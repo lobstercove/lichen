@@ -17,8 +17,10 @@ NETWORK=${1:-testnet}
 NETWORK=$(echo "$NETWORK" | tr '[:upper:]' '[:lower:]')
 SOLANA_RPC_URL=${2:-${CUSTODY_SOLANA_RPC_URL:-}}
 EVM_RPC_URL=${3:-${CUSTODY_EVM_RPC_URL:-}}
+NEOX_RPC_URL=${4:-${CUSTODY_NEOX_RPC_URL:-}}
 LOCAL_SOLANA_RPC_PORT="${LICHEN_LOCAL_SOLANA_RPC_PORT:-18899}"
 LOCAL_EVM_RPC_PORT="${LICHEN_LOCAL_EVM_RPC_PORT:-18545}"
+LOCAL_NEOX_RPC_PORT="${LICHEN_LOCAL_NEOX_RPC_PORT:-18546}"
 
 case $NETWORK in
   testnet)
@@ -182,6 +184,7 @@ mkdir -p "$LOG_DIR"
 CUSTODY_PID=""
 LOCAL_SOLANA_RPC_PID=""
 LOCAL_EVM_RPC_PID=""
+LOCAL_NEOX_RPC_PID=""
 LOCAL_AIRDROPS_FILE="${LOG_DIR}/airdrops.json"
 if [ "$LOCAL_CLUSTER_RESET" = "1" ]; then
   rm -f "$LOCAL_AIRDROPS_FILE" "$REPO_ROOT/airdrops.json" 2>/dev/null || true
@@ -249,6 +252,9 @@ fi
 if [ -n "$EVM_RPC_URL" ]; then
   export CUSTODY_EVM_RPC_URL="$EVM_RPC_URL"
 fi
+if [ -n "$NEOX_RPC_URL" ]; then
+  export CUSTODY_NEOX_RPC_URL="$NEOX_RPC_URL"
+fi
 
 write_local_service_fleet_config
 
@@ -264,6 +270,9 @@ cleanup_started_processes() {
   fi
   if [ -n "${LOCAL_EVM_RPC_PID:-}" ]; then
     kill "$LOCAL_EVM_RPC_PID" 2>/dev/null || true
+  fi
+  if [ -n "${LOCAL_NEOX_RPC_PID:-}" ]; then
+    kill "$LOCAL_NEOX_RPC_PID" 2>/dev/null || true
   fi
   if [ -n "${CUSTODY_PID:-}" ]; then
     kill "$CUSTODY_PID" 2>/dev/null || true
@@ -567,6 +576,22 @@ if ! wait_for_evm_rpc "$EVM_RPC_URL" "local EVM RPC" "$LOCAL_HEALTH_TIMEOUT_SECS
   exit 1
 fi
 
+if [ -z "$NEOX_RPC_URL" ]; then
+  NEOX_RPC_URL="http://127.0.0.1:${LOCAL_NEOX_RPC_PORT}"
+  LOCAL_NEOX_RPC_PID="$(start_detached_process "${LOG_DIR}/neox-rpc.log" \
+    env LICHEN_LOCAL_EVM_PORT="$LOCAL_NEOX_RPC_PORT" \
+      LICHEN_LOCAL_EVM_CHAIN_ID="${CUSTODY_NEOX_CHAIN_ID:-12227332}" \
+    python3 "${SCRIPT_DIR}/local-evm-rpc-mock.py")"
+fi
+export CUSTODY_NEOX_RPC_URL="$NEOX_RPC_URL"
+export CUSTODY_NEOX_CHAIN_ID="${CUSTODY_NEOX_CHAIN_ID:-12227332}"
+export CUSTODY_NEOX_NEO_TOKEN_ADDR="${CUSTODY_NEOX_NEO_TOKEN_ADDR:-0x1111111111111111111111111111111111111111}"
+
+if ! wait_for_evm_rpc "$NEOX_RPC_URL" "local Neo X RPC" "$LOCAL_HEALTH_TIMEOUT_SECS"; then
+  cleanup_started_processes
+  exit 1
+fi
+
 CUSTODY_PID="$(start_detached_process "${LOG_DIR}/custody.log" ./scripts/run-custody.sh "$NETWORK")"
 
 FAUCET_PID=""
@@ -632,5 +657,9 @@ fi
 echo "EVM RPC: $EVM_RPC_URL"
 if [ -n "$LOCAL_EVM_RPC_PID" ]; then
   echo "Local EVM RPC PID: $LOCAL_EVM_RPC_PID (port $LOCAL_EVM_RPC_PORT)"
+fi
+echo "Neo X RPC: $NEOX_RPC_URL"
+if [ -n "$LOCAL_NEOX_RPC_PID" ]; then
+  echo "Local Neo X RPC PID: $LOCAL_NEOX_RPC_PID (port $LOCAL_NEOX_RPC_PORT)"
 fi
 echo "Logs: $LOG_DIR"

@@ -1267,6 +1267,42 @@ test('wallet applies numeric, base58, and hex input guards', () => {
         'private-transfer viewing key should be hex-guarded');
 });
 
+test('wallet switch clears wallet-scoped dashboard and shielded state before reloading', () => {
+    assert(walletSrc.includes('let _walletViewGeneration = 0;'), 'wallet should track dashboard render generation');
+    assert(walletSrc.includes('function beginWalletViewRender('), 'wallet should increment render generation');
+    assert(walletSrc.includes('function isCurrentWalletView('), 'wallet should reject stale async renders');
+    assert(walletSrc.includes('function clearWalletScopedDashboardUi('), 'wallet should clear wallet-scoped panels on switch');
+    assert(walletSrc.includes('resetShieldedForWalletSwitch()'), 'wallet switch should reset shielded UI/state');
+    assert(walletSrc.includes('clearWalletScopedDashboardUi();\n    clearStakingValidatorsCache();'),
+        'switchWallet should clear visible data before reloading the next wallet');
+});
+
+test('wallet async loaders refuse to render after wallet switch', () => {
+    assert(walletSrc.includes('async function refreshBalance(options = {})'), 'balance loader should accept wallet context');
+    assert(walletSrc.includes('async function loadAssets(options = {})'), 'asset loader should accept wallet context');
+    assert(walletSrc.includes('async function loadActivity(reset = true, options = {})'), 'activity loader should accept wallet context');
+    assert(walletSrc.includes('async function loadStaking(options = {})'), 'staking loader should accept wallet context');
+    assert(walletSrc.includes('async function loadMossStakePosition(address, options = {})'), 'MossStake loader should accept wallet context');
+    assert(walletSrc.includes('async function refreshNFTs(options = {})'), 'NFT loader should accept wallet context');
+    assert((walletSrc.match(/isCurrentWalletView\(wallet, generation\)/g) || []).length >= 8,
+        'wallet loaders should guard DOM writes with active wallet context');
+    assert(identitySrc.includes('!isCurrentWalletView(wallet, walletViewGeneration ?? undefined)'),
+        'identity loader should ignore stale wallet data');
+});
+
+test('shielded state is isolated per active wallet', () => {
+    assert(shieldedSrc.includes('function createInitialShieldedState('), 'shielded module should have a reusable empty state');
+    assert(shieldedSrc.includes('function resetShieldedForWalletSwitch('), 'shielded module should expose switch reset');
+    assert(shieldedSrc.includes('window.resetShieldedForWalletSwitch = resetShieldedForWalletSwitch'),
+        'shielded reset should be callable by wallet switch');
+    assert(shieldedSrc.includes('shieldedState.ownedNotes = [];') && shieldedSrc.includes('shieldedState.shieldedBalance = 0;'),
+        'shielded init should clear previous wallet notes before loading current wallet notes');
+    assert(shieldedSrc.includes('localStorage.setItem(`${storageKey}:unreadable:${Date.now()}`, raw);'),
+        'unreadable local shielded payloads should be quarantined instead of mixed into another wallet');
+    assert(!shieldedSrc.includes('localStorage.removeItem(storageKey);'),
+        'unreadable local shielded payloads should not be removed from their primary wallet-scoped storage key');
+});
+
 // ============================================================================
 // SUMMARY
 // ============================================================================

@@ -588,8 +588,10 @@ function validateDexWalletAndPairState() {
     );
 
     assert(
-        js.includes('P&L: ${pnlSign}$') && js.includes('24h: ${changeSign}$'),
-        'DEX portfolio summary labels P&L separately from the 24h value change'
+        js.includes('Open P&L: ${pnlSign}$') &&
+            !js.includes('dexPortfolioCache') &&
+            !js.includes('24h: ${changeSign}$'),
+        'DEX portfolio summary avoids fake local 24h deltas'
     );
 
     const calcTotalBody = extractFunctionBody(js, 'calcTotal');
@@ -617,17 +619,68 @@ function validateDexWalletAndPairState() {
 
 function validateFrontendInputGuards() {
     const dexJs = fs.readFileSync(path.join(repoRoot, 'dex', 'dex.js'), 'utf8');
+    const dexHtml = fs.readFileSync(path.join(repoRoot, 'dex', 'index.html'), 'utf8');
     const faucetJs = fs.readFileSync(path.join(repoRoot, 'faucet', 'faucet.js'), 'utf8');
     const faucetHtml = fs.readFileSync(path.join(repoRoot, 'faucet', 'index.html'), 'utf8');
 
     const dexNumericGuardBody = extractFunctionBody(dexJs, 'applyDexNumericInputGuards');
     assert(
         dexJs.includes('function sanitizeDexNumberInput(') &&
+            !dexHtml.includes('type="number"') &&
+            !dexJs.includes('type="number"') &&
+            dexHtml.includes('id="orderPrice" placeholder="0.0000" inputmode="decimal"') &&
+            dexHtml.includes('id="orderAmount" placeholder="0.00" inputmode="decimal"') &&
+            dexHtml.includes('data-dex-numeric="true"') &&
+            dexNumericGuardBody.includes('input[data-dex-numeric="true"]') &&
             dexNumericGuardBody.includes("event.key === 'e' || event.key === 'E' || event.key === '+'") &&
             dexNumericGuardBody.includes("event.key === '-' && !dexInputAllowsNegative(input)") &&
             dexNumericGuardBody.includes("event.key === '.' && !dexInputAllowsDecimal(input)") &&
             dexNumericGuardBody.includes("input.addEventListener('paste'"),
         'DEX numeric inputs reject exponent/sign junk and sanitize pasted values'
+    );
+
+    assert(
+        dexHtml.includes('id="predictTradeHint"') &&
+            dexHtml.includes('id="predictCreateHint"') &&
+            dexHtml.includes('id="addLiqHint"') &&
+            dexHtml.includes('id="proposalSubmitHint"') &&
+            dexHtml.includes('id="launchTradeHint"') &&
+            dexHtml.includes('id="launchCreateHint"') &&
+            dexHtml.includes('id="rewardClaimAllHint"') &&
+            dexHtml.includes('id="rewardClaimTradingHint"') &&
+            dexHtml.includes('id="rewardClaimLpHint"') &&
+            dexHtml.includes('id="predictStatusFilter"') &&
+            dexHtml.includes('id="predictPagination"') &&
+            dexJs.includes('function getPredictCreateValidation()') &&
+            dexJs.includes('function isPredictMarketOpen(') &&
+            dexJs.includes('function applyPredictionMarketSort()') &&
+            dexJs.includes('function getFilteredPredictionMarkets()') &&
+            dexJs.includes('function renderPredictPagination(') &&
+            dexJs.includes('function getAddLiquidityValidation()') &&
+            dexJs.includes('function updateAddLiquidityButton()') &&
+            dexJs.includes('function updateProposalSubmitButton()') &&
+            dexJs.includes('function updateRewardsClaimButtons()') &&
+            dexJs.includes('function updateLaunchTradeButton()') &&
+            dexJs.includes('.btn-predict-resolve, .btn-predict-challenge, .btn-predict-finalize, .btn-predict-claim, .btn-predict-claim-pos') &&
+            dexJs.includes("document.querySelectorAll('.margin-close-btn, .cancel-btn')") &&
+            dexJs.includes("document.querySelectorAll('.lp-collect-btn, .lp-remove-btn, .lp-add-btn')") &&
+            dexJs.includes('No LP positions yet'),
+        'DEX prediction, pool, launch, rewards, and governance actions expose validation-driven disabled states'
+    );
+
+    const updateSubmitBody = extractFunctionBody(dexJs, 'updateSubmitBtn');
+    const syncOrderTypeBody = extractFunctionBody(dexJs, 'syncOrderTypeUi');
+    assert(
+        dexHtml.includes('id="orderSubmitHint"') &&
+            dexHtml.includes('id="marginMarketNotice"') &&
+            dexHtml.includes('id="marginAdvancedToggle"') &&
+            dexHtml.includes('id="marginCollateral"') &&
+            updateSubmitBody.includes('Reconnect wallet to sign') &&
+            updateSubmitBody.includes('Margin entries are market-only') &&
+            syncOrderTypeBody.includes('marginMarketNotice') &&
+            dexJs.includes("const neededToken = tradeMode === 'margin'") &&
+            dexJs.includes("const neededAmount = tradeMode === 'margin'"),
+        'DEX order ticket exposes clear margin and wallet gating state'
     );
 
     const dexObserverBody = extractFunctionBody(dexJs, 'observeDexNumericInputGuards');

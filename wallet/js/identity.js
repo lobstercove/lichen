@@ -391,12 +391,16 @@ async function buildContractCall(functionName, args, password, valueLicn = 0) {
 async function loadIdentityData() {
     const wallet = getActiveWallet();
     if (!wallet) return null;
+    const walletViewGeneration = typeof _walletViewGeneration !== 'undefined' ? _walletViewGeneration : null;
 
     try {
         const [profile, lichenNameResult] = await Promise.all([
             rpc.call('getLichenIdProfile', [wallet.address]).catch(() => null),
             rpc.call('reverseLichenName', [wallet.address]).catch(() => null),
         ]);
+        if (typeof isCurrentWalletView === 'function' && !isCurrentWalletView(wallet, walletViewGeneration ?? undefined)) {
+            return null;
+        }
         // reverseLichenName returns {"name": "alice.lichen"} or null — extract the string
         const lichenName = lichenNameResult?.name || null;
 
@@ -405,6 +409,9 @@ async function loadIdentityData() {
             try {
                 nameDetails = await rpc.call('resolveLichenName', [lichenName]);
             } catch (_) { }
+        }
+        if (typeof isCurrentWalletView === 'function' && !isCurrentWalletView(wallet, walletViewGeneration ?? undefined)) {
+            return null;
         }
 
         _identityCache = {

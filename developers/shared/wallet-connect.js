@@ -420,10 +420,7 @@ LichenWallet.prototype._restore = function () {
         var data = JSON.parse(stored);
         if (!data || !data.address) return;
 
-        var providerType = typeof data.provider === 'string' && data.provider.trim()
-            ? data.provider.trim()
-            : 'extension';
-        if (providerType !== 'extension') {
+        if (data.provider !== 'extension') {
             self._clearConnectionState(false);
             self._updateButton();
             return;

@@ -18,35 +18,55 @@ const SHIELDED_STORAGE_VERSION = 1;
 const SHIELDED_NOTE_PAYLOAD_MAGIC = new TextEncoder().encode('LNP1');
 
 // ===== Shielded Wallet State =====
-let shieldedState = {
-    initialized: false,
-    // Shielded keypair (derived from wallet seed)
-    spendingKey: null,        // Uint8Array(32) — secret, never leaves client
-    viewingKey: null,         // Uint8Array(32) — can share with auditors
-    shieldedAddress: null,    // Base58-encoded viewing key hash
+function createInitialShieldedState(previousState = {}) {
+    return {
+        initialized: false,
+        // Shielded keypair (derived from wallet seed)
+        spendingKey: null,        // Uint8Array(32) — secret, never leaves client
+        viewingKey: null,         // Uint8Array(32) — can share with auditors
+        shieldedAddress: null,    // Base58-encoded viewing key hash
 
-    // Owned notes (trial-decrypted from commitment stream)
-    ownedNotes: [],           // { index, value, blinding, serial, commitment, spent }
-    shieldedBalance: 0,       // Sum of unspent note values (spores)
+        // Owned notes (trial-decrypted from commitment stream)
+        ownedNotes: [],           // { index, value, blinding, serial, commitment, spent }
+        shieldedBalance: 0,       // Sum of unspent note values (spores)
 
-    // Merkle tree state (synced from RPC)
-    merkleRoot: null,
-    lastSyncedIndex: 0,
-    commitments: [],          // All commitment hashes for proof generation
+        // Merkle tree state (synced from RPC)
+        merkleRoot: null,
+        lastSyncedIndex: 0,
+        commitments: [],          // All commitment hashes for proof generation
 
-    // Pool stats
-    poolStats: null,
-    storageLoadFailed: false,
-    storageKeyName: null,
+        // Pool stats
+        poolStats: null,
+        storageLoadFailed: false,
+        storageKeyName: null,
 
-    // Proof generation state
-    provingKeys: {
-        shield: null,
-        unshield: null,
-        transfer: null,
-    },
-    provingKeysLoaded: false,
-};
+        // Proof generation state
+        provingKeys: previousState.provingKeys || {
+            shield: null,
+            unshield: null,
+            transfer: null,
+        },
+        provingKeysLoaded: Boolean(previousState.provingKeysLoaded),
+    };
+}
+
+let shieldedState = createInitialShieldedState();
+
+function resetShieldedForWalletSwitch() {
+    if (typeof zeroBytes === 'function') {
+        zeroBytes(shieldedState.spendingKey);
+        zeroBytes(shieldedState.viewingKey);
+    }
+    shieldedState = createInitialShieldedState(shieldedState);
+    if (typeof window !== 'undefined') window.shieldedState = shieldedState;
+    showShieldedStatus('', null);
+    updateShieldedUI();
+}
+
+if (typeof window !== 'undefined') {
+    window.resetShieldedForWalletSwitch = resetShieldedForWalletSwitch;
+    window.shieldedState = shieldedState;
+}
 
 const SHIELDED_SIGNED_SUBMISSION_AVAILABLE = true;
 const SHIELDED_PRIVATE_TRANSFER_AVAILABLE = false;
@@ -253,6 +273,13 @@ async function initShielded(walletSeed) {
     shieldedState.initialized = true;
     shieldedState.storageLoadFailed = false;
     shieldedState.storageKeyName = getShieldedStorageKeyName();
+    shieldedState.ownedNotes = [];
+    shieldedState.shieldedBalance = 0;
+    shieldedState.merkleRoot = null;
+    shieldedState.lastSyncedIndex = 0;
+    shieldedState.commitments = [];
+    shieldedState.poolStats = null;
+    if (typeof window !== 'undefined') window.shieldedState = shieldedState;
 
     // Load owned notes from localStorage
     await loadNotesFromStorage();
@@ -1064,8 +1091,8 @@ async function saveNotesToStorage() {
 }
 
 async function loadNotesFromStorage() {
+    const storageKey = getShieldedStorageKeyName();
     try {
-        const storageKey = getShieldedStorageKeyName();
         const raw = storageKey ? localStorage.getItem(storageKey) : null;
         if (!raw) return;
 
@@ -1088,9 +1115,21 @@ async function loadNotesFromStorage() {
         shieldedState.storageLoadFailed = false;
         shieldedState.storageKeyName = storageKey;
     } catch (e) {
+        shieldedState.ownedNotes = [];
+        shieldedState.lastSyncedIndex = 0;
+        shieldedState.shieldedBalance = 0;
         shieldedState.storageLoadFailed = true;
-        console.error('Failed to load shielded notes:', e);
-        showToast('Shielded note storage could not be decrypted. Not overwriting local notes.');
+        shieldedState.storageKeyName = storageKey;
+
+        try {
+            const raw = storageKey ? localStorage.getItem(storageKey) : null;
+            if (raw) {
+                localStorage.setItem(`${storageKey}:unreadable:${Date.now()}`, raw);
+            }
+        } catch (_) { /* best-effort recovery copy only */ }
+
+        console.warn('Shielded note storage could not be decrypted. Not overwriting local notes.', e?.message || e);
+        showShieldedStatus('Shielded note storage could not be decrypted. Not overwriting local notes.', 'error');
     }
 }
 

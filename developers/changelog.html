@@ -79,6 +79,33 @@
         <!-- Timeline -->
         <div class="changelog-timeline">
 
+            <!-- ============ v0.5.61 ============ -->
+            <div class="changelog-entry">
+                <div class="changelog-header">
+                    <span class="changelog-version">v0.5.61</span>
+                    <span class="changelog-date">May 21, 2026</span>
+                </div>
+                <h3 class="changelog-title">DEX Readiness and Wallet State Isolation</h3>
+
+                <div class="changelog-section" data-type="improved">
+                    <h4><i class="fas fa-arrow-up" style="color: var(--accent)"></i> Improvements</h4>
+                    <ul>
+                        <li><strong>DEX order entry</strong> &mdash; spot and margin tickets now accept decimal prices
+                            and amounts, keep button state tied to real prerequisites, and surface fee-only activity
+                            when a zero-amount contract call represents a fee-bearing action.</li>
+                        <li><strong>DEX workflow gates</strong> &mdash; prediction markets, pools, launchpad,
+                            governance, and rewards now use consistent wallet, input, lifecycle, and contract-support
+                            gates before a user can submit an action.</li>
+                        <li><strong>Wallet account isolation</strong> &mdash; switching wallets now resets shielded,
+                            activity, and account-scoped UI state before loading the newly selected wallet, preventing
+                            stale private balances or notes from another wallet from remaining on screen.</li>
+                        <li><strong>Neo X local validation</strong> &mdash; the local stack now starts a Neo X mock route
+                            for custody tests so GAS and NEO bridge deposit/withdrawal paths can be exercised without
+                            depending on a public external RPC.</li>
+                    </ul>
+                </div>
+            </div>
+
             <!-- ============ v0.5.60 ============ -->
             <div class="changelog-entry">
                 <div class="changelog-header">

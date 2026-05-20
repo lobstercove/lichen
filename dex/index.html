@@ -194,6 +194,8 @@
                             style="font-size:0.75rem;color:var(--text-muted);padding:4px 0;">
                             <div style="display:flex;justify-content:space-between;"><span>Entry</span><span
                                     id="marginEntry">—</span></div>
+                            <div style="display:flex;justify-content:space-between;"><span>Collateral</span><span
+                                    id="marginCollateral">—</span></div>
                             <div style="display:flex;justify-content:space-between;"><span>Liq. Price</span><span
                                     class="text-warning" id="marginLiqPrice">—</span></div>
                             <div style="display:flex;justify-content:space-between;"><span>Margin Ratio</span><span
@@ -203,21 +205,30 @@
                             style="font-size:0.75rem;color:var(--yellow-warning);padding:4px 0;text-align:center;">
                             <i class="fas fa-exclamation-triangle"></i> This pair is not enabled for margin trading
                         </div>
-                        <div class="margin-sltp-row" style="display:flex;gap:8px;padding:4px 0;">
-                            <div class="form-group" style="flex:1;margin:0;">
-                                <label style="font-size:0.72rem;">Stop-Loss</label>
-                                <div class="input-with-unit">
-                                    <input type="number" id="marginSL" placeholder="0.00" step="any" min="0"
-                                        style="font-size:0.8rem;">
-                                    <span class="input-unit" id="marginSLUnit" style="font-size:0.7rem;">lUSD</span>
+                        <div id="marginMarketNotice" class="margin-market-notice hidden" role="status">
+                            Margin entries execute at market. Use open positions to manage exits.
+                        </div>
+                        <button type="button" id="marginAdvancedToggle" class="margin-advanced-toggle"
+                            aria-expanded="false">
+                            Advanced risk
+                        </button>
+                        <div id="marginAdvancedPanel" class="margin-advanced-panel hidden">
+                            <div class="margin-sltp-row" style="display:flex;gap:8px;padding:4px 0;">
+                                <div class="form-group" style="flex:1;margin:0;">
+                                    <label style="font-size:0.72rem;">Stop-Loss</label>
+                                    <div class="input-with-unit">
+                                        <input type="text" id="marginSL" placeholder="0.00" inputmode="decimal"
+                                            data-dex-numeric="true" data-min="0" style="font-size:0.8rem;">
+                                        <span class="input-unit" id="marginSLUnit" style="font-size:0.7rem;">lUSD</span>
+                                    </div>
                                 </div>
-                            </div>
-                            <div class="form-group" style="flex:1;margin:0;">
-                                <label style="font-size:0.72rem;">Take-Profit</label>
-                                <div class="input-with-unit">
-                                    <input type="number" id="marginTP" placeholder="0.00" step="any" min="0"
-                                        style="font-size:0.8rem;">
-                                    <span class="input-unit" id="marginTPUnit" style="font-size:0.7rem;">lUSD</span>
+                                <div class="form-group" style="flex:1;margin:0;">
+                                    <label style="font-size:0.72rem;">Take-Profit</label>
+                                    <div class="input-with-unit">
+                                        <input type="text" id="marginTP" placeholder="0.00" inputmode="decimal"
+                                            data-dex-numeric="true" data-min="0" style="font-size:0.8rem;">
+                                        <span class="input-unit" id="marginTPUnit" style="font-size:0.7rem;">lUSD</span>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -241,21 +252,24 @@
                         <div class="form-group" id="priceGroup">
                             <label>Price</label>
                             <div class="input-with-unit">
-                                <input type="number" id="orderPrice" placeholder="0.0000" step="any" min="0">
+                                <input type="text" id="orderPrice" placeholder="0.0000" inputmode="decimal"
+                                    data-dex-numeric="true" data-min="0">
                                 <span class="input-unit" id="orderPriceUnit">lUSD</span>
                             </div>
                         </div>
                         <div class="form-group stop-price-group" id="stopPriceGroup" style="display: none;">
                             <label>Stop Price</label>
                             <div class="input-with-unit">
-                                <input type="number" id="stopPrice" placeholder="0.0000" step="any" min="0">
+                                <input type="text" id="stopPrice" placeholder="0.0000" inputmode="decimal"
+                                    data-dex-numeric="true" data-min="0">
                                 <span class="input-unit" id="stopPriceUnit">lUSD</span>
                             </div>
                         </div>
                         <div class="form-group">
                             <label>Amount</label>
                             <div class="input-with-unit">
-                                <input type="number" id="orderAmount" placeholder="0.00" step="any" min="0">
+                                <input type="text" id="orderAmount" placeholder="0.00" inputmode="decimal"
+                                    data-dex-numeric="true" data-min="0">
                                 <span class="input-unit" id="orderAmountUnit">LICN</span>
                             </div>
                         </div>
@@ -268,7 +282,8 @@
                         <div class="form-group">
                             <label>Total</label>
                             <div class="input-with-unit">
-                                <input type="number" id="orderTotal" placeholder="0.00" readonly>
+                                <input type="text" id="orderTotal" placeholder="0.00" inputmode="decimal"
+                                    data-dex-numeric="true" data-min="0" readonly>
                                 <span class="input-unit" id="orderTotalUnit">lUSD</span>
                             </div>
                         </div>
@@ -298,8 +313,8 @@
                                     <button class="slippage-btn active" data-slip="0.5">0.5%</button>
                                     <button class="slippage-btn" data-slip="1.0">1.0%</button>
                                     <div class="slippage-custom">
-                                        <input type="number" id="slippageCustom" placeholder="Custom" step="0.01"
-                                            min="0.01" max="50" class="form-input">
+                                        <input type="text" id="slippageCustom" placeholder="Custom" inputmode="decimal"
+                                            data-dex-numeric="true" data-min="0.01" data-max="50" class="form-input">
                                         <span>%</span>
                                     </div>
                                 </div>
@@ -333,6 +348,7 @@
                                 <span id="routeInfo">—</span>
                             </div>
                         </div>
+                        <div id="orderSubmitHint" class="order-submit-hint" role="status" aria-live="polite"></div>
 
                         <button class="btn btn-full btn-buy" id="submitOrder">
                             Buy LICN
@@ -500,6 +516,11 @@
                         Custom</button>
                 </div>
                 <div class="predict-sort">
+                    <select class="network-select" id="predictStatusFilter">
+                        <option value="open">Show: Open</option>
+                        <option value="all">Show: All</option>
+                        <option value="closed">Show: Closed/Resolved</option>
+                    </select>
                     <select class="network-select" id="predictSort">
                         <option value="volume">Sort: Volume</option>
                         <option value="newest">Sort: Newest</option>
@@ -520,6 +541,13 @@
                         </div>
                         <div class="predict-market-grid" id="predictMarketGrid">
                             <!-- Market cards populated from RPC by renderPredictionMarkets() -->
+                        </div>
+                        <div class="predict-pagination" id="predictPagination">
+                            <button class="btn btn-small btn-secondary" id="predictPrevPage" type="button"><i
+                                    class="fas fa-chevron-left"></i> Prev</button>
+                            <span class="predict-page-info mono-value" id="predictPageInfo">0 markets</span>
+                            <button class="btn btn-small btn-secondary" id="predictNextPage" type="button">Next <i
+                                    class="fas fa-chevron-right"></i></button>
                         </div>
                     </div>
                 </div>
@@ -552,7 +580,8 @@
                             <div class="form-group">
                                 <label>Amount (lUSD)</label>
                                 <div class="input-with-unit">
-                                    <input type="number" id="predictAmount" placeholder="0.00" step="1" min="1">
+                                    <input type="text" id="predictAmount" placeholder="0.00" inputmode="decimal"
+                                        data-dex-numeric="true" data-min="1">
                                     <span class="input-unit">lUSD</span>
                                 </div>
                                 <div class="predict-preset-row">
@@ -578,6 +607,7 @@
 
                             <button class="btn btn-full btn-buy" id="predictSubmitBtn"><i class="fas fa-bolt"></i> Buy
                                 YES Shares</button>
+                            <div class="order-submit-hint" id="predictTradeHint"></div>
                         </div>
                     </div>
 
@@ -644,7 +674,8 @@
                             <div class="form-group">
                                 <label>Initial Liquidity (lUSD)</label>
                                 <div class="input-with-unit">
-                                    <input type="number" id="predictInitLiq" placeholder="1000" step="100" min="100">
+                                    <input type="text" id="predictInitLiq" placeholder="1000" inputmode="decimal"
+                                        data-dex-numeric="true" data-min="100">
                                     <span class="input-unit">lUSD</span>
                                 </div>
                             </div>
@@ -663,6 +694,7 @@
 
                             <button class="btn btn-full btn-primary" id="predictCreateBtn"><i class="fas fa-rocket"></i>
                                 Create Market</button>
+                            <div class="order-submit-hint" id="predictCreateHint"></div>
                         </div>
                     </div>
                 </div>
@@ -848,12 +880,14 @@
                             <div class="price-range-inputs">
                                 <div class="range-input-box">
                                     <span class="range-label">Min Price</span>
-                                    <input type="number" id="liqMinPrice" placeholder="0.0000" step="0.0001">
+                                    <input type="text" id="liqMinPrice" placeholder="0.0000" inputmode="decimal"
+                                        data-dex-numeric="true" data-min="0">
                                     <span class="range-unit">lUSD per LICN</span>
                                 </div>
                                 <div class="range-input-box">
                                     <span class="range-label">Max Price</span>
-                                    <input type="number" id="liqMaxPrice" placeholder="0.0000" step="0.0001">
+                                    <input type="text" id="liqMaxPrice" placeholder="0.0000" inputmode="decimal"
+                                        data-dex-numeric="true" data-min="0">
                                     <span class="range-unit">lUSD per LICN</span>
                                 </div>
                             </div>
@@ -862,13 +896,15 @@
                         <div class="form-group">
                             <label>Deposit Amounts</label>
                             <div class="input-with-unit">
-                                <input type="number" id="liqAmountA" placeholder="0.00" step="0.01">
+                                <input type="text" id="liqAmountA" placeholder="0.00" inputmode="decimal"
+                                    data-dex-numeric="true" data-min="0">
                                 <span class="input-unit">LICN</span>
                             </div>
                         </div>
                         <div class="form-group">
                             <div class="input-with-unit">
-                                <input type="number" id="liqAmountB" placeholder="0.00" step="0.01">
+                                <input type="text" id="liqAmountB" placeholder="0.00" inputmode="decimal"
+                                    data-dex-numeric="true" data-min="0">
                                 <span class="input-unit">lUSD</span>
                             </div>
                         </div>
@@ -880,6 +916,7 @@
                         </div>
 
                         <button class="btn btn-full btn-buy" id="addLiqBtn">Add Liquidity</button>
+                        <div class="order-submit-hint" id="addLiqHint"></div>
                     </div>
                 </div>
             </div>
@@ -928,13 +965,14 @@
 
             <!-- Stats Row -->
             <div class="rewards-stats-row">
-                <div class="pool-stat-card highlight-card">
-                    <div class="stat-icon-wrap accent-icon"><i class="fas fa-coins"></i></div>
-                    <div class="pool-stat-label">Pending Rewards</div>
-                    <div class="pool-stat-value accent-text" id="rewardsPending">0 LICN</div>
-                    <div class="stat-sub" id="rewardsPendingUsd">≈ $0.00</div>
-                    <button class="btn btn-small btn-primary claim-btn" id="claimAllBtn">Claim All</button>
-                </div>
+                    <div class="pool-stat-card highlight-card">
+                        <div class="stat-icon-wrap accent-icon"><i class="fas fa-coins"></i></div>
+                        <div class="pool-stat-label">Pending Rewards</div>
+                        <div class="pool-stat-value accent-text" id="rewardsPending">0 LICN</div>
+                        <div class="stat-sub" id="rewardsPendingUsd">≈ $0.00</div>
+                        <button class="btn btn-small btn-primary claim-btn" id="claimAllBtn">Claim All</button>
+                        <div class="order-submit-hint" id="rewardClaimAllHint"></div>
+                    </div>
                 <div class="pool-stat-card">
                     <div class="stat-icon-wrap"><i class="fas fa-medal"></i></div>
                     <div class="pool-stat-label">Your Tier</div>
@@ -969,6 +1007,7 @@
                             </h3>
                             <button class="btn btn-small btn-primary claim-btn" id="claimTradingBtn">Claim</button>
                         </div>
+                        <div class="order-submit-hint" id="rewardClaimTradingHint"></div>
                         <div class="reward-body">
                             <p class="text-secondary">Fee mining: earn LICN proportional to fees paid, scaled by tier
                                 multiplier.</p>
@@ -996,6 +1035,7 @@
                             </h3>
                             <button class="btn btn-small btn-primary claim-btn" id="claimLpBtn">Claim</button>
                         </div>
+                        <div class="order-submit-hint" id="rewardClaimLpHint"></div>
                         <div class="reward-body">
                             <p class="text-secondary">Earn LICN proportional to your in-range concentrated liquidity
                                 position.</p>
@@ -1255,14 +1295,16 @@
                             <div class="form-group">
                                 <label>New Maker Fee (bps)</label>
                                 <div class="input-with-unit">
-                                    <input type="number" id="propMakerFee" placeholder="-1" min="-100" max="100">
+                                    <input type="text" id="propMakerFee" placeholder="-1" inputmode="numeric"
+                                        data-dex-numeric="true" data-decimal="false" data-min="-100" data-max="100">
                                     <span class="input-unit">BPS</span>
                                 </div>
                             </div>
                             <div class="form-group">
                                 <label>New Taker Fee (bps)</label>
                                 <div class="input-with-unit">
-                                    <input type="number" id="propTakerFee" placeholder="5" min="0" max="100">
+                                    <input type="text" id="propTakerFee" placeholder="5" inputmode="numeric"
+                                        data-dex-numeric="true" data-decimal="false" data-min="0" data-max="100">
                                     <span class="input-unit">BPS</span>
                                 </div>
                             </div>
@@ -1342,7 +1384,8 @@
                             <div class="form-group">
                                 <label>Proposed Value</label>
                                 <div class="input-with-unit">
-                                    <input type="number" id="propParamValue" placeholder="Enter new value" step="any">
+                                    <input type="text" id="propParamValue" placeholder="Enter new value"
+                                        inputmode="decimal" data-dex-numeric="true">
                                     <span class="input-unit" id="propParamUnit">x</span>
                                 </div>
                             </div>
@@ -1371,6 +1414,7 @@
 
                         <button class="btn btn-full btn-primary" id="submitProposalBtn"><i
                                 class="fas fa-paper-plane"></i> Submit Proposal</button>
+                        <div class="order-submit-hint" id="proposalSubmitHint"></div>
                     </div>
                 </div>
             </div>
@@ -1510,7 +1554,8 @@
                             <div class="form-group">
                                 <label id="launchAmountLabel">Amount (LICN)</label>
                                 <div class="input-with-unit">
-                                    <input type="number" id="launchAmountInput" placeholder="0.00" min="0" step="any">
+                                    <input type="text" id="launchAmountInput" placeholder="0.00" inputmode="decimal"
+                                        data-dex-numeric="true" data-min="0">
                                     <span class="input-unit" id="launchAmountUnit">LICN</span>
                                 </div>
                                 <div class="launch-presets">
@@ -1537,6 +1582,7 @@
                             <button class="btn btn-full btn-buy" id="launchTradeBtn">
                                 <i class="fas fa-bolt"></i> Buy Tokens
                             </button>
+                            <div class="order-submit-hint" id="launchTradeHint"></div>
                         </div>
                     </div>
 
@@ -1557,6 +1603,7 @@
                         <button class="btn btn-full btn-primary" id="launchCreateBtn">
                             <i class="fas fa-rocket"></i> Launch Token (10 LICN)
                         </button>
+                        <div class="order-submit-hint" id="launchCreateHint"></div>
                     </div>
 
                     <!-- Your Holdings -->

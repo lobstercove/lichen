@@ -25,9 +25,16 @@ const HELPER_FAMILIES = [
             'explorer/shared/wallet-connect.js',
             'faucet/shared/wallet-connect.js',
             'monitoring/shared/wallet-connect.js',
+        ],
+        note: 'Extension-only wallet-connect family. Developers, Marketplace, DEX, and Programs remain intentional variants.',
+    },
+    {
+        id: 'wallet-connect-popup-bridge',
+        source: 'dex/shared/wallet-connect.js',
+        targets: [
             'programs/shared/wallet-connect.js',
         ],
-        note: 'Extension-only wallet-connect family. Developers, Marketplace, and DEX remain intentional variants.',
+        note: 'DEX and Programs share the external wallet/web-wallet popup bridge helper.',
     },
     {
         id: 'shared-utils-standard',

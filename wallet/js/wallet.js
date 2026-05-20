@@ -668,6 +668,63 @@ function stopBalancePolling() {
 
 window.currentShieldedBalanceSpores = Number(window.currentShieldedBalanceSpores || 0);
 window.currentWalletBalanceBreakdown = null;
+let _walletViewGeneration = 0;
+
+function beginWalletViewRender() {
+    _walletViewGeneration += 1;
+    return _walletViewGeneration;
+}
+
+function isCurrentWalletView(walletOrId, generation = _walletViewGeneration) {
+    const walletId = typeof walletOrId === 'string' ? walletOrId : walletOrId?.id;
+    return !!walletId && walletState.activeWalletId === walletId && generation === _walletViewGeneration;
+}
+
+function clearWalletScopedDashboardUi() {
+    window.totalWalletBalance = 0;
+    window.walletBalance = 0;
+    window.currentShieldedBalanceSpores = 0;
+    window.currentWalletBalanceBreakdown = null;
+
+    const setText = (id, value) => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = value;
+    };
+    const setHtml = (id, value) => {
+        const el = document.getElementById(id);
+        if (el) el.innerHTML = value;
+    };
+
+    setText('totalBalance', '0.00 LICN');
+    setText('balanceUsd', '$0.00 USD');
+    const breakdownEl = document.getElementById('balanceBreakdown');
+    if (breakdownEl) {
+        breakdownEl.innerHTML = '';
+        breakdownEl.style.display = 'none';
+    }
+
+    setHtml('assetsList', '<div class="wallet-loading"><i class="fas fa-spinner fa-spin"></i> Loading assets...</div>');
+    setHtml('activityList', '<div class="wallet-loading"><i class="fas fa-spinner fa-spin"></i> Loading activity...</div>');
+    setHtml('stakingValidatorInfo', '<div class="wallet-loading"><i class="fas fa-spinner fa-spin"></i> Loading staking...</div>');
+    setHtml('identityContent', '<div class="id-loading"><i class="fas fa-spinner fa-spin"></i><span>Loading LichenID...</span></div>');
+
+    const nftGrid = document.getElementById('nftsGrid');
+    const nftEmpty = document.getElementById('nftsEmpty');
+    if (nftGrid) {
+        nftGrid.innerHTML = '';
+        nftGrid.style.display = 'none';
+    }
+    if (nftEmpty) nftEmpty.style.display = 'none';
+    setText('nftCount', '0 NFTs');
+
+    _activityBeforeSlot = null;
+    _activityItems = [];
+    _activityHasMore = true;
+
+    if (typeof resetShieldedForWalletSwitch === 'function') {
+        resetShieldedForWalletSwitch();
+    }
+}
 
 function renderWalletBalanceBreakdown() {
     const breakdownEl = document.getElementById('balanceBreakdown');
@@ -1723,12 +1780,17 @@ function persistSessionWalletState() {
 }
 
 function renderSessionOnlyWarningBox() {
+    const popupCopy = isBridgePopupSession();
+    const title = popupCopy ? 'Signing session only.' : 'Browser session wallet.';
+    const body = popupCopy
+        ? 'This popup unlocks your wallet only to approve the requesting app. Closing it ends this signing session.'
+        : 'Your encrypted wallet stays in this browser session, not long-lived browser storage. Use the extension for persistent wallet custody.';
     return `
         <div class="warning-box">
             <i class="fas fa-hourglass-half warning-icon"></i>
             <div>
-                <strong>This web wallet is session-only.</strong>
-                <p>Encrypted keys stay in this tab and are removed from persistent browser storage. Use the extension for long-lived wallet custody.</p>
+                <strong>${title}</strong>
+                <p>${body}</p>
             </div>
         </div>
     `;
@@ -2399,23 +2461,30 @@ async function importWalletJson() {
 
 // ===== DASHBOARD =====
 async function showDashboard() {
+    const wallet = getActiveWallet();
+    const generation = beginWalletViewRender();
     showScreen('walletDashboard');
     setupDashboardTabs();
     setupWalletSelector();
+    clearWalletScopedDashboardUi();
+    if (!wallet) return;
+
     // Fetch live prices before rendering balances
     await fetchLivePrices();
-    await refreshBalance();
-    await loadAssets();
+    if (!isCurrentWalletView(wallet, generation)) return;
+    await refreshBalance({ wallet, generation });
+    await loadAssets({ wallet, generation });
     void refreshWalletRestrictionStatus({ updateAssets: true, updateSend: true });
-    await loadActivity();
-    await loadStaking();
-    refreshNFTs();
+    await loadActivity(true, { wallet, generation });
+    await loadStaking({ wallet, generation });
+    refreshNFTs({ wallet, generation });
     connectBalanceWebSocket();
     startBalancePolling();
 }
 
 async function initShieldedForActiveWallet() {
     const wallet = getActiveWallet();
+    const generation = _walletViewGeneration;
     if (!wallet || !wallet.encryptedKey || typeof initShielded !== 'function') return;
 
     // AUDIT-FIX W-2: Use secure password modal instead of window.prompt()
@@ -2433,6 +2502,7 @@ async function initShieldedForActiveWallet() {
         showToast('Shielded initialization cancelled');
         return;
     }
+    if (!isCurrentWalletView(wallet, generation)) return;
 
     let decryptedSeedHex = null;
     try {
@@ -2469,6 +2539,10 @@ async function initShieldedForActiveWallet() {
         zeroBytes(seedBytes);
         zeroBytes(keyMaterial);
 
+        if (!isCurrentWalletView(wallet, generation)) {
+            zeroBytes(shieldSeed);
+            return;
+        }
         await initShielded(shieldSeed);
         zeroBytes(shieldSeed);
     } catch (error) {
@@ -2561,8 +2635,14 @@ function getActiveWallet() {
 }
 
 function switchWallet(walletId) {
+    if (walletState.activeWalletId === walletId) {
+        document.getElementById('walletDropdown')?.classList.remove('show');
+        return;
+    }
     walletState.activeWalletId = walletId;
     saveWalletState();
+    beginWalletViewRender();
+    clearWalletScopedDashboardUi();
     clearStakingValidatorsCache();
     if (typeof clearIdentityCache === 'function') {
         clearIdentityCache();
@@ -2577,8 +2657,9 @@ function switchWallet(walletId) {
     showDashboard();
 }
 
-async function refreshBalance() {
-    const wallet = getActiveWallet();
+async function refreshBalance(options = {}) {
+    const wallet = options.wallet || getActiveWallet();
+    const generation = options.generation ?? _walletViewGeneration;
     if (!wallet) return;
 
     try {
@@ -2591,6 +2672,7 @@ async function refreshBalance() {
 
         // Fetch all token balances in parallel
         const tokenBalances = await getAllTokenBalances(wallet.address);
+        if (!isCurrentWalletView(wallet, generation)) return;
 
         // Calculate total USD value from live prices
         let totalUsd = licn * getPrice('LICN');
@@ -2617,6 +2699,7 @@ async function refreshBalance() {
         };
         renderWalletBalanceBreakdown();
     } catch (error) {
+        if (!isCurrentWalletView(wallet, generation)) return;
         // Silently handle - new wallet with no on-chain account is expected
         const settings = walletState.settings || {};
         const currency = settings.currency || 'USD';
@@ -2635,9 +2718,10 @@ async function refreshBalance() {
     }
 }
 
-async function loadAssets() {
+async function loadAssets(options = {}) {
     const assetsList = document.getElementById('assetsList');
-    const wallet = getActiveWallet();
+    const wallet = options.wallet || getActiveWallet();
+    const generation = options.generation ?? _walletViewGeneration;
     if (!wallet) return;
 
     const balance = await rpc.getBalance(wallet.address).catch(() => ({ licn: 0 }));
@@ -2649,6 +2733,7 @@ async function loadAssets() {
         fetchWrappedReserveStats(['wNEO', 'wGAS']),
         fetchNeoGasRewardsSnapshot(wallet.address),
     ]);
+    if (!isCurrentWalletView(wallet, generation)) return;
 
     // Live prices for display
     const settings = walletState.settings || {};
@@ -2721,7 +2806,9 @@ async function loadAssets() {
 
     // Token contracts are loaded dynamically from deploy-manifest; nothing to show if absent
 
-    assetsList.innerHTML = html;
+    if (isCurrentWalletView(wallet, generation)) {
+        assetsList.innerHTML = html;
+    }
 }
 
 let _activityBeforeSlot = null; // Pagination cursor for activity
@@ -2790,9 +2877,14 @@ async function getStakingValidators() {
     return validators;
 }
 
-async function loadActivity(reset = true) {
+async function loadActivity(reset = true, options = {}) {
+    if (typeof reset === 'object' && reset !== null) {
+        options = reset;
+        reset = true;
+    }
     const activityList = document.getElementById('activityList');
-    const wallet = getActiveWallet();
+    const wallet = options.wallet || getActiveWallet();
+    const generation = options.generation ?? _walletViewGeneration;
     if (!wallet) return;
 
     if (reset) {
@@ -2854,6 +2946,8 @@ async function loadActivity(reset = true) {
                 }
             } catch (e) { /* faucet API unavailable — skip silently */ }
         }
+
+        if (!isCurrentWalletView(wallet, generation)) return;
 
         if (typeof rpcHasMore === 'boolean') {
             _activityHasMore = rpcHasMore;
@@ -3046,14 +3140,16 @@ async function loadActivity(reset = true) {
         }
 
     } catch (error) {
+        if (!isCurrentWalletView(wallet, generation)) return;
         console.error('Failed to load activity:', error);
         if (_activityItems.length === 0) activityList.innerHTML = emptyHtml;
     }
 }
 
 // Load staking info (validator status, bootstrap grant, vesting)
-async function loadStaking() {
-    const wallet = getActiveWallet();
+async function loadStaking(options = {}) {
+    const wallet = options.wallet || getActiveWallet();
+    const generation = options.generation ?? _walletViewGeneration;
     if (!wallet) return;
 
     const validatorSection = document.getElementById('stakingValidatorInfo');
@@ -3062,6 +3158,7 @@ async function loadStaking() {
     try {
         // Check if this wallet is a validator
         const validators = await getStakingValidators();
+        if (!isCurrentWalletView(wallet, generation)) return;
         const myValidator = validators.find(v => v.pubkey === wallet.address);
 
         // Always show staking tab (for MossStake or validator staking)
@@ -3141,7 +3238,7 @@ async function loadStaking() {
                 `;
 
                 // Load MossStake position
-                loadMossStakePosition(wallet.address);
+                loadMossStakePosition(wallet.address, { walletId: wallet.id, generation });
             }
             return;
         }
@@ -3205,6 +3302,7 @@ async function loadStaking() {
 
         // Get validator account to check actual stake
         const account = await rpc.getAccount(wallet.address);
+        if (!isCurrentWalletView(wallet, generation)) return;
         const totalStake = account?.spores || 0;
         const totalStakeLICN = totalStake / SPORES_PER_LICN;
 
@@ -3262,6 +3360,7 @@ async function loadStaking() {
         }
 
     } catch (error) {
+        if (!isCurrentWalletView(wallet, generation)) return;
         console.error('Failed to load staking info:', error);
         // Show MossStake UI even on error
         if (stakingTabBtn) stakingTabBtn.style.display = 'flex';
@@ -3278,17 +3377,20 @@ function refreshStakingIfVisible() {
     const stakingTab = document.querySelector('.dashboard-tab[data-tab="staking"]');
     const stakingSection = document.getElementById('stakingValidatorInfo');
     if (stakingTab && stakingTab.classList.contains('active') && stakingSection && stakingSection.style.display !== 'none') {
-        loadMossStakePosition(wallet.address);
+        loadMossStakePosition(wallet.address, { walletId: wallet.id, generation: _walletViewGeneration });
     }
 }
 
 // Load MossStake position for community  stakers
-async function loadMossStakePosition(address) {
+async function loadMossStakePosition(address, options = {}) {
+    const expectedWalletId = options.walletId || walletState.activeWalletId;
+    const generation = options.generation ?? _walletViewGeneration;
     try {
         const poolInfo = await rpc.call('getMossStakePoolInfo');
         const position = await rpc.call('getStakingPosition', [address]);
         const queue = await rpc.call('getUnstakingQueue', [address]);
         const currentSlot = await getCurrentChainSlot();
+        if (!isCurrentWalletView(expectedWalletId, generation)) return;
         const hasCurrentSlot = currentSlot > 0;
 
         // Update basic stats
@@ -3386,6 +3488,7 @@ async function loadMossStakePosition(address) {
             document.getElementById('pendingUnstakes').style.display = 'none';
         }
     } catch (error) {
+        if (!isCurrentWalletView(expectedWalletId, generation)) return;
         console.error('Failed to load MossStake position:', error);
     }
 }
@@ -3477,8 +3580,9 @@ async function showMossStakeModal() {
         showToast(`Staked ${amount} LICN! Sig: ${String(txSig).slice(0, 16)}...`);
         await refreshBalance();
         // Refresh staking position after a brief delay for block inclusion
-        setTimeout(() => loadMossStakePosition(wallet.address), 1500);
-        setTimeout(() => loadMossStakePosition(wallet.address), 4000);
+        const generation = _walletViewGeneration;
+        setTimeout(() => loadMossStakePosition(wallet.address, { walletId: wallet.id, generation }), 1500);
+        setTimeout(() => loadMossStakePosition(wallet.address, { walletId: wallet.id, generation }), 4000);
     } catch (error) {
         showToast('Stake failed: ' + error.message);
     }
@@ -3567,8 +3671,9 @@ async function showMossUnstakeModal() {
         showToast(`Unstake initiated! 7-day cooldown. Sig: ${String(txSig).slice(0, 16)}...`);
         await refreshBalance();
         // Refresh staking position after a brief delay for block inclusion
-        setTimeout(() => loadMossStakePosition(wallet.address), 1500);
-        setTimeout(() => loadMossStakePosition(wallet.address), 4000);
+        const generation = _walletViewGeneration;
+        setTimeout(() => loadMossStakePosition(wallet.address, { walletId: wallet.id, generation }), 1500);
+        setTimeout(() => loadMossStakePosition(wallet.address, { walletId: wallet.id, generation }), 4000);
     } catch (error) {
         showToast('Unstake failed: ' + error.message);
     }
@@ -3646,8 +3751,9 @@ async function claimMossStake() {
         const txSig = await rpc.sendTransaction(txBase64);
         showToast(`Claimed! Sig: ${String(txSig).slice(0, 16)}...`);
         await refreshBalance();
-        setTimeout(() => loadMossStakePosition(wallet.address), 1500);
-        setTimeout(() => loadMossStakePosition(wallet.address), 4000);
+        const generation = _walletViewGeneration;
+        setTimeout(() => loadMossStakePosition(wallet.address, { walletId: wallet.id, generation }), 1500);
+        setTimeout(() => loadMossStakePosition(wallet.address, { walletId: wallet.id, generation }), 4000);
     } catch (error) {
         showToast('Claim failed: ' + error.message);
     }
@@ -4164,8 +4270,9 @@ function showBuy() {
 
 // ===== NFT FUNCTIONS =====
 
-async function refreshNFTs() {
-    const wallet = getActiveWallet();
+async function refreshNFTs(options = {}) {
+    const wallet = options.wallet || getActiveWallet();
+    const generation = options.generation ?? _walletViewGeneration;
     if (!wallet) return;
 
     const grid = document.getElementById('nftsGrid');
@@ -4185,6 +4292,7 @@ async function refreshNFTs() {
         } catch (e) {
             // RPC method may not exist yet - that's OK
         }
+        if (!isCurrentWalletView(wallet, generation)) return;
 
         if (nfts && nfts.length > 0) {
             countEl.textContent = `${nfts.length} NFT${nfts.length !== 1 ? 's' : ''}`;
@@ -4218,6 +4326,7 @@ async function refreshNFTs() {
             empty.style.display = 'flex';
         }
     } catch (error) {
+        if (!isCurrentWalletView(wallet, generation)) return;
         console.error('Failed to load NFTs:', error);
         countEl.textContent = '0 NFTs';
         grid.style.display = 'none';

@@ -1223,6 +1223,7 @@ document.addEventListener('DOMContentLoaded', () => {
         candles: [], connected: false, tradeMode: 'spot', _wsSubs: [], _predictWsSub: null, _predictWsRefreshTimer: null, _predictCountdownTimer: null, _marginRealtimeRefreshTimer: null, marginMaxLeverage: 100,
         _predictSlotAnchor: { slot: 0, ts: 0 },
         governanceMinQuorum: GOVERNANCE_MIN_QUORUM_DEFAULT,
+        rewardPending: { trading: 0, lp: 0, total: 0 },
         // Task 5.1: Slippage tolerance (loaded from localStorage)
         slippagePct: parseFloat(localStorage.getItem('dexSlippage')) || 0.5,
         // Task 5.2: Notification preferences
@@ -2184,11 +2185,48 @@ document.addEventListener('DOMContentLoaded', () => {
     const priceInput = document.getElementById('orderPrice'), amountInput = document.getElementById('orderAmount'), totalInput = document.getElementById('orderTotal');
     const submitBtn = document.getElementById('submitOrder'), stopGroup = document.querySelector('.stop-price-group');
 
+    function readDexDecimal(input) {
+        const raw = String(input?.value || '').trim();
+        if (!raw || raw === '.' || raw === '-' || raw === '-.') return 0;
+        const numeric = Number(raw);
+        return Number.isFinite(numeric) ? numeric : 0;
+    }
+
+    function updateOrderSubmitHint(message = '', tone = '') {
+        const hint = document.getElementById('orderSubmitHint');
+        if (!hint) return;
+        hint.textContent = message;
+        hint.className = `order-submit-hint${tone ? ` ${tone}` : ''}`;
+    }
+
+    function updateDexActionHint(id, message = '', tone = '') {
+        const hint = document.getElementById(id);
+        if (!hint) return;
+        hint.textContent = message;
+        hint.className = `order-submit-hint${tone ? ` ${tone}` : ''}`;
+    }
+
     function updateMarginSltpVisibility() {
         const sltpRow = document.querySelector('.margin-sltp-row');
         if (!sltpRow) return;
-        const hidden = state.tradeMode === 'margin' && state.orderType === 'stop-limit';
-        sltpRow.style.display = hidden ? 'none' : 'flex';
+        sltpRow.style.display = state.tradeMode === 'margin' ? 'flex' : 'none';
+    }
+
+    function syncOrderOptionsUi() {
+        const postOnlyEl = document.getElementById('postOnly');
+        const reduceOnlyEl = document.getElementById('reduceOnly');
+        const marginEntry = state.tradeMode === 'margin';
+        if (postOnlyEl) {
+            const disabled = marginEntry || state.orderType !== 'limit';
+            postOnlyEl.disabled = disabled;
+            postOnlyEl.title = disabled ? 'Post-only applies to spot limit orders' : '';
+            if (disabled) postOnlyEl.checked = false;
+        }
+        if (reduceOnlyEl) {
+            reduceOnlyEl.disabled = true;
+            reduceOnlyEl.title = 'Reduce positions from the open position row';
+            reduceOnlyEl.checked = false;
+        }
     }
 
     orderTabs.forEach(tab => tab.addEventListener('click', () => {
@@ -2252,7 +2290,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function getEffectiveOrderPrice(side, orderType, tradeMode = state.tradeMode) {
         if (orderType !== 'market') {
-            return Math.max(0, parseFloat(priceInput?.value || '0') || 0);
+            return Math.max(0, readDexDecimal(priceInput));
         }
         return tradeMode === 'margin'
             ? getSpotMarketReferencePrice(side)
@@ -2277,32 +2315,40 @@ document.addEventListener('DOMContentLoaded', () => {
         if (priceInput?.parentElement?.parentElement) {
             priceInput.parentElement.parentElement.style.display = state.orderType === 'market' ? 'none' : 'block';
         }
+        const marketNotice = document.getElementById('marginMarketNotice');
+        if (marketNotice) marketNotice.classList.toggle('hidden', !marginMarketOnly);
         updateMarginSltpVisibility();
+        syncOrderOptionsUi();
     }
 
     function updateSubmitBtn() {
         if (!submitBtn) return;
+        const connected = !!(state.connected && (state.walletAddress || wallet.address));
+        const canSign = walletCanSign();
         const sideLabel = state.tradeMode === 'margin'
             ? (state.orderSide === 'buy' ? 'Long' : 'Short')
             : (state.orderSide === 'buy' ? 'Buy' : 'Sell');
         const m = state.tradeMode === 'margin' ? ` ${state.leverageValue}x` : '';
-        submitBtn.className = `btn-full ${state.orderSide === 'buy' ? 'btn-buy' : 'btn-sell'}`;
+        submitBtn.className = `btn btn-full ${state.orderSide === 'buy' ? 'btn-buy' : 'btn-sell'}`;
         submitBtn.textContent = `${sideLabel}${m} ${state.activePair?.base || ''}`;
 
-        if (!state.connected || !state.activePair) {
-            submitBtn.disabled = true;
-            submitBtn.title = state.connected ? 'No active pair selected' : 'Connect wallet to trade';
-            return;
-        }
-
-        const amount = Math.max(0, parseFloat(amountInput?.value || '0') || 0);
+        const amount = Math.max(0, readDexDecimal(amountInput));
         const price = getEffectiveOrderPrice(state.orderSide, state.orderType);
         const stopPriceInput = document.getElementById('stopPrice');
-        const stopPrice = Math.max(0, parseFloat(stopPriceInput?.value || '0') || 0);
+        const stopPrice = Math.max(0, readDexDecimal(stopPriceInput));
         const feeRate = 0.0005;
 
         let disabledReason = '';
-        if (amount <= 0) disabledReason = 'Enter an amount';
+        let disabledHtml = '';
+        if (!connected) {
+            disabledReason = 'Connect wallet to trade';
+            disabledHtml = '<i class="fas fa-wallet"></i> Connect Wallet to Trade';
+        } else if (!canSign) {
+            disabledReason = 'Reconnect wallet to sign';
+            disabledHtml = walletReconnectPromptHtml();
+        } else if (!state.activePair) disabledReason = 'Select a trading pair';
+        else if (state.tradeMode === 'margin' && state.orderType !== 'market') disabledReason = 'Margin entries are market-only';
+        else if (amount <= 0) disabledReason = 'Enter an amount';
         else if (pairBaseRequiresWholeNeoLot(state.activePair) && !isWholeNeoLotAmount(amount)) disabledReason = 'wNEO requires whole NEO lots';
         else if (state.orderType !== 'market' && price <= 0) disabledReason = 'Enter a valid price';
         else if (state.orderType === 'market' && price <= 0) disabledReason = 'Waiting for market price';
@@ -2335,6 +2381,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
         submitBtn.disabled = Boolean(disabledReason);
         submitBtn.title = disabledReason;
+        if (disabledReason) {
+            if (disabledHtml) submitBtn.innerHTML = disabledHtml;
+            updateOrderSubmitHint(disabledReason, 'warning');
+        } else {
+            updateOrderSubmitHint(state.tradeMode === 'margin'
+                ? 'Market margin entry. Manage exits from open positions.'
+                : '', state.tradeMode === 'margin' ? 'ready' : '');
+        }
     }
 
     function getAllowedLeverageLevels(maxLeverage) {
@@ -2402,20 +2456,28 @@ document.addEventListener('DOMContentLoaded', () => {
     if (inlineLeverage) inlineLeverage.addEventListener('input', () => { const maxLev = state.marginType === 'cross' ? Math.min(state.marginMaxLeverage || 100, 3) : (state.marginMaxLeverage || 100); state.leverageValue = snapLeverageToAllowed(parseFloat(inlineLeverage.value), maxLev); inlineLeverage.value = String(state.leverageValue); if (inlineLeverageTag) inlineLeverageTag.textContent = `${state.leverageValue}x`; updateSubmitBtn(); updateMarginInfo(); });
     document.querySelectorAll('.margin-inline-type').forEach(btn => btn.addEventListener('click', () => { document.querySelectorAll('.margin-inline-type').forEach(b => b.classList.remove('active')); btn.classList.add('active'); state.marginType = btn.dataset.mtype; applyLeverageConstraints(); updateMarginInfo(); updateSubmitBtn(); }));
 
+    const marginAdvancedToggle = document.getElementById('marginAdvancedToggle');
+    const marginAdvancedPanel = document.getElementById('marginAdvancedPanel');
+    if (marginAdvancedToggle && marginAdvancedPanel) {
+        marginAdvancedToggle.addEventListener('click', () => {
+            const expanded = marginAdvancedToggle.getAttribute('aria-expanded') === 'true';
+            marginAdvancedToggle.setAttribute('aria-expanded', expanded ? 'false' : 'true');
+            marginAdvancedPanel.classList.toggle('hidden', expanded);
+        });
+    }
+
     // F9.5a/F9.5b/F9.12a: Route info and fee estimate from actual router quote API
     let _routeQuoteTimer = null;
     const ROUTE_TYPE_LABELS = { clob: 'CLOB Direct', amm: 'AMM Pool', split: 'CLOB + AMM Split', multi_hop: 'Multi-Hop' };
     function calcTotal() {
         if (!priceInput || !amountInput || !totalInput) return;
-        const rawP = parseFloat(priceInput.value);
-        const rawA = parseFloat(amountInput.value);
+        const rawP = readDexDecimal(priceInput);
+        const rawA = readDexDecimal(amountInput);
         const effectivePrice = state.orderType === 'market'
             ? getEffectiveOrderPrice(state.orderSide, state.orderType)
-            : (Number.isFinite(rawP) ? rawP : 0);
+            : rawP;
         const p = Math.max(0, effectivePrice);
-        const a = Math.max(0, Number.isFinite(rawA) ? rawA : 0);
-        if (Number.isFinite(rawP) && rawP < 0) priceInput.value = String(p);
-        if (Number.isFinite(rawA) && rawA < 0) amountInput.value = String(a);
+        const a = Math.max(0, rawA);
         totalInput.value = (p * a).toFixed(4);
         if (state.tradeMode === 'margin') updateMarginInfo();
         updateSubmitBtn();
@@ -2434,7 +2496,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 try {
                     const tokenIn = quoteSide === 'buy' ? quotePair.quote : quotePair.base;
                     const tokenOut = quoteSide === 'buy' ? quotePair.base : quotePair.quote;
-                    const amountIn = Math.round(p * a * 1e9);
+                    const amountInHuman = quoteSide === 'buy' ? p * a : a;
+                    const amountIn = Math.round(amountInHuman * 1e9);
                     const { data } = await api.post('/router/quote', { token_in: tokenIn, token_out: tokenOut, amount_in: amountIn, slippage: quoteSlippage });
                     if (state.activePairId !== quotePairId || state.orderSide !== quoteSide) return;
                     if (data && data.routeType) {
@@ -2460,10 +2523,8 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!priceInput || !amountInput) return;
         const p = state.orderType === 'market'
             ? getEffectiveOrderPrice(state.orderSide, state.orderType)
-            : Math.max(0, parseFloat(priceInput.value) || 0);
-        const rawT = parseFloat(totalInput.value);
-        const t = Math.max(0, Number.isFinite(rawT) ? rawT : 0);
-        if (Number.isFinite(rawT) && rawT < 0) totalInput.value = String(t);
+            : Math.max(0, readDexDecimal(priceInput));
+        const t = Math.max(0, readDexDecimal(totalInput));
         if (p > 0) amountInput.value = (t / p).toFixed(4);
         if (state.tradeMode === 'margin') updateMarginInfo();
         updateSubmitBtn();
@@ -2514,7 +2575,7 @@ document.addEventListener('DOMContentLoaded', () => {
         slippageBtns.forEach(btn => btn.addEventListener('click', () => setSlippage(parseFloat(btn.dataset.slip))));
         if (slippageCustom) {
             slippageCustom.addEventListener('change', () => {
-                const v = parseFloat(slippageCustom.value);
+                const v = readDexDecimal(slippageCustom);
                 if (v > 0 && v <= 50) {
                     setSlippage(v);
                     slippageBtns.forEach(b => b.classList.remove('active'));
@@ -2664,8 +2725,13 @@ document.addEventListener('DOMContentLoaded', () => {
             } catch { }
         }
         {
-            const neededToken = side === 'buy' ? (pair?.quote || 'lUSD') : (pair?.base || 'LICN');
-            const neededAmount = side === 'buy' ? (effectivePrice * amount) : amount;
+            const leverageValue = Math.max(1, Number(leverage || state.leverageValue || 1));
+            const neededToken = tradeMode === 'margin'
+                ? (pair?.quote || 'lUSD')
+                : (side === 'buy' ? (pair?.quote || 'lUSD') : (pair?.base || 'LICN'));
+            const neededAmount = tradeMode === 'margin'
+                ? ((effectivePrice * amount) / leverageValue)
+                : (side === 'buy' ? (effectivePrice * amount) : amount);
             const available = balances[neededToken]?.available || 0;
             if (neededAmount > available) {
                 return { ok: false, error: `Insufficient ${neededToken}: need ${formatAmount(neededAmount)}, have ${formatAmount(available)}`, code: 'BALANCE' };
@@ -2707,13 +2773,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // === Order submission via signed sendTransaction ===
     if (submitBtn) submitBtn.addEventListener('click', async () => {
-        const rawPrice = parseFloat(priceInput?.value) || 0;
+        const rawPrice = readDexDecimal(priceInput);
         const price = state.orderType === 'market'
             ? (state.tradeMode === 'margin' ? getSpotMarketReferencePrice(state.orderSide) : getSpotMarketWorstPrice(state.orderSide))
             : rawPrice;
-        const amount = parseFloat(amountInput?.value) || 0;
+        const amount = readDexDecimal(amountInput);
         const stopPriceInput = document.getElementById('stopPrice');
-        const stopPrice = parseFloat(stopPriceInput?.value) || 0;
+        const stopPrice = readDexDecimal(stopPriceInput);
 
         // Post-Only checkbox — override order type to post-only (ORDER_POST_ONLY=3)
         const postOnlyEl = document.getElementById('postOnly');
@@ -2781,8 +2847,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 // Auto-set SL/TP on newly opened position if the user specified values
                 const marginSLInput = document.getElementById('marginSL');
                 const marginTPInput = document.getElementById('marginTP');
-                const slVal = parseFloat(marginSLInput?.value) || 0;
-                const tpVal = parseFloat(marginTPInput?.value) || 0;
+                const slVal = readDexDecimal(marginSLInput);
+                const tpVal = readDexDecimal(marginTPInput);
                 if (state.orderType !== 'stop-limit' && (slVal > 0 || tpVal > 0)) {
                     try {
                         // Get position count to determine the new position's ID
@@ -2857,8 +2923,8 @@ document.addEventListener('DOMContentLoaded', () => {
             row.classList.add('editing');
             const origPrice = parseFloat(btn.dataset.price) || 0;
             const origAmount = parseFloat(btn.dataset.amount) || 0;
-            priceCell.innerHTML = `<input type="number" class="edit-price-input" value="${origPrice}" step="0.0001" style="width:80px;padding:2px 4px;font-size:0.78rem;background:var(--bg-input);color:var(--text-primary);border:1px solid var(--teal-primary);border-radius:3px;font-family:'JetBrains Mono',monospace;">`;
-            qtyCell.innerHTML = `<input type="number" class="edit-qty-input" value="${origAmount}" step="0.01" style="width:70px;padding:2px 4px;font-size:0.78rem;background:var(--bg-input);color:var(--text-primary);border:1px solid var(--teal-primary);border-radius:3px;font-family:'JetBrains Mono',monospace;">`;
+            priceCell.innerHTML = `<input type="text" inputmode="decimal" data-dex-numeric="true" data-min="0" class="edit-price-input" value="${origPrice}" style="width:80px;padding:2px 4px;font-size:0.78rem;background:var(--bg-input);color:var(--text-primary);border:1px solid var(--teal-primary);border-radius:3px;font-family:'JetBrains Mono',monospace;">`;
+            qtyCell.innerHTML = `<input type="text" inputmode="decimal" data-dex-numeric="true" data-min="0" class="edit-qty-input" value="${origAmount}" style="width:70px;padding:2px 4px;font-size:0.78rem;background:var(--bg-input);color:var(--text-primary);border:1px solid var(--teal-primary);border-radius:3px;font-family:'JetBrains Mono',monospace;">`;
             // Change pencil to save icon
             btn.innerHTML = '<i class="fas fa-check" style="color:var(--green-success);"></i>';
             btn.title = 'Save changes';
@@ -2866,8 +2932,8 @@ document.addEventListener('DOMContentLoaded', () => {
             btn.replaceWith(btn.cloneNode(true));
             const saveBtn = row.querySelector('.edit-order-btn');
             saveBtn.addEventListener('click', async () => {
-                const newPrice = parseFloat(row.querySelector('.edit-price-input')?.value);
-                const newQty = parseFloat(row.querySelector('.edit-qty-input')?.value);
+                const newPrice = readDexDecimal(row.querySelector('.edit-price-input'));
+                const newQty = readDexDecimal(row.querySelector('.edit-qty-input'));
                 if (!newPrice || newPrice <= 0 || !newQty || newQty <= 0) {
                     showNotification('Enter valid price and amount', 'warning');
                     return;
@@ -4091,38 +4157,11 @@ document.addEventListener('DOMContentLoaded', () => {
         return 0;
     }
 
-    // Task 7.1: Portfolio summary — total value, unrealized P&L, 24h change
+    // Task 7.1: Portfolio summary — total wallet value and open-position P&L.
     function computePortfolioSummary() {
         let totalValue = 0;
         Object.values(balances).forEach(b => { totalValue += b.usd || 0; });
-        // Cache for 24h comparison
-        const cacheKey = 'dexPortfolioCache';
-        const now = Date.now();
-        let change24h = 0;
-        try {
-            const cached = JSON.parse(localStorage.getItem(cacheKey));
-            if (cached && cached.ts && cached.value !== undefined) {
-                const age = now - cached.ts;
-                if (age < 86400000) { // within 24h
-                    change24h = totalValue - cached.value;
-                } else {
-                    // Cache expired, save new baseline
-                    localStorage.setItem(cacheKey, JSON.stringify({ ts: now, value: totalValue }));
-                }
-            } else {
-                localStorage.setItem(cacheKey, JSON.stringify({ ts: now, value: totalValue }));
-            }
-        } catch {
-            localStorage.setItem(cacheKey, JSON.stringify({ ts: now, value: totalValue }));
-        }
-        // Update cache if value changed significantly (>1%) or no recent save
-        try {
-            const cached = JSON.parse(localStorage.getItem(cacheKey));
-            if (!cached || (now - cached.ts > 300000)) { // re-cache every 5 min
-                localStorage.setItem(cacheKey, JSON.stringify({ ts: now, value: totalValue }));
-            }
-        } catch { /* ignore */ }
-        return { totalValue, change24h };
+        return { totalValue };
     }
 
     function computeUnrealizedPnl() {
@@ -4155,18 +4194,54 @@ document.addEventListener('DOMContentLoaded', () => {
             container.className = 'portfolio-summary';
             balList.parentNode.insertBefore(container, balList.nextSibling);
         }
-        const { totalValue, change24h } = computePortfolioSummary();
+        const { totalValue } = computePortfolioSummary();
         const unrealizedPnl = computeUnrealizedPnl();
-        const changeClass = change24h >= 0 ? 'positive' : 'negative';
-        const changeSign = change24h >= 0 ? '+' : '';
         const pnlClass = unrealizedPnl >= 0 ? 'positive' : 'negative';
         const pnlSign = unrealizedPnl >= 0 ? '+' : '';
-        container.innerHTML = `<div class="portfolio-total"><span class="portfolio-label">Portfolio Value</span><span class="portfolio-value">$${formatAmount(totalValue)}</span></div><div class="portfolio-metrics"><span class="${pnlClass}">P&L: ${pnlSign}$${formatAmount(Math.abs(unrealizedPnl))}</span><span class="portfolio-change ${changeClass}">24h: ${changeSign}$${formatAmount(Math.abs(change24h))}</span></div>`;
+        container.innerHTML = `<div class="portfolio-total"><span class="portfolio-label">Portfolio Value</span><span class="portfolio-value">$${formatAmount(totalValue)}</span></div><div class="portfolio-metrics"><span class="${pnlClass}">Open P&L: ${pnlSign}$${formatAmount(Math.abs(unrealizedPnl))}</span></div>`;
     }
 
     // ═══════════════════════════════════════════════════════════════════════
     // F10E.1/E2/E4/E9/E10 — Wallet-Gate All Interactive Forms
     // ═══════════════════════════════════════════════════════════════════════
+    function updateRewardsClaimButtons() {
+        const connected = !!(state.connected && (state.walletAddress || wallet.address));
+        const canSign = walletCanSign();
+        const pending = state.rewardPending || { trading: 0, lp: 0, total: 0 };
+        const rules = [
+            { id: 'claimAllBtn', hintId: 'rewardClaimAllHint', amount: pending.total, label: 'Claim All' },
+            { id: 'claimTradingBtn', hintId: 'rewardClaimTradingHint', amount: pending.trading, label: 'Claim' },
+            { id: 'claimLpBtn', hintId: 'rewardClaimLpHint', amount: pending.lp, label: 'Claim' },
+        ];
+        rules.forEach(({ id, hintId, amount, label }) => {
+            const button = document.getElementById(id);
+            if (!button) return;
+            let message = '';
+            let disabled = false;
+            let buttonText = label;
+            if (!connected) {
+                disabled = true;
+                message = 'Connect wallet to claim';
+                buttonText = 'Connect';
+            } else if (!canSign) {
+                disabled = true;
+                message = 'Reconnect wallet to sign';
+                buttonText = 'Reconnect';
+            } else if (!contracts.dex_rewards) {
+                disabled = true;
+                message = 'Rewards contract not loaded';
+            } else if (!(Number(amount) > 0)) {
+                disabled = true;
+                message = 'No rewards to claim';
+            }
+            button.disabled = disabled;
+            button.classList.toggle('btn-wallet-gate', disabled && (!connected || !canSign));
+            button.title = message;
+            if (!button.dataset.busy) button.textContent = buttonText;
+            updateDexActionHint(hintId, message || `${label} ready`, disabled ? 'warning' : 'ready');
+        });
+    }
+
     function applyWalletGateAll() {
         const connected = !!(state.connected && (state.walletAddress || wallet.address));
         const canSign = walletCanSign();
@@ -4181,7 +4256,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 updateSubmitBtn();
             } else {
                 submitBtn.disabled = true;
-                submitBtn.className = 'btn-full btn-wallet-gate';
+                submitBtn.className = 'btn btn-full btn-wallet-gate';
                 submitBtn.innerHTML = connected
                     ? walletReconnectPromptHtml()
                     : '<i class="fas fa-wallet"></i> Connect Wallet to Trade';
@@ -4200,31 +4275,11 @@ document.addEventListener('DOMContentLoaded', () => {
             toggleButton.title = canSign ? '' : (connected ? 'Reconnect wallet to sign' : 'Connect wallet to trade');
         });
         if (predictSubmit) {
-            if (canSign) {
-                predictSubmit.disabled = false;
-                predictSubmit.classList.remove('btn-wallet-gate');
-                updatePredictSubmitButton();
-            } else {
-                predictSubmit.disabled = true;
-                predictSubmit.className = 'btn-full btn-wallet-gate';
-                predictSubmit.innerHTML = connected
-                    ? walletReconnectPromptHtml()
-                    : '<i class="fas fa-wallet"></i> Connect Wallet to Trade';
-            }
+            updatePredictSubmitButton();
         }
         const predictCreate = document.getElementById('predictCreateBtn');
         if (predictCreate) {
-            if (canSign) {
-                predictCreate.disabled = false;
-                predictCreate.classList.remove('btn-wallet-gate');
-                predictCreate.innerHTML = '<i class="fas fa-rocket"></i> Create Market';
-            } else {
-                predictCreate.disabled = true;
-                predictCreate.className = 'btn btn-full btn-wallet-gate';
-                predictCreate.innerHTML = connected
-                    ? walletReconnectPromptHtml()
-                    : '<i class="fas fa-wallet"></i> Connect Wallet to Create';
-            }
+            updatePredictCreateButton();
         }
 
         // --- Pool view: Add Liquidity (F10E.10) ---
@@ -4232,17 +4287,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (addLiqForm) addLiqForm.classList.toggle('wallet-gated-disabled', !connected);
         const addLiqSubmit = document.getElementById('addLiqBtn');
         if (addLiqSubmit) {
-            if (canSign) {
-                addLiqSubmit.disabled = false;
-                addLiqSubmit.classList.remove('btn-wallet-gate');
-                addLiqSubmit.textContent = 'Add Liquidity';
-            } else {
-                addLiqSubmit.disabled = true;
-                addLiqSubmit.className = 'btn btn-full btn-wallet-gate';
-                addLiqSubmit.innerHTML = connected
-                    ? walletReconnectPromptHtml()
-                    : '<i class="fas fa-wallet"></i> Connect Wallet';
-            }
+            updateAddLiquidityButton();
         }
 
         // --- Governance: New Proposal (F10E.4) ---
@@ -4250,24 +4295,11 @@ document.addEventListener('DOMContentLoaded', () => {
         if (proposalForm) proposalForm.classList.toggle('wallet-gated-disabled', !connected);
         const proposalSubmit = document.getElementById('submitProposalBtn');
         if (proposalSubmit) {
-            if (canSign) {
-                proposalSubmit.disabled = false;
-                proposalSubmit.classList.remove('btn-wallet-gate');
-                proposalSubmit.innerHTML = '<i class="fas fa-paper-plane"></i> Submit Proposal';
-            } else {
-                proposalSubmit.disabled = true;
-                proposalSubmit.className = 'btn btn-full btn-wallet-gate';
-                proposalSubmit.innerHTML = connected
-                    ? walletReconnectPromptHtml()
-                    : '<i class="fas fa-wallet"></i> Connect Wallet to Propose';
-            }
+            updateProposalSubmitButton();
         }
 
         // --- Rewards: Claim button (already has wallet check, but disable visually) ---
-        const claimAll = document.getElementById('claimAllBtn');
-        if (claimAll) {
-            claimAll.disabled = !canSign;
-        }
+        updateRewardsClaimButtons();
 
         // --- Rewards: Source panels wallet-gated (F13.5) ---
         const rewardsSources = document.querySelector('.rewards-sources');
@@ -4276,69 +4308,65 @@ document.addEventListener('DOMContentLoaded', () => {
         if (tierPanel) tierPanel.classList.toggle('wallet-gated-disabled', !connected);
 
         // --- Rewards: Per-source Claim buttons (F15.9) ---
+        updateRewardsClaimButtons();
         document.querySelectorAll('.rewards-sources .claim-btn').forEach(btn => {
-            btn.disabled = !canSign;
+            btn.classList.toggle('btn-wallet-gate', !canSign);
         });
 
         // --- Pool: Per-row Add buttons (F15.7) ---
         document.querySelectorAll('.pool-add-btn').forEach(btn => {
             btn.disabled = !canSign;
             btn.classList.toggle('btn-wallet-gate', !canSign);
+            btn.title = canSign ? '' : (connected ? 'Reconnect wallet to sign' : 'Connect wallet first');
         });
 
-        // --- Governance: Vote buttons (F15.10) ---
-        document.querySelectorAll('.vote-btn').forEach(btn => {
+        // --- Pool: LP position actions ---
+        document.querySelectorAll('.lp-collect-btn, .lp-remove-btn, .lp-add-btn').forEach(btn => {
             btn.disabled = !canSign;
             btn.classList.toggle('btn-wallet-gate', !canSign);
+            btn.title = canSign ? '' : (connected ? 'Reconnect wallet to sign' : 'Connect wallet first');
+        });
+
+        // --- Governance: Proposal lifecycle buttons (F15.10) ---
+        const governanceLifecycleSelectors = '.vote-btn, .finalize-btn, .execute-btn';
+        document.querySelectorAll(governanceLifecycleSelectors).forEach(btn => {
+            btn.disabled = !canSign;
+            btn.classList.toggle('btn-wallet-gate', !canSign);
+            btn.title = canSign ? '' : (connected ? 'Reconnect wallet to sign' : 'Connect wallet first');
         });
 
         // --- Prediction: Card action buttons (dynamically rendered) ---
         document.querySelectorAll('.btn-predict-buy, .btn-predict-buy-no').forEach(btn => {
-            btn.disabled = !canSign;
+            const marketOpen = btn.dataset.marketOpen !== '0';
+            btn.disabled = !canSign || !marketOpen;
             btn.classList.toggle('btn-wallet-gate', !canSign);
+            btn.title = marketOpen ? (canSign ? '' : (connected ? 'Reconnect wallet to sign' : 'Connect wallet to trade')) : 'Market is not open';
         });
-        document.querySelectorAll('.btn-predict-resolve, .btn-predict-claim, .btn-predict-claim-pos').forEach(btn => {
+        document.querySelectorAll('.btn-predict-resolve, .btn-predict-challenge, .btn-predict-finalize, .btn-predict-claim, .btn-predict-claim-pos').forEach(btn => {
             btn.disabled = !canSign;
             btn.classList.toggle('btn-wallet-gate', !canSign);
         });
 
         // --- Trade: Margin close & cancel order buttons ---
         document.querySelectorAll('.margin-close-btn, .cancel-btn').forEach(btn => {
-            btn.disabled = !connected;
-            btn.classList.toggle('btn-wallet-gate', !connected);
+            btn.disabled = !canSign;
+            btn.classList.toggle('btn-wallet-gate', !canSign);
+            btn.title = canSign ? '' : (connected ? 'Reconnect wallet to sign' : 'Connect wallet first');
         });
 
         // --- Launchpad: Buy/Sell/Create buttons ---
         document.querySelectorAll('.launch-quick-buy, .launch-quick-sell').forEach(btn => {
-            btn.disabled = !connected;
-            btn.classList.toggle('btn-wallet-gate', !connected);
+            btn.disabled = !canSign;
+            btn.classList.toggle('btn-wallet-gate', !canSign);
+            btn.title = canSign ? '' : (connected ? 'Reconnect wallet to sign' : 'Connect wallet first');
         });
         const launchTradeGate = document.getElementById('launchTradeBtn');
         if (launchTradeGate) {
-            if (canSign) {
-                launchTradeGate.disabled = false;
-                launchTradeGate.classList.remove('btn-wallet-gate');
-            } else {
-                launchTradeGate.disabled = true;
-                launchTradeGate.className = 'btn btn-full btn-wallet-gate';
-                launchTradeGate.innerHTML = connected
-                    ? walletReconnectPromptHtml()
-                    : '<i class="fas fa-wallet"></i> Connect Wallet to Trade';
-            }
+            updateLaunchTradeButton();
         }
         const launchCreateGate = document.getElementById('launchCreateBtn');
         if (launchCreateGate) {
-            if (canSign) {
-                launchCreateGate.disabled = false;
-                launchCreateGate.classList.remove('btn-wallet-gate');
-                launchCreateGate.innerHTML = '<i class="fas fa-rocket"></i> Launch Token (10 LICN)';
-            } else {
-                launchCreateGate.disabled = true;
-                launchCreateGate.className = 'btn btn-full btn-wallet-gate';
-                launchCreateGate.innerHTML = connected
-                    ? walletReconnectPromptHtml()
-                    : '<i class="fas fa-wallet"></i> Connect Wallet to Launch';
-            }
+            updateLaunchCreateButton();
         }
         const launchTradeForm = document.getElementById('launchTradeForm');
         if (launchTradeForm) launchTradeForm.classList.toggle('wallet-gated-disabled', !connected);
@@ -4498,24 +4526,35 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function updateMarginInfo() {
-        const e = document.getElementById('marginEntry'), l = document.getElementById('marginLiqPrice'), r = document.getElementById('marginRatio');
-        const manualPrice = parseFloat(priceInput?.value || '0') || 0;
-        const referencePrice = manualPrice > 0 ? manualPrice : state.lastPrice;
-        const amount = Math.max(0, parseFloat(amountInput?.value || '0') || 0);
+        const e = document.getElementById('marginEntry');
+        const c = document.getElementById('marginCollateral');
+        const l = document.getElementById('marginLiqPrice');
+        const r = document.getElementById('marginRatio');
+        const referencePrice = state.orderType === 'market'
+            ? getSpotMarketReferencePrice(state.orderSide)
+            : (readDexDecimal(priceInput) || state.lastPrice);
+        const amount = Math.max(0, readDexDecimal(amountInput));
         const notional = Math.max(0, referencePrice * amount);
-        if (e) e.textContent = formatPrice(referencePrice);
-        // F10.7 FIX: Liquidation price uses tier-appropriate maintenance BPS
-        // Liq occurs when margin_ratio drops to maintenance level
-        // For long: liq_price = entry * (1 - (margin/notional - maintBps/10000))
-        //         = entry * (1 - 1/leverage + maintBps/10000) — simplified
-        // For short: liq_price = entry * (1 + 1/leverage - maintBps/10000)
+        const quoteSymbol = state.activePair?.quote || '';
+        if (e) e.textContent = referencePrice > 0 ? formatPrice(referencePrice) : '—';
+        if (notional <= 0 || referencePrice <= 0) {
+            if (c) c.textContent = '—';
+            if (l) l.textContent = '—';
+            if (r) r.textContent = '—';
+            return;
+        }
         const maintBps = getMaintenanceBps(state.leverageValue);
         const maintFrac = maintBps / 10000;
+        // Liquidation price uses tier-appropriate maintenance BPS.
+        // Long: entry * (1 - 1/leverage + maint). Short: entry * (1 + 1/leverage - maint).
         const isolatedMargin = state.leverageValue > 0 ? (notional / state.leverageValue) : 0;
         const effectiveMargin = state.marginType === 'cross' ? getQuoteAvailableMargin() : isolatedMargin;
         const effectiveLeverage = effectiveMargin > 0 && notional > 0
             ? Math.max(1, notional / effectiveMargin)
             : Math.max(1, state.leverageValue);
+        if (c) c.textContent = state.marginType === 'cross'
+            ? `${formatAmount(effectiveMargin)} ${quoteSymbol}`
+            : `${formatAmount(isolatedMargin)} ${quoteSymbol}`;
         if (l) l.textContent = formatPrice(state.marginSide === 'long'
             ? referencePrice * (1 - 1 / effectiveLeverage + maintFrac)
             : referencePrice * (1 + 1 / effectiveLeverage - maintFrac));
@@ -4538,6 +4577,86 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch { /* API unavailable — keep placeholder */ }
     }
 
+    function getPoolId(pool) {
+        return Number(pool?.poolId || pool?.id || 0);
+    }
+
+    function getSelectedLiquidityPool() {
+        const selectedPoolId = document.getElementById('liqPoolSelect')?.value;
+        if (!selectedPoolId) return null;
+        return (state.poolsCache || []).find(pool => String(getPoolId(pool)) === String(selectedPoolId)) || null;
+    }
+
+    function getPoolTokenSymbols(pool = getSelectedLiquidityPool()) {
+        return {
+            tokenA: pool?.tokenASymbol || pool?.baseSymbol || pool?.tokenA || 'LICN',
+            tokenB: pool?.tokenBSymbol || pool?.quoteSymbol || pool?.tokenB || 'lUSD',
+        };
+    }
+
+    function updatePoolShareEstimate() {
+        const shareEl = document.getElementById('liqPoolShare');
+        if (!shareEl) return;
+        const pool = getSelectedLiquidityPool();
+        if (!pool || !pool.liquidity) {
+            shareEl.textContent = '—';
+            return;
+        }
+        const amtA = readDexDecimal(document.getElementById('liqAmountA'));
+        const amtB = readDexDecimal(document.getElementById('liqAmountB'));
+        if (amtA <= 0 && amtB <= 0) {
+            shareEl.textContent = '—';
+            return;
+        }
+        // pool price ratio: convert sqrtPrice into poolPrice so token A deposits are value-weighted.
+        const poolPrice = pool.sqrtPrice ? sqrtPriceQ32ToPrice(pool.sqrtPrice) : 1;
+        const deposit = (amtA * poolPrice + amtB) * 1e9;
+        const share = deposit / (pool.liquidity + deposit) * 100;
+        shareEl.textContent = share >= 0.01 ? share.toFixed(2) + '%' : '< 0.01%';
+    }
+
+    function getAddLiquidityValidation() {
+        if (!state.connected) return { ok: false, message: 'Connect wallet to add liquidity', gate: true };
+        if (!walletCanSign()) return { ok: false, message: 'Reconnect wallet to sign', gate: true };
+        const pool = getSelectedLiquidityPool();
+        if (!pool) return { ok: false, message: 'Select a liquidity pool' };
+
+        const amtA = readDexDecimal(document.getElementById('liqAmountA'));
+        const amtB = readDexDecimal(document.getElementById('liqAmountB'));
+        if (amtA <= 0 && amtB <= 0) return { ok: false, message: 'Enter at least one deposit amount' };
+        if (amtA < 0 || amtB < 0) return { ok: false, message: 'Deposit amounts must be positive' };
+        if (amtA > 9_000_000 || amtB > 9_000_000) return { ok: false, message: 'Deposit amount too large, maximum 9M' };
+
+        const fullRange = document.getElementById('fullRangeToggle')?.checked;
+        if (!fullRange) {
+            const minPrice = readDexDecimal(document.getElementById('liqMinPrice'));
+            const maxPrice = readDexDecimal(document.getElementById('liqMaxPrice'));
+            if (minPrice <= 0 || maxPrice <= 0) return { ok: false, message: 'Enter a valid price range or choose Full Range' };
+            if (minPrice >= maxPrice) return { ok: false, message: 'Min price must be below max price' };
+        }
+
+        const { tokenA, tokenB } = getPoolTokenSymbols(pool);
+        const availableA = Number(balances[tokenA]?.available || 0);
+        const availableB = Number(balances[tokenB]?.available || 0);
+        if (amtA > availableA) return { ok: false, message: `Insufficient ${tokenA} balance` };
+        if (amtB > availableB) return { ok: false, message: `Insufficient ${tokenB} balance` };
+
+        return { ok: true, message: 'Ready to add liquidity' };
+    }
+
+    function updateAddLiquidityButton() {
+        const button = document.getElementById('addLiqBtn');
+        if (!button) return;
+        const validation = getAddLiquidityValidation();
+        button.disabled = !validation.ok;
+        button.className = validation.gate ? 'btn btn-full btn-wallet-gate' : 'btn btn-full btn-buy';
+        button.innerHTML = validation.gate
+            ? (state.connected ? walletReconnectPromptHtml() : '<i class="fas fa-wallet"></i> Connect Wallet')
+            : 'Add Liquidity';
+        button.title = validation.ok ? '' : validation.message;
+        updateDexActionHint('addLiqHint', validation.message, validation.ok ? 'ready' : 'warning');
+    }
+
     async function loadPools() {
         try {
             const { data } = await api.get('/pools');
@@ -4551,13 +4670,15 @@ document.addEventListener('DOMContentLoaded', () => {
                         const tvl = p.tvl ? formatVolume(p.tvl) : formatAmount((p.liquidity || 0) / 1e9) + ' LP';
                         const vol = p.totalVolume ? formatVolume(p.totalVolume) : '—';
                         const apr = p.apr ? p.apr.toFixed(1) + '%' : '—';
-                        return `<tr class="pool-row" data-pool-id="${p.poolId || p.id || 0}">
+                        const poolId = getPoolId(p);
+                        const canAdd = walletCanSign();
+                        return `<tr class="pool-row" data-pool-id="${poolId}">
                             <td class="pool-pair">${pair}</td>
                             <td><span class="fee-badge">${fee}</span></td>
                             <td class="mono-value">${tvl}</td>
                             <td class="mono-value">${vol}</td>
                             <td class="apr-value">${apr}</td>
-                            <td><button class="btn btn-small btn-secondary pool-add-btn${!state.connected ? ' btn-wallet-gate' : ''}" data-pool-id="${p.poolId || p.id || 0}"${!state.connected ? ' disabled' : ''}>Add</button></td>
+                            <td><button class="btn btn-small btn-secondary pool-add-btn${!canAdd ? ' btn-wallet-gate' : ''}" data-pool-id="${poolId}"${!canAdd ? ' disabled' : ''}>Add</button></td>
                         </tr>`;
                     }).join('');
                 }
@@ -4566,19 +4687,21 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (poolSelect) {
                     poolSelect.innerHTML = data.map(p => {
                         const label = `${p.tokenASymbol || 'A'}/${p.tokenBSymbol || 'B'}`;
-                        return `<option value="${p.poolId || p.id || 0}">${escapeHtml(label)}</option>`;
+                        return `<option value="${getPoolId(p)}">${escapeHtml(label)}</option>`;
                     }).join('') || '<option>No pools available</option>';
                 }
                 // F7.18: Store pools for price lookup on select change
                 state.poolsCache = data;
                 function poolSelectHandler() {
                     const sel = document.getElementById('liqPoolSelect');
-                    const pool = state.poolsCache?.find(p => String(p.poolId || p.id) === sel?.value);
+                    const pool = state.poolsCache?.find(p => String(getPoolId(p)) === sel?.value);
                     const priceEl = document.getElementById('liqCurrentPrice');
                     if (pool && pool.sqrtPrice && priceEl) {
                         const price = sqrtPriceQ32ToPrice(pool.sqrtPrice);
                         priceEl.textContent = price >= 0.01 ? price.toFixed(6) : price.toExponential(4);
                     } else if (priceEl) { priceEl.textContent = '—'; }
+                    updatePoolShareEstimate();
+                    updateAddLiquidityButton();
                 }
                 const liqSel = document.getElementById('liqPoolSelect');
                 if (liqSel) { liqSel.onchange = poolSelectHandler; poolSelectHandler(); }
@@ -4588,6 +4711,8 @@ document.addEventListener('DOMContentLoaded', () => {
         // Empty state — no pools from API
         const _ptb = document.getElementById('poolTableBody');
         if (_ptb) _ptb.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:20px;"><i class="fas fa-water" style="margin-right:6px;"></i>No liquidity pools — create one to get started</td></tr>';
+        updatePoolShareEstimate();
+        updateAddLiquidityButton();
     }
 
     async function loadLPPositions() {
@@ -4622,9 +4747,13 @@ document.addEventListener('DOMContentLoaded', () => {
                         </div>
                     `).join('');
                 }
+                applyWalletGateAll();
                 return;
             }
-        } catch { /* API unavailable */ }
+            if (container) container.innerHTML = '<div style="text-align:center;color:var(--text-muted);padding:30px;font-size:0.85rem;"><i class="fas fa-layer-group" style="font-size:1.2rem;margin-bottom:8px;display:block;opacity:0.4;"></i>No LP positions yet</div>';
+        } catch {
+            if (container) container.innerHTML = '<div style="text-align:center;color:var(--text-muted);padding:30px;font-size:0.85rem;"><i class="fas fa-circle-exclamation" style="font-size:1.2rem;margin-bottom:8px;display:block;opacity:0.4;"></i>Unable to load LP positions</div>';
+        }
     }
 
     // F8.10/F8.11/F8.12: LP position action handlers via event delegation
@@ -4685,14 +4814,12 @@ document.addEventListener('DOMContentLoaded', () => {
     // Add Liquidity submit handler
     const addLiqBtn = document.getElementById('addLiqBtn');
     if (addLiqBtn) addLiqBtn.addEventListener('click', async () => {
-        if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
-        const amtA = parseFloat(document.getElementById('liqAmountA')?.value) || 0;
-        const amtB = parseFloat(document.getElementById('liqAmountB')?.value) || 0;
-        if (!amtA && !amtB) { showNotification('Enter deposit amounts', 'warning'); return; }
-        if (amtA < 0 || amtB < 0) { showNotification('Amounts must be positive', 'warning'); return; }
-        if (amtA > 9_000_000 || amtB > 9_000_000) { showNotification('Amount too large (max 9M)', 'warning'); return; }
-        const minPrice = parseFloat(document.getElementById('liqMinPrice')?.value) || 0;
-        const maxPrice = parseFloat(document.getElementById('liqMaxPrice')?.value) || 0;
+        const validation = getAddLiquidityValidation();
+        if (!validation.ok) { showNotification(validation.message, 'warning'); return; }
+        const amtA = readDexDecimal(document.getElementById('liqAmountA'));
+        const amtB = readDexDecimal(document.getElementById('liqAmountB'));
+        const minPrice = readDexDecimal(document.getElementById('liqMinPrice'));
+        const maxPrice = readDexDecimal(document.getElementById('liqMaxPrice'));
         const fullRange = document.getElementById('fullRangeToggle')?.checked;
         addLiqBtn.disabled = true; addLiqBtn.textContent = 'Adding...';
         try {
@@ -4712,7 +4839,7 @@ document.addEventListener('DOMContentLoaded', () => {
             // F24.10 FIX: Refresh LP positions and pools after adding liquidity
             loadLPPositions().catch(() => { }); loadPools().catch(() => { });
         } catch (e) { showNotification(`Add liquidity: ${e.message}`, 'error'); }
-        finally { addLiqBtn.disabled = false; addLiqBtn.textContent = 'Add Liquidity'; }
+        finally { addLiqBtn.disabled = false; addLiqBtn.textContent = 'Add Liquidity'; updateAddLiquidityButton(); }
     });
 
     // Fee tier selector — F7.20: store selected value in state
@@ -4721,6 +4848,7 @@ document.addEventListener('DOMContentLoaded', () => {
         document.querySelectorAll('.fee-tier-btn').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
         state.selectedFeeTier = parseInt(btn.dataset.fee) || 30;
+        updateAddLiquidityButton();
     }));
 
     // Pool filter pills
@@ -4768,22 +4896,14 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     // F7.19: Pool share estimate — update on amount input
-    ['liqAmountA', 'liqAmountB'].forEach(id => {
+    ['liqAmountA', 'liqAmountB', 'liqMinPrice', 'liqMaxPrice'].forEach(id => {
         document.getElementById(id)?.addEventListener('input', () => {
-            const shareEl = document.getElementById('liqPoolShare');
-            if (!shareEl) return;
-            const sel = document.getElementById('liqPoolSelect');
-            const pool = state.poolsCache?.find(p => String(p.poolId || p.id) === sel?.value);
-            if (!pool || !pool.liquidity) { shareEl.textContent = '—'; return; }
-            const amtA = parseFloat(document.getElementById('liqAmountA')?.value) || 0;
-            const amtB = parseFloat(document.getElementById('liqAmountB')?.value) || 0;
-            // F24.17 FIX: Weight deposit by pool price ratio for accurate share estimate
-            const poolPrice = pool.sqrtPrice ? sqrtPriceQ32ToPrice(pool.sqrtPrice) : 1;
-            const deposit = (amtA * poolPrice + amtB) * 1e9; // scale to match liquidity units
-            const share = deposit / (pool.liquidity + deposit) * 100;
-            shareEl.textContent = share >= 0.01 ? share.toFixed(2) + '%' : '< 0.01%';
+            updatePoolShareEstimate();
+            updateAddLiquidityButton();
         });
     });
+    document.getElementById('fullRangeToggle')?.addEventListener('change', updateAddLiquidityButton);
+    updateAddLiquidityButton();
 
     // ═══════════════════════════════════════════════════════════════════════
     // Margin — Open/Close Positions + Load from API
@@ -5048,7 +5168,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     <div style="font-size:0.8rem;color:var(--text-secondary);" id="marginCloseTypeHint">Market close executes immediately at current mark price.</div>
                     <label id="marginCloseLimitPriceRow" class="hidden" style="display:flex;flex-direction:column;gap:4px;font-size:0.82rem;">
                         <span>Limit close price</span>
-                        <input id="marginCloseLimitPriceInput" type="number" min="0.000000001" step="0.000000001" placeholder="e.g. 0.1250" />
+                        <input id="marginCloseLimitPriceInput" type="text" inputmode="decimal" data-dex-numeric="true" data-min="0" placeholder="e.g. 0.1250" />
                     </label>
                     <div style="display:flex;gap:6px;flex-wrap:wrap;">
                         <button class="btn btn-small btn-secondary" data-close-pct="25">25%</button>
@@ -5058,7 +5178,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     </div>
                     <label style="display:flex;flex-direction:column;gap:4px;font-size:0.82rem;">
                         <span>Custom quantity</span>
-                        <input id="marginCloseQtyInput" type="number" min="0.001" step="0.001" placeholder="e.g. 0.2500" />
+                        <input id="marginCloseQtyInput" type="text" inputmode="decimal" data-dex-numeric="true" data-min="0" placeholder="e.g. 0.2500" />
                     </label>
                 </div>
                 <div class="order-confirm-footer">
@@ -5105,14 +5225,14 @@ document.addEventListener('DOMContentLoaded', () => {
         }));
 
         if (qtyInput) qtyInput.addEventListener('input', () => {
-            const customQty = parseFloat(qtyInput.value || '0');
+            const customQty = readDexDecimal(qtyInput);
             if (customQty > 0) {
                 overlay.querySelectorAll('[data-close-pct]').forEach(b => b.className = 'btn btn-small btn-secondary');
             }
         });
 
         const submit = async () => {
-            const customQty = parseFloat(qtyInput?.value || '0');
+            const customQty = readDexDecimal(qtyInput);
             let closeAmountRaw;
             if (customQty > 0) {
                 closeAmountRaw = Math.floor(customQty * PRICE_SCALE);
@@ -5127,7 +5247,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             let limitPriceRaw = 0;
             if (selectedType === 'limit') {
-                const limitPriceHuman = parseFloat(limitPriceInput?.value || '0');
+                const limitPriceHuman = readDexDecimal(limitPriceInput);
                 if (!limitPriceHuman || limitPriceHuman <= 0) {
                     showNotification('Enter a valid limit close price', 'warning');
                     return;
@@ -5230,8 +5350,8 @@ document.addEventListener('DOMContentLoaded', () => {
                             </div>
                             <div class="margin-sltp-inline hidden" data-position-id="${posId}" data-side="${side.toLowerCase()}" data-entry-price="${entryHuman}">
                                 <div style="display:flex;gap:6px;align-items:center;">
-                                    <input type="number" class="sltp-sl-input" placeholder="Stop-Loss" step="0.0001" value="${slPrice > 0 ? (slPrice / PRICE_SCALE).toFixed(4) : ''}" style="flex:1;font-size:0.8rem;" />
-                                    <input type="number" class="sltp-tp-input" placeholder="Take-Profit" step="0.0001" value="${tpPrice > 0 ? (tpPrice / PRICE_SCALE).toFixed(4) : ''}" style="flex:1;font-size:0.8rem;" />
+                                    <input type="text" inputmode="decimal" data-dex-numeric="true" data-min="0" class="sltp-sl-input" placeholder="Stop-Loss" value="${slPrice > 0 ? (slPrice / PRICE_SCALE).toFixed(4) : ''}" style="flex:1;font-size:0.8rem;" />
+                                    <input type="text" inputmode="decimal" data-dex-numeric="true" data-min="0" class="sltp-tp-input" placeholder="Take-Profit" value="${tpPrice > 0 ? (tpPrice / PRICE_SCALE).toFixed(4) : ''}" style="flex:1;font-size:0.8rem;" />
                                     <button class="btn btn-small btn-primary sltp-save-btn" data-position-id="${posId}">Save</button>
                                     <button class="btn btn-small btn-secondary sltp-cancel-btn" data-position-id="${posId}">×</button>
                                 </div>
@@ -5242,13 +5362,13 @@ document.addEventListener('DOMContentLoaded', () => {
                                     <button class="btn btn-small btn-secondary pclose-pct-btn" data-position-id="${posId}" data-pct="50">50%</button>
                                     <button class="btn btn-small btn-secondary pclose-pct-btn" data-position-id="${posId}" data-pct="75">75%</button>
                                     <button class="btn btn-small btn-primary pclose-pct-btn" data-position-id="${posId}" data-pct="100">100%</button>
-                                    <input type="number" class="pclose-custom-input" placeholder="Custom qty" step="0.001" min="0.001" style="flex:1;font-size:0.8rem;max-width:100px;" />
+                                    <input type="text" inputmode="decimal" data-dex-numeric="true" data-min="0" class="pclose-custom-input" placeholder="Custom qty" style="flex:1;font-size:0.8rem;max-width:100px;" />
                                     <button class="btn btn-small btn-primary pclose-custom-btn" data-position-id="${posId}">Go</button>
                                     <button class="btn btn-small btn-secondary pclose-cancel-btn" data-position-id="${posId}">×</button>
                                 </div>
                             </div>
                             <div class="margin-adjust-inline hidden" data-position-id="${posId}">
-                                <input type="number" class="margin-adjust-input" placeholder="Amount" step="0.001" min="0.001" />
+                                <input type="text" inputmode="decimal" data-dex-numeric="true" data-min="0" class="margin-adjust-input" placeholder="Amount" />
                                 <button class="btn btn-small btn-primary margin-adjust-confirm" data-position-id="${posId}" data-action="">Confirm</button>
                                 <button class="btn btn-small btn-secondary margin-adjust-cancel" data-position-id="${posId}">Cancel</button>
                             </div>
@@ -5301,7 +5421,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         const posId = parseInt(btn.dataset.positionId);
                         const panel = btn.closest('.margin-pclose-inline');
                         const input = panel.querySelector('.pclose-custom-input');
-                        const qty = parseFloat(input.value || '0');
+                        const qty = readDexDecimal(input);
                         if (qty <= 0) { showNotification('Enter a valid quantity', 'warning'); return; }
                         const closeAmt = Math.floor(qty * 1e9);
                         btn.disabled = true;
@@ -5372,7 +5492,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         const action = btn.dataset.action;
                         const row = container.querySelector(`.margin-adjust-inline[data-position-id="${btn.dataset.positionId}"]`);
                         const input = row?.querySelector('.margin-adjust-input');
-                        const amountHuman = parseFloat(input?.value);
+                        const amountHuman = readDexDecimal(input);
                         if (!amountHuman || amountHuman <= 0) { showNotification('Enter a valid amount', 'warning'); return; }
                         if (amountHuman > 9_000_000) { showNotification('Amount too large', 'warning'); return; }
                         const amountScaled = Math.round(amountHuman * PRICE_SCALE);
@@ -5416,8 +5536,8 @@ document.addEventListener('DOMContentLoaded', () => {
                         const row = container.querySelector(`.margin-sltp-inline[data-position-id="${btn.dataset.positionId}"]`);
                         const slInput = row?.querySelector('.sltp-sl-input');
                         const tpInput = row?.querySelector('.sltp-tp-input');
-                        const slVal = parseFloat(slInput?.value) || 0;
-                        const tpVal = parseFloat(tpInput?.value) || 0;
+                        const slVal = readDexDecimal(slInput);
+                        const tpVal = readDexDecimal(tpInput);
                         if (slVal < 0 || tpVal < 0) { showNotification('SL/TP cannot be negative', 'warning'); return; }
                         if (slVal > 9_000_000 || tpVal > 9_000_000) { showNotification('SL/TP price too large', 'warning'); return; }
                         const side = String(row?.dataset.side || 'long').toLowerCase();
@@ -5602,7 +5722,11 @@ document.addEventListener('DOMContentLoaded', () => {
             if (refEl) refEl.textContent = `${location.origin}?ref=${wallet.address}`;
         }
         // User rewards
-        if (!state.connected) return;
+        if (!state.connected) {
+            state.rewardPending = { trading: 0, lp: 0, total: 0 };
+            updateRewardsClaimButtons();
+            return;
+        }
         try {
             const { data } = await api.get(`/rewards/${wallet.address}`);
             if (data) {
@@ -5610,6 +5734,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const pending = data.pending ? data.pending / 1e9 : 0;
                 const lpPending = data.lpPending ? data.lpPending / 1e9 : 0;
                 const totalPending = pending + lpPending;
+                state.rewardPending = { trading: pending, lp: lpPending, total: totalPending };
                 el('rewardsPending', formatAmount(totalPending) + ' LICN');
                 el('rewardsPendingUsd', `≈ $${formatAmount(totalPending * state.lastPrice)}`);
                 // F13.2: Compute tier from totalVolume (camelCase from RPC)
@@ -5660,8 +5785,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 el('rewardRefCount', (data.referralCount ?? 0) + ' traders');
                 el('rewardRefEarnings', formatAmount(data.referralEarnings ? data.referralEarnings / 1e9 : 0) + ' LICN');
                 el('rewardRefRate', '10%');
+                updateRewardsClaimButtons();
             }
-        } catch { /* API unavailable */ }
+        } catch { updateRewardsClaimButtons(); }
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -5877,6 +6003,53 @@ document.addEventListener('DOMContentLoaded', () => {
     const delistFields = document.getElementById('delistFields');
     const paramFields = document.getElementById('paramFields');
     const SUPPORTED_PROPOSAL_TYPES = new Set(['pair', 'fee', 'delist', 'param']);
+
+    function getActiveProposalType() {
+        const activeType = document.querySelector('.proposal-type-btn.active');
+        return SUPPORTED_PROPOSAL_TYPES.has(activeType?.dataset?.ptype) ? activeType.dataset.ptype : 'pair';
+    }
+
+    function getProposalSubmitValidation() {
+        if (!state.connected) return { ok: false, message: 'Connect wallet to propose', gate: true };
+        if (!walletCanSign()) return { ok: false, message: 'Reconnect wallet to sign', gate: true };
+        if (!contracts.dex_governance) return { ok: false, message: 'Governance contract not loaded' };
+        if (Number(state.reputation || 0) < 500) return { ok: false, message: 'Requires LichenID reputation of at least 500' };
+
+        const ptype = getActiveProposalType();
+        if (ptype === 'pair') {
+            const base = String(document.getElementById('propBaseToken')?.value || '').trim();
+            const quote = String(document.getElementById('propQuoteToken')?.value || '').trim();
+            if (!base || !quote) return { ok: false, message: 'Enter base and quote token addresses' };
+        } else if (ptype === 'fee') {
+            const pair = document.getElementById('propFeePair')?.value;
+            const makerFee = readDexDecimal(document.getElementById('propMakerFee'));
+            const takerFee = readDexDecimal(document.getElementById('propTakerFee'));
+            if (!pair) return { ok: false, message: 'Select a trading pair' };
+            if (makerFee < -100 || makerFee > 100 || takerFee < 0 || takerFee > 100) {
+                return { ok: false, message: 'Fee changes must stay within configured bps bounds' };
+            }
+        } else if (ptype === 'delist') {
+            return { ok: false, message: 'Delist proposals are not supported by the current governance contract' };
+        } else if (ptype === 'param') {
+            return { ok: false, message: 'Parameter proposals are not supported by the current governance contract' };
+        }
+
+        return { ok: true, message: 'Ready to submit proposal' };
+    }
+
+    function updateProposalSubmitButton() {
+        const button = document.getElementById('submitProposalBtn');
+        if (!button) return;
+        const validation = getProposalSubmitValidation();
+        button.disabled = !validation.ok;
+        button.className = validation.gate ? 'btn btn-full btn-wallet-gate' : 'btn btn-full btn-primary';
+        button.innerHTML = validation.gate
+            ? (state.connected ? walletReconnectPromptHtml() : '<i class="fas fa-wallet"></i> Connect Wallet to Propose')
+            : '<i class="fas fa-paper-plane"></i> Submit Proposal';
+        button.title = validation.ok ? '' : validation.message;
+        updateDexActionHint('proposalSubmitHint', validation.message, validation.ok ? 'ready' : 'warning');
+    }
+
     proposalTypeBtns.forEach(btn => btn.addEventListener('click', () => {
         proposalTypeBtns.forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
@@ -5885,6 +6058,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (feeFields) feeFields.classList.toggle('hidden', ptype !== 'fee');
         if (delistFields) delistFields.classList.toggle('hidden', ptype !== 'delist');
         if (paramFields) paramFields.classList.toggle('hidden', ptype !== 'param');
+        updateProposalSubmitButton();
     }));
 
     // F10E.5: Parameter selector — show current value + description
@@ -5900,6 +6074,21 @@ document.addEventListener('DOMContentLoaded', () => {
         if (curEl) curEl.textContent = `${current}${unit}`;
         if (unitEl) unitEl.textContent = unit;
         if (descEl) descEl.textContent = desc;
+        updateProposalSubmitButton();
+    });
+
+    [
+        'propBaseToken',
+        'propQuoteToken',
+        'propMakerFee',
+        'propTakerFee',
+        'propFeePair',
+        'propDelistPair',
+        'propDelistReason',
+        'propParamValue',
+    ].forEach((id) => {
+        document.getElementById(id)?.addEventListener('input', updateProposalSubmitButton);
+        document.getElementById(id)?.addEventListener('change', updateProposalSubmitButton);
     });
 
     // F14.10: Reusable governance filter function
@@ -5922,10 +6111,9 @@ document.addEventListener('DOMContentLoaded', () => {
     // Submit Proposal handler
     const submitProposalBtn = document.getElementById('submitProposalBtn');
     if (submitProposalBtn) submitProposalBtn.addEventListener('click', async () => {
-        if (!state.connected) { showNotification('Connect wallet to propose', 'warning'); return; }
-        if (!walletCanSign()) { showNotification('Reconnect wallet to sign transactions', 'warning'); return; }
-        const activeType = document.querySelector('.proposal-type-btn.active');
-        const ptype = SUPPORTED_PROPOSAL_TYPES.has(activeType?.dataset?.ptype) ? activeType.dataset.ptype : 'pair';
+        const validation = getProposalSubmitValidation();
+        if (!validation.ok) { showNotification(validation.message, 'warning'); return; }
+        const ptype = getActiveProposalType();
         submitProposalBtn.disabled = true; submitProposalBtn.textContent = 'Submitting...';
         try {
             // AUDIT-FIX: Proposal submission via signed sendTransaction (not unsigned REST)
@@ -5938,8 +6126,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 proposalData.quote_token = quote;
             } else if (ptype === 'fee') {
                 proposalData.pair = document.getElementById('propFeePair')?.value || 'LICN/lUSD';
-                proposalData.maker_fee = parseInt(document.getElementById('propMakerFee')?.value) || -1;
-                proposalData.taker_fee = parseInt(document.getElementById('propTakerFee')?.value) || 5;
+                proposalData.maker_fee = Math.trunc(readDexDecimal(document.getElementById('propMakerFee'))) || -1;
+                proposalData.taker_fee = Math.trunc(readDexDecimal(document.getElementById('propTakerFee'))) || 5;
             } else if (ptype === 'delist') {
                 const propDelistReason = document.getElementById('propDelistReason');
                 const delistReason = propDelistReason?.value?.trim() || '';
@@ -6005,8 +6193,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 showNotification('Proposal submitted', 'success');
             }
         } catch (e) { showNotification(`Proposal failed: ${e.message}`, 'error'); }
-        finally { submitProposalBtn.disabled = false; submitProposalBtn.innerHTML = '<i class="fas fa-paper-plane"></i> Submit Proposal'; }
+        finally { submitProposalBtn.disabled = false; submitProposalBtn.innerHTML = '<i class="fas fa-paper-plane"></i> Submit Proposal'; updateProposalSubmitButton(); }
     });
+    updateProposalSubmitButton();
 
     // ═══════════════════════════════════════════════════════════════════════
     // Prediction Market — Predict View (Live API)
@@ -6021,12 +6210,17 @@ document.addEventListener('DOMContentLoaded', () => {
         selectedOutcome: 0,
         selectedOutcomeLabel: 'YES',
         activeCategory: 'all',
+        statusFilter: 'open',
+        marketPage: 1,
+        marketPageSize: 6,
         markets: [...INITIAL_MARKETS],
         positions: [],
         stats: null,
         live: false,
         lastMarketsError: null,
     };
+
+    let predictMarketType = 'binary';
 
     const PREDICT_OUTCOME_THEME_COUNT = 8;
     const DEX_NEGATIVE_ALLOWED_INPUT_IDS = new Set(['propMakerFee']);
@@ -6103,6 +6297,78 @@ document.addEventListener('DOMContentLoaded', () => {
         return outcomeIndex === 1 ? (1 - Number(market.yes || 0.5)) : Number(market.yes || 0.5);
     }
 
+    function isPredictMarketOpen(market) {
+        if (!market || String(market.status || 'active').toLowerCase() !== 'active') return false;
+        const closeSlot = Number(market.closes || market.close_slot || 0);
+        if (!closeSlot) return true;
+        const currentSlot = getRealtimePredictSlot(market.current_slot || predictState.stats?.current_slot || 0);
+        return !currentSlot || currentSlot < closeSlot;
+    }
+
+    function getPredictLusdAvailable() {
+        return Number(
+            balances.lUSD?.available ??
+            balances.LUSD?.available ??
+            balances.lusd?.available ??
+            0
+        ) || 0;
+    }
+
+    function getPredictOutcomeNames() {
+        return Array.from(document.querySelectorAll('#outcomeInputs .outcome-name'))
+            .map(input => sanitizePredictTextValue(input.value, 64).trim())
+            .filter(Boolean);
+    }
+
+    function getPredictCreateValidation() {
+        if (!state.connected) return { ok: false, message: 'Connect wallet to create a market', gate: true };
+        if (!walletCanSign()) return { ok: false, message: 'Reconnect wallet to sign', gate: true };
+
+        const question = sanitizePredictTextValue(document.getElementById('predictQuestion')?.value, 200).trim();
+        if (!question) return { ok: false, message: 'Enter a market question' };
+
+        const liquidity = readDexDecimal(document.getElementById('predictInitLiq'));
+        if (liquidity < 100) return { ok: false, message: 'Initial liquidity must be at least 100 lUSD' };
+        if (liquidity > 9_000_000) return { ok: false, message: 'Initial liquidity is too large' };
+
+        const closeDateInput = document.getElementById('predictCloseDate')?.value;
+        if (closeDateInput && new Date(closeDateInput).getTime() <= Date.now()) {
+            return { ok: false, message: 'Close date must be in the future' };
+        }
+
+        if (predictMarketType === 'multi') {
+            const outcomes = getPredictOutcomeNames();
+            if (outcomes.length < 2) return { ok: false, message: 'Enter at least 2 outcome names' };
+            if (outcomes.length > 8) return { ok: false, message: 'Maximum 8 outcomes' };
+            if (new Set(outcomes.map((outcome) => outcome.toLowerCase())).size !== outcomes.length) {
+                return { ok: false, message: 'Outcome names must be unique' };
+            }
+        }
+
+        const available = getPredictLusdAvailable();
+        const required = liquidity + 10;
+        if (available > 0 && required > available) {
+            return { ok: false, message: `Needs about ${formatAmount(required)} lUSD including creation fee` };
+        }
+
+        return { ok: true, message: 'Ready to create market' };
+    }
+
+    function updatePredictCreateButton() {
+        const button = document.getElementById('predictCreateBtn');
+        if (!button) return;
+        const validation = getPredictCreateValidation();
+        button.disabled = !validation.ok;
+        button.className = validation.gate
+            ? 'btn btn-full btn-wallet-gate'
+            : 'btn btn-full btn-primary';
+        button.innerHTML = validation.gate
+            ? (state.connected ? walletReconnectPromptHtml() : '<i class="fas fa-wallet"></i> Connect Wallet to Create')
+            : '<i class="fas fa-rocket"></i> Create Market';
+        button.title = validation.ok ? '' : validation.message;
+        updateDexActionHint('predictCreateHint', validation.message, validation.ok ? 'ready' : 'warning');
+    }
+
     function updatePredictSubmitButton() {
         const submitButton = document.getElementById('predictSubmitBtn');
         if (!submitButton) return;
@@ -6111,12 +6377,50 @@ document.addEventListener('DOMContentLoaded', () => {
         predictState.selectedOutcome = outcomeIndex;
         const outcomeLabel = market ? getPredictOutcomeLabel(market, outcomeIndex).toUpperCase() : 'YES';
         predictState.selectedOutcomeLabel = outcomeLabel;
-        if (market?.multi) {
-            submitButton.className = `btn btn-full predict-submit-outcome ${getPredictOutcomeThemeClass(outcomeIndex)}`;
-        } else {
-            submitButton.className = `btn btn-full ${outcomeIndex === 1 ? 'btn-sell' : 'btn-buy'}`;
+        const baseClass = market?.multi
+            ? `btn btn-full predict-submit-outcome ${getPredictOutcomeThemeClass(outcomeIndex)}`
+            : `btn btn-full ${outcomeIndex === 1 ? 'btn-sell' : 'btn-buy'}`;
+
+        let disabled = false;
+        let message = 'Ready to trade';
+        let label = `<i class="fas fa-bolt"></i> Buy ${escapeHtml(outcomeLabel)} Shares`;
+        let gate = false;
+        const amount = readDexDecimal(document.getElementById('predictAmount'));
+
+        if (!market) {
+            disabled = true;
+            message = 'Select an active market';
+            label = '<i class="fas fa-chart-line"></i> Select Market';
+        } else if (!state.connected) {
+            disabled = true;
+            gate = true;
+            message = 'Connect wallet to trade';
+            label = '<i class="fas fa-wallet"></i> Connect Wallet to Trade';
+        } else if (!walletCanSign()) {
+            disabled = true;
+            gate = true;
+            message = 'Reconnect wallet to sign';
+            label = walletReconnectPromptHtml();
+        } else if (!isPredictMarketOpen(market)) {
+            disabled = true;
+            message = 'Market is not open for trading';
+            label = '<i class="fas fa-lock"></i> Market Closed';
+        } else if (amount < 1) {
+            disabled = true;
+            message = 'Enter amount, minimum 1 lUSD';
+        } else if (amount > 9_000_000) {
+            disabled = true;
+            message = 'Amount too large, maximum 9M lUSD';
+        } else if (amount > getPredictLusdAvailable()) {
+            disabled = true;
+            message = 'Insufficient lUSD balance';
         }
-        submitButton.innerHTML = `<i class="fas fa-bolt"></i> Buy ${escapeHtml(outcomeLabel)} Shares`;
+
+        submitButton.disabled = disabled;
+        submitButton.className = gate ? 'btn btn-full btn-wallet-gate' : baseClass;
+        submitButton.innerHTML = label;
+        submitButton.title = disabled ? message : '';
+        updateDexActionHint('predictTradeHint', message, disabled ? 'warning' : 'ready');
     }
 
     function renderPredictOutcomeToggle(market = getPredictSelectedMarket()) {
@@ -6209,19 +6513,23 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (sanitized !== input.value) {
                     input.value = sanitized;
                 }
+                updatePredictCreateButton();
             });
             input.addEventListener('blur', () => {
                 input.value = sanitizePredictTextValue(input.value, maxLength).trim();
+                updatePredictCreateButton();
             });
         });
     }
 
     function dexInputAllowsNegative(input) {
-        const minValue = Number(input.min);
+        const minValue = Number(input.dataset.min ?? input.min);
         return DEX_NEGATIVE_ALLOWED_INPUT_IDS.has(input.id) || (Number.isFinite(minValue) && minValue < 0);
     }
 
     function dexInputAllowsDecimal(input) {
+        if (input.dataset.decimal === 'false') return false;
+        if (input.dataset.dexNumeric === 'true') return true;
         const stepValue = String(input.step || '').trim().toLowerCase();
         if (!stepValue || stepValue === 'any') {
             return true;
@@ -6279,8 +6587,8 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
-        const minValue = Number(input.min);
-        const maxValue = Number(input.max);
+        const minValue = Number(input.dataset.min ?? input.min);
+        const maxValue = Number(input.dataset.max ?? input.max);
         if (Number.isFinite(minValue) && numericValue < minValue) {
             numericValue = minValue;
         }
@@ -6299,9 +6607,12 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function applyDexNumericInputGuards(root = document) {
-        root.querySelectorAll('input[type="number"]').forEach((input) => {
+        root.querySelectorAll('input[data-dex-numeric="true"]').forEach((input) => {
             if (input.dataset.dexNumericGuarded === '1') return;
             input.dataset.dexNumericGuarded = '1';
+            if (!input.getAttribute('inputmode')) {
+                input.setAttribute('inputmode', dexInputAllowsDecimal(input) ? 'decimal' : 'numeric');
+            }
             input.addEventListener('keydown', (event) => {
                 if (event.ctrlKey || event.metaKey || event.altKey) return;
                 if (event.key === 'e' || event.key === 'E' || event.key === '+') {
@@ -6383,6 +6694,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (multiSection) {
             multiSection.classList.add('hidden');
         }
+        updatePredictCreateButton();
     }
 
     // ─── Load prediction stats from API ─────────────────────────
@@ -6400,6 +6712,76 @@ document.addEventListener('DOMContentLoaded', () => {
                 el('pmTotalTraders', data.total_traders ?? '0');
             }
         } catch { /* API unavailable — keep placeholder text */ }
+    }
+
+    function applyPredictionMarketSort() {
+        const sortBy = document.getElementById('predictSort')?.value || 'volume';
+        const activeRank = (market) => isPredictMarketOpen(market) ? 0 : 1;
+        predictState.markets.sort((a, b) => {
+            const statusDelta = activeRank(a) - activeRank(b);
+            if (statusDelta !== 0) return statusDelta;
+            if (sortBy === 'liquidity') return Number(b.liquidity || 0) - Number(a.liquidity || 0);
+            if (sortBy === 'newest') return Number(b.id || 0) - Number(a.id || 0);
+            if (sortBy === 'ending') {
+                const aClose = Number(a.closes || Number.MAX_SAFE_INTEGER);
+                const bClose = Number(b.closes || Number.MAX_SAFE_INTEGER);
+                return aClose - bClose;
+            }
+            if (sortBy === 'traders') {
+                const traderDelta = b.traders - a.traders;
+                return Number.isFinite(traderDelta)
+                    ? traderDelta
+                    : Number(b.traders || 0) - Number(a.traders || 0);
+            }
+            return Number(b.volume || 0) - Number(a.volume || 0);
+        });
+    }
+
+    function getFilteredPredictionMarkets() {
+        const category = predictState.activeCategory || 'all';
+        const statusFilter = predictState.statusFilter || 'open';
+        return predictState.markets.filter((market) => {
+            const categoryMatch = category === 'all' || market.cat === category;
+            if (!categoryMatch) return false;
+            if (statusFilter === 'open') return isPredictMarketOpen(market);
+            if (statusFilter === 'closed') return !isPredictMarketOpen(market);
+            return true;
+        });
+    }
+
+    function getPredictMarketPage(markets) {
+        const pageSize = Math.max(1, Number(predictState.marketPageSize || 6));
+        const pageCount = Math.max(1, Math.ceil(markets.length / pageSize));
+        const page = Math.min(Math.max(1, Number(predictState.marketPage || 1)), pageCount);
+        predictState.marketPage = page;
+        return {
+            page,
+            pageSize,
+            pageCount,
+            rows: markets.slice((page - 1) * pageSize, page * pageSize),
+        };
+    }
+
+    function renderPredictPagination(totalRows, page, pageSize, pageCount) {
+        const pagination = document.getElementById('predictPagination');
+        const info = document.getElementById('predictPageInfo');
+        const prev = document.getElementById('predictPrevPage');
+        const next = document.getElementById('predictNextPage');
+        if (!pagination || !info || !prev || !next) return;
+
+        const shouldShow = totalRows > pageSize;
+        pagination.classList.toggle('hidden', !shouldShow);
+        if (!totalRows) {
+            info.textContent = '0 markets';
+        } else if (shouldShow) {
+            const first = ((page - 1) * pageSize) + 1;
+            const last = Math.min(totalRows, page * pageSize);
+            info.textContent = `${first}-${last} of ${totalRows}`;
+        } else {
+            info.textContent = `${totalRows} market${totalRows === 1 ? '' : 's'}`;
+        }
+        prev.disabled = page <= 1;
+        next.disabled = page >= pageCount;
     }
 
     // ─── Load markets from API ──────────────────────────────────
@@ -6446,6 +6828,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         ? m.resolved_outcome.toLowerCase()
                         : (m.winning_outcome === 0 ? 'yes' : (m.winning_outcome === 1 ? 'no' : '')),
                 }));
+                applyPredictionMarketSort();
                 predictState.live = true;
                 predictState.lastMarketsError = null;
                 renderPredictionMarkets();
@@ -6615,15 +6998,23 @@ document.addEventListener('DOMContentLoaded', () => {
         // Remove all previously rendered cards AND empty-state placeholders
         grid.querySelectorAll('.market-card, .predict-empty-state').forEach(c => c.remove());
 
-        if (!predictState.markets.length) {
+        const filteredMarkets = getFilteredPredictionMarkets();
+        const pagedMarkets = getPredictMarketPage(filteredMarkets);
+        renderPredictPagination(filteredMarkets.length, pagedMarkets.page, pagedMarkets.pageSize, pagedMarkets.pageCount);
+        syncPredictFilterControls();
+
+        if (!predictState.markets.length || !filteredMarkets.length) {
             predictState.selectedMarket = null;
             predictState.selectedOutcome = 0;
             const emptyEl = document.createElement('div');
             emptyEl.className = 'predict-empty-state';
             emptyEl.style.cssText = 'text-align:center;color:var(--text-muted);padding:40px;font-size:0.9rem;';
             const hasError = !!predictState.lastMarketsError;
+            const hasFilteredOutMarkets = !hasError && predictState.markets.length > 0 && !filteredMarkets.length;
             emptyEl.innerHTML = hasError
                 ? '<i class="fas fa-circle-exclamation" style="font-size:2rem;margin-bottom:12px;display:block;opacity:0.4;"></i><p>Unable to load prediction markets</p><p style="font-size:0.8rem;margin-top:8px;">Retrying automatically...</p>'
+                : hasFilteredOutMarkets
+                    ? '<i class="fas fa-filter" style="font-size:2rem;margin-bottom:12px;display:block;opacity:0.4;"></i><p>No markets match these filters</p><p style="font-size:0.8rem;margin-top:8px;">Change category or status to see more markets</p>'
                 : '<i class="fas fa-chart-line" style="font-size:2rem;margin-bottom:12px;display:block;opacity:0.4;"></i><p>No prediction markets yet</p><p style="font-size:0.8rem;margin-top:8px;">Create a market to get started</p>';
             grid.appendChild(emptyEl);
             syncPredictTradePanel(null);
@@ -6640,16 +7031,17 @@ document.addEventListener('DOMContentLoaded', () => {
             economics: '<i class="fas fa-chart-bar"></i> Economics',
             custom: '<i class="fas fa-puzzle-piece"></i> Custom'
         };
-        if (!predictState.markets.some((market) => market.id === predictState.selectedMarket)) {
-            const fallbackMarket = predictState.markets.find((market) => market.status === 'active') || predictState.markets[0];
+        if (!filteredMarkets.some((market) => market.id === predictState.selectedMarket)) {
+            const fallbackMarket = filteredMarkets.find((market) => isPredictMarketOpen(market)) || filteredMarkets[0];
             predictState.selectedMarket = fallbackMarket?.id ?? null;
             predictState.selectedOutcome = 0;
         } else {
             predictState.selectedOutcome = normalizePredictOutcomeSelection(getPredictSelectedMarket());
         }
 
-        predictState.markets.forEach(m => {
+        pagedMarkets.rows.forEach(m => {
             const isResolved = m.status === 'resolved';
+            const canTradeMarket = isPredictMarketOpen(m);
             const isMulti = m.multi;
             const yesPct = Math.round((m.yes || 0.5) * 100);
             const noPct = 100 - yesPct;
@@ -6665,7 +7057,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         <div class="outcome-label"><span class="outcome-dot multi-dot"></span><span>${escapeHtml(o.name)}</span></div>
                         <div class="outcome-bar-wrap"><div class="outcome-bar multi-bar" style="width:${pct}%"></div></div>
                         <div class="outcome-price"><span class="outcome-price-val">$${(o.price || 0).toFixed(2)}</span></div>
-                        <button class="btn btn-small btn-predict-buy" data-outcome="${i}" data-market="${m.id}">Buy</button>
+                        <button class="btn btn-small btn-predict-buy" data-outcome="${i}" data-market="${m.id}"${canTradeMarket ? '' : ' disabled title="Market is not open"'}>${canTradeMarket ? 'Buy' : 'Closed'}</button>
                     </div>`;
                 }).join('');
             } else if (isResolved) {
@@ -6692,13 +7084,13 @@ document.addEventListener('DOMContentLoaded', () => {
                         <div class="outcome-label"><span class="outcome-dot yes"></span><span>YES</span></div>
                         <div class="outcome-bar-wrap"><div class="outcome-bar yes-bar" style="width:${yesPct}%"></div></div>
                         <div class="outcome-price"><span class="outcome-price-val yes-price">$${yesPrice}</span>${yesChg}</div>
-                        <button class="btn btn-small btn-predict-buy" data-outcome="yes" data-market="${m.id}">Buy</button>
+                        <button class="btn btn-small btn-predict-buy" data-outcome="yes" data-market="${m.id}" data-market-open="${canTradeMarket ? '1' : '0'}"${canTradeMarket ? '' : ' disabled title="Market is not open"'}>${canTradeMarket ? 'Buy' : 'Closed'}</button>
                     </div>
                     <div class="outcome-row no-outcome">
                         <div class="outcome-label"><span class="outcome-dot no"></span><span>NO</span></div>
                         <div class="outcome-bar-wrap"><div class="outcome-bar no-bar" style="width:${noPct}%"></div></div>
                         <div class="outcome-price"><span class="outcome-price-val no-price">$${noPrice}</span>${noChg}</div>
-                        <button class="btn btn-small btn-predict-buy-no" data-outcome="no" data-market="${m.id}">Buy</button>
+                        <button class="btn btn-small btn-predict-buy-no" data-outcome="no" data-market="${m.id}" data-market-open="${canTradeMarket ? '1' : '0'}"${canTradeMarket ? '' : ' disabled title="Market is not open"'}>${canTradeMarket ? 'Buy' : 'Closed'}</button>
                     </div>`;
             }
 
@@ -6802,9 +7194,6 @@ document.addEventListener('DOMContentLoaded', () => {
         // Re-apply wallet gating on dynamically rendered prediction buttons
         applyWalletGateAll();
 
-        // Re-apply active category filter so websocket refreshes don't reset it
-        applyPredictCategoryFilter();
-
         const selectedMarket = getPredictSelectedMarket();
         if (selectedMarket) {
             setPredictSelectedMarket(selectedMarket.id, normalizePredictOutcomeSelection(selectedMarket));
@@ -6879,7 +7268,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (e.target.closest('button')) return;
                 const mid = parseInt(card.dataset.marketId);
                 const m = predictState.markets.find(x => x.id === mid);
-                if (!m || m.status !== 'active') return;
+                if (!m || !isPredictMarketOpen(m)) return;
                 setPredictSelectedMarket(mid);
                 applyWalletGateAll();
             });
@@ -6888,10 +7277,12 @@ document.addEventListener('DOMContentLoaded', () => {
         // Buy/Sell buttons on cards
         document.querySelectorAll('.btn-predict-buy, .btn-predict-buy-no').forEach(btn => btn.addEventListener('click', () => {
             if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
+            if (!walletCanSign()) { showNotification('Reconnect wallet to sign transactions', 'warning'); return; }
             const mid = parseInt(btn.dataset.market);
             const outcome = Number.parseInt(btn.dataset.outcome, 10);
             const m = predictState.markets.find(x => x.id === mid);
             if (!m) return;
+            if (!isPredictMarketOpen(m)) { showNotification('Market is not open for trading', 'warning'); return; }
             const outcomeIndex = Number.isInteger(outcome) ? outcome : (btn.dataset.outcome === 'no' ? 1 : 0);
             setPredictSelectedMarket(mid, outcomeIndex);
             applyWalletGateAll();
@@ -7170,22 +7561,37 @@ document.addEventListener('DOMContentLoaded', () => {
     document.querySelector('.predict-chart-overlay')?.addEventListener('click', closePredictChart);
     document.addEventListener('keydown', e => { if (e.key === 'Escape') closePredictChart(); });
 
-    // Category filter — persist selection in predictState so it survives
-    // websocket-driven re-renders of the market grid
-    function applyPredictCategoryFilter() {
+    // Prediction filters persist in predictState so websocket-driven re-renders
+    // do not reset category/status/page selection.
+    function syncPredictFilterControls() {
         const cat = predictState.activeCategory || 'all';
         document.querySelectorAll('.predict-cat-btn').forEach(b => {
             b.classList.toggle('active', b.dataset.cat === cat);
         });
-        document.querySelectorAll('.market-card').forEach(card => {
-            if (cat === 'all' || card.dataset.cat === cat) card.style.display = '';
-            else card.style.display = 'none';
-        });
+        const statusFilter = document.getElementById('predictStatusFilter');
+        if (statusFilter && statusFilter.value !== (predictState.statusFilter || 'open')) {
+            statusFilter.value = predictState.statusFilter || 'open';
+        }
     }
     document.querySelectorAll('.predict-cat-btn').forEach(btn => btn.addEventListener('click', () => {
         predictState.activeCategory = btn.dataset.cat || 'all';
-        applyPredictCategoryFilter();
+        predictState.marketPage = 1;
+        renderPredictionMarkets();
     }));
+    const predictStatusFilter = document.getElementById('predictStatusFilter');
+    if (predictStatusFilter) predictStatusFilter.addEventListener('change', () => {
+        predictState.statusFilter = predictStatusFilter.value || 'open';
+        predictState.marketPage = 1;
+        renderPredictionMarkets();
+    });
+    document.getElementById('predictPrevPage')?.addEventListener('click', () => {
+        predictState.marketPage = Math.max(1, Number(predictState.marketPage || 1) - 1);
+        renderPredictionMarkets();
+    });
+    document.getElementById('predictNextPage')?.addEventListener('click', () => {
+        predictState.marketPage = Number(predictState.marketPage || 1) + 1;
+        renderPredictionMarkets();
+    });
 
     // Bind initial static cards
     bindPredictionCardEvents();
@@ -7195,20 +7601,24 @@ document.addEventListener('DOMContentLoaded', () => {
     applyPredictTextInputGuards();
     refreshPredictOutcomeInputs();
     syncPredictTradePanel(getPredictSelectedMarket());
+    updatePredictCreateButton();
 
     // Amount presets
     document.querySelectorAll('.predict-preset-row .preset-btn').forEach(btn => btn.addEventListener('click', () => {
         const ai = document.getElementById('predictAmount');
-        if (ai) { ai.value = btn.dataset.amt; updatePredictCalc(); }
+        if (ai) { ai.value = btn.dataset.amt; updatePredictCalc(); updatePredictSubmitButton(); }
     }));
 
     // Calculate trade summary
     const predictAmountInput = document.getElementById('predictAmount');
-    if (predictAmountInput) predictAmountInput.addEventListener('input', updatePredictCalc);
+    if (predictAmountInput) predictAmountInput.addEventListener('input', () => {
+        updatePredictCalc();
+        updatePredictSubmitButton();
+    });
 
     // F12.2 FIX: CPMM pricing formula matching contract's calculate_buy
     function updatePredictCalc() {
-        const amt = parseFloat(document.getElementById('predictAmount')?.value) || 0;
+        const amt = readDexDecimal(document.getElementById('predictAmount'));
         const m = predictState.markets.find(x => x.id === predictState.selectedMarket);
         const sharesEl = document.getElementById('predictShares');
         const avgPriceEl = document.getElementById('predictAvgPrice');
@@ -7256,6 +7666,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (avgPriceEl) avgPriceEl.textContent = shares > 0 ? `$${(amt / shares).toFixed(4)}` : '$0.00';
         if (payoutEl) payoutEl.textContent = `$${payout.toFixed(2)}`;
         if (feeEl) feeEl.textContent = `$${fee.toFixed(2)}`;
+        updatePredictSubmitButton();
     }
 
     // Submit trade
@@ -7263,7 +7674,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (predictSubmitBtn) predictSubmitBtn.addEventListener('click', async () => {
         if (!state.connected) { showNotification('Connect wallet to trade', 'warning'); return; }
         if (!walletCanSign()) { showNotification('Reconnect wallet to sign transactions', 'warning'); return; }
-        const amt = parseFloat(document.getElementById('predictAmount')?.value) || 0;
+        const amt = readDexDecimal(document.getElementById('predictAmount'));
         if (amt < 1) { showNotification('Enter amount (min $1)', 'warning'); return; }
         if (amt > 9_000_000) { showNotification('Amount too large (max 9M)', 'warning'); return; }
         const m = predictState.markets.find(x => x.id === predictState.selectedMarket);
@@ -7294,18 +7705,21 @@ document.addEventListener('DOMContentLoaded', () => {
     if (closeDateEl) {
         const today = new Date().toISOString().split('T')[0];
         closeDateEl.setAttribute('min', today);
+        closeDateEl.addEventListener('input', updatePredictCreateButton);
     }
+    document.getElementById('predictInitLiq')?.addEventListener('input', updatePredictCreateButton);
+    document.getElementById('predictQuestion')?.addEventListener('input', updatePredictCreateButton);
 
     // Create market
     const predictCreateBtn = document.getElementById('predictCreateBtn');
     if (predictCreateBtn) predictCreateBtn.addEventListener('click', async () => {
-        if (!state.connected) { showNotification('Connect wallet to create', 'warning'); return; }
-        if (!walletCanSign()) { showNotification('Reconnect wallet to sign transactions', 'warning'); return; }
+        const createValidation = getPredictCreateValidation();
+        if (!createValidation.ok) { showNotification(createValidation.message, 'warning'); return; }
         const questionInput = document.getElementById('predictQuestion');
         const q = sanitizePredictTextValue(questionInput?.value, 200).trim();
         if (questionInput && questionInput.value !== q) questionInput.value = q;
         if (!q) { showNotification('Enter market question', 'warning'); return; }
-        const liq = parseFloat(document.getElementById('predictInitLiq')?.value) || 0;
+        const liq = readDexDecimal(document.getElementById('predictInitLiq'));
         if (liq < 100) { showNotification('Min 100 lUSD initial liquidity', 'warning'); return; }
 
         // Collect outcomes for multi-outcome markets
@@ -7390,16 +7804,17 @@ document.addEventListener('DOMContentLoaded', () => {
             resetPredictCreateForm();
         } catch (e) { showNotification(`Create failed: ${e.message}`, 'error'); }
         predictCreateBtn.disabled = false; predictCreateBtn.innerHTML = '<i class="fas fa-rocket"></i> Create Market';
+        updatePredictCreateButton();
     });
 
     // Market type toggle — show/hide multi-outcome inputs
-    let predictMarketType = 'binary';
     document.querySelectorAll('.predict-type-btn').forEach(btn => btn.addEventListener('click', () => {
         document.querySelectorAll('.predict-type-btn').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
         predictMarketType = btn.dataset.type;
         const multiSection = document.getElementById('multiOutcomeSection');
         if (multiSection) multiSection.classList.toggle('hidden', predictMarketType === 'binary');
+        updatePredictCreateButton();
     }));
 
     // Add/remove outcome inputs (max 8)
@@ -7419,21 +7834,14 @@ document.addEventListener('DOMContentLoaded', () => {
         });
         container.appendChild(row);
         refreshPredictOutcomeInputs();
+        updatePredictCreateButton();
     });
 
     // Sort selector
     const predictSort = document.getElementById('predictSort');
     if (predictSort) predictSort.addEventListener('change', async () => {
-        const sortBy = predictSort.value;
-        // Re-fetch and re-sort from API
-        await loadPredictionMarkets();
-        if (sortBy === 'volume') predictState.markets.sort((a, b) => b.volume - a.volume);
-        else if (sortBy === 'liquidity') predictState.markets.sort((a, b) => b.liquidity - a.liquidity);
-        else if (sortBy === 'newest') predictState.markets.sort((a, b) => b.id - a.id);
-        // F11.5 FIX: Add "ending" sort by close_slot (soonest first)
-        else if (sortBy === 'ending') predictState.markets.sort((a, b) => (a.closes || Infinity) - (b.closes || Infinity));
-        // F11.5 FIX: Add "traders" sort by unique trader count
-        else if (sortBy === 'traders') predictState.markets.sort((a, b) => b.traders - a.traders);
+        applyPredictionMarketSort();
+        predictState.marketPage = 1;
         renderPredictionMarkets();
         showNotification(`Sorted by ${predictSort.options[predictSort.selectedIndex].text}`, 'info');
     });
@@ -7450,7 +7858,10 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!state.connected) { showNotification('Connect wallet to claim', 'warning'); return; }
         if (!walletCanSign()) { showNotification('Reconnect wallet to sign transactions', 'warning'); return; }
         if (!contracts.dex_rewards) { showNotification('Rewards contract not loaded', 'error'); return; }
+        const pending = btn.id === 'claimAllBtn' ? state.rewardPending?.total : state.rewardPending?.trading;
+        if (!(Number(pending) > 0)) { showNotification('No rewards to claim', 'info'); return; }
         btn.disabled = true;
+        btn.dataset.busy = '1';
         const origText = btn.innerHTML;
         btn.textContent = 'Claiming...';
         try {
@@ -7460,8 +7871,10 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch (e) {
             showNotification(`Claim failed: ${e.message}`, 'error');
         }
+        delete btn.dataset.busy;
         btn.disabled = false;
         btn.innerHTML = origText;
+        updateRewardsClaimButtons();
     }));
 
     const claimLpBtn = document.getElementById('claimLpBtn');
@@ -7470,8 +7883,10 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!walletCanSign()) { showNotification('Reconnect wallet to sign transactions', 'warning'); return; }
         if (!contracts.dex_rewards) { showNotification('Rewards contract not loaded', 'error'); return; }
         if (!contracts.dex_amm) { showNotification('AMM contract not loaded', 'error'); return; }
+        if (!(Number(state.rewardPending?.lp) > 0)) { showNotification('No LP rewards to claim', 'info'); return; }
 
         claimLpBtn.disabled = true;
+        claimLpBtn.dataset.busy = '1';
         const origText = claimLpBtn.innerHTML;
         claimLpBtn.textContent = 'Claiming...';
         try {
@@ -7497,8 +7912,10 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch (e) {
             showNotification(`LP claim failed: ${e.message}`, 'error');
         } finally {
+            delete claimLpBtn.dataset.busy;
             claimLpBtn.disabled = false;
             claimLpBtn.innerHTML = origText;
+            updateRewardsClaimButtons();
         }
     });
 
@@ -7536,6 +7953,64 @@ document.addEventListener('DOMContentLoaded', () => {
     // ═══════════════════════════════════════════════════════════════════════
 
     const launchState = { tokens: [], selectedToken: null, tradeMode: 'buy', quoteTimer: null };
+
+    function getSelectedLaunchToken() {
+        return launchState.tokens.find(token => Number(token.id) === Number(launchState.selectedToken)) || null;
+    }
+
+    function getLaunchTradeValidation() {
+        if (!state.connected) return { ok: false, message: 'Connect wallet to trade', gate: true };
+        if (!walletCanSign()) return { ok: false, message: 'Reconnect wallet to sign', gate: true };
+        if (!contracts.sporepump) return { ok: false, message: 'Launchpad contract not loaded' };
+        const token = getSelectedLaunchToken();
+        if (!token) return { ok: false, message: 'Select a token first' };
+        if (token.graduated) return { ok: false, message: 'Graduated tokens trade on the DEX order book' };
+        const amount = readDexDecimal(document.getElementById('launchAmountInput'));
+        if (amount <= 0) return { ok: false, message: 'Enter a positive amount' };
+        if (amount > 9_000_000) return { ok: false, message: 'Amount too large, maximum 9M' };
+        if (launchState.tradeMode === 'buy' && amount > Number(balances.LICN?.available || 0)) {
+            return { ok: false, message: 'Insufficient LICN balance' };
+        }
+        return { ok: true, message: launchState.tradeMode === 'buy' ? 'Ready to buy' : 'Ready to sell' };
+    }
+
+    function updateLaunchTradeButton() {
+        const button = document.getElementById('launchTradeBtn');
+        if (!button) return;
+        const side = launchState.tradeMode === 'sell' ? 'sell' : 'buy';
+        const validation = getLaunchTradeValidation();
+        button.disabled = !validation.ok;
+        button.className = validation.gate
+            ? 'btn btn-full btn-wallet-gate'
+            : `btn btn-full ${side === 'buy' ? 'btn-buy' : 'btn-sell'}`;
+        button.innerHTML = validation.gate
+            ? (state.connected ? walletReconnectPromptHtml() : '<i class="fas fa-wallet"></i> Connect Wallet to Trade')
+            : `<i class="fas fa-bolt"></i> ${side === 'buy' ? 'Buy Tokens' : 'Sell Tokens'}`;
+        button.title = validation.ok ? '' : validation.message;
+        updateDexActionHint('launchTradeHint', validation.message, validation.ok ? 'ready' : 'warning');
+    }
+
+    function getLaunchCreateValidation() {
+        if (!state.connected) return { ok: false, message: 'Connect wallet to launch', gate: true };
+        if (!walletCanSign()) return { ok: false, message: 'Reconnect wallet to sign', gate: true };
+        if (!contracts.sporepump) return { ok: false, message: 'Launchpad contract not loaded' };
+        const licnBal = Number(balances.LICN?.available || 0);
+        if (licnBal < 10) return { ok: false, message: `Need 10 LICN to launch, available ${formatAmount(licnBal)}` };
+        return { ok: true, message: 'Ready to launch token' };
+    }
+
+    function updateLaunchCreateButton() {
+        const button = document.getElementById('launchCreateBtn');
+        if (!button) return;
+        const validation = getLaunchCreateValidation();
+        button.disabled = !validation.ok;
+        button.className = validation.gate ? 'btn btn-full btn-wallet-gate' : 'btn btn-full btn-primary';
+        button.innerHTML = validation.gate
+            ? (state.connected ? walletReconnectPromptHtml() : '<i class="fas fa-wallet"></i> Connect Wallet to Launch')
+            : '<i class="fas fa-rocket"></i> Launch Token (10 LICN)';
+        button.title = validation.ok ? '' : validation.message;
+        updateDexActionHint('launchCreateHint', validation.message, validation.ok ? 'ready' : 'warning');
+    }
 
     function renderLaunchpadEmptyState(grid, title, subtitle = '') {
         if (!grid) return;
@@ -7627,11 +8102,13 @@ document.addEventListener('DOMContentLoaded', () => {
         // Quick buy/sell buttons
         document.querySelectorAll('.launch-quick-buy').forEach(btn => btn.addEventListener('click', () => {
             if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
+            if (!walletCanSign()) { showNotification('Reconnect wallet to sign transactions', 'warning'); return; }
             selectLaunchToken(parseInt(btn.dataset.tokenId));
             setLaunchSide('buy');
         }));
         document.querySelectorAll('.launch-quick-sell').forEach(btn => btn.addEventListener('click', () => {
             if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
+            if (!walletCanSign()) { showNotification('Reconnect wallet to sign transactions', 'warning'); return; }
             selectLaunchToken(parseInt(btn.dataset.tokenId));
             setLaunchSide('sell');
         }));
@@ -7650,6 +8127,8 @@ document.addEventListener('DOMContentLoaded', () => {
         updateLaunchSidebar(t);
         if (t) drawBondingCurve(t);
         updateLaunchQuote();
+        updateLaunchTradeButton();
+        updateLaunchCreateButton();
         loadLaunchHoldings();
     }
 
@@ -7783,21 +8262,21 @@ document.addEventListener('DOMContentLoaded', () => {
         if (side === 'buy') {
             if (amtLabel) amtLabel.textContent = 'Amount (LICN)';
             if (amtUnit) amtUnit.textContent = 'LICN';
-            if (tradeBtn) { tradeBtn.innerHTML = '<i class="fas fa-bolt"></i> Buy Tokens'; tradeBtn.className = 'btn btn-full btn-buy'; }
         } else {
             if (amtLabel) amtLabel.textContent = 'Amount (Tokens)';
             if (amtUnit) amtUnit.textContent = 'TOKENS';
-            if (tradeBtn) { tradeBtn.innerHTML = '<i class="fas fa-bolt"></i> Sell Tokens'; tradeBtn.className = 'btn btn-full btn-sell'; }
         }
         updateLaunchQuote();
+        updateLaunchTradeButton();
     }
 
     function updateLaunchQuote() {
-        const amt = parseFloat(document.getElementById('launchAmountInput')?.value) || 0;
-        const t = launchState.tokens.find(x => x.id === launchState.selectedToken);
+        const amt = readDexDecimal(document.getElementById('launchAmountInput'));
+        const t = getSelectedLaunchToken();
         const el = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
         if (!t || !amt) {
             el('launchQuoteTokens', '—'); el('launchQuoteImpact', '—'); el('launchQuoteFee', '—');
+            updateLaunchTradeButton();
             return;
         }
         if (launchState.tradeMode === 'buy') {
@@ -7833,6 +8312,7 @@ document.addEventListener('DOMContentLoaded', () => {
             el('launchQuoteImpact', impact.toFixed(2) + '%');
             el('launchQuoteFee', formatAmount(refundRaw * 0.01) + ' LICN');
         }
+        updateLaunchTradeButton();
     }
 
     let launchHoldingsSeq = 0;
@@ -7886,26 +8366,23 @@ document.addEventListener('DOMContentLoaded', () => {
     const launchAmtInput = document.getElementById('launchAmountInput');
     if (launchAmtInput) launchAmtInput.addEventListener('input', () => {
         clearTimeout(launchState.quoteTimer);
+        updateLaunchTradeButton();
         launchState.quoteTimer = setTimeout(updateLaunchQuote, 150);
     });
 
     // Presets
     document.querySelectorAll('.launch-preset').forEach(btn => btn.addEventListener('click', () => {
         const inp = document.getElementById('launchAmountInput');
-        if (inp) { inp.value = btn.dataset.lamount; updateLaunchQuote(); }
+        if (inp) { inp.value = btn.dataset.lamount; updateLaunchQuote(); updateLaunchTradeButton(); }
     }));
 
     // Trade button (Buy / Sell)
     const launchTradeBtn = document.getElementById('launchTradeBtn');
     if (launchTradeBtn) launchTradeBtn.addEventListener('click', async () => {
-        if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
-        if (!walletCanSign()) { showNotification('Reconnect wallet to sign transactions', 'warning'); return; }
-        if (!contracts.sporepump) { showNotification('SporePump contract not found in registry', 'error'); return; }
+        const validation = getLaunchTradeValidation();
+        if (!validation.ok) { showNotification(validation.message, 'warning'); return; }
         const tid = launchState.selectedToken;
-        if (!tid) { showNotification('Select a token first', 'warning'); return; }
-        const amt = parseFloat(document.getElementById('launchAmountInput')?.value) || 0;
-        if (amt <= 0) { showNotification('Enter a positive amount', 'warning'); return; }
-        if (amt > 9_000_000) { showNotification('Amount too large (max 9M)', 'warning'); return; }
+        const amt = readDexDecimal(document.getElementById('launchAmountInput'));
 
         launchTradeBtn.disabled = true;
         const origText = launchTradeBtn.innerHTML;
@@ -7930,18 +8407,15 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         launchTradeBtn.disabled = false;
         launchTradeBtn.innerHTML = origText;
+        updateLaunchTradeButton();
+        updateLaunchCreateButton();
     });
 
     // Create token button
     const launchCreateBtn = document.getElementById('launchCreateBtn');
     if (launchCreateBtn) launchCreateBtn.addEventListener('click', async () => {
-        if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
-        if (!walletCanSign()) { showNotification('Reconnect wallet to sign transactions', 'warning'); return; }
-        if (!contracts.sporepump) { showNotification('SporePump contract not found in registry', 'error'); return; }
-
-        // Check balance
-        const licnBal = balances['LICN']?.available || 0;
-        if (licnBal < 10) { showNotification(`Insufficient LICN: need 10, have ${formatAmount(licnBal)}`, 'warning'); return; }
+        const validation = getLaunchCreateValidation();
+        if (!validation.ok) { showNotification(validation.message, 'warning'); return; }
 
         launchCreateBtn.disabled = true;
         launchCreateBtn.textContent = 'Launching...';
@@ -7957,7 +8431,12 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         launchCreateBtn.disabled = false;
         launchCreateBtn.innerHTML = '<i class="fas fa-rocket"></i> Launch Token (10 LICN)';
+        updateLaunchTradeButton();
+        updateLaunchCreateButton();
     });
+
+    updateLaunchTradeButton();
+    updateLaunchCreateButton();
 
     // ═══════════════════════════════════════════════════════════════════════
     // Notifications + Formatting
