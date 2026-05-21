@@ -2248,11 +2248,6 @@ document.addEventListener('DOMContentLoaded', () => {
         if (state.tradeMode === 'margin') updateMarginInfo();
     }));
     orderTypeBtns.forEach(btn => btn.addEventListener('click', () => {
-        if (state.tradeMode === 'margin' && btn.dataset.type !== 'limit') {
-            showNotification('Open margin positions with limit orders. Manage stops from open positions.', 'info');
-            syncOrderTypeUi();
-            return;
-        }
         state.orderType = btn.dataset.type;
         syncOrderTypeUi();
         calcTotal();
@@ -2307,18 +2302,13 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function syncOrderTypeUi() {
-        if (state.tradeMode === 'margin' && state.orderType !== 'limit') {
-            state.orderType = 'limit';
-        }
-
         orderTypeBtns.forEach(btn => {
-            const marginOnlyHidden = state.tradeMode === 'margin' && btn.dataset.type !== 'limit';
-            btn.hidden = marginOnlyHidden;
-            btn.style.display = marginOnlyHidden ? 'none' : '';
-            btn.disabled = marginOnlyHidden;
-            btn.classList.toggle('mode-disabled', marginOnlyHidden);
+            btn.hidden = false;
+            btn.style.display = '';
+            btn.disabled = false;
+            btn.classList.remove('mode-disabled');
             btn.classList.toggle('active', btn.dataset.type === state.orderType);
-            btn.title = marginOnlyHidden ? 'Margin entries use limit orders' : '';
+            btn.title = '';
         });
 
         if (stopGroup) stopGroup.style.display = state.orderType === 'stop-limit' ? 'block' : 'none';
@@ -2354,7 +2344,7 @@ document.addEventListener('DOMContentLoaded', () => {
             disabledReason = 'Reconnect wallet to sign';
             disabledHtml = walletReconnectPromptHtml();
         } else if (!state.activePair) disabledReason = 'Select a trading pair';
-        else if (state.tradeMode === 'margin' && state.orderType !== 'limit') disabledReason = 'Use a limit order for margin';
+        else if (state.tradeMode === 'margin' && state.orderType === 'stop-limit') disabledReason = 'Margin stop-limit entries are not live yet';
         else if (amount <= 0) disabledReason = 'Enter an amount';
         else if (pairBaseRequiresWholeNeoLot(state.activePair) && !isWholeNeoLotAmount(amount)) disabledReason = 'wNEO requires whole NEO lots';
         else if (state.orderType !== 'market' && price <= 0) disabledReason = 'Enter a valid price';
@@ -2634,7 +2624,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // 3. Contract availability
         if (!contracts.dex_core) return { ok: false, error: 'Contract addresses not loaded', code: 'NO_CONTRACT' };
         if (tradeMode === 'margin' && !contracts.dex_margin) return { ok: false, error: 'Margin contract not loaded', code: 'NO_MARGIN' };
-        if (tradeMode === 'margin' && orderType !== 'limit') return { ok: false, error: 'Use a limit order for margin', code: 'MARGIN_LIMIT_ONLY' };
+        if (tradeMode === 'margin' && orderType === 'stop-limit') return { ok: false, error: 'Margin stop-limit entries are not live yet', code: 'MARGIN_STOP_LIMIT_UNSUPPORTED' };
 
         // 4. Stop-limit validation
         if (orderType === 'stop-limit') {
@@ -2828,7 +2818,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 const marginSide = state.orderSide === 'buy' ? 'long' : 'short';
                 const size = Math.round(amount * PRICE_SCALE);
                 const leverage = state.leverageValue;
-                state.orderType = 'limit';
                 const referencePrice = price;
                 const notional = amount * referencePrice;
                 const isolatedMarginDeposit = Math.round((notional / leverage) * PRICE_SCALE);
@@ -2838,12 +2827,14 @@ document.addEventListener('DOMContentLoaded', () => {
                     showNotification(`Insufficient ${state.activePair?.quote || 'quote'} balance for margin`, 'warning');
                     return;
                 }
-                const openPositionArgs = buildOpenPositionLimitArgs(wallet.address, state.activePairId, marginSide, size, leverage, marginDeposit, state.marginType, Math.round(price * PRICE_SCALE));
+                const openPositionArgs = effectiveOrderType === 'market'
+                    ? buildOpenPositionArgs(wallet.address, state.activePairId, marginSide, size, leverage, marginDeposit, state.marginType)
+                    : buildOpenPositionLimitArgs(wallet.address, state.activePairId, marginSide, size, leverage, marginDeposit, state.marginType, Math.round(price * PRICE_SCALE));
                 const result = await wallet.sendTransaction([contractIx(
                     contracts.dex_margin,
                     openPositionArgs
                 )]);
-                showNotification(`${marginSide.toUpperCase()} ${state.leverageValue}x opened: ${formatAmount(amount)} ${state.activePair?.base || ''} @ ${formatPrice(price || state.lastPrice)}`, 'success');
+                showNotification(`${marginSide.toUpperCase()} ${state.leverageValue}x opened: ${formatAmount(amount)} ${state.activePair?.base || ''} @ ${effectiveOrderType === 'market' ? 'MARKET' : formatPrice(price || state.lastPrice)}`, 'success');
                 // F17.8: Immediate panel refresh after margin trade
                 loadMarginPositions().catch(() => { });
             } else {

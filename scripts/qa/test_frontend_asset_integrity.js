@@ -674,13 +674,14 @@ function validateFrontendInputGuards() {
         dexHtml.includes('id="orderSubmitHint"') &&
             dexHtml.includes('id="marginCollateral"') &&
             updateSubmitBody.includes('Reconnect wallet to sign') &&
-            updateSubmitBody.includes('Use a limit order for margin') &&
-            syncOrderTypeBody.includes('marginOnlyHidden') &&
-            syncOrderTypeBody.includes('btn.hidden = marginOnlyHidden') &&
-            syncOrderTypeBody.includes("btn.style.display = marginOnlyHidden ? 'none' : ''") &&
+            updateSubmitBody.includes('Margin stop-limit entries are not live yet') &&
+            dexJs.includes("if (mode === 'margin') state.orderType = 'limit';") &&
+            !syncOrderTypeBody.includes('marginOnlyHidden') &&
+            syncOrderTypeBody.includes('btn.hidden = false') &&
+            syncOrderTypeBody.includes("btn.style.display = ''") &&
             dexJs.includes("const neededToken = tradeMode === 'margin'") &&
             dexJs.includes("const neededAmount = tradeMode === 'margin'"),
-        'DEX order ticket exposes clear margin and wallet gating state'
+        'DEX order ticket exposes clear wallet gating and keeps margin order tabs visible'
     );
 
     const dexObserverBody = extractFunctionBody(dexJs, 'observeDexNumericInputGuards');
