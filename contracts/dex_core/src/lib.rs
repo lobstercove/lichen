@@ -2170,6 +2170,8 @@ fn fill_at_price_level(
 
         let maker_status = decode_order_status(&maker_data);
         if maker_status == STATUS_FILLED || maker_status == STATUS_CANCELLED {
+            save_u64(&lk, 0);
+            new_level_count = new_level_count.saturating_sub(1);
             continue;
         }
 
@@ -2497,7 +2499,7 @@ fn add_to_book(pair_id: u64, side: u8, price: u64, order_id: u64) {
         save_u64(&bid_count_key(pair_id, price), new_count);
         // Update best bid
         let best = load_u64(&best_bid_key(pair_id));
-        if price > best {
+        if best == 0 || load_u64(&bid_count_key(pair_id, best)) == 0 || price > best {
             save_u64(&best_bid_key(pair_id), price);
         }
     } else {
@@ -2507,8 +2509,38 @@ fn add_to_book(pair_id: u64, side: u8, price: u64, order_id: u64) {
         save_u64(&ask_count_key(pair_id, price), new_count);
         // Update best ask
         let best = load_u64(&best_ask_key(pair_id));
-        if price < best {
+        if best == u64::MAX || load_u64(&ask_count_key(pair_id, best)) == 0 || price < best {
             save_u64(&best_ask_key(pair_id), price);
+        }
+    }
+}
+
+/// Remove a resting order id from its price level, then compact the level.
+fn remove_from_book_level(pair_id: u64, side: u8, price: u64, order_id: u64) {
+    let count_key = if side == SIDE_BUY {
+        bid_count_key(pair_id, price)
+    } else {
+        ask_count_key(pair_id, price)
+    };
+    let level_count = load_u64(&count_key);
+    for idx in 1..=level_count {
+        let lk = if side == SIDE_BUY {
+            bid_level_key(pair_id, price, idx)
+        } else {
+            ask_level_key(pair_id, price, idx)
+        };
+        if load_u64(&lk) == order_id {
+            save_u64(&lk, 0);
+            compact_price_level(pair_id, side, price);
+            let remaining = load_u64(&count_key);
+            if remaining == 0 {
+                if side == SIDE_BUY && load_u64(&best_bid_key(pair_id)) == price {
+                    save_u64(&best_bid_key(pair_id), 0);
+                } else if side == SIDE_SELL && load_u64(&best_ask_key(pair_id)) == price {
+                    save_u64(&best_ask_key(pair_id), u64::MAX);
+                }
+            }
+            break;
         }
     }
 }
@@ -2586,24 +2618,7 @@ pub fn cancel_order(caller: *const u8, order_id: u64) -> u32 {
     let order_pair = decode_order_pair_id(&data);
     let order_side = decode_order_side(&data);
     let order_price = decode_order_price(&data);
-    let count_key = if order_side == SIDE_BUY {
-        bid_count_key(order_pair, order_price)
-    } else {
-        ask_count_key(order_pair, order_price)
-    };
-    let level_count = load_u64(&count_key);
-    for idx in 1..=level_count {
-        let lk = if order_side == SIDE_BUY {
-            bid_level_key(order_pair, order_price, idx)
-        } else {
-            ask_level_key(order_pair, order_price, idx)
-        };
-        if load_u64(&lk) == order_id {
-            save_u64(&lk, 0);
-            compact_price_level(order_pair, order_side, order_price);
-            break;
-        }
-    }
+    remove_from_book_level(order_pair, order_side, order_price, order_id);
 
     log_info("Order cancelled");
     reentrancy_exit();
@@ -2640,10 +2655,11 @@ pub fn cancel_all_orders(caller: *const u8, pair_id: u64) -> u32 {
                 let op = decode_order_pair_id(&data);
                 let status = decode_order_status(&data);
                 if op == pair_id && (status == STATUS_OPEN || status == STATUS_PARTIAL) {
+                    let order_side = decode_order_side(&data);
+                    let order_price = decode_order_price(&data);
                     // Refund remaining escrow
                     let escrow_remaining = decode_order_escrow_locked(&data);
                     if escrow_remaining > 0 {
-                        let order_side = decode_order_side(&data);
                         if let Some(pd) = storage_get(&pair_key(op)) {
                             let refund_token = if order_side == SIDE_SELL {
                                 decode_pair_base_token(&pd)
@@ -2660,6 +2676,7 @@ pub fn cancel_all_orders(caller: *const u8, pair_id: u64) -> u32 {
                     }
                     update_order_status(&mut data, STATUS_CANCELLED);
                     storage_set(&ok, &data);
+                    remove_from_book_level(op, order_side, order_price, oid);
                 }
             }
         }
@@ -4602,6 +4619,9 @@ mod tests {
         let d2 = storage_get(&order_key(2)).unwrap();
         assert_eq!(decode_order_status(&d1), STATUS_CANCELLED);
         assert_eq!(decode_order_status(&d2), STATUS_CANCELLED);
+        assert_eq!(load_u64(&bid_count_key(pair_id, 1_000_000_000)), 0);
+        assert_eq!(load_u64(&bid_count_key(pair_id, 2_000_000_000)), 0);
+        assert_eq!(load_u64(&best_bid_key(pair_id)), 0);
     }
 
     #[test]

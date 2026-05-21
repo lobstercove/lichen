@@ -1075,6 +1075,49 @@ pub fn open_position_with_mode(
     0
 }
 
+/// Open a margin position only if the fresh mark satisfies the requested limit.
+/// Long entries execute when mark_price <= limit_price; short entries execute
+/// when mark_price >= limit_price.
+/// Returns open_position_with_mode codes plus 10=limit condition not met/invalid.
+pub fn open_position_limit_with_mode(
+    trader: *const u8,
+    pair_id: u64,
+    side: u8,
+    size: u64,
+    leverage: u64,
+    margin_amount: u64,
+    margin_mode: u8,
+    limit_price: u64,
+) -> u32 {
+    if limit_price == 0 {
+        return 10;
+    }
+    if side > SIDE_SHORT {
+        return 2;
+    }
+    let mark_price = fresh_mark_price(pair_id);
+    if mark_price == 0 {
+        return 6;
+    }
+    let limit_ok = if side == SIDE_LONG {
+        mark_price <= limit_price
+    } else {
+        mark_price >= limit_price
+    };
+    if !limit_ok {
+        return 10;
+    }
+    open_position_with_mode(
+        trader,
+        pair_id,
+        side,
+        size,
+        leverage,
+        margin_amount,
+        margin_mode,
+    )
+}
+
 /// Close a margin position
 /// Returns: 0=success, 1=not found, 2=not owner, 3=already closed, 4=reentrancy,
 ///          5=oracle unavailable (price stale or missing)
@@ -2473,6 +2516,30 @@ pub extern "C" fn call() -> u32 {
                 _rc = r as u32;
             }
         }
+        // 32 = open_position_limit(trader[32], pair_id[8], side[1], size[8], leverage[8], margin[8], margin_mode[1], limit_price[8])
+        32 => {
+            if args.len() >= 75 {
+                let pair_id = bytes_to_u64(&args[33..41]);
+                let side = args[41];
+                let size = bytes_to_u64(&args[42..50]);
+                let leverage = bytes_to_u64(&args[50..58]);
+                let margin = bytes_to_u64(&args[58..66]);
+                let margin_mode = args[66];
+                let limit_price = bytes_to_u64(&args[67..75]);
+                let r = open_position_limit_with_mode(
+                    args[1..33].as_ptr(),
+                    pair_id,
+                    side,
+                    size,
+                    leverage,
+                    margin,
+                    margin_mode,
+                    limit_price,
+                );
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+            }
+        }
         _ => {
             lichen_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
             _rc = 255;
@@ -2633,6 +2700,82 @@ mod tests {
         // 2x tier: initial_margin_bps=5000 → required = 1B * 5000/10000 = 500_000_000
         assert_eq!(
             open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000),
+            0
+        );
+        assert_eq!(get_position_count(), 1);
+    }
+
+    #[test]
+    fn test_open_position_limit_long_respects_mark() {
+        let _admin = setup();
+        let trader = [2u8; 32];
+        test_mock::set_caller(trader);
+        test_mock::set_slot(100);
+
+        assert_eq!(
+            open_position_limit_with_mode(
+                trader.as_ptr(),
+                1,
+                SIDE_LONG,
+                1_000_000_000,
+                2,
+                500_000_000,
+                0,
+                900_000_000,
+            ),
+            10
+        );
+        assert_eq!(get_position_count(), 0);
+
+        assert_eq!(
+            open_position_limit_with_mode(
+                trader.as_ptr(),
+                1,
+                SIDE_LONG,
+                1_000_000_000,
+                2,
+                500_000_000,
+                0,
+                1_100_000_000,
+            ),
+            0
+        );
+        assert_eq!(get_position_count(), 1);
+    }
+
+    #[test]
+    fn test_open_position_limit_short_respects_mark() {
+        let _admin = setup();
+        let trader = [2u8; 32];
+        test_mock::set_caller(trader);
+        test_mock::set_slot(100);
+
+        assert_eq!(
+            open_position_limit_with_mode(
+                trader.as_ptr(),
+                1,
+                SIDE_SHORT,
+                1_000_000_000,
+                2,
+                500_000_000,
+                0,
+                1_100_000_000,
+            ),
+            10
+        );
+        assert_eq!(get_position_count(), 0);
+
+        assert_eq!(
+            open_position_limit_with_mode(
+                trader.as_ptr(),
+                1,
+                SIDE_SHORT,
+                1_000_000_000,
+                2,
+                500_000_000,
+                0,
+                900_000_000,
+            ),
             0
         );
         assert_eq!(get_position_count(), 1);

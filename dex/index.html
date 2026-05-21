@@ -205,33 +205,6 @@
                             style="font-size:0.75rem;color:var(--yellow-warning);padding:4px 0;text-align:center;">
                             <i class="fas fa-exclamation-triangle"></i> This pair is not enabled for margin trading
                         </div>
-                        <div id="marginMarketNotice" class="margin-market-notice hidden" role="status">
-                            Margin entries execute at market. Use open positions to manage exits.
-                        </div>
-                        <button type="button" id="marginAdvancedToggle" class="margin-advanced-toggle"
-                            aria-expanded="false">
-                            Advanced risk
-                        </button>
-                        <div id="marginAdvancedPanel" class="margin-advanced-panel hidden">
-                            <div class="margin-sltp-row" style="display:flex;gap:8px;padding:4px 0;">
-                                <div class="form-group" style="flex:1;margin:0;">
-                                    <label style="font-size:0.72rem;">Stop-Loss</label>
-                                    <div class="input-with-unit">
-                                        <input type="text" id="marginSL" placeholder="0.00" inputmode="decimal"
-                                            data-dex-numeric="true" data-min="0" style="font-size:0.8rem;">
-                                        <span class="input-unit" id="marginSLUnit" style="font-size:0.7rem;">lUSD</span>
-                                    </div>
-                                </div>
-                                <div class="form-group" style="flex:1;margin:0;">
-                                    <label style="font-size:0.72rem;">Take-Profit</label>
-                                    <div class="input-with-unit">
-                                        <input type="text" id="marginTP" placeholder="0.00" inputmode="decimal"
-                                            data-dex-numeric="true" data-min="0" style="font-size:0.8rem;">
-                                        <span class="input-unit" id="marginTPUnit" style="font-size:0.7rem;">lUSD</span>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
                     </div>
                     <div class="order-tabs">
                         <button class="order-tab active" data-side="buy">Buy</button>

@@ -18303,14 +18303,20 @@ async fn handle_get_prediction_positions(
         }
     };
 
-    let count_key = format!("pm_userc_{}", address);
+    let address_pubkey = Pubkey::from_base58(&address).map_err(|e| RpcError {
+        code: -32602,
+        message: format!("invalid address: {e}"),
+    })?;
+    let address_hex = hex::encode(address_pubkey.0);
+
+    let count_key = format!("pm_userc_{}", address_hex);
     let count = state
         .state
         .get_program_storage_u64(PREDICT_SYMBOL, count_key.as_bytes());
 
     let mut positions = Vec::new();
     for idx in 0..count {
-        let um_key = format!("pm_user_{}_{}", address, idx);
+        let um_key = format!("pm_user_{}_{}", address_hex, idx);
         let market_id = match state
             .state
             .get_program_storage(PREDICT_SYMBOL, um_key.as_bytes())
@@ -18330,7 +18336,7 @@ async fn handle_get_prediction_positions(
         let outcome_count = mkt_data[65];
 
         for oi in 0..outcome_count {
-            let pos_key = format!("pm_p_{}_{}_{}", market_id, address, oi);
+            let pos_key = format!("pm_p_{}_{}_{}", market_id, address_hex, oi);
             if let Some(pd) = state
                 .state
                 .get_program_storage(PREDICT_SYMBOL, pos_key.as_bytes())
@@ -18375,7 +18381,12 @@ async fn handle_get_prediction_trader_stats(
         }
     };
 
-    let key = format!("pm_ts_{}", address);
+    let address_pubkey = Pubkey::from_base58(&address).map_err(|e| RpcError {
+        code: -32602,
+        message: format!("invalid address: {e}"),
+    })?;
+    let address_hex = hex::encode(address_pubkey.0);
+    let key = format!("pm_ts_{}", address_hex);
     match state
         .state
         .get_program_storage(PREDICT_SYMBOL, key.as_bytes())

@@ -711,6 +711,23 @@ document.addEventListener('DOMContentLoaded', () => {
         return arr;
     }
 
+    // Opcode 32: open_position_limit(trader, pair_id, side, size, leverage, margin, margin_mode, limit_price)
+    function buildOpenPositionLimitArgs(trader, pairId, side, size, leverage, margin, marginType = 'isolated', limitPrice = 0) {
+        const buf = new ArrayBuffer(75);
+        const view = new DataView(buf);
+        const arr = new Uint8Array(buf);
+        writeU8(arr, 0, 32); // opcode
+        writePubkey(arr, 1, trader);
+        writeU64LE(view, 33, pairId);
+        writeU8(arr, 41, side === 'long' ? 0 : 1);
+        writeU64LE(view, 42, size);
+        writeU64LE(view, 50, leverage);
+        writeU64LE(view, 58, margin);
+        writeU8(arr, 66, marginType === 'cross' ? 1 : 0);
+        writeU64LE(view, 67, limitPrice);
+        return arr;
+    }
+
     // Opcode 3: close_position(caller, position_id)
     function buildClosePositionArgs(caller, positionId) {
         const buf = new ArrayBuffer(41);
@@ -1914,8 +1931,6 @@ document.addEventListener('DOMContentLoaded', () => {
         setTextById('orderPriceUnit', quote);
         setTextById('stopPriceUnit', quote);
         setTextById('orderTotalUnit', quote);
-        setTextById('marginSLUnit', quote);
-        setTextById('marginTPUnit', quote);
         setTextById('orderAmountUnit', base);
     }
 
@@ -2206,12 +2221,6 @@ document.addEventListener('DOMContentLoaded', () => {
         hint.className = `order-submit-hint${tone ? ` ${tone}` : ''}`;
     }
 
-    function updateMarginSltpVisibility() {
-        const sltpRow = document.querySelector('.margin-sltp-row');
-        if (!sltpRow) return;
-        sltpRow.style.display = state.tradeMode === 'margin' ? 'flex' : 'none';
-    }
-
     function syncOrderOptionsUi() {
         const postOnlyEl = document.getElementById('postOnly');
         const reduceOnlyEl = document.getElementById('reduceOnly');
@@ -2239,8 +2248,8 @@ document.addEventListener('DOMContentLoaded', () => {
         if (state.tradeMode === 'margin') updateMarginInfo();
     }));
     orderTypeBtns.forEach(btn => btn.addEventListener('click', () => {
-        if (state.tradeMode === 'margin' && btn.dataset.type !== 'market') {
-            showNotification('Margin entry orders are currently market-only', 'info');
+        if (state.tradeMode === 'margin' && btn.dataset.type !== 'limit') {
+            showNotification('Open margin positions with limit orders. Manage stops from open positions.', 'info');
             syncOrderTypeUi();
             return;
         }
@@ -2298,26 +2307,24 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function syncOrderTypeUi() {
-        const marginMarketOnly = state.tradeMode === 'margin';
-        if (marginMarketOnly && state.orderType !== 'market') {
-            state.orderType = 'market';
+        if (state.tradeMode === 'margin' && state.orderType !== 'limit') {
+            state.orderType = 'limit';
         }
 
         orderTypeBtns.forEach(btn => {
-            const disabled = marginMarketOnly && btn.dataset.type !== 'market';
-            btn.disabled = disabled;
-            btn.classList.toggle('mode-disabled', disabled);
+            const marginOnlyHidden = state.tradeMode === 'margin' && btn.dataset.type !== 'limit';
+            btn.hidden = marginOnlyHidden;
+            btn.style.display = marginOnlyHidden ? 'none' : '';
+            btn.disabled = marginOnlyHidden;
+            btn.classList.toggle('mode-disabled', marginOnlyHidden);
             btn.classList.toggle('active', btn.dataset.type === state.orderType);
-            btn.title = disabled ? 'Margin entry orders are currently market-only' : '';
+            btn.title = marginOnlyHidden ? 'Margin entries use limit orders' : '';
         });
 
         if (stopGroup) stopGroup.style.display = state.orderType === 'stop-limit' ? 'block' : 'none';
         if (priceInput?.parentElement?.parentElement) {
             priceInput.parentElement.parentElement.style.display = state.orderType === 'market' ? 'none' : 'block';
         }
-        const marketNotice = document.getElementById('marginMarketNotice');
-        if (marketNotice) marketNotice.classList.toggle('hidden', !marginMarketOnly);
-        updateMarginSltpVisibility();
         syncOrderOptionsUi();
     }
 
@@ -2347,7 +2354,7 @@ document.addEventListener('DOMContentLoaded', () => {
             disabledReason = 'Reconnect wallet to sign';
             disabledHtml = walletReconnectPromptHtml();
         } else if (!state.activePair) disabledReason = 'Select a trading pair';
-        else if (state.tradeMode === 'margin' && state.orderType !== 'market') disabledReason = 'Margin entries are market-only';
+        else if (state.tradeMode === 'margin' && state.orderType !== 'limit') disabledReason = 'Use a limit order for margin';
         else if (amount <= 0) disabledReason = 'Enter an amount';
         else if (pairBaseRequiresWholeNeoLot(state.activePair) && !isWholeNeoLotAmount(amount)) disabledReason = 'wNEO requires whole NEO lots';
         else if (state.orderType !== 'market' && price <= 0) disabledReason = 'Enter a valid price';
@@ -2386,7 +2393,7 @@ document.addEventListener('DOMContentLoaded', () => {
             updateOrderSubmitHint(disabledReason, 'warning');
         } else {
             updateOrderSubmitHint(state.tradeMode === 'margin'
-                ? 'Market margin entry. Manage exits from open positions.'
+                ? 'Limit margin entry. Manage exits from open positions.'
                 : '', state.tradeMode === 'margin' ? 'ready' : '');
         }
     }
@@ -2431,6 +2438,7 @@ document.addEventListener('DOMContentLoaded', () => {
             return false;
         }
         state.tradeMode = mode;
+        if (mode === 'margin') state.orderType = 'limit';
         updateOrderSideLabels();
         syncOrderTypeUi();
         document.querySelectorAll('.trade-mode').forEach(b => b.classList.toggle('active', b.dataset.mode === mode));
@@ -2455,16 +2463,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const inlineLeverage = document.getElementById('inlineLeverage'), inlineLeverageTag = document.getElementById('inlineLeverageTag');
     if (inlineLeverage) inlineLeverage.addEventListener('input', () => { const maxLev = state.marginType === 'cross' ? Math.min(state.marginMaxLeverage || 100, 3) : (state.marginMaxLeverage || 100); state.leverageValue = snapLeverageToAllowed(parseFloat(inlineLeverage.value), maxLev); inlineLeverage.value = String(state.leverageValue); if (inlineLeverageTag) inlineLeverageTag.textContent = `${state.leverageValue}x`; updateSubmitBtn(); updateMarginInfo(); });
     document.querySelectorAll('.margin-inline-type').forEach(btn => btn.addEventListener('click', () => { document.querySelectorAll('.margin-inline-type').forEach(b => b.classList.remove('active')); btn.classList.add('active'); state.marginType = btn.dataset.mtype; applyLeverageConstraints(); updateMarginInfo(); updateSubmitBtn(); }));
-
-    const marginAdvancedToggle = document.getElementById('marginAdvancedToggle');
-    const marginAdvancedPanel = document.getElementById('marginAdvancedPanel');
-    if (marginAdvancedToggle && marginAdvancedPanel) {
-        marginAdvancedToggle.addEventListener('click', () => {
-            const expanded = marginAdvancedToggle.getAttribute('aria-expanded') === 'true';
-            marginAdvancedToggle.setAttribute('aria-expanded', expanded ? 'false' : 'true');
-            marginAdvancedPanel.classList.toggle('hidden', expanded);
-        });
-    }
 
     // F9.5a/F9.5b/F9.12a: Route info and fee estimate from actual router quote API
     let _routeQuoteTimer = null;
@@ -2636,7 +2634,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // 3. Contract availability
         if (!contracts.dex_core) return { ok: false, error: 'Contract addresses not loaded', code: 'NO_CONTRACT' };
         if (tradeMode === 'margin' && !contracts.dex_margin) return { ok: false, error: 'Margin contract not loaded', code: 'NO_MARGIN' };
-        if (tradeMode === 'margin' && orderType !== 'market') return { ok: false, error: 'Margin entry orders are currently market-only', code: 'MARGIN_MARKET_ONLY' };
+        if (tradeMode === 'margin' && orderType !== 'limit') return { ok: false, error: 'Use a limit order for margin', code: 'MARGIN_LIMIT_ONLY' };
 
         // 4. Stop-limit validation
         if (orderType === 'stop-limit') {
@@ -2830,7 +2828,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 const marginSide = state.orderSide === 'buy' ? 'long' : 'short';
                 const size = Math.round(amount * PRICE_SCALE);
                 const leverage = state.leverageValue;
-                const referencePrice = getSpotMarketReferencePrice(state.orderSide);
+                state.orderType = 'limit';
+                const referencePrice = price;
                 const notional = amount * referencePrice;
                 const isolatedMarginDeposit = Math.round((notional / leverage) * PRICE_SCALE);
                 const crossMarginDeposit = isolatedMarginDeposit;
@@ -2839,33 +2838,12 @@ document.addEventListener('DOMContentLoaded', () => {
                     showNotification(`Insufficient ${state.activePair?.quote || 'quote'} balance for margin`, 'warning');
                     return;
                 }
+                const openPositionArgs = buildOpenPositionLimitArgs(wallet.address, state.activePairId, marginSide, size, leverage, marginDeposit, state.marginType, Math.round(price * PRICE_SCALE));
                 const result = await wallet.sendTransaction([contractIx(
                     contracts.dex_margin,
-                    buildOpenPositionArgs(wallet.address, state.activePairId, marginSide, size, leverage, marginDeposit, state.marginType)
+                    openPositionArgs
                 )]);
                 showNotification(`${marginSide.toUpperCase()} ${state.leverageValue}x opened: ${formatAmount(amount)} ${state.activePair?.base || ''} @ ${formatPrice(price || state.lastPrice)}`, 'success');
-                // Auto-set SL/TP on newly opened position if the user specified values
-                const marginSLInput = document.getElementById('marginSL');
-                const marginTPInput = document.getElementById('marginTP');
-                const slVal = readDexDecimal(marginSLInput);
-                const tpVal = readDexDecimal(marginTPInput);
-                if (state.orderType !== 'stop-limit' && (slVal > 0 || tpVal > 0)) {
-                    try {
-                        // Get position count to determine the new position's ID
-                        const { data: posData } = await api.get(`/margin/positions?trader=${wallet.address}`);
-                        const openPositions = Array.isArray(posData) ? posData.filter(p => p.status === 'open' || p.status === 0) : [];
-                        const newPos = openPositions.length > 0 ? openPositions[openPositions.length - 1] : null;
-                        if (newPos && newPos.positionId) {
-                            await wallet.sendTransaction([contractIx(
-                                contracts.dex_margin,
-                                buildSetPositionSlTpArgs(wallet.address, newPos.positionId, slVal > 0 ? Math.round(slVal * PRICE_SCALE) : 0, tpVal > 0 ? Math.round(tpVal * PRICE_SCALE) : 0)
-                            )]);
-                            showNotification(`SL/TP set: ${slVal > 0 ? 'SL @ ' + formatPrice(slVal) : ''}${slVal > 0 && tpVal > 0 ? ' / ' : ''}${tpVal > 0 ? 'TP @ ' + formatPrice(tpVal) : ''}`, 'success');
-                            if (marginSLInput) marginSLInput.value = '';
-                            if (marginTPInput) marginTPInput.value = '';
-                        }
-                    } catch (e) { showNotification('Position opened but SL/TP failed: ' + e.message, 'warning'); }
-                }
                 // F17.8: Immediate panel refresh after margin trade
                 loadMarginPositions().catch(() => { });
             } else {

@@ -89,8 +89,6 @@ const requiredStaticNumericIds = [
     'stopPrice',
     'orderAmount',
     'orderTotal',
-    'marginSL',
-    'marginTP',
     'slippageCustom',
     'predictAmount',
     'predictInitLiq',
@@ -145,7 +143,18 @@ const updateSubmitBtn = extractFunctionBody(dexJs, 'updateSubmitBtn');
 const syncOrderTypeUi = extractFunctionBody(dexJs, 'syncOrderTypeUi');
 const updateMarginInfo = extractFunctionBody(dexJs, 'updateMarginInfo');
 assert(updateSubmitBtn.includes('walletCanSign()') && updateSubmitBtn.includes('Reconnect wallet to sign'), 'trade submit button gates read-only wallet state');
-assert(updateSubmitBtn.includes('Margin entries are market-only') && syncOrderTypeUi.includes('marginMarketOnly'), 'margin ticket enforces market-only entry until contract support changes');
+assert(
+    dexJs.includes('function buildOpenPositionLimitArgs(')
+        && dexJs.includes("if (mode === 'margin') state.orderType = 'limit';")
+        && syncOrderTypeUi.includes("state.tradeMode === 'margin' && state.orderType !== 'limit'")
+        && syncOrderTypeUi.includes("state.tradeMode === 'margin' && btn.dataset.type !== 'limit'")
+        && syncOrderTypeUi.includes('btn.hidden = marginOnlyHidden')
+        && syncOrderTypeUi.includes("btn.style.display = marginOnlyHidden ? 'none' : ''")
+        && dexJs.includes('buildOpenPositionLimitArgs(wallet.address')
+        && !dexJs.includes('Margin entries are market-only')
+        && !syncOrderTypeUi.includes('marginMarketOnly'),
+    'margin ticket is limit-only on entry and cannot silently default to market'
+);
 assert(
     updateMarginInfo.includes('marginEntry')
         && updateMarginInfo.includes('marginCollateral')

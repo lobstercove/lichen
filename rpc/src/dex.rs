@@ -568,11 +568,11 @@ fn default_limit() -> String {
 
 #[derive(Deserialize)]
 pub struct SwapBody {
-    #[serde(rename = "tokenIn")]
+    #[serde(rename = "tokenIn", alias = "token_in")]
     pub token_in: String,
-    #[serde(rename = "tokenOut")]
+    #[serde(rename = "tokenOut", alias = "token_out")]
     pub token_out: String,
-    #[serde(rename = "amountIn")]
+    #[serde(rename = "amountIn", alias = "amount_in")]
     pub amount_in: u64,
     pub slippage: f64,
 }
@@ -894,6 +894,34 @@ fn build_token_symbol_map(state: &crate::RpcState) -> HashMap<String, String> {
 
     *cache = Some((Instant::now(), map.clone()));
     map
+}
+
+fn normalize_router_token(state: &crate::RpcState, token: &str) -> String {
+    let trimmed = token.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    if trimmed.len() == 64 && trimmed.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return trimmed.to_lowercase();
+    }
+
+    if let Ok(pubkey) = Pubkey::from_base58(trimmed) {
+        return hex::encode(pubkey.0);
+    }
+
+    let symbol = trimmed.to_ascii_lowercase();
+    if symbol == "licn" {
+        return "00".repeat(32);
+    }
+
+    for (address, display_symbol) in build_token_symbol_map(state) {
+        if display_symbol.to_ascii_lowercase() == symbol {
+            return address;
+        }
+    }
+
+    trimmed.to_lowercase()
 }
 
 /// Decode a trading pair from 112-byte blob
@@ -1908,7 +1936,8 @@ async fn post_router_swap(
         return api_err("slippage must be 0-50%");
     }
 
-    let token_in = body.token_in.to_lowercase();
+    let token_in = normalize_router_token(&state, &body.token_in);
+    let token_out = normalize_router_token(&state, &body.token_out);
 
     // Find the best route for this token pair
     let route_count = read_u64(&state, DEX_ROUTER_PROGRAM, ROUTER_ROUTE_COUNT_KEY);
@@ -1926,9 +1955,8 @@ async fn post_router_swap(
                 // Match token pair (both directions)
                 let route_in = route.token_in.to_lowercase();
                 let route_out = route.token_out.to_lowercase();
-                let body_out = body.token_out.to_lowercase();
-                if !((route_in == token_in && route_out == body_out)
-                    || (route_out == token_in && route_in == body_out))
+                if !((route_in == token_in && route_out == token_out)
+                    || (route_out == token_in && route_in == token_out))
                 {
                     continue;
                 }
@@ -2011,8 +2039,7 @@ async fn post_router_swap(
                 if data.len() >= 96 {
                     let ta = hex::encode(&data[0..32]);
                     let tb = hex::encode(&data[32..64]);
-                    let body_out = body.token_out.to_lowercase();
-                    if (ta == token_in && tb == body_out) || (tb == token_in && ta == body_out) {
+                    if (ta == token_in && tb == token_out) || (tb == token_in && ta == token_out) {
                         if let Some((amount_out, impact)) =
                             quote_amm_swap(&state, pid, &token_in, body.amount_in)
                         {
@@ -2022,7 +2049,7 @@ async fn post_router_swap(
                                 best_route = Some(RouteJson {
                                     route_id: pid,
                                     token_in: token_in.clone(),
-                                    token_out: body_out.clone(),
+                                    token_out: token_out.clone(),
                                     route_type: "amm",
                                     pool_or_pair_id: pid,
                                     secondary_id: 0,
