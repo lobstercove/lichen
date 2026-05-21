@@ -315,13 +315,26 @@ test('shielded.js confirm handlers call shield/unshield operations', () => {
 
 test('shielded.js uses signed transaction builders for supported shielded flows', () => {
     assert(shieldedSrc.includes('SHIELDED_SIGNED_SUBMISSION_AVAILABLE = true'), 'Shield/unshield signed submission should be enabled once the wallet builder is wired');
+    assert(shieldedSrc.includes('SHIELDED_PRIVATE_TRANSFER_AVAILABLE = true'), 'Private transfer should be enabled through the signed native transaction path');
     assert(shieldedSrc.includes('async function submitShieldTransaction'), 'Shield flow must build and submit a signed shield transaction');
     assert(shieldedSrc.includes('async function submitUnshieldTransaction'), 'Unshield flow must build and submit a signed unshield transaction');
-    assert(shieldedSrc.includes('SHIELDED_PRIVATE_TRANSFER_AVAILABLE = false'), 'Private transfer should remain explicitly disabled until native encrypted note payload storage is wired');
+    assert(shieldedSrc.includes('async function submitShieldedTransferTransaction'), 'Private transfer flow must build and submit a signed transfer transaction');
+    assert(shieldedSrc.includes('function buildShieldedTransferInstructionData'), 'Private transfer should include encrypted output note payloads in instruction data');
     assert(shieldedSrc.includes('function bytesToBase64(bytes)'), 'Shielded transaction encoding should use a chunked base64 helper for proof-sized payloads');
     assert(!shieldedSrc.includes("rpc.call('submitShieldTransaction'"), 'Shield flow must not call unsupported submitShieldTransaction RPC');
     assert(!shieldedSrc.includes("rpc.call('submitUnshieldTransaction'"), 'Unshield flow must not call unsupported submitUnshieldTransaction RPC');
     assert(!shieldedSrc.includes("rpc.call('submitShieldedTransfer'"), 'Transfer flow must not call unsupported submitShieldedTransfer RPC');
+});
+
+test('shielded.js gates private transfer inputs and self transfers', () => {
+    assert(shieldedSrc.includes('function privateTransferValidationMessage()'),
+        'Private transfer should use a shared validation message for button state and submit');
+    assert(shieldedSrc.includes('function isOwnViewingKey(value)'),
+        'Private transfer should compare the recipient viewing key against the active wallet viewing key');
+    assert(shieldedSrc.includes("return 'Private transfers to your own viewing key are not allowed';"),
+        'Private transfer should block sending shielded funds to the same wallet viewing key');
+    assert(walletHtml.includes('id="shieldedTransferValidationMsg"'),
+        'Private transfer modal should render inline validation feedback');
 });
 
 // ---- W-11: .lichen full lifecycle assertions ----

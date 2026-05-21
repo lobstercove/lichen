@@ -69,7 +69,7 @@ if (typeof window !== 'undefined') {
 }
 
 const SHIELDED_SIGNED_SUBMISSION_AVAILABLE = true;
-const SHIELDED_PRIVATE_TRANSFER_AVAILABLE = false;
+const SHIELDED_PRIVATE_TRANSFER_AVAILABLE = true;
 
 function shieldedSubmissionUnavailable(action) {
     const message = `${action} requires a signed shielded transaction builder and is not available in this wallet yet`;
@@ -142,6 +142,36 @@ function buildUnshieldInstructionData(amountSpores, nullifierHex, merkleRootHex,
     header.set(hexToBytes(merkleRootHex), 41);
     header.set(hexToBytes(recipientHashHex), 73);
     return concatBytes(header, proofBytes);
+}
+
+function buildShieldedTransferInstructionData(nullifiers, outputCommitments, merkleRootHex, proofBytes) {
+    if (!Array.isArray(nullifiers) || nullifiers.length !== 2) {
+        throw new Error('Private transfer requires two input nullifiers');
+    }
+    if (!Array.isArray(outputCommitments) || outputCommitments.length !== 2) {
+        throw new Error('Private transfer requires two output notes');
+    }
+
+    const header = new Uint8Array(161);
+    header[0] = 25;
+    header.set(hexToBytes(nullifiers[0]), 1);
+    header.set(hexToBytes(nullifiers[1]), 33);
+    header.set(hexToBytes(outputCommitments[0].commitment), 65);
+    header.set(hexToBytes(outputCommitments[1].commitment), 97);
+    header.set(hexToBytes(merkleRootHex), 129);
+
+    const notePayload = new TextEncoder().encode(JSON.stringify({
+        outputs: outputCommitments.map((note) => ({
+            commitment: note.commitment,
+            encrypted_note: note.encrypted_note,
+            ephemeral_pk: note.ephemeral_pk,
+        })),
+    }));
+    const payloadHeader = new Uint8Array(12);
+    payloadHeader.set(SHIELDED_NOTE_PAYLOAD_MAGIC, 0);
+    writeU32Le(payloadHeader, 4, proofBytes.length);
+    writeU32Le(payloadHeader, 8, notePayload.length);
+    return concatBytes(header, payloadHeader.subarray(0, 8), proofBytes, payloadHeader.subarray(8), notePayload);
 }
 
 async function signAndSubmitShieldedInstruction({ wallet, password, accounts, instructionData, onSubmitted }) {
@@ -239,8 +269,31 @@ async function submitUnshieldTransaction({ amountSpores, recipientAddress, nulli
     return { success: true, signature };
 }
 
-async function submitShieldedTransferTransaction() {
-    throw new Error('Private transfer needs native encrypted note payload storage before wallet submission can be enabled');
+async function submitShieldedTransferTransaction({ amountSpores, nullifiers, outputCommitments, merkleRoot, proof }) {
+    const wallet = typeof getActiveWallet === 'function' ? getActiveWallet() : null;
+    if (!wallet) {
+        throw new Error('No active wallet');
+    }
+    const password = await requestShieldedSigningPassword(
+        'Private Transfer',
+        `Sign private transfer for ${(amountSpores / SPORES_PER_LICN).toFixed(6)} LICN`,
+    );
+    if (!password) {
+        throw new Error('Private transfer cancelled');
+    }
+    const signer = LichenCrypto.addressToBytes(wallet.address);
+    const signature = await signAndSubmitShieldedInstruction({
+        wallet,
+        password,
+        accounts: [signer],
+        instructionData: buildShieldedTransferInstructionData(
+            nullifiers,
+            outputCommitments,
+            merkleRoot,
+            proof,
+        ),
+    });
+    return { success: true, signature };
 }
 
 // ===== Initialization =====
@@ -512,6 +565,7 @@ async function tryDecryptNote(entry) {
 
         const owner = plaintext.slice(0, 32);
         const value = new DataView(plaintext.buffer, plaintext.byteOffset + 32, 8).getBigUint64(0, true);
+        if (Number(value) <= 0) return null;
         const blinding = bytesToHex(plaintext.slice(40, 72));
         const serial = bytesToHex(plaintext.slice(72, 104));
 
@@ -764,8 +818,22 @@ async function shieldedTransfer(amountLicn, recipientViewingKey) {
         return;
     }
 
+    const normalizedRecipientViewingKey = normalizeViewingKeyHex(recipientViewingKey);
+    if (!/^[0-9a-f]{64}$/.test(normalizedRecipientViewingKey)) {
+        showToast('Enter a valid recipient viewing key');
+        return;
+    }
+    if (isOwnViewingKey(normalizedRecipientViewingKey)) {
+        showToast('Private transfers to your own viewing key are not allowed');
+        return;
+    }
+
     const amountSpores = Math.floor(amountLicn * SPORES_PER_LICN);
-    const unspentNotes = shieldedState.ownedNotes.filter(n => !n.spent);
+    if (!Number.isFinite(amountSpores) || amountSpores <= 0) {
+        showToast('Enter a valid amount');
+        return;
+    }
+    const unspentNotes = shieldedState.ownedNotes.filter(n => !n.spent && Number(n.value || 0) > 0);
     const totalAvailable = unspentNotes.reduce((sum, n) => sum + n.value, 0);
 
     if (amountSpores > totalAvailable) {
@@ -776,7 +844,7 @@ async function shieldedTransfer(amountLicn, recipientViewingKey) {
     // Transfer circuit is fixed 2-in-2-out: choose exactly two notes whose sum covers amount.
     const inputNotes = selectTwoInputNotes(unspentNotes, amountSpores);
     if (!inputNotes) {
-        showToast('Transfer currently requires two notes with combined value >= amount');
+        showToast('Private transfer requires two unspent shielded notes with enough balance');
         return;
     }
 
@@ -796,6 +864,7 @@ async function shieldedTransfer(amountLicn, recipientViewingKey) {
     showShieldedStatus('Generating ZK proof (may take ~5s)...', 'pending');
 
     try {
+        await assertPublicFeeBalance('transfer');
         // Create output notes (always two outputs for transfer circuit)
         const recipientBlinding = crypto.getRandomValues(new Uint8Array(32));
         const recipientSerial = crypto.getRandomValues(new Uint8Array(32));
@@ -803,7 +872,8 @@ async function shieldedTransfer(amountLicn, recipientViewingKey) {
         const changeSerial = crypto.getRandomValues(new Uint8Array(32));
 
         // Load Merkle witnesses for both inputs
-        const merkleWitnesses = await Promise.all(inputNotes.map((note) => rpc.call('getShieldedMerklePath', [note.index])));
+        const inputIndices = await Promise.all(inputNotes.map((note) => resolveNoteCommitmentIndex(note)));
+        const merkleWitnesses = await Promise.all(inputIndices.map((index) => rpc.call('getShieldedMerklePath', [index])));
 
         // Generate transfer proof + canonical public outputs (nullifiers/commitments)
         const transferProof = await generateTransferProof({
@@ -829,7 +899,7 @@ async function shieldedTransfer(amountLicn, recipientViewingKey) {
             amountSpores,
             recipientBlinding,
             recipientSerial,
-            recipientViewingKey,
+            normalizedRecipientViewingKey,
         );
 
         const changeEphKey = crypto.getRandomValues(new Uint8Array(32));
@@ -861,6 +931,7 @@ async function shieldedTransfer(amountLicn, recipientViewingKey) {
         showShieldedStatus('Submitting transaction...', 'pending');
 
         const result = await submitShieldedTransferTransaction({
+            amountSpores,
             nullifiers,
             outputCommitments,
             merkleRoot: shieldedState.merkleRoot,
@@ -871,16 +942,32 @@ async function shieldedTransfer(amountLicn, recipientViewingKey) {
             // Mark input notes as spent
             for (const note of inputNotes) {
                 note.spent = true;
+                note.nullifier = nullifiers[inputNotes.indexOf(note)];
             }
-            shieldedState.shieldedBalance = shieldedState.ownedNotes
-                .filter(n => !n.spent)
-                .reduce((sum, n) => sum + n.value, 0);
-
-            await saveNotesToStorage();
+            if (changeAmount > 0) {
+                await upsertOwnedShieldedNote({
+                    index: null,
+                    value: changeAmount,
+                    blinding: bytesToHex(changeBlinding),
+                    serial: bytesToHex(changeSerial),
+                    commitment: transferProof.commitment_d,
+                    pendingIndex: true,
+                    pendingConfirmation: true,
+                    signature: result.signature,
+                    spent: false,
+                    createdAt: Date.now(),
+                    broadcastAt: Date.now(),
+                });
+            } else {
+                recalculateShieldedBalance();
+                await saveNotesToStorage();
+            }
             updateShieldedUI();
 
             showShieldedStatus('', 'idle');
             showToast(`Transferred ${amountLicn} LICN privately`);
+            setTimeout(() => syncShieldedState(), 1500);
+            setTimeout(() => syncShieldedState(), 5000);
             closeModal('shieldedTransferModal');
         } else {
             throw new Error(result?.error || 'Shielded transfer failed');
@@ -1008,6 +1095,57 @@ function selectTwoInputNotes(unspentNotes, targetAmount) {
     }
 
     return bestPair;
+}
+
+function ownViewingKeyHex() {
+    return shieldedState.viewingKey ? bytesToHex(shieldedState.viewingKey).toLowerCase() : '';
+}
+
+function normalizeViewingKeyHex(value) {
+    return String(value || '').trim().replace(/^0x/i, '').toLowerCase();
+}
+
+function isOwnViewingKey(value) {
+    const normalized = normalizeViewingKeyHex(value);
+    return Boolean(normalized && ownViewingKeyHex() && normalized === ownViewingKeyHex());
+}
+
+function shieldedFeeSpores(type) {
+    const baseFee = typeof BASE_FEE_SPORES !== 'undefined' ? BASE_FEE_SPORES : 1_000_000;
+    const zkFees = typeof ZK_COMPUTE_FEE !== 'undefined' ? ZK_COMPUTE_FEE : { shield: 100_000, unshield: 150_000, transfer: 200_000 };
+    return baseFee + (zkFees[type] || 0);
+}
+
+async function assertPublicFeeBalance(type) {
+    const wallet = typeof getActiveWallet === 'function' ? getActiveWallet() : null;
+    if (!wallet || typeof rpc === 'undefined') return;
+    const balResult = await rpc.call('getBalance', [wallet.address]);
+    const spendableSpores = Number(balResult?.spendable ?? balResult?.spores ?? balResult?.balance ?? 0);
+    const required = shieldedFeeSpores(type);
+    if (Number.isFinite(spendableSpores) && spendableSpores < required) {
+        throw new Error(`Insufficient public LICN for fee: need ${(required / SPORES_PER_LICN).toFixed(4)} LICN`);
+    }
+}
+
+function privateTransferValidationMessage() {
+    if (!SHIELDED_SIGNED_SUBMISSION_AVAILABLE) return 'Signed shielded transaction submission is not enabled';
+    if (!SHIELDED_PRIVATE_TRANSFER_AVAILABLE) return 'Private transfer is not enabled';
+    const amountInput = document.getElementById('shieldedTransferAmount');
+    const viewingKeyInput = document.getElementById('shieldedTransferRecipientVK');
+    const amount = parseFloat(amountInput?.value || '');
+    const viewingKey = normalizeViewingKeyHex(viewingKeyInput?.value || '');
+    const available = (shieldedState.shieldedBalance || 0) / SPORES_PER_LICN;
+    const unspentNotes = shieldedState.ownedNotes.filter(n => !n.spent && Number(n.value || 0) > 0);
+
+    if (!Number.isFinite(amount) || amount <= 0) return 'Enter an amount to transfer';
+    if (available <= 0) return 'No shielded balance available';
+    if (amount > available) return `Max shielded balance: ${available.toFixed(4)} LICN`;
+    if (!/^[0-9a-f]{64}$/.test(viewingKey)) return 'Enter a 64-character recipient viewing key';
+    if (isOwnViewingKey(viewingKey)) return 'Private transfers to your own viewing key are not allowed';
+    if (!selectTwoInputNotes(unspentNotes, Math.floor(amount * SPORES_PER_LICN))) {
+        return 'Private transfer requires two unspent shielded notes with enough balance';
+    }
+    return '';
 }
 
 async function encryptNoteBytes(noteBytes, encKey) {
@@ -1330,7 +1468,14 @@ function openShieldedTransferModal() {
             if (isNaN(v) || v <= 0) return;
             const maxLicn = (shieldedState.shieldedBalance || 0) / SPORES_PER_LICN;
             if (v > maxLicn) input.value = maxLicn > 0 ? maxLicn.toFixed(6) : '';
+            _updateTransferModalBtn();
         };
+        input.oninput = _updateTransferModalBtn;
+    }
+    const vkInput = document.getElementById('shieldedTransferRecipientVK');
+    if (vkInput) {
+        vkInput.value = '';
+        vkInput.oninput = _updateTransferModalBtn;
     }
     if (typeof window.applyWalletInputGuards === 'function') {
         window.applyWalletInputGuards(document.getElementById('shieldedTransferModal'));
@@ -1381,19 +1526,14 @@ function _updateUnshieldModalBtn() {
 function _updateTransferModalBtn() {
     const btn = document.querySelector('#shieldedTransferModal .modal-footer .btn-shield');
     if (!btn) return;
-    if (!SHIELDED_SIGNED_SUBMISSION_AVAILABLE || !SHIELDED_PRIVATE_TRANSFER_AVAILABLE) {
-        btn.disabled = true;
-        btn.title = 'Private transfer needs native encrypted note payload storage before wallet submission can be enabled';
-        return;
+    const message = privateTransferValidationMessage();
+    const validationEl = document.getElementById('shieldedTransferValidationMsg');
+    if (validationEl) {
+        validationEl.textContent = message;
+        validationEl.style.color = message ? 'var(--text-muted)' : '';
     }
-    const available = (shieldedState.shieldedBalance || 0) / SPORES_PER_LICN;
-    if (available <= 0) {
-        btn.disabled = true;
-        btn.title = 'No shielded balance';
-    } else {
-        btn.disabled = false;
-        btn.title = '';
-    }
+    btn.disabled = Boolean(message);
+    btn.title = message;
 }
 
 async function confirmShield() {
@@ -1459,15 +1599,19 @@ function confirmUnshield() {
     unshieldLicn(amount, recipient);
 }
 
-function confirmShieldedTransfer() {
+async function confirmShieldedTransfer() {
     let amount = parseFloat(document.getElementById('shieldedTransferAmount').value);
-    const viewingKey = document.getElementById('shieldedTransferRecipientVK').value.trim();
+    const viewingKey = normalizeViewingKeyHex(document.getElementById('shieldedTransferRecipientVK').value);
     if (isNaN(amount) || amount <= 0) {
         showToast('Enter a valid amount');
         return;
     }
-    if (!viewingKey || viewingKey.length !== 64) {
+    if (!/^[0-9a-f]{64}$/.test(viewingKey)) {
         showToast('Enter a valid recipient viewing key (64 hex chars)');
+        return;
+    }
+    if (isOwnViewingKey(viewingKey)) {
+        showToast('Private transfers to your own viewing key are not allowed');
         return;
     }
     // Balance guard: check shielded balance
@@ -1481,6 +1625,26 @@ function confirmShieldedTransfer() {
         document.getElementById('shieldedTransferAmount').value = amount;
         showToast(`Amount adjusted to shielded balance: ${availableLicn.toFixed(4)} LICN`);
         return; // Let user review
+    }
+    const amountSpores = Math.floor(amount * SPORES_PER_LICN);
+    if (!Number.isFinite(amountSpores) || amountSpores <= 0) {
+        showToast('Enter a valid amount');
+        return;
+    }
+    const inputNotes = selectTwoInputNotes(
+        shieldedState.ownedNotes.filter(n => !n.spent && Number(n.value || 0) > 0),
+        amountSpores,
+    );
+    if (!inputNotes) {
+        showToast('Private transfer requires two unspent shielded notes with enough balance');
+        _updateTransferModalBtn();
+        return;
+    }
+    try {
+        await assertPublicFeeBalance('transfer');
+    } catch (error) {
+        showToast(error.message || 'Insufficient public LICN for fee');
+        return;
     }
     closeModal('shieldedTransferModal');
     shieldedTransfer(amount, viewingKey);

@@ -780,7 +780,9 @@ test('CC-9b extension shield panel uses signed native shielded submission', () =
   assert.ok(!fullSrc.includes("rpc().call('sendShieldedTransaction'"), 'full page must not call unsupported sendShieldedTransaction RPC');
   assert.ok(fullSrc.includes('submitExtensionShield'), 'full page should submit shield through the signed native transaction path');
   assert.ok(fullSrc.includes('submitExtensionUnshield'), 'full page should submit unshield through the signed native transaction path');
-  assert.ok(fullSrc.includes('Private transfer needs native encrypted note payload storage'), 'private transfer should remain explicitly unavailable until note payload storage is wired');
+  assert.ok(fullSrc.includes('submitExtensionPrivateTransfer'), 'full page should submit private transfers through the signed native transaction path');
+  assert.ok(fullSrc.includes('buildExtTransferInstructionData'), 'extension private transfers should include encrypted output note payloads in instruction data');
+  assert.ok(fullSrc.includes('isOwnExtensionViewingKey'), 'extension private transfers should block sending to the same shielded viewing key');
 });
 
 test('CC-9c extension shield deposits persist encrypted note payloads on-chain', () => {

@@ -394,6 +394,32 @@ function buildExtUnshieldInstructionData(amountSpores, nullifierHex, merkleRootH
   return concatBytesExt(header, proofBytes);
 }
 
+function buildExtTransferInstructionData(nullifiers, outputCommitments, merkleRootHex, proofBytes) {
+  if (!Array.isArray(nullifiers) || nullifiers.length !== 2) throw new Error('Private transfer requires two input nullifiers');
+  if (!Array.isArray(outputCommitments) || outputCommitments.length !== 2) throw new Error('Private transfer requires two output notes');
+
+  const header = new Uint8Array(161);
+  header[0] = 25;
+  header.set(hexToBytesAnyExt(nullifiers[0], 32), 1);
+  header.set(hexToBytesAnyExt(nullifiers[1], 32), 33);
+  header.set(hexToBytesAnyExt(outputCommitments[0].commitment, 32), 65);
+  header.set(hexToBytesAnyExt(outputCommitments[1].commitment, 32), 97);
+  header.set(hexToBytesAnyExt(merkleRootHex, 32), 129);
+
+  const notePayload = new TextEncoder().encode(JSON.stringify({
+    outputs: outputCommitments.map((note) => ({
+      commitment: note.commitment,
+      encrypted_note: note.encrypted_note,
+      ephemeral_pk: note.ephemeral_pk,
+    })),
+  }));
+  const envelopeHeader = new Uint8Array(12);
+  envelopeHeader.set(SHIELDED_NOTE_PAYLOAD_MAGIC_EXT, 0);
+  writeU32LeExt(envelopeHeader, 4, proofBytes.length);
+  writeU32LeExt(envelopeHeader, 8, notePayload.length);
+  return concatBytesExt(header, envelopeHeader.subarray(0, 8), proofBytes, envelopeHeader.subarray(8), notePayload);
+}
+
 function zeroBytesExt(bytes) {
   if (bytes instanceof Uint8Array) {
     bytes.fill(0);
@@ -1786,6 +1812,7 @@ async function tryDecryptExtensionShieldedNote(client, entry) {
     const plaintext = new Uint8Array(decrypted);
     if (plaintext.length < 104) return null;
     const value = Number(new DataView(plaintext.buffer, plaintext.byteOffset + 32, 8).getBigUint64(0, true));
+    if (value <= 0) return null;
     const blinding = bytesToHex(plaintext.slice(40, 72));
     const serial = bytesToHex(plaintext.slice(72, 104));
     const commitmentResp = await client.call('computeShieldCommitment', [{ amount: value, blinding }]).catch(() => null);
@@ -1909,6 +1936,66 @@ async function resolveExtensionNoteCommitmentIndex(client, note) {
   note.index = resolved;
   note.pendingIndex = false;
   return resolved;
+}
+
+function normalizeExtensionViewingKey(value) {
+  return String(value || '').trim().replace(/^0x/i, '').toLowerCase();
+}
+
+function ownExtensionViewingKeyHex() {
+  return _shieldedState.viewingKey ? bytesToHex(_shieldedState.viewingKey).toLowerCase() : '';
+}
+
+function isOwnExtensionViewingKey(value) {
+  const normalized = normalizeExtensionViewingKey(value);
+  return Boolean(normalized && ownExtensionViewingKeyHex() && normalized === ownExtensionViewingKeyHex());
+}
+
+function selectTwoExtensionInputNotes(unspentNotes, targetAmount) {
+  if (!Array.isArray(unspentNotes) || unspentNotes.length < 2) return null;
+  let bestPair = null;
+  let bestExcess = Number.MAX_SAFE_INTEGER;
+  for (let i = 0; i < unspentNotes.length; i++) {
+    for (let j = i + 1; j < unspentNotes.length; j++) {
+      const total = Number(unspentNotes[i].value || 0) + Number(unspentNotes[j].value || 0);
+      if (total < targetAmount) continue;
+      const excess = total - targetAmount;
+      if (excess < bestExcess) {
+        bestPair = [unspentNotes[i], unspentNotes[j]];
+        bestExcess = excess;
+        if (excess === 0) return bestPair;
+      }
+    }
+  }
+  return bestPair;
+}
+
+async function encryptExtensionNoteForRecipient(value, blinding, serial, recipientViewingKeyHex) {
+  const recipientVK = hexToBytesAnyExt(recipientViewingKeyHex, 32);
+  const ephemeralKey = crypto.getRandomValues(new Uint8Array(32));
+  const encKeyMaterial = new Uint8Array([...ephemeralKey, ...recipientVK]);
+  const encKeyHash = await crypto.subtle.digest('SHA-256', encKeyMaterial);
+  const noteBytes = new Uint8Array(104);
+  noteBytes.set(recipientVK.slice(0, 32), 0);
+  new DataView(noteBytes.buffer).setBigUint64(32, BigInt(value), true);
+  noteBytes.set(blinding, 40);
+  noteBytes.set(serial, 72);
+  return {
+    encryptedNote: await encryptExtensionShieldedNoteBytes(noteBytes, new Uint8Array(encKeyHash)),
+    ephemeralPk: bytesToHex(ephemeralKey),
+  };
+}
+
+async function assertExtensionPublicFeeBalance(type) {
+  const wallet = getActiveWallet();
+  if (!wallet) return;
+  const zkFees = { shield: 100_000, unshield: 150_000, transfer: 200_000 };
+  const required = 1_000_000 + (zkFees[type] || 0);
+  const balResult = await rpc().call('getBalance', [wallet.address]);
+  const spendableSpores = Number(balResult?.spendable ?? balResult?.spores ?? balResult?.balance ?? 0);
+  if (Number.isFinite(spendableSpores) && spendableSpores < required) {
+    throw new Error(`Insufficient public LICN for fee: need ${(required / 1e9).toFixed(4)} LICN`);
+  }
 }
 
 async function signAndSubmitExtensionShieldedInstruction({ wallet, password, instructionDataBytes }) {
@@ -2059,6 +2146,130 @@ async function submitExtensionUnshield({ wallet, amountLicn, password, recipient
   note.nullifier = proof.nullifier;
   _shieldedState.balance = _shieldedState.notes.filter(n => !n.spent).reduce((sum, item) => sum + Number(item.value || 0), 0);
   await saveExtensionShieldedNotes(wallet);
+  return signature;
+}
+
+async function submitExtensionPrivateTransfer({ wallet, amountLicn, password, recipientViewingKey, statusEl }) {
+  if (!_shieldedState.initialized) {
+    const ok = await ensureShieldedStateInitialized(wallet, password);
+    if (!ok) throw new Error('Shielded wallet not initialized');
+  }
+
+  const normalizedViewingKey = normalizeExtensionViewingKey(recipientViewingKey);
+  if (!/^[0-9a-f]{64}$/.test(normalizedViewingKey)) {
+    throw new Error('Enter a valid recipient viewing key');
+  }
+  if (isOwnExtensionViewingKey(normalizedViewingKey)) {
+    throw new Error('Private transfers to your own viewing key are not allowed');
+  }
+
+  const amountSpores = Math.floor(Number(amountLicn) * 1_000_000_000);
+  if (!Number.isFinite(amountSpores) || amountSpores <= 0) throw new Error('Invalid amount');
+  const unspentNotes = (_shieldedState.notes || []).filter((note) => !note.spent && Number(note.value || 0) > 0);
+  const inputNotes = selectTwoExtensionInputNotes(unspentNotes, amountSpores);
+  if (!inputNotes) {
+    throw new Error('Private transfer requires two unspent shielded notes with enough balance');
+  }
+
+  const client = rpc();
+  await assertExtensionPublicFeeBalance('transfer');
+  const inputTotal = inputNotes.reduce((sum, note) => sum + Number(note.value || 0), 0);
+  const changeAmount = inputTotal - amountSpores;
+
+  statusEl.textContent = 'Generating private transfer proof...';
+  const inputIndices = await Promise.all(inputNotes.map((note) => resolveExtensionNoteCommitmentIndex(client, note)));
+  const merkleWitnesses = await Promise.all(inputIndices.map((index) => client.call('getShieldedMerklePath', [index])));
+  const pool = await client.call('getShieldedPoolState', []).catch(() => _shieldedState.poolStats);
+  const merkleRoot = merkleWitnesses[0]?.root
+    || merkleWitnesses[0]?.merkleRoot
+    || merkleWitnesses[0]?.merkle_root
+    || pool?.merkleRoot
+    || pool?.merkle_root;
+  if (!merkleRoot) throw new Error('Shielded Merkle root unavailable');
+
+  const recipientBlinding = crypto.getRandomValues(new Uint8Array(32));
+  const recipientSerial = crypto.getRandomValues(new Uint8Array(32));
+  const changeBlinding = crypto.getRandomValues(new Uint8Array(32));
+  const changeSerial = crypto.getRandomValues(new Uint8Array(32));
+
+  const proof = await client.call('generateTransferProof', [{
+    merkle_root: merkleRoot,
+    inputs: inputNotes.map((note, index) => ({
+      amount: Number(note.value || 0),
+      blinding: note.blinding,
+      serial: note.serial,
+      spending_key: bytesToHex(_shieldedState.spendingKey),
+      merkle_path: merkleWitnesses[index]?.siblings || [],
+      path_bits: merkleWitnesses[index]?.pathBits || merkleWitnesses[index]?.path_bits || [],
+    })),
+    outputs: [
+      { amount: amountSpores, blinding: bytesToHex(recipientBlinding) },
+      { amount: changeAmount, blinding: bytesToHex(changeBlinding) },
+    ],
+  }]);
+
+  const recipientEnc = await encryptExtensionNoteForRecipient(
+    amountSpores,
+    recipientBlinding,
+    recipientSerial,
+    normalizedViewingKey,
+  );
+  const changeEnc = await encryptExtensionNoteForRecipient(
+    changeAmount,
+    changeBlinding,
+    changeSerial,
+    bytesToHex(_shieldedState.viewingKey),
+  );
+  const outputCommitments = [
+    {
+      commitment: proof.commitment_c,
+      encrypted_note: recipientEnc.encryptedNote,
+      ephemeral_pk: recipientEnc.ephemeralPk,
+    },
+    {
+      commitment: proof.commitment_d,
+      encrypted_note: changeEnc.encryptedNote,
+      ephemeral_pk: changeEnc.ephemeralPk,
+    },
+  ];
+
+  statusEl.textContent = 'Submitting signed transaction...';
+  const signature = await signAndSubmitExtensionShieldedInstruction({
+    wallet,
+    password,
+    instructionDataBytes: buildExtTransferInstructionData(
+      [proof.nullifier_a, proof.nullifier_b],
+      outputCommitments,
+      merkleRoot,
+      hexToBytesAnyExt(proof.proof),
+    ),
+  });
+
+  inputNotes.forEach((note, index) => {
+    note.spent = true;
+    note.nullifier = index === 0 ? proof.nullifier_a : proof.nullifier_b;
+  });
+  if (changeAmount > 0) {
+    await upsertExtensionShieldedNote(wallet, {
+      index: null,
+      value: changeAmount,
+      blinding: bytesToHex(changeBlinding),
+      serial: bytesToHex(changeSerial),
+      commitment: proof.commitment_d,
+      pendingIndex: true,
+      pendingConfirmation: true,
+      signature,
+      spent: false,
+      createdAt: Date.now(),
+      broadcastAt: Date.now(),
+    });
+  } else {
+    recalculateExtensionShieldedBalance();
+    await saveExtensionShieldedNotes(wallet);
+  }
+
+  setTimeout(() => syncExtensionShieldedNotesFromChain(wallet, client).catch(() => {}), 1500);
+  setTimeout(() => syncExtensionShieldedNotesFromChain(wallet, client).catch(() => {}), 5000);
   return signature;
 }
 
@@ -2236,7 +2447,7 @@ async function loadShieldTab() {
           <button class="btn btn-small btn-secondary" id="extUnshieldBtn" ${unspent.length === 0 ? 'disabled title="No shielded balance"' : ''}><i class="fas fa-arrow-up"></i> Unshield</button>
         </div>
       </div>
-      <button class="btn btn-primary" id="extPrivateTransferBtn" style="width:100%;padding:0.75rem;" disabled title="Private transfer needs native encrypted note payload storage before wallet submission can be enabled">
+      <button class="btn btn-primary" id="extPrivateTransferBtn" style="width:100%;padding:0.75rem;" ${unspent.length < 2 ? 'disabled title="Private transfer requires two unspent shielded notes"' : ''}>
         <i class="fas fa-paper-plane"></i> Private Transfer
       </button>
     </div>
@@ -2310,7 +2521,8 @@ function showShieldModal(type) {
        <input type="text" id="shieldModalRecipient" value="${escapeHtmlExt(activeWalletForModal?.address || '')}" placeholder="Active wallet address" readonly aria-readonly="true" data-address-input="base58" title="Unshield returns to the active wallet address" style="width:100%;padding:0.75rem;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);margin-bottom:1rem;box-sizing:border-box;">`
     : type === 'transfer'
       ? `<label style="font-size:0.85rem;font-weight:600;display:block;margin-bottom:0.25rem;">Recipient Viewing Key</label>
-       <input type="text" id="shieldModalRecipient" placeholder="64-char hex viewing key" data-hex-input="true" maxlength="64" style="width:100%;padding:0.75rem;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);margin-bottom:1rem;box-sizing:border-box;">`
+       <input type="text" id="shieldModalRecipient" placeholder="64-char hex viewing key" data-hex-input="true" maxlength="64" style="width:100%;padding:0.75rem;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);margin-bottom:0.35rem;box-sizing:border-box;">
+       <div id="shieldModalValidation" style="font-size:0.75rem;color:var(--text-muted);margin-bottom:1rem;"></div>`
       : '';
 
   const overlay = document.createElement('div');
@@ -2341,15 +2553,15 @@ function showShieldModal(type) {
     const wallet = getActiveWallet();
     const recipient = type === 'unshield'
       ? (wallet?.address || '')
-      : (overlay.querySelector('#shieldModalRecipient')?.value?.trim() || '');
+      : normalizeExtensionViewingKey(overlay.querySelector('#shieldModalRecipient')?.value || '');
     const statusEl = overlay.querySelector('#shieldModalStatus');
 
     if (!amount || amount <= 0) { statusEl.textContent = 'Enter a valid amount'; return; }
     if (!password) { statusEl.textContent = 'Password required'; return; }
     if (type !== 'shield' && !recipient) { statusEl.textContent = 'Recipient required'; return; }
     if (type === 'transfer') {
-      statusEl.textContent = 'Private transfer needs native encrypted note payload storage before wallet submission can be enabled';
-      return;
+      if (!/^[0-9a-f]{64}$/.test(recipient)) { statusEl.textContent = 'Enter a valid recipient viewing key'; return; }
+      if (isOwnExtensionViewingKey(recipient)) { statusEl.textContent = 'Private transfers to your own viewing key are not allowed'; return; }
     }
 
     // Balance guard
@@ -2365,17 +2577,38 @@ function showShieldModal(type) {
         const shieldedBal = (_shieldedState.balance || 0) / 1e9;
         if (shieldedBal <= 0) { statusEl.textContent = 'No shielded balance available'; return; }
         if (amount > shieldedBal) { statusEl.textContent = `Max available: ${shieldedBal.toFixed(4)} LICN`; return; }
+        if (type === 'transfer') {
+          const amountSpores = Math.floor(amount * 1e9);
+          if (!Number.isFinite(amountSpores) || amountSpores <= 0) {
+            statusEl.textContent = 'Enter a valid amount';
+            return;
+          }
+          const inputNotes = selectTwoExtensionInputNotes(
+            (_shieldedState.notes || []).filter((note) => !note.spent && Number(note.value || 0) > 0),
+            amountSpores,
+          );
+          if (!inputNotes) {
+            statusEl.textContent = 'Private transfer requires two unspent shielded notes with enough balance';
+            return;
+          }
+          await assertExtensionPublicFeeBalance('transfer');
+        }
       }
-    } catch (e) { /* let RPC reject */ }
+    } catch (e) {
+      statusEl.textContent = e?.message || 'Balance check failed';
+      return;
+    }
 
     statusEl.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Submitting...';
     try {
       if (!wallet) throw new Error('No active wallet');
       const signature = type === 'shield'
         ? await submitExtensionShield({ wallet, amountLicn: amount, password, statusEl })
-        : await submitExtensionUnshield({ wallet, amountLicn: amount, password, recipient, statusEl });
+        : type === 'transfer'
+          ? await submitExtensionPrivateTransfer({ wallet, amountLicn: amount, password, recipientViewingKey: recipient, statusEl })
+          : await submitExtensionUnshield({ wallet, amountLicn: amount, password, recipient, statusEl });
       statusEl.innerHTML = '<i class="fas fa-check-circle" style="color:#10b981;"></i> Submitted ' + escapeHtmlExt(String(signature).slice(0, 16)) + '...';
-      showToast(type === 'shield' ? 'Shield transaction submitted' : 'Unshield transaction submitted', 'success');
+      showToast(type === 'shield' ? 'Shield transaction submitted' : type === 'transfer' ? 'Private transfer submitted' : 'Unshield transaction submitted', 'success');
       setTimeout(() => {
         overlay.remove();
         loadShieldTab();
@@ -3098,6 +3331,7 @@ async function handleSend() {
   const selectedToken = $('sendToken')?.value || 'LICN';
 
   if (!isValidAddress(to)) { showToast('Invalid recipient address', 'error'); return; }
+  if (to === wallet.address) { showToast('Sending to your own wallet is not allowed', 'error'); return; }
   if (!amount || amount <= 0) { showToast('Enter a valid amount', 'error'); return; }
   if (!pw) { showToast('Password required to sign', 'error'); return; }
   if (selectedToken !== 'LICN') { showToast('Extension send supports LICN transfers only', 'error'); return; }

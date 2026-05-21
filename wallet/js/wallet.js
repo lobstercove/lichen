@@ -522,8 +522,11 @@ function connectBalanceWebSocket() {
         scheduleWsReconnect();
     };
 
-    balanceWs.onerror = (error) => {
-        console.warn('[WS] Error:', error);
+    balanceWs.onerror = () => {
+        console.warn('[WS] Connection failed; using polling while reconnecting.');
+        if (balanceWs && balanceWs.readyState === WebSocket.CONNECTING) {
+            try { balanceWs.close(); } catch (_) { /* onclose will schedule reconnect */ }
+        }
     };
 }
 
@@ -4624,6 +4627,14 @@ async function confirmSend() {
         return;
     }
 
+    const wallet = getActiveWallet();
+    if (!wallet) return;
+
+    if (to === wallet.address) {
+        showToast('Sending to your own wallet is not allowed', 'error');
+        return;
+    }
+
     if (!amount || amount <= 0) {
         showToast('Invalid amount', 'error');
         return;
@@ -4633,9 +4644,6 @@ async function confirmSend() {
         showToast('wNEO transfers require whole NEO lots', 'error');
         return;
     }
-
-    const wallet = getActiveWallet();
-    if (!wallet) return;
 
     // Pre-flight balance check with auto-correction
     try {

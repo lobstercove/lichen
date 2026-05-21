@@ -1476,6 +1476,10 @@ async function handleSendNow() {
     alert('Invalid recipient address');
     return;
   }
+  if (to === wallet.address) {
+    alert('Sending to your own wallet is not allowed');
+    return;
+  }
   if (!amount || amount <= 0) {
     alert('Invalid amount');
     return;

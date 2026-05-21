@@ -138,6 +138,9 @@ class WalletWsManager {
 
     this.socket.onerror = () => {
       this.state = 'error';
+      if (this.socket && this.socket.readyState === WebSocket.CONNECTING) {
+        try { this.socket.close(); } catch (_) { /* onclose schedules reconnect */ }
+      }
     };
 
     this.socket.onclose = () => {
