@@ -4,11 +4,18 @@ use crate::restrictions::{ProtocolModuleId, RestrictionTransferDirection};
 const SHIELDED_NOTE_PAYLOAD_MAGIC: &[u8; 4] = b"LNP1";
 const MAX_SHIELDED_NOTE_PAYLOAD_BYTES: usize = 4096;
 
+type ProofBytes = Vec<u8>;
+type EncryptedNotePayload = Vec<u8>;
+type ShieldedNoteEnvelope = Option<(ProofBytes, EncryptedNotePayload)>;
+type ShieldDepositPayload = (ProofBytes, Option<EncryptedNotePayload>);
+type ShieldedTransferOutputPayloads = Option<[EncryptedNotePayload; 2]>;
+type ShieldedTransferPayload = (ProofBytes, ShieldedTransferOutputPayloads);
+
 fn parse_shielded_note_envelope(
     data: &[u8],
     envelope_offset: usize,
     action: &str,
-) -> Result<Option<(Vec<u8>, Vec<u8>)>, String> {
+) -> Result<ShieldedNoteEnvelope, String> {
     if data.len() < envelope_offset + SHIELDED_NOTE_PAYLOAD_MAGIC.len()
         || &data[envelope_offset..envelope_offset + SHIELDED_NOTE_PAYLOAD_MAGIC.len()]
             != SHIELDED_NOTE_PAYLOAD_MAGIC
@@ -79,7 +86,7 @@ fn parse_shielded_note_envelope(
 fn parse_shield_deposit_payload(
     data: &[u8],
     commitment: &[u8; 32],
-) -> Result<(Vec<u8>, Option<Vec<u8>>), String> {
+) -> Result<ShieldDepositPayload, String> {
     if let Some((proof_bytes, note_payload)) = parse_shielded_note_envelope(data, 41, "Shield")? {
         validate_shielded_note_payload_for("Shield", &note_payload, commitment)?;
         return Ok((proof_bytes, Some(note_payload)));
@@ -144,7 +151,7 @@ fn parse_shielded_transfer_payload(
     data: &[u8],
     commitment_c: &[u8; 32],
     commitment_d: &[u8; 32],
-) -> Result<(Vec<u8>, Option<[Vec<u8>; 2]>), String> {
+) -> Result<ShieldedTransferPayload, String> {
     let Some((proof_bytes, note_payload)) =
         parse_shielded_note_envelope(data, 161, "ShieldedTransfer")?
     else {
