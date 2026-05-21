@@ -672,12 +672,12 @@ function validateFrontendInputGuards() {
     const syncOrderTypeBody = extractFunctionBody(dexJs, 'syncOrderTypeUi');
     assert(
         dexHtml.includes('id="orderSubmitHint"') &&
-            dexHtml.includes('id="marginMarketNotice"') &&
-            dexHtml.includes('id="marginAdvancedToggle"') &&
             dexHtml.includes('id="marginCollateral"') &&
             updateSubmitBody.includes('Reconnect wallet to sign') &&
-            updateSubmitBody.includes('Margin entries are market-only') &&
-            syncOrderTypeBody.includes('marginMarketNotice') &&
+            updateSubmitBody.includes('Use a limit order for margin') &&
+            syncOrderTypeBody.includes('marginOnlyHidden') &&
+            syncOrderTypeBody.includes('btn.hidden = marginOnlyHidden') &&
+            syncOrderTypeBody.includes("btn.style.display = marginOnlyHidden ? 'none' : ''") &&
             dexJs.includes("const neededToken = tradeMode === 'margin'") &&
             dexJs.includes("const neededAmount = tradeMode === 'margin'"),
         'DEX order ticket exposes clear margin and wallet gating state'
