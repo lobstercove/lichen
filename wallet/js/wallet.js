@@ -524,9 +524,6 @@ function connectBalanceWebSocket() {
 
     balanceWs.onerror = () => {
         console.warn('[WS] Connection failed; using polling while reconnecting.');
-        if (balanceWs && balanceWs.readyState === WebSocket.CONNECTING) {
-            try { balanceWs.close(); } catch (_) { /* onclose will schedule reconnect */ }
-        }
     };
 }
 

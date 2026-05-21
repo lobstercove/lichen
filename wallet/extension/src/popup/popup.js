@@ -2333,8 +2333,8 @@ async function loadShieldPanel() {
 }
 
 function openExtShieldModal(type) {
-  // For shield/unshield/transfer, open the full wallet page at shield tab
-  chrome.tabs.create({ url: chrome.runtime.getURL('src/pages/full.html') + '#shield' });
+  const hash = type === 'transfer' ? '#shield-transfer' : '#shield';
+  chrome.tabs.create({ url: chrome.runtime.getURL('src/pages/full.html') + hash });
 }
 
 // ===== NFTs panel =====

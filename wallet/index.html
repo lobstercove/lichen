@@ -19,7 +19,7 @@
     <meta property="og:url" content="https://wallet.lichen.network">
     <link rel="stylesheet" href="shared-base-styles.css">
     <link rel="stylesheet" href="shared-theme.css">
-    <link rel="stylesheet" href="wallet.css?v=2026052001">
+    <link rel="stylesheet" href="wallet.css?v=2026052101">
     <link
         href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap"
         rel="stylesheet">
@@ -498,10 +498,11 @@
                                 </button>
                             </div>
                         </div>
-                        <button class="btn btn-primary shield-transfer-btn"
+                        <button class="btn btn-primary shield-transfer-btn" id="shieldedTransferOpenBtn"
                             data-wallet-action="openShieldedTransferModal">
                             <i class="fas fa-paper-plane"></i> Private Transfer
                         </button>
+                        <div class="shield-transfer-hint" id="shieldedTransferHint"></div>
                     </div>
 
                     <!-- Shielded Address & Keys -->
@@ -1181,10 +1182,10 @@
     <script src="shared/env.js"></script>
     <script src="shared-config.js"></script>
     <script src="shared/pq.js?v=20260405"></script>
-    <script src="js/wallet.js?v=2026052001"></script>
+    <script src="js/wallet.js?v=2026052101"></script>
     <script src="js/identity.js?v=20260519"></script>
     <script src="js/crypto.js?v=20260519"></script>
-    <script src="js/shielded.js?v=2026052001"></script>
+    <script src="js/shielded.js?v=2026052101"></script>
     <script src="js/dapp-bridge.js?v=20260413"></script>
     <script src="js/wallet-bootstrap.js?v=20260403"></script>
 </body>

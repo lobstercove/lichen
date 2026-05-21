@@ -1280,6 +1280,13 @@ test('wallet applies numeric, base58, and hex input guards', () => {
         'private-transfer viewing key should be hex-guarded');
 });
 
+test('wallet blocks transparent transfers to the active wallet address', () => {
+    assert(walletSrc.includes("if (to === wallet.address)"),
+        'confirmSend should compare recipient against the active wallet address');
+    assert(walletSrc.includes("showToast('Sending to your own wallet is not allowed'"),
+        'confirmSend should show a clear self-transfer rejection');
+});
+
 test('wallet switch clears wallet-scoped dashboard and shielded state before reloading', () => {
     assert(walletSrc.includes('let _walletViewGeneration = 0;'), 'wallet should track dashboard render generation');
     assert(walletSrc.includes('function beginWalletViewRender('), 'wallet should increment render generation');

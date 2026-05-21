@@ -931,6 +931,17 @@ test('CC-23 extension applies numeric, base58, and hex input guards', () => {
     'full-page send amount should be numeric-guarded');
 });
 
+test('CC-23b extension blocks transparent transfers to the active wallet address', () => {
+  assert.ok(fullSrc.includes("if (to === wallet.address)"),
+    'full-page send should compare recipient against the active wallet address');
+  assert.ok(fullSrc.includes("showToast('Sending to your own wallet is not allowed'"),
+    'full-page send should show a clear self-transfer rejection');
+  assert.ok(popupSrc.includes("if (to === wallet.address)"),
+    'popup send should compare recipient against the active wallet address');
+  assert.ok(popupSrc.includes("alert('Sending to your own wallet is not allowed')"),
+    'popup send should show a clear self-transfer rejection');
+});
+
 test('CC-24 extension activity identifies shield and unshield transactions explicitly', () => {
   assert.ok(popupSrc.includes("'Shield': 'Shielded'"), 'popup should label Shield activity');
   assert.ok(popupSrc.includes("'Unshield': 'Unshielded'"), 'popup should label Unshield activity');

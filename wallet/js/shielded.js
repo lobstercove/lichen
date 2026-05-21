@@ -1148,6 +1148,20 @@ function privateTransferValidationMessage() {
     return '';
 }
 
+function privateTransferPrereqMessage() {
+    if (!SHIELDED_SIGNED_SUBMISSION_AVAILABLE) return 'Signed shielded transaction submission is not enabled';
+    if (!SHIELDED_PRIVATE_TRANSFER_AVAILABLE) return 'Private transfer is not enabled';
+    if (!shieldedState.initialized) return 'Initialize shielded privacy first';
+    const unspentNotes = shieldedState.ownedNotes.filter(n => !n.spent && Number(n.value || 0) > 0);
+    if ((shieldedState.shieldedBalance || 0) <= 0 || unspentNotes.length === 0) {
+        return 'Shield LICN before sending a private transfer';
+    }
+    if (unspentNotes.length < 2) {
+        return 'Private transfer requires two unspent shielded notes';
+    }
+    return '';
+}
+
 async function encryptNoteBytes(noteBytes, encKey) {
     const iv = crypto.getRandomValues(new Uint8Array(12));
     const aesKey = await crypto.subtle.importKey(
@@ -1312,6 +1326,16 @@ function updateShieldedUI() {
         if (poolCommitsEl) poolCommitsEl.textContent = (shieldedState.poolStats.commitment_count || 0).toLocaleString();
     }
 
+    const transferBtn = el('shieldedTransferOpenBtn');
+    const transferHint = el('shieldedTransferHint');
+    const transferMessage = privateTransferPrereqMessage();
+    if (transferBtn) {
+        transferBtn.classList.toggle('is-disabled', Boolean(transferMessage));
+        transferBtn.setAttribute('aria-disabled', transferMessage ? 'true' : 'false');
+        transferBtn.title = transferMessage;
+    }
+    if (transferHint) transferHint.textContent = transferMessage;
+
     // Render note list
     renderNoteList();
 }
@@ -1458,6 +1482,12 @@ function openUnshieldModal() {
 }
 
 function openShieldedTransferModal() {
+    const prereqMessage = privateTransferPrereqMessage();
+    if (prereqMessage) {
+        showToast(prereqMessage);
+        updateShieldedUI();
+        return;
+    }
     const el = document.getElementById('transferFeeDisplay');
     if (el) el.textContent = zkFeeDisplay('transfer');
     const input = document.getElementById('shieldedTransferAmount');
@@ -1647,7 +1677,7 @@ async function confirmShieldedTransfer() {
         return;
     }
     closeModal('shieldedTransferModal');
-    shieldedTransfer(amount, viewingKey);
+    await shieldedTransfer(amount, viewingKey);
 }
 
 function copyShieldedAddress(btnEl) {

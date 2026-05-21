@@ -1970,6 +1970,18 @@ function selectTwoExtensionInputNotes(unspentNotes, targetAmount) {
   return bestPair;
 }
 
+function extensionPrivateTransferPrereqMessage() {
+  if (!_shieldedState.initialized) return 'Initialize shielded privacy first';
+  const unspent = (_shieldedState.notes || []).filter((note) => !note.spent && Number(note.value || 0) > 0);
+  if ((_shieldedState.balance || 0) <= 0 || unspent.length === 0) {
+    return 'Shield LICN before sending a private transfer';
+  }
+  if (unspent.length < 2) {
+    return 'Private transfer requires two unspent shielded notes';
+  }
+  return '';
+}
+
 async function encryptExtensionNoteForRecipient(value, blinding, serial, recipientViewingKeyHex) {
   const recipientVK = hexToBytesAnyExt(recipientViewingKeyHex, 32);
   const ephemeralKey = crypto.getRandomValues(new Uint8Array(32));
@@ -2406,6 +2418,7 @@ async function loadShieldTab() {
   const poolLicn = poolStats ? ((poolStats.pool_balance || 0) / 1_000_000_000).toFixed(2) : '—';
   const commitCount = poolStats ? (poolStats.commitment_count || poolStats.commitmentCount || 0).toLocaleString() : '—';
   const unspent = ownedNotes.filter(n => !n.spent);
+  const transferPrereq = extensionPrivateTransferPrereqMessage();
 
   const notesHtml = unspent.length > 0
     ? unspent.map(n => {
@@ -2447,9 +2460,10 @@ async function loadShieldTab() {
           <button class="btn btn-small btn-secondary" id="extUnshieldBtn" ${unspent.length === 0 ? 'disabled title="No shielded balance"' : ''}><i class="fas fa-arrow-up"></i> Unshield</button>
         </div>
       </div>
-      <button class="btn btn-primary" id="extPrivateTransferBtn" style="width:100%;padding:0.75rem;" ${unspent.length < 2 ? 'disabled title="Private transfer requires two unspent shielded notes"' : ''}>
+      <button class="btn btn-primary ${transferPrereq ? 'is-disabled' : ''}" id="extPrivateTransferBtn" style="width:100%;padding:0.75rem;opacity:${transferPrereq ? '0.62' : '1'};" aria-disabled="${transferPrereq ? 'true' : 'false'}" title="${escapeHtmlExt(transferPrereq)}">
         <i class="fas fa-paper-plane"></i> Private Transfer
       </button>
+      <div style="min-height:1rem;margin-top:0.45rem;text-align:center;font-size:0.72rem;color:var(--text-muted);">${escapeHtmlExt(transferPrereq)}</div>
     </div>
 
     <div style="background:var(--card-bg);padding:1rem;border-radius:12px;border:1px solid var(--border);margin-bottom:1.25rem;">
@@ -2497,7 +2511,11 @@ async function loadShieldTab() {
   // Wire buttons
   $('extShieldBtn')?.addEventListener('click', () => showShieldModal('shield'));
   $('extUnshieldBtn')?.addEventListener('click', () => showShieldModal('unshield'));
-  $('extPrivateTransferBtn')?.addEventListener('click', () => showShieldModal('transfer'));
+  $('extPrivateTransferBtn')?.addEventListener('click', () => {
+    const message = extensionPrivateTransferPrereqMessage();
+    if (message) { showToast(message, 'info'); return; }
+    showShieldModal('transfer');
+  });
   $('extCopyShieldAddr')?.addEventListener('click', () => {
     if (_shieldedState.address) { navigator.clipboard.writeText(_shieldedState.address); showToast('Shielded address copied', 'success'); }
   });
@@ -2512,6 +2530,10 @@ async function loadShieldTab() {
 }
 
 function showShieldModal(type) {
+  if (type === 'transfer') {
+    const prereq = extensionPrivateTransferPrereqMessage();
+    if (prereq) { showToast(prereq, 'info'); return; }
+  }
   const titles = { shield: 'Shield LICN', unshield: 'Unshield LICN', transfer: 'Private Transfer' };
   const icons = { shield: 'fa-arrow-down', unshield: 'fa-arrow-up', transfer: 'fa-paper-plane' };
 
@@ -2545,6 +2567,50 @@ function showShieldModal(type) {
   `;
   document.body.appendChild(overlay);
   applyExtensionInputGuards(overlay);
+
+  const confirmBtn = overlay.querySelector('#shieldModalConfirm');
+  const amountInput = overlay.querySelector('#shieldModalAmount');
+  const passwordInput = overlay.querySelector('#shieldModalPassword');
+  const recipientInput = overlay.querySelector('#shieldModalRecipient');
+  const validationEl = overlay.querySelector('#shieldModalValidation');
+  const statusLine = overlay.querySelector('#shieldModalStatus');
+  const modalValidationMessage = () => {
+    const amount = parseFloat(amountInput?.value || '');
+    if (!Number.isFinite(amount) || amount <= 0) return 'Enter a valid amount';
+    if (!passwordInput?.value) return 'Password required';
+    if (type !== 'shield' && !recipientInput?.value) return 'Recipient required';
+    if (type === 'unshield') {
+      const shieldedBal = (_shieldedState.balance || 0) / 1e9;
+      if (shieldedBal <= 0) return 'No shielded balance available';
+      if (amount > shieldedBal) return `Max available: ${shieldedBal.toFixed(4)} LICN`;
+    }
+    if (type === 'transfer') {
+      const recipient = normalizeExtensionViewingKey(recipientInput?.value || '');
+      const shieldedBal = (_shieldedState.balance || 0) / 1e9;
+      if (!/^[0-9a-f]{64}$/.test(recipient)) return 'Enter a valid recipient viewing key';
+      if (isOwnExtensionViewingKey(recipient)) return 'Private transfers to your own viewing key are not allowed';
+      if (shieldedBal <= 0) return 'No shielded balance available';
+      if (amount > shieldedBal) return `Max available: ${shieldedBal.toFixed(4)} LICN`;
+      const amountSpores = Math.floor(amount * 1e9);
+      const inputNotes = selectTwoExtensionInputNotes(
+        (_shieldedState.notes || []).filter((note) => !note.spent && Number(note.value || 0) > 0),
+        amountSpores,
+      );
+      if (!inputNotes) return 'Private transfer requires two unspent shielded notes with enough balance';
+    }
+    return '';
+  };
+  const refreshModalValidation = () => {
+    const message = modalValidationMessage();
+    if (confirmBtn) {
+      confirmBtn.disabled = Boolean(message);
+      confirmBtn.title = message;
+    }
+    if (type === 'transfer' && validationEl) validationEl.textContent = message;
+    if (type !== 'transfer' && statusLine && !statusLine.dataset.busy) statusLine.textContent = message;
+  };
+  [amountInput, passwordInput, recipientInput].forEach((input) => input?.addEventListener('input', refreshModalValidation));
+  refreshModalValidation();
 
   overlay.querySelector('#shieldModalCancel').addEventListener('click', () => overlay.remove());
   overlay.querySelector('#shieldModalConfirm').addEventListener('click', async () => {
@@ -2599,6 +2665,7 @@ function showShieldModal(type) {
       return;
     }
 
+    statusEl.dataset.busy = 'true';
     statusEl.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Submitting...';
     try {
       if (!wallet) throw new Error('No active wallet');
@@ -2614,6 +2681,7 @@ function showShieldModal(type) {
         loadShieldTab();
       }, 900);
     } catch (err) {
+      delete statusEl.dataset.busy;
       statusEl.innerHTML = '<i class="fas fa-exclamation-circle" style="color:#ef4444;"></i> ' + escapeHtmlExt(err.message);
     }
   });
@@ -4017,8 +4085,15 @@ async function boot() {
     // Handle hash-based tab navigation (e.g. full.html#identity)
     const hash = window.location.hash.replace('#', '');
     if (hash) {
-      const tabBtn = document.querySelector(`.dashboard-tab[data-tab="${hash}"]`);
-      if (tabBtn) tabBtn.click();
+      const requestedShieldTransfer = hash === 'shield-transfer';
+      const tabName = requestedShieldTransfer ? 'shield' : hash;
+      const tabBtn = document.querySelector(`.dashboard-tab[data-tab="${tabName}"]`);
+      if (tabBtn) {
+        tabBtn.click();
+        if (requestedShieldTransfer) {
+          setTimeout(() => showShieldModal('transfer'), 350);
+        }
+      }
     }
   }
 
