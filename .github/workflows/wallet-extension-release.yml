@@ -25,6 +25,9 @@ jobs:
               with:
                   node-version: "22"
 
+            - name: Build JavaScript SDK
+              run: cd sdk/js && npm ci --ignore-scripts && npm run build
+
             - name: Run wallet release validation
               run: |
                   node scripts/qa/test_wallet_extension_audit.js
