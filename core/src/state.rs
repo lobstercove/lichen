@@ -3709,7 +3709,7 @@ mod tests {
         // Active account
         let active = Account::new(100, Pubkey([1u8; 32]));
         let mut active_bytes = vec![0xBC];
-        bincode::serialize_into(&mut active_bytes, &active).unwrap();
+        crate::codec::append_legacy_bincode(&mut active_bytes, &active, "account").unwrap();
         assert!(!StateStore::deserialize_account_check_dormant(
             &active_bytes
         ));
@@ -3718,7 +3718,7 @@ mod tests {
         let mut dormant = Account::new(0, Pubkey([2u8; 32]));
         dormant.dormant = true;
         let mut dormant_bytes = vec![0xBC];
-        bincode::serialize_into(&mut dormant_bytes, &dormant).unwrap();
+        crate::codec::append_legacy_bincode(&mut dormant_bytes, &dormant, "account").unwrap();
         assert!(StateStore::deserialize_account_check_dormant(
             &dormant_bytes
         ));

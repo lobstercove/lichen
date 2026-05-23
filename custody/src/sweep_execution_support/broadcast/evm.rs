@@ -3,7 +3,7 @@ use super::*;
 pub(super) async fn broadcast_evm_sweep(
     state: &CustodyState,
     url: &str,
-    job: &SweepJob,
+    job: &mut SweepJob,
 ) -> Result<Option<String>, String> {
     if is_evm_token_asset(&job.chain, &job.asset) {
         return broadcast_evm_token_sweep(state, url, job).await;
@@ -59,7 +59,11 @@ pub(super) async fn broadcast_evm_sweep(
     let tx_hex = format!("0x{}", hex::encode(raw_tx));
 
     let result = evm_rpc_call(&state.http, url, "eth_sendRawTransaction", json!([tx_hex])).await?;
-    Ok(result.as_str().map(|value| value.to_string()))
+    let tx_hash = result.as_str().map(|value| value.to_string());
+    if tx_hash.is_some() {
+        job.credited_amount = Some(value.to_string());
+    }
+    Ok(tx_hash)
 }
 
 async fn broadcast_evm_token_sweep(

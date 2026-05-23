@@ -5,6 +5,56 @@ import { Keypair } from './keypair.js';
 import { encodeMessage } from './bincode.js';
 import { PqSignature } from './pq.js';
 
+const SIGNING_ENVELOPE_MAGIC = new TextEncoder().encode('LICHEN-SIG');
+const SIGNING_ENVELOPE_VERSION = 1;
+const DOMAIN_NATIVE_TX = 'native-tx';
+const textEncoder = new TextEncoder();
+
+function concatBytes(parts: Uint8Array[]): Uint8Array {
+  const total = parts.reduce((sum, part) => sum + part.length, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.length;
+  }
+  return out;
+}
+
+function u16Le(value: number): Uint8Array {
+  const out = new Uint8Array(2);
+  new DataView(out.buffer).setUint16(0, value, true);
+  return out;
+}
+
+function u64Le(value: number | bigint): Uint8Array {
+  const out = new Uint8Array(8);
+  new DataView(out.buffer).setBigUint64(0, BigInt(value), true);
+  return out;
+}
+
+export function signingBytesForChainId(
+  domain: string,
+  chainId: string,
+  payload: Uint8Array,
+): Uint8Array {
+  if (!chainId) return payload;
+  const domainBytes = textEncoder.encode(domain);
+  const chainBytes = textEncoder.encode(chainId);
+  if (domainBytes.length > 0xffff) throw new Error('Signing domain is too long');
+  if (chainBytes.length > 0xffff) throw new Error('Chain id is too long');
+  return concatBytes([
+    SIGNING_ENVELOPE_MAGIC,
+    Uint8Array.of(SIGNING_ENVELOPE_VERSION),
+    u16Le(domainBytes.length),
+    domainBytes,
+    u16Le(chainBytes.length),
+    chainBytes,
+    u64Le(payload.length),
+    payload,
+  ]);
+}
+
 /**
  * Transaction instruction
  */
@@ -76,9 +126,16 @@ export class TransactionBuilder {
    * Build and sign the transaction
    */
   buildAndSign(keypair: Keypair): Transaction {
+    return this.buildAndSignForChainId(keypair, '');
+  }
+
+  /**
+   * Build and sign the transaction with a versioned chain-id signing envelope.
+   */
+  buildAndSignForChainId(keypair: Keypair, chainId: string): Transaction {
     const message = this.build();
     const messageBytes = encodeMessage(message);
-    const signature = keypair.sign(messageBytes);
+    const signature = keypair.sign(signingBytesForChainId(DOMAIN_NATIVE_TX, chainId, messageBytes));
     return {
       signatures: [signature],
       message,

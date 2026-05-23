@@ -1038,7 +1038,7 @@ const Playground = {
             this.showToast('Program ID not available yet', 'warning');
             return;
         }
-        window.open(`${this.getExplorerUrl()}/program/${programId}`, '_blank');
+        window.open(`${this.getExplorerUrl()}/program/${programId}`, '_blank', 'noopener,noreferrer');
     },
 
     openProgramInfoInExplorer() {
@@ -1047,7 +1047,7 @@ const Playground = {
             this.showToast('Program ID not available', 'warning');
             return;
         }
-        window.open(`${this.getExplorerUrl()}/program/${programId}`, '_blank');
+        window.open(`${this.getExplorerUrl()}/program/${programId}`, '_blank', 'noopener,noreferrer');
     },
 
     renderProgramCalls() {
@@ -6833,10 +6833,10 @@ strip = true
     },
     oracle: {
         name: 'LichenOracle Feeds',
-        description: 'Price feeds, VRF, attestations',
+        description: 'Price feeds, validator entropy, attestations',
         files: {
             'lib.rs': `// LichenOracle - Decentralized Oracle
-// Price feeds, verifiable random function (VRF), attestation services
+// Price feeds, validator-entropy commit-reveal randomness, attestation services
 
 #![no_std]
 #![no_main]
@@ -6846,7 +6846,8 @@ use alloc::vec::Vec;
 
 use lichen_sdk::{
     log_info, storage_get, storage_set, set_return_data,
-    bytes_to_u64, u64_to_bytes, get_timestamp
+    bytes_to_u64, u64_to_bytes, get_timestamp, get_slot,
+    get_block_entropy, poseidon_hash
 };
 
 const MAX_STALENESS: u64 = 3600; // 1 hour
@@ -6937,7 +6938,7 @@ pub extern "C" fn get_price(feed_id: u64) -> u32 {
     1
 }
 
-/// Commit-reveal VRF: Phase 1
+/// Commit-reveal randomness: Phase 1
 #[no_mangle]
 pub extern "C" fn commit_randomness(
     committer_ptr: *const u8,
@@ -6949,13 +6950,13 @@ pub extern "C" fn commit_randomness(
     let key = alloc::format!("rng_commit_{}", h);
     let mut data = Vec::with_capacity(40);
     data.extend_from_slice(commitment);
-    data.extend_from_slice(&u64_to_bytes(get_timestamp()));
+    data.extend_from_slice(&u64_to_bytes(get_slot()));
     storage_set(key.as_bytes(), &data);
     log_info(&alloc::format!("Randomness committed by {}", &h[..8]));
     1
 }
 
-/// Commit-reveal VRF: Phase 2
+/// Commit-reveal randomness: Phase 2
 #[no_mangle]
 pub extern "C" fn reveal_randomness(
     committer_ptr: *const u8,
@@ -6965,19 +6966,37 @@ pub extern "C" fn reveal_randomness(
     let h = hex(committer);
     let key = alloc::format!("rng_commit_{}", h);
     let commit = match storage_get(key.as_bytes()) {
-        Some(d) => d,
+        Some(d) if d.len() >= 40 => d,
+        Some(_) => { log_info("Malformed commit"); return 0; },
         None => { log_info("No commit found"); return 0; }
     };
 
-    // Derive random from commitment + block timestamp
-    let ts = get_timestamp();
-    let preimage = unsafe { core::slice::from_raw_parts(preimage_ptr, 32) };
-    let random = bytes_to_u64(&preimage[0..8]) ^ ts ^ 0xDEADBEEF_CAFEBABE;
+    let mut preimage = [0u8; 32];
+    preimage.copy_from_slice(unsafe { core::slice::from_raw_parts(preimage_ptr, 32) });
+    let commitment = &commit[0..32];
+    let commit_slot = bytes_to_u64(&commit[32..40]);
+    let entropy_slot = commit_slot.saturating_add(1);
+    let entropy = match get_block_entropy(entropy_slot) {
+        Some(e) => e,
+        None => { log_info("Block entropy unavailable"); return 0; }
+    };
+
+    let expected = poseidon_hash(&preimage, &[0u8; 32]);
+    if expected.as_slice() != commitment {
+        log_info("Commitment mismatch");
+        return 0;
+    }
+
+    let random_hash = poseidon_hash(&expected, &entropy);
+    let random = bytes_to_u64(&random_hash[0..8]);
 
     let result_key = alloc::format!("random_{}", h);
-    storage_set(result_key.as_bytes(), &u64_to_bytes(random));
+    let mut result = Vec::with_capacity(16);
+    result.extend_from_slice(&u64_to_bytes(random));
+    result.extend_from_slice(&u64_to_bytes(entropy_slot));
+    storage_set(result_key.as_bytes(), &result);
 
-    set_return_data(&u64_to_bytes(random));
+    set_return_data(&result);
     log_info(&alloc::format!("Randomness revealed: {}", random));
     1
 }

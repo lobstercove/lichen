@@ -16,6 +16,6 @@ pub(super) use self::preflight::withdrawal_access_message;
 #[allow(unused_imports)]
 pub(super) use self::preflight::CreateWithdrawalPreflight;
 pub(super) use self::preflight::{
-    build_create_withdrawal_response, handle_withdrawal_auth_replay,
-    prepare_create_withdrawal_request,
+    build_create_withdrawal_response, find_withdrawal_auth_replay_response,
+    handle_withdrawal_auth_replay, prepare_create_withdrawal_request,
 };

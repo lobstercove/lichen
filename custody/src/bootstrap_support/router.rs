@@ -19,6 +19,7 @@ pub(crate) fn build_custody_app(state: CustodyState) -> Router {
         .route("/webhooks", post(create_webhook))
         .route("/webhooks", get(list_webhooks))
         .route("/webhooks/:webhook_id", delete(delete_webhook))
+        .route("/ws/events/tickets", post(create_ws_events_ticket))
         .route("/ws/events", get(ws_events))
         .route("/events", get(list_events))
         .layer(build_cors_layer())

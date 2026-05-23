@@ -197,6 +197,21 @@ pub(crate) fn validate_withdrawal_request_destination(
             })));
         }
     }
+    if asset_lower == "musd" {
+        let route_check = if req.dest_chain == "solana" || req.dest_chain == "sol" {
+            solana_mint_for_asset(config, &req.preferred_stablecoin)
+        } else if is_evm_chain(&req.dest_chain) {
+            evm_token_contract_for_asset(config, &req.dest_chain, &req.preferred_stablecoin)
+        } else {
+            Err(format!(
+                "unsupported stablecoin withdrawal chain: {}",
+                req.dest_chain
+            ))
+        };
+        if let Err(error) = route_check {
+            return Err(Json(json!({ "error": error })));
+        }
+    }
 
     Ok(())
 }

@@ -21,6 +21,7 @@ LOG1="$ART_DIR/v1.log"
 LOG2="$ART_DIR/v2.log"
 LOG3="$ART_DIR/v3.log"
 LOCAL_CUSTODY_TOKEN_FILE="$ART_DIR/custody-api-auth-token"
+LOCAL_KEYPAIR_PASSWORD_FILE="$ART_DIR/keypair-password"
 STAGGER_SECS="${LICN_LOCAL_STAGGER_SECS:-15}"
 NETWORK="${LICN_LOCAL_NETWORK:-testnet}"
 MANIFEST_FILE="$ROOT/signed-metadata-manifest-${NETWORK}.json"
@@ -195,6 +196,28 @@ prepare_local_bridge_env() {
   chmod 600 "$LOCAL_CUSTODY_TOKEN_FILE" 2>/dev/null || true
 }
 
+prepare_local_keypair_password() {
+  local reset="${1:-0}"
+
+  if [[ -n "${LICHEN_KEYPAIR_PASSWORD:-}" ]]; then
+    printf '%s' "$LICHEN_KEYPAIR_PASSWORD" > "$LOCAL_KEYPAIR_PASSWORD_FILE"
+    chmod 600 "$LOCAL_KEYPAIR_PASSWORD_FILE" 2>/dev/null || true
+    return 0
+  fi
+
+  if [[ -f "$LOCAL_KEYPAIR_PASSWORD_FILE" ]]; then
+    export LICHEN_KEYPAIR_PASSWORD="$(cat "$LOCAL_KEYPAIR_PASSWORD_FILE")"
+    return 0
+  fi
+
+  if [[ "$reset" == "1" ]]; then
+    export LICHEN_KEYPAIR_PASSWORD="$(generate_local_token)"
+    printf '%s' "$LICHEN_KEYPAIR_PASSWORD" > "$LOCAL_KEYPAIR_PASSWORD_FILE"
+    chmod 600 "$LOCAL_KEYPAIR_PASSWORD_FILE" 2>/dev/null || true
+    echo "[local-3validators] generated local keypair password file at ${LOCAL_KEYPAIR_PASSWORD_FILE#$ROOT/}"
+  fi
+}
+
 clear_local_peer_trust_state() {
   local state_dir
   for state_dir in "$ROOT/data/state-${P2P1}" "$ROOT/data/state-${P2P2}" "$ROOT/data/state-${P2P3}"; do
@@ -210,6 +233,53 @@ reset_local_cluster_state() {
   rm -rf "$ROOT/data/state-${NETWORK}" "$ROOT/data/custody-${NETWORK}"*
   rm -f "$PID_FILE" "$LOG1" "$LOG2" "$LOG3" "$MANIFEST_FILE"
   mkdir -p "$ART_DIR"
+}
+
+keypair_file_is_encrypted() {
+  local path="$1"
+
+  if [[ ! -f "$path" ]]; then
+    return 1
+  fi
+
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "$path" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as handle:
+    data = json.load(handle)
+
+raise SystemExit(0 if data.get("encrypted") is True else 1)
+PY
+    return $?
+  fi
+
+  grep -Eq '"encrypted"[[:space:]]*:[[:space:]]*true' "$path"
+}
+
+require_password_for_existing_encrypted_keypairs() {
+  local path
+  local encrypted_paths=()
+
+  if [[ -n "${LICHEN_KEYPAIR_PASSWORD:-}" ]]; then
+    return 0
+  fi
+
+  for path in "$STATE1_DIR/validator-keypair.json" "$STATE2_DIR/validator-keypair.json" "$STATE3_DIR/validator-keypair.json"; do
+    if keypair_file_is_encrypted "$path"; then
+      encrypted_paths+=("$path")
+    fi
+  done
+
+  if [[ "${#encrypted_paths[@]}" -eq 0 ]]; then
+    return 0
+  fi
+
+  echo "[local-3validators] ERROR: existing encrypted validator keypairs require LICHEN_KEYPAIR_PASSWORD before restart"
+  printf '[local-3validators] encrypted keypair: %s\n' "${encrypted_paths[@]}"
+  echo "[local-3validators] Refusing to stop the current cluster without the password; export LICHEN_KEYPAIR_PASSWORD or use start-reset for a fresh local chain."
+  exit 1
 }
 
 rpc_ok() {
@@ -444,6 +514,12 @@ start_cluster() {
   ensure_runtime_binaries
   refresh_changed_contract_wasm
 
+  prepare_local_keypair_password "$reset"
+
+  if [[ "$reset" != "1" ]]; then
+    require_password_for_existing_encrypted_keypairs
+  fi
+
   stop_cluster
 
   prepare_local_bridge_env
@@ -496,6 +572,12 @@ start_seed_only() {
   ensure_runtime_binaries
   refresh_changed_contract_wasm
 
+  prepare_local_keypair_password "$reset"
+
+  if [[ "$reset" != "1" ]]; then
+    require_password_for_existing_encrypted_keypairs
+  fi
+
   stop_cluster
 
   prepare_local_bridge_env
@@ -537,6 +619,8 @@ promote_joiners_from_seed_sync() {
   fi
 
   echo "[local-3validators] preparing empty V2/V3 state directories for network sync"
+  prepare_local_keypair_password 0
+  require_password_for_existing_encrypted_keypairs
   prepare_joiner_empty_state
   assert_joiner_state_has_no_copied_chain_artifacts
 

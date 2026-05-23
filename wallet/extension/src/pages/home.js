@@ -4,6 +4,7 @@ import { loadStakingSnapshot, stakeLicn, unstakeStLicn } from '../core/staking-s
 import { hasBridgeAccessAuth, loadBridgeSnapshot, requestBridgeDepositAddress, getBridgeDepositStatus } from '../core/bridge-service.js';
 import { loadNftSnapshot } from '../core/nft-service.js';
 import { isValidAddress } from '../core/crypto-service.js';
+import { baseUnitsToDecimalString, parsePositiveDecimalBaseUnits } from '../core/amount-service.js';
 
 let latestState = null;
 let activeDepositId = null;
@@ -85,11 +86,7 @@ function setActionStatus(message) {
 }
 
 function parsePositiveAmount(value, label) {
-  const amount = Number(value);
-  if (!Number.isFinite(amount) || amount <= 0) {
-    throw new Error(`${label} must be a positive number`);
-  }
-  return amount;
+  return baseUnitsToDecimalString(parsePositiveDecimalBaseUnits(value, 9, label), 9);
 }
 
 function parseIntegerRange(value, label, min, max) {

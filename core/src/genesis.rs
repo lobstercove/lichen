@@ -1,6 +1,7 @@
 // Lichen Genesis Configuration
 // Production-ready genesis block and chain initialization
 
+use crate::codec::{deserialize_legacy_bincode_strict, serialize_legacy_bincode_limited};
 use crate::consensus::{
     DEFAULT_BFT_MAX_PHASE_TIMEOUT_MS, DEFAULT_BFT_PRECOMMIT_TIMEOUT_BASE_MS,
     DEFAULT_BFT_PREVOTE_TIMEOUT_BASE_MS, DEFAULT_BFT_PROPOSE_TIMEOUT_BASE_MS,
@@ -24,6 +25,12 @@ pub const GENESIS_STATE_CHUNK_OPCODE: u8 = 41;
 /// Wire version for the canonical genesis state bundle.
 pub const GENESIS_STATE_BUNDLE_VERSION: u16 = 1;
 
+/// Maximum decoded genesis-state bundle size accepted during network bootstrap.
+pub const GENESIS_STATE_BUNDLE_CODEC_LIMIT_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Maximum encoded genesis-state chunk size accepted from a slot-0 instruction.
+pub const GENESIS_STATE_CHUNK_CODEC_LIMIT_BYTES: u64 = 4 * 1024 * 1024;
+
 /// One exported key/value column in the canonical genesis state.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GenesisStateCategory {
@@ -39,6 +46,24 @@ pub struct GenesisStateBundle {
     pub categories: Vec<GenesisStateCategory>,
 }
 
+impl GenesisStateBundle {
+    pub fn to_legacy_bincode(&self) -> Result<Vec<u8>, String> {
+        serialize_legacy_bincode_limited(
+            self,
+            GENESIS_STATE_BUNDLE_CODEC_LIMIT_BYTES,
+            "genesis state bundle",
+        )
+    }
+
+    pub fn from_legacy_bincode(bytes: &[u8]) -> Result<Self, String> {
+        deserialize_legacy_bincode_strict(
+            bytes,
+            GENESIS_STATE_BUNDLE_CODEC_LIMIT_BYTES,
+            "genesis state bundle",
+        )
+    }
+}
+
 /// A compressed chunk of [`GenesisStateBundle`] embedded in a slot-0
 /// transaction instruction.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -52,6 +77,24 @@ pub struct GenesisStateChunk {
     pub chunk_index: u32,
     pub total_chunks: u32,
     pub data: Vec<u8>,
+}
+
+impl GenesisStateChunk {
+    pub fn to_legacy_bincode(&self) -> Result<Vec<u8>, String> {
+        serialize_legacy_bincode_limited(
+            self,
+            GENESIS_STATE_CHUNK_CODEC_LIMIT_BYTES,
+            "genesis state chunk",
+        )
+    }
+
+    pub fn from_legacy_bincode(bytes: &[u8]) -> Result<Self, String> {
+        deserialize_legacy_bincode_strict(
+            bytes,
+            GENESIS_STATE_CHUNK_CODEC_LIMIT_BYTES,
+            "genesis state chunk",
+        )
+    }
 }
 
 /// Oracle prices frozen at genesis time — embedded in the genesis block for
@@ -401,6 +444,15 @@ pub struct ConsensusParams {
     /// Minimum stake to be a validator (in spores)
     pub min_validator_stake: u64,
 
+    /// Permit treasury-funded RegisterValidator bootstrap grants.
+    ///
+    /// This must stay false for public/mainnet genesis configs. Local
+    /// development clusters can enable it explicitly for deterministic
+    /// multi-validator bootstrap tests; public validators should use
+    /// self-funded registration or a governed voucher path.
+    #[serde(default)]
+    pub validator_bootstrap_grants_enabled: bool,
+
     /// Reference per-slot inflation rate used to derive epoch minting (in spores).
     /// The field name is preserved for genesis compatibility.
     pub validator_reward_per_block: u64,
@@ -465,6 +517,7 @@ impl Default for ConsensusParams {
             max_phase_timeout_ms: DEFAULT_BFT_MAX_PHASE_TIMEOUT_MS,
             epoch_slots: 432000,
             min_validator_stake: 75_000_000_000, // 75 LICN — testnet only, see note above
+            validator_bootstrap_grants_enabled: false,
             validator_reward_per_block: 20_000_000, // 0.02 LICN — sustainable emission rate
             slashing_percentage_double_sign: 50,
             slashing_downtime_per_100_missed: 1,
@@ -614,6 +667,14 @@ impl GenesisConfig {
 
         if self.consensus.finality_threshold_percent > 100 {
             return Err("Finality threshold cannot exceed 100%".to_string());
+        }
+
+        if self.consensus.validator_bootstrap_grants_enabled && is_mainnet_chain_id(&self.chain_id)
+        {
+            return Err(
+                "Validator bootstrap grants are local/dev-only and cannot be enabled on mainnet"
+                    .to_string(),
+            );
         }
 
         // Validate initial accounts (allow empty for dynamic genesis)
@@ -886,6 +947,7 @@ impl GenesisConfig {
                 epoch_slots: 432000, // ~2 days at 400ms
                 // AUDIT-FIX 3.22: Lower stake requirement for testnet (75 LICN vs 75k)
                 min_validator_stake: 75_000_000_000, // 75 LICN (testnet)
+                validator_bootstrap_grants_enabled: false,
                 // Sustainable emission: 0.02 LICN/block (reduced for BFT adaptive timing)
                 validator_reward_per_block: 20_000_000, // 0.02 LICN
                 slashing_percentage_double_sign: 50,
@@ -943,6 +1005,7 @@ impl GenesisConfig {
                 // AUDIT-FIX 1.3: match SLOTS_PER_EPOCH constant (432_000)
                 epoch_slots: 432000,
                 min_validator_stake: 75_000_000_000_000, // 75,000 LICN
+                validator_bootstrap_grants_enabled: false,
                 // Sustainable emission: 0.02 LICN/block (reduced for BFT adaptive timing)
                 validator_reward_per_block: 20_000_000, // 0.02 LICN
                 slashing_percentage_double_sign: 50,
@@ -1010,6 +1073,61 @@ mod tests {
             created_epoch: 0,
             expires_at_slot: Some(10),
         }
+    }
+
+    fn test_genesis_state_bundle() -> GenesisStateBundle {
+        GenesisStateBundle {
+            version: GENESIS_STATE_BUNDLE_VERSION,
+            state_root: [7u8; 32],
+            categories: vec![GenesisStateCategory {
+                name: "accounts".to_string(),
+                entries: vec![(b"account:1".to_vec(), vec![1, 2, 3])],
+            }],
+        }
+    }
+
+    #[test]
+    fn test_genesis_state_bundle_legacy_bincode_codec_is_strict() {
+        let bundle = test_genesis_state_bundle();
+        let bytes = bundle.to_legacy_bincode().expect("serialize bundle");
+
+        let decoded = GenesisStateBundle::from_legacy_bincode(&bytes).expect("deserialize bundle");
+        assert_eq!(decoded, bundle);
+
+        let mut trailing = bytes;
+        trailing.push(0);
+        let err = GenesisStateBundle::from_legacy_bincode(&trailing).unwrap_err();
+        assert!(
+            err.contains("trailing") || err.contains("Slice had bytes remaining"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_genesis_state_chunk_legacy_bincode_codec_is_strict() {
+        let chunk = GenesisStateChunk {
+            version: GENESIS_STATE_BUNDLE_VERSION,
+            state_root: [9u8; 32],
+            compression: "gzip".to_string(),
+            compressed_len: 3,
+            uncompressed_len: 5,
+            compressed_sha256: [3u8; 32],
+            chunk_index: 0,
+            total_chunks: 1,
+            data: vec![1, 2, 3],
+        };
+        let bytes = chunk.to_legacy_bincode().expect("serialize chunk");
+
+        let decoded = GenesisStateChunk::from_legacy_bincode(&bytes).expect("deserialize chunk");
+        assert_eq!(decoded, chunk);
+
+        let mut trailing = bytes;
+        trailing.push(0);
+        let err = GenesisStateChunk::from_legacy_bincode(&trailing).unwrap_err();
+        assert!(
+            err.contains("trailing") || err.contains("Slice had bytes remaining"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -1158,6 +1276,17 @@ mod tests {
             .validate()
             .expect_err("mainnet genesis restrictions must be rejected");
         assert!(error.contains("testnet-only"));
+    }
+
+    #[test]
+    fn test_validate_rejects_mainnet_validator_bootstrap_grants() {
+        let mut genesis = GenesisConfig::default_mainnet();
+        genesis.consensus.validator_bootstrap_grants_enabled = true;
+
+        let error = genesis
+            .validate()
+            .expect_err("mainnet validator grants must be rejected");
+        assert!(error.contains("local/dev-only"));
     }
 
     #[test]

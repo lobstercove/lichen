@@ -78,7 +78,3 @@ pub(super) fn next_deposit_index(
 ) -> Result<u64, String> {
     cursor::next_deposit_index(db, user_id, chain, asset)
 }
-
-pub(super) fn set_last_u64_index(db: &DB, key: &str, value: u64) -> Result<(), String> {
-    cursor::set_last_u64_index(db, key, value)
-}

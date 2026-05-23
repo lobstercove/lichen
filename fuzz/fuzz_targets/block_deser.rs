@@ -1,11 +1,11 @@
 #![no_main]
 use libfuzzer_sys::fuzz_target;
-use lichen_core::Block;
+use lichen_core::{codec::deserialize_legacy_bincode, Block};
 
 fuzz_target!(|data: &[u8]| {
     // Fuzz block deserialization — must never panic on arbitrary bytes.
     let _ = serde_json::from_slice::<Block>(data);
-    let _ = bincode::deserialize::<Block>(data);
+    let _ = deserialize_legacy_bincode::<Block>(data, "fuzz block");
 
     // Try to verify an arbitrary block (should error, not panic)
     if let Ok(block) = serde_json::from_slice::<Block>(data) {

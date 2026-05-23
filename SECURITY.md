@@ -32,11 +32,16 @@ The following are in scope:
 - Custody service (`custody/`)
 - SDKs (`sdk/`)
 - CLI (`cli/`)
+- Wallet and frontend issues that affect keys, signing, transaction intent,
+  custody/bridge flows, or trust boundaries
+- Third-party dependency issues that materially affect Lichen
 
 The following are out of scope:
-- Frontend-only issues with no backend impact (e.g., CSS rendering)
+- Frontend-only issues with no security, signing, privacy, or transaction impact
+  (e.g., cosmetic CSS rendering)
 - Denial of service via high transaction volume (rate limiting is in place)
-- Issues in third-party dependencies (report upstream; notify us if it affects Lichen)
+- Vulnerabilities in third-party services that do not affect Lichen-controlled
+  software or deployments
 
 ### Recognition
 
@@ -47,5 +52,6 @@ will be credited in the fix release notes (unless they prefer to remain anonymou
 
 | Version | Supported |
 |---------|-----------|
-| 0.4.x   | Yes       |
+| 0.5.x   | Yes       |
+| 0.4.x   | Critical fixes only |
 | < 0.4   | No        |

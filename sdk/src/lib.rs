@@ -52,6 +52,7 @@ pub mod test_mock {
         pub static TIMESTAMP: RefCell<u64> = RefCell::new(1000);
         pub static VALUE: RefCell<u64> = RefCell::new(0);
         pub static SLOT: RefCell<u64> = RefCell::new(1);
+        pub static BLOCK_ENTROPY: RefCell<HashMap<u64, [u8; 32]>> = RefCell::new(HashMap::new());
         pub static CROSS_CALL_RESPONSE: RefCell<Option<Vec<u8>>> = RefCell::new(None);
         pub static CROSS_CALL_RESPONSE_QUEUE: RefCell<Vec<Vec<u8>>> = RefCell::new(Vec::new());
         pub static CROSS_CALL_SHOULD_FAIL: RefCell<bool> = RefCell::new(false);
@@ -72,6 +73,7 @@ pub mod test_mock {
         TIMESTAMP.with(|t| *t.borrow_mut() = 1000);
         VALUE.with(|v| *v.borrow_mut() = 0);
         SLOT.with(|s| *s.borrow_mut() = 1);
+        BLOCK_ENTROPY.with(|e| e.borrow_mut().clear());
         CROSS_CALL_RESPONSE.with(|c| *c.borrow_mut() = None);
         CROSS_CALL_RESPONSE_QUEUE.with(|c| c.borrow_mut().clear());
         CROSS_CALL_SHOULD_FAIL.with(|c| *c.borrow_mut() = false);
@@ -103,6 +105,12 @@ pub mod test_mock {
 
     pub fn set_slot(s: u64) {
         SLOT.with(|slot| *slot.borrow_mut() = s);
+    }
+
+    pub fn set_block_entropy(slot: u64, entropy: [u8; 32]) {
+        BLOCK_ENTROPY.with(|entries| {
+            entries.borrow_mut().insert(slot, entropy);
+        });
     }
 
     pub fn set_cross_call_response(data: Option<Vec<u8>>) {
@@ -558,6 +566,30 @@ pub fn get_slot() -> u64 {
     #[cfg(not(target_arch = "wasm32"))]
     {
         test_mock::SLOT.with(|s| *s.borrow())
+    }
+}
+
+/// Get deterministic validator-derived entropy for a committed block slot.
+///
+/// The runtime derives this from canonical block and BFT commit-certificate
+/// data. Contracts should prefer this over block timestamps for randomness.
+pub fn get_block_entropy(slot: u64) -> Option<[u8; 32]> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        extern "C" {
+            fn get_block_entropy(slot: u64, out_ptr: u32) -> u32;
+        }
+        let mut buf = [0u8; 32];
+        let status = unsafe { get_block_entropy(slot, buf.as_mut_ptr() as u32) };
+        if status == 0 {
+            Some(buf)
+        } else {
+            None
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        test_mock::BLOCK_ENTROPY.with(|entries| entries.borrow().get(&slot).copied())
     }
 }
 

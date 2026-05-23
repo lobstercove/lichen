@@ -4,6 +4,8 @@ import { decryptPrivateKey, isValidAddress, signTransaction } from './crypto-ser
 const SUPPORTED_CHAINS = ['solana', 'ethereum', 'bsc', 'bnb', 'neox', 'neo-x', 'neo_x'];
 const SUPPORTED_ASSETS = ['usdc', 'usdt', 'sol', 'eth', 'bnb', 'gas', 'neo'];
 const BRIDGE_AUTH_TTL_SECS = 24 * 60 * 60;
+const BRIDGE_AUTH_DOMAIN_V2 = 'LICHEN_BRIDGE_ACCESS_V2';
+const BRIDGE_AUTH_CREATE_ACTION = 'createBridgeDeposit';
 const BRIDGE_CACHE_KEY = 'lichenBridgeDeposits';
 
 let activeBridgeAuth = null;
@@ -14,6 +16,18 @@ function getTrustedBridgeRpc(network) {
 
 function buildBridgeAccessMessage(userId, issuedAt, expiresAt) {
   return `LICHEN_BRIDGE_ACCESS_V1\nuser_id=${userId}\nissued_at=${issuedAt}\nexpires_at=${expiresAt}\n`;
+}
+
+function bridgeAuthNonce() {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function buildBridgeAccessMessageV2(userId, chain, asset, issuedAt, expiresAt, nonce) {
+  const canonicalChain = canonicalBridgeChain(chain);
+  const normalizedAsset = String(asset || '').trim().toLowerCase();
+  return `${BRIDGE_AUTH_DOMAIN_V2}\naction=${BRIDGE_AUTH_CREATE_ACTION}\nuser_id=${userId}\nchain=${canonicalChain}\nasset=${normalizedAsset}\nroute=${canonicalChain}:${normalizedAsset}\nissued_at=${issuedAt}\nexpires_at=${expiresAt}\nnonce=${nonce}\n`;
 }
 
 function hasValidBridgeAccessAuth(wallet) {
@@ -28,14 +42,20 @@ export function hasBridgeAccessAuth(wallet) {
 
 function currentBridgeAuthPayload(wallet) {
   if (!hasValidBridgeAccessAuth(wallet)) return null;
-  return {
+  const payload = {
     issued_at: activeBridgeAuth.issued_at,
     expires_at: activeBridgeAuth.expires_at,
     signature: activeBridgeAuth.signature
   };
+  for (const key of ['version', 'domain', 'action', 'user_id', 'chain', 'asset', 'route', 'nonce']) {
+    if (activeBridgeAuth[key] !== undefined && activeBridgeAuth[key] !== null) {
+      payload[key] = activeBridgeAuth[key];
+    }
+  }
+  return payload;
 }
 
-async function ensureBridgeAccessAuth(wallet, password, { forceRefresh = false } = {}) {
+async function ensureBridgeAccessAuth(wallet, password, { forceRefresh = false, chain = '', asset = '' } = {}) {
   if (!forceRefresh && hasValidBridgeAccessAuth(wallet)) {
     return currentBridgeAuthPayload(wallet);
   }
@@ -51,9 +71,14 @@ async function ensureBridgeAccessAuth(wallet, password, { forceRefresh = false }
     privateKeyHex = await decryptPrivateKey(wallet.encryptedKey, password);
     const issuedAt = Math.floor(Date.now() / 1000);
     const expiresAt = issuedAt + BRIDGE_AUTH_TTL_SECS;
-    const messageBytes = new TextEncoder().encode(
-      buildBridgeAccessMessage(wallet.address, issuedAt, expiresAt)
-    );
+    const canonicalChain = canonicalBridgeChain(chain);
+    const normalizedAsset = String(asset || '').trim().toLowerCase();
+    const useV2 = Boolean(canonicalChain && normalizedAsset);
+    const nonce = useV2 ? bridgeAuthNonce() : '';
+    const message = useV2
+      ? buildBridgeAccessMessageV2(wallet.address, canonicalChain, normalizedAsset, issuedAt, expiresAt, nonce)
+      : buildBridgeAccessMessage(wallet.address, issuedAt, expiresAt);
+    const messageBytes = new TextEncoder().encode(message);
     const signature = await signTransaction(privateKeyHex, messageBytes);
 
     activeBridgeAuth = {
@@ -62,6 +87,15 @@ async function ensureBridgeAccessAuth(wallet, password, { forceRefresh = false }
       expires_at: expiresAt,
       signature
     };
+    if (useV2) {
+      activeBridgeAuth.version = 2;
+      activeBridgeAuth.domain = BRIDGE_AUTH_DOMAIN_V2;
+      activeBridgeAuth.action = BRIDGE_AUTH_CREATE_ACTION;
+      activeBridgeAuth.chain = canonicalChain;
+      activeBridgeAuth.asset = normalizedAsset;
+      activeBridgeAuth.route = `${canonicalChain}:${normalizedAsset}`;
+      activeBridgeAuth.nonce = nonce;
+    }
 
     return currentBridgeAuthPayload(wallet);
   } finally {
@@ -199,7 +233,11 @@ export async function requestBridgeDepositAddress({ wallet, password, chain, ass
 
   await assertBridgeRouteOpen({ chain: canonicalChain, asset: normalizedAsset, network });
 
-  const auth = await ensureBridgeAccessAuth(wallet, password, { forceRefresh: true });
+  const auth = await ensureBridgeAccessAuth(wallet, password, {
+    forceRefresh: true,
+    chain: canonicalChain,
+    asset: normalizedAsset
+  });
 
   // Route through authenticated RPC bridge proxy — custody auth stays server-side.
   const rpc = getTrustedBridgeRpc(network);

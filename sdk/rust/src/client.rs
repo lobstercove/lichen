@@ -124,6 +124,10 @@ impl Client {
         serde_json::from_value(result).map_err(|e| Error::ParseError(e.to_string()))
     }
 
+    async fn signing_chain_id(&self) -> Result<String> {
+        Ok(self.get_network_info().await?.chain_id)
+    }
+
     /// Get validators
     pub async fn get_validators(&self) -> Result<Vec<Value>> {
         let result = self.rpc_call("getValidators", json!([])).await?;
@@ -240,6 +244,7 @@ impl Client {
     pub async fn stake(&self, staker: &Keypair, validator: &Pubkey, amount: u64) -> Result<String> {
         let blockhash_str = self.get_recent_blockhash().await?;
         let blockhash = Hash::from_hex(&blockhash_str).map_err(|e| Error::ParseError(e))?;
+        let chain_id = self.signing_chain_id().await?;
 
         let mut data = vec![9u8];
         data.extend_from_slice(&amount.to_le_bytes());
@@ -253,7 +258,7 @@ impl Client {
         let tx = TransactionBuilder::new()
             .add_instruction(instruction)
             .recent_blockhash(blockhash)
-            .build_and_sign(staker)?;
+            .build_and_sign_for_chain_id(staker, &chain_id)?;
 
         self.send_transaction(&tx).await
     }
@@ -267,6 +272,7 @@ impl Client {
     ) -> Result<String> {
         let blockhash_str = self.get_recent_blockhash().await?;
         let blockhash = Hash::from_hex(&blockhash_str).map_err(|e| Error::ParseError(e))?;
+        let chain_id = self.signing_chain_id().await?;
 
         let mut data = vec![10u8];
         data.extend_from_slice(&amount.to_le_bytes());
@@ -280,7 +286,7 @@ impl Client {
         let tx = TransactionBuilder::new()
             .add_instruction(instruction)
             .recent_blockhash(blockhash)
-            .build_and_sign(staker)?;
+            .build_and_sign_for_chain_id(staker, &chain_id)?;
 
         self.send_transaction(&tx).await
     }
@@ -305,6 +311,7 @@ impl Client {
     pub async fn transfer(&self, from: &Keypair, to: &Pubkey, amount: u64) -> Result<String> {
         let blockhash_str = self.get_recent_blockhash().await?;
         let blockhash = Hash::from_hex(&blockhash_str).map_err(|e| Error::ParseError(e))?;
+        let chain_id = self.signing_chain_id().await?;
 
         let mut data = vec![0u8]; // Transfer instruction type
         data.extend_from_slice(&amount.to_le_bytes());
@@ -318,7 +325,7 @@ impl Client {
         let tx = TransactionBuilder::new()
             .add_instruction(instruction)
             .recent_blockhash(blockhash)
-            .build_and_sign(from)?;
+            .build_and_sign_for_chain_id(from, &chain_id)?;
 
         self.send_transaction(&tx).await
     }
@@ -348,6 +355,7 @@ impl Client {
 
         let blockhash_str = self.get_recent_blockhash().await?;
         let blockhash = Hash::from_hex(&blockhash_str).map_err(|e| Error::ParseError(e))?;
+        let chain_id = self.signing_chain_id().await?;
 
         let contract_ix = ContractInstruction::Deploy { code, init_data };
         let data = serde_json::to_vec(&contract_ix)
@@ -362,7 +370,7 @@ impl Client {
         let tx = TransactionBuilder::new()
             .add_instruction(instruction)
             .recent_blockhash(blockhash)
-            .build_and_sign(deployer)?;
+            .build_and_sign_for_chain_id(deployer, &chain_id)?;
 
         self.send_transaction(&tx).await
     }
@@ -385,6 +393,7 @@ impl Client {
     ) -> Result<String> {
         let blockhash_str = self.get_recent_blockhash().await?;
         let blockhash = Hash::from_hex(&blockhash_str).map_err(|e| Error::ParseError(e))?;
+        let chain_id = self.signing_chain_id().await?;
 
         let contract_ix = ContractInstruction::Call {
             function: function.to_string(),
@@ -403,7 +412,7 @@ impl Client {
         let tx = TransactionBuilder::new()
             .add_instruction(instruction)
             .recent_blockhash(blockhash)
-            .build_and_sign(caller)?;
+            .build_and_sign_for_chain_id(caller, &chain_id)?;
 
         self.send_transaction(&tx).await
     }
@@ -428,6 +437,7 @@ impl Client {
 
         let blockhash_str = self.get_recent_blockhash().await?;
         let blockhash = Hash::from_hex(&blockhash_str).map_err(|e| Error::ParseError(e))?;
+        let chain_id = self.signing_chain_id().await?;
 
         let contract_ix = ContractInstruction::Upgrade { code };
         let data = serde_json::to_vec(&contract_ix)
@@ -442,7 +452,7 @@ impl Client {
         let tx = TransactionBuilder::new()
             .add_instruction(instruction)
             .recent_blockhash(blockhash)
-            .build_and_sign(owner)?;
+            .build_and_sign_for_chain_id(owner, &chain_id)?;
 
         self.send_transaction(&tx).await
     }

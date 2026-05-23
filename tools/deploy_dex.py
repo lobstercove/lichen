@@ -257,7 +257,9 @@ async def deploy_contract(
 
 async def call_contract(
     conn: Connection, caller: Keypair, program_pubkey: PublicKey,
-    func: str, args: Optional[dict] = None
+    func: str, args: Optional[dict] = None,
+    compute_budget: Optional[int] = None,
+    compute_unit_price: Optional[int] = None,
 ) -> str:
     """Send a Call instruction to a deployed contract. Returns signature."""
     args_bytes = json.dumps(args or {}).encode()
@@ -272,6 +274,8 @@ async def call_contract(
         TransactionBuilder()
         .add(ix)
         .set_recent_blockhash(blockhash)
+        .set_compute_budget(compute_budget)
+        .set_compute_unit_price(compute_unit_price)
         .build_and_sign(caller)
     )
     sig = await conn.send_transaction(tx)
@@ -280,7 +284,9 @@ async def call_contract(
 
 async def call_contract_raw(
     conn: Connection, caller: Keypair, program_pubkey: PublicKey,
-    func: str, raw_args: list, value: int = 0
+    func: str, raw_args: list, value: int = 0,
+    compute_budget: Optional[int] = None,
+    compute_unit_price: Optional[int] = None,
 ) -> str:
     """Send a Call instruction with raw byte list args. Returns signature."""
     payload = json.dumps({"Call": {"function": func, "args": raw_args, "value": value}})
@@ -294,6 +300,8 @@ async def call_contract_raw(
         TransactionBuilder()
         .add(ix)
         .set_recent_blockhash(blockhash)
+        .set_compute_budget(compute_budget)
+        .set_compute_unit_price(compute_unit_price)
         .build_and_sign(caller)
     )
     sig = await conn.send_transaction(tx)
@@ -486,9 +494,9 @@ async def phase_initialize_dex(
             ("LICN", "lUSD", DEFAULT_LOT),
             ("wSOL", "lUSD", DEFAULT_LOT),
             ("wETH", "lUSD", DEFAULT_LOT),
-            ("wBNB", "lUSD", DEFAULT_LOT),
             ("wSOL", "LICN", DEFAULT_LOT),
             ("wETH", "LICN", DEFAULT_LOT),
+            ("wBNB", "lUSD", DEFAULT_LOT),
             ("wBNB", "LICN", DEFAULT_LOT),
             ("wNEO", "lUSD", DEFAULT_LOT),
             ("wNEO", "LICN", DEFAULT_LOT),
@@ -723,8 +731,8 @@ def save_manifest(deployer_pubkey: PublicKey, addrs: Dict[str, PublicKey]) -> No
             "neo_gas_rewards": str(addrs["neo_gas_rewards"]) if "neo_gas_rewards" in addrs else None,
         },
         "trading_pairs": [
-            "LICN/lUSD", "wSOL/lUSD", "wETH/lUSD", "wBNB/lUSD",
-            "wSOL/LICN", "wETH/LICN", "wBNB/LICN",
+            "LICN/lUSD", "wSOL/lUSD", "wETH/lUSD",
+            "wSOL/LICN", "wETH/LICN", "wBNB/lUSD", "wBNB/LICN",
             "wNEO/lUSD", "wNEO/LICN", "wGAS/lUSD", "wGAS/LICN",
         ],
     }

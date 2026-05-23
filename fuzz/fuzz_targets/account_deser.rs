@@ -1,11 +1,11 @@
 #![no_main]
 use libfuzzer_sys::fuzz_target;
-use lichen_core::{Account, Pubkey};
+use lichen_core::{codec::deserialize_legacy_bincode, Account, Pubkey};
 
 fuzz_target!(|data: &[u8]| {
     // Fuzz account deserialization — must never panic.
     let _ = serde_json::from_slice::<Account>(data);
-    let _ = bincode::deserialize::<Account>(data);
+    let _ = deserialize_legacy_bincode::<Account>(data, "fuzz account");
 
     // Fuzz Pubkey construction from arbitrary bytes
     if data.len() >= 32 {

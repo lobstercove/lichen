@@ -9,6 +9,7 @@ const esbuild = require('esbuild');
 const repoRoot = path.join(__dirname, '..', '..');
 const providerRouterPath = path.join(repoRoot, 'wallet', 'extension', 'src', 'core', 'provider-router.js');
 const cryptoServicePath = path.join(repoRoot, 'wallet', 'extension', 'src', 'core', 'crypto-service.js');
+const txServicePath = path.join(repoRoot, 'wallet', 'extension', 'src', 'core', 'tx-service.js');
 
 function writeU64LE(parts, value) {
   const buf = new ArrayBuffer(8);
@@ -104,15 +105,19 @@ async function loadWalletRuntime() {
   const entryPath = path.join(tmpDir, 'entry.mjs');
   const bundlePath = path.join(tmpDir, 'bundle.cjs');
   fs.writeFileSync(entryPath, `
-    import { handleProviderRequest, finalizePendingRequest, consumeFinalizedResult } from ${JSON.stringify(providerRouterPath)};
+    import { handleProviderRequest, finalizePendingRequest, consumeFinalizedResult, getPendingRequest } from ${JSON.stringify(providerRouterPath)};
     import { encryptPrivateKey, privateKeyToKeypair, base58Decode } from ${JSON.stringify(cryptoServicePath)};
+    import { buildNativeTransferMessage, buildAmountInstructionData } from ${JSON.stringify(txServicePath)};
     export {
       handleProviderRequest,
       finalizePendingRequest,
       consumeFinalizedResult,
+      getPendingRequest,
       encryptPrivateKey,
       privateKeyToKeypair,
-      base58Decode
+      base58Decode,
+      buildNativeTransferMessage,
+      buildAmountInstructionData
     };
   `);
 
@@ -137,6 +142,29 @@ async function run() {
   }
 
   const originalFetch = globalThis.fetch;
+  const originalChrome = globalThis.chrome;
+  const storageData = {};
+  globalThis.chrome = {
+    storage: {
+      local: {
+        async get(key) {
+          if (typeof key === 'string') {
+            return Object.prototype.hasOwnProperty.call(storageData, key) ? { [key]: storageData[key] } : {};
+          }
+          if (Array.isArray(key)) {
+            return key.reduce((out, entry) => {
+              if (Object.prototype.hasOwnProperty.call(storageData, entry)) out[entry] = storageData[entry];
+              return out;
+            }, {});
+          }
+          return { ...storageData };
+        },
+        async set(values) {
+          Object.assign(storageData, values || {});
+        }
+      }
+    }
+  };
   globalThis.fetch = async () => {
     throw new Error('signTransaction E2E must not submit or call RPC');
   };
@@ -146,15 +174,37 @@ async function run() {
       handleProviderRequest,
       finalizePendingRequest,
       consumeFinalizedResult,
+      getPendingRequest,
       encryptPrivateKey,
       privateKeyToKeypair,
-      base58Decode
+      base58Decode,
+      buildNativeTransferMessage,
+      buildAmountInstructionData
     } = await loadWalletRuntime();
 
     const password = 'rg-703-signing-e2e-password';
     const privateKeyHex = '11'.repeat(32);
     const keypair = await privateKeyToKeypair(privateKeyHex);
     const encryptedKey = await encryptPrivateKey(privateKeyHex, password);
+    const amountMessage = buildNativeTransferMessage(
+      keypair.address,
+      keypair.address,
+      '1.000000001',
+      bytes(32, 0xaa).reduce((hex, byte) => hex + byte.toString(16).padStart(2, '0'), '')
+    );
+    const nativeTransferData = Uint8Array.from(amountMessage.instructions[0].data);
+    assert.strictEqual(
+      new DataView(nativeTransferData.buffer, nativeTransferData.byteOffset, nativeTransferData.byteLength).getBigUint64(1, true),
+      1_000_000_001n,
+      'native transfer amount parser should preserve 9-decimal base units'
+    );
+    assert.throws(
+      () => buildNativeTransferMessage(keypair.address, keypair.address, '1.0000000001', amountMessage.blockhash),
+      /at most 9 decimal places/,
+      'native transfer amount parser should reject over-precision'
+    );
+    const stakingData = buildAmountInstructionData(13, '2.000000001', 2);
+    assert.strictEqual(new DataView(stakingData.buffer).getBigUint64(1, true), 2_000_000_001n, 'staking amount parser should preserve base units');
     const unsignedWireTx = buildUnsignedRestrictionWireTx();
     const context = {
       origin: null,
@@ -175,6 +225,13 @@ async function run() {
     assert.strictEqual(pending.ok, true, 'signTransaction request should be accepted');
     assert.strictEqual(pending.pending, true, 'signTransaction should require approval');
     assert.ok(pending.requestId, 'signTransaction should return a pending request id');
+    const pendingRequest = getPendingRequest(pending.requestId);
+    assert.strictEqual(pendingRequest.transactionIntent.intent, 'Unknown transaction', 'governance proposal should not be mislabelled as a transfer');
+    assert.match(
+      pendingRequest.transactionIntent.warnings.join(' '),
+      /System opcode 34 is not decoded|administrative/i,
+      'unknown system opcode should carry an administrative warning'
+    );
 
     const finalized = await finalizePendingRequest(pending.requestId, true, context, { password });
     assert.strictEqual(finalized.ok, true, 'approval finalization should succeed');
@@ -272,6 +329,13 @@ async function run() {
     }, context);
     assert.strictEqual(blockedPending.ok, true, 'restricted transfer signing request should still require approval');
     assert.strictEqual(blockedPending.pending, true, 'restricted transfer should be represented as a pending approval');
+    const blockedPendingRequest = getPendingRequest(blockedPending.requestId);
+    assert.strictEqual(blockedPendingRequest.transactionIntent.intent, 'Native transfer', 'native transfer intent should be decoded');
+    assert.strictEqual(blockedPendingRequest.transactionIntent.amount, '1.0 LICN', 'native transfer amount should be decoded in LICN');
+    assert.strictEqual(blockedPendingRequest.transactionIntent.tokenDecimals, '9', 'native LICN decimals should be visible');
+    assert.strictEqual(blockedPendingRequest.transactionIntent.network, 'local-testnet', 'transaction intent should include network');
+    assert.strictEqual(blockedPendingRequest.transactionIntent.rpc, 'http://localhost:8899', 'transaction intent should include RPC endpoint');
+    assert.ok(blockedPendingRequest.transactionIntent.destination, 'native transfer destination should be visible');
 
     const blockedFinalized = await finalizePendingRequest(blockedPending.requestId, true, context, {
       password: 'intentionally-wrong-password'
@@ -331,14 +395,78 @@ async function run() {
     for (const request of dappRpcRequests) {
       assert.strictEqual(request.url, 'http://localhost:8899', 'dapp restriction methods must use trusted local-testnet RPC');
     }
+
+    storageData.lichenWalletState = {
+      schemaVersion: 1,
+      wallets: [],
+      activeWalletId: null,
+      isLocked: true,
+      settings: { currency: 'USD', lockTimeout: 300000 },
+      network: { selected: 'local-testnet' }
+    };
+    const networkContext = {
+      origin: 'https://dex.lichen.network',
+      network: 'local-testnet',
+      hasWallet: false,
+      isLocked: true,
+      activeAddress: null,
+      activeWallet: null
+    };
+
+    const switchPending = await handleProviderRequest({
+      method: 'wallet_switchEthereumChain',
+      params: [{ chainId: '0x2711' }]
+    }, networkContext);
+    assert.strictEqual(switchPending.ok, true, 'wallet_switchEthereumChain should be accepted');
+    assert.strictEqual(switchPending.pending, true, 'wallet_switchEthereumChain should require approval');
+    assert.strictEqual(storageData.lichenWalletState.network.selected, 'local-testnet', 'network switch must not mutate before approval');
+
+    await finalizePendingRequest(switchPending.requestId, true, networkContext);
+    const switchResult = consumeFinalizedResult(switchPending.requestId);
+    assert.strictEqual(switchResult.ok, true, 'approved network switch should finalize successfully');
+    assert.strictEqual(storageData.lichenWalletState.network.selected, 'testnet', 'approved network switch should mutate selected network');
+
+    storageData.lichenWalletState.network.selected = 'local-testnet';
+    const addPending = await handleProviderRequest({
+      method: 'wallet_addEthereumChain',
+      params: [{
+        chainId: '0x2711',
+        rpcUrls: ['https://custom-testnet.lichen.network/rpc']
+      }]
+    }, networkContext);
+    assert.strictEqual(addPending.ok, true, 'wallet_addEthereumChain should be accepted');
+    assert.strictEqual(addPending.pending, true, 'wallet_addEthereumChain should require approval');
+    assert.strictEqual(storageData.lichenWalletState.network.selected, 'local-testnet', 'addNetwork must not mutate before approval');
+    assert.strictEqual(storageData.lichenWalletState.settings.testnetRPC, undefined, 'addNetwork must not save RPC before approval');
+
+    await finalizePendingRequest(addPending.requestId, true, networkContext);
+    const addResult = consumeFinalizedResult(addPending.requestId);
+    assert.strictEqual(addResult.ok, true, 'approved addNetwork should finalize successfully');
+    assert.strictEqual(storageData.lichenWalletState.network.selected, 'testnet', 'approved addNetwork should switch selected network');
+    assert.strictEqual(
+      storageData.lichenWalletState.settings.testnetRPC,
+      'https://custom-testnet.lichen.network/rpc',
+      'approved addNetwork should persist the requested RPC endpoint'
+    );
+
+    storageData.lichenWalletState.network.selected = 'local-testnet';
+    const rejectedPending = await handleProviderRequest({
+      method: 'licn_switchNetwork',
+      params: [{ chainId: '0x2711' }]
+    }, networkContext);
+    await finalizePendingRequest(rejectedPending.requestId, false, networkContext);
+    const rejectedResult = consumeFinalizedResult(rejectedPending.requestId);
+    assert.strictEqual(rejectedResult.ok, false, 'rejected network switch should finalize as rejected');
+    assert.strictEqual(storageData.lichenWalletState.network.selected, 'local-testnet', 'rejected network switch must not mutate state');
   } finally {
     globalThis.fetch = originalFetch;
+    globalThis.chrome = originalChrome;
   }
 }
 
 run()
   .then(() => {
-    console.log('Wallet extension RG-703/RG-707/RG-708 signing/provider E2E: 5 passed, 0 failed');
+    console.log('Wallet extension RG-703/RG-707/RG-708 signing/provider E2E: 9 passed, 0 failed');
   })
   .catch((error) => {
     console.error(`Wallet extension RG-703/RG-707 signing E2E failed: ${error.stack || error.message}`);

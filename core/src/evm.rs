@@ -1095,8 +1095,9 @@ mod tests {
             topics: vec![[0x01; 32], [0x02; 32]],
             data: vec![0xFF, 0xFE, 0xFD],
         };
-        let bytes = bincode::serialize(&log).expect("serialize");
-        let decoded: EvmLog = bincode::deserialize(&bytes).expect("deserialize");
+        let bytes = crate::codec::serialize_legacy_bincode(&log, "EVM log").expect("serialize");
+        let decoded: EvmLog =
+            crate::codec::deserialize_legacy_bincode(&bytes, "EVM log").expect("deserialize");
         assert_eq!(decoded.address, [0xAB; 20]);
         assert_eq!(decoded.topics.len(), 2);
         assert_eq!(decoded.topics[0], [0x01; 32]);
@@ -1116,8 +1117,10 @@ mod tests {
                 data: vec![0x42],
             },
         };
-        let bytes = bincode::serialize(&entry).expect("serialize");
-        let decoded: EvmLogEntry = bincode::deserialize(&bytes).expect("deserialize");
+        let bytes =
+            crate::codec::serialize_legacy_bincode(&entry, "EVM log entry").expect("serialize");
+        let decoded: EvmLogEntry =
+            crate::codec::deserialize_legacy_bincode(&bytes, "EVM log entry").expect("deserialize");
         assert_eq!(decoded.tx_hash, [0xAA; 32]);
         assert_eq!(decoded.tx_index, 5);
         assert_eq!(decoded.log_index, 3);
@@ -1333,8 +1336,10 @@ mod tests {
                 data: vec![0xAB, 0xCD],
             }],
         };
-        let bytes = bincode::serialize(&receipt).expect("serialize");
-        let decoded: EvmReceipt = bincode::deserialize(&bytes).expect("deserialize");
+        let bytes =
+            crate::codec::serialize_legacy_bincode(&receipt, "EVM receipt").expect("serialize");
+        let decoded: EvmReceipt =
+            crate::codec::deserialize_legacy_bincode(&bytes, "EVM receipt").expect("deserialize");
         assert_eq!(decoded.structured_logs.len(), 1);
         assert_eq!(decoded.structured_logs[0].address, [0xDD; 20]);
         assert_eq!(decoded.structured_logs[0].topics.len(), 2);

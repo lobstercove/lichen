@@ -11,9 +11,13 @@ Per DEX_LIQUIDITY_STRATEGY.md §3.1:
     wSOL  = 500K/epoch   (wsol_token)
     wETH  = 50K/epoch    (weth_token)
     wBNB  = 100K/epoch   (wbnb_token)
+    wNEO  = 100K/epoch   (wneo_token, whole-NEO lots only)
+    wGAS  = 100K/epoch   (wgas_token)
 
-On testnet, also mints test amounts of wSOL, wETH, wBNB so all 7 AMM pools
-can be seeded with liquidity.
+On testnet, also mints synthetic test amounts of wSOL, wETH, wBNB, wNEO, and
+wGAS so all 11 AMM pools can be seeded with liquidity. On mainnet, wrapped
+asset liquidity must come from real custody deposits/reserve attestations, so
+this script skips synthetic wrapped mints unless explicitly overridden.
 
 Usage:
   python tools/mint_protocol_lusd.py                       # testnet, localhost
@@ -38,6 +42,8 @@ EPOCH_CAPS = {
     "WSOL": 500_000,       # 500K wSOL per epoch
     "WETH": 50_000,        # 50K wETH per epoch
     "WBNB": 100_000,       # 100K wBNB per epoch
+    "WNEO": 100_000,       # 100K wNEO per epoch, whole-NEO lots only
+    "WGAS": 100_000,       # 100K wGAS per epoch
 }
 
 # Amounts to mint (whole tokens) — will be batched per-epoch if needed
@@ -46,7 +52,11 @@ MINT_AMOUNTS = {
     "WSOL": 10_000,        # testnet: ~$1.5M at ~$150/SOL
     "WETH": 500,           # testnet: ~$1M at ~$2000/ETH
     "WBNB": 5_000,         # testnet: ~$3M at ~$610/BNB
+    "WNEO": 50_000,        # testnet: whole-NEO liquidity for pairs 8/9
+    "WGAS": 75_000,        # testnet: GAS liquidity for pairs 10/11
 }
+
+WRAPPED_SYMBOLS = {"WSOL", "WETH", "WBNB", "WNEO", "WGAS"}
 
 
 async def main():
@@ -71,6 +81,14 @@ async def main():
     admin = Keypair.load(genesis_kp_path)
     admin_bytes = bytes(admin.address().to_bytes())
     print(f"  Admin (genesis): {admin.address()}")
+    allow_synthetic_wrapped = (
+        NETWORK != "mainnet"
+        or os.environ.get("LICHEN_ALLOW_SYNTHETIC_WRAPPED_MINTS", "").lower() in {"1", "true", "yes"}
+    )
+    if NETWORK == "mainnet" and allow_synthetic_wrapped:
+        print("  WARNING: synthetic wrapped-asset mints explicitly enabled on mainnet.")
+    elif NETWORK == "mainnet":
+        print("  Mainnet mode: synthetic wrapped-asset mints are skipped; use real custody deposits/reserves.")
 
     admin_balance = await conn._rpc('getBalance', [str(admin.address())])
     admin_spores = admin_balance.get('spendable', admin_balance.get('spores', 0)) if isinstance(admin_balance, dict) else admin_balance
@@ -107,6 +125,9 @@ async def main():
     # ── Mint tokens to reserve_pool ──
     minted = 0
     for sym, whole_amount in MINT_AMOUNTS.items():
+        if sym in WRAPPED_SYMBOLS and not allow_synthetic_wrapped:
+            print(f"  SKIP {sym}: synthetic wrapped mints disabled on {NETWORK}")
+            continue
         if sym not in tokens:
             print(f"  SKIP {sym}: contract not found on-chain")
             continue

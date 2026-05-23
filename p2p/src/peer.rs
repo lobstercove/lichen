@@ -9,7 +9,10 @@ use chacha20poly1305::{
 };
 use dashmap::DashMap;
 use hkdf::Hkdf;
-use lichen_core::{Keypair, PqSignature, Pubkey};
+use lichen_core::{
+    codec::{deserialize_legacy_bincode_strict, serialize_legacy_bincode_limited},
+    Keypair, PqSignature, Pubkey,
+};
 use ml_kem::kem::{Decapsulate, Encapsulate};
 use ml_kem::{Encoded, EncodedSizeUser, KemCore, MlKem768};
 use quinn::{Connection, Endpoint, ServerConfig};
@@ -1584,6 +1587,7 @@ async fn handle_connection(
 const TRANSPORT_HANDSHAKE_VERSION: u32 = 1;
 const TRANSPORT_HANDSHAKE_TIMEOUT_SECS: u64 = 10;
 const TRANSPORT_FRAME_LIMIT_BYTES: usize = 64 * 1024;
+const TRANSPORT_FRAME_LIMIT_BYTES_U64: u64 = TRANSPORT_FRAME_LIMIT_BYTES as u64;
 const CLIENT_HELLO_TAG: &[u8] = b"lichen-p2p-client-hello-v1";
 const SERVER_HELLO_TAG: &[u8] = b"lichen-p2p-server-hello-v1";
 const SESSION_KEY_INFO_TAG: &[u8] = b"lichen-p2p-session-key-v1";
@@ -1895,13 +1899,21 @@ impl SecureSession {
         let ciphertext = cipher
             .encrypt(XNonce::from_slice(&nonce), plaintext)
             .map_err(|e| format!("Failed to encrypt transport frame: {}", e))?;
-        bincode::serialize(&SecureTransportFrame { nonce, ciphertext })
-            .map_err(|e| format!("Failed to serialize secure transport frame: {}", e))
+        serialize_legacy_bincode_limited(
+            &SecureTransportFrame { nonce, ciphertext },
+            TRANSPORT_FRAME_LIMIT_BYTES_U64,
+            "secure transport frame",
+        )
+        .map_err(|e| format!("Failed to serialize secure transport frame: {}", e))
     }
 
     fn decrypt(&self, bytes: &[u8]) -> Result<Vec<u8>, String> {
-        let frame: SecureTransportFrame = bincode::deserialize(bytes)
-            .map_err(|e| format!("Failed to deserialize secure transport frame: {}", e))?;
+        let frame: SecureTransportFrame = deserialize_legacy_bincode_strict(
+            bytes,
+            TRANSPORT_FRAME_LIMIT_BYTES_U64,
+            "secure transport frame",
+        )
+        .map_err(|e| format!("Failed to deserialize secure transport frame: {}", e))?;
         let cipher = XChaCha20Poly1305::new_from_slice(&self.key)
             .map_err(|e| format!("Failed to create transport cipher: {}", e))?;
         cipher
@@ -2140,13 +2152,17 @@ async fn perform_inbound_handshake(
                 peer_addr, e
             )
         })?;
-    let client_hello: TransportClientHello =
-        bincode::deserialize(&client_hello_bytes).map_err(|e| {
-            format!(
-                "Failed to decode transport client hello from {}: {}",
-                peer_addr, e
-            )
-        })?;
+    let client_hello: TransportClientHello = deserialize_legacy_bincode_strict(
+        &client_hello_bytes,
+        TRANSPORT_FRAME_LIMIT_BYTES_U64,
+        "transport client hello",
+    )
+    .map_err(|e| {
+        format!(
+            "Failed to decode transport client hello from {}: {}",
+            peer_addr, e
+        )
+    })?;
     let remote_identity = verify_client_hello(&client_hello)?;
 
     let client_ek = decode_mlkem_encapsulation_key(&client_hello.kem_public_key)?;
@@ -2164,8 +2180,12 @@ async fn perform_inbound_handshake(
         server_nonce,
         ciphertext.as_slice(),
     )?;
-    let server_hello_bytes = bincode::serialize(&server_hello)
-        .map_err(|e| format!("Failed to serialize transport server hello: {}", e))?;
+    let server_hello_bytes = serialize_legacy_bincode_limited(
+        &server_hello,
+        TRANSPORT_FRAME_LIMIT_BYTES_U64,
+        "transport server hello",
+    )
+    .map_err(|e| format!("Failed to serialize transport server hello: {}", e))?;
 
     send.write_all(&server_hello_bytes).await.map_err(|e| {
         format!(
@@ -2207,8 +2227,12 @@ impl PeerManager {
             client_ek.as_bytes().as_slice(),
             client_nonce,
         )?;
-        let client_hello_bytes = bincode::serialize(&client_hello)
-            .map_err(|e| format!("Failed to serialize transport client hello: {}", e))?;
+        let client_hello_bytes = serialize_legacy_bincode_limited(
+            &client_hello,
+            TRANSPORT_FRAME_LIMIT_BYTES_U64,
+            "transport client hello",
+        )
+        .map_err(|e| format!("Failed to serialize transport client hello: {}", e))?;
 
         let (mut send, mut recv) = connection
             .open_bi()
@@ -2245,13 +2269,17 @@ impl PeerManager {
             )
         })?;
 
-        let server_hello: TransportServerHello = bincode::deserialize(&server_hello_bytes)
-            .map_err(|e| {
-                format!(
-                    "Failed to decode transport response from {}: {}",
-                    peer_addr, e
-                )
-            })?;
+        let server_hello: TransportServerHello = deserialize_legacy_bincode_strict(
+            &server_hello_bytes,
+            TRANSPORT_FRAME_LIMIT_BYTES_U64,
+            "transport server hello",
+        )
+        .map_err(|e| {
+            format!(
+                "Failed to decode transport response from {}: {}",
+                peer_addr, e
+            )
+        })?;
         let client_hello_hash: [u8; 32] = Sha256::digest(&client_hello_bytes).into();
         let remote_identity = verify_server_hello(&server_hello, &client_hello_hash)?;
         let ciphertext = decode_mlkem_ciphertext(&server_hello.kem_ciphertext)?;
@@ -2561,6 +2589,19 @@ mod tests {
         let ciphertext = session.encrypt(plaintext).unwrap();
         let decrypted = session.decrypt(&ciphertext).unwrap();
         assert_eq!(decrypted, plaintext);
+    }
+
+    #[test]
+    fn test_secure_session_rejects_trailing_frame_bytes() {
+        let session = SecureSession { key: [7u8; 32] };
+        let mut ciphertext = session.encrypt(b"hello pq transport").unwrap();
+        ciphertext.push(0);
+
+        let result = session.decrypt(&ciphertext);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .contains("Failed to deserialize secure transport frame"));
     }
 
     #[test]

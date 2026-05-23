@@ -197,6 +197,10 @@ class Connection:
     async def get_network_info(self) -> Dict[str, Any]:
         """Get network information"""
         return await self._rpc("getNetworkInfo")
+
+    async def _get_signing_chain_id(self) -> str:
+        info = await self.get_network_info()
+        return info.get("chain_id") or info.get("chainId") or ""
     
     # ============================================================================
     # VALIDATOR ENDPOINTS
@@ -221,21 +225,23 @@ class Connection:
     async def stake(self, from_keypair: Keypair, validator: PublicKey, amount: int) -> str:
         """Create and send a stake transaction"""
         blockhash = await self.get_recent_blockhash()
+        chain_id = await self._get_signing_chain_id()
         instruction = TransactionBuilder.stake(from_keypair.pubkey(), validator, amount)
         transaction = (TransactionBuilder()
             .add(instruction)
             .set_recent_blockhash(blockhash)
-            .build_and_sign(from_keypair))
+            .build_and_sign_for_chain_id(from_keypair, chain_id))
         return await self.send_transaction(transaction)
     
     async def unstake(self, from_keypair: Keypair, validator: PublicKey, amount: int) -> str:
         """Create and send an unstake request transaction"""
         blockhash = await self.get_recent_blockhash()
+        chain_id = await self._get_signing_chain_id()
         instruction = TransactionBuilder.unstake(from_keypair.pubkey(), validator, amount)
         transaction = (TransactionBuilder()
             .add(instruction)
             .set_recent_blockhash(blockhash)
-            .build_and_sign(from_keypair))
+            .build_and_sign_for_chain_id(from_keypair, chain_id))
         return await self.send_transaction(transaction)
     
     async def get_staking_status(self, pubkey: PublicKey) -> Dict[str, Any]:
@@ -263,11 +269,12 @@ class Connection:
             Transaction signature
         """
         blockhash = await self.get_recent_blockhash()
+        chain_id = await self._get_signing_chain_id()
         instruction = TransactionBuilder.transfer(from_keypair.pubkey(), to, amount)
         transaction = (TransactionBuilder()
             .add(instruction)
             .set_recent_blockhash(blockhash)
-            .build_and_sign(from_keypair))
+            .build_and_sign_for_chain_id(from_keypair, chain_id))
         return await self.send_transaction(transaction)
 
     async def deploy_contract(
@@ -288,11 +295,12 @@ class Connection:
             Transaction signature
         """
         blockhash = await self.get_recent_blockhash()
+        chain_id = await self._get_signing_chain_id()
         instruction = TransactionBuilder.deploy_contract(deployer.pubkey(), code, init_data)
         transaction = (TransactionBuilder()
             .add(instruction)
             .set_recent_blockhash(blockhash)
-            .build_and_sign(deployer))
+            .build_and_sign_for_chain_id(deployer, chain_id))
         return await self.send_transaction(transaction)
 
     async def call_contract(
@@ -317,13 +325,14 @@ class Connection:
             Transaction signature
         """
         blockhash = await self.get_recent_blockhash()
+        chain_id = await self._get_signing_chain_id()
         instruction = TransactionBuilder.call_contract(
             caller.pubkey(), contract, function_name, args, value
         )
         transaction = (TransactionBuilder()
             .add(instruction)
             .set_recent_blockhash(blockhash)
-            .build_and_sign(caller))
+            .build_and_sign_for_chain_id(caller, chain_id))
         return await self.send_transaction(transaction)
 
     async def upgrade_contract(
@@ -344,11 +353,12 @@ class Connection:
             Transaction signature
         """
         blockhash = await self.get_recent_blockhash()
+        chain_id = await self._get_signing_chain_id()
         instruction = TransactionBuilder.upgrade_contract(owner.pubkey(), contract, code)
         transaction = (TransactionBuilder()
             .add(instruction)
             .set_recent_blockhash(blockhash)
-            .build_and_sign(owner))
+            .build_and_sign_for_chain_id(owner, chain_id))
         return await self.send_transaction(transaction)
 
     # ============================================================================

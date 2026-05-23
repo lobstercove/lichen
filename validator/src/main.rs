@@ -24,6 +24,9 @@ pub mod wal;
 
 use flate2::read::GzDecoder;
 use futures_util::{SinkExt, StreamExt};
+use lichen_core::codec::{
+    deserialize_legacy_bincode_strict, serialize_legacy_bincode, serialize_legacy_bincode_limited,
+};
 use lichen_core::keypair_file::{
     load_keypair_with_password_policy, plaintext_keypair_compat_allowed,
     require_runtime_keypair_password,
@@ -42,11 +45,13 @@ use lichen_core::{
     MarketActivity, MarketActivityKind, Mempool, NftActivity, NftActivityKind, PqSignature,
     Precommit, Prevote, ProgramCallActivity, Proposal, Pubkey, RoundStep, SlashingEvidence,
     SlashingOffense, StakePool, StateStore, Transaction, TxProcessor, ValidatorInfo, ValidatorSet,
-    Vote, VoteAggregator, VoteAuthority, BASE_FEE, BOOTSTRAP_GRANT_AMOUNT, CONTRACT_DEPLOY_FEE,
-    CONTRACT_UPGRADE_FEE, EVM_PROGRAM_ID, GENESIS_DISTRIBUTION, GENESIS_STATE_BUNDLE_VERSION,
-    GENESIS_STATE_CHUNK_OPCODE, GENESIS_SUPPLY_SPORES, MAX_TX_AGE_BLOCKS, NFT_COLLECTION_FEE,
-    NFT_MINT_FEE, ORACLE_ASSET_MAX_LEN, ORACLE_ASSET_MIN_LEN, ORACLE_STALENESS_SLOTS,
-    SYSTEM_PROGRAM_ID as CORE_SYSTEM_PROGRAM_ID,
+    Vote, VoteAggregator, VoteAuthority, BASE_FEE, BOOTSTRAP_GRANT_AMOUNT, CHAIN_ID_METADATA_KEY,
+    CONTRACT_DEPLOY_FEE, CONTRACT_UPGRADE_FEE, EVM_PROGRAM_ID, GENESIS_DISTRIBUTION,
+    GENESIS_STATE_BUNDLE_VERSION, GENESIS_STATE_CHUNK_OPCODE, GENESIS_SUPPLY_SPORES,
+    MAX_TX_AGE_BLOCKS, NFT_COLLECTION_FEE, NFT_MINT_FEE, ORACLE_ASSET_MAX_LEN,
+    ORACLE_ASSET_MIN_LEN, ORACLE_STALENESS_SLOTS, SLASHING_EVIDENCE_CODEC_LIMIT_BYTES,
+    SYSTEM_PROGRAM_ID as CORE_SYSTEM_PROGRAM_ID, VALIDATOR_BOOTSTRAP_GRANTS_ENABLED_METADATA_KEY,
+    VALIDATOR_BOOTSTRAP_GRANTS_ENABLED_VALUE,
 };
 use lichen_genesis::{
     genesis_assign_achievements, genesis_auto_deploy, genesis_bootstrap_bridge_committee,
@@ -409,6 +414,14 @@ const BLOCK_RANGE_SERVE_REFILL_BLOCKS_PER_SEC: u64 = 1000;
 const SNAPSHOT_SERVE_BURST_UNITS: u64 = 32;
 const SNAPSHOT_SERVE_REFILL_UNITS_PER_SEC: u64 = 8;
 const MAX_SNAPSHOT_CHUNK_SIZE: u64 = 2000;
+const SNAPSHOT_ENTRIES_CODEC_LIMIT_BYTES: u64 = 16 * 1024 * 1024;
+
+fn deserialize_snapshot_value<T>(data: &[u8], context: &str) -> Result<T, String>
+where
+    T: serde::de::DeserializeOwned,
+{
+    deserialize_legacy_bincode_strict(data, data.len() as u64, context)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SyncCatchUpActions {
@@ -1222,7 +1235,7 @@ fn extract_genesis_state_bundle(block: &Block) -> Result<Option<GenesisStateBund
                 && ix.data.len() > 1
                 && ix.data[0] == GENESIS_STATE_CHUNK_OPCODE
             {
-                let chunk: GenesisStateChunk = bincode::deserialize(&ix.data[1..])
+                let chunk = GenesisStateChunk::from_legacy_bincode(&ix.data[1..])
                     .map_err(|err| format!("invalid genesis state chunk encoding: {}", err))?;
                 chunks.push(chunk);
             }
@@ -1319,7 +1332,7 @@ fn extract_genesis_state_bundle(block: &Block) -> Result<Option<GenesisStateBund
         ));
     }
 
-    let bundle: GenesisStateBundle = bincode::deserialize(&raw)
+    let bundle = GenesisStateBundle::from_legacy_bincode(&raw)
         .map_err(|err| format!("invalid genesis state bundle encoding: {}", err))?;
     if bundle.version != GENESIS_STATE_BUNDLE_VERSION {
         return Err(format!(
@@ -1351,24 +1364,36 @@ fn apply_genesis_state_bundle(
                 let Some((_, data)) = category.entries.first() else {
                     return Err("genesis stake_pool category is empty".to_string());
                 };
-                let pool: StakePool = bincode::deserialize(data)
-                    .map_err(|err| format!("failed to decode genesis stake pool: {}", err))?;
+                let pool: StakePool = deserialize_legacy_bincode_strict(
+                    data,
+                    data.len() as u64,
+                    "genesis stake pool",
+                )
+                .map_err(|err| format!("failed to decode genesis stake pool: {}", err))?;
                 state.put_stake_pool(&pool)?;
             }
             "mossstake_pool" => {
                 let Some((_, data)) = category.entries.first() else {
                     return Err("genesis mossstake_pool category is empty".to_string());
                 };
-                let pool: lichen_core::MossStakePool = bincode::deserialize(data)
-                    .map_err(|err| format!("failed to decode genesis MossStake pool: {}", err))?;
+                let pool: lichen_core::MossStakePool = deserialize_legacy_bincode_strict(
+                    data,
+                    data.len() as u64,
+                    "genesis MossStake pool",
+                )
+                .map_err(|err| format!("failed to decode genesis MossStake pool: {}", err))?;
                 state.put_mossstake_pool(&pool)?;
             }
             "validator_set" => {
                 let Some((_, data)) = category.entries.first() else {
                     return Err("genesis validator_set category is empty".to_string());
                 };
-                let set: ValidatorSet = bincode::deserialize(data)
-                    .map_err(|err| format!("failed to decode genesis validator set: {}", err))?;
+                let set: ValidatorSet = deserialize_legacy_bincode_strict(
+                    data,
+                    data.len() as u64,
+                    "genesis validator set",
+                )
+                .map_err(|err| format!("failed to decode genesis validator set: {}", err))?;
                 state.save_validator_set(&set)?;
             }
             category_name => {
@@ -1397,7 +1422,13 @@ fn validate_state_root_with_schema(
     use_cold_start: bool,
 ) -> Result<(), String> {
     if block_root == Hash::default() {
-        return Ok(());
+        if slot == 0 {
+            return Ok(());
+        }
+        return Err(format!(
+            "slot {} {} missing state-root commitment",
+            slot, context
+        ));
     }
 
     let initial_root = if use_cold_start {
@@ -3553,7 +3584,22 @@ fn validate_block_transactions_against_state(
     allow_schema_detection: bool,
     commit: bool,
 ) -> Result<(), String> {
-    if block.header.slot == 0 || block.transactions.is_empty() {
+    if block.header.slot == 0 {
+        return validate_state_root_with_schema(
+            state,
+            block.header.slot,
+            block.header.state_root,
+            context,
+            allow_schema_detection,
+        );
+    }
+    if block.header.state_root == Hash::default() {
+        return Err(format!(
+            "slot {} {} missing state-root commitment",
+            block.header.slot, context
+        ));
+    }
+    if block.transactions.is_empty() {
         return validate_state_root_with_schema(
             state,
             block.header.slot,
@@ -3569,7 +3615,7 @@ fn validate_block_transactions_against_state(
         speculative_processor.process_transactions_speculative(&block.transactions, &producer);
 
     let computed_root = state.compute_state_root_for_batch(&speculative.batch);
-    if block.header.state_root != Hash::default() && computed_root != block.header.state_root {
+    if computed_root != block.header.state_root {
         return Err(format!(
             "slot {} {} state-root mismatch: local={} expected={}",
             block.header.slot,
@@ -3632,6 +3678,7 @@ fn validate_consensus_proposal_before_prevote(
     proposal: &Proposal,
     expected_parent_hash: Hash,
     expected_validators_hash: Hash,
+    chain_id: &str,
 ) -> Result<(), String> {
     let block = &proposal.block;
     if block.header.slot != proposal.height {
@@ -3658,7 +3705,7 @@ fn validate_consensus_proposal_before_prevote(
             expected_validators_hash.to_hex(),
         ));
     }
-    if !block.verify_signature() {
+    if !block.verify_signature_with_chain_id(chain_id) {
         return Err(format!(
             "proposal h={} r={} rejected: block signature is invalid",
             proposal.height, proposal.round,
@@ -5041,6 +5088,7 @@ fn latest_verified_checkpoint(
     state: &StateStore,
     validator_set: &ValidatorSet,
     stake_pool: &StakePool,
+    chain_id: &str,
 ) -> Option<(lichen_core::CheckpointMeta, String, Block)> {
     let finalized_slot = state.get_last_finalized_slot().ok()?;
     let checkpoints = StateStore::list_checkpoints(data_dir);
@@ -5081,7 +5129,12 @@ fn latest_verified_checkpoint(
             warn!("⚠️  Rejecting checkpoint at slot {}: {}", meta.slot, err);
             continue;
         }
-        if let Err(err) = verify_committed_block_authenticity(&block, validator_set, stake_pool) {
+        if let Err(err) = verify_committed_block_authenticity_with_chain_id(
+            &block,
+            validator_set,
+            stake_pool,
+            chain_id,
+        ) {
             warn!(
                 "⚠️  Rejecting checkpoint at slot {}: commit verification failed: {}",
                 meta.slot, err
@@ -5095,10 +5148,20 @@ fn latest_verified_checkpoint(
     None
 }
 
+#[cfg(test)]
 fn verify_committed_block_authenticity(
     block: &Block,
     validator_set: &ValidatorSet,
     stake_pool: &StakePool,
+) -> Result<(), String> {
+    verify_committed_block_authenticity_with_chain_id(block, validator_set, stake_pool, "")
+}
+
+fn verify_committed_block_authenticity_with_chain_id(
+    block: &Block,
+    validator_set: &ValidatorSet,
+    stake_pool: &StakePool,
+    chain_id: &str,
 ) -> Result<(), String> {
     if block.header.slot == 0 {
         return Ok(());
@@ -5111,26 +5174,75 @@ fn verify_committed_block_authenticity(
         ));
     }
 
-    block.verify_commit(validator_set, stake_pool)
+    block.verify_commit_with_chain_id(chain_id, validator_set, stake_pool)
+}
+
+#[cfg(test)]
+fn verify_synced_block_consensus_authenticity(
+    block: &Block,
+    validator_set: &ValidatorSet,
+    stake_pool: &StakePool,
+) -> Result<(), String> {
+    verify_synced_block_consensus_authenticity_with_chain_id(block, validator_set, stake_pool, "")
+}
+
+fn verify_synced_block_consensus_authenticity_with_chain_id(
+    block: &Block,
+    validator_set: &ValidatorSet,
+    stake_pool: &StakePool,
+    chain_id: &str,
+) -> Result<(), String> {
+    if block.header.slot == 0 {
+        return Ok(());
+    }
+
+    let proposer = Pubkey(block.header.validator);
+    match validator_set.get_validator(&proposer) {
+        Some(validator) if !validator.pending_activation => {}
+        Some(_) => {
+            return Err(format!(
+                "block {} proposer {} is pending activation",
+                block.header.slot,
+                proposer.to_base58()
+            ));
+        }
+        None => {
+            return Err(format!(
+                "block {} proposer {} is not in the active validator set",
+                block.header.slot,
+                proposer.to_base58()
+            ));
+        }
+    }
+
+    verify_committed_block_authenticity_with_chain_id(block, validator_set, stake_pool, chain_id)
+}
+
+struct CheckpointAnchor<'a> {
+    slot: u64,
+    state_root: [u8; 32],
+    checkpoint_header: Option<&'a lichen_core::BlockHeader>,
+    commit_round: u32,
+    commit_signatures: &'a [lichen_core::CommitSignature],
+    chain_id: &'a str,
 }
 
 fn verify_checkpoint_anchor(
-    slot: u64,
-    _state_root: [u8; 32],
-    checkpoint_header: Option<&lichen_core::BlockHeader>,
-    commit_round: u32,
-    commit_signatures: &[lichen_core::CommitSignature],
+    anchor: CheckpointAnchor<'_>,
     validator_set: &ValidatorSet,
     stake_pool: &StakePool,
 ) -> Result<(), String> {
     // The signed committed header authenticates the finalized slot. The
     // checkpoint state_root itself is corroborated independently across peers
     // and then verified against the downloaded checkpoint contents.
-    let header = checkpoint_header.ok_or_else(|| "missing checkpoint header".to_string())?;
-    if header.slot != slot {
+    let _checkpoint_state_root = anchor.state_root;
+    let header = anchor
+        .checkpoint_header
+        .ok_or_else(|| "missing checkpoint header".to_string())?;
+    if header.slot != anchor.slot {
         return Err(format!(
             "checkpoint header slot mismatch: expected {}, got {}",
-            slot, header.slot
+            anchor.slot, header.slot
         ));
     }
 
@@ -5139,13 +5251,18 @@ fn verify_checkpoint_anchor(
         transactions: Vec::new(),
         tx_fees_paid: Vec::new(),
         oracle_prices: Vec::new(),
-        commit_round,
-        commit_signatures: commit_signatures.to_vec(),
+        commit_round: anchor.commit_round,
+        commit_signatures: anchor.commit_signatures.to_vec(),
     };
-    if !block.verify_signature() {
+    if !block.verify_signature_with_chain_id(anchor.chain_id) {
         return Err("checkpoint header signature verification failed".to_string());
     }
-    verify_committed_block_authenticity(&block, validator_set, stake_pool)
+    verify_committed_block_authenticity_with_chain_id(
+        &block,
+        validator_set,
+        stake_pool,
+        anchor.chain_id,
+    )
 }
 
 #[cfg(test)]
@@ -7018,22 +7135,67 @@ async fn run_validator() {
         }
     };
 
-    if let Some(bind) = signer_bind {
-        if let Ok(addr) = bind.parse::<SocketAddr>() {
-            if !addr.ip().is_loopback() {
-                warn!(
-                    "LICHEN_SIGNER_BIND is exposed on {}. Use loopback or a private interface only.",
-                    addr
-                );
-            }
-            let signer_data_dir = data_dir_path.clone();
-            tokio::spawn(async move {
-                threshold_signer::start_signer_server(addr, &signer_data_dir).await;
-            });
+    // Parse --import-key before opening chain state. Identity failures should
+    // fail fast and cleanly without touching RocksDB or starting services.
+    if let Some(import_pos) = args
+        .iter()
+        .position(|arg| arg == "--import-key" || arg.starts_with("--import-key="))
+    {
+        let import_path = if args[import_pos].starts_with("--import-key=") {
+            args[import_pos]
+                .strip_prefix("--import-key=")
+                .unwrap()
+                .to_string()
+        } else if let Some(p) = args.get(import_pos + 1) {
+            p.to_string()
         } else {
-            warn!("Invalid LICHEN_SIGNER_BIND value: {}", bind);
+            error!("❌ --import-key requires a file path argument");
+            std::process::exit(1);
+        };
+        let source = Path::new(&import_path);
+        if !source.exists() {
+            error!("❌ --import-key file not found: {}", import_path);
+            std::process::exit(1);
         }
+        let dest = data_dir_path.join("validator-keypair.json");
+        if dest.exists() {
+            let backup = dest.with_extension("json.bak");
+            info!("📋 Backing up existing keypair to {:?}", backup);
+            if let Err(e) = fs::copy(&dest, &backup) {
+                warn!("⚠️  Failed to backup existing keypair: {}", e);
+            }
+        }
+        info!("🔑 Importing keypair from {:?} → {:?}", source, dest);
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent).ok();
+        }
+        if let Err(e) = fs::copy(source, &dest) {
+            error!("❌ Failed to copy keypair file for --import-key: {}", e);
+            std::process::exit(1);
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&dest, fs::Permissions::from_mode(0o600)).ok();
+        }
+        info!(
+            "✅ Keypair imported successfully — this validator will resume the imported identity"
+        );
     }
+
+    let keypair_path = get_flag_value(&args, &["--keypair"]);
+    let validator_keypair = match keypair_loader::load_or_generate_keypair(
+        keypair_path,
+        p2p_port,
+        Some(data_dir_path.as_path()),
+        network_arg.as_deref(),
+    ) {
+        Ok(keypair) => keypair,
+        Err(err) => {
+            error!("Failed to load or generate validator keypair: {}", err);
+            std::process::exit(1);
+        }
+    };
 
     // Parse --cache-size-mb flag for RocksDB shared block cache
     let cache_size_mb: Option<usize> =
@@ -7161,6 +7323,39 @@ async fn run_validator() {
     };
 
     let runtime_genesis_config = Arc::new(RwLock::new(genesis_config.clone()));
+    if let Err(err) = state.put_metadata(CHAIN_ID_METADATA_KEY, genesis_config.chain_id.as_bytes())
+    {
+        error!("Failed to persist chain-id signing metadata: {}", err);
+        return;
+    }
+    let local_dev_bootstrap_grants_enabled = dev_mode
+        && env_flag_enabled("LICHEN_LOCAL_DEV")
+        && !genesis_config
+            .chain_id
+            .to_ascii_lowercase()
+            .contains("mainnet");
+    let bootstrap_grants_enabled = genesis_config.consensus.validator_bootstrap_grants_enabled
+        || local_dev_bootstrap_grants_enabled;
+    let bootstrap_grants_value = if bootstrap_grants_enabled {
+        VALIDATOR_BOOTSTRAP_GRANTS_ENABLED_VALUE
+    } else {
+        b"0".as_slice()
+    };
+    if let Err(err) = state.put_metadata(
+        VALIDATOR_BOOTSTRAP_GRANTS_ENABLED_METADATA_KEY,
+        bootstrap_grants_value,
+    ) {
+        error!(
+            "Failed to persist validator registration policy metadata: {}",
+            err
+        );
+        return;
+    }
+    if bootstrap_grants_enabled {
+        info!("🔧 Validator bootstrap grants enabled for this local/dev chain policy");
+    } else {
+        info!("🔒 Validator bootstrap grants disabled; registration is self-funded/governed");
+    }
 
     // P2P NETWORK SETUP - do this early to check if joining existing network
     info!("🦞 Initializing P2P network...");
@@ -7186,7 +7381,7 @@ async fn run_validator() {
         .to_string();
 
     let no_auto_restart = has_flag(&args, "--no-auto-restart");
-    let data_dir_path = Path::new(&data_dir);
+    let data_dir_path_ref = data_dir_path.as_path();
 
     let update_config = updater::UpdateConfig {
         mode: auto_update_mode,
@@ -7196,13 +7391,13 @@ async fn run_validator() {
         jitter_max_secs: 60,
         target_binary: "lichen-validator".to_string(),
         companion_binaries: discover_companion_binaries(),
-        companion_assets: discover_companion_assets(data_dir_path),
+        companion_assets: discover_companion_assets(data_dir_path_ref),
     };
 
     // Spawn auto-updater background task
     info!("🔄 Validator version: v{}", updater::VERSION);
     let _updater_handle = updater::spawn_update_checker(update_config);
-    let validator_runtime_home = resolve_validator_runtime_home(data_dir_path);
+    let validator_runtime_home = resolve_validator_runtime_home(data_dir_path_ref);
     if let Err(err) = std::fs::create_dir_all(&validator_runtime_home) {
         warn!(
             "Failed to create validator runtime home {}: {}",
@@ -7370,6 +7565,7 @@ async fn run_validator() {
             .unwrap_or_default(),
         // P3-6: External address for NAT traversal and self-seed filtering.
         external_addr: configured_external_addr,
+        consensus_chain_id: genesis_config.chain_id.clone(),
     };
 
     let has_genesis_block = state.get_block_by_slot(0).unwrap_or(None).is_some();
@@ -7526,7 +7722,7 @@ async fn run_validator() {
     // Block rewards use protocol-level coinbase (no signing needed).
     let treasury_keypair = load_treasury_keypair(
         genesis_wallet.as_ref(),
-        data_dir_path,
+        &data_dir_path,
         &genesis_keypairs_dir,
         &genesis_config.chain_id,
     );
@@ -7544,81 +7740,26 @@ async fn run_validator() {
         }
     }
 
-    // Parse --import-key: copy an existing keypair file into the validator data directory,
-    // then use it as the validator identity. This is for machine migration.
-    if let Some(import_pos) = args
-        .iter()
-        .position(|arg| arg == "--import-key" || arg.starts_with("--import-key="))
-    {
-        let import_path = if args[import_pos].starts_with("--import-key=") {
-            args[import_pos]
-                .strip_prefix("--import-key=")
-                .unwrap()
-                .to_string()
-        } else if let Some(p) = args.get(import_pos + 1) {
-            p.to_string()
-        } else {
-            error!("❌ --import-key requires a file path argument");
-            std::process::exit(1);
-        };
-        let source = Path::new(&import_path);
-        if !source.exists() {
-            error!("❌ --import-key file not found: {}", import_path);
-            std::process::exit(1);
-        }
-        let dest = data_dir_path.join("validator-keypair.json");
-        if dest.exists() {
-            // Back up existing keypair before overwriting
-            let backup = dest.with_extension("json.bak");
-            info!("📋 Backing up existing keypair to {:?}", backup);
-            if let Err(e) = fs::copy(&dest, &backup) {
-                warn!("⚠️  Failed to backup existing keypair: {}", e);
-            }
-        }
-        info!("🔑 Importing keypair from {:?} → {:?}", source, dest);
-        if let Some(parent) = dest.parent() {
-            fs::create_dir_all(parent).ok();
-        }
-        if let Err(e) = fs::copy(source, &dest) {
-            error!("❌ Failed to copy keypair file for --import-key: {}", e);
-            std::process::exit(1);
-        }
-        // Set restrictive permissions
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&dest, fs::Permissions::from_mode(0o600)).ok();
-        }
-        info!(
-            "✅ Keypair imported successfully — this validator will resume the imported identity"
-        );
-    }
-
-    // Load validator keypair from file (production-ready)
-    // Priority order:
-    // 1. --keypair CLI argument
-    // 2. LICHEN_VALIDATOR_KEYPAIR env var
-    // 3. {data_dir}/validator-keypair.json
-    // 4. Generate new and save to {data_dir}/validator-keypair.json
-
-    let keypair_path = get_flag_value(&args, &["--keypair"]);
-
-    let validator_keypair = match keypair_loader::load_or_generate_keypair(
-        keypair_path,
-        p2p_port,
-        Some(data_dir_path),
-        network_arg.as_deref(),
-    ) {
-        Ok(keypair) => keypair,
-        Err(err) => {
-            error!("Failed to load or generate validator keypair: {}", err);
-            std::process::exit(1);
-        }
-    };
-
     let validator_pubkey = validator_keypair.pubkey();
     info!("🦞 Validator identity: {}", validator_pubkey.to_base58());
     info!("   Port: {}, Keypair loaded successfully", p2p_port);
+
+    if let Some(bind) = signer_bind {
+        if let Ok(addr) = bind.parse::<SocketAddr>() {
+            if !addr.ip().is_loopback() {
+                warn!(
+                    "LICHEN_SIGNER_BIND is exposed on {}. Use loopback or a private interface only.",
+                    addr
+                );
+            }
+            let signer_data_dir = data_dir_path.clone();
+            tokio::spawn(async move {
+                threshold_signer::start_signer_server(addr, &signer_data_dir).await;
+            });
+        } else {
+            warn!("Invalid LICHEN_SIGNER_BIND value: {}", bind);
+        }
+    }
 
     // ========================================================================
     // MACHINE FINGERPRINT (Anti-Sybil)
@@ -7642,9 +7783,10 @@ async fn run_validator() {
     } else {
         let fp = collect_machine_fingerprint();
         if fp == [0u8; 32] {
-            warn!(
-                "⚠️  Could not collect machine fingerprint — running without anti-Sybil protection"
+            error!(
+                "❌ Could not collect machine fingerprint. Non-dev validators must provide a stable nonzero fingerprint for Sybil-resistant registration."
             );
+            std::process::exit(1);
         } else {
             info!(
                 "🔒 Machine fingerprint: {}..{}",
@@ -8787,7 +8929,12 @@ async fn run_validator() {
                 // ── Block validation (T2.2) ──────────────────────────
                 // Verify producer signature and structural limits BEFORE
                 // accepting any block into local state.
-                if !block.verify_signature() {
+                let block_signature_chain_id = runtime_genesis_config_for_blocks
+                    .read()
+                    .await
+                    .chain_id
+                    .clone();
+                if !block.verify_signature_with_chain_id(&block_signature_chain_id) {
                     warn!(
                         "⚠️  Rejecting block {} — invalid signature from {}",
                         block_slot,
@@ -8835,11 +8982,10 @@ async fn run_validator() {
                     continue;
                 }
 
-                // Active-set membership check for live, non-sync blocks. During
-                // historical sync, the parent hash chain plus deterministic
-                // replay/state-root validation are authoritative; mutating the
-                // local validator set before a block is chainable can corrupt
-                // the pre-block state used to validate slot roots.
+                // Early active-set membership check for live, non-sync blocks.
+                // Historical sync blocks are checked at the canonical acceptance
+                // boundary, after the parent has advanced the local validator set
+                // to the correct pre-block state.
                 if block_slot > 0 && !is_sync_block {
                     let vs = validator_set_for_blocks.read().await;
                     if vs.get_validator(&Pubkey(block.header.validator)).is_none() {
@@ -8852,23 +8998,11 @@ async fn run_validator() {
                     }
                 }
 
-                // Commit certificate verification is NOT performed during
-                // block processing.  Full validators rely on:
-                //   1. Block signature verification (above — proves producer identity)
-                //   2. Parent-hash chain (ordering & tamper detection during sync)
-                //   3. BFT consensus (propose/prevote/precommit during real-time)
-                //
-                // Re-verifying commit certs here is unsafe because the local
-                // stake pool diverges from the producer's pool at each height
-                // during join/sync: the joiner replays RegisterValidator TXs
-                // that add itself to the set, but the producer's commit cert
-                // was signed BEFORE those validators joined.  This creates an
-                // unresolvable 2/3-stake mismatch at every join event.
-                //
-                // Commit certificates are stored in blocks for light-client
-                // verification, not full-node re-verification.  This matches
-                // Tendermint's architecture: fast-sync trusts the hash chain,
-                // consensus mode uses live BFT voting.
+                // Network-origin blocks must carry a valid commit certificate
+                // and an active proposer before they become canonical. Future
+                // blocks may be buffered while their parents are missing, but
+                // every chainable block is rechecked against the local pre-block
+                // validator set immediately before replay/storage.
 
                 // 1.7: Double-block equivocation detection
                 {
@@ -8912,7 +9046,11 @@ async fn run_validator() {
 
                                 // PHASE-3: Submit SlashValidator tx through consensus
                                 // (opcode 27) so all nodes apply the same penalty
-                                if let Ok(evidence_bytes) = bincode::serialize(&evidence) {
+                                if let Ok(evidence_bytes) = serialize_legacy_bincode_limited(
+                                    &evidence,
+                                    SLASHING_EVIDENCE_CODEC_LIMIT_BYTES,
+                                    "slashing evidence",
+                                ) {
                                     let mut ix_data = vec![27u8];
                                     ix_data.extend_from_slice(&evidence_bytes);
                                     let tip = state_for_blocks.get_last_slot().unwrap_or(0);
@@ -9926,6 +10064,30 @@ async fn run_validator() {
                                 continue;
                             }
 
+                            let chain_id = runtime_genesis_config_for_blocks
+                                .read()
+                                .await
+                                .chain_id
+                                .clone();
+                            {
+                                let vs = validator_set_for_blocks.read().await;
+                                let pool = stake_pool_for_blocks.read().await;
+                                if let Err(err) =
+                                    verify_synced_block_consensus_authenticity_with_chain_id(
+                                        &pending_block,
+                                        &vs,
+                                        &pool,
+                                        &chain_id,
+                                    )
+                                {
+                                    warn!(
+                                        "⚠️  Rejecting pending block {} — consensus authenticity failed: {}",
+                                        pending_slot, err
+                                    );
+                                    continue;
+                                }
+                            }
+
                             // P1-1: Header-first sync — skip TX replay for blocks
                             // outside the full-execution window during catch-up.
                             let did_full_validate =
@@ -10201,6 +10363,27 @@ async fn run_validator() {
                             continue;
                         }
 
+                        let chain_id = runtime_genesis_config_for_blocks
+                            .read()
+                            .await
+                            .chain_id
+                            .clone();
+                        {
+                            let vs = validator_set_for_blocks.read().await;
+                            let pool = stake_pool_for_blocks.read().await;
+                            if let Err(err) =
+                                verify_synced_block_consensus_authenticity_with_chain_id(
+                                    &block, &vs, &pool, &chain_id,
+                                )
+                            {
+                                warn!(
+                                    "⚠️  Rejecting block {} — consensus authenticity failed: {}",
+                                    block_slot, err
+                                );
+                                continue;
+                            }
+                        }
+
                         // Valid next block in chain - replay transactions then store
                         // P1-1: Skip TX replay in header-only sync for far-away blocks.
                         let did_full_validate = sync_mgr.should_full_validate(block_slot).await;
@@ -10394,6 +10577,30 @@ async fn run_validator() {
                                     );
                                     sync_mgr.record_progress(pending_slot).await;
                                     continue;
+                                }
+
+                                let chain_id = runtime_genesis_config_for_blocks
+                                    .read()
+                                    .await
+                                    .chain_id
+                                    .clone();
+                                {
+                                    let vs = validator_set_for_blocks.read().await;
+                                    let pool = stake_pool_for_blocks.read().await;
+                                    if let Err(err) =
+                                        verify_synced_block_consensus_authenticity_with_chain_id(
+                                            &pending_block,
+                                            &vs,
+                                            &pool,
+                                            &chain_id,
+                                        )
+                                    {
+                                        warn!(
+                                            "⚠️  Rejecting pending block {} — consensus authenticity failed: {}",
+                                            pending_slot, err
+                                        );
+                                        continue;
+                                    }
                                 }
 
                                 if sync_mgr
@@ -10748,7 +10955,15 @@ async fn run_validator() {
                             if !existing.commit_signatures.is_empty() {
                                 let vs = validator_set_for_blocks.read().await;
                                 let pool = stake_pool_for_blocks.read().await;
-                                if existing.verify_commit(&vs, &pool).is_ok() {
+                                let chain_id = runtime_genesis_config_for_blocks
+                                    .read()
+                                    .await
+                                    .chain_id
+                                    .clone();
+                                if existing
+                                    .verify_commit_with_chain_id(&chain_id, &vs, &pool)
+                                    .is_ok()
+                                {
                                     debug!(
                                         "🛡️  BFT FINALITY: Block {} has valid commit certificate — \
                                          rejecting fork choice replacement",
@@ -10837,6 +11052,27 @@ async fn run_validator() {
                             if (incoming_weight > existing_weight && oracle_prefers_incoming)
                                 || longest_chain_rule
                             {
+                                let chain_id = runtime_genesis_config_for_blocks
+                                    .read()
+                                    .await
+                                    .chain_id
+                                    .clone();
+                                {
+                                    let vs = validator_set_for_blocks.read().await;
+                                    let pool = stake_pool_for_blocks.read().await;
+                                    if let Err(err) =
+                                        verify_synced_block_consensus_authenticity_with_chain_id(
+                                            &block, &vs, &pool, &chain_id,
+                                        )
+                                    {
+                                        warn!(
+                                            "⚠️  Rejecting fork replacement block {} — consensus authenticity failed: {}",
+                                            block_slot, err
+                                        );
+                                        continue;
+                                    }
+                                }
+
                                 // Revert old block's financial effects before replacing
                                 revert_block_effects(
                                     &state_for_blocks,
@@ -10948,6 +11184,30 @@ async fn run_validator() {
                                             );
                                             sync_mgr.record_progress(pending_slot).await;
                                             continue;
+                                        }
+
+                                        let chain_id = runtime_genesis_config_for_blocks
+                                            .read()
+                                            .await
+                                            .chain_id
+                                            .clone();
+                                        {
+                                            let vs = validator_set_for_blocks.read().await;
+                                            let pool = stake_pool_for_blocks.read().await;
+                                            if let Err(err) =
+                                                verify_synced_block_consensus_authenticity_with_chain_id(
+                                                    &pending_block,
+                                                    &vs,
+                                                    &pool,
+                                                    &chain_id,
+                                                )
+                                            {
+                                                warn!(
+                                                    "⚠️  Rejecting pending block {} — consensus authenticity failed: {}",
+                                                    pending_slot, err
+                                                );
+                                                continue;
+                                            }
                                         }
 
                                         if sync_mgr
@@ -11154,7 +11414,11 @@ async fn run_validator() {
 
                             // PHASE-3: Submit SlashValidator tx through consensus
                             // (opcode 27) so all nodes apply the same penalty
-                            if let Ok(evidence_bytes) = bincode::serialize(&evidence) {
+                            if let Ok(evidence_bytes) = serialize_legacy_bincode_limited(
+                                &evidence,
+                                SLASHING_EVIDENCE_CODEC_LIMIT_BYTES,
+                                "slashing evidence",
+                            ) {
                                 let mut ix_data = vec![27u8];
                                 ix_data.extend_from_slice(&evidence_bytes);
                                 let tip = state_for_votes.get_last_slot().unwrap_or(0);
@@ -11789,6 +12053,7 @@ async fn run_validator() {
         let peer_mgr_for_snapshot = p2p_pm.clone();
         let local_addr_for_snapshot = p2p_config.listen_addr;
         let data_dir_for_snapshot = data_dir.clone();
+        let chain_id_for_snapshot_serve = genesis_config.chain_id.clone();
         tokio::spawn(async move {
             info!("🔄 Snapshot request handler started");
             let mut snapshot_tokens: HashMap<std::net::SocketAddr, TokenBucket> = HashMap::new();
@@ -11864,6 +12129,7 @@ async fn run_validator() {
                             &state_for_snapshot_serve,
                             &vs,
                             &pool,
+                            &chain_id_for_snapshot_serve,
                         ) {
                             Some((meta, _, block)) => (
                                 meta.slot,
@@ -11908,6 +12174,7 @@ async fn run_validator() {
                             &state_for_snapshot_serve,
                             &vs,
                             &pool,
+                            &chain_id_for_snapshot_serve,
                         ) {
                             Some((meta, path, _block)) => {
                                 match StateStore::open_checkpoint(&path) {
@@ -11928,7 +12195,8 @@ async fn run_validator() {
                                 let set = store.load_validator_set().unwrap_or_default();
                                 Some(vec![(
                                     b"validator_set".to_vec(),
-                                    bincode::serialize(&set).unwrap_or_default(),
+                                    serialize_legacy_bincode(&set, "validator_set snapshot")
+                                        .unwrap_or_default(),
                                 )])
                             }
                             "stake_pool" if chunk_index == 0 => {
@@ -11936,7 +12204,8 @@ async fn run_validator() {
                                     store.get_stake_pool().unwrap_or_else(|_| StakePool::new());
                                 Some(vec![(
                                     b"stake_pool".to_vec(),
-                                    bincode::serialize(&pool).unwrap_or_default(),
+                                    serialize_legacy_bincode(&pool, "stake_pool snapshot")
+                                        .unwrap_or_default(),
                                 )])
                             }
                             "mossstake_pool" if chunk_index == 0 => {
@@ -11945,7 +12214,8 @@ async fn run_validator() {
                                     .unwrap_or_else(|_| lichen_core::MossStakePool::new());
                                 Some(vec![(
                                     b"mossstake_pool".to_vec(),
-                                    bincode::serialize(&pool).unwrap_or_default(),
+                                    serialize_legacy_bincode(&pool, "mossstake_pool snapshot")
+                                        .unwrap_or_default(),
                                 )])
                             }
                             "validator_set" | "stake_pool" | "mossstake_pool" => Some(Vec::new()),
@@ -11953,7 +12223,12 @@ async fn run_validator() {
                         };
 
                         if let Some(chunk) = singleton_chunk {
-                            let entries_bytes = bincode::serialize(&chunk).unwrap_or_default();
+                            let entries_bytes = serialize_legacy_bincode_limited(
+                                &chunk,
+                                SNAPSHOT_ENTRIES_CODEC_LIMIT_BYTES,
+                                "state snapshot entries",
+                            )
+                            .unwrap_or_default();
                             let msg = P2PMessage::new(
                                 MessageType::StateSnapshotResponse {
                                     category: category.clone(),
@@ -12051,7 +12326,12 @@ async fn run_validator() {
 
                         let chunk = page.entries;
 
-                        let entries_bytes = bincode::serialize(&chunk).unwrap_or_default();
+                        let entries_bytes = serialize_legacy_bincode_limited(
+                            &chunk,
+                            SNAPSHOT_ENTRIES_CODEC_LIMIT_BYTES,
+                            "state snapshot entries",
+                        )
+                        .unwrap_or_default();
                         let msg = P2PMessage::new(
                             MessageType::StateSnapshotResponse {
                                 category: category.clone(),
@@ -12122,6 +12402,7 @@ async fn run_validator() {
                                 &state_for_snapshot_serve,
                                 &vs,
                                 &pool,
+                                &chain_id_for_snapshot_serve,
                             ) {
                                 Some((meta, _, block)) => (
                                     meta.slot,
@@ -12170,6 +12451,7 @@ async fn run_validator() {
         let local_addr_for_snap_apply = local_addr;
         let sync_mgr_for_snapshot = sync_manager.clone();
         let block_apply_lock_for_snapshot_apply = block_apply_lock.clone();
+        let chain_id_for_snapshot_apply = genesis_config.chain_id.clone();
         tokio::spawn(async move {
             // Track state snapshot download progress per category
             let mut state_snap_progress: std::collections::HashMap<String, (u64, u64)> =
@@ -12222,11 +12504,14 @@ async fn run_validator() {
                             } else {
                                 let pool = stake_pool_for_snapshot_apply.read().await;
                                 verify_checkpoint_anchor(
-                                    slot,
-                                    state_root,
-                                    checkpoint_header.as_ref(),
-                                    commit_round,
-                                    &commit_signatures,
+                                    CheckpointAnchor {
+                                        slot,
+                                        state_root,
+                                        checkpoint_header: checkpoint_header.as_ref(),
+                                        commit_round,
+                                        commit_signatures: &commit_signatures,
+                                        chain_id: &chain_id_for_snapshot_apply,
+                                    },
                                     &vs,
                                     &pool,
                                 )
@@ -12422,7 +12707,11 @@ async fn run_validator() {
                     );
 
                     // Deserialize and stage entries (NOT written to live DB yet)
-                    match bincode::deserialize::<Vec<(Vec<u8>, Vec<u8>)>>(entries_bytes) {
+                    match deserialize_legacy_bincode_strict::<Vec<(Vec<u8>, Vec<u8>)>>(
+                        entries_bytes,
+                        SNAPSHOT_ENTRIES_CODEC_LIMIT_BYTES,
+                        "state snapshot entries",
+                    ) {
                         Ok(entries) => {
                             let count = entries.len();
                             staged_snapshot_entries
@@ -12509,7 +12798,10 @@ async fn run_validator() {
                                         let Some((_, data)) = entries.first() else {
                                             break 'staging false;
                                         };
-                                        match bincode::deserialize::<ValidatorSet>(data) {
+                                        match deserialize_snapshot_value::<ValidatorSet>(
+                                            data,
+                                            "validator_set snapshot",
+                                        ) {
                                             Ok(set) => staging_state
                                                 .save_validator_set(&set)
                                                 .map(|_| set.validators().len()),
@@ -12523,7 +12815,10 @@ async fn run_validator() {
                                         let Some((_, data)) = entries.first() else {
                                             break 'staging false;
                                         };
-                                        match bincode::deserialize::<StakePool>(data) {
+                                        match deserialize_snapshot_value::<StakePool>(
+                                            data,
+                                            "stake_pool snapshot",
+                                        ) {
                                             Ok(pool) => staging_state
                                                 .put_stake_pool(&pool)
                                                 .map(|_| pool.stake_entries().len()),
@@ -12537,8 +12832,9 @@ async fn run_validator() {
                                         let Some((_, data)) = entries.first() else {
                                             break 'staging false;
                                         };
-                                        match bincode::deserialize::<lichen_core::MossStakePool>(
+                                        match deserialize_snapshot_value::<lichen_core::MossStakePool>(
                                             data,
+                                            "mossstake_pool snapshot",
                                         ) {
                                             Ok(pool) => {
                                                 staging_state.put_mossstake_pool(&pool).map(|_| 1)
@@ -12662,7 +12958,10 @@ async fn run_validator() {
                                         warn!("⚠️  Missing validator_set snapshot payload");
                                         continue;
                                     };
-                                    match bincode::deserialize::<ValidatorSet>(data) {
+                                    match deserialize_snapshot_value::<ValidatorSet>(
+                                        data,
+                                        "validator_set snapshot",
+                                    ) {
                                         Ok(set) => {
                                             let count = set.validators().len();
                                             let res = state_for_snapshot_apply
@@ -12691,7 +12990,10 @@ async fn run_validator() {
                                         warn!("⚠️  Missing stake_pool snapshot payload");
                                         continue;
                                     };
-                                    match bincode::deserialize::<StakePool>(data) {
+                                    match deserialize_snapshot_value::<StakePool>(
+                                        data,
+                                        "stake_pool snapshot",
+                                    ) {
                                         Ok(pool) => {
                                             let count = pool.stake_entries().len();
                                             let res = state_for_snapshot_apply
@@ -12718,7 +13020,10 @@ async fn run_validator() {
                                         warn!("⚠️  Missing mossstake_pool snapshot payload");
                                         continue;
                                     };
-                                    match bincode::deserialize::<lichen_core::MossStakePool>(data) {
+                                    match deserialize_snapshot_value::<lichen_core::MossStakePool>(
+                                        data,
+                                        "mossstake_pool snapshot",
+                                    ) {
                                         Ok(pool) => state_for_snapshot_apply
                                             .put_mossstake_pool(&pool)
                                             .map(|_| 1),
@@ -13961,7 +14266,11 @@ async fn run_validator() {
                 let requester = msg.requester;
                 match state_for_erasure.get_block_by_slot(slot) {
                     Ok(Some(block)) => {
-                        let serialized = match bincode::serialize(&block) {
+                        let serialized = match serialize_legacy_bincode_limited(
+                            &block,
+                            lichen_core::MAX_BLOCK_SIZE as u64,
+                            "erasure block",
+                        ) {
                             Ok(s) => s,
                             Err(e) => {
                                 warn!("P2P: Failed to serialize block {} for erasure: {}", slot, e);
@@ -14033,7 +14342,11 @@ async fn run_validator() {
                 if present >= lichen_p2p::erasure::DATA_SHARDS {
                     match lichen_p2p::erasure::decode_shards(buffer) {
                         Ok(data) => {
-                            match bincode::deserialize::<Block>(&data) {
+                            match deserialize_legacy_bincode_strict::<Block>(
+                                &data,
+                                lichen_core::MAX_BLOCK_SIZE as u64,
+                                "erasure block",
+                            ) {
                                 Ok(block) => {
                                     info!(
                                         "📦 Erasure-reconstructed block slot {} ({} shards used)",
@@ -14209,6 +14522,7 @@ async fn run_validator() {
         let register_keypair_seed = validator_keypair.to_seed();
         let register_pubkey = validator_pubkey;
         let register_fingerprint = machine_fingerprint;
+        let register_chain_id = genesis_config.chain_id.clone();
         let bootstrap_rpc_urls = bootstrap_rpc_urls.clone();
         let marker_path = std::path::PathBuf::from(&data_dir).join("registration-submitted.marker");
         let sync_mgr_for_register = sync_manager.clone();
@@ -14475,7 +14789,8 @@ async fn run_validator() {
                 };
                 let msg = lichen_core::Message::new(vec![ix], blockhash);
                 let mut tx = Transaction::new(msg);
-                let sig = register_kp.sign(&tx.message.serialize());
+                let sig =
+                    register_kp.sign(&tx.message.signing_bytes_for_chain_id(&register_chain_id));
                 tx.signatures.push(sig);
 
                 let tx_bytes = tx.to_wire();
@@ -14845,9 +15160,10 @@ async fn run_validator() {
         precommit_timeout_base_ms: genesis_config.consensus.precommit_timeout_base_ms,
         max_phase_timeout_ms: genesis_config.consensus.max_phase_timeout_ms,
     };
-    let mut bft = ConsensusEngine::new_with_min_stake_and_timeouts(
+    let mut bft = ConsensusEngine::new_with_chain_id_min_stake_and_timeouts(
         bft_keypair,
         validator_pubkey,
+        genesis_config.chain_id.clone(),
         min_validator_stake,
         bft_timeouts,
     );
@@ -15126,6 +15442,7 @@ async fn run_validator() {
                         &proposal,
                         parent_hash,
                         expected_validators_hash,
+                        &genesis_config.chain_id,
                     ) {
                         Ok(()) => match consensus_wal.log_proposal_block_result(
                             proposal.height,
@@ -15283,6 +15600,7 @@ async fn run_validator() {
                         &proposal,
                         parent_hash,
                         expected_validators_hash,
+                        &genesis_config.chain_id,
                     ) {
                         Ok(()) => match consensus_wal.log_proposal_block_result(
                             proposal.height,
@@ -15439,7 +15757,7 @@ async fn run_validator() {
                     );
                     drop(mp);
                     block.header.validators_hash = compute_validators_hash(&height_vs, &height_pool);
-                    block.sign(&validator_keypair);
+                    block.sign_with_chain_id(&validator_keypair, &genesis_config.chain_id);
                     let proposal_action = bft.create_proposal(block, &height_vs, &height_pool);
                     execute_consensus_actions(
                         proposal_action,
@@ -15552,7 +15870,7 @@ async fn run_validator() {
                             );
                             drop(mp);
                             block.header.validators_hash = compute_validators_hash(&height_vs, &height_pool);
-                            block.sign(&validator_keypair);
+                            block.sign_with_chain_id(&validator_keypair, &genesis_config.chain_id);
                             let proposal_action = bft.create_proposal(block, &height_vs, &height_pool);
                             execute_consensus_actions(
                                 proposal_action,
@@ -15638,7 +15956,7 @@ async fn run_validator() {
                         drop(mp);
                         block.header.validators_hash =
                             compute_validators_hash(&height_vs, &height_pool);
-                        block.sign(&validator_keypair);
+                        block.sign_with_chain_id(&validator_keypair, &genesis_config.chain_id);
                         let proposal_action = bft.create_proposal(block, &height_vs, &height_pool);
                         execute_consensus_actions(
                             proposal_action,
@@ -15755,6 +16073,7 @@ async fn run_validator() {
                                 &proposal,
                                 parent_hash,
                                 expected_validators_hash,
+                                &genesis_config.chain_id,
                             ) {
                                 Ok(()) => match consensus_wal.log_proposal_block_result(
                                     proposal.height,
@@ -16872,6 +17191,94 @@ mod tests {
     }
 
     #[test]
+    fn validate_state_root_with_schema_allows_genesis_zero_root_only() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+
+        validate_state_root_with_schema(&state, 0, Hash::default(), "genesis test", true)
+            .expect("legacy zero-root genesis remains accepted");
+
+        let err =
+            validate_state_root_with_schema(&state, 1, Hash::default(), "non-genesis test", true)
+                .expect_err("non-genesis zero state root must be rejected");
+
+        assert!(err.contains("missing state-root commitment"));
+    }
+
+    #[test]
+    fn validate_then_replay_rejects_empty_non_genesis_zero_state_root() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let validator = Pubkey([42u8; 32]);
+
+        let genesis_root = state.compute_state_root_cold_start();
+        let genesis =
+            Block::new_with_timestamp(0, Hash::default(), genesis_root, validator.0, Vec::new(), 0);
+        let genesis_hash = genesis.hash();
+        state.put_block(&genesis).expect("put genesis");
+        state.set_last_slot(0).expect("set last slot");
+
+        let block =
+            Block::new_with_timestamp(1, genesis_hash, Hash::default(), validator.0, Vec::new(), 1);
+        let root_before = state.compute_state_root_cold_start();
+        let err = validate_then_replay_block_transactions(&state, &block, "test replay", false)
+            .expect_err("empty non-genesis zero state root should fail");
+
+        assert!(err.contains("missing state-root commitment"));
+        assert_eq!(state.compute_state_root_cold_start(), root_before);
+    }
+
+    #[test]
+    fn validate_then_replay_rejects_tx_block_zero_state_root_before_mutation() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let alice_kp = Keypair::generate();
+        let alice = alice_kp.pubkey();
+        let bob = Pubkey([2u8; 32]);
+        let treasury = Pubkey([3u8; 32]);
+        let validator = Pubkey([42u8; 32]);
+
+        state.set_treasury_pubkey(&treasury).expect("set treasury");
+        state
+            .put_account(&treasury, &Account::new(0, treasury))
+            .expect("put treasury");
+        state
+            .put_account(&alice, &Account::new(1000, alice))
+            .expect("fund alice");
+
+        let genesis_root = state.compute_state_root_cold_start();
+        let genesis =
+            Block::new_with_timestamp(0, Hash::default(), genesis_root, validator.0, Vec::new(), 0);
+        let genesis_hash = genesis.hash();
+        state.put_block(&genesis).expect("put genesis");
+        state.set_last_slot(0).expect("set last slot");
+
+        let tx = make_signed_transfer_tx(&alice_kp, alice, bob, 1, genesis_hash);
+        let tx_hash = tx.hash();
+        let block =
+            Block::new_with_timestamp(1, genesis_hash, Hash::default(), validator.0, vec![tx], 1);
+        let root_before = state.compute_state_root_cold_start();
+        let alice_before = state
+            .get_account(&alice)
+            .expect("read alice")
+            .expect("alice exists");
+
+        let err = validate_then_replay_block_transactions(&state, &block, "test replay", false)
+            .expect_err("tx block without state-root commitment should fail");
+
+        assert!(err.contains("missing state-root commitment"));
+        assert_eq!(state.compute_state_root_cold_start(), root_before);
+        let alice_after = state
+            .get_account(&alice)
+            .expect("read alice after")
+            .expect("alice remains");
+        assert_eq!(alice_after.spores, alice_before.spores);
+        assert_eq!(alice_after.spendable, alice_before.spendable);
+        assert!(state.get_account(&bob).expect("read bob").is_none());
+        assert!(state.get_transaction(&tx_hash).expect("read tx").is_none());
+    }
+
+    #[test]
     fn validate_then_replay_commits_speculative_batch_without_checkpoint_copy() {
         let temp_dir = tempfile::tempdir().expect("create temp dir");
         let state = StateStore::open(temp_dir.path()).expect("open state");
@@ -16979,6 +17386,7 @@ mod tests {
             &proposal,
             genesis_hash,
             validators_hash,
+            "",
         )
         .expect_err("bad proposal root must be rejected before voting");
 
@@ -17047,6 +17455,7 @@ mod tests {
             &proposal,
             genesis_hash,
             validators_hash,
+            "",
         )
         .expect("valid proposal should pass before prevote");
 
@@ -17127,6 +17536,7 @@ mod tests {
             &proposal,
             genesis_hash,
             validators_hash,
+            "",
         )
         .expect("valid locked-value reproposal should pass before prevote");
     }
@@ -17166,6 +17576,7 @@ mod tests {
             &proposal,
             genesis_hash,
             validators_hash,
+            "",
         )
         .expect_err("invalid block signature must be rejected");
 
@@ -17239,7 +17650,9 @@ mod tests {
         use flate2::{write::GzEncoder, Compression};
         use std::io::Write;
 
-        let raw = bincode::serialize(bundle).expect("serialize genesis bundle");
+        let raw = bundle
+            .to_legacy_bincode()
+            .expect("serialize genesis bundle");
         let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
         encoder.write_all(&raw).expect("compress genesis bundle");
         let compressed = encoder.finish().expect("finish gzip");
@@ -17258,7 +17671,7 @@ mod tests {
             total_chunks: 1,
             data: compressed,
         };
-        let chunk_bytes = bincode::serialize(&chunk).expect("serialize chunk");
+        let chunk_bytes = chunk.to_legacy_bincode().expect("serialize chunk");
         let mut data = vec![GENESIS_STATE_CHUNK_OPCODE];
         data.extend_from_slice(&chunk_bytes);
 
@@ -17396,15 +17809,19 @@ mod tests {
                     name: "stake_pool".to_string(),
                     entries: vec![(
                         b"pool".to_vec(),
-                        bincode::serialize(&pool).expect("serialize stake pool"),
+                        serialize_legacy_bincode(&pool, "test stake pool")
+                            .expect("serialize stake pool"),
                     )],
                 },
                 lichen_core::GenesisStateCategory {
                     name: "mossstake_pool".to_string(),
                     entries: vec![(
                         b"pool".to_vec(),
-                        bincode::serialize(&lichen_core::MossStakePool::new())
-                            .expect("serialize mossstake pool"),
+                        serialize_legacy_bincode(
+                            &lichen_core::MossStakePool::new(),
+                            "test mossstake pool",
+                        )
+                        .expect("serialize mossstake pool"),
                     )],
                 },
             ],
@@ -17545,6 +17962,7 @@ mod tests {
                 &state,
                 &validator_set,
                 &stake_pool,
+                "",
             )
             .is_none(),
             "checkpoint should not be exposed before slot is finalized"
@@ -17559,6 +17977,7 @@ mod tests {
             &state,
             &validator_set,
             &stake_pool,
+            "",
         )
         .expect("checkpoint should be exposed once finalized and verified");
 
@@ -17643,6 +18062,7 @@ mod tests {
             &state,
             &validator_set,
             &stake_pool,
+            "",
         )
         .expect("post-effects checkpoint should still verify");
 
@@ -17740,6 +18160,7 @@ mod tests {
             &state,
             &validator_set,
             &stake_pool,
+            "",
         )
         .expect("should fall back to older valid checkpoint");
 
@@ -17794,22 +18215,28 @@ mod tests {
         }];
 
         assert!(verify_checkpoint_anchor(
-            1,
-            block.header.state_root.0,
-            Some(&block.header),
-            0,
-            &commit_signatures,
+            CheckpointAnchor {
+                slot: 1,
+                state_root: block.header.state_root.0,
+                checkpoint_header: Some(&block.header),
+                commit_round: 0,
+                commit_signatures: &commit_signatures,
+                chain_id: "",
+            },
             &validator_set,
             &stake_pool,
         )
         .is_ok());
 
         assert!(verify_checkpoint_anchor(
-            1,
-            block.header.state_root.0,
-            None,
-            0,
-            &commit_signatures,
+            CheckpointAnchor {
+                slot: 1,
+                state_root: block.header.state_root.0,
+                checkpoint_header: None,
+                commit_round: 0,
+                commit_signatures: &commit_signatures,
+                chain_id: "",
+            },
             &validator_set,
             &stake_pool,
         )
@@ -17864,11 +18291,14 @@ mod tests {
         }];
 
         assert!(verify_checkpoint_anchor(
-            1,
-            [0xAB; 32],
-            Some(&block.header),
-            0,
-            &commit_signatures,
+            CheckpointAnchor {
+                slot: 1,
+                state_root: [0xAB; 32],
+                checkpoint_header: Some(&block.header),
+                commit_round: 0,
+                commit_signatures: &commit_signatures,
+                chain_id: "",
+            },
             &validator_set,
             &stake_pool,
         )
@@ -17919,6 +18349,97 @@ mod tests {
             result.unwrap_err(),
             "block 1 has no commit certificate".to_string()
         );
+    }
+
+    fn committed_block_for_auth_test(proposer: &Keypair, committers: &[&Keypair]) -> Block {
+        let timestamp = 1_000;
+        let mut block = Block::new_with_timestamp(
+            1,
+            Hash::default(),
+            Hash::hash(b"synced-block-auth-root"),
+            proposer.pubkey().0,
+            Vec::new(),
+            timestamp,
+        );
+        block.sign(proposer);
+        block.commit_round = 0;
+
+        let block_hash = block.hash();
+        block.commit_signatures = committers
+            .iter()
+            .map(|committer| {
+                let signable = Precommit::signable_bytes(1, 0, &Some(block_hash), timestamp);
+                lichen_core::CommitSignature {
+                    validator: committer.pubkey().0,
+                    signature: committer.sign(&signable),
+                    timestamp,
+                }
+            })
+            .collect();
+        block
+    }
+
+    #[test]
+    fn verify_synced_block_consensus_authenticity_accepts_active_committed_block() {
+        let validator_kp = Keypair::generate();
+        let validator_pk = validator_kp.pubkey();
+
+        let mut validator_set = ValidatorSet::new();
+        validator_set.add_validator(test_validator_info(validator_pk));
+
+        let mut stake_pool = StakePool::new();
+        stake_pool
+            .stake(validator_pk, MIN_VALIDATOR_STAKE, 0)
+            .expect("stake validator");
+
+        let block = committed_block_for_auth_test(&validator_kp, &[&validator_kp]);
+
+        verify_synced_block_consensus_authenticity(&block, &validator_set, &stake_pool)
+            .expect("active proposer with quorum commit should verify");
+    }
+
+    #[test]
+    fn verify_synced_block_consensus_authenticity_rejects_pending_proposer() {
+        let validator_kp = Keypair::generate();
+        let validator_pk = validator_kp.pubkey();
+
+        let mut pending_validator = test_validator_info(validator_pk);
+        pending_validator.pending_activation = true;
+
+        let mut validator_set = ValidatorSet::new();
+        validator_set.add_validator(pending_validator);
+
+        let mut stake_pool = StakePool::new();
+        stake_pool
+            .stake(validator_pk, MIN_VALIDATOR_STAKE, 0)
+            .expect("stake validator");
+
+        let block = committed_block_for_auth_test(&validator_kp, &[&validator_kp]);
+
+        let err = verify_synced_block_consensus_authenticity(&block, &validator_set, &stake_pool)
+            .expect_err("pending proposer must be rejected");
+        assert!(err.contains("pending activation"));
+    }
+
+    #[test]
+    fn verify_synced_block_consensus_authenticity_rejects_non_member_proposer() {
+        let proposer_kp = Keypair::generate();
+        let committer_kp = Keypair::generate();
+        let committer_pk = committer_kp.pubkey();
+
+        let mut validator_set = ValidatorSet::new();
+        validator_set.add_validator(test_validator_info(committer_pk));
+
+        let mut stake_pool = StakePool::new();
+        stake_pool
+            .stake(committer_pk, MIN_VALIDATOR_STAKE, 0)
+            .expect("stake committer");
+
+        let block = committed_block_for_auth_test(&proposer_kp, &[&committer_kp]);
+
+        let err = verify_synced_block_consensus_authenticity(&block, &validator_set, &stake_pool)
+            .expect_err("non-member proposer must be rejected");
+        assert!(err.contains("not in the active validator set"));
     }
 
     #[test]

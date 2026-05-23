@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 
 use crate::block::Block;
+use crate::codec::deserialize_legacy_bincode;
 
 use super::*;
 
@@ -710,7 +711,7 @@ impl StateStore {
         let iter = self.db.iterator_cf(&cf, rocksdb::IteratorMode::Start);
         for (_, value) in iter.flatten() {
             let maybe_account = if value.first() == Some(&0xBC) {
-                bincode::deserialize::<Account>(&value[1..]).ok()
+                deserialize_legacy_bincode::<Account>(&value[1..], "account").ok()
             } else {
                 serde_json::from_slice::<Account>(&value).ok()
             };

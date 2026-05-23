@@ -36,14 +36,32 @@ pub(crate) fn load_config() -> CustodyConfig {
     let solana_treasury_owner = std::env::var("CUSTODY_SOLANA_TREASURY_OWNER")
         .ok()
         .or_else(|| treasury_solana_address.clone());
-    let solana_usdc_mint = std::env::var("CUSTODY_SOLANA_USDC_MINT")
-        .unwrap_or_else(|_| "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".to_string());
-    let solana_usdt_mint = std::env::var("CUSTODY_SOLANA_USDT_MINT")
-        .unwrap_or_else(|_| "Es9vMFrzaCER3FXvxuauYhVNiVw9g8Y3V9D2n7sGdG8d".to_string());
-    let evm_usdc_contract = std::env::var("CUSTODY_EVM_USDC")
-        .unwrap_or_else(|_| "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48".to_string());
-    let evm_usdt_contract = std::env::var("CUSTODY_EVM_USDT")
-        .unwrap_or_else(|_| "0xdAC17F958D2ee523a2206206994597C13D831ec7".to_string());
+    let solana_usdc_mint = optional_env("CUSTODY_SOLANA_USDC_MINT").unwrap_or_default();
+    let solana_usdt_mint = optional_env("CUSTODY_SOLANA_USDT_MINT").unwrap_or_default();
+    let evm_usdc_contract = first_env(&[
+        "CUSTODY_ETH_USDC_TOKEN_ADDR",
+        "CUSTODY_ETH_USDC",
+        "CUSTODY_EVM_USDC",
+    ])
+    .unwrap_or_default();
+    let evm_usdt_contract = first_env(&[
+        "CUSTODY_ETH_USDT_TOKEN_ADDR",
+        "CUSTODY_ETH_USDT",
+        "CUSTODY_EVM_USDT",
+    ])
+    .unwrap_or_default();
+    let bnb_usdc_contract = first_env(&[
+        "CUSTODY_BSC_USDC_TOKEN_ADDR",
+        "CUSTODY_BNB_USDC_TOKEN_ADDR",
+        "CUSTODY_BSC_USDC",
+        "CUSTODY_BNB_USDC",
+    ]);
+    let bnb_usdt_contract = first_env(&[
+        "CUSTODY_BSC_USDT_TOKEN_ADDR",
+        "CUSTODY_BNB_USDT_TOKEN_ADDR",
+        "CUSTODY_BSC_USDT",
+        "CUSTODY_BNB_USDT",
+    ]);
     let licn_rpc_url = std::env::var("CUSTODY_LICHEN_RPC_URL").ok();
     let treasury_keypair_path = std::env::var("CUSTODY_TREASURY_KEYPAIR").ok();
     let musd_contract_addr = std::env::var("CUSTODY_LUSD_TOKEN_ADDR").ok();
@@ -153,6 +171,8 @@ pub(crate) fn load_config() -> CustodyConfig {
         solana_usdt_mint,
         evm_usdc_contract,
         evm_usdt_contract,
+        bnb_usdc_contract,
+        bnb_usdt_contract,
         signer_endpoints: signer_endpoints.clone(),
         signer_threshold,
         licn_rpc_url,
@@ -224,4 +244,15 @@ pub(crate) fn load_config() -> CustodyConfig {
         neox_multisig_address: std::env::var("CUSTODY_NEOX_MULTISIG_ADDRESS").ok(),
         webhook_allowed_hosts,
     }
+}
+
+fn optional_env(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn first_env(names: &[&str]) -> Option<String> {
+    names.iter().find_map(|name| optional_env(name))
 }

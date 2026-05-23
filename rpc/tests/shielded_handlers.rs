@@ -341,6 +341,53 @@ async fn test_rpc_generate_shield_proof_accepts_native_blinding_bytes() {
 }
 
 #[tokio::test]
+async fn test_rpc_generate_shield_proof_accepts_amount_string() {
+    let app = create_empty_app();
+    let amount = 1_000_000_001u64;
+    let blinding = [0xabu8; 32];
+    let commitment = commitment_hash(amount, &blinding);
+
+    let resp = rpc_call_with_params(
+        &app,
+        "generateShieldProof",
+        json!([{
+            "amount": amount.to_string(),
+            "blinding": hex::encode(blinding),
+        }]),
+    )
+    .await
+    .unwrap();
+
+    assert!(resp.get("error").is_none(), "unexpected error: {resp:?}");
+    let result = &resp["result"];
+    assert_eq!(result["amount"], amount);
+    assert_eq!(result["commitment"], hex::encode(commitment));
+}
+
+#[tokio::test]
+async fn test_rpc_shielded_amount_string_rejects_u64_overflow() {
+    let app = create_empty_app();
+    let blinding = [0x11u8; 32];
+
+    let resp = rpc_call_with_params(
+        &app,
+        "computeShieldCommitment",
+        json!([{
+            "amount": "18446744073709551616",
+            "blinding": hex::encode(blinding),
+        }]),
+    )
+    .await
+    .unwrap();
+
+    let error_message = resp["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        error_message.contains("amount (u64) is required"),
+        "unexpected error: {resp:?}"
+    );
+}
+
+#[tokio::test]
 async fn test_rpc_get_shielded_pool_state_empty() {
     let app = create_empty_app();
     let resp = rpc_call(&app, "getShieldedPoolState").await.unwrap();

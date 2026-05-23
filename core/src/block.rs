@@ -1,6 +1,8 @@
 // Lichen Core - Block Structure
 
+use crate::codec::serialized_size_legacy_bincode;
 use crate::hash::Hash;
+use crate::signing::{maybe_versioned_signing_bytes, DOMAIN_BLOCK};
 use crate::transaction::Transaction;
 use crate::PqSignature;
 use serde::{Deserialize, Serialize};
@@ -234,6 +236,13 @@ impl Block {
         self.header.signature = Some(keypair.sign(&hash.0));
     }
 
+    /// Sign the block producer signature with a versioned chain-id domain.
+    pub fn sign_with_chain_id(&mut self, keypair: &crate::account::Keypair, chain_id: &str) {
+        let hash = self.signable_hash();
+        let signable = maybe_versioned_signing_bytes(DOMAIN_BLOCK, chain_id, &hash.0);
+        self.header.signature = Some(keypair.sign(&signable));
+    }
+
     /// Verify the block signature against the validator public key.
     /// Only the genesis block (slot 0) may be unsigned.
     pub fn verify_signature(&self) -> bool {
@@ -241,6 +250,25 @@ impl Block {
         let hash = self.signable_hash();
         match &self.header.signature {
             Some(signature) => {
+                crate::account::Keypair::verify(&validator_pubkey, &hash.0, signature)
+            }
+            None => self.header.slot == 0,
+        }
+    }
+
+    /// Verify the block producer signature against a chain-id domain, with
+    /// legacy fallback for historical blocks and mixed-version rollout.
+    pub fn verify_signature_with_chain_id(&self, chain_id: &str) -> bool {
+        let validator_pubkey = crate::account::Pubkey(self.header.validator);
+        let hash = self.signable_hash();
+        match &self.header.signature {
+            Some(signature) => {
+                if !chain_id.is_empty() {
+                    let signable = maybe_versioned_signing_bytes(DOMAIN_BLOCK, chain_id, &hash.0);
+                    if crate::account::Keypair::verify(&validator_pubkey, &signable, signature) {
+                        return true;
+                    }
+                }
                 crate::account::Keypair::verify(&validator_pubkey, &hash.0, signature)
             }
             None => self.header.slot == 0,
@@ -263,6 +291,17 @@ impl Block {
     /// validators not in the set are silently skipped.
     pub fn verify_commit(
         &self,
+        validator_set: &crate::consensus::ValidatorSet,
+        stake_pool: &crate::consensus::StakePool,
+    ) -> Result<(), String> {
+        self.verify_commit_with_chain_id("", validator_set, stake_pool)
+    }
+
+    /// Verify the block's commit certificate with chain-id domain separation,
+    /// falling back to legacy precommit bytes for historical blocks.
+    pub fn verify_commit_with_chain_id(
+        &self,
+        chain_id: &str,
         validator_set: &crate::consensus::ValidatorSet,
         stake_pool: &crate::consensus::StakePool,
     ) -> Result<(), String> {
@@ -321,7 +360,16 @@ impl Block {
                 &Some(block_hash),
                 cs.timestamp,
             );
-            if !crate::Keypair::verify(&pubkey, &signable, &cs.signature) {
+            let domain_signable = crate::consensus::Precommit::signing_bytes_for_chain_id(
+                chain_id,
+                self.header.slot,
+                self.commit_round,
+                &Some(block_hash),
+                cs.timestamp,
+            );
+            if !crate::Keypair::verify(&pubkey, &domain_signable, &cs.signature)
+                && !crate::Keypair::verify(&pubkey, &signable, &cs.signature)
+            {
                 continue;
             }
 
@@ -364,12 +412,15 @@ pub fn compute_bft_timestamp(
         return None;
     }
 
-    // Collect (timestamp, stake) pairs for valid commit voters
+    // Collect (timestamp, stake) pairs for active commit voters.
     let mut weighted: Vec<(u64, u64)> = commit_signatures
         .iter()
         .filter(|cs| {
             let pubkey = crate::Pubkey(cs.validator);
-            validator_set.get_validator(&pubkey).is_some()
+            matches!(
+                validator_set.get_validator(&pubkey),
+                Some(info) if !info.pending_activation
+            )
         })
         .map(|cs| {
             let pubkey = crate::Pubkey(cs.validator);
@@ -633,7 +684,7 @@ impl Block {
             }
         }
 
-        let serialized_size = bincode::serialized_size(self)
+        let serialized_size = serialized_size_legacy_bincode(self, "block")
             .map_err(|e| format!("Block serialization size check failed: {}", e))?;
 
         if serialized_size > MAX_BLOCK_SIZE as u64 {
@@ -712,6 +763,49 @@ mod tests {
         // Tamper with timestamp — verification should fail
         block.header.timestamp += 1;
         assert!(!block.verify_signature());
+    }
+
+    #[test]
+    fn test_block_sign_with_chain_id_domain() {
+        use crate::Keypair;
+
+        let kp = Keypair::generate();
+        let mut block = Block::new_with_timestamp(
+            1,
+            Hash::default(),
+            Hash::hash(b"state"),
+            kp.pubkey().0,
+            Vec::new(),
+            1000,
+        );
+
+        block.sign_with_chain_id(&kp, "lichen-testnet-1");
+
+        assert!(block.verify_signature_with_chain_id("lichen-testnet-1"));
+        assert!(!block.verify_signature_with_chain_id("lichen-mainnet-1"));
+        assert!(
+            !block.verify_signature(),
+            "domain-separated block signatures should not verify as legacy"
+        );
+    }
+
+    #[test]
+    fn test_block_chain_id_verification_falls_back_to_legacy() {
+        use crate::Keypair;
+
+        let kp = Keypair::generate();
+        let mut block = Block::new_with_timestamp(
+            1,
+            Hash::default(),
+            Hash::hash(b"state"),
+            kp.pubkey().0,
+            Vec::new(),
+            1000,
+        );
+
+        block.sign(&kp);
+
+        assert!(block.verify_signature_with_chain_id("lichen-testnet-1"));
     }
 
     #[test]
@@ -890,7 +984,8 @@ mod tests {
         }
 
         let block = Block::new(1, Hash::default(), Hash::default(), [0u8; 32], txs);
-        let actual_size = bincode::serialized_size(&block).unwrap();
+        let actual_size =
+            serialized_size_legacy_bincode(&block, "block test fixture").expect("block size");
 
         assert!(
             actual_size > MAX_BLOCK_SIZE as u64,
@@ -1469,6 +1564,75 @@ mod tests {
         // Cumulative at 1000: 600K/1000K = 60% > 50% → median = 1000
         let result = compute_bft_timestamp(&sigs, &vs, &sp, None);
         assert_eq!(result, Some(1000));
+    }
+
+    #[test]
+    fn test_bft_timestamp_ignores_pending_validators() {
+        use crate::consensus::{StakePool, ValidatorInfo, ValidatorSet};
+
+        let mut vs = ValidatorSet::new();
+        let mut sp = StakePool::new();
+        let active_a = {
+            let mut k = [0u8; 32];
+            k[0] = 1;
+            k
+        };
+        let active_b = {
+            let mut k = [0u8; 32];
+            k[0] = 2;
+            k
+        };
+        let pending = {
+            let mut k = [0u8; 32];
+            k[0] = 3;
+            k
+        };
+
+        let base = 100_000_000_000_000u64;
+        for (k, stake, pending_activation) in [
+            (active_a, base, false),
+            (active_b, base, false),
+            (pending, base * 100, true),
+        ] {
+            vs.add_validator(ValidatorInfo {
+                pubkey: crate::Pubkey(k),
+                reputation: 100,
+                blocks_proposed: 0,
+                votes_cast: 0,
+                correct_votes: 0,
+                stake,
+                joined_slot: 0,
+                last_active_slot: 0,
+                last_observed_at_ms: 0,
+                last_observed_block_at_ms: 0,
+                last_observed_block_slot: 0,
+                commission_rate: 500,
+                transactions_processed: 0,
+                pending_activation,
+            });
+            sp.stake(crate::Pubkey(k), stake, 0).ok();
+        }
+
+        let sigs = vec![
+            CommitSignature {
+                validator: pending,
+                signature: test_signature(0),
+                timestamp: 1,
+            },
+            CommitSignature {
+                validator: active_a,
+                signature: test_signature(0),
+                timestamp: 1000,
+            },
+            CommitSignature {
+                validator: active_b,
+                signature: test_signature(0),
+                timestamp: 1004,
+            },
+        ];
+
+        let result = compute_bft_timestamp(&sigs, &vs, &sp, None);
+        assert_eq!(result, Some(1004));
     }
 
     #[test]

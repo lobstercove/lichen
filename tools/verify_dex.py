@@ -7,17 +7,20 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'sdk', 'python'
 from lichen import Connection, Keypair, PublicKey
 
 SPORES = 1_000_000_000
+RPC = os.environ.get('LICHEN_RPC_URL', 'http://127.0.0.1:8899')
+NETWORK = os.environ.get('LICHEN_NETWORK', 'testnet')
 
 PAIR_NAMES = {
     1: "LICN/lUSD", 2: "wSOL/lUSD", 3: "wETH/lUSD",
     4: "wSOL/LICN", 5: "wETH/LICN", 6: "wBNB/lUSD", 7: "wBNB/LICN",
+    8: "wNEO/lUSD", 9: "wNEO/LICN", 10: "wGAS/lUSD", 11: "wGAS/LICN",
 }
 
 async def main():
-    conn = Connection('http://127.0.0.1:8899')
+    conn = Connection(RPC)
     from deploy_dex import load_genesis_keypair
 
-    reserve = load_genesis_keypair('reserve_pool')
+    reserve = load_genesis_keypair('reserve_pool', NETWORK)
     reserve_str = str(reserve.address())
 
     # Find DEX contract
@@ -32,7 +35,7 @@ async def main():
             dex_addr = prog
         elif sym == "DEXAMM":
             dex_amm_addr = prog
-        elif sym in ("LUSD", "WSOL", "WETH", "WBNB"):
+        elif sym in ("LUSD", "WSOL", "WETH", "WBNB", "WNEO", "WGAS"):
             token_addrs[sym] = prog
 
     print(f"DEX Core: {dex_addr}")
@@ -41,7 +44,7 @@ async def main():
 
     # Query order book for each pair using opcode 10 (get_order_book)
     # Args: opcode(1) + pair_id(u64)
-    for pair_id in range(1, 8):
+    for pair_id in sorted(PAIR_NAMES):
         name = PAIR_NAMES[pair_id]
         args = bytes([10]) + struct.pack('<Q', pair_id)
         args_b64 = base64.b64encode(args).decode()

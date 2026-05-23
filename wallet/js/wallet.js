@@ -177,6 +177,16 @@ if (typeof window !== 'undefined') {
 // Fallback values used ONLY when RPC is unreachable (never displayed as "live").
 const _OFFLINE_FALLBACK_PRICES = { LICN: 0.10, lUSD: 1.0, wSOL: 150.0, wETH: 3000.0, wBNB: 600.0, wNEO: 3.0, wGAS: 1.5 };
 const livePrices = { LICN: 0, lUSD: 1.0, wSOL: 0, wETH: 0, wBNB: 0, wNEO: 0, wGAS: 0 };
+const priceMetadata = {
+    LICN: { source: 'unavailable', timestamp: 0, fallback: false },
+    lUSD: { source: 'stablecoin-peg', timestamp: 0, fallback: true },
+    wSOL: { source: 'unavailable', timestamp: 0, fallback: false },
+    wETH: { source: 'unavailable', timestamp: 0, fallback: false },
+    wBNB: { source: 'unavailable', timestamp: 0, fallback: false },
+    wNEO: { source: 'unavailable', timestamp: 0, fallback: false },
+    wGAS: { source: 'unavailable', timestamp: 0, fallback: false },
+};
+const PRICE_STALE_MS = 5 * 60 * 1000;
 const WHOLE_NEO_LOT = 1_000_000_000;
 let _pricesLoaded = false;
 
@@ -186,26 +196,122 @@ function priceSymbolKey(symbol) {
     return map[upper] || symbol;
 }
 
-function setLivePrice(symbol, price) {
+function setLivePrice(symbol, price, source = 'oracle', timestamp = Date.now()) {
     const key = priceSymbolKey(symbol);
     if (!Object.prototype.hasOwnProperty.call(livePrices, key)) return;
     const parsed = parseFloat(price);
-    if (Number.isFinite(parsed) && parsed > 0) livePrices[key] = parsed;
+    if (Number.isFinite(parsed) && parsed > 0) {
+        livePrices[key] = parsed;
+        priceMetadata[key] = { source, timestamp, fallback: false };
+    }
+}
+
+function applyOfflineFallbackPrices() {
+    for (const [symbol, price] of Object.entries(_OFFLINE_FALLBACK_PRICES)) {
+        const key = priceSymbolKey(symbol);
+        if (!Object.prototype.hasOwnProperty.call(livePrices, key)) continue;
+        livePrices[key] = price;
+        priceMetadata[key] = {
+            source: key === 'lUSD' ? 'stablecoin-peg' : 'offline-fallback',
+            timestamp: 0,
+            fallback: true,
+        };
+    }
+}
+
+function getPriceQuote(symbol) {
+    const key = priceSymbolKey(symbol);
+    const live = livePrices[key];
+    const metadata = priceMetadata[key] || { source: 'unavailable', timestamp: 0, fallback: false };
+    if (Number.isFinite(live) && live > 0) {
+        return {
+            symbol: key,
+            price: live,
+            source: metadata.source,
+            timestamp: metadata.timestamp || 0,
+            stale: metadata.timestamp > 0 && Date.now() - metadata.timestamp > PRICE_STALE_MS,
+            fallback: metadata.fallback === true,
+        };
+    }
+
+    const fallback = _OFFLINE_FALLBACK_PRICES[key];
+    if (Number.isFinite(fallback) && fallback > 0) {
+        return {
+            symbol: key,
+            price: fallback,
+            source: key === 'lUSD' ? 'stablecoin-peg' : 'offline-fallback',
+            timestamp: 0,
+            stale: false,
+            fallback: true,
+        };
+    }
+
+    return { symbol: key || String(symbol || ''), price: 0, source: 'unavailable', timestamp: 0, stale: false, fallback: false };
+}
+
+function priceTimestampLabel(timestamp) {
+    return timestamp > 0 ? new Date(timestamp).toLocaleString() : 'not available';
+}
+
+function usdValuationSuffix(quotes, { compact = false } = {}) {
+    const list = (Array.isArray(quotes) ? quotes : [quotes]).filter(Boolean);
+    if (list.some(q => q.source === 'offline-fallback')) return compact ? ' · est' : ' · offline estimate';
+    if (list.some(q => q.stale)) return compact ? ' · stale' : ' · stale price';
+    return '';
+}
+
+function usdValuationTitle(quotes) {
+    const list = (Array.isArray(quotes) ? quotes : [quotes]).filter(q => q && q.price > 0);
+    if (!list.length) return 'USD valuation source unavailable';
+    const seen = new Set();
+    const parts = [];
+    for (const quote of list) {
+        if (seen.has(quote.symbol)) continue;
+        seen.add(quote.symbol);
+        const state = quote.source === 'offline-fallback'
+            ? 'offline fallback estimate'
+            : (quote.source === 'stablecoin-peg' ? 'stablecoin peg estimate' : quote.source);
+        const stale = quote.stale ? ', stale' : '';
+        parts.push(`${quote.symbol}: ${state}, updated ${priceTimestampLabel(quote.timestamp)}${stale}`);
+    }
+    return `USD valuation sources: ${parts.join('; ')}`;
 }
 
 function isWholeNeoLotAmount(amount) {
-    const numeric = Number(amount);
-    if (!Number.isFinite(numeric) || numeric <= 0) return false;
-    const baseUnits = Math.round(numeric * WHOLE_NEO_LOT);
-    return baseUnits > 0
-        && baseUnits % WHOLE_NEO_LOT === 0
-        && Math.abs(numeric - Math.round(numeric)) < 1e-9;
+    try {
+        const baseUnits = parsePositiveDecimalBaseUnits(amount, 9, 'wNEO amount');
+        return baseUnits % BigInt(WHOLE_NEO_LOT) === 0n;
+    } catch {
+        return false;
+    }
 }
 
 function formatBaseUnitsAmount(value, decimals = 9) {
     const numeric = Number(value || 0);
     if (!Number.isFinite(numeric) || numeric <= 0) return '0';
     return fmtToken(numeric / Math.pow(10, decimals));
+}
+
+function u64ValueToBigInt(value) {
+    if (typeof value === 'bigint') return value;
+    const text = String(value ?? '0').trim();
+    if (!/^\d+$/.test(text)) return 0n;
+    return BigInt(text);
+}
+
+function tokenDecimalsForBaseUnits(selectedToken) {
+    if (selectedToken === 'LICN' || selectedToken === 'stLICN') return 9;
+    const token = TOKEN_REGISTRY[selectedToken];
+    return token?.decimals ?? 9;
+}
+
+function parseSendAmountBaseUnits(selectedToken, amountText) {
+    const decimals = tokenDecimalsForBaseUnits(selectedToken);
+    return parsePositiveDecimalBaseUnits(amountText, decimals, `${selectedToken} amount`);
+}
+
+function sendAmountDisplay(selectedToken, baseUnits) {
+    return baseUnitsToDecimalString(baseUnits, tokenDecimalsForBaseUnits(selectedToken));
 }
 
 function wrappedReserveRpcMethod(symbol) {
@@ -287,13 +393,13 @@ async function fetchLivePrices() {
             for (const pair of result) {
                 const base = (pair.base || '').toUpperCase();
                 const quote = (pair.quote || '').toUpperCase();
-                if (pair.price && (quote === 'LUSD' || quote === 'USD')) setLivePrice(base, pair.price);
+                if (pair.price && (quote === 'LUSD' || quote === 'USD')) setLivePrice(base, pair.price, 'dex-pairs');
             }
             // LICN price: look for LICN/lUSD pair
             const licnPair = result.find(p =>
                 (p.base || '').toUpperCase() === 'LICN' && (p.quote || '').toUpperCase() === 'LUSD'
             );
-            if (licnPair && licnPair.price) setLivePrice('LICN', licnPair.price);
+            if (licnPair && licnPair.price) setLivePrice('LICN', licnPair.price, 'dex-pairs');
             _pricesLoaded = true;
         }
     } catch {
@@ -302,14 +408,14 @@ async function fetchLivePrices() {
             const oracleResult = await rpc.call('getOraclePrices', []);
             if (oracleResult && typeof oracleResult === 'object') {
                 for (const [sym, price] of Object.entries(oracleResult)) {
-                    setLivePrice(sym, price);
+                    setLivePrice(sym, price, 'oracle');
                 }
                 _pricesLoaded = true;
             }
         } catch {
             // Both sources unavailable — use offline fallbacks
             if (!_pricesLoaded) {
-                Object.assign(livePrices, _OFFLINE_FALLBACK_PRICES);
+                applyOfflineFallbackPrices();
             }
         }
     }
@@ -319,7 +425,7 @@ async function fetchLivePrices() {
 setInterval(fetchLivePrices, 30000);
 
 function getPrice(symbol) {
-    return livePrices[symbol] || _OFFLINE_FALLBACK_PRICES[symbol] || 0;
+    return getPriceQuote(symbol).price;
 }
 
 // Network configuration — centralized in shared-config.js (LICHEN_CONFIG)
@@ -690,6 +796,10 @@ function clearWalletScopedDashboardUi() {
         const el = document.getElementById(id);
         if (el) el.textContent = value;
     };
+    const setTitle = (id, value) => {
+        const el = document.getElementById(id);
+        if (el) el.title = value;
+    };
     const setHtml = (id, value) => {
         const el = document.getElementById(id);
         if (el) el.innerHTML = value;
@@ -697,6 +807,7 @@ function clearWalletScopedDashboardUi() {
 
     setText('totalBalance', '0.00 LICN');
     setText('balanceUsd', '$0.00 USD');
+    setTitle('balanceUsd', 'USD valuation source unavailable');
     const breakdownEl = document.getElementById('balanceBreakdown');
     if (breakdownEl) {
         breakdownEl.innerHTML = '';
@@ -874,11 +985,18 @@ async function trustedRpcCall(method, params = []) {
 }
 
 let _networkBaseFeeLicn = typeof BASE_FEE_LICN === 'number' ? BASE_FEE_LICN : 0.001;
+let _networkBaseFeeSpores = typeof BASE_FEE_SPORES === 'number' ? BigInt(BASE_FEE_SPORES) : 1_000_000n;
 
 function getNetworkBaseFeeLicn() {
     return (Number.isFinite(_networkBaseFeeLicn) && _networkBaseFeeLicn > 0)
         ? _networkBaseFeeLicn
         : (typeof BASE_FEE_LICN === 'number' ? BASE_FEE_LICN : 0.001);
+}
+
+function getNetworkBaseFeeSpores() {
+    return _networkBaseFeeSpores > 0n
+        ? _networkBaseFeeSpores
+        : (typeof BASE_FEE_SPORES === 'number' ? BigInt(BASE_FEE_SPORES) : 1_000_000n);
 }
 
 function updateSendFeeEstimateUI() {
@@ -890,17 +1008,19 @@ function updateSendFeeEstimateUI() {
 async function refreshDynamicFeeConfig() {
     try {
         const feeConfig = await rpc.call('getFeeConfig', []);
-        const baseFeeSpores = Number(
+        const baseFeeSpores = u64ValueToBigInt(
             feeConfig?.base_fee_spores
             ?? feeConfig?.baseFeeSpores
             ?? feeConfig?.base_fee
             ?? 0
         );
-        if (Number.isFinite(baseFeeSpores) && baseFeeSpores > 0) {
-            _networkBaseFeeLicn = baseFeeSpores / SPORES_PER_LICN;
+        if (baseFeeSpores > 0n) {
+            _networkBaseFeeLicn = Number(baseFeeSpores) / SPORES_PER_LICN;
+            _networkBaseFeeSpores = baseFeeSpores;
         }
     } catch (_) {
         _networkBaseFeeLicn = typeof BASE_FEE_LICN === 'number' ? BASE_FEE_LICN : 0.001;
+        _networkBaseFeeSpores = typeof BASE_FEE_SPORES === 'number' ? BigInt(BASE_FEE_SPORES) : 1_000_000n;
     }
     updateSendFeeEstimateUI();
 }
@@ -1456,14 +1576,11 @@ function restrictionAssetForSendToken(selectedToken) {
     return TOKEN_REGISTRY[selectedToken]?.address || null;
 }
 
-function sendAmountToBaseUnits(selectedToken, amount) {
-    if (selectedToken === 'LICN') return Math.floor(amount * SPORES_PER_LICN);
-    const token = TOKEN_REGISTRY[selectedToken];
-    if (!token) return Math.floor(amount);
-    return Math.floor(amount * Math.pow(10, token.decimals));
+function sendAmountToBaseUnits(selectedToken, amountText) {
+    return parseSendAmountBaseUnits(selectedToken, amountText).toString();
 }
 
-async function preflightWalletTransferRestrictions(wallet, to, selectedToken, amount) {
+async function preflightWalletTransferRestrictions(wallet, to, selectedToken, amountText) {
     const asset = restrictionAssetForSendToken(selectedToken);
     if (!asset) return null;
 
@@ -1471,7 +1588,7 @@ async function preflightWalletTransferRestrictions(wallet, to, selectedToken, am
         from: wallet.address,
         to,
         asset,
-        amount: sendAmountToBaseUnits(selectedToken, amount)
+        amount: sendAmountToBaseUnits(selectedToken, amountText)
     }]);
 
     if (status?.allowed === false || status?.blocked === true) {
@@ -2478,6 +2595,10 @@ async function showDashboard() {
     await loadActivity(true, { wallet, generation });
     await loadStaking({ wallet, generation });
     refreshNFTs({ wallet, generation });
+    const activeTab = document.querySelector('.dashboard-tab.active')?.dataset?.tab;
+    if (activeTab === 'identity' && typeof loadIdentity === 'function' && isCurrentWalletView(wallet, generation)) {
+        await loadIdentity();
+    }
     connectBalanceWebSocket();
     startBalancePolling();
 }
@@ -2674,10 +2795,13 @@ async function refreshBalance(options = {}) {
         const tokenBalances = await getAllTokenBalances(wallet.address);
         if (!isCurrentWalletView(wallet, generation)) return;
 
-        // Calculate total USD value from live prices
-        let totalUsd = licn * getPrice('LICN');
+        // Calculate total USD value from live prices or clearly marked fallback quotes.
+        const valuationQuotes = [getPriceQuote('LICN')];
+        let totalUsd = licn * valuationQuotes[0].price;
         for (const [symbol, bal] of Object.entries(tokenBalances)) {
-            totalUsd += bal * getPrice(symbol);
+            const quote = getPriceQuote(symbol);
+            valuationQuotes.push(quote);
+            totalUsd += bal * quote.price;
         }
 
         // Use saved display settings
@@ -2688,7 +2812,9 @@ async function refreshBalance(options = {}) {
         const sym = currencySymbols[currency] || '$';
 
         document.getElementById('totalBalance').textContent = `${fmtToken(licn)} LICN`;
-        document.getElementById('balanceUsd').textContent = `${fmtUsd(totalUsd, sym)} ${currency}`;
+        const balanceUsdEl = document.getElementById('balanceUsd');
+        balanceUsdEl.textContent = `${fmtUsd(totalUsd, sym)} ${currency}${usdValuationSuffix(valuationQuotes)}`;
+        balanceUsdEl.title = usdValuationTitle(valuationQuotes);
 
         // Balance breakdown — show spendable/staked/locked/moss split when non-trivial
         window.currentWalletBalanceBreakdown = {
@@ -2709,7 +2835,9 @@ async function refreshBalance(options = {}) {
         window.walletBalance = 0;
         window.currentWalletBalanceBreakdown = null;
         document.getElementById('totalBalance').textContent = '0.00 LICN';
-        document.getElementById('balanceUsd').textContent = `${sym}0.00 ${currency}`;
+        const balanceUsdEl = document.getElementById('balanceUsd');
+        balanceUsdEl.textContent = `${sym}0.00 ${currency}`;
+        balanceUsdEl.title = 'USD valuation source unavailable';
         const breakdownEl = document.getElementById('balanceBreakdown');
         if (breakdownEl) {
             breakdownEl.innerHTML = '';
@@ -2750,7 +2878,8 @@ async function loadAssets(options = {}) {
     let html = '';
 
     // LICN (always first, always shown)
-    const licnUsd = licn * getPrice('LICN');
+    const licnQuote = getPriceQuote('LICN');
+    const licnUsd = licn * licnQuote.price;
     const licnBadges = renderAssetRestrictionBadges(restrictionStatus?.assets?.LICN);
     html += `
         <div class="asset-item${licnBadges ? ' asset-restricted' : ''}" data-asset-symbol="LICN" style="cursor: default;">
@@ -2762,7 +2891,7 @@ async function loadAssets(options = {}) {
             </div>
             <div class="asset-balance">
                 <div class="asset-amount">${fmtToken(licn)}</div>
-                <div class="asset-value">${fmtUsd(licnUsd, sym)}</div>
+                <div class="asset-value" title="${escapeHtml(usdValuationTitle([licnQuote]))}">${fmtUsd(licnUsd, sym)}${usdValuationSuffix([licnQuote], { compact: true })}</div>
             </div>
         </div>
     `;
@@ -2770,7 +2899,8 @@ async function loadAssets(options = {}) {
     // Wrapped tokens (only show when balance > 0)
     for (const [symbol, token] of Object.entries(TOKEN_REGISTRY)) {
         const bal = tokenBalances[symbol] || 0;
-        const usdVal = bal * getPrice(symbol);
+        const quote = getPriceQuote(symbol);
+        const usdVal = bal * quote.price;
 
         if (bal > 0) {
             const tokenSymbol = token.symbol || symbol;
@@ -2795,7 +2925,7 @@ async function loadAssets(options = {}) {
                     </div>
                     <div class="asset-balance">
                         <div class="asset-amount">${fmtToken(bal)}</div>
-                        <div class="asset-value">${fmtUsd(usdVal, sym)}</div>
+                        <div class="asset-value" title="${escapeHtml(usdValuationTitle([quote]))}">${fmtUsd(usdVal, sym)}${usdValuationSuffix([quote], { compact: true })}</div>
                     </div>
                 </div>
             `;
@@ -3526,27 +3656,33 @@ async function showMossStakeModal() {
     });
 
     if (!values) return;
-    let amount = parseFloat(values.stakeAmount);
-    if (!amount || amount <= 0) { showToast('Invalid amount'); return; }
+    const amountText = String(values.stakeAmount || '').trim();
+    let amountBaseUnits;
+    try {
+        amountBaseUnits = parsePositiveDecimalBaseUnits(amountText, 9, 'Stake amount');
+    } catch (error) {
+        showToast(error.message || 'Invalid amount');
+        return;
+    }
     if (!values.password) { showToast('Password required'); return; }
 
     // Balance guard: check spendable LICN and auto-correct
     try {
         const balResult = await rpc.call('getBalance', [wallet.address]);
-        const spendable = (balResult?.spendable || balResult?.balance || 0) / SPORES_PER_LICN;
-        const maxStakable = Math.max(0, spendable - BASE_FEE_LICN);
-        if (maxStakable <= 0) {
+        const spendable = u64ValueToBigInt(balResult?.spendable || balResult?.balance || 0);
+        const baseFeeSpores = getNetworkBaseFeeSpores();
+        const maxStakable = spendable > baseFeeSpores ? spendable - baseFeeSpores : 0n;
+        if (maxStakable <= 0n) {
             showToast('Insufficient LICN balance for staking');
             return;
         }
-        if (amount > maxStakable) {
-            amount = parseFloat(maxStakable.toFixed(6));
-            showToast(`Stake amount adjusted to available balance: ${fmtToken(amount)} LICN`);
+        if (amountBaseUnits > maxStakable) {
+            amountBaseUnits = maxStakable;
+            showToast(`Stake amount adjusted to available balance: ${baseUnitsToDecimalString(maxStakable, 9)} LICN`);
         }
     } catch (e) { /* let RPC reject */ }
 
     try {
-        const spores = Math.floor(amount * SPORES_PER_LICN);
         const tierByte = parseInt(values.lockTier || '0');
         const latestBlock = await rpc.getLatestBlock();
         const fromPubkey = LichenCrypto.addressToBytes(wallet.address);
@@ -3555,7 +3691,7 @@ async function showMossStakeModal() {
         const instructionData = new Uint8Array(10);
         instructionData[0] = 13;
         const view = new DataView(instructionData.buffer);
-        view.setBigUint64(1, BigInt(spores), true);
+        view.setBigUint64(1, amountBaseUnits, true);
         instructionData[9] = tierByte;
 
         const message = {
@@ -3577,7 +3713,7 @@ async function showMossStakeModal() {
 
         showToast('Submitting liquid staking transaction...');
         const txSig = await rpc.sendTransaction(txBase64);
-        showToast(`Staked ${amount} LICN! Sig: ${String(txSig).slice(0, 16)}...`);
+        showToast(`Staked ${baseUnitsToDecimalString(amountBaseUnits, 9)} LICN! Sig: ${String(txSig).slice(0, 16)}...`);
         await refreshBalance();
         // Refresh staking position after a brief delay for block inclusion
         const generation = _walletViewGeneration;
@@ -3610,36 +3746,42 @@ async function showMossUnstakeModal() {
     });
 
     if (!values) return;
-    let amount = parseFloat(values.unstakeAmount);
-    if (!amount || amount <= 0) { showToast('Invalid amount'); return; }
+    const amountText = String(values.unstakeAmount || '').trim();
+    let amountBaseUnits;
+    try {
+        amountBaseUnits = parsePositiveDecimalBaseUnits(amountText, 9, 'Unstake amount');
+    } catch (error) {
+        showToast(error.message || 'Invalid amount');
+        return;
+    }
     if (!values.password) { showToast('Password required'); return; }
 
     // Balance guard: check stLICN position and auto-correct
     try {
         const position = await rpc.call('getStakingPosition', [wallet.address]);
-        const stLicn = (position?.st_licn_amount || 0) / SPORES_PER_LICN;
-        if (stLicn <= 0) {
+        const stLicn = u64ValueToBigInt(position?.st_licn_amount || 0);
+        if (stLicn <= 0n) {
             showToast('No stLICN balance to unstake');
             return;
         }
-        if (amount > stLicn) {
-            amount = parseFloat(stLicn.toFixed(6));
-            showToast(`Unstake amount adjusted to stLICN balance: ${fmtToken(amount)} stLICN`);
+        if (amountBaseUnits > stLicn) {
+            amountBaseUnits = stLicn;
+            showToast(`Unstake amount adjusted to stLICN balance: ${baseUnitsToDecimalString(stLicn, 9)} stLICN`);
         }
     } catch (e) { /* let RPC reject */ }
 
     // Fee guard: need LICN for tx fee
     try {
         const balResult = await rpc.call('getBalance', [wallet.address]);
-        const spendable = (balResult?.spendable || balResult?.balance || 0) / SPORES_PER_LICN;
-        if (spendable < BASE_FEE_LICN) {
-            showToast(`Insufficient LICN for fee: need ${fmtToken(BASE_FEE_LICN)} LICN`);
+        const spendable = u64ValueToBigInt(balResult?.spendable || balResult?.balance || 0);
+        const baseFeeSpores = getNetworkBaseFeeSpores();
+        if (spendable < baseFeeSpores) {
+            showToast(`Insufficient LICN for fee: need ${baseUnitsToDecimalString(baseFeeSpores, 9)} LICN`);
             return;
         }
     } catch (e) { /* let RPC reject */ }
 
     try {
-        const spores = Math.floor(amount * SPORES_PER_LICN);
         const latestBlock = await rpc.getLatestBlock();
         const fromPubkey = LichenCrypto.addressToBytes(wallet.address);
 
@@ -3647,7 +3789,7 @@ async function showMossUnstakeModal() {
         const instructionData = new Uint8Array(9);
         instructionData[0] = 14;
         const view = new DataView(instructionData.buffer);
-        view.setBigUint64(1, BigInt(spores), true);
+        view.setBigUint64(1, amountBaseUnits, true);
 
         const message = {
             instructions: [{
@@ -3924,10 +4066,24 @@ function switchReceiveTab(tabName) {
 // ===== BRIDGE DEPOSIT =====
 
 const BRIDGE_AUTH_TTL_SECS = 24 * 60 * 60;
+const BRIDGE_AUTH_DOMAIN_V2 = 'LICHEN_BRIDGE_ACCESS_V2';
+const BRIDGE_AUTH_CREATE_ACTION = 'createBridgeDeposit';
 let activeBridgeAuth = null;
 
 function buildBridgeAccessMessage(userId, issuedAt, expiresAt) {
     return `LICHEN_BRIDGE_ACCESS_V1\nuser_id=${userId}\nissued_at=${issuedAt}\nexpires_at=${expiresAt}\n`;
+}
+
+function bridgeAuthNonce() {
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    return Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function buildBridgeAccessMessageV2(userId, chain, asset, issuedAt, expiresAt, nonce) {
+    const canonicalChain = String(chain || '').trim().toLowerCase();
+    const normalizedAsset = String(asset || '').trim().toLowerCase();
+    return `${BRIDGE_AUTH_DOMAIN_V2}\naction=${BRIDGE_AUTH_CREATE_ACTION}\nuser_id=${userId}\nchain=${canonicalChain}\nasset=${normalizedAsset}\nroute=${canonicalChain}:${normalizedAsset}\nissued_at=${issuedAt}\nexpires_at=${expiresAt}\nnonce=${nonce}\n`;
 }
 
 function hasValidBridgeAuth(wallet) {
@@ -3938,14 +4094,20 @@ function hasValidBridgeAuth(wallet) {
 
 function currentBridgeAuthPayload(wallet) {
     if (!hasValidBridgeAuth(wallet)) return null;
-    return {
+    const payload = {
         issued_at: activeBridgeAuth.issued_at,
         expires_at: activeBridgeAuth.expires_at,
         signature: activeBridgeAuth.signature
     };
+    for (const key of ['version', 'domain', 'action', 'user_id', 'chain', 'asset', 'route', 'nonce']) {
+        if (activeBridgeAuth[key] !== undefined && activeBridgeAuth[key] !== null) {
+            payload[key] = activeBridgeAuth[key];
+        }
+    }
+    return payload;
 }
 
-async function ensureBridgeAccessAuth(wallet, { forceRefresh = false } = {}) {
+async function ensureBridgeAccessAuth(wallet, { forceRefresh = false, chain = '', asset = '' } = {}) {
     if (!forceRefresh && hasValidBridgeAuth(wallet)) return activeBridgeAuth;
 
     const values = await showPasswordModal({
@@ -3967,9 +4129,14 @@ async function ensureBridgeAccessAuth(wallet, { forceRefresh = false } = {}) {
     const privateKey = await LichenCrypto.decryptPrivateKey(wallet.encryptedKey, values.password);
     const issuedAt = Math.floor(Date.now() / 1000);
     const expiresAt = issuedAt + BRIDGE_AUTH_TTL_SECS;
-    const messageBytes = new TextEncoder().encode(
-        buildBridgeAccessMessage(wallet.address, issuedAt, expiresAt)
-    );
+    const canonicalChain = String(chain || '').trim().toLowerCase();
+    const normalizedAsset = String(asset || '').trim().toLowerCase();
+    const useV2 = Boolean(canonicalChain && normalizedAsset);
+    const nonce = useV2 ? bridgeAuthNonce() : '';
+    const message = useV2
+        ? buildBridgeAccessMessageV2(wallet.address, canonicalChain, normalizedAsset, issuedAt, expiresAt, nonce)
+        : buildBridgeAccessMessage(wallet.address, issuedAt, expiresAt);
+    const messageBytes = new TextEncoder().encode(message);
     const signature = await LichenCrypto.signTransaction(privateKey, messageBytes);
 
     activeBridgeAuth = {
@@ -3978,6 +4145,15 @@ async function ensureBridgeAccessAuth(wallet, { forceRefresh = false } = {}) {
         expires_at: expiresAt,
         signature
     };
+    if (useV2) {
+        activeBridgeAuth.version = 2;
+        activeBridgeAuth.domain = BRIDGE_AUTH_DOMAIN_V2;
+        activeBridgeAuth.action = BRIDGE_AUTH_CREATE_ACTION;
+        activeBridgeAuth.chain = canonicalChain;
+        activeBridgeAuth.asset = normalizedAsset;
+        activeBridgeAuth.route = `${canonicalChain}:${normalizedAsset}`;
+        activeBridgeAuth.nonce = nonce;
+    }
 
     return activeBridgeAuth;
 }
@@ -4076,7 +4252,11 @@ async function requestDepositAddress(chain, asset, chainName, icon) {
 
     let bridgeAuth;
     try {
-        bridgeAuth = await ensureBridgeAccessAuth(wallet, { forceRefresh: true });
+        bridgeAuth = await ensureBridgeAccessAuth(wallet, {
+            forceRefresh: true,
+            chain,
+            asset
+        });
     } catch (error) {
         showToast(error.message || 'Bridge authorization failed', 'error');
         return;
@@ -4098,11 +4278,7 @@ async function requestDepositAddress(chain, asset, chainName, icon) {
             user_id: wallet.address,
             chain: chain,
             asset: asset,
-            auth: {
-                issued_at: bridgeAuth.issued_at,
-                expires_at: bridgeAuth.expires_at,
-                signature: bridgeAuth.signature
-            }
+            auth: currentBridgeAuthPayload(wallet) || bridgeAuth
         }]);
 
         const depositAddress = data.address;
@@ -4340,14 +4516,14 @@ function showNFTDetail(mintId) {
     const marketBase = (typeof LICHEN_CONFIG !== 'undefined' && LICHEN_CONFIG.marketplace)
         ? String(LICHEN_CONFIG.marketplace).replace(/\/+$/, '')
         : '../marketplace';
-    window.open(marketBase + '/item.html?id=' + id, '_blank');
+    window.open(marketBase + '/item.html?id=' + id, '_blank', 'noopener,noreferrer');
 }
 
 function openMarketplace() {
     const marketBase = (typeof LICHEN_CONFIG !== 'undefined' && LICHEN_CONFIG.marketplace)
         ? String(LICHEN_CONFIG.marketplace).replace(/\/+$/, '')
         : '../marketplace';
-    window.open(marketBase + '/index.html', '_blank');
+    window.open(marketBase + '/index.html', '_blank', 'noopener,noreferrer');
 }
 
 function formatLicn(spores) {
@@ -4616,8 +4792,10 @@ async function updateSendTokenUI() {
 
 async function confirmSend() {
     const to = document.getElementById('sendTo').value.trim();
-    let amount = parseFloat(document.getElementById('sendAmount').value);
+    const amountInput = document.getElementById('sendAmount');
+    const amountText = amountInput.value.trim();
     const selectedToken = document.getElementById('sendToken')?.value || 'LICN';
+    let amountBaseUnits;
 
     if (!LichenCrypto.isValidAddress(to)) {
         showToast('Invalid recipient address', 'error');
@@ -4632,12 +4810,14 @@ async function confirmSend() {
         return;
     }
 
-    if (!amount || amount <= 0) {
-        showToast('Invalid amount', 'error');
+    try {
+        amountBaseUnits = parseSendAmountBaseUnits(selectedToken, amountText);
+    } catch (error) {
+        showToast(error.message || 'Invalid amount', 'error');
         return;
     }
 
-    if (selectedToken === 'wNEO' && !isWholeNeoLotAmount(amount)) {
+    if (selectedToken === 'wNEO' && !isWholeNeoLotAmount(amountText)) {
         showToast('wNEO transfers require whole NEO lots', 'error');
         return;
     }
@@ -4646,39 +4826,49 @@ async function confirmSend() {
     try {
         await refreshDynamicFeeConfig();
         const balResult = await rpc.call('getBalance', [wallet.address]);
-        const spendable = (balResult?.spendable || balResult?.balance || 0) / SPORES_PER_LICN;
-        const baseFee = getNetworkBaseFeeLicn();
+        const spendableSpores = u64ValueToBigInt(balResult?.spendable || balResult?.balance || 0);
+        const baseFeeSpores = getNetworkBaseFeeSpores();
 
         if (selectedToken === 'LICN') {
-            const maxSendable = Math.max(0, spendable - baseFee);
-            if (maxSendable <= 0) {
+            const maxSendable = spendableSpores > baseFeeSpores ? spendableSpores - baseFeeSpores : 0n;
+            if (maxSendable <= 0n) {
                 showToast('Insufficient LICN balance (not enough to cover fee)');
-                document.getElementById('sendAmount').value = '0';
+                amountInput.value = '0';
                 return;
             }
-            if (amount > maxSendable) {
-                amount = parseFloat(maxSendable.toFixed(6));
-                document.getElementById('sendAmount').value = amount;
-                showToast(`Amount adjusted to available balance: ${fmtToken(amount)} LICN`);
+            if (amountBaseUnits > maxSendable) {
+                const adjusted = baseUnitsToDecimalString(maxSendable, 9);
+                amountInput.value = adjusted;
+                showToast(`Amount adjusted to available balance: ${adjusted} LICN`);
                 return; // Let user review the adjusted amount
             }
         } else {
             // Check fee coverage for non-LICN tokens
-            if (spendable < baseFee) {
-                showToast(`Insufficient LICN for fee: need ${fmtToken(baseFee)} LICN, have ${fmtToken(spendable)}`);
+            if (spendableSpores < baseFeeSpores) {
+                const need = baseUnitsToDecimalString(baseFeeSpores, 9);
+                const have = baseUnitsToDecimalString(spendableSpores, 9);
+                showToast(`Insufficient LICN for fee: need ${need} LICN, have ${have}`);
                 return;
             }
             // Check token balance
-            const tokenBal = await getTokenBalanceFormatted(selectedToken, wallet.address);
-            if (tokenBal <= 0) {
+            let tokenBalBaseUnits = 0n;
+            if (selectedToken === 'stLICN') {
+                const position = await rpc.call('getStakingPosition', [wallet.address]);
+                tokenBalBaseUnits = u64ValueToBigInt(position?.st_licn_amount || 0);
+            } else {
+                const token = TOKEN_REGISTRY[selectedToken];
+                const tokenResult = token?.address ? await rpc.getTokenBalance(token.address, wallet.address) : null;
+                tokenBalBaseUnits = u64ValueToBigInt(tokenResult?.balance || 0);
+            }
+            if (tokenBalBaseUnits <= 0n) {
                 showToast(`No ${selectedToken} balance available`);
-                document.getElementById('sendAmount').value = '0';
+                amountInput.value = '0';
                 return;
             }
-            if (amount > tokenBal) {
-                amount = parseFloat(tokenBal.toFixed(6));
-                document.getElementById('sendAmount').value = amount;
-                showToast(`Amount adjusted to available balance: ${fmtToken(amount)} ${selectedToken}`);
+            if (amountBaseUnits > tokenBalBaseUnits) {
+                const adjusted = baseUnitsToDecimalString(tokenBalBaseUnits, tokenDecimalsForBaseUnits(selectedToken));
+                amountInput.value = adjusted;
+                showToast(`Amount adjusted to available balance: ${adjusted} ${selectedToken}`);
                 return; // Let user review the adjusted amount
             }
         }
@@ -4687,7 +4877,7 @@ async function confirmSend() {
     }
 
     try {
-        await preflightWalletTransferRestrictions(wallet, to, selectedToken, amount);
+        await preflightWalletTransferRestrictions(wallet, to, selectedToken, amountText);
     } catch (error) {
         renderSendRestrictionStatus(selectedToken);
         showToast(error.message || 'Transfer blocked by consensus restriction', 'error');
@@ -4707,13 +4897,12 @@ async function confirmSend() {
 
         if (selectedToken === 'LICN') {
             // Native LICN transfer
-            const spores = Math.floor(amount * SPORES_PER_LICN);
             const systemProgram = new Uint8Array(32); // SYSTEM_PROGRAM_ID = [0; 32]
 
             const instructionData = new Uint8Array(9);
             instructionData[0] = 0; // Transfer type
             const view = new DataView(instructionData.buffer);
-            view.setBigUint64(1, BigInt(spores), true);
+            view.setBigUint64(1, amountBaseUnits, true);
 
             message = {
                 instructions: [{
@@ -4725,13 +4914,12 @@ async function confirmSend() {
             };
         } else if (selectedToken === 'stLICN') {
             // stLICN transfer via MossStake opcode 16
-            const stLicnSpores = Math.floor(amount * SPORES_PER_LICN);
             const systemProgram = new Uint8Array(32); // SYSTEM_PROGRAM_ID = [0; 32]
 
             const instructionData = new Uint8Array(9);
             instructionData[0] = 16; // MossStake transfer
             const view = new DataView(instructionData.buffer);
-            view.setBigUint64(1, BigInt(stLicnSpores), true);
+            view.setBigUint64(1, amountBaseUnits, true);
 
             message = {
                 instructions: [{
@@ -4749,14 +4937,13 @@ async function confirmSend() {
                 return;
             }
 
-            const rawAmount = Math.floor(amount * Math.pow(10, token.decimals));
             const contractProgramId = new Uint8Array(32).fill(0xFF); // CONTRACT_PROGRAM_ID
             const tokenProgramPubkey = bs58.decode(token.address);
 
             // Build contract call payload: {"Call": {"function": "transfer", "args": [...], "value": 0}}
             const callArgs = JSON.stringify({
                 to: Array.from(toPubkey),
-                amount: rawAmount,
+                amount: amountBaseUnits.toString(),
             });
             const callPayload = JSON.stringify({
                 Call: {
@@ -4779,7 +4966,7 @@ async function confirmSend() {
         // Sign the transaction with the native PQ wallet key
         const passwordValues = await showPasswordModal({
             title: 'Sign Transaction',
-            message: `Send ${amount} ${selectedToken} to ${to}`,
+            message: `Send ${sendAmountDisplay(selectedToken, amountBaseUnits)} ${selectedToken} to ${to}`,
             icon: 'fas fa-pen-nib',
             confirmText: 'Sign & Send',
             fields: [
@@ -4822,7 +5009,7 @@ async function confirmSend() {
             refreshBalance();
         }).catch(() => { /* confirmation polling failed, balance will refresh anyway */ });
 
-        showToast(`✅ ${amount} ${selectedToken} sent! Signature: ${String(txSignature).slice(0, 16)}...`);
+        showToast(`✅ ${sendAmountDisplay(selectedToken, amountBaseUnits)} ${selectedToken} sent! Signature: ${String(txSignature).slice(0, 16)}...`);
         closeModal('sendModal');
 
         // Clear form and reset token selector

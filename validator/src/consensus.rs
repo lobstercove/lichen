@@ -102,6 +102,7 @@ pub struct ConsensusEngine {
     // ── Identity ────────────────────────────────────────────────────
     keypair: Keypair,
     pub validator_pubkey: Pubkey,
+    signing_chain_id: String,
     min_validator_stake: u64,
     timeouts: ConsensusTimeoutConfig,
 
@@ -194,9 +195,28 @@ impl ConsensusEngine {
         min_validator_stake: u64,
         timeouts: ConsensusTimeoutConfig,
     ) -> Self {
+        Self::new_with_chain_id_min_stake_and_timeouts(
+            keypair,
+            validator_pubkey,
+            "",
+            min_validator_stake,
+            timeouts,
+        )
+    }
+
+    /// Create a new consensus engine with chain-id signing domains,
+    /// network-specific minimum stake, and timeout configuration.
+    pub fn new_with_chain_id_min_stake_and_timeouts(
+        keypair: Keypair,
+        validator_pubkey: Pubkey,
+        signing_chain_id: impl Into<String>,
+        min_validator_stake: u64,
+        timeouts: ConsensusTimeoutConfig,
+    ) -> Self {
         Self {
             keypair,
             validator_pubkey,
+            signing_chain_id: signing_chain_id.into(),
             min_validator_stake,
             timeouts,
             height: 0,
@@ -357,8 +377,13 @@ impl ConsensusEngine {
         };
 
         let block_hash = block.hash();
-        let sig_bytes =
-            Proposal::signable_bytes_static(self.height, self.round, &block_hash, valid_round);
+        let sig_bytes = Proposal::signing_bytes_static_for_chain_id(
+            &self.signing_chain_id,
+            self.height,
+            self.round,
+            &block_hash,
+            valid_round,
+        );
         let signature = self.keypair.sign(&sig_bytes);
 
         let proposal = Proposal {
@@ -412,7 +437,7 @@ impl ConsensusEngine {
             return ConsensusAction::None;
         }
         // Verify signature
-        if !proposal.verify_signature() {
+        if !proposal.verify_signature_with_chain_id(&self.signing_chain_id) {
             warn!(
                 "🚨 BFT: Invalid proposal signature from {:?}",
                 proposal.proposer
@@ -436,7 +461,10 @@ impl ConsensusEngine {
             return ConsensusAction::None;
         }
         // Verify block signature
-        if !proposal.block.verify_signature() {
+        if !proposal
+            .block
+            .verify_signature_with_chain_id(&self.signing_chain_id)
+        {
             warn!("🚨 BFT: Invalid block signature in proposal");
             return ConsensusAction::None;
         }
@@ -533,7 +561,7 @@ impl ConsensusEngine {
         if prevote.height < self.height {
             return ConsensusAction::None;
         }
-        if !prevote.verify_signature() {
+        if !prevote.verify_signature_with_chain_id(&self.signing_chain_id) {
             warn!("🚨 BFT: Invalid prevote signature");
             return ConsensusAction::None;
         }
@@ -683,7 +711,7 @@ impl ConsensusEngine {
         if precommit.height < self.height {
             return ConsensusAction::None;
         }
-        if !precommit.verify_signature() {
+        if !precommit.verify_signature_with_chain_id(&self.signing_chain_id) {
             warn!("🚨 BFT: Invalid precommit signature");
             return ConsensusAction::None;
         }
@@ -967,7 +995,12 @@ impl ConsensusEngine {
         }
 
         self.transition_to(RoundStep::Prevote);
-        let msg = Prevote::signable_bytes(self.height, self.round, &block_hash);
+        let msg = Prevote::signing_bytes_for_chain_id(
+            &self.signing_chain_id,
+            self.height,
+            self.round,
+            &block_hash,
+        );
         let signature = self.keypair.sign(&msg);
 
         let prevote = Prevote {
@@ -1067,7 +1100,13 @@ impl ConsensusEngine {
             .unwrap_or_default()
             .as_secs();
 
-        let msg = Precommit::signable_bytes(self.height, self.round, &block_hash, timestamp);
+        let msg = Precommit::signing_bytes_for_chain_id(
+            &self.signing_chain_id,
+            self.height,
+            self.round,
+            &block_hash,
+            timestamp,
+        );
         let signature = self.keypair.sign(&msg);
 
         let precommit = Precommit {
@@ -1684,12 +1723,16 @@ impl ConsensusEngine {
             }
             return Ok(());
         }
-        let signable = Prevote::signable_bytes(height, round, &block_hash);
+        let signable =
+            Prevote::signing_bytes_for_chain_id(&self.signing_chain_id, height, round, &block_hash);
         if !Keypair::verify(&self.validator_pubkey, &signable, &signature) {
-            return Err(format!(
-                "invalid recovered prevote signature for height={} round={}",
-                height, round
-            ));
+            let legacy = Prevote::signable_bytes(height, round, &block_hash);
+            if !Keypair::verify(&self.validator_pubkey, &legacy, &signature) {
+                return Err(format!(
+                    "invalid recovered prevote signature for height={} round={}",
+                    height, round
+                ));
+            }
         }
 
         info!(
@@ -1729,12 +1772,21 @@ impl ConsensusEngine {
             }
             return Ok(());
         }
-        let signable = Precommit::signable_bytes(height, round, &block_hash, timestamp);
+        let signable = Precommit::signing_bytes_for_chain_id(
+            &self.signing_chain_id,
+            height,
+            round,
+            &block_hash,
+            timestamp,
+        );
         if !Keypair::verify(&self.validator_pubkey, &signable, &signature) {
-            return Err(format!(
-                "invalid recovered precommit signature for height={} round={}",
-                height, round
-            ));
+            let legacy = Precommit::signable_bytes(height, round, &block_hash, timestamp);
+            if !Keypair::verify(&self.validator_pubkey, &legacy, &signature) {
+                return Err(format!(
+                    "invalid recovered precommit signature for height={} round={}",
+                    height, round
+                ));
+            }
         }
 
         info!(

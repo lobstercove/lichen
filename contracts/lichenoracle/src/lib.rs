@@ -1,5 +1,5 @@
 // LichenOracle - Decentralized Oracle System
-// Features: Price Feeds, Verifiable Random Function (VRF), Attestations
+// Features: Price feeds, validator-entropy commit-reveal randomness, attestations
 
 #![no_std]
 #![cfg_attr(target_arch = "wasm32", no_main)]
@@ -9,7 +9,8 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use lichen_sdk::{
-    bytes_to_u64, get_caller, get_timestamp, log_info, storage_get, storage_set, u64_to_bytes,
+    bytes_to_u64, get_block_entropy, get_caller, get_slot, get_timestamp, log_info, storage_get,
+    set_return_data, storage_set, u64_to_bytes,
 };
 
 // ============================================================================
@@ -74,6 +75,22 @@ fn auth_key(prefix: &str, addr: &[u8; 32]) -> alloc::string::String {
     alloc::format!("{}_{}", prefix, hex_encode(addr))
 }
 
+fn randomness_commit_key(requester: &[u8; 32]) -> alloc::string::String {
+    alloc::format!("rng_commit_{}", hex_encode(requester))
+}
+
+fn randomness_seed_commit_key(requester: &[u8; 32], seed: u64) -> alloc::string::String {
+    alloc::format!("rng_commit_{}_{}", hex_encode(requester), seed)
+}
+
+fn randomness_result_key(requester: &[u8; 32]) -> alloc::string::String {
+    alloc::format!("random_{}", hex_encode(requester))
+}
+
+fn randomness_seed_result_key(requester: &[u8; 32], seed: u64) -> alloc::string::String {
+    alloc::format!("random_{}_{}", hex_encode(requester), seed)
+}
+
 fn bump_stat(key: &[u8]) {
     let current = storage_get(key).map(|d| bytes_to_u64(&d)).unwrap_or(0);
     storage_set(key, &u64_to_bytes(current.saturating_add(1)));
@@ -120,7 +137,7 @@ pub extern "C" fn initialize_oracle(owner_ptr: *const u8) -> u32 {
     storage_set(b"oracle_owner", &owner);
 
     log_info("Oracle initialized!");
-    log_info("   Features: Price Feeds, VRF, Attestations");
+    log_info("   Features: Price Feeds, Validator Entropy, Attestations");
     // AUDIT-FIX 2.22: Return 0 for success (consistent with all other functions)
     0
 }
@@ -365,12 +382,13 @@ pub extern "C" fn get_price_value(asset_ptr: *const u8, asset_len: u32) -> u32 {
 }
 
 // ============================================================================
-// VERIFIABLE RANDOM FUNCTION (VRF) - Commit-Reveal Scheme
+// VALIDATOR-ENTROPY RANDOMNESS - Commit-Reveal Scheme
 // ============================================================================
 // Phase 1 (commit): Requester submits H(secret || seed). Stored on-chain.
 // Phase 2 (reveal): Requester reveals secret. Contract verifies H(secret || seed)
-//   matches commit, then derives randomness as H(commit || block_timestamp).
-//   Block timestamp is unknown at commit time, making the output unpredictable.
+//   matches commit, then derives randomness from the first committed block
+//   entropy after the commit slot. This avoids proposer-controlled timestamp
+//   influence and keeps the output fixed even if the requester delays reveal.
 // ============================================================================
 
 /// Commit phase: submit hash of (secret || seed)
@@ -411,23 +429,25 @@ pub extern "C" fn commit_randomness(
             return 0;
         }
     };
-    let timestamp = get_timestamp();
+    let commit_slot = get_slot();
 
-    let key = alloc::format!("rng_commit_{}", hex_encode(&requester));
+    let key = randomness_commit_key(&requester);
     if matches!(storage_get(key.as_bytes()), Some(existing) if existing.len() >= 49 && existing[48] == 0)
     {
         log_info("Pending randomness commit already exists");
         return 0;
     }
 
-    // Store: commit_hash (32) + seed (8) + timestamp (8) + status (1: 0=pending, 1=revealed)
+    // Store: commit_hash (32) + seed (8) + commit_slot (8) + status (1: 0=pending, 1=revealed)
     let mut data = Vec::with_capacity(49);
     data.extend_from_slice(&commit_hash);
     data.extend_from_slice(&u64_to_bytes(seed));
-    data.extend_from_slice(&u64_to_bytes(timestamp));
+    data.extend_from_slice(&u64_to_bytes(commit_slot));
     data.push(0u8); // status: pending
 
     storage_set(key.as_bytes(), &data);
+    let seed_key = randomness_seed_commit_key(&requester, seed);
+    storage_set(seed_key.as_bytes(), &data);
 
     log_info("Randomness committed — reveal to finalize");
     1
@@ -469,9 +489,9 @@ pub extern "C" fn reveal_randomness(
         log_info("reveal_randomness rejected: null result_ptr");
         return 0;
     }
-    let reveal_timestamp = get_timestamp();
+    let reveal_slot = get_slot();
 
-    let commit_key = alloc::format!("rng_commit_{}", hex_encode(&requester));
+    let commit_key = randomness_commit_key(&requester);
 
     let commit_data = match storage_get(commit_key.as_bytes()) {
         Some(d) if d.len() >= 49 => d,
@@ -485,6 +505,8 @@ pub extern "C" fn reveal_randomness(
     let stored_commit_hash = &commit_data[0..32];
     let seed_bytes: [u8; 8] = commit_data[32..40].try_into().unwrap_or([0; 8]);
     let seed = u64::from_le_bytes(seed_bytes);
+    let commit_slot_bytes: [u8; 8] = commit_data[40..48].try_into().unwrap_or([0; 8]);
+    let commit_slot = u64::from_le_bytes(commit_slot_bytes);
     let status = commit_data[48];
 
     if status != 0 {
@@ -492,43 +514,80 @@ pub extern "C" fn reveal_randomness(
         return 0;
     }
 
-    // Verify: H(secret || seed) == stored_commit_hash
+    // Verify the current domain-separated commitment, while accepting the
+    // legacy H(secret || seed) form for already-integrated callers.
     let mut preimage = Vec::with_capacity(40);
     preimage.extend_from_slice(&secret);
     preimage.extend_from_slice(&u64_to_bytes(seed));
-    let computed_hash = simple_hash(&preimage);
+    let legacy_hash = simple_hash(&preimage);
 
-    if computed_hash != stored_commit_hash {
+    let mut domain_preimage = Vec::with_capacity(96);
+    domain_preimage.extend_from_slice(b"LichenOracle.commit.v1");
+    domain_preimage.extend_from_slice(&requester);
+    domain_preimage.extend_from_slice(&u64_to_bytes(seed));
+    domain_preimage.extend_from_slice(&secret);
+    let computed_hash = simple_hash(&domain_preimage);
+
+    if computed_hash != stored_commit_hash && legacy_hash != stored_commit_hash {
         log_info("Commit verification failed — secret doesn't match");
         return 0;
     }
 
-    // Derive randomness: H(commit_hash || reveal_timestamp)
-    // reveal_timestamp is the current block timestamp, unknown at commit time
-    let mut rng_input = Vec::with_capacity(40);
+    let entropy_slot = match commit_slot.checked_add(1) {
+        Some(slot) => slot,
+        None => {
+            log_info("Randomness reveal rejected: invalid commit slot");
+            return 0;
+        }
+    };
+    if reveal_slot < entropy_slot {
+        log_info("Randomness reveal rejected: wait for the next committed block");
+        return 0;
+    }
+    let block_entropy = match get_block_entropy(entropy_slot) {
+        Some(entropy) => entropy,
+        None => {
+            log_info("Randomness reveal rejected: block entropy unavailable");
+            return 0;
+        }
+    };
+
+    // Derive randomness from a fixed post-commit entropy slot so delayed reveal
+    // cannot choose a favorable block.
+    let mut rng_input = Vec::with_capacity(128);
+    rng_input.extend_from_slice(b"LICHEN_ORACLE_RANDOMNESS_V2");
     rng_input.extend_from_slice(stored_commit_hash);
-    rng_input.extend_from_slice(&u64_to_bytes(reveal_timestamp));
+    rng_input.extend_from_slice(&requester);
+    rng_input.extend_from_slice(&u64_to_bytes(seed));
+    rng_input.extend_from_slice(&u64_to_bytes(commit_slot));
+    rng_input.extend_from_slice(&u64_to_bytes(entropy_slot));
+    rng_input.extend_from_slice(&block_entropy);
     let random_hash = simple_hash(&rng_input);
 
     // Extract u64 random value from first 8 bytes of hash
     let random_value = u64::from_le_bytes(random_hash[0..8].try_into().unwrap_or([0; 8]));
 
     // Store result
-    let result_key = alloc::format!("random_{}", hex_encode(&requester));
-    let mut result_data = Vec::with_capacity(24);
+    let result_key = randomness_result_key(&requester);
+    let mut result_data = Vec::with_capacity(48);
     result_data.extend_from_slice(&u64_to_bytes(random_value));
-    result_data.extend_from_slice(&u64_to_bytes(reveal_timestamp));
+    result_data.extend_from_slice(&u64_to_bytes(entropy_slot));
     result_data.extend_from_slice(&requester);
     storage_set(result_key.as_bytes(), &result_data);
+    let seed_result_key = randomness_seed_result_key(&requester, seed);
+    storage_set(seed_result_key.as_bytes(), &result_data);
 
     // Mark commit as revealed
     let mut updated_commit = commit_data.clone();
     updated_commit[48] = 1; // status: revealed
     storage_set(commit_key.as_bytes(), &updated_commit);
+    let seed_commit_key = randomness_seed_commit_key(&requester, seed);
+    storage_set(seed_commit_key.as_bytes(), &updated_commit);
 
     // Write random_value to result pointer
     let value_bytes = u64_to_bytes(random_value);
     write_bytes(result_ptr, &value_bytes);
+    set_return_data(&result_data[..16]);
 
     log_info("Randomness revealed!");
     log_info(&alloc::format!("   Value: {}", random_value));
@@ -699,13 +758,15 @@ pub extern "C" fn get_randomness(requester_ptr: *const u8, _seed: u64, result_pt
         return 0;
     }
 
-    // New key format from commit-reveal and legacy request_randomness
-    let key = alloc::format!("random_{}", hex_encode(&requester));
+    let seed_key = randomness_seed_result_key(&requester, _seed);
+    let legacy_key = randomness_result_key(&requester);
+    let result = storage_get(seed_key.as_bytes()).or_else(|| storage_get(legacy_key.as_bytes()));
 
-    match storage_get(key.as_bytes()) {
+    match result {
         Some(data) if data.len() >= 16 => {
-            // Return: random_value (8) + timestamp (8)
+            // Return: random_value (8) + entropy_slot (8)
             write_bytes(result_ptr, &data[..16]);
+            set_return_data(&data[..16]);
             1
         }
         _ => {
@@ -1230,6 +1291,42 @@ mod tests {
         test_mock::reset();
     }
 
+    fn commit_hash_for(requester: &[u8; 32], secret: &[u8; 32], seed: u64) -> [u8; 32] {
+        let mut preimage = Vec::with_capacity(96);
+        preimage.extend_from_slice(b"LichenOracle.commit.v1");
+        preimage.extend_from_slice(requester);
+        preimage.extend_from_slice(&lichen_sdk::u64_to_bytes(seed));
+        preimage.extend_from_slice(secret);
+        simple_hash(&preimage)
+    }
+
+    fn legacy_commit_hash_for(secret: &[u8; 32], seed: u64) -> [u8; 32] {
+        let mut preimage = Vec::with_capacity(40);
+        preimage.extend_from_slice(secret);
+        preimage.extend_from_slice(&lichen_sdk::u64_to_bytes(seed));
+        simple_hash(&preimage)
+    }
+
+    fn expected_random_value(
+        requester: &[u8; 32],
+        commit_hash: &[u8; 32],
+        seed: u64,
+        commit_slot: u64,
+        entropy_slot: u64,
+        block_entropy: &[u8; 32],
+    ) -> u64 {
+        let mut rng_input = Vec::with_capacity(128);
+        rng_input.extend_from_slice(b"LICHEN_ORACLE_RANDOMNESS_V2");
+        rng_input.extend_from_slice(commit_hash);
+        rng_input.extend_from_slice(requester);
+        rng_input.extend_from_slice(&lichen_sdk::u64_to_bytes(seed));
+        rng_input.extend_from_slice(&lichen_sdk::u64_to_bytes(commit_slot));
+        rng_input.extend_from_slice(&lichen_sdk::u64_to_bytes(entropy_slot));
+        rng_input.extend_from_slice(block_entropy);
+        let random_hash = simple_hash(&rng_input);
+        u64::from_le_bytes(random_hash[0..8].try_into().unwrap_or([0; 8]))
+    }
+
     #[test]
     fn test_initialize_oracle() {
         setup();
@@ -1479,10 +1576,14 @@ mod tests {
             commit_randomness(requester.as_ptr(), commit_hash.as_ptr(), 12345),
             1
         );
-        let key = alloc::format!("rng_commit_{}", hex_encode(&requester));
+        let key = randomness_commit_key(&requester);
         let data = lichen_sdk::storage_get(key.as_bytes()).unwrap();
         assert_eq!(data.len(), 49);
         assert_eq!(&data[0..32], &commit_hash[..]);
+        assert_eq!(bytes_to_u64(&data[40..48]), 1);
+
+        let seed_key = randomness_seed_commit_key(&requester, 12345);
+        assert_eq!(lichen_sdk::storage_get(seed_key.as_bytes()), Some(data));
     }
 
     #[test]
@@ -1502,7 +1603,7 @@ mod tests {
             0
         );
 
-        let key = alloc::format!("rng_commit_{}", hex_encode(&requester));
+        let key = randomness_commit_key(&requester);
         let data = lichen_sdk::storage_get(key.as_bytes()).unwrap();
         assert_eq!(&data[0..32], &first[..]);
     }
@@ -1513,23 +1614,36 @@ mod tests {
         let requester = [1u8; 32];
         let secret = [0xBBu8; 32];
         let seed: u64 = 12345;
-        // Compute commit hash = simple_hash(secret || u64_to_bytes(seed))
-        let mut preimage = Vec::with_capacity(40);
-        preimage.extend_from_slice(&secret);
-        preimage.extend_from_slice(&lichen_sdk::u64_to_bytes(seed));
-        let commit_hash = simple_hash(&preimage);
+        let commit_hash = commit_hash_for(&requester, &secret, seed);
+        let block_entropy = [0x33u8; 32];
+
         // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(requester);
+        test_mock::set_slot(10);
         assert_eq!(
             commit_randomness(requester.as_ptr(), commit_hash.as_ptr(), seed),
             1
         );
-        test_mock::set_timestamp(2000);
+        test_mock::set_slot(11);
+        test_mock::set_block_entropy(11, block_entropy);
         let mut result = [0u8; 8];
         assert_eq!(
             reveal_randomness(requester.as_ptr(), secret.as_ptr(), result.as_mut_ptr()),
             1
         );
+
+        let expected =
+            expected_random_value(&requester, &commit_hash, seed, 10, 11, &block_entropy);
+        assert_eq!(u64::from_le_bytes(result), expected);
+        let return_data = test_mock::get_return_data();
+        assert_eq!(return_data.len(), 16);
+        assert_eq!(bytes_to_u64(&return_data[0..8]), expected);
+        assert_eq!(bytes_to_u64(&return_data[8..16]), 11);
+
+        let mut stored = [0u8; 16];
+        assert_eq!(get_randomness(requester.as_ptr(), seed, stored.as_mut_ptr()), 1);
+        assert_eq!(bytes_to_u64(&stored[0..8]), expected);
+        assert_eq!(bytes_to_u64(&stored[8..16]), 11);
     }
 
     #[test]
@@ -1538,12 +1652,12 @@ mod tests {
         let requester = [1u8; 32];
         let secret = [0xBBu8; 32];
         let seed: u64 = 12345;
-        let mut preimage = Vec::with_capacity(40);
-        preimage.extend_from_slice(&secret);
-        preimage.extend_from_slice(&lichen_sdk::u64_to_bytes(seed));
-        let commit_hash = simple_hash(&preimage);
+        let commit_hash = commit_hash_for(&requester, &secret, seed);
+        test_mock::set_caller(requester);
+        test_mock::set_slot(10);
         commit_randomness(requester.as_ptr(), commit_hash.as_ptr(), seed);
-        test_mock::set_timestamp(2000);
+        test_mock::set_slot(11);
+        test_mock::set_block_entropy(11, [0x44u8; 32]);
         let wrong = [0xCCu8; 32];
         let mut result = [0u8; 8];
         assert_eq!(
@@ -1570,18 +1684,73 @@ mod tests {
         let requester = [1u8; 32];
         let secret = [0xBBu8; 32];
         let seed: u64 = 12345;
-        let mut preimage = Vec::with_capacity(40);
-        preimage.extend_from_slice(&secret);
-        preimage.extend_from_slice(&lichen_sdk::u64_to_bytes(seed));
-        let commit_hash = simple_hash(&preimage);
+        let commit_hash = commit_hash_for(&requester, &secret, seed);
+        test_mock::set_caller(requester);
+        test_mock::set_slot(10);
         commit_randomness(requester.as_ptr(), commit_hash.as_ptr(), seed);
-        test_mock::set_timestamp(2000);
+        test_mock::set_slot(11);
+        test_mock::set_block_entropy(11, [0x55u8; 32]);
         let mut result = [0u8; 8];
         reveal_randomness(requester.as_ptr(), secret.as_ptr(), result.as_mut_ptr());
         // Second reveal should fail
         assert_eq!(
             reveal_randomness(requester.as_ptr(), secret.as_ptr(), result.as_mut_ptr()),
             0
+        );
+    }
+
+    #[test]
+    fn test_reveal_randomness_waits_for_entropy_slot() {
+        setup();
+        let requester = [1u8; 32];
+        let secret = [0xBBu8; 32];
+        let seed: u64 = 12345;
+        let commit_hash = commit_hash_for(&requester, &secret, seed);
+        test_mock::set_caller(requester);
+        test_mock::set_slot(10);
+        assert_eq!(
+            commit_randomness(requester.as_ptr(), commit_hash.as_ptr(), seed),
+            1
+        );
+
+        let mut result = [0u8; 8];
+        assert_eq!(
+            reveal_randomness(requester.as_ptr(), secret.as_ptr(), result.as_mut_ptr()),
+            0
+        );
+
+        test_mock::set_slot(11);
+        assert_eq!(
+            reveal_randomness(requester.as_ptr(), secret.as_ptr(), result.as_mut_ptr()),
+            0
+        );
+
+        test_mock::set_block_entropy(11, [0x66u8; 32]);
+        assert_eq!(
+            reveal_randomness(requester.as_ptr(), secret.as_ptr(), result.as_mut_ptr()),
+            1
+        );
+    }
+
+    #[test]
+    fn test_reveal_randomness_accepts_legacy_commit_hash() {
+        setup();
+        let requester = [1u8; 32];
+        let secret = [0xBBu8; 32];
+        let seed: u64 = 12345;
+        let commit_hash = legacy_commit_hash_for(&secret, seed);
+        test_mock::set_caller(requester);
+        test_mock::set_slot(10);
+        assert_eq!(
+            commit_randomness(requester.as_ptr(), commit_hash.as_ptr(), seed),
+            1
+        );
+        test_mock::set_slot(11);
+        test_mock::set_block_entropy(11, [0x77u8; 32]);
+        let mut result = [0u8; 8];
+        assert_eq!(
+            reveal_randomness(requester.as_ptr(), secret.as_ptr(), result.as_mut_ptr()),
+            1
         );
     }
 
@@ -1772,22 +1941,19 @@ mod tests {
         let secret = [0x42u8; 32];
         let seed: u64 = 99999;
 
-        // Compute commit using the new SHA-256
-        let mut preimage = Vec::with_capacity(40);
-        preimage.extend_from_slice(&secret);
-        preimage.extend_from_slice(&lichen_sdk::u64_to_bytes(seed));
-        let commit_hash = sha256(&preimage);
+        let commit_hash = commit_hash_for(&requester, &secret, seed);
 
         // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(requester);
+        test_mock::set_slot(5000);
         // Commit
         assert_eq!(
             commit_randomness(requester.as_ptr(), commit_hash.as_ptr(), seed),
             1
         );
 
-        // Advance time
-        test_mock::set_timestamp(5000);
+        test_mock::set_slot(5001);
+        test_mock::set_block_entropy(5001, [0x88u8; 32]);
 
         // Reveal
         let mut result = [0u8; 8];

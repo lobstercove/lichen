@@ -151,6 +151,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           origin: request.origin,
           params: request.payload?.params || null,
           createdAt: request.createdAt,
+          grantsAccountAccess: Boolean(request.grantsAccountAccess),
+          grantAccountAddress: request.grantsAccountAccess ? (activeWallet?.address || null) : null,
+          networkChange: request.networkChange || null,
+          transactionIntent: request.transactionIntent || null,
           restrictionPreflight: request.restrictionPreflight || null,
           providerState
         };

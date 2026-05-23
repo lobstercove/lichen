@@ -1,4 +1,5 @@
 use super::*;
+use crate::codec::{deserialize_legacy_bincode, serialize_legacy_bincode};
 
 impl StateStore {
     /// Store treasury public key
@@ -1046,8 +1047,7 @@ impl StateStore {
             .db
             .cf_handle(CF_STATS)
             .ok_or_else(|| "Stats CF not found".to_string())?;
-        let data = bincode::serialize(tracker)
-            .map_err(|e| format!("Failed to serialize slashing tracker: {}", e))?;
+        let data = serialize_legacy_bincode(tracker, "slashing tracker")?;
         self.db
             .put_cf(&cf, b"slashing_tracker", &data)
             .map_err(|e| format!("Failed to persist slashing tracker: {}", e))
@@ -1061,13 +1061,15 @@ impl StateStore {
             None => return crate::consensus::SlashingTracker::new(),
         };
         match self.db.get_cf(&cf, b"slashing_tracker") {
-            Ok(Some(data)) => bincode::deserialize(&data).unwrap_or_else(|e| {
-                tracing::warn!(
-                    "Failed to deserialize slashing tracker, starting fresh: {}",
-                    e
-                );
-                crate::consensus::SlashingTracker::new()
-            }),
+            Ok(Some(data)) => {
+                deserialize_legacy_bincode(&data, "slashing tracker").unwrap_or_else(|e| {
+                    tracing::warn!(
+                        "Failed to deserialize slashing tracker, starting fresh: {}",
+                        e
+                    );
+                    crate::consensus::SlashingTracker::new()
+                })
+            }
             _ => crate::consensus::SlashingTracker::new(),
         }
     }

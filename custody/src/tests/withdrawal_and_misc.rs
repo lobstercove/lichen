@@ -16,6 +16,30 @@ async fn test_submit_burn_signature_requires_api_auth() {
     assert!(response.is_err());
     let err = response.expect_err("missing auth should fail");
     assert_eq!(err.0.code, "unauthorized");
+    assert_eq!(err.0.status_code(), axum::http::StatusCode::UNAUTHORIZED);
+}
+
+#[test]
+fn test_error_response_uses_typed_http_statuses() {
+    assert_eq!(
+        ErrorResponse::invalid("rate_limited: wait before retrying").status_code(),
+        axum::http::StatusCode::TOO_MANY_REQUESTS
+    );
+    assert_eq!(
+        ErrorResponse::invalid(
+            "bridge auth already used for a different deposit request; sign a new bridge authorization",
+        )
+        .status_code(),
+        axum::http::StatusCode::CONFLICT
+    );
+    assert_eq!(
+        ErrorResponse::invalid("unsupported asset").status_code(),
+        axum::http::StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        ErrorResponse::db("rocksdb write failed").status_code(),
+        axum::http::StatusCode::INTERNAL_SERVER_ERROR
+    );
 }
 
 #[tokio::test]

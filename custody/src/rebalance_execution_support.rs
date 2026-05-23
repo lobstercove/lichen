@@ -111,9 +111,9 @@ pub(super) async fn process_rebalance_jobs(state: &CustodyState) -> Result<(), S
                 }
             }
             "ethereum" => {
-                if let (Some(url), Some(ref tx_hash)) =
-                    (state.config.evm_rpc_url.as_ref(), &job.swap_tx_hash)
-                {
+                let route = evm_route_for_chain(&state.config, "ethereum");
+                let url = route.as_ref().and_then(|route| route.rpc_url.as_ref());
+                if let (Some(url), Some(ref tx_hash)) = (url, &job.swap_tx_hash) {
                     check_evm_tx_confirmed(
                         &state.http,
                         url,
@@ -153,12 +153,15 @@ pub(super) async fn process_rebalance_jobs(state: &CustodyState) -> Result<(), S
                     }
                 }
                 "ethereum" => {
-                    if let (Some(url), Some(ref tx_hash)) =
-                        (state.config.evm_rpc_url.as_ref(), &job.swap_tx_hash)
-                    {
+                    let route = evm_route_for_chain(&state.config, "ethereum");
+                    let url = route.as_ref().and_then(|route| route.rpc_url.as_ref());
+                    let treasury = route
+                        .as_ref()
+                        .and_then(|route| route.treasury_address.as_deref())
+                        .unwrap_or("");
+                    if let (Some(url), Some(ref tx_hash)) = (url, &job.swap_tx_hash) {
                         let to_contract = evm_contract_for_asset(&state.config, &job.to_asset)
                             .unwrap_or_default();
-                        let treasury = state.config.treasury_evm_address.as_deref().unwrap_or("");
                         parse_evm_swap_output(&state.http, url, tx_hash, treasury, &to_contract)
                             .await
                             .unwrap_or(None)

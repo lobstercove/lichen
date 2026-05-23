@@ -1095,7 +1095,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // Fee tier → tick spacing mapping (matches contract)
     const FEE_TIER_SPACING = { 1: 1, 5: 10, 30: 60, 100: 200 };
     // AUDIT-FIX F10.9: Bincode-compatible message serialization for signing.
-    // Must match Rust's bincode::serialize(Message { instructions, recent_blockhash })
+    // Must match Rust's legacy bincode message codec
     // where Message/Instruction use Vec (u64 LE length prefix) and fixed [u8; 32] arrays.
     function encodeTransactionMessage(instructions, blockhash, signer, computeBudget, computeUnitPrice) {
         const parts = [];
@@ -2167,9 +2167,64 @@ document.addEventListener('DOMContentLoaded', () => {
 
     let tvRetryCount = 0;
     let _tvSymbolChanging = false;
+    let tvChartResizeObserver = null;
+    let tvChartResizeFallbackInstalled = false;
+    let tvChartResizeRaf = 0;
+
+    function syncTradingChartSize() {
+        const el = document.getElementById('tvChartContainer');
+        if (!el) return;
+        const rect = el.getBoundingClientRect();
+        const width = Math.max(0, Math.round(rect.width));
+        const height = Math.max(0, Math.round(rect.height));
+        if (!width || !height) return;
+
+        const iframe = el.querySelector('iframe');
+        if (iframe) {
+            iframe.style.width = `${width}px`;
+            iframe.style.height = `${height}px`;
+        }
+        if (tvWidget && typeof tvWidget.resize === 'function') {
+            try { tvWidget.resize(width, height); } catch { /* chart library may not expose resize */ }
+        }
+    }
+
+    function scheduleTradingChartResize() {
+        if (tvChartResizeRaf) return;
+        tvChartResizeRaf = requestAnimationFrame(() => {
+            tvChartResizeRaf = 0;
+            syncTradingChartSize();
+        });
+    }
+
+    function installTradingChartResizeObserver() {
+        const el = document.getElementById('tvChartContainer');
+        if (!el) return;
+        if (tvChartResizeObserver) {
+            tvChartResizeObserver.disconnect();
+            tvChartResizeObserver = null;
+        }
+        if (typeof ResizeObserver === 'function') {
+            tvChartResizeObserver = new ResizeObserver(() => scheduleTradingChartResize());
+            tvChartResizeObserver.observe(el);
+            scheduleTradingChartResize();
+            return;
+        }
+        if (!tvChartResizeFallbackInstalled) {
+            window.addEventListener('resize', scheduleTradingChartResize);
+            tvChartResizeFallbackInstalled = true;
+        }
+        scheduleTradingChartResize();
+    }
+
+    function scheduleTradingViewInit() {
+        requestAnimationFrame(initTradingView);
+    }
+
     function initTradingView() {
         const el = document.getElementById('tvChartContainer');
         if (!el || typeof TradingView === 'undefined') { if (el) el.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-muted);font-size:0.9rem;"><i class="fas fa-chart-line" style="margin-right:8px;"></i> Chart unavailable — library failed to load</div>'; if (++tvRetryCount < 5) setTimeout(initTradingView, 5000); return; }
+        installTradingChartResizeObserver();
         tvWidget = new TradingView.widget({
             symbol: state.activePair?.id || 'LICN/lUSD', container: el, datafeed: createDatafeed(), library_path: 'charting_library/', locale: 'en', fullscreen: false, autosize: true, theme: 'Dark', interval: localStorage.getItem('dexChartInterval') || '15', toolbar_bg: '#0d1117',
             loading_screen: { backgroundColor: '#0A0E27', foregroundColor: '#00C9DB' },
@@ -2188,6 +2243,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     selectPair(p).finally(() => { _tvSymbolChanging = false; });
                 }
             });
+            scheduleTradingChartResize();
         });
     }
 
@@ -2432,6 +2488,7 @@ document.addEventListener('DOMContentLoaded', () => {
         updateOrderSideLabels();
         syncOrderTypeUi();
         document.querySelectorAll('.trade-mode').forEach(b => b.classList.toggle('active', b.dataset.mode === mode));
+        document.querySelector('.trade-layout')?.classList.toggle('margin-mode', mode === 'margin');
         const mi = document.getElementById('marginInline');
         if (mi) mi.classList.toggle('hidden', state.tradeMode !== 'margin');
         updateSubmitBtn();
@@ -2442,6 +2499,7 @@ document.addEventListener('DOMContentLoaded', () => {
             updateMarginInfo();
         }
         syncMarginAvailabilityUi();
+        scheduleTradingChartResize();
         return true;
     }
 
@@ -8563,7 +8621,7 @@ document.addEventListener('DOMContentLoaded', () => {
             updatePairStats(state.activePair); updateTickerDisplay(); updateMarginInfo();
             if (priceInput) priceInput.value = formatPriceRaw(state.lastPrice);
             await Promise.all([loadOrderBook(), loadRecentTrades()]);
-            setTimeout(initTradingView, 200);
+            scheduleTradingViewInit();
             connectWebSocket(); subscribePair(state.activePairId); subscribeAllTickers();
         } else {
             // No pairs on-chain — show empty state
@@ -8573,7 +8631,7 @@ document.addEventListener('DOMContentLoaded', () => {
             state.orderBook = { asks: [], bids: [] }; renderOrderBook();
             const tc = document.querySelector('.trades-list');
             if (tc) tc.innerHTML = '<div style="text-align:center;color:var(--text-muted);padding:20px;font-size:0.85rem;"><i class="fas fa-info-circle" style="margin-right:6px;"></i>No trading pairs available. Bootstrap pairs via dex_core contract.</div>';
-            setTimeout(initTradingView, 200);
+            scheduleTradingViewInit();
             connectWebSocket(); subscribeAllTickers();
         }
         // F10E.7 / DEX-M01 / FE-06: oracle fast-poll overlay (opt-in, default off).

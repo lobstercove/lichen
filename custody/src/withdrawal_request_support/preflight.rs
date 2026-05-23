@@ -262,6 +262,16 @@ pub(crate) async fn handle_withdrawal_auth_replay(
     velocity_snapshot: &WithdrawalVelocitySnapshot,
 ) -> Option<Json<Value>> {
     let _replay_guard = state.bridge_auth_replay_lock.lock().await;
+    find_withdrawal_auth_replay_response(state, now_secs, replay_digest, req, velocity_snapshot)
+}
+
+pub(crate) fn find_withdrawal_auth_replay_response(
+    state: &CustodyState,
+    now_secs: u64,
+    replay_digest: &str,
+    req: &WithdrawalRequest,
+    velocity_snapshot: &WithdrawalVelocitySnapshot,
+) -> Option<Json<Value>> {
     if let Err(error) =
         prune_expired_bridge_auth_replays(&state.db, now_secs, BRIDGE_AUTH_REPLAY_PRUNE_BATCH)
     {

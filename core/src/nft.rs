@@ -1,6 +1,7 @@
 // Lichen Core - NFT primitives (system-level)
 
 use crate::account::Pubkey;
+use crate::codec::{deserialize_legacy_bincode, serialize_legacy_bincode};
 use crate::hash::Hash;
 use serde::{Deserialize, Serialize};
 
@@ -64,35 +65,35 @@ pub struct NftActivity {
 }
 
 pub fn encode_collection_state(state: &CollectionState) -> Result<Vec<u8>, String> {
-    bincode::serialize(state).map_err(|e| format!("Failed to encode collection: {}", e))
+    serialize_legacy_bincode(state, "NFT collection")
 }
 
 pub fn decode_collection_state(data: &[u8]) -> Result<CollectionState, String> {
-    bincode::deserialize(data).map_err(|e| format!("Failed to decode collection: {}", e))
+    deserialize_legacy_bincode(data, "NFT collection")
 }
 
 pub fn encode_token_state(state: &TokenState) -> Result<Vec<u8>, String> {
-    bincode::serialize(state).map_err(|e| format!("Failed to encode token: {}", e))
+    serialize_legacy_bincode(state, "NFT token")
 }
 
 pub fn decode_token_state(data: &[u8]) -> Result<TokenState, String> {
-    bincode::deserialize(data).map_err(|e| format!("Failed to decode token: {}", e))
+    deserialize_legacy_bincode(data, "NFT token")
 }
 
 pub fn decode_create_collection_data(data: &[u8]) -> Result<CreateCollectionData, String> {
-    bincode::deserialize(data).map_err(|e| format!("Failed to decode collection data: {}", e))
+    deserialize_legacy_bincode(data, "NFT create collection data")
 }
 
 pub fn decode_mint_nft_data(data: &[u8]) -> Result<MintNftData, String> {
-    bincode::deserialize(data).map_err(|e| format!("Failed to decode mint data: {}", e))
+    deserialize_legacy_bincode(data, "NFT mint data")
 }
 
 pub fn encode_nft_activity(activity: &NftActivity) -> Result<Vec<u8>, String> {
-    bincode::serialize(activity).map_err(|e| format!("Failed to encode NFT activity: {}", e))
+    serialize_legacy_bincode(activity, "NFT activity")
 }
 
 pub fn decode_nft_activity(data: &[u8]) -> Result<NftActivity, String> {
-    bincode::deserialize(data).map_err(|e| format!("Failed to decode NFT activity: {}", e))
+    deserialize_legacy_bincode(data, "NFT activity")
 }
 
 #[cfg(test)]
@@ -208,7 +209,7 @@ mod tests {
             public_mint: false,
             mint_authority: None,
         };
-        let bytes = bincode::serialize(&data).unwrap();
+        let bytes = serialize_legacy_bincode(&data, "NFT create collection data").unwrap();
         let decoded = decode_create_collection_data(&bytes).unwrap();
         assert_eq!(decoded.name, "TestCol");
         assert_eq!(decoded.royalty_bps, 250);
@@ -229,7 +230,7 @@ mod tests {
             token_id: 42,
             metadata_uri: "https://example.com/meta.json".to_string(),
         };
-        let bytes = bincode::serialize(&data).unwrap();
+        let bytes = serialize_legacy_bincode(&data, "NFT mint data").unwrap();
         let decoded = decode_mint_nft_data(&bytes).unwrap();
         assert_eq!(decoded.token_id, 42);
         assert_eq!(decoded.metadata_uri, "https://example.com/meta.json");

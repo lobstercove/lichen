@@ -22,6 +22,8 @@ pub(super) struct CustodyState {
     pub(super) deposit_rate: Arc<Mutex<DepositRateState>>,
     /// Broadcast channel for webhook/WebSocket events
     pub(super) event_tx: broadcast::Sender<CustodyWebhookEvent>,
+    /// Short-lived one-use tickets for custody event WebSocket upgrades.
+    pub(super) ws_event_tickets: Arc<Mutex<BTreeMap<String, WsEventTicket>>>,
     /// Cap concurrent webhook deliveries to prevent unbounded task fan-out.
     pub(super) webhook_delivery_limiter: Arc<Semaphore>,
 }
@@ -70,6 +72,12 @@ pub(super) struct CustodyWebhookEvent {
 }
 
 #[derive(Clone, Debug)]
+pub(super) struct WsEventTicket {
+    pub(super) event_filter: Vec<String>,
+    pub(super) expires_at: i64,
+}
+
+#[derive(Clone, Debug)]
 pub(super) struct CustodyConfig {
     pub(super) db_path: String,
     pub(super) solana_rpc_url: Option<String>,
@@ -99,8 +107,16 @@ pub(super) struct CustodyConfig {
     pub(super) solana_treasury_owner: Option<String>,
     pub(super) solana_usdc_mint: String,
     pub(super) solana_usdt_mint: String,
+    /// Ethereum USDC source token contract. Loaded from CUSTODY_ETH_USDC_TOKEN_ADDR
+    /// or the legacy CUSTODY_EVM_USDC alias.
     pub(super) evm_usdc_contract: String,
+    /// Ethereum USDT source token contract. Loaded from CUSTODY_ETH_USDT_TOKEN_ADDR
+    /// or the legacy CUSTODY_EVM_USDT alias.
     pub(super) evm_usdt_contract: String,
+    /// BSC/BEP-20 USDC source token contract required before BSC USDC routes open.
+    pub(super) bnb_usdc_contract: Option<String>,
+    /// BSC/BEP-20 USDT source token contract required before BSC USDT routes open.
+    pub(super) bnb_usdt_contract: Option<String>,
     pub(super) signer_endpoints: Vec<String>,
     pub(super) signer_threshold: usize,
     pub(super) licn_rpc_url: Option<String>,
@@ -191,9 +207,22 @@ impl ErrorResponse {
         }
     }
 
+    pub(super) fn status_for_error_message(message: &str) -> StatusCode {
+        if message.starts_with("rate_limited:") {
+            return StatusCode::TOO_MANY_REQUESTS;
+        }
+        if message.contains("auth already used for a different") {
+            return StatusCode::CONFLICT;
+        }
+        if message.starts_with("db error:") {
+            return StatusCode::INTERNAL_SERVER_ERROR;
+        }
+        StatusCode::BAD_REQUEST
+    }
+
     pub(super) fn status_code(&self) -> StatusCode {
         match self.code {
-            "invalid_request" => StatusCode::BAD_REQUEST,
+            "invalid_request" => Self::status_for_error_message(&self.message),
             "not_found" => StatusCode::NOT_FOUND,
             "unauthorized" => StatusCode::UNAUTHORIZED,
             "db_error" => StatusCode::INTERNAL_SERVER_ERROR,
@@ -212,5 +241,29 @@ impl IntoResponse for ErrorResponse {
     fn into_response(self) -> Response {
         let status = self.status_code();
         (status, Json(self)).into_response()
+    }
+}
+
+pub(super) struct CustodyJsonResponse(pub(super) Value, pub(super) StatusCode);
+
+impl CustodyJsonResponse {
+    pub(super) fn from_value(value: Value) -> Self {
+        let status = value
+            .get("error")
+            .and_then(|error| error.as_str())
+            .map(ErrorResponse::status_for_error_message)
+            .unwrap_or(StatusCode::OK);
+        Self(value, status)
+    }
+
+    pub(super) fn from_json(value: Json<Value>) -> Self {
+        Self::from_value(value.0)
+    }
+}
+
+impl IntoResponse for CustodyJsonResponse {
+    fn into_response(self) -> Response {
+        let status = self.1;
+        (status, Json(self.0)).into_response()
     }
 }

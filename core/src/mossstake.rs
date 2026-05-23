@@ -1,6 +1,7 @@
 // Lichen MossStake - Liquid Staking Protocol
 // Stake LICN, receive stLICN (liquid receipt token)
 
+use crate::codec::serialize_legacy_bincode;
 use crate::consensus::UNSTAKE_COOLDOWN_SLOTS;
 use crate::Pubkey;
 use serde::{Deserialize, Serialize};
@@ -610,14 +611,17 @@ impl MossStakePool {
         let sorted_unstake: BTreeMap<&Pubkey, &Vec<UnstakeRequest>> =
             self.unstake_requests.iter().collect();
 
-        let data = bincode::serialize(&(
-            0x04u8, // domain separator
-            &self.st_licn_token,
-            &self.positions,
-            &sorted_unstake,
-            self.total_validators,
-            self.average_apy_bp,
-        ))
+        let data = serialize_legacy_bincode(
+            &(
+                0x04u8, // domain separator
+                &self.st_licn_token,
+                &self.positions,
+                &sorted_unstake,
+                self.total_validators,
+                self.average_apy_bp,
+            ),
+            "MossStake canonical hash",
+        )
         .unwrap_or_default();
 
         crate::Hash::hash(&data)

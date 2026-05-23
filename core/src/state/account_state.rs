@@ -1,4 +1,5 @@
 use super::*;
+use crate::codec::{append_legacy_bincode, deserialize_legacy_bincode};
 use crate::restrictions::{
     restriction_mode_blocks_transfer, RestrictionTarget, RestrictionTransferDirection,
     NATIVE_LICN_ASSET_ID,
@@ -15,7 +16,7 @@ impl StateStore {
         match self.db.get_cf(&cf, pubkey.0) {
             Ok(Some(data)) => {
                 let mut account: Account = if data.first() == Some(&0xBC) {
-                    bincode::deserialize(&data[1..])
+                    deserialize_legacy_bincode(&data[1..], "account")
                         .map_err(|e| format!("Failed to deserialize account (bincode): {}", e))?
                 } else {
                     serde_json::from_slice(&data)
@@ -52,7 +53,7 @@ impl StateStore {
             };
 
             let mut account: Account = if data.first() == Some(&0xBC) {
-                bincode::deserialize(&data[1..])
+                deserialize_legacy_bincode(&data[1..], "account")
                     .map_err(|e| format!("Failed to deserialize account (bincode): {}", e))?
             } else {
                 serde_json::from_slice(&data)
@@ -94,7 +95,7 @@ impl StateStore {
                     .as_ref()
                     .and_then(|data| {
                         if data.first() == Some(&0xBC) {
-                            bincode::deserialize::<Account>(&data[1..]).ok()
+                            deserialize_legacy_bincode::<Account>(&data[1..], "account").ok()
                         } else {
                             serde_json::from_slice::<Account>(data).ok()
                         }
@@ -112,7 +113,7 @@ impl StateStore {
 
         let mut value = Vec::with_capacity(256);
         value.push(0xBC);
-        bincode::serialize_into(&mut value, account)
+        append_legacy_bincode(&mut value, account, "account")
             .map_err(|e| format!("Failed to serialize account: {}", e))?;
 
         self.db
@@ -233,11 +234,11 @@ impl StateStore {
         let mut batch = rocksdb::WriteBatch::default();
         let mut from_bytes = Vec::with_capacity(256);
         from_bytes.push(0xBC);
-        bincode::serialize_into(&mut from_bytes, &from_account)
+        append_legacy_bincode(&mut from_bytes, &from_account, "account")
             .map_err(|e| format!("Serialize from: {}", e))?;
         let mut to_bytes = Vec::with_capacity(256);
         to_bytes.push(0xBC);
-        bincode::serialize_into(&mut to_bytes, &to_account)
+        append_legacy_bincode(&mut to_bytes, &to_account, "account")
             .map_err(|e| format!("Serialize to: {}", e))?;
         batch.put_cf(&cf, from.0, &from_bytes);
         batch.put_cf(&cf, to.0, &to_bytes);
@@ -319,7 +320,7 @@ impl StateStore {
                     .as_ref()
                     .and_then(|data| {
                         if data.first() == Some(&0xBC) {
-                            bincode::deserialize::<Account>(&data[1..]).ok()
+                            deserialize_legacy_bincode::<Account>(&data[1..], "account").ok()
                         } else {
                             serde_json::from_slice::<Account>(data).ok()
                         }
@@ -331,7 +332,7 @@ impl StateStore {
 
             let mut value = Vec::with_capacity(256);
             value.push(0xBC);
-            bincode::serialize_into(&mut value, account)
+            append_legacy_bincode(&mut value, account, "account")
                 .map_err(|e| format!("Failed to serialize account: {}", e))?;
             batch.put_cf(&cf, pubkey.0, &value);
             meta.push((pubkey, is_new, old_balance, account.spores));
@@ -401,7 +402,7 @@ impl StateStore {
                     .as_ref()
                     .and_then(|data| {
                         if data.first() == Some(&0xBC) {
-                            bincode::deserialize::<Account>(&data[1..]).ok()
+                            deserialize_legacy_bincode::<Account>(&data[1..], "account").ok()
                         } else {
                             serde_json::from_slice::<Account>(data).ok()
                         }
@@ -413,7 +414,7 @@ impl StateStore {
 
             let mut value = Vec::with_capacity(256);
             value.push(0xBC);
-            bincode::serialize_into(&mut value, account)
+            append_legacy_bincode(&mut value, account, "account")
                 .map_err(|e| format!("Failed to serialize account: {}", e))?;
             batch.put_cf(&cf, pubkey.0, &value);
             meta.push((pubkey, is_new, old_balance, account.spores));
@@ -480,7 +481,7 @@ impl StateStore {
                 .as_ref()
                 .and_then(|data| {
                     if data.first() == Some(&0xBC) {
-                        bincode::deserialize::<Account>(&data[1..]).ok()
+                        deserialize_legacy_bincode::<Account>(&data[1..], "account").ok()
                     } else {
                         serde_json::from_slice::<Account>(data).ok()
                     }
@@ -494,7 +495,7 @@ impl StateStore {
 
         let mut acct_bytes = Vec::with_capacity(256);
         acct_bytes.push(0xBC);
-        bincode::serialize_into(&mut acct_bytes, acct)
+        append_legacy_bincode(&mut acct_bytes, acct, "account")
             .map_err(|e| format!("Failed to serialize account: {}", e))?;
         batch.put_cf(&cf_accounts, acct_key.0, &acct_bytes);
 

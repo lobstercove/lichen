@@ -2,6 +2,7 @@
 
 use base64::Engine;
 use lichen_client_sdk::{Client, Keypair, TransactionBuilder};
+use lichen_core::codec::serialize_legacy_bincode;
 use lichen_core::{Hash, Instruction, SYSTEM_PROGRAM_ID};
 
 #[tokio::main]
@@ -40,7 +41,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     println!("   Instructions: {}", tx.message.instructions.len());
 
-    let tx_bytes = bincode::serialize(&tx)?;
+    let tx_bytes = serialize_legacy_bincode(&tx, "generated transaction")
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     let tx_base64 = base64::engine::general_purpose::STANDARD.encode(&tx_bytes);
     match client.send_raw_transaction(&tx_base64).await {
         Ok(sig) => println!("📤 Submitted: {}", sig),

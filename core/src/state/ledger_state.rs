@@ -1,4 +1,5 @@
 use crate::block::Block;
+use crate::codec::{append_legacy_bincode, deserialize_legacy_bincode, serialize_legacy_bincode};
 
 use super::*;
 
@@ -208,7 +209,7 @@ impl StateStore {
         let block_hash = block.hash();
         let mut value = Vec::with_capacity(4096);
         value.push(0xBC);
-        bincode::serialize_into(&mut value, block)
+        append_legacy_bincode(&mut value, block, "block")
             .map_err(|e| format!("Failed to serialize block: {}", e))?;
 
         let is_new_slot = self
@@ -250,7 +251,7 @@ impl StateStore {
 
             let mut tx_value = Vec::with_capacity(512);
             tx_value.push(0xBC);
-            match bincode::serialize_into(&mut tx_value, tx) {
+            match append_legacy_bincode(&mut tx_value, tx, "transaction") {
                 Ok(()) => {
                     batch.put_cf(&tx_cf, sig.0, &tx_value);
                 }
@@ -320,7 +321,7 @@ impl StateStore {
         match self.db.get_cf(&cf, hash.0) {
             Ok(Some(data)) => {
                 let block: Block = if data.first() == Some(&0xBC) {
-                    bincode::deserialize(&data[1..])
+                    deserialize_legacy_bincode(&data[1..], "block")
                         .map_err(|e| format!("Failed to deserialize block (bincode): {}", e))?
                 } else {
                     serde_json::from_slice(&data)
@@ -333,9 +334,11 @@ impl StateStore {
                     if let Some(cold_cf) = cold.cf_handle(COLD_CF_BLOCKS) {
                         if let Ok(Some(data)) = cold.get_cf(&cold_cf, hash.0) {
                             let block: Block = if data.first() == Some(&0xBC) {
-                                bincode::deserialize(&data[1..]).map_err(|e| {
-                                    format!("Failed to deserialize cold block (bincode): {}", e)
-                                })?
+                                deserialize_legacy_bincode(&data[1..], "cold block").map_err(
+                                    |e| {
+                                        format!("Failed to deserialize cold block (bincode): {}", e)
+                                    },
+                                )?
                             } else {
                                 serde_json::from_slice(&data).map_err(|e| {
                                     format!("Failed to deserialize cold block (json): {}", e)
@@ -440,7 +443,7 @@ impl StateStore {
         let sig = tx.signature();
         let mut value = Vec::with_capacity(512);
         value.push(0xBC);
-        bincode::serialize_into(&mut value, tx)
+        append_legacy_bincode(&mut value, tx, "transaction")
             .map_err(|e| format!("Failed to serialize transaction: {}", e))?;
 
         self.db
@@ -458,7 +461,7 @@ impl StateStore {
         match self.db.get_cf(&cf, sig.0) {
             Ok(Some(data)) => {
                 let tx: Transaction = if data.first() == Some(&0xBC) {
-                    bincode::deserialize(&data[1..]).map_err(|e| {
+                    deserialize_legacy_bincode(&data[1..], "transaction").map_err(|e| {
                         format!("Failed to deserialize transaction (bincode): {}", e)
                     })?
                 } else {
@@ -472,12 +475,14 @@ impl StateStore {
                     if let Some(cold_cf) = cold.cf_handle(COLD_CF_TRANSACTIONS) {
                         if let Ok(Some(data)) = cold.get_cf(&cold_cf, sig.0) {
                             let tx: Transaction = if data.first() == Some(&0xBC) {
-                                bincode::deserialize(&data[1..]).map_err(|e| {
-                                    format!(
-                                        "Failed to deserialize cold transaction (bincode): {}",
-                                        e
-                                    )
-                                })?
+                                deserialize_legacy_bincode(&data[1..], "cold transaction").map_err(
+                                    |e| {
+                                        format!(
+                                            "Failed to deserialize cold transaction (bincode): {}",
+                                            e
+                                        )
+                                    },
+                                )?
                             } else {
                                 serde_json::from_slice(&data).map_err(|e| {
                                     format!("Failed to deserialize cold transaction (json): {}", e)
@@ -526,8 +531,7 @@ impl StateStore {
             .db
             .cf_handle(CF_TX_META)
             .ok_or_else(|| "TX meta CF not found".to_string())?;
-        let data =
-            bincode::serialize(meta).map_err(|e| format!("Failed to serialize tx meta: {}", e))?;
+        let data = serialize_legacy_bincode(meta, "tx meta")?;
         self.db
             .put_cf(&cf, sig.0, data)
             .map_err(|e| format!("Failed to store tx meta: {}", e))
@@ -545,7 +549,9 @@ impl StateStore {
                 Ok(Some(u64::from_le_bytes(data.try_into().unwrap())))
             }
             Ok(Some(data)) => {
-                if let Ok(meta) = bincode::deserialize::<crate::processor::TxMeta>(&data) {
+                if let Ok(meta) =
+                    deserialize_legacy_bincode::<crate::processor::TxMeta>(&data, "tx meta")
+                {
                     Ok(Some(meta.compute_units_used))
                 } else {
                     Ok(None)
@@ -569,7 +575,7 @@ impl StateStore {
                 compute_units_used: u64::from_le_bytes(data.try_into().unwrap()),
                 ..Default::default()
             })),
-            Ok(Some(data)) => bincode::deserialize(&data)
+            Ok(Some(data)) => deserialize_legacy_bincode(&data, "tx meta")
                 .map(Some)
                 .map_err(|e| format!("Failed to deserialize tx meta: {}", e)),
             Ok(None) => Ok(None),

@@ -1319,10 +1319,11 @@
         <section class="section" id="validators">
             <div class="container">
                 <div class="section-header">
-                    <h2 class="section-title">Bootstrap Validator Program</h2>
+                    <h2 class="section-title">Validator Program</h2>
                     <p class="section-subtitle">
-                        The first 200 validators can launch with a 100,000 LICN bootstrap grant. Self-funded operators
-                        can join independently at 75,000 LICN once they want a standard long-term validator path.
+                        Public validators join through self-funded stake or governed vouchers. Local/dev bootstrap
+                        grants remain available for deterministic test clusters, but raw public registration does not
+                        mint treasury stake.
                     </p>
                 </div>
 
@@ -1330,18 +1331,18 @@
                     <div class="chain-card animate-on-scroll">
                         <div class="chain-header ethereum">
                             <i class="fas fa-rocket"></i>
-                            <h3>Day 0 — Bootstrap</h3>
+                            <h3>Day 0 — Registration</h3>
                         </div>
-                        <p class="chain-summary">Start on commodity hardware with a network bootstrap allocation instead
-                            of a capital gate.</p>
+                        <p class="chain-summary">Start on commodity hardware with self-funded stake or an explicit
+                            governed voucher.</p>
                         <div class="chain-metrics">
                             <div class="metric">
                                 <span class="metric-label">Capital Required</span>
-                                <span class="metric-value good">$0</span>
+                                <span class="metric-value good">75,000 LICN</span>
                             </div>
                             <div class="metric">
                                 <span class="metric-label">Bootstrap Grant</span>
-                                <span class="metric-value good">100,000 LICN</span>
+                                <span class="metric-value good">Governed/Dev</span>
                             </div>
                             <div class="metric">
                                 <span class="metric-label">Hardware</span>
@@ -1509,7 +1510,8 @@
                     <div class="contract-card animate-on-scroll" data-category="infra">
                         <div class="contract-icon"><i class="fas fa-broadcast-tower"></i></div>
                         <h3>LichenOracle</h3>
-                        <p>Decentralized price feeds, verifiable random function (VRF), attestation services.</p>
+                        <p>Decentralized price feeds, validator-entropy commit-reveal randomness, attestation services.
+                        </p>
                         <span class="contract-size">16.4 KB WASM</span>
                     </div>
                     <div class="contract-card animate-on-scroll" data-category="infra">

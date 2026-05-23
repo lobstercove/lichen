@@ -15,6 +15,7 @@ const SLOTS_PER_YEAR = 78_840_000;
 const SLOTS_PER_DAY = 86_400_000 / MS_PER_SLOT; // 216000 at 400ms
 const BASE_FEE_SPORES = 1_000_000; // 0.001 LICN
 const BASE_FEE_LICN = BASE_FEE_SPORES / SPORES_PER_LICN; // 0.001
+const MAX_U64 = 18_446_744_073_709_551_615n;
 
 // Fee distribution ratios (must sum to 1.0)
 const FEE_SPLIT = {
@@ -31,6 +32,57 @@ const ZK_COMPUTE_FEE = {
     unshield: 150_000,
     transfer: 200_000,
 };
+
+function normalizeBaseUnitDecimals(decimals, label = 'decimals') {
+    const value = Number(decimals);
+    if (!Number.isSafeInteger(value) || value < 0 || value > 18) {
+        throw new Error(`${label} must be an integer between 0 and 18`);
+    }
+    return value;
+}
+
+function parseDecimalBaseUnits(value, decimals = 9, label = 'Amount') {
+    const unitDecimals = normalizeBaseUnitDecimals(decimals);
+    let text = String(value ?? '').trim();
+    if (text.startsWith('.')) text = `0${text}`;
+    if (!text || !/^\d+(?:\.\d*)?$/.test(text)) {
+        throw new Error(`${label} must be a decimal amount`);
+    }
+
+    const [wholeRaw, fractionRaw = ''] = text.split('.');
+    if (fractionRaw.length > unitDecimals) {
+        throw new Error(`${label} supports at most ${unitDecimals} decimal places`);
+    }
+
+    const whole = BigInt(wholeRaw || '0');
+    const scale = 10n ** BigInt(unitDecimals);
+    const fraction = unitDecimals === 0
+        ? 0n
+        : BigInt((fractionRaw + '0'.repeat(unitDecimals)).slice(0, unitDecimals) || '0');
+    const units = whole * scale + fraction;
+    if (units > MAX_U64) {
+        throw new Error(`${label} is too large`);
+    }
+    return units;
+}
+
+function parsePositiveDecimalBaseUnits(value, decimals = 9, label = 'Amount') {
+    const units = parseDecimalBaseUnits(value, decimals, label);
+    if (units <= 0n) {
+        throw new Error(`${label} must be greater than zero`);
+    }
+    return units;
+}
+
+function baseUnitsToDecimalString(value, decimals = 9) {
+    const unitDecimals = normalizeBaseUnitDecimals(decimals);
+    const units = typeof value === 'bigint' ? value : BigInt(String(value || 0));
+    const scale = 10n ** BigInt(unitDecimals);
+    const whole = units / scale;
+    if (unitDecimals === 0) return whole.toString();
+    const fraction = (units % scale).toString().padStart(unitDecimals, '0').replace(/0+$/, '');
+    return fraction ? `${whole.toString()}.${fraction}` : whole.toString();
+}
 
 // LichenID reputation constants (matches RPC lichenid_trust_tier in rpc/src/lib.rs)
 const MAX_REPUTATION = 100_000;       // on-chain cap from contracts/lichenid MAX_REPUTATION
@@ -795,7 +847,7 @@ function readLeU64(bytes) {
 }
 
 // ── Bincode Message Serializer ──
-// Produces the same bytes as Rust's bincode::serialize(&Message) so signatures match.
+// Produces the same bytes as Rust's legacy bincode message codec so signatures match.
 
 function serializeMessageBincode(message) {
     var parts = [];
@@ -954,6 +1006,7 @@ if (typeof module !== 'undefined' && module.exports) {
         SLOTS_PER_DAY, BASE_FEE_SPORES, BASE_FEE_LICN, FEE_SPLIT,
         ZK_COMPUTE_FEE, MAX_REPUTATION, MAX_REP_PROGRESS_BAR,
         TRUST_TIER_THRESHOLDS, ACHIEVEMENT_DEFS,
+        parseDecimalBaseUnits, parsePositiveDecimalBaseUnits, baseUnitsToDecimalString,
         getTrustTier, getTrustTierNumber,
         escapeHtml, escapeJsAttr, formatNumber, formatHash, formatAddress, normalizeTxType,
         formatLicnExact,

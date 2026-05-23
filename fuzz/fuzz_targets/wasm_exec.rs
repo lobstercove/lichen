@@ -1,14 +1,8 @@
-//! Fuzz target: WASM contract execution engine
-//!
-//! Feeds arbitrary bytecode to the WASM runtime to verify it never panics
-//! on malformed modules. Tests the contract execution sandbox.
-
 #![no_main]
 use libfuzzer_sys::fuzz_target;
 use lichen_core::{ContractAccount, ContractContext, ContractInstruction, ContractRuntime, Pubkey};
 
 fuzz_target!(|data: &[u8]| {
-    // Minimum viable: need at least 33 bytes for program_id + 1 byte data
     if data.len() < 33 {
         return;
     }
@@ -20,27 +14,18 @@ fuzz_target!(|data: &[u8]| {
     });
     let call_data = &data[32..];
 
-    // Create a minimal contract with the fuzzed bytecode as if it were WASM
-    let contract = ContractAccount {
-        owner: Pubkey([0u8; 32]),
-        wasm_bytecode: data.to_vec(),
-        storage: std::collections::HashMap::new(),
-    };
+    let contract = ContractAccount::new(data.to_vec(), Pubkey([0u8; 32]));
+    let mut runtime = ContractRuntime::new();
 
-    // Try to execute — must not panic regardless of input
-    let instruction = ContractInstruction {
-        program_id,
-        data: call_data.to_vec(),
-        accounts: vec![],
-    };
+    let _ = ContractInstruction::deserialize(call_data);
+    let _ = ContractInstruction::call("fuzz".to_string(), call_data.to_vec(), 0).serialize();
+    let _ = runtime.deploy(data);
 
-    let ctx = ContractContext {
-        caller: Pubkey([1u8; 32]),
-        program_id,
-        slot: 0,
-        timestamp: 0,
-    };
+    let ctx = ContractContext::new(Pubkey([1u8; 32]), program_id, 0, 0);
+    let function_name = std::str::from_utf8(call_data)
+        .ok()
+        .filter(|name| !name.is_empty())
+        .unwrap_or("fuzz");
 
-    // ContractRuntime::execute may return Err but must never panic
-    let _ = ContractRuntime::execute(&contract, &instruction, &ctx);
+    let _ = runtime.execute(&contract, function_name, call_data, ctx);
 });

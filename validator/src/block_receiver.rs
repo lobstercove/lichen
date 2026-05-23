@@ -52,13 +52,21 @@ const MAX_FUTURE_TIMESTAMP_SECS: u64 = 120;
 ///
 /// This is the minimal validation done for ALL incoming blocks (sync and BFT).
 pub fn validate_block_basic(block: &Block) -> Result<(), BlockValidationError> {
+    validate_block_basic_with_chain_id(block, "")
+}
+
+/// Validate an incoming block using chain-id scoped block signatures.
+pub fn validate_block_basic_with_chain_id(
+    block: &Block,
+    chain_id: &str,
+) -> Result<(), BlockValidationError> {
     // Genesis block gets a pass
     if block.header.slot == 0 {
         return Ok(());
     }
 
     // Verify the block signature
-    if !block.verify_signature() {
+    if !block.verify_signature_with_chain_id(chain_id) {
         return Err(BlockValidationError::InvalidSignature);
     }
 
@@ -121,7 +129,17 @@ pub fn validate_block_full(
     validator_set: &ValidatorSet,
     stake_pool: &StakePool,
 ) -> Result<(), BlockValidationError> {
-    validate_block_basic(block)?;
+    validate_block_full_with_chain_id(block, validator_set, stake_pool, "")
+}
+
+/// Full validation with chain-id scoped block signatures.
+pub fn validate_block_full_with_chain_id(
+    block: &Block,
+    validator_set: &ValidatorSet,
+    stake_pool: &StakePool,
+    chain_id: &str,
+) -> Result<(), BlockValidationError> {
+    validate_block_basic_with_chain_id(block, chain_id)?;
     validate_block_producer(block, validator_set, stake_pool)?;
     Ok(())
 }

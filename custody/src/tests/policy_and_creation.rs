@@ -143,11 +143,51 @@ fn test_validate_webhook_destination_rejects_non_local_host_without_allowlist() 
 }
 
 #[test]
-fn test_validate_webhook_destination_allows_loopback_without_allowlist() {
+fn test_validate_webhook_destination_rejects_internal_hosts_without_dev_override() {
     let config = test_config();
 
-    assert!(validate_webhook_destination(&config, "http://localhost:3000/webhook").is_ok());
-    assert!(validate_webhook_destination(&config, "http://127.0.0.1:3000/webhook").is_ok());
+    for url in [
+        "http://localhost:3000/webhook",
+        "https://127.0.0.1:3000/webhook",
+        "https://10.0.0.12/webhook",
+        "https://172.16.0.12/webhook",
+        "https://192.168.1.12/webhook",
+        "https://169.254.10.20/webhook",
+        "https://[::1]/webhook",
+        "https://[fc00::1]/webhook",
+        "https://[fe80::1]/webhook",
+    ] {
+        let err = validate_webhook_destination_with_mode(&config, url, false)
+            .expect_err("internal webhook must fail closed without explicit dev override");
+        assert!(
+            err.contains("CUSTODY_ALLOW_LOCAL_WEBHOOKS") || err.contains("invalid webhook url"),
+            "{} returned unexpected error: {}",
+            url,
+            err
+        );
+    }
+}
+
+#[test]
+fn test_validate_webhook_destination_allows_internal_hosts_with_dev_override() {
+    let config = test_config();
+
+    assert!(
+        validate_webhook_destination_with_mode(&config, "http://localhost:3000/webhook", true)
+            .is_ok()
+    );
+    assert!(
+        validate_webhook_destination_with_mode(&config, "https://192.168.1.12/webhook", true)
+            .is_ok()
+    );
+}
+
+#[test]
+fn test_validate_webhook_destination_allows_public_allowlisted_host() {
+    let mut config = test_config();
+    config.webhook_allowed_hosts = vec!["hooks.example.com".to_string()];
+
+    assert!(validate_webhook_destination(&config, "https://hooks.example.com/callback").is_ok());
 }
 
 #[test]
@@ -184,6 +224,7 @@ async fn test_create_withdrawal_rate_limit_emits_spike_event() {
         response.0.get("error").and_then(|value| value.as_str()),
         Some("rate_limited: too many withdrawals, try again later")
     );
+    assert_eq!(response.1, axum::http::StatusCode::TOO_MANY_REQUESTS);
 
     let event = event_rx
         .recv()
@@ -224,6 +265,7 @@ async fn test_create_withdrawal_value_limit_emits_spike_event() {
         response.0.get("error").and_then(|value| value.as_str()),
         Some("rate_limited: hourly withdrawal value limit reached")
     );
+    assert_eq!(response.1, axum::http::StatusCode::TOO_MANY_REQUESTS);
 
     let event = event_rx
         .recv()
@@ -947,6 +989,113 @@ async fn test_create_withdrawal_reuses_existing_job_for_identical_withdrawal_aut
     let rl = state.withdrawal_rate.lock().await;
     assert_eq!(rl.count_this_minute, 1);
     assert_eq!(rl.value_this_hour, 1_000_000_000);
+}
+
+#[tokio::test]
+async fn test_create_withdrawal_concurrent_same_auth_is_single_job_and_allocation() {
+    let state = test_state();
+    adjust_reserve_balance(&state.db, "ethereum", "usdt", 500_000, true)
+        .await
+        .expect("seed preferred reserve");
+    adjust_reserve_balance(&state.db, "ethereum", "usdc", 1_000_000, true)
+        .await
+        .expect("seed alternate reserve");
+
+    let mut request = WithdrawalRequest {
+        user_id: String::new(),
+        asset: "mUSD".to_string(),
+        amount: 1_000_000_000,
+        dest_chain: "ethereum".to_string(),
+        dest_address: "0x1111111111111111111111111111111111111111".to_string(),
+        preferred_stablecoin: "usdt".to_string(),
+        auth: None,
+    };
+    sign_test_withdrawal_request(&mut request, 77);
+
+    let mut handles = Vec::new();
+    for _ in 0..8 {
+        let state = state.clone();
+        let request = request.clone();
+        handles.push(tokio::spawn(async move {
+            create_withdrawal(State(state), test_auth_headers(), Json(request)).await
+        }));
+    }
+
+    let mut job_ids = BTreeSet::new();
+    for handle in handles {
+        let response = handle.await.expect("withdrawal task should finish");
+        let job_id = response
+            .0
+            .get("job_id")
+            .and_then(|value| value.as_str())
+            .expect("concurrent withdrawal should return a job id");
+        job_ids.insert(job_id.to_string());
+    }
+
+    assert_eq!(job_ids.len(), 1);
+    assert_eq!(count_withdrawal_jobs(&state.db).unwrap().total, 1);
+
+    let rl = state.withdrawal_rate.lock().await;
+    assert_eq!(rl.count_this_minute, 1);
+    assert_eq!(rl.value_this_hour, 1_000_000_000);
+    drop(rl);
+
+    let rebalances =
+        list_rebalance_jobs_by_status(&state.db, "queued").expect("list queued rebalances");
+    assert_eq!(rebalances.len(), 1);
+    assert_eq!(rebalances[0].chain, "ethereum");
+    assert_eq!(rebalances[0].from_asset, "usdc");
+    assert_eq!(rebalances[0].to_asset, "usdt");
+    assert_eq!(rebalances[0].amount, 500_000);
+}
+
+#[tokio::test]
+async fn test_create_withdrawal_requires_configured_stablecoin_destination_route() {
+    let mut state = test_state();
+    state.config.bnb_usdt_contract = None;
+    let mut request = WithdrawalRequest {
+        user_id: String::new(),
+        asset: "mUSD".to_string(),
+        amount: 1_000_000_000,
+        dest_chain: "bsc".to_string(),
+        dest_address: "0x1111111111111111111111111111111111111111".to_string(),
+        preferred_stablecoin: "usdt".to_string(),
+        auth: None,
+    };
+    sign_test_withdrawal_request(&mut request, 78);
+
+    let response =
+        create_withdrawal(State(state.clone()), test_auth_headers(), Json(request)).await;
+    assert!(response
+        .0
+        .get("error")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default()
+        .contains("CUSTODY_BSC_USDT_TOKEN_ADDR"));
+    assert_eq!(count_withdrawal_jobs(&state.db).unwrap().total, 0);
+
+    let mut state = test_state();
+    state.config.solana_usdc_mint.clear();
+    let mut request = WithdrawalRequest {
+        user_id: String::new(),
+        asset: "mUSD".to_string(),
+        amount: 1_000_000_000,
+        dest_chain: "solana".to_string(),
+        dest_address: "11111111111111111111111111111111".to_string(),
+        preferred_stablecoin: "usdc".to_string(),
+        auth: None,
+    };
+    sign_test_withdrawal_request(&mut request, 79);
+
+    let response =
+        create_withdrawal(State(state.clone()), test_auth_headers(), Json(request)).await;
+    assert!(response
+        .0
+        .get("error")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default()
+        .contains("CUSTODY_SOLANA_USDC_MINT"));
+    assert_eq!(count_withdrawal_jobs(&state.db).unwrap().total, 0);
 }
 
 #[tokio::test]

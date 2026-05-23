@@ -13,8 +13,12 @@ pub(super) fn ensure_solana_config(config: &CustodyConfig) -> Result<(), String>
 
 pub(super) fn solana_mint_for_asset(config: &CustodyConfig, asset: &str) -> Result<String, String> {
     match asset {
-        "usdc" => Ok(config.solana_usdc_mint.clone()),
-        "usdt" => Ok(config.solana_usdt_mint.clone()),
+        "usdc" => {
+            require_configured_value(Some(&config.solana_usdc_mint), "CUSTODY_SOLANA_USDC_MINT")
+        }
+        "usdt" => {
+            require_configured_value(Some(&config.solana_usdt_mint), "CUSTODY_SOLANA_USDT_MINT")
+        }
         _ => Err("unsupported solana token".to_string()),
     }
 }
@@ -24,15 +28,22 @@ pub(super) fn evm_contract_for_asset(
     asset: &str,
 ) -> Result<String, String> {
     match asset {
-        "usdc" => Ok(config.evm_usdc_contract.clone()),
-        "usdt" => Ok(config.evm_usdt_contract.clone()),
+        "usdc" => require_evm_contract(
+            Some(&config.evm_usdc_contract),
+            "CUSTODY_ETH_USDC_TOKEN_ADDR/CUSTODY_EVM_USDC",
+        ),
+        "usdt" => require_evm_contract(
+            Some(&config.evm_usdt_contract),
+            "CUSTODY_ETH_USDT_TOKEN_ADDR/CUSTODY_EVM_USDT",
+        ),
         _ => Err("unsupported evm token".to_string()),
     }
 }
 
 pub(super) fn is_evm_token_asset(chain: &str, asset: &str) -> bool {
     let asset = asset.trim().to_ascii_lowercase();
-    matches!(asset.as_str(), "usdc" | "usdt")
+    (matches!(canonical_evm_chain(chain), Some("ethereum" | "bsc"))
+        && matches!(asset.as_str(), "usdc" | "usdt"))
         || (canonical_evm_chain(chain) == Some("neox") && asset == "neo")
 }
 
@@ -46,9 +57,17 @@ pub(super) fn evm_token_contract_for_asset(
     asset: &str,
 ) -> Result<String, String> {
     let asset = asset.trim().to_ascii_lowercase();
-    match asset.as_str() {
-        "usdc" | "usdt" => evm_contract_for_asset(config, &asset),
-        "neo" if canonical_evm_chain(chain) == Some("neox") => config
+    match (canonical_evm_chain(chain), asset.as_str()) {
+        (Some("ethereum"), "usdc" | "usdt") => evm_contract_for_asset(config, &asset),
+        (Some("bsc"), "usdc") => require_evm_contract(
+            config.bnb_usdc_contract.as_ref(),
+            "CUSTODY_BSC_USDC_TOKEN_ADDR/CUSTODY_BNB_USDC_TOKEN_ADDR",
+        ),
+        (Some("bsc"), "usdt") => require_evm_contract(
+            config.bnb_usdt_contract.as_ref(),
+            "CUSTODY_BSC_USDT_TOKEN_ADDR/CUSTODY_BNB_USDT_TOKEN_ADDR",
+        ),
+        (Some("neox"), "neo") => config
             .neox_neo_token_contract
             .clone()
             .ok_or_else(|| "missing CUSTODY_NEOX_NEO_TOKEN_ADDR".to_string()),
@@ -150,9 +169,40 @@ pub(super) fn resolve_token_contract(
         "neo" if canonical_chain == Some("neox") && config.neox_neo_token_contract.is_some() => {
             config.wneo_contract_addr.clone()
         }
-        "usdt" | "usdc" => config.musd_contract_addr.clone(),
+        "usdt" | "usdc" if stablecoin_source_route_configured(config, chain, asset) => {
+            config.musd_contract_addr.clone()
+        }
         _ => None,
     }
+}
+
+fn stablecoin_source_route_configured(config: &CustodyConfig, chain: &str, asset: &str) -> bool {
+    let asset = asset.trim().to_ascii_lowercase();
+    if !matches!(asset.as_str(), "usdc" | "usdt") {
+        return false;
+    }
+
+    if matches!(chain, "sol" | "solana") {
+        return solana_mint_for_asset(config, &asset).is_ok();
+    }
+
+    canonical_evm_chain(chain)
+        .map(|_| evm_token_contract_for_asset(config, chain, &asset).is_ok())
+        .unwrap_or(false)
+}
+
+fn require_configured_value(value: Option<&String>, env_name: &str) -> Result<String, String> {
+    let value = value
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("missing {}", env_name))?;
+    Ok(value.to_string())
+}
+
+fn require_evm_contract(value: Option<&String>, env_name: &str) -> Result<String, String> {
+    let contract = require_configured_value(value, env_name)?;
+    parse_evm_address(&contract).map_err(|error| format!("invalid {}: {}", env_name, error))?;
+    Ok(contract)
 }
 
 pub(super) fn derive_associated_token_address(owner: &str, mint: &str) -> Result<String, String> {

@@ -7,8 +7,9 @@ use crate::message::{
 use crate::peer::{PeerManager, NON_CONSENSUS_FANOUT};
 use crate::peer_store::PeerStore;
 use lichen_core::{
-    Block, BlockHeader, CommitSignature, PqSignature, Precommit, Prevote, Proposal, Pubkey,
-    StakePool, Transaction, ValidatorSet, Vote, MAX_BLOCK_SIZE, MAX_TX_PER_BLOCK,
+    codec::serialized_size_legacy_bincode, Block, BlockHeader, CommitSignature, PqSignature,
+    Precommit, Prevote, Proposal, Pubkey, StakePool, Transaction, ValidatorSet, Vote,
+    MAX_BLOCK_SIZE, MAX_TX_PER_BLOCK,
 };
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -85,7 +86,7 @@ fn validate_compact_block_for_p2p_admission(
             MAX_COMPACT_BLOCK_TX_IDS
         ));
     }
-    let serialized_size = bincode::serialized_size(compact_block)
+    let serialized_size = serialized_size_legacy_bincode(compact_block, "compact block")
         .map_err(|err| format!("compact block size check failed: {}", err))?;
     if serialized_size > MAX_BLOCK_SIZE as u64 {
         return Err(format!(
@@ -124,7 +125,7 @@ fn validate_block_txs_for_p2p_admission(transactions: &[Transaction]) -> Result<
     Ok(())
 }
 
-fn validate_message_for_p2p_admission(msg_type: &MessageType) -> Result<(), String> {
+pub fn validate_message_for_p2p_admission(msg_type: &MessageType) -> Result<(), String> {
     match msg_type {
         MessageType::Block(block) | MessageType::BlockResponse(block) => {
             validate_block_for_p2p_admission(block)
@@ -236,6 +237,8 @@ pub struct P2PConfig {
     /// P3-6: Externally-reachable address for NAT traversal (if known).
     /// If None, peers behind NAT will use relay-assisted hole punching.
     pub external_addr: Option<SocketAddr>,
+    /// Chain id used to validate consensus activity signatures for peer liveness.
+    pub consensus_chain_id: String,
 }
 
 impl Default for P2PConfig {
@@ -252,6 +255,7 @@ impl Default for P2PConfig {
             max_peers: None,
             reserved_relay_peers: Vec::new(),
             external_addr: None,
+            consensus_chain_id: String::new(),
         }
     }
 }
@@ -464,6 +468,9 @@ pub struct P2PNetwork {
     /// Verified validator activity from signed consensus traffic.
     consensus_activity_tx: mpsc::Sender<ConsensusActivityMsg>,
 
+    /// Chain id used to validate consensus activity signatures for peer liveness.
+    consensus_chain_id: String,
+
     /// AUDIT-FIX H11: Track last announcement slot per validator pubkey
     /// to reject stale/replayed validator announcements.
     last_announce_slot: std::sync::Mutex<std::collections::HashMap<[u8; 32], u64>>,
@@ -585,6 +592,7 @@ impl P2PNetwork {
             prevote_tx,
             precommit_tx,
             consensus_activity_tx,
+            consensus_chain_id: config.consensus_chain_id,
             last_announce_slot: std::sync::Mutex::new(std::collections::HashMap::new()),
         })
     }
@@ -699,7 +707,7 @@ impl P2PNetwork {
                     peer_addr,
                     proposal.proposer,
                     proposal.height,
-                    proposal.verify_signature(),
+                    proposal.verify_signature_with_chain_id(&self.consensus_chain_id),
                 );
                 if let Err(e) = self.proposal_tx.try_send(proposal) {
                     warn!(
@@ -718,7 +726,7 @@ impl P2PNetwork {
                     peer_addr,
                     prevote.validator,
                     prevote.height,
-                    prevote.verify_signature(),
+                    prevote.verify_signature_with_chain_id(&self.consensus_chain_id),
                 );
                 if let Err(e) = self.prevote_tx.try_send(prevote) {
                     warn!(
@@ -737,7 +745,7 @@ impl P2PNetwork {
                     peer_addr,
                     precommit.validator,
                     precommit.height,
-                    precommit.verify_signature(),
+                    precommit.verify_signature_with_chain_id(&self.consensus_chain_id),
                 );
                 if let Err(e) = self.precommit_tx.try_send(precommit) {
                     warn!(

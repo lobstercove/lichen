@@ -902,7 +902,7 @@ function readLeU64(bytes) {
 }
 
 // ── Bincode Message Serializer ──
-// Produces the same bytes as Rust's bincode::serialize(&Message) so signatures match.
+// Produces the same bytes as Rust's legacy bincode message codec so signatures match.
 
 function serializeMessageBincode(message) {
     var parts = [];

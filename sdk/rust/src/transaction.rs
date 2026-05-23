@@ -31,8 +31,7 @@ impl TransactionBuilder {
         self
     }
 
-    /// Build and sign the transaction
-    pub fn build_and_sign(self, keypair: &Keypair) -> Result<CoreTransaction> {
+    fn build_message(self) -> Result<Message> {
         let blockhash = self
             .recent_blockhash
             .ok_or(Error::BuildError("Recent blockhash not set".to_string()))?;
@@ -41,14 +40,24 @@ impl TransactionBuilder {
             return Err(Error::BuildError("No instructions added".to_string()));
         }
 
-        // Create message
-        let message = Message::new(self.instructions, blockhash);
+        Ok(Message::new(self.instructions, blockhash))
+    }
 
-        // Sign message
-        let message_bytes = message.serialize();
+    /// Build and sign the transaction using legacy message bytes.
+    pub fn build_and_sign(self, keypair: &Keypair) -> Result<CoreTransaction> {
+        self.build_and_sign_for_chain_id(keypair, "")
+    }
+
+    /// Build and sign the transaction using the versioned chain-id domain envelope.
+    pub fn build_and_sign_for_chain_id(
+        self,
+        keypair: &Keypair,
+        chain_id: &str,
+    ) -> Result<CoreTransaction> {
+        let message = self.build_message()?;
+        let message_bytes = message.signing_bytes_for_chain_id(chain_id);
         let signature = keypair.sign(&message_bytes);
 
-        // Create transaction
         Ok(CoreTransaction {
             signatures: vec![signature],
             message,
@@ -138,6 +147,28 @@ mod tests {
         assert_eq!(tx.signatures.len(), 1);
         assert!(tx.signatures[0].validate().is_ok());
         assert_eq!(tx.signatures[0].signer_address(), kp.pubkey());
+    }
+
+    #[test]
+    fn build_and_sign_for_chain_id_uses_domain_envelope() {
+        let kp = Keypair::new();
+        let ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![kp.pubkey()],
+            data: vec![0],
+        };
+        let tx = TransactionBuilder::new()
+            .add_instruction(ix)
+            .recent_blockhash(zero_blockhash())
+            .build_and_sign_for_chain_id(&kp, "lichen-testnet-1")
+            .expect("should build");
+
+        assert!(tx
+            .verify_required_signatures_with_chain_id("lichen-testnet-1")
+            .is_ok());
+        assert!(tx
+            .verify_required_signatures_with_chain_id("lichen-mainnet-1")
+            .is_err());
     }
 
     #[test]

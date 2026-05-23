@@ -1,6 +1,7 @@
 // Lichen Smart Contract System
 // WASM-based programmable contracts with proper host function implementations
 
+use crate::codec::{deserialize_legacy_bincode, serialize_legacy_bincode};
 use crate::restrictions::{
     RestrictionMode, RestrictionRecord, RestrictionTarget, RestrictionTransferDirection,
     NATIVE_LICN_ASSET_ID,
@@ -99,6 +100,30 @@ pub struct AbiReturn {
     pub description: Option<String>,
 }
 
+/// How a contract function's WASM result maps to transaction success.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AbiResultKind {
+    /// WASM trap/compute/memory failure is the only chain-level failure.
+    RuntimeSuccessOnly,
+    /// The first WASM I32/I64 return value is an error/status code.
+    ReturnCode,
+    /// The first WASM I32/I64 return value is data, not an error/status code.
+    ReturnValue,
+}
+
+/// Declared success semantics for a function.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AbiResultSemantics {
+    pub kind: AbiResultKind,
+    /// Status codes that commit for `return_code` functions. Defaults to `[0]`
+    /// when omitted or empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub success_codes: Vec<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
 /// Describes a single callable contract function
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AbiFunction {
@@ -119,6 +144,10 @@ pub struct AbiFunction {
     /// Whether this function only reads state (no writes)
     #[serde(default)]
     pub readonly: bool,
+    /// Optional declared result semantics. Old ABI JSON remains valid; when
+    /// absent, the processor uses its legacy compatibility fallback.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result_semantics: Option<AbiResultSemantics>,
 }
 
 /// Event field descriptor
@@ -219,6 +248,7 @@ impl ContractAbi {
                         returns,
                         opcode: None,
                         readonly: false,
+                        result_semantics: None,
                     })
                 } else {
                     None
@@ -920,6 +950,144 @@ pub struct ContractResult {
     pub native_account_ops: Vec<NativeAccountOp>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContractOutcomeFallback {
+    /// Preserve the historical top-level processor behavior while contracts
+    /// migrate to declared ABI result semantics.
+    LegacyNonzeroNoChangeFailure,
+    /// Use runtime success only when the ABI is silent.
+    RuntimeSuccessOnly,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContractOutcome {
+    pub success: bool,
+    pub error: Option<String>,
+    pub declared: bool,
+}
+
+fn code_is_declared_success(code: i64, success_codes: &[i64]) -> bool {
+    if success_codes.is_empty() {
+        code == 0
+    } else {
+        success_codes.contains(&code)
+    }
+}
+
+fn abi_error_label(contract: &ContractAccount, code: i64) -> Option<String> {
+    let code = u32::try_from(code).ok()?;
+    contract
+        .abi
+        .as_ref()?
+        .errors
+        .iter()
+        .find(|error| error.code == code)
+        .map(|error| match &error.message {
+            Some(message) => format!("{} ({})", error.name, message),
+            None => error.name.clone(),
+        })
+}
+
+fn legacy_nonzero_no_change_failure(
+    function_name: &str,
+    result: &ContractResult,
+) -> ContractOutcome {
+    if let Some(rc) = result.return_code {
+        let meaningful_changes = result
+            .storage_changes
+            .keys()
+            .any(|key| !key.ends_with(b"_reentrancy"));
+        if rc != 0 && !meaningful_changes && result.cross_call_changes.is_empty() {
+            return ContractOutcome {
+                success: false,
+                error: Some(format!(
+                    "Contract '{}' returned error code {} with no state changes",
+                    function_name, rc
+                )),
+                declared: false,
+            };
+        }
+    }
+
+    ContractOutcome {
+        success: true,
+        error: None,
+        declared: false,
+    }
+}
+
+/// Evaluate a contract call result using declared ABI semantics when present.
+///
+/// The VM still reports raw WASM execution separately. This helper only decides
+/// whether a non-trapping function return should commit or revert.
+pub fn evaluate_contract_outcome(
+    contract: &ContractAccount,
+    function_name: &str,
+    result: &ContractResult,
+    fallback: ContractOutcomeFallback,
+) -> ContractOutcome {
+    if !result.success {
+        return ContractOutcome {
+            success: false,
+            error: result.error.clone(),
+            declared: false,
+        };
+    }
+
+    if let Some(semantics) = find_abi_function(contract, function_name)
+        .and_then(|function| function.result_semantics.as_ref())
+    {
+        return match semantics.kind {
+            AbiResultKind::RuntimeSuccessOnly | AbiResultKind::ReturnValue => ContractOutcome {
+                success: true,
+                error: None,
+                declared: true,
+            },
+            AbiResultKind::ReturnCode => match result.return_code {
+                Some(code) if code_is_declared_success(code, &semantics.success_codes) => {
+                    ContractOutcome {
+                        success: true,
+                        error: None,
+                        declared: true,
+                    }
+                }
+                Some(code) => {
+                    let label = abi_error_label(contract, code)
+                        .map(|label| format!(" ({label})"))
+                        .unwrap_or_default();
+                    ContractOutcome {
+                        success: false,
+                        error: Some(format!(
+                            "Contract '{}' returned ABI failure code {}{}",
+                            function_name, code, label
+                        )),
+                        declared: true,
+                    }
+                }
+                None => ContractOutcome {
+                    success: false,
+                    error: Some(format!(
+                        "Contract '{}' declares return-code result semantics but returned no code",
+                        function_name
+                    )),
+                    declared: true,
+                },
+            },
+        };
+    }
+
+    match fallback {
+        ContractOutcomeFallback::LegacyNonzeroNoChangeFailure => {
+            legacy_nonzero_no_change_failure(function_name, result)
+        }
+        ContractOutcomeFallback::RuntimeSuccessOnly => ContractOutcome {
+            success: true,
+            error: None,
+            declared: false,
+        },
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProgramCallActivity {
     pub slot: u64,
@@ -932,11 +1100,11 @@ pub struct ProgramCallActivity {
 }
 
 pub fn encode_program_call_activity(activity: &ProgramCallActivity) -> Result<Vec<u8>, String> {
-    bincode::serialize(activity).map_err(|e| format!("Failed to encode program call: {}", e))
+    serialize_legacy_bincode(activity, "program call activity")
 }
 
 pub fn decode_program_call_activity(data: &[u8]) -> Result<ProgramCallActivity, String> {
-    bincode::deserialize(data).map_err(|e| format!("Failed to decode program call: {}", e))
+    deserialize_legacy_bincode(data, "program call activity")
 }
 
 /// Maximum log message length (16 KB)
@@ -985,6 +1153,8 @@ const COMPUTE_CROSS_CALL: u64 = 5_000;
 const COMPUTE_COMPLIANCE_CHECK: u64 = 500;
 /// Compute cost for Poseidon hash (SNARK-friendly, more expensive than plain hash)
 const COMPUTE_POSEIDON_HASH: u64 = 2_000;
+/// Compute cost for exposing canonical block entropy to contracts.
+const COMPUTE_BLOCK_ENTROPY: u64 = 1_000;
 /// Maximum cross-contract call depth (prevents infinite recursion)
 const MAX_CROSS_CALL_DEPTH: u32 = 8;
 /// Maximum function name length for cross-contract calls
@@ -1186,6 +1356,7 @@ impl ContractRuntime {
                 "get_contract_address" => Function::new_typed_with_env(&mut store, &env, host_get_contract_address),
                 "get_value" => Function::new_typed_with_env(&mut store, &env, host_get_value),
                 "get_slot" => Function::new_typed_with_env(&mut store, &env, host_get_slot),
+                "get_block_entropy" => Function::new_typed_with_env(&mut store, &env, host_get_block_entropy),
                 // Restriction compliance checks
                 "can_send" => Function::new_typed_with_env(&mut store, &env, host_can_send),
                 "can_receive" => Function::new_typed_with_env(&mut store, &env, host_can_receive),
@@ -2036,6 +2207,81 @@ fn host_get_slot(env: FunctionEnvMut<ContractContext>) -> u64 {
     env.data().slot
 }
 
+/// Deterministically derive RANDAO-style entropy from a committed block.
+///
+/// The input includes stable header fields and the sorted BFT commit
+/// certificate. Commit signatures are the validator entropy component; they
+/// cannot be supplied by a single block proposer.
+pub fn derive_block_entropy(block: &crate::Block) -> [u8; 32] {
+    let mut input = Vec::new();
+    input.extend_from_slice(b"LICHEN_BLOCK_ENTROPY_V1");
+    input.extend_from_slice(&block.header.slot.to_le_bytes());
+    input.extend_from_slice(&block.header.parent_hash.0);
+    input.extend_from_slice(&block.header.state_root.0);
+    input.extend_from_slice(&block.header.tx_root.0);
+    input.extend_from_slice(&block.header.validators_hash.0);
+    input.extend_from_slice(&block.header.validator);
+    input.extend_from_slice(&block.hash().0);
+    input.extend_from_slice(&block.commit_round.to_le_bytes());
+
+    let mut commit_signatures = block.commit_signatures.clone();
+    commit_signatures.sort_by(|a, b| {
+        a.validator
+            .cmp(&b.validator)
+            .then(a.timestamp.cmp(&b.timestamp))
+            .then(a.signature.sig.cmp(&b.signature.sig))
+    });
+
+    input.extend_from_slice(&(commit_signatures.len() as u64).to_le_bytes());
+    for commit in commit_signatures {
+        input.extend_from_slice(&commit.validator);
+        input.extend_from_slice(&commit.timestamp.to_le_bytes());
+        input.push(commit.signature.scheme_version);
+        input.push(commit.signature.public_key.scheme_version);
+        input.extend_from_slice(&(commit.signature.public_key.bytes.len() as u64).to_le_bytes());
+        input.extend_from_slice(&commit.signature.public_key.bytes);
+        input.extend_from_slice(&(commit.signature.sig.len() as u64).to_le_bytes());
+        input.extend_from_slice(&commit.signature.sig);
+    }
+
+    Hash::hash(&input).0
+}
+
+/// Write committed-block entropy for `slot` to WASM memory.
+///
+/// Signature: get_block_entropy(slot: u64, out_ptr: u32) -> u32
+/// Returns 0 on success, 1 when the slot is unavailable or memory write fails.
+fn host_get_block_entropy(
+    mut env: FunctionEnvMut<ContractContext>,
+    slot: u64,
+    out_ptr: u32,
+) -> u32 {
+    {
+        let ctx = env.data_mut();
+        if !deduct_compute(ctx, COMPUTE_BLOCK_ENTROPY) {
+            return 1;
+        }
+    }
+
+    let (state_store, memory) = match (env.data().state_store.clone(), env.data().memory.clone()) {
+        (Some(state_store), Some(memory)) => (state_store, memory),
+        _ => return 1,
+    };
+
+    let block = match state_store.get_block_by_slot(slot) {
+        Ok(Some(block)) => block,
+        _ => return 1,
+    };
+    let entropy = derive_block_entropy(&block);
+
+    let view = memory.view(&env);
+    if view.write(out_ptr as u64, &entropy).is_err() {
+        return 1;
+    }
+
+    0
+}
+
 fn read_pubkey_from_memory(
     env: &FunctionEnvMut<ContractContext>,
     memory: &Memory,
@@ -2621,8 +2867,14 @@ fn host_cross_contract_call(
         ctx.compute_remaining = ctx.compute_remaining.saturating_sub(result.compute_used);
     }
 
-    if !result.success {
-        // Callee failed — return 0, don't apply any changes
+    let outcome = evaluate_contract_outcome(
+        &target_contract,
+        &function_name,
+        &result,
+        ContractOutcomeFallback::RuntimeSuccessOnly,
+    );
+    if !outcome.success {
+        // Callee failed by runtime or declared ABI — return 0, don't apply changes.
         // AUDIT-FIX C-2: Refund escrowed value via delta on callee failure
         if value > 0 {
             let mut deltas = pending_value_deltas
@@ -2631,7 +2883,7 @@ fn host_cross_contract_call(
             *deltas.entry(caller_contract).or_default() += value as i64;
         }
         let ctx = env.data_mut();
-        if let Some(ref err) = result.error {
+        if let Some(ref err) = outcome.error {
             ctx.logs.push(format!(
                 "[CCC] {}::{} returned error: {}",
                 crate::Pubkey(target.0),
@@ -3503,6 +3755,7 @@ mod tests {
                     returns: None,
                     opcode: None,
                     readonly: true,
+                    result_semantics: None,
                 },
                 AbiFunction {
                     name: "set".to_string(),
@@ -3511,6 +3764,7 @@ mod tests {
                     returns: None,
                     opcode: None,
                     readonly: false,
+                    result_semantics: None,
                 },
             ],
             events: Vec::new(),
@@ -3590,6 +3844,56 @@ mod tests {
         assert_eq!(ctx.args, args);
         assert_eq!(ctx.value, 500);
         assert_eq!(ctx.slot, 42);
+    }
+
+    #[test]
+    fn test_derive_block_entropy_uses_sorted_commit_certificate() {
+        let kp1 = crate::Keypair::generate();
+        let kp2 = crate::Keypair::generate();
+        let pk1 = kp1.pubkey();
+        let pk2 = kp2.pubkey();
+        let block = crate::Block::new_with_timestamp(
+            10,
+            Hash::hash(b"parent"),
+            Hash::hash(b"state"),
+            pk1.0,
+            Vec::new(),
+            1234,
+        );
+        let block_hash = block.hash();
+
+        let sig1 = kp1.sign(&crate::consensus::Precommit::signable_bytes(
+            10,
+            0,
+            &Some(block_hash),
+            2000,
+        ));
+        let sig2 = kp2.sign(&crate::consensus::Precommit::signable_bytes(
+            10,
+            0,
+            &Some(block_hash),
+            2001,
+        ));
+        let commit1 = crate::CommitSignature {
+            validator: pk1.0,
+            signature: sig1,
+            timestamp: 2000,
+        };
+        let commit2 = crate::CommitSignature {
+            validator: pk2.0,
+            signature: sig2,
+            timestamp: 2001,
+        };
+
+        let mut a = block.clone();
+        a.commit_signatures = vec![commit1.clone(), commit2.clone()];
+        let mut b = block.clone();
+        b.commit_signatures = vec![commit2, commit1];
+
+        assert_eq!(derive_block_entropy(&a), derive_block_entropy(&b));
+
+        b.header.state_root = Hash::hash(b"different-state");
+        assert_ne!(derive_block_entropy(&a), derive_block_entropy(&b));
     }
 
     #[test]
@@ -3874,7 +4178,11 @@ mod tests {
                             {"name": "maker_fee_bps", "type": "i16"},
                             {"name": "taker_fee_bps", "type": "u16"},
                             {"name": "enabled", "type": "bool", "optional": true}
-                        ]
+                        ],
+                        "result_semantics": {
+                            "kind": "return_code",
+                            "success_codes": [0]
+                        }
                     }
                 ]
             }"#,
@@ -3888,6 +4196,9 @@ mod tests {
         assert_eq!(abi.functions[0].params[3].param_type, AbiType::U16);
         assert_eq!(abi.functions[0].params[4].param_type, AbiType::Bool);
         assert!(abi.functions[0].params[4].optional);
+        let result_semantics = abi.functions[0].result_semantics.as_ref().unwrap();
+        assert_eq!(result_semantics.kind, AbiResultKind::ReturnCode);
+        assert_eq!(result_semantics.success_codes, vec![0]);
     }
 
     #[test]

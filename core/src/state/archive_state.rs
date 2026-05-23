@@ -1,4 +1,5 @@
 use super::*;
+use crate::codec::{append_legacy_bincode, deserialize_legacy_bincode};
 
 impl StateStore {
     /// Enable or disable archive mode. When enabled, every `put_account` also
@@ -31,7 +32,7 @@ impl StateStore {
 
         let mut value = Vec::with_capacity(256);
         value.push(0xBC);
-        bincode::serialize_into(&mut value, account)
+        append_legacy_bincode(&mut value, account, "account snapshot")
             .map_err(|e| format!("Failed to serialize snapshot: {}", e))?;
 
         self.db
@@ -75,8 +76,9 @@ impl StateStore {
                 continue;
             }
             if value.first() == Some(&0xBC) {
-                let mut account: Account = bincode::deserialize(&value[1..])
-                    .map_err(|e| format!("Failed to deserialize snapshot: {}", e))?;
+                let mut account: Account =
+                    deserialize_legacy_bincode(&value[1..], "account snapshot")
+                        .map_err(|e| format!("Failed to deserialize snapshot: {}", e))?;
                 account.fixup_legacy();
                 return Ok(Some(account));
             }

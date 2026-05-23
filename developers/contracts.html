@@ -549,7 +549,7 @@ pub extern "C" fn get_value() -> u32 {
                         <span class="method-badge get">READ</span>
                     </div>
                     <div class="method-body">
-                        <p>Get the current block timestamp (Unix seconds). Useful for time-based logic like expiry
+                        <p>Get the deterministic block slot value. Useful for slot-based logic like expiry
                             checks and vesting schedules.</p>
                     </div>
                 </div>
@@ -1242,7 +1242,7 @@ fn require_reputation(caller: &amp;[u8]) -&gt; bool {
                         </tr>
                         <tr>
                             <td><code>test_mock::set_timestamp(ts)</code></td>
-                            <td>Set the mock block timestamp</td>
+                            <td>Set the mock deterministic timestamp/slot-age value</td>
                         </tr>
                         <tr>
                             <td><code>test_mock::set_slot(s)</code></td>

@@ -26,9 +26,36 @@ pub(super) async fn process_solana_deposits(state: &CustodyState, url: &str) -> 
                 continue;
             }
 
-            store_deposit_event(
-                &state.db,
-                &DepositEvent {
+            let mut sweep_job = None;
+            if let Some(treasury) = state.config.treasury_solana_address.clone() {
+                let balance = solana_get_balance(&state.http, url, &deposit.address).await?;
+                let credited_amount = if balance > SOLANA_SWEEP_FEE_LAMPORTS {
+                    Some((balance - SOLANA_SWEEP_FEE_LAMPORTS).to_string())
+                } else {
+                    None
+                };
+                sweep_job = Some(SweepJob {
+                    job_id: Uuid::new_v4().to_string(),
+                    deposit_id: deposit.deposit_id.clone(),
+                    chain: deposit.chain.clone(),
+                    asset: deposit.asset.clone(),
+                    from_address: deposit.address.clone(),
+                    to_treasury: treasury,
+                    tx_hash: sig.clone(),
+                    amount: Some(balance.to_string()),
+                    credited_amount,
+                    signatures: Vec::new(),
+                    sweep_tx_hash: None,
+                    attempts: 0,
+                    last_error: None,
+                    next_attempt_at: None,
+                    status: "queued".to_string(),
+                    created_at: chrono::Utc::now().timestamp(),
+                });
+            }
+
+            let observation = DepositObservationWrite {
+                event: DepositEvent {
                     event_id: Uuid::new_v4().to_string(),
                     deposit_id: deposit.deposit_id.clone(),
                     tx_hash: sig.clone(),
@@ -37,52 +64,24 @@ pub(super) async fn process_solana_deposits(state: &CustodyState, url: &str) -> 
                     status: "confirmed".to_string(),
                     observed_at: chrono::Utc::now().timestamp(),
                 },
-            )?;
+                sweep_job,
+                markers: Vec::new(),
+            };
 
-            update_deposit_status(&state.db, &deposit.deposit_id, "confirmed")?;
-            emit_custody_event(
-                state,
-                "deposit.confirmed",
-                &deposit.deposit_id,
-                Some(&deposit.deposit_id),
-                Some(sig),
-                Some(&serde_json::json!({
-                    "chain": deposit.chain,
-                    "asset": deposit.asset,
-                    "address": deposit.address,
-                    "user_id": deposit.user_id
-                })),
-            );
-
-            if let Some(treasury) = state.config.treasury_solana_address.clone() {
-                let balance = solana_get_balance(&state.http, url, &deposit.address).await?;
-                let credited_amount = if balance > SOLANA_SWEEP_FEE_LAMPORTS {
-                    Some((balance - SOLANA_SWEEP_FEE_LAMPORTS).to_string())
-                } else {
-                    None
-                };
-                enqueue_sweep_job(
-                    &state.db,
-                    &SweepJob {
-                        job_id: Uuid::new_v4().to_string(),
-                        deposit_id: deposit.deposit_id.clone(),
-                        chain: deposit.chain.clone(),
-                        asset: deposit.asset.clone(),
-                        from_address: deposit.address.clone(),
-                        to_treasury: treasury,
-                        tx_hash: sig.clone(),
-                        amount: Some(balance.to_string()),
-                        credited_amount,
-                        signatures: Vec::new(),
-                        sweep_tx_hash: None,
-                        attempts: 0,
-                        last_error: None,
-                        next_attempt_at: None,
-                        status: "queued".to_string(),
-                        created_at: chrono::Utc::now().timestamp(),
-                    },
-                )?;
-                update_deposit_status(&state.db, &deposit.deposit_id, "sweep_queued")?;
+            if persist_deposit_observation(&state.db, &observation)? {
+                emit_custody_event(
+                    state,
+                    "deposit.confirmed",
+                    &deposit.deposit_id,
+                    Some(&deposit.deposit_id),
+                    Some(sig),
+                    Some(&serde_json::json!({
+                        "chain": deposit.chain,
+                        "asset": deposit.asset,
+                        "address": deposit.address,
+                        "user_id": deposit.user_id
+                    })),
+                );
             }
             break;
         }
@@ -111,16 +110,39 @@ async fn process_solana_token_deposit(
         return Ok(());
     }
 
-    set_last_balance_with_key(&state.db, &last_key, balance)?;
-
     let synthetic_tx_hash = format!("spl_balance:{}", balance);
     if deposit_event_already_processed(&state.db, &deposit.deposit_id, &synthetic_tx_hash) {
         return Ok(());
     }
 
-    store_deposit_event(
-        &state.db,
-        &DepositEvent {
+    let mut sweep_job = None;
+    if let Some(treasury) = state.config.solana_treasury_owner.clone() {
+        let mint = solana_mint_for_asset(&state.config, &deposit.asset)?;
+        let treasury_ata = derive_associated_token_address_from_str(&treasury, &mint)?;
+        ensure_associated_token_account_for_str(state, &treasury, &mint, &treasury_ata).await?;
+
+        sweep_job = Some(SweepJob {
+            job_id: Uuid::new_v4().to_string(),
+            deposit_id: deposit.deposit_id.clone(),
+            chain: deposit.chain.clone(),
+            asset: deposit.asset.clone(),
+            from_address: deposit.address.clone(),
+            to_treasury: treasury_ata,
+            tx_hash: synthetic_tx_hash.clone(),
+            amount: Some(balance.to_string()),
+            credited_amount: None,
+            signatures: Vec::new(),
+            sweep_tx_hash: None,
+            attempts: 0,
+            last_error: None,
+            next_attempt_at: None,
+            status: "queued".to_string(),
+            created_at: chrono::Utc::now().timestamp(),
+        });
+    }
+
+    let observation = DepositObservationWrite {
+        event: DepositEvent {
             event_id: Uuid::new_v4().to_string(),
             deposit_id: deposit.deposit_id.clone(),
             tx_hash: synthetic_tx_hash.clone(),
@@ -129,51 +151,28 @@ async fn process_solana_token_deposit(
             status: "confirmed".to_string(),
             observed_at: chrono::Utc::now().timestamp(),
         },
-    )?;
+        sweep_job,
+        markers: vec![DepositObservationMarker::TokenBalance {
+            key: last_key,
+            balance,
+        }],
+    };
 
-    update_deposit_status(&state.db, &deposit.deposit_id, "confirmed")?;
-    emit_custody_event(
-        state,
-        "deposit.confirmed",
-        &deposit.deposit_id,
-        Some(&deposit.deposit_id),
-        Some(&synthetic_tx_hash),
-        Some(&serde_json::json!({
-            "chain": deposit.chain,
-            "asset": deposit.asset,
-            "address": deposit.address,
-            "user_id": deposit.user_id,
-            "amount": balance
-        })),
-    );
-
-    if let Some(treasury) = state.config.solana_treasury_owner.clone() {
-        let mint = solana_mint_for_asset(&state.config, &deposit.asset)?;
-        let treasury_ata = derive_associated_token_address_from_str(&treasury, &mint)?;
-        ensure_associated_token_account_for_str(state, &treasury, &mint, &treasury_ata).await?;
-
-        enqueue_sweep_job(
-            &state.db,
-            &SweepJob {
-                job_id: Uuid::new_v4().to_string(),
-                deposit_id: deposit.deposit_id.clone(),
-                chain: deposit.chain.clone(),
-                asset: deposit.asset.clone(),
-                from_address: deposit.address.clone(),
-                to_treasury: treasury_ata,
-                tx_hash: synthetic_tx_hash,
-                amount: Some(balance.to_string()),
-                credited_amount: None,
-                signatures: Vec::new(),
-                sweep_tx_hash: None,
-                attempts: 0,
-                last_error: None,
-                next_attempt_at: None,
-                status: "queued".to_string(),
-                created_at: chrono::Utc::now().timestamp(),
-            },
-        )?;
-        update_deposit_status(&state.db, &deposit.deposit_id, "sweep_queued")?;
+    if persist_deposit_observation(&state.db, &observation)? {
+        emit_custody_event(
+            state,
+            "deposit.confirmed",
+            &deposit.deposit_id,
+            Some(&deposit.deposit_id),
+            Some(&synthetic_tx_hash),
+            Some(&serde_json::json!({
+                "chain": deposit.chain,
+                "asset": deposit.asset,
+                "address": deposit.address,
+                "user_id": deposit.user_id,
+                "amount": balance
+            })),
+        );
     }
 
     Ok(())

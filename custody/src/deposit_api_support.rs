@@ -47,7 +47,7 @@ pub(super) async fn create_deposit(
     })?;
     let bridge_auth = parse_bridge_access_auth_value(bridge_auth_value)?;
     let now = current_unix_secs()?;
-    verify_bridge_access_auth_at(&user_id, &bridge_auth, now)?;
+    verify_bridge_access_auth_for_create_at(&user_id, &chain, &asset, &bridge_auth, now)?;
     let replay_digest = bridge_access_replay_digest(
         BRIDGE_AUTH_REPLAY_ACTION_CREATE_DEPOSIT,
         &user_id,
@@ -56,12 +56,18 @@ pub(super) async fn create_deposit(
 
     if (chain == "solana" || chain == "sol") && is_solana_stablecoin(&asset) {
         ensure_solana_config(&state.config).map_err(|e| Json(ErrorResponse::invalid(&e)))?;
+        solana_mint_for_asset(&state.config, &asset)
+            .map_err(|e| Json(ErrorResponse::invalid(&e)))?;
     }
     if is_evm_chain(&chain) && rpc_url_for_chain(&state.config, &chain).is_none() {
         return Err(ErrorResponse::invalid(&format!(
             "missing RPC URL for chain {}",
             chain
         )));
+    }
+    if is_evm_chain(&chain) && is_evm_token_asset(&chain, &asset) {
+        evm_token_contract_for_asset(&state.config, &chain, &asset)
+            .map_err(|e| Json(ErrorResponse::invalid(&e)))?;
     }
     if canonical_evm_chain(&chain) == Some("neox") {
         match asset.as_str() {
@@ -229,7 +235,12 @@ pub(super) async fn get_deposit(
         ))
     })?;
     let bridge_auth = parse_bridge_access_auth_json(bridge_auth_json)?;
-    verify_bridge_access_auth(user_id, &bridge_auth)?;
+    verify_bridge_access_auth_for_lookup_at(
+        user_id,
+        &deposit_id,
+        &bridge_auth,
+        current_unix_secs()?,
+    )?;
 
     let record = fetch_deposit(&state.db, &deposit_id)
         .map_err(|e| Json(ErrorResponse::db(&e)))?

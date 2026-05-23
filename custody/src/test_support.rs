@@ -37,6 +37,8 @@ pub(super) fn test_config() -> CustodyConfig {
         solana_usdt_mint: "Es9vMFrzaCER3FXvxuauYhVNiVw9g8Y3V9D2n7sGdG8d".to_string(),
         evm_usdc_contract: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48".to_string(),
         evm_usdt_contract: "0xdAC17F958D2ee523a2206206994597C13D831ec7".to_string(),
+        bnb_usdc_contract: Some("0x2222222222222222222222222222222222222222".to_string()),
+        bnb_usdt_contract: Some("0x3333333333333333333333333333333333333333".to_string()),
         signer_endpoints: vec![],
         signer_threshold: 0,
         licn_rpc_url: None,
@@ -146,6 +148,7 @@ pub(super) fn test_state_with_db_path(db_path: &str, destroy_existing: bool) -> 
         withdrawal_rate: std::sync::Arc::new(tokio::sync::Mutex::new(withdrawal_rate)),
         deposit_rate: std::sync::Arc::new(tokio::sync::Mutex::new(deposit_rate)),
         event_tx,
+        ws_event_tickets: std::sync::Arc::new(tokio::sync::Mutex::new(BTreeMap::new())),
         webhook_delivery_limiter: std::sync::Arc::new(tokio::sync::Semaphore::new(1)),
     }
 }
@@ -184,6 +187,43 @@ pub(super) fn test_bridge_access_auth_payload(seed: u8) -> (String, Value) {
         json!({
             "issued_at": issued_at,
             "expires_at": expires_at,
+            "signature": serde_json::to_value(keypair.sign(&message))
+                .expect("encode bridge auth signature"),
+        }),
+    )
+}
+
+pub(super) fn test_bridge_access_auth_payload_v2(
+    seed: u8,
+    chain: &str,
+    asset: &str,
+) -> (String, Value) {
+    let keypair = Keypair::from_seed(&[seed; 32]);
+    let user_id = keypair.pubkey().to_base58();
+    let issued_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock")
+        .as_secs();
+    let expires_at = issued_at + 600;
+    let chain = chain.trim().to_lowercase();
+    let asset = asset.trim().to_lowercase();
+    let nonce = format!("test-bridge-auth-v2-{}", seed);
+    let message =
+        bridge_access_message_v2_create(&user_id, &chain, &asset, issued_at, expires_at, &nonce);
+
+    (
+        user_id.clone(),
+        json!({
+            "version": 2,
+            "domain": BRIDGE_ACCESS_DOMAIN_V2,
+            "action": BRIDGE_AUTH_REPLAY_ACTION_CREATE_DEPOSIT,
+            "user_id": user_id,
+            "chain": chain,
+            "asset": asset,
+            "route": format!("{}:{}", chain, asset),
+            "issued_at": issued_at,
+            "expires_at": expires_at,
+            "nonce": nonce,
             "signature": serde_json::to_value(keypair.sign(&message))
                 .expect("encode bridge auth signature"),
         }),
@@ -287,6 +327,7 @@ pub(super) async fn mock_rpc_handler(
         "eth_getTransactionCount" => Value::String("0x3".to_string()),
         "eth_gasPrice" => Value::String("0x4a817c800".to_string()),
         "eth_chainId" => Value::String("0x1".to_string()),
+        "eth_blockNumber" => Value::String("0x3".to_string()),
         "eth_estimateGas" => Value::String("0x55f0".to_string()),
         "eth_getTransactionReceipt" => state.transaction_receipt.clone().unwrap_or(Value::Null),
         "eth_sendRawTransaction" => state

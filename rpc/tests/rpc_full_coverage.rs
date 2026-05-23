@@ -4683,7 +4683,8 @@ async fn test_send_transaction_raw_bincode() {
     };
 
     // Encode as raw bincode (no envelope)
-    let raw_bincode = bincode::serialize(&tx).unwrap();
+    let raw_bincode =
+        lichen_core::codec::serialize_legacy_bincode(&tx, "test transaction").unwrap();
     let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &raw_bincode);
 
     let resp = rpc_p(&app, "/", "sendTransaction", json!([b64]))

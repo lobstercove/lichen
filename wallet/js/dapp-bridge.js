@@ -19,7 +19,15 @@
     const CLOSE_DELAY_MS = 150;
     const HINT_ID = 'walletDappBridgeHint';
     const SIGNING_METHODS = new Set(['licn_signMessage', 'licn_signTransaction', 'licn_sendTransaction']);
-    const INTERACTIVE_METHODS = new Set(['licn_requestAccounts', 'licn_signMessage', 'licn_signTransaction', 'licn_sendTransaction']);
+    const NETWORK_CHANGE_METHODS = new Set(['licn_switchNetwork', 'licn_addNetwork']);
+    const INTERACTIVE_METHODS = new Set([
+        'licn_requestAccounts',
+        'licn_signMessage',
+        'licn_signTransaction',
+        'licn_sendTransaction',
+        'licn_switchNetwork',
+        'licn_addNetwork',
+    ]);
     const pendingRequests = new Map();
     const finalizedResponses = new Map();
 
@@ -116,10 +124,14 @@
             licn_sign_message: 'licn_signMessage',
             licn_sign_transaction: 'licn_signTransaction',
             licn_send_transaction: 'licn_sendTransaction',
+            licn_switch_network: 'licn_switchNetwork',
+            licn_add_network: 'licn_addNetwork',
             personal_sign: 'licn_signMessage',
             eth_sign: 'licn_signMessage',
             eth_signTransaction: 'licn_signTransaction',
             eth_sendTransaction: 'licn_sendTransaction',
+            wallet_switchEthereumChain: 'licn_switchNetwork',
+            wallet_addEthereumChain: 'licn_addNetwork',
         };
         return aliases[key] || key;
     }
@@ -199,6 +211,34 @@
         if (value === 'mainnet') return '0x2710';
         if (value === 'testnet') return '0x2711';
         return '0x539';
+    }
+
+    function networkFromAnyChainId(chainIdInput) {
+        const value = String(chainIdInput || '').trim().toLowerCase();
+        const normalized = value.startsWith('0x') ? value : `0x${value}`;
+        if (normalized === '0x2710') return 'mainnet';
+        if (normalized === '0x2711') return 'testnet';
+        if (normalized === '0x539') return 'local-testnet';
+        return '';
+    }
+
+    function rpcOriginFromEndpoint(endpoint) {
+        let url;
+        try {
+            url = new URL(String(endpoint || '').trim());
+        } catch {
+            throw new Error('RPC endpoint must be a valid http(s) URL');
+        }
+        if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+            throw new Error('RPC endpoint must use http:// or https://');
+        }
+        if (url.username || url.password) {
+            throw new Error('RPC endpoint must not include embedded credentials');
+        }
+        return {
+            endpoint: url.toString().replace(/\/+$/, ''),
+            origin: url.origin,
+        };
     }
 
     function getActiveWalletSafe() {
@@ -447,6 +487,51 @@
         return [];
     }
 
+    function getSingleRequestObject(payload) {
+        const params = getParams(payload);
+        if (params.length) {
+            return params[0] && typeof params[0] === 'object' ? params[0] : {};
+        }
+        if (payload?.params && typeof payload.params === 'object') {
+            return payload.params;
+        }
+        return {};
+    }
+
+    function buildNetworkChangeRequest(payload, providerState) {
+        const method = normalizeMethod(payload?.method);
+        const spec = getSingleRequestObject(payload);
+        const requestedChainId = String(spec?.chainId || '').trim();
+        const nextNetwork = networkFromAnyChainId(requestedChainId);
+        if (!nextNetwork) {
+            throw new Error(method === 'licn_addNetwork' ? 'Invalid chain definition' : 'Unsupported chainId for network switch');
+        }
+
+        const previousNetwork = providerState?.network || getRuntimeSelectedNetwork();
+        const change = {
+            kind: method === 'licn_addNetwork' ? 'add' : 'switch',
+            previousNetwork,
+            previousChainId: getCurrentChainId(previousNetwork),
+            nextNetwork,
+            nextChainId: getCurrentChainId(nextNetwork),
+            requestedChainId,
+            rpcEndpoint: '',
+            rpcOrigin: '',
+        };
+
+        if (method === 'licn_addNetwork') {
+            const rpcUrls = Array.isArray(spec?.rpcUrls) ? spec.rpcUrls : [];
+            if (!rpcUrls.length) {
+                throw new Error('Invalid chain definition');
+            }
+            const parsed = rpcOriginFromEndpoint(rpcUrls[0]);
+            change.rpcEndpoint = parsed.endpoint;
+            change.rpcOrigin = parsed.origin;
+        }
+
+        return change;
+    }
+
     function getTransactionFromPayload(payload) {
         const params = getParams(payload);
         if (params.length) {
@@ -506,6 +591,106 @@
         return `${text.slice(0, 10)}...${text.slice(-8)}`;
     }
 
+    function pubkeyLabel(value) {
+        if (!Array.isArray(value) && !(value instanceof Uint8Array)) {
+            return '—';
+        }
+        try {
+            const bytes = value instanceof Uint8Array ? value : Uint8Array.from(value);
+            return bs58.encode(bytes);
+        } catch {
+            return shortenValue(JSON.stringify(value));
+        }
+    }
+
+    function readU64Le(data, offset = 0) {
+        const bytes = Array.isArray(data) || data instanceof Uint8Array ? data : [];
+        if (bytes.length < offset + 8) return null;
+        let value = 0n;
+        for (let i = 0; i < 8; i++) {
+            value |= BigInt(bytes[offset + i] || 0) << BigInt(i * 8);
+        }
+        return value;
+    }
+
+    function formatBaseUnits(value, decimals, symbol) {
+        if (typeof value !== 'bigint') return '—';
+        const scale = 10n ** BigInt(decimals);
+        const whole = value / scale;
+        const fraction = value % scale;
+        let fractionText = fraction.toString().padStart(decimals, '0').replace(/0+$/, '');
+        if (!fractionText) fractionText = '0';
+        return `${whole.toString()}.${fractionText} ${symbol}`;
+    }
+
+    function bytesToUtf8(data) {
+        if (!Array.isArray(data) && !(data instanceof Uint8Array)) return '';
+        try {
+            return new TextDecoder().decode(data instanceof Uint8Array ? data : Uint8Array.from(data));
+        } catch {
+            return '';
+        }
+    }
+
+    function parseJsonText(text) {
+        try {
+            return JSON.parse(text);
+        } catch {
+            return null;
+        }
+    }
+
+    function riskyContractWords(text) {
+        return /admin|owner|pause|unpause|upgrade|mint|burn|approve|treasury|governance|set_/i.test(String(text || ''));
+    }
+
+    function decodeContractCallIntent(data) {
+        const payloadText = bytesToUtf8(data);
+        const payload = parseJsonText(payloadText);
+        const call = payload?.Call || payload?.call || null;
+        if (!call || typeof call !== 'object') {
+            return {
+                callName: 'Unknown contract call',
+                destination: '—',
+                amount: '—',
+                token: 'Contract token',
+                tokenDecimals: 'contract registry / unknown',
+                warnings: ['Contract payload is not a decoded call envelope.']
+            };
+        }
+
+        const callName = String(call.function || call.method || 'unknown');
+        let destination = '—';
+        let amount = '—';
+        let token = 'Contract token';
+        const tokenDecimals = 'contract registry / unknown';
+        const warnings = [];
+
+        if (Array.isArray(call.args)) {
+            const argsText = bytesToUtf8(call.args);
+            const args = parseJsonText(argsText);
+            if (args && typeof args === 'object') {
+                if (Array.isArray(args.to)) destination = pubkeyLabel(args.to);
+                if (args.amount !== undefined && args.amount !== null && /^\d+$/.test(String(args.amount))) {
+                    amount = `${BigInt(String(args.amount)).toString()} base units`;
+                }
+            }
+        }
+
+        if (callName === 'transfer') {
+            token = 'Contract token transfer';
+        } else {
+            warnings.push('Contract call may execute program-specific logic.');
+        }
+
+        if (riskyContractWords(payloadText) || riskyContractWords(callName)) {
+            warnings.push('Contract payload contains admin-like terms; review before signing.');
+        }
+
+        warnings.push('Contract token decimals must be checked against the registry.');
+        return { callName, destination, amount, token, tokenDecimals, warnings };
+    }
+
     function detailRowHtml(label, value, options = {}) {
         const displayValue = String(value ?? '').trim() || '—';
         const valueClass = options.mono ? ' class="mono"' : '';
@@ -530,13 +715,60 @@
         }
     }
 
-    function transactionSummaryHtml(txObject) {
+    function transactionIntentRows(txObject, providerState) {
         const message = txObject?.message || {};
         const instructions = Array.isArray(message.instructions) ? message.instructions : [];
         const firstInstruction = instructions[0] || null;
+        const firstAccounts = Array.isArray(firstInstruction?.accounts) ? firstInstruction.accounts : [];
+        const firstData = Array.isArray(firstInstruction?.data) ? firstInstruction.data : [];
+        const primaryProgram = describeProgram(firstInstruction?.program_id);
+        const warnings = [];
+        let action = 'Unknown transaction';
+        let amount = '—';
+        let tokenDecimals = '—';
+        let token = '—';
+        let destination = pubkeyLabel(firstAccounts[1]);
+
+        if (primaryProgram === 'System Program' && firstData[0] === 0 && firstAccounts.length >= 2) {
+            token = 'LICN';
+            tokenDecimals = '9';
+            amount = formatBaseUnits(readU64Le(firstData, 1), 9, token);
+            action = 'Native transfer';
+        } else if (primaryProgram === 'System Program' && firstData[0] === 16 && firstAccounts.length >= 2) {
+            token = 'stLICN';
+            tokenDecimals = '9';
+            amount = formatBaseUnits(readU64Le(firstData, 1), 9, token);
+            action = 'MossStake transfer';
+        } else if (primaryProgram === 'Contract Program') {
+            const contractIntent = decodeContractCallIntent(firstData);
+            action = contractIntent.callName === 'transfer' ? 'Contract token transfer' : contractIntent.callName;
+            amount = contractIntent.amount;
+            token = contractIntent.token;
+            tokenDecimals = contractIntent.tokenDecimals;
+            destination = contractIntent.destination;
+            warnings.push(...contractIntent.warnings);
+        } else if (!firstInstruction) {
+            warnings.push('Transaction has no instructions.');
+        } else {
+            warnings.push('Unknown program or instruction; review raw parameters before signing.');
+        }
+
+        if (primaryProgram === 'System Program' && firstData[0] !== 0 && firstData[0] !== 16) {
+            warnings.push(`System opcode ${String(firstData[0] ?? 'unknown')} is not decoded; it may be administrative.`);
+        }
+
         const rows = [
+            ['Intent', action],
             ['Instructions', String(instructions.length)],
-            ['Primary program', describeProgram(firstInstruction?.program_id)],
+            ['Account', pubkeyLabel(firstAccounts[0]), true],
+            ['Destination', destination, true],
+            ['Amount', amount],
+            ['Token decimals', tokenDecimals],
+            ['Token', token],
+            ['Network', providerState?.network || getCurrentNetwork()],
+            ['RPC', typeof getRpcEndpoint === 'function' ? getRpcEndpoint() : '—', true],
+            ['Fee', 'Network base fee plus any priority fee'],
+            ['Primary program', primaryProgram],
             ['Blockhash', shortenValue(message.blockhash || message.recent_blockhash || '')],
         ];
 
@@ -546,8 +778,51 @@
         if (Number.isFinite(message.compute_unit_price)) {
             rows.push(['Compute unit price', String(message.compute_unit_price)]);
         }
+        if (warnings.length) {
+            rows.push(['Warnings', warnings.join(' ')]);
+        }
 
-        return rows.map(([label, value]) => detailRowHtml(label, value, { mono: true })).join('');
+        return rows;
+    }
+
+    function transactionSummaryHtml(txObject, providerState) {
+        return transactionIntentRows(txObject, providerState)
+            .map(([label, value, mono]) => detailRowHtml(label, value, { mono: Boolean(mono) }))
+            .join('');
+    }
+
+    function approvalGrantsAccountAccess(method, providerState) {
+        return SIGNING_METHODS.has(method) && !providerState.connected;
+    }
+
+    function accountAccessGrantHtml(grantsAccountAccess, walletAddress) {
+        if (!grantsAccountAccess) {
+            return '';
+        }
+        return detailRowHtml(
+            'Account access',
+            `Connects this site to ${walletAddress} for 30 days or until disconnected`
+        );
+    }
+
+    function networkChangeDetailsHtml(change) {
+        if (!change) {
+            return '';
+        }
+        const rpcDetails = change.kind === 'add'
+            ? `
+                ${detailRowHtml('RPC Origin', change.rpcOrigin, { mono: true })}
+                ${detailRowHtml('RPC URL', change.rpcEndpoint, { mono: true })}
+            `
+            : '';
+        return `
+            ${detailRowHtml('Action', change.kind === 'add' ? 'Add & switch network' : 'Switch network')}
+            ${detailRowHtml('From network', change.previousNetwork)}
+            ${detailRowHtml('From chain ID', change.previousChainId, { mono: true })}
+            ${detailRowHtml('To network', change.nextNetwork)}
+            ${detailRowHtml('To chain ID', change.nextChainId || change.requestedChainId, { mono: true })}
+            ${rpcDetails}
+        `;
     }
 
     function approvalMessageHtml(request, providerState) {
@@ -557,6 +832,10 @@
         const walletAddress = String(providerState.activeAddress || wallet?.address || '—');
         const network = String(providerState.network || getCurrentNetwork());
         const method = normalizeMethod(request?.payload?.method);
+        const grantsAccountAccess = approvalGrantsAccountAccess(method, providerState);
+        const networkChange = NETWORK_CHANGE_METHODS.has(method)
+            ? buildNetworkChangeRequest(request.payload, providerState)
+            : null;
 
         let intro = 'Approve this request from the connected application.';
         if (method === 'licn_requestAccounts') {
@@ -567,6 +846,14 @@
             intro = 'Review the transaction details below. Your wallet password is required before signing.';
         } else if (method === 'licn_signMessage') {
             intro = 'Review the signing request below. Your wallet password is required before signing.';
+        } else if (method === 'licn_switchNetwork') {
+            intro = 'Review this network switch request before changing the active wallet network.';
+        } else if (method === 'licn_addNetwork') {
+            intro = 'Review this network addition request before saving the RPC endpoint and changing the active wallet network.';
+        }
+
+        if (grantsAccountAccess) {
+            intro = `${intro} Approving also connects this site to your active account until the approval expires.`;
         }
 
         let details = '';
@@ -581,10 +868,16 @@
             details = `
                 ${detailRowHtml('Wallet', walletName)}
                 ${detailRowHtml('Network', network)}
+                ${accountAccessGrantHtml(grantsAccountAccess, walletAddress)}
                 ${detailRowHtml('Message bytes', String(messageBytes.length))}
             `;
+        } else if (NETWORK_CHANGE_METHODS.has(method)) {
+            details = networkChangeDetailsHtml(networkChange);
         } else {
-            details = transactionSummaryHtml(normalizeTransactionObject(request.payload));
+            details = `
+                ${accountAccessGrantHtml(grantsAccountAccess, walletAddress)}
+                ${transactionSummaryHtml(normalizeTransactionObject(request.payload), providerState)}
+            `;
         }
 
         return `
@@ -602,19 +895,36 @@
         const method = normalizeMethod(request?.payload?.method);
         const providerState = buildProviderState(request.origin);
         const needsPassword = SIGNING_METHODS.has(method);
+        const grantsAccountAccess = approvalGrantsAccountAccess(method, providerState);
         const title = method === 'licn_requestAccounts'
             ? 'Connect Site'
             : method === 'licn_signMessage'
                 ? 'Approve Message Signature'
                 : method === 'licn_signTransaction'
                     ? 'Approve Transaction Signature'
-                    : 'Approve Transaction';
+                    : method === 'licn_switchNetwork'
+                        ? 'Switch Network'
+                        : method === 'licn_addNetwork'
+                            ? 'Add Network'
+                            : 'Approve Transaction';
 
         const values = await showPasswordModal({
             title,
             message: approvalMessageHtml(request, providerState),
-            icon: method === 'licn_requestAccounts' ? 'fas fa-link' : 'fas fa-shield-alt',
-            confirmText: method === 'licn_requestAccounts' ? 'Connect' : 'Approve',
+            icon: method === 'licn_requestAccounts'
+                ? 'fas fa-link'
+                : NETWORK_CHANGE_METHODS.has(method)
+                    ? 'fas fa-network-wired'
+                    : 'fas fa-shield-alt',
+            confirmText: method === 'licn_requestAccounts'
+                ? 'Connect'
+                : grantsAccountAccess
+                    ? 'Approve & Connect'
+                    : method === 'licn_switchNetwork'
+                        ? 'Switch Network'
+                        : method === 'licn_addNetwork'
+                            ? 'Add & Switch Network'
+                            : 'Approve',
             fields: needsPassword
                 ? [{
                     id: 'password',
@@ -701,6 +1011,35 @@
                 signedTransactionBase64: signResult.result.signedTransactionBase64,
             },
         };
+    }
+
+    async function finalizeNetworkChange(request) {
+        const providerState = buildProviderState(request.origin);
+        const change = buildNetworkChangeRequest(request.payload, providerState);
+
+        if (change.kind === 'add') {
+            walletState.settings = walletState.settings || {};
+            if (change.nextNetwork === 'mainnet' || change.nextNetwork === 'testnet') {
+                const normalized = typeof normalizeRpcOverride === 'function'
+                    ? normalizeRpcOverride(change.rpcEndpoint, change.nextNetwork)
+                    : change.rpcEndpoint;
+                if (normalized) {
+                    walletState.settings[change.nextNetwork === 'mainnet' ? 'mainnetRPC' : 'testnetRPC'] = normalized;
+                    walletState.settings.allowUnsafeRpc = true;
+                } else {
+                    delete walletState.settings[change.nextNetwork === 'mainnet' ? 'mainnetRPC' : 'testnetRPC'];
+                }
+            } else if (change.rpcEndpoint !== getTrustedRpcEndpoint(change.nextNetwork)) {
+                throw new Error('Custom RPC overrides are only supported for mainnet and testnet in the web wallet');
+            }
+        }
+
+        if (typeof switchNetwork !== 'function') {
+            throw new Error('Network switching is unavailable in this wallet session');
+        }
+
+        await switchNetwork(change.nextNetwork);
+        return { ok: true, result: null };
     }
 
     function hintMessageForRequest(request) {
@@ -877,9 +1216,8 @@
                 return;
             }
 
-            approveOrigin(request.origin);
-
             if (method === 'licn_requestAccounts') {
+                approveOrigin(request.origin);
                 const connectedState = buildProviderState(request.origin);
                 if (!connectedState.accounts.length) {
                     sendResponse(request, { ok: false, error: 'No active wallet available' });
@@ -892,19 +1230,32 @@
             }
 
             if (method === 'licn_signMessage') {
-                sendResponse(request, await finalizeSignMessage(request, approvalValues.password));
+                const result = await finalizeSignMessage(request, approvalValues.password);
+                if (result?.ok) approveOrigin(request.origin);
+                sendResponse(request, result);
                 schedulePopupClose();
                 return;
             }
 
             if (method === 'licn_signTransaction') {
-                sendResponse(request, await finalizeSignTransaction(request, approvalValues.password));
+                const result = await finalizeSignTransaction(request, approvalValues.password);
+                if (result?.ok) approveOrigin(request.origin);
+                sendResponse(request, result);
                 schedulePopupClose();
                 return;
             }
 
             if (method === 'licn_sendTransaction') {
-                sendResponse(request, await finalizeSendTransaction(request, approvalValues.password));
+                const result = await finalizeSendTransaction(request, approvalValues.password);
+                if (result?.ok) approveOrigin(request.origin);
+                sendResponse(request, result);
+                schedulePopupClose();
+                return;
+            }
+
+            if (NETWORK_CHANGE_METHODS.has(method)) {
+                const result = await finalizeNetworkChange(request);
+                sendResponse(request, result);
                 schedulePopupClose();
                 return;
             }

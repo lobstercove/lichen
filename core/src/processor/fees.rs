@@ -22,7 +22,11 @@ impl TxProcessor {
         if let Some(first_ix) = tx.message.instructions.first() {
             if first_ix.program_id == SYSTEM_PROGRAM_ID {
                 if let Some(&kind) = first_ix.data.first() {
-                    if matches!(kind, 2..=5 | 19 | 26 | 27 | 30 | 31) {
+                    let legacy_or_grant_validator_registration =
+                        kind == 26 && first_ix.data.get(33).copied().unwrap_or(0) == 0;
+                    if matches!(kind, 2..=5 | 19 | 27 | 30 | 31)
+                        || legacy_or_grant_validator_registration
+                    {
                         return 0;
                     }
                 }

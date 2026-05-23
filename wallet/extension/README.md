@@ -86,6 +86,9 @@ These helpers let dapps preflight user experience, but they do not create, lift,
 - Background service worker: ready
 - Background WebSocket runtime manager: connect/reconnect/status and sync message endpoints wired
 - Content/in-page provider bridge: request, approval queue, origin permission, pending-request TTL, and finalized result flow wired
+- Network-change provider requests: `wallet_switchEthereumChain` and
+  `wallet_addEthereumChain` require origin-scoped approval before the selected
+  network or RPC endpoint is mutated.
 - Core endpoint parity: identity/staking/bridge/NFT/provider/ws modules resolve user-configured RPC where allowed
 - Trusted-control split: bridge routing, signed metadata, LichenID resolution, and restriction checks stay pinned to trusted endpoints
 - Restriction-governance safety: trusted restriction status reads, popup/full-page restriction banners, direct-send `canTransfer` preflight, provider sign/send preflight before key decryption, and approval-page blocking warnings wired
@@ -113,6 +116,8 @@ Supported Lichen provider methods:
 - `lichen_getRestrictionStatus`
 - `lichen_canTransfer`
 - `lichen_getContractLifecycleStatus`
+- `licn_switchNetwork` (approval required)
+- `licn_addNetwork` (approval required)
 - `licn_signMessage`
 - `licn_signTransaction`
 - `licn_sendTransaction`

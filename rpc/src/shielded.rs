@@ -697,13 +697,7 @@ pub(crate) async fn handle_compute_shield_commitment(
         message: "Invalid params: expected [{ amount, blinding }]".to_string(),
     })?;
 
-    let amount = obj
-        .get("amount")
-        .and_then(|v| v.as_u64())
-        .ok_or_else(|| RpcError {
-            code: -32602,
-            message: "Invalid params: amount (u64) is required".to_string(),
-        })?;
+    let amount = parse_u64_field(obj, "amount", "amount".to_string())?;
 
     let blinding_hex = obj
         .get("blinding")
@@ -769,13 +763,7 @@ pub(crate) async fn handle_generate_shield_proof(
         message: "Invalid params: expected [{ amount, blinding }]".to_string(),
     })?;
 
-    let amount = obj
-        .get("amount")
-        .and_then(|v| v.as_u64())
-        .ok_or_else(|| RpcError {
-            code: -32602,
-            message: "Invalid params: amount (u64) is required".to_string(),
-        })?;
+    let amount = parse_u64_field(obj, "amount", "amount".to_string())?;
 
     let blinding_hex = obj
         .get("blinding")
@@ -824,13 +812,7 @@ pub(crate) async fn handle_generate_unshield_proof(
         message: "Invalid params: expected unshield witness object".to_string(),
     })?;
 
-    let amount = obj
-        .get("amount")
-        .and_then(|v| v.as_u64())
-        .ok_or_else(|| RpcError {
-            code: -32602,
-            message: "Invalid params: amount (u64) is required".to_string(),
-        })?;
+    let amount = parse_u64_field(obj, "amount", "amount".to_string())?;
 
     let merkle_root_hex = obj
         .get("merkle_root")
@@ -1029,13 +1011,7 @@ pub(crate) async fn handle_generate_transfer_proof(
             message: format!("Invalid params: inputs[{}] must be an object", i),
         })?;
 
-        input_values[i] = input_obj
-            .get("amount")
-            .and_then(|v| v.as_u64())
-            .ok_or_else(|| RpcError {
-                code: -32602,
-                message: format!("Invalid params: inputs[{}].amount (u64) is required", i),
-            })?;
+        input_values[i] = parse_u64_field(input_obj, "amount", format!("inputs[{}].amount", i))?;
         input_blindings[i] = parse_hex_32(
             input_obj
                 .get("blinding")
@@ -1143,13 +1119,7 @@ pub(crate) async fn handle_generate_transfer_proof(
             message: format!("Invalid params: outputs[{}] must be an object", i),
         })?;
 
-        output_values[i] = output_obj
-            .get("amount")
-            .and_then(|v| v.as_u64())
-            .ok_or_else(|| RpcError {
-                code: -32602,
-                message: format!("Invalid params: outputs[{}].amount (u64) is required", i),
-            })?;
+        output_values[i] = parse_u64_field(output_obj, "amount", format!("outputs[{}].amount", i))?;
         output_blindings[i] = parse_hex_32(
             output_obj
                 .get("blinding")
@@ -1247,6 +1217,23 @@ fn first_param_object(
             .and_then(|v| v.as_object())
             .or_else(|| p.as_object())
     })
+}
+
+fn parse_u64_field(
+    obj: &serde_json::Map<String, serde_json::Value>,
+    field: &str,
+    label: String,
+) -> Result<u64, RpcError> {
+    obj.get(field)
+        .and_then(|value| {
+            value
+                .as_u64()
+                .or_else(|| value.as_str().and_then(|text| text.parse::<u64>().ok()))
+        })
+        .ok_or_else(|| RpcError {
+            code: -32602,
+            message: format!("Invalid params: {} (u64) is required", label),
+        })
 }
 
 fn parse_hex_32(hex_str: &str) -> Result<[u8; 32], RpcError> {

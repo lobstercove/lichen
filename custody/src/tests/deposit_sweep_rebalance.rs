@@ -100,6 +100,97 @@ async fn test_create_deposit_reuses_existing_deposit_for_identical_bridge_auth()
 }
 
 #[tokio::test]
+async fn test_create_deposit_accepts_v2_route_bound_bridge_auth() {
+    let state = test_state();
+    let (user_id, auth) = test_bridge_access_auth_payload_v2(24, "ethereum", "eth");
+
+    let response = create_deposit(
+        State(state.clone()),
+        test_auth_headers(),
+        Json(CreateDepositRequest {
+            user_id: user_id.clone(),
+            chain: "ethereum".to_string(),
+            asset: "eth".to_string(),
+            auth: Some(auth.clone()),
+        }),
+    )
+    .await
+    .expect("v2 bridge auth should create a deposit");
+
+    let lookup = get_deposit(
+        State(state),
+        test_auth_headers(),
+        axum::extract::Path(response.0.deposit_id.clone()),
+        axum::extract::Query(test_bridge_lookup_query(&user_id, &auth)),
+    )
+    .await
+    .expect("v2 create auth should continue to authorize status lookup");
+
+    assert_eq!(lookup.0.deposit_id, response.0.deposit_id);
+    assert_eq!(lookup.0.user_id, user_id);
+}
+
+#[tokio::test]
+async fn test_create_deposit_rejects_v2_route_substitution() {
+    let state = test_state();
+    let (user_id, auth) = test_bridge_access_auth_payload_v2(25, "ethereum", "eth");
+
+    let err = create_deposit(
+        State(state),
+        test_auth_headers(),
+        Json(CreateDepositRequest {
+            user_id,
+            chain: "solana".to_string(),
+            asset: "sol".to_string(),
+            auth: Some(auth),
+        }),
+    )
+    .await
+    .expect_err("v2 bridge auth must be bound to the requested route");
+
+    assert_eq!(err.code, "invalid_request");
+    assert_eq!(err.message, "bridge auth route does not match request");
+}
+
+#[tokio::test]
+async fn test_create_deposit_reuses_existing_deposit_for_identical_v2_bridge_auth() {
+    let state = test_state();
+    let (user_id, auth) = test_bridge_access_auth_payload_v2(26, "ethereum", "eth");
+
+    let first = create_deposit(
+        State(state.clone()),
+        test_auth_headers(),
+        Json(CreateDepositRequest {
+            user_id: user_id.clone(),
+            chain: "ethereum".to_string(),
+            asset: "eth".to_string(),
+            auth: Some(auth.clone()),
+        }),
+    )
+    .await
+    .expect("first v2 deposit creation should succeed");
+
+    let second = create_deposit(
+        State(state.clone()),
+        test_auth_headers(),
+        Json(CreateDepositRequest {
+            user_id,
+            chain: "ethereum".to_string(),
+            asset: "eth".to_string(),
+            auth: Some(auth),
+        }),
+    )
+    .await
+    .expect("identical v2 bridge auth replay should be idempotent");
+
+    assert_eq!(first.0.deposit_id, second.0.deposit_id);
+    assert_eq!(first.0.address, second.0.address);
+
+    let dr = state.deposit_rate.lock().await;
+    assert_eq!(dr.count_this_minute, 1);
+}
+
+#[tokio::test]
 async fn test_create_deposit_neox_gas_and_neo_use_chain_id_scoped_path() {
     let mut state = test_state();
     state.config.neox_rpc_url = Some("http://localhost:9545".to_string());
@@ -181,6 +272,62 @@ async fn test_create_deposit_neox_gas_and_neo_use_chain_id_scoped_path() {
 }
 
 #[tokio::test]
+async fn test_create_deposit_requires_configured_stablecoin_source_route() {
+    let mut state = test_state();
+
+    state.config.solana_usdc_mint.clear();
+    let (user_id, auth) = test_bridge_access_auth_payload(34);
+    let err = create_deposit(
+        State(state.clone()),
+        test_auth_headers(),
+        Json(CreateDepositRequest {
+            user_id,
+            chain: "solana".to_string(),
+            asset: "usdc".to_string(),
+            auth: Some(auth),
+        }),
+    )
+    .await
+    .expect_err("Solana USDC deposits require an explicit mint");
+    assert_eq!(err.code, "invalid_request");
+    assert!(err.message.contains("CUSTODY_SOLANA_USDC_MINT"));
+
+    state.config.evm_usdt_contract.clear();
+    let (user_id, auth) = test_bridge_access_auth_payload(35);
+    let err = create_deposit(
+        State(state.clone()),
+        test_auth_headers(),
+        Json(CreateDepositRequest {
+            user_id,
+            chain: "ethereum".to_string(),
+            asset: "usdt".to_string(),
+            auth: Some(auth),
+        }),
+    )
+    .await
+    .expect_err("Ethereum USDT deposits require an explicit token contract");
+    assert_eq!(err.code, "invalid_request");
+    assert!(err.message.contains("CUSTODY_ETH_USDT_TOKEN_ADDR"));
+
+    state.config.bnb_usdt_contract = None;
+    let (user_id, auth) = test_bridge_access_auth_payload(36);
+    let err = create_deposit(
+        State(state.clone()),
+        test_auth_headers(),
+        Json(CreateDepositRequest {
+            user_id,
+            chain: "bsc".to_string(),
+            asset: "usdt".to_string(),
+            auth: Some(auth),
+        }),
+    )
+    .await
+    .expect_err("BSC USDT deposits require a BSC token contract");
+    assert_eq!(err.code, "invalid_request");
+    assert!(err.message.contains("CUSTODY_BSC_USDT_TOKEN_ADDR"));
+}
+
+#[tokio::test]
 async fn test_create_deposit_rejects_bridge_auth_reuse_for_different_asset() {
     let state = test_state();
     let (user_id, auth) = test_bridge_access_auth_payload(15);
@@ -217,6 +364,7 @@ async fn test_create_deposit_rejects_bridge_auth_reuse_for_different_asset() {
     .expect_err("bridge auth replay must not authorize a different deposit request");
 
     assert_eq!(err.code, "invalid_request");
+    assert_eq!(err.status_code(), axum::http::StatusCode::CONFLICT);
     assert_eq!(
         err.message,
         "bridge auth already used for a different deposit request; sign a new bridge authorization"
@@ -347,7 +495,7 @@ async fn test_create_deposit_rate_limit_rejection_returns_bad_request_status() {
         .send()
         .await
         .expect("send second deposit request");
-    assert_eq!(second.status(), reqwest::StatusCode::BAD_REQUEST);
+    assert_eq!(second.status(), reqwest::StatusCode::TOO_MANY_REQUESTS);
 
     let body: Value = second
         .json()
@@ -403,6 +551,102 @@ fn test_build_credit_job_uses_native_solana_credited_amount() {
         .expect("build native SOL credit job")
         .expect("credit job should be created");
     assert_eq!(credit.amount_spores, 10_000);
+}
+
+#[test]
+fn test_build_credit_job_uses_native_evm_credited_amount() {
+    let mut state = test_state();
+    state.config.licn_rpc_url = Some("http://localhost:8899".to_string());
+    state.config.treasury_keypair_path = Some("/tmp/test-treasury.json".to_string());
+    state.config.weth_contract_addr = Some("11111111111111111111111111111111".to_string());
+
+    let deposit = DepositRequest {
+        deposit_id: "dep-eth-credit-1".to_string(),
+        user_id: "11111111111111111111111111111111".to_string(),
+        chain: "ethereum".to_string(),
+        asset: "eth".to_string(),
+        address: "0x5555555555555555555555555555555555555555".to_string(),
+        derivation_path: "m/44'/60'/0'/0/3".to_string(),
+        deposit_seed_source: DEPOSIT_SEED_SOURCE_TREASURY_ROOT.to_string(),
+        created_at: 1000,
+        status: "swept".to_string(),
+    };
+    store_deposit(&state.db, &deposit).expect("store native EVM deposit");
+
+    let sweep = SweepJob {
+        job_id: "sweep-eth-credit-1".to_string(),
+        deposit_id: deposit.deposit_id.clone(),
+        chain: "ethereum".to_string(),
+        asset: "eth".to_string(),
+        from_address: deposit.address.clone(),
+        to_treasury: "0x4444444444444444444444444444444444444444".to_string(),
+        tx_hash: "tx".to_string(),
+        amount: Some("1000000000000000000".to_string()),
+        credited_amount: Some("800000000000000000".to_string()),
+        signatures: Vec::new(),
+        sweep_tx_hash: Some("sweep-hash".to_string()),
+        attempts: 0,
+        last_error: None,
+        next_attempt_at: None,
+        status: "sweep_confirmed".to_string(),
+        created_at: 1000,
+    };
+
+    let credit = build_credit_job(&state, &sweep)
+        .expect("build native EVM credit job")
+        .expect("credit job should be created");
+    assert_eq!(credit.amount_spores, 800_000_000);
+}
+
+#[test]
+fn test_build_credit_job_requires_stablecoin_source_route_contract() {
+    let mut state = test_state();
+    state.config.licn_rpc_url = Some("http://localhost:8899".to_string());
+    state.config.treasury_keypair_path = Some("/tmp/test-treasury.json".to_string());
+    state.config.musd_contract_addr = Some("11111111111111111111111111111111".to_string());
+    state.config.bnb_usdt_contract = None;
+
+    let deposit = DepositRequest {
+        deposit_id: "dep-bsc-usdt-credit-1".to_string(),
+        user_id: "11111111111111111111111111111111".to_string(),
+        chain: "bsc".to_string(),
+        asset: "usdt".to_string(),
+        address: "0x5555555555555555555555555555555555555555".to_string(),
+        derivation_path: "m/44'/60'/0'/0/4".to_string(),
+        deposit_seed_source: DEPOSIT_SEED_SOURCE_DEPOSIT_ROOT.to_string(),
+        created_at: 1000,
+        status: "swept".to_string(),
+    };
+    store_deposit(&state.db, &deposit).expect("store BSC USDT deposit");
+
+    let sweep = SweepJob {
+        job_id: "sweep-bsc-usdt-credit-1".to_string(),
+        deposit_id: deposit.deposit_id.clone(),
+        chain: "bsc".to_string(),
+        asset: "usdt".to_string(),
+        from_address: deposit.address.clone(),
+        to_treasury: "0x4444444444444444444444444444444444444444".to_string(),
+        tx_hash: "tx".to_string(),
+        amount: Some("1000000000000000000".to_string()),
+        credited_amount: None,
+        signatures: Vec::new(),
+        sweep_tx_hash: Some("sweep-hash".to_string()),
+        attempts: 0,
+        last_error: None,
+        next_attempt_at: None,
+        status: "sweep_confirmed".to_string(),
+        created_at: 1000,
+    };
+
+    assert!(build_credit_job(&state, &sweep)
+        .expect("missing source route should not crash credit builder")
+        .is_none());
+
+    state.config.bnb_usdt_contract = Some("0x3333333333333333333333333333333333333333".to_string());
+    let credit = build_credit_job(&state, &sweep)
+        .expect("configured BSC stablecoin source route should build")
+        .expect("credit job should be created");
+    assert_eq!(credit.amount_spores, 1_000_000_000);
 }
 
 #[test]
@@ -750,6 +994,17 @@ fn test_resolve_token_contract_stablecoins() {
         resolve_token_contract(&config, "ethereum", "usdc"),
         Some("LUSD_CONTRACT_456".to_string())
     );
+    assert_eq!(
+        resolve_token_contract(&config, "bsc", "usdc"),
+        Some("LUSD_CONTRACT_456".to_string())
+    );
+
+    config.solana_usdt_mint.clear();
+    assert_eq!(resolve_token_contract(&config, "solana", "usdt"), None);
+    config.evm_usdc_contract.clear();
+    assert_eq!(resolve_token_contract(&config, "ethereum", "usdc"), None);
+    config.bnb_usdc_contract = None;
+    assert_eq!(resolve_token_contract(&config, "bsc", "usdc"), None);
 }
 
 #[test]
@@ -1264,6 +1519,277 @@ fn test_count_sweep_jobs_with_index() {
 }
 
 #[test]
+fn test_deposit_observation_commit_batches_event_sweep_status_and_balance() {
+    let state = test_state();
+    let deposit = DepositRequest {
+        deposit_id: "atomic-observation-deposit".to_string(),
+        user_id: "atomic-user".to_string(),
+        chain: "ethereum".to_string(),
+        asset: "eth".to_string(),
+        address: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+        derivation_path: "m/44'/60'/0'/0/1".to_string(),
+        deposit_seed_source: default_deposit_seed_source(),
+        created_at: 1,
+        status: "issued".to_string(),
+    };
+    store_deposit(&state.db, &deposit).expect("store issued deposit");
+    set_status_index(&state.db, "deposits", "issued", &deposit.deposit_id)
+        .expect("index issued deposit");
+
+    let observation = DepositObservationWrite {
+        event: DepositEvent {
+            event_id: "event-atomic-1".to_string(),
+            deposit_id: deposit.deposit_id.clone(),
+            tx_hash: "balance:42000".to_string(),
+            confirmations: 12,
+            amount: Some(42_000),
+            status: "confirmed".to_string(),
+            observed_at: 10,
+        },
+        sweep_job: Some(SweepJob {
+            job_id: "sweep-atomic-1".to_string(),
+            deposit_id: deposit.deposit_id.clone(),
+            chain: deposit.chain.clone(),
+            asset: deposit.asset.clone(),
+            from_address: deposit.address.clone(),
+            to_treasury: "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
+            tx_hash: "balance:42000:block:99".to_string(),
+            amount: Some("42000".to_string()),
+            credited_amount: None,
+            signatures: Vec::new(),
+            sweep_tx_hash: None,
+            attempts: 0,
+            last_error: None,
+            next_attempt_at: None,
+            status: "queued".to_string(),
+            created_at: 10,
+        }),
+        markers: vec![DepositObservationMarker::AddressBalance {
+            address: deposit.address.clone(),
+            balance: 42_000,
+        }],
+    };
+
+    assert!(
+        persist_deposit_observation(&state.db, &observation).expect("persist atomic observation")
+    );
+    assert!(deposit_event_already_processed(
+        &state.db,
+        &deposit.deposit_id,
+        "balance:42000"
+    ));
+    assert_eq!(
+        fetch_deposit(&state.db, &deposit.deposit_id)
+            .expect("fetch deposit")
+            .expect("deposit exists")
+            .status,
+        "sweep_queued"
+    );
+    assert_eq!(
+        get_last_balance(&state.db, &deposit.address).expect("balance marker"),
+        42_000
+    );
+    assert!(list_pending_deposits_for_chains(&state.db, &["ethereum"])
+        .expect("list pending deposits")
+        .is_empty());
+
+    let queued = list_sweep_jobs_by_status(&state.db, "queued").expect("list queued sweeps");
+    assert_eq!(queued.len(), 1);
+    assert_eq!(queued[0].job_id.as_str(), "sweep-atomic-1");
+    assert_eq!(queued[0].deposit_id.as_str(), deposit.deposit_id.as_str());
+
+    let replay = DepositObservationWrite {
+        event: DepositEvent {
+            event_id: "event-atomic-replay".to_string(),
+            deposit_id: queued[0].deposit_id.clone(),
+            tx_hash: "balance:42000".to_string(),
+            confirmations: 12,
+            amount: Some(42_000),
+            status: "confirmed".to_string(),
+            observed_at: 11,
+        },
+        sweep_job: Some(SweepJob {
+            job_id: "sweep-atomic-replay".to_string(),
+            deposit_id: queued[0].deposit_id.clone(),
+            chain: "ethereum".to_string(),
+            asset: "eth".to_string(),
+            from_address: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+            to_treasury: "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
+            tx_hash: "balance:42000:block:100".to_string(),
+            amount: Some("42000".to_string()),
+            credited_amount: None,
+            signatures: Vec::new(),
+            sweep_tx_hash: None,
+            attempts: 0,
+            last_error: None,
+            next_attempt_at: None,
+            status: "queued".to_string(),
+            created_at: 11,
+        }),
+        markers: vec![DepositObservationMarker::AddressBalance {
+            address: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+            balance: 42_000,
+        }],
+    };
+    assert!(!persist_deposit_observation(&state.db, &replay).expect("replay should be idempotent"));
+    assert_eq!(
+        list_sweep_jobs_by_status(&state.db, "queued")
+            .expect("list queued sweeps after replay")
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn test_deposit_observation_replay_advances_cursor_without_duplicate_sweeps() {
+    let state = test_state();
+    for (suffix, address, path_index) in [
+        ("one", "0x0000000000000000000000000000000000000001", 1),
+        ("two", "0x0000000000000000000000000000000000000002", 2),
+    ] {
+        let deposit = DepositRequest {
+            deposit_id: format!("erc20-deposit-{}", suffix),
+            user_id: format!("user-{}", suffix),
+            chain: "ethereum".to_string(),
+            asset: "usdc".to_string(),
+            address: address.to_string(),
+            derivation_path: format!("m/44'/60'/0'/0/{}", path_index),
+            deposit_seed_source: default_deposit_seed_source(),
+            created_at: 1,
+            status: "issued".to_string(),
+        };
+        store_deposit(&state.db, &deposit).expect("store token deposit");
+        set_status_index(&state.db, "deposits", "issued", &deposit.deposit_id)
+            .expect("index token deposit");
+    }
+
+    let observations = vec![
+        DepositObservationWrite {
+            event: DepositEvent {
+                event_id: "erc20-event-one".to_string(),
+                deposit_id: "erc20-deposit-one".to_string(),
+                tx_hash: "0xtx-one".to_string(),
+                confirmations: 12,
+                amount: Some(100),
+                status: "confirmed".to_string(),
+                observed_at: 10,
+            },
+            sweep_job: Some(SweepJob {
+                job_id: "erc20-sweep-one".to_string(),
+                deposit_id: "erc20-deposit-one".to_string(),
+                chain: "ethereum".to_string(),
+                asset: "usdc".to_string(),
+                from_address: "0x0000000000000000000000000000000000000001".to_string(),
+                to_treasury: "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
+                tx_hash: "0xtx-one".to_string(),
+                amount: Some("100".to_string()),
+                credited_amount: None,
+                signatures: Vec::new(),
+                sweep_tx_hash: None,
+                attempts: 0,
+                last_error: None,
+                next_attempt_at: None,
+                status: "queued".to_string(),
+                created_at: 10,
+            }),
+            markers: Vec::new(),
+        },
+        DepositObservationWrite {
+            event: DepositEvent {
+                event_id: "erc20-event-two".to_string(),
+                deposit_id: "erc20-deposit-two".to_string(),
+                tx_hash: "0xtx-two".to_string(),
+                confirmations: 12,
+                amount: Some(200),
+                status: "confirmed".to_string(),
+                observed_at: 10,
+            },
+            sweep_job: Some(SweepJob {
+                job_id: "erc20-sweep-two".to_string(),
+                deposit_id: "erc20-deposit-two".to_string(),
+                chain: "ethereum".to_string(),
+                asset: "usdc".to_string(),
+                from_address: "0x0000000000000000000000000000000000000002".to_string(),
+                to_treasury: "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
+                tx_hash: "0xtx-two".to_string(),
+                amount: Some("200".to_string()),
+                credited_amount: None,
+                signatures: Vec::new(),
+                sweep_tx_hash: None,
+                attempts: 0,
+                last_error: None,
+                next_attempt_at: None,
+                status: "queued".to_string(),
+                created_at: 10,
+            }),
+            markers: Vec::new(),
+        },
+    ];
+
+    assert_eq!(
+        persist_deposit_observations(&state.db, &observations, &[])
+            .expect("persist observations without cursor"),
+        vec![0, 1]
+    );
+    assert_eq!(
+        get_last_u64_index(&state.db, "evm_logs:ethereum:0xcontract").expect("cursor lookup"),
+        None
+    );
+
+    let committed_on_replay = persist_deposit_observations(
+        &state.db,
+        &observations,
+        &[DepositObservationMarker::Cursor {
+            key: "evm_logs:ethereum:0xcontract".to_string(),
+            value: 51,
+        }],
+    )
+    .expect("replay observations and advance cursor");
+    assert!(committed_on_replay.is_empty());
+    assert_eq!(
+        get_last_u64_index(&state.db, "evm_logs:ethereum:0xcontract")
+            .expect("cursor lookup after replay"),
+        Some(51)
+    );
+
+    let queued = list_sweep_jobs_by_status(&state.db, "queued").expect("queued sweeps");
+    assert_eq!(queued.len(), 2);
+    assert!(deposit_event_already_processed(
+        &state.db,
+        "erc20-deposit-one",
+        "0xtx-one"
+    ));
+    assert!(deposit_event_already_processed(
+        &state.db,
+        "erc20-deposit-two",
+        "0xtx-two"
+    ));
+}
+
+#[test]
+fn test_pending_deposit_listing_ignores_stale_status_index_entries() {
+    let state = test_state();
+    let deposit = DepositRequest {
+        deposit_id: "stale-index-deposit".to_string(),
+        user_id: "stale-index-user".to_string(),
+        chain: "ethereum".to_string(),
+        asset: "eth".to_string(),
+        address: "0xcccccccccccccccccccccccccccccccccccccccc".to_string(),
+        derivation_path: "m/44'/60'/0'/0/7".to_string(),
+        deposit_seed_source: default_deposit_seed_source(),
+        created_at: 1,
+        status: "sweep_queued".to_string(),
+    };
+    store_deposit(&state.db, &deposit).expect("store sweep queued deposit");
+    set_status_index(&state.db, "deposits", "issued", &deposit.deposit_id)
+        .expect("write stale issued index");
+
+    assert!(list_pending_deposits_for_chains(&state.db, &["ethereum"])
+        .expect("list pending deposits")
+        .is_empty());
+}
+
+#[test]
 fn test_promote_locally_signed_sweep_jobs_clears_placeholder_signatures() {
     let state = test_state();
     let job = SweepJob {
@@ -1346,6 +1872,80 @@ async fn test_promote_locally_signed_sweep_jobs_emits_local_signing_metadata() {
             .and_then(|value| value.as_bool()),
         Some(false)
     );
+}
+
+#[tokio::test]
+async fn test_process_sweep_jobs_persists_native_evm_credited_amount_after_gas() {
+    let mut state = test_state();
+    let rpc_requests = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
+    let rpc_url = spawn_mock_server(Router::new().route("/", post(mock_rpc_handler)).with_state(
+        MockRpcState {
+            safe_nonce_hex: "0x0".to_string(),
+            safe_tx_hash_hex: "0x0".to_string(),
+            send_raw_tx_hash_hex: Some(
+                "0xbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeef".to_string(),
+            ),
+            transaction_receipt: None,
+            requests: rpc_requests.clone(),
+        },
+    ))
+    .await;
+    state.config.evm_rpc_url = Some(rpc_url.clone());
+    state.config.eth_rpc_url = Some(rpc_url);
+
+    let deposit = DepositRequest {
+        deposit_id: "dep-native-evm-sweep-credit".to_string(),
+        user_id: "11111111111111111111111111111111".to_string(),
+        chain: "ethereum".to_string(),
+        asset: "eth".to_string(),
+        address: "0x5555555555555555555555555555555555555555".to_string(),
+        derivation_path: "m/44'/60'/0'/0/9".to_string(),
+        deposit_seed_source: DEPOSIT_SEED_SOURCE_TREASURY_ROOT.to_string(),
+        created_at: 1000,
+        status: "sweep_queued".to_string(),
+    };
+    store_deposit(&state.db, &deposit).expect("store native EVM deposit");
+
+    let job = SweepJob {
+        job_id: "sweep-native-evm-credit".to_string(),
+        deposit_id: deposit.deposit_id.clone(),
+        chain: "ethereum".to_string(),
+        asset: "eth".to_string(),
+        from_address: deposit.address.clone(),
+        to_treasury: "0x4444444444444444444444444444444444444444".to_string(),
+        tx_hash: "deposit-observed-hash".to_string(),
+        amount: Some("1000000000000000000".to_string()),
+        credited_amount: None,
+        signatures: Vec::new(),
+        sweep_tx_hash: None,
+        attempts: 0,
+        last_error: None,
+        next_attempt_at: None,
+        status: "signed".to_string(),
+        created_at: 1000,
+    };
+    store_sweep_job(&state.db, &job).expect("store signed native EVM sweep");
+
+    process_sweep_jobs(&state)
+        .await
+        .expect("process native EVM sweep broadcast");
+
+    let submitted =
+        list_sweep_jobs_by_status(&state.db, "sweep_submitted").expect("list submitted sweeps");
+    assert_eq!(submitted.len(), 1);
+    assert_eq!(
+        submitted[0].credited_amount.as_deref(),
+        Some("999472000000000000")
+    );
+    assert_eq!(
+        submitted[0].sweep_tx_hash.as_deref(),
+        Some("0xbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeef")
+    );
+
+    let requests = rpc_requests.lock().await;
+    assert!(requests.iter().any(|payload| {
+        payload.get("method").and_then(|value| value.as_str()) == Some("eth_sendRawTransaction")
+    }));
 }
 
 #[tokio::test]
@@ -1522,6 +2122,136 @@ async fn test_process_rebalance_jobs_multi_signer_blocks_local_treasury_executio
         data.get("mode").and_then(|value| value.as_str()),
         Some("blocked-local-rebalance")
     );
+}
+
+#[tokio::test]
+async fn test_ethereum_rebalance_uses_route_treasury_and_rpc() {
+    let mut state = test_state();
+    let rpc_requests = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
+    let rpc_url = spawn_mock_server(Router::new().route("/", post(mock_rpc_handler)).with_state(
+        MockRpcState {
+            safe_nonce_hex: "0x0".to_string(),
+            safe_tx_hash_hex: "0x0".to_string(),
+            send_raw_tx_hash_hex: Some(
+                "0xfeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedface".to_string(),
+            ),
+            transaction_receipt: Some(json!({
+                "status": "0x1",
+                "blockNumber": "0x1",
+            })),
+            requests: rpc_requests.clone(),
+        },
+    ))
+    .await;
+
+    let derived_treasury =
+        derive_evm_address("custody/treasury/ethereum", &state.config.master_seed)
+            .expect("derive Ethereum treasury");
+    state.config.evm_rpc_url = None;
+    state.config.eth_rpc_url = Some(rpc_url);
+    state.config.treasury_evm_address =
+        Some("0x9999999999999999999999999999999999999999".to_string());
+    state.config.treasury_eth_address = Some(derived_treasury);
+    state.config.uniswap_router = Some("0x1111111111111111111111111111111111111111".to_string());
+
+    let job = RebalanceJob {
+        job_id: "rebalance-route-treasury".to_string(),
+        chain: "ethereum".to_string(),
+        from_asset: "usdt".to_string(),
+        to_asset: "usdc".to_string(),
+        amount: 1_000_000,
+        trigger: "threshold".to_string(),
+        linked_withdrawal_job_id: None,
+        swap_tx_hash: None,
+        status: "queued".to_string(),
+        attempts: 0,
+        last_error: None,
+        next_attempt_at: None,
+        created_at: 1000,
+    };
+    store_rebalance_job(&state.db, &job).expect("store rebalance job");
+
+    process_rebalance_jobs(&state)
+        .await
+        .expect("route-specific Ethereum rebalance should submit");
+
+    let submitted =
+        list_rebalance_jobs_by_status(&state.db, "submitted").expect("list submitted rebalances");
+    assert_eq!(submitted.len(), 1);
+    assert_eq!(submitted[0].job_id, "rebalance-route-treasury");
+
+    let requests = rpc_requests.lock().await;
+    let sends = requests
+        .iter()
+        .filter(|payload| {
+            payload.get("method").and_then(|value| value.as_str()) == Some("eth_sendRawTransaction")
+        })
+        .count();
+    assert_eq!(sends, 2);
+}
+
+#[tokio::test]
+async fn test_ethereum_rebalance_rejects_treasury_signer_mismatch_before_broadcast() {
+    let mut state = test_state();
+    let rpc_requests = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
+    let rpc_url = spawn_mock_server(Router::new().route("/", post(mock_rpc_handler)).with_state(
+        MockRpcState {
+            safe_nonce_hex: "0x0".to_string(),
+            safe_tx_hash_hex: "0x0".to_string(),
+            send_raw_tx_hash_hex: Some(
+                "0xfeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedface".to_string(),
+            ),
+            transaction_receipt: Some(json!({
+                "status": "0x1",
+                "blockNumber": "0x1",
+            })),
+            requests: rpc_requests.clone(),
+        },
+    ))
+    .await;
+
+    state.config.evm_rpc_url = None;
+    state.config.eth_rpc_url = Some(rpc_url);
+    state.config.treasury_eth_address =
+        Some("0x1111111111111111111111111111111111111111".to_string());
+    state.config.uniswap_router = Some("0x1111111111111111111111111111111111111111".to_string());
+
+    let job = RebalanceJob {
+        job_id: "rebalance-mismatched-treasury".to_string(),
+        chain: "ethereum".to_string(),
+        from_asset: "usdt".to_string(),
+        to_asset: "usdc".to_string(),
+        amount: 1_000_000,
+        trigger: "threshold".to_string(),
+        linked_withdrawal_job_id: None,
+        swap_tx_hash: None,
+        status: "queued".to_string(),
+        attempts: 0,
+        last_error: None,
+        next_attempt_at: None,
+        created_at: 1000,
+    };
+    store_rebalance_job(&state.db, &job).expect("store rebalance job");
+
+    process_rebalance_jobs(&state)
+        .await
+        .expect("signer mismatch should be recorded on the job");
+
+    let queued =
+        list_rebalance_jobs_by_status(&state.db, "queued").expect("list queued rebalances");
+    assert_eq!(queued.len(), 1);
+    assert_eq!(queued[0].job_id, "rebalance-mismatched-treasury");
+    assert_eq!(queued[0].attempts, 1);
+    assert!(queued[0]
+        .last_error
+        .as_deref()
+        .unwrap_or_default()
+        .contains("derived Ethereum rebalance signer"));
+
+    let requests = rpc_requests.lock().await;
+    assert!(requests.iter().all(|payload| {
+        payload.get("method").and_then(|value| value.as_str()) != Some("eth_sendRawTransaction")
+    }));
 }
 
 #[tokio::test]

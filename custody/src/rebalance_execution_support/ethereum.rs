@@ -9,25 +9,31 @@ pub(super) async fn execute_ethereum_rebalance_swap(
         .uniswap_router
         .as_ref()
         .ok_or_else(|| "missing CUSTODY_UNISWAP_ROUTER for Ethereum rebalance".to_string())?;
-    let evm_url = state
-        .config
-        .evm_rpc_url
+    let route = evm_route_for_chain(&state.config, "ethereum")
+        .ok_or_else(|| "missing Ethereum route for rebalance".to_string())?;
+    let evm_url = route
+        .rpc_url
         .as_ref()
-        .ok_or_else(|| "missing EVM RPC for rebalance".to_string())?;
-    let treasury_addr = state
-        .config
-        .treasury_evm_address
+        .ok_or_else(|| "missing Ethereum RPC for rebalance".to_string())?;
+    let treasury_addr = route
+        .treasury_address
         .as_ref()
-        .ok_or_else(|| "missing treasury EVM address".to_string())?;
+        .ok_or_else(|| "missing Ethereum treasury address for rebalance".to_string())?;
+    let derived_treasury =
+        derive_evm_address(route.treasury_derivation_path, &state.config.master_seed)?;
+    if !derived_treasury.eq_ignore_ascii_case(treasury_addr) {
+        return Err(format!(
+            "derived Ethereum rebalance signer {} does not match configured treasury {}",
+            derived_treasury, treasury_addr
+        ));
+    }
 
     let from_contract = match job.from_asset.as_str() {
-        "usdt" => &state.config.evm_usdt_contract,
-        "usdc" => &state.config.evm_usdc_contract,
+        "usdt" | "usdc" => evm_contract_for_asset(&state.config, &job.from_asset)?,
         _ => return Err(format!("unsupported from_asset: {}", job.from_asset)),
     };
     let to_contract = match job.to_asset.as_str() {
-        "usdt" => &state.config.evm_usdt_contract,
-        "usdc" => &state.config.evm_usdc_contract,
+        "usdt" | "usdc" => evm_contract_for_asset(&state.config, &job.to_asset)?,
         _ => return Err(format!("unsupported to_asset: {}", job.to_asset)),
     };
 
@@ -36,13 +42,14 @@ pub(super) async fn execute_ethereum_rebalance_swap(
     let chain_id = evm_get_chain_id(&state.http, evm_url).await?;
 
     let approve_data = evm_encode_erc20_approve(router, job.amount as u128)?;
-    let signing_key = derive_evm_signing_key("custody-treasury-evm", &state.config.master_seed)?;
+    let signing_key =
+        derive_evm_signing_key(route.treasury_derivation_path, &state.config.master_seed)?;
     let approve_tx = build_evm_signed_transaction_with_data(
         &signing_key,
         nonce,
         gas_price,
         100_000u128,
-        from_contract,
+        &from_contract,
         0,
         &approve_data,
         chain_id,
@@ -80,8 +87,8 @@ pub(super) async fn execute_ethereum_rebalance_swap(
     }
 
     let swap_data = build_uniswap_exact_input_single(
-        from_contract,
-        to_contract,
+        &from_contract,
+        &to_contract,
         job.amount as u128,
         100,
         state.config.rebalance_max_slippage_bps,

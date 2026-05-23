@@ -1,0 +1,16 @@
+# Lichen faucet testnet environment example.
+# Mirrors the inline Environment= entries in deploy/lichen-faucet.service.
+
+PORT=9100
+RPC_URL=http://127.0.0.1:8899
+NETWORK=testnet
+MAX_PER_REQUEST=10
+DAILY_LIMIT_PER_IP=50
+COOLDOWN_SECONDS=60
+AIRDROPS_FILE=/var/lib/lichen/airdrops.json
+FAUCET_KEYPAIR=/var/lib/lichen/faucet-keypair-testnet.json
+RUST_LOG=info
+TRUSTED_PROXY=127.0.0.1,::1
+
+# Local development only. Leave unset in production.
+# DEV_CORS=1

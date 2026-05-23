@@ -15,14 +15,6 @@ pub(super) fn get_last_balance(db: &DB, address: &str) -> Result<u128, String> {
     }
 }
 
-pub(super) fn set_last_balance(db: &DB, address: &str, balance: u128) -> Result<(), String> {
-    let cf = db
-        .cf_handle(CF_ADDRESS_BALANCES)
-        .ok_or_else(|| "missing address_balances cf".to_string())?;
-    db.put_cf(cf, address.as_bytes(), balance.to_le_bytes())
-        .map_err(|error| format!("db put: {}", error))
-}
-
 pub(super) fn get_last_balance_with_key(db: &DB, key: &str) -> Result<u64, String> {
     let cf = db
         .cf_handle(CF_TOKEN_BALANCES)

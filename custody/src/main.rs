@@ -98,7 +98,7 @@ use auth_replay_support::{
     prune_expired_bridge_auth_replays,
 };
 use balance_cache_support::{
-    get_last_balance, get_last_balance_with_key, set_last_balance, set_last_balance_with_key,
+    get_last_balance, get_last_balance_with_key, set_last_balance_with_key,
 };
 use bootstrap_support::{
     build_custody_app, build_custody_state, custody_listen_addr, prepare_custody_config,
@@ -125,16 +125,17 @@ use deposit_derivation::{
     active_deposit_seed_source, bip44_derivation_path_for_config, default_deposit_seed_source,
     deposit_seed_for_record, deposit_seed_for_source, derive_deposit_address,
     derive_solana_owner_pubkey, get_last_u64_index, get_or_allocate_derivation_account,
-    is_evm_chain, next_deposit_index, set_last_u64_index,
+    is_evm_chain, next_deposit_index,
 };
 #[cfg(test)]
 use deposit_derivation::{bip44_coin_type, bip44_derivation_path};
 use deposit_event_support::{
-    deposit_event_already_processed, store_deposit_event, update_deposit_status,
+    deposit_event_already_processed, persist_deposit_observation, persist_deposit_observations,
+    update_deposit_status, DepositObservationMarker, DepositObservationWrite,
 };
 use deposit_monitor_support::{evm_watcher_loop, evm_watcher_loop_for_chains, solana_watcher_loop};
 use deposit_persistence::{fetch_deposit, store_deposit};
-use event_api_support::{list_events, ws_events};
+use event_api_support::{create_ws_events_ticket, list_events, ws_events};
 #[cfg(test)]
 use evm_support::to_be_bytes;
 use evm_support::{
@@ -149,9 +150,9 @@ use job_models::{
     WithdrawalJob,
 };
 use job_persistence_support::{
-    count_sweep_jobs, count_withdrawal_jobs, enqueue_sweep_job, fetch_withdrawal_job,
-    list_rebalance_jobs_by_status, list_sweep_jobs_by_status, list_withdrawal_jobs_by_status,
-    store_rebalance_job, store_sweep_job, store_withdrawal_job,
+    count_sweep_jobs, count_withdrawal_jobs, fetch_withdrawal_job, list_rebalance_jobs_by_status,
+    list_sweep_jobs_by_status, list_withdrawal_jobs_by_status, store_rebalance_job,
+    store_sweep_job, store_withdrawal_job,
 };
 use lichen_rpc_support::{licn_get_recent_blockhash, licn_rpc_call, licn_send_transaction};
 #[cfg(test)]
@@ -168,16 +169,17 @@ use rebalance_execution_support::process_rebalance_jobs;
 use rebalance_execution_support::rebalance_worker_loop;
 use rebalance_output_support::decode_transfer_log;
 #[cfg(test)]
-use request_auth_support::bridge_access_message;
+use request_auth_support::{bridge_access_message, bridge_access_message_v2_create};
 use request_auth_support::{
     bridge_access_replay_digest, current_unix_secs, parse_bridge_access_auth_json,
     parse_bridge_access_auth_value, parse_bridge_access_signature, verify_api_auth,
-    verify_bridge_access_auth, verify_bridge_access_auth_at,
+    verify_bridge_access_auth_for_create_at, verify_bridge_access_auth_for_lookup_at,
 };
 use request_models::{
     BridgeAccessAuth, BridgeAuthReplayRecord, DepositEvent, DepositRequest, WithdrawalAccessAuth,
     WithdrawalAuthReplayRecord, WithdrawalRequest, BRIDGE_ACCESS_CLOCK_SKEW_SECS,
-    BRIDGE_ACCESS_DOMAIN, BRIDGE_ACCESS_MAX_TTL_SECS, BRIDGE_AUTH_REPLAY_ACTION_CREATE_DEPOSIT,
+    BRIDGE_ACCESS_DOMAIN, BRIDGE_ACCESS_DOMAIN_V2, BRIDGE_ACCESS_MAX_TTL_SECS,
+    BRIDGE_AUTH_ACTION_GET_DEPOSIT, BRIDGE_AUTH_REPLAY_ACTION_CREATE_DEPOSIT,
     BRIDGE_AUTH_REPLAY_ACTION_CREATE_WITHDRAWAL, BRIDGE_AUTH_REPLAY_PRUNE_BATCH,
     WITHDRAWAL_ACCESS_CLOCK_SKEW_SECS, WITHDRAWAL_ACCESS_DOMAIN, WITHDRAWAL_ACCESS_MAX_TTL_SECS,
 };
@@ -189,8 +191,8 @@ use retry_support::{
     is_ready_for_retry, mark_sweep_failed, next_retry_timestamp, MAX_JOB_ATTEMPTS,
 };
 use runtime_types::{
-    CreateWebhookRequest, CustodyConfig, CustodyState, CustodyWebhookEvent, ErrorResponse,
-    HealthResponse, StatusCounts, WebhookRegistration,
+    CreateWebhookRequest, CustodyConfig, CustodyJsonResponse, CustodyState, CustodyWebhookEvent,
+    ErrorResponse, HealthResponse, StatusCounts, WebhookRegistration, WsEventTicket,
 };
 #[cfg(test)]
 use security_guards::validate_custody_security_configuration_with_mode;
@@ -222,7 +224,9 @@ use storage_support::{
 use sweep_execution_support::process_sweep_jobs;
 use sweep_execution_support::sweep_worker_loop;
 #[cfg(test)]
-use webhook_support::{compute_webhook_signature, validate_webhook_destination};
+use webhook_support::{
+    compute_webhook_signature, validate_webhook_destination, validate_webhook_destination_with_mode,
+};
 use webhook_support::{create_webhook, delete_webhook, list_webhooks, webhook_dispatcher_loop};
 use withdrawal_api_support::{
     confirm_withdrawal_operator, create_withdrawal, submit_burn_signature,
@@ -261,9 +265,9 @@ use withdrawal_controls::{
 use withdrawal_request_support::withdrawal_access_message;
 use withdrawal_request_support::{
     build_create_withdrawal_response, complete_withdrawal_request, default_preferred_stablecoin,
-    enforce_withdrawal_rate_limits, handle_withdrawal_auth_replay,
-    prepare_create_withdrawal_request, resolve_withdrawal_preferred_stablecoin,
-    validate_withdrawal_request_destination,
+    enforce_withdrawal_rate_limits, find_withdrawal_auth_replay_response,
+    handle_withdrawal_auth_replay, prepare_create_withdrawal_request,
+    resolve_withdrawal_preferred_stablecoin, validate_withdrawal_request_destination,
 };
 #[cfg(test)]
 use withdrawal_settlement_support::process_withdrawal_jobs;

@@ -45,6 +45,10 @@ import {
   preflightNativeTransferRestrictions,
   restrictionPreflightSummary
 } from '../core/restriction-service.js';
+import {
+  baseUnitsToDecimalString,
+  parsePositiveDecimalBaseUnits
+} from '../core/amount-service.js';
 
 const NFT_MARKETPLACE_URL = 'https://marketplace.lichen.network';
 const SHIELDED_NOTE_PAYLOAD_MAGIC_EXT = new TextEncoder().encode('LNP1');
@@ -56,7 +60,9 @@ const NOTE_ENCRYPTION_V1_PREFIX_EXT = 'a1:';
 let state = null;
 let createdMnemonic = '';
 let createdKeypair = null;
-let _licnUsdPriceCache = { value: 0.10, ts: 0 };
+const LICN_USD_PRICE_CACHE_MS = 60 * 1000;
+const LICN_USD_PRICE_STALE_MS = 5 * 60 * 1000;
+let _licnUsdPriceCache = { value: 0.10, ts: 0, source: 'offline-fallback', fallback: true };
 let extensionRestrictionStatusCache = {
   address: null,
   network: null,
@@ -353,6 +359,30 @@ function writeU32LeExt(target, offset, value) {
   new DataView(target.buffer, target.byteOffset, target.byteLength).setUint32(offset, Number(value), true);
 }
 
+function baseUnitBigIntExt(value) {
+  if (typeof value === 'bigint') return value > 0n ? value : 0n;
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value) || value <= 0) return 0n;
+    return BigInt(value);
+  }
+  const text = String(value ?? '0').trim();
+  if (!/^\d+$/.test(text)) return 0n;
+  return BigInt(text);
+}
+
+function parseLicnAmountSporesExt(value, label = 'Amount') {
+  return parsePositiveDecimalBaseUnits(value, 9, label);
+}
+
+function formatLicnBaseUnitsExactExt(value) {
+  return baseUnitsToDecimalString(baseUnitBigIntExt(value), 9);
+}
+
+function formatLicnBaseUnitsFixedExt(value, digits = 4) {
+  const [whole, fraction = ''] = formatLicnBaseUnitsExactExt(value).split('.');
+  return `${whole}.${fraction.padEnd(digits, '0').slice(0, digits)}`;
+}
+
 function concatBytesExt(...chunks) {
   const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
   const out = new Uint8Array(total);
@@ -435,15 +465,42 @@ function rpcEndpointToApiBase(endpoint) {
   }
 }
 
+function normalizeLicnUsdQuote(cache = _licnUsdPriceCache, now = Date.now()) {
+  const value = Number(cache?.value || 0);
+  const timestamp = Number(cache?.ts || 0);
+  const source = cache?.source || (timestamp > 0 ? 'oracle' : 'offline-fallback');
+  return {
+    value: Number.isFinite(value) && value > 0 ? value : 0.10,
+    source,
+    timestamp,
+    stale: timestamp > 0 && now - timestamp > LICN_USD_PRICE_STALE_MS,
+    fallback: cache?.fallback === true || source === 'offline-fallback',
+  };
+}
+
+function licnUsdQuoteSuffix(quote) {
+  if (quote?.fallback) return ' · offline estimate';
+  if (quote?.stale) return ' · stale price';
+  return '';
+}
+
+function licnUsdQuoteTitle(quote) {
+  if (!quote) return 'USD valuation source unavailable';
+  const source = quote.source === 'offline-fallback' ? 'offline fallback estimate' : quote.source;
+  const updated = quote.timestamp > 0 ? new Date(quote.timestamp).toLocaleString() : 'not available';
+  const stale = quote.stale ? ', stale' : '';
+  return `USD valuation source: LICN ${source}, updated ${updated}${stale}`;
+}
+
 async function getLiveLicnUsdPrice() {
   const now = Date.now();
-  if (now - _licnUsdPriceCache.ts < 60_000 && _licnUsdPriceCache.value > 0) {
-    return _licnUsdPriceCache.value;
+  if (now - _licnUsdPriceCache.ts < LICN_USD_PRICE_CACHE_MS && _licnUsdPriceCache.value > 0) {
+    return normalizeLicnUsdQuote(_licnUsdPriceCache, now);
   }
 
   const endpoint = getRpcEndpoint(state?.network?.selected || 'local-testnet', state?.settings || {});
   const apiBase = rpcEndpointToApiBase(endpoint);
-  if (!apiBase) return _licnUsdPriceCache.value || 0.10;
+  if (!apiBase) return normalizeLicnUsdQuote(_licnUsdPriceCache, now);
 
   try {
     const response = await fetch(`${apiBase}/oracle/prices`);
@@ -453,14 +510,14 @@ async function getLiveLicnUsdPrice() {
     const licnFeed = feeds.find((feed) => String(feed?.asset || '').toUpperCase() === 'LICN');
     const price = Number(licnFeed?.price || 0);
     if (Number.isFinite(price) && price > 0) {
-      _licnUsdPriceCache = { value: price, ts: now };
-      return price;
+      _licnUsdPriceCache = { value: price, ts: now, source: 'oracle', fallback: false };
+      return normalizeLicnUsdQuote(_licnUsdPriceCache, now);
     }
   } catch {
     // Fall back to cached/default price.
   }
 
-  return _licnUsdPriceCache.value || 0.10;
+  return normalizeLicnUsdQuote(_licnUsdPriceCache, now);
 }
 
 function securePasswordPrompt(label = 'Wallet password (for signing):') {
@@ -1108,6 +1165,8 @@ async function showDashboard() {
   await loadAssets();
   await loadActivity();
   await loadNftsTab();
+  const activeTab = document.querySelector('.dashboard-tab.active')?.dataset?.tab;
+  if (activeTab === 'identity') await loadIdentityTab();
 }
 
 function setupDashboardTabs() {
@@ -1195,19 +1254,20 @@ async function refreshBalance() {
   try {
     const result = await rpc().getBalance(wallet.address);
     const balanceSnapshot = getFullBalanceSnapshot(result);
-    const licnUsdPrice = await getLiveLicnUsdPrice();
+    const licnUsdQuote = await getLiveLicnUsdPrice();
     $('totalBalance').textContent = `${balanceSnapshot.totalLicn.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 9 })} LICN`;
-    $('balanceUsd').textContent = `$${(balanceSnapshot.totalLicn * licnUsdPrice).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 })} USD`;
+    $('balanceUsd').textContent = `$${(balanceSnapshot.totalLicn * licnUsdQuote.value).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 })} USD${licnUsdQuoteSuffix(licnUsdQuote)}`;
+    $('balanceUsd').title = licnUsdQuoteTitle(licnUsdQuote);
 
     const breakdownEl = $('balanceBreakdown');
     if (breakdownEl) {
-      const shieldedLicn = Math.max(0, Number(_shieldedState?.balance || 0)) / 1_000_000_000;
-      const hasBreakdown = balanceSnapshot.stakedLicn > 0 || balanceSnapshot.lockedLicn > 0 || balanceSnapshot.mossStakedLicn > 0 || balanceSnapshot.pendingRewardsLicn > 0 || shieldedLicn > 0;
+      const shieldedSpores = extensionShieldedBalanceSpores();
+      const hasBreakdown = balanceSnapshot.stakedLicn > 0 || balanceSnapshot.lockedLicn > 0 || balanceSnapshot.mossStakedLicn > 0 || balanceSnapshot.pendingRewardsLicn > 0 || shieldedSpores > 0n;
       if (hasBreakdown) {
         const parts = [`<i class="fas fa-wallet" style="opacity:0.5;"></i> Spendable: <strong>${balanceSnapshot.spendableLicn.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`];
         if (balanceSnapshot.stakedLicn > 0) parts.push(`<i class="fas fa-lock" style="opacity:0.5;"></i> Staked: <strong>${balanceSnapshot.stakedLicn.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`);
         if (balanceSnapshot.mossStakedLicn > 0) parts.push(`<i class="fas fa-coins" style="opacity:0.5;"></i> Liquid Staking: <strong>${balanceSnapshot.mossStakedLicn.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`);
-        if (shieldedLicn > 0) parts.push(`<i class="fas fa-shield-alt" style="opacity:0.5;"></i> Shielded: <strong>${shieldedLicn.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`);
+        if (shieldedSpores > 0n) parts.push(`<i class="fas fa-shield-alt" style="opacity:0.5;"></i> Shielded: <strong>${formatLicnBaseUnitsFixedExt(shieldedSpores)}</strong>`);
         if (balanceSnapshot.pendingRewardsLicn > 0) parts.push(`<i class="fas fa-gift" style="opacity:0.5;"></i> Rewards: <strong>${balanceSnapshot.pendingRewardsLicn.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`);
         if (balanceSnapshot.lockedLicn > 0) parts.push(`<i class="fas fa-hourglass" style="opacity:0.5;"></i> Locked: <strong>${balanceSnapshot.lockedLicn.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`);
         breakdownEl.innerHTML = parts.join(' &nbsp;·&nbsp; ');
@@ -1221,6 +1281,7 @@ async function refreshBalance() {
   } catch {
     $('totalBalance').textContent = '0.00 LICN';
     $('balanceUsd').textContent = '$0.00 USD';
+    $('balanceUsd').title = 'USD valuation source unavailable';
     if ($('balanceBreakdown')) {
       $('balanceBreakdown').innerHTML = '';
       $('balanceBreakdown').style.display = 'none';
@@ -1580,28 +1641,36 @@ async function showStakeModal() {
 
   overlay.querySelector('#stakeCancelBtn').addEventListener('click', () => overlay.remove());
   overlay.querySelector('#stakeConfirmBtn').addEventListener('click', async () => {
-    let amount = parseFloat(overlay.querySelector('#stakeAmountInput').value);
+    const amountInput = overlay.querySelector('#stakeAmountInput');
+    const amountText = amountInput.value.trim();
     const tier = parseInt(overlay.querySelector('#stakeTierSelect').value, 10);
     const password = overlay.querySelector('#stakePasswordInput').value;
     const statusEl = overlay.querySelector('#stakeModalStatus');
-    if (!amount || amount <= 0) { statusEl.textContent = 'Enter a valid amount'; return; }
+    let amountSpores;
+    try {
+      amountSpores = parseLicnAmountSporesExt(amountText, 'Stake amount');
+    } catch (error) {
+      statusEl.textContent = error?.message || 'Enter a valid amount';
+      return;
+    }
     if (!password) { statusEl.textContent = 'Password required'; return; }
     // Balance guard: check spendable LICN
     try {
       const balResult = await rpc().getBalance(wallet.address);
-      const spendable = Number(balResult?.spendable || balResult?.spores || 0) / 1_000_000_000;
-      const maxStakable = Math.max(0, spendable - 0.001);
-      if (maxStakable <= 0) { statusEl.textContent = 'Insufficient LICN balance'; return; }
-      if (amount > maxStakable) {
-        amount = parseFloat(maxStakable.toFixed(6));
-        overlay.querySelector('#stakeAmountInput').value = amount;
-        statusEl.textContent = `Adjusted to available: ${amount} LICN`;
+      const spendable = baseUnitBigIntExt(balResult?.spendable || balResult?.spores || 0);
+      const feeSpores = 1_000_000n;
+      const maxStakable = spendable > feeSpores ? spendable - feeSpores : 0n;
+      if (maxStakable <= 0n) { statusEl.textContent = 'Insufficient LICN balance'; return; }
+      if (amountSpores > maxStakable) {
+        const adjusted = formatLicnBaseUnitsExactExt(maxStakable);
+        amountInput.value = adjusted;
+        statusEl.textContent = `Adjusted to available: ${adjusted} LICN`;
         return;
       }
     } catch (e) { /* let RPC reject */ }
     try {
       statusEl.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Staking...';
-      await stakeLicn({ wallet, password, amountLicn: amount, tier, network: state.network?.selected || 'local-testnet' });
+      await stakeLicn({ wallet, password, amountLicn: amountText, tier, network: state.network?.selected || 'local-testnet' });
       statusEl.innerHTML = '<span style="color:#10b981;">✓ Staked successfully!</span>';
       setTimeout(() => { overlay.remove(); loadStakingTab(); }, 1500);
     } catch (err) {
@@ -1636,26 +1705,33 @@ async function showUnstakeModal() {
 
   overlay.querySelector('#unstakeCancelBtn').addEventListener('click', () => overlay.remove());
   overlay.querySelector('#unstakeConfirmBtn').addEventListener('click', async () => {
-    let amount = parseFloat(overlay.querySelector('#unstakeAmountInput').value);
+    const amountInput = overlay.querySelector('#unstakeAmountInput');
+    const amountText = amountInput.value.trim();
     const password = overlay.querySelector('#unstakePasswordInput').value;
     const statusEl = overlay.querySelector('#unstakeModalStatus');
-    if (!amount || amount <= 0) { statusEl.textContent = 'Enter a valid amount'; return; }
+    let amountSpores;
+    try {
+      amountSpores = parseLicnAmountSporesExt(amountText, 'Unstake amount');
+    } catch (error) {
+      statusEl.textContent = error?.message || 'Enter a valid amount';
+      return;
+    }
     if (!password) { statusEl.textContent = 'Password required'; return; }
     // Balance guard: check stLICN position
     try {
       const pos = await rpc().call('getStakingPosition', [wallet.address]);
-      const stLicn = (pos?.st_licn_amount || 0) / 1_000_000_000;
-      if (stLicn <= 0) { statusEl.textContent = 'No stLICN balance to unstake'; return; }
-      if (amount > stLicn) {
-        amount = parseFloat(stLicn.toFixed(6));
-        overlay.querySelector('#unstakeAmountInput').value = amount;
-        statusEl.textContent = `Adjusted to stLICN balance: ${amount}`;
+      const stLicn = baseUnitBigIntExt(pos?.st_licn_amount || 0);
+      if (stLicn <= 0n) { statusEl.textContent = 'No stLICN balance to unstake'; return; }
+      if (amountSpores > stLicn) {
+        const adjusted = formatLicnBaseUnitsExactExt(stLicn);
+        amountInput.value = adjusted;
+        statusEl.textContent = `Adjusted to stLICN balance: ${adjusted}`;
         return;
       }
     } catch (e) { /* let RPC reject */ }
     try {
       statusEl.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Unstaking...';
-      await unstakeStLicn({ wallet, password, amountLicn: amount, network: state.network?.selected || 'local-testnet' });
+      await unstakeStLicn({ wallet, password, amountLicn: amountText, network: state.network?.selected || 'local-testnet' });
       statusEl.innerHTML = '<span style="color:#10b981;">✓ Unstake initiated! 7-day cooldown.</span>';
       setTimeout(() => { overlay.remove(); loadStakingTab(); }, 1500);
     } catch (err) {
@@ -1706,7 +1782,19 @@ async function handleFullClaim() {
 // ──────────────────────────────────────────
 // Shield (ZK Privacy) Tab
 // ──────────────────────────────────────────
-let _shieldedState = { initialized: false, balance: 0, address: null, viewingKey: null, notes: [], poolStats: null };
+let _shieldedState = { initialized: false, balance: '0', address: null, viewingKey: null, notes: [], poolStats: null };
+
+function extensionNoteValueSpores(note) {
+  return baseUnitBigIntExt(note?.value || 0);
+}
+
+function extensionShieldedBalanceSpores() {
+  return baseUnitBigIntExt(_shieldedState.balance || 0);
+}
+
+function unspentExtensionShieldedNotes() {
+  return (_shieldedState.notes || []).filter((note) => !note.spent && extensionNoteValueSpores(note) > 0n);
+}
 
 async function deriveExtensionShieldedStorageKey() {
   if (!_shieldedState.spendingKey || !_shieldedState.viewingKey) return null;
@@ -1760,7 +1848,8 @@ async function saveExtensionShieldedNotes(wallet) {
 function recalculateExtensionShieldedBalance() {
   _shieldedState.balance = (_shieldedState.notes || [])
     .filter(n => !n.spent)
-    .reduce((sum, note) => sum + Number(note.value || 0), 0);
+    .reduce((sum, note) => sum + extensionNoteValueSpores(note), 0n)
+    .toString();
 }
 
 async function upsertExtensionShieldedNote(wallet, note) {
@@ -1811,15 +1900,15 @@ async function tryDecryptExtensionShieldedNote(client, entry) {
     const decrypted = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, aesKey, ciphertext);
     const plaintext = new Uint8Array(decrypted);
     if (plaintext.length < 104) return null;
-    const value = Number(new DataView(plaintext.buffer, plaintext.byteOffset + 32, 8).getBigUint64(0, true));
-    if (value <= 0) return null;
+    const value = new DataView(plaintext.buffer, plaintext.byteOffset + 32, 8).getBigUint64(0, true);
+    if (value <= 0n) return null;
     const blinding = bytesToHex(plaintext.slice(40, 72));
     const serial = bytesToHex(plaintext.slice(72, 104));
-    const commitmentResp = await client.call('computeShieldCommitment', [{ amount: value, blinding }]).catch(() => null);
+    const commitmentResp = await client.call('computeShieldCommitment', [{ amount: value.toString(), blinding }]).catch(() => null);
     if (!commitmentResp?.commitment || String(commitmentResp.commitment).toLowerCase() !== String(entry.commitment || '').toLowerCase()) {
       return null;
     }
-    return { value, blinding, serial };
+    return { value: value.toString(), blinding, serial };
   } catch {
     return null;
   }
@@ -1953,17 +2042,19 @@ function isOwnExtensionViewingKey(value) {
 
 function selectTwoExtensionInputNotes(unspentNotes, targetAmount) {
   if (!Array.isArray(unspentNotes) || unspentNotes.length < 2) return null;
+  const target = baseUnitBigIntExt(targetAmount);
+  if (target <= 0n) return null;
   let bestPair = null;
-  let bestExcess = Number.MAX_SAFE_INTEGER;
+  let bestExcess = null;
   for (let i = 0; i < unspentNotes.length; i++) {
     for (let j = i + 1; j < unspentNotes.length; j++) {
-      const total = Number(unspentNotes[i].value || 0) + Number(unspentNotes[j].value || 0);
-      if (total < targetAmount) continue;
-      const excess = total - targetAmount;
-      if (excess < bestExcess) {
+      const total = extensionNoteValueSpores(unspentNotes[i]) + extensionNoteValueSpores(unspentNotes[j]);
+      if (total < target) continue;
+      const excess = total - target;
+      if (bestExcess === null || excess < bestExcess) {
         bestPair = [unspentNotes[i], unspentNotes[j]];
         bestExcess = excess;
-        if (excess === 0) return bestPair;
+        if (excess === 0n) return bestPair;
       }
     }
   }
@@ -1972,8 +2063,8 @@ function selectTwoExtensionInputNotes(unspentNotes, targetAmount) {
 
 function extensionPrivateTransferPrereqMessage() {
   if (!_shieldedState.initialized) return 'Initialize shielded privacy first';
-  const unspent = (_shieldedState.notes || []).filter((note) => !note.spent && Number(note.value || 0) > 0);
-  if ((_shieldedState.balance || 0) <= 0 || unspent.length === 0) {
+  const unspent = unspentExtensionShieldedNotes();
+  if (extensionShieldedBalanceSpores() <= 0n || unspent.length === 0) {
     return 'Shield LICN before sending a private transfer';
   }
   if (unspent.length < 2) {
@@ -2004,9 +2095,10 @@ async function assertExtensionPublicFeeBalance(type) {
   const zkFees = { shield: 100_000, unshield: 150_000, transfer: 200_000 };
   const required = 1_000_000 + (zkFees[type] || 0);
   const balResult = await rpc().call('getBalance', [wallet.address]);
-  const spendableSpores = Number(balResult?.spendable ?? balResult?.spores ?? balResult?.balance ?? 0);
-  if (Number.isFinite(spendableSpores) && spendableSpores < required) {
-    throw new Error(`Insufficient public LICN for fee: need ${(required / 1e9).toFixed(4)} LICN`);
+  const spendableSpores = baseUnitBigIntExt(balResult?.spendable ?? balResult?.spores ?? balResult?.balance ?? 0);
+  const requiredSpores = BigInt(required);
+  if (spendableSpores < requiredSpores) {
+    throw new Error(`Insufficient public LICN for fee: need ${formatLicnBaseUnitsFixedExt(requiredSpores)} LICN`);
   }
 }
 
@@ -2024,8 +2116,7 @@ async function signAndSubmitExtensionShieldedInstruction({ wallet, password, ins
 }
 
 async function submitExtensionShield({ wallet, amountLicn, password, statusEl }) {
-  const amountSpores = Math.floor(Number(amountLicn) * 1_000_000_000);
-  if (!Number.isFinite(amountSpores) || amountSpores <= 0) throw new Error('Invalid amount');
+  const amountSpores = parseLicnAmountSporesExt(amountLicn, 'Shield amount');
 
   const client = rpc();
   if (!_shieldedState.initialized) {
@@ -2039,7 +2130,7 @@ async function submitExtensionShield({ wallet, amountLicn, password, statusEl })
   const noteBytes = new Uint8Array(104);
   const ownerBytes = base58Decode(_shieldedState.address);
   noteBytes.set(ownerBytes.slice(0, 32), 0);
-  new DataView(noteBytes.buffer).setBigUint64(32, BigInt(amountSpores), true);
+  new DataView(noteBytes.buffer).setBigUint64(32, amountSpores, true);
   noteBytes.set(blinding, 40);
   noteBytes.set(serial, 72);
   const ephemeralKey = crypto.getRandomValues(new Uint8Array(32));
@@ -2047,7 +2138,7 @@ async function submitExtensionShield({ wallet, amountLicn, password, statusEl })
   const encKeyHash = await crypto.subtle.digest('SHA-256', encKeyMaterial);
   const encryptedNote = await encryptExtensionShieldedNoteBytes(noteBytes, new Uint8Array(encKeyHash));
   const proof = await client.call('generateShieldProof', [{
-    amount: amountSpores,
+    amount: amountSpores.toString(),
     blinding: bytesToHex(blinding),
     commitment: null,
   }]);
@@ -2073,7 +2164,7 @@ async function submitExtensionShield({ wallet, amountLicn, password, statusEl })
 
   const ownedNote = {
     index: null,
-    value: amountSpores,
+    value: amountSpores.toString(),
     blinding: bytesToHex(blinding),
     serial: bytesToHex(serial),
     commitment: proof.commitment,
@@ -2117,8 +2208,8 @@ async function submitExtensionUnshield({ wallet, amountLicn, password, recipient
     throw new Error('Unshield currently requires the active wallet as recipient');
   }
 
-  const amountSpores = Math.floor(Number(amountLicn) * 1_000_000_000);
-  const note = (_shieldedState.notes || []).find((n) => !n.spent && Number(n.value || 0) === amountSpores);
+  const amountSpores = parseLicnAmountSporesExt(amountLicn, 'Unshield amount');
+  const note = (_shieldedState.notes || []).find((n) => !n.spent && extensionNoteValueSpores(n) === amountSpores);
   if (!note) throw new Error('Unshield currently requires a single note exactly matching the amount');
 
   const client = rpc();
@@ -2131,7 +2222,7 @@ async function submitExtensionUnshield({ wallet, amountLicn, password, recipient
 
   statusEl.textContent = 'Generating unshield proof...';
   const proof = await client.call('generateUnshieldProof', [{
-    amount: amountSpores,
+    amount: amountSpores.toString(),
     merkle_root: merkleRoot,
     recipient,
     blinding: note.blinding,
@@ -2156,7 +2247,7 @@ async function submitExtensionUnshield({ wallet, amountLicn, password, recipient
 
   note.spent = true;
   note.nullifier = proof.nullifier;
-  _shieldedState.balance = _shieldedState.notes.filter(n => !n.spent).reduce((sum, item) => sum + Number(item.value || 0), 0);
+  recalculateExtensionShieldedBalance();
   await saveExtensionShieldedNotes(wallet);
   return signature;
 }
@@ -2175,9 +2266,8 @@ async function submitExtensionPrivateTransfer({ wallet, amountLicn, password, re
     throw new Error('Private transfers to your own viewing key are not allowed');
   }
 
-  const amountSpores = Math.floor(Number(amountLicn) * 1_000_000_000);
-  if (!Number.isFinite(amountSpores) || amountSpores <= 0) throw new Error('Invalid amount');
-  const unspentNotes = (_shieldedState.notes || []).filter((note) => !note.spent && Number(note.value || 0) > 0);
+  const amountSpores = parseLicnAmountSporesExt(amountLicn, 'Private transfer amount');
+  const unspentNotes = unspentExtensionShieldedNotes();
   const inputNotes = selectTwoExtensionInputNotes(unspentNotes, amountSpores);
   if (!inputNotes) {
     throw new Error('Private transfer requires two unspent shielded notes with enough balance');
@@ -2185,7 +2275,7 @@ async function submitExtensionPrivateTransfer({ wallet, amountLicn, password, re
 
   const client = rpc();
   await assertExtensionPublicFeeBalance('transfer');
-  const inputTotal = inputNotes.reduce((sum, note) => sum + Number(note.value || 0), 0);
+  const inputTotal = inputNotes.reduce((sum, note) => sum + extensionNoteValueSpores(note), 0n);
   const changeAmount = inputTotal - amountSpores;
 
   statusEl.textContent = 'Generating private transfer proof...';
@@ -2207,7 +2297,7 @@ async function submitExtensionPrivateTransfer({ wallet, amountLicn, password, re
   const proof = await client.call('generateTransferProof', [{
     merkle_root: merkleRoot,
     inputs: inputNotes.map((note, index) => ({
-      amount: Number(note.value || 0),
+      amount: extensionNoteValueSpores(note).toString(),
       blinding: note.blinding,
       serial: note.serial,
       spending_key: bytesToHex(_shieldedState.spendingKey),
@@ -2215,8 +2305,8 @@ async function submitExtensionPrivateTransfer({ wallet, amountLicn, password, re
       path_bits: merkleWitnesses[index]?.pathBits || merkleWitnesses[index]?.path_bits || [],
     })),
     outputs: [
-      { amount: amountSpores, blinding: bytesToHex(recipientBlinding) },
-      { amount: changeAmount, blinding: bytesToHex(changeBlinding) },
+      { amount: amountSpores.toString(), blinding: bytesToHex(recipientBlinding) },
+      { amount: changeAmount.toString(), blinding: bytesToHex(changeBlinding) },
     ],
   }]);
 
@@ -2261,10 +2351,10 @@ async function submitExtensionPrivateTransfer({ wallet, amountLicn, password, re
     note.spent = true;
     note.nullifier = index === 0 ? proof.nullifier_a : proof.nullifier_b;
   });
-  if (changeAmount > 0) {
+  if (changeAmount > 0n) {
     await upsertExtensionShieldedNote(wallet, {
       index: null,
-      value: changeAmount,
+      value: changeAmount.toString(),
       blinding: bytesToHex(changeBlinding),
       serial: bytesToHex(changeSerial),
       commitment: proof.commitment_d,
@@ -2386,7 +2476,7 @@ async function loadShieldTab() {
 
   await syncExtensionShieldedNotesFromChain(wallet, rpcClient);
 
-  let shieldedBalance = 0;
+  let shieldedBalance = 0n;
   let ownedNotes = [];
   let shieldedAddress = _shieldedState.address || 'Initialize shielded wallet to derive';
   ownedNotes = Array.isArray(_shieldedState.notes) ? _shieldedState.notes : [];
@@ -2409,13 +2499,13 @@ async function loadShieldTab() {
   if (resolvedAnyNoteIndex) {
     await saveExtensionShieldedNotes(wallet);
   }
-  shieldedBalance = ownedNotes.filter(n => !n.spent).reduce((s, n) => s + Number(n.value || 0), 0);
+  shieldedBalance = ownedNotes.filter(n => !n.spent).reduce((s, n) => s + extensionNoteValueSpores(n), 0n);
 
-  _shieldedState = { ..._shieldedState, balance: shieldedBalance, address: shieldedAddress, notes: ownedNotes, poolStats };
+  _shieldedState = { ..._shieldedState, balance: shieldedBalance.toString(), address: shieldedAddress, notes: ownedNotes, poolStats };
   void refreshBalance();
 
-  const balLicn = (shieldedBalance / 1_000_000_000).toFixed(4);
-  const poolLicn = poolStats ? ((poolStats.pool_balance || 0) / 1_000_000_000).toFixed(2) : '—';
+  const balLicn = formatLicnBaseUnitsFixedExt(shieldedBalance);
+  const poolLicn = poolStats ? formatLicnBaseUnitsFixedExt(poolStats.pool_balance || 0, 2) : '—';
   const commitCount = poolStats ? (poolStats.commitment_count || poolStats.commitmentCount || 0).toLocaleString() : '—';
   const unspent = ownedNotes.filter(n => !n.spent);
   const transferPrereq = extensionPrivateTransferPrereqMessage();
@@ -2427,7 +2517,7 @@ async function loadShieldTab() {
       return `
         <div style="padding:0.75rem;background:var(--card-bg);border-radius:8px;border:1px solid var(--border);margin-bottom:0.5rem;display:flex;justify-content:space-between;align-items:center;">
           <div>
-            <div style="font-weight:600;"><i class="fas fa-lock" style="color:#10b981;margin-right:0.25rem;"></i>${(Number(n.value || 0) / 1e9).toFixed(4)} LICN</div>
+            <div style="font-weight:600;"><i class="fas fa-lock" style="color:#10b981;margin-right:0.25rem;"></i>${formatLicnBaseUnitsFixedExt(n.value)} LICN</div>
             <div style="font-size:0.7rem;color:var(--text-muted);">Note #${n.index ?? '?'} &bull; ${(n.commitment || '').slice(0, 12)}...</div>
           </div>
           <span style="font-size:0.7rem;background:rgba(16,185,129,0.1);color:#10b981;padding:0.2rem 0.5rem;border-radius:4px;"><i class="${icon}"></i> ${label}</span>
@@ -2575,25 +2665,29 @@ function showShieldModal(type) {
   const validationEl = overlay.querySelector('#shieldModalValidation');
   const statusLine = overlay.querySelector('#shieldModalStatus');
   const modalValidationMessage = () => {
-    const amount = parseFloat(amountInput?.value || '');
-    if (!Number.isFinite(amount) || amount <= 0) return 'Enter a valid amount';
+    const amountText = amountInput?.value || '';
+    let amountSpores;
+    try {
+      amountSpores = parseLicnAmountSporesExt(amountText, `${titles[type]} amount`);
+    } catch (error) {
+      return amountText.trim() ? (error?.message || 'Enter a valid amount') : 'Enter a valid amount';
+    }
     if (!passwordInput?.value) return 'Password required';
     if (type !== 'shield' && !recipientInput?.value) return 'Recipient required';
     if (type === 'unshield') {
-      const shieldedBal = (_shieldedState.balance || 0) / 1e9;
-      if (shieldedBal <= 0) return 'No shielded balance available';
-      if (amount > shieldedBal) return `Max available: ${shieldedBal.toFixed(4)} LICN`;
+      const shieldedBal = extensionShieldedBalanceSpores();
+      if (shieldedBal <= 0n) return 'No shielded balance available';
+      if (amountSpores > shieldedBal) return `Max available: ${formatLicnBaseUnitsFixedExt(shieldedBal)} LICN`;
     }
     if (type === 'transfer') {
       const recipient = normalizeExtensionViewingKey(recipientInput?.value || '');
-      const shieldedBal = (_shieldedState.balance || 0) / 1e9;
+      const shieldedBal = extensionShieldedBalanceSpores();
       if (!/^[0-9a-f]{64}$/.test(recipient)) return 'Enter a valid recipient viewing key';
       if (isOwnExtensionViewingKey(recipient)) return 'Private transfers to your own viewing key are not allowed';
-      if (shieldedBal <= 0) return 'No shielded balance available';
-      if (amount > shieldedBal) return `Max available: ${shieldedBal.toFixed(4)} LICN`;
-      const amountSpores = Math.floor(amount * 1e9);
+      if (shieldedBal <= 0n) return 'No shielded balance available';
+      if (amountSpores > shieldedBal) return `Max available: ${formatLicnBaseUnitsFixedExt(shieldedBal)} LICN`;
       const inputNotes = selectTwoExtensionInputNotes(
-        (_shieldedState.notes || []).filter((note) => !note.spent && Number(note.value || 0) > 0),
+        unspentExtensionShieldedNotes(),
         amountSpores,
       );
       if (!inputNotes) return 'Private transfer requires two unspent shielded notes with enough balance';
@@ -2614,7 +2708,7 @@ function showShieldModal(type) {
 
   overlay.querySelector('#shieldModalCancel').addEventListener('click', () => overlay.remove());
   overlay.querySelector('#shieldModalConfirm').addEventListener('click', async () => {
-    const amount = parseFloat(overlay.querySelector('#shieldModalAmount').value);
+    const amountText = overlay.querySelector('#shieldModalAmount').value.trim();
     const password = overlay.querySelector('#shieldModalPassword').value;
     const wallet = getActiveWallet();
     const recipient = type === 'unshield'
@@ -2622,7 +2716,13 @@ function showShieldModal(type) {
       : normalizeExtensionViewingKey(overlay.querySelector('#shieldModalRecipient')?.value || '');
     const statusEl = overlay.querySelector('#shieldModalStatus');
 
-    if (!amount || amount <= 0) { statusEl.textContent = 'Enter a valid amount'; return; }
+    let amountSpores;
+    try {
+      amountSpores = parseLicnAmountSporesExt(amountText, `${titles[type]} amount`);
+    } catch (error) {
+      statusEl.textContent = error?.message || 'Enter a valid amount';
+      return;
+    }
     if (!password) { statusEl.textContent = 'Password required'; return; }
     if (type !== 'shield' && !recipient) { statusEl.textContent = 'Recipient required'; return; }
     if (type === 'transfer') {
@@ -2634,23 +2734,19 @@ function showShieldModal(type) {
     try {
       if (type === 'shield') {
         const balResult = await rpc().call('getBalance', [wallet.address]);
-        const spendable = (balResult?.spendable || balResult?.balance || 0) / 1e9;
-        const maxShieldable = Math.max(0, spendable - 0.001);
-        if (maxShieldable <= 0) { statusEl.textContent = 'Insufficient LICN balance to shield'; return; }
-        if (amount > maxShieldable) { statusEl.textContent = `Max shieldable: ${maxShieldable.toFixed(4)} LICN`; return; }
+        const spendable = baseUnitBigIntExt(balResult?.spendable || balResult?.balance || 0);
+        const feeSpores = 1_000_000n;
+        const maxShieldable = spendable > feeSpores ? spendable - feeSpores : 0n;
+        if (maxShieldable <= 0n) { statusEl.textContent = 'Insufficient LICN balance to shield'; return; }
+        if (amountSpores > maxShieldable) { statusEl.textContent = `Max shieldable: ${formatLicnBaseUnitsFixedExt(maxShieldable)} LICN`; return; }
       } else {
         // unshield/transfer: check shielded balance
-        const shieldedBal = (_shieldedState.balance || 0) / 1e9;
-        if (shieldedBal <= 0) { statusEl.textContent = 'No shielded balance available'; return; }
-        if (amount > shieldedBal) { statusEl.textContent = `Max available: ${shieldedBal.toFixed(4)} LICN`; return; }
+        const shieldedBal = extensionShieldedBalanceSpores();
+        if (shieldedBal <= 0n) { statusEl.textContent = 'No shielded balance available'; return; }
+        if (amountSpores > shieldedBal) { statusEl.textContent = `Max available: ${formatLicnBaseUnitsFixedExt(shieldedBal)} LICN`; return; }
         if (type === 'transfer') {
-          const amountSpores = Math.floor(amount * 1e9);
-          if (!Number.isFinite(amountSpores) || amountSpores <= 0) {
-            statusEl.textContent = 'Enter a valid amount';
-            return;
-          }
           const inputNotes = selectTwoExtensionInputNotes(
-            (_shieldedState.notes || []).filter((note) => !note.spent && Number(note.value || 0) > 0),
+            unspentExtensionShieldedNotes(),
             amountSpores,
           );
           if (!inputNotes) {
@@ -2670,10 +2766,10 @@ function showShieldModal(type) {
     try {
       if (!wallet) throw new Error('No active wallet');
       const signature = type === 'shield'
-        ? await submitExtensionShield({ wallet, amountLicn: amount, password, statusEl })
+        ? await submitExtensionShield({ wallet, amountLicn: amountText, password, statusEl })
         : type === 'transfer'
-          ? await submitExtensionPrivateTransfer({ wallet, amountLicn: amount, password, recipientViewingKey: recipient, statusEl })
-          : await submitExtensionUnshield({ wallet, amountLicn: amount, password, recipient, statusEl });
+          ? await submitExtensionPrivateTransfer({ wallet, amountLicn: amountText, password, recipientViewingKey: recipient, statusEl })
+          : await submitExtensionUnshield({ wallet, amountLicn: amountText, password, recipient, statusEl });
       statusEl.innerHTML = '<i class="fas fa-check-circle" style="color:#10b981;"></i> Submitted ' + escapeHtmlExt(String(signature).slice(0, 16)) + '...';
       showToast(type === 'shield' ? 'Shield transaction submitted' : type === 'transfer' ? 'Private transfer submitted' : 'Unshield transaction submitted', 'success');
       setTimeout(() => {
@@ -3394,34 +3490,43 @@ async function handleSend() {
   if (!wallet) return;
 
   const to = $('sendTo').value.trim();
-  const amount = Number($('sendAmount').value || 0);
+  const amountInput = $('sendAmount');
+  const amountText = amountInput.value.trim();
   const pw = $('sendPassword').value;
   const selectedToken = $('sendToken')?.value || 'LICN';
+  let amountSpores;
 
   if (!isValidAddress(to)) { showToast('Invalid recipient address', 'error'); return; }
   if (to === wallet.address) { showToast('Sending to your own wallet is not allowed', 'error'); return; }
-  if (!amount || amount <= 0) { showToast('Enter a valid amount', 'error'); return; }
+  try {
+    amountSpores = parseLicnAmountSporesExt(amountText, 'Transfer amount');
+  } catch (error) {
+    showToast(error?.message || 'Enter a valid amount', 'error');
+    return;
+  }
   if (!pw) { showToast('Password required to sign', 'error'); return; }
   if (selectedToken !== 'LICN') { showToast('Extension send supports LICN transfers only', 'error'); return; }
 
   try {
     const balResult = await rpc().getBalance(wallet.address);
-    const spendable = Number(balResult?.spendable || balResult?.spores || 0) / 1_000_000_000;
-    const maxSendable = Math.max(0, spendable - 0.001);
-    if (maxSendable <= 0) {
+    const spendable = baseUnitBigIntExt(balResult?.spendable || balResult?.spores || 0);
+    const feeSpores = 1_000_000n;
+    const maxSendable = spendable > feeSpores ? spendable - feeSpores : 0n;
+    if (maxSendable <= 0n) {
       showToast('Insufficient LICN balance (not enough to cover fee)', 'error');
       return;
     }
-    if (amount > maxSendable) {
-      $('sendAmount').value = maxSendable.toFixed(6);
-      showToast(`Amount adjusted to available balance: ${maxSendable.toFixed(6)} LICN`, 'error');
+    if (amountSpores > maxSendable) {
+      const adjusted = formatLicnBaseUnitsExactExt(maxSendable);
+      amountInput.value = adjusted;
+      showToast(`Amount adjusted to available balance: ${adjusted} LICN`, 'error');
       return;
     }
 
     const restrictionPreflight = await preflightNativeTransferRestrictions({
       fromAddress: wallet.address,
       toAddress: to,
-      amountLicn: amount,
+      amountLicn: amountText,
       network: activeNetworkKey()
     });
     renderSendRestrictionStatus(restrictionPreflight);
@@ -3435,7 +3540,7 @@ async function handleSend() {
       privateKeyHex: privKey,
       fromAddress: wallet.address,
       toAddress: to,
-      amountLicn: amount,
+      amountLicn: amountText,
       blockhash
     });
 
@@ -3984,8 +4089,10 @@ function wireEvents() {
     if (!wallet) return;
     try {
       const result = await rpc().getBalance(wallet.address);
-      const spendable = Number(result?.spendable || result?.spores || 0) / 1_000_000_000;
-      $('sendAmount').value = Math.max(0, spendable - 0.001).toFixed(6);
+      const spendable = baseUnitBigIntExt(result?.spendable || result?.spores || 0);
+      const feeSpores = 1_000_000n;
+      const maxSend = spendable > feeSpores ? spendable - feeSpores : 0n;
+      $('sendAmount').value = maxSend > 0n ? formatLicnBaseUnitsExactExt(maxSend) : '';
     } catch { /* ignore */ }
   });
 

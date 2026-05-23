@@ -1,7 +1,11 @@
 // Lichen Core - Transaction Model
 
 use crate::account::{Keypair, PqSignature, Pubkey};
+use crate::codec::{
+    deserialize_legacy_bincode_strict, serialize_legacy_bincode, serialized_size_legacy_bincode,
+};
 use crate::hash::Hash;
+use crate::signing::{maybe_versioned_signing_bytes, DOMAIN_NATIVE_TX};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
@@ -81,7 +85,7 @@ impl Message {
     /// well-formed Message). Callers that need fallibility should use
     /// `try_serialize()` instead.
     pub fn serialize(&self) -> Vec<u8> {
-        bincode::serialize(self).unwrap_or_else(|e| {
+        serialize_legacy_bincode(self, "Message").unwrap_or_else(|e| {
             panic!(
                 "FATAL: Message serialization failed ({}). This indicates data corruption or OOM.",
                 e
@@ -91,7 +95,16 @@ impl Message {
 
     /// Fallible serialization for contexts that can propagate errors.
     pub fn try_serialize(&self) -> Result<Vec<u8>, String> {
-        bincode::serialize(self).map_err(|e| format!("Message serialization failed: {}", e))
+        serialize_legacy_bincode(self, "Message")
+            .map_err(|e| format!("Message serialization failed: {}", e))
+    }
+
+    /// Serialize into the versioned native transaction signing envelope for a chain.
+    ///
+    /// An empty `chain_id` returns the legacy message bytes for compatibility
+    /// with old tests and local fixtures.
+    pub fn signing_bytes_for_chain_id(&self, chain_id: &str) -> Vec<u8> {
+        maybe_versioned_signing_bytes(DOMAIN_NATIVE_TX, chain_id, &self.serialize())
     }
 
     /// Hash for signing
@@ -210,63 +223,114 @@ impl Transaction {
     /// actual bytes propagated over the network, including the self-contained PQ
     /// signatures that carry signer public keys.
     pub fn hash(&self) -> Hash {
-        let data = bincode::serialize(self).expect("Transaction bincode serialization failed");
+        let data = serialize_legacy_bincode(self, "Transaction")
+            .expect("Transaction serialization failed");
         Hash::hash(&data)
     }
 
-    /// Collect the signer accounts required by this transaction.
-    pub fn required_signers(&self) -> Result<HashSet<Pubkey>, String> {
+    /// Collect required signer accounts in their canonical signature order.
+    ///
+    /// The first account of each instruction is the signer for that instruction.
+    /// Repeated signers are included once at their first occurrence. The same
+    /// order is enforced for `Transaction::signatures` so a signed transaction
+    /// cannot be replayed with reordered, duplicated, or extra signatures.
+    pub fn required_signers_ordered(&self) -> Result<Vec<Pubkey>, String> {
         if self.message.instructions.is_empty() {
             return Err("No instructions".to_string());
         }
 
-        let mut required_signers = HashSet::new();
+        let mut seen = HashSet::new();
+        let mut required_signers = Vec::new();
         for ix in &self.message.instructions {
             let Some(first_account) = ix.accounts.first() else {
                 return Err("Instruction has no accounts".to_string());
             };
-            required_signers.insert(*first_account);
+            if seen.insert(*first_account) {
+                required_signers.push(*first_account);
+            }
         }
 
         Ok(required_signers)
     }
 
-    /// Verify that every required signer has a valid PQ signature over the
-    /// serialized transaction message.
+    /// Collect the signer accounts required by this transaction.
+    pub fn required_signers(&self) -> Result<HashSet<Pubkey>, String> {
+        Ok(self.required_signers_ordered()?.into_iter().collect())
+    }
+
+    /// Verify that the canonical required signer set has valid PQ signatures
+    /// over the serialized transaction message.
     pub fn verify_required_signatures(&self) -> Result<HashSet<Pubkey>, String> {
+        self.verify_required_signatures_against(&self.message.serialize())
+    }
+
+    /// Verify native signatures against the chain-id domain envelope, falling
+    /// back to legacy message bytes during the mixed-client rollout.
+    pub fn verify_required_signatures_with_chain_id(
+        &self,
+        chain_id: &str,
+    ) -> Result<HashSet<Pubkey>, String> {
+        let domain_result = self
+            .verify_required_signatures_against(&self.message.signing_bytes_for_chain_id(chain_id));
+        if domain_result.is_ok() || chain_id.is_empty() {
+            return domain_result;
+        }
+
+        domain_result.or_else(|domain_err| {
+            self.verify_required_signatures().map_err(|legacy_err| {
+                format!(
+                    "{}; legacy verification also failed: {}",
+                    domain_err, legacy_err
+                )
+            })
+        })
+    }
+
+    fn verify_required_signatures_against(
+        &self,
+        message_bytes: &[u8],
+    ) -> Result<HashSet<Pubkey>, String> {
         if self.signatures.is_empty() {
             return Err("No signatures".to_string());
         }
 
-        let required_signers = self.required_signers()?;
-        if self.signatures.len() < required_signers.len() {
+        let required_signers = self.required_signers_ordered()?;
+        if self.signatures.len() != required_signers.len() {
             return Err(format!(
-                "Insufficient signatures: got {}, need {}",
+                "Signature set must match required signers exactly: got {}, need {}",
                 self.signatures.len(),
                 required_signers.len()
             ));
         }
 
-        let message_bytes = self.message.serialize();
         let mut verified_signers = HashSet::with_capacity(required_signers.len());
 
-        for signature in &self.signatures {
+        for (index, (signature, expected_signer)) in self
+            .signatures
+            .iter()
+            .zip(required_signers.iter())
+            .enumerate()
+        {
+            signature
+                .validate()
+                .map_err(|err| format!("invalid signature {}: {}", index, err))?;
             let signer = signature.signer_address();
-            if !required_signers.contains(&signer) || verified_signers.contains(&signer) {
-                continue;
+            if signer != *expected_signer {
+                return Err(format!(
+                    "signature {} signed by {}, expected {}",
+                    index, signer, expected_signer
+                ));
             }
 
-            if Keypair::verify(&signer, &message_bytes, signature) {
-                verified_signers.insert(signer);
-            }
-        }
-
-        for signer in &required_signers {
-            if !verified_signers.contains(signer) {
+            if !Keypair::verify(expected_signer, message_bytes, signature) {
                 return Err(format!(
                     "Missing or invalid signature for account {}",
-                    signer
+                    expected_signer
                 ));
+            }
+
+            if !verified_signers.insert(signer) {
+                return Err(format!("Duplicate signature for account {}", signer));
             }
         }
 
@@ -323,7 +387,7 @@ impl Transaction {
                 ));
             }
         }
-        let serialized_size = bincode::serialized_size(self)
+        let serialized_size = serialized_size_legacy_bincode(self, "Transaction")
             .map_err(|e| format!("Transaction size serialization failed: {}", e))?;
         if serialized_size > MAX_TRANSACTION_SERIALIZED_SIZE {
             return Err(format!(
@@ -341,7 +405,8 @@ impl Transaction {
     /// Callers that need base64 transport can encode the returned bytes with
     /// `base64::encode(&tx.to_wire())`.
     pub fn to_wire(&self) -> Vec<u8> {
-        let payload = bincode::serialize(self).expect("Transaction bincode serialization failed");
+        let payload = serialize_legacy_bincode(self, "Transaction")
+            .expect("Transaction serialization failed");
         let mut buf = Vec::with_capacity(4 + payload.len());
         buf.extend_from_slice(&TX_WIRE_MAGIC);
         buf.push(TX_WIRE_VERSION);
@@ -353,7 +418,7 @@ impl Transaction {
     /// Deserialize from wire bytes, supporting three formats:
     ///
     /// 1. **V1 envelope** — starts with `TX_WIRE_MAGIC` (`[0x4D, 0x54]`)
-    /// 2. **Raw bincode** — `bincode::serialize(&Transaction)` output
+    /// 2. **Raw legacy bincode** — canonical transaction bytes
     /// 3. **JSON** — `{ "signatures": [...], "message": {...} }` from browser wallets
     ///
     /// The `max_wire_bytes` parameter caps both JSON and bincode payloads before
@@ -399,18 +464,13 @@ impl Transaction {
 
 /// Bounded bincode deserialization with panic catch (bincode 1.x safety).
 fn bounded_bincode_deser(bytes: &[u8], limit: u64) -> Result<Transaction, String> {
-    use bincode::Options;
-    match std::panic::catch_unwind(|| {
-        bincode::options()
-            .with_limit(limit)
-            .with_fixint_encoding()
-            .allow_trailing_bytes()
-            .deserialize(bytes)
-    }) {
-        Ok(Ok(tx)) => Ok(tx),
-        Ok(Err(e)) => Err(format!("bincode: {}", e)),
-        Err(_) => Err("bincode panicked during deserialization".to_string()),
-    }
+    deserialize_legacy_bincode_strict(bytes, limit, "Transaction wire").map_err(|err| {
+        if err.contains("panicked") {
+            "bincode panicked during deserialization".to_string()
+        } else {
+            format!("bincode: {}", err)
+        }
+    })
 }
 
 /// Attempt JSON deserialization of a wallet-format transaction.
@@ -534,7 +594,8 @@ mod tests {
             .collect();
         let tx = Transaction::new(Message::new(instructions, Hash::default()));
 
-        let serialized_size = bincode::serialized_size(&tx).unwrap();
+        let serialized_size = serialized_size_legacy_bincode(&tx, "transaction test fixture")
+            .expect("serialized size");
         assert!(
             serialized_size > MAX_TRANSACTION_SERIALIZED_SIZE,
             "fixture must exceed tx serialized-size cap"
@@ -543,6 +604,109 @@ mod tests {
         let result = tx.validate_structure();
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("serialized size too large"));
+    }
+
+    fn two_signer_transaction() -> (Transaction, Keypair, Keypair) {
+        let kp1 = Keypair::from_seed(&[1u8; 32]);
+        let kp2 = Keypair::from_seed(&[2u8; 32]);
+        let ix1 = Instruction {
+            program_id: Pubkey([1u8; 32]),
+            accounts: vec![kp1.pubkey()],
+            data: vec![1],
+        };
+        let ix2 = Instruction {
+            program_id: Pubkey([2u8; 32]),
+            accounts: vec![kp2.pubkey()],
+            data: vec![2],
+        };
+        let mut tx = Transaction::new(Message::new(vec![ix1, ix2], Hash::hash(b"recent")));
+        let message = tx.message.serialize();
+        tx.signatures.push(kp1.sign(&message));
+        tx.signatures.push(kp2.sign(&message));
+        (tx, kp1, kp2)
+    }
+
+    #[test]
+    fn test_verify_required_signatures_accepts_canonical_multi_signer_order() {
+        let (tx, kp1, kp2) = two_signer_transaction();
+
+        let signers = tx.verify_required_signatures().unwrap();
+        assert!(signers.contains(&kp1.pubkey()));
+        assert!(signers.contains(&kp2.pubkey()));
+    }
+
+    #[test]
+    fn test_verify_required_signatures_accepts_chain_id_domain() {
+        let kp1 = Keypair::from_seed(&[1u8; 32]);
+        let kp2 = Keypair::from_seed(&[2u8; 32]);
+        let ix1 = Instruction {
+            program_id: Pubkey([1u8; 32]),
+            accounts: vec![kp1.pubkey()],
+            data: vec![1],
+        };
+        let ix2 = Instruction {
+            program_id: Pubkey([2u8; 32]),
+            accounts: vec![kp2.pubkey()],
+            data: vec![2],
+        };
+        let mut tx = Transaction::new(Message::new(vec![ix1, ix2], Hash::hash(b"recent")));
+        let message = tx.message.signing_bytes_for_chain_id("lichen-testnet-1");
+        tx.signatures.push(kp1.sign(&message));
+        tx.signatures.push(kp2.sign(&message));
+
+        let signers = tx
+            .verify_required_signatures_with_chain_id("lichen-testnet-1")
+            .expect("chain-id domain signatures should verify");
+        assert!(signers.contains(&kp1.pubkey()));
+        assert!(signers.contains(&kp2.pubkey()));
+
+        let wrong_chain = tx.verify_required_signatures_with_chain_id("lichen-mainnet-1");
+        assert!(
+            wrong_chain.is_err(),
+            "chain-id domain signatures must not verify on a different chain"
+        );
+    }
+
+    #[test]
+    fn test_verify_required_signatures_with_chain_id_falls_back_to_legacy() {
+        let (tx, kp1, kp2) = two_signer_transaction();
+
+        let signers = tx
+            .verify_required_signatures_with_chain_id("lichen-testnet-1")
+            .expect("legacy message signatures should verify during rollout");
+        assert!(signers.contains(&kp1.pubkey()));
+        assert!(signers.contains(&kp2.pubkey()));
+    }
+
+    #[test]
+    fn test_verify_required_signatures_rejects_extra_signature_malleation() {
+        let (mut tx, _kp1, _kp2) = two_signer_transaction();
+        let extra = Keypair::from_seed(&[3u8; 32]);
+        tx.signatures.push(extra.sign(&tx.message.serialize()));
+
+        let result = tx.verify_required_signatures();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("must match required signers"));
+    }
+
+    #[test]
+    fn test_verify_required_signatures_rejects_reordered_signatures() {
+        let (mut tx, _kp1, _kp2) = two_signer_transaction();
+        tx.signatures.swap(0, 1);
+
+        let result = tx.verify_required_signatures();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("expected"));
+    }
+
+    #[test]
+    fn test_verify_required_signatures_rejects_duplicate_signer_malleation() {
+        let (mut tx, kp1, _kp2) = two_signer_transaction();
+        tx.signatures[1] = kp1.sign(&tx.message.serialize());
+
+        let result = tx.verify_required_signatures();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("expected"));
     }
 
     #[test]
@@ -722,7 +886,8 @@ mod tests {
             tx_type: Default::default(),
         };
 
-        let bytes = bincode::serialize(&tx).expect("tx serialization");
+        let bytes =
+            serialize_legacy_bincode(&tx, "transaction golden vector").expect("tx serialization");
         let tx_hash = Hash::hash(&bytes);
 
         assert_eq!(

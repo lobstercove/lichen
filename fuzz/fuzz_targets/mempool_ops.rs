@@ -1,6 +1,6 @@
 #![no_main]
 use libfuzzer_sys::fuzz_target;
-use lichen_core::{Mempool, Transaction, Message, Instruction, Pubkey, Hash};
+use lichen_core::{Hash, Instruction, Mempool, Message, Pubkey, Transaction};
 
 fuzz_target!(|data: &[u8]| {
     if data.len() < 10 {
@@ -45,16 +45,21 @@ fuzz_target!(|data: &[u8]| {
         Hash::default(),
     );
 
-    let tx = Transaction {
-        signatures: vec![[data[0]; 64]],
-        message,
-    };
+    let tx = Transaction::new(message);
 
     match op {
-        0 => { let _ = mempool.add_transaction(tx, fee, reputation); },
-        1 => { let _ = mempool.get_top_transactions(fee as usize % 50); },
-        2 => { mempool.cleanup_expired(); },
-        3 => { mempool.clear(); },
-        _ => {},
+        0 => {
+            let _ = mempool.add_transaction(tx, fee, reputation);
+        }
+        1 => {
+            let _ = mempool.get_top_transactions(fee as usize % 50);
+        }
+        2 => {
+            mempool.cleanup_expired();
+        }
+        3 => {
+            mempool.clear();
+        }
+        _ => {}
     }
 });

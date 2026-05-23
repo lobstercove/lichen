@@ -1,8 +1,12 @@
 // Lichen Consensus Module
 // Byzantine Fault Tolerant consensus with Proof of Contribution
 
+use crate::codec::serialize_legacy_bincode;
 use crate::genesis::ConsensusParams;
 use crate::mossstake::MOSSSTAKE_BLOCK_SHARE_BPS;
+use crate::signing::{
+    maybe_versioned_signing_bytes, DOMAIN_PRECOMMIT, DOMAIN_PREVOTE, DOMAIN_PROPOSAL,
+};
 use crate::{Block, Hash, PqSignature, Pubkey};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
@@ -32,6 +36,16 @@ pub const DEFAULT_BFT_MAX_PHASE_TIMEOUT_MS: u64 = 60_000;
 /// Bootstrap grant amount (100,000 LICN) — the initial stake granted to the first 200 validators.
 /// Funded from the genesis treasury reserve (not from block reward minting).
 pub const BOOTSTRAP_GRANT_AMOUNT: u64 = 100_000 * 1_000_000_000; // 100k LICN in spores
+
+/// Consensus metadata key that permits treasury-funded validator bootstrap grants.
+///
+/// Production/public chains leave this disabled and register validators through
+/// self-funded stake or a future governed voucher path. Local development
+/// clusters may enable it explicitly so restart/reset tests can still bootstrap
+/// joining validators without copying state.
+pub const VALIDATOR_BOOTSTRAP_GRANTS_ENABLED_METADATA_KEY: &str =
+    "validator_bootstrap_grants_enabled";
+pub const VALIDATOR_BOOTSTRAP_GRANTS_ENABLED_VALUE: &[u8] = b"1";
 
 // ============================================================================
 // INFLATIONARY SUPPLY MODEL
@@ -1042,7 +1056,17 @@ impl StakePool {
             }
             // Sync fingerprint if local is empty
             if local.machine_fingerprint == [0u8; 32] && entry.machine_fingerprint != [0u8; 32] {
-                local.machine_fingerprint = entry.machine_fingerprint;
+                match self.fingerprint_registry.get(&entry.machine_fingerprint) {
+                    Some(existing) if existing != &entry.validator => {
+                        // Preserve the existing owner; snapshots must not create
+                        // duplicate fingerprint ownership for an already claimed machine.
+                    }
+                    _ => {
+                        self.fingerprint_registry
+                            .insert(entry.machine_fingerprint, entry.validator);
+                        local.machine_fingerprint = entry.machine_fingerprint;
+                    }
+                }
             }
             // Accept higher blocks produced count
             if entry.blocks_produced > local.blocks_produced {
@@ -1809,6 +1833,18 @@ impl StakePool {
         current_slot: u64,
         fingerprint: [u8; 32],
     ) -> Result<(u64, bool), String> {
+        if fingerprint != [0u8; 32] {
+            if let Some(existing) = self.fingerprint_registry.get(&fingerprint) {
+                if existing != &validator {
+                    return Err(format!(
+                        "Machine fingerprint already registered to validator {}. \
+                         Each machine can only receive one bootstrap grant.",
+                        existing.to_base58()
+                    ));
+                }
+            }
+        }
+
         // If validator already exists, ensure idempotent bootstrap.
         // A validator that already has >= the requested amount is fully
         // bootstrapped — return early to prevent double-accounting.
@@ -1840,19 +1876,6 @@ impl StakePool {
                 self.register_fingerprint(&validator, fingerprint)?;
             }
             return Ok((existing_index, false));
-        }
-
-        // New validator — check fingerprint BEFORE allocating bootstrap index
-        if fingerprint != [0u8; 32] {
-            if let Some(existing) = self.fingerprint_registry.get(&fingerprint) {
-                if existing != &validator {
-                    return Err(format!(
-                        "Machine fingerprint already registered to validator {}. \
-                         Each machine can only receive one bootstrap grant.",
-                        existing.to_base58()
-                    ));
-                }
-            }
         }
 
         // Fingerprint is unique — safe to allocate bootstrap index
@@ -1914,16 +1937,19 @@ impl StakePool {
             .collect();
         let sorted_fp: BTreeMap<&[u8; 32], &Pubkey> = self.fingerprint_registry.iter().collect();
 
-        let data = bincode::serialize(&(
-            0x03u8, // domain separator
-            self.total_staked,
-            self.total_slashed,
-            self.bootstrap_grants_issued,
-            &sorted_stakes,
-            &sorted_unstake,
-            &sorted_delegations,
-            &sorted_fp,
-        ))
+        let data = serialize_legacy_bincode(
+            &(
+                0x03u8, // domain separator
+                self.total_staked,
+                self.total_slashed,
+                self.bootstrap_grants_issued,
+                &sorted_stakes,
+                &sorted_unstake,
+                &sorted_delegations,
+                &sorted_fp,
+            ),
+            "stake pool canonical hash",
+        )
         .unwrap_or_default();
 
         Hash::hash(&data)
@@ -2144,10 +2170,27 @@ impl Proposal {
         msg
     }
 
+    /// Construct versioned chain-id-domain bytes for signing/verification.
+    pub fn signing_bytes_for_chain_id(&self, chain_id: &str) -> Vec<u8> {
+        maybe_versioned_signing_bytes(DOMAIN_PROPOSAL, chain_id, &self.signable_bytes())
+    }
+
     /// Verify the proposer's PQ signature.
     pub fn verify_signature(&self) -> bool {
         let msg = self.signable_bytes();
         crate::Keypair::verify(&self.proposer, &msg, &self.signature)
+    }
+
+    /// Verify a proposal signature against a chain-id domain, with legacy
+    /// fallback for mixed-version rollout and historical WAL/network messages.
+    pub fn verify_signature_with_chain_id(&self, chain_id: &str) -> bool {
+        if !chain_id.is_empty() {
+            let msg = self.signing_bytes_for_chain_id(chain_id);
+            if crate::Keypair::verify(&self.proposer, &msg, &self.signature) {
+                return true;
+            }
+        }
+        self.verify_signature()
     }
 
     /// Static helper to compute proposal signable bytes from components,
@@ -2164,6 +2207,20 @@ impl Proposal {
         msg.extend_from_slice(&block_hash.0);
         msg.extend_from_slice(&valid_round.to_le_bytes());
         msg
+    }
+
+    pub fn signing_bytes_static_for_chain_id(
+        chain_id: &str,
+        height: u64,
+        round: u32,
+        block_hash: &Hash,
+        valid_round: i32,
+    ) -> Vec<u8> {
+        maybe_versioned_signing_bytes(
+            DOMAIN_PROPOSAL,
+            chain_id,
+            &Self::signable_bytes_static(height, round, block_hash, valid_round),
+        )
     }
 }
 
@@ -2199,10 +2256,38 @@ impl Prevote {
         msg
     }
 
+    pub fn signing_bytes_for_chain_id(
+        chain_id: &str,
+        height: u64,
+        round: u32,
+        block_hash: &Option<Hash>,
+    ) -> Vec<u8> {
+        maybe_versioned_signing_bytes(
+            DOMAIN_PREVOTE,
+            chain_id,
+            &Self::signable_bytes(height, round, block_hash),
+        )
+    }
+
     /// Verify the voter's PQ signature.
     pub fn verify_signature(&self) -> bool {
         let msg = Self::signable_bytes(self.height, self.round, &self.block_hash);
         crate::Keypair::verify(&self.validator, &msg, &self.signature)
+    }
+
+    pub fn verify_signature_with_chain_id(&self, chain_id: &str) -> bool {
+        if !chain_id.is_empty() {
+            let msg = Self::signing_bytes_for_chain_id(
+                chain_id,
+                self.height,
+                self.round,
+                &self.block_hash,
+            );
+            if crate::Keypair::verify(&self.validator, &msg, &self.signature) {
+                return true;
+            }
+        }
+        self.verify_signature()
     }
 }
 
@@ -2254,10 +2339,40 @@ impl Precommit {
         msg
     }
 
+    pub fn signing_bytes_for_chain_id(
+        chain_id: &str,
+        height: u64,
+        round: u32,
+        block_hash: &Option<Hash>,
+        timestamp: u64,
+    ) -> Vec<u8> {
+        maybe_versioned_signing_bytes(
+            DOMAIN_PRECOMMIT,
+            chain_id,
+            &Self::signable_bytes(height, round, block_hash, timestamp),
+        )
+    }
+
     /// Verify the voter's PQ signature.
     pub fn verify_signature(&self) -> bool {
         let msg = Self::signable_bytes(self.height, self.round, &self.block_hash, self.timestamp);
         crate::Keypair::verify(&self.validator, &msg, &self.signature)
+    }
+
+    pub fn verify_signature_with_chain_id(&self, chain_id: &str) -> bool {
+        if !chain_id.is_empty() {
+            let msg = Self::signing_bytes_for_chain_id(
+                chain_id,
+                self.height,
+                self.round,
+                &self.block_hash,
+                self.timestamp,
+            );
+            if crate::Keypair::verify(&self.validator, &msg, &self.signature) {
+                return true;
+            }
+        }
+        self.verify_signature()
     }
 }
 
@@ -3052,6 +3167,9 @@ pub enum SlashingOffense {
     },
 }
 
+/// Maximum encoded SlashValidator evidence payload accepted by the system program.
+pub const SLASHING_EVIDENCE_CODEC_LIMIT_BYTES: u64 = 64 * 1024;
+
 /// Evidence of slashable behavior
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SlashingEvidence {
@@ -3650,6 +3768,7 @@ impl SlashingTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::codec::deserialize_legacy_bincode;
 
     fn test_signature(fill: u8) -> crate::PqSignature {
         crate::PqSignature::test_fixture(fill)
@@ -4489,9 +4608,9 @@ mod tests {
         }
         assert_eq!(pool.bootstrap_grants_issued(), 5);
 
-        // Bincode roundtrip (production format — used by RocksDB persistence)
-        let bytes = bincode::serialize(&pool).unwrap();
-        let pool2: StakePool = bincode::deserialize(&bytes).unwrap();
+        // Legacy bincode roundtrip (production format used by RocksDB persistence)
+        let bytes = serialize_legacy_bincode(&pool, "stake pool test").unwrap();
+        let pool2: StakePool = deserialize_legacy_bincode(&bytes, "stake pool test").unwrap();
         assert_eq!(pool2.bootstrap_grants_issued(), 5);
 
         // The counter continues from 5, not 0
@@ -4500,14 +4619,14 @@ mod tests {
         assert_eq!(idx, 5);
         assert_eq!(pool2.bootstrap_grants_issued(), 6);
 
-        // Bincode roundtrip WITH fingerprint (tests fingerprint_registry serialization)
+        // Legacy bincode roundtrip WITH fingerprint (tests fingerprint_registry serialization)
         let pk_with_fp = Pubkey::new([0xAA; 32]);
         let next_idx = pool.next_bootstrap_index().unwrap();
         pool.stake_with_index(pk_with_fp, BOOTSTRAP_GRANT_AMOUNT, 0, next_idx)
             .unwrap();
         pool.register_fingerprint(&pk_with_fp, [0xFF; 32]).unwrap();
-        let bytes2 = bincode::serialize(&pool).unwrap();
-        let pool3: StakePool = bincode::deserialize(&bytes2).unwrap();
+        let bytes2 = serialize_legacy_bincode(&pool, "stake pool test").unwrap();
+        let pool3: StakePool = deserialize_legacy_bincode(&bytes2, "stake pool test").unwrap();
         assert_eq!(pool3.bootstrap_grants_issued(), 6); // 5 original + 1 new
         assert_eq!(pool3.fingerprint_owner(&[0xFF; 32]), Some(&pk_with_fp));
     }
@@ -4571,6 +4690,68 @@ mod tests {
         assert_eq!(idx2, 1);
         assert!(is_new2);
         assert_eq!(pool.bootstrap_grants_issued(), 2);
+    }
+
+    #[test]
+    fn test_try_bootstrap_existing_under_target_duplicate_fingerprint_does_not_mutate() {
+        let mut pool = StakePool::new();
+        let pk1 = Pubkey::new([1u8; 32]);
+        let pk2 = Pubkey::new([2u8; 32]);
+        let fingerprint = [0xBC; 32];
+
+        pool.try_bootstrap_with_fingerprint(pk1, BOOTSTRAP_GRANT_AMOUNT, 0, fingerprint)
+            .unwrap();
+        pool.stake_with_index(pk2, MIN_VALIDATOR_STAKE, 0, u64::MAX)
+            .unwrap();
+        let before_amount = pool.get_stake(&pk2).unwrap().amount;
+        let before_total = pool.total_stake();
+
+        let err = pool
+            .try_bootstrap_with_fingerprint(pk2, BOOTSTRAP_GRANT_AMOUNT, 0, fingerprint)
+            .unwrap_err();
+        assert!(err.contains("already registered"));
+        assert_eq!(pool.get_stake(&pk2).unwrap().amount, before_amount);
+        assert_eq!(pool.total_stake(), before_total);
+        assert_eq!(pool.bootstrap_grants_issued(), 1);
+    }
+
+    #[test]
+    fn test_upsert_stake_full_existing_fingerprint_updates_registry() {
+        let mut pool = StakePool::new();
+        let pk = Pubkey::new([1u8; 32]);
+        let fingerprint = [0xFA; 32];
+        pool.stake(pk, MIN_VALIDATOR_STAKE, 0).unwrap();
+
+        let mut remote = StakeInfo::new(pk, MIN_VALIDATOR_STAKE, 0);
+        remote.machine_fingerprint = fingerprint;
+        pool.upsert_stake_full(remote);
+
+        assert_eq!(
+            pool.get_stake(&pk).unwrap().machine_fingerprint,
+            fingerprint
+        );
+        assert_eq!(pool.fingerprint_owner(&fingerprint), Some(&pk));
+    }
+
+    #[test]
+    fn test_upsert_stake_full_existing_fingerprint_collision_preserves_owner() {
+        let mut pool = StakePool::new();
+        let owner = Pubkey::new([1u8; 32]);
+        let contender = Pubkey::new([2u8; 32]);
+        let fingerprint = [0xFB; 32];
+        pool.stake(owner, MIN_VALIDATOR_STAKE, 0).unwrap();
+        pool.register_fingerprint(&owner, fingerprint).unwrap();
+        pool.stake(contender, MIN_VALIDATOR_STAKE, 0).unwrap();
+
+        let mut remote = StakeInfo::new(contender, MIN_VALIDATOR_STAKE, 0);
+        remote.machine_fingerprint = fingerprint;
+        pool.upsert_stake_full(remote);
+
+        assert_eq!(pool.fingerprint_owner(&fingerprint), Some(&owner));
+        assert_eq!(
+            pool.get_stake(&contender).unwrap().machine_fingerprint,
+            [0u8; 32]
+        );
     }
 
     #[test]

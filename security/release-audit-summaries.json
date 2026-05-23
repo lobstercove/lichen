@@ -1,0 +1,116 @@
+{
+  "schema_version": 1,
+  "policy": "Public release audit summaries are tracked as commands and expected evidence only. Runtime logs, private harnesses, local state, credentials, and generated artifacts stay ignored.",
+  "generated_artifact_policy": [
+    "/tests/",
+    "tests/artifacts/",
+    "/tmp/lichen-*",
+    "logs/",
+    "*.log"
+  ],
+  "summaries": [
+    {
+      "id": "AUD-001",
+      "area": "GitHub Actions supply chain",
+      "status": "tracked-gate",
+      "command": "node scripts/qa/test_github_actions_supply_chain.js",
+      "tracked_sources": [
+        ".github/workflows/ci.yml",
+        ".github/workflows/release.yml",
+        ".github/workflows/scorecard.yml",
+        ".github/workflows/wallet-extension-release.yml",
+        "scripts/qa/test_github_actions_supply_chain.js"
+      ],
+      "expected_evidence": "All third-party GitHub Actions refs are pinned to 40-character commit SHAs and default workflow token permissions stay read-only.",
+      "artifact_policy": "stdout summary only; do not commit workflow logs or downloaded artifacts."
+    },
+    {
+      "id": "AUD-002",
+      "area": "RustSec advisory exceptions",
+      "status": "tracked-gate",
+      "command": "node scripts/qa/test_rustsec_advisory_policy.js",
+      "tracked_sources": [
+        ".cargo/audit.toml",
+        "deny.toml",
+        "security/rustsec-advisory-exceptions.json",
+        "scripts/qa/test_rustsec_advisory_policy.js"
+      ],
+      "expected_evidence": "Each advisory exception has an owner, future expiry, substantive mitigation, and matching cargo-audit or cargo-deny config entry.",
+      "artifact_policy": "stdout summary only; cargo advisory database caches remain local."
+    },
+    {
+      "id": "AUD-003",
+      "area": "Legacy wire codec boundary",
+      "status": "tracked-gate",
+      "command": "node scripts/qa/test_legacy_bincode_codec_policy.js",
+      "tracked_sources": [
+        "core/src/codec.rs",
+        "scripts/qa/test_legacy_bincode_codec_policy.js"
+      ],
+      "expected_evidence": "Runtime Rust code only calls bincode through the named legacy compatibility codec boundary.",
+      "artifact_policy": "stdout summary only; no generated codec reports are committed."
+    },
+    {
+      "id": "AUD-004",
+      "area": "Python SDK release supply chain",
+      "status": "tracked-gate",
+      "command": "bash scripts/qa/test_python_sdk_release_supply_chain.sh",
+      "tracked_sources": [
+        "sdk/python/pyproject.toml",
+        "sdk/python/requirements.txt",
+        "sdk/python/requirements.lock",
+        "sdk/python/requirements-release.in",
+        "sdk/python/requirements-release.lock",
+        "scripts/qa/test_python_sdk_release_supply_chain.sh"
+      ],
+      "expected_evidence": "Runtime and release-tool dependencies install with --require-hashes, the SDK wheel builds without isolation, pip check passes, and pip-audit reports no known runtime vulnerabilities.",
+      "artifact_policy": "Temporary venvs and wheels are created under the OS temp directory and removed by the QA script."
+    },
+    {
+      "id": "AUD-005",
+      "area": "Deployment environment contracts",
+      "status": "tracked-gate",
+      "command": "node scripts/qa/test_deployment_env_examples.js",
+      "tracked_sources": [
+        "deploy/lichen-validator.service",
+        "deploy/lichen-custody.service",
+        "deploy/lichen-custody-mainnet.service",
+        "deploy/lichen-faucet.service",
+        "deploy/env-testnet.example",
+        "deploy/env-mainnet.example",
+        "deploy/custody-env.example",
+        "deploy/custody-env-mainnet.example",
+        "deploy/faucet-env.example",
+        "scripts/qa/test_deployment_env_examples.js"
+      ],
+      "expected_evidence": "Redacted validator, custody, and faucet env examples match the systemd EnvironmentFile, inline environment, and deploy/setup.sh generated-key contracts while keeping live credential values out of tracked templates.",
+      "artifact_policy": "stdout summary only; filled env files, secret-manager exports, and host-specific copies remain untracked operator material."
+    },
+    {
+      "id": "E2E-001",
+      "area": "Deterministic local chain smoke",
+      "status": "tracked-live-gate",
+      "command": "node scripts/qa/test_deterministic_e2e_smoke.js",
+      "tracked_sources": [
+        "scripts/qa/test_deterministic_e2e_smoke.js",
+        "scripts/start-local-3validators.sh",
+        "scripts/start-local-stack.sh"
+      ],
+      "expected_evidence": "A live local validator RPC reports healthy chain identity, monotonic slots, canonical block hashes and state roots, validator-count consistency, and expected genesis symbol registry entries.",
+      "artifact_policy": "stdout summary only; local validator state remains under ignored data directories."
+    },
+    {
+      "id": "E2E-002",
+      "area": "RPC and CLI integration inventory",
+      "status": "tracked-live-gate",
+      "command": "bash scripts/qa/test-rpc-comprehensive.sh && bash scripts/qa/test-cli-comprehensive.sh",
+      "tracked_sources": [
+        "scripts/qa/e2e-rpc-coverage.js",
+        "scripts/qa/test-rpc-comprehensive.sh",
+        "scripts/qa/test-cli-comprehensive.sh"
+      ],
+      "expected_evidence": "Live local RPC and CLI commands complete without failed endpoint wiring, transport, or command-surface regressions.",
+      "artifact_policy": "Legacy shell fallbacks may write /tmp summaries; do not move those outputs into tracked paths."
+    }
+  ]
+}

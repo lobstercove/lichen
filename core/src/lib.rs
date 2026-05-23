@@ -11,6 +11,7 @@ pub extern "C" fn __rust_probestack() {}
 
 pub mod account;
 pub mod block;
+pub mod codec;
 pub mod consensus;
 pub mod contract;
 pub mod contract_instruction;
@@ -29,6 +30,7 @@ pub mod network;
 pub mod nft;
 pub mod processor;
 pub mod restrictions;
+pub mod signing;
 pub mod state;
 pub mod transaction;
 #[cfg(feature = "zk")]
@@ -53,14 +55,16 @@ pub use consensus::{
     DOWNTIME_TIER2_SLASH_BPS, FINALITY_DEPTH, GENESIS_SUPPLY_SPORES, INFLATION_DECAY_RATE_BPS,
     INITIAL_INFLATION_RATE_BPS, MAX_BOOTSTRAP_SLOTS, MAX_BOOTSTRAP_VALIDATORS,
     MIGRATION_COOLDOWN_SLOTS, MIN_VALIDATOR_STAKE, PENALTY_REPAYMENT_BOOST_SLOTS,
-    PERFORMANCE_BONUS_BPS, SLOTS_PER_EPOCH, SLOTS_PER_YEAR, TERMINAL_INFLATION_RATE_BPS,
-    UPTIME_BONUS_THRESHOLD_BPS,
+    PERFORMANCE_BONUS_BPS, SLASHING_EVIDENCE_CODEC_LIMIT_BYTES, SLOTS_PER_EPOCH, SLOTS_PER_YEAR,
+    TERMINAL_INFLATION_RATE_BPS, UPTIME_BONUS_THRESHOLD_BPS,
+    VALIDATOR_BOOTSTRAP_GRANTS_ENABLED_METADATA_KEY, VALIDATOR_BOOTSTRAP_GRANTS_ENABLED_VALUE,
 };
 pub use contract::{
     decode_program_call_activity, encode_program_call_activity, AbiError, AbiEvent, AbiEventField,
-    AbiFunction, AbiParam, AbiReturn, AbiType, ContractAbi, ContractAccount, ContractContext,
-    ContractLifecycleStatus, ContractResult, ContractRuntime, PendingUpgrade, ProgramCallActivity,
-    DEFAULT_WASM_MEMORY_PAGES, MAX_WASM_MEMORY_PAGES, WASM_CU_DIVISOR,
+    AbiFunction, AbiParam, AbiResultKind, AbiResultSemantics, AbiReturn, AbiType, ContractAbi,
+    ContractAccount, ContractContext, ContractLifecycleStatus, ContractResult, ContractRuntime,
+    PendingUpgrade, ProgramCallActivity, DEFAULT_WASM_MEMORY_PAGES, MAX_WASM_MEMORY_PAGES,
+    WASM_CU_DIVISOR,
 };
 pub use contract_instruction::ContractInstruction;
 pub use evm::{
@@ -114,6 +118,11 @@ pub use restrictions::{
     EffectiveRestrictionRecord, ProtocolModuleId, RestrictionLiftReason, RestrictionMode,
     RestrictionReason, RestrictionRecord, RestrictionStatus, RestrictionTarget,
     RestrictionTransferDirection, GUARDIAN_RESTRICTION_MAX_SLOTS, NATIVE_LICN_ASSET_ID,
+};
+pub use signing::{
+    maybe_versioned_signing_bytes, versioned_signing_bytes, CHAIN_ID_METADATA_KEY, DOMAIN_BLOCK,
+    DOMAIN_NATIVE_TX, DOMAIN_PRECOMMIT, DOMAIN_PREVOTE, DOMAIN_PROPOSAL, SIGNING_ENVELOPE_MAGIC,
+    SIGNING_ENVELOPE_VERSION,
 };
 pub use state::AccountProof;
 pub use state::CheckpointMeta;

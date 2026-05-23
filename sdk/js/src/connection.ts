@@ -353,6 +353,11 @@ export class Connection {
     return this.rpc('getNetworkInfo');
   }
 
+  private async getSigningChainId(): Promise<string> {
+    const info = (await this.getNetworkInfo()) as any;
+    return info.chain_id ?? info.chainId ?? '';
+  }
+
   // ============================================================================
   // VALIDATOR ENDPOINTS
   // ============================================================================
@@ -387,11 +392,12 @@ export class Connection {
    */
   async stake(from: Keypair, validator: PublicKey, amount: number | bigint): Promise<string> {
     const blockhash = await this.getRecentBlockhash();
+    const chainId = await this.getSigningChainId();
     const instruction = TransactionBuilder.stake(from.pubkey(), validator, amount);
     const transaction = new TransactionBuilder()
       .add(instruction)
       .setRecentBlockhash(blockhash)
-      .buildAndSign(from);
+      .buildAndSignForChainId(from, chainId);
     return this.sendTransaction(transaction);
   }
 
@@ -400,11 +406,12 @@ export class Connection {
    */
   async unstake(from: Keypair, validator: PublicKey, amount: number | bigint): Promise<string> {
     const blockhash = await this.getRecentBlockhash();
+    const chainId = await this.getSigningChainId();
     const instruction = TransactionBuilder.unstake(from.pubkey(), validator, amount);
     const transaction = new TransactionBuilder()
       .add(instruction)
       .setRecentBlockhash(blockhash)
-      .buildAndSign(from);
+      .buildAndSignForChainId(from, chainId);
     return this.sendTransaction(transaction);
   }
 
@@ -436,11 +443,12 @@ export class Connection {
    */
   async transfer(from: Keypair, to: PublicKey, amount: number | bigint): Promise<string> {
     const blockhash = await this.getRecentBlockhash();
+    const chainId = await this.getSigningChainId();
     const instruction = TransactionBuilder.transfer(from.pubkey(), to, amount);
     const transaction = new TransactionBuilder()
       .add(instruction)
       .setRecentBlockhash(blockhash)
-      .buildAndSign(from);
+      .buildAndSignForChainId(from, chainId);
     return this.sendTransaction(transaction);
   }
 
@@ -458,11 +466,12 @@ export class Connection {
     initData: Uint8Array = new Uint8Array(0),
   ): Promise<string> {
     const blockhash = await this.getRecentBlockhash();
+    const chainId = await this.getSigningChainId();
     const instruction = TransactionBuilder.deployContract(deployer.pubkey(), code, initData);
     const transaction = new TransactionBuilder()
       .add(instruction)
       .setRecentBlockhash(blockhash)
-      .buildAndSign(deployer);
+      .buildAndSignForChainId(deployer, chainId);
     return this.sendTransaction(transaction);
   }
 
@@ -484,11 +493,12 @@ export class Connection {
     value: number | bigint = 0,
   ): Promise<string> {
     const blockhash = await this.getRecentBlockhash();
+    const chainId = await this.getSigningChainId();
     const instruction = TransactionBuilder.callContract(caller.pubkey(), contract, functionName, args, value);
     const transaction = new TransactionBuilder()
       .add(instruction)
       .setRecentBlockhash(blockhash)
-      .buildAndSign(caller);
+      .buildAndSignForChainId(caller, chainId);
     return this.sendTransaction(transaction);
   }
 
@@ -506,11 +516,12 @@ export class Connection {
     code: Uint8Array,
   ): Promise<string> {
     const blockhash = await this.getRecentBlockhash();
+    const chainId = await this.getSigningChainId();
     const instruction = TransactionBuilder.upgradeContract(owner.pubkey(), contract, code);
     const transaction = new TransactionBuilder()
       .add(instruction)
       .setRecentBlockhash(blockhash)
-      .buildAndSign(owner);
+      .buildAndSignForChainId(owner, chainId);
     return this.sendTransaction(transaction);
   }
 

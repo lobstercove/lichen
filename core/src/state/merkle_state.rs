@@ -2,6 +2,7 @@ use rocksdb::Direction;
 use serde::{Deserialize, Serialize};
 
 use super::*;
+use crate::codec::{append_legacy_bincode, deserialize_legacy_bincode, serialize_legacy_bincode};
 
 const STATE_ROOT_PREFIX_WITH_RESTRICTIONS: u8 = 0x03;
 const STATE_ROOT_PREFIX_LEGACY: u8 = 0x02;
@@ -493,7 +494,7 @@ impl StateStore {
     fn serialized_account_value(account: &Account) -> Result<Vec<u8>, String> {
         let mut value = Vec::with_capacity(256);
         value.push(0xBC);
-        bincode::serialize_into(&mut value, account)
+        append_legacy_bincode(&mut value, account, "account")
             .map_err(|e| format!("Failed to serialize account: {}", e))?;
         Ok(value)
     }
@@ -599,7 +600,7 @@ impl StateStore {
             leaves.insert(key.to_vec(), Hash::hash_two_parts(&key, &value));
         }
         for (id, record) in &batch.restriction_overlay {
-            match bincode::serialize(record) {
+            match serialize_legacy_bincode(record, "restriction") {
                 Ok(value) => {
                     let key = id.to_be_bytes().to_vec();
                     leaves.insert(key.clone(), Hash::hash_two_parts(&key, &value));
@@ -1003,7 +1004,7 @@ impl StateStore {
         } else {
             raw
         };
-        match bincode::deserialize::<Account>(data) {
+        match deserialize_legacy_bincode::<Account>(data, "account") {
             Ok(account) => account.dormant,
             Err(_) => false,
         }

@@ -387,10 +387,13 @@
 
             <div class="sub-heading">Return Code Conventions</div>
             <p>The runtime records the WASM return value in <code>return_code</code> (visible in
-                <code>getTransaction</code> and <code>callContract</code> responses), but there is
-                <strong>no chain-wide success code</strong>. Different contracts use different conventions. Treat
-                <code>return_code</code> as a raw contract-defined value and consult the ABI or contract docs for the
-                specific meaning.
+                <code>getTransaction</code> and <code>callContract</code> responses). New ABI metadata can declare
+                <code>result_semantics</code> per function so validators decide deterministically whether a
+                non-trapping call commits or reverts. For example, <code>{"kind":"return_code","success_codes":[0]}</code>
+                means any returned code other than <code>0</code> is an ABI failure and the transaction's contract
+                state changes are reverted. <code>{"kind":"return_value"}</code> means the return value is data, not a
+                status code. Legacy functions without <code>result_semantics</code> keep the compatibility behavior
+                below until their ABI is migrated.
             </p>
             <table class="const-table">
                 <tr>
@@ -1303,17 +1306,18 @@ curl -X POST https://testnet-rpc.lichen.network \
                     <div class="contract-icon icon-infra"><i class="fas fa-satellite-dish"></i></div>
                     <div class="contract-header-text">
                         <h3>LichenOracle</h3>
-                        <div class="subtitle">Price Feeds, VRF &amp; Attestations</div>
+                        <div class="subtitle">Price Feeds, Validator Entropy &amp; Attestations</div>
                     </div>
                     <div class="contract-meta"><span class="meta-chip">1,341 lines</span><span class="meta-chip">24
                             fns</span><span class="meta-chip">16.4 KB</span></div>
                 </div>
                 <div class="contract-body">
                     <p>Oracle contract providing three services: <strong>price feeds</strong> (owner-authorized feeders
-                        submit prices per asset, max 1h staleness), <strong>verifiable random function (VRF)</strong>
-                        (commit-reveal scheme for provably fair randomness), and <strong>data attestations</strong>
-                        (arbitrary signed data with on-chain verification). It complements, rather than replaces, the
-                        native validator oracle used for consensus price surfaces.</p>
+                        submit prices per asset, max 1h staleness), <strong>validator-entropy commit-reveal
+                            randomness</strong> (commitments bind to the first committed block entropy after the commit
+                        slot), and <strong>data attestations</strong> (arbitrary signed data with on-chain
+                        verification). It complements, rather than replaces, the native validator oracle used for
+                        consensus price surfaces.</p>
                     <div class="sub-heading">Configuration</div>
                     <table class="const-table">
                         <tr>

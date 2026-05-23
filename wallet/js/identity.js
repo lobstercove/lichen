@@ -85,6 +85,15 @@ function fmtAddr(addr, len = 8) {
     return addr.slice(0, len) + '…' + addr.slice(-4);
 }
 
+function formatLichenNameLabel(name) {
+    const bare = String(name || '').trim().replace(/(?:\.lichen)+$/i, '');
+    return bare ? `${bare}.lichen` : '';
+}
+
+function bareLichenNameLabel(name) {
+    return String(name || '').trim().replace(/(?:\.lichen)+$/i, '').toLowerCase();
+}
+
 function getAgentTypeName(val) {
     const t = AGENT_TYPES.find(a => a.value === Number(val));
     return t ? t.label : 'Unknown';
@@ -567,10 +576,10 @@ function renderIdentity(container, data) {
 
 // ── Profile Strip (top bar, always visible when has identity) ──
 function renderProfileStrip(displayName, agentType, agentDesc, tier, rep, isActive, lichenName) {
-    const lichenDisplay = lichenName ? escHtml((lichenName.endsWith('.lichen') ? lichenName : lichenName + '.lichen')) : null;
+    const lichenDisplay = lichenName ? escHtml(formatLichenNameLabel(lichenName)) : null;
     // Avoid showing "name name.lichen" when display name matches the .lichen name
-    const lichenBase = lichenName ? lichenName.replace(/\.lichen$/, '').toLowerCase() : null;
-    const rawDisplayLower = String(displayName).toLowerCase().replace(/\.lichen$/, '');
+    const lichenBase = lichenName ? bareLichenNameLabel(lichenName) : null;
+    const rawDisplayLower = bareLichenNameLabel(displayName);
     const showDisplayName = !lichenDisplay || rawDisplayLower !== lichenBase;
     return `
         <div class="id-profile-strip">
@@ -663,7 +672,7 @@ function renderNameSection(lichenName, nameDetails) {
         `;
     }
 
-    const name = lichenName.endsWith('.lichen') ? lichenName : lichenName + '.lichen';
+    const name = formatLichenNameLabel(lichenName);
     const expiry = nameDetails?.expiry_slot;
     const registered = nameDetails?.registered_slot || 0;
     // Expiry will be updated asynchronously
@@ -731,7 +740,7 @@ function renderSkillsSection(skills) {
 function renderVouchesSection(received, given) {
     const chips = received.length > 0
         ? received.slice(0, 12).map(v => {
-            const label = v.voucher_name ? escHtml(v.voucher_name) + '.lichen' : fmtAddr(v.voucher, 8);
+            const label = v.voucher_name ? escHtml(formatLichenNameLabel(v.voucher_name)) : escHtml(fmtAddr(v.voucher, 8));
             return `<span class="id-chip">${label}</span>`;
         }).join('')
         : '<span class="id-chip id-chip-muted">None yet</span>';
@@ -994,7 +1003,7 @@ async function showRegisterNameModal() {
                 });
             }
             const updateCost = () => {
-                const n = (nameInput?.value || '').toLowerCase().replace(/\.lichen$/, '').trim();
+                const n = bareLichenNameLabel(nameInput?.value || '');
                 const d = Math.max(1, Math.min(10, parseInt(durationInput?.value) || 1));
                 if (n.length >= 5) {
                     const costPerYear = getNameCostPerYear(n.length);
@@ -1011,7 +1020,7 @@ async function showRegisterNameModal() {
     });
     if (!values || !values.password || !values.name) return;
 
-    const name = values.name.toLowerCase().replace(/\.lichen$/, '').trim();
+    const name = bareLichenNameLabel(values.name);
     const duration = Math.max(1, Math.min(10, parseInt(values.duration) || 1));
     const costPerYear = getNameCostPerYear(name.length);
     const totalCost = costPerYear * duration;
@@ -1052,7 +1061,7 @@ async function showRenewNameModal() {
     const currentName = _identityCache?.lichenName;
     if (!currentName) { showToast('No name to renew'); return; }
 
-    const name = currentName.replace(/\.lichen$/, '');
+    const name = bareLichenNameLabel(currentName);
     const costPerYear = getNameCostPerYear(name.length);
 
     const FEE = typeof BASE_FEE_LICN !== 'undefined' ? BASE_FEE_LICN : 0.001;
@@ -1096,7 +1105,7 @@ async function showTransferNameModal() {
     const currentName = _identityCache?.lichenName;
     if (!currentName) { showToast('No name to transfer'); return; }
 
-    const name = currentName.replace(/\.lichen$/, '');
+    const name = bareLichenNameLabel(currentName);
 
     const FEE = typeof BASE_FEE_LICN !== 'undefined' ? BASE_FEE_LICN : 0.001;
     const values = await showPasswordModal({
@@ -1142,7 +1151,7 @@ async function showReleaseNameModal() {
     const currentName = _identityCache?.lichenName;
     if (!currentName) { showToast('No name to release'); return; }
 
-    const name = currentName.replace(/\.lichen$/, '');
+    const name = bareLichenNameLabel(currentName);
 
     const confirmed = await showConfirmModal({
         title: `Release ${name}.lichen?`,

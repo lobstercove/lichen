@@ -13,10 +13,10 @@ pub(super) async fn create_withdrawal(
     State(state): State<CustodyState>,
     headers: axum::http::HeaderMap,
     Json(req): Json<WithdrawalRequest>,
-) -> Json<Value> {
+) -> CustodyJsonResponse {
     let preflight = match prepare_create_withdrawal_request(&state, &headers, req) {
         Ok(preflight) => preflight,
-        Err(response) => return response,
+        Err(response) => return CustodyJsonResponse::from_json(response),
     };
     let req = preflight.req;
     let now_secs = preflight.now_secs;
@@ -27,20 +27,20 @@ pub(super) async fn create_withdrawal(
     let velocity_snapshot =
         match build_withdrawal_velocity_snapshot(&state.config, &asset_lower, req.amount) {
             Ok(snapshot) => snapshot,
-            Err(error) => return Json(json!({ "error": error })),
+            Err(error) => return CustodyJsonResponse::from_value(json!({ "error": error })),
         };
 
     if let Some(response) =
         handle_withdrawal_auth_replay(&state, now_secs, &replay_digest, &req, &velocity_snapshot)
             .await
     {
-        return response;
+        return CustodyJsonResponse::from_json(response);
     }
 
     if let Err(response) =
         validate_withdrawal_request_destination(&state.config, &req, &asset_lower)
     {
-        return response;
+        return CustodyJsonResponse::from_json(response);
     }
 
     if let Err(error) = ensure_withdrawal_restrictions_allow(
@@ -53,26 +53,37 @@ pub(super) async fn create_withdrawal(
     )
     .await
     {
-        return Json(json!({ "error": error }));
+        return CustodyJsonResponse::from_value(json!({ "error": error }));
+    }
+
+    let _replay_guard = state.bridge_auth_replay_lock.lock().await;
+    if let Some(response) = find_withdrawal_auth_replay_response(
+        &state,
+        now_secs,
+        &replay_digest,
+        &req,
+        &velocity_snapshot,
+    ) {
+        return CustodyJsonResponse::from_json(response);
     }
 
     if let Err(response) = enforce_withdrawal_rate_limits(&state, &req).await {
-        return response;
+        return CustodyJsonResponse::from_json(response);
     }
 
     let preferred = match resolve_withdrawal_preferred_stablecoin(&state.db, &req, &asset_lower) {
         Ok(preferred) => preferred,
-        Err(response) => return response,
+        Err(response) => return CustodyJsonResponse::from_json(response),
     };
 
-    complete_withdrawal_request(
+    CustodyJsonResponse::from_json(complete_withdrawal_request(
         &state,
         &req,
         preferred,
         &velocity_snapshot,
         &replay_digest,
         withdrawal_auth_expires_at,
-    )
+    ))
 }
 
 #[derive(Deserialize)]

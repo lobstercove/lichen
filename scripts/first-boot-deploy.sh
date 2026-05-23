@@ -38,6 +38,7 @@ TOOLS_DIR="${REPO_ROOT}/tools"
 CONTRACTS_DIR="${REPO_ROOT}/contracts"
 SDK_PYTHON_DIR="${REPO_ROOT}/sdk/python"
 SDK_REQUIREMENTS_FILE="${SDK_PYTHON_DIR}/requirements.txt"
+SDK_REQUIREMENTS_LOCK="${SDK_PYTHON_DIR}/requirements.lock"
 MANIFEST="${REPO_ROOT}/deploy-manifest.json"
 PYTHON_BIN="${PYTHON_BIN:-$REPO_ROOT/.venv/bin/python}"
 if [[ ! -x "$PYTHON_BIN" ]]; then
@@ -90,6 +91,8 @@ NC='\033[0m'
 ensure_python_runtime() {
     local bootstrap_python="python3"
     local venv_dir="${REPO_ROOT}/.venv"
+    local requirements_file="$SDK_REQUIREMENTS_FILE"
+    local pip_install_args=()
 
     if ! command -v "$bootstrap_python" >/dev/null 2>&1; then
         echo -e "  ${RED}❌ python3 is required for post-genesis bootstrap${NC}"
@@ -107,8 +110,13 @@ PY
         fi
     fi
 
-    if [[ ! -f "$SDK_REQUIREMENTS_FILE" ]]; then
-        echo -e "  ${RED}❌ Python requirements file not found at ${SDK_REQUIREMENTS_FILE}${NC}"
+    if [[ -f "$SDK_REQUIREMENTS_LOCK" ]]; then
+        requirements_file="$SDK_REQUIREMENTS_LOCK"
+        pip_install_args=(--require-hashes)
+    fi
+
+    if [[ ! -f "$requirements_file" ]]; then
+        echo -e "  ${RED}❌ Python requirements file not found at ${requirements_file}${NC}"
         exit 1
     fi
 
@@ -117,8 +125,10 @@ PY
         rm -rf "$venv_dir"
     fi
     "$bootstrap_python" -m venv "$venv_dir"
-    "$venv_dir/bin/python" -m pip install --upgrade pip >/dev/null
-    "$venv_dir/bin/pip" install -r "$SDK_REQUIREMENTS_FILE"
+    if [[ ${#pip_install_args[@]} -eq 0 ]]; then
+        "$venv_dir/bin/python" -m pip install --upgrade pip >/dev/null
+    fi
+    "$venv_dir/bin/python" -m pip install "${pip_install_args[@]}" -r "$requirements_file"
     PYTHON_BIN="$venv_dir/bin/python"
 }
 

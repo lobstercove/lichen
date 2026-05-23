@@ -55,6 +55,11 @@ function lichenToEvmAddress(base58Pubkey) {
     }
 }
 
+function formatExplorerLichenName(name) {
+    const bare = String(name || '').trim().replace(/(?:\.lichen)+$/i, '');
+    return bare ? `${bare}.lichen` : '';
+}
+
 // ===== RPC helper =====
 // Delegates to the shared LichenRPC instance from explorer.js.
 // Falls back to direct fetch if rpc is unavailable (standalone testing).
@@ -173,6 +178,34 @@ function initAddressRealtime() {
 }
 
 // ===== Load Address Data =====
+const ORACLE_PRICE_STALE_MS = 5 * 60 * 1000;
+
+function normalizeOraclePriceSnapshot(oraclePrices) {
+    if (oraclePrices && typeof oraclePrices === 'object' && oraclePrices.prices && typeof oraclePrices.prices === 'object') {
+        return {
+            prices: oraclePrices.prices,
+            source: oraclePrices.source || 'oracle',
+            timestamp: Number(oraclePrices.timestamp || 0),
+        };
+    }
+    return {
+        prices: oraclePrices || {},
+        source: 'oracle',
+        timestamp: 0,
+    };
+}
+
+function oraclePriceTimestampLabel(timestamp) {
+    return timestamp > 0 ? new Date(timestamp).toLocaleString() : 'not available';
+}
+
+function tokenUsdValuationTitle(symbol, quote) {
+    if (!quote || !quote.price) return `USD valuation source unavailable for ${symbol || 'token'}`;
+    const source = quote.source === 'stablecoin-peg' ? 'stablecoin peg estimate' : quote.source;
+    const stale = quote.stale ? ', stale' : '';
+    return `USD valuation source: ${symbol || 'token'} ${source}, updated ${oraclePriceTimestampLabel(quote.timestamp)}${stale}`;
+}
+
 async function loadAddressData() {
     try {
         let accountData;
@@ -187,9 +220,9 @@ async function loadAddressData() {
         // Fetch oracle prices for token USD values
         try {
             const prices = await rpcCall('getOraclePrices', []);
-            window._oraclePrices = prices || {};
+            window._oraclePrices = { prices: prices || {}, source: 'oracle', timestamp: Date.now() };
         } catch (_e) {
-            window._oraclePrices = {};
+            window._oraclePrices = { prices: {}, source: 'unavailable', timestamp: 0 };
         }
         await applyValidatorType(accountData);
         displayAddressData(accountData);
@@ -458,14 +491,14 @@ function renderIdentityPane(profile) {
 
     const vouchReceivedHtml = vouchesReceived.length
         ? vouchesReceived.slice(0, 20).map(v => {
-            const name = v.voucher_name ? `${escapeHtml(v.voucher_name)}.lichen` : formatAddress(v.voucher);
+            const name = v.voucher_name ? escapeHtml(formatExplorerLichenName(v.voucher_name)) : formatAddress(v.voucher);
             return `<span class="identity-chip"><strong>${name}</strong></span>`;
         }).join('')
         : `<span class="identity-chip">No received vouches</span>`;
 
     const vouchGivenHtml = vouchesGiven.length
         ? vouchesGiven.slice(0, 20).map(v => {
-            const name = v.vouchee_name ? `${escapeHtml(v.vouchee_name)}.lichen` : formatAddress(v.vouchee);
+            const name = v.vouchee_name ? escapeHtml(formatExplorerLichenName(v.vouchee_name)) : formatAddress(v.vouchee);
             return `<span class="identity-chip"><strong>${name}</strong></span>`;
         }).join('')
         : `<span class="identity-chip">No given vouches</span>`;
@@ -489,7 +522,7 @@ function renderIdentityPane(profile) {
         .join('');
 
     const primaryName = profile?.lichenName
-        ? escapeHtml(profile.lichenName.endsWith('.lichen') ? profile.lichenName : profile.lichenName + '.lichen')
+        ? escapeHtml(formatExplorerLichenName(profile.lichenName))
         : displayName;
     const expirySlot = profile?.nameDetails?.expiry_slot;
     const registeredSlot = profile?.nameDetails?.registered_slot || 0;
@@ -1865,7 +1898,8 @@ function displayTokenBalances(tokens, oraclePrices) {
     const tbody = document.getElementById('tokensTable');
     if (!tbody) return;
     tbody.innerHTML = '';
-    const prices = oraclePrices || {};
+    const priceSnapshot = normalizeOraclePriceSnapshot(oraclePrices);
+    const prices = priceSnapshot.prices || {};
 
     if (!tokens || tokens.length === 0) {
         tbody.innerHTML = `
@@ -1894,12 +1928,27 @@ function displayTokenBalances(tokens, oraclePrices) {
             Object.entries(prices).map(([k, v]) => [k.toUpperCase(), v])
         );
         let usdPrice = priceLookup[rawSymbol.toUpperCase()] || 0;
+        let priceQuote = usdPrice > 0
+            ? {
+                price: usdPrice,
+                source: priceSnapshot.source,
+                timestamp: priceSnapshot.timestamp,
+                stale: priceSnapshot.timestamp > 0 && Date.now() - priceSnapshot.timestamp > ORACLE_PRICE_STALE_MS,
+            }
+            : null;
         // Stablecoins: lUSD/LUSD = $1.00 if oracle returns 0
-        if (!usdPrice && /^l?usd$/i.test(rawSymbol)) usdPrice = 1.0;
+        if (!usdPrice && /^l?usd$/i.test(rawSymbol)) {
+            usdPrice = 1.0;
+            priceQuote = { price: usdPrice, source: 'stablecoin-peg', timestamp: 0, stale: false };
+        }
         const usdValue = uiAmount * usdPrice;
+        const valueSuffix = priceQuote?.source === 'stablecoin-peg'
+            ? ' · peg'
+            : (priceQuote?.stale ? ' · stale' : '');
         const valueStr = usdPrice > 0
-            ? '$' + usdValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+            ? '$' + usdValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + valueSuffix
             : '—';
+        const valueTitle = tokenUsdValuationTitle(rawSymbol, priceQuote);
 
         const row = document.createElement('tr');
         row.innerHTML = `
@@ -1911,7 +1960,7 @@ function displayTokenBalances(tokens, oraclePrices) {
             </td>
             <td><strong>${symbol}</strong></td>
             <td>${uiAmount.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: decimals })}</td>
-            <td>${valueStr}</td>
+            <td title="${escapeHtml(valueTitle)}">${valueStr}</td>
         `;
         tbody.appendChild(row);
     });

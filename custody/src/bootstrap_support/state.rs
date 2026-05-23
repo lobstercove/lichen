@@ -62,6 +62,7 @@ pub(crate) async fn build_custody_state(mut config: CustodyConfig) -> CustodySta
         // AUDIT-FIX W-H4: Deposit rate limiter
         deposit_rate: Arc::new(Mutex::new(deposit_rate_state)),
         event_tx: event_tx.clone(),
+        ws_event_tickets: Arc::new(Mutex::new(BTreeMap::new())),
         webhook_delivery_limiter: Arc::new(Semaphore::new(webhook_max_inflight)),
     }
 }

@@ -1,6 +1,7 @@
 // P2P Message Types
 
 use lichen_core::{
+    codec::{deserialize_legacy_bincode_strict, serialize_legacy_bincode_limited},
     Block, BlockHeader, CommitSignature, Hash, PqSignature, Precommit, Prevote, Proposal, Pubkey,
     SlashingEvidence, StakePool, Transaction, ValidatorSet, Vote,
 };
@@ -350,6 +351,20 @@ pub struct PeerInfoMsg {
 /// Minimum payload size to trigger LZ4 compression (1 KB).
 /// Messages smaller than this are sent uncompressed to avoid overhead.
 const COMPRESSION_THRESHOLD: usize = 1024;
+const P2P_MESSAGE_CODEC_LIMIT_BYTES: u64 = 16 * 1024 * 1024;
+
+fn decode_p2p_message_payload(payload: &[u8]) -> Result<P2PMessage, String> {
+    let msg: P2PMessage =
+        deserialize_legacy_bincode_strict(payload, P2P_MESSAGE_CODEC_LIMIT_BYTES, "P2P message")
+            .map_err(|e| format!("Deserialization error: {}", e))?;
+    if msg.version != P2P_PROTOCOL_VERSION {
+        return Err(format!(
+            "Protocol version mismatch: got {}, expected {}",
+            msg.version, P2P_PROTOCOL_VERSION
+        ));
+    }
+    Ok(msg)
+}
 
 impl P2PMessage {
     /// Create new message
@@ -378,11 +393,9 @@ impl P2PMessage {
     ///
     /// Limit is 16 MB to accommodate state snapshot chunks.
     pub fn serialize(&self) -> Result<Vec<u8>, String> {
-        use bincode::Options;
-        let raw = bincode::options()
-            .with_limit(16 * 1024 * 1024)
-            .serialize(self)
-            .map_err(|e| format!("Serialization error: {}", e))?;
+        let raw =
+            serialize_legacy_bincode_limited(self, P2P_MESSAGE_CODEC_LIMIT_BYTES, "P2P message")
+                .map_err(|e| format!("Serialization error: {}", e))?;
 
         if raw.len() >= COMPRESSION_THRESHOLD {
             let compressed = lz4_flex::compress_prepend_size(&raw);
@@ -407,8 +420,6 @@ impl P2PMessage {
     /// legacy (raw bincode, any other first byte) formats.
     /// AUDIT-FIX L2: Rejects messages with incompatible protocol version.
     pub fn deserialize(bytes: &[u8]) -> Result<Self, String> {
-        use bincode::Options;
-
         if bytes.is_empty() {
             return Err("Empty message".to_string());
         }
@@ -431,23 +442,9 @@ impl P2PMessage {
                         expected_len
                     ));
                 }
-                // Use a leaked local binding so the borrow checker is happy
-                // (the decompressed Vec lives long enough for deserialization).
-                // We return early from this function, so no actual leak.
                 let decompressed = lz4_flex::decompress_size_prepended(&bytes[5..])
                     .map_err(|e| format!("LZ4 decompression error: {}", e))?;
-                // Can't return a reference to a local, so deserialize inline
-                let msg: Self = bincode::options()
-                    .with_limit(16 * 1024 * 1024)
-                    .deserialize(&decompressed)
-                    .map_err(|e| format!("Deserialization error: {}", e))?;
-                if msg.version != P2P_PROTOCOL_VERSION {
-                    return Err(format!(
-                        "Protocol version mismatch: got {}, expected {}",
-                        msg.version, P2P_PROTOCOL_VERSION
-                    ));
-                }
-                return Ok(msg);
+                return decode_p2p_message_payload(&decompressed);
             }
             _other => {
                 // Legacy compatibility: no prefix byte, try raw bincode
@@ -456,17 +453,7 @@ impl P2PMessage {
             }
         };
 
-        let msg: Self = bincode::options()
-            .with_limit(16 * 1024 * 1024)
-            .deserialize(payload)
-            .map_err(|e| format!("Deserialization error: {}", e))?;
-        if msg.version != P2P_PROTOCOL_VERSION {
-            return Err(format!(
-                "Protocol version mismatch: got {}, expected {}",
-                msg.version, P2P_PROTOCOL_VERSION
-            ));
-        }
-        Ok(msg)
+        decode_p2p_message_payload(payload)
     }
 }
 
@@ -615,17 +602,29 @@ mod tests {
     fn test_legacy_message_backwards_compat() {
         // Simulate a message from an old peer without the 0x00/0x01 prefix.
         // The deserializer should handle raw bincode as legacy format.
-        use bincode::Options;
         let addr = "127.0.0.1:8000".parse().unwrap();
         let msg = P2PMessage::new(MessageType::Ping, addr);
         // Serialize with raw bincode (no envelope prefix)
-        let raw = bincode::options()
-            .with_limit(16 * 1024 * 1024)
-            .serialize(&msg)
-            .unwrap();
+        let raw =
+            serialize_legacy_bincode_limited(&msg, P2P_MESSAGE_CODEC_LIMIT_BYTES, "P2P message")
+                .unwrap();
         // Deserialize — should fall through to legacy path
         let decoded = P2PMessage::deserialize(&raw).unwrap();
         assert_eq!(decoded.version, msg.version);
+    }
+
+    #[test]
+    fn test_legacy_message_rejects_trailing_bytes() {
+        let addr = "127.0.0.1:8000".parse().unwrap();
+        let msg = P2PMessage::new(MessageType::Ping, addr);
+        let mut raw =
+            serialize_legacy_bincode_limited(&msg, P2P_MESSAGE_CODEC_LIMIT_BYTES, "P2P message")
+                .unwrap();
+        raw.push(0);
+
+        let result = P2PMessage::deserialize(&raw);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Deserialization error"));
     }
 
     #[test]

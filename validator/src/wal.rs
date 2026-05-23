@@ -17,6 +17,7 @@
 // applied, the WAL is truncated (checkpointed) because the committed
 // block is the new source of truth.
 
+use lichen_core::codec::{deserialize_legacy_bincode_strict, serialize_legacy_bincode_limited};
 use lichen_core::{Block, Hash, PqSignature, Precommit, Prevote, Pubkey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -24,6 +25,8 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use tracing::{debug, error, info, warn};
+
+const WAL_ENTRY_CODEC_LIMIT_BYTES: u64 = 32 * 1024 * 1024;
 
 /// A single WAL entry. Entries are appended; only the latest state matters.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -153,7 +156,11 @@ impl ConsensusWal {
                 );
                 break;
             }
-            match bincode::deserialize::<WalEntry>(payload) {
+            match deserialize_legacy_bincode_strict::<WalEntry>(
+                payload,
+                WAL_ENTRY_CODEC_LIMIT_BYTES,
+                "consensus WAL entry",
+            ) {
                 Ok(entry) => entries.push(entry),
                 Err(e) => {
                     warn!("⚠️ WAL: Failed to decode entry at offset {}: {}", cursor, e);
@@ -168,8 +175,12 @@ impl ConsensusWal {
     /// Append an entry to the WAL and flush to disk.
     fn append_result(&mut self, entry: WalEntry) -> Result<(), String> {
         // Serialize entry
-        let encoded = bincode::serialize(&entry)
-            .map_err(|e| format!("WAL: Failed to serialize entry: {e}"))?;
+        let encoded = serialize_legacy_bincode_limited(
+            &entry,
+            WAL_ENTRY_CODEC_LIMIT_BYTES,
+            "consensus WAL entry",
+        )
+        .map_err(|e| format!("WAL: Failed to serialize entry: {e}"))?;
 
         // Append length-prefixed entry to file
         let mut file = match fs::OpenOptions::new()
@@ -359,7 +370,11 @@ impl ConsensusWal {
         match fs::File::create(&self.path) {
             Ok(mut f) => {
                 let entry = WalEntry::Checkpoint { height };
-                if let Ok(encoded) = bincode::serialize(&entry) {
+                if let Ok(encoded) = serialize_legacy_bincode_limited(
+                    &entry,
+                    WAL_ENTRY_CODEC_LIMIT_BYTES,
+                    "consensus WAL checkpoint",
+                ) {
                     let len_bytes = (encoded.len() as u32).to_le_bytes();
                     let checksum = Self::checksum(&encoded);
                     if let Err(e) = f

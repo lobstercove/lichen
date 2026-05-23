@@ -1,36 +1,149 @@
 use super::*;
+use crate::codec::deserialize_legacy_bincode_strict;
+use crate::consensus::SLASHING_EVIDENCE_CODEC_LIMIT_BYTES;
 use crate::restrictions::{ProtocolModuleId, RestrictionTransferDirection};
+
+const REGISTER_VALIDATOR_LEGACY_LEN: usize = 33;
+const REGISTER_VALIDATOR_EXPLICIT_GRANT_LEN: usize = 34;
+const REGISTER_VALIDATOR_SELF_FUNDED_LEN: usize = 42;
+const REGISTER_VALIDATOR_MODE_OFFSET: usize = 33;
+const REGISTER_VALIDATOR_MODE_GRANT: u8 = 0;
+const REGISTER_VALIDATOR_MODE_SELF_FUNDED: u8 = 1;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ValidatorRegistrationMode {
+    BootstrapGrant,
+    SelfFunded { amount: u64 },
+}
+
+fn decode_validator_registration_mode(data: &[u8]) -> Result<ValidatorRegistrationMode, String> {
+    match data.len() {
+        REGISTER_VALIDATOR_LEGACY_LEN => Ok(ValidatorRegistrationMode::BootstrapGrant),
+        REGISTER_VALIDATOR_EXPLICIT_GRANT_LEN => {
+            if data[REGISTER_VALIDATOR_MODE_OFFSET] == REGISTER_VALIDATOR_MODE_GRANT {
+                Ok(ValidatorRegistrationMode::BootstrapGrant)
+            } else {
+                Err("RegisterValidator: invalid registration mode".to_string())
+            }
+        }
+        REGISTER_VALIDATOR_SELF_FUNDED_LEN => match data[REGISTER_VALIDATOR_MODE_OFFSET] {
+            REGISTER_VALIDATOR_MODE_SELF_FUNDED => {
+                let amount_bytes: [u8; 8] = data[34..42]
+                    .try_into()
+                    .map_err(|_| "RegisterValidator: invalid self-funded amount".to_string())?;
+                let amount = u64::from_le_bytes(amount_bytes);
+                if amount == 0 {
+                    return Err("RegisterValidator: self-funded amount must be nonzero".to_string());
+                }
+                Ok(ValidatorRegistrationMode::SelfFunded { amount })
+            }
+            REGISTER_VALIDATOR_MODE_GRANT => Err(
+                "RegisterValidator: grant mode must not include trailing self-funded amount"
+                    .to_string(),
+            ),
+            _ => Err("RegisterValidator: invalid registration mode".to_string()),
+        },
+        len if len < REGISTER_VALIDATOR_LEGACY_LEN => {
+            Err("RegisterValidator: missing machine_fingerprint (need 33 bytes)".to_string())
+        }
+        _ => Err("RegisterValidator: invalid instruction length".to_string()),
+    }
+}
 
 impl TxProcessor {
     /// On-chain validator registration with bootstrap grant (instruction type 26).
     /// Processes validator admission through consensus so ALL nodes see identical state.
     ///
-    /// Instruction data: [26 | machine_fingerprint(32)]
-    /// Accounts: [new_validator_pubkey]
+    /// Instruction data:
+    /// - legacy/dev grant: [26 | machine_fingerprint(32)]
+    /// - explicit dev grant: [26 | machine_fingerprint(32) | 0]
+    /// - self-funded: [26 | machine_fingerprint(32) | 1 | amount_u64_le]
+    ///   Accounts: [new_validator_pubkey]
     ///
-    /// This is fee-exempt because the new validator has no account yet.
-    /// The treasury funds the bootstrap grant (100K LICN) which is immediately staked.
+    /// Treasury bootstrap grants are disabled unless chain metadata explicitly
+    /// enables them. Public registration should use self-funded stake or a
+    /// governed voucher path.
     pub(super) fn system_register_validator(&self, ix: &Instruction) -> Result<(), String> {
         if ix.accounts.is_empty() {
             return Err("RegisterValidator requires [validator] account".to_string());
         }
-        if ix.data.len() < 33 {
-            return Err(
-                "RegisterValidator: missing machine_fingerprint (need 33 bytes)".to_string(),
-            );
-        }
+        let mode = decode_validator_registration_mode(&ix.data)?;
 
         let validator_pubkey = ix.accounts[0];
         let mut fingerprint = [0u8; 32];
         fingerprint.copy_from_slice(&ix.data[1..33]);
 
-        if let Some(existing) = self.b_get_account(&validator_pubkey)? {
-            if existing.staked >= crate::consensus::BOOTSTRAP_GRANT_AMOUNT {
-                return Ok(());
+        if fingerprint == [0u8; 32] {
+            return Err(
+                "RegisterValidator: zero machine fingerprint is not accepted for validator registration"
+                    .to_string(),
+            );
+        }
+
+        match mode {
+            ValidatorRegistrationMode::BootstrapGrant => {
+                self.system_register_validator_bootstrap_grant(validator_pubkey, fingerprint)
+            }
+            ValidatorRegistrationMode::SelfFunded { amount } => {
+                self.system_register_validator_self_funded(validator_pubkey, fingerprint, amount)
+            }
+        }
+    }
+
+    fn validator_bootstrap_grants_enabled(&self) -> Result<bool, String> {
+        Ok(self
+            .state
+            .get_metadata(crate::consensus::VALIDATOR_BOOTSTRAP_GRANTS_ENABLED_METADATA_KEY)?
+            .as_deref()
+            == Some(crate::consensus::VALIDATOR_BOOTSTRAP_GRANTS_ENABLED_VALUE))
+    }
+
+    fn system_register_validator_bootstrap_grant(
+        &self,
+        validator_pubkey: Pubkey,
+        fingerprint: [u8; 32],
+    ) -> Result<(), String> {
+        if !self.validator_bootstrap_grants_enabled()? {
+            return Err(
+                "RegisterValidator: treasury bootstrap grants are disabled on this chain; use self-funded registration or a governed voucher"
+                    .to_string(),
+            );
+        }
+
+        let mut pool = self.b_get_stake_pool()?;
+        if let Some(existing_pk) = pool.fingerprint_owner(&fingerprint) {
+            if existing_pk != &validator_pubkey {
+                return Err(format!(
+                    "RegisterValidator: machine fingerprint already registered to {}",
+                    existing_pk.to_base58()
+                ));
             }
         }
 
-        let pool = self.b_get_stake_pool()?;
+        if let Some(existing) = self.b_get_account(&validator_pubkey)? {
+            if existing.staked >= crate::consensus::BOOTSTRAP_GRANT_AMOUNT {
+                if pool
+                    .get_stake(&validator_pubkey)
+                    .map(|stake| stake.total_stake() >= crate::consensus::BOOTSTRAP_GRANT_AMOUNT)
+                    .unwrap_or(false)
+                {
+                    pool.register_fingerprint(&validator_pubkey, fingerprint)
+                        .map_err(|e| format!("RegisterValidator: stake pool error: {}", e))?;
+                    self.b_put_stake_pool(&pool)?;
+                    return Ok(());
+                }
+                return Err(
+                    "RegisterValidator: existing staked account is not backed by stake-pool registration"
+                        .to_string(),
+                );
+            }
+            if existing.staked > 0 {
+                return Err(
+                    "RegisterValidator: existing validator account has partial stake; use self-funded registration or repair the stake-pool state"
+                        .to_string(),
+                );
+            }
+        }
         let grants_issued = pool.bootstrap_grants_issued();
         if grants_issued >= crate::consensus::MAX_BOOTSTRAP_VALIDATORS {
             return Err(format!(
@@ -38,17 +151,6 @@ impl TxProcessor {
                 grants_issued,
                 crate::consensus::MAX_BOOTSTRAP_VALIDATORS
             ));
-        }
-
-        if fingerprint != [0u8; 32] {
-            if let Some(existing_pk) = pool.fingerprint_owner(&fingerprint) {
-                if existing_pk != &validator_pubkey {
-                    return Err(format!(
-                        "RegisterValidator: machine fingerprint already registered to {}",
-                        existing_pk.to_base58()
-                    ));
-                }
-            }
         }
         drop(pool);
 
@@ -118,6 +220,56 @@ impl TxProcessor {
         Ok(())
     }
 
+    fn system_register_validator_self_funded(
+        &self,
+        validator_pubkey: Pubkey,
+        fingerprint: [u8; 32],
+        amount: u64,
+    ) -> Result<(), String> {
+        self.ensure_protocol_module_not_paused(ProtocolModuleId::Staking, "RegisterValidator")?;
+
+        let mut pool = self.b_get_stake_pool()?;
+        if pool.get_stake(&validator_pubkey).is_some() {
+            return Err(
+                "RegisterValidator: validator is already registered; use Stake to add stake"
+                    .to_string(),
+            );
+        }
+        if let Some(existing_pk) = pool.fingerprint_owner(&fingerprint) {
+            if existing_pk != &validator_pubkey {
+                return Err(format!(
+                    "RegisterValidator: machine fingerprint already registered to {}",
+                    existing_pk.to_base58()
+                ));
+            }
+        }
+
+        let mut account = self.b_get_account(&validator_pubkey)?.ok_or_else(|| {
+            "RegisterValidator: self-funded validator account not found".to_string()
+        })?;
+        self.ensure_native_account_direction_not_restricted(
+            &validator_pubkey,
+            RestrictionTransferDirection::Outgoing,
+            amount,
+            account.spendable,
+            "RegisterValidator",
+            "validator",
+        )?;
+        account
+            .stake(amount)
+            .map_err(|e| format!("RegisterValidator: self-funded stake failed: {}", e))?;
+        self.b_put_account(&validator_pubkey, &account)?;
+
+        let current_slot = self.b_get_last_slot().unwrap_or(0);
+        pool.stake_with_index(validator_pubkey, amount, current_slot, u64::MAX)
+            .map_err(|e| format!("RegisterValidator: stake pool error: {}", e))?;
+        pool.register_fingerprint(&validator_pubkey, fingerprint)
+            .map_err(|e| format!("RegisterValidator: stake pool error: {}", e))?;
+        self.b_put_stake_pool(&pool)?;
+
+        Ok(())
+    }
+
     /// System program: SlashValidator (opcode 27)
     ///
     /// Consensus-based equivocation slashing — the Ethereum/Cosmos pattern.
@@ -135,8 +287,12 @@ impl TxProcessor {
 
         let offending_validator = ix.accounts[0];
 
-        let evidence: crate::consensus::SlashingEvidence = bincode::deserialize(&ix.data[1..])
-            .map_err(|e| format!("SlashValidator: invalid evidence encoding: {}", e))?;
+        let evidence: crate::consensus::SlashingEvidence = deserialize_legacy_bincode_strict(
+            &ix.data[1..],
+            SLASHING_EVIDENCE_CODEC_LIMIT_BYTES,
+            "slashing evidence",
+        )
+        .map_err(|e| format!("SlashValidator: invalid evidence encoding: {}", e))?;
 
         if evidence.validator != offending_validator {
             return Err(format!(

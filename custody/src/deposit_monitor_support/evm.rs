@@ -28,12 +28,28 @@ pub(super) async fn process_evm_deposits_for_chains(
             continue;
         }
 
-        set_last_balance(&state.db, &deposit.address, balance)?;
-
         let amount_u64 = u64::try_from(balance).ok();
-        store_deposit_event(
-            &state.db,
-            &DepositEvent {
+        let sweep_job =
+            treasury_for_chain(&state.config, &deposit.chain).map(|treasury| SweepJob {
+                job_id: Uuid::new_v4().to_string(),
+                deposit_id: deposit.deposit_id.clone(),
+                chain: deposit.chain.clone(),
+                asset: deposit.asset.clone(),
+                from_address: deposit.address.clone(),
+                to_treasury: treasury,
+                tx_hash: format!("balance:{}:block:{}", balance, block_number),
+                amount: Some(balance.to_string()),
+                credited_amount: None,
+                signatures: Vec::new(),
+                sweep_tx_hash: None,
+                attempts: 0,
+                last_error: None,
+                next_attempt_at: None,
+                status: "queued".to_string(),
+                created_at: chrono::Utc::now().timestamp(),
+            });
+        let observation = DepositObservationWrite {
+            event: DepositEvent {
                 event_id: Uuid::new_v4().to_string(),
                 deposit_id: deposit.deposit_id.clone(),
                 tx_hash: format!("balance:{}", balance),
@@ -42,47 +58,28 @@ pub(super) async fn process_evm_deposits_for_chains(
                 status: "confirmed".to_string(),
                 observed_at: chrono::Utc::now().timestamp(),
             },
-        )?;
+            sweep_job,
+            markers: vec![DepositObservationMarker::AddressBalance {
+                address: deposit.address.clone(),
+                balance,
+            }],
+        };
 
-        update_deposit_status(&state.db, &deposit.deposit_id, "confirmed")?;
-        emit_custody_event(
-            state,
-            "deposit.confirmed",
-            &deposit.deposit_id,
-            Some(&deposit.deposit_id),
-            None,
-            Some(&serde_json::json!({
-                "chain": deposit.chain,
-                "asset": deposit.asset,
-                "address": deposit.address,
-                "user_id": deposit.user_id,
-                "amount": balance
-            })),
-        );
-
-        if let Some(treasury) = treasury_for_chain(&state.config, &deposit.chain) {
-            enqueue_sweep_job(
-                &state.db,
-                &SweepJob {
-                    job_id: Uuid::new_v4().to_string(),
-                    deposit_id: deposit.deposit_id.clone(),
-                    chain: deposit.chain.clone(),
-                    asset: deposit.asset.clone(),
-                    from_address: deposit.address.clone(),
-                    to_treasury: treasury,
-                    tx_hash: format!("balance:{}:block:{}", balance, block_number),
-                    amount: Some(balance.to_string()),
-                    credited_amount: None,
-                    signatures: Vec::new(),
-                    sweep_tx_hash: None,
-                    attempts: 0,
-                    last_error: None,
-                    next_attempt_at: None,
-                    status: "queued".to_string(),
-                    created_at: chrono::Utc::now().timestamp(),
-                },
-            )?;
-            update_deposit_status(&state.db, &deposit.deposit_id, "sweep_queued")?;
+        if persist_deposit_observation(&state.db, &observation)? {
+            emit_custody_event(
+                state,
+                "deposit.confirmed",
+                &deposit.deposit_id,
+                Some(&deposit.deposit_id),
+                None,
+                Some(&serde_json::json!({
+                    "chain": deposit.chain,
+                    "asset": deposit.asset,
+                    "address": deposit.address,
+                    "user_id": deposit.user_id,
+                    "amount": balance
+                })),
+            );
         }
     }
 
@@ -119,12 +116,31 @@ pub(super) async fn process_evm_deposits(state: &CustodyState, url: &str) -> Res
             continue;
         }
 
-        set_last_balance(&state.db, &deposit.address, balance)?;
-
         let amount_u64 = u64::try_from(balance).ok();
-        store_deposit_event(
-            &state.db,
-            &DepositEvent {
+        let sweep_job = state
+            .config
+            .treasury_evm_address
+            .clone()
+            .map(|treasury| SweepJob {
+                job_id: Uuid::new_v4().to_string(),
+                deposit_id: deposit.deposit_id.clone(),
+                chain: deposit.chain.clone(),
+                asset: deposit.asset.clone(),
+                from_address: deposit.address.clone(),
+                to_treasury: treasury,
+                tx_hash: format!("balance:{}:block:{}", balance, block_number),
+                amount: Some(balance.to_string()),
+                credited_amount: None,
+                signatures: Vec::new(),
+                sweep_tx_hash: None,
+                attempts: 0,
+                last_error: None,
+                next_attempt_at: None,
+                status: "queued".to_string(),
+                created_at: chrono::Utc::now().timestamp(),
+            });
+        let observation = DepositObservationWrite {
+            event: DepositEvent {
                 event_id: Uuid::new_v4().to_string(),
                 deposit_id: deposit.deposit_id.clone(),
                 tx_hash: format!("balance:{}", balance),
@@ -133,47 +149,28 @@ pub(super) async fn process_evm_deposits(state: &CustodyState, url: &str) -> Res
                 status: "confirmed".to_string(),
                 observed_at: chrono::Utc::now().timestamp(),
             },
-        )?;
+            sweep_job,
+            markers: vec![DepositObservationMarker::AddressBalance {
+                address: deposit.address.clone(),
+                balance,
+            }],
+        };
 
-        update_deposit_status(&state.db, &deposit.deposit_id, "confirmed")?;
-        emit_custody_event(
-            state,
-            "deposit.confirmed",
-            &deposit.deposit_id,
-            Some(&deposit.deposit_id),
-            None,
-            Some(&serde_json::json!({
-                "chain": deposit.chain,
-                "asset": deposit.asset,
-                "address": deposit.address,
-                "user_id": deposit.user_id,
-                "amount": balance
-            })),
-        );
-
-        if let Some(treasury) = state.config.treasury_evm_address.clone() {
-            enqueue_sweep_job(
-                &state.db,
-                &SweepJob {
-                    job_id: Uuid::new_v4().to_string(),
-                    deposit_id: deposit.deposit_id.clone(),
-                    chain: deposit.chain.clone(),
-                    asset: deposit.asset.clone(),
-                    from_address: deposit.address.clone(),
-                    to_treasury: treasury,
-                    tx_hash: format!("balance:{}:block:{}", balance, block_number),
-                    amount: Some(balance.to_string()),
-                    credited_amount: None,
-                    signatures: Vec::new(),
-                    sweep_tx_hash: None,
-                    attempts: 0,
-                    last_error: None,
-                    next_attempt_at: None,
-                    status: "queued".to_string(),
-                    created_at: chrono::Utc::now().timestamp(),
-                },
-            )?;
-            update_deposit_status(&state.db, &deposit.deposit_id, "sweep_queued")?;
+        if persist_deposit_observation(&state.db, &observation)? {
+            emit_custody_event(
+                state,
+                "deposit.confirmed",
+                &deposit.deposit_id,
+                Some(&deposit.deposit_id),
+                None,
+                Some(&serde_json::json!({
+                    "chain": deposit.chain,
+                    "asset": deposit.asset,
+                    "address": deposit.address,
+                    "user_id": deposit.user_id,
+                    "amount": balance
+                })),
+            );
         }
     }
 
@@ -231,7 +228,19 @@ async fn process_evm_erc20_deposits(
             from_block
         };
 
+        struct EvmTokenDepositEmission {
+            deposit_id: String,
+            tx_hash: String,
+            chain: String,
+            asset: String,
+            address: String,
+            user_id: String,
+            amount: u128,
+        }
+
         let logs = evm_get_transfer_logs(&state.http, url, &contract, from_block, to_block).await?;
+        let mut observations = Vec::new();
+        let mut emissions = Vec::new();
         for log in logs {
             if let Some((to, amount, tx_hash)) = decode_transfer_log(&log) {
                 if let Some(deposits) = address_map.get(&to.to_lowercase()) {
@@ -247,38 +256,14 @@ async fn process_evm_erc20_deposits(
                             })
                             .unwrap_or(false)
                     }) {
-                        store_deposit_event(
-                            &state.db,
-                            &DepositEvent {
-                                event_id: Uuid::new_v4().to_string(),
-                                deposit_id: deposit.deposit_id.clone(),
-                                tx_hash: tx_hash.clone(),
-                                confirmations: state.config.evm_confirmations,
-                                amount: u64::try_from(amount).ok(),
-                                status: "confirmed".to_string(),
-                                observed_at: chrono::Utc::now().timestamp(),
-                            },
-                        )?;
-                        update_deposit_status(&state.db, &deposit.deposit_id, "confirmed")?;
-                        emit_custody_event(
-                            state,
-                            "deposit.confirmed",
-                            &deposit.deposit_id,
-                            Some(&deposit.deposit_id),
-                            Some(&tx_hash),
-                            Some(&serde_json::json!({
-                                "chain": deposit.chain,
-                                "asset": deposit.asset,
-                                "address": deposit.address,
-                                "user_id": deposit.user_id,
-                                "amount": amount
-                            })),
-                        );
+                        if deposit_event_already_processed(&state.db, &deposit.deposit_id, &tx_hash)
+                        {
+                            continue;
+                        }
 
-                        if let Some(treasury) = treasury_for_chain(&state.config, &deposit.chain) {
-                            enqueue_sweep_job(
-                                &state.db,
-                                &SweepJob {
+                        let sweep_job =
+                            treasury_for_chain(&state.config, &deposit.chain).map(|treasury| {
+                                SweepJob {
                                     job_id: Uuid::new_v4().to_string(),
                                     deposit_id: deposit.deposit_id.clone(),
                                     chain: deposit.chain.clone(),
@@ -295,16 +280,61 @@ async fn process_evm_erc20_deposits(
                                     next_attempt_at: None,
                                     status: "queued".to_string(),
                                     created_at: chrono::Utc::now().timestamp(),
-                                },
-                            )?;
-                            update_deposit_status(&state.db, &deposit.deposit_id, "sweep_queued")?;
-                        }
+                                }
+                            });
+                        observations.push(DepositObservationWrite {
+                            event: DepositEvent {
+                                event_id: Uuid::new_v4().to_string(),
+                                deposit_id: deposit.deposit_id.clone(),
+                                tx_hash: tx_hash.clone(),
+                                confirmations: state.config.evm_confirmations,
+                                amount: u64::try_from(amount).ok(),
+                                status: "confirmed".to_string(),
+                                observed_at: chrono::Utc::now().timestamp(),
+                            },
+                            sweep_job,
+                            markers: Vec::new(),
+                        });
+                        emissions.push(EvmTokenDepositEmission {
+                            deposit_id: deposit.deposit_id.clone(),
+                            tx_hash: tx_hash.clone(),
+                            chain: deposit.chain.clone(),
+                            asset: deposit.asset.clone(),
+                            address: deposit.address.clone(),
+                            user_id: deposit.user_id.clone(),
+                            amount,
+                        });
                     }
                 }
             }
         }
 
-        set_last_u64_index(&state.db, &cursor_key, to_block.saturating_add(1))?;
+        let committed = persist_deposit_observations(
+            &state.db,
+            &observations,
+            &[DepositObservationMarker::Cursor {
+                key: cursor_key,
+                value: to_block.saturating_add(1),
+            }],
+        )?;
+        for index in committed {
+            if let Some(emission) = emissions.get(index) {
+                emit_custody_event(
+                    state,
+                    "deposit.confirmed",
+                    &emission.deposit_id,
+                    Some(&emission.deposit_id),
+                    Some(&emission.tx_hash),
+                    Some(&serde_json::json!({
+                        "chain": emission.chain,
+                        "asset": emission.asset,
+                        "address": emission.address,
+                        "user_id": emission.user_id,
+                        "amount": emission.amount
+                    })),
+                );
+            }
+        }
     }
 
     Ok(())

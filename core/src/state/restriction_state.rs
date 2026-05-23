@@ -3,6 +3,7 @@ use std::collections::BTreeSet;
 use rocksdb::{Direction, IteratorMode, DB};
 
 use super::*;
+use crate::codec::{deserialize_legacy_bincode, serialize_legacy_bincode};
 use crate::restrictions::{
     restriction_mode_blocks_transfer, ContractRestrictionAccess, EffectiveRestrictionRecord,
     ProtocolModuleId, RestrictionMode, RestrictionRecord, RestrictionTarget,
@@ -27,11 +28,11 @@ fn restriction_id_from_key(key: &[u8]) -> Option<u64> {
 }
 
 fn encode_restriction(record: &RestrictionRecord) -> Result<Vec<u8>, String> {
-    bincode::serialize(record).map_err(|e| format!("Failed to serialize restriction: {}", e))
+    serialize_legacy_bincode(record, "restriction")
 }
 
 fn decode_restriction(data: &[u8]) -> Result<RestrictionRecord, String> {
-    bincode::deserialize(data).map_err(|e| format!("Failed to deserialize restriction: {}", e))
+    deserialize_legacy_bincode(data, "restriction")
 }
 
 fn get_counter(db: &DB) -> Result<u64, String> {

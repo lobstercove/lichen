@@ -64,6 +64,21 @@ fn deploy_wasm_contract(state: &StateStore, address: &Pubkey, owner: &Pubkey, wa
     state.put_account(address, &account).unwrap();
 }
 
+fn deploy_wasm_contract_with_abi(
+    state: &StateStore,
+    address: &Pubkey,
+    owner: &Pubkey,
+    wasm_bytes: &[u8],
+    abi: ContractAbi,
+) {
+    let mut contract = ContractAccount::new(wasm_bytes.to_vec(), *owner);
+    contract.abi = Some(abi);
+    let mut account = account_with_spores(*address, 0);
+    account.executable = true;
+    account.data = serde_json::to_vec(&contract).unwrap();
+    state.put_account(address, &account).unwrap();
+}
+
 fn set_contract_lifecycle_status(
     state: &StateStore,
     address: &Pubkey,
@@ -171,6 +186,52 @@ fn target_ping_wat() -> &'static str {
             (i32.const 1)
         )
     )"#
+}
+
+/// Target WASM: writes the same storage key as `ping`, but returns code 2.
+/// Declared ABI tests use this to prove callee state is not merged on ABI
+/// failure even when the WASM function did not trap.
+fn target_ping_return_code_2_wat() -> &'static str {
+    r#"(module
+        (import "env" "storage_write" (func $storage_write (param i32 i32 i32 i32) (result i32)))
+        (memory (export "memory") 1)
+        (data (i32.const 0) "ping_key")
+        (data (i32.const 16) "pong")
+        (func (export "ping") (result i32)
+            (drop (call $storage_write (i32.const 0) (i32.const 8) (i32.const 16) (i32.const 4)))
+            (i32.const 2))
+    )"#
+}
+
+fn ping_return_code_success_zero_abi() -> ContractAbi {
+    ContractAbi {
+        version: "1.0".to_string(),
+        name: "target_ping_policy".to_string(),
+        template: None,
+        description: None,
+        functions: vec![AbiFunction {
+            name: "ping".to_string(),
+            description: None,
+            params: Vec::new(),
+            returns: Some(AbiReturn {
+                return_type: AbiType::I32,
+                description: None,
+            }),
+            opcode: None,
+            readonly: false,
+            result_semantics: Some(AbiResultSemantics {
+                kind: AbiResultKind::ReturnCode,
+                success_codes: vec![0],
+                description: None,
+            }),
+        }],
+        events: Vec::new(),
+        errors: vec![AbiError {
+            code: 2,
+            name: "Rejected".to_string(),
+            message: Some("test failure".to_string()),
+        }],
+    }
 }
 
 /// Caller WASM: has a `call_target` function that invokes cross_contract_call
@@ -334,6 +395,62 @@ fn test_cross_contract_call_executes_target() {
     assert!(
         result.return_code.unwrap_or(0) > 0,
         "Return code should indicate success (>0 bytes from CCC)"
+    );
+}
+
+#[test]
+fn test_cross_contract_call_declared_abi_failure_does_not_merge_callee_changes() {
+    let (state, _tmp) = create_test_state();
+    let owner = Pubkey::new([1u8; 32]);
+    let caller_addr = Pubkey::new([10u8; 32]);
+    let target_addr = Pubkey::new([21u8; 32]);
+
+    deploy_wasm_contract_with_abi(
+        &state,
+        &target_addr,
+        &owner,
+        target_ping_return_code_2_wat().as_bytes(),
+        ping_return_code_success_zero_abi(),
+    );
+    deploy_wasm_contract(&state, &caller_addr, &owner, caller_ccc_wat().as_bytes());
+
+    let caller_account = state.get_account(&caller_addr).unwrap().unwrap();
+    let caller_contract: ContractAccount = serde_json::from_slice(&caller_account.data).unwrap();
+    let args = target_addr.0.to_vec();
+    let mut ctx = ContractContext::with_args(
+        owner,
+        caller_addr,
+        0,
+        1,
+        caller_contract.storage.clone(),
+        args.clone(),
+    );
+    ctx.state_store = Some(state.clone());
+
+    let mut runtime = ContractRuntime::new();
+    let result = runtime
+        .execute(&caller_contract, "call", &args, ctx)
+        .expect("caller execution should not trap");
+
+    assert!(result.success);
+    assert_eq!(
+        result.return_code,
+        Some(0),
+        "declared ABI failure should make CCC report failure to caller"
+    );
+    assert!(
+        result.cross_call_changes.is_empty(),
+        "callee storage changes must not merge after declared ABI failure"
+    );
+    assert!(result
+        .logs
+        .iter()
+        .any(|log| log.contains("ABI failure code 2")));
+    assert_eq!(
+        state
+            .get_contract_storage(&target_addr, b"ping_key")
+            .unwrap(),
+        None
     );
 }
 

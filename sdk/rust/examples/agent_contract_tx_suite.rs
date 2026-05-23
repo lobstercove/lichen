@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
+use lichen_core::codec::serialize_legacy_bincode;
 use lichen_core::{ContractInstruction, Hash, Instruction, Keypair, Message, Pubkey, Transaction};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -171,7 +172,8 @@ fn build_contract_call_tx_b64(
         tx_type: Default::default(),
     };
 
-    let tx_bytes = bincode::serialize(&tx)?;
+    let tx_bytes =
+        serialize_legacy_bincode(&tx, "agent contract transaction").map_err(anyhow::Error::msg)?;
     Ok(B64.encode(tx_bytes))
 }
 

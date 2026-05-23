@@ -40,7 +40,9 @@ const settingsSrc = fs.readFileSync(path.join(extRoot, 'pages', 'settings.js'), 
 const identitySrc = fs.readFileSync(path.join(extRoot, 'pages', 'identity.js'), 'utf8');
 const homeSrc = fs.readFileSync(path.join(extRoot, 'pages', 'home.js'), 'utf8');
 const homeHtmlSrc = fs.readFileSync(path.join(extRoot, 'pages', 'home.html'), 'utf8');
+const amountServiceSrc = fs.readFileSync(path.join(extRoot, 'core', 'amount-service.js'), 'utf8');
 const txServiceSrc = fs.readFileSync(path.join(extRoot, 'core', 'tx-service.js'), 'utf8');
+const stakingServiceSrc = fs.readFileSync(path.join(extRoot, 'core', 'staking-service.js'), 'utf8');
 const bridgeServiceSrc = fs.readFileSync(path.join(extRoot, 'core', 'bridge-service.js'), 'utf8');
 const identityServiceSrc = fs.readFileSync(path.join(extRoot, 'core', 'identity-service.js'), 'utf8');
 const restrictionServiceSrc = fs.readFileSync(path.join(extRoot, 'core', 'restriction-service.js'), 'utf8');
@@ -449,6 +451,11 @@ test('E-10.2 bridge-service pins bridge control-plane RPC to trusted endpoints',
   assert.ok(bridgeServiceSrc.includes("new LichenRPC(getTrustedRpcEndpoint(network))"), 'bridge-service should build bridge RPC from trusted endpoint');
   assert.ok(!bridgeServiceSrc.includes('await getConfiguredRpcEndpoint(network)'), 'bridge-service should not use configured custom RPC for bridge control-plane calls');
   assert.ok(bridgeServiceSrc.includes('buildBridgeAccessMessage('), 'bridge-service should build a signed bridge access message');
+  assert.ok(bridgeServiceSrc.includes('buildBridgeAccessMessageV2('), 'bridge-service should build route-bound V2 bridge auth messages');
+  assert.ok(bridgeServiceSrc.includes("BRIDGE_AUTH_DOMAIN_V2 = 'LICHEN_BRIDGE_ACCESS_V2'"), 'bridge-service should mark V2 bridge auth domain');
+  assert.ok(bridgeServiceSrc.includes('route=${canonicalChain}:${normalizedAsset}'), 'bridge-service should sign the canonical bridge route');
+  assert.ok(bridgeServiceSrc.includes('activeBridgeAuth.version = 2'), 'bridge-service should emit V2 auth envelopes for deposit creation');
+  assert.ok(bridgeServiceSrc.includes('activeBridgeAuth.nonce = nonce'), 'bridge-service should include a fresh nonce in bridge auth');
   assert.ok(bridgeServiceSrc.includes('Wallet password required for bridge authorization'), 'bridge-service should require a wallet password before signing bridge access');
   assert.ok(bridgeServiceSrc.includes('BRIDGE_CACHE_KEY'), 'bridge-service should maintain a local bridge deposit cache');
   assert.ok(!bridgeServiceSrc.includes("getBridgeDepositsByRecipient"), 'bridge-service should not rely on public recipient-history bridge RPC');
@@ -859,6 +866,66 @@ test('CC-17 provider router applies TTL expiry to approved origins', () => {
     'provider router should stamp origin approvals with expiry');
 });
 
+test('CC-17.5 extension first-sign approvals disclose account access and only connect after success', () => {
+  assert.ok(providerRouterSrc.includes('grantsAccountAccess: Boolean(extra.grantsAccountAccess)'),
+    'provider router should persist first-sign account access grants on pending requests');
+  assert.ok(providerRouterSrc.includes('grantsAccountAccess: Boolean(origin && !approved)'),
+    'provider router should mark unconnected signing approvals as account access grants');
+  assert.ok(providerRouterSrc.includes('if (finalized?.ok && request.origin)'),
+    'provider router should approve origin only after successful signing finalization');
+  assert.ok(serviceWorkerSrc.includes('grantsAccountAccess: Boolean(request.grantsAccountAccess)'),
+    'service worker should expose account access grant metadata to approve UI');
+  assert.ok(serviceWorkerSrc.includes('grantAccountAddress: request.grantsAccountAccess ? (activeWallet?.address || null) : null'),
+    'service worker should expose the active account address only for account access consent');
+  assert.ok(approveSrc.includes('function requestGrantsAccountAccess(request)'),
+    'approve UI should detect first-sign account access grants');
+  assert.ok(approveSrc.includes('Approving also connects this site to') && approveSrc.includes('Approve & Connect'),
+    'approve UI should disclose first-sign account access consent and label the approval action');
+});
+
+test('CC-17.6 extension network changes require origin-scoped approvals before mutation', () => {
+  assert.ok(providerRouterSrc.includes('function networkChangeFromPayload(payload, context, kind)'),
+    'provider router should normalize network-change approval details');
+  assert.ok(providerRouterSrc.includes('networkChange: extra.networkChange || null'),
+    'provider router should persist pending network-change metadata');
+  assert.ok(providerRouterSrc.includes("method === 'licn_switchNetwork' || method === 'licn_addNetwork'"),
+    'provider router should finalize approved network-change requests explicitly');
+  assert.ok(providerRouterSrc.includes("createPendingRequest(payload, context, { networkChange })"),
+    'provider router should route network changes through pending approvals');
+  assert.ok(!providerRouterSrc.includes("case 'licn_switchNetwork': {\n      const params = normalizeParams(payload);"),
+    'provider router should not keep the old immediate switchNetwork mutation body');
+  assert.ok(serviceWorkerSrc.includes('networkChange: request.networkChange || null'),
+    'service worker should expose network-change metadata to approve UI');
+  assert.ok(approveSrc.includes('wallet_switchEthereumChain') && approveSrc.includes('wallet_addEthereumChain'),
+    'approve UI should normalize EVM network-change aliases');
+  assert.ok(approveSrc.includes('function renderNetworkChangeRows(networkChange)'),
+    'approve UI should render old/new network and RPC details');
+  assert.ok(approveSrc.includes('Switch Network') && approveSrc.includes('Add & Switch Network'),
+    'approve UI should label network approval actions explicitly');
+});
+
+test('CC-17.7 extension transaction approvals decode semantic signing intent', () => {
+  assert.ok(providerRouterSrc.includes('async function buildTransactionIntentForPayload(payload, context = {})'),
+    'provider router should build semantic signing intent metadata');
+  assert.ok(providerRouterSrc.includes('function buildTransactionIntentFromObject(txObject, context = {}, rpcEndpoint ='),
+    'provider router should decode transaction objects into signing intent');
+  assert.ok(providerRouterSrc.includes('function readU64Le(data, offset = 0)'),
+    'provider router should decode u64 base-unit amounts without Number');
+  assert.ok(providerRouterSrc.includes('function decodeContractCallIntent(data)'),
+    'provider router should decode contract call intent best-effort');
+  assert.ok(providerRouterSrc.includes('transactionIntent: extra.transactionIntent || null'),
+    'provider router should persist transaction intent on pending approvals');
+  assert.ok(serviceWorkerSrc.includes('transactionIntent: request.transactionIntent || null'),
+    'service worker should expose transaction intent to approve UI');
+  assert.ok(approveSrc.includes('function renderTransactionIntentRows(transactionIntent)'),
+    'approve UI should render transaction intent rows');
+  for (const label of ['Account', 'Destination', 'Amount', 'Token Decimals', 'Network', 'RPC', 'Fee', 'Program', 'Warnings']) {
+    assert.ok(approveSrc.includes(`'${label}'`), `approve UI missing ${label} transaction intent row`);
+  }
+  assert.ok(providerRouterSrc.includes('Contract payload contains admin-like terms; review before signing.'),
+    'provider router should warn on admin-like contract payload terms');
+});
+
 test('CC-18 provider router reuses shared tx-service message serializer', () => {
   assert.ok(providerRouterSrc.includes("import { serializeMessageForSigning } from './tx-service.js';"),
     'provider router should import serializeMessageForSigning from tx-service');
@@ -885,7 +952,20 @@ test('CC-20 extension uses chain slot and normalized .lichen labels', () => {
   assert.ok(fullSrc.includes('async function getCurrentChainSlotExt('), 'full page should resolve MossStake lock state from chain slot');
   assert.ok(!fullSrc.includes('const currentSlot = Math.floor(Date.now() / 400);'), 'full page should not use wall-clock slot guesses for MossStake');
   assert.ok(fullSrc.includes('function formatLichenNameExt('), 'full page should normalize .lichen labels');
+  assert.ok(fullSrc.includes("replace(/(?:\\.lichen)+$/i, '')"), 'full page should strip repeated .lichen suffixes');
+  assert.ok(fullSrc.includes('formatLichenNameExt(v.voucher_name)'), 'full page vouch labels should use normalized .lichen labels');
   assert.ok(popupSrc.includes('function formatLichenNamePopup('), 'popup should normalize .lichen labels');
+});
+
+test('CC-20b extension reloads active identity tab after wallet switch refresh', () => {
+  assert.ok(
+    fullSrc.includes("const activeTab = document.querySelector('.dashboard-tab.active')?.dataset?.tab;"),
+    'full page dashboard refresh should inspect the active tab'
+  );
+  assert.ok(
+    fullSrc.includes("if (activeTab === 'identity') await loadIdentityTab();"),
+    'full page should reload the identity tab after switching wallets while identity is active'
+  );
 });
 
 test('CC-21 extension shield notes resolve commitment indexes before spending', () => {
@@ -962,6 +1042,69 @@ test('CC-25 extension activity treats ContractCall as fee-only contract activity
     'popup should show ContractCall fee when amount is zero');
   assert.ok(fullSrc.includes("((tx.type === 'Contract' || tx.type === 'ContractCall') && isZeroAmount)"),
     'full page should show ContractCall fee when amount is zero');
+});
+
+test('CC-26 extension parses wallet amounts into base-unit BigInt values', () => {
+  assert.ok(amountServiceSrc.includes('export function parseDecimalBaseUnits('),
+    'amount service should export decimal-to-base-unit parser');
+  assert.ok(amountServiceSrc.includes('fractionRaw.length > unitDecimals'),
+    'amount service should reject over-precision instead of truncating');
+  assert.ok(amountServiceSrc.includes('const MAX_U64 = 18_446_744_073_709_551_615n;'),
+    'amount service should reject values larger than u64');
+  assert.ok(txServiceSrc.includes("parsePositiveDecimalBaseUnits(amountLicn, 9, 'Transfer amount')"),
+    'native transfer builder should parse decimal amount strings into base units');
+  assert.ok(txServiceSrc.includes('view.setBigUint64(1, spores, true);'),
+    'tx-service should write parsed BigInt spores into u64 payloads');
+  assert.ok(!txServiceSrc.includes('Math.floor(Number(amountLicn) * 1_000_000_000)'),
+    'tx-service should not convert transfer amounts through floating point');
+  assert.ok(stakingServiceSrc.includes('parsePositiveDecimalBaseUnits(amountLicn, 9, label)'),
+    'staking service should validate stake amounts through base-unit parsing');
+  assert.ok(homeSrc.includes('parsePositiveDecimalBaseUnits(value, 9, label)'),
+    'home staking prompts should reuse base-unit amount parsing');
+});
+
+test('CC-27 extension send and shielded flows avoid floating-point amount payloads', () => {
+  assert.ok(fullSrc.includes('const amountText = amountInput.value.trim();'),
+    'full-page send should keep amount text until base-unit parsing');
+  assert.ok(fullSrc.includes('amountSpores = parseLicnAmountSporesExt(amountText'),
+    'full page should parse entered amounts into BigInt spores');
+  assert.ok(fullSrc.includes('value: amountSpores.toString()'),
+    'extension shield notes should store amount values as u64 strings');
+  assert.ok(fullSrc.includes('amount: amountSpores.toString()'),
+    'extension shielded proof calls should submit string u64 amounts');
+  assert.ok(fullSrc.includes('reduce((sum, note) => sum + extensionNoteValueSpores(note), 0n)'),
+    'extension shielded balance should be recalculated with BigInt note values');
+  assert.ok(popupSrc.includes('parseLicnAmountSporesPopup(amountText'),
+    'popup send should parse amount text into BigInt spores');
+  assert.ok(providerRouterSrc.includes("if (/^0x[0-9a-f]+$/i.test(text)) bigint = BigInt(text);"),
+    'provider router hex quantities should avoid lossy Number conversion');
+  assert.ok(!fullSrc.includes('Math.floor(Number(amountLicn) * 1_000_000_000)'),
+    'full-page shielded submitters should not floor amountLicn through Number');
+  assert.ok(!fullSrc.includes('Math.floor(amount * 1e9)'),
+    'full-page shielded modal validation should not floor decimal amounts through Number');
+  assert.ok(!popupSrc.includes('const amount = Number(document.getElementById(\'sendAmount\').value || 0)'),
+    'popup send should not parse user transfer amounts with Number');
+});
+
+test('CC-28 extension USD valuations expose source, timestamp, and fallback state', () => {
+  for (const [label, src] of [['full page', fullSrc], ['popup', popupSrc]]) {
+    assert.ok(src.includes('const LICN_USD_PRICE_STALE_MS = 5 * 60 * 1000;'),
+      `${label} should define a stale window for LICN USD quotes`);
+    assert.ok(src.includes("let _licnUsdPriceCache = { value: 0.10, ts: 0, source: 'offline-fallback', fallback: true };"),
+      `${label} should initialize the default price as an offline fallback`);
+    assert.ok(src.includes('function normalizeLicnUsdQuote('),
+      `${label} should normalize price responses into quote metadata`);
+    assert.ok(src.includes("return ' · offline estimate';") && src.includes("return ' · stale price';"),
+      `${label} should visibly mark offline and stale USD valuations`);
+    assert.ok(src.includes('function licnUsdQuoteTitle('),
+      `${label} should expose valuation source details in a title`);
+    assert.ok(src.includes("_licnUsdPriceCache = { value: price, ts: now, source: 'oracle', fallback: false };"),
+      `${label} should timestamp live oracle prices`);
+  }
+  assert.ok(fullSrc.includes(" $('balanceUsd').title = licnUsdQuoteTitle(licnUsdQuote);") || fullSrc.includes("$('balanceUsd').title = licnUsdQuoteTitle(licnUsdQuote);"),
+    'full page balance USD display should include quote source details');
+  assert.ok(popupSrc.includes('usdEl.title = licnUsdQuoteTitle(licnUsdQuote);'),
+    'popup balance USD display should include quote source details');
 });
 
 // ============================================================================

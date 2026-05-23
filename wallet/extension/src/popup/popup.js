@@ -23,11 +23,17 @@ import {
   preflightNativeTransferRestrictions,
   restrictionPreflightSummary
 } from '../core/restriction-service.js';
+import {
+  baseUnitsToDecimalString,
+  parsePositiveDecimalBaseUnits
+} from '../core/amount-service.js';
 
 let state = null;
 let pendingGeneratedMnemonic = '';
 let fullCarouselTimer = null;
-let _licnUsdPriceCache = { value: 0.10, ts: 0 };
+const LICN_USD_PRICE_CACHE_MS = 60 * 1000;
+const LICN_USD_PRICE_STALE_MS = 5 * 60 * 1000;
+let _licnUsdPriceCache = { value: 0.10, ts: 0, source: 'offline-fallback', fallback: true };
 let extensionRestrictionStatusCache = {
   address: null,
   network: null,
@@ -49,6 +55,30 @@ function formatRewardMultiplierPopup(multiplier) {
     return `${numeric.toLocaleString(undefined, { maximumFractionDigits: 2 })}x`;
   }
   return `${raw || '1'}x`;
+}
+
+function baseUnitBigIntPopup(value) {
+  if (typeof value === 'bigint') return value > 0n ? value : 0n;
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value) || value <= 0) return 0n;
+    return BigInt(value);
+  }
+  const text = String(value ?? '0').trim();
+  if (!/^\d+$/.test(text)) return 0n;
+  return BigInt(text);
+}
+
+function parseLicnAmountSporesPopup(value, label = 'Amount') {
+  return parsePositiveDecimalBaseUnits(value, 9, label);
+}
+
+function formatLicnBaseUnitsPopup(value) {
+  return baseUnitsToDecimalString(baseUnitBigIntPopup(value), 9);
+}
+
+function formatLicnBaseUnitsFixedPopup(value, digits = 4) {
+  const [whole, fraction = ''] = formatLicnBaseUnitsPopup(value).split('.');
+  return `${whole}.${fraction.padEnd(digits, '0').slice(0, digits)}`;
 }
 
 function formatMossStakeRewardLabel(_apyPercent, multiplier) {
@@ -612,14 +642,41 @@ function rpcEndpointToApiBase(endpoint) {
   }
 }
 
+function normalizeLicnUsdQuote(cache = _licnUsdPriceCache, now = Date.now()) {
+  const value = Number(cache?.value || 0);
+  const timestamp = Number(cache?.ts || 0);
+  const source = cache?.source || (timestamp > 0 ? 'oracle' : 'offline-fallback');
+  return {
+    value: Number.isFinite(value) && value > 0 ? value : 0.10,
+    source,
+    timestamp,
+    stale: timestamp > 0 && now - timestamp > LICN_USD_PRICE_STALE_MS,
+    fallback: cache?.fallback === true || source === 'offline-fallback',
+  };
+}
+
+function licnUsdQuoteSuffix(quote) {
+  if (quote?.fallback) return ' · offline estimate';
+  if (quote?.stale) return ' · stale price';
+  return '';
+}
+
+function licnUsdQuoteTitle(quote) {
+  if (!quote) return 'USD valuation source unavailable';
+  const source = quote.source === 'offline-fallback' ? 'offline fallback estimate' : quote.source;
+  const updated = quote.timestamp > 0 ? new Date(quote.timestamp).toLocaleString() : 'not available';
+  const stale = quote.stale ? ', stale' : '';
+  return `USD valuation source: LICN ${source}, updated ${updated}${stale}`;
+}
+
 async function getLiveLicnUsdPrice(endpoint) {
   const now = Date.now();
-  if (now - _licnUsdPriceCache.ts < 60_000 && _licnUsdPriceCache.value > 0) {
-    return _licnUsdPriceCache.value;
+  if (now - _licnUsdPriceCache.ts < LICN_USD_PRICE_CACHE_MS && _licnUsdPriceCache.value > 0) {
+    return normalizeLicnUsdQuote(_licnUsdPriceCache, now);
   }
 
   const apiBase = rpcEndpointToApiBase(endpoint);
-  if (!apiBase) return _licnUsdPriceCache.value || 0.10;
+  if (!apiBase) return normalizeLicnUsdQuote(_licnUsdPriceCache, now);
 
   try {
     const resp = await fetch(`${apiBase}/oracle/prices`);
@@ -629,14 +686,14 @@ async function getLiveLicnUsdPrice(endpoint) {
     const licnFeed = feeds.find((feed) => String(feed?.asset || '').toUpperCase() === 'LICN');
     const price = Number(licnFeed?.price || 0);
     if (Number.isFinite(price) && price > 0) {
-      _licnUsdPriceCache = { value: price, ts: now };
-      return price;
+      _licnUsdPriceCache = { value: price, ts: now, source: 'oracle', fallback: false };
+      return normalizeLicnUsdQuote(_licnUsdPriceCache, now);
     }
   } catch {
     // fall back to cached/default
   }
 
-  return _licnUsdPriceCache.value || 0.10;
+  return normalizeLicnUsdQuote(_licnUsdPriceCache, now);
 }
 
 function getActiveWallet() {
@@ -1410,23 +1467,27 @@ async function refreshBalance() {
 
   try {
     const result = await rpc.getBalance(wallet.address);
-    const licnUsdPrice = await getLiveLicnUsdPrice(endpoint);
+    const licnUsdQuote = await getLiveLicnUsdPrice(endpoint);
     const balanceSnapshot = getPopupBalanceSnapshot(result);
     window._cachedSpendableLicn = balanceSnapshot.spendableLicn;
+    window._cachedSpendableSpores = baseUnitBigIntPopup(result?.spendable ?? result?.available ?? result?.spores ?? result?.balance ?? 0).toString();
     document.getElementById('walletBalance').textContent = `${balanceSnapshot.totalLicn.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 9 })} LICN`;
     const usdEl = document.getElementById('balanceUsd');
-    if (usdEl) usdEl.textContent = `$${(balanceSnapshot.totalLicn * licnUsdPrice).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 })} USD`;
+    if (usdEl) {
+      usdEl.textContent = `$${(balanceSnapshot.totalLicn * licnUsdQuote.value).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 })} USD${licnUsdQuoteSuffix(licnUsdQuote)}`;
+      usdEl.title = licnUsdQuoteTitle(licnUsdQuote);
+    }
 
     // Balance breakdown (matches wallet website)
     const breakdownEl = document.getElementById('balanceBreakdown');
     if (breakdownEl) {
-      const shieldedLicn = Math.max(0, Number(shieldedPopupState?.shieldedBalance || 0)) / 1_000_000_000;
-      const hasBreakdown = balanceSnapshot.stakedLicn > 0 || balanceSnapshot.lockedLicn > 0 || balanceSnapshot.mossStakedLicn > 0 || balanceSnapshot.pendingRewardsLicn > 0 || shieldedLicn > 0;
+      const shieldedSpores = baseUnitBigIntPopup(shieldedPopupState?.shieldedBalance || 0);
+      const hasBreakdown = balanceSnapshot.stakedLicn > 0 || balanceSnapshot.lockedLicn > 0 || balanceSnapshot.mossStakedLicn > 0 || balanceSnapshot.pendingRewardsLicn > 0 || shieldedSpores > 0n;
       if (hasBreakdown) {
         const parts = [`<i class="fas fa-wallet"></i> Spendable: <strong>${balanceSnapshot.spendableLicn.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`];
         if (balanceSnapshot.stakedLicn > 0) parts.push(`<i class="fas fa-lock"></i> Staked: <strong>${balanceSnapshot.stakedLicn.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`);
         if (balanceSnapshot.mossStakedLicn > 0) parts.push(`<i class="fas fa-coins"></i> Liquid Staking: <strong>${balanceSnapshot.mossStakedLicn.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`);
-        if (shieldedLicn > 0) parts.push(`<i class="fas fa-shield-alt"></i> Shielded: <strong>${shieldedLicn.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`);
+        if (shieldedSpores > 0n) parts.push(`<i class="fas fa-shield-alt"></i> Shielded: <strong>${formatLicnBaseUnitsFixedPopup(shieldedSpores)}</strong>`);
         if (balanceSnapshot.pendingRewardsLicn > 0) parts.push(`<i class="fas fa-gift"></i> Rewards: <strong>${balanceSnapshot.pendingRewardsLicn.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`);
         if (balanceSnapshot.lockedLicn > 0) parts.push(`<i class="fas fa-hourglass"></i> Locked: <strong>${balanceSnapshot.lockedLicn.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`);
         breakdownEl.innerHTML = parts.join(' · ');
@@ -1460,6 +1521,11 @@ async function refreshBalance() {
     setStatus('');
   } catch (error) {
     document.getElementById('walletBalance').textContent = '0.00 LICN';
+    const usdEl = document.getElementById('balanceUsd');
+    if (usdEl) {
+      usdEl.textContent = '$0.00 USD';
+      usdEl.title = 'USD valuation source unavailable';
+    }
     setStatus('RPC unavailable (showing cached state)');
   }
 }
@@ -1469,8 +1535,10 @@ async function handleSendNow() {
   if (!wallet) return;
 
   const to = document.getElementById('sendTo').value.trim();
-  const amount = Number(document.getElementById('sendAmount').value || 0);
+  const amountInput = document.getElementById('sendAmount');
+  const amountText = amountInput.value.trim();
   const password = document.getElementById('sendPassword').value;
+  let amountSpores;
 
   if (!isValidAddress(to)) {
     alert('Invalid recipient address');
@@ -1480,8 +1548,10 @@ async function handleSendNow() {
     alert('Sending to your own wallet is not allowed');
     return;
   }
-  if (!amount || amount <= 0) {
-    alert('Invalid amount');
+  try {
+    amountSpores = parseLicnAmountSporesPopup(amountText, 'Transfer amount');
+  } catch (error) {
+    alert(error?.message || 'Invalid amount');
     return;
   }
   if (!password) {
@@ -1496,15 +1566,17 @@ async function handleSendNow() {
     setStatus('Checking balance...');
 
     const balResult = await rpc.getBalance(wallet.address);
-    const spendable = Number(balResult?.spendable || balResult?.spores || 0) / 1_000_000_000;
-    const maxSendable = Math.max(0, spendable - 0.001);
-    if (maxSendable <= 0) {
+    const spendable = baseUnitBigIntPopup(balResult?.spendable || balResult?.spores || 0);
+    const feeSpores = 1_000_000n;
+    const maxSendable = spendable > feeSpores ? spendable - feeSpores : 0n;
+    if (maxSendable <= 0n) {
       alert('Insufficient LICN balance (not enough to cover fee)');
       return;
     }
-    if (amount > maxSendable) {
-      document.getElementById('sendAmount').value = maxSendable.toFixed(6);
-      alert(`Amount adjusted to available balance: ${maxSendable.toFixed(6)} LICN. Review and re-confirm.`);
+    if (amountSpores > maxSendable) {
+      const adjusted = formatLicnBaseUnitsPopup(maxSendable);
+      amountInput.value = adjusted;
+      alert(`Amount adjusted to available balance: ${adjusted} LICN. Review and re-confirm.`);
       return;
     }
 
@@ -1512,7 +1584,7 @@ async function handleSendNow() {
     const restrictionPreflight = await preflightNativeTransferRestrictions({
       fromAddress: wallet.address,
       toAddress: to,
-      amountLicn: amount,
+      amountLicn: amountText,
       network: activeNetworkKey()
     });
     renderPopupSendRestrictionStatus(restrictionPreflight);
@@ -1527,7 +1599,7 @@ async function handleSendNow() {
       privateKeyHex,
       fromAddress: wallet.address,
       toAddress: to,
-      amountLicn: amount,
+      amountLicn: amountText,
       blockhash: latestBlock.hash
     });
 
@@ -2119,7 +2191,7 @@ let shieldedPopupState = {
   spendingKey: null,
   viewingKey: null,
   shieldedAddress: null,
-  shieldedBalance: 0,
+  shieldedBalance: '0',
   ownedNotes: [],
 };
 
@@ -2162,7 +2234,7 @@ function resetShieldedPopupState() {
     spendingKey: null,
     viewingKey: null,
     shieldedAddress: null,
-    shieldedBalance: 0,
+    shieldedBalance: '0',
     ownedNotes: [],
   };
 }
@@ -2277,9 +2349,8 @@ async function loadShieldPanel() {
     if (stats) {
       const poolShielded = document.getElementById('extPoolShielded');
       const poolCommits = document.getElementById('extPoolCommitments');
-      const totalShielded = Number(stats.total_shielded ?? stats.totalShielded ?? 0);
       const commitmentCount = Number(stats.commitment_count ?? stats.commitmentCount ?? 0);
-      if (poolShielded) poolShielded.textContent = `${(totalShielded / 1_000_000_000).toLocaleString(undefined, { maximumFractionDigits: 4 })} LICN`;
+      if (poolShielded) poolShielded.textContent = `${formatLicnBaseUnitsFixedPopup(stats.total_shielded ?? stats.totalShielded ?? 0)} LICN`;
       if (poolCommits) poolCommits.textContent = String(commitmentCount);
     }
   } catch { /* RPC unavailable */ }
@@ -2288,18 +2359,18 @@ async function loadShieldPanel() {
     const notes = Array.isArray(shieldedPopupState.ownedNotes) ? shieldedPopupState.ownedNotes : [];
     shieldedPopupState.shieldedBalance = notes
       .filter((note) => !note.spent)
-      .reduce((sum, note) => sum + Number(note.value || 0), 0);
+      .reduce((sum, note) => sum + baseUnitBigIntPopup(note.value || 0), 0n)
+      .toString();
     void refreshBalance();
   }
 
   // Update shielded balance display
   const balEl = document.getElementById('extShieldedBalance');
   if (balEl) {
-    const mol = shieldedPopupState.shieldedBalance / 1_000_000_000;
-    balEl.textContent = `${mol.toLocaleString(undefined, { minimumFractionDigits: 4, maximumFractionDigits: 4 })} LICN`;
+    balEl.textContent = `${formatLicnBaseUnitsFixedPopup(shieldedPopupState.shieldedBalance)} LICN`;
   }
   const sporesEl = document.getElementById('extShieldedSpores');
-  if (sporesEl) sporesEl.textContent = `${shieldedPopupState.shieldedBalance.toLocaleString()} spores`;
+  if (sporesEl) sporesEl.textContent = `${baseUnitBigIntPopup(shieldedPopupState.shieldedBalance).toLocaleString()} spores`;
 
   // Notes count
   const noteCount = document.getElementById('extNoteCount');
@@ -2317,7 +2388,7 @@ async function loadShieldPanel() {
         return `
           <div style="padding:0.65rem 0.75rem;background:var(--card-bg);border:1px solid var(--border);border-radius:10px;margin-bottom:0.45rem;display:flex;justify-content:space-between;align-items:center;gap:0.75rem;">
             <div>
-              <div style="font-weight:600;color:var(--text-primary);">${(Number(note.value || 0) / 1_000_000_000).toFixed(4)} LICN</div>
+              <div style="font-weight:600;color:var(--text-primary);">${formatLicnBaseUnitsFixedPopup(note.value)} LICN</div>
               <div style="font-size:0.7rem;color:var(--text-muted);">Note #${note.index ?? '?'} · ${(note.commitment || '').slice(0, 12)}...</div>
             </div>
             <span style="font-size:0.7rem;background:rgba(16,185,129,0.1);color:#10b981;padding:0.2rem 0.45rem;border-radius:999px;white-space:nowrap;">${label}</span>
@@ -2676,9 +2747,11 @@ function wireEvents() {
   });
 
   document.getElementById('sendMaxBtn')?.addEventListener('click', () => {
-    const max = Math.max(0, (window._cachedSpendableLicn || 0) - 0.001);
+    const spendable = baseUnitBigIntPopup(window._cachedSpendableSpores || 0);
+    const feeSpores = 1_000_000n;
+    const max = spendable > feeSpores ? spendable - feeSpores : 0n;
     const amountEl = document.getElementById('sendAmount');
-    if (amountEl) amountEl.value = max > 0 ? max.toFixed(9) : '';
+    if (amountEl) amountEl.value = max > 0n ? formatLicnBaseUnitsPopup(max) : '';
   });
 
   document.getElementById('extStakeBtn')?.addEventListener('click', () => {
@@ -2694,11 +2767,17 @@ function wireEvents() {
   const extSendAmt = document.getElementById('sendAmount');
   if (extSendAmt) {
     extSendAmt.addEventListener('blur', () => {
-      let v = parseFloat(extSendAmt.value);
-      if (isNaN(v) || v < 0) { extSendAmt.value = ''; return; }
-      const spendable = window._cachedSpendableLicn || 0;
-      const maxSend = Math.max(0, spendable - 0.001);
-      if (v > maxSend) extSendAmt.value = maxSend > 0 ? maxSend.toFixed(9) : '';
+      let valueSpores;
+      try {
+        valueSpores = parseLicnAmountSporesPopup(extSendAmt.value, 'Transfer amount');
+      } catch (_) {
+        extSendAmt.value = '';
+        return;
+      }
+      const spendable = baseUnitBigIntPopup(window._cachedSpendableSpores || 0);
+      const feeSpores = 1_000_000n;
+      const maxSend = spendable > feeSpores ? spendable - feeSpores : 0n;
+      if (valueSpores > maxSend) extSendAmt.value = maxSend > 0n ? formatLicnBaseUnitsPopup(maxSend) : '';
     });
   }
   document.getElementById('saveLockTimeout').addEventListener('click', saveAutoLockSettings);
@@ -2718,7 +2797,7 @@ function wireEvents() {
   // NFT actions
   document.getElementById('refreshNfts')?.addEventListener('click', () => loadNftsPanel());
   document.getElementById('browseMarketplace')?.addEventListener('click', () => {
-    window.open('https://marketplace.lichen.network', '_blank');
+    window.open('https://marketplace.lichen.network', '_blank', 'noopener,noreferrer');
   });
 
   // Shield tab buttons

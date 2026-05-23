@@ -2,6 +2,7 @@
 //! Tests every RPC method and SDK capability
 
 use lichen_client_sdk::{Client, Keypair, TransactionBuilder};
+use lichen_core::codec::serialize_legacy_bincode;
 use lichen_core::{Hash, Instruction, Pubkey};
 
 #[tokio::main]
@@ -207,7 +208,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                     // Test serialization (don't send - we don't have tokens)
                     print!("Serialize transaction... ");
-                    match bincode::serialize(&tx) {
+                    match serialize_legacy_bincode(&tx, "SDK example transaction") {
                         Ok(bytes) => println!("✅ Size: {} bytes", bytes.len()),
                         Err(e) => println!("❌ ERROR: {}", e),
                     }

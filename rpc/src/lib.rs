@@ -52,6 +52,7 @@ use axum::{
 };
 use chrono::{SecondsFormat, Utc};
 use lichen_core::account::Keypair as TreasuryKeypair;
+use lichen_core::codec::serialize_legacy_bincode;
 use lichen_core::contract::{
     ContractAccount, ContractEvent, ContractLifecycleStatus, ContractRuntime,
 };
@@ -2008,11 +2009,32 @@ fn parse_pq_signature_value(value: &serde_json::Value) -> Result<PqSignature, Rp
 }
 
 const BRIDGE_ACCESS_DOMAIN: &str = "LICHEN_BRIDGE_ACCESS_V1";
+const BRIDGE_ACCESS_DOMAIN_V2: &str = "LICHEN_BRIDGE_ACCESS_V2";
 const BRIDGE_ACCESS_MAX_TTL_SECS: u64 = 24 * 60 * 60;
 const BRIDGE_ACCESS_CLOCK_SKEW_SECS: u64 = 300;
+const BRIDGE_AUTH_ACTION_CREATE_DEPOSIT: &str = "createBridgeDeposit";
+const BRIDGE_AUTH_ACTION_GET_DEPOSIT: &str = "getBridgeDeposit";
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 struct BridgeAccessAuth {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    version: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    domain: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    action: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    user_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    chain: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    asset: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    route: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    deposit_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    nonce: Option<String>,
     issued_at: u64,
     expires_at: u64,
     signature: serde_json::Value,
@@ -2022,6 +2044,52 @@ fn bridge_access_message(user_id: &str, issued_at: u64, expires_at: u64) -> Vec<
     format!(
         "{}\nuser_id={}\nissued_at={}\nexpires_at={}\n",
         BRIDGE_ACCESS_DOMAIN, user_id, issued_at, expires_at
+    )
+    .into_bytes()
+}
+
+fn bridge_access_message_v2_create(
+    user_id: &str,
+    chain: &str,
+    asset: &str,
+    issued_at: u64,
+    expires_at: u64,
+    nonce: &str,
+) -> Vec<u8> {
+    let chain = chain.trim().to_lowercase();
+    let asset = asset.trim().to_lowercase();
+    format!(
+        "{}\naction={}\nuser_id={}\nchain={}\nasset={}\nroute={}:{}\nissued_at={}\nexpires_at={}\nnonce={}\n",
+        BRIDGE_ACCESS_DOMAIN_V2,
+        BRIDGE_AUTH_ACTION_CREATE_DEPOSIT,
+        user_id,
+        chain,
+        asset,
+        chain,
+        asset,
+        issued_at,
+        expires_at,
+        nonce
+    )
+    .into_bytes()
+}
+
+fn bridge_access_message_v2_lookup(
+    user_id: &str,
+    deposit_id: &str,
+    issued_at: u64,
+    expires_at: u64,
+    nonce: &str,
+) -> Vec<u8> {
+    format!(
+        "{}\naction={}\nuser_id={}\ndeposit_id={}\nissued_at={}\nexpires_at={}\nnonce={}\n",
+        BRIDGE_ACCESS_DOMAIN_V2,
+        BRIDGE_AUTH_ACTION_GET_DEPOSIT,
+        user_id,
+        deposit_id,
+        issued_at,
+        expires_at,
+        nonce
     )
     .into_bytes()
 }
@@ -2043,15 +2111,126 @@ fn parse_bridge_access_auth(value: &serde_json::Value) -> Result<BridgeAccessAut
     })
 }
 
-fn verify_bridge_access_auth(user_id: &str, auth: &BridgeAccessAuth) -> Result<(), RpcError> {
-    verify_bridge_access_auth_at(user_id, auth, current_unix_secs()?)
+fn verify_bridge_access_auth_for_create(
+    user_id: &str,
+    chain: &str,
+    asset: &str,
+    auth: &BridgeAccessAuth,
+) -> Result<(), RpcError> {
+    verify_bridge_access_auth_for_create_at(user_id, chain, asset, auth, current_unix_secs()?)
 }
 
+fn verify_bridge_access_auth_for_create_at(
+    user_id: &str,
+    chain: &str,
+    asset: &str,
+    auth: &BridgeAccessAuth,
+    now: u64,
+) -> Result<(), RpcError> {
+    if !bridge_auth_is_v2(auth) {
+        return verify_bridge_access_auth_v1_at(user_id, auth, now);
+    }
+
+    let chain = chain.trim().to_lowercase();
+    let asset = asset.trim().to_lowercase();
+    let action = bridge_auth_v2_action(auth)?;
+    if action != BRIDGE_AUTH_ACTION_CREATE_DEPOSIT {
+        return Err(RpcError {
+            code: -32602,
+            message: "bridge auth action does not match createBridgeDeposit".to_string(),
+        });
+    }
+    let auth_user_id = bridge_auth_v2_field(auth.user_id.as_deref(), "user_id")?;
+    if auth_user_id != user_id {
+        return Err(RpcError {
+            code: -32602,
+            message: "bridge auth user_id does not match request".to_string(),
+        });
+    }
+    let auth_chain = bridge_auth_v2_field(auth.chain.as_deref(), "chain")?.to_lowercase();
+    let auth_asset = bridge_auth_v2_field(auth.asset.as_deref(), "asset")?.to_lowercase();
+    let expected_route = format!("{}:{}", chain, asset);
+    let auth_route = bridge_auth_v2_field(auth.route.as_deref(), "route")?.to_lowercase();
+    if auth_chain != chain || auth_asset != asset || auth_route != expected_route {
+        return Err(RpcError {
+            code: -32602,
+            message: "bridge auth route does not match request".to_string(),
+        });
+    }
+
+    verify_bridge_access_auth_v2_create_at(user_id, &chain, &asset, auth, now)
+}
+
+fn verify_bridge_access_auth_for_lookup(
+    user_id: &str,
+    deposit_id: &str,
+    auth: &BridgeAccessAuth,
+) -> Result<(), RpcError> {
+    verify_bridge_access_auth_for_lookup_at(user_id, deposit_id, auth, current_unix_secs()?)
+}
+
+fn verify_bridge_access_auth_for_lookup_at(
+    user_id: &str,
+    deposit_id: &str,
+    auth: &BridgeAccessAuth,
+    now: u64,
+) -> Result<(), RpcError> {
+    if !bridge_auth_is_v2(auth) {
+        return verify_bridge_access_auth_v1_at(user_id, auth, now);
+    }
+
+    match bridge_auth_v2_action(auth)? {
+        BRIDGE_AUTH_ACTION_CREATE_DEPOSIT => {
+            verify_bridge_access_auth_v2_self_contained_at(user_id, auth, now)
+        }
+        BRIDGE_AUTH_ACTION_GET_DEPOSIT => {
+            let auth_user_id = bridge_auth_v2_field(auth.user_id.as_deref(), "user_id")?;
+            if auth_user_id != user_id {
+                return Err(RpcError {
+                    code: -32602,
+                    message: "bridge auth user_id does not match request".to_string(),
+                });
+            }
+            let auth_deposit_id = bridge_auth_v2_field(auth.deposit_id.as_deref(), "deposit_id")?;
+            if auth_deposit_id != deposit_id {
+                return Err(RpcError {
+                    code: -32602,
+                    message: "bridge auth deposit_id does not match request".to_string(),
+                });
+            }
+            verify_bridge_access_auth_v2_lookup_at(user_id, deposit_id, auth, now)
+        }
+        _ => Err(RpcError {
+            code: -32602,
+            message: "unsupported bridge auth action".to_string(),
+        }),
+    }
+}
+
+#[cfg(test)]
 fn verify_bridge_access_auth_at(
     user_id: &str,
     auth: &BridgeAccessAuth,
     now: u64,
 ) -> Result<(), RpcError> {
+    if bridge_auth_is_v2(auth) {
+        return verify_bridge_access_auth_v2_self_contained_at(user_id, auth, now);
+    }
+    verify_bridge_access_auth_v1_at(user_id, auth, now)
+}
+
+fn verify_bridge_access_auth_v1_at(
+    user_id: &str,
+    auth: &BridgeAccessAuth,
+    now: u64,
+) -> Result<(), RpcError> {
+    validate_bridge_auth_time(auth, now)?;
+
+    let message = bridge_access_message(user_id, auth.issued_at, auth.expires_at);
+    verify_bridge_access_signature(user_id, auth, &message)
+}
+
+fn validate_bridge_auth_time(auth: &BridgeAccessAuth, now: u64) -> Result<(), RpcError> {
     if auth.expires_at <= auth.issued_at {
         return Err(RpcError {
             code: -32602,
@@ -2083,13 +2262,20 @@ fn verify_bridge_access_auth_at(
         });
     }
 
+    Ok(())
+}
+
+fn verify_bridge_access_signature(
+    user_id: &str,
+    auth: &BridgeAccessAuth,
+    message: &[u8],
+) -> Result<(), RpcError> {
     let user_pubkey = Pubkey::from_base58(user_id).map_err(|_| RpcError {
         code: -32602,
         message: "user_id must be a valid Lichen base58 public key (32 bytes)".to_string(),
     })?;
     let signature = parse_pq_signature_value(&auth.signature)?;
-    let message = bridge_access_message(user_id, auth.issued_at, auth.expires_at);
-    if !lichen_core::account::Keypair::verify(&user_pubkey, &message, &signature) {
+    if !lichen_core::account::Keypair::verify(&user_pubkey, message, &signature) {
         return Err(RpcError {
             code: -32602,
             message: "Invalid bridge auth signature".to_string(),
@@ -2097,6 +2283,145 @@ fn verify_bridge_access_auth_at(
     }
 
     Ok(())
+}
+
+fn bridge_auth_is_v2(auth: &BridgeAccessAuth) -> bool {
+    auth.version == Some(2) || auth.domain.as_deref() == Some(BRIDGE_ACCESS_DOMAIN_V2)
+}
+
+fn bridge_auth_v2_action(auth: &BridgeAccessAuth) -> Result<&str, RpcError> {
+    validate_bridge_auth_v2_header(auth)?;
+    bridge_auth_v2_field(auth.action.as_deref(), "action")
+}
+
+fn validate_bridge_auth_v2_header(auth: &BridgeAccessAuth) -> Result<(), RpcError> {
+    if auth.version != Some(2) {
+        return Err(RpcError {
+            code: -32602,
+            message: "bridge auth version must be 2".to_string(),
+        });
+    }
+    if auth.domain.as_deref() != Some(BRIDGE_ACCESS_DOMAIN_V2) {
+        return Err(RpcError {
+            code: -32602,
+            message: "bridge auth domain must be LICHEN_BRIDGE_ACCESS_V2".to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn bridge_auth_v2_field<'a>(value: Option<&'a str>, field: &str) -> Result<&'a str, RpcError> {
+    let value = value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| RpcError {
+            code: -32602,
+            message: format!("bridge auth {} is required", field),
+        })?;
+    if value.contains('\n') || value.len() > 160 {
+        return Err(RpcError {
+            code: -32602,
+            message: format!(
+                "bridge auth {} must be <= 160 chars and contain no newlines",
+                field
+            ),
+        });
+    }
+    Ok(value)
+}
+
+fn bridge_auth_v2_nonce(auth: &BridgeAccessAuth) -> Result<&str, RpcError> {
+    let nonce = bridge_auth_v2_field(auth.nonce.as_deref(), "nonce")?;
+    if nonce.len() > 128 {
+        return Err(RpcError {
+            code: -32602,
+            message: "bridge auth nonce must be <= 128 chars and contain no newlines".to_string(),
+        });
+    }
+    Ok(nonce)
+}
+
+fn verify_bridge_access_auth_v2_create_at(
+    user_id: &str,
+    chain: &str,
+    asset: &str,
+    auth: &BridgeAccessAuth,
+    now: u64,
+) -> Result<(), RpcError> {
+    validate_bridge_auth_time(auth, now)?;
+    validate_bridge_auth_v2_header(auth)?;
+    let nonce = bridge_auth_v2_nonce(auth)?;
+    let message = bridge_access_message_v2_create(
+        user_id,
+        chain,
+        asset,
+        auth.issued_at,
+        auth.expires_at,
+        nonce,
+    );
+    verify_bridge_access_signature(user_id, auth, &message)
+}
+
+fn verify_bridge_access_auth_v2_lookup_at(
+    user_id: &str,
+    deposit_id: &str,
+    auth: &BridgeAccessAuth,
+    now: u64,
+) -> Result<(), RpcError> {
+    validate_bridge_auth_time(auth, now)?;
+    validate_bridge_auth_v2_header(auth)?;
+    let nonce = bridge_auth_v2_nonce(auth)?;
+    let message = bridge_access_message_v2_lookup(
+        user_id,
+        deposit_id,
+        auth.issued_at,
+        auth.expires_at,
+        nonce,
+    );
+    verify_bridge_access_signature(user_id, auth, &message)
+}
+
+fn verify_bridge_access_auth_v2_self_contained_at(
+    user_id: &str,
+    auth: &BridgeAccessAuth,
+    now: u64,
+) -> Result<(), RpcError> {
+    match bridge_auth_v2_action(auth)? {
+        BRIDGE_AUTH_ACTION_CREATE_DEPOSIT => {
+            let auth_user_id = bridge_auth_v2_field(auth.user_id.as_deref(), "user_id")?;
+            if auth_user_id != user_id {
+                return Err(RpcError {
+                    code: -32602,
+                    message: "bridge auth user_id does not match request".to_string(),
+                });
+            }
+            let chain = bridge_auth_v2_field(auth.chain.as_deref(), "chain")?.to_lowercase();
+            let asset = bridge_auth_v2_field(auth.asset.as_deref(), "asset")?.to_lowercase();
+            let route = bridge_auth_v2_field(auth.route.as_deref(), "route")?.to_lowercase();
+            if route != format!("{}:{}", chain, asset) {
+                return Err(RpcError {
+                    code: -32602,
+                    message: "bridge auth route is inconsistent".to_string(),
+                });
+            }
+            verify_bridge_access_auth_v2_create_at(user_id, &chain, &asset, auth, now)
+        }
+        BRIDGE_AUTH_ACTION_GET_DEPOSIT => {
+            let auth_user_id = bridge_auth_v2_field(auth.user_id.as_deref(), "user_id")?;
+            if auth_user_id != user_id {
+                return Err(RpcError {
+                    code: -32602,
+                    message: "bridge auth user_id does not match request".to_string(),
+                });
+            }
+            let deposit_id = bridge_auth_v2_field(auth.deposit_id.as_deref(), "deposit_id")?;
+            verify_bridge_access_auth_v2_lookup_at(user_id, deposit_id, auth, now)
+        }
+        _ => Err(RpcError {
+            code: -32602,
+            message: "unsupported bridge auth action".to_string(),
+        }),
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -2193,7 +2518,7 @@ fn encode_rpc_response(headers: &HeaderMap, response: RpcResponse) -> Response {
                 });
         }
     } else if accept.contains("application/octet-stream") {
-        if let Ok(bytes) = bincode::serialize(&response) {
+        if let Ok(bytes) = serialize_legacy_bincode(&response, "RPC binary simulate response") {
             return Response::builder()
                 .status(200)
                 .header("content-type", "application/octet-stream")
@@ -4033,7 +4358,8 @@ fn solana_block_transaction_encoded_json(
 }
 
 fn encode_solana_transaction(tx: &Transaction, encoding: &str) -> String {
-    let bytes = bincode::serialize(tx).unwrap_or_default();
+    let bytes =
+        serialize_legacy_bincode(tx, "Solana-compatible transaction encoding").unwrap_or_default();
     match encoding {
         "base58" => bs58::encode(bytes).into_string(),
         _ => {
@@ -7275,10 +7601,11 @@ pub(crate) async fn preflight_transaction_submission(
         }
     }
 
-    tx.verify_required_signatures().map_err(|error| RpcError {
-        code: -32003,
-        message: error,
-    })?;
+    tx.verify_required_signatures_with_chain_id(&state.chain_id)
+        .map_err(|error| RpcError {
+            code: -32003,
+            message: error,
+        })?;
 
     {
         let budget = tx.message.effective_compute_budget();
@@ -7904,10 +8231,21 @@ fn execute_readonly_contract_call(
     let exec_result = runtime.execute(&contract, function, &exec_args, context);
     runtime.return_to_pool();
 
-    exec_result.map_err(|error| RpcError {
+    let mut result = exec_result.map_err(|error| RpcError {
         code: -32000,
         message: format!("Contract execution failed: {}", error),
-    })
+    })?;
+    let outcome = lichen_core::contract::evaluate_contract_outcome(
+        &contract,
+        function,
+        &result,
+        lichen_core::contract::ContractOutcomeFallback::RuntimeSuccessOnly,
+    );
+    if !outcome.success {
+        result.success = false;
+        result.error = outcome.error;
+    }
+    Ok(result)
 }
 
 fn merged_contract_logs(result: &lichen_core::contract::ContractResult) -> Vec<String> {
@@ -19266,7 +19604,8 @@ async fn handle_get_lichenbridge_stats(state: &RpcState) -> Result<serde_json::V
 // ============================================================================
 
 /// createBridgeDeposit — Proxy to custody POST /deposits
-/// Params: [{ user_id, chain, asset, auth: { issued_at, expires_at, signature } }]
+/// Params: [{ user_id, chain, asset, auth }]
+/// Auth accepts legacy V1 and route-bound V2 bridge access envelopes.
 async fn handle_create_bridge_deposit(
     state: &RpcState,
     params: Option<serde_json::Value>,
@@ -19346,7 +19685,7 @@ async fn handle_create_bridge_deposit(
     }
 
     let bridge_auth = parse_bridge_access_auth(auth)?;
-    verify_bridge_access_auth(user_id, &bridge_auth)?;
+    verify_bridge_access_auth_for_create(user_id, chain, asset, &bridge_auth)?;
 
     let incident_status = load_incident_status_record(state);
     if let Some(reason) = bridge_deposit_incident_block_reason(&incident_status) {
@@ -19421,7 +19760,7 @@ async fn handle_create_bridge_deposit(
 }
 
 /// getBridgeDeposit — Proxy to custody GET /deposits/:deposit_id
-/// Params: [{ deposit_id, user_id, auth: { issued_at, expires_at, signature } }]
+/// Params: [{ deposit_id, user_id, auth }]
 ///    or [deposit_id, { user_id, auth: { ... } }]
 fn parse_bridge_deposit_lookup_object(
     object: &serde_json::Map<String, serde_json::Value>,
@@ -19526,7 +19865,7 @@ async fn handle_get_bridge_deposit(
         });
     }
 
-    verify_bridge_access_auth(&user_id, &bridge_auth)?;
+    verify_bridge_access_auth_for_lookup(&user_id, &deposit_id, &bridge_auth)?;
     let bridge_auth_json = serde_json::to_string(&bridge_auth).map_err(|e| RpcError {
         code: -32000,
         message: format!("Failed to encode bridge auth for custody lookup: {}", e),
@@ -19741,19 +20080,19 @@ async fn handle_get_oracle_prices(state: &RpcState) -> Result<serde_json::Value,
 #[cfg(test)]
 mod tests {
     use super::{
-        bridge_access_message, classify_evm_method_tier, classify_method,
-        classify_solana_method_tier, clear_privileged_rpc_mutation_test_sink, constant_time_eq,
-        decode_contract_result_u64, disk_readiness_from_counts, encode_readonly_return_data_b64,
-        encode_rpc_response, filter_signatures_for_address, get_cached_program_list_response,
-        handle_build_ban_code_hash_tx, handle_build_extend_restriction_tx,
-        handle_build_lift_restriction_tx, handle_build_pause_bridge_route_tx,
-        handle_build_quarantine_contract_tx, handle_build_restrict_account_asset_tx,
-        handle_build_restrict_account_tx, handle_build_resume_bridge_route_tx,
-        handle_build_resume_contract_tx, handle_build_set_frozen_asset_amount_tx,
-        handle_build_suspend_contract_tx, handle_build_terminate_contract_tx,
-        handle_build_unban_code_hash_tx, handle_build_unrestrict_account_asset_tx,
-        handle_build_unrestrict_account_tx, handle_can_receive, handle_can_send,
-        handle_can_transfer, handle_create_bridge_deposit,
+        bridge_access_message, bridge_access_message_v2_create, classify_evm_method_tier,
+        classify_method, classify_solana_method_tier, clear_privileged_rpc_mutation_test_sink,
+        constant_time_eq, decode_contract_result_u64, disk_readiness_from_counts,
+        encode_readonly_return_data_b64, encode_rpc_response, filter_signatures_for_address,
+        get_cached_program_list_response, handle_build_ban_code_hash_tx,
+        handle_build_extend_restriction_tx, handle_build_lift_restriction_tx,
+        handle_build_pause_bridge_route_tx, handle_build_quarantine_contract_tx,
+        handle_build_restrict_account_asset_tx, handle_build_restrict_account_tx,
+        handle_build_resume_bridge_route_tx, handle_build_resume_contract_tx,
+        handle_build_set_frozen_asset_amount_tx, handle_build_suspend_contract_tx,
+        handle_build_terminate_contract_tx, handle_build_unban_code_hash_tx,
+        handle_build_unrestrict_account_asset_tx, handle_build_unrestrict_account_tx,
+        handle_can_receive, handle_can_send, handle_can_transfer, handle_create_bridge_deposit,
         handle_get_account_asset_restriction_status, handle_get_account_restriction_status,
         handle_get_all_symbol_registry, handle_get_asset_restriction_status,
         handle_get_bridge_deposit, handle_get_bridge_route_restriction_status,
@@ -19777,8 +20116,9 @@ mod tests {
         storage_key_with_u64_le, strip_admin_token_from_params,
         validate_incoming_transaction_limits, validate_solana_encoding,
         validate_solana_transaction_details, verify_admin_auth, verify_bridge_access_auth_at,
-        AirdropCooldowns, MethodTier, RateLimiter, RpcError, RpcResponse, RpcState,
-        AIRDROP_COOLDOWN_MAX_ENTRIES, AIRDROP_COOLDOWN_SECS, PROGRAM_LIST_CACHE_TTL_MS,
+        verify_bridge_access_auth_for_create_at, AirdropCooldowns, MethodTier, RateLimiter,
+        RpcError, RpcResponse, RpcState, AIRDROP_COOLDOWN_MAX_ENTRIES, AIRDROP_COOLDOWN_SECS,
+        BRIDGE_ACCESS_DOMAIN_V2, BRIDGE_AUTH_ACTION_CREATE_DEPOSIT, PROGRAM_LIST_CACHE_TTL_MS,
         RPC_DISK_CRITICAL_MIN_AVAILABLE_BYTES, SOLANA_SPL_TOKEN_PROGRAM_ID,
         SOLANA_TOKEN_ACCOUNT_SPACE, SYSTEM_PROPOSE_GOVERNANCE_ACTION_IX,
     };
@@ -20224,6 +20564,7 @@ mod tests {
                 returns: None,
                 opcode: None,
                 readonly,
+                result_semantics: None,
             }],
             events: Vec::new(),
             errors: Vec::new(),
@@ -20723,6 +21064,41 @@ mod tests {
             "auth": {
                 "issued_at": issued_at,
                 "expires_at": expires_at,
+                "signature": pq_signature_json(&keypair.sign(&message)),
+            }
+        })
+    }
+
+    fn signed_bridge_deposit_payload_v2(seed: u8, chain: &str, asset: &str) -> serde_json::Value {
+        let keypair = LichenKeypair::from_seed(&[seed; 32]);
+        let user_id = keypair.pubkey().to_base58();
+        let issued_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock")
+            .as_secs();
+        let expires_at = issued_at + 600;
+        let chain = chain.trim().to_lowercase();
+        let asset = asset.trim().to_lowercase();
+        let nonce = format!("rpc-bridge-auth-v2-{}", seed);
+        let message = bridge_access_message_v2_create(
+            &user_id, &chain, &asset, issued_at, expires_at, &nonce,
+        );
+
+        serde_json::json!({
+            "user_id": user_id.clone(),
+            "chain": chain.clone(),
+            "asset": asset.clone(),
+            "auth": {
+                "version": 2,
+                "domain": BRIDGE_ACCESS_DOMAIN_V2,
+                "action": BRIDGE_AUTH_ACTION_CREATE_DEPOSIT,
+                "user_id": user_id,
+                "chain": chain,
+                "asset": asset,
+                "route": format!("{}:{}", chain, asset),
+                "issued_at": issued_at,
+                "expires_at": expires_at,
+                "nonce": nonce,
                 "signature": pq_signature_json(&keypair.sign(&message)),
             }
         })
@@ -21666,6 +22042,77 @@ mod tests {
         let err = verify_bridge_access_auth_at(&other_user, &auth, issued_at + 60)
             .expect_err("bridge auth must be bound to the requesting user");
         assert!(err.message.contains("Invalid bridge auth signature"));
+    }
+
+    #[test]
+    fn test_bridge_access_auth_v2_verifies_route_bound_signature() {
+        let keypair = LichenKeypair::from_seed(&[11u8; 32]);
+        let user_id = keypair.pubkey().to_base58();
+        let issued_at = 1_700_000_000u64;
+        let expires_at = issued_at + 600;
+        let nonce = "route-bound-test";
+        let message = bridge_access_message_v2_create(
+            &user_id, "ethereum", "eth", issued_at, expires_at, nonce,
+        );
+        let auth = parse_bridge_access_auth(&serde_json::json!({
+            "version": 2,
+            "domain": BRIDGE_ACCESS_DOMAIN_V2,
+            "action": BRIDGE_AUTH_ACTION_CREATE_DEPOSIT,
+            "user_id": user_id,
+            "chain": "ethereum",
+            "asset": "eth",
+            "route": "ethereum:eth",
+            "issued_at": issued_at,
+            "expires_at": expires_at,
+            "nonce": nonce,
+            "signature": pq_signature_json(&keypair.sign(&message)),
+        }))
+        .expect("parse v2 bridge auth");
+
+        verify_bridge_access_auth_for_create_at(
+            &keypair.pubkey().to_base58(),
+            "ethereum",
+            "eth",
+            &auth,
+            issued_at + 60,
+        )
+        .expect("valid v2 bridge auth must verify");
+    }
+
+    #[test]
+    fn test_bridge_access_auth_v2_rejects_route_substitution() {
+        let keypair = LichenKeypair::from_seed(&[12u8; 32]);
+        let user_id = keypair.pubkey().to_base58();
+        let issued_at = 1_700_000_000u64;
+        let expires_at = issued_at + 600;
+        let nonce = "route-substitution-test";
+        let message = bridge_access_message_v2_create(
+            &user_id, "ethereum", "eth", issued_at, expires_at, nonce,
+        );
+        let auth = parse_bridge_access_auth(&serde_json::json!({
+            "version": 2,
+            "domain": BRIDGE_ACCESS_DOMAIN_V2,
+            "action": BRIDGE_AUTH_ACTION_CREATE_DEPOSIT,
+            "user_id": user_id,
+            "chain": "ethereum",
+            "asset": "eth",
+            "route": "ethereum:eth",
+            "issued_at": issued_at,
+            "expires_at": expires_at,
+            "nonce": nonce,
+            "signature": pq_signature_json(&keypair.sign(&message)),
+        }))
+        .expect("parse v2 bridge auth");
+
+        let err = verify_bridge_access_auth_for_create_at(
+            &keypair.pubkey().to_base58(),
+            "solana",
+            "sol",
+            &auth,
+            issued_at + 60,
+        )
+        .expect_err("v2 bridge auth must be route-bound");
+        assert_eq!(err.message, "bridge auth route does not match request");
     }
 
     #[test]
@@ -23847,6 +24294,73 @@ mod tests {
         let requests = custody_state.requests.lock().await;
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0]["auth"], expected_auth);
+    }
+
+    #[tokio::test]
+    async fn test_create_bridge_deposit_accepts_v2_route_bound_auth() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+
+        let custody_state = MockCustodyState::default();
+        let custody_url = spawn_mock_server(
+            Router::new()
+                .route("/deposits", post(mock_custody_create_deposit))
+                .with_state(custody_state.clone()),
+        )
+        .await;
+
+        let mut rpc_state = make_test_rpc_state(state);
+        rpc_state.custody_url = Some(custody_url);
+        rpc_state.custody_auth_token = Some("test-auth-token".to_string());
+
+        let payload = signed_bridge_deposit_payload_v2(42, "ethereum", "eth");
+        let expected_auth = payload
+            .get("auth")
+            .cloned()
+            .expect("bridge auth payload should exist");
+
+        let response = handle_create_bridge_deposit(&rpc_state, Some(serde_json::json!([payload])))
+            .await
+            .expect("v2 bridge deposit creation should succeed");
+
+        assert_eq!(
+            response["deposit_id"],
+            "11111111-1111-1111-1111-111111111111"
+        );
+
+        let requests = custody_state.requests.lock().await;
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0]["auth"], expected_auth);
+    }
+
+    #[tokio::test]
+    async fn test_create_bridge_deposit_rejects_v2_route_substitution_before_custody() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+
+        let custody_state = MockCustodyState::default();
+        let custody_url = spawn_mock_server(
+            Router::new()
+                .route("/deposits", post(mock_custody_create_deposit))
+                .with_state(custody_state.clone()),
+        )
+        .await;
+
+        let mut rpc_state = make_test_rpc_state(state);
+        rpc_state.custody_url = Some(custody_url);
+        rpc_state.custody_auth_token = Some("test-auth-token".to_string());
+
+        let mut payload = signed_bridge_deposit_payload_v2(43, "ethereum", "eth");
+        payload["chain"] = serde_json::Value::String("solana".to_string());
+        payload["asset"] = serde_json::Value::String("sol".to_string());
+
+        let err = handle_create_bridge_deposit(&rpc_state, Some(serde_json::json!([payload])))
+            .await
+            .expect_err("route-substituted v2 auth must not reach custody");
+
+        assert_eq!(err.code, -32602);
+        assert_eq!(err.message, "bridge auth route does not match request");
+        assert!(custody_state.requests.lock().await.is_empty());
     }
 
     #[test]

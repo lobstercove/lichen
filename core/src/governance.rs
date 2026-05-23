@@ -345,7 +345,8 @@ mod tests {
     }
 
     fn bincode_variant_index(action: &GovernanceAction) -> u32 {
-        let bytes = bincode::serialize(action).expect("governance action serializes");
+        let bytes = crate::codec::serialize_legacy_bincode(action, "governance action")
+            .expect("governance action serializes");
         u32::from_le_bytes(bytes[0..4].try_into().expect("variant index prefix"))
     }
 

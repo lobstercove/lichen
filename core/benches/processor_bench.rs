@@ -10,7 +10,8 @@ use lichen_core::zk::circuits::shield::ShieldCircuit;
 use lichen_core::zk::{commitment_hash, random_scalar_bytes, Prover, Verifier};
 use lichen_core::StateStore;
 use lichen_core::{
-    Account, Block, Hash, Instruction, Keypair, Message, Pubkey, Transaction, TxProcessor,
+    codec::serialize_legacy_bincode, Account, Block, Hash, Instruction, Keypair, Message, Pubkey,
+    Transaction, TxProcessor,
 };
 use tempfile::TempDir;
 
@@ -31,7 +32,7 @@ fn make_signed_transfer(sender: &Keypair, recent_blockhash: Hash) -> Transaction
     let ix = Instruction {
         program_id: Pubkey([0u8; 32]), // system program
         accounts: vec![sender.pubkey(), receiver.pubkey()],
-        data: bincode::serialize(&(1_000_000u64)).unwrap(), // 0.001 LICN
+        data: serialize_legacy_bincode(&(1_000_000u64), "benchmark transfer amount").unwrap(),
     };
     let msg = Message::new(vec![ix], recent_blockhash);
     let mut tx = Transaction::new(msg);

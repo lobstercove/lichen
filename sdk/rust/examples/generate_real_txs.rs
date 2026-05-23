@@ -2,6 +2,7 @@
 
 use base64::Engine;
 use lichen_client_sdk::{Client, Keypair};
+use lichen_core::codec::serialize_legacy_bincode;
 use lichen_core::{Hash, Instruction, SYSTEM_PROGRAM_ID};
 use std::error::Error;
 
@@ -73,8 +74,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
             tx_type: Default::default(),
         };
 
-        // Serialize with bincode
-        let tx_bytes = bincode::serialize(&tx)?;
+        let tx_bytes = serialize_legacy_bincode(&tx, "generated transaction")
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         let tx_base64 = base64::engine::general_purpose::STANDARD.encode(&tx_bytes);
 
         // Send transaction

@@ -27,6 +27,7 @@ use super::merkle::{
 };
 use super::r1cs_bn254::fr_to_bytes;
 use super::{ProofType, ZkProof};
+use crate::codec::serialize_legacy_bincode;
 use ark_bn254::Fr;
 use ark_ff::PrimeField;
 use p3_uni_stark::prove as prove_stark;
@@ -559,8 +560,7 @@ fn serialize_stark_proof<const WIDTH: usize>(
     proof_type: ProofType,
     public_inputs: [u64; WIDTH],
 ) -> Result<ZkProof, String> {
-    let proof_bytes = bincode::serialize(proof)
-        .map_err(|e| format!("STARK proof serialization failed: {}", e))?;
+    let proof_bytes = serialize_legacy_bincode(proof, "STARK proof")?;
 
     Ok(ZkProof::plonky3(
         proof_type,

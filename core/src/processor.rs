@@ -4,8 +4,9 @@ use crate::account::{Account, Pubkey};
 use crate::consensus::{slot_to_epoch, SLOTS_PER_EPOCH};
 use crate::contract::{
     build_top_level_call_context, contract_lifecycle_status_for_restriction_mode,
-    derive_contract_lifecycle_from_state_store, ContractAbi, ContractAccount, ContractContext,
-    ContractEvent, ContractRuntime, NativeAccountOp,
+    derive_contract_lifecycle_from_state_store, evaluate_contract_outcome, ContractAbi,
+    ContractAccount, ContractContext, ContractEvent, ContractOutcomeFallback, ContractRuntime,
+    NativeAccountOp,
 };
 use crate::contract_instruction::ContractInstruction;
 use crate::evm::{
@@ -13,6 +14,7 @@ use crate::evm::{
     EvmReceipt, EvmTxRecord, EVM_PROGRAM_ID,
 };
 use crate::governance::{GovernanceAction, GovernanceProposal};
+use crate::signing::CHAIN_ID_METADATA_KEY;
 use crate::state::{StateBatch, StateStore, SymbolRegistryEntry};
 use crate::transaction::{Instruction, Transaction};
 use crate::{Hash, MAX_CONTRACT_CODE};
@@ -545,8 +547,25 @@ impl TxProcessor {
         self.mode == TxProcessorMode::Speculative
     }
 
-    fn verify_transaction_signatures(tx: &Transaction) -> Result<(), String> {
-        tx.verify_required_signatures().map(|_| ())
+    fn transaction_signing_chain_id(&self) -> Result<Option<String>, String> {
+        let Some(bytes) = self.state.get_metadata(CHAIN_ID_METADATA_KEY)? else {
+            return Ok(None);
+        };
+        let chain_id = String::from_utf8(bytes)
+            .map_err(|e| format!("invalid chain_id signing metadata: {}", e))?;
+        if chain_id.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(chain_id))
+        }
+    }
+
+    fn verify_transaction_signatures(&self, tx: &Transaction) -> Result<(), String> {
+        match self.transaction_signing_chain_id()? {
+            Some(chain_id) => tx.verify_required_signatures_with_chain_id(&chain_id),
+            None => tx.verify_required_signatures(),
+        }
+        .map(|_| ())
     }
 
     fn drain_contract_meta(&self) -> (Option<i64>, Vec<String>, u64, Vec<u8>) {
@@ -663,6 +682,39 @@ mod tests {
             treasury,
             genesis_hash,
         )
+    }
+
+    #[test]
+    fn verify_transaction_signatures_uses_chain_id_metadata() {
+        let temp_dir = tempdir().unwrap();
+        let state = StateStore::open(temp_dir.path()).unwrap();
+        state
+            .put_metadata(CHAIN_ID_METADATA_KEY, b"lichen-testnet-1")
+            .expect("put chain id");
+        let processor = TxProcessor::new(state);
+        let kp = Keypair::generate();
+        let ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![kp.pubkey()],
+            data: vec![0],
+        };
+        let message = crate::transaction::Message::new(vec![ix], Hash::hash(b"recent"));
+        let mut tx = Transaction::new(message);
+        tx.signatures
+            .push(kp.sign(&tx.message.signing_bytes_for_chain_id("lichen-testnet-1")));
+
+        processor
+            .verify_transaction_signatures(&tx)
+            .expect("matching chain id should verify");
+
+        let temp_dir = tempdir().unwrap();
+        let wrong_state = StateStore::open(temp_dir.path()).unwrap();
+        wrong_state
+            .put_metadata(CHAIN_ID_METADATA_KEY, b"lichen-mainnet-1")
+            .expect("put wrong chain id");
+        let wrong_processor = TxProcessor::new(wrong_state);
+
+        assert!(wrong_processor.verify_transaction_signatures(&tx).is_err());
     }
 
     fn advance_test_slot(state: &StateStore, slot: u64) -> Hash {
@@ -2941,7 +2993,8 @@ mod tests {
             public_mint: true,
             mint_authority: None,
         };
-        let encoded = bincode::serialize(&col_data).unwrap();
+        let encoded =
+            crate::codec::serialize_legacy_bincode(&col_data, "test NFT collection").unwrap();
         let mut data = vec![6u8];
         data.extend_from_slice(&encoded);
 
@@ -3012,7 +3065,8 @@ mod tests {
             public_mint: true,
             mint_authority: None,
         };
-        let encoded = bincode::serialize(&col_data).unwrap();
+        let encoded =
+            crate::codec::serialize_legacy_bincode(&col_data, "test NFT collection").unwrap();
         let mut data = vec![6u8];
         data.extend_from_slice(&encoded);
         let ix = Instruction {
@@ -3056,7 +3110,7 @@ mod tests {
             token_id: 1,
             metadata_uri: "https://example.com/nft/1.json".to_string(),
         };
-        let encoded = bincode::serialize(&mint_data).unwrap();
+        let encoded = crate::codec::serialize_legacy_bincode(&mint_data, "test NFT mint").unwrap();
         let mut data = vec![7u8];
         data.extend_from_slice(&encoded);
 
@@ -3102,7 +3156,7 @@ mod tests {
             token_id: 1,
             metadata_uri: "https://example.com/1.json".to_string(),
         };
-        let encoded = bincode::serialize(&mint_data).unwrap();
+        let encoded = crate::codec::serialize_legacy_bincode(&mint_data, "test NFT mint").unwrap();
         let mut data = vec![7u8];
         data.extend_from_slice(&encoded);
 
@@ -3148,7 +3202,9 @@ mod tests {
             metadata_uri: "https://example.com/1.json".to_string(),
         };
         let mut mdata = vec![7u8];
-        mdata.extend_from_slice(&bincode::serialize(&mint_data).unwrap());
+        mdata.extend_from_slice(
+            &crate::codec::serialize_legacy_bincode(&mint_data, "test NFT mint").unwrap(),
+        );
         let ix_mint = Instruction {
             program_id: SYSTEM_PROGRAM_ID,
             accounts: vec![alice, collection, token_addr, alice],
@@ -3201,7 +3257,9 @@ mod tests {
             metadata_uri: "uri".to_string(),
         };
         let mut mdata = vec![7u8];
-        mdata.extend_from_slice(&bincode::serialize(&mint_data).unwrap());
+        mdata.extend_from_slice(
+            &crate::codec::serialize_legacy_bincode(&mint_data, "test NFT mint").unwrap(),
+        );
         let ix = Instruction {
             program_id: SYSTEM_PROGRAM_ID,
             accounts: vec![alice, collection, token_addr, alice],
@@ -3307,6 +3365,25 @@ mod tests {
         make_signed_tx(kp, ix, recent_blockhash)
     }
 
+    fn make_self_funded_register_validator_tx(
+        kp: &Keypair,
+        validator: Pubkey,
+        fingerprint: [u8; 32],
+        amount: u64,
+        recent_blockhash: Hash,
+    ) -> Transaction {
+        let mut data = vec![26u8];
+        data.extend_from_slice(&fingerprint);
+        data.push(1u8);
+        data.extend_from_slice(&amount.to_le_bytes());
+        let ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![validator],
+            data,
+        };
+        make_signed_tx(kp, ix, recent_blockhash)
+    }
+
     fn make_deregister_validator_tx(
         kp: &Keypair,
         validator: Pubkey,
@@ -3326,6 +3403,15 @@ mod tests {
             .unwrap();
     }
 
+    fn enable_validator_bootstrap_grants(state: &StateStore) {
+        state
+            .put_metadata(
+                crate::consensus::VALIDATOR_BOOTSTRAP_GRANTS_ENABLED_METADATA_KEY,
+                crate::consensus::VALIDATOR_BOOTSTRAP_GRANTS_ENABLED_VALUE,
+            )
+            .unwrap();
+    }
+
     fn assert_validator_registration_not_granted(
         state: &StateStore,
         treasury: Pubkey,
@@ -3341,6 +3427,231 @@ mod tests {
         assert_eq!(pool.bootstrap_grants_issued(), 0);
         assert!(pool.get_stake(&validator).is_none());
         assert!(pool.fingerprint_owner(&fingerprint).is_none());
+    }
+
+    #[test]
+    fn test_register_validator_bootstrap_grant_success_records_fingerprint_and_debt() {
+        let (processor, state, _alice_kp, _alice, treasury, genesis_hash) = setup();
+        let block_producer = Pubkey([42u8; 32]);
+        enable_validator_bootstrap_grants(&state);
+        fund_treasury_for_validator_bootstrap(&state, treasury);
+        let before_treasury = state.get_account(&treasury).unwrap().unwrap();
+        let validator_kp = Keypair::generate();
+        let validator = validator_kp.pubkey();
+        let fingerprint = [0x21; 32];
+
+        let tx = make_register_validator_tx(&validator_kp, validator, fingerprint, genesis_hash);
+        let result = processor.process_transaction(&tx, &block_producer);
+        assert!(
+            result.success,
+            "RegisterValidator failed: {:?}",
+            result.error
+        );
+        assert_eq!(result.fee_paid, 0);
+
+        let after_treasury = state.get_account(&treasury).unwrap().unwrap();
+        assert_eq!(
+            after_treasury.spendable,
+            before_treasury
+                .spendable
+                .saturating_sub(crate::consensus::BOOTSTRAP_GRANT_AMOUNT)
+        );
+        let validator_account = state.get_account(&validator).unwrap().unwrap();
+        assert_eq!(
+            validator_account.staked,
+            crate::consensus::BOOTSTRAP_GRANT_AMOUNT
+        );
+        let pool = state.get_stake_pool().unwrap();
+        let stake = pool.get_stake(&validator).unwrap();
+        assert_eq!(stake.amount, crate::consensus::BOOTSTRAP_GRANT_AMOUNT);
+        assert_eq!(
+            stake.bootstrap_debt,
+            crate::consensus::BOOTSTRAP_GRANT_AMOUNT
+        );
+        assert_eq!(pool.bootstrap_grants_issued(), 1);
+        assert_eq!(pool.fingerprint_owner(&fingerprint), Some(&validator));
+    }
+
+    #[test]
+    fn test_register_validator_bootstrap_grant_disabled_rejects_without_grant() {
+        let (processor, state, _alice_kp, _alice, treasury, genesis_hash) = setup();
+        let block_producer = Pubkey([42u8; 32]);
+        fund_treasury_for_validator_bootstrap(&state, treasury);
+        let before_treasury = state.get_account(&treasury).unwrap().unwrap();
+        let validator_kp = Keypair::generate();
+        let validator = validator_kp.pubkey();
+        let fingerprint = [0x22; 32];
+
+        let tx = make_register_validator_tx(&validator_kp, validator, fingerprint, genesis_hash);
+        let result = processor.process_transaction(&tx, &block_producer);
+        assert!(!result.success);
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("bootstrap grants are disabled"));
+        assert_validator_registration_not_granted(
+            &state,
+            treasury,
+            &before_treasury,
+            validator,
+            fingerprint,
+        );
+    }
+
+    #[test]
+    fn test_register_validator_zero_fingerprint_rejects_without_grant() {
+        let (processor, state, _alice_kp, _alice, treasury, genesis_hash) = setup();
+        let block_producer = Pubkey([42u8; 32]);
+        enable_validator_bootstrap_grants(&state);
+        fund_treasury_for_validator_bootstrap(&state, treasury);
+        let before_treasury = state.get_account(&treasury).unwrap().unwrap();
+        let validator_kp = Keypair::generate();
+        let validator = validator_kp.pubkey();
+        let fingerprint = [0u8; 32];
+
+        let tx = make_register_validator_tx(&validator_kp, validator, fingerprint, genesis_hash);
+        let result = processor.process_transaction(&tx, &block_producer);
+        assert!(!result.success);
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("zero machine fingerprint"));
+        assert_validator_registration_not_granted(
+            &state,
+            treasury,
+            &before_treasury,
+            validator,
+            fingerprint,
+        );
+    }
+
+    #[test]
+    fn test_register_validator_duplicate_fingerprint_rejects_without_second_grant() {
+        let (processor, state, _alice_kp, _alice, treasury, genesis_hash) = setup();
+        let block_producer = Pubkey([42u8; 32]);
+        enable_validator_bootstrap_grants(&state);
+        fund_treasury_for_validator_bootstrap(&state, treasury);
+        let first_kp = Keypair::generate();
+        let first_validator = first_kp.pubkey();
+        let second_kp = Keypair::generate();
+        let second_validator = second_kp.pubkey();
+        let fingerprint = [0x23; 32];
+
+        let first_tx =
+            make_register_validator_tx(&first_kp, first_validator, fingerprint, genesis_hash);
+        assert!(
+            processor
+                .process_transaction(&first_tx, &block_producer)
+                .success
+        );
+        let before_second_treasury = state.get_account(&treasury).unwrap().unwrap();
+
+        let second_tx =
+            make_register_validator_tx(&second_kp, second_validator, fingerprint, genesis_hash);
+        let result = processor.process_transaction(&second_tx, &block_producer);
+        assert!(!result.success);
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("machine fingerprint already registered"));
+
+        let after_second_treasury = state.get_account(&treasury).unwrap().unwrap();
+        assert_eq!(
+            after_second_treasury.spendable,
+            before_second_treasury.spendable
+        );
+        assert!(state.get_account(&second_validator).unwrap().is_none());
+        let pool = state.get_stake_pool().unwrap();
+        assert_eq!(pool.bootstrap_grants_issued(), 1);
+        assert!(pool.get_stake(&second_validator).is_none());
+        assert_eq!(pool.fingerprint_owner(&fingerprint), Some(&first_validator));
+    }
+
+    #[test]
+    fn test_register_validator_existing_staked_account_without_pool_rejects() {
+        let (processor, state, _alice_kp, _alice, treasury, genesis_hash) = setup();
+        let block_producer = Pubkey([42u8; 32]);
+        enable_validator_bootstrap_grants(&state);
+        fund_treasury_for_validator_bootstrap(&state, treasury);
+        let before_treasury = state.get_account(&treasury).unwrap().unwrap();
+        let validator_kp = Keypair::generate();
+        let validator = validator_kp.pubkey();
+        let fingerprint = [0x24; 32];
+        let mut account = Account::new(100_000, validator);
+        account
+            .stake(crate::consensus::BOOTSTRAP_GRANT_AMOUNT)
+            .unwrap();
+        state.put_account(&validator, &account).unwrap();
+
+        let tx = make_register_validator_tx(&validator_kp, validator, fingerprint, genesis_hash);
+        let result = processor.process_transaction(&tx, &block_producer);
+        assert!(!result.success);
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("not backed by stake-pool registration"));
+        let after_treasury = state.get_account(&treasury).unwrap().unwrap();
+        assert_eq!(after_treasury.spendable, before_treasury.spendable);
+        let pool = state.get_stake_pool().unwrap();
+        assert_eq!(pool.bootstrap_grants_issued(), 0);
+        assert!(pool.get_stake(&validator).is_none());
+        assert!(pool.fingerprint_owner(&fingerprint).is_none());
+    }
+
+    #[test]
+    fn test_register_validator_self_funded_success_without_grant() {
+        let (processor, state, _alice_kp, _alice, treasury, genesis_hash) = setup();
+        let block_producer = Pubkey([42u8; 32]);
+        fund_treasury_for_validator_bootstrap(&state, treasury);
+        let before_treasury = state.get_account(&treasury).unwrap().unwrap();
+        let validator_kp = Keypair::generate();
+        let validator = validator_kp.pubkey();
+        let fingerprint = [0x25; 32];
+        let amount = crate::consensus::MIN_VALIDATOR_STAKE;
+        state
+            .put_account(&validator, &Account::new(100_000, validator))
+            .unwrap();
+
+        let tx = make_self_funded_register_validator_tx(
+            &validator_kp,
+            validator,
+            fingerprint,
+            amount,
+            genesis_hash,
+        );
+        let result = processor.process_transaction(&tx, &block_producer);
+        assert!(
+            result.success,
+            "RegisterValidator failed: {:?}",
+            result.error
+        );
+        assert_eq!(result.fee_paid, BASE_FEE);
+
+        let after_treasury = state.get_account(&treasury).unwrap().unwrap();
+        assert!(after_treasury.spendable >= before_treasury.spendable);
+        assert_ne!(
+            after_treasury.spendable,
+            before_treasury
+                .spendable
+                .saturating_sub(crate::consensus::BOOTSTRAP_GRANT_AMOUNT)
+        );
+        let account = state.get_account(&validator).unwrap().unwrap();
+        assert_eq!(account.staked, amount);
+        assert_eq!(
+            account.spendable,
+            Account::licn_to_spores(100_000) - BASE_FEE - amount
+        );
+        let pool = state.get_stake_pool().unwrap();
+        let stake = pool.get_stake(&validator).unwrap();
+        assert_eq!(stake.amount, amount);
+        assert_eq!(stake.bootstrap_index, u64::MAX);
+        assert_eq!(stake.bootstrap_debt, 0);
+        assert_eq!(pool.bootstrap_grants_issued(), 0);
+        assert_eq!(pool.fingerprint_owner(&fingerprint), Some(&validator));
     }
 
     #[test]
@@ -3819,6 +4130,7 @@ mod tests {
     fn test_register_validator_rejects_treasury_outgoing_restriction_without_grant() {
         let (processor, state, _alice_kp, _alice, treasury, genesis_hash) = setup();
         let block_producer = Pubkey([42u8; 32]);
+        enable_validator_bootstrap_grants(&state);
         fund_treasury_for_validator_bootstrap(&state, treasury);
         let before_treasury = state.get_account(&treasury).unwrap().unwrap();
         let validator_kp = Keypair::generate();
@@ -3852,6 +4164,7 @@ mod tests {
     fn test_register_validator_rejects_treasury_native_frozen_amount_without_grant() {
         let (processor, state, _alice_kp, _alice, treasury, genesis_hash) = setup();
         let block_producer = Pubkey([42u8; 32]);
+        enable_validator_bootstrap_grants(&state);
         fund_treasury_for_validator_bootstrap(&state, treasury);
         let before_treasury = state.get_account(&treasury).unwrap().unwrap();
         let validator_kp = Keypair::generate();
@@ -3888,6 +4201,7 @@ mod tests {
     fn test_register_validator_rejects_incoming_restricted_validator_without_grant() {
         let (processor, state, _alice_kp, _alice, treasury, genesis_hash) = setup();
         let block_producer = Pubkey([42u8; 32]);
+        enable_validator_bootstrap_grants(&state);
         fund_treasury_for_validator_bootstrap(&state, treasury);
         let before_treasury = state.get_account(&treasury).unwrap().unwrap();
         let validator_kp = Keypair::generate();
@@ -3921,6 +4235,7 @@ mod tests {
     fn test_register_validator_protocol_pause_rejects_without_grant() {
         let (processor, state, _alice_kp, _alice, treasury, genesis_hash) = setup();
         let block_producer = Pubkey([42u8; 32]);
+        enable_validator_bootstrap_grants(&state);
         fund_treasury_for_validator_bootstrap(&state, treasury);
         let before_treasury = state.get_account(&treasury).unwrap().unwrap();
         let validator_kp = Keypair::generate();
@@ -8220,6 +8535,186 @@ mod tests {
         vec![
             0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00, 0x00, 0x02, 0x01, tag,
         ]
+    }
+
+    fn abi_result_policy_test_code() -> Vec<u8> {
+        wat::parse_str(
+            r#"(module
+                (import "env" "storage_write" (func $storage_write (param i32 i32 i32 i32) (result i32)))
+                (memory (export "memory") 1)
+                (data (i32.const 0) "abi_key")
+                (data (i32.const 16) "written")
+                (func (export "write_then_code_7") (result i32)
+                    (drop (call $storage_write (i32.const 0) (i32.const 7) (i32.const 16) (i32.const 7)))
+                    (i32.const 7))
+                (func (export "return_value_7") (result i32)
+                    (i32.const 7))
+            )"#,
+        )
+        .unwrap()
+    }
+
+    fn abi_result_function(
+        name: &str,
+        kind: crate::contract::AbiResultKind,
+        success_codes: Vec<i64>,
+    ) -> crate::contract::AbiFunction {
+        crate::contract::AbiFunction {
+            name: name.to_string(),
+            description: None,
+            params: Vec::new(),
+            returns: Some(crate::contract::AbiReturn {
+                return_type: crate::contract::AbiType::I32,
+                description: None,
+            }),
+            opcode: None,
+            readonly: false,
+            result_semantics: Some(crate::contract::AbiResultSemantics {
+                kind,
+                success_codes,
+                description: None,
+            }),
+        }
+    }
+
+    fn install_abi_result_test_contract(
+        state: &StateStore,
+        address: Pubkey,
+        owner: Pubkey,
+        functions: Vec<crate::contract::AbiFunction>,
+    ) {
+        let mut contract = crate::ContractAccount::new(abi_result_policy_test_code(), owner);
+        contract.abi = Some(crate::ContractAbi {
+            version: "1.0".to_string(),
+            name: "abi_result_policy_test".to_string(),
+            template: None,
+            description: None,
+            functions,
+            events: Vec::new(),
+            errors: vec![crate::contract::AbiError {
+                code: 7,
+                name: "Rejected".to_string(),
+                message: Some("test failure".to_string()),
+            }],
+        });
+        let mut account = Account::new(0, address);
+        account.executable = true;
+        account.data = serde_json::to_vec(&contract).unwrap();
+        state.put_account(&address, &account).unwrap();
+    }
+
+    fn make_contract_call_tx(
+        signer: &crate::Keypair,
+        contract_addr: Pubkey,
+        function: &str,
+        genesis_hash: Hash,
+    ) -> Transaction {
+        let ix = Instruction {
+            program_id: CONTRACT_PROGRAM_ID,
+            accounts: vec![signer.pubkey(), contract_addr],
+            data: crate::ContractInstruction::Call {
+                function: function.to_string(),
+                args: Vec::new(),
+                value: 0,
+            }
+            .serialize()
+            .unwrap(),
+        };
+        let message = crate::transaction::Message::new(vec![ix], genesis_hash);
+        let mut tx = Transaction::new(message);
+        tx.signatures.push(signer.sign(&tx.message.serialize()));
+        tx
+    }
+
+    #[test]
+    fn test_contract_abi_return_code_failure_reverts_state_changes() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let contract_addr = Pubkey([0xA7; 32]);
+        install_abi_result_test_contract(
+            &state,
+            contract_addr,
+            alice,
+            vec![abi_result_function(
+                "write_then_code_7",
+                crate::contract::AbiResultKind::ReturnCode,
+                vec![0],
+            )],
+        );
+        let tx = make_contract_call_tx(&alice_kp, contract_addr, "write_then_code_7", genesis_hash);
+
+        let simulation = processor.simulate_transaction(&tx);
+        assert!(!simulation.success);
+        assert!(simulation
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("ABI failure code 7"));
+
+        let result = processor.process_transaction(&tx, &alice);
+
+        assert!(!result.success);
+        assert_eq!(result.return_code, Some(7));
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("ABI failure code 7"));
+        assert_eq!(
+            state
+                .get_contract_storage(&contract_addr, b"abi_key")
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn test_contract_abi_return_code_success_commits_state_changes() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let contract_addr = Pubkey([0xA8; 32]);
+        install_abi_result_test_contract(
+            &state,
+            contract_addr,
+            alice,
+            vec![abi_result_function(
+                "write_then_code_7",
+                crate::contract::AbiResultKind::ReturnCode,
+                vec![7],
+            )],
+        );
+        let tx = make_contract_call_tx(&alice_kp, contract_addr, "write_then_code_7", genesis_hash);
+
+        let result = processor.process_transaction(&tx, &alice);
+
+        assert!(result.success, "{:?}", result.error);
+        assert_eq!(result.return_code, Some(7));
+        assert_eq!(
+            state
+                .get_contract_storage(&contract_addr, b"abi_key")
+                .unwrap(),
+            Some(b"written".to_vec())
+        );
+    }
+
+    #[test]
+    fn test_contract_abi_return_value_nonzero_does_not_trigger_legacy_failure() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let contract_addr = Pubkey([0xA9; 32]);
+        install_abi_result_test_contract(
+            &state,
+            contract_addr,
+            alice,
+            vec![abi_result_function(
+                "return_value_7",
+                crate::contract::AbiResultKind::ReturnValue,
+                Vec::new(),
+            )],
+        );
+        let tx = make_contract_call_tx(&alice_kp, contract_addr, "return_value_7", genesis_hash);
+
+        let result = processor.process_transaction(&tx, &alice);
+
+        assert!(result.success, "{:?}", result.error);
+        assert_eq!(result.return_code, Some(7));
     }
 
     fn governance_test_contract_code() -> Vec<u8> {
@@ -14932,7 +15427,8 @@ mod tests {
         msg.compute_unit_price = Some(2000);
 
         let serialized = msg.serialize();
-        let deserialized: crate::transaction::Message = bincode::deserialize(&serialized).unwrap();
+        let deserialized: crate::transaction::Message =
+            crate::codec::deserialize_legacy_bincode(&serialized, "message serde test").unwrap();
         assert_eq!(deserialized.compute_budget, Some(500_000));
         assert_eq!(deserialized.compute_unit_price, Some(2000));
         assert_eq!(deserialized.effective_compute_budget(), 500_000);

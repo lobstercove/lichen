@@ -1,8 +1,9 @@
 import { base58Decode, signTransaction, generateEVMAddress } from './crypto-service.js';
 import { LichenRPC, getRpcEndpoint } from './rpc-service.js';
+import { parsePositiveDecimalBaseUnits } from './amount-service.js';
 
 /**
- * Serialize a transaction message using Bincode format (matches Rust bincode::serialize)
+ * Serialize a transaction message using Bincode format (matches Rust legacy bincode serialization)
  * This MUST match the website's serializeMessageBincode() exactly for signature compatibility.
  */
 export function serializeMessageForSigning(message) {
@@ -21,17 +22,32 @@ export function serializeMessageForSigning(message) {
     parts.push(new Uint8Array(bytes));
   }
 
+  function parseOptionalU64(value, fieldName) {
+    if (typeof value === 'bigint') {
+      if (value < 0n) throw new Error(`Invalid ${fieldName}: expected a non-negative integer`);
+      return value;
+    }
+    if (typeof value === 'number') {
+      if (!Number.isSafeInteger(value) || value < 0) {
+        throw new Error(`Invalid ${fieldName}: expected a non-negative integer`);
+      }
+      return BigInt(value);
+    }
+    const text = String(value ?? '').trim();
+    if (!/^\d+$/.test(text)) {
+      throw new Error(`Invalid ${fieldName}: expected a non-negative integer`);
+    }
+    return BigInt(text);
+  }
+
   function writeOptionalU64(value, fieldName) {
     if (value === undefined || value === null) {
       parts.push(new Uint8Array([0x00]));
       return;
     }
 
-    const numeric = typeof value === 'string' ? Number(value) : value;
-    if (!Number.isFinite(numeric) || numeric < 0 || !Number.isInteger(numeric)) {
-      throw new Error(`Invalid ${fieldName}: expected a non-negative integer`);
-    }
-    if (numeric === 0) {
+    const numeric = parseOptionalU64(value, fieldName);
+    if (numeric === 0n) {
       parts.push(new Uint8Array([0x00]));
       return;
     }
@@ -96,17 +112,13 @@ export function encodeTransactionBase64(transaction) {
 export function buildNativeTransferMessage(fromAddress, toAddress, amountLicn, blockhash) {
   const fromPubkey = base58Decode(fromAddress);
   const toPubkey = base58Decode(toAddress);
-  const spores = Math.floor(Number(amountLicn) * 1_000_000_000);
-
-  if (!Number.isFinite(spores) || spores <= 0) {
-    throw new Error('Invalid transfer amount');
-  }
+  const spores = parsePositiveDecimalBaseUnits(amountLicn, 9, 'Transfer amount');
 
   const systemProgram = new Uint8Array(32); // SYSTEM_PROGRAM_ID = [0; 32]
   const instructionData = new Uint8Array(9);
   instructionData[0] = 0;
   const view = new DataView(instructionData.buffer);
-  view.setBigUint64(1, BigInt(spores), true);
+  view.setBigUint64(1, spores, true);
 
   return {
     instructions: [
@@ -138,16 +150,13 @@ export async function buildSignedNativeTransferTransaction({
 }
 
 export function buildAmountInstructionData(opcode, amountLicn, extraByte) {
-  const spores = Math.floor(Number(amountLicn) * 1_000_000_000);
-  if (!Number.isFinite(spores) || spores <= 0) {
-    throw new Error('Invalid amount');
-  }
+  const spores = parsePositiveDecimalBaseUnits(amountLicn, 9, 'Amount');
 
   const hasExtra = extraByte !== undefined && extraByte !== null;
   const instructionData = new Uint8Array(hasExtra ? 10 : 9);
   instructionData[0] = opcode;
   const view = new DataView(instructionData.buffer);
-  view.setBigUint64(1, BigInt(spores), true);
+  view.setBigUint64(1, spores, true);
   if (hasExtra) instructionData[9] = extraByte & 0xff;
   return instructionData;
 }

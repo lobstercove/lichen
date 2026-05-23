@@ -1,0 +1,5 @@
+# Hash-pinned tooling for Python SDK release and audit verification.
+build>=1.2.2
+pip-audit>=2.9.0
+setuptools>=68.0
+wheel>=0.43.0

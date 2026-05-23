@@ -306,9 +306,9 @@ test('wallet shield tab exposes shield and unshield actions', () => {
 
 test('shielded.js confirm handlers call shield/unshield operations', () => {
     assert(shieldedSrc.includes('function confirmShield()'), 'confirmShield handler must exist');
-    assert(shieldedSrc.includes('shieldLicn(amount);'), 'confirmShield must trigger shieldLicn');
+    assert(shieldedSrc.includes('shieldLicn(amountText);'), 'confirmShield must trigger shieldLicn with validated amount text');
     assert(shieldedSrc.includes('function confirmUnshield()'), 'confirmUnshield handler must exist');
-    assert(shieldedSrc.includes('unshieldLicn(amount, recipient);'), 'confirmUnshield must trigger unshieldLicn');
+    assert(shieldedSrc.includes('unshieldLicn(amountText, recipient);'), 'confirmUnshield must trigger unshieldLicn with validated amount text');
     assert(shieldedSrc.includes("showToast('Enter a recipient address')"),
         'confirmUnshield must validate recipient input');
 });
@@ -372,6 +372,20 @@ test('explorer address view renders LichenID vouches and achievements', () => {
     assert(explorerAddressSrc.includes('Vouched By ('), 'Explorer must render vouch visibility section');
     assert(explorerAddressSrc.includes('Achievements'), 'Explorer must render achievements visibility section');
     assert(explorerAddressSrc.includes("data-identity-action=\"vouch\""), 'Explorer must expose vouch user action');
+});
+
+test('explorer vouch labels normalize full .lichen names once', () => {
+    assert(explorerAddressSrc.includes('function formatExplorerLichenName('), 'Explorer should define a .lichen label normalizer');
+    assert(explorerAddressSrc.includes("replace(/(?:\\.lichen)+$/i, '')"),
+        'Explorer should strip one or more existing .lichen suffixes before display');
+    assert(explorerAddressSrc.includes('formatExplorerLichenName(v.voucher_name)'),
+        'Explorer received-vouch chips should use normalized .lichen labels');
+    assert(explorerAddressSrc.includes('formatExplorerLichenName(v.vouchee_name)'),
+        'Explorer given-vouch chips should use normalized .lichen labels');
+    assert(!explorerAddressSrc.includes("${escapeHtml(v.voucher_name)}.lichen"),
+        'Explorer should not append a second .lichen suffix to received vouches');
+    assert(!explorerAddressSrc.includes("${escapeHtml(v.vouchee_name)}.lichen"),
+        'Explorer should not append a second .lichen suffix to given vouches');
 });
 
 test('isValidAddress rejects short strings', () => {
@@ -624,6 +638,60 @@ test('dapp-bridge requires password-gated approval for signing and uses canonica
     assert(walletBridgeSrc.includes('const values = await showPasswordModal({'), 'Bridge signing flow must use the wallet password modal');
     assert(walletBridgeSrc.includes('serializeMessageBincode(txObject.message || {})'), 'Bridge must sign canonical serialized transaction messages');
     assert(walletBridgeSrc.includes('rpc.sendTransaction(signResult.result.signedTransactionBase64)'), 'Bridge send flow must broadcast through the wallet RPC helper');
+});
+
+test('dapp-bridge transaction approvals decode semantic signing intent', () => {
+    assert(walletBridgeSrc.includes('function transactionIntentRows(txObject, providerState)'), 'Bridge should build semantic transaction intent rows');
+    assert(walletBridgeSrc.includes('function readU64Le(data, offset = 0)'), 'Bridge should decode u64 base-unit amounts without Number');
+    assert(walletBridgeSrc.includes('function formatBaseUnits(value, decimals, symbol)'), 'Bridge should format base units with token decimals');
+    assert(walletBridgeSrc.includes('function decodeContractCallIntent(data)'), 'Bridge should decode contract call intent best-effort');
+    for (const label of ['Account', 'Destination', 'Amount', 'Token decimals', 'Network', 'RPC', 'Fee', 'Primary program', 'Warnings']) {
+        assert(walletBridgeSrc.includes(`'${label}'`), `Bridge signing prompt missing ${label} row`);
+    }
+    assert(walletBridgeSrc.includes('transactionSummaryHtml(normalizeTransactionObject(request.payload), providerState)'),
+        'Bridge transaction summary should include provider state for network/RPC context');
+    assert(walletBridgeSrc.includes('Contract payload contains admin-like terms; review before signing.'),
+        'Bridge contract signing prompt should warn on admin-like payload terms');
+});
+
+test('dapp-bridge first-sign approvals disclose account access and only connect after successful signing', () => {
+    assert(walletBridgeSrc.includes('function approvalGrantsAccountAccess(method, providerState)'), 'Bridge must detect first-sign account access grants');
+    assert(walletBridgeSrc.includes('Approving also connects this site to your active account until the approval expires.'), 'Bridge first-sign prompt must disclose account access');
+    assert(walletBridgeSrc.includes("'Account access'") && walletBridgeSrc.includes('Connects this site to'), 'Bridge first-sign prompt must show account access details');
+    assert(walletBridgeSrc.includes("'Approve & Connect'"), 'Bridge first-sign confirmation text must include connect consent');
+
+    const signIndex = walletBridgeSrc.indexOf("if (method === 'licn_signMessage')");
+    const finalizeIndex = walletBridgeSrc.indexOf('const result = await finalizeSignMessage(request, approvalValues.password);', signIndex);
+    const approveIndex = walletBridgeSrc.indexOf('if (result?.ok) approveOrigin(request.origin);', finalizeIndex);
+    const responseIndex = walletBridgeSrc.indexOf('sendResponse(request, result);', approveIndex);
+    assert(signIndex >= 0 && finalizeIndex > signIndex, 'Bridge signMessage finalization path not found');
+    assert(approveIndex > finalizeIndex && responseIndex > approveIndex, 'Bridge must approve origin only after successful signing finalization');
+});
+
+test('dapp-bridge network changes require origin-scoped approval before mutation', () => {
+    assert(walletBridgeSrc.includes("wallet_switchEthereumChain: 'licn_switchNetwork'"), 'Bridge must alias wallet_switchEthereumChain');
+    assert(walletBridgeSrc.includes("wallet_addEthereumChain: 'licn_addNetwork'"), 'Bridge must alias wallet_addEthereumChain');
+    assert(walletBridgeSrc.includes("const NETWORK_CHANGE_METHODS = new Set(['licn_switchNetwork', 'licn_addNetwork']);"),
+        'Bridge must classify network-change methods as privileged');
+    assert(walletBridgeSrc.includes('function buildNetworkChangeRequest(payload, providerState)'),
+        'Bridge must build explicit network-change approval details');
+    assert(walletBridgeSrc.includes('Review this network switch request before changing the active wallet network.'),
+        'Bridge switch prompt must explain the mutation');
+    assert(walletBridgeSrc.includes('Review this network addition request before saving the RPC endpoint and changing the active wallet network.'),
+        'Bridge add-network prompt must explain RPC and network mutation');
+    assert(walletBridgeSrc.includes("method === 'licn_switchNetwork'") && walletBridgeSrc.includes("'Switch Network'"),
+        'Bridge switch approval button should be explicit');
+    assert(walletBridgeSrc.includes("method === 'licn_addNetwork'") && walletBridgeSrc.includes("'Add & Switch Network'"),
+        'Bridge add-network approval button should be explicit');
+
+    const processIndex = walletBridgeSrc.indexOf('async function processRequest(request)');
+    const approvalIndex = walletBridgeSrc.indexOf('const approvalValues = await requestApproval(request);');
+    const networkFinalizeIndex = walletBridgeSrc.indexOf('const result = await finalizeNetworkChange(request);', approvalIndex);
+    const switchNetworkIndex = walletBridgeSrc.indexOf('await switchNetwork(change.nextNetwork);');
+    assert(processIndex >= 0 && switchNetworkIndex > 0 && switchNetworkIndex < processIndex,
+        'Bridge network mutation should be isolated inside finalizeNetworkChange');
+    assert(approvalIndex >= 0 && networkFinalizeIndex > approvalIndex,
+        'Bridge processRequest must call finalizeNetworkChange only after approval');
 });
 
 test('popup wallet sessions are not forcibly reloaded or re-locked mid-flow', () => {
@@ -959,6 +1027,16 @@ test('wallet.js pins bridge control-plane methods to trusted RPC', () => {
         'bridge deposit creation should use trustedRpcCall');
     assert(walletSrc.includes("trustedRpcCall('getBridgeDeposit'"),
         'bridge deposit polling should use trustedRpcCall');
+    assert(walletSrc.includes('buildBridgeAccessMessageV2('),
+        'bridge deposit creation should sign route-bound V2 bridge auth messages');
+    assert(walletSrc.includes("BRIDGE_AUTH_DOMAIN_V2 = 'LICHEN_BRIDGE_ACCESS_V2'"),
+        'bridge auth should mark the V2 domain');
+    assert(walletSrc.includes('route=${canonicalChain}:${normalizedAsset}'),
+        'bridge auth should bind the canonical chain/asset route');
+    assert(walletSrc.includes('activeBridgeAuth.version = 2'),
+        'bridge deposit creation should emit a V2 auth envelope');
+    assert(walletSrc.includes('activeBridgeAuth.nonce = nonce'),
+        'bridge deposit creation should include a fresh nonce');
 });
 
 test('wallet.js exposes Neo X bridge controls with route status and reserve context', () => {
@@ -1103,7 +1181,7 @@ test('wallet send flow checks canTransfer before signing or submitting', () => {
     assert(!walletSrc.includes("rpc.call('canTransfer'"),
         'send preflight must not use user-overridable RPC');
 
-    const preflightIndex = walletSrc.indexOf('await preflightWalletTransferRestrictions(wallet, to, selectedToken, amount);');
+    const preflightIndex = walletSrc.indexOf('await preflightWalletTransferRestrictions(wallet, to, selectedToken, amountText);');
     const buildIndex = walletSrc.indexOf("showToast('Building transaction...');");
     assert(preflightIndex !== -1, 'confirmSend should call restriction preflight');
     assert(buildIndex !== -1, 'confirmSend should still build transactions after preflight');
@@ -1297,6 +1375,13 @@ test('wallet switch clears wallet-scoped dashboard and shielded state before rel
         'switchWallet should clear visible data before reloading the next wallet');
 });
 
+test('wallet switch reloads active identity tab instead of leaving a spinner', () => {
+    assert(walletSrc.includes("const activeTab = document.querySelector('.dashboard-tab.active')?.dataset?.tab;"),
+        'dashboard refresh should inspect the active tab after wallet switch');
+    assert(walletSrc.includes("if (activeTab === 'identity' && typeof loadIdentity === 'function'"),
+        'active identity tab should reload immediately after dashboard refresh');
+});
+
 test('wallet async loaders refuse to render after wallet switch', () => {
     assert(walletSrc.includes('async function refreshBalance(options = {})'), 'balance loader should accept wallet context');
     assert(walletSrc.includes('async function loadAssets(options = {})'), 'asset loader should accept wallet context');
@@ -1310,17 +1395,85 @@ test('wallet async loaders refuse to render after wallet switch', () => {
         'identity loader should ignore stale wallet data');
 });
 
+test('wallet identity vouch labels normalize full .lichen names once', () => {
+    assert(identitySrc.includes('function formatLichenNameLabel('), 'identity.js should define a .lichen label normalizer');
+    assert(identitySrc.includes("replace(/(?:\\.lichen)+$/i, '')"),
+        'identity.js should strip one or more existing .lichen suffixes before display');
+    assert(identitySrc.includes('formatLichenNameLabel(v.voucher_name)'),
+        'vouch chips should render normalized .lichen labels');
+    assert(!identitySrc.includes("escHtml(v.voucher_name) + '.lichen'"),
+        'vouch chips should not append a second .lichen suffix');
+});
+
 test('shielded state is isolated per active wallet', () => {
     assert(shieldedSrc.includes('function createInitialShieldedState('), 'shielded module should have a reusable empty state');
     assert(shieldedSrc.includes('function resetShieldedForWalletSwitch('), 'shielded module should expose switch reset');
     assert(shieldedSrc.includes('window.resetShieldedForWalletSwitch = resetShieldedForWalletSwitch'),
         'shielded reset should be callable by wallet switch');
-    assert(shieldedSrc.includes('shieldedState.ownedNotes = [];') && shieldedSrc.includes('shieldedState.shieldedBalance = 0;'),
+    assert(shieldedSrc.includes('shieldedState.ownedNotes = [];') && shieldedSrc.includes("shieldedState.shieldedBalance = '0';"),
         'shielded init should clear previous wallet notes before loading current wallet notes');
     assert(shieldedSrc.includes('localStorage.setItem(`${storageKey}:unreadable:${Date.now()}`, raw);'),
         'unreadable local shielded payloads should be quarantined instead of mixed into another wallet');
     assert(!shieldedSrc.includes('localStorage.removeItem(storageKey);'),
         'unreadable local shielded payloads should not be removed from their primary wallet-scoped storage key');
+});
+
+test('wallet parses transfer and shielded amounts as base-unit BigInt values', () => {
+    assert(walletSharedUtilsSrc.includes('function parseDecimalBaseUnits('), 'shared utils should define decimal-to-base-unit parsing');
+    assert(walletSharedUtilsSrc.includes('fractionRaw.length > unitDecimals'), 'shared parser should reject over-precision');
+    assert(walletSharedUtilsSrc.includes('const MAX_U64 = 18_446_744_073_709_551_615n;'), 'shared parser should cap u64 payloads');
+    assert(walletSrc.includes('function parseSendAmountBaseUnits('), 'wallet send path should centralize amount parsing');
+    assert(walletSrc.includes('view.setBigUint64(1, amountBaseUnits, true);'),
+        'native transfers should write parsed BigInt base units');
+    assert(walletSrc.includes('amount: amountBaseUnits.toString()'),
+        'contract token payloads should serialize base units as decimal strings');
+    assert(!walletSrc.includes('Math.floor(amount * SPORES_PER_LICN)'),
+        'wallet send path should not convert LICN amounts through floating point');
+    assert(!walletSrc.includes('Math.floor(amount * Math.pow(10, token.decimals))'),
+        'wallet token send path should not convert token amounts through floating point');
+});
+
+test('wallet shielded flows keep note values and proof amounts lossless', () => {
+    assert(shieldedSrc.includes('function parseShieldedAmountSpores('), 'shielded module should parse decimal amounts to spores');
+    assert(shieldedSrc.includes('amountSpores = parseShieldedAmountSpores(amountText'), 'shielded confirmations should parse amount text');
+    assert(shieldedSrc.includes('value: amountSpores.toString()'), 'shield notes should store amount values as u64 strings');
+    assert(shieldedSrc.includes('amount: amountSpores.toString()'), 'shielded proofs should submit string u64 amounts');
+    assert(shieldedSrc.includes('reduce((sum, n) => sum + noteValueSpores(n), 0n)'),
+        'shielded balance should be recalculated with BigInt note values');
+    assert(!shieldedSrc.includes('Math.floor(amount * SPORES_PER_LICN)'),
+        'shielded flows should not floor decimal LICN amounts through Number');
+});
+
+test('wallet USD valuations expose quote source, staleness, and fallback state', () => {
+    assert(walletSrc.includes('const PRICE_STALE_MS = 5 * 60 * 1000;'),
+        'wallet should define a stale window for displayed USD quotes');
+    assert(walletSrc.includes('const priceMetadata = {'),
+        'wallet should track source metadata for live prices');
+    assert(walletSrc.includes('function getPriceQuote(symbol)'),
+        'wallet should expose price quotes with source metadata');
+    assert(walletSrc.includes("source: key === 'lUSD' ? 'stablecoin-peg' : 'offline-fallback'"),
+        'wallet should distinguish stablecoin peg fallback from offline fallback prices');
+    assert(walletSrc.includes("' · offline estimate'") && walletSrc.includes("' · stale price'"),
+        'wallet should visibly mark offline and stale USD valuations');
+    assert(walletSrc.includes('balanceUsdEl.title = usdValuationTitle(valuationQuotes);'),
+        'wallet total USD display should include source details in its title');
+    assert(walletSrc.includes('class="asset-value" title="${escapeHtml(usdValuationTitle([quote]))}"'),
+        'wallet asset USD values should include per-asset valuation source details');
+});
+
+test('explorer token USD valuations expose oracle timestamps and peg fallbacks', () => {
+    assert(explorerAddressSrc.includes('const ORACLE_PRICE_STALE_MS = 5 * 60 * 1000;'),
+        'explorer should define a stale window for token USD prices');
+    assert(explorerAddressSrc.includes("window._oraclePrices = { prices: prices || {}, source: 'oracle', timestamp: Date.now() };"),
+        'explorer should store oracle price source and fetch timestamp');
+    assert(explorerAddressSrc.includes("window._oraclePrices = { prices: {}, source: 'unavailable', timestamp: 0 };"),
+        'explorer should explicitly track unavailable oracle prices');
+    assert(explorerAddressSrc.includes("priceQuote = { price: usdPrice, source: 'stablecoin-peg', timestamp: 0, stale: false };"),
+        'explorer stablecoin fallback should be labeled as a peg estimate');
+    assert(explorerAddressSrc.includes("const valueSuffix = priceQuote?.source === 'stablecoin-peg'"),
+        'explorer should visibly mark peg fallback values');
+    assert(explorerAddressSrc.includes('title="${escapeHtml(valueTitle)}"'),
+        'explorer token USD value cells should include valuation source details');
 });
 
 // ============================================================================

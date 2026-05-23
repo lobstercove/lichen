@@ -10,6 +10,13 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 lichen-core = { package = "lobstercove-lichen-core", path = "../core" }
+lichen-p2p = { path = "../p2p" }
+digest = "=0.11.2"
+hybrid-array = "=0.4.10"
+ml-dsa = "=0.1.0-rc.8"
+pkcs8 = "=0.11.0-rc.11"
+signature = "=3.0.0-rc.10"
+slh-dsa = "=0.2.0-rc.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
@@ -70,4 +77,19 @@ doc = false
 [[bin]]
 name = "p2p_message"
 path = "fuzz_targets/p2p_message.rs"
+doc = false
+
+[[bin]]
+name = "transaction_admission"
+path = "fuzz_targets/transaction_admission.rs"
+doc = false
+
+[[bin]]
+name = "signed_tx_malleation"
+path = "fuzz_targets/signed_tx_malleation.rs"
+doc = false
+
+[[bin]]
+name = "commit_certificate"
+path = "fuzz_targets/commit_certificate.rs"
 doc = false

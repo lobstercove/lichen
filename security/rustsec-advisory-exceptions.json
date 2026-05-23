@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "policy": "RustSec advisory exceptions must be owned, time-bound, and mirrored by .cargo/audit.toml and deny.toml.",
+  "exceptions": [
+    {
+      "id": "RUSTSEC-2023-0089",
+      "crate": "atomic-polyfill",
+      "owner": "Custody Security",
+      "tools": ["cargo-audit"],
+      "expires": "2026-08-31",
+      "reason": "Transitive through frost-core in the threshold custody path; Lichen does not expose atomic-polyfill APIs directly.",
+      "mitigation": "Keep custody runtime isolated and monitored while validating an upstream threshold-signing dependency update."
+    },
+    {
+      "id": "RUSTSEC-2024-0370",
+      "crate": "proc-macro-error",
+      "owner": "Developer Tooling",
+      "tools": ["cargo-audit", "cargo-deny"],
+      "expires": "2026-07-31",
+      "reason": "Unmaintained proc-macro helper used at build time only, with no runtime consensus, custody, or wallet execution surface.",
+      "mitigation": "Replace the dependent macro stack or remove the transitive dependency during the next tooling dependency refresh."
+    },
+    {
+      "id": "RUSTSEC-2024-0384",
+      "crate": "instant",
+      "owner": "Validator Runtime",
+      "tools": ["cargo-audit", "cargo-deny"],
+      "expires": "2026-08-31",
+      "reason": "Unmaintained timing helper retained transitively through parking_lot and reed-solomon-erasure in validator networking dependencies.",
+      "mitigation": "Track upstream dependency updates and keep validator runtime tests covering networking and erasure-code paths."
+    },
+    {
+      "id": "RUSTSEC-2024-0388",
+      "crate": "derivative",
+      "owner": "Core Runtime",
+      "tools": ["cargo-audit", "cargo-deny"],
+      "expires": "2026-07-31",
+      "reason": "Unmaintained derive helper used by dependencies without a known exploit path into transaction execution or consensus validation.",
+      "mitigation": "Audit replacement versions and remove the advisory exception once the dependent crates migrate away from derivative."
+    },
+    {
+      "id": "RUSTSEC-2024-0436",
+      "crate": "paste",
+      "owner": "Smart Contracts",
+      "tools": ["cargo-audit", "cargo-deny"],
+      "expires": "2026-07-31",
+      "reason": "Unmaintained macro utility used by build-time code generation rather than runtime blockchain state transitions.",
+      "mitigation": "Refresh contract and runtime dependencies, then remove paste from the transitive graph where practical."
+    },
+    {
+      "id": "RUSTSEC-2025-0055",
+      "crate": "tracing-subscriber",
+      "owner": "Observability",
+      "tools": ["cargo-audit", "cargo-deny"],
+      "expires": "2026-08-31",
+      "reason": "ANSI log poisoning risk is mitigated by non-TTY structured production logs and existing log sanitization controls.",
+      "mitigation": "Upgrade tracing-subscriber once the dependent logging stack accepts the patched release without changing operator logs."
+    },
+    {
+      "id": "RUSTSEC-2025-0057",
+      "crate": "fxhash",
+      "owner": "Core Runtime",
+      "tools": ["cargo-audit", "cargo-deny"],
+      "expires": "2026-08-31",
+      "reason": "Unmaintained non-cryptographic hash map dependency retained only for internal maps where collision resistance is not a security boundary.",
+      "mitigation": "Replace with maintained hashers in shared runtime dependencies after measuring consensus and validator performance impact."
+    },
+    {
+      "id": "RUSTSEC-2025-0141",
+      "crate": "bincode",
+      "owner": "Protocol Serialization",
+      "tools": ["cargo-audit", "cargo-deny"],
+      "expires": "2026-09-30",
+      "reason": "Bincode 1.x remains pinned for no-reset wire and state compatibility while versioned canonical serialization migration is staged.",
+      "mitigation": "Migrate or encapsulate bincode behind versioned canonical serializers with compatibility tests before expiry."
+    },
+    {
+      "id": "RUSTSEC-2026-0002",
+      "crate": "lru",
+      "owner": "Validator Runtime",
+      "tools": ["cargo-audit"],
+      "expires": "2026-07-31",
+      "reason": "IterMut unsoundness is accepted because current runtime cache paths avoid IterMut and are covered by validator runtime tests.",
+      "mitigation": "Upgrade lru or replace affected cache dependencies, then add a static ban on IterMut usage if the exception remains necessary."
+    },
+    {
+      "id": "RUSTSEC-2026-0012",
+      "crate": "keccak",
+      "owner": "Custody Security",
+      "tools": ["cargo-audit"],
+      "expires": "2026-07-31",
+      "reason": "ARMv8 backend unsoundness is outside current production deployment targets, which run x86_64 and exclude the vulnerable backend.",
+      "mitigation": "Upgrade the hashing dependency before ARM validator or custody deployments are considered production eligible."
+    }
+  ]
+}

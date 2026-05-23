@@ -8,7 +8,7 @@ use self::solana::broadcast_solana_sweep;
 
 pub(super) async fn broadcast_sweep(
     state: &CustodyState,
-    job: &SweepJob,
+    job: &mut SweepJob,
 ) -> Result<Option<String>, String> {
     if let Some(err) = local_sweep_policy_error(&state.config) {
         return Err(format!(

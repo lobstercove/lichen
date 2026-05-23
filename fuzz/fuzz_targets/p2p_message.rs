@@ -1,44 +1,86 @@
-//! Fuzz target: P2P message deserialization
-//!
-//! Feeds arbitrary bytes to the P2P message parser to ensure it never panics
-//! on malformed network messages. Covers block propagation, vote gossip,
-//! and sync protocol messages.
-
 #![no_main]
 use libfuzzer_sys::fuzz_target;
+use lichen_core::codec::serialize_legacy_bincode;
+use lichen_core::Hash;
+use lichen_p2p::{MessageType, P2PMessage, P2P_PROTOCOL_VERSION};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 fuzz_target!(|data: &[u8]| {
-    // ── 1. Try bincode deserialization as a P2P message envelope ─────
-    // The P2P layer uses bincode for wire format. Corrupt payloads from
-    // malicious peers must produce Err, never panic.
-    let _ = bincode::deserialize::<lichen_core::Block>(data);
-    let _ = bincode::deserialize::<lichen_core::Transaction>(data);
-    let _ = bincode::deserialize::<lichen_core::Vote>(data);
-    let _ = bincode::deserialize::<lichen_core::Message>(data);
+    let _ = P2PMessage::deserialize(data);
 
-    // ── 2. Try serde_json deserialization (JSON-RPC peer messages) ───
-    let _ = serde_json::from_slice::<serde_json::Value>(data);
+    let mut uncompressed = Vec::with_capacity(data.len() + 1);
+    uncompressed.push(0x00);
+    uncompressed.extend_from_slice(data);
+    let _ = P2PMessage::deserialize(&uncompressed);
 
-    // ── 3. Try decoding as a block header (fixed layout) ────────────
-    // BlockHeader: slot(8) + parent_hash(32) + state_root(32) + timestamp(8) + validator(32) = 112
-    if data.len() >= 112 {
-        let _slot = u64::from_le_bytes(data[0..8].try_into().unwrap_or([0; 8]));
-        let mut parent = [0u8; 32];
-        parent.copy_from_slice(&data[8..40]);
-        let mut state_root = [0u8; 32];
-        state_root.copy_from_slice(&data[40..72]);
-        let _ts = u64::from_le_bytes(data[72..80].try_into().unwrap_or([0; 8]));
-        let mut validator = [0u8; 32];
-        validator.copy_from_slice(&data[80..112]);
+    let mut compressed = Vec::with_capacity(data.len() + 5);
+    compressed.push(0xFF);
+    compressed.extend_from_slice(&(data.len() as u32).to_le_bytes());
+    compressed.extend_from_slice(data);
+    let _ = P2PMessage::deserialize(&compressed);
+
+    let message = P2PMessage::new(message_type_from_bytes(data), loopback_addr(data));
+    let encoded = message
+        .serialize()
+        .expect("valid P2P message must serialize");
+    let decoded = P2PMessage::deserialize(&encoded).expect("valid P2P message must round-trip");
+    assert_eq!(decoded.version, P2P_PROTOCOL_VERSION);
+
+    let mut legacy = message.clone();
+    legacy.version = if data.first().copied().unwrap_or(0) & 1 == 0 {
+        P2P_PROTOCOL_VERSION
+    } else {
+        P2P_PROTOCOL_VERSION.saturating_add(1)
+    };
+    let legacy_wire =
+        serialize_legacy_bincode(&legacy, "fuzz P2P legacy message").expect("legacy P2P encode");
+    let legacy_result = P2PMessage::deserialize(&legacy_wire);
+    if legacy.version == P2P_PROTOCOL_VERSION {
+        assert!(legacy_result.is_ok());
+    } else {
+        assert!(legacy_result.is_err());
     }
 
-    // ── 4. Hash::from_hex on arbitrary strings ──────────────────────
-    if let Ok(s) = std::str::from_utf8(data) {
-        let _ = lichen_core::Hash::from_hex(s);
-    }
-
-    // ── 5. Pubkey::from_base58 on arbitrary strings ─────────────────
-    if let Ok(s) = std::str::from_utf8(data) {
-        let _ = lichen_core::Pubkey::from_base58(s);
+    if let Ok(decoded) = P2PMessage::deserialize(data) {
+        assert_eq!(decoded.version, P2P_PROTOCOL_VERSION);
+        let reencoded = decoded.serialize().expect("decoded P2P message re-encodes");
+        assert!(P2PMessage::deserialize(&reencoded).is_ok());
     }
 });
+
+fn loopback_addr(data: &[u8]) -> SocketAddr {
+    let port = u16::from_le_bytes([
+        data.get(1).copied().unwrap_or(0),
+        data.get(2).copied().unwrap_or(0),
+    ])
+    .max(1);
+    SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port)
+}
+
+fn message_type_from_bytes(data: &[u8]) -> MessageType {
+    match data.first().copied().unwrap_or(0) % 6 {
+        0 => MessageType::Ping,
+        1 => MessageType::Pong,
+        2 => MessageType::StatusRequest,
+        3 => MessageType::StatusResponse {
+            current_slot: read_u64(data, 1),
+            total_blocks: read_u64(data, 9),
+        },
+        4 => MessageType::BlockRequest {
+            slot: read_u64(data, 1),
+        },
+        _ => MessageType::ConsistencyReport {
+            current_slot: read_u64(data, 1),
+            validator_set_hash: Hash::hash(data),
+            stake_pool_hash: Hash::hash(&data.iter().rev().copied().collect::<Vec<_>>()),
+        },
+    }
+}
+
+fn read_u64(data: &[u8], offset: usize) -> u64 {
+    let mut bytes = [0u8; 8];
+    for (idx, byte) in bytes.iter_mut().enumerate() {
+        *byte = data.get(offset + idx).copied().unwrap_or(0);
+    }
+    u64::from_le_bytes(bytes)
+}

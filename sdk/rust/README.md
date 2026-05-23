@@ -107,6 +107,7 @@ assert!(Keypair::verify(&pubkey, message, &signature));
 
 ```rust
 use lichen_client_sdk::{Hash, Instruction, TransactionBuilder};
+use lichen_core::codec::serialize_legacy_bincode;
 
 // Build transaction
 let tx = TransactionBuilder::new()
@@ -115,7 +116,7 @@ let tx = TransactionBuilder::new()
     .build_and_sign(&keypair)?;
 
 // Serialize and send
-let tx_bytes = bincode::serialize(&tx)?;
+let tx_bytes = serialize_legacy_bincode(&tx, "SDK transaction")?;
 let tx_base64 = base64::encode(&tx_bytes);
 client.send_raw_transaction(&tx_base64).await?;
 ```

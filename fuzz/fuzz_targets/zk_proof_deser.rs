@@ -15,8 +15,7 @@ fuzz_target!(|data: &[u8]| {
     if data.len() >= 32 {
         let mut nullifier = [0u8; 32];
         nullifier.copy_from_slice(&data[..32]);
-        // Hash the nullifier just like the shielded pool would
-        let _hash = lichen_core::Hash::digest(&nullifier);
+        let _hash = lichen_core::Hash::hash(&nullifier);
     }
 
     // ── 3. Try decoding as a generic shielded payload header ────────

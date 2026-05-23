@@ -27,6 +27,25 @@ const portals = [
     definePortal('faucet', ['src']),
 ];
 
+const CSP_CONNECT_ALLOWLIST = [
+    'https://rpc.lichen.network',
+    'https://testnet-rpc.lichen.network',
+    'wss://rpc.lichen.network',
+    'wss://testnet-rpc.lichen.network',
+    'https://custody.lichen.network',
+    'https://testnet-custody.lichen.network',
+    'https://explorer.lichen.network',
+    'https://wallet.lichen.network',
+    'https://marketplace.lichen.network',
+    'https://dex.lichen.network',
+    'https://lichen.network',
+    'https://developers.lichen.network',
+    'https://programs.lichen.network',
+    'https://faucet.lichen.network',
+    'https://cloudflareinsights.com',
+    'https://static.cloudflareinsights.com',
+];
+
 let passed = 0;
 let failed = 0;
 const gitIgnoreCache = new Map();
@@ -192,6 +211,40 @@ function validateRequiredStagePaths(portal) {
     }
 
     assert(missing.length === 0, `${portal.name} staged Pages assets exist locally`);
+}
+
+function validateProductionHeaders(portal) {
+    const headersPath = path.join(repoRoot, portal.name, '_headers');
+    if (!fs.existsSync(headersPath)) {
+        return;
+    }
+
+    const headers = fs.readFileSync(headersPath, 'utf8');
+    const connectSrcDirectives = [...headers.matchAll(/connect-src\s+([^;\n]+)/g)].map(match => match[1]);
+    assert(
+        !/connect-src[^\n]*(?:http:\/\/localhost|ws:\/\/localhost)/.test(headers),
+        `${portal.name}/_headers production connect-src excludes localhost origins`
+    );
+    assert(
+        connectSrcDirectives.length > 0 &&
+            connectSrcDirectives.every(directive => {
+                const tokens = directive.trim().split(/\s+/);
+                return !tokens.includes('https:') && !tokens.includes('wss:');
+            }),
+        `${portal.name}/_headers production connect-src excludes broad https/wss schemes`
+    );
+    assert(
+        connectSrcDirectives.length > 0 &&
+            connectSrcDirectives.every(directive => {
+                const tokens = new Set(directive.trim().split(/\s+/));
+                return CSP_CONNECT_ALLOWLIST.every(origin => tokens.has(origin));
+            }),
+        `${portal.name}/_headers production connect-src includes explicit RPC, custody, app, and analytics origins`
+    );
+    assert(
+        !/frame-ancestors[^\n]*http:\/\/localhost/.test(headers),
+        `${portal.name}/_headers production frame-ancestors excludes localhost origins`
+    );
 }
 
 function analyzeAssetRefs(portal, pagePath, refs, kind) {
@@ -552,6 +605,21 @@ function validateDexChartPricePrecision() {
             !js.includes('p.price < 1 ? 10000 : 100'),
         'DEX TradingView resolveSymbol uses shared chart price-scale helper'
     );
+
+    const syncSizeBody = extractFunctionBody(js, 'syncTradingChartSize');
+    const observerBody = extractFunctionBody(js, 'installTradingChartResizeObserver');
+    assert(
+        js.includes('let tvChartResizeObserver = null') &&
+            js.includes('function scheduleTradingChartResize()') &&
+            observerBody.includes("typeof ResizeObserver === 'function'") &&
+            observerBody.includes('tvChartResizeObserver.observe(el);') &&
+            syncSizeBody.includes("tvWidget.resize(width, height)") &&
+            syncSizeBody.includes("el.querySelector('iframe')") &&
+            js.includes('syncMarginAvailabilityUi();\n        scheduleTradingChartResize();') &&
+            !js.includes("window.dispatchEvent(new Event('resize'))") &&
+            !js.includes('setTimeout(initTradingView, 200)'),
+        'DEX TradingView resizes through container ResizeObserver instead of synthetic window resize workarounds'
+    );
 }
 
 function validateDexWalletAndPairState() {
@@ -615,6 +683,20 @@ function validateDexWalletAndPairState() {
             !walletConnect.includes('!provider.isWindowOpen()) {\n        return [];'),
         'DEX web-wallet provider preserves approved state when the popup is closed'
     );
+}
+
+function validateWalletConnectionOriginGuards() {
+    for (const relativePath of ['dex/shared/wallet-connect.js', 'programs/shared/wallet-connect.js']) {
+        const js = fs.readFileSync(path.join(repoRoot, relativePath), 'utf8');
+        assert(
+            js.includes('function isLocalDevelopmentOrigin()') &&
+                js.includes('function isLocalWalletOverrideUrl(value)') &&
+                js.includes('isLocalDevelopmentOrigin() &&') &&
+                js.includes("window.localStorage.getItem('lichen_app_url_wallet')") &&
+                js.includes('overrideUrl = isLocalWalletOverrideUrl(candidate) ? candidate : null;'),
+            `${relativePath} only honors wallet origin overrides for local development`
+        );
+    }
 }
 
 function validateFrontendInputGuards() {
@@ -716,6 +798,7 @@ for (const portal of portals) {
     const htmlFiles = getPortalHtmlFiles(portal);
     assert(htmlFiles.length > 0, `${portal.name} contributes deployed HTML pages to the asset scan`);
     validateRequiredStagePaths(portal);
+    validateProductionHeaders(portal);
 
     for (const pagePath of htmlFiles) {
         const html = fs.readFileSync(pagePath, 'utf8');
@@ -728,6 +811,7 @@ validateMonitoringIncidentControls();
 validateMonitoringRiskConsole();
 validateDexChartPricePrecision();
 validateDexWalletAndPairState();
+validateWalletConnectionOriginGuards();
 validateFrontendInputGuards();
 
 console.log(`\nFrontend asset integrity: ${passed} passed, ${failed} failed`);

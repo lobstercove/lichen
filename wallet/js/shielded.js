@@ -28,7 +28,7 @@ function createInitialShieldedState(previousState = {}) {
 
         // Owned notes (trial-decrypted from commitment stream)
         ownedNotes: [],           // { index, value, blinding, serial, commitment, spent }
-        shieldedBalance: 0,       // Sum of unspent note values (spores)
+        shieldedBalance: '0',     // Sum of unspent note values (spores, decimal string)
 
         // Merkle tree state (synced from RPC)
         merkleRoot: null,
@@ -102,6 +102,38 @@ function concatBytes(...chunks) {
         offset += chunk.length;
     }
     return out;
+}
+
+function u64BigInt(value) {
+    if (typeof value === 'bigint') return value;
+    const text = String(value ?? '0').trim();
+    if (!/^\d+$/.test(text)) return 0n;
+    return BigInt(text);
+}
+
+function parseShieldedAmountSpores(value, label = 'Shielded amount') {
+    return parsePositiveDecimalBaseUnits(value, 9, label);
+}
+
+function formatShieldedSpores(value) {
+    return baseUnitsToDecimalString(u64BigInt(value), 9);
+}
+
+function formatShieldedSporesFixed(value, digits = 4) {
+    const [whole, fraction = ''] = formatShieldedSpores(value).split('.');
+    return `${whole}.${fraction.padEnd(digits, '0').slice(0, digits)}`;
+}
+
+function noteValueSpores(note) {
+    return u64BigInt(note?.value || 0);
+}
+
+function shieldedBalanceSpores() {
+    return u64BigInt(shieldedState.shieldedBalance || 0);
+}
+
+function unspentShieldedNotes() {
+    return shieldedState.ownedNotes.filter(n => !n.spent && noteValueSpores(n) > 0n);
 }
 
 function bytesToBase64(bytes) {
@@ -231,7 +263,7 @@ async function submitShieldTransaction({ amountSpores, commitment, proof, encryp
     const wallet = typeof getActiveWallet === 'function' ? getActiveWallet() : null;
     const password = await requestShieldedSigningPassword(
         'Shield LICN',
-        `Sign shield transaction for ${(amountSpores / SPORES_PER_LICN).toFixed(6)} LICN`,
+        `Sign shield transaction for ${formatShieldedSpores(amountSpores)} LICN`,
     );
     if (!password) {
         throw new Error('Shield cancelled');
@@ -254,7 +286,7 @@ async function submitUnshieldTransaction({ amountSpores, recipientAddress, nulli
     }
     const password = await requestShieldedSigningPassword(
         'Unshield LICN',
-        `Sign unshield transaction for ${(amountSpores / SPORES_PER_LICN).toFixed(6)} LICN`,
+        `Sign unshield transaction for ${formatShieldedSpores(amountSpores)} LICN`,
     );
     if (!password) {
         throw new Error('Unshield cancelled');
@@ -276,7 +308,7 @@ async function submitShieldedTransferTransaction({ amountSpores, nullifiers, out
     }
     const password = await requestShieldedSigningPassword(
         'Private Transfer',
-        `Sign private transfer for ${(amountSpores / SPORES_PER_LICN).toFixed(6)} LICN`,
+        `Sign private transfer for ${formatShieldedSpores(amountSpores)} LICN`,
     );
     if (!password) {
         throw new Error('Private transfer cancelled');
@@ -327,7 +359,7 @@ async function initShielded(walletSeed) {
     shieldedState.storageLoadFailed = false;
     shieldedState.storageKeyName = getShieldedStorageKeyName();
     shieldedState.ownedNotes = [];
-    shieldedState.shieldedBalance = 0;
+    shieldedState.shieldedBalance = '0';
     shieldedState.merkleRoot = null;
     shieldedState.lastSyncedIndex = 0;
     shieldedState.commitments = [];
@@ -461,7 +493,8 @@ async function fetchShieldedCommitmentEntries(from, limit = 1000) {
 function recalculateShieldedBalance() {
     shieldedState.shieldedBalance = shieldedState.ownedNotes
         .filter(n => !n.spent)
-        .reduce((sum, n) => sum + Number(n.value || 0), 0);
+        .reduce((sum, n) => sum + noteValueSpores(n), 0n)
+        .toString();
 }
 
 async function upsertOwnedShieldedNote(note) {
@@ -565,19 +598,19 @@ async function tryDecryptNote(entry) {
 
         const owner = plaintext.slice(0, 32);
         const value = new DataView(plaintext.buffer, plaintext.byteOffset + 32, 8).getBigUint64(0, true);
-        if (Number(value) <= 0) return null;
+        if (value <= 0n) return null;
         const blinding = bytesToHex(plaintext.slice(40, 72));
         const serial = bytesToHex(plaintext.slice(72, 104));
 
         // Verify commitment matches
-        const expectedCommitment = await computeCommitmentHash(Number(value), blinding);
+        const expectedCommitment = await computeCommitmentHash(value.toString(), blinding);
         if (expectedCommitment !== String(entry.commitment || '').toLowerCase()) {
             return null; // Wrong key or corrupted
         }
 
         return {
             owner: bytesToHex(owner),
-            value: Number(value),
+            value: value.toString(),
             blinding,
             serial,
         };
@@ -598,9 +631,11 @@ async function shieldLicn(amountLicn) {
         return;
     }
 
-    const amountSpores = Math.floor(amountLicn * SPORES_PER_LICN);
-    if (amountSpores <= 0) {
-        showToast('Amount must be positive');
+    let amountSpores;
+    try {
+        amountSpores = parseShieldedAmountSpores(amountLicn, 'Shield amount');
+    } catch (error) {
+        showToast(error.message || 'Amount must be positive');
         return;
     }
 
@@ -619,7 +654,7 @@ async function shieldLicn(amountLicn) {
         const serial = crypto.getRandomValues(new Uint8Array(32));
 
         // Generate a real shield proof and circuit-aligned commitment.
-        const shieldProof = await generateShieldProof(amountSpores, null, blindingHex);
+        const shieldProof = await generateShieldProof(amountSpores.toString(), null, blindingHex);
         const commitment = shieldProof.commitment;
 
         // Encrypt note for ourselves
@@ -627,7 +662,7 @@ async function shieldLicn(amountLicn) {
         // AUDIT-FIX SH-1: shieldedAddress is Base58, decode it properly (not hex)
         const ownerBytes = bs58.decode(shieldedState.shieldedAddress);
         noteBytes.set(ownerBytes.slice(0, 32), 0);
-        new DataView(noteBytes.buffer).setBigUint64(32, BigInt(amountSpores), true);
+        new DataView(noteBytes.buffer).setBigUint64(32, amountSpores, true);
         noteBytes.set(blinding, 40);
         noteBytes.set(serial, 72);
 
@@ -647,7 +682,7 @@ async function shieldLicn(amountLicn) {
 
         const ownedNote = {
             index: null,
-            value: amountSpores,
+            value: amountSpores.toString(),
             blinding: blindingHex,
             serial: bytesToHex(serial),
             commitment,
@@ -696,7 +731,7 @@ async function shieldLicn(amountLicn) {
             });
 
             showShieldedStatus('', 'idle');
-            showToast(`Shielded ${amountLicn} LICN successfully!`);
+            showToast(`Shielded ${formatShieldedSpores(amountSpores)} LICN successfully!`);
             setTimeout(() => syncShieldedState(), 1500);
             closeModal('shieldModal');
         } else {
@@ -730,17 +765,23 @@ async function unshieldLicn(amountLicn, recipientAddress) {
         return;
     }
 
-    const amountSpores = Math.floor(amountLicn * SPORES_PER_LICN);
+    let amountSpores;
+    try {
+        amountSpores = parseShieldedAmountSpores(amountLicn, 'Unshield amount');
+    } catch (error) {
+        showToast(error.message || 'Enter a valid amount');
+        return;
+    }
 
     const unspentNotes = shieldedState.ownedNotes.filter(n => !n.spent);
-    const totalAvailable = unspentNotes.reduce((sum, n) => sum + n.value, 0);
+    const totalAvailable = unspentNotes.reduce((sum, n) => sum + noteValueSpores(n), 0n);
     if (amountSpores > totalAvailable) {
-        showToast(`Insufficient shielded balance. Available: ${(totalAvailable / SPORES_PER_LICN).toFixed(4)} LICN`);
+        showToast(`Insufficient shielded balance. Available: ${formatShieldedSpores(totalAvailable)} LICN`);
         return;
     }
 
     // Current unshield circuit supports one input note where value == amount.
-    const noteToSpend = unspentNotes.find((n) => n.value === amountSpores);
+    const noteToSpend = unspentNotes.find((n) => noteValueSpores(n) === amountSpores);
     if (!noteToSpend) {
         showToast('Unshield currently requires a single note exactly matching the amount');
         return;
@@ -762,7 +803,7 @@ async function unshieldLicn(amountLicn, recipientAddress) {
         }
         shieldedState.merkleRoot = merkleRoot;
         const unshieldProof = await generateUnshieldProof({
-            amount: amountSpores,
+            amount: amountSpores.toString(),
             merkleRoot,
             recipient: recipientAddress,
             blinding: noteToSpend.blinding,
@@ -787,14 +828,15 @@ async function unshieldLicn(amountLicn, recipientAddress) {
         if (result && result.success) {
             noteToSpend.spent = true;
             noteToSpend.nullifier = unshieldProof.nullifier;
-            shieldedState.shieldedBalance -= amountSpores;
+            shieldedState.shieldedBalance =
+                (shieldedBalanceSpores() > amountSpores ? shieldedBalanceSpores() - amountSpores : 0n).toString();
 
             // If change needed, a new note will appear in the commitment stream
             await saveNotesToStorage();
             updateShieldedUI();
 
             showShieldedStatus('', 'idle');
-            showToast(`Unshielded ${amountLicn} LICN to ${recipientAddress.slice(0, 8)}...`);
+            showToast(`Unshielded ${formatShieldedSpores(amountSpores)} LICN to ${recipientAddress.slice(0, 8)}...`);
             setTimeout(() => syncShieldedState(), 1500);
             closeModal('unshieldModal');
         } else {
@@ -828,13 +870,15 @@ async function shieldedTransfer(amountLicn, recipientViewingKey) {
         return;
     }
 
-    const amountSpores = Math.floor(amountLicn * SPORES_PER_LICN);
-    if (!Number.isFinite(amountSpores) || amountSpores <= 0) {
-        showToast('Enter a valid amount');
+    let amountSpores;
+    try {
+        amountSpores = parseShieldedAmountSpores(amountLicn, 'Private transfer amount');
+    } catch (error) {
+        showToast(error.message || 'Enter a valid amount');
         return;
     }
-    const unspentNotes = shieldedState.ownedNotes.filter(n => !n.spent && Number(n.value || 0) > 0);
-    const totalAvailable = unspentNotes.reduce((sum, n) => sum + n.value, 0);
+    const unspentNotes = shieldedState.ownedNotes.filter(n => !n.spent && noteValueSpores(n) > 0n);
+    const totalAvailable = unspentNotes.reduce((sum, n) => sum + noteValueSpores(n), 0n);
 
     if (amountSpores > totalAvailable) {
         showToast('Insufficient shielded balance');
@@ -857,7 +901,7 @@ async function shieldedTransfer(amountLicn, recipientViewingKey) {
         return;
     }
 
-    const inputTotal = inputNotes[0].value + inputNotes[1].value;
+    const inputTotal = noteValueSpores(inputNotes[0]) + noteValueSpores(inputNotes[1]);
 
     const changeAmount = inputTotal - amountSpores;
 
@@ -879,7 +923,7 @@ async function shieldedTransfer(amountLicn, recipientViewingKey) {
         const transferProof = await generateTransferProof({
             merkleRoot: shieldedState.merkleRoot,
             inputs: inputNotes.map((note, i) => ({
-                amount: note.value,
+                amount: noteValueSpores(note).toString(),
                 blinding: note.blinding,
                 serial: note.serial,
                 spendingKey: bytesToHex(shieldedState.spendingKey || new Uint8Array(32)),
@@ -887,8 +931,8 @@ async function shieldedTransfer(amountLicn, recipientViewingKey) {
                 pathBits: (merkleWitnesses[i]?.pathBits || merkleWitnesses[i]?.path_bits || []),
             })),
             outputs: [
-                { amount: amountSpores, blinding: bytesToHex(recipientBlinding) },
-                { amount: changeAmount, blinding: bytesToHex(changeBlinding) },
+                { amount: amountSpores.toString(), blinding: bytesToHex(recipientBlinding) },
+                { amount: changeAmount.toString(), blinding: bytesToHex(changeBlinding) },
             ],
         });
 
@@ -909,7 +953,7 @@ async function shieldedTransfer(amountLicn, recipientViewingKey) {
 
         const changeNote = new Uint8Array(104);
         changeNote.set(new Uint8Array(32), 0); // self
-        new DataView(changeNote.buffer).setBigUint64(32, BigInt(changeAmount), true);
+        new DataView(changeNote.buffer).setBigUint64(32, changeAmount, true);
         changeNote.set(changeBlinding, 40);
         changeNote.set(changeSerial, 72);
 
@@ -944,10 +988,10 @@ async function shieldedTransfer(amountLicn, recipientViewingKey) {
                 note.spent = true;
                 note.nullifier = nullifiers[inputNotes.indexOf(note)];
             }
-            if (changeAmount > 0) {
+            if (changeAmount > 0n) {
                 await upsertOwnedShieldedNote({
                     index: null,
-                    value: changeAmount,
+                    value: changeAmount.toString(),
                     blinding: bytesToHex(changeBlinding),
                     serial: bytesToHex(changeSerial),
                     commitment: transferProof.commitment_d,
@@ -1079,17 +1123,18 @@ function selectTwoInputNotes(unspentNotes, targetAmount) {
     if (!Array.isArray(unspentNotes) || unspentNotes.length < 2) return null;
 
     let bestPair = null;
-    let bestExcess = Number.MAX_SAFE_INTEGER;
+    const target = u64BigInt(targetAmount);
+    let bestExcess = null;
 
     for (let i = 0; i < unspentNotes.length; i++) {
         for (let j = i + 1; j < unspentNotes.length; j++) {
-            const total = unspentNotes[i].value + unspentNotes[j].value;
-            if (total < targetAmount) continue;
-            const excess = total - targetAmount;
-            if (excess < bestExcess) {
+            const total = noteValueSpores(unspentNotes[i]) + noteValueSpores(unspentNotes[j]);
+            if (total < target) continue;
+            const excess = total - target;
+            if (bestExcess === null || excess < bestExcess) {
                 bestExcess = excess;
                 bestPair = [unspentNotes[i], unspentNotes[j]];
-                if (bestExcess === 0) return bestPair;
+                if (bestExcess === 0n) return bestPair;
             }
         }
     }
@@ -1120,10 +1165,10 @@ async function assertPublicFeeBalance(type) {
     const wallet = typeof getActiveWallet === 'function' ? getActiveWallet() : null;
     if (!wallet || typeof rpc === 'undefined') return;
     const balResult = await rpc.call('getBalance', [wallet.address]);
-    const spendableSpores = Number(balResult?.spendable ?? balResult?.spores ?? balResult?.balance ?? 0);
-    const required = shieldedFeeSpores(type);
-    if (Number.isFinite(spendableSpores) && spendableSpores < required) {
-        throw new Error(`Insufficient public LICN for fee: need ${(required / SPORES_PER_LICN).toFixed(4)} LICN`);
+    const spendableSpores = u64BigInt(balResult?.spendable ?? balResult?.spores ?? balResult?.balance ?? 0);
+    const required = BigInt(shieldedFeeSpores(type));
+    if (spendableSpores < required) {
+        throw new Error(`Insufficient public LICN for fee: need ${formatShieldedSporesFixed(required)} LICN`);
     }
 }
 
@@ -1132,17 +1177,22 @@ function privateTransferValidationMessage() {
     if (!SHIELDED_PRIVATE_TRANSFER_AVAILABLE) return 'Private transfer is not enabled';
     const amountInput = document.getElementById('shieldedTransferAmount');
     const viewingKeyInput = document.getElementById('shieldedTransferRecipientVK');
-    const amount = parseFloat(amountInput?.value || '');
+    const amountText = amountInput?.value || '';
     const viewingKey = normalizeViewingKeyHex(viewingKeyInput?.value || '');
-    const available = (shieldedState.shieldedBalance || 0) / SPORES_PER_LICN;
-    const unspentNotes = shieldedState.ownedNotes.filter(n => !n.spent && Number(n.value || 0) > 0);
+    const available = shieldedBalanceSpores();
+    const unspentNotes = unspentShieldedNotes();
+    let amountSpores;
 
-    if (!Number.isFinite(amount) || amount <= 0) return 'Enter an amount to transfer';
-    if (available <= 0) return 'No shielded balance available';
-    if (amount > available) return `Max shielded balance: ${available.toFixed(4)} LICN`;
+    try {
+        amountSpores = parseShieldedAmountSpores(amountText, 'Private transfer amount');
+    } catch (error) {
+        return amountText.trim() ? (error.message || 'Enter an amount to transfer') : 'Enter an amount to transfer';
+    }
+    if (available <= 0n) return 'No shielded balance available';
+    if (amountSpores > available) return `Max shielded balance: ${formatShieldedSporesFixed(available)} LICN`;
     if (!/^[0-9a-f]{64}$/.test(viewingKey)) return 'Enter a 64-character recipient viewing key';
     if (isOwnViewingKey(viewingKey)) return 'Private transfers to your own viewing key are not allowed';
-    if (!selectTwoInputNotes(unspentNotes, Math.floor(amount * SPORES_PER_LICN))) {
+    if (!selectTwoInputNotes(unspentNotes, amountSpores)) {
         return 'Private transfer requires two unspent shielded notes with enough balance';
     }
     return '';
@@ -1152,8 +1202,8 @@ function privateTransferPrereqMessage() {
     if (!SHIELDED_SIGNED_SUBMISSION_AVAILABLE) return 'Signed shielded transaction submission is not enabled';
     if (!SHIELDED_PRIVATE_TRANSFER_AVAILABLE) return 'Private transfer is not enabled';
     if (!shieldedState.initialized) return 'Initialize shielded privacy first';
-    const unspentNotes = shieldedState.ownedNotes.filter(n => !n.spent && Number(n.value || 0) > 0);
-    if ((shieldedState.shieldedBalance || 0) <= 0 || unspentNotes.length === 0) {
+    const unspentNotes = unspentShieldedNotes();
+    if (shieldedBalanceSpores() <= 0n || unspentNotes.length === 0) {
         return 'Shield LICN before sending a private transfer';
     }
     if (unspentNotes.length < 2) {
@@ -1263,13 +1313,13 @@ async function loadNotesFromStorage() {
         const data = JSON.parse(new TextDecoder().decode(decrypted));
         shieldedState.ownedNotes = data.ownedNotes || [];
         shieldedState.lastSyncedIndex = data.lastSyncedIndex || 0;
-        shieldedState.shieldedBalance = data.shieldedBalance || 0;
+        shieldedState.shieldedBalance = u64BigInt(data.shieldedBalance || 0).toString();
         shieldedState.storageLoadFailed = false;
         shieldedState.storageKeyName = storageKey;
     } catch (e) {
         shieldedState.ownedNotes = [];
         shieldedState.lastSyncedIndex = 0;
-        shieldedState.shieldedBalance = 0;
+        shieldedState.shieldedBalance = '0';
         shieldedState.storageLoadFailed = true;
         shieldedState.storageKeyName = storageKey;
 
@@ -1288,20 +1338,21 @@ async function loadNotesFromStorage() {
 // ===== UI Updates =====
 
 function updateShieldedUI() {
-    const balanceLicn = shieldedState.shieldedBalance / SPORES_PER_LICN;
+    const balanceSpores = shieldedBalanceSpores();
+    const balanceLicn = formatShieldedSporesFixed(balanceSpores);
     const el = (id) => document.getElementById(id);
     if (typeof window.setWalletShieldedBalance === 'function') {
-        window.setWalletShieldedBalance(shieldedState.shieldedBalance);
+        window.setWalletShieldedBalance(balanceSpores.toString());
     } else {
-        window.currentShieldedBalanceSpores = shieldedState.shieldedBalance;
+        window.currentShieldedBalanceSpores = balanceSpores.toString();
     }
 
     // Shielded balance display
     const balEl = el('shieldedBalanceValue');
-    if (balEl) balEl.textContent = balanceLicn.toFixed(4) + ' LICN';
+    if (balEl) balEl.textContent = balanceLicn + ' LICN';
 
     const balSporesEl = el('shieldedBalanceSporesValue');
-    if (balSporesEl) balSporesEl.textContent = shieldedState.shieldedBalance.toLocaleString() + ' spores';
+    if (balSporesEl) balSporesEl.textContent = balanceSpores.toLocaleString() + ' spores';
 
     // Shielded address
     const addrEl = el('shieldedAddressDisplay');
@@ -1319,8 +1370,7 @@ function updateShieldedUI() {
     if (shieldedState.poolStats) {
         const poolBalEl = el('poolTotalShielded');
         if (poolBalEl) {
-            const poolLicn = (shieldedState.poolStats.pool_balance || 0) / SPORES_PER_LICN;
-            poolBalEl.textContent = poolLicn.toFixed(2) + ' LICN';
+            poolBalEl.textContent = formatShieldedSporesFixed(shieldedState.poolStats.pool_balance || 0, 2) + ' LICN';
         }
         const poolCommitsEl = el('poolCommitmentCount');
         if (poolCommitsEl) poolCommitsEl.textContent = (shieldedState.poolStats.commitment_count || 0).toLocaleString();
@@ -1366,7 +1416,7 @@ function renderNoteList() {
                 <div>
                     <div class="shield-note-amount">
                         <i class="fas fa-lock"></i>
-                        ${(Number(note.value || 0) / SPORES_PER_LICN).toFixed(4)} LICN
+                        ${formatShieldedSporesFixed(note.value)} LICN
                     </div>
                     <div class="shield-note-meta">
                         Note #${note.index ?? '?'} &bull; ${note.commitment ? note.commitment.slice(0, 12) + '...' : ''}
@@ -1438,10 +1488,16 @@ function openShieldModal() {
     if (input) {
         input.value = '';
         input.onblur = () => {
-            const v = parseFloat(input.value);
-            if (isNaN(v) || v <= 0) return;
-            const maxLicn = Math.max(0, (window.walletBalance || 0) - (typeof BASE_FEE_LICN !== 'undefined' ? BASE_FEE_LICN : 0.001));
-            if (v > maxLicn) input.value = maxLicn > 0 ? maxLicn.toFixed(6) : '';
+            let valueSpores;
+            try {
+                valueSpores = parseShieldedAmountSpores(input.value, 'Shield amount');
+            } catch (_) {
+                return;
+            }
+            const walletBalanceSpores = parseDecimalBaseUnits(window.walletBalance || '0', 9, 'Wallet balance');
+            const feeSpores = typeof BASE_FEE_SPORES === 'number' ? BigInt(BASE_FEE_SPORES) : 1_000_000n;
+            const maxSpores = walletBalanceSpores > feeSpores ? walletBalanceSpores - feeSpores : 0n;
+            if (valueSpores > maxSpores) input.value = maxSpores > 0n ? formatShieldedSpores(maxSpores) : '';
         };
     }
     if (typeof window.applyWalletInputGuards === 'function') {
@@ -1468,10 +1524,14 @@ function openUnshieldModal() {
     if (input) {
         input.value = '';
         input.onblur = () => {
-            const v = parseFloat(input.value);
-            if (isNaN(v) || v <= 0) return;
-            const maxLicn = (shieldedState.shieldedBalance || 0) / SPORES_PER_LICN;
-            if (v > maxLicn) input.value = maxLicn > 0 ? maxLicn.toFixed(6) : '';
+            let valueSpores;
+            try {
+                valueSpores = parseShieldedAmountSpores(input.value, 'Unshield amount');
+            } catch (_) {
+                return;
+            }
+            const maxSpores = shieldedBalanceSpores();
+            if (valueSpores > maxSpores) input.value = maxSpores > 0n ? formatShieldedSpores(maxSpores) : '';
         };
     }
     if (typeof window.applyWalletInputGuards === 'function') {
@@ -1494,10 +1554,14 @@ function openShieldedTransferModal() {
     if (input) {
         input.value = '';
         input.onblur = () => {
-            const v = parseFloat(input.value);
-            if (isNaN(v) || v <= 0) return;
-            const maxLicn = (shieldedState.shieldedBalance || 0) / SPORES_PER_LICN;
-            if (v > maxLicn) input.value = maxLicn > 0 ? maxLicn.toFixed(6) : '';
+            let valueSpores;
+            try {
+                valueSpores = parseShieldedAmountSpores(input.value, 'Private transfer amount');
+            } catch (_) {
+                return;
+            }
+            const maxSpores = shieldedBalanceSpores();
+            if (valueSpores > maxSpores) input.value = maxSpores > 0n ? formatShieldedSpores(maxSpores) : '';
             _updateTransferModalBtn();
         };
         input.oninput = _updateTransferModalBtn;
@@ -1524,8 +1588,8 @@ function _updateShieldModalBtn() {
         btn.title = 'Signed shielded transaction submission is not enabled yet';
         return;
     }
-    const spendable = window.walletBalance || 0;
-    const fee = typeof BASE_FEE_LICN !== 'undefined' ? BASE_FEE_LICN : 0.001;
+    const spendable = parseDecimalBaseUnits(window.walletBalance || '0', 9, 'Wallet balance');
+    const fee = typeof BASE_FEE_SPORES === 'number' ? BigInt(BASE_FEE_SPORES) : 1_000_000n;
     if (spendable <= fee) {
         btn.disabled = true;
         btn.title = 'Insufficient LICN balance';
@@ -1543,8 +1607,8 @@ function _updateUnshieldModalBtn() {
         btn.title = 'Signed shielded transaction submission is not enabled yet';
         return;
     }
-    const available = (shieldedState.shieldedBalance || 0) / SPORES_PER_LICN;
-    if (available <= 0) {
+    const available = shieldedBalanceSpores();
+    if (available <= 0n) {
         btn.disabled = true;
         btn.title = 'No shielded balance';
     } else {
@@ -1567,9 +1631,13 @@ function _updateTransferModalBtn() {
 }
 
 async function confirmShield() {
-    let amount = parseFloat(document.getElementById('shieldAmount').value);
-    if (isNaN(amount) || amount <= 0) {
-        showToast('Enter a valid amount');
+    const amountInput = document.getElementById('shieldAmount');
+    const amountText = amountInput?.value?.trim() || '';
+    let amountSpores;
+    try {
+        amountSpores = parseShieldedAmountSpores(amountText, 'Shield amount');
+    } catch (error) {
+        showToast(error.message || 'Enter a valid amount');
         return;
     }
     // Balance guard: check transparent balance
@@ -1577,32 +1645,37 @@ async function confirmShield() {
         const wallet = getActiveWallet();
         if (wallet) {
             const balResult = await rpc.call('getBalance', [wallet.address]);
-            const spendable = (balResult?.spendable || balResult?.balance || 0) / SPORES_PER_LICN;
-            const maxShieldable = Math.max(0, spendable - BASE_FEE_LICN);
-            if (maxShieldable <= 0) {
+            const spendable = u64BigInt(balResult?.spendable || balResult?.balance || 0);
+            const fee = typeof BASE_FEE_SPORES === 'number' ? BigInt(BASE_FEE_SPORES) : 1_000_000n;
+            const maxShieldable = spendable > fee ? spendable - fee : 0n;
+            if (maxShieldable <= 0n) {
                 showToast('Insufficient LICN balance to shield');
                 return;
             }
-            if (amount > maxShieldable) {
-                amount = parseFloat(maxShieldable.toFixed(6));
-                document.getElementById('shieldAmount').value = amount;
-                showToast(`Amount adjusted to available balance: ${(maxShieldable).toFixed(4)} LICN`);
+            if (amountSpores > maxShieldable) {
+                const adjusted = formatShieldedSpores(maxShieldable);
+                amountInput.value = adjusted;
+                showToast(`Amount adjusted to available balance: ${formatShieldedSporesFixed(maxShieldable)} LICN`);
                 return; // Let user review
             }
         }
     } catch (e) { /* let RPC reject */ }
     closeModal('shieldModal');
-    shieldLicn(amount);
+    shieldLicn(amountText);
 }
 
 function confirmUnshield() {
-    let amount = parseFloat(document.getElementById('unshieldAmount').value);
+    const amountInput = document.getElementById('unshieldAmount');
+    const amountText = amountInput?.value?.trim() || '';
     const wallet = typeof getActiveWallet === 'function' ? getActiveWallet() : null;
     const recipient = wallet?.address || '';
     const recipientInput = document.getElementById('unshieldRecipient');
     if (recipientInput) recipientInput.value = recipient;
-    if (isNaN(amount) || amount <= 0) {
-        showToast('Enter a valid amount');
+    let amountSpores;
+    try {
+        amountSpores = parseShieldedAmountSpores(amountText, 'Unshield amount');
+    } catch (error) {
+        showToast(error.message || 'Enter a valid amount');
         return;
     }
     if (!recipient) {
@@ -1614,26 +1687,30 @@ function confirmUnshield() {
         return;
     }
     // Balance guard: check shielded balance
-    const availableLicn = (shieldedState.shieldedBalance || 0) / SPORES_PER_LICN;
-    if (availableLicn <= 0) {
+    const availableSpores = shieldedBalanceSpores();
+    if (availableSpores <= 0n) {
         showToast('No shielded balance to unshield');
         return;
     }
-    if (amount > availableLicn) {
-        amount = parseFloat(availableLicn.toFixed(6));
-        document.getElementById('unshieldAmount').value = amount;
-        showToast(`Amount adjusted to shielded balance: ${availableLicn.toFixed(4)} LICN`);
+    if (amountSpores > availableSpores) {
+        const adjusted = formatShieldedSpores(availableSpores);
+        amountInput.value = adjusted;
+        showToast(`Amount adjusted to shielded balance: ${formatShieldedSporesFixed(availableSpores)} LICN`);
         return; // Let user review
     }
     closeModal('unshieldModal');
-    unshieldLicn(amount, recipient);
+    unshieldLicn(amountText, recipient);
 }
 
 async function confirmShieldedTransfer() {
-    let amount = parseFloat(document.getElementById('shieldedTransferAmount').value);
+    const amountInput = document.getElementById('shieldedTransferAmount');
+    const amountText = amountInput?.value?.trim() || '';
     const viewingKey = normalizeViewingKeyHex(document.getElementById('shieldedTransferRecipientVK').value);
-    if (isNaN(amount) || amount <= 0) {
-        showToast('Enter a valid amount');
+    let amountSpores;
+    try {
+        amountSpores = parseShieldedAmountSpores(amountText, 'Private transfer amount');
+    } catch (error) {
+        showToast(error.message || 'Enter a valid amount');
         return;
     }
     if (!/^[0-9a-f]{64}$/.test(viewingKey)) {
@@ -1645,24 +1722,19 @@ async function confirmShieldedTransfer() {
         return;
     }
     // Balance guard: check shielded balance
-    const availableLicn = (shieldedState.shieldedBalance || 0) / SPORES_PER_LICN;
-    if (availableLicn <= 0) {
+    const availableSpores = shieldedBalanceSpores();
+    if (availableSpores <= 0n) {
         showToast('No shielded balance for transfer');
         return;
     }
-    if (amount > availableLicn) {
-        amount = parseFloat(availableLicn.toFixed(6));
-        document.getElementById('shieldedTransferAmount').value = amount;
-        showToast(`Amount adjusted to shielded balance: ${availableLicn.toFixed(4)} LICN`);
+    if (amountSpores > availableSpores) {
+        const adjusted = formatShieldedSpores(availableSpores);
+        amountInput.value = adjusted;
+        showToast(`Amount adjusted to shielded balance: ${formatShieldedSporesFixed(availableSpores)} LICN`);
         return; // Let user review
     }
-    const amountSpores = Math.floor(amount * SPORES_PER_LICN);
-    if (!Number.isFinite(amountSpores) || amountSpores <= 0) {
-        showToast('Enter a valid amount');
-        return;
-    }
     const inputNotes = selectTwoInputNotes(
-        shieldedState.ownedNotes.filter(n => !n.spent && Number(n.value || 0) > 0),
+        unspentShieldedNotes(),
         amountSpores,
     );
     if (!inputNotes) {
@@ -1677,7 +1749,7 @@ async function confirmShieldedTransfer() {
         return;
     }
     closeModal('shieldedTransferModal');
-    await shieldedTransfer(amount, viewingKey);
+    await shieldedTransfer(amountText, viewingKey);
 }
 
 function copyShieldedAddress(btnEl) {

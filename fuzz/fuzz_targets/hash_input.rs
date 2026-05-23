@@ -13,6 +13,9 @@ fuzz_target!(|data: &[u8]| {
     // Empty vs non-empty should differ (unless data is empty)
     if !data.is_empty() {
         let empty_hash = Hash::hash(&[]);
-        assert_ne!(h, empty_hash, "Non-empty input should not hash to empty hash");
+        assert_ne!(
+            h, empty_hash,
+            "Non-empty input should not hash to empty hash"
+        );
     }
 });

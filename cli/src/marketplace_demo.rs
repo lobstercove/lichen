@@ -4,6 +4,7 @@
 use anyhow::{Context, Result};
 use base64::Engine;
 use clap::Parser;
+use lichen_core::codec::serialize_legacy_bincode;
 use lichen_core::{
     ContractInstruction, CreateCollectionData, Hash, Instruction, Keypair, KeypairFile, Message,
     MintNftData, Pubkey, Transaction, CONTRACT_PROGRAM_ID, SYSTEM_PROGRAM_ID,
@@ -90,7 +91,10 @@ async fn main() -> Result<()> {
         };
 
         let mut data = vec![6u8];
-        data.extend_from_slice(&bincode::serialize(&collection_data)?);
+        data.extend_from_slice(
+            &serialize_legacy_bincode(&collection_data, "marketplace demo collection")
+                .map_err(anyhow::Error::msg)?,
+        );
 
         let ix = Instruction {
             program_id: SYSTEM_PROGRAM_ID,
@@ -124,7 +128,10 @@ async fn main() -> Result<()> {
             };
 
             let mut data = vec![7u8];
-            data.extend_from_slice(&bincode::serialize(&mint_data)?);
+            data.extend_from_slice(
+                &serialize_legacy_bincode(&mint_data, "marketplace demo NFT mint")
+                    .map_err(anyhow::Error::msg)?,
+            );
 
             let ix = Instruction {
                 program_id: SYSTEM_PROGRAM_ID,

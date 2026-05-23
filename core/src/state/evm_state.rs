@@ -1,4 +1,5 @@
 use super::*;
+use crate::codec::{deserialize_legacy_bincode, serialize_legacy_bincode};
 
 #[derive(Serialize, Deserialize)]
 struct PersistedEvmReceipt {
@@ -69,16 +70,17 @@ impl From<LegacyPersistedEvmReceipt> for EvmReceipt {
 }
 
 pub(super) fn serialize_evm_receipt_for_storage(receipt: &EvmReceipt) -> Result<Vec<u8>, String> {
-    bincode::serialize(&PersistedEvmReceipt::from(receipt))
-        .map_err(|e| format!("Failed to serialize EVM receipt: {}", e))
+    serialize_legacy_bincode(&PersistedEvmReceipt::from(receipt), "EVM receipt")
 }
 
 pub(super) fn deserialize_evm_receipt_from_storage(data: &[u8]) -> Result<EvmReceipt, String> {
-    match bincode::deserialize::<PersistedEvmReceipt>(data) {
+    match deserialize_legacy_bincode::<PersistedEvmReceipt>(data, "EVM receipt") {
         Ok(receipt) => Ok(receipt.into()),
-        Err(primary_err) => bincode::deserialize::<LegacyPersistedEvmReceipt>(data)
-            .map(Into::into)
-            .map_err(|_| format!("Failed to deserialize EVM receipt: {}", primary_err)),
+        Err(primary_err) => {
+            deserialize_legacy_bincode::<LegacyPersistedEvmReceipt>(data, "legacy EVM receipt")
+                .map(Into::into)
+                .map_err(|_| format!("Failed to deserialize EVM receipt: {}", primary_err))
+        }
     }
 }
 
@@ -175,9 +177,7 @@ impl StateStore {
             .ok_or_else(|| "EVM Accounts CF not found".to_string())?;
 
         match self.db.get_cf(&cf, evm_address) {
-            Ok(Some(data)) => bincode::deserialize(&data)
-                .map(Some)
-                .map_err(|e| format!("Failed to deserialize EVM account: {}", e)),
+            Ok(Some(data)) => deserialize_legacy_bincode(&data, "EVM account").map(Some),
             Ok(None) => Ok(None),
             Err(e) => Err(format!("Database error: {}", e)),
         }
@@ -193,8 +193,7 @@ impl StateStore {
             .cf_handle(CF_EVM_ACCOUNTS)
             .ok_or_else(|| "EVM Accounts CF not found".to_string())?;
 
-        let data = bincode::serialize(account)
-            .map_err(|e| format!("Failed to serialize EVM account: {}", e))?;
+        let data = serialize_legacy_bincode(account, "EVM account")?;
 
         self.db
             .put_cf(&cf, evm_address, data)
@@ -307,8 +306,7 @@ impl StateStore {
             .db
             .cf_handle(CF_EVM_TXS)
             .ok_or_else(|| "EVM Txs CF not found".to_string())?;
-        let data =
-            bincode::serialize(record).map_err(|e| format!("Failed to serialize EVM tx: {}", e))?;
+        let data = serialize_legacy_bincode(record, "EVM tx")?;
         self.db
             .put_cf(&cf, record.evm_hash, data)
             .map_err(|e| format!("Failed to store EVM tx: {}", e))
@@ -320,9 +318,7 @@ impl StateStore {
             .cf_handle(CF_EVM_TXS)
             .ok_or_else(|| "EVM Txs CF not found".to_string())?;
         match self.db.get_cf(&cf, evm_hash) {
-            Ok(Some(data)) => bincode::deserialize(&data)
-                .map(Some)
-                .map_err(|e| format!("Failed to deserialize EVM tx: {}", e)),
+            Ok(Some(data)) => deserialize_legacy_bincode(&data, "EVM tx").map(Some),
             Ok(None) => Ok(None),
             Err(e) => Err(format!("Database error: {}", e)),
         }
@@ -381,12 +377,11 @@ impl StateStore {
             .ok_or_else(|| "EVM Logs CF not found".to_string())?;
         let key = slot.to_be_bytes();
         let mut existing: Vec<crate::evm::EvmLogEntry> = match self.db.get_cf(&cf, key) {
-            Ok(Some(data)) => bincode::deserialize(&data).unwrap_or_default(),
+            Ok(Some(data)) => deserialize_legacy_bincode(&data, "EVM logs").unwrap_or_default(),
             _ => Vec::new(),
         };
         existing.extend_from_slice(logs);
-        let data = bincode::serialize(&existing)
-            .map_err(|e| format!("Failed to serialize EVM logs: {}", e))?;
+        let data = serialize_legacy_bincode(&existing, "EVM logs")?;
         self.db
             .put_cf(&cf, key, data)
             .map_err(|e| format!("Failed to store EVM logs: {}", e))
@@ -399,8 +394,7 @@ impl StateStore {
             .ok_or_else(|| "EVM Logs CF not found".to_string())?;
         let key = slot.to_be_bytes();
         match self.db.get_cf(&cf, key) {
-            Ok(Some(data)) => bincode::deserialize(&data)
-                .map_err(|e| format!("Failed to deserialize EVM logs: {}", e)),
+            Ok(Some(data)) => deserialize_legacy_bincode(&data, "EVM logs"),
             Ok(None) => Ok(Vec::new()),
             Err(e) => Err(format!("Database error: {}", e)),
         }

@@ -1,6 +1,7 @@
 // Lichen Core - Marketplace activity tracking
 
 use crate::account::Pubkey;
+use crate::codec::{deserialize_legacy_bincode, serialize_legacy_bincode};
 use crate::hash::Hash;
 use serde::{Deserialize, Serialize};
 
@@ -39,11 +40,11 @@ pub struct MarketActivity {
 }
 
 pub fn encode_market_activity(activity: &MarketActivity) -> Result<Vec<u8>, String> {
-    bincode::serialize(activity).map_err(|e| format!("Failed to encode market activity: {}", e))
+    serialize_legacy_bincode(activity, "market activity")
 }
 
 pub fn decode_market_activity(data: &[u8]) -> Result<MarketActivity, String> {
-    bincode::deserialize(data).map_err(|e| format!("Failed to decode market activity: {}", e))
+    deserialize_legacy_bincode(data, "market activity")
 }
 
 #[cfg(test)]

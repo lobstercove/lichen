@@ -1,6 +1,7 @@
 """Transaction types and builder for Lichen."""
 
 import json
+import struct
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -8,6 +9,32 @@ from .bincode import EncodedInstruction, encode_message, encode_transaction
 from .keypair import Keypair
 from .pq import PqSignature
 from .publickey import PublicKey
+
+SIGNING_ENVELOPE_MAGIC = b"LICHEN-SIG"
+SIGNING_ENVELOPE_VERSION = 1
+DOMAIN_NATIVE_TX = "native-tx"
+
+
+def signing_bytes_for_chain_id(domain: str, chain_id: str, payload: bytes) -> bytes:
+    """Wrap payload bytes in the versioned chain-id signing envelope."""
+    if not chain_id:
+        return payload
+    domain_bytes = domain.encode("utf-8")
+    chain_bytes = chain_id.encode("utf-8")
+    if len(domain_bytes) > 0xFFFF:
+        raise ValueError("Signing domain is too long")
+    if len(chain_bytes) > 0xFFFF:
+        raise ValueError("Chain id is too long")
+    return b"".join([
+        SIGNING_ENVELOPE_MAGIC,
+        bytes([SIGNING_ENVELOPE_VERSION]),
+        struct.pack("<H", len(domain_bytes)),
+        domain_bytes,
+        struct.pack("<H", len(chain_bytes)),
+        chain_bytes,
+        struct.pack("<Q", len(payload)),
+        payload,
+    ])
 
 
 @dataclass
@@ -82,6 +109,9 @@ class TransactionBuilder:
         )
 
     def build_and_sign(self, keypair: Keypair) -> Transaction:
+        return self.build_and_sign_for_chain_id(keypair, "")
+
+    def build_and_sign_for_chain_id(self, keypair: Keypair, chain_id: str) -> Transaction:
         message = self.build()
         encoded_instructions = [
             EncodedInstruction(ix.program_id, ix.accounts, ix.data)
@@ -93,7 +123,9 @@ class TransactionBuilder:
             message.compute_budget,
             message.compute_unit_price,
         )
-        signature = keypair.sign(message_bytes)
+        signature = keypair.sign(
+            signing_bytes_for_chain_id(DOMAIN_NATIVE_TX, chain_id, message_bytes)
+        )
         return Transaction(signatures=[signature], message=message)
 
     @staticmethod

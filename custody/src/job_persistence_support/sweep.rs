@@ -55,19 +55,6 @@ pub(crate) fn store_sweep_job(db: &DB, job: &SweepJob) -> Result<(), String> {
         .map_err(|error| format!("db put: {}", error))
 }
 
-pub(crate) fn enqueue_sweep_job(db: &DB, job: &SweepJob) -> Result<(), String> {
-    let cf = db
-        .cf_handle(CF_SWEEP_JOBS)
-        .ok_or_else(|| "missing sweep_jobs cf".to_string())?;
-    let bytes = serde_json::to_vec(job).map_err(|error| format!("encode: {}", error))?;
-    db.put_cf(cf, job.job_id.as_bytes(), bytes)
-        .map_err(|error| format!("db put: {}", error))?;
-    if let Err(error) = set_status_index(db, "sweep", &job.status, &job.job_id) {
-        tracing::error!("Failed set_status_index: {error}");
-    }
-    Ok(())
-}
-
 pub(crate) fn count_sweep_jobs(db: &DB) -> Result<StatusCounts, String> {
     let mut counts = StatusCounts {
         total: 0,

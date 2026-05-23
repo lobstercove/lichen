@@ -55,8 +55,102 @@ function externalEvmNetworkFromAnyChainId(chainIdInput) {
   return null;
 }
 
+function networkSettingsPatch(network, endpoint) {
+  if (network === 'mainnet') return { mainnetRPC: endpoint };
+  if (network === 'testnet') return { testnetRPC: endpoint };
+  if (network === 'local-mainnet') return { localMainnetRPC: endpoint };
+  return { localTestnetRPC: endpoint };
+}
+
+function rpcOriginFromEndpoint(endpoint) {
+  try {
+    const url = new URL(String(endpoint || '').trim());
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      throw new Error('RPC endpoint must use http:// or https://');
+    }
+    if (url.username || url.password) {
+      throw new Error('RPC endpoint must not include embedded credentials');
+    }
+    return {
+      endpoint: url.toString().replace(/\/+$/, ''),
+      origin: url.origin
+    };
+  } catch (error) {
+    throw new Error(error?.message || 'RPC endpoint must be a valid http(s) URL');
+  }
+}
+
+function networkChangeFromPayload(payload, context, kind) {
+  const params = normalizeParams(payload);
+  const request = Array.isArray(params?.args) ? params.args[0] : params;
+  const targetChainId = request?.chainId;
+  const nextNetwork = networkFromAnyChainId(targetChainId);
+  const externalMeta = externalEvmNetworkFromAnyChainId(targetChainId);
+  if (!nextNetwork) {
+    if (externalMeta) {
+      const action = kind === 'add' ? 'addition' : 'switching';
+      throw new Error(`${externalMeta.chainName} metadata is recognized, but external EVM network ${action} is not enabled in Lichen wallet`);
+    }
+    throw new Error(kind === 'add' ? 'Invalid chain definition' : 'Unsupported chainId for network switch');
+  }
+
+  const previousNetwork = context.network || 'local-testnet';
+  const change = {
+    kind,
+    origin: context.origin || null,
+    previousNetwork,
+    previousChainId: getNetworkMeta(previousNetwork).chainHex,
+    nextNetwork,
+    nextChainId: getNetworkMeta(nextNetwork).chainHex,
+    requestedChainId: String(targetChainId || '').trim(),
+    rpcEndpoint: null,
+    rpcOrigin: null
+  };
+
+  if (kind === 'add') {
+    const rpcUrls = Array.isArray(request?.rpcUrls) ? request.rpcUrls : [];
+    const parsed = rpcOriginFromEndpoint(rpcUrls[0]);
+    change.rpcEndpoint = parsed.endpoint;
+    change.rpcOrigin = parsed.origin;
+  }
+
+  return change;
+}
+
+async function finalizeNetworkChange(request) {
+  const change = request?.networkChange;
+  if (!change || typeof change !== 'object') {
+    return { ok: false, error: 'Network change details unavailable' };
+  }
+
+  if (change.kind === 'add') {
+    await patchState({
+      settings: networkSettingsPatch(change.nextNetwork, change.rpcEndpoint),
+      network: { selected: change.nextNetwork }
+    });
+    return { ok: true, result: null };
+  }
+
+  if (change.kind === 'switch') {
+    await patchState({ network: { selected: change.nextNetwork } });
+    return { ok: true, result: null };
+  }
+
+  return { ok: false, error: 'Unsupported network change approval' };
+}
+
 function toHexQuantity(value) {
-  const bigint = BigInt(Math.max(0, Math.floor(Number(value || 0))));
+  let bigint = 0n;
+  if (typeof value === 'bigint') {
+    bigint = value;
+  } else if (typeof value === 'number') {
+    bigint = Number.isSafeInteger(value) && value > 0 ? BigInt(value) : 0n;
+  } else {
+    const text = String(value ?? '0').trim();
+    if (/^0x[0-9a-f]+$/i.test(text)) bigint = BigInt(text);
+    else if (/^\d+$/.test(text)) bigint = BigInt(text);
+  }
+  if (bigint < 0n) bigint = 0n;
   return `0x${bigint.toString(16)}`;
 }
 
@@ -201,6 +295,9 @@ export function listPendingRequests(limit = 20) {
       method: normalizeMethod(entry.payload?.method || null),
       origin: entry.origin || null,
       createdAt: entry.createdAt || Date.now(),
+      grantsAccountAccess: Boolean(entry.grantsAccountAccess),
+      networkChange: entry.networkChange || null,
+      transactionIntent: entry.transactionIntent || null,
       restrictionBlocked: entry.restrictionPreflight?.allowed === false
     }));
 
@@ -240,6 +337,9 @@ function createPendingRequest(payload, context, extra = {}) {
     origin: context.origin || null,
     createdAt: Date.now(),
     finalized: null,
+    grantsAccountAccess: Boolean(extra.grantsAccountAccess),
+    networkChange: extra.networkChange || null,
+    transactionIntent: extra.transactionIntent || null,
     restrictionPreflight: extra.restrictionPreflight || null
   });
   return requestId;
@@ -658,6 +758,33 @@ function decodeTransactionInputForSigning(incomingTx) {
 
 const BS58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
 
+function bs58encode(bytesLike) {
+  const buffer = bytesLike instanceof Uint8Array ? bytesLike : Uint8Array.from(bytesLike || []);
+  if (!buffer.length) return '';
+  const digits = [0];
+  for (const byte of buffer) {
+    let carry = byte;
+    for (let i = 0; i < digits.length; i++) {
+      carry += digits[i] << 8;
+      digits[i] = carry % 58;
+      carry = (carry / 58) | 0;
+    }
+    while (carry > 0) {
+      digits.push(carry % 58);
+      carry = (carry / 58) | 0;
+    }
+  }
+
+  let output = '';
+  for (let i = 0; i < buffer.length - 1 && buffer[i] === 0; i++) {
+    output += BS58_ALPHABET[0];
+  }
+  for (let i = digits.length - 1; i >= 0; i--) {
+    output += BS58_ALPHABET[digits[i]];
+  }
+  return output;
+}
+
 function bs58decode(str) {
   let num = 0n;
   for (let i = 0; i < str.length; i++) {
@@ -686,6 +813,7 @@ function normalizePubkeyBytes(value) {
 
 function normalizeDataBytes(value) {
   if (Array.isArray(value)) return Uint8Array.from(value);
+  if (value instanceof Uint8Array) return value;
   if (typeof value === 'string') return new TextEncoder().encode(value);
   return new Uint8Array(0);
 }
@@ -733,6 +861,194 @@ function messageBytesForSigning(txObject) {
   const signTarget = txObject?.message || txObject;
   const normalizedMessage = normalizeMessageForSigning(signTarget);
   return serializeMessageForSigning(normalizedMessage);
+}
+
+function shortenValue(value) {
+  const text = String(value || '').trim();
+  if (!text) return '—';
+  if (text.length <= 20) return text;
+  return `${text.slice(0, 10)}...${text.slice(-8)}`;
+}
+
+function pubkeyLabel(value) {
+  if (typeof value === 'string' && value.trim()) return value.trim();
+  if (!Array.isArray(value) && !(value instanceof Uint8Array)) return '—';
+  try {
+    return bs58encode(value);
+  } catch {
+    return shortenValue(JSON.stringify(value));
+  }
+}
+
+function readU64Le(data, offset = 0) {
+  const bytes = Array.isArray(data) || data instanceof Uint8Array ? data : [];
+  if (bytes.length < offset + 8) return null;
+  let value = 0n;
+  for (let i = 0; i < 8; i++) {
+    value |= BigInt(bytes[offset + i] || 0) << BigInt(i * 8);
+  }
+  return value;
+}
+
+function formatBaseUnits(value, decimals, symbol) {
+  if (typeof value !== 'bigint') return '—';
+  const scale = 10n ** BigInt(decimals);
+  const whole = value / scale;
+  const fraction = value % scale;
+  let fractionText = fraction.toString().padStart(decimals, '0').replace(/0+$/, '');
+  if (!fractionText) fractionText = '0';
+  return `${whole.toString()}.${fractionText} ${symbol}`;
+}
+
+function bytesToUtf8(data) {
+  if (!Array.isArray(data) && !(data instanceof Uint8Array)) return '';
+  try {
+    return new TextDecoder().decode(data instanceof Uint8Array ? data : Uint8Array.from(data));
+  } catch {
+    return '';
+  }
+}
+
+function parseJsonText(text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+function riskyContractWords(text) {
+  return /admin|owner|pause|unpause|upgrade|mint|burn|approve|treasury|governance|set_/i.test(String(text || ''));
+}
+
+function describeProgram(programId) {
+  if (!Array.isArray(programId) && !(programId instanceof Uint8Array) && typeof programId !== 'string') {
+    return 'Unknown Program';
+  }
+  if (typeof programId === 'string') return shortenValue(programId);
+
+  const bytes = programId instanceof Uint8Array ? programId : Uint8Array.from(programId);
+  if (bytes.length === 32 && bytes.every((byte) => byte === 0)) return 'System Program';
+  if (bytes.length === 32 && bytes.every((byte) => byte === 0xff)) return 'Contract Program';
+  return shortenValue(bs58encode(bytes));
+}
+
+function decodeContractCallIntent(data) {
+  const payloadText = bytesToUtf8(data);
+  const payload = parseJsonText(payloadText);
+  const call = payload?.Call || payload?.call || null;
+  if (!call || typeof call !== 'object') {
+    return {
+      callName: 'Unknown contract call',
+      destination: '—',
+      amount: '—',
+      token: 'Contract token',
+      tokenDecimals: 'contract registry / unknown',
+      warnings: ['Contract payload is not a decoded call envelope.']
+    };
+  }
+
+  const callName = String(call.function || call.method || 'unknown');
+  let destination = '—';
+  let amount = '—';
+  let token = 'Contract token';
+  const tokenDecimals = 'contract registry / unknown';
+  const warnings = [];
+
+  if (Array.isArray(call.args)) {
+    const argsText = bytesToUtf8(call.args);
+    const args = parseJsonText(argsText);
+    if (args && typeof args === 'object') {
+      if (Array.isArray(args.to)) destination = pubkeyLabel(args.to);
+      if (args.amount !== undefined && args.amount !== null && /^\d+$/.test(String(args.amount))) {
+        amount = `${BigInt(String(args.amount)).toString()} base units`;
+      }
+    }
+  }
+
+  if (callName === 'transfer') {
+    token = 'Contract token transfer';
+  } else {
+    warnings.push('Contract call may execute program-specific logic.');
+  }
+
+  if (riskyContractWords(payloadText) || riskyContractWords(callName)) {
+    warnings.push('Contract payload contains admin-like terms; review before signing.');
+  }
+
+  warnings.push('Contract token decimals must be checked against the registry.');
+  return { callName, destination, amount, token, tokenDecimals, warnings };
+}
+
+function buildTransactionIntentFromObject(txObject, context = {}, rpcEndpoint = '—', sourceFormat = 'object') {
+  const message = txObject?.message || txObject || {};
+  const instructions = Array.isArray(message.instructions) ? message.instructions : [];
+  const firstInstruction = instructions[0] || null;
+  const firstAccounts = Array.isArray(firstInstruction?.accounts) ? firstInstruction.accounts : [];
+  const firstData = normalizeDataBytes(firstInstruction?.data);
+  const primaryProgram = describeProgram(firstInstruction?.program_id ?? firstInstruction?.programId);
+  const warnings = [];
+  let intent = 'Unknown transaction';
+  let amount = '—';
+  let tokenDecimals = '—';
+  let token = '—';
+  let destination = pubkeyLabel(firstAccounts[1]);
+  let contract = '—';
+
+  if (!firstInstruction) {
+    warnings.push('Transaction has no instructions.');
+  } else if (primaryProgram === 'System Program' && firstData[0] === 0 && firstAccounts.length >= 2) {
+    token = 'LICN';
+    tokenDecimals = '9';
+    amount = formatBaseUnits(readU64Le(firstData, 1), 9, token);
+    intent = 'Native transfer';
+  } else if (primaryProgram === 'System Program' && firstData[0] === 16 && firstAccounts.length >= 2) {
+    token = 'stLICN';
+    tokenDecimals = '9';
+    amount = formatBaseUnits(readU64Le(firstData, 1), 9, token);
+    intent = 'MossStake transfer';
+  } else if (primaryProgram === 'Contract Program') {
+    const contractIntent = decodeContractCallIntent(firstData);
+    intent = contractIntent.callName === 'transfer' ? 'Contract token transfer' : contractIntent.callName;
+    amount = contractIntent.amount;
+    token = contractIntent.token;
+    tokenDecimals = contractIntent.tokenDecimals;
+    destination = contractIntent.destination;
+    contract = pubkeyLabel(firstAccounts[1]);
+    warnings.push(...contractIntent.warnings);
+  } else {
+    warnings.push('Unknown program or instruction; review raw parameters before signing.');
+  }
+
+  if (primaryProgram === 'System Program' && firstData[0] !== 0 && firstData[0] !== 16) {
+    warnings.push(`System opcode ${String(firstData[0] ?? 'unknown')} is not decoded; it may be administrative.`);
+  }
+
+  const intentSummary = {
+    intent,
+    instructionCount: instructions.length,
+    account: pubkeyLabel(firstAccounts[0]),
+    destination,
+    amount,
+    token,
+    tokenDecimals,
+    network: context.network || 'local-testnet',
+    rpc: rpcEndpoint || '—',
+    fee: 'Network base fee plus any priority fee',
+    program: primaryProgram,
+    blockhash: shortenValue(message.blockhash || message.recent_blockhash || message.recentBlockhash || ''),
+    computeBudget: Number.isFinite(message.compute_budget ?? message.computeBudget)
+      ? String(message.compute_budget ?? message.computeBudget)
+      : null,
+    computeUnitPrice: Number.isFinite(message.compute_unit_price ?? message.computeUnitPrice)
+      ? String(message.compute_unit_price ?? message.computeUnitPrice)
+      : null,
+    warnings,
+    sourceFormat
+  };
+
+  if (contract !== '—') intentSummary.contract = contract;
+  return intentSummary;
 }
 
 async function previewRestrictionPreflightForPayload(payload, context = {}) {
@@ -783,6 +1099,57 @@ async function getRpcForContext(context = {}) {
 
 function getChainId(context = {}) {
   return `lichen:${context.network || 'local-testnet'}`;
+}
+
+async function buildTransactionIntentForPayload(payload, context = {}) {
+  const network = context.network || 'local-testnet';
+  let rpcEndpoint = '—';
+  try {
+    rpcEndpoint = await getConfiguredRpcEndpoint(network);
+  } catch {
+    rpcEndpoint = '—';
+  }
+
+  const params = normalizeParams(payload);
+  const incomingTx = getTransactionFromParams(params);
+  if (!incomingTx) {
+    return {
+      intent: 'Unknown transaction',
+      instructionCount: 0,
+      account: '—',
+      destination: '—',
+      amount: '—',
+      token: '—',
+      tokenDecimals: '—',
+      network,
+      rpc: rpcEndpoint,
+      fee: 'Network base fee plus any priority fee',
+      program: 'Unknown Program',
+      blockhash: '—',
+      warnings: ['Missing transaction payload.']
+    };
+  }
+
+  try {
+    const { txObject, sourceFormat } = decodeTransactionInputForSigning(incomingTx);
+    return buildTransactionIntentFromObject(txObject, { ...context, network }, rpcEndpoint, sourceFormat);
+  } catch (error) {
+    return {
+      intent: 'Unknown transaction',
+      instructionCount: 0,
+      account: '—',
+      destination: '—',
+      amount: '—',
+      token: '—',
+      tokenDecimals: '—',
+      network,
+      rpc: rpcEndpoint,
+      fee: 'Network base fee plus any priority fee',
+      program: 'Unknown Program',
+      blockhash: '—',
+      warnings: [`Transaction payload could not be decoded: ${error?.message || error}`]
+    };
+  }
 }
 
 async function resolveAddressForReadMethod(payload, connectedAddress) {
@@ -955,10 +1322,6 @@ async function finalizePendingRequest(requestId, approved, context = {}, approva
     return { ok: true };
   }
 
-  if (request.origin) {
-    await approveOrigin(request.origin);
-  }
-
   if (method === 'licn_requestAccounts') {
     const activeAddress = context.activeAddress || null;
     if (!activeAddress) {
@@ -967,25 +1330,47 @@ async function finalizePendingRequest(requestId, approved, context = {}, approva
       return { ok: true };
     }
 
+    if (request.origin) {
+      await approveOrigin(request.origin);
+    }
+
     request.finalized = { ok: true, result: [activeAddress] };
     request.finalizedAt = Date.now();
     return { ok: true };
   }
 
   if (method === 'licn_signMessage') {
-    request.finalized = await finalizeSignMessage(request, context, approvalInput);
+    const finalized = await finalizeSignMessage(request, context, approvalInput);
+    if (finalized?.ok && request.origin) {
+      await approveOrigin(request.origin);
+    }
+    request.finalized = finalized;
     request.finalizedAt = Date.now();
     return { ok: true };
   }
 
   if (method === 'licn_signTransaction') {
-    request.finalized = await finalizeSignTransaction(request, context, approvalInput);
+    const finalized = await finalizeSignTransaction(request, context, approvalInput);
+    if (finalized?.ok && request.origin) {
+      await approveOrigin(request.origin);
+    }
+    request.finalized = finalized;
     request.finalizedAt = Date.now();
     return { ok: true };
   }
 
   if (method === 'licn_sendTransaction') {
-    request.finalized = await finalizeSendTransaction(request, context, approvalInput);
+    const finalized = await finalizeSendTransaction(request, context, approvalInput);
+    if (finalized?.ok && request.origin) {
+      await approveOrigin(request.origin);
+    }
+    request.finalized = finalized;
+    request.finalizedAt = Date.now();
+    return { ok: true };
+  }
+
+  if (method === 'licn_switchNetwork' || method === 'licn_addNetwork') {
+    request.finalized = await finalizeNetworkChange(request);
     request.finalizedAt = Date.now();
     return { ok: true };
   }
@@ -1097,47 +1482,39 @@ export async function handleProviderRequest(payload, context = {}) {
     }
 
     case 'licn_switchNetwork': {
-      const params = normalizeParams(payload);
-      const argObject = Array.isArray(params?.args) ? params.args[0] : params;
-      const targetChainId = argObject?.chainId;
-      const nextNetwork = networkFromAnyChainId(targetChainId);
-      if (!nextNetwork) {
-        const externalMeta = externalEvmNetworkFromAnyChainId(targetChainId);
-        if (externalMeta) {
-          return { ok: false, error: `${externalMeta.chainName} metadata is recognized, but Lichen wallet does not switch external EVM signing networks yet` };
-        }
-        return { ok: false, error: 'Unsupported chainId for network switch' };
+      if (!origin) {
+        return { ok: false, error: 'Origin unavailable for network approval' };
       }
-
-      await patchState({ network: { selected: nextNetwork } });
-      return { ok: true, result: null };
+      let networkChange;
+      try {
+        networkChange = networkChangeFromPayload(payload, context, 'switch');
+      } catch (error) {
+        return { ok: false, error: error?.message || String(error) };
+      }
+      const requestId = createPendingRequest(payload, context, { networkChange });
+      return {
+        ok: true,
+        pending: true,
+        requestId
+      };
     }
 
     case 'licn_addNetwork': {
-      const params = normalizeParams(payload);
-      const spec = Array.isArray(params?.args) ? params.args[0] : params;
-      const chainId = spec?.chainId;
-      const rpcUrls = Array.isArray(spec?.rpcUrls) ? spec.rpcUrls : [];
-      const endpoint = String(rpcUrls[0] || '').trim();
-
-      const network = networkFromAnyChainId(chainId);
-      if (!network || !endpoint) {
-        const externalMeta = externalEvmNetworkFromAnyChainId(chainId);
-        if (externalMeta) {
-          return { ok: false, error: `${externalMeta.chainName} metadata is recognized, but external EVM network addition is not enabled in Lichen wallet` };
-        }
-        return { ok: false, error: 'Invalid chain definition' };
+      if (!origin) {
+        return { ok: false, error: 'Origin unavailable for network approval' };
       }
-
-      const settingsPatch =
-        network === 'mainnet'
-          ? { mainnetRPC: endpoint }
-          : network === 'testnet'
-            ? { testnetRPC: endpoint }
-            : { localTestnetRPC: endpoint };
-
-      await patchState({ settings: settingsPatch, network: { selected: network } });
-      return { ok: true, result: null };
+      let networkChange;
+      try {
+        networkChange = networkChangeFromPayload(payload, context, 'add');
+      } catch (error) {
+        return { ok: false, error: error?.message || String(error) };
+      }
+      const requestId = createPendingRequest(payload, context, { networkChange });
+      return {
+        ok: true,
+        pending: true,
+        requestId
+      };
     }
 
     case 'licn_watchAsset': {
@@ -1327,7 +1704,9 @@ export async function handleProviderRequest(payload, context = {}) {
     }
 
     case 'licn_signMessage': {
-      const requestId = createPendingRequest(payload, context);
+      const requestId = createPendingRequest(payload, context, {
+        grantsAccountAccess: Boolean(origin && !approved)
+      });
       return {
         ok: true,
         pending: true,
@@ -1336,8 +1715,13 @@ export async function handleProviderRequest(payload, context = {}) {
     }
 
     case 'licn_signTransaction': {
+      const transactionIntent = await buildTransactionIntentForPayload(payload, context);
       const restrictionPreflight = await previewRestrictionPreflightForPayload(payload, context);
-      const requestId = createPendingRequest(payload, context, { restrictionPreflight });
+      const requestId = createPendingRequest(payload, context, {
+        grantsAccountAccess: Boolean(origin && !approved),
+        transactionIntent,
+        restrictionPreflight
+      });
       return {
         ok: true,
         pending: true,
@@ -1346,8 +1730,13 @@ export async function handleProviderRequest(payload, context = {}) {
     }
 
     case 'licn_sendTransaction': {
+      const transactionIntent = await buildTransactionIntentForPayload(payload, context);
       const restrictionPreflight = await previewRestrictionPreflightForPayload(payload, context);
-      const requestId = createPendingRequest(payload, context, { restrictionPreflight });
+      const requestId = createPendingRequest(payload, context, {
+        grantsAccountAccess: Boolean(origin && !approved),
+        transactionIntent,
+        restrictionPreflight
+      });
       return {
         ok: true,
         pending: true,

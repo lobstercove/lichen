@@ -23,7 +23,9 @@ function normalizeMethod(method) {
     personal_sign: 'licn_signMessage',
     eth_sign: 'licn_signMessage',
     eth_signTransaction: 'licn_signTransaction',
-    eth_sendTransaction: 'licn_sendTransaction'
+    eth_sendTransaction: 'licn_sendTransaction',
+    wallet_switchEthereumChain: 'licn_switchNetwork',
+    wallet_addEthereumChain: 'licn_addNetwork'
   };
   return aliases[key] || key;
 }
@@ -33,6 +35,11 @@ function isSigningMethod(method) {
   return normalized === 'licn_signMessage'
     || normalized === 'licn_signTransaction'
     || normalized === 'licn_sendTransaction';
+}
+
+function isNetworkChangeMethod(method) {
+  const normalized = normalizeMethod(method);
+  return normalized === 'licn_switchNetwork' || normalized === 'licn_addNetwork';
 }
 
 function setDecisionEnabled(enabled) {
@@ -61,6 +68,64 @@ function restrictionSummary(preflight) {
 
 function requestHasBlockingRestriction(request) {
   return request?.restrictionPreflight?.allowed === false;
+}
+
+function requestGrantsAccountAccess(request) {
+  const provider = request?.providerState || {};
+  return Boolean(request?.grantsAccountAccess)
+    || (isSigningMethod(request?.method) && !provider.connected && Boolean(request?.origin));
+}
+
+function renderNetworkChangeRows(networkChange) {
+  if (!networkChange || typeof networkChange !== 'object') return '';
+  const action = networkChange.kind === 'add' ? 'Add & switch network' : 'Switch network';
+  const rpcRows = networkChange.kind === 'add'
+    ? `
+    <div>RPC Origin</div><div class="mono">${escapeHtml(networkChange.rpcOrigin || '—')}</div>
+    <div>RPC URL</div><div class="mono">${escapeHtml(networkChange.rpcEndpoint || '—')}</div>
+  `
+    : '';
+  return `
+    <div>Network Action</div><div>${escapeHtml(action)}</div>
+    <div>From Network</div><div>${escapeHtml(networkChange.previousNetwork || '—')}</div>
+    <div>From Chain ID</div><div class="mono">${escapeHtml(networkChange.previousChainId || '—')}</div>
+    <div>To Network</div><div>${escapeHtml(networkChange.nextNetwork || '—')}</div>
+    <div>To Chain ID</div><div class="mono">${escapeHtml(networkChange.nextChainId || networkChange.requestedChainId || '—')}</div>
+    ${rpcRows}
+  `;
+}
+
+function renderIntentRow(label, value, mono = false) {
+  const className = mono ? ' class="mono"' : '';
+  return `<div>${escapeHtml(label)}</div><div${className}>${escapeHtml(value ?? '—')}</div>`;
+}
+
+function renderTransactionIntentRows(transactionIntent) {
+  if (!transactionIntent || typeof transactionIntent !== 'object') return '';
+  const rows = [
+    ['Intent', transactionIntent.intent],
+    ['Instructions', transactionIntent.instructionCount],
+    ['Account', transactionIntent.account, true],
+    ['Destination', transactionIntent.destination, true],
+    ['Amount', transactionIntent.amount],
+    ['Token', transactionIntent.token],
+    ['Token Decimals', transactionIntent.tokenDecimals],
+    ['Network', transactionIntent.network],
+    ['RPC', transactionIntent.rpc, true],
+    ['Fee', transactionIntent.fee],
+    ['Program', transactionIntent.program],
+    ['Blockhash', transactionIntent.blockhash, true],
+    ['Source Format', transactionIntent.sourceFormat]
+  ];
+
+  if (transactionIntent.contract) rows.splice(11, 0, ['Contract', transactionIntent.contract, true]);
+  if (transactionIntent.computeBudget) rows.push(['Compute Budget', transactionIntent.computeBudget]);
+  if (transactionIntent.computeUnitPrice) rows.push(['Compute Unit Price', transactionIntent.computeUnitPrice]);
+  if (Array.isArray(transactionIntent.warnings) && transactionIntent.warnings.length) {
+    rows.push(['Warnings', transactionIntent.warnings.join(' ')]);
+  }
+
+  return rows.map(([label, value, mono]) => renderIntentRow(label, value, Boolean(mono))).join('');
 }
 
 async function loadRequest(requestId) {
@@ -146,6 +211,16 @@ function renderRequest(request) {
 
   const normalizedMethod = normalizeMethod(request.method);
   const paramsDisplay = JSON.stringify(request.params || {}, null, 2);
+  const grantsAccountAccess = requestGrantsAccountAccess(request);
+  const grantAccountAddress = request.grantAccountAddress || provider.activeAddress || 'active account';
+  const networkChangeRows = renderNetworkChangeRows(request.networkChange);
+  const transactionIntentRows = renderTransactionIntentRows(request.transactionIntent);
+  const accountAccessConsent = grantsAccountAccess
+    ? `
+    <div>Account Access</div>
+    <div>Approving also connects this site to <span class="mono">${escapeHtml(grantAccountAddress)}</span> for 30 days or until disconnected.</div>
+  `
+    : '';
 
   const content = document.getElementById('approveContent');
   content.innerHTML = `
@@ -154,6 +229,9 @@ function renderRequest(request) {
     <div>Network</div><div>${escapeHtml(provider.network || '—')}</div>
     <div>Chain ID</div><div class="mono">${escapeHtml(provider.chainId || '—')}</div>
     <div>Connected</div><div>${provider.connected ? 'Yes' : 'No'}</div>
+    ${accountAccessConsent}
+    ${networkChangeRows}
+    ${transactionIntentRows}
     <div>Active Account</div><div class="mono">${escapeHtml(provider.activeAddress || '—')}</div>
     <div>Exposed Accounts</div><div class="mono">${escapeHtml(accountDisplay)}</div>
     <div>Wallet Locked</div><div>${provider.isLocked ? 'Yes' : 'No'}</div>
@@ -163,6 +241,18 @@ function renderRequest(request) {
 
   const needsPassword = isSigningMethod(request.method);
   document.getElementById('passwordRow').style.display = needsPassword ? 'block' : 'none';
+  const approveBtn = document.getElementById('approveBtn');
+  if (approveBtn) {
+    let approveText = 'Approve';
+    if (normalizedMethod === 'licn_requestAccounts') {
+      approveText = 'Connect';
+    } else if (grantsAccountAccess) {
+      approveText = 'Approve & Connect';
+    } else if (isNetworkChangeMethod(normalizedMethod)) {
+      approveText = request.networkChange?.kind === 'add' ? 'Add & Switch Network' : 'Switch Network';
+    }
+    approveBtn.textContent = approveText;
+  }
 
   const restrictionEl = document.getElementById('approveRestrictionStatus');
   const preflight = request.restrictionPreflight || null;

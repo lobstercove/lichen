@@ -107,12 +107,29 @@ function waitForInjectedLichenProvider(timeoutMs) {
     });
 }
 
+function isLocalDevelopmentOrigin() {
+    if (typeof window === 'undefined' || !window.location) return false;
+    var hostname = String(window.location.hostname || '').toLowerCase();
+    return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
+}
+
+function isLocalWalletOverrideUrl(value) {
+    try {
+        var url = new URL(value, window.location.origin);
+        var hostname = String(url.hostname || '').toLowerCase();
+        return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
+    } catch (e) {
+        return false;
+    }
+}
+
 function getWalletAppUrl(entry) {
     var overrideUrl = null;
     try {
-        overrideUrl = typeof window !== 'undefined' && window.localStorage
-            ? window.localStorage.getItem('lichen_app_url_wallet')
-            : null;
+        if (isLocalDevelopmentOrigin() && typeof window !== 'undefined' && window.localStorage) {
+            var candidate = window.localStorage.getItem('lichen_app_url_wallet');
+            overrideUrl = isLocalWalletOverrideUrl(candidate) ? candidate : null;
+        }
     } catch (e) { }
 
     var baseUrl = overrideUrl || ((typeof LICHEN_CONFIG !== 'undefined' && LICHEN_CONFIG.wallet)

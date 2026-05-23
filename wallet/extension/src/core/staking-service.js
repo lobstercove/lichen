@@ -1,16 +1,16 @@
 import { LichenRPC, getConfiguredRpcEndpoint } from './rpc-service.js';
 import { decryptPrivateKey } from './crypto-service.js';
 import { buildAmountInstructionData, buildSignedSingleInstructionTransaction, encodeTransactionBase64 } from './tx-service.js';
+import { baseUnitsToDecimalString, parsePositiveDecimalBaseUnits } from './amount-service.js';
+
+const MAX_STAKING_AMOUNT_BASE_UNITS = 1_000_000_000n * 1_000_000_000n;
 
 function validateAmount(amountLicn, label) {
-  const amount = Number(amountLicn);
-  if (!Number.isFinite(amount) || amount <= 0) {
-    throw new Error(`${label} must be a positive number`);
-  }
-  if (amount > 1_000_000_000) {
+  const baseUnits = parsePositiveDecimalBaseUnits(amountLicn, 9, label);
+  if (baseUnits > MAX_STAKING_AMOUNT_BASE_UNITS) {
     throw new Error(`${label} is too large`);
   }
-  return amount;
+  return baseUnitsToDecimalString(baseUnits, 9);
 }
 
 export async function loadStakingSnapshot(address, network) {

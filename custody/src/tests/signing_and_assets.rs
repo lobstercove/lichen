@@ -492,10 +492,14 @@ fn test_build_threshold_solana_withdrawal_message_supports_stablecoins() {
 
 #[test]
 fn test_solana_mint_for_asset() {
-    let config = test_config();
+    let mut config = test_config();
     assert!(solana_mint_for_asset(&config, "usdc").is_ok());
     assert!(solana_mint_for_asset(&config, "usdt").is_ok());
     assert!(solana_mint_for_asset(&config, "btc").is_err());
+
+    config.solana_usdc_mint.clear();
+    let err = solana_mint_for_asset(&config, "usdc").unwrap_err();
+    assert!(err.contains("CUSTODY_SOLANA_USDC_MINT"));
 }
 
 #[test]
@@ -504,9 +508,22 @@ fn test_evm_contract_for_asset() {
     assert!(evm_contract_for_asset(&config, "usdc").is_ok());
     assert!(evm_contract_for_asset(&config, "usdt").is_ok());
     assert!(evm_contract_for_asset(&config, "eth").is_err());
+    assert_eq!(
+        evm_token_contract_for_asset(&config, "ethereum", "usdc").unwrap(),
+        config.evm_usdc_contract
+    );
+    assert_eq!(
+        evm_token_contract_for_asset(&config, "bsc", "usdt").unwrap(),
+        config.bnb_usdt_contract.clone().unwrap()
+    );
+    config.bnb_usdt_contract = None;
+    let err = evm_token_contract_for_asset(&config, "bsc", "usdt").unwrap_err();
+    assert!(err.contains("CUSTODY_BSC_USDT_TOKEN_ADDR"));
+    assert!(!is_evm_token_asset("neox", "usdc"));
     assert!(!is_evm_token_asset("neox", "gas"));
     assert!(is_evm_token_asset("neox", "neo"));
     assert!(is_evm_token_asset("ethereum", "usdc"));
+    assert!(is_evm_token_asset("bsc", "usdc"));
     assert!(evm_token_contract_for_asset(&config, "neox", "neo").is_err());
     config.neox_neo_token_contract = Some("0x1111111111111111111111111111111111111111".to_string());
     assert_eq!(

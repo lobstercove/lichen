@@ -6,7 +6,9 @@ fn list_pending_deposits(db: &DB, chain: &str) -> Result<Vec<DepositRequest>, St
         let ids = list_ids_by_status_index(db, "deposits", status)?;
         for id in ids {
             if let Some(record) = fetch_deposit(db, &id)? {
-                if record.chain == chain {
+                if record.chain == chain
+                    && (record.status == "issued" || record.status == "pending")
+                {
                     results.push(record);
                 }
             }

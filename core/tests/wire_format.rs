@@ -4,6 +4,7 @@
 // the same byte layout as the JS and Python SDK manual bincode encoders.
 // Also tests JSON (serde_json) round-trip with structured PQ signatures.
 
+use lichen_core::codec::{deserialize_legacy_bincode, serialize_legacy_bincode};
 use lichen_core::{Hash, Instruction, Keypair, Message, PqSignature, Pubkey, Transaction};
 
 fn test_signature(fill: u8, message: &[u8]) -> PqSignature {
@@ -123,10 +124,10 @@ fn build_expected_bincode(tx: &Transaction) -> Vec<u8> {
 
 #[test]
 fn test_bincode_matches_sdk_layout() {
-    // The Rust bincode::serialize output must match the expected byte layout
+    // The Rust legacy bincode codec output must match the expected byte layout
     // that JS and Python SDKs produce with their manual encoders.
     let tx = make_test_transaction();
-    let rust_bincode = bincode::serialize(&tx).unwrap();
+    let rust_bincode = serialize_legacy_bincode(&tx, "wire-format transaction").unwrap();
     let expected = build_expected_bincode(&tx);
 
     assert_eq!(
@@ -145,8 +146,8 @@ fn test_bincode_matches_sdk_layout() {
 #[test]
 fn test_bincode_round_trip() {
     let tx = make_test_transaction();
-    let bytes = bincode::serialize(&tx).unwrap();
-    let tx2: Transaction = bincode::deserialize(&bytes).unwrap();
+    let bytes = serialize_legacy_bincode(&tx, "wire-format transaction").unwrap();
+    let tx2: Transaction = deserialize_legacy_bincode(&bytes, "wire-format transaction").unwrap();
 
     assert_eq!(tx.signatures.len(), tx2.signatures.len());
     assert_eq!(tx.signatures[0], tx2.signatures[0]);
@@ -201,7 +202,7 @@ fn test_json_round_trip_with_pq_signatures() {
 fn test_bincode_and_json_produce_different_bytes() {
     // Sanity check: bincode and JSON should produce different byte arrays
     let tx = make_test_transaction();
-    let bincode_bytes = bincode::serialize(&tx).unwrap();
+    let bincode_bytes = serialize_legacy_bincode(&tx, "wire-format transaction").unwrap();
     let json_bytes = serde_json::to_vec(&tx).unwrap();
 
     assert_ne!(bincode_bytes, json_bytes);
@@ -210,7 +211,7 @@ fn test_bincode_and_json_produce_different_bytes() {
 #[test]
 fn test_bincode_signature_encoding_is_pq_structured_bytes() {
     let tx = make_test_transaction();
-    let bytes = bincode::serialize(&tx).unwrap();
+    let bytes = serialize_legacy_bincode(&tx, "wire-format transaction").unwrap();
 
     // First 8 bytes: u64 LE count of signatures = 1
     let sig_count = u64::from_le_bytes(bytes[0..8].try_into().unwrap());
@@ -245,11 +246,11 @@ fn test_bincode_signature_encoding_is_pq_structured_bytes() {
 #[test]
 fn test_message_serialize_for_signing_matches_bincode() {
     // The Message::serialize() method (used for signing) must produce the same
-    // bytes as a standalone bincode::serialize(&message), so that signing bytes
+    // bytes as the canonical legacy bincode message codec, so signing bytes
     // are consistent regardless of the code path.
     let tx = make_test_transaction();
     let sign_bytes = tx.message.serialize();
-    let bincode_bytes = bincode::serialize(&tx.message).unwrap();
+    let bincode_bytes = serialize_legacy_bincode(&tx.message, "wire-format message").unwrap();
     assert_eq!(sign_bytes, bincode_bytes);
 }
 
@@ -269,12 +270,12 @@ fn test_multiple_signatures() {
         tx_type: Default::default(),
     };
 
-    let bytes = bincode::serialize(&tx).unwrap();
+    let bytes = serialize_legacy_bincode(&tx, "wire-format transaction").unwrap();
     let expected = build_expected_bincode(&tx);
     assert_eq!(bytes, expected);
 
     // Round-trip
-    let tx2: Transaction = bincode::deserialize(&bytes).unwrap();
+    let tx2: Transaction = deserialize_legacy_bincode(&bytes, "wire-format transaction").unwrap();
     assert_eq!(tx2.signatures.len(), 2);
     assert_eq!(tx2.signatures[0], sig1);
     assert_eq!(tx2.signatures[1], sig2);
@@ -293,11 +294,11 @@ fn test_empty_signatures() {
         tx_type: Default::default(),
     };
 
-    let bytes = bincode::serialize(&tx).unwrap();
+    let bytes = serialize_legacy_bincode(&tx, "wire-format transaction").unwrap();
     let expected = build_expected_bincode(&tx);
     assert_eq!(bytes, expected);
 
-    let tx2: Transaction = bincode::deserialize(&bytes).unwrap();
+    let tx2: Transaction = deserialize_legacy_bincode(&bytes, "wire-format transaction").unwrap();
     assert_eq!(tx2.signatures.len(), 0);
 }
 
@@ -320,11 +321,11 @@ fn test_multiple_instructions() {
         tx_type: Default::default(),
     };
 
-    let bytes = bincode::serialize(&tx).unwrap();
+    let bytes = serialize_legacy_bincode(&tx, "wire-format transaction").unwrap();
     let expected = build_expected_bincode(&tx);
     assert_eq!(bytes, expected);
 
-    let tx2: Transaction = bincode::deserialize(&bytes).unwrap();
+    let tx2: Transaction = deserialize_legacy_bincode(&bytes, "wire-format transaction").unwrap();
     assert_eq!(tx2.message.instructions.len(), 2);
     assert_eq!(tx2.message.instructions[1].accounts.len(), 3);
 }
@@ -372,8 +373,8 @@ fn test_simulated_js_sdk_bytes_deserialize() {
     js_bytes.extend_from_slice(&0u32.to_le_bytes());
 
     // This must deserialize successfully
-    let tx: Transaction =
-        bincode::deserialize(&js_bytes).expect("Failed to deserialize JS SDK bincode bytes");
+    let tx: Transaction = deserialize_legacy_bincode(&js_bytes, "simulated JS SDK transaction")
+        .expect("Failed to deserialize JS SDK bincode bytes");
 
     assert_eq!(tx.signatures.len(), 1);
     assert_eq!(tx.signatures[0], signature);
@@ -450,7 +451,7 @@ fn test_wire_envelope_round_trip_evm() {
 fn test_wire_envelope_accepts_raw_bincode() {
     // Raw bincode without the wire envelope is still accepted.
     let tx = make_test_transaction();
-    let raw_bincode = bincode::serialize(&tx).unwrap();
+    let raw_bincode = serialize_legacy_bincode(&tx, "wire-format transaction").unwrap();
 
     // First two bytes should NOT be the magic (they're the sig count u64 LE)
     assert_ne!(&raw_bincode[0..2], &lichen_core::TX_WIRE_MAGIC);
@@ -517,7 +518,7 @@ fn test_wire_envelope_type_overrides_payload() {
     // Envelope says Evm, but payload was serialized as Native.
     // Envelope type is authoritative.
     let tx = make_test_transaction(); // Native
-    let payload = bincode::serialize(&tx).unwrap();
+    let payload = serialize_legacy_bincode(&tx, "wire-format transaction").unwrap();
     let mut wire = vec![0x4D, 0x54, 1, 1]; // magic + v1 + Evm
     wire.extend_from_slice(&payload);
 
@@ -528,12 +529,32 @@ fn test_wire_envelope_type_overrides_payload() {
 #[test]
 fn test_wire_envelope_size_matches() {
     let tx = make_test_transaction();
-    let raw_bincode = bincode::serialize(&tx).unwrap();
+    let raw_bincode = serialize_legacy_bincode(&tx, "wire-format transaction").unwrap();
     let wire = tx.to_wire();
 
     // Wire = 4 (header) + raw bincode
     assert_eq!(wire.len(), 4 + raw_bincode.len());
     assert_eq!(&wire[4..], &raw_bincode[..]);
+}
+
+#[test]
+fn test_wire_envelope_rejects_trailing_bytes() {
+    let tx = make_test_transaction();
+    let mut wire = tx.to_wire();
+    wire.extend_from_slice(b"trailing-junk");
+
+    let result = Transaction::from_wire(&wire, MAX_TEST_LIMIT);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_raw_bincode_rejects_trailing_bytes() {
+    let tx = make_test_transaction();
+    let mut raw_bincode = serialize_legacy_bincode(&tx, "wire-format transaction").unwrap();
+    raw_bincode.extend_from_slice(b"trailing-junk");
+
+    let result = Transaction::from_wire(&raw_bincode, MAX_TEST_LIMIT);
+    assert!(result.is_err());
 }
 
 // ─── Task 4.1: Transaction Hash Determinism (H-7) ───────────────────

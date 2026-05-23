@@ -3,7 +3,7 @@ use super::*;
 pub(super) async fn broadcast_solana_sweep(
     state: &CustodyState,
     url: &str,
-    job: &SweepJob,
+    job: &mut SweepJob,
 ) -> Result<Option<String>, String> {
     if is_solana_stablecoin(&job.asset) {
         return broadcast_solana_token_sweep(state, url, job).await;

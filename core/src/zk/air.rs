@@ -17,6 +17,8 @@ use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
 use p3_uni_stark::{Proof as StarkProof, StarkConfig};
 use serde::{Deserialize, Serialize};
 
+use crate::codec::deserialize_legacy_bincode;
+
 pub type StarkField = Goldilocks;
 
 pub const STARK_TRACE_ROWS: usize = 4;
@@ -116,7 +118,7 @@ pub fn build_stark_config() -> LichenStarkConfig {
 }
 
 pub fn deserialize_stark_proof(bytes: &[u8]) -> Result<LichenStarkProof, String> {
-    bincode::deserialize(bytes).map_err(|e| format!("invalid STARK proof bytes: {}", e))
+    deserialize_legacy_bincode(bytes, "STARK proof")
 }
 
 pub fn u64_to_goldilocks_words(value: u64) -> [u64; U64_GOLDILOCKS_WORDS] {

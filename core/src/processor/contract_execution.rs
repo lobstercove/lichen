@@ -240,25 +240,16 @@ impl TxProcessor {
             meta.3 = result.return_data.clone();
         }
 
-        if result.success {
-            if let Some(rc) = result.return_code {
-                let meaningful_changes = result
-                    .storage_changes
-                    .keys()
-                    .any(|key| !key.ends_with(b"_reentrancy"));
-                if rc != 0 && !meaningful_changes && result.cross_call_changes.is_empty() {
-                    return Err(format!(
-                        "Contract '{}' returned error code {} with no state changes. Logs: {:?}",
-                        function, rc, result.logs
-                    ));
-                }
-            }
-        }
-
-        if !result.success {
-            return Err(result
+        let outcome = evaluate_contract_outcome(
+            &contract,
+            function,
+            &result,
+            ContractOutcomeFallback::LegacyNonzeroNoChangeFailure,
+        );
+        if !outcome.success {
+            return Err(outcome
                 .error
-                .unwrap_or("Contract execution failed".to_string()));
+                .unwrap_or_else(|| "Contract execution failed".to_string()));
         }
 
         for (addr, delta) in &result.ccc_value_deltas {

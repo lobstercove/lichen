@@ -7,7 +7,7 @@ Ultra-low fees · Sub-second BFT block commitment · Agent-native identity · Mu
 [![License: Apache--2.0%20%2B%20MIT](https://img.shields.io/badge/License-Apache--2.0%20%2B%20MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.88+-00C9DB.svg)](https://www.rust-lang.org)
 
-**Current release:** signed `v0.5.63` with signed shielded private transfers, encrypted output-note recovery, private-transfer input/self-send gates, wallet and extension WebSocket reconnect hardening, DEX limit-first margin entry, full multi-pair DEX E2E coverage, prediction trader-position reads for Base58 wallets, stale CLOB level repair, wallet account-state isolation, local Neo X custody validation, full Neo X GAS/NEO custody routing, wNEO/wGAS contracts, Neo GAS rewards vault, reserve/liability proof services, agent/compute policy gates, wallet/DEX/RPC/SDK surfaces, DEX chart precision for Neo pairs, independent validator joiner P2P admission, stale-restart recovery, native shield proof witness preservation, durable encrypted shielded-note recovery, indexed shielded privacy reads, and fail-closed public activation gates built on the stable `v0.5.37` base.
+**Current release:** signed `v0.5.64` with signed shielded private transfers, encrypted output-note recovery, private-transfer input/self-send gates, wallet and extension WebSocket reconnect hardening, DEX limit-first margin entry, full multi-pair DEX E2E coverage, prediction trader-position reads for Base58 wallets, stale CLOB level repair, wallet account-state isolation, local Neo X custody validation, full Neo X GAS/NEO custody routing, wNEO/wGAS contracts, Neo GAS rewards vault, reserve/liability proof services, agent/compute policy gates, wallet/DEX/RPC/SDK surfaces, DEX chart precision for Neo pairs, independent validator joiner P2P admission, stale-restart recovery, native shield proof witness preservation, durable encrypted shielded-note recovery, indexed shielded privacy reads, and fail-closed public activation gates built on the stable `v0.5.37` base.
 
 **Website:** https://lichen.network  
 **Documentation:** https://developers.lichen.network  
@@ -73,12 +73,13 @@ Four binaries ship from this repo:
 
 - Browser token, registry, and contract-resolution metadata is verified from release-signed manifests served by `getSignedMetadataManifest`; custom RPC overrides remain transport-only for generic reads.
 - Local helper launchers such as `run-validator.sh` and `scripts/run-custody.sh` fail closed unless `LICHEN_LOCAL_DEV=1` is set explicitly. Production operator automation is kept outside the public repo.
-- Supply-chain policy in CI includes all-lockfile `cargo audit`, `cargo deny`, reproducible npm lockfile installs plus production `npm audit`, Python SDK dependency consistency checks, Rust CycloneDX SBOM artifact generation, OpenSSF Scorecard reporting, and GitHub artifact provenance attestations for release bundles.
+- Supply-chain policy in CI includes all-lockfile `cargo audit`, `cargo deny`, centralized owner/expiry-tracked RustSec exceptions, reproducible npm lockfile installs plus production `npm audit`, hash-pinned Python SDK release QA with `pip-audit`, deterministic local E2E smoke coverage, Rust CycloneDX SBOM artifact generation, OpenSSF Scorecard reporting, and GitHub artifact provenance attestations for release bundles.
 
 ## Deployment Invariants
 
 - Clean-slate testnet and mainnet deployments never copy RocksDB state. The genesis host creates slot 0; every other validator starts from empty chain state and syncs from seed peers.
 - All public RPC hosts run local custody with `CUSTODY_URL` pointed at `127.0.0.1`. For Neo X to work everywhere, every host must receive the same `/etc/lichen/custody-env` on testnet or `/etc/lichen/custody-env-mainnet` on mainnet, including `CUSTODY_NEOX_RPC_URL`, `CUSTODY_NEOX_CHAIN_ID`, and `CUSTODY_NEOX_NEO_TOKEN_ADDR`.
+- Stablecoin custody routes open only when the source network token is explicitly configured: Solana requires `CUSTODY_SOLANA_USDC_MINT` / `CUSTODY_SOLANA_USDT_MINT`, Ethereum requires `CUSTODY_ETH_USDC_TOKEN_ADDR` / `CUSTODY_ETH_USDT_TOKEN_ADDR` (legacy `CUSTODY_EVM_USDC` / `CUSTODY_EVM_USDT` are Ethereum-only aliases), and BSC requires `CUSTODY_BSC_USDC_TOKEN_ADDR` / `CUSTODY_BSC_USDT_TOKEN_ADDR`.
 - `keypairs/deployer.json` is machine-local and ignored. If an old root-owned copy exists on a VPS, deployment sync must exclude it rather than trying to overwrite it; the canonical deployer material comes from the approved operator secret path.
 - Neo X NEO deposits and withdrawals are enabled only when the configured source token route exists in custody env. GAS and NEO route config must be treated as custody configuration, not wallet-only UI state.
 
@@ -133,9 +134,9 @@ https://github.com/lobstercove/lichen/releases/download/<tag>/lichen-validator-<
 ```
 
 Examples:
-- `https://github.com/lobstercove/lichen/releases/download/v0.5.63/lichen-validator-linux-x86_64.tar.gz`
-- `https://github.com/lobstercove/lichen/releases/download/v0.5.63/lichen-validator-darwin-aarch64.tar.gz`
-- `https://github.com/lobstercove/lichen/releases/download/v0.5.63/lichen-validator-windows-x86_64.tar.gz`
+- `https://github.com/lobstercove/lichen/releases/download/v0.5.64/lichen-validator-linux-x86_64.tar.gz`
+- `https://github.com/lobstercove/lichen/releases/download/v0.5.64/lichen-validator-darwin-aarch64.tar.gz`
+- `https://github.com/lobstercove/lichen/releases/download/v0.5.64/lichen-validator-windows-x86_64.tar.gz`
 
 Linux x86_64:
 
@@ -403,8 +404,8 @@ For a repo checkout on Linux, the foreground command above is the public manual 
 That's it. The validator will:
 - Generate or reuse the encrypted validator wallet identity under the chosen `--db-path`
 - Import verified genesis state from block 0 and sync/replay the chain from seed nodes
-- Receive a 100K LICN bootstrap stake grant (first 200 validators only)
-- Begin producing & voting on blocks
+- Register only after it has self-funded stake or a governed/local-dev bootstrap voucher
+- Begin producing and voting once the registration is finalized on-chain
 
 ### 3. Verify
 

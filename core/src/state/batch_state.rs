@@ -1,5 +1,6 @@
 use super::evm_state;
 use super::*;
+use crate::codec::{append_legacy_bincode, deserialize_legacy_bincode, serialize_legacy_bincode};
 use crate::restrictions::{
     restriction_mode_blocks_transfer, RestrictionTarget, RestrictionTransferDirection,
     NATIVE_LICN_ASSET_ID,
@@ -249,8 +250,7 @@ impl StateBatch {
 
             for change in changes {
                 if let Some(ref account) = change.account {
-                    let data = bincode::serialize(account)
-                        .map_err(|e| format!("Failed to serialize EVM account: {}", e))?;
+                    let data = serialize_legacy_bincode(account, "EVM account")?;
                     self.batch.put_cf(&cf_accounts, change.evm_address, &data);
                 } else {
                     self.batch.delete_cf(&cf_accounts, change.evm_address);
@@ -315,7 +315,7 @@ impl StateBatch {
         match self.db.get_cf(&cf, pubkey.0) {
             Ok(Some(data)) => {
                 let mut account: Account = if data.first() == Some(&0xBC) {
-                    bincode::deserialize(&data[1..])
+                    deserialize_legacy_bincode(&data[1..], "account")
                         .map_err(|e| format!("Failed to deserialize account (bincode): {}", e))?
                 } else {
                     serde_json::from_slice(&data)
@@ -342,7 +342,7 @@ impl StateBatch {
             match self.db.get_cf(&cf, pubkey.0) {
                 Ok(Some(data)) => {
                     let acct = if data.first() == Some(&0xBC) {
-                        bincode::deserialize::<Account>(&data[1..]).ok()
+                        deserialize_legacy_bincode::<Account>(&data[1..], "account").ok()
                     } else {
                         serde_json::from_slice::<Account>(&data).ok()
                     };
@@ -367,7 +367,7 @@ impl StateBatch {
 
         let mut value = Vec::with_capacity(256);
         value.push(0xBC);
-        bincode::serialize_into(&mut value, account)
+        append_legacy_bincode(&mut value, account, "account")
             .map_err(|e| format!("Failed to serialize account: {}", e))?;
 
         self.batch.put_cf(&cf, pubkey.0, &value);
@@ -473,7 +473,7 @@ impl StateBatch {
         let sig = tx.signature();
         let mut value = Vec::with_capacity(512);
         value.push(0xBC);
-        bincode::serialize_into(&mut value, tx)
+        append_legacy_bincode(&mut value, tx, "transaction")
             .map_err(|e| format!("Failed to serialize transaction: {}", e))?;
         self.batch.put_cf(&cf, sig.0, &value);
         self.transaction_overlay.insert(sig);
@@ -513,8 +513,7 @@ impl StateBatch {
             .db
             .cf_handle(CF_TX_META)
             .ok_or_else(|| "TX meta CF not found".to_string())?;
-        let data =
-            bincode::serialize(meta).map_err(|e| format!("Failed to serialize tx meta: {}", e))?;
+        let data = serialize_legacy_bincode(meta, "tx meta")?;
         self.batch.put_cf(&cf, sig.0, data);
         Ok(())
     }
@@ -524,8 +523,7 @@ impl StateBatch {
             .db
             .cf_handle(CF_STAKE_POOL)
             .ok_or_else(|| "Stake pool CF not found".to_string())?;
-        let data = bincode::serialize(pool)
-            .map_err(|e| format!("Failed to serialize stake pool: {}", e))?;
+        let data = serialize_legacy_bincode(pool, "stake pool")?;
         self.batch.put_cf(&cf, b"pool", &data);
         self.stake_pool_overlay = Some(pool.clone());
         Ok(())
@@ -540,8 +538,7 @@ impl StateBatch {
             .cf_handle(CF_STAKE_POOL)
             .ok_or_else(|| "Stake pool CF not found".to_string())?;
         match self.db.get_cf(&cf, b"pool") {
-            Ok(Some(data)) => bincode::deserialize(&data)
-                .map_err(|e| format!("Failed to deserialize stake pool: {}", e)),
+            Ok(Some(data)) => deserialize_legacy_bincode(&data, "stake pool"),
             Ok(None) => Ok(crate::consensus::StakePool::new()),
             Err(e) => Err(format!("Database error: {}", e)),
         }
@@ -896,8 +893,7 @@ impl StateBatch {
             .cf_handle(CF_EVM_TXS)
             .ok_or_else(|| "EVM txs CF not found".to_string())?;
         let key = record.evm_hash.as_slice();
-        let value =
-            bincode::serialize(record).map_err(|e| format!("Failed to serialize EVM tx: {}", e))?;
+        let value = serialize_legacy_bincode(record, "EVM tx")?;
         self.batch.put_cf(&cf, key, &value);
         Ok(())
     }
@@ -927,12 +923,11 @@ impl StateBatch {
             .ok_or_else(|| "EVM Logs CF not found".to_string())?;
         let key = slot.to_be_bytes();
         let mut existing: Vec<crate::evm::EvmLogEntry> = match self.db.get_cf(&cf, key) {
-            Ok(Some(data)) => bincode::deserialize(&data).unwrap_or_default(),
+            Ok(Some(data)) => deserialize_legacy_bincode(&data, "EVM logs").unwrap_or_default(),
             _ => Vec::new(),
         };
         existing.extend_from_slice(logs);
-        let data = bincode::serialize(&existing)
-            .map_err(|e| format!("Failed to serialize EVM logs: {}", e))?;
+        let data = serialize_legacy_bincode(&existing, "EVM logs")?;
         self.batch.put_cf(&cf, key, &data);
         Ok(())
     }

@@ -252,13 +252,18 @@ mod tests {
 
     #[test]
     fn test_shard_serialization_roundtrip() {
+        use lichen_core::codec::{
+            deserialize_legacy_bincode_strict, serialize_legacy_bincode_limited,
+        };
+
         let data = b"Shard serialization test";
         let shards = encode_shards(77, data).unwrap();
         let shard = &shards[0];
 
-        // Serialize and deserialize with bincode
-        let encoded = bincode::serialize(shard).unwrap();
-        let decoded: ErasureShard = bincode::deserialize(&encoded).unwrap();
+        // Serialize and deserialize with the same legacy bincode boundary used by P2P.
+        let encoded = serialize_legacy_bincode_limited(shard, 64 * 1024, "erasure shard").unwrap();
+        let decoded: ErasureShard =
+            deserialize_legacy_bincode_strict(&encoded, 64 * 1024, "erasure shard").unwrap();
         assert_eq!(decoded.slot, 77);
         assert_eq!(decoded.index, 0);
         assert_eq!(decoded.data, shard.data);

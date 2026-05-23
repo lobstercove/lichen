@@ -818,9 +818,9 @@
                     </ul>
                     <p><strong>Contract execution fields</strong> (present for contract call transactions):</p>
                     <ul>
-                        <li><code>return_code</code> — Raw WASM return value. The meaning is contract-specific; many
-                            contracts use <code>0</code> or <code>1</code> as success, while getters may return the
-                            value directly. Omitted when null.</li>
+                        <li><code>return_code</code> — Raw WASM return value. For contracts with ABI
+                            <code>result_semantics</code>, validators use this field to decide commit versus revert.
+                            For legacy undeclared functions it remains contract-specific. Omitted when null.</li>
                         <li><code>return_data</code> — Base64-encoded bytes set via <code>set_return_data()</code>.
                             Omitted when empty.</li>
                         <li><code>contract_logs</code> — Array of log strings emitted via <code>log()</code>. Omitted
@@ -909,7 +909,7 @@
                     <p>Object — Simulation result with logs, runtime error messages, and <code>returnCode</code> for
                         contract-level result inspection.</p>
                     <p><strong>Debugging tip:</strong> A transaction can be structurally valid but contract-semantically
-                        rejected. Inspect <code>success</code>, runtime errors, and the contract-specific
+                        rejected. Inspect <code>success</code>, runtime errors, ABI <code>result_semantics</code>, and
                         <code>returnCode</code> together.
                     </p>
                 </div>

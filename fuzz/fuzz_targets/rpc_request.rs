@@ -1,8 +1,8 @@
 #![no_main]
 use libfuzzer_sys::fuzz_target;
 
-/// Fuzz JSON-RPC request parsing.
-/// The RPC server must handle malformed JSON gracefully without panicking.
+// Fuzz JSON-RPC request parsing.
+// The RPC server must handle malformed JSON gracefully without panicking.
 fuzz_target!(|data: &[u8]| {
     // Parse as JSON-RPC request — the RPC layer uses serde_json
     #[derive(serde::Deserialize)]

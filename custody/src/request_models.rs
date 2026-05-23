@@ -15,9 +15,11 @@ pub(super) struct DepositRequest {
 }
 
 pub(super) const BRIDGE_ACCESS_DOMAIN: &str = "LICHEN_BRIDGE_ACCESS_V1";
+pub(super) const BRIDGE_ACCESS_DOMAIN_V2: &str = "LICHEN_BRIDGE_ACCESS_V2";
 pub(super) const BRIDGE_ACCESS_MAX_TTL_SECS: u64 = 24 * 60 * 60;
 pub(super) const BRIDGE_ACCESS_CLOCK_SKEW_SECS: u64 = 300;
 pub(super) const BRIDGE_AUTH_REPLAY_ACTION_CREATE_DEPOSIT: &str = "createBridgeDeposit";
+pub(super) const BRIDGE_AUTH_ACTION_GET_DEPOSIT: &str = "getBridgeDeposit";
 pub(super) const BRIDGE_AUTH_REPLAY_ACTION_CREATE_WITHDRAWAL: &str = "createWithdrawal";
 pub(super) const BRIDGE_AUTH_REPLAY_PRUNE_BATCH: usize = 128;
 pub(super) const WITHDRAWAL_ACCESS_DOMAIN: &str = "LICHEN_WITHDRAWAL_ACCESS_V1";
@@ -26,6 +28,24 @@ pub(super) const WITHDRAWAL_ACCESS_CLOCK_SKEW_SECS: u64 = 300;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct BridgeAccessAuth {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) version: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) domain: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) action: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) user_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) chain: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) asset: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) route: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) deposit_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) nonce: Option<String>,
     pub(super) issued_at: u64,
     pub(super) expires_at: u64,
     pub(super) signature: Value,

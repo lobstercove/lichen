@@ -5,6 +5,7 @@
 //!   lichen-genesis --network testnet --wallet-file ./artifacts/testnet/genesis-wallet.json --initial-validator <base58> --db-path /var/lib/lichen/state-testnet
 
 use flate2::{write::GzEncoder, Compression};
+use lichen_core::codec::serialize_legacy_bincode;
 use lichen_core::consensus::{
     StakePool, BOOTSTRAP_GRANT_AMOUNT, FOUNDING_CLIFF_SECONDS, FOUNDING_VEST_TOTAL_SECONDS,
 };
@@ -93,7 +94,7 @@ fn build_genesis_state_bundle(
         name: "stake_pool".to_string(),
         entries: vec![(
             b"pool".to_vec(),
-            bincode::serialize(&stake_pool)
+            serialize_legacy_bincode(&stake_pool, "genesis stake pool")
                 .map_err(|e| format!("Failed to serialize stake pool: {}", e))?,
         )],
     });
@@ -103,7 +104,7 @@ fn build_genesis_state_bundle(
         name: "mossstake_pool".to_string(),
         entries: vec![(
             b"pool".to_vec(),
-            bincode::serialize(&mossstake_pool)
+            serialize_legacy_bincode(&mossstake_pool, "genesis MossStake pool")
                 .map_err(|e| format!("Failed to serialize MossStake pool: {}", e))?,
         )],
     });
@@ -119,7 +120,8 @@ fn encode_genesis_state_chunks(
     state_root: Hash,
     bundle: &GenesisStateBundle,
 ) -> Result<Vec<GenesisStateChunk>, String> {
-    let raw = bincode::serialize(bundle)
+    let raw = bundle
+        .to_legacy_bincode()
         .map_err(|e| format!("Failed to serialize genesis state bundle: {}", e))?;
     let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
     encoder
@@ -163,7 +165,8 @@ fn append_genesis_state_bundle_txs(
     chunks: Vec<GenesisStateChunk>,
 ) -> Result<(), String> {
     for chunk in chunks {
-        let chunk_bytes = bincode::serialize(&chunk)
+        let chunk_bytes = chunk
+            .to_legacy_bincode()
             .map_err(|e| format!("Failed to serialize genesis state chunk: {}", e))?;
         let mut ix_data = Vec::with_capacity(1 + chunk_bytes.len());
         ix_data.push(GENESIS_STATE_CHUNK_OPCODE);

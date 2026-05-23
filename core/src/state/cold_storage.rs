@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use crate::block::Block;
+use crate::codec::deserialize_legacy_bincode;
 
 use super::*;
 
@@ -86,7 +87,7 @@ impl StateStore {
                     .map_err(|e| format!("Cold write error (block): {}", e))?;
 
                 let block: Option<Block> = if block_data.first() == Some(&0xBC) {
-                    bincode::deserialize(&block_data[1..]).ok()
+                    deserialize_legacy_bincode(&block_data[1..], "cold block").ok()
                 } else {
                     serde_json::from_slice(&block_data).ok()
                 };

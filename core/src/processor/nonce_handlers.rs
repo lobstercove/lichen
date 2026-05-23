@@ -1,4 +1,5 @@
 use super::*;
+use crate::codec::{deserialize_legacy_bincode, serialize_legacy_bincode};
 use crate::restrictions::{
     restriction_mode_blocks_transfer, RestrictionTarget, RestrictionTransferDirection,
     NATIVE_LICN_ASSET_ID,
@@ -70,8 +71,8 @@ impl TxProcessor {
             fee_per_signature: BASE_FEE,
         };
 
-        let mut nonce_data =
-            bincode::serialize(&nonce_state).map_err(|e| format!("NonceInit serialize: {}", e))?;
+        let mut nonce_data = serialize_legacy_bincode(&nonce_state, "nonce state")
+            .map_err(|e| format!("NonceInit serialize: {}", e))?;
         nonce_data.insert(0, NONCE_ACCOUNT_MARKER);
 
         self.b_transfer(&funder, &nonce_pk, NONCE_ACCOUNT_MIN_BALANCE)?;
@@ -121,8 +122,8 @@ impl TxProcessor {
             fee_per_signature: BASE_FEE,
         };
 
-        let mut data =
-            bincode::serialize(&updated).map_err(|e| format!("NonceAdvance serialize: {}", e))?;
+        let mut data = serialize_legacy_bincode(&updated, "nonce state")
+            .map_err(|e| format!("NonceAdvance serialize: {}", e))?;
         data.insert(0, NONCE_ACCOUNT_MARKER);
 
         let mut acct = nonce_account;
@@ -263,8 +264,8 @@ impl TxProcessor {
             fee_per_signature: nonce_state.fee_per_signature,
         };
 
-        let mut data =
-            bincode::serialize(&updated).map_err(|e| format!("NonceAuthorize serialize: {}", e))?;
+        let mut data = serialize_legacy_bincode(&updated, "nonce state")
+            .map_err(|e| format!("NonceAuthorize serialize: {}", e))?;
         data.insert(0, NONCE_ACCOUNT_MARKER);
 
         let mut acct = nonce_account;
@@ -279,6 +280,7 @@ impl TxProcessor {
         if data.is_empty() || data[0] != NONCE_ACCOUNT_MARKER {
             return Err("Not a nonce account".to_string());
         }
-        bincode::deserialize(&data[1..]).map_err(|e| format!("Invalid nonce state: {}", e))
+        deserialize_legacy_bincode(&data[1..], "nonce state")
+            .map_err(|e| format!("Invalid nonce state: {}", e))
     }
 }
