@@ -6200,6 +6200,12 @@ fn has_flag(args: &[String], name: &str) -> bool {
         .any(|a| a == name || a.starts_with(&format!("{}=", name)))
 }
 
+fn is_version_request(args: &[String]) -> bool {
+    args.iter()
+        .skip(1)
+        .any(|arg| matches!(arg.as_str(), "--version" | "-V"))
+}
+
 #[derive(Debug, Clone, Copy)]
 struct RestrictionSchemaReport {
     before_schema: Option<bool>,
@@ -6794,6 +6800,11 @@ fn configure_archive_mode(state: &StateStore, args: &[String], cold_store_attach
 
 fn main() {
     let args: Vec<String> = env::args().collect();
+
+    if is_version_request(&args) {
+        println!("lichen-validator {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
 
     if let Some(exit_code) = maybe_run_restriction_schema_admin(&args) {
         std::process::exit(exit_code);
@@ -19008,6 +19019,23 @@ mod tests {
     fn validate_new_validator_version_rejects_older_versions() {
         let error = validate_new_validator_version("0.0.9").unwrap_err();
         assert!(error.contains("below minimum supported"));
+    }
+
+    #[test]
+    fn version_request_bypasses_supervisor_args() {
+        assert!(is_version_request(&[
+            "lichen-validator".to_string(),
+            "--version".to_string()
+        ]));
+        assert!(is_version_request(&[
+            "lichen-validator".to_string(),
+            "--supervised".to_string(),
+            "-V".to_string()
+        ]));
+        assert!(!is_version_request(&[
+            "lichen-validator".to_string(),
+            "--max-restarts=1".to_string()
+        ]));
     }
 
     // ── parse_marketplace_args ──────────────────────────────────────

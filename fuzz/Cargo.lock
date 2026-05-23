@@ -2682,7 +2682,7 @@ dependencies = [
 
 [[package]]
 name = "lichen-p2p"
-version = "0.5.64"
+version = "0.5.65"
 dependencies = [
  "anyhow",
  "bincode",
@@ -2714,7 +2714,7 @@ checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
 
 [[package]]
 name = "lobstercove-lichen-core"
-version = "0.5.64"
+version = "0.5.65"
 dependencies = [
  "aes-gcm",
  "alloy-consensus",
