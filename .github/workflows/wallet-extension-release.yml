@@ -43,11 +43,20 @@ jobs:
                     node scripts/package-wallet-extension.mjs
                   fi
 
+            - name: Prepare public release artifacts
+              run: |
+                  cd dist/wallet-extension
+                  runtime_zip="$(ls LichenWallet-extension-v*.zip)"
+                  sha256sum "${runtime_zip}" > SHA256SUMS
+                  rm -f LichenWallet-extension-store-submission-*.zip latest.json
+
             - name: Upload packaged artifacts
               uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
               with:
                   name: lichen-wallet-extension-release
-                  path: dist/wallet-extension/*
+                  path: |
+                      dist/wallet-extension/LichenWallet-extension-v*.zip
+                      dist/wallet-extension/SHA256SUMS
                   if-no-files-found: error
 
     release:
@@ -70,27 +79,19 @@ jobs:
                   generate_release_notes: true
                   files: |
                       LichenWallet-extension-*.zip
-                      LichenWallet-extension-store-submission-*.zip
                       SHA256SUMS
-                      latest.json
                   body: |
                       ## LichenWallet Extension ${{ github.ref_name }}
 
-                      This release packages the browser-store submission bundle and the signed review ZIP for the wallet extension.
+                      This public release packages the browser extension ZIP for manual installation.
 
                       ### Included Artifacts
 
-                      - `LichenWallet-extension-v*.zip`: runtime extension ZIP for review and store submission
-                      - `LichenWallet-extension-store-submission-v*.zip`: listing copy, permissions rationale, update policy, and submission checklist
-                      - `latest.json`: machine-readable release metadata for the wallet install page
-                      - `SHA256SUMS`: release checksums
+                      - `LichenWallet-extension-v*.zip`: runtime extension ZIP
+                      - `SHA256SUMS`: checksum for the runtime ZIP
 
                       ### Auto Update
 
                       - Chrome Web Store: automatic updates after this version is published
                       - Microsoft Edge Add-ons: automatic updates after this version is published
                       - Unpacked or direct ZIP installs: manual updates only
-
-                      ### Store Submission
-
-                      Use the store submission bundle attached to this release when filling the Chrome Web Store and Edge Add-ons listings.

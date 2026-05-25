@@ -14,6 +14,7 @@ const files = {
     storeChecklist: path.join(ROOT, 'wallet', 'extension', 'store', 'submission-checklist.md'),
     packageJson: path.join(ROOT, 'package.json'),
     packageScript: path.join(ROOT, 'scripts', 'package-wallet-extension.mjs'),
+    releaseWorkflow: path.join(ROOT, '.github', 'workflows', 'wallet-extension-release.yml'),
     walletJs: path.join(ROOT, 'wallet', 'js', 'wallet.js'),
     walletSharedConfig: path.join(ROOT, 'wallet', 'shared-config.js'),
     restrictionService: path.join(ROOT, 'wallet', 'extension', 'src', 'core', 'restriction-service.js'),
@@ -166,6 +167,15 @@ function main() {
         assertIncludes(sources.packageScript, "['store', 'store']", 'package-wallet-extension.mjs');
         assertIncludes(sources.storeChecklist, 'store/permissions-justification.md', 'submission-checklist.md');
         assertIncludes(sources.storeChecklist, 'store/submission-checklist.md', 'submission-checklist.md');
+    });
+
+    test('public wallet extension release excludes store-submission materials', () => {
+        assertIncludes(sources.releaseWorkflow, 'Prepare public release artifacts', 'wallet-extension-release.yml');
+        assertIncludes(sources.releaseWorkflow, 'rm -f LichenWallet-extension-store-submission-*.zip latest.json', 'wallet-extension-release.yml');
+        assertIncludes(sources.releaseWorkflow, 'sha256sum "${runtime_zip}" > SHA256SUMS', 'wallet-extension-release.yml');
+        const releaseFilesBlock = sources.releaseWorkflow.split('files: |')[1].split('body: |')[0];
+        assertNotIncludes(releaseFilesBlock, 'store-submission', 'wallet-extension-release.yml release files');
+        assertNotIncludes(releaseFilesBlock, 'latest.json', 'wallet-extension-release.yml release files');
     });
 
     test('web wallet source still publishes canonical restriction RPC names', () => {
