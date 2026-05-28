@@ -5,6 +5,11 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.69] - 2026-05-28
+
+### Fixed
+- Makes contract WASM relinks explicit by allowing unresolved host imports for `wasm32-unknown-unknown`, so the release gate does not depend on stale contract build caches.
+
 ## [0.5.68] - 2026-05-28
 
 ### Fixed
