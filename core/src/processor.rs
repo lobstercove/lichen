@@ -5488,6 +5488,12 @@ mod tests {
             data: execute_data.clone(),
         };
         let execute_tx = make_signed_tx(&bob_kp, execute_ix, genesis_hash);
+        let sim = processor.simulate_transaction(&execute_tx);
+        assert!(
+            !sim.success,
+            "simulation should fail before timelock expires"
+        );
+        assert!(sim.error.as_deref().unwrap_or("").contains("timelocked"));
         let result = processor.process_transaction(&execute_tx, &Pubkey([42u8; 32]));
         assert!(
             !result.success,

@@ -5,6 +5,12 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.67] - 2026-05-28
+
+### Fixed
+- Makes governed-transfer dry runs execute governed proposal checks against a rollback batch so timelocks, approvals, cancellation, and daily-cap failures match block execution before a transaction is broadcast.
+- Exposes governed proposal execution policy fields through RPC, including `execute_after_epoch`, velocity tier, daily cap, and cancellation state, so CLI/operator views show the effective on-chain policy.
+
 ## [0.5.66] - 2026-05-28
 
 ### Added

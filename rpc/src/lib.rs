@@ -9711,6 +9711,10 @@ async fn handle_get_governed_proposal(
         "amount_licn": proposal.amount / 1_000_000_000,
         "approvals": proposal.approvals.iter().map(|p| p.to_base58()).collect::<Vec<_>>(),
         "threshold": proposal.threshold,
+        "execute_after_epoch": proposal.execute_after_epoch,
+        "velocity_tier": proposal.velocity_tier.as_str(),
+        "daily_cap_spores": proposal.daily_cap_spores,
+        "cancelled": proposal.cancelled,
         "executed": proposal.executed,
     }))
 }
@@ -20098,7 +20102,7 @@ mod tests {
         handle_get_bridge_deposit, handle_get_bridge_route_restriction_status,
         handle_get_code_hash_restriction_status, handle_get_contract_info,
         handle_get_contract_lifecycle_status, handle_get_governance_events,
-        handle_get_incident_status, handle_get_lichenoracle_stats,
+        handle_get_governed_proposal, handle_get_incident_status, handle_get_lichenoracle_stats,
         handle_get_neo_gas_rewards_position, handle_get_neo_gas_rewards_stats,
         handle_get_neo_zk_proof_service_status, handle_get_program, handle_get_program_stats,
         handle_get_recent_blocks, handle_get_recent_shielded_transactions,
@@ -20205,6 +20209,44 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs()
+    }
+
+    #[tokio::test]
+    async fn test_get_governed_proposal_returns_execution_policy_fields() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+        let source = Pubkey([0x11; 32]);
+        let recipient = Pubkey([0x22; 32]);
+        let approver = Pubkey([0x33; 32]);
+
+        state
+            .set_governed_proposal(&lichen_core::multisig::GovernedProposal {
+                id: 7,
+                source,
+                recipient,
+                amount: 123_000_000_000,
+                approvals: vec![approver],
+                threshold: 2,
+                execute_after_epoch: 9,
+                velocity_tier: lichen_core::multisig::GovernedTransferVelocityTier::Elevated,
+                daily_cap_spores: 1_000_000_000_000,
+                executed: false,
+                cancelled: true,
+            })
+            .unwrap();
+
+        let rpc_state = make_test_rpc_state(state);
+        let response = handle_get_governed_proposal(&rpc_state, Some(serde_json::json!([7])))
+            .await
+            .unwrap();
+
+        assert_eq!(response["id"], 7);
+        assert_eq!(response["source"], source.to_base58());
+        assert_eq!(response["recipient"], recipient.to_base58());
+        assert_eq!(response["execute_after_epoch"], 9);
+        assert_eq!(response["velocity_tier"], "elevated");
+        assert_eq!(response["daily_cap_spores"], 1_000_000_000_000u64);
+        assert_eq!(response["cancelled"], true);
     }
 
     fn put_tip_block_with_timestamp(state: &StateStore, slot: u64, timestamp: u64) {

@@ -676,6 +676,33 @@ impl TxProcessor {
         result
     }
 
+    /// Validate governed proposal instructions against the same state-machine
+    /// checks as block execution, then discard any simulated mutations.
+    fn validate_governed_system_preflight(&self, tx: &Transaction) -> Result<(), String> {
+        let has_governed_instruction = tx.message.instructions.iter().any(|instruction| {
+            instruction.program_id == SYSTEM_PROGRAM_ID
+                && matches!(instruction.data.first().copied(), Some(21 | 22 | 32..=37))
+        });
+        if !has_governed_instruction {
+            return Ok(());
+        }
+
+        self.begin_batch();
+        let result = (|| {
+            for instruction in &tx.message.instructions {
+                if instruction.program_id != SYSTEM_PROGRAM_ID {
+                    continue;
+                }
+                if matches!(instruction.data.first().copied(), Some(21 | 22 | 32..=37)) {
+                    self.execute_system_program(instruction)?;
+                }
+            }
+            Ok(())
+        })();
+        self.rollback_batch();
+        result
+    }
+
     /// Simulate a transaction without persisting.
     pub fn simulate_transaction(&self, tx: &Transaction) -> SimulationResult {
         let mut logs = Vec::new();
@@ -784,6 +811,19 @@ impl TxProcessor {
             "Fee estimate: {} spores (budget: {} CU)",
             total_fee, compute_budget
         ));
+
+        if let Err(error) = self.validate_governed_system_preflight(tx) {
+            return SimulationResult {
+                success: false,
+                fee: total_fee,
+                logs,
+                error: Some(format!("Execution error: {}", error)),
+                compute_used: compute_units_for_tx(tx),
+                return_data: None,
+                return_code: None,
+                state_changes: 0,
+            };
+        }
 
         let mut total_compute = 0u64;
         let mut last_return_data: Option<Vec<u8>> = None;
