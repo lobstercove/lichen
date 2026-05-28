@@ -406,6 +406,14 @@ test('E-8.4 full.js error message is descriptive', () => {
   assert.ok(fullSrc.includes('0-9, a-f'), 'error message should mention valid hex chars');
 });
 
+test('E-8.5 extension private-key import handles pasted export text and visible popup errors', () => {
+  assert.ok(fullSrc.includes('function normalizeImportPrivateKeyHex('), 'full page should normalize private key import input');
+  assert.ok(fullSrc.includes('raw.match(/(?:0x)?[0-9a-fA-F]{64}/g)'), 'full page should extract a single 64-hex token from pasted export text');
+  assert.ok(popupSrc.includes('function setImportStatus('), 'popup should expose import status messages');
+  assert.ok(popupHtmlSrc.includes('id="importStatus"'), 'popup import screen should include visible status output');
+  assert.ok(popupSrc.includes('Private key import failed:'), 'popup should surface private-key import errors');
+});
+
 // ── E-9: Inline onclick handler in full.js loadActivity ──
 console.log('\n── E-9: No Inline onclick Handler ──');
 

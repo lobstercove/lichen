@@ -34,6 +34,16 @@ pub(crate) async fn submit_signed_instruction(
     signer: &Keypair,
     instruction: Instruction,
 ) -> Result<String> {
+    let transaction = build_signed_instruction(client, signer, instruction).await?;
+
+    client.submit_wire_transaction(transaction.to_wire()).await
+}
+
+pub(crate) async fn build_signed_instruction(
+    client: &RpcClient,
+    signer: &Keypair,
+    instruction: Instruction,
+) -> Result<Transaction> {
     let message = Message {
         instructions: vec![instruction],
         recent_blockhash: client.get_recent_blockhash().await?,
@@ -49,5 +59,5 @@ pub(crate) async fn submit_signed_instruction(
         tx_type: Default::default(),
     };
 
-    client.submit_wire_transaction(transaction.to_wire()).await
+    Ok(transaction)
 }

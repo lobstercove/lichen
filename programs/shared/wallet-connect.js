@@ -142,13 +142,59 @@ function getWalletAppUrl(entry) {
     return url;
 }
 
-function getDexSelectedNetwork() {
+function getWalletConnectScriptOption(name) {
+    if (typeof document === 'undefined') return '';
+    var attrName = 'data-lichen-' + name;
+    var scripts = document.querySelectorAll('script[' + attrName + ']');
+    for (var i = scripts.length - 1; i >= 0; i--) {
+        var value = scripts[i].getAttribute(attrName);
+        if (typeof value === 'string' && value.trim()) {
+            return value.trim();
+        }
+    }
+    return '';
+}
+
+function isProgramsWalletConnectContext() {
+    if (typeof window === 'undefined') return false;
+    var host = String(window.location && window.location.hostname || '');
+    var path = String(window.location && window.location.pathname || '');
+    var title = typeof document !== 'undefined' ? String(document.title || '') : '';
+    return host === 'programs.lichen.network'
+        || path.indexOf('/programs/') === 0
+        || /Lichen Playground/i.test(title);
+}
+
+function getWalletConnectSource() {
+    if (typeof window !== 'undefined' && typeof window.LICHEN_WALLET_CONNECT_SOURCE === 'string') {
+        var source = window.LICHEN_WALLET_CONNECT_SOURCE.trim();
+        if (source) return source;
+    }
+    var scriptSource = getWalletConnectScriptOption('source');
+    if (scriptSource) return scriptSource;
+    if (isProgramsWalletConnectContext()) return 'programs';
+    return 'dex';
+}
+
+function getWalletConnectNetworkStorageKey() {
+    if (typeof window !== 'undefined' && typeof window.LICHEN_WALLET_NETWORK_STORAGE_KEY === 'string') {
+        var storageKey = window.LICHEN_WALLET_NETWORK_STORAGE_KEY.trim();
+        if (storageKey) return storageKey;
+    }
+    var scriptStorageKey = getWalletConnectScriptOption('network-storage-key');
+    if (scriptStorageKey) return scriptStorageKey;
+    if (isProgramsWalletConnectContext()) return 'playground_network';
+    return 'dexNetwork';
+}
+
+function getSelectedWalletNetwork() {
+    var storageKey = getWalletConnectNetworkStorageKey();
     if (typeof LICHEN_CONFIG !== 'undefined' && typeof LICHEN_CONFIG.currentNetwork === 'function') {
-        return LICHEN_CONFIG.currentNetwork('dexNetwork');
+        return LICHEN_CONFIG.currentNetwork(storageKey);
     }
 
     try {
-        return localStorage.getItem('dexNetwork') || 'testnet';
+        return localStorage.getItem(storageKey) || 'testnet';
     } catch (e) {
         return 'testnet';
     }
@@ -157,8 +203,8 @@ function getDexSelectedNetwork() {
 function getWalletPopupUrl(entry) {
     var url = getWalletAppUrl(entry);
     url.searchParams.set('bridge', 'popup');
-    url.searchParams.set('source', 'dex');
-    url.searchParams.set('network', getDexSelectedNetwork());
+    url.searchParams.set('source', getWalletConnectSource());
+    url.searchParams.set('network', getSelectedWalletNetwork());
     url.searchParams.set('returnTo', window.location.href);
     return url;
 }
@@ -676,7 +722,7 @@ LichenWallet.prototype._connectProvider = async function (provider) {
     }
 
     if (!Array.isArray(accounts) || !accounts.length) {
-        throw new Error('Lichen wallet extension returned no accounts');
+        throw new Error('Lichen wallet provider returned no accounts');
     }
 
     this.address = accounts[0];
@@ -970,7 +1016,7 @@ LichenWallet.prototype.bindConnectButton = function (selector) {
     el.addEventListener('click', function (e) {
         e.preventDefault();
         self.toggle().catch(function (err) {
-            console.error('Monitoring wallet action failed:', err);
+            console.error('Wallet action failed:', err);
         });
     });
 

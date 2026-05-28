@@ -481,6 +481,13 @@ function setStatus(message) {
   }
 }
 
+function setImportStatus(message) {
+  const importStatus = document.getElementById('importStatus');
+  if (importStatus) {
+    importStatus.textContent = String(message || '');
+  }
+}
+
 function activeNetworkKey() {
   return state?.network?.selected || 'local-testnet';
 }
@@ -1785,15 +1792,19 @@ async function createWalletFromPrivateKeyHex(privateKeyHex, password, walletName
 }
 
 function normalizePrivateKeyHex(privateKeyHex) {
-  const normalized = String(privateKeyHex || '').trim().toLowerCase().replace(/^0x/, '');
-  if (!/^[0-9a-f]+$/.test(normalized)) {
+  const raw = String(privateKeyHex || '').trim();
+  const compact = raw.replace(/\s+/g, '').replace(/^0x/i, '').toLowerCase();
+  if (/^[0-9a-f]{64}$/.test(compact)) return compact;
+
+  const candidates = (raw.match(/(?:0x)?[0-9a-fA-F]{64}/g) || [])
+    .map((candidate) => candidate.replace(/^0x/i, '').toLowerCase())
+    .filter((candidate) => candidate.length === 64);
+
+  if (candidates.length === 1) return candidates[0];
+  if (!/^[0-9a-f]+$/.test(compact)) {
     throw new Error('Private key must be hex');
   }
-  if (normalized.length !== 64) {
-    throw new Error('Private key must be 64 hex chars');
-  }
-
-  return normalized;
+  throw new Error('Private key must be 64 hex chars');
 }
 
 async function parseKeystoreToPrivateKeyHex(rawJson, password) {
@@ -1891,6 +1902,7 @@ async function handleCreateFinish() {
 }
 
 async function handleImportSave() {
+  setImportStatus('');
   const importType = document.getElementById('importType').value;
   const mnemonic = getImportMnemonicValue();
   const privateKeyRaw = document.getElementById('importPrivateKey').value.trim();
@@ -1898,6 +1910,7 @@ async function handleImportSave() {
   const password = document.getElementById('importPassword').value.trim();
 
   if (password.length < 8) {
+    setImportStatus('Password must be at least 8 characters');
     alert('Password must be at least 8 characters');
     return;
   }
@@ -1916,9 +1929,12 @@ async function handleImportSave() {
   if (importType === 'privateKey') {
     try {
       const privateKeyHex = normalizePrivateKeyHex(privateKeyRaw);
+      setImportStatus('Importing private key...');
       await createWalletFromPrivateKeyHex(privateKeyHex, password, `Imported Key ${walletNumber}`);
+      setImportStatus('Wallet imported');
       return;
     } catch (error) {
+      setImportStatus(`Private key import failed: ${error?.message || error}`);
       alert(`Private key import failed: ${error?.message || error}`);
       return;
     }
@@ -2667,7 +2683,10 @@ function wireEvents() {
     button.addEventListener('click', () => startCreateFlow());
   });
   document.querySelectorAll('[data-action="goImport"]').forEach((button) => {
-    button.addEventListener('click', () => showScreen('import'));
+    button.addEventListener('click', () => {
+      setImportStatus('');
+      showScreen('import');
+    });
   });
 
   document.getElementById('backFromCreate').addEventListener('click', (event) => {
@@ -2693,6 +2712,7 @@ function wireEvents() {
     tab.addEventListener('click', () => {
       const nextType = tab.dataset.importType;
       if (!nextType) return;
+      setImportStatus('');
       document.getElementById('importType').value = nextType;
       updateImportTypeUi();
     });

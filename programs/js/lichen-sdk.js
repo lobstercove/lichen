@@ -142,7 +142,7 @@ function requireLichenPQ() {
 }
 
 function localWalletsDisabledError() {
-    return new Error('Browser-local wallets are disabled in Programs. Use the Lichen wallet extension.');
+    return new Error('Browser-local wallets are disabled in Programs. Use the Lichen wallet extension or the Lichen web wallet.');
 }
 
 function normalizePubkeyBytes(pubkey) {
@@ -206,15 +206,40 @@ function base64Encode(bytes) {
 }
 
 async function resolveInjectedLichenProvider(wallet, timeoutMs = 0) {
-    let provider = null;
+    const matchesWalletAddress = async (provider) => {
+        if (!provider || !wallet?.address || typeof provider.getProviderState !== 'function') {
+            return true;
+        }
+        const state = await provider.getProviderState().catch(() => null);
+        if (state && Array.isArray(state.accounts) && state.accounts.length && !state.accounts.includes(wallet.address)) {
+            return false;
+        }
+        return true;
+    };
 
-    if (typeof getInjectedLichenProvider === 'function') {
-        provider = getInjectedLichenProvider();
-    } else if (typeof window !== 'undefined' && window.licnwallet && window.licnwallet.isLichenWallet) {
-        provider = window.licnwallet;
+    if (wallet?.provider && await matchesWalletAddress(wallet.provider)) {
+        return wallet.provider;
     }
 
-    if (!provider && timeoutMs > 0 && typeof waitForInjectedLichenProvider === 'function') {
+    const preferWebWallet = wallet?.providerType === 'web-wallet' || wallet?.provider === 'web-wallet';
+    if (preferWebWallet && typeof getPopupLichenProvider === 'function') {
+        const popupProvider = getPopupLichenProvider();
+        if (await matchesWalletAddress(popupProvider)) {
+            return popupProvider;
+        }
+    }
+
+    let provider = null;
+
+    if (!preferWebWallet) {
+        if (typeof getInjectedLichenProvider === 'function') {
+            provider = getInjectedLichenProvider();
+        } else if (typeof window !== 'undefined' && window.licnwallet && window.licnwallet.isLichenWallet) {
+            provider = window.licnwallet;
+        }
+    }
+
+    if (!preferWebWallet && !provider && timeoutMs > 0 && typeof waitForInjectedLichenProvider === 'function') {
         provider = await waitForInjectedLichenProvider(timeoutMs);
     }
 
@@ -222,14 +247,7 @@ async function resolveInjectedLichenProvider(wallet, timeoutMs = 0) {
         return null;
     }
 
-    if (wallet && wallet.address && typeof provider.getProviderState === 'function') {
-        const state = await provider.getProviderState().catch(() => null);
-        if (state && Array.isArray(state.accounts) && state.accounts.length && !state.accounts.includes(wallet.address)) {
-            return null;
-        }
-    }
-
-    return provider;
+    return await matchesWalletAddress(provider) ? provider : null;
 }
 
 function unwrapSendTransactionResult(result) {
@@ -979,7 +997,7 @@ class LichenWS {
 // WALLET (ML-DSA-65)
 // ============================================================================
 
-class LichenWallet {
+class LichenSdkWallet {
     constructor({ privateKey = null, publicKey = null, publicKeyHex = null, seed = null, address = null } = {}) {
         this.privateKey = privateKey;
         this.publicKey = publicKey;
@@ -1086,7 +1104,7 @@ class TransactionBuilder {
             return this;
         }
 
-        throw new Error('Wallet cannot sign transactions. Reconnect the Lichen wallet extension.');
+        throw new Error('Wallet cannot sign transactions. Reconnect the Lichen wallet provider.');
     }
 
     buildRpcMessage() {
@@ -1129,7 +1147,7 @@ class TransactionBuilder {
         if (this.extensionWallet) {
             const provider = await resolveInjectedLichenProvider(this.extensionWallet, 800);
             if (!provider || typeof provider.sendTransaction !== 'function') {
-                throw new Error('Lichen wallet extension not available for transaction approval');
+                throw new Error('Lichen wallet provider not available for transaction approval');
             }
 
             return unwrapSendTransactionResult(await provider.sendTransaction({
@@ -1450,7 +1468,7 @@ if (typeof window !== 'undefined') {
     window.Lichen = {
         RPC: LichenRPC,
         WebSocket: LichenWS,
-        Wallet: LichenWallet,
+        Wallet: LichenSdkWallet,
         TransactionBuilder,
         ProgramDeployer,
         CONFIG: LICHEN_SDK_CONFIG,
@@ -1469,7 +1487,7 @@ if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
         LichenRPC,
         LichenWS,
-        LichenWallet,
+        LichenWallet: LichenSdkWallet,
         TransactionBuilder,
         ProgramDeployer,
         LICHEN_SDK_CONFIG

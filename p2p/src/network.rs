@@ -163,7 +163,6 @@ fn expensive_request_label(msg_type: &MessageType) -> Option<&'static str> {
     match msg_type {
         MessageType::StatusRequest => Some("status request"),
         MessageType::SnapshotRequest { .. } => Some("snapshot request"),
-        MessageType::StateSnapshotRequest { .. } => Some("state snapshot request"),
         MessageType::CheckpointMetaRequest => Some("checkpoint meta request"),
         MessageType::FindNode { .. } => Some("FindNode request"),
         _ => None,
@@ -1575,6 +1574,14 @@ mod tests {
         assert_eq!(
             expensive_request_label(&MessageType::StatusRequest),
             Some("status request")
+        );
+        assert_eq!(
+            expensive_request_label(&MessageType::StateSnapshotRequest {
+                category: "accounts".to_string(),
+                chunk_index: 0,
+                chunk_size: 16 * 1024 * 1024,
+            }),
+            None
         );
         assert_eq!(expensive_request_label(&MessageType::Ping), None);
     }

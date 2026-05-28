@@ -969,6 +969,19 @@ function getImportMnemonicFromGrid() {
   return words.join(' ');
 }
 
+function normalizeImportPrivateKeyHex(privateKey) {
+  const raw = String(privateKey || '').trim();
+  const compact = raw.replace(/\s+/g, '').replace(/^0x/i, '');
+  if (/^[0-9a-fA-F]{64}$/.test(compact)) return compact;
+
+  const candidates = (raw.match(/(?:0x)?[0-9a-fA-F]{64}/g) || [])
+    .map(candidate => candidate.replace(/^0x/i, ''))
+    .filter(candidate => candidate.length === 64);
+
+  if (candidates.length === 1) return candidates[0];
+  throw new Error('Private key must be exactly 64 hex characters (0-9, a-f)');
+}
+
 async function handleImportSeed() {
   const seed = getImportMnemonicFromGrid();
   const pw = $('importPasswordSeed').value;
@@ -1000,9 +1013,14 @@ async function handleImportSeed() {
 }
 
 async function handleImportPrivKey() {
-  let key = $('importPrivKey').value.trim().replace(/^0x/, '');
+  let key;
+  try {
+    key = normalizeImportPrivateKeyHex($('importPrivKey').value);
+  } catch (e) {
+    showToast(e.message, 'error');
+    return;
+  }
   const pw = $('importPasswordPriv').value;
-  if (!key || !/^[0-9a-fA-F]{64}$/.test(key)) { showToast('Private key must be exactly 64 hex characters (0-9, a-f)', 'error'); return; }
   if (!pw || pw.length < 8) { showToast('Password must be at least 8 characters', 'error'); return; }
 
   try {

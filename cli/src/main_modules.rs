@@ -93,6 +93,7 @@ mod gov_query_request_support;
 mod gov_query_support;
 mod gov_support;
 mod gov_write_support;
+mod governed_transfer_support;
 mod identity_support;
 mod info_fees_support;
 mod info_host_functions_support;

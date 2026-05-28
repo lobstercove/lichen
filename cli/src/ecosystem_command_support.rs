@@ -4,6 +4,7 @@ use crate::cli_args::Commands;
 use crate::client::RpcClient;
 use crate::defi_support::handle_defi_command;
 use crate::gov_support::handle_gov_command;
+use crate::governed_transfer_support::handle_governed_transfer_command;
 use crate::keypair_manager::KeypairManager;
 use crate::nft_support::handle_nft_command;
 use crate::restriction_support::handle_restriction_command;
@@ -19,6 +20,15 @@ pub(super) async fn handle_ecosystem_command(
     match command {
         Commands::Token(token_cmd) => handle_token_command(client, keypair_mgr, token_cmd).await?,
         Commands::Gov(gov_cmd) => handle_gov_command(client, keypair_mgr, gov_cmd).await?,
+        Commands::GovernedTransfer(governed_transfer_cmd) => {
+            handle_governed_transfer_command(
+                client,
+                keypair_mgr,
+                governed_transfer_cmd,
+                json_output,
+            )
+            .await?
+        }
         Commands::Restriction(restriction_cmd) => {
             handle_restriction_command(client, restriction_cmd, json_output).await?
         }

@@ -239,6 +239,23 @@ test('wallet.js has hex validation regex in importWalletPrivateKey', () => {
         'Must explain the 64-hex-character private key requirement');
 });
 
+test('wallet.js initializes import tabs from the dashboard import path', () => {
+    const fnMatch = walletSrc.match(/function showImportWalletFromDashboard\(\)[\s\S]*?function showCreateWalletFromDashboard\(\)/);
+    assert(fnMatch, 'showImportWalletFromDashboard function not found');
+    assert(fnMatch[0].includes("showScreen('importWalletScreen')"), 'dashboard import should use the normal screen path');
+    assert(fnMatch[0].includes('setupImportTabs()'), 'dashboard import should initialize import tab handlers');
+    assert(fnMatch[0].includes("setImportMethod('seed')"), 'dashboard import should reset to the seed tab');
+});
+
+test('wallet.js private-key import accepts pasted export text and reports runtime failures', () => {
+    assert(walletSrc.includes('function normalizePrivateKeyInput('), 'private key import should normalize pasted input');
+    assert(walletSrc.includes('raw.match(/(?:0x)?[0-9a-fA-F]{64}/g)'), 'private key import should extract a single 64-hex token from pasted export text');
+    const fnMatch = walletSrc.match(/async function importWalletPrivateKey\(\)[\s\S]*?async function importWalletJson\(\)/);
+    assert(fnMatch, 'importWalletPrivateKey function not found');
+    assert(fnMatch[0].includes('try {'), 'private key import should catch runtime crypto/storage failures');
+    assert(fnMatch[0].includes('Private key import failed:'), 'private key import should show failed import errors');
+});
+
 // ---- W-4: Auto-lock "Never" bug ----
 console.log('\nW-4: Auto-lock "Never" (timeout=0) fix');
 
@@ -607,8 +624,8 @@ test('wallet-connect.js exposes popup-backed web wallet provider without local c
     assert(walletConnectSrc.includes("var WALLET_POPUP_STATE_KEY = 'lichen_web_wallet_popup_state_v1';"), 'Popup provider must persist approved web-wallet session state locally');
     assert(!walletConnectSrc.includes('createWallet') && !walletConnectSrc.includes('LichenPQ.generateKeypair'),
         'Popup provider must not fall back to local wallet generation');
-    assert(walletConnectSrc.includes("url.searchParams.set('network', getDexSelectedNetwork());"),
-        'Popup wallet URL must carry the active DEX network');
+    assert(walletConnectSrc.includes("url.searchParams.set('network', getSelectedWalletNetwork());"),
+        'Popup wallet URL must carry the active frontend network');
 });
 
 test('wallet index loads dapp bridge before wallet bootstrap', () => {

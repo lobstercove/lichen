@@ -2105,6 +2105,7 @@ function showCreateWallet() {
 function showImportWallet() {
     showScreen('importWalletScreen');
     setupImportTabs();
+    setImportMethod('seed');
 }
 
 // ===== CREATE WALLET FLOW =====
@@ -2333,31 +2334,52 @@ async function finishCreateWallet() {
 }
 
 // ===== IMPORT WALLET =====
+function setImportMethod(method = 'seed') {
+    const nextMethod = ['seed', 'private', 'json'].includes(method) ? method : 'seed';
+    document.querySelectorAll('.import-tab').forEach(tab => {
+        tab.classList.toggle('active', tab.dataset.method === nextMethod);
+    });
+    document.querySelectorAll('.import-method').forEach(panel => {
+        panel.classList.toggle('active', panel.dataset.method === nextMethod);
+    });
+}
+
 function setupImportTabs() {
     const tabs = document.querySelectorAll('.import-tab');
-    const methods = document.querySelectorAll('.import-method');
 
     tabs.forEach(tab => {
-        tab.addEventListener('click', () => {
-            const method = tab.dataset.method;
-
-            tabs.forEach(t => t.classList.remove('active'));
-            methods.forEach(m => m.classList.remove('active'));
-
-            tab.classList.add('active');
-            document.querySelector(`.import-method[data-method="${method}"]`).classList.add('active');
+        if (tab.dataset.importTabBound === '1') return;
+        tab.dataset.importTabBound = '1';
+        tab.addEventListener('click', (event) => {
+            event.preventDefault();
+            setImportMethod(tab.dataset.method);
         });
     });
 
     // File upload handler
-    document.getElementById('importJsonFile').addEventListener('change', (e) => {
-        const file = e.target.files[0];
-        if (file) {
-            document.getElementById('fileName').textContent = file.name;
-        }
-    });
+    const importJsonFile = document.getElementById('importJsonFile');
+    if (importJsonFile && importJsonFile.dataset.importFileBound !== '1') {
+        importJsonFile.dataset.importFileBound = '1';
+        importJsonFile.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                document.getElementById('fileName').textContent = file.name;
+            }
+        });
+    }
 
     buildImportMnemonicGrid();
+}
+
+function normalizePrivateKeyInput(privateKey) {
+    const raw = String(privateKey || '').trim();
+    const compact = raw.replace(/\s+/g, '').replace(/^0x/i, '');
+    if (/^[0-9a-fA-F]*$/.test(compact)) return compact;
+
+    const candidates = (raw.match(/(?:0x)?[0-9a-fA-F]{64}/g) || [])
+        .map(candidate => candidate.replace(/^0x/i, ''))
+        .filter(candidate => candidate.length === 64);
+    return candidates.length === 1 ? candidates[0] : compact;
 }
 
 function buildImportMnemonicGrid() {
@@ -2452,7 +2474,7 @@ async function importWalletPrivateKey() {
     const privateKey = document.getElementById('importPrivateKey').value.trim();
     const password = document.getElementById('importPasswordPrivate').value;
 
-    let normalizedKey = privateKey.replace(/^0x/, '');
+    const normalizedKey = normalizePrivateKeyInput(privateKey);
     if (!normalizedKey || !/^[0-9a-fA-F]+$/.test(normalizedKey)) {
         showToast('Invalid private key format (must be hex characters)', 'error');
         return;
@@ -2467,30 +2489,34 @@ async function importWalletPrivateKey() {
         return;
     }
 
-    const publicKey = await LichenCrypto.derivePublicKey(LichenCrypto.hexToBytes(normalizedKey));
-    const address = await LichenCrypto.publicKeyToAddress(publicKey);
-    const encrypted = await LichenCrypto.encryptPrivateKey(normalizedKey, password);
+    try {
+        const publicKey = await LichenCrypto.derivePublicKey(LichenCrypto.hexToBytes(normalizedKey));
+        const address = await LichenCrypto.publicKeyToAddress(publicKey);
+        const encrypted = await LichenCrypto.encryptPrivateKey(normalizedKey, password);
 
-    const wallet = {
-        id: LichenCrypto.generateId(),
-        name: `Wallet ${walletState.wallets.length + 1}`,
-        address,
-        publicKey: LichenCrypto.bytesToHex(publicKey),
-        encryptedKey: encrypted,
-        createdAt: Date.now()
-    };
+        const wallet = {
+            id: LichenCrypto.generateId(),
+            name: `Wallet ${walletState.wallets.length + 1}`,
+            address,
+            publicKey: LichenCrypto.bytesToHex(publicKey),
+            encryptedKey: encrypted,
+            createdAt: Date.now()
+        };
 
-    walletState.wallets.push(wallet);
-    walletState.activeWalletId = wallet.id;
-    walletState.isLocked = false;
-    saveWalletState();
-    markBridgePopupUnlockSession();
+        walletState.wallets.push(wallet);
+        walletState.activeWalletId = wallet.id;
+        walletState.isLocked = false;
+        saveWalletState();
+        markBridgePopupUnlockSession();
 
-    showSessionOnlyWalletToast('Wallet imported successfully.');
-    showDashboard();
+        showSessionOnlyWalletToast('Wallet imported successfully.');
+        showDashboard();
 
-    // Auto-register EVM address for MetaMask compatibility (non-blocking)
-    registerEvmAddress(wallet, password);
+        // Auto-register EVM address for MetaMask compatibility (non-blocking)
+        registerEvmAddress(wallet, password);
+    } catch (error) {
+        showToast(`Private key import failed: ${error?.message || error}`, 'error');
+    }
 }
 
 async function importWalletJson() {
@@ -5116,14 +5142,16 @@ function showImportWalletFromDashboard() {
     document.getElementById('walletDropdown').classList.remove('show');
 
     // Show import wallet screen
-    document.getElementById('walletDashboard').style.display = 'none';
-    document.getElementById('importWalletScreen').style.display = 'block';
+    showScreen('importWalletScreen');
+    setupImportTabs();
+    setImportMethod('seed');
 
     // Update back button behavior to return to dashboard
     const backButtons = document.querySelectorAll('#importWalletScreen .wallet-footer a');
     backButtons.forEach(btn => {
         btn.onclick = (e) => {
             e.preventDefault();
+            e.stopPropagation();
             document.getElementById('importWalletScreen').style.display = 'none';
             document.getElementById('walletDashboard').style.display = 'block';
         };
@@ -5143,6 +5171,7 @@ function showCreateWalletFromDashboard() {
     backButtons.forEach(btn => {
         btn.onclick = (e) => {
             e.preventDefault();
+            e.stopPropagation();
             document.getElementById('createWalletScreen').style.display = 'none';
             document.getElementById('walletDashboard').style.display = 'block';
         };

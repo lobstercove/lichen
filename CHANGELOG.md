@@ -5,6 +5,16 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.66] - 2026-05-28
+
+### Added
+- Adds generic governed native-wallet transfer CLI operations for proposing, approving, executing, cancelling, and inspecting governed wallet transfers without embedding operation-specific defaults.
+
+### Fixed
+- Increases encrypted P2P transport frame capacity so warp state snapshot chunks fit inside the transport frame.
+- Exempts state snapshot chunk requests from the expensive-request throttle and keeps snapshot serving pinned to a verified checkpoint export session during warp sync.
+- Hardens validator warp catch-up retry, duplicate chunk handling, and staging cleanup so a stale validator can rejoin from checkpoint state without mutating live state prematurely.
+
 ## [0.5.44] - 2026-05-17
 
 ### Fixed

@@ -548,6 +548,55 @@
 .wm-create-info i { font-size: 2rem; color: var(--teal-primary); margin-bottom: 12px; display: block; }
 .wm-create-info h4 { margin-bottom: 6px; }
 .wm-create-info p { font-size: 0.85rem; color: var(--text-muted); margin-bottom: 16px; }
+.wm-extension-helper {
+    font-size: 0.78rem;
+    line-height: 1.5;
+    color: #9fb0d1;
+    margin: -4px auto 16px;
+    max-width: 28rem;
+}
+.wm-extension-helper.hidden {
+    display: none;
+}
+.wm-extension-actions {
+    display: grid;
+    gap: 12px;
+}
+.wm-extension-actions .hidden {
+    display: none;
+}
+.wm-extension-status {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4rem;
+    padding: 0.4rem 0.75rem;
+    margin-bottom: 0.85rem;
+    border-radius: 999px;
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    border: 1px solid transparent;
+}
+.wm-extension-status.hidden {
+    display: none;
+}
+.wm-extension-status.ready {
+    color: #7ef5d5;
+    background: rgba(0, 201, 219, 0.14);
+    border-color: rgba(0, 201, 219, 0.32);
+}
+.wm-extension-status.warning {
+    color: #ffd78c;
+    background: rgba(255, 209, 102, 0.14);
+    border-color: rgba(255, 209, 102, 0.32);
+}
+.wm-extension-status.info {
+    color: #b8c1ec;
+    background: rgba(255, 255, 255, 0.05);
+    border-color: rgba(255, 255, 255, 0.12);
+}
 #wmCreateBtn { margin-bottom: 16px; }
 .wm-generated-row {
     display: flex;

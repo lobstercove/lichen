@@ -284,6 +284,10 @@ pub(super) enum Commands {
     #[command(subcommand)]
     Gov(GovCommands),
 
+    /// Governed native-wallet transfer operations
+    #[command(subcommand)]
+    GovernedTransfer(GovernedTransferCommands),
+
     /// Restriction governance operations
     #[command(subcommand)]
     Restriction(RestrictionCommands),
@@ -730,6 +734,98 @@ pub(super) enum GovCommands {
         /// Keypair file (default: ~/.lichen/keypairs/id.json)
         #[arg(short, long)]
         keypair: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+pub(super) enum GovernedTransferCommands {
+    /// Propose a governed transfer from a governed native wallet
+    Propose {
+        /// Recipient address (Base58)
+        to: String,
+
+        /// Amount in LICN, up to 9 decimal places
+        amount: String,
+
+        /// Source governed wallet role or Base58 address
+        #[arg(long)]
+        source: String,
+
+        /// Signer keypair file
+        #[arg(short, long)]
+        keypair: Option<PathBuf>,
+
+        /// Simulate and print details without broadcasting
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Submit without simulateTransaction preflight
+        #[arg(long)]
+        skip_preflight: bool,
+
+        /// Maximum proposal IDs to scan when locating the created proposal
+        #[arg(long, default_value = "1000")]
+        scan_limit: u64,
+    },
+
+    /// Approve a governed transfer proposal
+    Approve {
+        /// Governed transfer proposal ID
+        proposal_id: u64,
+
+        /// Signer keypair file
+        #[arg(short, long)]
+        keypair: Option<PathBuf>,
+
+        /// Simulate and print details without broadcasting
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Submit without simulateTransaction preflight
+        #[arg(long)]
+        skip_preflight: bool,
+    },
+
+    /// Execute a governed transfer proposal after threshold and timelock
+    Execute {
+        /// Governed transfer proposal ID
+        proposal_id: u64,
+
+        /// Signer keypair file
+        #[arg(short, long)]
+        keypair: Option<PathBuf>,
+
+        /// Simulate and print details without broadcasting
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Submit without simulateTransaction preflight
+        #[arg(long)]
+        skip_preflight: bool,
+    },
+
+    /// Cancel a governed transfer proposal before execution
+    Cancel {
+        /// Governed transfer proposal ID
+        proposal_id: u64,
+
+        /// Signer keypair file
+        #[arg(short, long)]
+        keypair: Option<PathBuf>,
+
+        /// Simulate and print details without broadcasting
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Submit without simulateTransaction preflight
+        #[arg(long)]
+        skip_preflight: bool,
+    },
+
+    /// Show governed transfer proposal details
+    Info {
+        /// Governed transfer proposal ID
+        proposal_id: u64,
     },
 }
 

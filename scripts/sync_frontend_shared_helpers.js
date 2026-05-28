@@ -34,7 +34,7 @@ const HELPER_FAMILIES = [
         targets: [
             'programs/shared/wallet-connect.js',
         ],
-        note: 'DEX and Programs share the external wallet/web-wallet popup bridge helper.',
+        note: 'DEX and Programs share the external wallet/web-wallet popup bridge helper. Marketplace intentionally extends this bridge with NFT transaction helpers.',
     },
     {
         id: 'shared-utils-standard',

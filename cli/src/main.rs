@@ -53,6 +53,7 @@ async fn main() -> Result<()> {
 
         command @ (Commands::Token(_)
         | Commands::Gov(_)
+        | Commands::GovernedTransfer(_)
         | Commands::Restriction(_)
         | Commands::Symbol(_)
         | Commands::Nft(_)

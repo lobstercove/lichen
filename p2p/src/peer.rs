@@ -1586,7 +1586,10 @@ async fn handle_connection(
 
 const TRANSPORT_HANDSHAKE_VERSION: u32 = 1;
 const TRANSPORT_HANDSHAKE_TIMEOUT_SECS: u64 = 10;
-const TRANSPORT_FRAME_LIMIT_BYTES: usize = 64 * 1024;
+// P2P messages are capped at 16 MiB so checkpoint state snapshot chunks can be
+// exchanged during warp sync. The encrypted transport frame has to allow that
+// payload plus the compression flag, AEAD tag, nonce, and bincode Vec framing.
+const TRANSPORT_FRAME_LIMIT_BYTES: usize = 17 * 1024 * 1024;
 const TRANSPORT_FRAME_LIMIT_BYTES_U64: u64 = TRANSPORT_FRAME_LIMIT_BYTES as u64;
 const CLIENT_HELLO_TAG: &[u8] = b"lichen-p2p-client-hello-v1";
 const SERVER_HELLO_TAG: &[u8] = b"lichen-p2p-server-hello-v1";

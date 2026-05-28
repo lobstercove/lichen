@@ -1,7 +1,8 @@
 /**
  * Lichen Shared Wallet Connect Utility
  * 
- * Provides a unified extension-backed wallet connection flow for Marketplace.
+ * Provides a unified extension-backed wallet connection experience across
+ * Lichen frontends.
  */
 
 // ─── Shared Utilities ────────────────────────────────────
@@ -67,6 +68,45 @@ function getInjectedLichenProvider() {
     return null;
 }
 
+function waitForInjectedLichenProvider(timeoutMs) {
+    var existing = getInjectedLichenProvider();
+    if (existing) return Promise.resolve(existing);
+
+    timeoutMs = typeof timeoutMs === 'number' ? timeoutMs : 400;
+
+    return new Promise(function (resolve) {
+        var settled = false;
+        var pollTimer = null;
+        var timeoutTimer = null;
+
+        function cleanup() {
+            window.removeEventListener('lichenwallet#initialized', onReady);
+            if (pollTimer) clearInterval(pollTimer);
+            if (timeoutTimer) clearTimeout(timeoutTimer);
+        }
+
+        function finish(provider) {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            resolve(provider || null);
+        }
+
+        function onReady() {
+            finish(getInjectedLichenProvider());
+        }
+
+        window.addEventListener('lichenwallet#initialized', onReady);
+        pollTimer = setInterval(function () {
+            var provider = getInjectedLichenProvider();
+            if (provider) finish(provider);
+        }, 50);
+        timeoutTimer = setTimeout(function () {
+            finish(null);
+        }, timeoutMs);
+    });
+}
+
 function normalizeRecentBlockhash(result) {
     var blockhash = typeof result === 'string' ? result : result && result.blockhash;
     if (!blockhash || typeof blockhash !== 'string' || !/^[0-9a-fA-F]{64}$/.test(blockhash)) {
@@ -109,47 +149,492 @@ function unwrapTransactionResult(result) {
     return result && typeof result === 'object' && result.txHash ? result.txHash : result;
 }
 
-function waitForInjectedLichenProvider(timeoutMs) {
-    var existing = getInjectedLichenProvider();
-    if (existing) return Promise.resolve(existing);
+function isLocalDevelopmentOrigin() {
+    if (typeof window === 'undefined' || !window.location) return false;
+    var hostname = String(window.location.hostname || '').toLowerCase();
+    return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
+}
 
-    timeoutMs = typeof timeoutMs === 'number' ? timeoutMs : 400;
+function isLocalWalletOverrideUrl(value) {
+    try {
+        var url = new URL(value, window.location.origin);
+        var hostname = String(url.hostname || '').toLowerCase();
+        return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
+    } catch (e) {
+        return false;
+    }
+}
 
-    return new Promise(function (resolve) {
-        var settled = false;
-        var pollTimer = null;
-        var timeoutTimer = null;
+function getWalletAppUrl(entry) {
+    var overrideUrl = null;
+    try {
+        if (isLocalDevelopmentOrigin() && typeof window !== 'undefined' && window.localStorage) {
+            var candidate = window.localStorage.getItem('lichen_app_url_wallet');
+            overrideUrl = isLocalWalletOverrideUrl(candidate) ? candidate : null;
+        }
+    } catch (e) { }
 
-        function cleanup() {
-            window.removeEventListener('lichenwallet#initialized', onReady);
-            if (pollTimer) clearInterval(pollTimer);
-            if (timeoutTimer) clearTimeout(timeoutTimer);
+    var baseUrl = overrideUrl || ((typeof LICHEN_CONFIG !== 'undefined' && LICHEN_CONFIG.wallet)
+        ? LICHEN_CONFIG.wallet
+        : 'https://wallet.lichen.network');
+    var url = new URL(baseUrl, window.location.origin);
+    if (entry) {
+        url.searchParams.set('entry', entry);
+    }
+    return url;
+}
+
+function getWalletConnectScriptOption(name) {
+    if (typeof document === 'undefined') return '';
+    var attrName = 'data-lichen-' + name;
+    var scripts = document.querySelectorAll('script[' + attrName + ']');
+    for (var i = scripts.length - 1; i >= 0; i--) {
+        var value = scripts[i].getAttribute(attrName);
+        if (typeof value === 'string' && value.trim()) {
+            return value.trim();
+        }
+    }
+    return '';
+}
+
+function isProgramsWalletConnectContext() {
+    if (typeof window === 'undefined') return false;
+    var host = String(window.location && window.location.hostname || '');
+    var path = String(window.location && window.location.pathname || '');
+    var title = typeof document !== 'undefined' ? String(document.title || '') : '';
+    return host === 'programs.lichen.network'
+        || path.indexOf('/programs/') === 0
+        || /Lichen Playground/i.test(title);
+}
+
+function getWalletConnectSource() {
+    if (typeof window !== 'undefined' && typeof window.LICHEN_WALLET_CONNECT_SOURCE === 'string') {
+        var source = window.LICHEN_WALLET_CONNECT_SOURCE.trim();
+        if (source) return source;
+    }
+    var scriptSource = getWalletConnectScriptOption('source');
+    if (scriptSource) return scriptSource;
+    if (isProgramsWalletConnectContext()) return 'programs';
+    return 'dex';
+}
+
+function getWalletConnectNetworkStorageKey() {
+    if (typeof window !== 'undefined' && typeof window.LICHEN_WALLET_NETWORK_STORAGE_KEY === 'string') {
+        var storageKey = window.LICHEN_WALLET_NETWORK_STORAGE_KEY.trim();
+        if (storageKey) return storageKey;
+    }
+    var scriptStorageKey = getWalletConnectScriptOption('network-storage-key');
+    if (scriptStorageKey) return scriptStorageKey;
+    if (isProgramsWalletConnectContext()) return 'playground_network';
+    return 'dexNetwork';
+}
+
+function getSelectedWalletNetwork() {
+    var storageKey = getWalletConnectNetworkStorageKey();
+    if (typeof LICHEN_CONFIG !== 'undefined' && typeof LICHEN_CONFIG.currentNetwork === 'function') {
+        return LICHEN_CONFIG.currentNetwork(storageKey);
+    }
+
+    try {
+        return localStorage.getItem(storageKey) || 'testnet';
+    } catch (e) {
+        return 'testnet';
+    }
+}
+
+function getWalletPopupUrl(entry) {
+    var url = getWalletAppUrl(entry);
+    url.searchParams.set('bridge', 'popup');
+    url.searchParams.set('source', getWalletConnectSource());
+    url.searchParams.set('network', getSelectedWalletNetwork());
+    url.searchParams.set('returnTo', window.location.href);
+    return url;
+}
+
+var WALLET_POPUP_REQUEST_TARGET = 'LICHEN_WEB_WALLET_BRIDGE';
+var WALLET_POPUP_RESPONSE_TARGET = 'LICHEN_WEB_WALLET_RESPONSE';
+var WALLET_POPUP_EVENT_TARGET = 'LICHEN_WEB_WALLET_EVENT';
+var WALLET_POPUP_STATE_KEY = 'lichen_web_wallet_popup_state_v1';
+var walletPopupProviderInstance = null;
+
+function popupProviderDisconnectedState(previous) {
+    var network = (typeof LICHEN_CONFIG !== 'undefined' && typeof LICHEN_CONFIG.currentNetwork === 'function')
+        ? LICHEN_CONFIG.currentNetwork()
+        : 'testnet';
+    return {
+        connected: false,
+        origin: window.location.origin,
+        chainId: previous && previous.chainId ? previous.chainId : (network === 'mainnet' ? '0x2710' : network === 'testnet' ? '0x2711' : '0x539'),
+        network: previous && previous.network ? previous.network : network,
+        activeAddress: '',
+        accounts: [],
+        isLocked: false,
+        providerType: 'web-wallet'
+    };
+}
+
+function normalizePopupProviderState(state, previous) {
+    var fallback = popupProviderDisconnectedState(previous);
+    if (!state || typeof state !== 'object') {
+        return fallback;
+    }
+
+    var accounts = Array.isArray(state.accounts)
+        ? state.accounts.map(function (address) { return typeof address === 'string' ? address.trim() : ''; }).filter(Boolean)
+        : [];
+
+    return {
+        connected: Boolean(state.connected),
+        origin: typeof state.origin === 'string' ? state.origin : fallback.origin,
+        chainId: typeof state.chainId === 'string' ? state.chainId : fallback.chainId,
+        network: typeof state.network === 'string' ? state.network : fallback.network,
+        activeAddress: accounts[0] || '',
+        accounts: accounts,
+        isLocked: Boolean(state.isLocked),
+        providerType: 'web-wallet'
+    };
+}
+
+function readStoredPopupProviderState() {
+    try {
+        var raw = localStorage.getItem(WALLET_POPUP_STATE_KEY);
+        if (!raw) return null;
+        return JSON.parse(raw);
+    } catch (e) {
+        return null;
+    }
+}
+
+function writeStoredPopupProviderState(state) {
+    try {
+        if (!state || !state.connected || !Array.isArray(state.accounts) || !state.accounts.length) {
+            localStorage.removeItem(WALLET_POPUP_STATE_KEY);
+            return;
         }
 
-        function finish(provider) {
-            if (settled) return;
-            settled = true;
-            cleanup();
-            resolve(provider || null);
-        }
+        localStorage.setItem(WALLET_POPUP_STATE_KEY, JSON.stringify({
+            connected: true,
+            origin: typeof state.origin === 'string' ? state.origin : window.location.origin,
+            chainId: typeof state.chainId === 'string' ? state.chainId : '',
+            network: typeof state.network === 'string' ? state.network : '',
+            accounts: state.accounts,
+            isLocked: Boolean(state.isLocked),
+            providerType: 'web-wallet'
+        }));
+    } catch (e) { }
+}
 
-        function onReady() {
-            finish(getInjectedLichenProvider());
-        }
+function PopupLichenProvider(options) {
+    options = options || {};
+    this.isLichenWallet = true;
+    this.isPopupWallet = true;
+    this.popupName = options.popupName || 'lichen-wallet-connect';
+    this.popup = null;
+    this.walletOrigin = getWalletAppUrl().origin;
+    this._requestId = 0;
+    this._pending = new Map();
+    this._listeners = new Map();
+    this._windowMonitor = null;
+    this._boundHandleMessage = this._handleMessage.bind(this);
+    this._lastState = normalizePopupProviderState(readStoredPopupProviderState(), popupProviderDisconnectedState());
 
-        window.addEventListener('lichenwallet#initialized', onReady);
-        pollTimer = setInterval(function () {
-            var provider = getInjectedLichenProvider();
-            if (provider) finish(provider);
-        }, 50);
-        timeoutTimer = setTimeout(function () {
-            finish(null);
-        }, timeoutMs);
+    window.addEventListener('message', this._boundHandleMessage);
+}
+
+PopupLichenProvider.prototype._persistState = function () {
+    writeStoredPopupProviderState(this._lastState);
+};
+
+PopupLichenProvider.prototype._emit = function (event, payload) {
+    var listeners = this._listeners.get(event);
+    if (!listeners) return;
+    listeners.forEach(function (handler) {
+        try { handler(payload); } catch (e) { }
     });
+};
+
+PopupLichenProvider.prototype.on = function (event, handler) {
+    if (!event || typeof handler !== 'function') return;
+    var listeners = this._listeners.get(event);
+    if (!listeners) {
+        listeners = new Set();
+        this._listeners.set(event, listeners);
+    }
+    listeners.add(handler);
+};
+
+PopupLichenProvider.prototype.removeListener = function (event, handler) {
+    var listeners = this._listeners.get(event);
+    if (!listeners) return;
+    listeners.delete(handler);
+    if (!listeners.size) {
+        this._listeners.delete(event);
+    }
+};
+
+PopupLichenProvider.prototype._clearPending = function (id) {
+    var pending = this._pending.get(id);
+    if (!pending) return null;
+    if (pending.retryTimer) clearInterval(pending.retryTimer);
+    if (pending.timeoutTimer) clearTimeout(pending.timeoutTimer);
+    this._pending.delete(id);
+    return pending;
+};
+
+PopupLichenProvider.prototype._setDisconnected = function () {
+    var previous = this._lastState;
+    this._lastState = popupProviderDisconnectedState(previous);
+    this._persistState();
+    if (previous && previous.connected) {
+        this._emit('accountsChanged', []);
+        this._emit('disconnect', { origin: previous.origin || window.location.origin });
+    }
+};
+
+PopupLichenProvider.prototype._handlePopupClosed = function () {
+    var self = this;
+    this.popup = null;
+    this._pending.forEach(function (_value, id) {
+        var pending = self._clearPending(id);
+        if (pending) {
+            pending.reject(new Error('Web wallet window closed before the request completed'));
+        }
+    });
+};
+
+PopupLichenProvider.prototype._startWindowMonitor = function () {
+    var self = this;
+    if (this._windowMonitor) return;
+    this._windowMonitor = setInterval(function () {
+        if (!self.popup || !self.popup.closed) return;
+        clearInterval(self._windowMonitor);
+        self._windowMonitor = null;
+        self._handlePopupClosed();
+    }, 300);
+};
+
+PopupLichenProvider.prototype.isWindowOpen = function () {
+    return Boolean(this.popup && !this.popup.closed);
+};
+
+PopupLichenProvider.prototype.focus = function (entry) {
+    this._openWindow(entry || 'web-wallet');
+};
+
+PopupLichenProvider.prototype._openWindow = function (entry) {
+    var popupUrl = getWalletPopupUrl(entry || 'web-wallet').toString();
+    if (!this.popup || this.popup.closed) {
+        this.popup = window.open(popupUrl, this.popupName, 'popup=yes,width=480,height=760,resizable=yes,scrollbars=yes');
+    }
+
+    if (!this.popup) {
+        throw new Error('Popup blocked. Allow popups for this site to use the Lichen web wallet.');
+    }
+
+    try { this.popup.focus(); } catch (e) { }
+    this._startWindowMonitor();
+    return this.popup;
+};
+
+PopupLichenProvider.prototype._updateStateFromMethod = function (method, result) {
+    if (method === 'licn_getProviderState') {
+        this._lastState = normalizePopupProviderState(result, this._lastState);
+        this._persistState();
+        return;
+    }
+
+    if (method === 'licn_requestAccounts') {
+        var accounts = Array.isArray(result) ? result.map(function (address) { return String(address || '').trim(); }).filter(Boolean) : [];
+        this._lastState = normalizePopupProviderState({
+            connected: accounts.length > 0,
+            accounts: accounts,
+            activeAddress: accounts[0] || '',
+            chainId: this._lastState.chainId,
+            network: this._lastState.network,
+            isLocked: false
+        }, this._lastState);
+        this._persistState();
+        return;
+    }
+
+    if (method === 'licn_disconnect') {
+        this._setDisconnected();
+    }
+};
+
+PopupLichenProvider.prototype._handleMessage = function (event) {
+    if (event.origin !== this.walletOrigin || !event.data) {
+        return;
+    }
+
+    if (event.data.target === WALLET_POPUP_EVENT_TARGET) {
+        if (event.data.event === 'connect') {
+            this._lastState = normalizePopupProviderState(event.data.payload, this._lastState);
+        } else if (event.data.event === 'disconnect') {
+            this._setDisconnected();
+            return;
+        } else if (event.data.event === 'accountsChanged') {
+            var accounts = Array.isArray(event.data.payload) ? event.data.payload : [];
+            this._lastState = normalizePopupProviderState({
+                connected: this._lastState.connected,
+                chainId: this._lastState.chainId,
+                network: this._lastState.network,
+                accounts: accounts,
+                isLocked: accounts.length === 0 ? true : false
+            }, this._lastState);
+        } else if (event.data.event === 'chainChanged') {
+            this._lastState = normalizePopupProviderState({
+                connected: this._lastState.connected,
+                accounts: this._lastState.accounts,
+                network: this._lastState.network,
+                chainId: event.data.payload,
+                isLocked: this._lastState.isLocked
+            }, this._lastState);
+        }
+
+        this._persistState();
+
+        this._emit(event.data.event, event.data.payload);
+        return;
+    }
+
+    if (event.data.target !== WALLET_POPUP_RESPONSE_TARGET) {
+        return;
+    }
+
+    var pending = this._clearPending(event.data.id);
+    if (!pending) {
+        return;
+    }
+
+    var response = event.data.response;
+    if (response && response.ok) {
+        this._updateStateFromMethod(pending.method, response.result);
+        pending.resolve(response.result);
+        return;
+    }
+
+    pending.reject(new Error(response && response.error ? response.error : 'Web wallet request failed'));
+};
+
+PopupLichenProvider.prototype._request = function (payload, options) {
+    var self = this;
+    options = options || {};
+    var requestId = 'wallet-popup-' + (++this._requestId) + '-' + Date.now();
+    var requestPayload = {
+        target: WALLET_POPUP_REQUEST_TARGET,
+        id: requestId,
+        payload: payload,
+    };
+
+    this._openWindow(options.entry || 'web-wallet');
+
+    return new Promise(function (resolve, reject) {
+        var pending = {
+            method: String(payload && payload.method || '').trim(),
+            resolve: resolve,
+            reject: reject,
+            retryTimer: null,
+            timeoutTimer: null,
+        };
+
+        function postRequest() {
+            if (!self.popup || self.popup.closed) {
+                return;
+            }
+            try {
+                self.popup.postMessage(requestPayload, self.walletOrigin);
+            } catch (e) { }
+        }
+
+        pending.retryTimer = setInterval(postRequest, 350);
+        pending.timeoutTimer = setTimeout(function () {
+            var expired = self._clearPending(requestId);
+            if (expired) {
+                expired.reject(new Error('Web wallet request timed out'));
+            }
+        }, options.timeoutMs || 600000);
+
+        self._pending.set(requestId, pending);
+        postRequest();
+    });
+};
+
+PopupLichenProvider.prototype.request = function (payload) {
+    return this._request(payload, { entry: 'web-wallet' });
+};
+
+PopupLichenProvider.prototype.getProviderState = function () {
+    if (!this.isWindowOpen()) {
+        return Promise.resolve(this._lastState);
+    }
+    return this._request({ method: 'licn_getProviderState' }, { entry: 'web-wallet', timeoutMs: 30000 })
+        .catch(function () {
+            return this._lastState;
+        }.bind(this));
+};
+
+PopupLichenProvider.prototype.isConnected = function () {
+    return this.getProviderState().then(function (state) {
+        return Boolean(state && state.connected && Array.isArray(state.accounts) && state.accounts.length);
+    });
+};
+
+PopupLichenProvider.prototype.accounts = function () {
+    return this.getProviderState().then(function (state) {
+        return Array.isArray(state && state.accounts) ? state.accounts : [];
+    });
+};
+
+PopupLichenProvider.prototype.requestAccounts = function () {
+    return this._request({ method: 'licn_requestAccounts' }, { entry: 'web-wallet' });
+};
+
+PopupLichenProvider.prototype.connect = function () {
+    return this.requestAccounts();
+};
+
+PopupLichenProvider.prototype.disconnect = function () {
+    var self = this;
+    if (!this.isWindowOpen()) {
+        this._setDisconnected();
+        return Promise.resolve(true);
+    }
+    return this._request({ method: 'licn_disconnect' }, { entry: 'web-wallet', timeoutMs: 30000 })
+        .then(function (result) {
+            self._setDisconnected();
+            return result;
+        });
+};
+
+PopupLichenProvider.prototype.getPermissions = function () {
+    if (!this.isWindowOpen()) {
+        return Promise.resolve(this._lastState.connected && Array.isArray(this._lastState.accounts) && this._lastState.accounts.length
+            ? [{
+                parentCapability: 'eth_accounts',
+                caveats: [{ type: 'filterResponse', value: this._lastState.accounts }],
+                date: Date.now(),
+                invoker: this._lastState.origin || window.location.origin,
+            }]
+            : []);
+    }
+    return this._request({ method: 'wallet_getPermissions' }, { entry: 'web-wallet', timeoutMs: 30000 })
+        .catch(function () { return []; });
+};
+
+PopupLichenProvider.prototype.sendTransaction = function (transaction) {
+    return this._request({ method: 'licn_sendTransaction', params: [{ transaction: transaction }] }, { entry: 'sign' });
+};
+
+function getPopupLichenProvider() {
+    if (!walletPopupProviderInstance) {
+        walletPopupProviderInstance = new PopupLichenProvider();
+    }
+    return walletPopupProviderInstance;
 }
 
 function extensionOnlyWalletError() {
-    return new Error('Browser-local wallets are disabled in Marketplace. Use the Lichen wallet extension.');
+    return new Error('Browser-local wallets are disabled in Marketplace. Use the Lichen wallet extension or the Lichen web wallet.');
 }
 
 // ─── Wallet Manager ──────────────────────────────────────
@@ -196,7 +681,6 @@ LichenWallet.prototype._clearConnectionState = function (notifyDisconnect, oldAd
     this.address = null;
     this.balance = 0;
     this._walletData = null;
-    this._provider = null;
 
     if (this.persist) {
         try { localStorage.removeItem(this.storageKey); } catch (e) { }
@@ -213,7 +697,7 @@ LichenWallet.prototype._clearConnectionState = function (notifyDisconnect, oldAd
     this._updateButton();
 };
 
-LichenWallet.prototype._bindInjectedProvider = function (provider) {
+LichenWallet.prototype._bindProvider = function (provider) {
     if (!provider) return;
     this._provider = provider;
 
@@ -223,6 +707,7 @@ LichenWallet.prototype._bindInjectedProvider = function (provider) {
 
     this._providerListenersBound = true;
     var self = this;
+    var providerType = provider.isPopupWallet ? 'web-wallet' : 'extension';
 
     provider.on('accountsChanged', function (accounts) {
         var nextAddress = Array.isArray(accounts) && accounts.length ? accounts[0] : null;
@@ -235,7 +720,7 @@ LichenWallet.prototype._bindInjectedProvider = function (provider) {
         self._walletData = {
             address: nextAddress,
             hasKeys: false,
-            provider: 'extension',
+            provider: providerType,
             created: (self._walletData && self._walletData.created) || Date.now()
         };
 
@@ -252,8 +737,8 @@ LichenWallet.prototype._bindInjectedProvider = function (provider) {
     });
 };
 
-LichenWallet.prototype._connectInjectedProvider = async function (provider) {
-    this._bindInjectedProvider(provider);
+LichenWallet.prototype._connectProvider = async function (provider) {
+    this._bindProvider(provider);
 
     var accounts = [];
     if (typeof provider.getProviderState === 'function') {
@@ -279,33 +764,45 @@ LichenWallet.prototype._connectInjectedProvider = async function (provider) {
     }
 
     if (!Array.isArray(accounts) || !accounts.length) {
-        throw new Error('Lichen wallet extension returned no accounts');
+        throw new Error('Lichen wallet provider returned no accounts');
     }
 
     this.address = accounts[0];
     this._walletData = {
         address: this.address,
         hasKeys: false,
-        provider: 'extension',
+        provider: provider.isPopupWallet ? 'web-wallet' : 'extension',
         created: Date.now()
     };
 };
 
 /**
- * Connect wallet via the injected Lichen extension only.
+ * Connect wallet via the injected Lichen extension or the popup-backed web wallet.
  * @returns {Promise<Object>} - { address, balance }
  */
-LichenWallet.prototype.connect = async function (importData) {
-    if (importData) {
+LichenWallet.prototype.connect = async function (options) {
+    if (options && typeof options !== 'object') {
         throw extensionOnlyWalletError();
     }
 
-    var injectedProvider = await waitForInjectedLichenProvider();
-    if (!injectedProvider) {
-        throw new Error('Lichen wallet extension not found. Install the extension to continue.');
+    var requestedProvider = options && typeof options.provider === 'string'
+        ? options.provider.trim()
+        : '';
+    var provider = null;
+
+    if (requestedProvider !== 'web-wallet') {
+        provider = await waitForInjectedLichenProvider(requestedProvider === 'extension' ? 600 : 250);
     }
 
-    await this._connectInjectedProvider(injectedProvider);
+    if (!provider && requestedProvider !== 'extension') {
+        provider = getPopupLichenProvider();
+    }
+
+    if (!provider) {
+        throw new Error('No wallet provider available. Install the extension or connect through the web wallet.');
+    }
+
+    await this._connectProvider(provider);
 
     // Fetch balance
     await this.refreshBalance();
@@ -326,6 +823,7 @@ LichenWallet.prototype.connect = async function (importData) {
     this._updateButton();
     this._startBalancePolling();
 
+    info.provider = this._walletData ? this._walletData.provider : 'extension';
     return info;
 };
 
@@ -337,77 +835,10 @@ LichenWallet.prototype._createRpcWallet = async function () {
 /** Disconnect wallet and clear state */
 LichenWallet.prototype.disconnect = function () {
     var oldAddr = this.address;
-    if (this._provider && this._walletData && this._walletData.provider === 'extension' && typeof this._provider.disconnect === 'function') {
+    if (this._provider && this._walletData && typeof this._provider.disconnect === 'function') {
         this._provider.disconnect().catch(function () { });
     }
     this._clearConnectionState(true, oldAddr);
-};
-
-LichenWallet.prototype._resolveInjectedProvider = async function () {
-    var provider = this._provider || getInjectedLichenProvider();
-    if (!provider) {
-        provider = await waitForInjectedLichenProvider(800);
-    }
-    if (!provider) return null;
-
-    this._bindInjectedProvider(provider);
-
-    if (typeof provider.getProviderState === 'function') {
-        var state = await provider.getProviderState().catch(function () { return null; });
-        if (state && state.connected === false) {
-            return null;
-        }
-        if (state && Array.isArray(state.accounts) && state.accounts.length && this.address && state.accounts.indexOf(this.address) === -1) {
-            return null;
-        }
-    }
-
-    return provider;
-};
-
-LichenWallet.prototype.sendTransaction = async function (instructions) {
-    if (!this.address) {
-        throw new Error('Connect a wallet before sending transactions');
-    }
-
-    if (!Array.isArray(instructions) || !instructions.length) {
-        throw new Error('At least one instruction is required');
-    }
-
-    var normalizedInstructions = instructions.map(function (ix) {
-        return normalizeRpcInstruction(ix, this.address);
-    }, this);
-    var blockhash = normalizeRecentBlockhash(await lichenRpcCall('getRecentBlockhash', [], this.rpcUrl));
-
-    var provider = await this._resolveInjectedProvider();
-    if (!provider || typeof provider.sendTransaction !== 'function') {
-        throw new Error('Lichen wallet extension not available for transaction approval');
-    }
-
-    return unwrapTransactionResult(await provider.sendTransaction({
-        signatures: [],
-        message: {
-            instructions: normalizedInstructions.map(function (ix) {
-                return {
-                    program_id: Array.from(ix.program_id),
-                    accounts: ix.accounts.map(function (account) { return Array.from(account); }),
-                    data: Array.from(ix.data),
-                };
-            }),
-            blockhash: blockhash,
-        },
-    }));
-};
-
-LichenWallet.prototype._openWalletModal = function () {
-    if (this.isConnected()) {
-        return Promise.resolve({ address: this.address, balance: this.balance });
-    }
-
-    return this.connect().catch(function (err) {
-        console.error('Marketplace wallet connect failed:', err);
-        return null;
-    });
 };
 
 /** Toggle connect/disconnect */
@@ -480,7 +911,7 @@ LichenWallet.prototype._readProviderAccounts = async function (provider) {
     return accounts.map(function (address) { return String(address || '').trim(); }).filter(Boolean);
 };
 
-LichenWallet.prototype._restoreValidatedConnection = function (data, address) {
+LichenWallet.prototype._restoreValidatedConnection = function (data, address, providerType) {
     var restoredAddress = String(address || data.address || '').trim();
     if (!restoredAddress) {
         this._clearConnectionState(false);
@@ -492,7 +923,7 @@ LichenWallet.prototype._restoreValidatedConnection = function (data, address) {
     this._walletData = {
         address: restoredAddress,
         hasKeys: false,
-        provider: 'extension',
+        provider: providerType,
         created: data && data.created ? data.created : Date.now()
     };
 
@@ -525,21 +956,46 @@ LichenWallet.prototype._restore = function () {
         var data = JSON.parse(stored);
         if (!data || !data.address) return;
 
-        if (data.provider !== 'extension') {
+        var providerType = typeof data.provider === 'string' && data.provider.trim()
+            ? data.provider.trim()
+            : 'extension';
+        if (providerType !== 'extension' && providerType !== 'web-wallet') {
             self._clearConnectionState(false);
             self._updateButton();
             return;
         }
 
-        waitForInjectedLichenProvider(1000).then(async function (provider) {
-            if (!provider) {
+        if (providerType === 'extension') {
+            waitForInjectedLichenProvider(1000).then(async function (provider) {
+                if (!provider) {
+                    self._clearConnectionState(false);
+                    self._updateButton();
+                    return;
+                }
+
+                self._bindProvider(provider);
+                var accounts = await self._readProviderAccounts(provider);
+                if (!accounts.length) {
+                    self._clearConnectionState(false);
+                    self._updateButton();
+                    return;
+                }
+
+                var storedAddress = String(data.address || '').trim();
+                var restoredAddress = storedAddress && accounts.indexOf(storedAddress) !== -1
+                    ? storedAddress
+                    : accounts[0];
+                self._restoreValidatedConnection(data, restoredAddress, 'extension');
+            }).catch(function () {
                 self._clearConnectionState(false);
                 self._updateButton();
-                return;
-            }
+            });
+            return;
+        }
 
-            self._bindInjectedProvider(provider);
-            var accounts = await self._readProviderAccounts(provider);
+        var popupProvider = getPopupLichenProvider();
+        self._bindProvider(popupProvider);
+        self._readProviderAccounts(popupProvider).then(function (accounts) {
             if (!accounts.length) {
                 self._clearConnectionState(false);
                 self._updateButton();
@@ -550,12 +1006,94 @@ LichenWallet.prototype._restore = function () {
             var restoredAddress = storedAddress && accounts.indexOf(storedAddress) !== -1
                 ? storedAddress
                 : accounts[0];
-            self._restoreValidatedConnection(data, restoredAddress);
+            self._restoreValidatedConnection(data, restoredAddress, 'web-wallet');
         }).catch(function () {
             self._clearConnectionState(false);
             self._updateButton();
         });
     } catch (e) { /* invalid stored data */ }
+};
+
+LichenWallet.prototype.getProvider = function () {
+    return this._provider;
+};
+
+LichenWallet.prototype._resolveTransactionProvider = async function () {
+    var providerType = this._walletData && this._walletData.provider === 'web-wallet'
+        ? 'web-wallet'
+        : 'extension';
+    var provider = this._provider;
+
+    if (!provider && providerType === 'web-wallet') {
+        provider = getPopupLichenProvider();
+    } else if (!provider) {
+        provider = getInjectedLichenProvider() || await waitForInjectedLichenProvider(800);
+    }
+
+    if (!provider) return null;
+
+    this._bindProvider(provider);
+
+    if (typeof provider.getProviderState === 'function') {
+        var state = await provider.getProviderState().catch(function () { return null; });
+        if (state && state.connected === false) {
+            return null;
+        }
+        if (state && Array.isArray(state.accounts) && state.accounts.length && this.address && state.accounts.indexOf(this.address) === -1) {
+            return null;
+        }
+    }
+
+    return provider;
+};
+
+LichenWallet.prototype.sendTransaction = async function (instructions) {
+    if (!this.address) {
+        throw new Error('Connect a wallet before sending transactions');
+    }
+
+    if (!Array.isArray(instructions) || !instructions.length) {
+        throw new Error('At least one instruction is required');
+    }
+
+    var normalizedInstructions = instructions.map(function (ix) {
+        return normalizeRpcInstruction(ix, this.address);
+    }, this);
+    var blockhash = normalizeRecentBlockhash(await lichenRpcCall('getRecentBlockhash', [], this.rpcUrl));
+
+    var provider = await this._resolveTransactionProvider();
+    if (!provider || typeof provider.sendTransaction !== 'function') {
+        throw new Error('Connected wallet provider is not available for transaction approval');
+    }
+
+    return unwrapTransactionResult(await provider.sendTransaction({
+        signatures: [],
+        message: {
+            instructions: normalizedInstructions.map(function (ix) {
+                return {
+                    program_id: Array.from(ix.program_id),
+                    accounts: ix.accounts.map(function (account) { return Array.from(account); }),
+                    data: Array.from(ix.data),
+                };
+            }),
+            blockhash: blockhash,
+        },
+    }));
+};
+
+LichenWallet.prototype._openWalletModal = function () {
+    if (this.isConnected()) {
+        return Promise.resolve({
+            address: this.address,
+            balance: this.balance,
+            provider: this._walletData ? this._walletData.provider : 'extension'
+        });
+    }
+
+    return this.connect().catch(function (err) {
+        console.error('Marketplace wallet connect failed:', err);
+        return null;
+    });
 };
 
 // ─── Event Callbacks ─────────────────────────────────────
@@ -627,6 +1165,9 @@ LichenWallet.prototype._updateButton = function () {
 
 // Make available globally
 window.LichenWallet = LichenWallet;
+window.getInjectedLichenProvider = window.getInjectedLichenProvider || getInjectedLichenProvider;
+window.waitForInjectedLichenProvider = window.waitForInjectedLichenProvider || waitForInjectedLichenProvider;
+window.getPopupLichenProvider = window.getPopupLichenProvider || getPopupLichenProvider;
 window.formatHash = window.formatHash || formatHash;
 window.getLichenRpcUrl = window.getLichenRpcUrl || getLichenRpcUrl;
 window.lichenRpcCall = window.lichenRpcCall || lichenRpcCall;

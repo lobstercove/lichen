@@ -686,7 +686,7 @@ function validateDexWalletAndPairState() {
 }
 
 function validateWalletConnectionOriginGuards() {
-    for (const relativePath of ['dex/shared/wallet-connect.js', 'programs/shared/wallet-connect.js']) {
+    for (const relativePath of ['dex/shared/wallet-connect.js', 'programs/shared/wallet-connect.js', 'marketplace/shared/wallet-connect.js']) {
         const js = fs.readFileSync(path.join(repoRoot, relativePath), 'utf8');
         assert(
             js.includes('function isLocalDevelopmentOrigin()') &&
@@ -697,6 +697,72 @@ function validateWalletConnectionOriginGuards() {
             `${relativePath} only honors wallet origin overrides for local development`
         );
     }
+}
+
+function validateMarketplaceWalletBridgeParity() {
+    const walletConnect = fs.readFileSync(path.join(repoRoot, 'marketplace', 'shared', 'wallet-connect.js'), 'utf8');
+    const htmlFiles = ['index.html', 'browse.html', 'create.html', 'item.html', 'profile.html']
+        .map((name) => fs.readFileSync(path.join(repoRoot, 'marketplace', name), 'utf8'));
+
+    assert(
+        walletConnect.includes('function PopupLichenProvider(') &&
+            walletConnect.includes('function getPopupLichenProvider()') &&
+            walletConnect.includes("url.searchParams.set('source', getWalletConnectSource());") &&
+            walletConnect.includes("url.searchParams.set('network', getSelectedWalletNetwork());"),
+        'Marketplace shared wallet utility uses the same popup-backed wallet bridge as DEX'
+    );
+
+    assert(
+        walletConnect.includes('LichenWallet.prototype.sendTransaction = async function (instructions)') &&
+            walletConnect.includes('normalizeRpcInstruction') &&
+            walletConnect.includes('provider.sendTransaction'),
+        'Marketplace retains its shared NFT transaction signer while delegating approval to the connected provider'
+    );
+
+    assert(
+        htmlFiles.every((html) => html.includes('data-lichen-source="marketplace"') &&
+            html.includes('data-lichen-network-storage-key="lichenmarket_network"')),
+        'Marketplace pages load wallet bridge with Marketplace popup source and network context'
+    );
+}
+
+function validateProgramsWalletBridgeParity() {
+    const html = fs.readFileSync(path.join(repoRoot, 'programs', 'playground.html'), 'utf8');
+    const js = fs.readFileSync(path.join(repoRoot, 'programs', 'js', 'playground-complete.js'), 'utf8');
+    const sdk = fs.readFileSync(path.join(repoRoot, 'programs', 'js', 'lichen-sdk.js'), 'utf8');
+
+    const helperIndex = html.indexOf('src="shared/wallet-connect.js"');
+    const sdkIndex = html.indexOf('src="js/lichen-sdk.js"');
+    assert(
+        helperIndex !== -1 &&
+            sdkIndex !== -1 &&
+            helperIndex < sdkIndex &&
+            html.includes('data-lichen-source="programs"') &&
+            html.includes('data-lichen-network-storage-key="playground_network"'),
+        'Programs playground loads the shared DEX wallet bridge before the SDK with Programs popup context'
+    );
+
+    assert(
+        js.includes("LICHEN_CONFIG.initNetworkSelector(selector, PLAYGROUND_NETWORK_STORAGE_KEY") &&
+            js.includes('networkSelectorManagedByConfig = true') &&
+            js.includes('this.network = normalizeExplorerNetwork(selector.value || this.network);'),
+        'Programs playground network selector is populated from shared network config'
+    );
+
+    assert(
+        js.includes("await this.connectWalletProvider('extension');") &&
+            js.includes("await this.connectWalletProvider('web-wallet');") &&
+            js.includes('const response = await connector.connect({ provider: providerType });') &&
+            js.includes('this.syncWalletProviderState({ notify: true })'),
+        'Programs playground supports DEX-style extension and web-wallet provider actions'
+    );
+
+    assert(
+        sdk.includes("wallet?.providerType === 'web-wallet'") &&
+            sdk.includes('const popupProvider = getPopupLichenProvider();') &&
+            sdk.includes('wallet?.provider && await matchesWalletAddress(wallet.provider)'),
+        'Programs SDK resolves popup and injected wallet providers for transaction approval'
+    );
 }
 
 function validateFrontendInputGuards() {
@@ -812,6 +878,8 @@ validateMonitoringRiskConsole();
 validateDexChartPricePrecision();
 validateDexWalletAndPairState();
 validateWalletConnectionOriginGuards();
+validateMarketplaceWalletBridgeParity();
+validateProgramsWalletBridgeParity();
 validateFrontendInputGuards();
 
 console.log(`\nFrontend asset integrity: ${passed} passed, ${failed} failed`);

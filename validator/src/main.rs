@@ -415,6 +415,7 @@ const SNAPSHOT_SERVE_BURST_UNITS: u64 = 32;
 const SNAPSHOT_SERVE_REFILL_UNITS_PER_SEC: u64 = 8;
 const MAX_SNAPSHOT_CHUNK_SIZE: u64 = 2000;
 const SNAPSHOT_ENTRIES_CODEC_LIMIT_BYTES: u64 = 16 * 1024 * 1024;
+const SNAPSHOT_PROGRESS_RETRY_SECS: u64 = 15;
 
 fn deserialize_snapshot_value<T>(data: &[u8], context: &str) -> Result<T, String>
 where
@@ -432,10 +433,7 @@ struct SyncCatchUpActions {
 fn sync_catch_up_actions(mode: sync::SyncMode) -> SyncCatchUpActions {
     SyncCatchUpActions {
         request_checkpoint_metadata: mode == sync::SyncMode::Warp,
-        // Block replay is the authoritative baseline. Warp snapshots are only
-        // an optimization and may be unavailable until peer validator identity
-        // and checkpoint corroboration are established.
-        request_block_ranges: true,
+        request_block_ranges: mode != sync::SyncMode::Warp,
     }
 }
 /// Maximum number of automatic restarts before the supervisor gives up.
@@ -648,6 +646,13 @@ impl TokenBucket {
 
 type SnapshotExportCursorKey = (std::net::SocketAddr, String, u64);
 type SnapshotExportCursorState = (u64, Option<Vec<u8>>);
+type SnapshotExportSessionKey = (std::net::SocketAddr, u64);
+
+#[derive(Clone)]
+struct SnapshotExportSessionState {
+    checkpoint_path: String,
+    meta: lichen_core::CheckpointMeta,
+}
 
 #[derive(Debug, Deserialize)]
 struct SeedsFile {
@@ -8832,7 +8837,7 @@ async fn run_validator() {
                             let actions = sync_catch_up_actions(current_mode);
                             if actions.request_checkpoint_metadata {
                                 info!(
-                                    "⚡ Warp sync: gap is {} blocks — probing state snapshot metadata; block replay remains active",
+                                    "⚡ Warp sync: gap is {} blocks — probing state snapshot metadata; block replay paused",
                                     gap
                                 );
                                 let peer_infos = peer_mgr_for_sync.get_peer_infos();
@@ -8852,6 +8857,7 @@ async fn run_validator() {
                                 }
                             }
                             if !actions.request_block_ranges {
+                                sync_mgr.complete_sync().await;
                                 continue;
                             }
                             let mut peer_infos = peer_mgr_for_sync.get_peer_infos();
@@ -10203,7 +10209,7 @@ async fn run_validator() {
                         let actions = sync_catch_up_actions(current_mode);
                         if actions.request_checkpoint_metadata {
                             info!(
-                                "⚡ Warp sync: gap is {} blocks — probing state snapshot metadata; block replay remains active",
+                                "⚡ Warp sync: gap is {} blocks — probing state snapshot metadata; block replay paused",
                                 gap
                             );
                             let peer_infos = peer_mgr_for_sync.get_peer_infos();
@@ -10222,6 +10228,7 @@ async fn run_validator() {
                             }
                         }
                         if !actions.request_block_ranges {
+                            sync_mgr.complete_sync().await;
                             continue;
                         }
 
@@ -10783,7 +10790,7 @@ async fn run_validator() {
                         let actions = sync_catch_up_actions(current_mode);
                         if actions.request_checkpoint_metadata {
                             info!(
-                                "⚡ Warp sync: gap is {} blocks — probing state snapshot metadata; block replay remains active",
+                                "⚡ Warp sync: gap is {} blocks — probing state snapshot metadata; block replay paused",
                                 gap
                             );
                             // Send CheckpointMetaRequest to all known peers
@@ -10805,6 +10812,7 @@ async fn run_validator() {
                             // for the remaining tip blocks.
                         }
                         if !actions.request_block_ranges {
+                            sync_mgr.complete_sync().await;
                             continue;
                         }
 
@@ -12072,9 +12080,17 @@ async fn run_validator() {
                 SnapshotExportCursorKey,
                 SnapshotExportCursorState,
             > = std::collections::HashMap::new();
+            let mut snapshot_export_sessions: std::collections::HashMap<
+                SnapshotExportSessionKey,
+                SnapshotExportSessionState,
+            > = std::collections::HashMap::new();
             // AUDIT-FIX M1: Track cursor last-access time for TTL eviction
             let mut cursor_last_access: std::collections::HashMap<
                 SnapshotExportCursorKey,
+                std::time::Instant,
+            > = std::collections::HashMap::new();
+            let mut session_last_access: std::collections::HashMap<
+                SnapshotExportSessionKey,
                 std::time::Instant,
             > = std::collections::HashMap::new();
             while let Some(request) = snapshot_request_rx.recv().await {
@@ -12084,6 +12100,14 @@ async fn run_validator() {
                     cursor_last_access.retain(|k, last| {
                         if now.duration_since(*last).as_secs() > 1800 {
                             snapshot_export_cursors.remove(k);
+                            false
+                        } else {
+                            true
+                        }
+                    });
+                    session_last_access.retain(|k, last| {
+                        if now.duration_since(*last).as_secs() > 1800 {
+                            snapshot_export_sessions.remove(k);
                             false
                         } else {
                             true
@@ -12104,8 +12128,11 @@ async fn run_validator() {
 
                 let snapshot_cost = if request.is_meta_request {
                     1
-                } else if let Some((_, _, chunk_size)) = request.state_snapshot_params {
-                    (chunk_size.min(MAX_SNAPSHOT_CHUNK_SIZE) / 256).max(1)
+                } else if request.state_snapshot_params.is_some() {
+                    // State snapshot chunk_size is an entry count, not bytes.
+                    // Keep the throttle request-based so a normal multi-category
+                    // warp snapshot cannot drop its own follow-up chunk requests.
+                    1
                 } else {
                     2
                 };
@@ -12176,64 +12203,189 @@ async fn run_validator() {
                 // Handle StateSnapshotRequest (chunked state transfer)
                 if let Some((ref category, chunk_index, chunk_size)) = request.state_snapshot_params
                 {
-                    // Serve state only from a finalized checkpoint backed by a verified commit.
-                    let checkpoint_store = {
-                        let vs = validator_set_for_snapshot.read().await;
-                        let pool = stake_pool_for_snapshot.read().await;
-                        match latest_verified_checkpoint(
-                            &data_dir_for_snapshot,
-                            &state_for_snapshot_serve,
-                            &vs,
-                            &pool,
-                            &chain_id_for_snapshot_serve,
-                        ) {
-                            Some((meta, path, _block)) => {
-                                match StateStore::open_checkpoint(&path) {
-                                    Ok(store) => Some((store, meta)),
-                                    Err(e) => {
-                                        warn!("⚠️  Failed to open checkpoint for snapshot: {}", e);
-                                        None
-                                    }
+                    let chunk_sz = chunk_size.clamp(1, MAX_SNAPSHOT_CHUNK_SIZE);
+                    let session_key = (request.requester, chunk_sz);
+                    if chunk_index == 0 && category == "accounts" {
+                        snapshot_export_sessions.remove(&session_key);
+                        session_last_access.remove(&session_key);
+                        snapshot_export_cursors.retain(|(peer, _, size), _| {
+                            *peer != request.requester || *size != chunk_sz
+                        });
+                        cursor_last_access.retain(|(peer, _, size), _| {
+                            *peer != request.requester || *size != chunk_sz
+                        });
+                    }
+
+                    let session = match snapshot_export_sessions.get(&session_key).cloned() {
+                        Some(session) => session,
+                        None => {
+                            let vs = validator_set_for_snapshot.read().await;
+                            let pool = stake_pool_for_snapshot.read().await;
+                            match latest_verified_checkpoint(
+                                &data_dir_for_snapshot,
+                                &state_for_snapshot_serve,
+                                &vs,
+                                &pool,
+                                &chain_id_for_snapshot_serve,
+                            ) {
+                                Some((meta, checkpoint_path, _block)) => {
+                                    let session = SnapshotExportSessionState {
+                                        checkpoint_path,
+                                        meta,
+                                    };
+                                    snapshot_export_sessions.insert(session_key, session.clone());
+                                    session
+                                }
+                                None => {
+                                    warn!(
+                                        "⚠️  No verified checkpoint available for state snapshot"
+                                    );
+                                    continue;
                                 }
                             }
-                            None => None,
                         }
                     };
+                    session_last_access.insert(session_key, std::time::Instant::now());
 
-                    if let Some((store, meta)) = checkpoint_store {
-                        let singleton_chunk = match category.as_str() {
-                            "validator_set" if chunk_index == 0 => {
-                                let set = store.load_validator_set().unwrap_or_default();
-                                Some(vec![(
-                                    b"validator_set".to_vec(),
-                                    serialize_legacy_bincode(&set, "validator_set snapshot")
-                                        .unwrap_or_default(),
-                                )])
-                            }
-                            "stake_pool" if chunk_index == 0 => {
-                                let pool =
-                                    store.get_stake_pool().unwrap_or_else(|_| StakePool::new());
-                                Some(vec![(
-                                    b"stake_pool".to_vec(),
-                                    serialize_legacy_bincode(&pool, "stake_pool snapshot")
-                                        .unwrap_or_default(),
-                                )])
-                            }
-                            "mossstake_pool" if chunk_index == 0 => {
-                                let pool = store
-                                    .get_mossstake_pool()
-                                    .unwrap_or_else(|_| lichen_core::MossStakePool::new());
-                                Some(vec![(
-                                    b"mossstake_pool".to_vec(),
-                                    serialize_legacy_bincode(&pool, "mossstake_pool snapshot")
-                                        .unwrap_or_default(),
-                                )])
-                            }
-                            "validator_set" | "stake_pool" | "mossstake_pool" => Some(Vec::new()),
-                            _ => None,
-                        };
+                    match StateStore::open_checkpoint(&session.checkpoint_path) {
+                        Ok(store) => {
+                            let meta = session.meta.clone();
+                            let singleton_chunk = match category.as_str() {
+                                "validator_set" if chunk_index == 0 => {
+                                    let set = store.load_validator_set().unwrap_or_default();
+                                    Some(vec![(
+                                        b"validator_set".to_vec(),
+                                        serialize_legacy_bincode(&set, "validator_set snapshot")
+                                            .unwrap_or_default(),
+                                    )])
+                                }
+                                "stake_pool" if chunk_index == 0 => {
+                                    let pool =
+                                        store.get_stake_pool().unwrap_or_else(|_| StakePool::new());
+                                    Some(vec![(
+                                        b"stake_pool".to_vec(),
+                                        serialize_legacy_bincode(&pool, "stake_pool snapshot")
+                                            .unwrap_or_default(),
+                                    )])
+                                }
+                                "mossstake_pool" if chunk_index == 0 => {
+                                    let pool = store
+                                        .get_mossstake_pool()
+                                        .unwrap_or_else(|_| lichen_core::MossStakePool::new());
+                                    Some(vec![(
+                                        b"mossstake_pool".to_vec(),
+                                        serialize_legacy_bincode(&pool, "mossstake_pool snapshot")
+                                            .unwrap_or_default(),
+                                    )])
+                                }
+                                "validator_set" | "stake_pool" | "mossstake_pool" => {
+                                    Some(Vec::new())
+                                }
+                                _ => None,
+                            };
 
-                        if let Some(chunk) = singleton_chunk {
+                            if let Some(chunk) = singleton_chunk {
+                                let entries_bytes = serialize_legacy_bincode_limited(
+                                    &chunk,
+                                    SNAPSHOT_ENTRIES_CODEC_LIMIT_BYTES,
+                                    "state snapshot entries",
+                                )
+                                .unwrap_or_default();
+                                let msg = P2PMessage::new(
+                                    MessageType::StateSnapshotResponse {
+                                        category: category.clone(),
+                                        chunk_index,
+                                        total_chunks: 1,
+                                        snapshot_slot: meta.slot,
+                                        state_root: meta.state_root,
+                                        entries: entries_bytes,
+                                    },
+                                    local_addr_for_snapshot,
+                                );
+                                if let Err(e) = peer_mgr_for_snapshot
+                                    .send_to_peer(&request.requester, msg)
+                                    .await
+                                {
+                                    warn!("⚠️  Failed to send state snapshot chunk: {}", e);
+                                } else {
+                                    info!(
+                                        "📤 Sent {} snapshot chunk {}/{} to {}",
+                                        category,
+                                        chunk_index + 1,
+                                        1,
+                                        request.requester
+                                    );
+                                }
+                                continue;
+                            }
+
+                            // RPC-M06 FIX: Use cursor-paginated export so serving
+                            // chunk N no longer rescans O(N*chunk_size) from start.
+                            let cache_key = (request.requester, category.clone(), chunk_sz);
+                            if chunk_index == 0 {
+                                snapshot_export_cursors.remove(&cache_key);
+                            }
+
+                            let entry = snapshot_export_cursors
+                                .entry(cache_key.clone())
+                                .or_insert((0, None));
+                            // AUDIT-FIX M1: Track cursor access time
+                            cursor_last_access.insert(cache_key.clone(), std::time::Instant::now());
+
+                            if chunk_index != entry.0 {
+                                // Rebuild cursor position for out-of-order requests.
+                                let mut replay_cursor: Option<Vec<u8>> = None;
+                                let mut replay_index = 0u64;
+                                while replay_index < chunk_index {
+                                    let replay_page = store
+                                        .export_snapshot_category_cursor_untracked(
+                                            category,
+                                            replay_cursor.as_deref(),
+                                            chunk_sz,
+                                        )
+                                        .unwrap_or_else(|_| lichen_core::state::KvPage {
+                                            entries: Vec::new(),
+                                            total: 0,
+                                            next_cursor: None,
+                                            has_more: false,
+                                        });
+
+                                    replay_cursor = replay_page.next_cursor;
+                                    replay_index = replay_index.saturating_add(1);
+                                    if !replay_page.has_more {
+                                        break;
+                                    }
+                                }
+                                entry.0 = replay_index;
+                                entry.1 = replay_cursor;
+                            }
+
+                            let page = store
+                                .export_snapshot_category_cursor_untracked(
+                                    category,
+                                    entry.1.as_deref(),
+                                    chunk_sz,
+                                )
+                                .unwrap_or_else(|_| lichen_core::state::KvPage {
+                                    entries: Vec::new(),
+                                    total: 0,
+                                    next_cursor: None,
+                                    has_more: false,
+                                });
+
+                            entry.0 = chunk_index.saturating_add(1);
+                            entry.1 = page.next_cursor.clone();
+                            let total_chunks = if page.has_more {
+                                chunk_index.saturating_add(2)
+                            } else {
+                                chunk_index.saturating_add(1)
+                            };
+                            if !page.has_more {
+                                snapshot_export_cursors.remove(&cache_key);
+                            }
+
+                            let chunk = page.entries;
+
                             let entries_bytes = serialize_legacy_bincode_limited(
                                 &chunk,
                                 SNAPSHOT_ENTRIES_CODEC_LIMIT_BYTES,
@@ -12244,7 +12396,7 @@ async fn run_validator() {
                                 MessageType::StateSnapshotResponse {
                                     category: category.clone(),
                                     chunk_index,
-                                    total_chunks: 1,
+                                    total_chunks: total_chunks.max(1),
                                     snapshot_slot: meta.slot,
                                     state_root: meta.state_root,
                                     entries: entries_bytes,
@@ -12261,112 +12413,18 @@ async fn run_validator() {
                                     "📤 Sent {} snapshot chunk {}/{} to {}",
                                     category,
                                     chunk_index + 1,
-                                    1,
+                                    total_chunks,
                                     request.requester
                                 );
                             }
-                            continue;
                         }
-
-                        // RPC-M06 FIX: Use cursor-paginated export so serving
-                        // chunk N no longer rescans O(N*chunk_size) from start.
-                        let chunk_sz = chunk_size.clamp(1, MAX_SNAPSHOT_CHUNK_SIZE);
-
-                        let cache_key = (request.requester, category.clone(), chunk_sz);
-                        if chunk_index == 0 {
-                            snapshot_export_cursors.remove(&cache_key);
-                        }
-
-                        let entry = snapshot_export_cursors
-                            .entry(cache_key.clone())
-                            .or_insert((0, None));
-                        // AUDIT-FIX M1: Track cursor access time
-                        cursor_last_access.insert(cache_key.clone(), std::time::Instant::now());
-
-                        if chunk_index != entry.0 {
-                            // Rebuild cursor position for out-of-order requests.
-                            let mut replay_cursor: Option<Vec<u8>> = None;
-                            let mut replay_index = 0u64;
-                            while replay_index < chunk_index {
-                                let replay_page = store
-                                    .export_snapshot_category_cursor_untracked(
-                                        category,
-                                        replay_cursor.as_deref(),
-                                        chunk_sz,
-                                    )
-                                    .unwrap_or_else(|_| lichen_core::state::KvPage {
-                                        entries: Vec::new(),
-                                        total: 0,
-                                        next_cursor: None,
-                                        has_more: false,
-                                    });
-
-                                replay_cursor = replay_page.next_cursor;
-                                replay_index = replay_index.saturating_add(1);
-                                if !replay_page.has_more {
-                                    break;
-                                }
-                            }
-                            entry.0 = replay_index;
-                            entry.1 = replay_cursor;
-                        }
-
-                        let page = store
-                            .export_snapshot_category_cursor_untracked(
-                                category,
-                                entry.1.as_deref(),
-                                chunk_sz,
-                            )
-                            .unwrap_or_else(|_| lichen_core::state::KvPage {
-                                entries: Vec::new(),
-                                total: 0,
-                                next_cursor: None,
-                                has_more: false,
-                            });
-
-                        entry.0 = chunk_index.saturating_add(1);
-                        entry.1 = page.next_cursor.clone();
-                        let total_chunks = if page.has_more {
-                            chunk_index.saturating_add(2)
-                        } else {
-                            chunk_index.saturating_add(1)
-                        };
-                        if !page.has_more {
-                            snapshot_export_cursors.remove(&cache_key);
-                        }
-
-                        let chunk = page.entries;
-
-                        let entries_bytes = serialize_legacy_bincode_limited(
-                            &chunk,
-                            SNAPSHOT_ENTRIES_CODEC_LIMIT_BYTES,
-                            "state snapshot entries",
-                        )
-                        .unwrap_or_default();
-                        let msg = P2PMessage::new(
-                            MessageType::StateSnapshotResponse {
-                                category: category.clone(),
-                                chunk_index,
-                                total_chunks: total_chunks.max(1),
-                                snapshot_slot: meta.slot,
-                                state_root: meta.state_root,
-                                entries: entries_bytes,
-                            },
-                            local_addr_for_snapshot,
-                        );
-                        if let Err(e) = peer_mgr_for_snapshot
-                            .send_to_peer(&request.requester, msg)
-                            .await
-                        {
-                            warn!("⚠️  Failed to send state snapshot chunk: {}", e);
-                        } else {
-                            info!(
-                                "📤 Sent {} snapshot chunk {}/{} to {}",
-                                category,
-                                chunk_index + 1,
-                                total_chunks,
-                                request.requester
+                        Err(e) => {
+                            warn!(
+                                "⚠️  Failed to open pinned checkpoint for snapshot slot {}: {}",
+                                session.meta.slot, e
                             );
+                            snapshot_export_sessions.remove(&session_key);
+                            session_last_access.remove(&session_key);
                         }
                     }
                     continue;
@@ -12472,6 +12530,7 @@ async fn run_validator() {
                 VerifiedCheckpointAnchor,
             > = std::collections::HashMap::new();
             let mut active_snapshot_anchor: Option<VerifiedCheckpointAnchor> = None;
+            let mut snapshot_last_progress_at = std::time::Instant::now();
             // Staged snapshot buffer: accumulate entries in memory instead of
             // writing directly to the live DB.  Only commit after the state root
             // has been verified on a staging StateStore.
@@ -12596,10 +12655,60 @@ async fn run_validator() {
                             }
 
                             if active_snapshot_anchor.is_some() {
+                                let incomplete =
+                                    WARP_SNAPSHOT_CATEGORIES.iter().any(|category_name| {
+                                        state_snap_progress
+                                            .get(*category_name)
+                                            .map(|(received, total)| received < total)
+                                            .unwrap_or(true)
+                                    });
+                                if incomplete
+                                    && snapshot_last_progress_at.elapsed().as_secs()
+                                        >= SNAPSHOT_PROGRESS_RETRY_SECS
+                                {
+                                    info!(
+                                        "🔁 Retrying incomplete state snapshot from {} at slot {}",
+                                        response.requester, slot
+                                    );
+                                    let chunk_size = 1000u64;
+                                    for category_name in WARP_SNAPSHOT_CATEGORIES {
+                                        let chunk_index =
+                                            match state_snap_progress.get(*category_name) {
+                                                Some((received, total)) if received >= total => {
+                                                    continue;
+                                                }
+                                                Some((received, _)) => *received,
+                                                None => 0,
+                                            };
+                                        let snap_request = P2PMessage::new(
+                                            MessageType::StateSnapshotRequest {
+                                                category: (*category_name).to_string(),
+                                                chunk_index,
+                                                chunk_size,
+                                            },
+                                            local_addr_for_snap_apply,
+                                        );
+                                        if let Err(e) = peer_mgr_for_snapshot_apply
+                                            .send_to_peer(&response.requester, snap_request)
+                                            .await
+                                        {
+                                            warn!(
+                                                "⚠️  Failed to retry {} snapshot chunk {}: {}",
+                                                category_name,
+                                                chunk_index + 1,
+                                                e
+                                            );
+                                        }
+                                    }
+                                    snapshot_last_progress_at = std::time::Instant::now();
+                                }
                                 continue;
                             }
 
                             active_snapshot_anchor = Some(anchor);
+                            snapshot_last_progress_at = std::time::Instant::now();
+                            state_snap_progress.clear();
+                            staged_snapshot_entries.clear();
                             // Peer is significantly ahead — request state snapshot
                             info!(
                                 "🔄 Requesting state snapshot from {} after {}-peer checkpoint corroboration (local slot {}, peer slot {})",
@@ -12708,6 +12817,20 @@ async fn run_validator() {
                             continue;
                         }
                     }
+                    if let Some(anchor) = active_snapshot_anchor.as_ref() {
+                        if anchor.slot != snapshot_slot || anchor.state_root != state_root {
+                            warn!(
+                                "⚠️  Rejecting {} snapshot chunk from {}: active snapshot mismatch (pinned slot {} root {}, got slot {} root {})",
+                                category,
+                                response.requester,
+                                anchor.slot,
+                                hex::encode(&anchor.state_root[..8]),
+                                snapshot_slot,
+                                hex::encode(&state_root[..8]),
+                            );
+                            continue;
+                        }
+                    }
                     info!(
                         "📥 Received {} snapshot chunk {}/{} from {} (slot {})",
                         category,
@@ -12717,33 +12840,77 @@ async fn run_validator() {
                         snapshot_slot
                     );
 
+                    let current_progress = state_snap_progress
+                        .get(category)
+                        .copied()
+                        .unwrap_or((0, total_chunks));
+                    if chunk_index < current_progress.0 {
+                        info!(
+                            "↩️  Ignoring duplicate {} snapshot chunk {}/{} from {}",
+                            category,
+                            chunk_index + 1,
+                            total_chunks,
+                            response.requester
+                        );
+                        continue;
+                    }
+                    if chunk_index > current_progress.0 {
+                        warn!(
+                            "⚠️  Received out-of-order {} snapshot chunk {}/{} from {}; retrying chunk {}",
+                            category,
+                            chunk_index + 1,
+                            total_chunks,
+                            response.requester,
+                            current_progress.0 + 1
+                        );
+                        let retry_request = P2PMessage::new(
+                            MessageType::StateSnapshotRequest {
+                                category: category.clone(),
+                                chunk_index: current_progress.0,
+                                chunk_size: 1000,
+                            },
+                            local_addr_for_snap_apply,
+                        );
+                        if let Err(e) = peer_mgr_for_snapshot_apply
+                            .send_to_peer(&response.requester, retry_request)
+                            .await
+                        {
+                            warn!(
+                                "⚠️  Failed to request missing {} snapshot chunk: {}",
+                                category, e
+                            );
+                        }
+                        continue;
+                    }
+
                     // Deserialize and stage entries (NOT written to live DB yet)
-                    match deserialize_legacy_bincode_strict::<Vec<(Vec<u8>, Vec<u8>)>>(
+                    let entries = match deserialize_legacy_bincode_strict::<Vec<(Vec<u8>, Vec<u8>)>>(
                         entries_bytes,
                         SNAPSHOT_ENTRIES_CODEC_LIMIT_BYTES,
                         "state snapshot entries",
                     ) {
-                        Ok(entries) => {
-                            let count = entries.len();
-                            staged_snapshot_entries
-                                .entry(category.clone())
-                                .or_default()
-                                .extend(entries);
-                            info!(
-                                "📦 Staged {} {} entries (chunk {}/{})",
-                                count,
-                                category,
-                                chunk_index + 1,
-                                total_chunks
-                            );
-                        }
+                        Ok(entries) => entries,
                         Err(e) => {
                             warn!(
                                 "⚠️  Failed to deserialize {} snapshot chunk: {}",
                                 category, e
                             );
+                            continue;
                         }
-                    }
+                    };
+                    let count = entries.len();
+                    staged_snapshot_entries
+                        .entry(category.clone())
+                        .or_default()
+                        .extend(entries);
+                    snapshot_last_progress_at = std::time::Instant::now();
+                    info!(
+                        "📦 Staged {} {} entries (chunk {}/{})",
+                        count,
+                        category,
+                        chunk_index + 1,
+                        total_chunks
+                    );
 
                     // Track progress
                     let progress = state_snap_progress
@@ -12792,6 +12959,17 @@ async fn run_validator() {
                             "{}/staging-snapshot-{}",
                             data_dir_for_snapshot_apply, snapshot_slot
                         );
+                        if let Err(e) = std::fs::remove_dir_all(&staging_dir) {
+                            if e.kind() != std::io::ErrorKind::NotFound {
+                                warn!(
+                                    "⚠️  Failed to clear old staging snapshot DB {}: {}",
+                                    staging_dir, e
+                                );
+                                staged_snapshot_entries.clear();
+                                state_snap_progress.clear();
+                                continue;
+                            }
+                        }
                         let staging_ok = 'staging: {
                             let staging_state =
                                 match lichen_core::state::StateStore::open(&staging_dir) {
@@ -18525,13 +18703,13 @@ mod tests {
     }
 
     #[test]
-    fn warp_sync_still_requests_block_range_replay() {
+    fn warp_sync_pauses_block_range_replay() {
         let actions = sync_catch_up_actions(sync::SyncMode::Warp);
 
         assert!(actions.request_checkpoint_metadata);
         assert!(
-            actions.request_block_ranges,
-            "checkpoint warp is an optimization; full block replay must remain active"
+            !actions.request_block_ranges,
+            "warp snapshots should not compete with block range replay"
         );
     }
 
