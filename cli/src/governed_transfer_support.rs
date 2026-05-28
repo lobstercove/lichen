@@ -85,11 +85,13 @@ pub(super) async fn handle_governed_transfer_command(
             handle_proposal_action(
                 client,
                 keypair_mgr,
-                ProposalAction::Approve,
-                proposal_id,
-                keypair,
-                dry_run,
-                skip_preflight,
+                ProposalActionRequest {
+                    action: ProposalAction::Approve,
+                    proposal_id,
+                    keypair,
+                    dry_run,
+                    skip_preflight,
+                },
                 json_output,
             )
             .await
@@ -103,11 +105,13 @@ pub(super) async fn handle_governed_transfer_command(
             handle_proposal_action(
                 client,
                 keypair_mgr,
-                ProposalAction::Execute,
-                proposal_id,
-                keypair,
-                dry_run,
-                skip_preflight,
+                ProposalActionRequest {
+                    action: ProposalAction::Execute,
+                    proposal_id,
+                    keypair,
+                    dry_run,
+                    skip_preflight,
+                },
                 json_output,
             )
             .await
@@ -121,11 +125,13 @@ pub(super) async fn handle_governed_transfer_command(
             handle_proposal_action(
                 client,
                 keypair_mgr,
-                ProposalAction::Cancel,
-                proposal_id,
-                keypair,
-                dry_run,
-                skip_preflight,
+                ProposalActionRequest {
+                    action: ProposalAction::Cancel,
+                    proposal_id,
+                    keypair,
+                    dry_run,
+                    skip_preflight,
+                },
                 json_output,
             )
             .await
@@ -271,47 +277,58 @@ impl ProposalAction {
     }
 }
 
-async fn handle_proposal_action(
-    client: &RpcClient,
-    keypair_mgr: &KeypairManager,
+struct ProposalActionRequest {
     action: ProposalAction,
     proposal_id: u64,
     keypair: Option<PathBuf>,
     dry_run: bool,
     skip_preflight: bool,
+}
+
+async fn handle_proposal_action(
+    client: &RpcClient,
+    keypair_mgr: &KeypairManager,
+    request: ProposalActionRequest,
     json_output: bool,
 ) -> Result<()> {
-    let before = require_governed_proposal(client, proposal_id).await?;
-    let signer = load_signer(keypair_mgr, keypair)?;
+    let before = require_governed_proposal(client, request.proposal_id).await?;
+    let signer = load_signer(keypair_mgr, request.keypair)?;
     let signer_pubkey = signer.pubkey();
 
     let instruction = Instruction {
         program_id: SYSTEM_PROGRAM_ID,
         accounts: vec![signer_pubkey],
-        data: encode_proposal_id_instruction(action.instruction_type(), proposal_id),
+        data: encode_proposal_id_instruction(request.action.instruction_type(), request.proposal_id),
     };
 
     if !json_output {
-        println!("Governed transfer {}", action.name());
-        println!("  Proposal: {}", proposal_id);
+        println!("Governed transfer {}", request.action.name());
+        println!("  Proposal: {}", request.proposal_id);
         println!("  Signer:   {}", signer_pubkey.to_base58());
-        println!("  Dry run:  {}", dry_run);
+        println!("  Dry run:  {}", request.dry_run);
         println!();
         print_proposal(&before);
     }
 
-    let outcome = submit_or_simulate(client, &signer, instruction, dry_run, skip_preflight).await?;
+    let outcome = submit_or_simulate(
+        client,
+        &signer,
+        instruction,
+        request.dry_run,
+        request.skip_preflight,
+    )
+    .await?;
     let after = if outcome.signature.is_some() {
-        get_governed_proposal(client, proposal_id).await?
+        get_governed_proposal(client, request.proposal_id).await?
     } else {
         None
     };
 
     if json_output {
         print_json(&json!({
-            "action": action.name(),
-            "dry_run": dry_run,
-            "proposal_id": proposal_id,
+            "action": request.action.name(),
+            "dry_run": request.dry_run,
+            "proposal_id": request.proposal_id,
             "signer": signer_pubkey.to_base58(),
             "signature": outcome.signature,
             "preflight": outcome.preflight,
