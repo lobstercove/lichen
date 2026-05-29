@@ -109,17 +109,23 @@ jobs:
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
       - name: Run workspace tests
         run: cargo test --workspace
+      - name: Reclaim workspace test artifacts
+        run: cargo clean
       - name: Run standalone contract tests
         run: |
+          set -euo pipefail
+          CONTRACT_TARGET_DIR="$GITHUB_WORKSPACE/target/contract-tests"
+          mkdir -p "$CONTRACT_TARGET_DIR"
           FAIL=0
           for dir in contracts/*/; do
             if [ -f "$dir/Cargo.toml" ]; then
               name=$(basename "$dir")
               echo "Testing $name..."
-              if ! (cd "$dir" && cargo test 2>&1); then
+              if ! (cd "$dir" && CARGO_TARGET_DIR="$CONTRACT_TARGET_DIR" cargo test 2>&1); then
                 echo "❌ FAILED: $name"
                 FAIL=1
               fi
+              rm -rf "$CONTRACT_TARGET_DIR/debug/incremental"
             fi
           done
           if [ $FAIL -ne 0 ]; then echo "❌ Contract tests failed"; exit 1; fi
