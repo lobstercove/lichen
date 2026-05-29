@@ -50,7 +50,7 @@
     "typescript": "^5.3.3"
   },
   "dependencies": {
-    "@noble/post-quantum": "^0.6.0",
+    "@noble/post-quantum": "^0.6.1",
     "bs58": "^5.0.0",
     "ws": "^8.20.1"
   }

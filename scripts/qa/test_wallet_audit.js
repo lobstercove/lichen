@@ -1054,6 +1054,12 @@ test('wallet.js pins bridge control-plane methods to trusted RPC', () => {
         'bridge deposit creation should emit a V2 auth envelope');
     assert(walletSrc.includes('activeBridgeAuth.nonce = nonce'),
         'bridge deposit creation should include a fresh nonce');
+    assert(walletSrc.includes('decryptKeypair(wallet.encryptedKey'),
+        'bridge authorization should derive wallet identity from decrypted key material before signing');
+    assert(walletSrc.includes('keypair.address !== wallet.address'),
+        'bridge authorization should reject encrypted keys that do not match the active wallet');
+    assert(walletSrc.includes('bridgeDepositUserMessage(error)'),
+        'bridge deposit flow should map custody/auth failures to user-safe messages');
 });
 
 test('wallet.js exposes Neo X bridge controls with route status and reserve context', () => {

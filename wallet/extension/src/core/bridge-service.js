@@ -1,5 +1,5 @@
 import { LichenRPC, getTrustedRpcEndpoint } from './rpc-service.js';
-import { decryptPrivateKey, isValidAddress, signTransaction } from './crypto-service.js';
+import { decryptPrivateKey, isValidAddress, privateKeyToKeypair, signTransaction } from './crypto-service.js';
 
 const SUPPORTED_CHAINS = ['solana', 'ethereum', 'bsc', 'bnb', 'neox', 'neo-x', 'neo_x'];
 const SUPPORTED_ASSETS = ['usdc', 'usdt', 'sol', 'eth', 'bnb', 'gas', 'neo'];
@@ -69,6 +69,10 @@ async function ensureBridgeAccessAuth(wallet, password, { forceRefresh = false, 
   let privateKeyHex = null;
   try {
     privateKeyHex = await decryptPrivateKey(wallet.encryptedKey, password);
+    const keypair = await privateKeyToKeypair(privateKeyHex);
+    if (keypair.address !== wallet.address) {
+      throw new Error('Wallet key does not match the active address. Re-import this wallet from its seed phrase or private key, then try again.');
+    }
     const issuedAt = Math.floor(Date.now() / 1000);
     const expiresAt = issuedAt + BRIDGE_AUTH_TTL_SECS;
     const canonicalChain = canonicalBridgeChain(chain);
@@ -79,7 +83,7 @@ async function ensureBridgeAccessAuth(wallet, password, { forceRefresh = false, 
       ? buildBridgeAccessMessageV2(wallet.address, canonicalChain, normalizedAsset, issuedAt, expiresAt, nonce)
       : buildBridgeAccessMessage(wallet.address, issuedAt, expiresAt);
     const messageBytes = new TextEncoder().encode(message);
-    const signature = await signTransaction(privateKeyHex, messageBytes);
+    const signature = await signTransaction(keypair.privateKey, messageBytes);
 
     activeBridgeAuth = {
       user_id: wallet.address,
@@ -103,6 +107,20 @@ async function ensureBridgeAccessAuth(wallet, password, { forceRefresh = false, 
       privateKeyHex = '0'.repeat(privateKeyHex.length);
     }
   }
+}
+
+function bridgeDepositUserMessage(error) {
+  const message = String(error?.message || error || '').trim();
+  if (/Invalid bridge auth signature/i.test(message)) {
+    return 'Bridge authorization did not match this wallet. Re-import the wallet from its seed phrase or private key, then try again.';
+  }
+  if (/missing CUSTODY_|Bridge service unavailable|Bridge service not configured|missing RPC URL for chain/i.test(message)) {
+    return 'This bridge route is not live on testnet yet. The custody route must be enabled before a deposit address can be created.';
+  }
+  if (/rate_limited/i.test(message)) {
+    return 'Too many bridge requests. Wait a few seconds, then request a new deposit address.';
+  }
+  return message || 'Failed to connect to bridge service';
 }
 
 function normalizeBridgeRecord(record = {}, fallback = {}) {
@@ -241,12 +259,17 @@ export async function requestBridgeDepositAddress({ wallet, password, chain, ass
 
   // Route through authenticated RPC bridge proxy — custody auth stays server-side.
   const rpc = getTrustedBridgeRpc(network);
-  const result = await rpc.call('createBridgeDeposit', [{
-    user_id: wallet.address,
-    chain: canonicalChain,
-    asset: normalizedAsset,
-    auth
-  }]);
+  let result;
+  try {
+    result = await rpc.call('createBridgeDeposit', [{
+      user_id: wallet.address,
+      chain: canonicalChain,
+      asset: normalizedAsset,
+      auth
+    }]);
+  } catch (error) {
+    throw new Error(bridgeDepositUserMessage(error));
+  }
 
   await upsertBridgeCacheRecord(result, {
     deposit_id: result?.deposit_id,

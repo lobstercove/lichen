@@ -2475,6 +2475,7 @@ function showExtBridgeTokens(chain) {
   selectEl.style.display = 'block';
   selectEl.innerHTML = `<p style="font-size:0.82rem;color:var(--text-secondary);margin-bottom:0.5rem;">Select token on ${escapeHtml(info.name)}:</p>
     ${info.detail ? `<p style="font-size:0.76rem;color:var(--text-muted);margin-top:-0.25rem;margin-bottom:0.5rem;">${escapeHtml(info.detail)}</p>` : ''}
+    <p style="font-size:0.76rem;color:var(--text-muted);margin-top:-0.25rem;margin-bottom:0.5rem;">Only send the selected asset on this chain. Unfunded addresses are reserved for 24 hours.</p>
     <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">${info.tokens.map(t =>
     `<button class="btn btn-secondary btn-small ext-bridge-token-btn" data-chain="${escapeHtml(info.chain)}" data-asset="${escapeHtml(t.toLowerCase())}" data-chain-name="${escapeHtml(info.name)}">${escapeHtml(t)}</button>`
   ).join('')}</div>`;
@@ -2525,7 +2526,7 @@ async function requestExtBridgeDeposit(chain, asset, chainName) {
         <div id="extDepositStatus" style="margin-top:0.75rem;padding:0.5rem;background:rgba(255,255,255,0.03);border-radius:8px;font-size:0.78rem;">
           <i class="fas fa-clock" style="color:var(--accent);"></i> Waiting for deposit...
         </div>
-        <p style="font-size:0.7rem;color:var(--text-muted);margin-top:0.5rem;">Expires in 24h. ID: <code style="font-size:0.68rem;">${escapeHtml(data.deposit_id)}</code></p>
+        <p style="font-size:0.7rem;color:var(--text-muted);margin-top:0.5rem;">Only send ${escapeHtml(asset.toUpperCase())} on ${escapeHtml(chainName)}. Reserved for 24h while unfunded; request a new address if it expires. ID: <code style="font-size:0.68rem;">${escapeHtml(data.deposit_id)}</code></p>
       `;
       document.getElementById('extDepositAddr')?.addEventListener('click', () => {
         navigator.clipboard.writeText(data.address).then(() => {

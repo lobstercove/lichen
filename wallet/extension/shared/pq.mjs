@@ -2,12 +2,16 @@
 
 // node_modules/@noble/hashes/utils.js
 function isBytes(a) {
-  return a instanceof Uint8Array || ArrayBuffer.isView(a) && a.constructor.name === "Uint8Array";
+  return a instanceof Uint8Array || ArrayBuffer.isView(a) && a.constructor.name === "Uint8Array" && "BYTES_PER_ELEMENT" in a && a.BYTES_PER_ELEMENT === 1;
 }
 function anumber(n, title = "") {
+  if (typeof n !== "number") {
+    const prefix = title && `"${title}" `;
+    throw new TypeError(`${prefix}expected number, got ${typeof n}`);
+  }
   if (!Number.isSafeInteger(n) || n < 0) {
     const prefix = title && `"${title}" `;
-    throw new Error(`${prefix}expected integer >= 0, got ${n}`);
+    throw new RangeError(`${prefix}expected integer >= 0, got ${n}`);
   }
 }
 function abytes(value, length, title = "") {
@@ -18,7 +22,10 @@ function abytes(value, length, title = "") {
     const prefix = title && `"${title}" `;
     const ofLen = needsLen ? ` of length ${length}` : "";
     const got = bytes ? `length=${len}` : `type=${typeof value}`;
-    throw new Error(prefix + "expected Uint8Array" + ofLen + ", got " + got);
+    const message = prefix + "expected Uint8Array" + ofLen + ", got " + got;
+    if (!bytes)
+      throw new TypeError(message);
+    throw new RangeError(message);
   }
   return value;
 }
@@ -32,7 +39,7 @@ function aoutput(out, instance) {
   abytes(out, void 0, "digestInto() output");
   const min = instance.outputLen;
   if (out.length < min) {
-    throw new Error('"digestInto() output" expected to be of length >=' + min);
+    throw new RangeError('"digestInto() output" expected to be of length >=' + min);
   }
 }
 function u32(arr) {
@@ -74,17 +81,23 @@ function createHasher(hashCons, info = {}) {
   const tmp = hashCons(void 0);
   hashC.outputLen = tmp.outputLen;
   hashC.blockLen = tmp.blockLen;
+  hashC.canXOF = tmp.canXOF;
   hashC.create = (opts) => hashCons(opts);
   Object.assign(hashC, info);
   return Object.freeze(hashC);
 }
 function randomBytes(bytesLength = 32) {
+  anumber(bytesLength, "bytesLength");
   const cr = typeof globalThis === "object" ? globalThis.crypto : null;
   if (typeof cr?.getRandomValues !== "function")
     throw new Error("crypto.getRandomValues must be defined");
+  if (bytesLength > 65536)
+    throw new RangeError(`"bytesLength" expected <= 65536, got ${bytesLength}`);
   return cr.getRandomValues(new Uint8Array(bytesLength));
 }
 var oidNist = (suffix) => ({
+  // Current NIST hashAlgs suffixes used here fit in one DER subidentifier octet.
+  // Larger suffix values would need base-128 OID encoding and a different length byte.
   oid: Uint8Array.from([6, 9, 96, 134, 72, 1, 101, 3, 4, 2, suffix])
 });
 
@@ -92,7 +105,7 @@ var oidNist = (suffix) => ({
 function abool(value, title = "") {
   if (typeof value !== "boolean") {
     const prefix = title && `"${title}" `;
-    throw new Error(prefix + "expected boolean, got type=" + typeof value);
+    throw new TypeError(prefix + "expected boolean, got type=" + typeof value);
   }
   return value;
 }
@@ -148,6 +161,9 @@ var SHA3_IOTA_L = IOTAS[1];
 var rotlH = (h, l, s) => s > 32 ? rotlBH(h, l, s) : rotlSH(h, l, s);
 var rotlL = (h, l, s) => s > 32 ? rotlBL(h, l, s) : rotlSL(h, l, s);
 function keccakP(s, rounds = 24) {
+  anumber(rounds, "rounds");
+  if (rounds < 1 || rounds > 24)
+    throw new Error('"rounds" expected integer 1..24');
   const B = new Uint32Array(5 * 2);
   for (let round = 24 - rounds; round < 24; round++) {
     for (let x = 0; x < 10; x++)
@@ -177,10 +193,17 @@ function keccakP(s, rounds = 24) {
       s[PI + 1] = Tl;
     }
     for (let y = 0; y < 50; y += 10) {
-      for (let x = 0; x < 10; x++)
-        B[x] = s[y + x];
-      for (let x = 0; x < 10; x++)
-        s[y + x] ^= ~B[(x + 2) % 10] & B[(x + 4) % 10];
+      const b0 = s[y], b1 = s[y + 1], b2 = s[y + 2], b3 = s[y + 3];
+      s[y] ^= ~s[y + 2] & s[y + 4];
+      s[y + 1] ^= ~s[y + 3] & s[y + 5];
+      s[y + 2] ^= ~s[y + 4] & s[y + 6];
+      s[y + 3] ^= ~s[y + 5] & s[y + 7];
+      s[y + 4] ^= ~s[y + 6] & s[y + 8];
+      s[y + 5] ^= ~s[y + 7] & s[y + 9];
+      s[y + 6] ^= ~s[y + 8] & b0;
+      s[y + 7] ^= ~s[y + 9] & b1;
+      s[y + 8] ^= ~b0 & b2;
+      s[y + 9] ^= ~b1 & b3;
     }
     s[0] ^= SHA3_IOTA_H[round];
     s[1] ^= SHA3_IOTA_L[round];
@@ -197,6 +220,7 @@ var Keccak = class _Keccak {
   blockLen;
   suffix;
   outputLen;
+  canXOF;
   enableXOF = false;
   rounds;
   // NOTE: we accept arguments in bytes instead of bits here.
@@ -205,6 +229,7 @@ var Keccak = class _Keccak {
     this.suffix = suffix;
     this.outputLen = outputLen;
     this.enableXOF = enableXOF;
+    this.canXOF = enableXOF;
     this.rounds = rounds;
     anumber(outputLen, "outputLen");
     if (!(0 < blockLen && blockLen < 200))
@@ -276,12 +301,13 @@ var Keccak = class _Keccak {
     aoutput(out, this);
     if (this.finished)
       throw new Error("digest() was already called");
-    this.writeInto(out);
+    this.writeInto(out.subarray(0, this.outputLen));
     this.destroy();
-    return out;
   }
   digest() {
-    return this.digestInto(new Uint8Array(this.outputLen));
+    const out = new Uint8Array(this.outputLen);
+    this.digestInto(out);
+    return out;
   }
   destroy() {
     this.destroyed = true;
@@ -290,6 +316,7 @@ var Keccak = class _Keccak {
   _cloneInto(to) {
     const { blockLen, suffix, outputLen, rounds, enableXOF } = this;
     to ||= new _Keccak(blockLen, suffix, outputLen, enableXOF, rounds);
+    to.blockLen = blockLen;
     to.state32.set(this.state32);
     to.pos = this.pos;
     to.posOut = this.posOut;
@@ -298,6 +325,7 @@ var Keccak = class _Keccak {
     to.suffix = suffix;
     to.outputLen = outputLen;
     to.enableXOF = enableXOF;
+    to.canXOF = this.canXOF;
     to.destroyed = this.destroyed;
     return to;
   }
@@ -318,10 +346,12 @@ function isPowerOfTwo(x) {
 }
 function reverseBits(n, bits) {
   checkU32(n);
+  if (!Number.isSafeInteger(bits) || bits < 0 || bits > 32)
+    throw new Error(`expected integer 0 <= bits <= 32, got ${bits}`);
   let reversed = 0;
   for (let i = 0; i < bits; i++, n >>>= 1)
     reversed = reversed << 1 | n & 1;
-  return reversed;
+  return reversed >>> 0;
 }
 function log2(n) {
   checkU32(n);
@@ -329,8 +359,8 @@ function log2(n) {
 }
 function bitReversalInplace(values) {
   const n = values.length;
-  if (n < 2 || !isPowerOfTwo(n))
-    throw new Error("n must be a power of 2 and greater than 1. Got " + n);
+  if (!isPowerOfTwo(n))
+    throw new Error("expected positive power-of-two length, got " + n);
   const bits = log2(n);
   for (let i = 0; i < n; i++) {
     const j = reverseBits(i, bits);
@@ -347,6 +377,8 @@ var FFTCore = (F2, coreOpts) => {
   const bits = log2(N2);
   if (!isPowerOfTwo(N2))
     throw new Error("FFT: Polynomial size should be power of two");
+  if (roots.length !== N2)
+    throw new Error(`FFT: wrong roots length: expected ${N2}, got ${roots.length}`);
   const isDit = dit !== invertButterflies;
   isDit;
   return (values) => {
@@ -445,7 +477,8 @@ function splitCoder(label, ...lengths) {
   };
 }
 function vecCoder(c, vecLen) {
-  const bytesLen = vecLen * c.bytesLen;
+  const coder = c;
+  const bytesLen = vecLen * coder.bytesLen;
   return {
     bytesLen,
     encode: (u) => {
@@ -453,7 +486,7 @@ function vecCoder(c, vecLen) {
         throw new RangeError(`vecCoder.encode: wrong length=${u.length}. Expected: ${vecLen}`);
       const res = new Uint8Array(bytesLen);
       for (let i = 0, pos = 0; i < u.length; i++) {
-        const b = c.encode(u[i]);
+        const b = coder.encode(u[i]);
         res.set(b, pos);
         b.fill(0);
         pos += b.length;
@@ -463,8 +496,8 @@ function vecCoder(c, vecLen) {
     decode: (a) => {
       abytes(a, bytesLen);
       const r = [];
-      for (let i = 0; i < a.length; i += c.bytesLen)
-        r.push(c.decode(a.subarray(i, i + c.bytesLen)));
+      for (let i = 0; i < a.length; i += coder.bytesLen)
+        r.push(coder.decode(a.subarray(i, i + coder.bytesLen)));
       return r;
     }
   };
@@ -563,7 +596,8 @@ var genCrystals = (opts) => {
     const bytesLen = d * (N2 / 8);
     return {
       bytesLen,
-      encode: (poly) => {
+      encode: (poly_) => {
+        const poly = poly_;
         const r = new Uint8Array(bytesLen);
         for (let i = 0, buf = 0, bufLen = 0, pos = 0; i < poly.length; i++) {
           buf |= (c.encode(poly[i]) & mask) << bufLen;
@@ -585,7 +619,16 @@ var genCrystals = (opts) => {
       }
     };
   };
-  return { mod, smod, nttZetas, NTT, bitsCoder };
+  return {
+    mod,
+    smod,
+    nttZetas,
+    NTT: {
+      encode: (r) => NTT.encode(r),
+      decode: (r) => NTT.decode(r)
+    },
+    bitsCoder
+  };
 };
 var createXofShake = (shake) => (seed, blockLen) => {
   if (!blockLen)
@@ -632,10 +675,37 @@ var F = 8347681;
 var D = 13;
 var GAMMA2_1 = Math.floor((Q - 1) / 88) | 0;
 var GAMMA2_2 = Math.floor((Q - 1) / 32) | 0;
-var PARAMS = /* @__PURE__ */ (() => ({
-  2: { K: 4, L: 4, D, GAMMA1: 2 ** 17, GAMMA2: GAMMA2_1, TAU: 39, ETA: 2, OMEGA: 80 },
-  3: { K: 6, L: 5, D, GAMMA1: 2 ** 19, GAMMA2: GAMMA2_2, TAU: 49, ETA: 4, OMEGA: 55 },
-  5: { K: 8, L: 7, D, GAMMA1: 2 ** 19, GAMMA2: GAMMA2_2, TAU: 60, ETA: 2, OMEGA: 75 }
+var PARAMS = /* @__PURE__ */ (() => Object.freeze({
+  2: Object.freeze({
+    K: 4,
+    L: 4,
+    D,
+    GAMMA1: 2 ** 17,
+    GAMMA2: GAMMA2_1,
+    TAU: 39,
+    ETA: 2,
+    OMEGA: 80
+  }),
+  3: Object.freeze({
+    K: 6,
+    L: 5,
+    D,
+    GAMMA1: 2 ** 19,
+    GAMMA2: GAMMA2_2,
+    TAU: 49,
+    ETA: 4,
+    OMEGA: 55
+  }),
+  5: Object.freeze({
+    K: 8,
+    L: 7,
+    D,
+    GAMMA1: 2 ** 19,
+    GAMMA2: GAMMA2_2,
+    TAU: 60,
+    ETA: 2,
+    OMEGA: 75
+  })
 }))();
 var newPoly = (n) => new Int32Array(n);
 var crystals = /* @__PURE__ */ genCrystals({
@@ -652,34 +722,43 @@ var polyCoder = (d, compress = id, verify = id) => crystals.bitsCoder(d, {
   encode: (i) => compress(verify(i)),
   decode: (i) => verify(compress(i))
 });
-var polyAdd = (a, b) => {
+var polyAdd = (a_, b_) => {
+  const a = a_;
+  const b = b_;
   for (let i = 0; i < a.length; i++)
     a[i] = crystals.mod(a[i] + b[i]);
   return a;
 };
-var polySub = (a, b) => {
+var polySub = (a_, b_) => {
+  const a = a_;
+  const b = b_;
   for (let i = 0; i < a.length; i++)
     a[i] = crystals.mod(a[i] - b[i]);
   return a;
 };
-var polyShiftl = (p) => {
+var polyShiftl = (p_) => {
+  const p = p_;
   for (let i = 0; i < N; i++)
     p[i] <<= D;
   return p;
 };
-var polyChknorm = (p, B) => {
+var polyChknorm = (p_, B) => {
+  const p = p_;
   for (let i = 0; i < N; i++)
     if (Math.abs(crystals.smod(p[i])) >= B)
       return true;
   return false;
 };
-var MultiplyNTTs = (a, b) => {
+var MultiplyNTTs = (a_, b_) => {
+  const a = a_;
+  const b = b_;
   const c = newPoly(N);
   for (let i = 0; i < a.length; i++)
     c[i] = crystals.mod(a[i] * b[i]);
   return c;
 };
-function RejNTTPoly(xof) {
+function RejNTTPoly(xof_) {
+  const xof = xof_;
   const r = newPoly(N);
   for (let j = 0; j < N; ) {
     const b = xof();
@@ -693,7 +772,8 @@ function RejNTTPoly(xof) {
   }
   return r;
 }
-function getDilithium(opts) {
+function getDilithium(opts_) {
+  const opts = opts_;
   const { K, L, GAMMA1, GAMMA2, TAU, ETA, OMEGA } = opts;
   const { CRH_BYTES, TR_BYTES, C_TILDE_BYTES, XOF128: XOF1282, XOF256: XOF2562, securityLevel } = opts;
   if (![2, 4].includes(ETA))
@@ -731,7 +811,8 @@ function getDilithium(opts) {
   };
   const hintCoder = {
     bytesLen: OMEGA + K,
-    encode: (h) => {
+    encode: (h_) => {
+      const h = h_;
       if (h === false)
         throw new Error("hint.encode: hint is false");
       const res = new Uint8Array(OMEGA + K);
@@ -778,7 +859,8 @@ function getDilithium(opts) {
   const secretCoder = splitCoder("secretKey", 32, 32, TR_BYTES, vecCoder(ETACoder, L), vecCoder(ETACoder, K), vecCoder(T0Coder, K));
   const sigCoder = splitCoder("signature", C_TILDE_BYTES, vecCoder(ZCoder, L), hintCoder);
   const CoefFromHalfByte = ETA === 2 ? (n) => n < 15 ? 2 - n % 5 : false : (n) => n < 9 ? 4 - n : false;
-  function RejBoundedPoly(xof) {
+  function RejBoundedPoly(xof_) {
+    const xof = xof_;
     const r = newPoly(N);
     for (let j = 0; j < N; ) {
       const b = xof();
@@ -817,7 +899,8 @@ function getDilithium(opts) {
     }
     return pre;
   };
-  const polyPowerRound = (p) => {
+  const polyPowerRound = (p_) => {
+    const p = p_;
     const res0 = newPoly(N);
     const res1 = newPoly(N);
     for (let i = 0; i < p.length; i++) {
@@ -827,12 +910,16 @@ function getDilithium(opts) {
     }
     return { r0: res0, r1: res1 };
   };
-  const polyUseHint = (u, h) => {
+  const polyUseHint = (u_, h_) => {
+    const u = u_;
+    const h = h_;
     for (let i = 0; i < N; i++)
       u[i] = UseHint(h[i], u[i]);
     return u;
   };
-  const polyMakeHint = (a, b) => {
+  const polyMakeHint = (a_, b_) => {
+    const a = a_;
+    const b = b_;
     const v = newPoly(N);
     let cnt = 0;
     for (let i = 0; i < N; i++) {
@@ -844,15 +931,15 @@ function getDilithium(opts) {
   };
   const signRandBytes = 32;
   const seedCoder = splitCoder("seed", 32, 64, 32);
-  const internal = {
-    info: { type: "internal-ml-dsa" },
-    lengths: {
+  const internal = Object.freeze({
+    info: Object.freeze({ type: "internal-ml-dsa" }),
+    lengths: Object.freeze({
       secretKey: secretCoder.bytesLen,
       publicKey: publicCoder.bytesLen,
       seed: 32,
       signature: sigCoder.bytesLen,
       signRand: signRandBytes
-    },
+    }),
     keygen: (seed) => {
       const seedDst = new Uint8Array(32 + 2);
       const randSeed = seed === void 0;
@@ -894,7 +981,10 @@ function getDilithium(opts) {
       xof.clean();
       xofPrime.clean();
       cleanBytes(rho, rhoPrime, K_, s1, s2, s1Hat, t, t0, t1, tr, seedDst);
-      return { publicKey, secretKey };
+      return {
+        publicKey,
+        secretKey
+      };
     },
     getPublicKey: (secretKey) => {
       const [rho, _K, _tr, s1, s2, _t0] = secretCoder.decode(secretKey);
@@ -1041,9 +1131,9 @@ function getDilithium(opts) {
           return false;
       return equalBytes(cTilde, c2);
     }
-  };
-  return {
-    info: { type: "ml-dsa" },
+  });
+  return Object.freeze({
+    info: Object.freeze({ type: "ml-dsa" }),
     internal,
     securityLevel,
     keygen: internal.keygen,
@@ -1062,8 +1152,8 @@ function getDilithium(opts) {
     },
     prehash: (hash) => {
       checkHash(hash, securityLevel);
-      return {
-        info: { type: "hashml-dsa" },
+      return Object.freeze({
+        info: Object.freeze({ type: "hashml-dsa" }),
         securityLevel,
         lengths: internal.lengths,
         keygen: internal.keygen,
@@ -1079,9 +1169,9 @@ function getDilithium(opts) {
           validateVerOpts(opts2);
           return internal.verify(sig, getMessagePrehash(hash, msg, opts2.context), publicKey);
         }
-      };
+      });
     }
-  };
+  });
 }
 var ml_dsa65 = /* @__PURE__ */ (() => getDilithium({
   ...PARAMS[3],
@@ -1381,9 +1471,6 @@ export {
   verifySignature
 };
 /*! Bundled license information:
-
-@noble/hashes/utils.js:
-  (*! noble-hashes - MIT License (c) 2022 Paul Miller (paulmillr.com) *)
 
 @noble/curves/utils.js:
   (*! noble-curves - MIT License (c) 2022 Paul Miller (paulmillr.com) *)

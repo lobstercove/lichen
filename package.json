@@ -30,7 +30,7 @@
     "ws": "^8.20.1"
   },
   "devDependencies": {
-    "@noble/post-quantum": "^0.6.0",
+    "@noble/post-quantum": "^0.6.1",
     "esbuild": "^0.25.11",
     "wrangler": "^4.70.0"
   }

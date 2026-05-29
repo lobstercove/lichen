@@ -4152,7 +4152,10 @@ async function ensureBridgeAccessAuth(wallet, { forceRefresh = false, chain = ''
         throw new Error('Bridge authorization cancelled');
     }
 
-    const privateKey = await LichenCrypto.decryptPrivateKey(wallet.encryptedKey, values.password);
+    const keypair = await LichenCrypto.decryptKeypair(wallet.encryptedKey, values.password);
+    if (keypair.address !== wallet.address) {
+        throw new Error('Wallet key does not match the active address. Re-import this wallet from its seed phrase or private key, then try again.');
+    }
     const issuedAt = Math.floor(Date.now() / 1000);
     const expiresAt = issuedAt + BRIDGE_AUTH_TTL_SECS;
     const canonicalChain = String(chain || '').trim().toLowerCase();
@@ -4163,7 +4166,7 @@ async function ensureBridgeAccessAuth(wallet, { forceRefresh = false, chain = ''
         ? buildBridgeAccessMessageV2(wallet.address, canonicalChain, normalizedAsset, issuedAt, expiresAt, nonce)
         : buildBridgeAccessMessage(wallet.address, issuedAt, expiresAt);
     const messageBytes = new TextEncoder().encode(message);
-    const signature = await LichenCrypto.signTransaction(privateKey, messageBytes);
+    const signature = await LichenCrypto.signTransaction(keypair.privateKey, messageBytes);
 
     activeBridgeAuth = {
         user_id: wallet.address,
@@ -4182,6 +4185,20 @@ async function ensureBridgeAccessAuth(wallet, { forceRefresh = false, chain = ''
     }
 
     return activeBridgeAuth;
+}
+
+function bridgeDepositUserMessage(error) {
+    const message = String(error?.message || error || '').trim();
+    if (/Invalid bridge auth signature/i.test(message)) {
+        return 'Bridge authorization did not match this wallet. Re-import the wallet from its seed phrase or private key, then try again.';
+    }
+    if (/missing CUSTODY_|Bridge service unavailable|Bridge service not configured|missing RPC URL for chain/i.test(message)) {
+        return 'This bridge route is not live on testnet yet. The custody route must be enabled before a deposit address can be created.';
+    }
+    if (/rate_limited/i.test(message)) {
+        return 'Too many bridge requests. Wait a few seconds, then request a new deposit address.';
+    }
+    return message || 'Failed to connect to bridge service';
 }
 
 async function showDepositInfo(chain) {
@@ -4216,8 +4233,7 @@ async function showDepositInfo(chain) {
             </div>
             <div id="bridgeDepositResult" style="display:none;"></div>
             <p id="bridgeHelpText" style="font-size: 0.8rem; color: var(--text-muted);">
-                You'll receive a unique deposit address. Send tokens there and they'll be credited
-                to your Lichen wallet automatically (~2-5 min after source chain finality).
+                You will receive a unique address for the selected asset and chain. Unfunded addresses are reserved for 24 hours; detected deposits continue through confirmation, sweep, and credit.
             </p>
         </div>`,
         icon: info.icon,
@@ -4335,7 +4351,7 @@ async function requestDepositAddress(chain, asset, chainName, icon) {
                     <span>Waiting for deposit...</span>
                 </div>
                 <p style="margin-top: 0.75rem; font-size: 0.78rem; color: var(--text-muted);">
-                    This address expires in 24 hours. Funds sent after expiry may be lost.<br>
+                    Only send ${safeAsset} on ${safeChainName}. This address is reserved for 24 hours while unfunded. If it expires, request a new address.<br>
                     Deposit ID: <code style="font-size: 0.72rem;">${safeDepositId}</code>
                 </p>
             `;
@@ -4365,7 +4381,7 @@ async function requestDepositAddress(chain, asset, chainName, icon) {
         if (tokenSelect) tokenSelect.style.display = 'flex';
         if (loadingState) loadingState.style.display = 'none';
         if (helpText) helpText.style.display = 'block';
-        showToast(error.message || 'Failed to connect to bridge service', 'error');
+        showToast(bridgeDepositUserMessage(error), 'error');
     }
 }
 

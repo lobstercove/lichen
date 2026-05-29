@@ -22216,6 +22216,52 @@ mod tests {
     }
 
     #[test]
+    fn test_bridge_access_auth_v2_accepts_fips204_signature() {
+        let seed = [13u8; 32];
+        let keypair =
+            dilithium::DilithiumKeyPair::generate_deterministic(dilithium::ML_DSA_65, &seed);
+        let public_key = lichen_core::PqPublicKey::new(
+            lichen_core::account::PQ_SCHEME_ML_DSA_65,
+            keypair.public_key().to_vec(),
+        )
+        .expect("valid ML-DSA public key");
+        let user_id = public_key.address().to_base58();
+        let issued_at = 1_700_000_000u64;
+        let expires_at = issued_at + 600;
+        let nonce = "fips204-route-bound-test";
+        let message = bridge_access_message_v2_create(
+            &user_id, "solana", "usdt", issued_at, expires_at, nonce,
+        );
+        let randomizer = [0u8; 32];
+        let signature = keypair
+            .sign_deterministic(&message, &[], &randomizer)
+            .expect("deterministic ML-DSA signing should succeed");
+        let pq_signature = lichen_core::PqSignature::new(
+            lichen_core::account::PQ_SCHEME_ML_DSA_65,
+            public_key,
+            signature.as_bytes().to_vec(),
+        )
+        .expect("valid ML-DSA signature");
+        let auth = parse_bridge_access_auth(&serde_json::json!({
+            "version": 2,
+            "domain": BRIDGE_ACCESS_DOMAIN_V2,
+            "action": BRIDGE_AUTH_ACTION_CREATE_DEPOSIT,
+            "user_id": user_id,
+            "chain": "solana",
+            "asset": "usdt",
+            "route": "solana:usdt",
+            "issued_at": issued_at,
+            "expires_at": expires_at,
+            "nonce": nonce,
+            "signature": pq_signature_json(&pq_signature),
+        }))
+        .expect("parse v2 bridge auth");
+
+        verify_bridge_access_auth_for_create_at(&user_id, "solana", "usdt", &auth, issued_at + 60)
+            .expect("FIPS 204 bridge auth must verify");
+    }
+
+    #[test]
     fn test_bridge_access_auth_v2_rejects_route_substitution() {
         let keypair = LichenKeypair::from_seed(&[12u8; 32]);
         let user_id = keypair.pubkey().to_base58();

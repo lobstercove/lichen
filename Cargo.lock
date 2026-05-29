@@ -2089,6 +2089,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "dilithium-rs"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9b0aa9ae3a1b700e0ac9f707cdff5c3893f4f11a3b1b317c5113a422ef785809"
+dependencies = [
+ "getrandom 0.2.17",
+ "sha2 0.10.9",
+ "sha3 0.10.9",
+ "subtle",
+ "zeroize",
+]
+
+[[package]]
 name = "dirs"
 version = "5.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3311,7 +3324,7 @@ dependencies = [
 
 [[package]]
 name = "lichen-cli"
-version = "0.5.70"
+version = "0.5.71"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -3338,7 +3351,7 @@ dependencies = [
 
 [[package]]
 name = "lichen-custody"
-version = "0.5.70"
+version = "0.5.71"
 dependencies = [
  "axum",
  "base64",
@@ -3370,7 +3383,7 @@ dependencies = [
 
 [[package]]
 name = "lichen-faucet"
-version = "0.5.70"
+version = "0.5.71"
 dependencies = [
  "axum",
  "chrono",
@@ -3386,7 +3399,7 @@ dependencies = [
 
 [[package]]
 name = "lichen-genesis"
-version = "0.5.70"
+version = "0.5.71"
 dependencies = [
  "bincode",
  "chrono",
@@ -3404,7 +3417,7 @@ dependencies = [
 
 [[package]]
 name = "lichen-p2p"
-version = "0.5.70"
+version = "0.5.71"
 dependencies = [
  "anyhow",
  "bincode",
@@ -3430,7 +3443,7 @@ dependencies = [
 
 [[package]]
 name = "lichen-rpc"
-version = "0.5.70"
+version = "0.5.71"
 dependencies = [
  "alloy-primitives 0.8.26",
  "axum",
@@ -3439,6 +3452,7 @@ dependencies = [
  "bs58",
  "chrono",
  "dashmap",
+ "dilithium-rs",
  "dirs",
  "futures-util",
  "hex",
@@ -3462,7 +3476,7 @@ dependencies = [
 
 [[package]]
 name = "lichen-validator"
-version = "0.5.70"
+version = "0.5.71"
 dependencies = [
  "anyhow",
  "axum",
@@ -3505,7 +3519,7 @@ checksum = "92daf443525c4cce67b150400bc2316076100ce0b3686209eb8cf3c31612e6f0"
 
 [[package]]
 name = "lobstercove-lichen-core"
-version = "0.5.70"
+version = "0.5.71"
 dependencies = [
  "aes-gcm",
  "alloy-consensus",
@@ -3525,6 +3539,7 @@ dependencies = [
  "chrono",
  "criterion",
  "derive_more 1.0.0",
+ "dilithium-rs",
  "ed25519-dalek",
  "getrandom 0.4.2",
  "hex",

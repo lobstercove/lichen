@@ -742,6 +742,9 @@ test('CC-4e extension bridge surfaces expose Neo X GAS with route-status preflig
   assert.ok(bridgeServiceSrc.includes("'neox'"), 'bridge-service missing Neo X support');
   assert.ok(bridgeServiceSrc.includes("'gas'"), 'bridge-service missing GAS asset support');
   assert.ok(bridgeServiceSrc.includes('getBridgeRouteRestrictionStatus'), 'bridge-service should preflight bridge route status');
+  assert.ok(bridgeServiceSrc.includes('privateKeyToKeypair'), 'bridge-service should derive the active address from decrypted key material before signing');
+  assert.ok(bridgeServiceSrc.includes('keypair.address !== wallet.address'), 'bridge-service should reject encrypted keys that do not match the active wallet');
+  assert.ok(bridgeServiceSrc.includes('bridgeDepositUserMessage(error)'), 'bridge-service should normalize custody/auth failures before surfacing them');
   assert.ok(fullSrc.includes("Bridge from Neo X"), 'full.js missing Neo X bridge card label');
   assert.ok(fullSrc.includes("startExtensionDeposit('neox')"), 'full.js missing Neo X click handler wiring');
   assert.ok(popupSrc.includes("NEOX: { name: 'Neo X'"), 'popup.js missing Neo X chain metadata');

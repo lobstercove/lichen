@@ -3714,11 +3714,14 @@ async function startExtensionDeposit(chain) {
     `<button class="btn btn-secondary" data-bridge-asset="${a}" style="margin:0.25rem;padding:0.5rem 1.25rem;">${a.toUpperCase()}</button>`
   ).join(' ');
 
-  container.innerHTML = `
+    container.innerHTML = `
     <p style="text-align:center;color:var(--text-secondary);margin-bottom:0.75rem;font-size:0.95rem;">
       Select a token to deposit from <strong>${escapeHtmlExt(chainLabel)}</strong>:
     </p>
     ${chainDetail ? `<p style="text-align:center;color:var(--text-muted);margin-top:-0.45rem;margin-bottom:0.75rem;font-size:0.82rem;">${escapeHtmlExt(chainDetail)}</p>` : ''}
+    <p style="text-align:center;color:var(--text-muted);margin-top:-0.25rem;margin-bottom:0.75rem;font-size:0.82rem;">
+      Only send the selected asset on this chain. Unfunded addresses are reserved for 24 hours.
+    </p>
     <div style="display:flex;gap:0.5rem;justify-content:center;margin-bottom:1rem;">${tokenButtons}</div>
     <div id="extDepositResult" style="display:none;"></div>
     <button class="btn btn-secondary btn-small" id="extDepositBack" style="margin-top:0.75rem;">← Back</button>
@@ -3775,6 +3778,7 @@ async function executeExtensionDeposit(chain, asset, chainLabel, container) {
           <div style="margin-bottom:0.5rem;"><strong>Send ${safeAsset} on ${escapeHtmlExt(chainLabel)} to:</strong></div>
           <div class="mono" style="word-break:break-all;background:rgba(0,0,0,0.15);padding:0.5rem;border-radius:6px;margin-bottom:0.5rem;cursor:pointer;" id="extDepositAddr">${safeAddr}</div>
           <div style="font-size:0.8rem;color:var(--text-muted);margin-bottom:0.5rem;">Deposit ID: ${safeId}</div>
+          <div style="font-size:0.8rem;color:var(--text-muted);margin-bottom:0.5rem;">Reserved for 24 hours while unfunded. If it expires, request a new address.</div>
           <div id="extDepositStatus" style="font-size:0.85rem;"><i class="fas fa-clock" style="color:var(--text-muted);"></i> Waiting for deposit...</div>
         </div>
       `;

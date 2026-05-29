@@ -190,6 +190,7 @@ function renderDepositCard(data) {
     <button class="btn btn-secondary btn-small" id="copyBridgeAddress" style="margin-bottom: 0.55rem;">Copy Address</button>
     <div><strong>Deposit ID:</strong> <span class="mono">${safeDepositId}</span></div>
     <div><strong>Status:</strong> <span id="bridgeDepositStatus">${safeStatus}</span></div>
+    <div style="margin-top:0.5rem;color:var(--text-muted);font-size:0.82rem;">Only send the selected asset on the selected chain. Unfunded addresses are reserved for 24 hours; if one expires, request a new address.</div>
   `;
 
   document.getElementById('copyBridgeAddress')?.addEventListener('click', () => {

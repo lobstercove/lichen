@@ -1,6 +1,6 @@
 [package]
 name = "lichen-rpc"
-version = "0.5.70"
+version = "0.5.71"
 edition = "2021"
 authors = ["Lichen Labs <hello@lichen.network>"]
 description = "Lichen JSON-RPC server"
@@ -35,3 +35,4 @@ libc = "0.2"
 [dev-dependencies]
 tempfile = "3.10"
 wat = "1"
+dilithium = { workspace = true }

@@ -20,6 +20,11 @@ pub const ML_DSA_65_SIGNATURE_BYTES: usize = 3309;
 pub const SLH_DSA_128F_PUBLIC_KEY_BYTES: usize = 32;
 pub const SLH_DSA_128F_SIGNATURE_BYTES: usize = 17_088;
 
+fn verify_fips204_ml_dsa65(public_key: &[u8], signature: &[u8], message: &[u8]) -> bool {
+    let signature = dilithium::DilithiumSignature::from_slice(signature);
+    dilithium::DilithiumKeyPair::verify(public_key, &signature, message, &[], dilithium::ML_DSA_65)
+}
+
 fn serialize_pq_blob<S>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
@@ -337,15 +342,16 @@ impl Keypair {
 
         match signature.scheme_version {
             PQ_SCHEME_ML_DSA_65 => {
-                let verifying_key = match signature.public_key.as_ml_dsa_verifying_key() {
-                    Some(verifying_key) => verifying_key,
-                    None => return false,
-                };
-                let ml_signature = match signature.as_ml_dsa_signature() {
-                    Some(signature) => signature,
-                    None => return false,
-                };
-                verifying_key.verify_with_context(message, &[], &ml_signature)
+                if let (Some(verifying_key), Some(ml_signature)) = (
+                    signature.public_key.as_ml_dsa_verifying_key(),
+                    signature.as_ml_dsa_signature(),
+                ) {
+                    if verifying_key.verify_with_context(message, &[], &ml_signature) {
+                        return true;
+                    }
+                }
+
+                verify_fips204_ml_dsa65(&signature.public_key.bytes, &signature.sig, message)
             }
             PQ_SCHEME_SLH_DSA_128F => {
                 let verifying_key = match signature.public_key.as_slh_dsa_verifying_key() {
@@ -669,6 +675,37 @@ mod tests {
         assert!(!Keypair::verify(&Pubkey([7u8; 32]), message, &signature));
         assert!(!Keypair::verify(
             &keypair.pubkey(),
+            b"different",
+            &signature
+        ));
+    }
+
+    #[test]
+    fn test_fips204_ml_dsa_signature_verifies() {
+        let seed = [7u8; 32];
+        let keypair =
+            dilithium::DilithiumKeyPair::generate_deterministic(dilithium::ML_DSA_65, &seed);
+        let message = b"lichen-browser-pq";
+        let randomizer = [0u8; 32];
+        let final_signature = keypair
+            .sign_deterministic(message, &[], &randomizer)
+            .expect("deterministic ML-DSA signing should succeed");
+        let public_key =
+            PqPublicKey::new(PQ_SCHEME_ML_DSA_65, keypair.public_key().to_vec()).unwrap();
+        let signature = PqSignature::new(
+            PQ_SCHEME_ML_DSA_65,
+            public_key,
+            final_signature.as_bytes().to_vec(),
+        )
+        .unwrap();
+
+        assert!(Keypair::verify(
+            &signature.signer_address(),
+            message,
+            &signature
+        ));
+        assert!(!Keypair::verify(
+            &signature.signer_address(),
             b"different",
             &signature
         ));
