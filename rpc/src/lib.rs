@@ -13492,30 +13492,124 @@ async fn handle_get_all_contracts(
             })
             .collect();
 
-    let contracts: Vec<serde_json::Value> = programs
-        .iter()
-        .map(|(pk, metadata)| {
-            let (symbol, name, owner, template) = registry_by_program
-                .get(pk)
-                .map(|(symbol, name, owner, template)| {
-                    (
-                        Some(symbol.clone()),
-                        name.clone(),
-                        Some(owner.clone()),
-                        template.clone(),
-                    )
-                })
-                .unwrap_or((None, None, None, None));
-            serde_json::json!({
-                "program_id": pk.to_base58(),
-                "symbol": symbol,
-                "name": name,
-                "owner": owner,
-                "template": template,
-                "metadata": metadata,
+    let program_keys: Vec<Pubkey> = programs.iter().map(|(pk, _)| *pk).collect();
+    let accounts_by_program =
+        state
+            .state
+            .get_accounts_batch(&program_keys)
+            .map_err(|e| RpcError {
+                code: -32000,
+                message: format!("Database error: {}", e),
+            })?;
+    let current_slot = state.state.get_last_slot().map_err(|e| RpcError {
+        code: -32000,
+        message: format!("Database error: {}", e),
+    })?;
+
+    let mut contracts = Vec::with_capacity(programs.len());
+    for (pk, metadata) in &programs {
+        let (symbol, name, registry_owner, template) = registry_by_program
+            .get(pk)
+            .map(|(symbol, name, owner, template)| {
+                (
+                    Some(symbol.clone()),
+                    name.clone(),
+                    Some(owner.clone()),
+                    template.clone(),
+                )
             })
-        })
-        .collect();
+            .unwrap_or((None, None, None, None));
+
+        let mut owner = registry_owner.clone();
+        let mut code_size = 0usize;
+        let mut is_executable = false;
+        let mut has_abi = false;
+        let mut abi_functions = 0usize;
+        let mut code_hash = String::new();
+        let mut version = 1u32;
+        let mut previous_code_hash = None;
+        let mut lifecycle_status = "unknown";
+        let mut lifecycle_updated_slot = 0u64;
+        let mut lifecycle_restriction_id = None;
+
+        if let Some(account) = accounts_by_program.get(pk) {
+            code_size = account.data.len();
+            is_executable = account.executable;
+            if owner.is_none() {
+                owner = Some(account.owner.to_base58());
+            }
+
+            if account.executable {
+                match serde_json::from_slice::<ContractAccount>(&account.data) {
+                    Ok(mut contract) => {
+                        if let Err(error) =
+                            lichen_core::contract::derive_contract_lifecycle_from_state_store(
+                                &state.state,
+                                pk,
+                                &mut contract,
+                                current_slot,
+                            )
+                        {
+                            tracing::debug!(
+                                program = %pk.to_base58(),
+                                error = %error,
+                                "failed to derive contract lifecycle for contract list"
+                            );
+                        }
+
+                        owner = Some(contract.owner.to_base58());
+                        has_abi = contract.abi.is_some();
+                        abi_functions = contract
+                            .abi
+                            .as_ref()
+                            .map(|abi| abi.functions.len())
+                            .unwrap_or(0);
+                        code_hash = contract.code_hash.to_hex();
+                        version = contract.version;
+                        previous_code_hash = contract.previous_code_hash.map(|hash| hash.to_hex());
+                        lifecycle_status =
+                            contract_lifecycle_status_label(contract.lifecycle_status);
+                        lifecycle_updated_slot = contract.lifecycle_updated_slot;
+                        lifecycle_restriction_id = contract.lifecycle_restriction_id;
+                    }
+                    Err(error) => {
+                        tracing::debug!(
+                            program = %pk.to_base58(),
+                            error = %error,
+                            "failed to decode contract account for contract list"
+                        );
+                    }
+                }
+            }
+        }
+
+        let mut contract = serde_json::json!({
+            "program_id": pk.to_base58(),
+            "symbol": symbol,
+            "name": name,
+            "owner": owner,
+            "registry_owner": registry_owner,
+            "template": template,
+            "metadata": metadata,
+            "code_size": code_size,
+            "is_executable": is_executable,
+            "has_abi": has_abi,
+            "abi_functions": abi_functions,
+            "code_hash": code_hash,
+            "deployed_at": 0,
+            "version": version,
+            "lifecycle_status": lifecycle_status,
+            "lifecycle_updated_slot": lifecycle_updated_slot,
+            "lifecycle_restriction_id": lifecycle_restriction_id,
+            "lifecycle_effective_at_slot": current_slot,
+        });
+        if let Some(hash) = previous_code_hash {
+            if let Some(obj) = contract.as_object_mut() {
+                obj.insert("previous_code_hash".to_string(), serde_json::json!(hash));
+            }
+        }
+        contracts.push(contract);
+    }
 
     let next_cursor = if has_more {
         programs.last().map(|(pk, _)| pk.to_base58())

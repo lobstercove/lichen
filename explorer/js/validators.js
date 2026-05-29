@@ -43,7 +43,10 @@ async function loadValidators() {
             return;
         }
 
-        const validatorsResult = await rpc.getValidators();
+        const [validatorsResult, currentSlot] = await Promise.all([
+            rpc.getValidators(),
+            rpc.getSlot(),
+        ]);
         const validators = validatorsResult && validatorsResult.validators ? validatorsResult.validators : validatorsResult;
         const validatorCount = validatorsResult && validatorsResult.count !== undefined
             ? validatorsResult.count
@@ -57,7 +60,7 @@ async function loadValidators() {
             return;
         }
 
-        validatorCurrentSlot = await rpc.getSlot();
+        validatorCurrentSlot = currentSlot;
 
         // Update stats
         document.getElementById('totalValidators').textContent = validatorCount;

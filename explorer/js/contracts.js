@@ -98,24 +98,13 @@ async function loadContracts() {
             if (signedEntry && signedEntry.program) signedByProgram[signedEntry.program] = signedEntry;
         }
 
-        // Enrich each program with contract info + registry
-        var enrichPromises = programs.map(async function (prog) {
+        // getAllContracts already includes cheap account-derived summary fields.
+        // Keep full ABI/details on the single-contract page to avoid N+1 RPC calls here.
+        allContracts = programs.map(function (prog) {
             var pid = prog.program_id || prog.program || prog.address || '';
             var reg = regByProgram[pid] || null;
             var signed = signedByProgram[pid] || null;
-            var info = null;
-            var abi = null;
 
-            try {
-                var fetched = await Promise.all([
-                    trustedRpcCall('getContractInfo', [pid]).catch(function () { return null; }),
-                    rpc.call('getContractAbi', [pid]).catch(function () { return null; }),
-                ]);
-                info = fetched[0];
-                abi = fetched[1];
-            } catch (e) { }
-
-            var tokenMetadata = (info && info.token_metadata && typeof info.token_metadata === 'object') ? info.token_metadata : {};
             var registryMetadata = (reg && reg.metadata && typeof reg.metadata === 'object') ? reg.metadata : {};
             var signedMetadata = (signed && signed.metadata && typeof signed.metadata === 'object') ? signed.metadata : {};
             var programMetadata = (prog && prog.metadata && typeof prog.metadata === 'object') ? prog.metadata : {};
@@ -124,17 +113,13 @@ async function loadContracts() {
                 || (signed && signed.template)
                 || prog.template
                 || programMetadata.template
-                || tokenMetadata.template
                 || '';
             var category = TEMPLATE_CATEGORIES[template] || 'infra';
             var iconClass = TEMPLATE_ICONS[template] || 'fa-file-code';
 
-            // Registry name takes priority over ABI name (ABI extraction defaults to "unknown")
-            var abiName = (abi && abi.name && abi.name !== 'unknown') ? abi.name : '';
             var name = (reg && reg.name)
                 || (signed && signed.name)
                 || prog.name
-                || abiName
                 || registryMetadata.name
                 || signedMetadata.name
                 || programMetadata.name
@@ -142,7 +127,6 @@ async function loadContracts() {
             var symbol = (reg && reg.symbol)
                 || (signed && signed.symbol)
                 || prog.symbol
-                || tokenMetadata.token_symbol
                 || registryMetadata.symbol
                 || signedMetadata.symbol
                 || programMetadata.symbol
@@ -156,14 +140,12 @@ async function loadContracts() {
                 category: category,
                 iconClass: iconClass,
                 template: template,
-                codeSize: (info && info.code_size) ? info.code_size : 0,
-                abiFuncs: (info && info.abi_functions) ? info.abi_functions : ((abi && abi.functions) ? abi.functions.length : 0),
-                owner: (info && info.owner) ? info.owner : ((reg && reg.owner) ? reg.owner : ((signed && signed.owner) ? signed.owner : (prog.owner || ''))),
-                deployedAt: (info && info.deployed_at) ? info.deployed_at : null,
+                codeSize: Number(prog.code_size || 0),
+                abiFuncs: Number(prog.abi_functions || 0),
+                owner: prog.owner || ((reg && reg.owner) ? reg.owner : ((signed && signed.owner) ? signed.owner : '')),
+                deployedAt: prog.deployed_at || null,
             };
         });
-
-        allContracts = await Promise.all(enrichPromises);
 
         // Sort by name
         allContracts.sort(function (a, b) {

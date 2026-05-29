@@ -295,6 +295,9 @@ fn app_with_state() -> (axum::Router, String) {
     state
         .put_account(&contract_prog, &contract_acct)
         .expect("put contract");
+    state
+        .index_program(&contract_prog)
+        .expect("index test contract");
 
     // Register symbol
     state
@@ -2770,6 +2773,9 @@ fn app_with_rich_state() -> (axum::Router, StateStore, String, String, String, S
         .put_account(&contract_prog, &contract_acct)
         .expect("put contract");
     state
+        .index_program(&contract_prog)
+        .expect("index test contract");
+    state
         .register_symbol(
             "TST",
             SymbolRegistryEntry {
@@ -3396,10 +3402,34 @@ async fn test_native_get_all_contracts_has_entry() {
     assert_valid_rpc(&resp);
     let result = &resp["result"];
     assert!(!result.is_null(), "getAllContracts should return data");
-    // Should contain at least our deployed contract
-    if let Some(arr) = result.as_array() {
-        assert!(!arr.is_empty(), "should have at least 1 contract");
-    }
+
+    let contracts = result["contracts"]
+        .as_array()
+        .expect("getAllContracts should return contracts array");
+    assert!(!contracts.is_empty(), "should have at least 1 contract");
+
+    let contract_id = Pubkey([99u8; 32]).to_base58();
+    let entry = contracts
+        .iter()
+        .find(|contract| contract["program_id"] == contract_id)
+        .expect("should include test contract");
+
+    assert_eq!(entry["symbol"], "TST");
+    assert_eq!(entry["name"], "Test Contract");
+    assert_eq!(entry["owner"], Pubkey([2u8; 32]).to_base58());
+    assert_eq!(entry["is_executable"], true);
+    assert_eq!(entry["has_abi"], false);
+    assert_eq!(entry["abi_functions"], 0);
+    assert_eq!(entry["version"], 1);
+    assert_eq!(entry["lifecycle_status"], "active");
+    assert!(
+        entry["code_size"].as_u64().unwrap_or(0) > 0,
+        "summary should include encoded account data size"
+    );
+    assert!(
+        entry["code_hash"].as_str().unwrap_or("").len() == 64,
+        "summary should include contract code hash"
+    );
 }
 
 // ── getSymbolRegistry returns registered TST symbol ──────────────────────────
