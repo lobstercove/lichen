@@ -177,6 +177,11 @@ for bin in lichen-validator lichen-genesis lichen zk-prove; do
   test -x "$root/$bin"
   sudo install -m 755 "$root/$bin" "/usr/local/bin/$bin"
 done
+for bin in lichen-custody lichen-faucet; do
+  if [ -x "$root/$bin" ]; then
+    sudo install -m 755 "$root/$bin" "/usr/local/bin/$bin"
+  fi
+done
 
 if [ -f "$root/seeds.json" ]; then
   sudo install -m 644 "$root/seeds.json" /etc/lichen/seeds.json
@@ -308,6 +313,35 @@ exit 1
 REMOTE
 }
 
+restart_faucet_if_local() {
+  local host="$1"
+  if [ "$NETWORK" != "testnet" ]; then
+    return 0
+  fi
+
+  echo "Refresh faucet after validator health ${host}"
+  ssh_run "$host" "bash -s" <<'REMOTE'
+set -euo pipefail
+if ! systemctl list-unit-files lichen-faucet.service >/dev/null 2>&1; then
+  exit 0
+fi
+if ! systemctl is-enabled --quiet lichen-faucet.service 2>/dev/null && \
+   ! systemctl is-active --quiet lichen-faucet.service 2>/dev/null; then
+  exit 0
+fi
+
+sudo systemctl restart lichen-faucet.service
+for _ in $(seq 1 30); do
+  if curl -fsS "http://127.0.0.1:9100/health" >/dev/null; then
+    exit 0
+  fi
+  sleep 1
+done
+echo "Faucet did not become healthy after restart."
+exit 1
+REMOTE
+}
+
 public_smoke() {
   local public_url
   case "$NETWORK" in
@@ -395,6 +429,7 @@ for host in $HOSTS; do
   install_host "$host"
   wait_healthy "$host"
   restart_custody_if_local "$host"
+  restart_faucet_if_local "$host"
 done
 
 public_smoke

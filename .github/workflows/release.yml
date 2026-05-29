@@ -92,6 +92,10 @@ jobs:
       - name: Build release binary
         run: cargo build --release --target ${{ matrix.target }} --bin lichen-validator --bin lichen-genesis --bin lichen --bin zk-prove
 
+      - name: Build Linux service binaries
+        if: startsWith(matrix.os, 'ubuntu')
+        run: cargo build --release --target ${{ matrix.target }} --bin lichen-custody --bin lichen-faucet
+
       - name: Download genesis contract bundle
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
@@ -105,6 +109,8 @@ jobs:
           strip target/${{ matrix.target }}/release/lichen-genesis
           strip target/${{ matrix.target }}/release/lichen
           strip target/${{ matrix.target }}/release/zk-prove
+          strip target/${{ matrix.target }}/release/lichen-custody
+          strip target/${{ matrix.target }}/release/lichen-faucet
 
       - name: Strip binary (Linux aarch64)
         if: matrix.target == 'aarch64-unknown-linux-gnu'
@@ -113,6 +119,8 @@ jobs:
           aarch64-linux-gnu-strip target/${{ matrix.target }}/release/lichen-genesis
           aarch64-linux-gnu-strip target/${{ matrix.target }}/release/lichen
           aarch64-linux-gnu-strip target/${{ matrix.target }}/release/zk-prove
+          aarch64-linux-gnu-strip target/${{ matrix.target }}/release/lichen-custody
+          aarch64-linux-gnu-strip target/${{ matrix.target }}/release/lichen-faucet
 
       - name: Strip binary (macOS)
         if: startsWith(matrix.os, 'macos')
@@ -130,6 +138,11 @@ jobs:
           cp target/${{ matrix.target }}/release/lichen-genesis ${{ matrix.artifact }}/
           cp target/${{ matrix.target }}/release/lichen ${{ matrix.artifact }}/
           cp target/${{ matrix.target }}/release/zk-prove ${{ matrix.artifact }}/
+          for bin in lichen-custody lichen-faucet; do
+            if [ -x "target/${{ matrix.target }}/release/$bin" ]; then
+              cp "target/${{ matrix.target }}/release/$bin" ${{ matrix.artifact }}/
+            fi
+          done
           cp seeds.json ${{ matrix.artifact }}/
           cp -R release-contracts/contracts ${{ matrix.artifact }}/contracts
           tar czf ${{ matrix.artifact }}.tar.gz ${{ matrix.artifact }}
@@ -241,7 +254,8 @@ jobs:
             ```
 
             Each archive includes `lichen-validator`, `lichen-genesis`, `lichen`, `zk-prove`,
-            `seeds.json`, and the genesis contract WASM bundle under `contracts/`.
+            `seeds.json`, and the genesis contract WASM bundle under `contracts/`. Linux
+            archives also include `lichen-custody` and `lichen-faucet` for VPS service rollouts.
             Install `seeds.json` under your chosen `--db-path` (or `/etc/lichen/seeds.json`)
             so seed-set updates flow through normal release upgrades.
 
