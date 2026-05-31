@@ -141,8 +141,9 @@ use evm_support::to_be_bytes;
 use evm_support::{
     build_evm_signed_transaction, build_evm_signed_transaction_with_data, derive_evm_address,
     derive_evm_signing_key, evm_encode_erc20_transfer, evm_estimate_gas, evm_get_balance,
-    evm_get_block_number, evm_get_chain_id, evm_get_gas_price, evm_get_transaction_count,
-    evm_get_transaction_receipt, evm_get_transfer_logs, evm_rpc_call, parse_evm_address,
+    evm_get_block_number, evm_get_chain_id, evm_get_erc20_balance, evm_get_gas_price,
+    evm_get_transaction_count, evm_get_transaction_receipt, evm_get_transfer_logs, evm_rpc_call,
+    parse_evm_address,
 };
 use hex_support::{parse_hex_u128, parse_hex_u64};
 use job_models::{
@@ -229,7 +230,7 @@ use webhook_support::{
 };
 use webhook_support::{create_webhook, delete_webhook, list_webhooks, webhook_dispatcher_loop};
 use withdrawal_api_support::{
-    confirm_withdrawal_operator, create_withdrawal, submit_burn_signature,
+    confirm_withdrawal_operator, create_withdrawal, get_withdrawal, submit_burn_signature,
 };
 #[cfg(test)]
 use withdrawal_api_support::{BurnSignaturePayload, WithdrawalOperatorConfirmationPayload};

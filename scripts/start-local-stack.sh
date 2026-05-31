@@ -16,11 +16,13 @@ export PATH
 NETWORK=${1:-testnet}
 NETWORK=$(echo "$NETWORK" | tr '[:upper:]' '[:lower:]')
 SOLANA_RPC_URL=${2:-${CUSTODY_SOLANA_RPC_URL:-}}
-EVM_RPC_URL=${3:-${CUSTODY_EVM_RPC_URL:-}}
+EVM_RPC_URL=${3:-${CUSTODY_ETH_RPC_URL:-${CUSTODY_EVM_RPC_URL:-}}}
 NEOX_RPC_URL=${4:-${CUSTODY_NEOX_RPC_URL:-}}
+BNB_RPC_URL="${CUSTODY_BNB_RPC_URL:-}"
 LOCAL_SOLANA_RPC_PORT="${LICHEN_LOCAL_SOLANA_RPC_PORT:-18899}"
 LOCAL_EVM_RPC_PORT="${LICHEN_LOCAL_EVM_RPC_PORT:-18545}"
 LOCAL_NEOX_RPC_PORT="${LICHEN_LOCAL_NEOX_RPC_PORT:-18546}"
+LOCAL_BNB_RPC_PORT="${LICHEN_LOCAL_BNB_RPC_PORT:-18547}"
 
 case $NETWORK in
   testnet)
@@ -184,6 +186,7 @@ mkdir -p "$LOG_DIR"
 CUSTODY_PID=""
 LOCAL_SOLANA_RPC_PID=""
 LOCAL_EVM_RPC_PID=""
+LOCAL_BNB_RPC_PID=""
 LOCAL_NEOX_RPC_PID=""
 LOCAL_AIRDROPS_FILE="${LOG_DIR}/airdrops.json"
 if [ "$LOCAL_CLUSTER_RESET" = "1" ]; then
@@ -250,7 +253,10 @@ if [ -n "$SOLANA_RPC_URL" ]; then
   export CUSTODY_SOLANA_RPC_URL="$SOLANA_RPC_URL"
 fi
 if [ -n "$EVM_RPC_URL" ]; then
-  export CUSTODY_EVM_RPC_URL="$EVM_RPC_URL"
+  export CUSTODY_ETH_RPC_URL="$EVM_RPC_URL"
+fi
+if [ -n "$BNB_RPC_URL" ]; then
+  export CUSTODY_BNB_RPC_URL="$BNB_RPC_URL"
 fi
 if [ -n "$NEOX_RPC_URL" ]; then
   export CUSTODY_NEOX_RPC_URL="$NEOX_RPC_URL"
@@ -270,6 +276,9 @@ cleanup_started_processes() {
   fi
   if [ -n "${LOCAL_EVM_RPC_PID:-}" ]; then
     kill "$LOCAL_EVM_RPC_PID" 2>/dev/null || true
+  fi
+  if [ -n "${LOCAL_BNB_RPC_PID:-}" ]; then
+    kill "$LOCAL_BNB_RPC_PID" 2>/dev/null || true
   fi
   if [ -n "${LOCAL_NEOX_RPC_PID:-}" ]; then
     kill "$LOCAL_NEOX_RPC_PID" 2>/dev/null || true
@@ -558,7 +567,7 @@ if [ -z "$SOLANA_RPC_URL" ]; then
 fi
 export CUSTODY_SOLANA_RPC_URL="$SOLANA_RPC_URL"
 export CUSTODY_SOLANA_USDC_MINT="${CUSTODY_SOLANA_USDC_MINT:-EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v}"
-export CUSTODY_SOLANA_USDT_MINT="${CUSTODY_SOLANA_USDT_MINT:-Es9vMFrzaCER3FXvxuauYhVNiVw9g8Y3V9D2n7sGdG8d}"
+export CUSTODY_SOLANA_USDT_MINT="${CUSTODY_SOLANA_USDT_MINT:-Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB}"
 
 if ! wait_for_solana_rpc "$SOLANA_RPC_URL" "local Solana-compatible RPC" "$LOCAL_HEALTH_TIMEOUT_SECS"; then
   cleanup_started_processes
@@ -569,15 +578,32 @@ if [ -z "$EVM_RPC_URL" ]; then
   EVM_RPC_URL="http://127.0.0.1:${LOCAL_EVM_RPC_PORT}"
   LOCAL_EVM_RPC_PID="$(start_detached_process "${LOG_DIR}/evm-rpc.log" \
     env LICHEN_LOCAL_EVM_PORT="$LOCAL_EVM_RPC_PORT" \
+      LICHEN_LOCAL_EVM_CHAIN_ID="${CUSTODY_ETH_CHAIN_ID:-1}" \
     python3 "${SCRIPT_DIR}/local-evm-rpc-mock.py")"
 fi
-export CUSTODY_EVM_RPC_URL="$EVM_RPC_URL"
+export CUSTODY_ETH_RPC_URL="$EVM_RPC_URL"
+export CUSTODY_ETH_CHAIN_ID="${CUSTODY_ETH_CHAIN_ID:-1}"
 export CUSTODY_ETH_USDC_TOKEN_ADDR="${CUSTODY_ETH_USDC_TOKEN_ADDR:-0x2222222222222222222222222222222222222222}"
 export CUSTODY_ETH_USDT_TOKEN_ADDR="${CUSTODY_ETH_USDT_TOKEN_ADDR:-0x3333333333333333333333333333333333333333}"
+
+if [ -z "$BNB_RPC_URL" ]; then
+  BNB_RPC_URL="http://127.0.0.1:${LOCAL_BNB_RPC_PORT}"
+  LOCAL_BNB_RPC_PID="$(start_detached_process "${LOG_DIR}/bnb-rpc.log" \
+    env LICHEN_LOCAL_EVM_PORT="$LOCAL_BNB_RPC_PORT" \
+      LICHEN_LOCAL_EVM_CHAIN_ID="${CUSTODY_BNB_CHAIN_ID:-56}" \
+    python3 "${SCRIPT_DIR}/local-evm-rpc-mock.py")"
+fi
+export CUSTODY_BNB_RPC_URL="$BNB_RPC_URL"
+export CUSTODY_BNB_CHAIN_ID="${CUSTODY_BNB_CHAIN_ID:-56}"
 export CUSTODY_BSC_USDC_TOKEN_ADDR="${CUSTODY_BSC_USDC_TOKEN_ADDR:-0x4444444444444444444444444444444444444444}"
 export CUSTODY_BSC_USDT_TOKEN_ADDR="${CUSTODY_BSC_USDT_TOKEN_ADDR:-0x5555555555555555555555555555555555555555}"
 
-if ! wait_for_evm_rpc "$EVM_RPC_URL" "local EVM RPC" "$LOCAL_HEALTH_TIMEOUT_SECS"; then
+if ! wait_for_evm_rpc "$EVM_RPC_URL" "local Ethereum RPC" "$LOCAL_HEALTH_TIMEOUT_SECS"; then
+  cleanup_started_processes
+  exit 1
+fi
+
+if ! wait_for_evm_rpc "$BNB_RPC_URL" "local BNB RPC" "$LOCAL_HEALTH_TIMEOUT_SECS"; then
   cleanup_started_processes
   exit 1
 fi
@@ -662,7 +688,11 @@ if [ -n "$LOCAL_SOLANA_RPC_PID" ]; then
 fi
 echo "EVM RPC: $EVM_RPC_URL"
 if [ -n "$LOCAL_EVM_RPC_PID" ]; then
-  echo "Local EVM RPC PID: $LOCAL_EVM_RPC_PID (port $LOCAL_EVM_RPC_PORT)"
+  echo "Local Ethereum RPC PID: $LOCAL_EVM_RPC_PID (port $LOCAL_EVM_RPC_PORT)"
+fi
+echo "BNB RPC: $BNB_RPC_URL"
+if [ -n "$LOCAL_BNB_RPC_PID" ]; then
+  echo "Local BNB RPC PID: $LOCAL_BNB_RPC_PID (port $LOCAL_BNB_RPC_PORT)"
 fi
 echo "Neo X RPC: $NEOX_RPC_URL"
 if [ -n "$LOCAL_NEOX_RPC_PID" ]; then

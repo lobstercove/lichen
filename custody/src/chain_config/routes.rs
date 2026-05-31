@@ -2,6 +2,8 @@ use super::*;
 
 #[cfg(test)]
 pub(crate) const NEOX_MAINNET_CHAIN_ID: u64 = 47_763;
+pub(crate) const ETH_MAINNET_CHAIN_ID: u64 = 1;
+pub(crate) const BNB_MAINNET_CHAIN_ID: u64 = 56;
 pub(crate) const NEOX_TESTNET_T4_CHAIN_ID: u64 = 12_227_332;
 
 const ETH_ALIASES: &[&str] = &["ethereum", "eth"];
@@ -75,7 +77,7 @@ pub(crate) fn evm_route_for_chain(config: &CustodyConfig, chain: &str) -> Option
             canonical_chain: "ethereum",
             aliases,
             native_asset,
-            chain_id: 1,
+            chain_id: config.eth_chain_id,
             rpc_url: config.eth_rpc_url.clone().or_else(generic_rpc),
             confirmations: config.evm_confirmations,
             treasury_address: config
@@ -89,7 +91,7 @@ pub(crate) fn evm_route_for_chain(config: &CustodyConfig, chain: &str) -> Option
             canonical_chain: "bsc",
             aliases,
             native_asset,
-            chain_id: 56,
+            chain_id: config.bnb_chain_id,
             rpc_url: config.bnb_rpc_url.clone().or_else(generic_rpc),
             confirmations: config.evm_confirmations,
             treasury_address: config

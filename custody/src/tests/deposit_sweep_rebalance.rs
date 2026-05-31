@@ -1,5 +1,7 @@
 use super::*;
-use crate::chain_config::{NEOX_MAINNET_CHAIN_ID, NEOX_TESTNET_T4_CHAIN_ID};
+use crate::chain_config::{
+    BNB_MAINNET_CHAIN_ID, ETH_MAINNET_CHAIN_ID, NEOX_MAINNET_CHAIN_ID, NEOX_TESTNET_T4_CHAIN_ID,
+};
 
 #[tokio::test]
 async fn test_create_deposit_uses_dedicated_deposit_seed_and_persists_source() {
@@ -904,8 +906,33 @@ fn test_bip44_derivation_path() {
 
 #[test]
 fn test_neox_chain_id_constants_match_official_networks() {
+    assert_eq!(ETH_MAINNET_CHAIN_ID, 1);
+    assert_eq!(BNB_MAINNET_CHAIN_ID, 56);
     assert_eq!(NEOX_TESTNET_T4_CHAIN_ID, 12_227_332);
     assert_eq!(NEOX_MAINNET_CHAIN_ID, 47_763);
+}
+
+#[test]
+fn test_evm_route_chain_ids_are_configurable_for_source_testnets() {
+    let mut config = test_config();
+
+    assert_eq!(
+        evm_route_for_chain(&config, "ethereum").unwrap().chain_id,
+        ETH_MAINNET_CHAIN_ID
+    );
+    assert_eq!(
+        evm_route_for_chain(&config, "bsc").unwrap().chain_id,
+        BNB_MAINNET_CHAIN_ID
+    );
+
+    config.eth_chain_id = 11_155_111;
+    config.bnb_chain_id = 97;
+
+    assert_eq!(
+        evm_route_for_chain(&config, "eth").unwrap().chain_id,
+        11_155_111
+    );
+    assert_eq!(evm_route_for_chain(&config, "bnb").unwrap().chain_id, 97);
 }
 
 #[test]

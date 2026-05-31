@@ -22,6 +22,14 @@ pub(crate) fn load_config() -> CustodyConfig {
     let treasury_bnb_address = std::env::var("CUSTODY_TREASURY_BNB").ok();
     let eth_rpc_url = std::env::var("CUSTODY_ETH_RPC_URL").ok();
     let bnb_rpc_url = std::env::var("CUSTODY_BNB_RPC_URL").ok();
+    let eth_chain_id = std::env::var("CUSTODY_ETH_CHAIN_ID")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(ETH_MAINNET_CHAIN_ID);
+    let bnb_chain_id = std::env::var("CUSTODY_BNB_CHAIN_ID")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(BNB_MAINNET_CHAIN_ID);
     let neox_rpc_url = std::env::var("CUSTODY_NEOX_RPC_URL").ok();
     let neox_chain_id = std::env::var("CUSTODY_NEOX_CHAIN_ID")
         .ok()
@@ -154,6 +162,8 @@ pub(crate) fn load_config() -> CustodyConfig {
         evm_rpc_url,
         eth_rpc_url,
         bnb_rpc_url,
+        eth_chain_id,
+        bnb_chain_id,
         neox_rpc_url,
         neox_chain_id,
         solana_confirmations,

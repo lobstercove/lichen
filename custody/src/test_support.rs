@@ -1,5 +1,5 @@
 use super::*;
-use crate::chain_config::NEOX_TESTNET_T4_CHAIN_ID;
+use crate::chain_config::{BNB_MAINNET_CHAIN_ID, ETH_MAINNET_CHAIN_ID, NEOX_TESTNET_T4_CHAIN_ID};
 
 pub(super) fn test_withdrawal_velocity_policy() -> WithdrawalVelocityPolicy {
     WithdrawalVelocityPolicy {
@@ -20,6 +20,8 @@ pub(super) fn test_config() -> CustodyConfig {
         evm_rpc_url: Some("http://localhost:8545".to_string()),
         eth_rpc_url: None,
         bnb_rpc_url: None,
+        eth_chain_id: ETH_MAINNET_CHAIN_ID,
+        bnb_chain_id: BNB_MAINNET_CHAIN_ID,
         neox_rpc_url: None,
         neox_chain_id: NEOX_TESTNET_T4_CHAIN_ID,
         solana_confirmations: 1,
@@ -34,7 +36,7 @@ pub(super) fn test_config() -> CustodyConfig {
         solana_fee_payer_keypair_path: Some("/tmp/fee.json".to_string()),
         solana_treasury_owner: Some("TEST_OWNER".to_string()),
         solana_usdc_mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".to_string(),
-        solana_usdt_mint: "Es9vMFrzaCER3FXvxuauYhVNiVw9g8Y3V9D2n7sGdG8d".to_string(),
+        solana_usdt_mint: "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB".to_string(),
         evm_usdc_contract: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48".to_string(),
         evm_usdt_contract: "0xdAC17F958D2ee523a2206206994597C13D831ec7".to_string(),
         bnb_usdc_contract: Some("0x2222222222222222222222222222222222222222".to_string()),

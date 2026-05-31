@@ -643,6 +643,64 @@ async fn test_process_withdrawal_jobs_expires_stale_pending_burn_and_releases_bu
 }
 
 #[tokio::test]
+async fn test_process_withdrawal_jobs_accepts_neox_wgas_and_wneo_burn_contracts() {
+    for (asset, contract, amount) in [
+        ("wGAS", "wrapped-wgas-contract", 1_000_000_000),
+        ("wNEO", "wrapped-wneo-contract", 2_000_000_000),
+    ] {
+        let mut state = test_state();
+        let licn_requests = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let licn_app: Router = Router::new()
+            .route("/", post(mock_licn_rpc_handler))
+            .with_state(MockLichenRpcState {
+                transaction_result: json!({
+                    "status": "Success",
+                    "to": contract,
+                    "from": "11111111111111111111111111111111",
+                    "contract_function": "burn",
+                    "token_amount_spores": amount,
+                }),
+                requests: licn_requests,
+            });
+        let licn_rpc_url = spawn_mock_server(licn_app).await;
+
+        state.config.licn_rpc_url = Some(licn_rpc_url);
+        state.config.wgas_contract_addr = Some("wrapped-wgas-contract".to_string());
+        state.config.wneo_contract_addr = Some("wrapped-wneo-contract".to_string());
+        state.config.withdrawal_velocity_policy.elevated_delay_secs = 600;
+
+        let mut job = test_withdrawal_job();
+        job.job_id = format!("withdrawal-neox-{}-burn", asset.to_ascii_lowercase());
+        job.user_id = "11111111111111111111111111111111".to_string();
+        job.asset = asset.to_string();
+        job.amount = amount;
+        job.dest_chain = "neox".to_string();
+        job.dest_address = "0x3333333333333333333333333333333333333333".to_string();
+        job.burn_tx_signature = Some(format!("burn-{}", asset.to_ascii_lowercase()));
+        job.status = "pending_burn".to_string();
+        job.velocity_tier = WithdrawalVelocityTier::Elevated;
+        store_withdrawal_job(&state.db, &job).expect("store pending Neo X withdrawal job");
+
+        process_withdrawal_jobs(&state)
+            .await
+            .expect("process Neo X withdrawal burn");
+
+        let stored_job = fetch_withdrawal_job(&state.db, &job.job_id)
+            .expect("fetch Neo X withdrawal job")
+            .expect("Neo X withdrawal job should exist");
+        assert_eq!(stored_job.status, "burned");
+        assert!(stored_job.burn_confirmed_at.is_some());
+        assert_eq!(
+            stored_job.release_after,
+            stored_job
+                .burn_confirmed_at
+                .map(|confirmed_at| confirmed_at + 600)
+        );
+        assert!(stored_job.outbound_tx_hash.is_none());
+    }
+}
+
+#[tokio::test]
 async fn test_process_signing_withdrawals_requires_tx_intent_before_broadcast() {
     let db_path = test_db_path();
     let _ = DB::destroy(&Options::default(), &db_path);

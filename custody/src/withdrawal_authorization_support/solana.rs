@@ -7,7 +7,7 @@ fn solana_treasury_owner_address(config: &CustodyConfig) -> Result<String, Strin
         .clone()
         .or_else(|| config.treasury_solana_address.clone())
         .ok_or_else(|| {
-            "missing Solana treasury owner (set CUSTODY_SOLANA_TREASURY_OWNER or CUSTODY_TREASURY_SOLANA_ADDRESS)"
+            "missing Solana treasury owner (set CUSTODY_SOLANA_TREASURY_OWNER or CUSTODY_TREASURY_SOLANA)"
                 .to_string()
         })
 }
@@ -80,7 +80,7 @@ pub(crate) fn build_threshold_solana_withdrawal_message(
             .config
             .treasury_solana_address
             .as_ref()
-            .ok_or_else(|| "missing CUSTODY_TREASURY_SOLANA_ADDRESS".to_string())?;
+            .ok_or_else(|| "missing CUSTODY_TREASURY_SOLANA".to_string())?;
         let from_pubkey = decode_solana_pubkey(treasury_address)?;
         let to_pubkey = decode_solana_pubkey(&job.dest_address)?;
         let transfer_amount = job.amount - solana_tx_fee;

@@ -32,7 +32,7 @@ pub(crate) async fn solana_get_signature_status(
     url: &str,
     signature: &str,
 ) -> Result<SignatureStatus, String> {
-    let params = json!([[signature]]);
+    let params = json!([[signature], { "searchTransactionHistory": true }]);
     let result = solana_rpc_call(client, url, "getSignatureStatuses", params).await?;
     let value = result
         .get("value")
@@ -43,7 +43,11 @@ pub(crate) async fn solana_get_signature_status(
         .and_then(|value| value.get("confirmations"))
         .and_then(|value| value.as_u64());
     let confirmation_status = value
-        .and_then(|value| value.get("confirmation_status"))
+        .and_then(|value| {
+            value
+                .get("confirmationStatus")
+                .or_else(|| value.get("confirmation_status"))
+        })
         .and_then(|value| value.as_str())
         .map(|value| value.to_string());
     Ok(SignatureStatus {
@@ -129,8 +133,12 @@ pub(crate) async fn solana_get_signature_confirmed(
     url: &str,
     signature: &str,
 ) -> Result<Option<bool>, String> {
-    let params = json!([[signature]]);
+    let params = json!([[signature], { "searchTransactionHistory": true }]);
     let result = solana_rpc_call(client, url, "getSignatureStatuses", params).await?;
+    solana_signature_confirmation_result(&result)
+}
+
+fn solana_signature_confirmation_result(result: &Value) -> Result<Option<bool>, String> {
     let value = result
         .get("value")
         .and_then(|value| value.as_array())
@@ -139,12 +147,23 @@ pub(crate) async fn solana_get_signature_confirmed(
     if value.is_none() {
         return Ok(None);
     }
+    let value = value.expect("checked above");
+
+    if value.get("err").is_some_and(|err| !err.is_null()) {
+        return Ok(Some(false));
+    }
+
     let confirmed = value
-        .and_then(|value| value.get("confirmation_status"))
+        .get("confirmationStatus")
+        .or_else(|| value.get("confirmation_status"))
         .and_then(|value| value.as_str())
         .map(|status| status == "finalized")
         .unwrap_or(false);
-    Ok(Some(confirmed))
+    if confirmed {
+        return Ok(Some(true));
+    }
+
+    Ok(None)
 }
 
 pub(crate) async fn solana_get_latest_blockhash(
@@ -159,6 +178,80 @@ pub(crate) async fn solana_get_latest_blockhash(
         .and_then(|field| field.as_str())
         .ok_or_else(|| "missing blockhash".to_string())?;
     decode_solana_pubkey(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::solana_signature_confirmation_result;
+    use serde_json::json;
+
+    #[test]
+    fn solana_signature_confirmation_waits_until_finalized() {
+        let pending = json!({
+            "value": [{
+                "slot": 123,
+                "confirmations": 4,
+                "confirmation_status": "confirmed",
+                "err": null
+            }]
+        });
+
+        assert_eq!(
+            solana_signature_confirmation_result(&pending).expect("parse pending status"),
+            None
+        );
+    }
+
+    #[test]
+    fn solana_signature_confirmation_marks_finalized_success() {
+        let finalized = json!({
+            "value": [{
+                "slot": 123,
+                "confirmations": null,
+                "confirmation_status": "finalized",
+                "err": null
+            }]
+        });
+
+        assert_eq!(
+            solana_signature_confirmation_result(&finalized).expect("parse finalized status"),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn solana_signature_confirmation_accepts_rpc_camel_case() {
+        let finalized = json!({
+            "value": [{
+                "slot": 123,
+                "confirmations": null,
+                "confirmationStatus": "finalized",
+                "err": null
+            }]
+        });
+
+        assert_eq!(
+            solana_signature_confirmation_result(&finalized).expect("parse finalized status"),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn solana_signature_confirmation_marks_chain_error_failed() {
+        let failed = json!({
+            "value": [{
+                "slot": 123,
+                "confirmations": null,
+                "confirmation_status": "finalized",
+                "err": {"InstructionError": [0, "InvalidAccountData"]}
+            }]
+        });
+
+        assert_eq!(
+            solana_signature_confirmation_result(&failed).expect("parse failed status"),
+            Some(false)
+        );
+    }
 }
 
 pub(crate) async fn solana_send_transaction(

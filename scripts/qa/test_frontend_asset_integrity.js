@@ -34,6 +34,7 @@ const CSP_CONNECT_ALLOWLIST = [
     'wss://testnet-rpc.lichen.network',
     'https://custody.lichen.network',
     'https://testnet-custody.lichen.network',
+    'https://custody-testnet.lichen.network',
     'https://explorer.lichen.network',
     'https://wallet.lichen.network',
     'https://marketplace.lichen.network',

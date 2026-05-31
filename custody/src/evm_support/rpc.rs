@@ -1,6 +1,6 @@
 use serde_json::{json, Value};
 
-use crate::{parse_hex_u128, parse_hex_u64};
+use crate::{parse_evm_address, parse_hex_u128, parse_hex_u64};
 
 pub(crate) async fn evm_get_balance(
     client: &reqwest::Client,
@@ -9,6 +9,35 @@ pub(crate) async fn evm_get_balance(
 ) -> Result<u128, String> {
     let params = json!([address, "latest"]);
     let result = evm_rpc_call(client, url, "eth_getBalance", params).await?;
+    let value = result.as_str().unwrap_or("0x0");
+    parse_hex_u128(value)
+}
+
+pub(crate) async fn evm_get_erc20_balance(
+    client: &reqwest::Client,
+    url: &str,
+    contract: &str,
+    address: &str,
+) -> Result<u128, String> {
+    let address = parse_evm_address(address)?;
+    let mut data = Vec::with_capacity(36);
+    data.extend_from_slice(&hex::decode("70a08231").map_err(|_| "selector".to_string())?);
+    data.extend_from_slice(&[0u8; 12]);
+    data.extend_from_slice(&address);
+
+    let result = evm_rpc_call(
+        client,
+        url,
+        "eth_call",
+        json!([
+            {
+                "to": contract,
+                "data": format!("0x{}", hex::encode(data)),
+            },
+            "latest"
+        ]),
+    )
+    .await?;
     let value = result.as_str().unwrap_or("0x0");
     parse_hex_u128(value)
 }

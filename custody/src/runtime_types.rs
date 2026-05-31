@@ -86,6 +86,12 @@ pub(super) struct CustodyConfig {
     pub(super) eth_rpc_url: Option<String>,
     /// Per-chain EVM RPC: BSC/BNB-specific (overrides evm_rpc_url for BNB deposits)
     pub(super) bnb_rpc_url: Option<String>,
+    /// Ethereum route chain ID. Defaults to Ethereum mainnet, but testnet
+    /// deployments can pin Sepolia or another explicitly selected source chain.
+    pub(super) eth_chain_id: u64,
+    /// BSC/BNB route chain ID. Defaults to BNB Smart Chain mainnet, but testnet
+    /// deployments can pin BSC testnet or another explicitly selected source chain.
+    pub(super) bnb_chain_id: u64,
     /// Per-chain EVM RPC: Neo X-specific.
     pub(super) neox_rpc_url: Option<String>,
     /// Neo X chain ID used for derivation domain separation and RPC checks.

@@ -7,6 +7,7 @@ pub(crate) fn build_custody_app(state: CustodyState) -> Router {
         .route("/deposits", post(create_deposit))
         .route("/deposits/:deposit_id", get(get_deposit))
         .route("/withdrawals", post(create_withdrawal))
+        .route("/withdrawals/:job_id", get(get_withdrawal))
         // AUDIT-FIX C4: Endpoint for clients to submit their Lichen burn tx signature.
         // Without this, withdrawal jobs stay in "pending_burn" forever because
         // burn_tx_signature starts as None and nothing ever populates it.

@@ -48,11 +48,14 @@ fn log_chain_configuration(config: &CustodyConfig) {
         "  ETH RPC:         {:?}",
         config.eth_rpc_url.as_ref().or(config.evm_rpc_url.as_ref())
     );
+    info!("  ETH Chain ID:    {}", config.eth_chain_id);
     info!(
         "  BNB RPC:         {:?}",
         config.bnb_rpc_url.as_ref().or(config.evm_rpc_url.as_ref())
     );
+    info!("  BNB Chain ID:    {}", config.bnb_chain_id);
     info!("  Neo X RPC:       {:?}", config.neox_rpc_url);
+    info!("  Neo X Chain ID:  {}", config.neox_chain_id);
     info!("  SOL Treasury:    {:?}", config.treasury_solana_address);
     info!(
         "  ETH Treasury:    {:?}",

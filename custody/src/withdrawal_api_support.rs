@@ -119,6 +119,22 @@ pub(super) async fn submit_burn_signature(
     submit_pending_burn_signature(&state, &job_id, payload.burn_tx_signature).await
 }
 
+pub(super) async fn get_withdrawal(
+    State(state): State<CustodyState>,
+    headers: axum::http::HeaderMap,
+    axum::extract::Path(job_id): axum::extract::Path<String>,
+) -> Result<Json<Value>, Json<ErrorResponse>> {
+    verify_api_auth(&state.config, &headers)?;
+
+    let Some(job) = fetch_withdrawal_job(&state.db, &job_id)
+        .map_err(|error| Json(ErrorResponse::db(&error)))?
+    else {
+        return Err(Json(ErrorResponse::not_found("Withdrawal not found")));
+    };
+
+    Ok(Json(json!({ "withdrawal": job })))
+}
+
 pub(super) async fn confirm_withdrawal_operator(
     State(state): State<CustodyState>,
     headers: axum::http::HeaderMap,

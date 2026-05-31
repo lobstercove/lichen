@@ -3723,6 +3723,128 @@ fn parse_contract_call_args(ix: &Instruction) -> Option<Vec<u8>> {
     Some(out)
 }
 
+fn json_value_as_u64(value: &serde_json::Value) -> Option<u64> {
+    value
+        .as_u64()
+        .or_else(|| value.as_str().and_then(|raw| raw.parse::<u64>().ok()))
+}
+
+fn token_amount_from_le_chunk(chunk: &[u8]) -> Option<u64> {
+    let mut raw = [0u8; 8];
+    match chunk.len() {
+        0 => None,
+        1 => Some(chunk[0] as u64),
+        2 => {
+            raw[..2].copy_from_slice(&chunk[..2]);
+            Some(u16::from_le_bytes(raw[..2].try_into().ok()?) as u64)
+        }
+        4 => {
+            raw[..4].copy_from_slice(&chunk[..4]);
+            Some(u32::from_le_bytes(raw[..4].try_into().ok()?) as u64)
+        }
+        _ => {
+            raw.copy_from_slice(&chunk[..8]);
+            Some(u64::from_le_bytes(raw))
+        }
+    }
+}
+
+fn pubkey_from_token_arg_chunk(chunk: &[u8]) -> Option<String> {
+    if chunk.len() < 32 {
+        return None;
+    }
+    Some(Pubkey::new(<[u8; 32]>::try_from(&chunk[..32]).ok()?).to_base58())
+}
+
+fn token_info_from_json_args(function: &str, args: &[u8]) -> Option<(u64, Option<String>)> {
+    if args.first() != Some(&b'[') {
+        return None;
+    }
+    let values: Vec<serde_json::Value> = serde_json::from_slice(args).ok()?;
+    match function {
+        "mint" if values.len() >= 3 => {
+            let amount = json_value_as_u64(&values[2])?;
+            let recipient = values[1].as_str().map(str::to_string);
+            Some((amount, recipient))
+        }
+        "burn" if values.len() >= 2 => Some((json_value_as_u64(&values[1])?, None)),
+        "transfer" if values.len() >= 3 => {
+            let amount = json_value_as_u64(&values[2])?;
+            let recipient = values[1].as_str().map(str::to_string);
+            Some((amount, recipient))
+        }
+        _ => None,
+    }
+}
+
+fn token_info_from_layout_args(function: &str, args: &[u8]) -> Option<(u64, Option<String>)> {
+    if args.first() != Some(&0xAB) {
+        return None;
+    }
+    let param_count = match function {
+        "burn" => 2,
+        "mint" | "transfer" => 3,
+        _ => return None,
+    };
+    if args.len() < 1 + param_count {
+        return None;
+    }
+
+    let layout = &args[1..1 + param_count];
+    let mut offset = 1 + param_count;
+    let mut chunks = Vec::with_capacity(param_count);
+    for stride in layout {
+        let stride = *stride as usize;
+        if stride == 0 || offset.saturating_add(stride) > args.len() {
+            return None;
+        }
+        chunks.push(&args[offset..offset + stride]);
+        offset += stride;
+    }
+
+    match function {
+        "mint" => Some((
+            token_amount_from_le_chunk(chunks[2])?,
+            pubkey_from_token_arg_chunk(chunks[1]),
+        )),
+        "burn" => Some((token_amount_from_le_chunk(chunks[1])?, None)),
+        "transfer" => Some((
+            token_amount_from_le_chunk(chunks[2])?,
+            pubkey_from_token_arg_chunk(chunks[1]),
+        )),
+        _ => None,
+    }
+}
+
+fn token_info_from_raw_args(function: &str, args: &[u8]) -> Option<(u64, Option<String>)> {
+    match function {
+        "mint" if args.len() >= 72 => {
+            // mint(caller: [u8;32], to: [u8;32], amount: u64)
+            let amt = u64::from_le_bytes(args[64..72].try_into().ok()?);
+            let to = Pubkey::new(<[u8; 32]>::try_from(&args[32..64]).ok()?);
+            Some((amt, Some(to.to_base58())))
+        }
+        "burn" if args.len() >= 40 => {
+            // burn(caller: [u8;32], amount: u64)
+            let amt = u64::from_le_bytes(args[32..40].try_into().ok()?);
+            Some((amt, None))
+        }
+        "transfer" if args.len() >= 72 => {
+            // transfer(from: [u8;32], to: [u8;32], amount: u64)
+            let amt = u64::from_le_bytes(args[64..72].try_into().ok()?);
+            let to = Pubkey::new(<[u8; 32]>::try_from(&args[32..64]).ok()?);
+            Some((amt, Some(to.to_base58())))
+        }
+        _ => None,
+    }
+}
+
+fn token_info_from_call_args(function: &str, args: &[u8]) -> Option<(u64, Option<String>)> {
+    token_info_from_json_args(function, args)
+        .or_else(|| token_info_from_layout_args(function, args))
+        .or_else(|| token_info_from_raw_args(function, args))
+}
+
 fn emit_prediction_events_from_tx(state: &RpcState, tx: &Transaction) {
     let predict_program = match state.state.get_symbol_registry("PREDICT") {
         Ok(Some(entry)) => entry.program,
@@ -3837,26 +3959,7 @@ fn extract_token_info(
         .unwrap_or(9);
     let function = parse_contract_function(ix)?;
     let args = parse_contract_call_args(ix)?;
-    let (amount, recipient) = match function.as_str() {
-        "mint" if args.len() >= 72 => {
-            // mint(caller: [u8;32], to: [u8;32], amount: u64)
-            let amt = u64::from_le_bytes(args[64..72].try_into().ok()?);
-            let to = Pubkey::new(<[u8; 32]>::try_from(&args[32..64]).ok()?);
-            (amt, Some(to.to_base58()))
-        }
-        "burn" if args.len() >= 40 => {
-            // burn(caller: [u8;32], amount: u64)
-            let amt = u64::from_le_bytes(args[32..40].try_into().ok()?);
-            (amt, None)
-        }
-        "transfer" if args.len() >= 72 => {
-            // transfer(from: [u8;32], to: [u8;32], amount: u64)
-            let amt = u64::from_le_bytes(args[64..72].try_into().ok()?);
-            let to = Pubkey::new(<[u8; 32]>::try_from(&args[32..64]).ok()?);
-            (amt, Some(to.to_base58()))
-        }
-        _ => return Some((entry.symbol.clone(), 0, decimals, None)),
-    };
+    let (amount, recipient) = token_info_from_call_args(&function, &args).unwrap_or((0, None));
     Some((entry.symbol.clone(), amount, decimals, recipient))
 }
 

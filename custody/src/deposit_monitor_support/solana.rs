@@ -4,7 +4,15 @@ pub(super) async fn process_solana_deposits(state: &CustodyState, url: &str) -> 
     let deposits = list_pending_deposits_for_chains(&state.db, &["solana", "sol"])?;
     for deposit in deposits {
         if is_solana_stablecoin(&deposit.asset) {
-            process_solana_token_deposit(state, url, &deposit).await?;
+            if let Err(error) = process_solana_token_deposit(state, url, &deposit).await {
+                tracing::warn!(
+                    "solana token deposit scan failed for deposit={} asset={} address={}: {}",
+                    deposit.deposit_id,
+                    deposit.asset,
+                    deposit.address,
+                    error
+                );
+            }
             continue;
         }
         let signatures =

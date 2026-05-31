@@ -245,7 +245,9 @@ for (const [relPath, expected] of Object.entries(validatorExpected)) {
 const custodyRouteKeys = [
   'CUSTODY_SOLANA_RPC_URL',
   'CUSTODY_ETH_RPC_URL',
+  'CUSTODY_ETH_CHAIN_ID',
   'CUSTODY_BNB_RPC_URL',
+  'CUSTODY_BNB_CHAIN_ID',
   'CUSTODY_EVM_RPC_URL',
   'CUSTODY_NEOX_RPC_URL',
   'CUSTODY_NEOX_CHAIN_ID',

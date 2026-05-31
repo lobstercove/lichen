@@ -27,12 +27,20 @@ pub(super) async fn check_solana_tx_confirmed(
         return Ok(false);
     }
 
+    solana_status_is_confirmed(&status, required_confirmations)
+}
+
+fn solana_status_is_confirmed(
+    status: &serde_json::Value,
+    required_confirmations: u64,
+) -> Result<bool, String> {
     if let Some(err) = status.get("err").filter(|value| !value.is_null()) {
         return Err(format!("solana transaction failed: {}", err));
     }
 
     let confirmation_status = status
-        .get("confirmation_status")
+        .get("confirmationStatus")
+        .or_else(|| status.get("confirmation_status"))
         .and_then(|value| value.as_str())
         .unwrap_or("unknown");
 
@@ -85,4 +93,32 @@ pub(super) async fn check_evm_tx_confirmed(
         .unwrap_or(0);
 
     Ok(current.saturating_sub(block_number) >= required_confirmations)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::solana_status_is_confirmed;
+    use serde_json::json;
+
+    #[test]
+    fn solana_confirmation_accepts_camel_case_finalized_status() {
+        let status = json!({
+            "confirmationStatus": "finalized",
+            "confirmations": null,
+            "err": null
+        });
+
+        assert!(solana_status_is_confirmed(&status, 32).expect("parse status"));
+    }
+
+    #[test]
+    fn solana_confirmation_accepts_legacy_snake_case_finalized_status() {
+        let status = json!({
+            "confirmation_status": "finalized",
+            "confirmations": null,
+            "err": null
+        });
+
+        assert!(solana_status_is_confirmed(&status, 32).expect("parse status"));
+    }
 }

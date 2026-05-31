@@ -13,6 +13,11 @@ pub(super) async fn process_evm_deposits_for_chains(
     {
         tracing::warn!("erc20 log scan failed (non-fatal): {}", error);
     }
+    if let Err(error) =
+        process_evm_erc20_balance_fallback(state, url, &deposits, block_number).await
+    {
+        tracing::warn!("erc20 balance fallback failed (non-fatal): {}", error);
+    }
 
     for deposit in deposits {
         if is_evm_token_asset(&deposit.chain, &deposit.asset) {
@@ -101,6 +106,11 @@ pub(super) async fn process_evm_deposits(state: &CustodyState, url: &str) -> Res
     {
         tracing::warn!("erc20 log scan failed (non-fatal): {}", error);
     }
+    if let Err(error) =
+        process_evm_erc20_balance_fallback(state, url, &deposits, block_number).await
+    {
+        tracing::warn!("erc20 balance fallback failed (non-fatal): {}", error);
+    }
 
     for deposit in deposits {
         if is_evm_token_asset(&deposit.chain, &deposit.asset) {
@@ -169,6 +179,114 @@ pub(super) async fn process_evm_deposits(state: &CustodyState, url: &str) -> Res
                     "address": deposit.address,
                     "user_id": deposit.user_id,
                     "amount": balance
+                })),
+            );
+        }
+    }
+
+    Ok(())
+}
+
+async fn process_evm_erc20_balance_fallback(
+    state: &CustodyState,
+    url: &str,
+    deposits: &[DepositRequest],
+    block_number: u64,
+) -> Result<(), String> {
+    for deposit in deposits
+        .iter()
+        .filter(|deposit| is_evm_token_asset(&deposit.chain, &deposit.asset))
+    {
+        let Some(current) = fetch_deposit(&state.db, &deposit.deposit_id)? else {
+            continue;
+        };
+        if current.status != "issued" && current.status != "pending" {
+            continue;
+        }
+
+        let contract = evm_token_contract_for_asset(&state.config, &deposit.chain, &deposit.asset)?;
+        let balance = evm_get_erc20_balance(&state.http, url, &contract, &deposit.address).await?;
+        if balance == 0 {
+            continue;
+        }
+
+        let balance_marker = u64::try_from(balance).ok();
+        let last_key = format!(
+            "erc20:{}:{}:{}",
+            canonical_evm_chain(&deposit.chain).unwrap_or("unknown"),
+            contract.to_lowercase(),
+            deposit.address.to_lowercase()
+        );
+        if let Some(balance_u64) = balance_marker {
+            if get_last_balance_with_key(&state.db, &last_key)? >= balance_u64 {
+                continue;
+            }
+        }
+
+        let synthetic_tx_hash = format!(
+            "erc20_balance:{}:{}:block:{}",
+            contract.to_lowercase(),
+            balance,
+            block_number
+        );
+        if deposit_event_already_processed(&state.db, &deposit.deposit_id, &synthetic_tx_hash) {
+            continue;
+        }
+
+        let sweep_job =
+            treasury_for_chain(&state.config, &deposit.chain).map(|treasury| SweepJob {
+                job_id: Uuid::new_v4().to_string(),
+                deposit_id: deposit.deposit_id.clone(),
+                chain: deposit.chain.clone(),
+                asset: deposit.asset.clone(),
+                from_address: deposit.address.clone(),
+                to_treasury: treasury,
+                tx_hash: synthetic_tx_hash.clone(),
+                amount: Some(balance.to_string()),
+                credited_amount: None,
+                signatures: Vec::new(),
+                sweep_tx_hash: None,
+                attempts: 0,
+                last_error: None,
+                next_attempt_at: None,
+                status: "queued".to_string(),
+                created_at: chrono::Utc::now().timestamp(),
+            });
+        let markers = balance_marker
+            .map(|balance| DepositObservationMarker::TokenBalance {
+                key: last_key,
+                balance,
+            })
+            .into_iter()
+            .collect::<Vec<_>>();
+        let observation = DepositObservationWrite {
+            event: DepositEvent {
+                event_id: Uuid::new_v4().to_string(),
+                deposit_id: deposit.deposit_id.clone(),
+                tx_hash: synthetic_tx_hash.clone(),
+                confirmations: state.config.evm_confirmations,
+                amount: u64::try_from(balance).ok(),
+                status: "confirmed".to_string(),
+                observed_at: chrono::Utc::now().timestamp(),
+            },
+            sweep_job,
+            markers,
+        };
+
+        if persist_deposit_observation(&state.db, &observation)? {
+            emit_custody_event(
+                state,
+                "deposit.confirmed",
+                &deposit.deposit_id,
+                Some(&deposit.deposit_id),
+                Some(&synthetic_tx_hash),
+                Some(&serde_json::json!({
+                    "chain": deposit.chain,
+                    "asset": deposit.asset,
+                    "address": deposit.address,
+                    "user_id": deposit.user_id,
+                    "amount": balance,
+                    "source": "erc20_balance_fallback"
                 })),
             );
         }

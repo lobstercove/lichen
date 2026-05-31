@@ -14,6 +14,11 @@ pub(super) async fn withdrawal_worker_loop(state: CustodyState) {
 }
 
 pub(super) async fn process_withdrawal_jobs(state: &CustodyState) -> Result<(), String> {
+    // Finalize already-broadcast outbound transactions before doing burn work.
+    // A stale or slow pending-burn lookup must not block settlement of funds
+    // that custody has already sent to the destination chain.
+    process_broadcasting_withdrawals(state).await?;
+
     pending_burn_support::process_pending_burn_withdrawals(state).await?;
 
     process_burned_withdrawals(state).await?;
