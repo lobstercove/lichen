@@ -5,6 +5,11 @@ testnet fresh start, during live testnet repair, and before mainnet launch. It
 covers external-chain route values only. Never commit private keys, auth tokens,
 custody seeds, funded keypairs, or provider API secrets.
 
+For the full 3-validator mainnet launch sequence, use
+`deploy/mainnet-launch-runbook.md`. That runbook starts the Lichen
+chain first, then starts custody only after post-genesis verification and
+route-specific dust tests pass.
+
 ## What Genesis Creates
 
 Genesis creates Lichen-side state: wrapped-token contracts, symbol registry
@@ -137,6 +142,13 @@ CUSTODY_NEOX_NEO_TOKEN_ADDR=REPLACE_WITH_NEO_X_NEO_CONTRACT
 Before mainnet launch, verify token decimals and issuer policy against primary
 sources, then run the same deposit/sweep/credit smoke tests with dust-sized
 amounts and a production release binary.
+
+Neo X route caveat: the current verifier treats `neox` as requiring both the
+GAS route and `CUSTODY_NEOX_NEO_TOKEN_ADDR`. Neo X is EVM-compatible, so the
+address format is correctly `0x...`, but do not use an unverified NEO token
+contract only to satisfy the verifier. If the public launch scope is Neo X GAS
+only, either keep Neo X custody non-public until the NEO contract is approved or
+ship a route verifier update that can represent a GAS-only Neo X route.
 
 ## Apply And Verify
 

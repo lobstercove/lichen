@@ -9,6 +9,8 @@
 
 # ── Rust build artifacts ────────────────────────────────────
 /target/
+/target-linux/
+/target-linux-zig/
 **/target/
 **/*.rs.bk
 *.pdb
@@ -59,6 +61,13 @@ sdk/rust/artifacts/
 # ── Environment / secrets ──────────────────────────────────
 .env
 .env.*
+*.env
+*.env.*
+!.env.example
+!.env.template
+!*.env.example
+!*.env.template
+.envrc
 *.secret
 *.key
 *.pem
