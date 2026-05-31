@@ -5,7 +5,7 @@ mainnet custody. It is intentionally step-by-step and gate-based. Do not skip a
 gate because mainnet genesis and custody routes handle real value.
 
 Written for the 2026-05-31 launch package. At the time of writing, the verified
-release candidate is `v0.5.73`. If a newer release is used, replace every
+release candidate is `v0.5.74`. If a newer release is used, replace every
 example tag with the newer signed release tag after CI and release verification
 pass.
 
@@ -186,7 +186,7 @@ credentials, or keypair passwords.
 Use the signed release that passed CI. For the current package:
 
 ```bash
-export LICHEN_RELEASE_TAG=v0.5.73
+export LICHEN_RELEASE_TAG=v0.5.74
 export LICHEN_MAINNET_VPS_HOSTS="15.204.229.189 37.59.97.61 15.235.142.253"
 ```
 
@@ -225,8 +225,11 @@ The release must be signed by the configured release-signing key. For the
 current trust anchor, the signer address is:
 
 ```text
-8HitBNnh8qbhfne5NCv2yHrQFoD6xbmHcWaUSgCGtsk
+6MuUKtm7T39umn7276rbuiCeMeT1XMr5jpWKQqFXVtc
 ```
+
+This signer is the post-public-history-cleanup trust anchor. Do not use the
+older pre-cleanup release signer for mainnet release assets or metadata.
 
 Do not proceed if release verification fails.
 
@@ -451,8 +454,11 @@ Record only public keys in the launch log.
 The release-signing public address expected by clients is:
 
 ```text
-8HitBNnh8qbhfne5NCv2yHrQFoD6xbmHcWaUSgCGtsk
+6MuUKtm7T39umn7276rbuiCeMeT1XMr5jpWKQqFXVtc
 ```
+
+This keypair is generated and stored outside the repository. Only the public
+address belongs in git, runbooks, signed metadata, and launch evidence.
 
 The private signing key is staged only long enough to generate the signed
 metadata manifest during post-genesis bootstrap, then removed or unmounted.
@@ -796,7 +802,7 @@ curl -fsS http://127.0.0.1:9899 \
 import json, sys
 d=json.load(sys.stdin)["result"]
 print(d["signer"])
-assert d["signer"] == "8HitBNnh8qbhfne5NCv2yHrQFoD6xbmHcWaUSgCGtsk"
+assert d["signer"] == "6MuUKtm7T39umn7276rbuiCeMeT1XMr5jpWKQqFXVtc"
 '
 ```
 
