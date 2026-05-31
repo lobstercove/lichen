@@ -32,29 +32,31 @@ fn canonical_chain(chain: &str) -> String {
     }
 }
 
-fn withdrawal_access_message(
-    user_id: &str,
-    asset: &str,
+struct WithdrawalAccessMessage<'a> {
+    user_id: &'a str,
+    asset: &'a str,
     amount: u64,
-    dest_chain: &str,
-    dest_address: &str,
-    preferred_stablecoin: &str,
+    dest_chain: &'a str,
+    dest_address: &'a str,
+    preferred_stablecoin: &'a str,
     issued_at: u64,
     expires_at: u64,
-    nonce: &str,
-) -> Vec<u8> {
+    nonce: &'a str,
+}
+
+fn withdrawal_access_message(message: &WithdrawalAccessMessage<'_>) -> Vec<u8> {
     format!(
         "{}\nuser_id={}\nasset={}\namount={}\ndest_chain={}\ndest_address={}\npreferred_stablecoin={}\nissued_at={}\nexpires_at={}\nnonce={}\n",
         WITHDRAWAL_ACCESS_DOMAIN,
-        user_id,
-        asset,
-        amount,
-        dest_chain,
-        dest_address,
-        preferred_stablecoin,
-        issued_at,
-        expires_at,
-        nonce,
+        message.user_id,
+        message.asset,
+        message.amount,
+        message.dest_chain,
+        message.dest_address,
+        message.preferred_stablecoin,
+        message.issued_at,
+        message.expires_at,
+        message.nonce,
     )
     .into_bytes()
 }
@@ -156,17 +158,17 @@ fn main() {
         )
     });
 
-    let message = withdrawal_access_message(
-        &user_id,
-        &asset,
+    let message = withdrawal_access_message(&WithdrawalAccessMessage {
+        user_id: &user_id,
+        asset: &asset,
         amount,
-        &dest_chain,
-        &dest_address,
-        &preferred_stablecoin,
+        dest_chain: &dest_chain,
+        dest_address: &dest_address,
+        preferred_stablecoin: &preferred_stablecoin,
         issued_at,
         expires_at,
-        &nonce,
-    );
+        nonce: &nonce,
+    });
     let signature = keypair.sign(&message);
 
     let payload = json!({
