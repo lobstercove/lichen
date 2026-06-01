@@ -26,6 +26,27 @@ function section(s) { console.log(`\n── ${s} ──`); }
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+const TRANSPORT_RETRY_ATTEMPTS = Number.parseInt(process.env.RPC_COVERAGE_RETRIES || '3', 10);
+
+async function withTransportRetries(fn) {
+    let lastError = null;
+    const attempts = Number.isFinite(TRANSPORT_RETRY_ATTEMPTS)
+        ? Math.max(1, TRANSPORT_RETRY_ATTEMPTS)
+        : 3;
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+        try {
+            return await fn();
+        } catch (error) {
+            lastError = error;
+            if (!isTransportOrProtocolError(error) || attempt === attempts) {
+                throw error;
+            }
+            await sleep(250 * attempt);
+        }
+    }
+    throw lastError;
+}
+
 function isTransportOrProtocolError(error) {
     const code = error && error.code ? String(error.code) : '';
     const message = error && error.message ? String(error.message) : '';
@@ -58,27 +79,47 @@ async function rpc(method, params) {
     });
 }
 
-// REST GET helper
-async function rest(path) {
+// REST helper
+async function restRequest(method, path, body) {
     return new Promise((resolve, reject) => {
         const url = new URL(path, REST_BASE);
         const mod = url.protocol === 'https:' ? https : http;
-        const req = mod.get(url, res => {
+        const payload = body === undefined ? null : JSON.stringify(body);
+        const headers = { 'Content-Type': 'application/json' };
+        if (payload) headers['Content-Length'] = Buffer.byteLength(payload);
+        const req = mod.request(url, { method, headers }, res => {
             let data = '';
             res.on('data', c => data += c);
             res.on('end', () => {
-                try { resolve(JSON.parse(data)); } catch { reject(new Error(`Invalid JSON response: ${data.slice(0, 120)}`)); }
+                let json = null;
+                try {
+                    json = data ? JSON.parse(data) : null;
+                } catch {
+                    reject(new Error(`Invalid JSON response: ${data.slice(0, 120)}`));
+                    return;
+                }
+                resolve({ status: res.statusCode || 0, json, text: data });
             });
         });
         req.on('error', reject);
         req.setTimeout(10000, () => { req.destroy(); reject(new Error('Timeout')); });
+        if (payload) req.write(payload);
+        req.end();
     });
+}
+
+async function rest(path) {
+    const result = await restRequest('GET', path);
+    if (result.status < 200 || result.status >= 300) {
+        throw new Error(`HTTP ${result.status}: ${String(result.text || '').slice(0, 120)}`);
+    }
+    return result.json;
 }
 
 // Try an RPC call, succeed whether it returns data or a known error
 async function tryRpc(method, params, label) {
     try {
-        const result = await rpc(method, params);
+        const result = await withTransportRetries(() => rpc(method, params));
         assert(true, `${label || method}: ${JSON.stringify(result).slice(0, 80)}`);
         return result;
     } catch (e) {
@@ -96,7 +137,7 @@ async function tryRpc(method, params, label) {
 
 async function tryRest(path) {
     try {
-        const result = await rest(path);
+        const result = await withTransportRetries(() => rest(path));
         assert(true, `REST ${path}: ${result !== null ? 'data' : 'empty'}`);
         return result;
     } catch (e) {
@@ -104,6 +145,42 @@ async function tryRest(path) {
         assert(false, `REST ${path}: ${prefix}: ${e.message.slice(0, 80)}`);
         return null;
     }
+}
+
+async function tryRestStatus(method, path, body, expectedStatus, expectedText) {
+    try {
+        const result = await withTransportRetries(() => restRequest(method, path, body));
+        const text = result.text || JSON.stringify(result.json || {});
+        const statusOk = result.status === expectedStatus;
+        const textOk = !expectedText || text.includes(expectedText);
+        assert(
+            statusOk && textOk,
+            `REST ${method} ${path}: expected ${expectedStatus}${expectedText ? ` + "${expectedText}"` : ''}, got ${result.status}`,
+        );
+        return result;
+    } catch (e) {
+        const prefix = isTransportOrProtocolError(e) ? 'transport/protocol failure' : 'error';
+        assert(false, `REST ${method} ${path}: ${prefix}: ${e.message.slice(0, 80)}`);
+        return null;
+    }
+}
+
+function apiData(envelope) {
+    if (envelope && typeof envelope === 'object' && Object.prototype.hasOwnProperty.call(envelope, 'data')) {
+        return envelope.data;
+    }
+    return envelope;
+}
+
+function assertRestShape(envelope, label, predicate) {
+    const data = apiData(envelope);
+    let ok = false;
+    try {
+        ok = predicate(data, envelope);
+    } catch {
+        ok = false;
+    }
+    assert(ok, label);
 }
 
 async function runTests() {
@@ -322,7 +399,7 @@ async function runTests() {
         '/api/v1/pairs/1/stats',
         '/api/v1/pairs/1/ticker',
         '/api/v1/tickers',
-        '/api/v1/orders',
+        `/api/v1/orders?trader=${encodeURIComponent(testAddr)}`,
         '/api/v1/pools',
         `/api/v1/pools/positions?owner=${encodeURIComponent(testAddr)}`,
         '/api/v1/margin/info',
@@ -347,9 +424,61 @@ async function runTests() {
         '/api/v1/routes',
     ];
 
+    const restResults = new Map();
     for (const ep of restEndpoints) {
-        await tryRest(ep);
+        restResults.set(ep, await tryRest(ep));
     }
+    const rewardsEndpoint = `/api/v1/rewards/${encodeURIComponent(testAddr)}`;
+    restResults.set(rewardsEndpoint, await tryRest(rewardsEndpoint));
+
+    assertRestShape(restResults.get('/api/v1/pairs'), 'DEX pairs shape: array with pair symbols and limits', (data) =>
+        Array.isArray(data)
+        && data.length > 0
+        && typeof data[0].pairId === 'number'
+        && typeof data[0].baseSymbol === 'string'
+        && typeof data[0].quoteSymbol === 'string'
+        && data[0].tickSize !== undefined
+        && data[0].lotSize !== undefined
+    );
+    assertRestShape(restResults.get(`/api/v1/orders?trader=${encodeURIComponent(testAddr)}`), 'DEX user orders shape: array', Array.isArray);
+    assertRestShape(restResults.get('/api/v1/pools'), 'DEX pools shape: array with token symbols', (data) =>
+        Array.isArray(data)
+        && data.length > 0
+        && typeof data[0].tokenASymbol === 'string'
+        && typeof data[0].tokenBSymbol === 'string'
+    );
+    assertRestShape(restResults.get('/api/v1/margin/enabled-pairs'), 'DEX margin enabled-pairs shape: enabledPairIds array', (data) =>
+        data && Array.isArray(data.enabledPairIds)
+    );
+    assertRestShape(restResults.get(rewardsEndpoint), 'DEX rewards shape: includes trading, LP, and referral amounts', (data) =>
+        data
+        && typeof data.pending === 'number'
+        && typeof data.claimed === 'number'
+        && typeof data.lpPending === 'number'
+        && typeof data.referralEarnings === 'number'
+    );
+    assertRestShape(restResults.get('/api/v1/governance/proposals'), 'DEX governance proposals shape: array', Array.isArray);
+    assertRestShape(restResults.get('/api/v1/routes'), 'DEX router routes shape: array', Array.isArray);
+    assertRestShape(restResults.get('/api/v1/prediction-market/markets'), 'Prediction markets shape: markets array', (data) =>
+        data && Array.isArray(data.markets)
+    );
+    assertRestShape(restResults.get('/api/v1/launchpad/tokens'), 'Launchpad tokens shape: tokens array', (data) =>
+        data && Array.isArray(data.tokens)
+    );
+
+    await tryRestStatus('POST', '/api/v1/orders', { pairId: 1 }, 405, 'sendTransaction');
+    await tryRestStatus('DELETE', '/api/v1/orders/1', undefined, 405, 'sendTransaction');
+    await tryRestStatus('POST', '/api/v1/margin/open', { pairId: 1 }, 405, 'sendTransaction');
+    await tryRestStatus('POST', '/api/v1/margin/close', { positionId: 1 }, 405, 'sendTransaction');
+    await tryRestStatus('POST', '/api/v1/governance/proposals', { proposalType: 'fee_change' }, 405, 'sendTransaction');
+    await tryRestStatus('POST', '/api/v1/governance/proposals/1/vote', { support: true }, 405, 'sendTransaction');
+    await tryRestStatus(
+        'POST',
+        '/api/v1/prediction-market/create',
+        { creator: testAddr, question: 'test', category: 'custom', close_slot: 999999999, outcomes: ['Yes', 'No'] },
+        400,
+        'sendTransaction',
+    );
 
     // ══════════════════════════════════════════════════════════════════════
     // C17: Shielded Pool REST API
@@ -399,7 +528,7 @@ async function runTests() {
         }
         async function trySolanaRpc(method, params, label) {
             try {
-                const result = await solanaRpc(method, params);
+                const result = await withTransportRetries(() => solanaRpc(method, params));
                 assert(true, `[solana-compat] ${label || method}: ${JSON.stringify(result).slice(0, 80)}`);
                 return result;
             } catch (e) {
@@ -455,7 +584,7 @@ async function runTests() {
         }
         async function tryEvmRpc(method, params, label) {
             try {
-                const result = await evmRpc(method, params);
+                const result = await withTransportRetries(() => evmRpc(method, params));
                 assert(true, `[evm] ${label || method}: ${JSON.stringify(result).slice(0, 80)}`);
                 return result;
             } catch (e) {

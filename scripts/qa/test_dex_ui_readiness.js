@@ -7,6 +7,7 @@ const path = require('path');
 const repoRoot = path.join(__dirname, '..', '..');
 const dexHtml = fs.readFileSync(path.join(repoRoot, 'dex', 'index.html'), 'utf8');
 const dexJs = fs.readFileSync(path.join(repoRoot, 'dex', 'dex.js'), 'utf8');
+const ciWorkflow = fs.readFileSync(path.join(repoRoot, '.github', 'workflows', 'ci.yml'), 'utf8');
 
 let passed = 0;
 let failed = 0;
@@ -218,6 +219,29 @@ assert(
 assert(dexHtml.includes('rewardClaimAllHint') && dexHtml.includes('rewardClaimTradingHint') && dexHtml.includes('rewardClaimLpHint'), 'reward claim actions expose per-button reasons');
 
 assert(countMatches(dexHtml, /class="order-submit-hint"/g) >= 9, 'DEX exposes inline action hints across trade, predict, pool, governance, launch, and rewards');
+assert(
+    !/\bapi\.post\((?!['"]\/router\/quote['"])/.test(dexJs)
+        && !/\bapi\.(?:del|delete|put|patch)\(/.test(dexJs)
+        && !dexJs.includes("api.post('/router/swap'")
+        && !dexJs.includes('api.post("/router/swap"'),
+    'DEX frontend uses REST only for read/quote paths, not mutating writes'
+);
+assert(
+    dexJs.includes('prepareTokenPull(spotEscrowSymbol(state.orderSide, state.activePair), contracts.dex_core, escrowRaw)')
+        && dexJs.includes('prepareTokenPull(MARGIN_COLLATERAL_SYMBOL, contracts.dex_margin, marginDeposit)')
+        && dexJs.includes('prepareTokenPull(tokenA, contracts.dex_amm, rawA)')
+        && dexJs.includes('prepareTokenPull(tokenB, contracts.dex_amm, rawB)')
+        && dexJs.includes("prepareTokenPull('lUSD', contracts.prediction_market, tradeAmountRaw)")
+        && dexJs.includes("namedCallIx(contracts.sporepump, 'buy'")
+        && dexJs.includes("namedCallIx(contracts.sporepump, 'sell'")
+        && dexJs.includes("namedCallIx(contracts.sporepump, 'create_token'"),
+    'DEX frontend pulls native/token collateral before signed trade, margin, pool, prediction, and launch actions'
+);
+assert(
+    ciWorkflow.includes('node scripts/qa/test_dex_ui_readiness.js')
+        && ciWorkflow.includes('node scripts/qa/audit_frontend_rpc_parity.js'),
+    'CI runs DEX frontend wiring and RPC parity audits'
+);
 
 if (failed > 0) {
     console.error(`\nDEX UI readiness: ${passed} passed, ${failed} failed`);

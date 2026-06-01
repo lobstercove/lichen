@@ -83,6 +83,10 @@ jobs:
         run: node scripts/qa/test_release_audit_summaries.js
       - name: Verify deployment env examples
         run: node scripts/qa/test_deployment_env_examples.js
+      - name: Verify DEX frontend wiring
+        run: node scripts/qa/test_dex_ui_readiness.js
+      - name: Verify frontend RPC parity
+        run: node scripts/qa/audit_frontend_rpc_parity.js
       - name: Verify expected contracts lockfile
         run: python3 scripts/qa/update-expected-contracts.py --check
 
@@ -225,6 +229,8 @@ jobs:
         run: bash scripts/qa/test-cli-comprehensive.sh
       - name: Run deterministic E2E smoke tests
         run: node scripts/qa/test_deterministic_e2e_smoke.js
+      - name: Run full RPC and DEX REST coverage
+        run: node scripts/qa/e2e-rpc-coverage.js
       - name: Stop validator
         if: always()
         run: |
