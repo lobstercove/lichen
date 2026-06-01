@@ -485,16 +485,34 @@ async function runTests() {
     // ══════════════════════════════════════════════════════════════════════
     section('C17: Shielded Pool REST');
 
+    const shieldedCommitmentsEndpoint = '/api/v1/shielded/commitments?from=0&limit=5';
     const shieldedEndpoints = [
         '/api/v1/shielded/pool',
         '/api/v1/shielded/merkle-root',
-        '/api/v1/shielded/merkle-path/0',
         '/api/v1/shielded/nullifier/0000000000000000000000000000000000000000000000000000000000000000',
-        '/api/v1/shielded/commitments?from=0&limit=5',
+        shieldedCommitmentsEndpoint,
     ];
 
+    let shieldedCommitments = null;
     for (const ep of shieldedEndpoints) {
-        await tryRest(ep);
+        const result = await tryRest(ep);
+        if (ep === shieldedCommitmentsEndpoint) {
+            shieldedCommitments = apiData(result);
+        }
+    }
+
+    const commitments = Array.isArray(shieldedCommitments)
+        ? shieldedCommitments
+        : shieldedCommitments && Array.isArray(shieldedCommitments.commitments)
+            ? shieldedCommitments.commitments
+            : [];
+    const totalCommitments = shieldedCommitments && typeof shieldedCommitments.total === 'number'
+        ? shieldedCommitments.total
+        : commitments.length;
+    if (totalCommitments > 0 || commitments.length > 0) {
+        await tryRest('/api/v1/shielded/merkle-path/0');
+    } else {
+        skip('REST /api/v1/shielded/merkle-path/0: no commitments on this chain');
     }
 
     // ══════════════════════════════════════════════════════════════════════
