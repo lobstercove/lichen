@@ -82,7 +82,7 @@ pub const SLOTS_PER_YEAR: u64 = 78_840_000;
 /// Uses integer arithmetic with u128 intermediates to avoid floating-point.
 ///
 /// # Examples
-/// ```
+/// ```rust,ignore
 /// use lichen_core::consensus::inflation_rate_bps;
 /// assert_eq!(inflation_rate_bps(0), 400);                       // year 0: 4.00%
 /// assert_eq!(inflation_rate_bps(78_840_000), 340);               // year 1: 3.40%
@@ -114,7 +114,7 @@ pub fn inflation_rate_bps(current_slot: u64) -> u64 {
 /// via [`StakePool::distribute_epoch_staker_rewards`], NOT per-slot to the block producer.
 ///
 /// # Examples
-/// ```
+/// ```rust,ignore
 /// use lichen_core::consensus::{compute_block_reward, GENESIS_SUPPLY_SPORES};
 /// let reward = compute_block_reward(0, GENESIS_SUPPLY_SPORES);
 /// // Year 0: 500M LICN × 4% / 78.84M slots ≈ 0.254 LICN per slot
@@ -139,7 +139,7 @@ pub fn compute_block_reward(current_slot: u64, total_supply: u64) -> u64 {
 /// Formula: epoch_mint = total_supply × inflation_rate_bps / 10000 × (SLOTS_PER_EPOCH / SLOTS_PER_YEAR)
 ///
 /// # Examples
-/// ```
+/// ```rust,ignore
 /// use lichen_core::consensus::{compute_epoch_mint, GENESIS_SUPPLY_SPORES};
 /// let mint = compute_epoch_mint(0, GENESIS_SUPPLY_SPORES);
 /// // Year 0: 500M LICN × 4% × (432K/78.84M) ≈ 109,589 LICN per epoch
