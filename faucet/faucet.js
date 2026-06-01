@@ -10,10 +10,10 @@ const EXPLORER_BASE =
     (typeof window !== 'undefined' && window.LICHEN_CONFIG?.explorer) ||
     '../explorer';
 let LICN_PER_REQUEST = 10; // default; overwritten by /faucet/config
-const FAUCET_BASE58_ALLOWED_RE = /^[1-9A-HJ-NP-Za-km-z]$/;
+const FAUCET_BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
 
 function sanitizeFaucetBase58(value) {
-    return String(value || '').split('').filter((char) => FAUCET_BASE58_ALLOWED_RE.test(char)).join('');
+    return String(value || '').split('').filter((char) => FAUCET_BASE58_ALPHABET.indexOf(char) !== -1).join('');
 }
 
 function sanitizeFaucetInteger(value) {

@@ -20,8 +20,8 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use lichen_sdk::{
-    bytes_to_u64, call_contract, get_caller, get_slot, log_info, storage_get, storage_set,
-    u64_to_bytes, Address, CrossCall,
+    bytes_to_u64, call_contract, get_caller, get_contract_address, get_slot, log_info, storage_get,
+    storage_set, u64_to_bytes, Address, CrossCall,
 };
 
 // ============================================================================
@@ -897,6 +897,7 @@ pub fn execute_proposal(proposal_id: u64) -> u32 {
     } else {
         [0u8; 32]
     };
+    let governance_addr = get_contract_address().0;
 
     match prop_type {
         PROPOSAL_NEW_PAIR => {
@@ -910,7 +911,7 @@ pub fn execute_proposal(proposal_id: u64) -> u32 {
             });
             // Use sensible defaults: tick_size=1_000_000, lot_size=100, min_order=1000
             let mut args = Vec::new();
-            args.extend_from_slice(&core_addr); // admin/caller (governance contract itself)
+            args.extend_from_slice(&governance_addr); // caller as seen by DEX core during CCC
             args.extend_from_slice(&base_token);
             args.extend_from_slice(&quote_token);
             args.extend_from_slice(&u64_to_bytes(1_000_000)); // tick_size
@@ -938,7 +939,7 @@ pub fn execute_proposal(proposal_id: u64) -> u32 {
             let maker_fee = decode_prop_maker_fee(&data);
             let taker_fee = decode_prop_taker_fee(&data);
             let mut args = Vec::new();
-            args.extend_from_slice(&core_addr); // admin/caller
+            args.extend_from_slice(&governance_addr); // caller as seen by DEX core during CCC
             args.extend_from_slice(&u64_to_bytes(pair_id));
             args.extend_from_slice(&maker_fee.to_le_bytes());
             args.extend_from_slice(&taker_fee.to_le_bytes());
@@ -966,7 +967,7 @@ pub fn execute_proposal(proposal_id: u64) -> u32 {
             // Cross-call dex_core::pause_pair(admin, pair_id) to halt trading
             let pair_id = decode_prop_pair_id(&data);
             let mut args = Vec::new();
-            args.extend_from_slice(&core_addr);
+            args.extend_from_slice(&governance_addr);
             args.extend_from_slice(&u64_to_bytes(pair_id));
             let target = Address(core_addr);
             let call = CrossCall::new(target, "pause_pair", args);
@@ -1375,8 +1376,11 @@ mod tests {
     use super::*;
     use lichen_sdk::test_mock;
 
+    const TEST_GOVERNANCE_CONTRACT: [u8; 32] = [99u8; 32];
+
     fn setup() -> [u8; 32] {
         test_mock::reset();
+        test_mock::set_contract_address(TEST_GOVERNANCE_CONTRACT);
         let admin = [1u8; 32];
         test_mock::set_caller(admin);
         assert_eq!(initialize(admin.as_ptr()), 0);
@@ -1992,7 +1996,7 @@ mod tests {
         assert_eq!(target, [88u8; 32]);
         assert_eq!(function, "create_pair");
         assert_eq!(value, 0);
-        assert_eq!(&args[0..32], &[88u8; 32]);
+        assert_eq!(&args[0..32], &TEST_GOVERNANCE_CONTRACT);
         assert_eq!(&args[32..64], &base);
         assert_eq!(&args[64..96], &quote);
         assert_ne!(&args[64..96], &later_preferred);
@@ -2092,6 +2096,13 @@ mod tests {
 
         pass_and_timelock(1, 200);
         assert_eq!(execute_proposal(1), 0);
+        let (target, function, args, value) =
+            test_mock::get_last_cross_call().expect("execution should cross-call dex_core");
+        assert_eq!(target, [88u8; 32]);
+        assert_eq!(function, "update_pair_fees");
+        assert_eq!(value, 0);
+        assert_eq!(&args[0..32], &TEST_GOVERNANCE_CONTRACT);
+        assert_eq!(bytes_to_u64(&args[32..40]), 5);
 
         // Status = EXECUTED
         let pd = storage_get(&proposal_key(1)).unwrap();

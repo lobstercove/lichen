@@ -16,6 +16,7 @@
         wsUrl: config.ws,
         network: currentNetwork,
         networks: LICHEN_CONFIG.networks,
+        slotDurationMs: config.slotDurationMs || 400,
     };
 
     // Network selector initialization (call from DOMContentLoaded)

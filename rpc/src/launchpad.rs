@@ -13,6 +13,7 @@ use axum::{
     routing::get,
     Json, Router,
 };
+use lichen_core::Pubkey;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -121,6 +122,7 @@ const GRADUATION_MCAP_LICN: f64 = 100_000.0;
 struct PlatformStatsJson {
     token_count: u64,
     fees_collected: f64,
+    total_raised: f64,
     total_graduated: u64,
     graduation_threshold: f64,
     creation_fee: f64,
@@ -137,11 +139,15 @@ fn collect_platform_stats(state: &RpcState) -> PlatformStatsJson {
     // Cap the scan to avoid unbounded per-request work when token_count becomes very large.
     let scan_limit = token_count.min(10_000);
     let mut graduated = 0u64;
+    let mut total_raised_raw = 0u128;
     for id in 1..=scan_limit {
         let key = format!("cpt:{:016x}", id);
         if let Some(data) = read_bytes(state, key.as_bytes()) {
-            if data.len() >= 65 && data[64] != 0 {
-                graduated += 1;
+            if data.len() >= 65 {
+                total_raised_raw = total_raised_raw.saturating_add(u64_le(&data, 40) as u128);
+                if data[64] != 0 {
+                    graduated += 1;
+                }
             }
         }
     }
@@ -149,6 +155,7 @@ fn collect_platform_stats(state: &RpcState) -> PlatformStatsJson {
     PlatformStatsJson {
         token_count,
         fees_collected: fees_raw as f64 / SPORES_PER_LICN,
+        total_raised: total_raised_raw as f64 / SPORES_PER_LICN,
         total_graduated: graduated,
         graduation_threshold: GRADUATION_MCAP_LICN,
         creation_fee: CREATION_FEE_LICN,
@@ -228,6 +235,16 @@ fn decode_token(state: &RpcState, id: u64) -> Option<TokenJson> {
         created_at,
         graduation_pct: grad_pct,
     })
+}
+
+fn account_key_component(input: &str) -> Option<String> {
+    let trimmed = input.trim();
+    if trimmed.len() == 64 && trimmed.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Some(trimmed.to_ascii_lowercase());
+    }
+    Pubkey::from_base58(trimmed)
+        .ok()
+        .map(|pubkey| hex::encode(pubkey.0))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -485,7 +502,11 @@ async fn get_holder_balance(
         return api_404(&format!("Token {} not found", id));
     }
 
-    let bal_key = format!("bal:{:016x}:{}", id, addr);
+    let account_hex = match account_key_component(&addr) {
+        Some(value) => value,
+        None => return api_err("invalid address query parameter"),
+    };
+    let bal_key = format!("bal:{:016x}:{}", id, account_hex);
     let balance = read_u64_key(&state, bal_key.as_bytes());
 
     #[derive(Serialize)]
@@ -683,5 +704,25 @@ mod tests {
         let val: u64 = 42;
         let data = val.to_le_bytes().to_vec();
         assert_eq!(u64_le(&data, 0), 42);
+    }
+
+    #[test]
+    fn account_key_component_accepts_base58_pubkey() {
+        let pubkey = Pubkey([0x11; 32]);
+        let encoded = pubkey.to_base58();
+        assert_eq!(account_key_component(&encoded), Some("11".repeat(32)));
+    }
+
+    #[test]
+    fn account_key_component_accepts_hex_and_normalizes_case() {
+        assert_eq!(
+            account_key_component(&"AB".repeat(32)),
+            Some("ab".repeat(32))
+        );
+    }
+
+    #[test]
+    fn account_key_component_rejects_invalid_input() {
+        assert_eq!(account_key_component("not a wallet address"), None);
     }
 }

@@ -95,7 +95,7 @@
       "opcode": 12,
       "params": [
         { "name": "caller_ptr", "type": "Pubkey" },
-        { "name": "cooldown_ms", "type": "u64" }
+        { "name": "cooldown_slots", "type": "u64" }
       ]
     },
     {
@@ -103,7 +103,7 @@
       "opcode": 13,
       "params": [
         { "name": "caller_ptr", "type": "Pubkey" },
-        { "name": "cooldown_ms", "type": "u64" }
+        { "name": "cooldown_slots", "type": "u64" }
       ]
     },
     {

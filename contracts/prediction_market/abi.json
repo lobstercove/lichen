@@ -39,6 +39,7 @@
     {"name": "get_price_history", "opcode": 34, "params": [{"name": "market_id", "type": "u64"}]},
     {"name": "get_trader_stats", "opcode": 35, "params": [{"name": "addr", "type": "Pubkey"}]},
     {"name": "get_leaderboard", "opcode": 36, "params": [{"name": "limit", "type": "u64"}]},
-    {"name": "get_market_analytics", "opcode": 37, "params": [{"name": "market_id", "type": "u64"}]}
+    {"name": "get_market_analytics", "opcode": 37, "params": [{"name": "market_id", "type": "u64"}]},
+    {"name": "set_self_address", "opcode": 38, "params": [{"name": "caller", "type": "Pubkey"}, {"name": "address", "type": "Pubkey"}]}
   ]
 }

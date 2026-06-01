@@ -4,7 +4,6 @@
   "functions": [
     {
       "name": "initialize",
-      "opcode": 0,
       "params": [
         { "name": "owner_ptr", "type": "Pubkey" },
         { "name": "fee_addr_ptr", "type": "Pubkey" }
@@ -12,7 +11,6 @@
     },
     {
       "name": "list_nft",
-      "opcode": 1,
       "params": [
         { "name": "seller_ptr", "type": "Pubkey" },
         { "name": "nft_contract_ptr", "type": "Pubkey" },
@@ -23,7 +21,6 @@
     },
     {
       "name": "buy_nft",
-      "opcode": 2,
       "params": [
         { "name": "buyer_ptr", "type": "Pubkey" },
         { "name": "nft_contract_ptr", "type": "Pubkey" },
@@ -32,7 +29,6 @@
     },
     {
       "name": "cancel_listing",
-      "opcode": 3,
       "params": [
         { "name": "seller_ptr", "type": "Pubkey" },
         { "name": "nft_contract_ptr", "type": "Pubkey" },
@@ -41,7 +37,7 @@
     },
     {
       "name": "get_listing",
-      "opcode": 4,
+      "readonly": true,
       "params": [
         { "name": "nft_contract_ptr", "type": "Pubkey" },
         { "name": "token_id", "type": "u64" },
@@ -50,7 +46,6 @@
     },
     {
       "name": "set_marketplace_fee",
-      "opcode": 5,
       "params": [
         { "name": "caller_ptr", "type": "Pubkey" },
         { "name": "new_fee", "type": "u64" }
@@ -58,19 +53,18 @@
     },
     {
       "name": "list_nft_with_royalty",
-      "opcode": 6,
       "params": [
         { "name": "seller_ptr", "type": "Pubkey" },
         { "name": "nft_contract_ptr", "type": "Pubkey" },
         { "name": "token_id", "type": "u64" },
         { "name": "price", "type": "u64" },
         { "name": "payment_token_ptr", "type": "Pubkey" },
-        { "name": "royalty_recipient_ptr", "type": "Pubkey" }
+        { "name": "royalty_recipient_ptr", "type": "Pubkey" },
+        { "name": "royalty_bps", "type": "u32" }
       ]
     },
     {
       "name": "make_offer",
-      "opcode": 7,
       "params": [
         { "name": "offerer_ptr", "type": "Pubkey" },
         { "name": "nft_contract_ptr", "type": "Pubkey" },
@@ -81,7 +75,6 @@
     },
     {
       "name": "cancel_offer",
-      "opcode": 8,
       "params": [
         { "name": "offerer_ptr", "type": "Pubkey" },
         { "name": "nft_contract_ptr", "type": "Pubkey" },
@@ -90,7 +83,6 @@
     },
     {
       "name": "accept_offer",
-      "opcode": 9,
       "params": [
         { "name": "seller_ptr", "type": "Pubkey" },
         { "name": "nft_contract_ptr", "type": "Pubkey" },
@@ -100,26 +92,121 @@
     },
     {
       "name": "get_marketplace_stats",
-      "opcode": 10,
+      "readonly": true,
       "params": []
     },
     {
-      "name": "mm_pause",
-      "opcode": 11,
+      "name": "set_nft_attributes",
       "params": [
-        { "name": "caller_ptr", "type": "Pubkey" }
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "nft_contract_ptr", "type": "Pubkey" },
+        { "name": "token_id", "type": "u64" },
+        { "name": "rarity", "type": "u8" },
+        { "name": "category", "type": "u8" },
+        { "name": "traits_ptr", "type": "bytes" },
+        { "name": "traits_len", "type": "u32" }
       ]
     },
     {
-      "name": "mm_unpause",
-      "opcode": 12,
+      "name": "get_nft_attributes",
+      "readonly": true,
       "params": [
-        { "name": "caller_ptr", "type": "Pubkey" }
+        { "name": "nft_contract_ptr", "type": "Pubkey" },
+        { "name": "token_id", "type": "u64" },
+        { "name": "out_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "get_offer_count",
+      "readonly": true,
+      "params": [
+        { "name": "nft_contract_ptr", "type": "Pubkey" },
+        { "name": "token_id", "type": "u64" }
+      ]
+    },
+    {
+      "name": "update_listing_price",
+      "params": [
+        { "name": "seller_ptr", "type": "Pubkey" },
+        { "name": "nft_contract_ptr", "type": "Pubkey" },
+        { "name": "token_id", "type": "u64" },
+        { "name": "new_price", "type": "u64" }
+      ]
+    },
+    {
+      "name": "create_auction",
+      "params": [
+        { "name": "seller_ptr", "type": "Pubkey" },
+        { "name": "nft_contract_ptr", "type": "Pubkey" },
+        { "name": "token_id", "type": "u64" },
+        { "name": "start_price", "type": "u64" },
+        { "name": "reserve_price", "type": "u64" },
+        { "name": "duration_slots", "type": "u64" },
+        { "name": "payment_token_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "place_bid",
+      "params": [
+        { "name": "bidder_ptr", "type": "Pubkey" },
+        { "name": "nft_contract_ptr", "type": "Pubkey" },
+        { "name": "token_id", "type": "u64" },
+        { "name": "bid_amount", "type": "u64" }
+      ]
+    },
+    {
+      "name": "settle_auction",
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "nft_contract_ptr", "type": "Pubkey" },
+        { "name": "token_id", "type": "u64" }
+      ]
+    },
+    {
+      "name": "cancel_auction",
+      "params": [
+        { "name": "seller_ptr", "type": "Pubkey" },
+        { "name": "nft_contract_ptr", "type": "Pubkey" },
+        { "name": "token_id", "type": "u64" }
+      ]
+    },
+    {
+      "name": "get_auction",
+      "readonly": true,
+      "params": [
+        { "name": "nft_contract_ptr", "type": "Pubkey" },
+        { "name": "token_id", "type": "u64" },
+        { "name": "out_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "make_collection_offer",
+      "params": [
+        { "name": "offerer_ptr", "type": "Pubkey" },
+        { "name": "collection_ptr", "type": "Pubkey" },
+        { "name": "price", "type": "u64" },
+        { "name": "payment_token_ptr", "type": "Pubkey" },
+        { "name": "expiry_slot", "type": "u64" }
+      ]
+    },
+    {
+      "name": "accept_collection_offer",
+      "params": [
+        { "name": "seller_ptr", "type": "Pubkey" },
+        { "name": "nft_contract_ptr", "type": "Pubkey" },
+        { "name": "token_id", "type": "u64" },
+        { "name": "offerer_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "cancel_collection_offer",
+      "params": [
+        { "name": "offerer_ptr", "type": "Pubkey" },
+        { "name": "collection_ptr", "type": "Pubkey" }
       ]
     },
     {
       "name": "claim_unpaid_payout",
-      "opcode": 13,
       "params": [
         { "name": "caller_ptr", "type": "Pubkey" },
         { "name": "token_ptr", "type": "Pubkey" }
@@ -127,10 +214,33 @@
     },
     {
       "name": "get_unpaid_payout",
-      "opcode": 14,
+      "readonly": true,
       "params": [
         { "name": "token_ptr", "type": "Pubkey" },
         { "name": "recipient_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "make_offer_with_expiry",
+      "params": [
+        { "name": "offerer_ptr", "type": "Pubkey" },
+        { "name": "nft_contract_ptr", "type": "Pubkey" },
+        { "name": "token_id", "type": "u64" },
+        { "name": "price", "type": "u64" },
+        { "name": "payment_token_ptr", "type": "Pubkey" },
+        { "name": "expiry_slot", "type": "u64" }
+      ]
+    },
+    {
+      "name": "mm_pause",
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "mm_unpause",
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" }
       ]
     }
   ]

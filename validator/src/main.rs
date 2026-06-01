@@ -1719,6 +1719,7 @@ fn record_block_activity(state: &StateStore, block: &Block) -> u32 {
                             program,
                             caller,
                             &args,
+                            value,
                             block.header.slot,
                             block.header.timestamp,
                             tx_signature,
@@ -1751,6 +1752,14 @@ struct ParsedMarketArgs {
 }
 
 fn parse_marketplace_args(args: &[u8]) -> ParsedMarketArgs {
+    parse_marketplace_args_for_function("", args, 0)
+}
+
+fn parse_marketplace_args_for_function(
+    function: &str,
+    args: &[u8],
+    value: u64,
+) -> ParsedMarketArgs {
     let mut parsed = ParsedMarketArgs {
         collection: None,
         token: None,
@@ -1764,11 +1773,7 @@ fn parse_marketplace_args(args: &[u8]) -> ParsedMarketArgs {
         return parsed;
     }
 
-    let Ok(value) = serde_json::from_slice::<JsonValue>(args) else {
-        return parsed;
-    };
-
-    let Some(obj) = value.as_object() else {
+    let Ok(json) = serde_json::from_slice::<JsonValue>(args) else {
         return parsed;
     };
 
@@ -1784,35 +1789,111 @@ fn parse_marketplace_args(args: &[u8]) -> ParsedMarketArgs {
         val.as_str().and_then(|s| s.parse::<u64>().ok())
     };
 
-    if let Some(val) = obj
-        .get("collection")
-        .or_else(|| obj.get("nft_contract"))
-        .or_else(|| obj.get("nftContract"))
-    {
-        parsed.collection = parse_pubkey(val);
-    }
+    if let Some(obj) = json.as_object() {
+        if let Some(val) = obj
+            .get("collection")
+            .or_else(|| obj.get("nft_contract"))
+            .or_else(|| obj.get("nftContract"))
+        {
+            parsed.collection = parse_pubkey(val);
+        }
 
-    if let Some(val) = obj.get("token") {
-        parsed.token = parse_pubkey(val);
-        if parsed.token.is_none() {
+        if let Some(val) = obj.get("token") {
+            parsed.token = parse_pubkey(val);
+            if parsed.token.is_none() {
+                parsed.token_id = parse_u64(val);
+            }
+        }
+
+        if let Some(val) = obj.get("token_id").or_else(|| obj.get("tokenId")) {
             parsed.token_id = parse_u64(val);
         }
+
+        if let Some(val) = obj.get("price") {
+            parsed.price = parse_u64(val);
+        }
+
+        if let Some(val) = obj.get("seller") {
+            parsed.seller = parse_pubkey(val);
+        }
+
+        if let Some(val) = obj.get("buyer") {
+            parsed.buyer = parse_pubkey(val);
+        }
+
+        return parsed;
     }
 
-    if let Some(val) = obj.get("token_id").or_else(|| obj.get("tokenId")) {
-        parsed.token_id = parse_u64(val);
-    }
+    let Some(arr) = json.as_array() else {
+        return parsed;
+    };
 
-    if let Some(val) = obj.get("price") {
-        parsed.price = parse_u64(val);
-    }
+    let pk = |idx: usize| -> Option<Pubkey> { arr.get(idx).and_then(parse_pubkey) };
+    let num = |idx: usize| -> Option<u64> { arr.get(idx).and_then(parse_u64) };
 
-    if let Some(val) = obj.get("seller") {
-        parsed.seller = parse_pubkey(val);
-    }
-
-    if let Some(val) = obj.get("buyer") {
-        parsed.buyer = parse_pubkey(val);
+    match function {
+        "list_nft" | "list_nft_with_royalty" => {
+            parsed.seller = pk(0);
+            parsed.collection = pk(1);
+            parsed.token_id = num(2);
+            parsed.price = num(3);
+        }
+        "buy_nft" => {
+            parsed.buyer = pk(0);
+            parsed.collection = pk(1);
+            parsed.token_id = num(2);
+            parsed.price = (value > 0).then_some(value);
+        }
+        "cancel_listing" | "settle_auction" | "cancel_auction" => {
+            parsed.seller = pk(0);
+            parsed.collection = pk(1);
+            parsed.token_id = num(2);
+        }
+        "make_offer" | "make_offer_with_expiry" => {
+            parsed.buyer = pk(0);
+            parsed.collection = pk(1);
+            parsed.token_id = num(2);
+            parsed.price = num(3).or_else(|| (value > 0).then_some(value));
+        }
+        "accept_offer" | "accept_collection_offer" => {
+            parsed.seller = pk(0);
+            parsed.collection = pk(1);
+            parsed.token_id = num(2);
+            parsed.buyer = pk(3);
+        }
+        "cancel_offer" => {
+            parsed.buyer = pk(0);
+            parsed.collection = pk(1);
+            parsed.token_id = num(2);
+        }
+        "update_listing_price" => {
+            parsed.seller = pk(0);
+            parsed.collection = pk(1);
+            parsed.token_id = num(2);
+            parsed.price = num(3);
+        }
+        "create_auction" => {
+            parsed.seller = pk(0);
+            parsed.collection = pk(1);
+            parsed.token_id = num(2);
+            parsed.price = num(3);
+        }
+        "place_bid" => {
+            parsed.buyer = pk(0);
+            parsed.collection = pk(1);
+            parsed.token_id = num(2);
+            parsed.price = num(3).or_else(|| (value > 0).then_some(value));
+        }
+        "make_collection_offer" => {
+            parsed.buyer = pk(0);
+            parsed.collection = pk(1);
+            parsed.price = num(2).or_else(|| (value > 0).then_some(value));
+        }
+        "cancel_collection_offer" => {
+            parsed.buyer = pk(0);
+            parsed.collection = pk(1);
+        }
+        _ => {}
     }
 
     parsed
@@ -1825,11 +1906,12 @@ fn build_market_activity(
     program: Pubkey,
     caller: Pubkey,
     args: &[u8],
+    call_value: u64,
     slot: u64,
     timestamp: u64,
     tx_signature: Hash,
 ) -> MarketActivity {
-    let parsed = parse_marketplace_args(args);
+    let parsed = parse_marketplace_args_for_function(&function, args, call_value);
 
     let (seller, buyer) = match kind {
         MarketActivityKind::Listing | MarketActivityKind::Cancel => {
@@ -2856,7 +2938,11 @@ fn emit_program_and_nft_events(
                                 }));
                             }
                         }
-                        ContractInstruction::Call { function, args, .. } => {
+                        ContractInstruction::Call {
+                            function,
+                            args,
+                            value,
+                        } => {
                             if let Some(program) = ix.accounts.get(1) {
                                 drop(ws_event_tx.send(lichen_rpc::ws::Event::ProgramCall {
                                     program: *program,
@@ -2900,6 +2986,7 @@ fn emit_program_and_nft_events(
                                         *program,
                                         caller,
                                         &args,
+                                        value,
                                         block.header.slot,
                                         block.header.timestamp,
                                         tx.signature(),
@@ -19253,6 +19340,27 @@ mod tests {
         // nftContract is an alias for "collection"
         assert!(parsed.collection.is_some());
         assert_eq!(parsed.token_id, Some(7));
+    }
+
+    #[test]
+    fn parse_marketplace_array_listing_args() {
+        let json =
+            r#"["11111111111111111111111111111111","11111111111111111111111111111111",42,1000,""]"#;
+        let parsed = parse_marketplace_args_for_function("list_nft", json.as_bytes(), 0);
+        assert!(parsed.seller.is_some());
+        assert!(parsed.collection.is_some());
+        assert_eq!(parsed.token_id, Some(42));
+        assert_eq!(parsed.price, Some(1000));
+    }
+
+    #[test]
+    fn parse_marketplace_array_buy_value_as_price() {
+        let json = r#"["11111111111111111111111111111111","11111111111111111111111111111111",7]"#;
+        let parsed = parse_marketplace_args_for_function("buy_nft", json.as_bytes(), 5000);
+        assert!(parsed.buyer.is_some());
+        assert!(parsed.collection.is_some());
+        assert_eq!(parsed.token_id, Some(7));
+        assert_eq!(parsed.price, Some(5000));
     }
 
     #[test]

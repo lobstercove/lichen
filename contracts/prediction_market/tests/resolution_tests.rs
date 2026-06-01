@@ -7,6 +7,14 @@
 use prediction_market::*;
 use sha2::{Digest, Sha256};
 
+const LUSD_UNIT: u64 = 1_000_000_000;
+const FIVE_LUSD: u64 = 5 * LUSD_UNIT;
+const TEN_LUSD: u64 = 10 * LUSD_UNIT;
+const FORTY_LUSD: u64 = 40 * LUSD_UNIT;
+const HUNDRED_LUSD: u64 = 100 * LUSD_UNIT;
+const MARKET_CREATION_FEE: u64 = TEN_LUSD;
+const DISPUTE_BOND: u64 = HUNDRED_LUSD;
+
 // ============================================================================
 // TEST HELPERS
 // ============================================================================
@@ -31,7 +39,7 @@ fn setup_large_market() -> ([u8; 32], u64) {
     let qh = [42u8; 32];
     let q = b"Will BTC reach 100k?";
     lichen_sdk::test_mock::set_caller(admin);
-    lichen_sdk::test_mock::set_value(10_000_000); // MARKET_CREATION_FEE
+    lichen_sdk::test_mock::set_value(MARKET_CREATION_FEE); // MARKET_CREATION_FEE
     let mid = create_market(
         admin.as_ptr(),
         2,
@@ -43,9 +51,9 @@ fn setup_large_market() -> ([u8; 32], u64) {
     ) as u64;
     assert!(mid > 0);
     lichen_sdk::test_mock::set_caller(admin);
-    lichen_sdk::test_mock::set_value(100_000_000);
+    lichen_sdk::test_mock::set_value(HUNDRED_LUSD);
     assert_eq!(
-        add_initial_liquidity(admin.as_ptr(), mid, 100_000_000, core::ptr::null(), 0),
+        add_initial_liquidity(admin.as_ptr(), mid, HUNDRED_LUSD, core::ptr::null(), 0),
         1
     );
     (admin, mid)
@@ -57,7 +65,7 @@ fn setup_multi_market() -> ([u8; 32], u64) {
     let qh = [55u8; 32];
     let q = b"Which party wins?";
     lichen_sdk::test_mock::set_caller(admin);
-    lichen_sdk::test_mock::set_value(10_000_000); // MARKET_CREATION_FEE
+    lichen_sdk::test_mock::set_value(MARKET_CREATION_FEE); // MARKET_CREATION_FEE
     let mid = create_market(
         admin.as_ptr(),
         1,
@@ -69,9 +77,9 @@ fn setup_multi_market() -> ([u8; 32], u64) {
     ) as u64;
     assert!(mid > 0);
     lichen_sdk::test_mock::set_caller(admin);
-    lichen_sdk::test_mock::set_value(40_000_000);
+    lichen_sdk::test_mock::set_value(FORTY_LUSD);
     assert_eq!(
-        add_initial_liquidity(admin.as_ptr(), mid, 40_000_000, core::ptr::null(), 0),
+        add_initial_liquidity(admin.as_ptr(), mid, FORTY_LUSD, core::ptr::null(), 0),
         1
     );
     (admin, mid)
@@ -180,7 +188,10 @@ fn mock_oracle_attestation_response(att_hash: &[u8; 32], sig_count: u8, timestam
     data.push(sig_count);
     data.extend_from_slice(&timestamp.to_le_bytes());
     data.extend_from_slice(att_hash);
-    lichen_sdk::test_mock::set_cross_call_response(Some(data));
+    lichen_sdk::test_mock::set_cross_call_responses(vec![
+        data,
+        0u32.to_le_bytes().to_vec(), // lUSD bond transfer_from succeeds
+    ]);
 }
 
 // ============================================================================
@@ -260,7 +271,7 @@ fn test_submit_resolution_requires_closed() {
     let att_hash = [99u8; 32];
     lichen_sdk::test_mock::set_caller(resolver);
     assert_eq!(
-        submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), 100_000_000),
+        submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), HUNDRED_LUSD),
         0
     );
 }
@@ -278,7 +289,7 @@ fn test_submit_resolution_basic() {
     let resolver = [2u8; 32];
     let att_hash = [99u8; 32];
     lichen_sdk::test_mock::set_caller(resolver);
-    let r = submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), 100_000_000);
+    let r = submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), HUNDRED_LUSD);
     assert_eq!(r, 1, "Resolution should be accepted");
 
     let rec = read_market_record(mid).unwrap();
@@ -306,7 +317,7 @@ fn test_submit_resolution_invalid_outcome() {
     let att_hash = [99u8; 32];
     lichen_sdk::test_mock::set_caller(resolver);
     assert_eq!(
-        submit_resolution(resolver.as_ptr(), mid, 5, att_hash.as_ptr(), 100_000_000),
+        submit_resolution(resolver.as_ptr(), mid, 5, att_hash.as_ptr(), HUNDRED_LUSD),
         0,
         "Invalid outcome index should fail"
     );
@@ -323,9 +334,15 @@ fn test_submit_resolution_insufficient_bond() {
     let resolver = [2u8; 32];
     let att_hash = [99u8; 32];
     lichen_sdk::test_mock::set_caller(resolver);
-    // DISPUTE_BOND = 100_000_000
+    // DISPUTE_BOND = HUNDRED_LUSD
     assert_eq!(
-        submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), 99_999_999),
+        submit_resolution(
+            resolver.as_ptr(),
+            mid,
+            0,
+            att_hash.as_ptr(),
+            DISPUTE_BOND - 1
+        ),
         0,
         "Below DISPUTE_BOND should fail"
     );
@@ -348,7 +365,7 @@ fn test_finalize_resolution_after_dispute_period() {
     let resolver = [2u8; 32];
     let att_hash = [99u8; 32];
     lichen_sdk::test_mock::set_caller(resolver);
-    submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), 100_000_000);
+    submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), HUNDRED_LUSD);
 
     // Advance past DISPUTE_PERIOD (172800 slots)
     lichen_sdk::test_mock::set_slot(101_001 + 432_001);
@@ -375,7 +392,7 @@ fn test_finalize_resolution_during_dispute_period() {
     let resolver = [2u8; 32];
     let att_hash = [99u8; 32];
     lichen_sdk::test_mock::set_caller(resolver);
-    submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), 100_000_000);
+    submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), HUNDRED_LUSD);
 
     // Try finalize at resolve_slot + 1000 (still within 172800)
     lichen_sdk::test_mock::set_slot(101_001 + 1000);
@@ -402,12 +419,12 @@ fn test_challenge_resolution_basic() {
     let resolver = [2u8; 32];
     let att_hash = [99u8; 32];
     lichen_sdk::test_mock::set_caller(resolver);
-    submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), 100_000_000);
+    submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), HUNDRED_LUSD);
 
     let challenger = [3u8; 32];
     let evidence = [88u8; 32];
     lichen_sdk::test_mock::set_caller(challenger);
-    let r = challenge_resolution(challenger.as_ptr(), mid, evidence.as_ptr(), 100_000_000);
+    let r = challenge_resolution(challenger.as_ptr(), mid, evidence.as_ptr(), HUNDRED_LUSD);
     assert_eq!(r, 1, "Challenge should succeed");
 
     let rec = read_market_record(mid).unwrap();
@@ -429,13 +446,13 @@ fn test_cannot_challenge_own_resolution() {
     let resolver = [2u8; 32];
     let att_hash = [99u8; 32];
     lichen_sdk::test_mock::set_caller(resolver);
-    submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), 100_000_000);
+    submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), HUNDRED_LUSD);
 
     // Same resolver tries to challenge
     let evidence = [88u8; 32];
     lichen_sdk::test_mock::set_caller(resolver);
     assert_eq!(
-        challenge_resolution(resolver.as_ptr(), mid, evidence.as_ptr(), 100_000_000),
+        challenge_resolution(resolver.as_ptr(), mid, evidence.as_ptr(), HUNDRED_LUSD),
         0,
         "Cannot challenge own resolution"
     );
@@ -452,7 +469,7 @@ fn test_challenge_after_dispute_period_fails() {
     let resolver = [2u8; 32];
     let att_hash = [99u8; 32];
     lichen_sdk::test_mock::set_caller(resolver);
-    submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), 100_000_000);
+    submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), HUNDRED_LUSD);
 
     // Advance past dispute period
     lichen_sdk::test_mock::set_slot(101_001 + 432_001);
@@ -460,7 +477,7 @@ fn test_challenge_after_dispute_period_fails() {
     let evidence = [88u8; 32];
     lichen_sdk::test_mock::set_caller(challenger);
     assert_eq!(
-        challenge_resolution(challenger.as_ptr(), mid, evidence.as_ptr(), 100_000_000),
+        challenge_resolution(challenger.as_ptr(), mid, evidence.as_ptr(), HUNDRED_LUSD),
         0
     );
 }
@@ -476,7 +493,7 @@ fn test_challenge_insufficient_bond() {
     let resolver = [2u8; 32];
     let att_hash = [99u8; 32];
     lichen_sdk::test_mock::set_caller(resolver);
-    submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), 100_000_000);
+    submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), HUNDRED_LUSD);
 
     let challenger = [3u8; 32];
     let evidence = [88u8; 32];
@@ -503,12 +520,12 @@ fn test_dao_resolve_disputed_market() {
     let resolver = [2u8; 32];
     let att_hash = [99u8; 32];
     lichen_sdk::test_mock::set_caller(resolver);
-    submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), 100_000_000);
+    submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), HUNDRED_LUSD);
 
     let challenger = [3u8; 32];
     let evidence = [88u8; 32];
     lichen_sdk::test_mock::set_caller(challenger);
-    challenge_resolution(challenger.as_ptr(), mid, evidence.as_ptr(), 100_000_000);
+    challenge_resolution(challenger.as_ptr(), mid, evidence.as_ptr(), HUNDRED_LUSD);
 
     // DAO (admin) resolves with different outcome
     lichen_sdk::test_mock::set_caller(admin);
@@ -547,7 +564,7 @@ fn test_redeem_winning_shares() {
 
     // Buy YES outcome
     lichen_sdk::test_mock::set_caller(t);
-    let bought = buy_shares(t.as_ptr(), mid, 0, 5_000_000);
+    let bought = buy_shares(t.as_ptr(), mid, 0, FIVE_LUSD);
     assert!(bought > 0);
     let (shares_before, _) = read_position(mid, &t, 0);
     assert!(shares_before > 0);
@@ -561,7 +578,7 @@ fn test_redeem_winning_shares() {
     let resolver = [3u8; 32];
     let att_hash = [99u8; 32];
     lichen_sdk::test_mock::set_caller(resolver);
-    submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), 100_000_000);
+    submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), HUNDRED_LUSD);
 
     // Finalize
     lichen_sdk::test_mock::set_slot(101_001 + 432_001);
@@ -587,7 +604,7 @@ fn test_redeem_losing_shares() {
 
     // Buy NO outcome (index 1)
     lichen_sdk::test_mock::set_caller(t);
-    buy_shares(t.as_ptr(), mid, 1, 5_000_000);
+    buy_shares(t.as_ptr(), mid, 1, FIVE_LUSD);
     let (shares_before, _) = read_position(mid, &t, 1);
     assert!(shares_before > 0);
 
@@ -599,7 +616,7 @@ fn test_redeem_losing_shares() {
     let resolver = [3u8; 32];
     let att_hash = [99u8; 32];
     lichen_sdk::test_mock::set_caller(resolver);
-    submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), 100_000_000);
+    submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), HUNDRED_LUSD);
 
     lichen_sdk::test_mock::set_slot(101_001 + 432_001);
     lichen_sdk::test_mock::set_caller(t);
@@ -623,7 +640,7 @@ fn test_double_redemption_prevented() {
     let t = [2u8; 32];
 
     lichen_sdk::test_mock::set_caller(t);
-    buy_shares(t.as_ptr(), mid, 0, 5_000_000);
+    buy_shares(t.as_ptr(), mid, 0, FIVE_LUSD);
 
     // Full lifecycle: Close → Resolve → Finalize
     lichen_sdk::test_mock::set_slot(101_001);
@@ -632,7 +649,7 @@ fn test_double_redemption_prevented() {
     let resolver = [3u8; 32];
     let att_hash = [99u8; 32];
     lichen_sdk::test_mock::set_caller(resolver);
-    submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), 100_000_000);
+    submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), HUNDRED_LUSD);
     lichen_sdk::test_mock::set_slot(101_001 + 432_001);
     lichen_sdk::test_mock::set_caller(t);
     finalize_resolution(t.as_ptr(), mid);
@@ -653,7 +670,7 @@ fn test_redeem_requires_resolved_status() {
     let (_admin, mid) = setup_large_market();
     let t = [2u8; 32];
     lichen_sdk::test_mock::set_caller(t);
-    buy_shares(t.as_ptr(), mid, 0, 5_000_000);
+    buy_shares(t.as_ptr(), mid, 0, FIVE_LUSD);
 
     // Market is ACTIVE, cannot redeem
     lichen_sdk::test_mock::set_caller(t);
@@ -676,7 +693,7 @@ fn test_redeem_with_no_shares() {
     let resolver = [3u8; 32];
     let att_hash = [99u8; 32];
     lichen_sdk::test_mock::set_caller(resolver);
-    submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), 100_000_000);
+    submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), HUNDRED_LUSD);
     lichen_sdk::test_mock::set_slot(101_001 + 432_001);
     lichen_sdk::test_mock::set_caller(anyone);
     finalize_resolution(anyone.as_ptr(), mid);
@@ -720,9 +737,9 @@ fn test_multi_outcome_resolution_and_redemption() {
     let resolver = [3u8; 32];
     let att_hash = [99u8; 32];
     lichen_sdk::test_mock::set_caller(resolver);
-    lichen_sdk::test_mock::set_value(100_000_000); // DISPUTE_BOND
+    lichen_sdk::test_mock::set_value(HUNDRED_LUSD); // DISPUTE_BOND
     assert_eq!(
-        submit_resolution(resolver.as_ptr(), mid, 2, att_hash.as_ptr(), 100_000_000),
+        submit_resolution(resolver.as_ptr(), mid, 2, att_hash.as_ptr(), HUNDRED_LUSD),
         1
     );
 
@@ -759,7 +776,7 @@ fn test_full_lifecycle_binary_resolve_yes() {
     let t_both = [4u8; 32];
 
     lichen_sdk::test_mock::set_caller(t_yes);
-    buy_shares(t_yes.as_ptr(), mid, 0, 5_000_000); // YES
+    buy_shares(t_yes.as_ptr(), mid, 0, FIVE_LUSD); // YES
     lichen_sdk::test_mock::set_slot(1200);
     lichen_sdk::test_mock::set_caller(t_no);
     buy_shares(t_no.as_ptr(), mid, 1, 3_000_000); // NO
@@ -784,7 +801,7 @@ fn test_full_lifecycle_binary_resolve_yes() {
     let resolver = [10u8; 32];
     let att_hash = [99u8; 32];
     lichen_sdk::test_mock::set_caller(resolver);
-    submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), 100_000_000);
+    submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), HUNDRED_LUSD);
 
     // Finalize
     lichen_sdk::test_mock::set_slot(101_001 + 432_001);
@@ -821,7 +838,7 @@ fn test_full_lifecycle_dispute_dao_override() {
 
     // Buy YES
     lichen_sdk::test_mock::set_caller(t);
-    buy_shares(t.as_ptr(), mid, 0, 5_000_000);
+    buy_shares(t.as_ptr(), mid, 0, FIVE_LUSD);
     let (yes_shares, _) = read_position(mid, &t, 0);
 
     // Close
@@ -833,13 +850,13 @@ fn test_full_lifecycle_dispute_dao_override() {
     let resolver = [3u8; 32];
     let att_hash = [99u8; 32];
     lichen_sdk::test_mock::set_caller(resolver);
-    submit_resolution(resolver.as_ptr(), mid, 1, att_hash.as_ptr(), 100_000_000);
+    submit_resolution(resolver.as_ptr(), mid, 1, att_hash.as_ptr(), HUNDRED_LUSD);
 
     // Challenger disputes
     let challenger = [4u8; 32];
     let evidence = [88u8; 32];
     lichen_sdk::test_mock::set_caller(challenger);
-    challenge_resolution(challenger.as_ptr(), mid, evidence.as_ptr(), 100_000_000);
+    challenge_resolution(challenger.as_ptr(), mid, evidence.as_ptr(), HUNDRED_LUSD);
 
     // DAO overrides with outcome 0 (YES wins)
     lichen_sdk::test_mock::set_caller(admin);
@@ -858,7 +875,7 @@ fn test_full_lifecycle_void_after_dispute() {
     let t = [2u8; 32];
 
     lichen_sdk::test_mock::set_caller(t);
-    buy_shares(t.as_ptr(), mid, 0, 5_000_000);
+    buy_shares(t.as_ptr(), mid, 0, FIVE_LUSD);
 
     // Close
     lichen_sdk::test_mock::set_slot(101_001);
@@ -869,11 +886,11 @@ fn test_full_lifecycle_void_after_dispute() {
     let resolver = [3u8; 32];
     let att_hash = [99u8; 32];
     lichen_sdk::test_mock::set_caller(resolver);
-    submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), 100_000_000);
+    submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), HUNDRED_LUSD);
     let challenger = [4u8; 32];
     let evidence = [88u8; 32];
     lichen_sdk::test_mock::set_caller(challenger);
-    challenge_resolution(challenger.as_ptr(), mid, evidence.as_ptr(), 100_000_000);
+    challenge_resolution(challenger.as_ptr(), mid, evidence.as_ptr(), HUNDRED_LUSD);
 
     // DAO voids instead of resolving
     lichen_sdk::test_mock::set_caller(admin);
@@ -892,6 +909,21 @@ fn test_full_lifecycle_void_after_dispute() {
     assert_eq!(result, 1, "Trader should get refund from voided market");
     let refund = lichen_sdk::bytes_to_u64(&lichen_sdk::test_mock::get_return_data());
     assert!(refund > 0, "Refund amount should be > 0");
+
+    lichen_sdk::test_mock::set_caller(resolver);
+    let resolver_refund = reclaim_collateral(resolver.as_ptr(), mid);
+    assert_eq!(resolver_refund, 1, "Resolver bond should be reclaimable");
+    let resolver_amount = lichen_sdk::bytes_to_u64(&lichen_sdk::test_mock::get_return_data());
+    assert_eq!(resolver_amount, HUNDRED_LUSD);
+
+    lichen_sdk::test_mock::set_caller(challenger);
+    let challenger_refund = reclaim_collateral(challenger.as_ptr(), mid);
+    assert_eq!(
+        challenger_refund, 1,
+        "Challenger bond should be reclaimable"
+    );
+    let challenger_amount = lichen_sdk::bytes_to_u64(&lichen_sdk::test_mock::get_return_data());
+    assert_eq!(challenger_amount, HUNDRED_LUSD);
 }
 
 // ============================================================================
@@ -906,7 +938,7 @@ fn test_voided_reclaim_multiple_traders() {
 
     // Two traders buy different sides
     lichen_sdk::test_mock::set_caller(t1);
-    buy_shares(t1.as_ptr(), mid, 0, 5_000_000);
+    buy_shares(t1.as_ptr(), mid, 0, FIVE_LUSD);
     lichen_sdk::test_mock::set_slot(1200);
     lichen_sdk::test_mock::set_caller(t2);
     buy_shares(t2.as_ptr(), mid, 1, 3_000_000);
@@ -941,22 +973,18 @@ fn test_voided_reclaim_with_mint_position() {
 
     // Mint complete set (equal cost in all outcomes)
     lichen_sdk::test_mock::set_caller(t);
-    assert_eq!(mint_complete_set(t.as_ptr(), mid, 10_000_000), 1);
+    assert_eq!(mint_complete_set(t.as_ptr(), mid, TEN_LUSD), 1);
 
     // Void
     lichen_sdk::test_mock::set_caller(admin);
     dao_void(admin.as_ptr(), mid);
 
-    // Reclaim — should get back 10M (= 10M cost_basis sum = 10M × 2 outcomes = 20M total cost, but capped)
+    // Reclaim should return the sum of the cost basis across both outcomes.
     lichen_sdk::test_mock::set_caller(t);
     let result = reclaim_collateral(t.as_ptr(), mid);
-    // cost_basis per outcome = 10M, 2 outcomes → total_cost = 20M
-    // But actual collateral is only 10M, so refund is capped at market_total_collateral
-    // (100M pool + 10M mint = 110M total collateral)
-    // refund = min(20M, 110M) = 20M
     assert_eq!(result, 1, "Reclaim should succeed");
     let refund = lichen_sdk::bytes_to_u64(&lichen_sdk::test_mock::get_return_data());
-    assert_eq!(refund, 20_000_000, "Mint refund = sum of cost_basis");
+    assert_eq!(refund, 2 * TEN_LUSD, "Mint refund = sum of cost_basis");
 }
 
 // ============================================================================
@@ -988,7 +1016,7 @@ fn test_resolution_with_oracle_attestation() {
 
     let resolver = [2u8; 32];
     lichen_sdk::test_mock::set_caller(resolver);
-    let r = submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), 100_000_000);
+    let r = submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), HUNDRED_LUSD);
     assert_eq!(r, 1, "Matching oracle attestation should succeed");
 
     let rec = read_market_record(mid).unwrap();
@@ -1023,7 +1051,7 @@ fn test_resolution_with_insufficient_attestation() {
 
     let resolver = [2u8; 32];
     lichen_sdk::test_mock::set_caller(resolver);
-    let r = submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), 100_000_000);
+    let r = submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), HUNDRED_LUSD);
     assert_eq!(r, 0, "Should fail with insufficient attestations");
 }
 
@@ -1049,7 +1077,7 @@ fn test_resolution_with_missing_attestation() {
 
     let resolver = [2u8; 32];
     lichen_sdk::test_mock::set_caller(resolver);
-    let r = submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), 100_000_000);
+    let r = submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), HUNDRED_LUSD);
     assert_eq!(r, 0, "Should fail with missing oracle response");
 }
 
@@ -1069,7 +1097,7 @@ fn test_resolution_rejects_payload_bound_to_other_market() {
     let other_qh = [11u8; 32];
     let other_q = b"Will LICN flip SOL?";
     lichen_sdk::test_mock::set_caller(other_creator);
-    lichen_sdk::test_mock::set_value(10_000_000);
+    lichen_sdk::test_mock::set_value(TEN_LUSD);
     let other_mid = create_market(
         other_creator.as_ptr(),
         2,
@@ -1092,7 +1120,7 @@ fn test_resolution_rejects_payload_bound_to_other_market() {
     let resolver = [2u8; 32];
     let last_cross_call_before = lichen_sdk::test_mock::get_last_cross_call();
     lichen_sdk::test_mock::set_caller(resolver);
-    let r = submit_resolution(resolver.as_ptr(), mid, 0, other_hash.as_ptr(), 100_000_000);
+    let r = submit_resolution(resolver.as_ptr(), mid, 0, other_hash.as_ptr(), HUNDRED_LUSD);
     assert_eq!(r, 0, "Should reject attestation hash from another market");
     assert!(
         lichen_sdk::test_mock::get_last_cross_call() == last_cross_call_before,
@@ -1124,7 +1152,7 @@ fn test_resolution_rejects_payload_mismatch_even_with_matching_hash() {
 
     let resolver = [2u8; 32];
     lichen_sdk::test_mock::set_caller(resolver);
-    let r = submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), 100_000_000);
+    let r = submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), HUNDRED_LUSD);
     assert_eq!(r, 0, "Should reject attestation payload mismatch");
 }
 
@@ -1134,8 +1162,11 @@ fn test_resolution_rejects_payload_mismatch_even_with_matching_hash() {
 
 fn mock_lichenid_reputation(_addr: &[u8; 32], reputation: u64) {
     // CON-14 audit fix: reputation is now read via cross-contract call, not storage.
-    // Set the mock cross-call response to return the reputation as 8 le bytes.
-    lichen_sdk::test_mock::set_cross_call_response(Some(reputation.to_le_bytes().to_vec()));
+    // Queue reputation first, then token transfer_from success for the lUSD bond.
+    lichen_sdk::test_mock::set_cross_call_responses(vec![
+        reputation.to_le_bytes().to_vec(),
+        0u32.to_le_bytes().to_vec(),
+    ]);
 }
 
 #[test]
@@ -1157,7 +1188,7 @@ fn test_resolution_with_lichenid_reputation_check() {
 
     let att_hash = [99u8; 32];
     lichen_sdk::test_mock::set_caller(resolver);
-    let r = submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), 100_000_000);
+    let r = submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), HUNDRED_LUSD);
     assert_eq!(r, 1, "Should succeed with 1500 reputation");
 }
 
@@ -1179,7 +1210,7 @@ fn test_resolution_insufficient_reputation() {
 
     let att_hash = [99u8; 32];
     lichen_sdk::test_mock::set_caller(resolver);
-    let r = submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), 100_000_000);
+    let r = submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), HUNDRED_LUSD);
     assert_eq!(r, 0, "Should fail with 500 reputation (need 1000+)");
 }
 
@@ -1214,7 +1245,7 @@ fn test_resolution_with_both_oracle_and_reputation() {
     mock_lichenid_reputation(&resolver, 2000);
 
     lichen_sdk::test_mock::set_caller(resolver);
-    let r = submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), 100_000_000);
+    let r = submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), HUNDRED_LUSD);
     assert_eq!(
         r, 0,
         "Shared mock response should fail closed on invalid oracle payload"
@@ -1230,7 +1261,7 @@ fn test_total_collateral_decreases_after_redemption() {
     let (_admin, mid) = setup_large_market();
     let t = [2u8; 32];
     lichen_sdk::test_mock::set_caller(t);
-    buy_shares(t.as_ptr(), mid, 0, 5_000_000);
+    buy_shares(t.as_ptr(), mid, 0, FIVE_LUSD);
     let (shares, _) = read_position(mid, &t, 0);
 
     // Full lifecycle
@@ -1240,7 +1271,7 @@ fn test_total_collateral_decreases_after_redemption() {
     let resolver = [3u8; 32];
     let att_hash = [99u8; 32];
     lichen_sdk::test_mock::set_caller(resolver);
-    submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), 100_000_000);
+    submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), HUNDRED_LUSD);
     lichen_sdk::test_mock::set_slot(101_001 + 432_001);
     lichen_sdk::test_mock::set_caller(t);
     finalize_resolution(t.as_ptr(), mid);

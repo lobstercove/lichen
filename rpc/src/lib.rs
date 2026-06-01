@@ -18563,6 +18563,44 @@ fn pm_u64(data: &[u8], off: usize) -> u64 {
     u64::from_le_bytes(data[off..off + 8].try_into().unwrap_or([0; 8]))
 }
 
+fn prediction_address_aliases(input: &str) -> Result<Vec<String>, RpcError> {
+    let trimmed = input.trim();
+    let mut aliases = Vec::new();
+    if trimmed.is_empty() {
+        return Err(RpcError {
+            code: -32602,
+            message: "address must not be empty".into(),
+        });
+    }
+    aliases.push(trimmed.to_string());
+    if let Ok(pk) = Pubkey::from_base58(trimmed) {
+        let hex_addr = hex::encode(pk.0);
+        if !aliases.contains(&hex_addr) {
+            aliases.push(hex_addr);
+        }
+        return Ok(aliases);
+    }
+    if trimmed.len() == 64 && trimmed.chars().all(|c| c.is_ascii_hexdigit()) {
+        let bytes = hex::decode(trimmed).map_err(|e| RpcError {
+            code: -32602,
+            message: format!("invalid hex address: {e}"),
+        })?;
+        if bytes.len() == 32 {
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&bytes);
+            let b58 = Pubkey(arr).to_base58();
+            if !aliases.contains(&b58) {
+                aliases.push(b58);
+            }
+            return Ok(aliases);
+        }
+    }
+    Err(RpcError {
+        code: -32602,
+        message: "invalid address".into(),
+    })
+}
+
 /// getPredictionMarketStats — Platform stats
 async fn handle_get_prediction_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
     resolve_symbol_pubkey(state, "PREDICT")?;
@@ -18842,54 +18880,51 @@ async fn handle_get_prediction_positions(
         }
     };
 
-    let address_pubkey = Pubkey::from_base58(&address).map_err(|e| RpcError {
-        code: -32602,
-        message: format!("invalid address: {e}"),
-    })?;
-    let address_hex = hex::encode(address_pubkey.0);
-
-    let count_key = format!("pm_userc_{}", address_hex);
-    let count = state
-        .state
-        .get_program_storage_u64(PREDICT_SYMBOL, count_key.as_bytes());
-
     let mut positions = Vec::new();
-    for idx in 0..count {
-        let um_key = format!("pm_user_{}_{}", address_hex, idx);
-        let market_id = match state
+    let mut seen = std::collections::HashSet::new();
+    for alias in prediction_address_aliases(&address)? {
+        let count_key = format!("pm_userc_{}", alias);
+        let count = state
             .state
-            .get_program_storage(PREDICT_SYMBOL, um_key.as_bytes())
-        {
-            Some(d) if d.len() >= 8 => pm_u64(&d, 0),
-            _ => continue,
-        };
+            .get_program_storage_u64(PREDICT_SYMBOL, count_key.as_bytes());
 
-        let mkt_key = format!("pm_m_{}", market_id);
-        let mkt_data = match state
-            .state
-            .get_program_storage(PREDICT_SYMBOL, mkt_key.as_bytes())
-        {
-            Some(d) if d.len() >= 192 => d,
-            _ => continue,
-        };
-        let outcome_count = mkt_data[65];
-
-        for oi in 0..outcome_count {
-            let pos_key = format!("pm_p_{}_{}_{}", market_id, address_hex, oi);
-            if let Some(pd) = state
+        for idx in 0..count {
+            let um_key = format!("pm_user_{}_{}", alias, idx);
+            let market_id = match state
                 .state
-                .get_program_storage(PREDICT_SYMBOL, pos_key.as_bytes())
+                .get_program_storage(PREDICT_SYMBOL, um_key.as_bytes())
             {
-                if pd.len() >= 16 {
-                    let shares = pm_u64(&pd, 0);
-                    let cost = pm_u64(&pd, 8);
-                    if shares > 0 {
-                        positions.push(serde_json::json!({
-                            "market_id": market_id,
-                            "outcome": oi,
-                            "shares": shares as f64 / PM_PRICE_SCALE,
-                            "cost_basis": cost as f64 / PM_PRICE_SCALE,
-                        }));
+                Some(d) if d.len() >= 8 => pm_u64(&d, 0),
+                _ => continue,
+            };
+
+            let mkt_key = format!("pm_m_{}", market_id);
+            let mkt_data = match state
+                .state
+                .get_program_storage(PREDICT_SYMBOL, mkt_key.as_bytes())
+            {
+                Some(d) if d.len() >= 192 => d,
+                _ => continue,
+            };
+            let outcome_count = mkt_data[65];
+
+            for oi in 0..outcome_count {
+                let pos_key = format!("pm_p_{}_{}_{}", market_id, alias, oi);
+                if let Some(pd) = state
+                    .state
+                    .get_program_storage(PREDICT_SYMBOL, pos_key.as_bytes())
+                {
+                    if pd.len() >= 16 {
+                        let shares = pm_u64(&pd, 0);
+                        let cost = pm_u64(&pd, 8);
+                        if shares > 0 && seen.insert((market_id, oi)) {
+                            positions.push(serde_json::json!({
+                                "market_id": market_id,
+                                "outcome": oi,
+                                "shares": shares as f64 / PM_PRICE_SCALE,
+                                "cost_basis": cost as f64 / PM_PRICE_SCALE,
+                            }));
+                        }
                     }
                 }
             }
@@ -19265,6 +19300,7 @@ async fn handle_get_dex_margin_stats(state: &RpcState) -> Result<serde_json::Val
         "total_pnl_profit": cf_stats_u64(state, "DEXMARGIN", b"mrg_pnl_profit"),
         "total_pnl_loss": cf_stats_u64(state, "DEXMARGIN", b"mrg_pnl_loss"),
         "insurance_fund": cf_stats_u64(state, "DEXMARGIN", b"mrg_insurance"),
+        "total_open_interest": cf_stats_u64(state, "DEXMARGIN", b"mrg_total_oi"),
         "max_leverage": max_leverage,
         "paused": cf_stats_bool(state, "DEXMARGIN", b"mrg_paused"),
     }))
@@ -20311,8 +20347,8 @@ mod tests {
         handle_verify_neo_reserve_liability_proof, live_signed_metadata_source_rpc,
         method_allowed_when_rpc_unready, parse_bridge_access_auth, parse_get_block_slot_param,
         parse_governance_event, parse_rpc_request, parse_rpc_tier_probe, parse_topic_hash,
-        pq_signature_json, privileged_rpc_mutation_test_output, put_cached_program_list_response,
-        rpc_readiness, rpc_readiness_json, rpc_unready_error,
+        pq_signature_json, prediction_address_aliases, privileged_rpc_mutation_test_output,
+        put_cached_program_list_response, rpc_readiness, rpc_readiness_json, rpc_unready_error,
         solana_method_allowed_when_rpc_unready, storage_key_with_pubkey_hex,
         storage_key_with_u64_le, strip_admin_token_from_params,
         validate_incoming_transaction_limits, validate_solana_encoding,
@@ -21906,6 +21942,21 @@ mod tests {
     #[test]
     fn test_m02_get_governance_events_is_moderate() {
         assert_eq!(classify_method("getGovernanceEvents"), MethodTier::Moderate);
+    }
+
+    #[test]
+    fn test_prediction_address_aliases_accept_base58_and_hex() {
+        let pubkey = Pubkey([0xCD; 32]);
+        let b58 = pubkey.to_base58();
+        let hex_addr = hex::encode(pubkey.0);
+
+        let from_b58 = prediction_address_aliases(&b58).unwrap();
+        assert!(from_b58.contains(&b58));
+        assert!(from_b58.contains(&hex_addr));
+
+        let from_hex = prediction_address_aliases(&hex_addr).unwrap();
+        assert!(from_hex.contains(&hex_addr));
+        assert!(from_hex.contains(&b58));
     }
 
     #[test]

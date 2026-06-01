@@ -145,7 +145,15 @@ class LichenRPC {
     async getMetrics() { return this.call('getMetrics'); }
     async getBalance(pubkey) { return this.call('getBalance', [pubkey]); }
     async getAccount(pubkey) { return this.call('getAccount', [pubkey]); }
-    async sendTransaction(txData) { return this.call('sendTransaction', [txData]); }
+    async submitTransaction(txData) { return this.call('sendTransaction', [txData]); }
+    async simulateTransaction(txData) { return this.call('simulateTransaction', [txData]); }
+    async sendTransaction(txData) {
+        const simulation = await this.simulateTransaction(txData);
+        if (!simulation?.success) {
+            throw new Error(simulation?.error || 'Transaction simulation failed');
+        }
+        return this.submitTransaction(txData);
+    }
     async health() { return this.call('health'); }
 }
 

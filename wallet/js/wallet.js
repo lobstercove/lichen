@@ -901,7 +901,27 @@ class LichenRPC {
 
     async getBalance(address) { return this.call('getBalance', [address]); }
     async getAccount(address) { return this.call('getAccount', [address]); }
-    async sendTransaction(txData) { return this.call('sendTransaction', [txData]); }
+    async submitTransaction(txData) { return this.call('sendTransaction', [txData]); }
+    async simulateTransaction(txData) { return this.call('simulateTransaction', [txData]); }
+    async sendTransaction(txData) {
+        const simulation = await this.simulateTransaction(txData);
+        if (!simulation?.success) {
+            const error = simulation?.error || 'Transaction simulation failed';
+            const returnCode = simulation?.returnCode === undefined || simulation?.returnCode === null
+                ? ''
+                : `, returnCode=${simulation.returnCode}`;
+            throw new Error(`Preflight failed: ${error}${returnCode}`);
+        }
+        return this.submitTransaction(txData);
+    }
+    async getRecentBlockhash() {
+        const result = await this.call('getRecentBlockhash');
+        const blockhash = typeof result === 'string' ? result : result?.blockhash;
+        if (!/^[0-9a-fA-F]{64}$/.test(String(blockhash || ''))) {
+            throw new Error('RPC returned invalid recent blockhash');
+        }
+        return blockhash;
+    }
     async getLatestBlock() { return this.call('getLatestBlock'); }
     async getTokenBalance(tokenProgram, holder) { return this.call('getTokenBalance', [tokenProgram, holder]); }
     async getContractInfo(contractId) { return this.call('getContractInfo', [contractId]); }
@@ -3710,7 +3730,7 @@ async function showMossStakeModal() {
 
     try {
         const tierByte = parseInt(values.lockTier || '0');
-        const latestBlock = await rpc.getLatestBlock();
+        const blockhash = await rpc.getRecentBlockhash();
         const fromPubkey = LichenCrypto.addressToBytes(wallet.address);
 
         // Instruction type 13 = MossStake deposit, then amount(8), then tier(1)
@@ -3726,7 +3746,7 @@ async function showMossStakeModal() {
                 accounts: [Array.from(fromPubkey)],
                 data: Array.from(instructionData)
             }],
-            blockhash: latestBlock.hash
+            blockhash
         };
 
         const privateKey = await LichenCrypto.decryptPrivateKey(wallet.encryptedKey, values.password);
@@ -3808,7 +3828,7 @@ async function showMossUnstakeModal() {
     } catch (e) { /* let RPC reject */ }
 
     try {
-        const latestBlock = await rpc.getLatestBlock();
+        const blockhash = await rpc.getRecentBlockhash();
         const fromPubkey = LichenCrypto.addressToBytes(wallet.address);
 
         // Instruction type 14 = MossStake unstake
@@ -3823,7 +3843,7 @@ async function showMossUnstakeModal() {
                 accounts: [Array.from(fromPubkey)],
                 data: Array.from(instructionData)
             }],
-            blockhash: latestBlock.hash
+            blockhash
         };
 
         const privateKey = await LichenCrypto.decryptPrivateKey(wallet.encryptedKey, values.password);
@@ -3892,7 +3912,7 @@ async function claimMossStake() {
     if (!values || !values.password) return;
 
     try {
-        const latestBlock = await rpc.getLatestBlock();
+        const blockhash = await rpc.getRecentBlockhash();
         const fromPubkey = LichenCrypto.addressToBytes(wallet.address);
 
         // Instruction type 15 = MossStake claim (data: [15], accounts: [user])
@@ -3904,7 +3924,7 @@ async function claimMossStake() {
                 accounts: [Array.from(fromPubkey)],
                 data: Array.from(instructionData)
             }],
-            blockhash: latestBlock.hash
+            blockhash
         };
 
         const privateKey = await LichenCrypto.decryptPrivateKey(wallet.encryptedKey, values.password);
@@ -4745,7 +4765,7 @@ async function registerEvmAddress(wallet, password) {
 
         const systemProgram = new Uint8Array(32); // SYSTEM_PROGRAM_ID = [0; 32]
         const fromPubkey = LichenCrypto.addressToBytes(wallet.address);
-        const latestBlock = await rpc.getLatestBlock();
+        const blockhash = await rpc.getRecentBlockhash();
 
         const message = {
             instructions: [{
@@ -4753,7 +4773,7 @@ async function registerEvmAddress(wallet, password) {
                 accounts: [Array.from(fromPubkey)],
                 data: Array.from(instructionData)
             }],
-            blockhash: latestBlock.hash
+            blockhash
         };
 
         const privateKey = await LichenCrypto.decryptPrivateKey(wallet.encryptedKey, password);
@@ -4929,9 +4949,7 @@ async function confirmSend() {
     try {
         showToast('Building transaction...');
 
-        // Get recent blockhash
-        const latestBlock = await rpc.getLatestBlock();
-        const blockhash = latestBlock.hash;
+        const blockhash = await rpc.getRecentBlockhash();
 
         const fromPubkey = LichenCrypto.addressToBytes(wallet.address);
         const toPubkey = LichenCrypto.addressToBytes(to);

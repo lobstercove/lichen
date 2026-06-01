@@ -28,15 +28,15 @@ use lichen_core::{Instruction, Pubkey, CONTRACT_PROGRAM_ID};
 
 const PREDICT_PROGRAM: &str = "PREDICT";
 const DEFAULT_PREDICT_PROGRAM_B58: &str = "J8sMvYFXW4ZCHc488KJ1zmZq1sQMTWyWfr8qnzUwwEyD";
-// F12.10 FIX: Prediction market uses LUSD_UNIT (1e6), not DEX PRICE_SCALE (1e9)
-const PRICE_SCALE: u64 = 1_000_000;
+// Prediction market uses lUSD_UNIT = 10^9, matching contract/frontend custody.
+const PRICE_SCALE: u64 = 1_000_000_000;
 const DEFAULT_CLOSE_SLOTS: u64 = 1_512_000; // ~7 days at 400ms/slot
-const MIN_COLLATERAL: u64 = 1_000_000; // 1 lUSD (6 decimals)
+const MIN_COLLATERAL: u64 = PRICE_SCALE; // 1 lUSD
 const TRADING_FEE_BPS: u64 = 200; // 2%
 const MIN_REPUTATION_CREATE: u64 = 500;
 const MIN_REPUTATION_RESOLVE: u64 = 1_000;
-const MARKET_CREATION_FEE: u64 = 10_000_000; // 10 lUSD
-const DISPUTE_BOND: u64 = 100_000_000; // 100 lUSD
+const MARKET_CREATION_FEE: u64 = 10 * PRICE_SCALE; // 10 lUSD
+const DISPUTE_BOND: u64 = 100 * PRICE_SCALE; // 100 lUSD
 const DISPUTE_PERIOD_SLOTS: u64 = 172_800; // 48h at 400ms/slot
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -703,6 +703,18 @@ async fn get_markets(
 
     let limit = params.limit.unwrap_or(50).min(200);
     let offset = params.offset.unwrap_or(0);
+    let creator_filter = match params
+        .creator
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(value) => match parse_pubkey_flexible(value) {
+            Some(pubkey) => Some(pubkey.to_base58()),
+            None => return api_err("creator must be a valid base58 or 64-char hex pubkey"),
+        },
+        None => None,
+    };
 
     // AUDIT-FIX C7: Apply offset/limit during iteration to avoid O(n) full scan.
     // Track how many matched so far to skip `offset` items and stop after `limit`.
@@ -723,8 +735,8 @@ async fn get_markets(
                 }
             }
             // F12.5 FIX: creator filter for "My Markets" tab
-            if let Some(ref cr) = params.creator {
-                if mkt.creator != cr.as_str() {
+            if let Some(ref cr) = creator_filter {
+                if mkt.creator != *cr {
                     continue;
                 }
             }
@@ -738,7 +750,7 @@ async fn get_markets(
             if markets.len() >= limit
                 && params.category.is_none()
                 && params.status.is_none()
-                && params.creator.is_none()
+                && creator_filter.is_none()
             {
                 // Unfiltered: total = total_markets
                 matched = total_markets as usize;
@@ -875,8 +887,8 @@ async fn get_price_history(
                 let snap_slot = u64_le(&data, 0);
                 let price_raw = u64_le(&data, 8);
                 let volume_raw = u64_le(&data, 16);
-                // Price is in lUSD units (6 decimals) → normalize to 0.0–1.0
-                let price = price_raw as f64 / 1_000_000.0;
+                // Price is in lUSD units; normalize to 0.0–1.0.
+                let price = price_raw as f64 / PRICE_SCALE as f64;
                 let volume = volume_raw as f64 / PRICE_SCALE as f64;
                 // Approximate timestamp
                 let slots_ago = current_slot_val.saturating_sub(snap_slot);
@@ -1603,6 +1615,31 @@ mod tests {
         assert_eq!(status_name(99, 0, 0), "unknown");
     }
 
+    #[test]
+    fn parse_pubkey_flexible_accepts_base58_and_hex() {
+        let pubkey = lichen_core::Pubkey([0xABu8; 32]);
+        let b58 = pubkey.to_base58();
+        let hex_addr = hex::encode(pubkey.0);
+
+        assert_eq!(parse_pubkey_flexible(&b58), Some(pubkey));
+        assert_eq!(parse_pubkey_flexible(&hex_addr), Some(pubkey));
+    }
+
+    #[test]
+    fn address_aliases_include_base58_and_hex() {
+        let pubkey = lichen_core::Pubkey([0xCDu8; 32]);
+        let b58 = pubkey.to_base58();
+        let hex_addr = hex::encode(pubkey.0);
+
+        let from_b58 = address_aliases(&b58);
+        assert!(from_b58.contains(&b58));
+        assert!(from_b58.contains(&hex_addr));
+
+        let from_hex = address_aliases(&hex_addr);
+        assert!(from_hex.contains(&hex_addr));
+        assert!(from_hex.contains(&b58));
+    }
+
     // ── build_create_market_args ──
 
     #[test]
@@ -1676,8 +1713,8 @@ mod tests {
     #[allow(clippy::assertions_on_constants)]
     fn constants_sane() {
         assert_eq!(
-            PRICE_SCALE, 1_000_000,
-            "Prediction uses 1e6 (LUSD), not 1e9"
+            PRICE_SCALE, 1_000_000_000,
+            "Prediction uses the contract lUSD_UNIT scale"
         );
         assert!(MIN_COLLATERAL > 0);
         assert!(TRADING_FEE_BPS > 0 && TRADING_FEE_BPS < 10_000);

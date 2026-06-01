@@ -33,6 +33,7 @@ import json
 import struct
 import asyncio
 import hashlib
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Optional, Dict
 
@@ -161,6 +162,16 @@ def derive_program_address(deployer: PublicKey, wasm_bytes: bytes) -> PublicKey:
 
 def keypair_address_bytes(keypair: Keypair) -> bytes:
     return bytes(keypair.address().to_bytes())
+
+
+def lusd_to_raw(value: str) -> int:
+    try:
+        amount = Decimal(str(value or "0"))
+    except (InvalidOperation, ValueError):
+        return 0
+    if amount <= 0:
+        return 0
+    return int(amount * Decimal(1_000_000_000))
 
 
 # Maps symbol registry names → deploy_dex contract names.
@@ -461,8 +472,8 @@ async def phase_initialize_dex(
                 data = [0] + admin_bytes
                 sig = await call_contract_raw(conn, deployer, addrs[name], "call", data)
             else:
-                # Named "initialize" export (takes no args or reads caller as admin)
-                sig = await call_contract(conn, deployer, addrs[name], "initialize")
+                # Named initialize exports expect raw admin[32], same as token contracts.
+                sig = await call_contract_raw(conn, deployer, addrs[name], "initialize", admin_bytes)
             print(f"  ✅ {name}.initialize() — sig={sig}")
         except Exception as e:
             print(f"  ⚠️  {name}.initialize() failed: {e}")
@@ -575,6 +586,27 @@ async def phase_initialize_dex(
 
     # ── Wire rewards for CLOB fee mining and AMM LP campaign accrual ─────
     if "dex_rewards" in addrs:
+        print(f"\n  --- Configuring dex_rewards payout custody ---")
+        data = (bytes([12])
+                + bytes(deployer.address().to_bytes())
+                + bytes(NATIVE_LICN.to_bytes()))
+        try:
+            sig = await call_contract_raw(
+                conn, deployer, addrs["dex_rewards"], "call", list(data))
+            print(f"  ✅ dex_rewards.set_lichencoin_address(native LICN) — sig={sig}")
+        except Exception as e:
+            print(f"  ⚠️  dex_rewards.set_lichencoin_address() failed: {e}")
+
+        data = (bytes([13])
+                + bytes(deployer.address().to_bytes())
+                + bytes(addrs["dex_rewards"].to_bytes()))
+        try:
+            sig = await call_contract_raw(
+                conn, deployer, addrs["dex_rewards"], "call", list(data))
+            print(f"  ✅ dex_rewards.set_rewards_pool(self) — sig={sig}")
+        except Exception as e:
+            print(f"  ⚠️  dex_rewards.set_rewards_pool() failed: {e}")
+
         if "dex_core" in addrs:
             print(f"\n  --- Wiring dex_core → dex_rewards ---")
             data = (bytes([34])
@@ -621,6 +653,111 @@ async def phase_initialize_dex(
             except Exception as e:
                 print(f"  ⚠️  dex_rewards.authorize(dex_amm) failed: {e}")
 
+    # ── Wire dex_margin standard lUSD collateral custody ─
+    if "dex_margin" in addrs:
+        print(f"\n  --- Configuring dex_margin collateral custody ---")
+        margin_configs = [
+            (29, addrs.get("lichenoracle"), "set_oracle_contract(lichenoracle)"),
+            (33, addrs.get("lusd_token"), "set_collateral_token_address(lUSD)"),
+            (34, addrs.get("dex_margin"), "set_self_address(dex_margin)"),
+        ]
+        for opcode, target, label in margin_configs:
+            if not target:
+                print(f"  ⚠️  dex_margin.{label} skipped: address unavailable")
+                continue
+            data = (bytes([opcode])
+                    + bytes(deployer.address().to_bytes())
+                    + bytes(target.to_bytes()))
+            try:
+                sig = await call_contract_raw(
+                    conn, deployer, addrs["dex_margin"], "call", list(data))
+                print(f"  ✅ dex_margin.{label} — sig={sig}")
+            except Exception as e:
+                print(f"  ⚠️  dex_margin.{label} failed: {e}")
+
+        bootstrap_raw = lusd_to_raw(os.environ.get("DEX_MARGIN_INSURANCE_BOOTSTRAP_LUSD", "0"))
+        if bootstrap_raw > 0:
+            if "lusd_token" not in addrs:
+                print("  ⚠️  dex_margin insurance bootstrap skipped: lusd_token unavailable")
+            elif str(deployer.address()) != str(admin_pubkey):
+                print("  ⚠️  dex_margin insurance bootstrap skipped: deployer is not the DEX/lUSD admin signer")
+                print("      Run admin flow: mint lUSD to admin, approve dex_margin, then dex_margin.deposit_insurance(op35).")
+            else:
+                admin_addr = bytes(deployer.address().to_bytes())
+                margin_addr = bytes(addrs["dex_margin"].to_bytes())
+                amount_bytes = struct.pack('<Q', bootstrap_raw)
+                try:
+                    mint_args = admin_addr + admin_addr + amount_bytes
+                    sig = await call_contract_raw(
+                        conn, deployer, addrs["lusd_token"], "mint", list(mint_args))
+                    print(f"  ✅ lUSD.mint(admin bootstrap) — sig={sig}")
+                    approve_args = admin_addr + margin_addr + amount_bytes
+                    sig = await call_contract_raw(
+                        conn, deployer, addrs["lusd_token"], "approve", list(approve_args))
+                    print(f"  ✅ lUSD.approve(dex_margin bootstrap) — sig={sig}")
+                    deposit_args = bytes([35]) + admin_addr + amount_bytes
+                    sig = await call_contract_raw(
+                        conn, deployer, addrs["dex_margin"], "call", list(deposit_args))
+                    print(f"  ✅ dex_margin.deposit_insurance({bootstrap_raw / 1_000_000_000:.4f} lUSD) — sig={sig}")
+                except Exception as e:
+                    print(f"  ⚠️  dex_margin insurance bootstrap failed: {e}")
+
+    # ── Wire DEX governance for proposal execution + eligibility checks ─────
+    if "dex_governance" in addrs:
+        if "dex_core" in addrs:
+            print(f"\n  --- Wiring dex_governance ↔ dex_core ---")
+
+            # dex_core opcode 35: set_governance_address(caller[32], governance[32])
+            data = (bytes([35])
+                    + bytes(deployer.address().to_bytes())
+                    + bytes(addrs["dex_governance"].to_bytes()))
+            try:
+                sig = await call_contract_raw(
+                    conn, deployer, addrs["dex_core"], "call", list(data))
+                print(f"  ✅ dex_core.set_governance_address(dex_governance) — sig={sig}")
+            except Exception as e:
+                print(f"  ⚠️  dex_core.set_governance_address() failed: {e}")
+
+            # dex_governance opcode 20: set_core_address(caller[32], core_addr[32])
+            data = (bytes([20])
+                    + bytes(deployer.address().to_bytes())
+                    + bytes(addrs["dex_core"].to_bytes()))
+            try:
+                sig = await call_contract_raw(
+                    conn, deployer, addrs["dex_governance"], "call", list(data))
+                print(f"  ✅ dex_governance.set_core_address(dex_core) — sig={sig}")
+            except Exception as e:
+                print(f"  ⚠️  dex_governance.set_core_address() failed: {e}")
+
+        if "lichenid" in addrs:
+            print(f"\n  --- Wiring dex_governance → LichenID ---")
+            # dex_governance opcode 14: set_lichenid_address(caller[32], lichenid_addr[32])
+            data = (bytes([14])
+                    + bytes(deployer.address().to_bytes())
+                    + bytes(addrs["lichenid"].to_bytes()))
+            try:
+                sig = await call_contract_raw(
+                    conn, deployer, addrs["dex_governance"], "call", list(data))
+                print(f"  ✅ dex_governance.set_lichenid_address() — sig={sig}")
+            except Exception as e:
+                print(f"  ⚠️  dex_governance.set_lichenid_address() failed: {e}")
+
+        print(f"\n  --- Configuring dex_governance quote whitelist ---")
+        for quote_name, quote_pk in (("lUSD", addrs.get("lusd_token")), ("LICN", NATIVE_LICN)):
+            if not quote_pk:
+                print(f"  ⚠️  dex_governance.add_allowed_quote({quote_name}): address unknown, skipping")
+                continue
+            # dex_governance opcode 15: add_allowed_quote(caller[32], quote_addr[32])
+            data = (bytes([15])
+                    + bytes(deployer.address().to_bytes())
+                    + bytes(quote_pk.to_bytes()))
+            try:
+                sig = await call_contract_raw(
+                    conn, deployer, addrs["dex_governance"], "call", list(data))
+                print(f"  ✅ dex_governance.add_allowed_quote({quote_name}) — sig={sig}")
+            except Exception as e:
+                print(f"  ⚠️  dex_governance.add_allowed_quote({quote_name}) failed: {e}")
+
 
 async def phase_initialize_prediction_market(
     conn: Connection, deployer: Keypair, addrs: Dict[str, PublicKey],
@@ -646,49 +783,26 @@ async def phase_initialize_prediction_market(
     except Exception as e:
         print(f"  ⚠️  {name}.initialize() failed: {e}")
 
-    # Wire LichenID address (for reputation checks)
-    if "lichenid" in addrs:
+    # Wire prediction dependencies via opcode dispatch. Only initialize/call are
+    # exported by this WASM; named setters are not exported.
+    prediction_configs = [
+        (18, "lichenid", "set_lichenid_address"),
+        (19, "lichenoracle", "set_oracle_address"),
+        (20, "lusd_token", "set_lusd_address"),
+        (21, "dex_governance", "set_dex_gov_address"),
+        (38, "prediction_market", "set_self_address"),
+    ]
+    for opcode, dep_name, label in prediction_configs:
+        if dep_name not in addrs:
+            continue
+        data = (bytes([opcode])
+                + bytes(deployer.address().to_bytes())
+                + bytes(addrs[dep_name].to_bytes()))
         try:
-            sig = await call_contract(
-                conn, deployer, addrs[name], "set_lichenid_address",
-                {"address": str(addrs["lichenid"])}
-            )
-            print(f"  ✅ {name}.set_lichenid_address() — sig={sig}")
+            sig = await call_contract_raw(conn, deployer, addrs[name], "call", list(data))
+            print(f"  ✅ {name}.{label}() — sig={sig}")
         except Exception as e:
-            print(f"  ⚠️  {name}.set_lichenid_address() failed: {e}")
-
-    # Wire LichenOracle address (for resolution attestation)
-    if "lichenoracle" in addrs:
-        try:
-            sig = await call_contract(
-                conn, deployer, addrs[name], "set_oracle_address",
-                {"address": str(addrs["lichenoracle"])}
-            )
-            print(f"  ✅ {name}.set_oracle_address() — sig={sig}")
-        except Exception as e:
-            print(f"  ⚠️  {name}.set_oracle_address() failed: {e}")
-
-    # Wire lUSD token address (collateral token)
-    if "lusd_token" in addrs:
-        try:
-            sig = await call_contract(
-                conn, deployer, addrs[name], "set_musd_address",
-                {"address": str(addrs["lusd_token"])}
-            )
-            print(f"  ✅ {name}.set_musd_address() — sig={sig}")
-        except Exception as e:
-            print(f"  ⚠️  {name}.set_musd_address() failed: {e}")
-
-    # Wire DEX governance address (for DAO dispute resolution)
-    if "dex_governance" in addrs:
-        try:
-            sig = await call_contract(
-                conn, deployer, addrs[name], "set_dex_gov_address",
-                {"address": str(addrs["dex_governance"])}
-            )
-            print(f"  ✅ {name}.set_dex_gov_address() — sig={sig}")
-        except Exception as e:
-            print(f"  ⚠️  {name}.set_dex_gov_address() failed: {e}")
+            print(f"  ⚠️  {name}.{label}() failed: {e}")
 
 
 async def phase_verify(

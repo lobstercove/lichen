@@ -26,6 +26,30 @@
 
     var fmp = (window.marketplaceUtils && window.marketplaceUtils.formatLicnPrice) || function (v, isLicn) { var n = Number(isLicn ? v : v / 1e9); if (n >= 0.01) return n.toFixed(2); if (n >= 0.0001) return n.toFixed(4); if (n >= 0.000001) return n.toFixed(6); if (n > 0) return n.toFixed(9); return '0'; };
 
+    function marketSlotDurationMs() {
+        var configured = window.lichenMarketConfig && Number(window.lichenMarketConfig.slotDurationMs);
+        return Number.isFinite(configured) && configured > 0 ? configured : 400;
+    }
+
+    function hoursToSlots(hours) {
+        return Math.ceil((Number(hours) || 0) * 3600000 / marketSlotDurationMs());
+    }
+
+    async function getCurrentSlot() {
+        var slot = await marketTrustedRpcCall('getSlot', []);
+        if (slot && typeof slot === 'object') slot = slot.slot || slot.value || slot.current_slot;
+        var n = Number(slot);
+        if (!Number.isFinite(n) || n < 0) throw new Error('Current slot unavailable');
+        return Math.floor(n);
+    }
+
+    async function expiryHoursToSlot(hours) {
+        if (!hours || hours <= 0) return 0;
+        var durationSlots = hoursToSlots(hours);
+        if (durationSlots <= 0) return 0;
+        return (await getCurrentSlot()) + durationSlots;
+    }
+
     function lazyAddresses() {
         if (!SYSTEM_PROGRAM_ID) SYSTEM_PROGRAM_ID = bs58encode(new Uint8Array(32));
     }
@@ -829,9 +853,7 @@
                 return;
             }
         }
-        var expiryTs = expiryHours > 0
-            ? Math.floor(Date.now() / 1000) + Math.floor(expiryHours * 3600)
-            : 0;
+        var expirySlot = await expiryHoursToSlot(expiryHours);
 
         // Balance check
         await refreshBalance();
@@ -858,7 +880,7 @@
                 tokenId,
                 offerSpores,
                 '', // native LICN
-                expiryTs
+                expirySlot
             ], offerSpores);
 
             await window.lichenWallet.sendTransaction([{
@@ -867,7 +889,7 @@
                 data: callData,
             }]);
 
-            var expiryLabel = expiryTs > 0
+            var expiryLabel = expirySlot > 0
                 ? (' (expires in ' + Math.floor(expiryHours) + 'h)')
                 : '';
             showToast('Offer of ' + fmp(offerLicn, true) + ' LICN submitted!' + expiryLabel, 'success');
@@ -899,7 +921,7 @@
             showToast('Expiry must be a non-negative number of hours', 'error');
             return;
         }
-        var expiryTs = expiryHours > 0 ? (Math.floor(Date.now() / 1000) + Math.floor(expiryHours * 3600)) : 0;
+        var expirySlot = await expiryHoursToSlot(expiryHours);
 
         await refreshBalance();
         if (userBalance < offerLicn) {
@@ -916,7 +938,7 @@
                 collectionId,
                 offerSpores,
                 '',
-                expiryTs
+                expirySlot
             ], offerSpores);
 
             await window.lichenWallet.sendTransaction([{
@@ -1004,8 +1026,15 @@
         var startSpores = Math.round(parseFloat(startPriceInput) * 1e9);
         var reserveSpores = reserveInput && !isNaN(parseFloat(reserveInput)) ? Math.round(parseFloat(reserveInput) * 1e9) : 0;
         var durationHours = durationInput && !isNaN(parseFloat(durationInput)) ? Math.max(1, Math.floor(parseFloat(durationInput))) : 24;
-        var now = Math.floor(Date.now() / 1000);
-        var endTs = now + (durationHours * 3600);
+        var durationSlots = hoursToSlots(durationHours);
+        if (durationSlots < 150) {
+            showToast('Auction duration must be at least 1 minute', 'error');
+            return;
+        }
+        if (durationSlots > 6480000) {
+            showToast('Auction duration must be 30 days or less', 'error');
+            return;
+        }
 
         try {
             var mp = await resolveMarketplaceProgram();
@@ -1019,9 +1048,8 @@
                 tokenId,
                 startSpores,
                 reserveSpores,
-                '',
-                now,
-                endTs
+                durationSlots,
+                ''
             ], 0);
 
             await window.lichenWallet.sendTransaction([{

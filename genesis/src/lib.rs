@@ -1226,8 +1226,8 @@ pub fn genesis_initialize_contracts(
     }
 
     // ── Prediction Market: wire up cross-contract addresses ──
-    // Set oracle, lusd, lichenid, and dex_gov addresses via opcode dispatch.
-    // Opcodes: 18=set_lichenid, 19=set_oracle, 20=set_lusd, 21=set_dex_gov
+    // Set oracle, lusd, lichenid, dex_gov, and self addresses via opcode dispatch.
+    // Opcodes: 18=set_lichenid, 19=set_oracle, 20=set_lusd, 21=set_dex_gov, 38=set_self
     // Format: [opcode][admin 32B][address 32B] = 65 bytes
     if let Some(predict_pk) = address_map.get("prediction_market") {
         let oracle_addr = address_map
@@ -1239,6 +1239,7 @@ pub fn genesis_initialize_contracts(
             .get("dex_governance")
             .map(|p| p.0)
             .unwrap_or(admin);
+        let predict_addr = predict_pk.0;
 
         // NOTE: LichenID address IS set here. The processor's cross-contract
         // storage injection reads the caller's LichenID reputation from
@@ -1250,6 +1251,7 @@ pub fn genesis_initialize_contracts(
             (19, &oracle_addr, "prediction_market(oracle)"),
             (20, &lusd_addr, "prediction_market(lusd)"),
             (21, &dex_gov_addr, "prediction_market(dex_gov)"),
+            (38, &predict_addr, "prediction_market(self)"),
         ];
 
         for &(opcode, addr, label) in configs {
@@ -1299,12 +1301,24 @@ pub fn genesis_initialize_contracts(
                 warn!("  WARN: Failed to set dex_governance(core)");
             }
         }
+
+        if let Some(dex_core_pk) = address_map.get("dex_core") {
+            let mut args = Vec::with_capacity(65);
+            args.push(35u8); // dex_core.set_governance_address
+            args.extend_from_slice(&admin);
+            args.extend_from_slice(&dex_gov_pk.0);
+            if exec_as_governance(dex_core_pk, "call", &args, "dex_core(governance)") {
+                info!("  SET dex_core(governance)");
+            } else {
+                warn!("  WARN: Failed to set dex_core(governance)");
+            }
+        }
     }
 
-    // ── DEX Rewards: set builder_grants wallet as rewards pool source ──
-    // The dex_rewards contract pays out LICN from its own balance (self-custody).
-    // Wire builder_grants as the source, then seed the contract with 1 year of
-    // rewards (1.2M LICN = 100K/month × 12) so claims work from day one.
+    // ── DEX Rewards: confirm self-custody and fund the contract ──
+    // The dex_rewards contract pays out LICN from its own balance. Seed the
+    // contract with 1 year of rewards (1.2M LICN = 100K/month × 12) from
+    // builder_grants so claims work from day one.
     if let Some(dex_rewards_pk) = address_map.get("dex_rewards") {
         let builder_grants_addr = state
             .get_builder_grants_pubkey()
@@ -1317,11 +1331,11 @@ pub fn genesis_initialize_contracts(
         let mut args = Vec::with_capacity(65);
         args.push(13u8);
         args.extend_from_slice(&admin);
-        args.extend_from_slice(&builder_grants_addr);
-        if exec_as_governance(dex_rewards_pk, "call", &args, "dex_rewards(builder_grants)") {
-            info!("  SET dex_rewards(builder_grants)");
+        args.extend_from_slice(&dex_rewards_pk.0);
+        if exec_as_governance(dex_rewards_pk, "call", &args, "dex_rewards(self_custody)") {
+            info!("  SET dex_rewards(self_custody)");
         } else {
-            warn!("  WARN: Failed to set dex_rewards builder_grants pool");
+            warn!("  WARN: Failed to set dex_rewards self-custody pool");
         }
 
         // Seed the contract with 1 year of rewards from builder_grants.
@@ -1606,22 +1620,31 @@ pub fn genesis_initialize_contracts(
         }
     }
 
-    // ── DEX Margin: wire LICN address (zero = native) for liquidator rewards + insurance ──
-    // Opcode 15 = set_lichencoin_address. Format: [15][admin 32B][licn_addr 32B]
+    // ── DEX Margin: wire standard lUSD collateral custody ──
+    // Positions use lUSD approval/transfer_from custody, matching the DEX quote
+    // asset path instead of host-level native LICN locking.
     if let Some(dex_margin_pk) = address_map.get("dex_margin") {
-        let mut args = Vec::with_capacity(65);
-        args.push(15u8); // opcode 15 = set_lichencoin_address
-        args.extend_from_slice(&admin);
-        args.extend_from_slice(&licn_addr);
-        if exec_as_governance(
-            dex_margin_pk,
-            "call",
-            &args,
-            "dex_margin(set_lichencoin_address)",
-        ) {
-            info!("  SET dex_margin(set_lichencoin_address)");
-        } else {
-            warn!("  WARN: Failed to set dex_margin lichencoin address");
+        let margin_addr = dex_margin_pk.0;
+        let oracle_addr = address_map
+            .get("lichenoracle")
+            .map(|p| p.0)
+            .unwrap_or(admin);
+        let configs: &[(u8, &[u8; 32], &str)] = &[
+            (29, &oracle_addr, "dex_margin(set_oracle_contract)"),
+            (33, &lusd_addr, "dex_margin(set_collateral_token_address)"),
+            (34, &margin_addr, "dex_margin(set_self_address)"),
+        ];
+
+        for &(opcode, addr, label) in configs {
+            let mut args = Vec::with_capacity(65);
+            args.push(opcode);
+            args.extend_from_slice(&admin);
+            args.extend_from_slice(addr);
+            if exec_as_governance(dex_margin_pk, "call", &args, label) {
+                info!("  SET {label}");
+            } else {
+                warn!("  WARN: Failed to set {label}");
+            }
         }
     }
 
@@ -3839,10 +3862,21 @@ mod tests {
             .unwrap()
             .unwrap()
             .program;
+        let dex_core = state.get_symbol_registry("DEX").unwrap().unwrap().program;
+        let dex_rewards = state
+            .get_symbol_registry("DEXREWARDS")
+            .unwrap()
+            .unwrap()
+            .program;
 
         assert_contract_storage_pubkey(&state, &predict, b"pm_lichenid_addr", &yid);
         assert_contract_storage_pubkey(&state, &predict, b"pm_oracle_addr", &oracle);
         assert_contract_storage_pubkey(&state, &predict, b"pm_lusd_addr", &lusd);
         assert_contract_storage_pubkey(&state, &predict, b"pm_dex_gov_addr", &dex_gov);
+        assert_contract_storage_pubkey(&state, &predict, b"pm_self_addr", &predict);
+        assert_contract_storage_pubkey(&state, &dex_gov, b"gov_lichenid_addr", &yid);
+        assert_contract_storage_pubkey(&state, &dex_gov, b"gov_core_addr", &dex_core);
+        assert_contract_storage_pubkey(&state, &dex_core, b"dex_governance_addr", &dex_gov);
+        assert_contract_storage_pubkey(&state, &dex_rewards, b"rew_pool_addr", &dex_rewards);
     }
 }

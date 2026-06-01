@@ -2123,14 +2123,14 @@ async function assertExtensionPublicFeeBalance(type) {
 async function signAndSubmitExtensionShieldedInstruction({ wallet, password, instructionDataBytes }) {
   const client = rpc();
   const privateKeyHex = await decryptPrivateKey(wallet.encryptedKey, password);
-  const block = await client.getLatestBlock();
+  const blockhash = await client.getRecentBlockhash();
   const tx = await buildSignedSingleInstructionTransaction({
     privateKeyHex,
     fromAddress: wallet.address,
-    blockhash: block.hash,
+    blockhash,
     instructionDataBytes,
   });
-  return client.sendTransaction(encodeTransactionBase64(tx));
+  return client.sendTransactionWithPreflight(encodeTransactionBase64(tx));
 }
 
 async function submitExtensionShield({ wallet, amountLicn, password, statusEl }) {
@@ -3551,8 +3551,7 @@ async function handleSend() {
     assertRestrictionPreflightAllowed(restrictionPreflight);
 
     const privKey = await decryptPrivateKey(wallet.encryptedKey, pw);
-    const block = await rpc().getLatestBlock();
-    const blockhash = block?.hash || block?.blockhash || 'genesis';
+    const blockhash = await rpc().getRecentBlockhash();
 
     const tx = await buildSignedNativeTransferTransaction({
       privateKeyHex: privKey,
@@ -3563,7 +3562,7 @@ async function handleSend() {
     });
 
     const encoded = encodeTransactionBase64(tx);
-    await rpc().sendTransaction(encoded);
+    await rpc().sendTransactionWithPreflight(encoded);
 
     showToast('Transaction sent!', 'success');
     closeModal('sendModal');

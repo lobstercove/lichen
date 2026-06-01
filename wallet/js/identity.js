@@ -362,7 +362,7 @@ async function buildContractCall(functionName, args, password, valueLicn = 0) {
     const lichenidAddr = await getLichenIdProgramAddress();
     if (!lichenidAddr) throw new Error('LichenID contract not found on network');
 
-    const latestBlock = await rpc.getLatestBlock();
+    const blockhash = await rpc.getRecentBlockhash();
     const fromPubkey = LichenCrypto.addressToBytes(wallet.address);
     const contractProgramId = new Uint8Array(32).fill(0xFF);
     const lichenidPubkey = bs58.decode(lichenidAddr);
@@ -384,7 +384,7 @@ async function buildContractCall(functionName, args, password, valueLicn = 0) {
             accounts: [Array.from(fromPubkey), Array.from(lichenidPubkey)],
             data: Array.from(new TextEncoder().encode(callPayload))
         }],
-        blockhash: latestBlock.hash
+        blockhash
     };
 
     const privateKey = await LichenCrypto.decryptPrivateKey(wallet.encryptedKey, password);
@@ -1307,9 +1307,14 @@ async function showEditAgentModal() {
         const tasks = [];
 
         // Update endpoint if changed
-        if (values.endpoint !== currentEndpoint) {
+        const nextEndpoint = String(values.endpoint || '').trim();
+        if (nextEndpoint !== currentEndpoint) {
+            if (!nextEndpoint) {
+                showToast('Endpoint cannot be cleared by the current LichenID contract');
+                return;
+            }
             tasks.push(async () => {
-                const tx = await buildContractCall('set_endpoint', { url: values.endpoint }, values.password);
+                const tx = await buildContractCall('set_endpoint', { url: nextEndpoint }, values.password);
                 return await rpc.sendTransaction(tx);
             });
         }

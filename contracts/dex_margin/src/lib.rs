@@ -7,7 +7,7 @@
 //   - Insurance fund from liquidation penalties
 //   - Funding rate (8-hour intervals, scaled by leverage tier)
 //   - Integration with ThallLend for margin funding
-//   - Host-level collateral locking via cross-contract calls
+//   - Standard lUSD collateral custody via MT-20 approval/transfer_from
 //   - Insurance fund governance withdrawal
 //   - Emergency pause, reentrancy guard, admin controls
 //   - Auto-deleveraging during extreme events
@@ -26,8 +26,7 @@ use alloc::vec::Vec;
 
 use lichen_sdk::{
     bytes_to_u64, call_contract, call_token_transfer, get_caller, get_contract_address, get_slot,
-    get_timestamp, log_info, storage_get, storage_set, transfer_token_or_native, u64_to_bytes,
-    Address, CrossCall,
+    get_timestamp, log_info, storage_get, storage_set, u64_to_bytes, Address, CrossCall,
 };
 
 // ============================================================================
@@ -43,6 +42,9 @@ const MAX_POSITIONS: u64 = 10_000;
 const MAX_FUNDING_RATE_BPS: u64 = 100; // 1% max per interval
                                        // AUDIT-FIX H-11: Cap total open interest to prevent system insolvency
 const MAX_TOTAL_OPEN_INTEREST: u64 = 100_000_000_000_000_000; // 100M LICN notional
+const MIN_INSURANCE_COVERAGE_BPS: u64 = 10_000; // Require 1:1 insurance coverage for open notional.
+const MARGIN_PRICE_SCALE: u64 = 1_000_000_000;
+const ORACLE_PRICE_SCALE: u64 = 100_000_000;
 
 // AUDIT-FIX M20: Mark price staleness guard — reject prices older than 30 minutes
 const MAX_PRICE_AGE_SECONDS: u64 = 1800;
@@ -66,8 +68,10 @@ const PAUSED_KEY: &[u8] = b"mrg_paused";
 const REENTRANCY_KEY: &[u8] = b"mrg_reentrancy";
 const POSITION_COUNT_KEY: &[u8] = b"mrg_pos_count";
 const INSURANCE_FUND_KEY: &[u8] = b"mrg_insurance";
+const TOTAL_COLLATERAL_ESCROWED_KEY: &[u8] = b"mrg_coll_esc";
 const LAST_FUNDING_KEY: &[u8] = b"mrg_last_fund";
-const LICHENCOIN_ADDRESS_KEY: &[u8] = b"mrg_licn_addr";
+const COLLATERAL_TOKEN_ADDRESS_KEY: &[u8] = b"mrg_coll_addr";
+const SELF_ADDRESS_KEY: &[u8] = b"mrg_self_addr";
 const TOTAL_VOLUME_KEY: &[u8] = b"mrg_total_volume";
 const LIQUIDATION_COUNT_KEY: &[u8] = b"mrg_liq_count";
 const TOTAL_PNL_PROFIT_KEY: &[u8] = b"mrg_pnl_profit";
@@ -76,6 +80,9 @@ const TOTAL_PNL_LOSS_KEY: &[u8] = b"mrg_pnl_loss";
 const TOTAL_OPEN_INTEREST_KEY: &[u8] = b"mrg_total_oi";
 // AUDIT-FIX MARGIN-1: Oracle contract address for cross-contract price feeds
 const ORACLE_ADDRESS_KEY: &[u8] = b"mrg_oracle_addr";
+
+// Collateral asset mode stored in position byte 123.
+const COLLATERAL_LUSD: u8 = 1;
 
 // ============================================================================
 // LEVERAGE TIER TABLE
@@ -113,6 +120,18 @@ fn load_u64(key: &[u8]) -> u64 {
 fn save_u64(key: &[u8], val: u64) {
     storage_set(key, &u64_to_bytes(val));
 }
+fn add_escrowed_collateral(amount: u64) {
+    save_u64(
+        TOTAL_COLLATERAL_ESCROWED_KEY,
+        load_u64(TOTAL_COLLATERAL_ESCROWED_KEY).saturating_add(amount),
+    );
+}
+fn sub_escrowed_collateral(amount: u64) {
+    save_u64(
+        TOTAL_COLLATERAL_ESCROWED_KEY,
+        load_u64(TOTAL_COLLATERAL_ESCROWED_KEY).saturating_sub(amount),
+    );
+}
 fn load_addr(key: &[u8]) -> [u8; 32] {
     storage_get(key)
         .map(|d| {
@@ -132,6 +151,143 @@ fn has_configured_address(key: &[u8]) -> bool {
     storage_get(key).map(|d| d.len() >= 32).unwrap_or(false)
 }
 
+fn load_self_addr() -> [u8; 32] {
+    load_addr(SELF_ADDRESS_KEY)
+}
+
+fn load_contract_escrow_addr() -> Option<[u8; 32]> {
+    let runtime_addr = get_contract_address().0;
+    if !is_zero(&runtime_addr) {
+        return Some(runtime_addr);
+    }
+
+    let configured = load_self_addr();
+    if is_zero(&configured) {
+        None
+    } else {
+        Some(configured)
+    }
+}
+
+fn decode_collateral_transfer_from_result(result: &[u8]) -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    if result.is_empty() {
+        return true;
+    }
+
+    match result.first().copied().unwrap_or(255) {
+        0 => true,
+        1 => {
+            log_info("margin collateral transfer_from failed: token paused");
+            false
+        }
+        5 => {
+            log_info("margin collateral transfer_from failed: insufficient balance");
+            false
+        }
+        7 => {
+            log_info("margin collateral transfer_from failed: insufficient allowance");
+            false
+        }
+        100 => {
+            log_info("margin collateral transfer_from failed: reentrancy guard");
+            false
+        }
+        200 => {
+            log_info("margin collateral transfer_from failed: caller mismatch");
+            false
+        }
+        _ => {
+            log_info("margin collateral transfer_from failed: token error");
+            false
+        }
+    }
+}
+
+fn escrow_lusd_collateral_in(payer: &[u8; 32], amount: u64) -> bool {
+    if amount == 0 {
+        return true;
+    }
+
+    let token_addr = load_addr(COLLATERAL_TOKEN_ADDRESS_KEY);
+    if is_zero(&token_addr) {
+        log_info("margin collateral token not configured");
+        return false;
+    }
+
+    let contract_addr = match load_contract_escrow_addr() {
+        Some(addr) => addr,
+        None => {
+            log_info("margin self address not configured");
+            return false;
+        }
+    };
+
+    let mut args = Vec::with_capacity(104);
+    args.extend_from_slice(&contract_addr);
+    args.extend_from_slice(payer);
+    args.extend_from_slice(&contract_addr);
+    args.extend_from_slice(&u64_to_bytes(amount));
+
+    let call = CrossCall::new(Address(token_addr), "transfer_from", args);
+    match call_contract(call) {
+        Ok(result) => decode_collateral_transfer_from_result(&result),
+        Err(_) => {
+            log_info("margin collateral transfer_from failed: cross-call error");
+            false
+        }
+    }
+}
+
+fn transfer_lusd_collateral_out(recipient: &[u8; 32], amount: u64) -> bool {
+    if amount == 0 {
+        return true;
+    }
+
+    let token_addr = load_addr(COLLATERAL_TOKEN_ADDRESS_KEY);
+    if is_zero(&token_addr) {
+        log_info("margin collateral token not configured");
+        return false;
+    }
+
+    let self_addr = match load_contract_escrow_addr() {
+        Some(addr) => addr,
+        None => {
+            log_info("margin self address not configured");
+            return false;
+        }
+    };
+
+    match call_token_transfer(
+        Address(token_addr),
+        Address(self_addr),
+        Address(*recipient),
+        amount,
+    ) {
+        Ok(true) => true,
+        Ok(false) => {
+            log_info("margin collateral transfer returned failure");
+            false
+        }
+        Err(_) => {
+            log_info("margin collateral transfer failed");
+            false
+        }
+    }
+}
+
+fn collateral_in(payer: &[u8; 32], amount: u64) -> bool {
+    escrow_lusd_collateral_in(payer, amount)
+}
+
+fn collateral_out(recipient: &[u8; 32], amount: u64) -> bool {
+    transfer_lusd_collateral_out(recipient, amount)
+}
+
+fn pay_liquidator_reward(liquidator: &[u8; 32], amount: u64) -> bool {
+    transfer_lusd_collateral_out(liquidator, amount)
+}
+
 fn u64_to_decimal(mut n: u64) -> Vec<u8> {
     if n == 0 {
         return alloc::vec![b'0'];
@@ -143,6 +299,28 @@ fn u64_to_decimal(mut n: u64) -> Vec<u8> {
     }
     buf.reverse();
     buf
+}
+
+fn oracle_lookup_args(asset: &[u8]) -> Option<Vec<u8>> {
+    if asset.is_empty() || asset.len() > 64 {
+        return None;
+    }
+
+    let padded_len = ((asset.len() + 31) / 32) * 32;
+    let mut args = Vec::with_capacity(1 + 2 + padded_len + 4);
+    args.push(0xAB);
+    args.push(padded_len as u8);
+    args.push(4);
+    args.extend_from_slice(asset);
+    while args.len() < 1 + 2 + padded_len {
+        args.push(0);
+    }
+    args.extend_from_slice(&(asset.len() as u32).to_le_bytes());
+    Some(args)
+}
+
+fn oracle_price_to_margin_price(price: u64) -> Option<u64> {
+    price.checked_mul(MARGIN_PRICE_SCALE / ORACLE_PRICE_SCALE)
 }
 fn hex_encode(bytes: &[u8]) -> Vec<u8> {
     let hex_chars: &[u8; 16] = b"0123456789abcdef";
@@ -293,7 +471,8 @@ fn require_admin(caller: &[u8; 32]) -> bool {
 // Bytes 106..114: sl_price (u64, stop-loss trigger price, 0 = none)
 // Bytes 114..122: tp_price (u64, take-profit trigger price, 0 = none)
 // Byte  122     : margin_mode (0=isolated, 1=cross)
-// Bytes 123..128: padding
+// Byte  123     : collateral_mode (1=lUSD MT-20)
+// Bytes 124..128: padding
 
 /// V1 position records are 112 bytes — guards use this for backward compat
 const POSITION_SIZE_V1: usize = 112;
@@ -313,6 +492,7 @@ fn encode_position(
     realized_pnl: u64,
     accumulated_funding: u64,
     margin_mode: u8,
+    collateral_mode: u8,
 ) -> Vec<u8> {
     let mut data = Vec::with_capacity(POSITION_SIZE);
     data.extend_from_slice(trader);
@@ -331,6 +511,7 @@ fn encode_position(
     data.extend_from_slice(&u64_to_bytes(0)); // sl_price
     data.extend_from_slice(&u64_to_bytes(0)); // tp_price
     data.push(margin_mode);
+    data.push(collateral_mode);
     while data.len() < POSITION_SIZE {
         data.push(0);
     }
@@ -652,17 +833,25 @@ pub fn update_mark_price_from_oracle(
     unsafe {
         core::ptr::copy_nonoverlapping(asset_ptr, asset_bytes.as_mut_ptr(), asset_len as usize);
     }
+    let oracle_args = match oracle_lookup_args(&asset_bytes) {
+        Some(args) => args,
+        None => return 3,
+    };
 
     // Cross-call oracle's get_price_value(asset_bytes)
-    let oracle_call = CrossCall::new(Address(oracle_addr), "get_price_value", asset_bytes);
+    let oracle_call = CrossCall::new(Address(oracle_addr), "get_price_value", oracle_args);
 
     match call_contract(oracle_call) {
         Ok(result) => {
             if result.len() >= 8 {
-                let price = bytes_to_u64(&result[..8]);
-                if price == 0 {
+                let oracle_price = bytes_to_u64(&result[..8]);
+                if oracle_price == 0 {
                     return 4; // zero price from oracle
                 }
+                let price = match oracle_price_to_margin_price(oracle_price) {
+                    Some(price) if price > 0 => price,
+                    _ => return 4,
+                };
                 // Store mark price with current timestamp
                 let mut data = Vec::with_capacity(16);
                 data.extend_from_slice(&u64_to_bytes(price));
@@ -907,7 +1096,8 @@ pub fn open_position(
 /// Open a new margin position with explicit margin mode.
 /// Returns: 0=success, 1=paused, 2=invalid leverage, 3=insufficient margin,
 ///          4=max positions, 5=reentrancy, 6=no mark price, 7=pair not margin-enabled,
-///          8=collateral lock failed, 9=invalid margin mode
+///          8=collateral escrow failed, 9=invalid margin mode/cap,
+///          11=insufficient insurance liquidity
 pub fn open_position_with_mode(
     trader: *const u8,
     pair_id: u64,
@@ -1009,6 +1199,15 @@ pub fn open_position_with_mode(
         return 9;
     }
 
+    let projected_oi = current_oi.saturating_add(notional);
+    let insurance_required =
+        (projected_oi as u128 * MIN_INSURANCE_COVERAGE_BPS as u128 / 10_000) as u64;
+    if load_u64(INSURANCE_FUND_KEY) < insurance_required {
+        log_info("Insufficient margin insurance liquidity");
+        reentrancy_exit();
+        return 11;
+    }
+
     let pos_count = load_u64(POSITION_COUNT_KEY);
     if pos_count >= MAX_POSITIONS {
         reentrancy_exit();
@@ -1018,20 +1217,10 @@ pub fn open_position_with_mode(
     let pos_id = pos_count + 1;
     let slot = get_slot();
 
-    // Lock collateral at host level (move from spendable to locked)
-    let lock_call = CrossCall::new(
-        Address([0u8; 32]), // host-level call (address zero = runtime)
-        "lock",
-        {
-            let mut args = Vec::with_capacity(40);
-            args.extend_from_slice(&t);
-            args.extend_from_slice(&u64_to_bytes(margin_amount));
-            args
-        },
-    );
-    // AUDIT-FIX G6-01: Check lock result — fail if host cannot lock collateral
-    if call_contract(lock_call).is_err() {
-        log_info("Collateral lock failed");
+    // New margin positions use standard MT-20 lUSD custody. The frontend must
+    // approve dex_margin first; this call pulls the exact margin into escrow.
+    if !escrow_lusd_collateral_in(&t, margin_amount) {
+        log_info("Margin collateral escrow failed");
         reentrancy_exit();
         return 8;
     }
@@ -1050,9 +1239,11 @@ pub fn open_position_with_mode(
         0,
         0,
         margin_mode,
+        COLLATERAL_LUSD,
     );
     storage_set(&position_key(pos_id), &data);
     save_u64(POSITION_COUNT_KEY, pos_id);
+    add_escrowed_collateral(margin_amount);
 
     // Track user positions
     let user_count = load_u64(&user_position_count_key(&t));
@@ -1183,34 +1374,41 @@ pub fn close_position(caller: *const u8, position_id: u64) -> u32 {
         (1u64 << 63).saturating_sub(pnl)
     };
     data[90..98].copy_from_slice(&pnl_biased.to_le_bytes());
-    // Track cumulative PnL
-    let unlock_amount = if is_profit {
+    let insurance = load_u64(INSURANCE_FUND_KEY);
+    let (unlock_amount, next_insurance) = if is_profit {
+        if pnl > insurance {
+            log_info("close_position: insufficient insurance liquidity for profit");
+            reentrancy_exit();
+            return 11;
+        }
+        (margin.saturating_add(pnl), insurance - pnl)
+    } else {
+        (
+            margin.saturating_sub(pnl),
+            insurance.saturating_add(pnl.min(margin)),
+        )
+    };
+
+    // Pay collateral back before mutating position status.
+    if !collateral_out(&trader, unlock_amount) {
+        log_info("close_position: collateral release failed");
+        reentrancy_exit();
+        return 10;
+    }
+
+    if is_profit {
         save_u64(
             TOTAL_PNL_PROFIT_KEY,
             load_u64(TOTAL_PNL_PROFIT_KEY).saturating_add(pnl),
         );
-        margin.saturating_add(pnl)
     } else {
         save_u64(
             TOTAL_PNL_LOSS_KEY,
             load_u64(TOTAL_PNL_LOSS_KEY).saturating_add(pnl),
         );
-        margin.saturating_sub(pnl)
-    };
-
-    // Unlock collateral at host level (move from locked to spendable)
-    let unlock_call = CrossCall::new(Address([0u8; 32]), "unlock", {
-        let mut args = Vec::with_capacity(40);
-        args.extend_from_slice(&trader);
-        args.extend_from_slice(&u64_to_bytes(unlock_amount));
-        args
-    });
-    // AUDIT-FIX G-3: Check unlock return — do NOT mark closed if unlock fails
-    if call_contract(unlock_call).is_err() {
-        log_info("close_position: collateral unlock failed");
-        reentrancy_exit();
-        return 10;
     }
+    save_u64(INSURANCE_FUND_KEY, next_insurance);
+    sub_escrowed_collateral(margin);
 
     update_pos_status(&mut data, POS_CLOSED);
     storage_set(&pk, &data);
@@ -1421,21 +1619,15 @@ pub fn add_margin(caller: *const u8, position_id: u64, amount: u64) -> u32 {
         } // overflow
     };
 
-    // AUDIT-FIX G6-01: Lock additional collateral at host level
-    let lock_call = CrossCall::new(Address([0u8; 32]), "lock", {
-        let mut args = Vec::with_capacity(40);
-        args.extend_from_slice(&c);
-        args.extend_from_slice(&u64_to_bytes(amount));
-        args
-    });
-    if call_contract(lock_call).is_err() {
-        log_info("Collateral lock failed on add_margin");
+    if !collateral_in(&c, amount) {
+        log_info("Collateral escrow failed on add_margin");
         reentrancy_exit();
         return 7;
     }
 
     update_pos_margin(&mut data, new_margin);
     storage_set(&pk, &data);
+    add_escrowed_collateral(amount);
     reentrancy_exit();
     0
 }
@@ -1510,21 +1702,15 @@ pub fn remove_margin(caller: *const u8, position_id: u64, amount: u64) -> u32 {
         return 6;
     } // would be unhealthy
 
-    // AUDIT-FIX G6-01: Unlock removed collateral at host level
-    let unlock_call = CrossCall::new(Address([0u8; 32]), "unlock", {
-        let mut args = Vec::with_capacity(40);
-        args.extend_from_slice(&c);
-        args.extend_from_slice(&u64_to_bytes(amount));
-        args
-    });
-    if call_contract(unlock_call).is_err() {
-        log_info("remove_margin: collateral unlock failed");
+    if !collateral_out(&c, amount) {
+        log_info("remove_margin: collateral release failed");
         reentrancy_exit();
         return 8;
     }
 
     update_pos_margin(&mut data, new_margin);
     storage_set(&pk, &data);
+    sub_escrowed_collateral(amount);
     reentrancy_exit();
     0
 }
@@ -1607,72 +1793,31 @@ pub fn liquidate(_liquidator: *const u8, position_id: u64) -> u32 {
     let notional = calculate_notional(size, mark_price).unwrap_or(u64::MAX);
     let open_notional = calculate_notional(size, entry_price).unwrap_or(u64::MAX);
     let penalty = (notional as u128 * liq_penalty_bps as u128 / 10_000) as u64;
-    let liquidator_reward = (penalty as u128 * LIQUIDATOR_SHARE_BPS as u128 / 10_000) as u64;
-    let insurance_add = penalty.saturating_sub(liquidator_reward);
+    let penalty_taken = penalty.min(margin);
+    let liquidator_reward = (penalty_taken as u128 * LIQUIDATOR_SHARE_BPS as u128 / 10_000) as u64;
+    let insurance_add = penalty_taken.saturating_sub(liquidator_reward);
 
-    // DEX-L03: LICN address must be set (or zero for native LICN).
-    let licn_addr = load_addr(LICHENCOIN_ADDRESS_KEY);
-
-    // Add to insurance fund (saturating to prevent overflow)
-    let insurance = load_u64(INSURANCE_FUND_KEY);
-    save_u64(INSURANCE_FUND_KEY, insurance.saturating_add(insurance_add));
-
-    // Unlock remaining margin minus penalty at host level
     let trader = decode_pos_trader(&data);
-    let remaining = margin.saturating_sub(penalty);
+    let remaining = margin.saturating_sub(penalty_taken);
     if remaining > 0 {
-        let unlock_call = CrossCall::new(Address([0u8; 32]), "unlock", {
-            let mut args = Vec::with_capacity(40);
-            args.extend_from_slice(&trader);
-            args.extend_from_slice(&u64_to_bytes(remaining));
-            args
-        });
-        // AUDIT-FIX G-3: Check unlock return — revert if host unlock fails
-        if call_contract(unlock_call).is_err() {
-            // Undo insurance fund credit before reverting
-            save_u64(INSURANCE_FUND_KEY, insurance);
-            log_info("liquidate: collateral unlock failed");
+        if !collateral_out(&trader, remaining) {
+            log_info("liquidate: collateral release failed");
             reentrancy_exit();
             return 10;
         }
     }
 
-    // Deduct penalty from locked balance
-    let deduct_call = CrossCall::new(Address([0u8; 32]), "deduct", {
-        let mut args = Vec::with_capacity(40);
-        args.extend_from_slice(&trader);
-        args.extend_from_slice(&u64_to_bytes(penalty.min(margin)));
-        args
-    });
-    // AUDIT-FIX G-3: Check deduct return — revert if host deduct fails
-    if call_contract(deduct_call).is_err() {
-        save_u64(INSURANCE_FUND_KEY, insurance);
-        log_info("liquidate: penalty deduct failed");
-        reentrancy_exit();
-        return 11;
+    let insurance = load_u64(INSURANCE_FUND_KEY);
+    let mut effective_insurance_add = insurance_add;
+    if liquidator_reward > 0 && !pay_liquidator_reward(&liq, liquidator_reward) {
+        log_info("liquidate: reward transfer failed, crediting to insurance");
+        effective_insurance_add = effective_insurance_add.saturating_add(liquidator_reward);
     }
-
-    // AUDIT-FIX G-4: Actually transfer liquidator reward via token transfer
-    if liquidator_reward > 0 {
-        let contract_addr = get_contract_address();
-        if transfer_token_or_native(
-            Address(licn_addr),
-            contract_addr,
-            Address(liq),
-            liquidator_reward,
-        )
-        .is_err()
-        {
-            log_info("liquidate: reward transfer failed, crediting to insurance");
-            // If transfer fails, add reward to insurance fund instead of losing it
-            save_u64(
-                INSURANCE_FUND_KEY,
-                insurance
-                    .saturating_add(insurance_add)
-                    .saturating_add(liquidator_reward),
-            );
-        }
-    }
+    save_u64(
+        INSURANCE_FUND_KEY,
+        insurance.saturating_add(effective_insurance_add),
+    );
+    sub_escrowed_collateral(margin);
 
     update_pos_status(&mut data, POS_LIQUIDATED);
     storage_set(&pk, &data);
@@ -1740,8 +1885,8 @@ pub fn set_maintenance_margin(caller: *const u8, margin_bps: u64) -> u32 {
     0
 }
 
-/// Set the LICN token address (admin only). Zero address = native LICN.
-pub fn set_lichencoin_address(caller: *const u8, addr: *const u8) -> u32 {
+/// Set the standard margin collateral token address (lUSD). Admin only.
+pub fn set_collateral_token_address(caller: *const u8, addr: *const u8) -> u32 {
     let mut c = [0u8; 32];
     let mut a = [0u8; 32];
     unsafe {
@@ -1749,19 +1894,85 @@ pub fn set_lichencoin_address(caller: *const u8, addr: *const u8) -> u32 {
         core::ptr::copy_nonoverlapping(addr, a.as_mut_ptr(), 32);
     }
 
-    // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
     if real_caller.0 != c {
         return 200;
     }
-
     if !require_admin(&c) {
         return 1;
     }
-    if has_configured_address(LICHENCOIN_ADDRESS_KEY) {
+    if is_zero(&a) {
+        return 2;
+    }
+    if has_configured_address(COLLATERAL_TOKEN_ADDRESS_KEY) {
         return 3;
     }
-    storage_set(LICHENCOIN_ADDRESS_KEY, &a);
+    storage_set(COLLATERAL_TOKEN_ADDRESS_KEY, &a);
+    0
+}
+
+/// Set this contract's own address for runtimes/tests that cannot provide it.
+pub fn set_self_address(caller: *const u8, addr: *const u8) -> u32 {
+    let mut c = [0u8; 32];
+    let mut a = [0u8; 32];
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+        core::ptr::copy_nonoverlapping(addr, a.as_mut_ptr(), 32);
+    }
+
+    let real_caller = get_caller();
+    if real_caller.0 != c {
+        return 200;
+    }
+    if !require_admin(&c) {
+        return 1;
+    }
+    if is_zero(&a) {
+        return 2;
+    }
+    if has_configured_address(SELF_ADDRESS_KEY) {
+        return 3;
+    }
+    storage_set(SELF_ADDRESS_KEY, &a);
+    0
+}
+
+/// Deposit lUSD into the margin insurance/settlement fund.
+/// Deposits are permissionless because they only increase the settlement pool;
+/// withdrawals remain admin/governance-only.
+/// The caller must approve dex_margin for `amount` first.
+/// Returns: 0=success, 2=zero amount, 3=transfer failed, 4=reentrancy,
+///          200=caller mismatch
+pub fn deposit_insurance(caller: *const u8, amount: u64) -> u32 {
+    if !reentrancy_enter() {
+        return 4;
+    }
+
+    let mut c = [0u8; 32];
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+    }
+
+    let real_caller = get_caller();
+    if real_caller.0 != c {
+        reentrancy_exit();
+        return 200;
+    }
+    if amount == 0 {
+        reentrancy_exit();
+        return 2;
+    }
+    if !escrow_lusd_collateral_in(&c, amount) {
+        reentrancy_exit();
+        return 3;
+    }
+
+    save_u64(
+        INSURANCE_FUND_KEY,
+        load_u64(INSURANCE_FUND_KEY).saturating_add(amount),
+    );
+    lichen_sdk::set_return_data(&u64_to_bytes(amount));
+    reentrancy_exit();
     0
 }
 
@@ -1794,21 +2005,17 @@ pub fn withdraw_insurance(caller: *const u8, amount: u64, recipient: *const u8) 
         return 3;
     }
 
-    let licn_addr = load_addr(LICHENCOIN_ADDRESS_KEY);
-    if !has_configured_address(LICHENCOIN_ADDRESS_KEY) {
+    if !has_configured_address(COLLATERAL_TOKEN_ADDRESS_KEY) {
         return 4;
     }
 
-    // P9-SC-03: Transfer from contract address (not admin) — contract holds insurance funds
-    let contract_addr = get_contract_address();
-    match transfer_token_or_native(Address(licn_addr), contract_addr, Address(r), amount) {
-        Ok(_) => {
-            save_u64(INSURANCE_FUND_KEY, insurance - amount);
-            log_info("Insurance fund withdrawal");
-            lichen_sdk::set_return_data(&u64_to_bytes(amount));
-            0
-        }
-        Err(_) => 5,
+    if transfer_lusd_collateral_out(&r, amount) {
+        save_u64(INSURANCE_FUND_KEY, insurance - amount);
+        log_info("Insurance fund withdrawal");
+        lichen_sdk::set_return_data(&u64_to_bytes(amount));
+        0
+    } else {
+        5
     }
 }
 
@@ -2050,34 +2257,41 @@ pub fn partial_close(caller: *const u8, position_id: u64, close_amount: u64) -> 
     }
     data[90..98].copy_from_slice(&new_pnl_biased.to_le_bytes());
 
-    // Track cumulative PnL
-    let unlock_amount = if is_profit {
+    let insurance = load_u64(INSURANCE_FUND_KEY);
+    let (unlock_amount, next_insurance) = if is_profit {
+        if pnl > insurance {
+            log_info("partial_close: insufficient insurance liquidity for profit");
+            reentrancy_exit();
+            return 11;
+        }
+        (proportional_margin.saturating_add(pnl), insurance - pnl)
+    } else {
+        (
+            proportional_margin.saturating_sub(pnl),
+            insurance.saturating_add(pnl.min(proportional_margin)),
+        )
+    };
+
+    // Release proportional collateral before mutating position.
+    if !collateral_out(&trader, unlock_amount) {
+        log_info("partial_close: collateral release failed");
+        reentrancy_exit();
+        return 10;
+    }
+
+    if is_profit {
         save_u64(
             TOTAL_PNL_PROFIT_KEY,
             load_u64(TOTAL_PNL_PROFIT_KEY).saturating_add(pnl),
         );
-        proportional_margin.saturating_add(pnl)
     } else {
         save_u64(
             TOTAL_PNL_LOSS_KEY,
             load_u64(TOTAL_PNL_LOSS_KEY).saturating_add(pnl),
         );
-        proportional_margin.saturating_sub(pnl)
-    };
-
-    // Unlock proportional collateral
-    let unlock_call = CrossCall::new(Address([0u8; 32]), "unlock", {
-        let mut args = Vec::with_capacity(40);
-        args.extend_from_slice(&trader);
-        args.extend_from_slice(&u64_to_bytes(unlock_amount));
-        args
-    });
-    // AUDIT-FIX G-3: Check unlock return — do NOT mutate position if unlock fails
-    if call_contract(unlock_call).is_err() {
-        log_info("partial_close: collateral unlock failed");
-        reentrancy_exit();
-        return 10;
     }
+    save_u64(INSURANCE_FUND_KEY, next_insurance);
+    sub_escrowed_collateral(proportional_margin);
 
     // Update position in-place: reduce size and margin, keep it open
     update_pos_size(&mut data, remaining_size);
@@ -2345,15 +2559,6 @@ pub extern "C" fn call() -> u32 {
                 _rc = r as u32;
             }
         }
-        // 15 = set_lichencoin_address(caller[32], addr[32])
-        15 => {
-            if args.len() >= 65 {
-                let r = set_lichencoin_address(args[1..33].as_ptr(), args[33..65].as_ptr());
-                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
-                _rc = r as u32;
-                _rc = r as u32;
-            }
-        }
         16 => {
             // get_total_volume — cumulative notional volume of all margin positions
             lichen_sdk::set_return_data(&u64_to_bytes(load_u64(TOTAL_VOLUME_KEY)));
@@ -2540,6 +2745,31 @@ pub extern "C" fn call() -> u32 {
                 _rc = r as u32;
             }
         }
+        // 33 = set_collateral_token_address(caller[32], token_addr[32])
+        33 => {
+            if args.len() >= 65 {
+                let r = set_collateral_token_address(args[1..33].as_ptr(), args[33..65].as_ptr());
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+            }
+        }
+        // 34 = set_self_address(caller[32], self_addr[32])
+        34 => {
+            if args.len() >= 65 {
+                let r = set_self_address(args[1..33].as_ptr(), args[33..65].as_ptr());
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+            }
+        }
+        // 35 = deposit_insurance(caller[32], amount[8])
+        35 => {
+            if args.len() >= 41 {
+                let amount = bytes_to_u64(&args[33..41]);
+                let r = deposit_insurance(args[1..33].as_ptr(), amount);
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+            }
+        }
         _ => {
             lichen_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
             _rc = 255;
@@ -2568,6 +2798,9 @@ mod tests {
         set_mark_price(admin.as_ptr(), 1, 1_000_000_000);
         // Enable margin for pair 1
         enable_margin_pair(admin.as_ptr(), 1);
+        storage_set(COLLATERAL_TOKEN_ADDRESS_KEY, &[9u8; 32]);
+        storage_set(SELF_ADDRESS_KEY, &[8u8; 32]);
+        save_u64(INSURANCE_FUND_KEY, 10_000_000_000_000_000);
         admin
     }
 
@@ -2799,6 +3032,22 @@ mod tests {
     }
 
     #[test]
+    fn test_open_position_requires_insurance_liquidity() {
+        let _admin = setup();
+        save_u64(INSURANCE_FUND_KEY, 0);
+        let trader = [2u8; 32];
+        test_mock::set_caller(trader);
+        test_mock::set_slot(100);
+
+        assert_eq!(
+            open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000),
+            11
+        );
+        assert_eq!(load_u64(POSITION_COUNT_KEY), 0);
+        assert!(storage_get(&position_key(1)).is_none());
+    }
+
+    #[test]
     fn test_open_position_short() {
         let _admin = setup();
         let trader = [2u8; 32];
@@ -2934,6 +3183,7 @@ mod tests {
         );
         let data = storage_get(&position_key(1)).unwrap();
         assert_eq!(decode_pos_margin_mode(&data), MARGIN_MODE_CROSS);
+        assert_eq!(data[123], COLLATERAL_LUSD);
     }
 
     #[test]
@@ -3227,7 +3477,6 @@ mod tests {
         let admin = setup();
         let trader = [2u8; 32];
         let liquidator = [3u8; 32];
-        let licn_addr = [10u8; 32];
         test_mock::set_slot(100);
         // 2x long, margin=500M, size=1B at price 1.0
         test_mock::set_caller(trader);
@@ -3235,7 +3484,6 @@ mod tests {
         // Drop mark price to 0.6 → PnL = -400M, effective = 100M, notional = 600M
         // margin_ratio = 100M / 600M * 10000 = 1666 bps < 2500 maint → liquidatable
         test_mock::set_caller(admin);
-        set_lichencoin_address(admin.as_ptr(), licn_addr.as_ptr());
         set_mark_price(admin.as_ptr(), 1, 600_000_000);
         test_mock::set_caller(liquidator);
         assert_eq!(liquidate(liquidator.as_ptr(), 1), 0);
@@ -3249,7 +3497,6 @@ mod tests {
         let admin = setup();
         let trader = [2u8; 32];
         let liquidator = [3u8; 32];
-        let licn_addr = [10u8; 32];
         test_mock::set_slot(100);
         // 50x tier: initial_margin_bps=200 → required = 1B * 200/10000 = 20M
         // maint_margin_bps=100 = 1%
@@ -3258,7 +3505,6 @@ mod tests {
         // Drop mark price to 0.985 → PnL = -15M, effective = 5M, notional = 985M
         // ratio = 5M / 985M * 10000 ≈ 50 bps < 100 bps maint → liquidatable
         test_mock::set_caller(admin);
-        set_lichencoin_address(admin.as_ptr(), licn_addr.as_ptr());
         set_mark_price(admin.as_ptr(), 1, 985_000_000);
         test_mock::set_caller(liquidator);
         assert_eq!(liquidate(liquidator.as_ptr(), 1), 0);
@@ -3282,7 +3528,6 @@ mod tests {
         let admin = setup_with_index();
         let trader = [2u8; 32];
         let liquidator = [3u8; 32];
-        let licn_addr = [10u8; 32];
 
         test_mock::set_timestamp(1000);
         test_mock::set_slot(100);
@@ -3290,7 +3535,6 @@ mod tests {
         test_mock::set_caller(admin);
         set_mark_price(admin.as_ptr(), 1, 1_000_000_000);
         set_index_price(admin.as_ptr(), 1, 1_000_000_000);
-        set_lichencoin_address(admin.as_ptr(), licn_addr.as_ptr());
 
         test_mock::set_caller(trader);
         assert_eq!(
@@ -3318,7 +3562,6 @@ mod tests {
         let trader_a = [2u8; 32];
         let trader_b = [3u8; 32];
         let liquidator = [4u8; 32];
-        let licn_addr = [10u8; 32];
         test_mock::set_slot(100);
 
         // For 5x tier: initial_margin_bps=2000, maint=1000bps=10%, penalty=500bps
@@ -3338,7 +3581,6 @@ mod tests {
         // Drop mark price to 0.85 → PnL=-150M, effective=50M, notional=850M
         // ratio = 50M/850M*10000 = 588 bps < 1000 maint → liquidatable
         test_mock::set_caller(_admin);
-        set_lichencoin_address(_admin.as_ptr(), licn_addr.as_ptr());
         set_mark_price(_admin.as_ptr(), 1, 850_000_000);
         test_mock::set_caller(liquidator);
         let liq1 = liquidate(liquidator.as_ptr(), 1);
@@ -3383,11 +3625,6 @@ mod tests {
         let admin = setup();
         let trader = [2u8; 32];
         let liq = [3u8; 32];
-        // DEX-L03: Configure lichencoin address so liquidation proceeds
-        let licn_addr = [10u8; 32];
-        test_mock::set_caller(admin);
-        set_lichencoin_address(admin.as_ptr(), licn_addr.as_ptr());
-        test_mock::set_cross_call_response(Some(vec![1u8]));
         test_mock::set_slot(100);
         // 5x tier: required = 1B * 2000/10000 = 200M, maint=1000bps=10%
         test_mock::set_caller(trader);
@@ -3529,8 +3766,11 @@ mod tests {
     // ---- INSURANCE FUND WITHDRAWAL TESTS ----
 
     #[test]
-    fn test_withdraw_insurance_no_lichencoin_addr() {
-        let admin = setup();
+    fn test_withdraw_insurance_no_collateral_token_addr() {
+        test_mock::reset();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        assert_eq!(initialize(admin.as_ptr()), 0);
         // Seed insurance fund
         save_u64(INSURANCE_FUND_KEY, 1_000_000);
         let recipient = [5u8; 32];
@@ -3544,8 +3784,6 @@ mod tests {
     fn test_withdraw_insurance_success() {
         let admin = setup();
         save_u64(INSURANCE_FUND_KEY, 1_000_000);
-        let licn_addr = [10u8; 32];
-        set_lichencoin_address(admin.as_ptr(), licn_addr.as_ptr());
         let recipient = [5u8; 32];
         // In test mode, cross-contract call returns Ok(Vec::new()) → success path
         assert_eq!(
@@ -3559,8 +3797,6 @@ mod tests {
     fn test_withdraw_insurance_exceeds_balance() {
         let admin = setup();
         save_u64(INSURANCE_FUND_KEY, 100);
-        let licn_addr = [10u8; 32];
-        set_lichencoin_address(admin.as_ptr(), licn_addr.as_ptr());
         let recipient = [5u8; 32];
         assert_eq!(
             withdraw_insurance(admin.as_ptr(), 200, recipient.as_ptr()),
@@ -3588,38 +3824,69 @@ mod tests {
     }
 
     #[test]
-    fn test_set_lichencoin_address() {
-        let admin = setup();
-        let licn = [10u8; 32];
-        assert_eq!(set_lichencoin_address(admin.as_ptr(), licn.as_ptr()), 0);
-        assert_eq!(load_addr(LICHENCOIN_ADDRESS_KEY), licn);
+    fn test_deposit_insurance_success() {
+        test_mock::reset();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        assert_eq!(initialize(admin.as_ptr()), 0);
+        storage_set(COLLATERAL_TOKEN_ADDRESS_KEY, &[9u8; 32]);
+        storage_set(SELF_ADDRESS_KEY, &[8u8; 32]);
+
+        assert_eq!(deposit_insurance(admin.as_ptr(), 1_000_000), 0);
+        assert_eq!(get_insurance_fund(), 1_000_000);
     }
 
     #[test]
-    fn test_set_lichencoin_address_accepts_native_licn() {
-        let admin = setup();
+    fn test_deposit_insurance_is_permissionless() {
+        test_mock::reset();
+        let admin = [1u8; 32];
+        let contributor = [2u8; 32];
+        test_mock::set_caller(admin);
+        assert_eq!(initialize(admin.as_ptr()), 0);
+        storage_set(COLLATERAL_TOKEN_ADDRESS_KEY, &[9u8; 32]);
+        storage_set(SELF_ADDRESS_KEY, &[8u8; 32]);
+
+        test_mock::set_caller(contributor);
+        assert_eq!(deposit_insurance(contributor.as_ptr(), 1_000_000), 0);
+        assert_eq!(get_insurance_fund(), 1_000_000);
+    }
+
+    #[test]
+    fn test_set_collateral_token_address() {
+        test_mock::reset();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        assert_eq!(initialize(admin.as_ptr()), 0);
+        let lusd = [9u8; 32];
+        assert_eq!(
+            set_collateral_token_address(admin.as_ptr(), lusd.as_ptr()),
+            0
+        );
+        assert_eq!(load_addr(COLLATERAL_TOKEN_ADDRESS_KEY), lusd);
+    }
+
+    #[test]
+    fn test_set_collateral_token_address_rejects_zero() {
+        test_mock::reset();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        assert_eq!(initialize(admin.as_ptr()), 0);
         let zero = [0u8; 32];
-        assert_eq!(set_lichencoin_address(admin.as_ptr(), zero.as_ptr()), 0);
-        assert_eq!(load_addr(LICHENCOIN_ADDRESS_KEY), zero);
+        assert_eq!(
+            set_collateral_token_address(admin.as_ptr(), zero.as_ptr()),
+            2
+        );
     }
 
     #[test]
-    fn test_set_lichencoin_address_not_admin() {
-        let _admin = setup();
-        let rando = [99u8; 32];
-        let licn = [10u8; 32];
-        test_mock::set_caller(rando);
-        assert_eq!(set_lichencoin_address(rando.as_ptr(), licn.as_ptr()), 1);
-    }
-
-    #[test]
-    fn test_set_lichencoin_address_reconfiguration_rejected() {
-        let admin = setup();
-        let first = [10u8; 32];
-        let second = [11u8; 32];
-        assert_eq!(set_lichencoin_address(admin.as_ptr(), first.as_ptr()), 0);
-        assert_eq!(set_lichencoin_address(admin.as_ptr(), second.as_ptr()), 3);
-        assert_eq!(load_addr(LICHENCOIN_ADDRESS_KEY), first);
+    fn test_set_self_address() {
+        test_mock::reset();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        assert_eq!(initialize(admin.as_ptr()), 0);
+        let self_addr = [8u8; 32];
+        assert_eq!(set_self_address(admin.as_ptr(), self_addr.as_ptr()), 0);
+        assert_eq!(load_addr(SELF_ADDRESS_KEY), self_addr);
     }
 
     #[test]
@@ -3648,6 +3915,41 @@ mod tests {
         let ret = test_mock::get_return_data();
         let unlock = bytes_to_u64(&ret);
         assert_eq!(unlock, 500_000_000); // no price change → full margin returned
+    }
+
+    #[test]
+    fn test_profitable_close_debits_insurance_and_escrow() {
+        let admin = setup();
+        let trader = [2u8; 32];
+        let insurance_before = get_insurance_fund();
+        test_mock::set_caller(trader);
+        open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000);
+        assert_eq!(load_u64(TOTAL_COLLATERAL_ESCROWED_KEY), 500_000_000);
+
+        test_mock::set_caller(admin);
+        set_mark_price(admin.as_ptr(), 1, 1_100_000_000);
+        test_mock::set_caller(trader);
+        assert_eq!(close_position(trader.as_ptr(), 1), 0);
+
+        assert_eq!(get_insurance_fund(), insurance_before - 100_000_000);
+        assert_eq!(load_u64(TOTAL_COLLATERAL_ESCROWED_KEY), 0);
+    }
+
+    #[test]
+    fn test_losing_close_credits_insurance_and_escrow_clears() {
+        let admin = setup();
+        let trader = [2u8; 32];
+        let insurance_before = get_insurance_fund();
+        test_mock::set_caller(trader);
+        open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000);
+
+        test_mock::set_caller(admin);
+        set_mark_price(admin.as_ptr(), 1, 900_000_000);
+        test_mock::set_caller(trader);
+        assert_eq!(close_position(trader.as_ptr(), 1), 0);
+
+        assert_eq!(get_insurance_fund(), insurance_before + 100_000_000);
+        assert_eq!(load_u64(TOTAL_COLLATERAL_ESCROWED_KEY), 0);
     }
 
     #[test]
@@ -4469,8 +4771,8 @@ mod tests {
         test_mock::set_caller(admin);
         assert_eq!(set_oracle_contract(admin.as_ptr(), oracle_addr.as_ptr()), 0);
 
-        // Mock oracle return: 2_000_000_000 (2.0 LICN price)
-        let price: u64 = 2_000_000_000;
+        // Mock oracle return: $2.00 with 8 oracle decimals.
+        let price: u64 = 200_000_000;
         test_mock::set_cross_call_response(Some(price.to_le_bytes().to_vec()));
 
         // Call update
@@ -4480,6 +4782,18 @@ mod tests {
         let r =
             update_mark_price_from_oracle(caller.as_ptr(), 1, asset.as_ptr(), asset.len() as u32);
         assert_eq!(r, 0, "Should succeed with valid oracle response");
+
+        let (target, function, args, value) =
+            test_mock::get_last_cross_call().expect("oracle cross-call captured");
+        assert_eq!(target, oracle_addr);
+        assert_eq!(function, "get_price_value");
+        assert_eq!(value, 0);
+        assert_eq!(&args[..3], &[0xAB, 32, 4]);
+        assert_eq!(&args[3..3 + asset.len()], asset);
+        assert_eq!(
+            u32::from_le_bytes(args[35..39].try_into().unwrap()),
+            asset.len() as u32
+        );
 
         // Verify mark price was updated
         let (stored_price, _ts) = load_mark_price(1);

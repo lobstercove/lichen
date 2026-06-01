@@ -23,6 +23,7 @@ use lichen_sdk::{
 
 // T5.12: Reentrancy guard
 const REENTRANCY_KEY: &[u8] = b"_reentrancy";
+const ERROR_RETURN: u64 = u64::MAX;
 
 fn reentrancy_enter() -> bool {
     if storage_get(REENTRANCY_KEY)
@@ -71,12 +72,13 @@ const TOKEN_COUNT_KEY: &[u8] = b"cp_token_count";
 // v2 CONSTANTS
 // ============================================================================
 
-/// Buy cooldown: minimum milliseconds between buys per user per token
-const DEFAULT_BUY_COOLDOWN_MS: u64 = 2_000; // 2 seconds
+/// Buy cooldown: minimum slots between buys per user per token.
+/// Slots are the deterministic contract clock (400ms target slot time).
+const DEFAULT_BUY_COOLDOWN_SLOTS: u64 = 5; // ~2 seconds
 /// Maximum LICN that can be spent in a single buy
 const DEFAULT_MAX_BUY_AMOUNT: u64 = 100_000_000_000_000; // 100K LICN ($10K at $0.10)
-/// Sell cooldown: minimum ms after buying before selling (anti-dump)
-const DEFAULT_SELL_COOLDOWN_MS: u64 = 5_000; // 5 seconds
+/// Sell cooldown: minimum slots after buying before selling (anti-dump).
+const DEFAULT_SELL_COOLDOWN_SLOTS: u64 = 13; // ~5.2 seconds
 /// Creator royalty: basis points on each trade (default 50 = 0.5%)
 const DEFAULT_CREATOR_ROYALTY_BPS: u64 = 50;
 const BPS_SCALE: u64 = 10_000;
@@ -220,13 +222,13 @@ fn last_buy_key(token_id: u64, buyer_hex: &[u8; 64]) -> Vec<u8> {
 fn get_buy_cooldown() -> u64 {
     storage_get(b"cp_buy_cooldown")
         .map(|d| bytes_to_u64(&d))
-        .unwrap_or(DEFAULT_BUY_COOLDOWN_MS)
+        .unwrap_or(DEFAULT_BUY_COOLDOWN_SLOTS)
 }
 
 fn get_sell_cooldown() -> u64 {
     storage_get(b"cp_sell_cooldown")
         .map(|d| bytes_to_u64(&d))
-        .unwrap_or(DEFAULT_SELL_COOLDOWN_MS)
+        .unwrap_or(DEFAULT_SELL_COOLDOWN_SLOTS)
 }
 
 fn get_max_buy() -> u64 {
@@ -315,7 +317,7 @@ pub extern "C" fn initialize(admin_ptr: *const u8) -> u32 {
 // ============================================================================
 
 /// Create a new token on the bonding curve
-/// Returns token ID (0 on failure)
+/// Returns token ID. Validation failures return ERROR_RETURN so the host reverts value transfers.
 #[no_mangle]
 pub extern "C" fn create_token(creator_ptr: *const u8, fee_paid: u64) -> u64 {
     let mut creator = [0u8; 32];
@@ -332,19 +334,19 @@ pub extern "C" fn create_token(creator_ptr: *const u8, fee_paid: u64) -> u64 {
     // G24-01: Verify actual payment via get_value() instead of trusting parameter
     if get_value() < CREATION_FEE {
         log_info("Insufficient creation fee (need 10 LICN)");
-        return 0;
+        return ERROR_RETURN;
     }
 
     if fee_paid < CREATION_FEE {
-        log_info("Insufficient creation fee (need 0.1 LICN)");
-        return 0;
+        log_info("Insufficient creation fee (need 10 LICN)");
+        return ERROR_RETURN;
     }
 
     let token_id = match load_u64(TOKEN_COUNT_KEY).checked_add(1) {
         Some(id) => id,
         None => {
             log_info("Token counter overflow");
-            return 0;
+            return ERROR_RETURN;
         }
     };
     let id_hex = u64_to_hex(token_id);
@@ -428,23 +430,23 @@ fn current_price(supply_sold: u64) -> u64 {
 // ============================================================================
 
 /// Buy tokens on the bonding curve
-/// Returns number of tokens received (0 on failure)
+/// Returns number of tokens received. Validation failures return ERROR_RETURN so the host reverts value transfers.
 #[no_mangle]
 pub extern "C" fn buy(buyer_ptr: *const u8, token_id: u64, licn_amount: u64) -> u64 {
     if licn_amount == 0 {
-        return 0;
+        return ERROR_RETURN;
     }
     if is_paused() {
         log_info("Protocol is paused");
-        return 0;
+        return ERROR_RETURN;
     }
     if is_token_frozen(token_id) {
         log_info("Token is frozen");
-        return 0;
+        return ERROR_RETURN;
     }
     if !reentrancy_enter() {
         log_info("Reentrancy detected");
-        return 0;
+        return ERROR_RETURN;
     }
 
     // v2: Max buy per tx
@@ -452,7 +454,7 @@ pub extern "C" fn buy(buyer_ptr: *const u8, token_id: u64, licn_amount: u64) -> 
     if licn_amount > max_buy {
         reentrancy_exit();
         log_info("Exceeds max buy per transaction");
-        return 0;
+        return ERROR_RETURN;
     }
 
     let mut buyer = [0u8; 32];
@@ -471,7 +473,7 @@ pub extern "C" fn buy(buyer_ptr: *const u8, token_id: u64, licn_amount: u64) -> 
     if get_value() < licn_amount {
         reentrancy_exit();
         log_info("Insufficient payment for buy");
-        return 0;
+        return ERROR_RETURN;
     }
 
     let buyer_hex = hex_encode_addr(&buyer);
@@ -484,7 +486,7 @@ pub extern "C" fn buy(buyer_ptr: *const u8, token_id: u64, licn_amount: u64) -> 
     if last_buy_ts > 0 && now < last_buy_ts.saturating_add(cooldown) {
         reentrancy_exit();
         log_info("Buy cooldown not expired");
-        return 0;
+        return ERROR_RETURN;
     }
 
     let id_hex = u64_to_hex(token_id);
@@ -495,7 +497,7 @@ pub extern "C" fn buy(buyer_ptr: *const u8, token_id: u64, licn_amount: u64) -> 
         _ => {
             log_info("Token not found");
             reentrancy_exit();
-            return 0;
+            return ERROR_RETURN;
         }
     };
 
@@ -503,7 +505,7 @@ pub extern "C" fn buy(buyer_ptr: *const u8, token_id: u64, licn_amount: u64) -> 
     if data[64] != 0 {
         log_info("Token graduated to DEX, trade there");
         reentrancy_exit();
-        return 0;
+        return ERROR_RETURN;
     }
 
     let supply_sold = bytes_to_u64(&data[32..40]);
@@ -535,7 +537,7 @@ pub extern "C" fn buy(buyer_ptr: *const u8, token_id: u64, licn_amount: u64) -> 
     if tokens_bought == 0 {
         log_info("Amount too small to buy any tokens");
         reentrancy_exit();
-        return 0;
+        return ERROR_RETURN;
     }
 
     let actual_cost = calculate_buy_cost(supply_sold, tokens_bought);
@@ -545,7 +547,7 @@ pub extern "C" fn buy(buyer_ptr: *const u8, token_id: u64, licn_amount: u64) -> 
         None => {
             reentrancy_exit();
             log_info("Raised LICN overflow");
-            return 0;
+            return ERROR_RETURN;
         }
     };
 
@@ -554,14 +556,14 @@ pub extern "C" fn buy(buyer_ptr: *const u8, token_id: u64, licn_amount: u64) -> 
     if !launchpad_can_receive(&buyer, tokens_bought, prev_bal) {
         log_info("Buyer cannot receive launchpad token");
         reentrancy_exit();
-        return 0;
+        return ERROR_RETURN;
     }
     let new_balance = match prev_bal.checked_add(tokens_bought) {
         Some(v) => v,
         None => {
             reentrancy_exit();
             log_info("Buyer balance overflow");
-            return 0;
+            return ERROR_RETURN;
         }
     };
 
@@ -635,19 +637,19 @@ pub extern "C" fn buy(buyer_ptr: *const u8, token_id: u64, licn_amount: u64) -> 
 }
 
 /// Sell tokens back to the bonding curve
-/// Returns LICN refund amount (0 on failure)
+/// Returns LICN refund amount. Validation failures return ERROR_RETURN so the host reverts.
 #[no_mangle]
 pub extern "C" fn sell(seller_ptr: *const u8, token_id: u64, token_amount: u64) -> u64 {
     if token_amount == 0 {
-        return 0;
+        return ERROR_RETURN;
     }
     if is_token_frozen(token_id) {
         log_info("Token is frozen");
-        return 0;
+        return ERROR_RETURN;
     }
     if !reentrancy_enter() {
         log_info("Reentrancy detected");
-        return 0;
+        return ERROR_RETURN;
     }
 
     let mut seller = [0u8; 32];
@@ -672,7 +674,7 @@ pub extern "C" fn sell(seller_ptr: *const u8, token_id: u64, token_amount: u64) 
     if last_buy_ts > 0 && now < last_buy_ts.saturating_add(sell_cd) {
         reentrancy_exit();
         log_info("Sell cooldown not expired (anti-dump)");
-        return 0;
+        return ERROR_RETURN;
     }
 
     let id_hex = u64_to_hex(token_id);
@@ -683,14 +685,14 @@ pub extern "C" fn sell(seller_ptr: *const u8, token_id: u64, token_amount: u64) 
         _ => {
             log_info("Token not found");
             reentrancy_exit();
-            return 0;
+            return ERROR_RETURN;
         }
     };
 
     if data[64] != 0 {
         log_info("Token graduated, trade on DEX");
         reentrancy_exit();
-        return 0;
+        return ERROR_RETURN;
     }
 
     // Check seller balance
@@ -700,20 +702,38 @@ pub extern "C" fn sell(seller_ptr: *const u8, token_id: u64, token_amount: u64) 
     if token_amount > balance {
         log_info("Insufficient token balance");
         reentrancy_exit();
-        return 0;
+        return ERROR_RETURN;
     }
     if !launchpad_can_send(&seller, token_amount, balance) {
         log_info("Seller cannot send launchpad token");
         reentrancy_exit();
-        return 0;
+        return ERROR_RETURN;
     }
 
     let supply_sold = bytes_to_u64(&data[32..40]);
     let licn_raised = bytes_to_u64(&data[40..48]);
+    if token_amount > supply_sold {
+        log_info("Sell amount exceeds circulating bonding-curve supply");
+        reentrancy_exit();
+        return ERROR_RETURN;
+    }
 
     let raw_refund = calculate_sell_refund(supply_sold, token_amount);
+    if raw_refund == 0 {
+        log_info("Sell amount too small for refund");
+        reentrancy_exit();
+        return ERROR_RETURN;
+    }
     let fee = u128_to_u64_saturating(raw_refund as u128 * PLATFORM_FEE_PERCENT as u128 / 100);
     let net_refund = raw_refund - fee;
+
+    // G24-01: Transfer LICN refund before mutating accounting. If payout fails,
+    // no bonding-curve state is committed and the host reverts the transaction.
+    if !transfer_licn_out(&seller, net_refund) {
+        log_info("Sell rejected: LICN transfer failed");
+        reentrancy_exit();
+        return ERROR_RETURN;
+    }
 
     // Update token data
     let new_supply = supply_sold - token_amount;
@@ -728,19 +748,6 @@ pub extern "C" fn sell(seller_ptr: *const u8, token_id: u64, token_amount: u64) 
     // Collect fee
     let fees = load_u64(b"cp_fees_collected");
     store_u64(b"cp_fees_collected", fees.saturating_add(fee));
-
-    // G24-01: Transfer LICN refund to seller (self-custody)
-    if !transfer_licn_out(&seller, net_refund) {
-        // Revert state changes on transfer failure
-        data[32..40].copy_from_slice(&u64_to_bytes(supply_sold));
-        data[40..48].copy_from_slice(&u64_to_bytes(licn_raised));
-        storage_set(&token_key, &data);
-        store_u64(&bal_key, balance);
-        store_u64(b"cp_fees_collected", fees);
-        log_info("Sell reverted: LICN transfer failed");
-        reentrancy_exit();
-        return 0;
-    }
 
     log_info("Sell successful");
     reentrancy_exit();
@@ -930,9 +937,9 @@ pub extern "C" fn unfreeze_token(caller_ptr: *const u8, token_id: u64) -> u32 {
     0
 }
 
-/// Admin sets buy cooldown (ms)
+/// Admin sets buy cooldown (slots)
 #[no_mangle]
-pub extern "C" fn set_buy_cooldown(caller_ptr: *const u8, cooldown_ms: u64) -> u32 {
+pub extern "C" fn set_buy_cooldown(caller_ptr: *const u8, cooldown_slots: u64) -> u32 {
     let mut caller = [0u8; 32];
     unsafe {
         core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
@@ -947,13 +954,13 @@ pub extern "C" fn set_buy_cooldown(caller_ptr: *const u8, cooldown_ms: u64) -> u
     if !is_admin(&caller) {
         return 1;
     }
-    store_u64(b"cp_buy_cooldown", cooldown_ms);
+    store_u64(b"cp_buy_cooldown", cooldown_slots);
     0
 }
 
-/// Admin sets sell cooldown (ms)
+/// Admin sets sell cooldown (slots)
 #[no_mangle]
-pub extern "C" fn set_sell_cooldown(caller_ptr: *const u8, cooldown_ms: u64) -> u32 {
+pub extern "C" fn set_sell_cooldown(caller_ptr: *const u8, cooldown_slots: u64) -> u32 {
     let mut caller = [0u8; 32];
     unsafe {
         core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
@@ -968,7 +975,7 @@ pub extern "C" fn set_sell_cooldown(caller_ptr: *const u8, cooldown_ms: u64) -> 
     if !is_admin(&caller) {
         return 1;
     }
-    store_u64(b"cp_sell_cooldown", cooldown_ms);
+    store_u64(b"cp_sell_cooldown", cooldown_slots);
     0
 }
 
@@ -1250,7 +1257,7 @@ mod tests {
         let creator = [2u8; 32];
         test_mock::set_caller(creator);
         test_mock::set_value(CREATION_FEE);
-        assert_eq!(create_token(creator.as_ptr(), CREATION_FEE), 0);
+        assert_eq!(create_token(creator.as_ptr(), CREATION_FEE), ERROR_RETURN);
         assert_eq!(load_u64(TOKEN_COUNT_KEY), u64::MAX);
     }
 
@@ -1263,7 +1270,10 @@ mod tests {
         let creator = [2u8; 32];
         test_mock::set_caller(creator);
         test_mock::set_value(CREATION_FEE - 1); // insufficient
-        assert_eq!(create_token(creator.as_ptr(), CREATION_FEE - 1), 0);
+        assert_eq!(
+            create_token(creator.as_ptr(), CREATION_FEE - 1),
+            ERROR_RETURN
+        );
         assert_eq!(get_token_count(), 0);
     }
 
@@ -1324,7 +1334,7 @@ mod tests {
         test_mock::set_caller(buyer);
         test_mock::set_value(1_000_000_000);
 
-        assert_eq!(buy(buyer.as_ptr(), token_id, 1_000_000_000), 0);
+        assert_eq!(buy(buyer.as_ptr(), token_id, 1_000_000_000), ERROR_RETURN);
         assert_eq!(test_mock::get_storage(&token_key).unwrap(), token_before);
         assert_eq!(load_u64(&bal_key), 0);
         assert_eq!(load_u64(&lbk), 0);
@@ -1334,7 +1344,7 @@ mod tests {
     #[test]
     fn test_buy_zero_amount() {
         setup();
-        assert_eq!(buy([3u8; 32].as_ptr(), 1, 0), 0);
+        assert_eq!(buy([3u8; 32].as_ptr(), 1, 0), ERROR_RETURN);
     }
 
     #[test]
@@ -1345,7 +1355,7 @@ mod tests {
         initialize(admin.as_ptr());
         test_mock::set_caller([3u8; 32]);
         test_mock::set_value(1_000_000_000);
-        assert_eq!(buy([3u8; 32].as_ptr(), 999, 1_000_000_000), 0);
+        assert_eq!(buy([3u8; 32].as_ptr(), 999, 1_000_000_000), ERROR_RETURN);
     }
 
     #[test]
@@ -1368,7 +1378,7 @@ mod tests {
         test_mock::set_value(1_000_000_000);
         let bought = buy(buyer.as_ptr(), token_id, 1_000_000_000);
         assert!(bought > 0);
-        // Advance past sell cooldown (default 5000ms)
+        // Advance past sell cooldown (default 13 slots)
         test_mock::set_timestamp(20_000);
         // Sell half the bought tokens
         let _refund = sell(buyer.as_ptr(), token_id, bought / 2);
@@ -1433,7 +1443,7 @@ mod tests {
 
         test_mock::set_timestamp(20_000);
         test_mock::set_cross_call_response(Some(vec![2u8]));
-        assert_eq!(sell(buyer.as_ptr(), token_id, bought / 2), 0);
+        assert_eq!(sell(buyer.as_ptr(), token_id, bought / 2), ERROR_RETURN);
         assert_eq!(load_u64(&bal_key), before_balance);
         assert_eq!(storage_get(&token_key).unwrap(), before_token);
         assert_eq!(load_u64(b"cp_fees_collected"), before_fees);
@@ -1470,7 +1480,7 @@ mod tests {
 
         test_mock::set_can_send(false);
         test_mock::set_timestamp(20_000);
-        assert_eq!(sell(buyer.as_ptr(), token_id, bought / 2), 0);
+        assert_eq!(sell(buyer.as_ptr(), token_id, bought / 2), ERROR_RETURN);
         assert_eq!(test_mock::get_storage(&token_key).unwrap(), token_before);
         assert_eq!(load_u64(&bal_key), balance_before);
         assert_eq!(load_u64(b"cp_fees_collected"), fees_before);
@@ -1488,13 +1498,13 @@ mod tests {
         test_mock::set_value(CREATION_FEE);
         create_token(creator.as_ptr(), CREATION_FEE);
         test_mock::set_caller([3u8; 32]);
-        assert_eq!(sell([3u8; 32].as_ptr(), 1, 1000), 0);
+        assert_eq!(sell([3u8; 32].as_ptr(), 1, 1000), ERROR_RETURN);
     }
 
     #[test]
     fn test_sell_zero_amount() {
         setup();
-        assert_eq!(sell([3u8; 32].as_ptr(), 1, 0), 0);
+        assert_eq!(sell([3u8; 32].as_ptr(), 1, 0), ERROR_RETURN);
     }
 
     #[test]
@@ -1599,7 +1609,7 @@ mod tests {
         assert!(is_paused());
         // Buy blocked (paused check is before caller check)
         let buyer = [3u8; 32];
-        assert_eq!(buy(buyer.as_ptr(), 1, 1_000_000_000), 0);
+        assert_eq!(buy(buyer.as_ptr(), 1, 1_000_000_000), ERROR_RETURN);
 
         test_mock::set_caller(admin);
         assert_eq!(unpause(admin.as_ptr()), 0);
@@ -1632,7 +1642,7 @@ mod tests {
         test_mock::set_caller(admin);
         assert_eq!(pause(admin.as_ptr()), 0);
 
-        test_mock::set_timestamp(16_000);
+        test_mock::set_timestamp(10_014);
         test_mock::set_caller(buyer);
         let refund = sell(buyer.as_ptr(), 1, tokens / 2);
         assert!(refund > 0, "sell should remain available while paused");
@@ -1666,7 +1676,7 @@ mod tests {
         // Buy blocked (frozen check is before caller check)
         let buyer = [3u8; 32];
         test_mock::set_timestamp(10_000);
-        assert_eq!(buy(buyer.as_ptr(), 1, 1_000_000_000), 0);
+        assert_eq!(buy(buyer.as_ptr(), 1, 1_000_000_000), ERROR_RETURN);
 
         // Unfreeze
         test_mock::set_caller(admin);
@@ -1713,7 +1723,7 @@ mod tests {
 
         test_mock::set_timestamp(20_000);
         test_mock::set_caller(buyer);
-        assert_eq!(sell(buyer.as_ptr(), token_id, bought / 2), 0);
+        assert_eq!(sell(buyer.as_ptr(), token_id, bought / 2), ERROR_RETURN);
         assert_eq!(test_mock::get_storage(&token_key).unwrap(), token_before);
         assert_eq!(load_u64(&bal_key), balance_before);
         assert_eq!(load_u64(b"cp_fees_collected"), fees_before);
@@ -1750,12 +1760,12 @@ mod tests {
         let tokens = buy(buyer.as_ptr(), 1, 1_000_000_000);
         assert!(tokens > 0);
 
-        // Second buy within cooldown (default 2000ms)
-        test_mock::set_timestamp(11_000);
-        assert_eq!(buy(buyer.as_ptr(), 1, 1_000_000_000), 0);
+        // Second buy within cooldown (default 5 slots)
+        test_mock::set_timestamp(10_003);
+        assert_eq!(buy(buyer.as_ptr(), 1, 1_000_000_000), ERROR_RETURN);
 
         // After cooldown
-        test_mock::set_timestamp(13_000);
+        test_mock::set_timestamp(10_006);
         let tokens2 = buy(buyer.as_ptr(), 1, 1_000_000_000);
         assert!(tokens2 > 0);
     }
@@ -1781,7 +1791,7 @@ mod tests {
 
         test_mock::set_timestamp(20_000);
         test_mock::set_value(1_000_000_000);
-        assert_eq!(buy(buyer.as_ptr(), 1, 1_000_000_000), 0);
+        assert_eq!(buy(buyer.as_ptr(), 1, 1_000_000_000), ERROR_RETURN);
     }
 
     #[test]
@@ -1806,12 +1816,12 @@ mod tests {
         let tokens = buy(buyer.as_ptr(), 1, 1_000_000_000);
         assert!(tokens > 0);
 
-        // Sell within sell cooldown (default 5000ms)
-        test_mock::set_timestamp(12_000);
-        assert_eq!(sell(buyer.as_ptr(), 1, tokens / 2), 0);
+        // Sell within sell cooldown (default 13 slots)
+        test_mock::set_timestamp(10_010);
+        assert_eq!(sell(buyer.as_ptr(), 1, tokens / 2), ERROR_RETURN);
 
         // After sell cooldown
-        test_mock::set_timestamp(16_000);
+        test_mock::set_timestamp(10_014);
         let refund = sell(buyer.as_ptr(), 1, tokens / 2);
         assert!(refund > 0);
     }
@@ -1836,7 +1846,7 @@ mod tests {
         test_mock::set_caller(buyer);
         // Over limit rejected (max buy check is before caller check)
         test_mock::set_value(1_000_000_000);
-        assert_eq!(buy(buyer.as_ptr(), 1, 1_000_000_000), 0);
+        assert_eq!(buy(buyer.as_ptr(), 1, 1_000_000_000), ERROR_RETURN);
         // Under limit works
         test_mock::set_value(400_000_000);
         let tokens = buy(buyer.as_ptr(), 1, 400_000_000);
@@ -1850,11 +1860,11 @@ mod tests {
         test_mock::set_caller(admin);
         initialize(admin.as_ptr());
 
-        assert_eq!(set_buy_cooldown(admin.as_ptr(), 5000), 0);
-        assert_eq!(get_buy_cooldown(), 5000);
+        assert_eq!(set_buy_cooldown(admin.as_ptr(), 5), 0);
+        assert_eq!(get_buy_cooldown(), 5);
 
-        assert_eq!(set_sell_cooldown(admin.as_ptr(), 10000), 0);
-        assert_eq!(get_sell_cooldown(), 10000);
+        assert_eq!(set_sell_cooldown(admin.as_ptr(), 25), 0);
+        assert_eq!(get_sell_cooldown(), 25);
 
         // Non-admin rejected
         let other = [9u8; 32];
@@ -1932,8 +1942,8 @@ mod tests {
     #[test]
     fn test_default_values() {
         setup();
-        assert_eq!(get_buy_cooldown(), DEFAULT_BUY_COOLDOWN_MS);
-        assert_eq!(get_sell_cooldown(), DEFAULT_SELL_COOLDOWN_MS);
+        assert_eq!(get_buy_cooldown(), DEFAULT_BUY_COOLDOWN_SLOTS);
+        assert_eq!(get_sell_cooldown(), DEFAULT_SELL_COOLDOWN_SLOTS);
         assert_eq!(get_max_buy(), DEFAULT_MAX_BUY_AMOUNT);
         assert_eq!(get_creator_royalty(), DEFAULT_CREATOR_ROYALTY_BPS);
     }
@@ -2259,7 +2269,7 @@ mod tests {
         test_mock::set_value(500_000_000); // 0.5 LICN
         assert_eq!(
             buy(buyer.as_ptr(), 1, 1_000_000_000),
-            0,
+            ERROR_RETURN,
             "Buy should fail: payment < amount"
         );
         // With sufficient value succeeds
@@ -2281,7 +2291,7 @@ mod tests {
         test_mock::set_value(0);
         assert_eq!(
             create_token(creator.as_ptr(), CREATION_FEE),
-            0,
+            ERROR_RETURN,
             "Create token should fail: no value"
         );
         // Exact fee attached — should succeed

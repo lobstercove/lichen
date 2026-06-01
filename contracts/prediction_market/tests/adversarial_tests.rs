@@ -5,6 +5,15 @@
 
 use prediction_market::*;
 
+const LUSD_UNIT: u64 = 1_000_000_000;
+const HALF_LUSD: u64 = LUSD_UNIT / 2;
+const ONE_LUSD: u64 = LUSD_UNIT;
+const FIVE_LUSD: u64 = 5 * LUSD_UNIT;
+const TEN_LUSD: u64 = 10 * LUSD_UNIT;
+const FORTY_LUSD: u64 = 40 * LUSD_UNIT;
+const HUNDRED_LUSD: u64 = 100 * LUSD_UNIT;
+const MARKET_CREATION_FEE: u64 = TEN_LUSD;
+
 // ============================================================================
 // TEST HELPERS
 // ============================================================================
@@ -28,7 +37,7 @@ fn setup_active_market() -> ([u8; 32], u64) {
     let qh = [42u8; 32];
     let q = b"Test market?";
     lichen_sdk::test_mock::set_caller(admin);
-    lichen_sdk::test_mock::set_value(10_000_000); // MARKET_CREATION_FEE
+    lichen_sdk::test_mock::set_value(MARKET_CREATION_FEE); // MARKET_CREATION_FEE
     let mid = create_market(
         admin.as_ptr(),
         2,
@@ -40,9 +49,9 @@ fn setup_active_market() -> ([u8; 32], u64) {
     ) as u64;
     assert!(mid > 0);
     lichen_sdk::test_mock::set_caller(admin);
-    lichen_sdk::test_mock::set_value(10_000_000);
+    lichen_sdk::test_mock::set_value(TEN_LUSD);
     assert_eq!(
-        add_initial_liquidity(admin.as_ptr(), mid, 10_000_000, core::ptr::null(), 0),
+        add_initial_liquidity(admin.as_ptr(), mid, TEN_LUSD, core::ptr::null(), 0),
         1
     );
     (admin, mid)
@@ -53,7 +62,7 @@ fn setup_active_market_large() -> ([u8; 32], u64) {
     let qh = [42u8; 32];
     let q = b"Large pool market?";
     lichen_sdk::test_mock::set_caller(admin);
-    lichen_sdk::test_mock::set_value(10_000_000); // MARKET_CREATION_FEE
+    lichen_sdk::test_mock::set_value(MARKET_CREATION_FEE); // MARKET_CREATION_FEE
     let mid = create_market(
         admin.as_ptr(),
         0,
@@ -66,9 +75,9 @@ fn setup_active_market_large() -> ([u8; 32], u64) {
     assert!(mid > 0);
     // 100 lUSD - larger pool so trades don't trigger circuit breaker as easily
     lichen_sdk::test_mock::set_caller(admin);
-    lichen_sdk::test_mock::set_value(100_000_000);
+    lichen_sdk::test_mock::set_value(HUNDRED_LUSD);
     assert_eq!(
-        add_initial_liquidity(admin.as_ptr(), mid, 100_000_000, core::ptr::null(), 0),
+        add_initial_liquidity(admin.as_ptr(), mid, HUNDRED_LUSD, core::ptr::null(), 0),
         1
     );
     (admin, mid)
@@ -137,13 +146,13 @@ fn test_circuit_breaker_arms_on_large_price_move() {
 
     // A 5 lUSD buy on 10 lUSD pool is huge (50%) → triggers circuit breaker
     lichen_sdk::test_mock::set_caller(t);
-    let r = buy_shares(t.as_ptr(), mid, 0, 5_000_000);
+    let r = buy_shares(t.as_ptr(), mid, 0, FIVE_LUSD);
     // First buy should succeed (breaker check is BEFORE arming)
     assert!(r > 0, "First big buy should succeed");
 
     // Second buy in same slot should be blocked by armed breaker
     lichen_sdk::test_mock::set_caller(t);
-    let r2 = buy_shares(t.as_ptr(), mid, 1, 1_000_000);
+    let r2 = buy_shares(t.as_ptr(), mid, 1, ONE_LUSD);
     assert_eq!(r2, 0, "Second buy should be blocked by circuit breaker");
 }
 
@@ -154,16 +163,16 @@ fn test_circuit_breaker_expires_after_pause_slots() {
 
     // Trigger breaker
     lichen_sdk::test_mock::set_caller(t);
-    buy_shares(t.as_ptr(), mid, 0, 5_000_000);
+    buy_shares(t.as_ptr(), mid, 0, FIVE_LUSD);
 
     // Blocked now
     lichen_sdk::test_mock::set_caller(t);
-    assert_eq!(buy_shares(t.as_ptr(), mid, 1, 500_000), 0);
+    assert_eq!(buy_shares(t.as_ptr(), mid, 1, HALF_LUSD), 0);
 
     // Advance past PRICE_MOVE_PAUSE_SLOTS (150)
     lichen_sdk::test_mock::set_slot(1000 + 151);
     lichen_sdk::test_mock::set_caller(t);
-    let r = buy_shares(t.as_ptr(), mid, 1, 500_000);
+    let r = buy_shares(t.as_ptr(), mid, 1, HALF_LUSD);
     assert!(r > 0, "Buy should succeed after circuit breaker expires");
 }
 
@@ -175,12 +184,12 @@ fn test_small_trade_does_not_trigger_breaker() {
 
     // Small trade relative to 100 lUSD pool
     lichen_sdk::test_mock::set_caller(t1);
-    assert!(buy_shares(t1.as_ptr(), mid, 0, 1_000_000) > 0);
+    assert!(buy_shares(t1.as_ptr(), mid, 0, ONE_LUSD) > 0);
 
     // Another trade in same slot should also succeed (no breaker)
     lichen_sdk::test_mock::set_caller(t2);
     assert!(
-        buy_shares(t2.as_ptr(), mid, 1, 1_000_000) > 0,
+        buy_shares(t2.as_ptr(), mid, 1, ONE_LUSD) > 0,
         "Small trades shouldn't trigger breaker"
     );
 }
@@ -193,9 +202,9 @@ fn test_small_trade_does_not_trigger_breaker() {
 fn test_max_bet_size_reject() {
     let (_admin, mid) = setup_active_market();
     let t = [2u8; 32];
-    // 60B exceeds CIRCUIT_BREAKER_COLLATERAL = 50_000_000_000
+    // 60K lUSD exceeds CIRCUIT_BREAKER_COLLATERAL = 50_000 * LUSD_UNIT.
     lichen_sdk::test_mock::set_caller(t);
-    assert_eq!(buy_shares(t.as_ptr(), mid, 0, 60_000_000_000), 0);
+    assert_eq!(buy_shares(t.as_ptr(), mid, 0, 60_000 * LUSD_UNIT), 0);
 }
 
 #[test]
@@ -203,12 +212,12 @@ fn test_at_max_collateral_boundary() {
     let (_admin, mid) = setup_active_market();
     let t = [2u8; 32];
     // Just at CIRCUIT_BREAKER_COLLATERAL minus existing collateral
-    // Existing = 10_000_000 from initial liquidity
-    // Max additional = 50_000_000_000 - 10_000_000 = 49_990_000_000
+    // Existing = TEN_LUSD from initial liquidity
+    // Max additional = 50_000 * LUSD_UNIT - TEN_LUSD.
     // This amount should not exceed the per-market collateral breaker
     // But it will likely fail due to other reasons (huge price impact)
     lichen_sdk::test_mock::set_caller(t);
-    let r = buy_shares(t.as_ptr(), mid, 0, 49_990_000_000);
+    let r = buy_shares(t.as_ptr(), mid, 0, 50_000 * LUSD_UNIT - TEN_LUSD);
     // Should be rejected because it exceeds CIRCUIT_BREAKER_COLLATERAL
     // existing_coll (10M) + 49990M = 50000M = 50B which equals CIRCUIT_BREAKER_COLLATERAL
     // The condition is > not >= so this is allowed by collateral check,
@@ -239,7 +248,7 @@ fn test_cannot_trade_on_pending_market() {
     let t = [2u8; 32];
     lichen_sdk::test_mock::set_caller(t);
     assert_eq!(
-        buy_shares(t.as_ptr(), mid, 0, 1_000_000),
+        buy_shares(t.as_ptr(), mid, 0, ONE_LUSD),
         0,
         "Cannot trade on PENDING market"
     );
@@ -253,7 +262,7 @@ fn test_cannot_trade_on_voided_market() {
     let t = [2u8; 32];
     lichen_sdk::test_mock::set_caller(t);
     assert_eq!(
-        buy_shares(t.as_ptr(), mid, 0, 1_000_000),
+        buy_shares(t.as_ptr(), mid, 0, ONE_LUSD),
         0,
         "Cannot trade on VOIDED market"
     );
@@ -267,7 +276,7 @@ fn test_cannot_mint_on_voided_market() {
     let t = [2u8; 32];
     lichen_sdk::test_mock::set_caller(t);
     assert_eq!(
-        mint_complete_set(t.as_ptr(), mid, 1_000_000),
+        mint_complete_set(t.as_ptr(), mid, ONE_LUSD),
         0,
         "Cannot mint on VOIDED market"
     );
@@ -280,7 +289,7 @@ fn test_cannot_add_liquidity_to_voided_market() {
     dao_void(admin.as_ptr(), mid);
     let lp = [3u8; 32];
     lichen_sdk::test_mock::set_caller(lp);
-    assert_eq!(add_liquidity(lp.as_ptr(), mid, 5_000_000), 0);
+    assert_eq!(add_liquidity(lp.as_ptr(), mid, FIVE_LUSD), 0);
 }
 
 #[test]
@@ -355,7 +364,7 @@ fn test_buy_shares_caller_mismatch() {
     let real = [2u8; 32];
     let fake = [3u8; 32];
     lichen_sdk::test_mock::set_caller(real);
-    assert_eq!(buy_shares(fake.as_ptr(), mid, 0, 1_000_000), 0);
+    assert_eq!(buy_shares(fake.as_ptr(), mid, 0, ONE_LUSD), 0);
 }
 
 #[test]
@@ -364,7 +373,7 @@ fn test_sell_shares_caller_mismatch() {
     let real = [2u8; 32];
     let fake = [3u8; 32];
     lichen_sdk::test_mock::set_caller(real);
-    assert_eq!(sell_shares(fake.as_ptr(), mid, 0, 1_000_000), 0);
+    assert_eq!(sell_shares(fake.as_ptr(), mid, 0, ONE_LUSD), 0);
 }
 
 #[test]
@@ -373,7 +382,7 @@ fn test_mint_complete_set_caller_mismatch() {
     let real = [2u8; 32];
     let fake = [3u8; 32];
     lichen_sdk::test_mock::set_caller(real);
-    assert_eq!(mint_complete_set(fake.as_ptr(), mid, 1_000_000), 0);
+    assert_eq!(mint_complete_set(fake.as_ptr(), mid, ONE_LUSD), 0);
 }
 
 #[test]
@@ -382,7 +391,7 @@ fn test_redeem_complete_set_caller_mismatch() {
     let real = [2u8; 32];
     let fake = [3u8; 32];
     lichen_sdk::test_mock::set_caller(real);
-    assert_eq!(redeem_complete_set(fake.as_ptr(), mid, 1_000_000), 0);
+    assert_eq!(redeem_complete_set(fake.as_ptr(), mid, ONE_LUSD), 0);
 }
 
 #[test]
@@ -391,7 +400,7 @@ fn test_add_liquidity_caller_mismatch() {
     let real = [2u8; 32];
     let fake = [3u8; 32];
     lichen_sdk::test_mock::set_caller(real);
-    assert_eq!(add_liquidity(fake.as_ptr(), mid, 5_000_000), 0);
+    assert_eq!(add_liquidity(fake.as_ptr(), mid, FIVE_LUSD), 0);
 }
 
 #[test]
@@ -411,7 +420,7 @@ fn test_buy_shares_nonexistent_market() {
     setup();
     let t = [2u8; 32];
     lichen_sdk::test_mock::set_caller(t);
-    assert_eq!(buy_shares(t.as_ptr(), 999, 0, 1_000_000), 0);
+    assert_eq!(buy_shares(t.as_ptr(), 999, 0, ONE_LUSD), 0);
 }
 
 #[test]
@@ -419,7 +428,7 @@ fn test_sell_shares_nonexistent_market() {
     setup();
     let t = [2u8; 32];
     lichen_sdk::test_mock::set_caller(t);
-    assert_eq!(sell_shares(t.as_ptr(), 999, 0, 1_000_000), 0);
+    assert_eq!(sell_shares(t.as_ptr(), 999, 0, ONE_LUSD), 0);
 }
 
 #[test]
@@ -427,7 +436,7 @@ fn test_mint_nonexistent_market() {
     setup();
     let t = [2u8; 32];
     lichen_sdk::test_mock::set_caller(t);
-    assert_eq!(mint_complete_set(t.as_ptr(), 999, 1_000_000), 0);
+    assert_eq!(mint_complete_set(t.as_ptr(), 999, ONE_LUSD), 0);
 }
 
 #[test]
@@ -435,7 +444,7 @@ fn test_add_liquidity_nonexistent_market() {
     setup();
     let lp = [3u8; 32];
     lichen_sdk::test_mock::set_caller(lp);
-    assert_eq!(add_liquidity(lp.as_ptr(), 999, 5_000_000), 0);
+    assert_eq!(add_liquidity(lp.as_ptr(), 999, FIVE_LUSD), 0);
 }
 
 // ============================================================================
@@ -448,7 +457,7 @@ fn test_minimum_collateral_accepted() {
     let qh = [42u8; 32];
     let q = b"Min test";
     lichen_sdk::test_mock::set_caller(admin);
-    lichen_sdk::test_mock::set_value(10_000_000); // MARKET_CREATION_FEE
+    lichen_sdk::test_mock::set_value(MARKET_CREATION_FEE); // MARKET_CREATION_FEE
     let mid = create_market(
         admin.as_ptr(),
         0,
@@ -458,10 +467,10 @@ fn test_minimum_collateral_accepted() {
         q.as_ptr(),
         q.len() as u32,
     ) as u64;
-    // MIN_COLLATERAL = 1_000_000 (1 lUSD)
+    // MIN_COLLATERAL = ONE_LUSD (1 lUSD)
     lichen_sdk::test_mock::set_caller(admin);
-    lichen_sdk::test_mock::set_value(1_000_000);
-    let r = add_initial_liquidity(admin.as_ptr(), mid, 1_000_000, core::ptr::null(), 0);
+    lichen_sdk::test_mock::set_value(ONE_LUSD);
+    let r = add_initial_liquidity(admin.as_ptr(), mid, ONE_LUSD, core::ptr::null(), 0);
     assert_eq!(r, 1, "minimum collateral should be accepted");
 }
 
@@ -471,6 +480,7 @@ fn test_below_minimum_collateral_rejected() {
     let qh = [42u8; 32];
     let q = b"Below min";
     lichen_sdk::test_mock::set_caller(admin);
+    lichen_sdk::test_mock::set_value(MARKET_CREATION_FEE); // MARKET_CREATION_FEE
     let mid = create_market(
         admin.as_ptr(),
         0,
@@ -481,7 +491,7 @@ fn test_below_minimum_collateral_rejected() {
         q.len() as u32,
     ) as u64;
     lichen_sdk::test_mock::set_caller(admin);
-    let r = add_initial_liquidity(admin.as_ptr(), mid, 999_999, core::ptr::null(), 0);
+    let r = add_initial_liquidity(admin.as_ptr(), mid, ONE_LUSD - 1, core::ptr::null(), 0);
     assert_eq!(r, 0, "below minimum collateral must be rejected");
 }
 
@@ -492,7 +502,7 @@ fn test_min_duration_boundary() {
     let q = b"Duration test";
     // MIN_DURATION = 9000 slots
     lichen_sdk::test_mock::set_caller(admin);
-    lichen_sdk::test_mock::set_value(10_000_000); // MARKET_CREATION_FEE
+    lichen_sdk::test_mock::set_value(MARKET_CREATION_FEE); // MARKET_CREATION_FEE
     let r = create_market(
         admin.as_ptr(),
         0,
@@ -529,7 +539,7 @@ fn test_outcome_count_boundary_2_accepted() {
     let qh = [42u8; 32];
     let q = b"Two outcomes";
     lichen_sdk::test_mock::set_caller(admin);
-    lichen_sdk::test_mock::set_value(10_000_000); // MARKET_CREATION_FEE
+    lichen_sdk::test_mock::set_value(MARKET_CREATION_FEE); // MARKET_CREATION_FEE
     assert!(
         create_market(
             admin.as_ptr(),
@@ -549,7 +559,7 @@ fn test_outcome_count_boundary_8_accepted() {
     let qh = [43u8; 32];
     let q = b"Eight outcomes";
     lichen_sdk::test_mock::set_caller(admin);
-    lichen_sdk::test_mock::set_value(10_000_000); // MARKET_CREATION_FEE
+    lichen_sdk::test_mock::set_value(MARKET_CREATION_FEE); // MARKET_CREATION_FEE
     assert!(
         create_market(
             admin.as_ptr(),
@@ -572,7 +582,7 @@ fn test_sell_exactly_all_shares() {
     let (_admin, mid) = setup_active_market_large();
     let t = [2u8; 32];
     lichen_sdk::test_mock::set_caller(t);
-    let bought = buy_shares(t.as_ptr(), mid, 0, 1_000_000);
+    let bought = buy_shares(t.as_ptr(), mid, 0, ONE_LUSD);
     assert!(bought > 0);
     let (pos, _) = read_position(mid, &t, 0);
     lichen_sdk::test_mock::set_caller(t);
@@ -587,7 +597,7 @@ fn test_sell_one_share_more_than_owned() {
     let (_admin, mid) = setup_active_market_large();
     let t = [2u8; 32];
     lichen_sdk::test_mock::set_caller(t);
-    buy_shares(t.as_ptr(), mid, 0, 1_000_000);
+    buy_shares(t.as_ptr(), mid, 0, ONE_LUSD);
     let (pos, _) = read_position(mid, &t, 0);
     lichen_sdk::test_mock::set_caller(t);
     assert_eq!(
@@ -606,7 +616,7 @@ fn test_sell_after_close_slot() {
     let (_admin, mid) = setup_active_market_large();
     let t = [2u8; 32];
     lichen_sdk::test_mock::set_caller(t);
-    buy_shares(t.as_ptr(), mid, 0, 1_000_000);
+    buy_shares(t.as_ptr(), mid, 0, ONE_LUSD);
     lichen_sdk::test_mock::set_slot(1000 + 100_001);
     lichen_sdk::test_mock::set_caller(t);
     let (pos, _) = read_position(mid, &t, 0);
@@ -620,7 +630,7 @@ fn test_mint_after_close_slot() {
     lichen_sdk::test_mock::set_slot(1000 + 100_001);
     let t = [2u8; 32];
     lichen_sdk::test_mock::set_caller(t);
-    let r = mint_complete_set(t.as_ptr(), mid, 1_000_000);
+    let r = mint_complete_set(t.as_ptr(), mid, ONE_LUSD);
     assert_eq!(r, 0, "Cannot mint after close_slot");
 }
 
@@ -629,11 +639,11 @@ fn test_redeem_complete_set_after_close_slot() {
     let (_admin, mid) = setup_active_market_large();
     let t = [2u8; 32];
     lichen_sdk::test_mock::set_caller(t);
-    mint_complete_set(t.as_ptr(), mid, 1_000_000);
+    mint_complete_set(t.as_ptr(), mid, ONE_LUSD);
     lichen_sdk::test_mock::set_slot(1000 + 100_001);
     lichen_sdk::test_mock::set_caller(t);
     // redeem_complete_set is allowed on ACTIVE or CLOSED markets
-    let r = redeem_complete_set(t.as_ptr(), mid, 1_000_000);
+    let r = redeem_complete_set(t.as_ptr(), mid, ONE_LUSD);
     // After close_slot the market is still ACTIVE in storage, but the buy/sell/mint
     // functions check close_slot. Redeem checks STATUS, not close_slot.
     // If status is still ACTIVE (not explicitly changed), redeem should work.
@@ -653,7 +663,7 @@ fn test_multi_outcome_buy_all_outcomes() {
     let qh = [99u8; 32];
     let q = b"Multi test";
     lichen_sdk::test_mock::set_caller(admin);
-    lichen_sdk::test_mock::set_value(10_000_000); // MARKET_CREATION_FEE
+    lichen_sdk::test_mock::set_value(MARKET_CREATION_FEE); // MARKET_CREATION_FEE
     let mid = create_market(
         admin.as_ptr(),
         0,
@@ -664,15 +674,15 @@ fn test_multi_outcome_buy_all_outcomes() {
         q.len() as u32,
     ) as u64;
     lichen_sdk::test_mock::set_caller(admin);
-    lichen_sdk::test_mock::set_value(40_000_000);
-    add_initial_liquidity(admin.as_ptr(), mid, 40_000_000, core::ptr::null(), 0);
+    lichen_sdk::test_mock::set_value(FORTY_LUSD);
+    add_initial_liquidity(admin.as_ptr(), mid, FORTY_LUSD, core::ptr::null(), 0);
 
     let t = [2u8; 32];
     for outcome in 0..4u8 {
         lichen_sdk::test_mock::set_slot(1000 + (outcome as u64) * 200); // advance slot each time
         lichen_sdk::test_mock::set_caller(t);
-        lichen_sdk::test_mock::set_value(1_000_000);
-        let r = buy_shares(t.as_ptr(), mid, outcome, 1_000_000);
+        lichen_sdk::test_mock::set_value(ONE_LUSD);
+        let r = buy_shares(t.as_ptr(), mid, outcome, ONE_LUSD);
         assert!(r > 0, "Should be able to buy outcome {}", outcome);
     }
 
@@ -689,7 +699,7 @@ fn test_multi_outcome_mint_complete_set() {
     let qh = [45u8; 32];
     let q = b"Mint multi test";
     lichen_sdk::test_mock::set_caller(admin);
-    lichen_sdk::test_mock::set_value(10_000_000); // MARKET_CREATION_FEE
+    lichen_sdk::test_mock::set_value(MARKET_CREATION_FEE); // MARKET_CREATION_FEE
     let mid = create_market(
         admin.as_ptr(),
         0,
@@ -700,24 +710,25 @@ fn test_multi_outcome_mint_complete_set() {
         q.len() as u32,
     ) as u64;
     lichen_sdk::test_mock::set_caller(admin);
-    lichen_sdk::test_mock::set_value(40_000_000);
-    add_initial_liquidity(admin.as_ptr(), mid, 40_000_000, core::ptr::null(), 0);
+    lichen_sdk::test_mock::set_value(FORTY_LUSD);
+    add_initial_liquidity(admin.as_ptr(), mid, FORTY_LUSD, core::ptr::null(), 0);
 
     let t = [2u8; 32];
     lichen_sdk::test_mock::set_caller(t);
-    lichen_sdk::test_mock::set_value(5_000_000);
-    assert_eq!(mint_complete_set(t.as_ptr(), mid, 5_000_000), 1);
+    lichen_sdk::test_mock::set_value(FIVE_LUSD);
+    assert_eq!(mint_complete_set(t.as_ptr(), mid, FIVE_LUSD), 1);
 
     // Should have 5M shares in each of 4 outcomes
     for outcome in 0..4u8 {
         let (shares, _) = read_position(mid, &t, outcome);
-        assert_eq!(shares, 5_000_000, "Should have 5M in outcome {}", outcome);
+        assert_eq!(shares, FIVE_LUSD, "Should have 5M in outcome {}", outcome);
     }
 
     // Redeem
     lichen_sdk::test_mock::set_caller(t);
-    let ret = redeem_complete_set(t.as_ptr(), mid, 5_000_000);
-    assert_eq!(ret, 5_000_000);
+    let ret = redeem_complete_set(t.as_ptr(), mid, FIVE_LUSD);
+    assert_eq!(ret, FIVE_LUSD as u32);
+    assert_eq!(read_return_u64(), FIVE_LUSD);
     for outcome in 0..4u8 {
         let (shares, _) = read_position(mid, &t, outcome);
         assert_eq!(shares, 0);
@@ -757,7 +768,7 @@ fn test_pause_blocks_add_liquidity() {
     lichen_sdk::test_mock::set_caller(admin);
     emergency_pause(admin.as_ptr());
     lichen_sdk::test_mock::set_caller(lp);
-    assert_eq!(add_liquidity(lp.as_ptr(), mid, 5_000_000), 0);
+    assert_eq!(add_liquidity(lp.as_ptr(), mid, FIVE_LUSD), 0);
 }
 
 #[test]
@@ -765,7 +776,7 @@ fn test_pause_allows_sell_exit() {
     let (_admin, mid) = setup_active_market_large();
     let t = [2u8; 32];
     lichen_sdk::test_mock::set_caller(t);
-    buy_shares(t.as_ptr(), mid, 0, 1_000_000);
+    buy_shares(t.as_ptr(), mid, 0, ONE_LUSD);
 
     let admin = [1u8; 32];
     lichen_sdk::test_mock::set_caller(admin);
@@ -787,7 +798,7 @@ fn test_pause_blocks_mint() {
     emergency_pause(admin.as_ptr());
     let t = [2u8; 32];
     lichen_sdk::test_mock::set_caller(t);
-    assert_eq!(mint_complete_set(t.as_ptr(), mid, 1_000_000), 0);
+    assert_eq!(mint_complete_set(t.as_ptr(), mid, ONE_LUSD), 0);
 }
 
 // ============================================================================
@@ -823,7 +834,7 @@ fn test_many_traders_sequential() {
         lichen_sdk::test_mock::set_slot(1000 + (i as u64) * 200); // advance slot to avoid breaker
         lichen_sdk::test_mock::set_caller(addr);
         let outcome = i % 2;
-        let r = buy_shares(addr.as_ptr(), mid, outcome, 500_000);
+        let r = buy_shares(addr.as_ptr(), mid, outcome, HALF_LUSD);
         assert!(r > 0, "Trader {} buy should succeed", i);
         let (shares, _) = read_position(mid, &addr, outcome);
         assert!(shares > 0, "Trader {} should have shares", i);
@@ -834,7 +845,7 @@ fn test_many_traders_sequential() {
     let p1 = read_price(mid, 1);
     let sum = p0 + p1;
     assert!(
-        sum >= 998_000 && sum <= 1_002_000,
+        sum >= ONE_LUSD - 2 && sum <= ONE_LUSD + 2,
         "After 20 trades, prices must sum to ~$1.00, got {}",
         sum
     );
@@ -854,7 +865,7 @@ fn test_market_count_consistency_across_voids() {
         qh[0] = i + 10;
         let q = b"Market";
         lichen_sdk::test_mock::set_caller(admin);
-        lichen_sdk::test_mock::set_value(10_000_000); // MARKET_CREATION_FEE
+        lichen_sdk::test_mock::set_value(MARKET_CREATION_FEE); // MARKET_CREATION_FEE
         create_market(
             admin.as_ptr(),
             0,
@@ -869,8 +880,8 @@ fn test_market_count_consistency_across_voids() {
 
     // Activate and void market 1
     lichen_sdk::test_mock::set_caller(admin);
-    lichen_sdk::test_mock::set_value(5_000_000);
-    add_initial_liquidity(admin.as_ptr(), 1, 5_000_000, core::ptr::null(), 0);
+    lichen_sdk::test_mock::set_value(FIVE_LUSD);
+    add_initial_liquidity(admin.as_ptr(), 1, FIVE_LUSD, core::ptr::null(), 0);
     lichen_sdk::test_mock::set_caller(admin);
     dao_void(admin.as_ptr(), 1);
 
@@ -905,23 +916,23 @@ fn test_get_position_never_returns_zero_for_status() {
 #[test]
 fn test_quote_buy_nonexistent_market() {
     setup();
-    assert_eq!(quote_buy(999, 0, 1_000_000), 0);
+    assert_eq!(quote_buy(999, 0, ONE_LUSD), 0);
 }
 
 #[test]
 fn test_quote_sell_nonexistent_market() {
     setup();
-    assert_eq!(quote_sell(999, 0, 1_000_000), 0);
+    assert_eq!(quote_sell(999, 0, ONE_LUSD), 0);
 }
 
 #[test]
 fn test_quote_buy_invalid_outcome() {
     let (_admin, mid) = setup_active_market();
-    assert_eq!(quote_buy(mid, 5, 1_000_000), 0);
+    assert_eq!(quote_buy(mid, 5, ONE_LUSD), 0);
 }
 
 #[test]
 fn test_quote_sell_invalid_outcome() {
     let (_admin, mid) = setup_active_market();
-    assert_eq!(quote_sell(mid, 5, 1_000_000), 0);
+    assert_eq!(quote_sell(mid, 5, ONE_LUSD), 0);
 }

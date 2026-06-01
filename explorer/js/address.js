@@ -990,12 +990,77 @@ function buildTransferInstruction(fromAddress, toAddress, amountLicn) {
     };
 }
 
+function utf8ByteLength(value) {
+    return new TextEncoder().encode(String(value || '')).length;
+}
+
+function normalizeContractCallArgs(functionName, args, callerAddress) {
+    if (Array.isArray(args)) return args;
+
+    const input = args || {};
+    switch (functionName) {
+        case 'register_identity': {
+            const owner = input.owner || callerAddress;
+            const name = String(input.name || '');
+            return [owner, Number(input.agent_type || 0), name, utf8ByteLength(name)];
+        }
+        case 'register_name': {
+            const name = String(input.name || '');
+            return [
+                input.caller || callerAddress,
+                name,
+                utf8ByteLength(name),
+                Number(input.duration_years || 1)
+            ];
+        }
+        case 'vouch':
+            return [input.voucher || callerAddress, input.vouchee];
+        case 'attest_skill': {
+            const skill = String(input.skill || '');
+            return [
+                input.attester || callerAddress,
+                input.target || input.identity,
+                skill,
+                utf8ByteLength(skill),
+                Number(input.level || input.attestation_level || 0)
+            ];
+        }
+        case 'add_skill': {
+            const skill = String(input.skill || input.skill_name || '');
+            return [
+                input.caller || callerAddress,
+                skill,
+                utf8ByteLength(skill),
+                Number(input.proficiency || 0)
+            ];
+        }
+        case 'update_agent_type':
+            return [input.owner || input.caller || callerAddress, Number(input.agent_type || input.new_agent_type || 0)];
+        case 'set_endpoint': {
+            const endpoint = String(input.endpoint || input.url || '');
+            return [input.owner || input.caller || callerAddress, endpoint, utf8ByteLength(endpoint)];
+        }
+        case 'set_metadata': {
+            const metadataJson = typeof input.metadata === 'string'
+                ? input.metadata
+                : JSON.stringify(input.metadata || {});
+            return [input.owner || input.caller || callerAddress, metadataJson, utf8ByteLength(metadataJson)];
+        }
+        case 'set_availability':
+            return [input.owner || input.caller || callerAddress, Number(input.availability || input.status || 0)];
+        case 'set_rate':
+            return [input.owner || input.caller || callerAddress, Number(input.rate || input.licn_per_unit || 0)];
+        default:
+            return input;
+    }
+}
+
 function buildContractCallInstruction({ callerAddress, contractAddress, functionName, args, value = 0 }) {
     const callerPubkey = bs58decode(callerAddress);
     const contractPubkey = bs58decode(contractAddress);
     const contractProgramId = new Uint8Array(32).fill(0xFF);
 
-    const callArgs = JSON.stringify(args || {});
+    const callArgs = JSON.stringify(normalizeContractCallArgs(functionName, args, callerAddress));
     const payload = JSON.stringify({
         Call: {
             function: functionName,
@@ -1012,10 +1077,16 @@ function buildContractCallInstruction({ callerAddress, contractAddress, function
 }
 
 async function signAndSendInstructions(wallet, instructions) {
-    const latestBlock = await rpcCall('getLatestBlock', []);
+    const blockhashEnvelope = await rpcCall('getRecentBlockhash', []);
+    const blockhash = typeof blockhashEnvelope === 'string'
+        ? blockhashEnvelope
+        : (blockhashEnvelope?.blockhash || blockhashEnvelope?.recent_blockhash);
+    if (typeof blockhash !== 'string' || !/^[0-9a-fA-F]{64}$/.test(blockhash)) {
+        throw new Error('Recent blockhash unavailable. Refresh and try again.');
+    }
     const message = {
         instructions,
-        blockhash: latestBlock.hash
+        blockhash
     };
 
     if (wallet?.mode !== 'extension') {
@@ -1397,7 +1468,10 @@ async function openEditProfileModal() {
     }).join('');
 
     const metadataDefault = JSON.stringify(currentLichenProfile?.agent?.metadata || {}, null, 2);
+    const currentAgentType = Number(currentLichenProfile?.identity?.agent_type || 0);
+    const currentEndpoint = String(currentLichenProfile?.agent?.endpoint || '').trim();
     const availabilityValue = Number(currentLichenProfile?.agent?.availability || 0);
+    const currentRateSpores = Number(currentLichenProfile?.agent?.rate || 0);
 
     openActionModal({
         title: 'Edit Identity Profile',
@@ -1410,7 +1484,7 @@ async function openEditProfileModal() {
             </div>
             <div class="form-group">
                 <label for="profileEndpointInput">Endpoint</label>
-                <input id="profileEndpointInput" value="${escapeHtml(currentLichenProfile?.agent?.endpoint || '')}" placeholder="https://api.example.com/agent">
+                <input id="profileEndpointInput" value="${escapeHtml(currentEndpoint)}" placeholder="https://api.example.com/agent">
             </div>
             <div class="form-group">
                 <label for="profileAvailabilityInput">Availability</label>
@@ -1421,7 +1495,7 @@ async function openEditProfileModal() {
             </div>
             <div class="form-group">
                 <label for="profileRateInput">Rate (LICN/request)</label>
-                <input id="profileRateInput" type="number" min="0" step="0.000001" value="${Number(currentLichenProfile?.agent?.rate || 0) / 1_000_000_000}">
+                <input id="profileRateInput" type="number" min="0" step="0.000001" value="${currentRateSpores / 1_000_000_000}">
             </div>
             <div class="form-group">
                 <label for="profileMetadataInput">Metadata (JSON)</label>
@@ -1434,51 +1508,71 @@ async function openEditProfileModal() {
                 const endpoint = String(document.getElementById('profileEndpointInput')?.value || '').trim();
                 const availability = Number(document.getElementById('profileAvailabilityInput')?.value || 0);
                 const rateLicn = Number(document.getElementById('profileRateInput')?.value || 0);
+                const rateSpores = Math.floor(rateLicn * 1_000_000_000);
                 const metadataText = String(document.getElementById('profileMetadataInput')?.value || '{}').trim();
                 const metadata = metadataText ? JSON.parse(metadataText) : {};
+                const metadataJson = JSON.stringify(metadata);
 
                 const lichenIdAddress = await getLichenIdProgramAddress();
                 const instructions = [];
 
-                instructions.push(buildContractCallInstruction({
-                    callerAddress: wallet.address,
-                    contractAddress: lichenIdAddress,
-                    functionName: 'update_agent_type',
-                    args: { owner: wallet.address, agent_type: type },
-                    value: 0
-                }));
+                if (type !== currentAgentType) {
+                    instructions.push(buildContractCallInstruction({
+                        callerAddress: wallet.address,
+                        contractAddress: lichenIdAddress,
+                        functionName: 'update_agent_type',
+                        args: { owner: wallet.address, agent_type: type },
+                        value: 0
+                    }));
+                }
 
-                instructions.push(buildContractCallInstruction({
-                    callerAddress: wallet.address,
-                    contractAddress: lichenIdAddress,
-                    functionName: 'set_endpoint',
-                    args: { owner: wallet.address, endpoint },
-                    value: 0
-                }));
+                if (endpoint !== currentEndpoint) {
+                    if (!endpoint) {
+                        throw new Error('Endpoint cannot be cleared by the current LichenID contract');
+                    }
+                    instructions.push(buildContractCallInstruction({
+                        callerAddress: wallet.address,
+                        contractAddress: lichenIdAddress,
+                        functionName: 'set_endpoint',
+                        args: { owner: wallet.address, endpoint },
+                        value: 0
+                    }));
+                }
 
-                instructions.push(buildContractCallInstruction({
-                    callerAddress: wallet.address,
-                    contractAddress: lichenIdAddress,
-                    functionName: 'set_metadata',
-                    args: { owner: wallet.address, metadata },
-                    value: 0
-                }));
+                if (metadataJson !== JSON.stringify(currentLichenProfile?.agent?.metadata || {})) {
+                    instructions.push(buildContractCallInstruction({
+                        callerAddress: wallet.address,
+                        contractAddress: lichenIdAddress,
+                        functionName: 'set_metadata',
+                        args: { owner: wallet.address, metadata: metadataJson },
+                        value: 0
+                    }));
+                }
 
-                instructions.push(buildContractCallInstruction({
-                    callerAddress: wallet.address,
-                    contractAddress: lichenIdAddress,
-                    functionName: 'set_availability',
-                    args: { owner: wallet.address, availability },
-                    value: 0
-                }));
+                if (availability !== availabilityValue) {
+                    instructions.push(buildContractCallInstruction({
+                        callerAddress: wallet.address,
+                        contractAddress: lichenIdAddress,
+                        functionName: 'set_availability',
+                        args: { owner: wallet.address, availability },
+                        value: 0
+                    }));
+                }
 
-                instructions.push(buildContractCallInstruction({
-                    callerAddress: wallet.address,
-                    contractAddress: lichenIdAddress,
-                    functionName: 'set_rate',
-                    args: { owner: wallet.address, rate: Math.floor(rateLicn * 1_000_000_000) },
-                    value: 0
-                }));
+                if (rateSpores !== currentRateSpores) {
+                    instructions.push(buildContractCallInstruction({
+                        callerAddress: wallet.address,
+                        contractAddress: lichenIdAddress,
+                        functionName: 'set_rate',
+                        args: { owner: wallet.address, rate: rateSpores },
+                        value: 0
+                    }));
+                }
+
+                if (!instructions.length) {
+                    throw new Error('No changes to save');
+                }
+
                 for (const instruction of instructions) {
                     await signAndSendInstructions(wallet, [instruction]);
                 }

@@ -22,24 +22,28 @@ const LICHEN_CONFIG = (() => {
             label: 'Mainnet',
             rpc: 'https://rpc.lichen.network',
             ws: 'wss://rpc.lichen.network/ws',
+            slotDurationMs: 400,
             local: false,
         },
         testnet: {
             label: 'Testnet',
             rpc: 'https://testnet-rpc.lichen.network',
             ws: 'wss://testnet-rpc.lichen.network/ws',
+            slotDurationMs: 400,
             local: false,
         },
         'local-testnet': {
             label: 'Local Testnet',
             rpc: 'http://localhost:8899',
             ws: 'ws://localhost:8900',
+            slotDurationMs: 400,
             local: true,
         },
         'local-mainnet': {
             label: 'Local Mainnet',
             rpc: 'http://localhost:9899',
             ws: 'ws://localhost:9900',
+            slotDurationMs: 400,
             local: true,
         },
     };

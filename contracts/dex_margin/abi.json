@@ -225,20 +225,6 @@
       ]
     },
     {
-      "name": "set_lichencoin_address",
-      "opcode": 15,
-      "params": [
-        {
-          "name": "caller",
-          "type": "Pubkey"
-        },
-        {
-          "name": "address",
-          "type": "Pubkey"
-        }
-      ]
-    },
-    {
       "name": "get_total_volume",
       "opcode": 16,
       "params": []
@@ -446,6 +432,86 @@
         },
         {
           "name": "price",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "open_position_limit",
+      "opcode": 32,
+      "params": [
+        {
+          "name": "trader",
+          "type": "Pubkey"
+        },
+        {
+          "name": "pair_id",
+          "type": "u64"
+        },
+        {
+          "name": "side",
+          "type": "u8"
+        },
+        {
+          "name": "size",
+          "type": "u64"
+        },
+        {
+          "name": "leverage",
+          "type": "u64"
+        },
+        {
+          "name": "margin",
+          "type": "u64"
+        },
+        {
+          "name": "margin_mode",
+          "type": "u8"
+        },
+        {
+          "name": "limit_price",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "set_collateral_token_address",
+      "opcode": 33,
+      "params": [
+        {
+          "name": "caller",
+          "type": "Pubkey"
+        },
+        {
+          "name": "token_addr",
+          "type": "Pubkey"
+        }
+      ]
+    },
+    {
+      "name": "set_self_address",
+      "opcode": 34,
+      "params": [
+        {
+          "name": "caller",
+          "type": "Pubkey"
+        },
+        {
+          "name": "self_addr",
+          "type": "Pubkey"
+        }
+      ]
+    },
+    {
+      "name": "deposit_insurance",
+      "opcode": 35,
+      "params": [
+        {
+          "name": "caller",
+          "type": "Pubkey"
+        },
+        {
+          "name": "amount",
           "type": "u64"
         }
       ]

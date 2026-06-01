@@ -37,7 +37,7 @@ export async function stakeLicn({ wallet, password, amountLicn, tier = 0, networ
   const tierByte = Math.max(0, Math.min(3, Number(tier) || 0));
   const rpc = new LichenRPC(await getConfiguredRpcEndpoint(network));
 
-  const latestBlock = await rpc.getLatestBlock();
+  const blockhash = await rpc.getRecentBlockhash();
   const privateKeyHex = await decryptPrivateKey(wallet.encryptedKey, password);
   // Build 10-byte instruction: [opcode(1), amount_le(8), tier(1)]
   const instructionData = buildAmountInstructionData(13, amount, tierByte);
@@ -45,14 +45,14 @@ export async function stakeLicn({ wallet, password, amountLicn, tier = 0, networ
   const transaction = await buildSignedSingleInstructionTransaction({
     privateKeyHex,
     fromAddress: wallet.address,
-    blockhash: latestBlock.hash,
+    blockhash,
     programIdBytes: new Uint8Array(32), // SYSTEM_PROGRAM_ID = [0; 32]
     accountPubkeys: [],
     instructionDataBytes: instructionData
   });
 
   const txBase64 = encodeTransactionBase64(transaction);
-  const txHash = await rpc.sendTransaction(txBase64);
+  const txHash = await rpc.sendTransactionWithPreflight(txBase64);
   return { txHash };
 }
 
@@ -61,21 +61,21 @@ export async function unstakeStLicn({ wallet, password, amountLicn, network }) {
   const amount = validateAmount(amountLicn, 'Unstake amount');
   const rpc = new LichenRPC(await getConfiguredRpcEndpoint(network));
 
-  const latestBlock = await rpc.getLatestBlock();
+  const blockhash = await rpc.getRecentBlockhash();
   const privateKeyHex = await decryptPrivateKey(wallet.encryptedKey, password);
   const instructionData = buildAmountInstructionData(14, amount);
 
   const transaction = await buildSignedSingleInstructionTransaction({
     privateKeyHex,
     fromAddress: wallet.address,
-    blockhash: latestBlock.hash,
+    blockhash,
     programIdBytes: new Uint8Array(32), // SYSTEM_PROGRAM_ID = [0; 32]
     accountPubkeys: [],
     instructionDataBytes: instructionData
   });
 
   const txBase64 = encodeTransactionBase64(transaction);
-  const txHash = await rpc.sendTransaction(txBase64);
+  const txHash = await rpc.sendTransactionWithPreflight(txBase64);
   return { txHash };
 }
 
@@ -83,7 +83,7 @@ export async function claimMossStake({ wallet, password, network }) {
   if (!wallet) throw new Error('No active wallet');
   const rpc = new LichenRPC(await getConfiguredRpcEndpoint(network));
 
-  const latestBlock = await rpc.getLatestBlock();
+  const blockhash = await rpc.getRecentBlockhash();
   const privateKeyHex = await decryptPrivateKey(wallet.encryptedKey, password);
   // Instruction type 15 = MossStakeClaim, no amount needed
   const instructionData = new Uint8Array([15]);
@@ -91,13 +91,13 @@ export async function claimMossStake({ wallet, password, network }) {
   const transaction = await buildSignedSingleInstructionTransaction({
     privateKeyHex,
     fromAddress: wallet.address,
-    blockhash: latestBlock.hash,
+    blockhash,
     programIdBytes: new Uint8Array(32),
     accountPubkeys: [],
     instructionDataBytes: instructionData
   });
 
   const txBase64 = encodeTransactionBase64(transaction);
-  const txHash = await rpc.sendTransaction(txBase64);
+  const txHash = await rpc.sendTransactionWithPreflight(txBase64);
   return { txHash };
 }

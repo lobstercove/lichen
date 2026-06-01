@@ -28,6 +28,30 @@
 
     var fmp = (window.marketplaceUtils && window.marketplaceUtils.formatLicnPrice) || function (v, isLicn) { var n = Number(isLicn ? v : v / 1e9); if (n >= 0.01) return n.toFixed(2); if (n >= 0.0001) return n.toFixed(4); if (n >= 0.000001) return n.toFixed(6); if (n > 0) return n.toFixed(9); return '0'; };
 
+    function marketSlotDurationMs() {
+        var configured = window.lichenMarketConfig && Number(window.lichenMarketConfig.slotDurationMs);
+        return Number.isFinite(configured) && configured > 0 ? configured : 400;
+    }
+
+    function hoursToSlots(hours) {
+        return Math.ceil((Number(hours) || 0) * 3600000 / marketSlotDurationMs());
+    }
+
+    async function getCurrentSlot() {
+        var slot = await marketTrustedRpcCall('getSlot', []);
+        if (slot && typeof slot === 'object') slot = slot.slot || slot.value || slot.current_slot;
+        var n = Number(slot);
+        if (!Number.isFinite(n) || n < 0) throw new Error('Current slot unavailable');
+        return Math.floor(n);
+    }
+
+    async function expiryHoursToSlot(hours) {
+        if (!hours || hours <= 0) return 0;
+        var durationSlots = hoursToSlots(hours);
+        if (durationSlots <= 0) return 0;
+        return (await getCurrentSlot()) + durationSlots;
+    }
+
     function lazyAddresses() {
         return;
     }
@@ -617,7 +641,7 @@
         listNFTForSale(nft, parseFloat(price));
     };
 
-    window._profileMakeCollectionOffer = function (index) {
+    window._profileMakeCollectionOffer = async function (index) {
         var nft = createdNFTs[index];
         if (!nft || !currentWallet) return;
 
@@ -631,17 +655,22 @@
         if (!amount || isNaN(parseFloat(amount)) || parseFloat(amount) <= 0) return;
 
         var expiryHours = prompt('Enter expiry in hours (optional, leave blank for no expiry):');
-        var expiryTs = 0;
+        var expirySlot = 0;
         if (expiryHours && expiryHours.trim() !== '') {
             var h = Number(expiryHours);
             if (!Number.isFinite(h) || h < 0) {
                 showToast('Expiry must be a non-negative number', 'error');
                 return;
             }
-            expiryTs = Math.floor(Date.now() / 1000) + Math.floor(h * 3600);
+            try {
+                expirySlot = await expiryHoursToSlot(h);
+            } catch (err) {
+                showToast('Cannot calculate expiry: ' + err.message, 'error');
+                return;
+            }
         }
 
-        makeCollectionOffer(collectionId, Math.round(parseFloat(amount) * 1e9), expiryTs);
+        makeCollectionOffer(collectionId, Math.round(parseFloat(amount) * 1e9), expirySlot);
     };
 
     window._profileCreateAuction = function (index) {
@@ -656,10 +685,17 @@
         var startSpores = Math.round(parseFloat(startPriceInput) * 1e9);
         var reserveSpores = reserveInput && !isNaN(parseFloat(reserveInput)) ? Math.round(parseFloat(reserveInput) * 1e9) : 0;
         var durationHours = durationInput && !isNaN(parseFloat(durationInput)) ? Math.max(1, Math.floor(parseFloat(durationInput))) : 24;
-        var now = Math.floor(Date.now() / 1000);
-        var endTs = now + (durationHours * 3600);
+        var durationSlots = hoursToSlots(durationHours);
+        if (durationSlots < 150) {
+            showToast('Auction duration must be at least 1 minute', 'error');
+            return;
+        }
+        if (durationSlots > 6480000) {
+            showToast('Auction duration must be 30 days or less', 'error');
+            return;
+        }
 
-        submitAuctionCreate(nft, startSpores, reserveSpores, now, endTs);
+        submitAuctionCreate(nft, startSpores, reserveSpores, durationSlots);
     };
 
     window._profilePlaceBid = function (index) {
@@ -672,7 +708,7 @@
         submitAuctionBid(nft, bidSpores);
     };
 
-    async function submitAuctionCreate(nft, startSpores, reserveSpores, startTs, endTs) {
+    async function submitAuctionCreate(nft, startSpores, reserveSpores, durationSlots) {
         try {
             var mp = await resolveMarketplaceProgram();
             if (!mp) throw new Error('Cannot resolve marketplace program');
@@ -685,9 +721,8 @@
                 tokenId,
                 startSpores,
                 reserveSpores,
-                '',
-                startTs,
-                endTs
+                durationSlots,
+                ''
             ], 0);
 
             await window.lichenWallet.sendTransaction([{
@@ -730,7 +765,7 @@
         }
     }
 
-    async function makeCollectionOffer(collectionId, priceSpores, expiryTs) {
+    async function makeCollectionOffer(collectionId, priceSpores, expirySlot) {
         try {
             var mp = await resolveMarketplaceProgram();
             if (!mp) throw new Error('Cannot resolve marketplace program');
@@ -740,7 +775,7 @@
                 collectionId,
                 priceSpores,
                 '',
-                expiryTs || 0
+                expirySlot || 0
             ], priceSpores);
 
             await window.lichenWallet.sendTransaction([{

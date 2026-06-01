@@ -113,6 +113,7 @@ const TRADE_COUNT_KEY: &[u8] = b"dex_trade_count";
 const FEE_TREASURY_KEY: &[u8] = b"dex_fee_treasury";
 const FEE_TREASURY_ADDR_KEY: &[u8] = b"dex_fee_treasury_addr";
 const FEE_TREASURY_EXPLICIT_KEY: &[u8] = b"dex_fee_treasury_explicit";
+const GOVERNANCE_ADDRESS_KEY: &[u8] = b"dex_governance_addr";
 const PREFERRED_QUOTE_KEY: &[u8] = b"dex_preferred_quote";
 const ALLOWED_QUOTE_COUNT_KEY: &[u8] = b"dex_aq_count";
 const MAX_ALLOWED_QUOTES: u64 = 8;
@@ -310,6 +311,14 @@ fn require_not_paused() -> bool {
 fn require_admin(caller: &[u8; 32]) -> bool {
     let admin = load_addr(ADMIN_KEY);
     !is_zero(&admin) && *caller == admin
+}
+
+fn require_admin_or_governance(caller: &[u8; 32]) -> bool {
+    if require_admin(caller) {
+        return true;
+    }
+    let governance = load_addr(GOVERNANCE_ADDRESS_KEY);
+    !is_zero(&governance) && *caller == governance
 }
 
 // ============================================================================
@@ -1011,6 +1020,32 @@ pub fn set_fee_treasury_address(caller: *const u8, treasury: *const u8) -> u32 {
     0
 }
 
+/// Set the governance contract allowed to execute governed DEX operations.
+/// Returns: 0=success, 1=not admin, 2=zero address, 3=already configured, 200=caller mismatch
+pub fn set_governance_address(caller: *const u8, governance: *const u8) -> u32 {
+    let mut c = [0u8; 32];
+    let mut g = [0u8; 32];
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+        core::ptr::copy_nonoverlapping(governance, g.as_mut_ptr(), 32);
+    }
+    let real_caller = get_caller();
+    if real_caller.0 != c {
+        return 200;
+    }
+    if !require_admin(&c) {
+        return 1;
+    }
+    if is_zero(&g) {
+        return 2;
+    }
+    if has_configured_address(GOVERNANCE_ADDRESS_KEY) {
+        return 3;
+    }
+    storage_set(GOVERNANCE_ADDRESS_KEY, &g);
+    0
+}
+
 /// Claim accrued maker rebates for the caller on a specific pair.
 /// Returns: 0=success, 1=nothing to claim, 2=transfer failed, 3=pair not found, 200=caller mismatch
 pub fn claim_rebate(caller: *const u8, pair_id: u64) -> u32 {
@@ -1345,7 +1380,7 @@ pub fn create_pair(
         reentrancy_exit();
         return 200;
     }
-    if !require_admin(&c) {
+    if !require_admin_or_governance(&c) {
         reentrancy_exit();
         return 1;
     }
@@ -1433,7 +1468,7 @@ pub fn update_pair_fees(
     if real_caller.0 != c {
         return 200;
     }
-    if !require_admin(&c) {
+    if !require_admin_or_governance(&c) {
         return 1;
     }
 
@@ -1470,7 +1505,7 @@ pub fn pause_pair(caller: *const u8, pair_id: u64) -> u32 {
     if real_caller.0 != c {
         return 200;
     }
-    if !require_admin(&c) {
+    if !require_admin_or_governance(&c) {
         return 1;
     }
     let pk = pair_key(pair_id);
@@ -1494,7 +1529,7 @@ pub fn unpause_pair(caller: *const u8, pair_id: u64) -> u32 {
     if real_caller.0 != c {
         return 200;
     }
-    if !require_admin(&c) {
+    if !require_admin_or_governance(&c) {
         return 1;
     }
     let pk = pair_key(pair_id);
@@ -3442,6 +3477,14 @@ pub extern "C" fn call() -> u32 {
                 _rc = r as u32;
             }
         }
+        35 => {
+            // set_governance_address(caller[32], governance[32])
+            if args.len() >= 65 {
+                let r = set_governance_address(args[1..33].as_ptr(), args[33..65].as_ptr());
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+            }
+        }
         _ => {
             lichen_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
             _rc = 255;
@@ -3656,6 +3699,65 @@ mod tests {
             ),
             1
         );
+    }
+
+    #[test]
+    fn test_governance_address_can_create_and_manage_pair() {
+        let admin = setup();
+        let governance = [42u8; 32];
+        let base = [10u8; 32];
+        let quote = [20u8; 32];
+
+        test_mock::set_caller(admin);
+        assert_eq!(
+            set_governance_address(admin.as_ptr(), governance.as_ptr()),
+            0
+        );
+
+        test_mock::set_caller(governance);
+        assert_eq!(
+            create_pair(
+                governance.as_ptr(),
+                base.as_ptr(),
+                quote.as_ptr(),
+                1000,
+                100,
+                1000
+            ),
+            0
+        );
+        assert_eq!(update_pair_fees(governance.as_ptr(), 1, -2, 10), 0);
+        assert_eq!(pause_pair(governance.as_ptr(), 1), 0);
+
+        let pd = storage_get(&pair_key(1)).unwrap();
+        assert_eq!(decode_pair_maker_fee(&pd), -2);
+        assert_eq!(decode_pair_taker_fee(&pd), 10);
+        assert_eq!(decode_pair_status(&pd), PAIR_PAUSED);
+    }
+
+    #[test]
+    fn test_set_governance_address_rejects_invalid_or_repeated_config() {
+        let admin = setup();
+        let governance = [42u8; 32];
+        let zero = [0u8; 32];
+        let rando = [99u8; 32];
+
+        test_mock::set_caller(admin);
+        assert_eq!(set_governance_address(admin.as_ptr(), zero.as_ptr()), 2);
+
+        test_mock::set_caller(rando);
+        assert_eq!(
+            set_governance_address(rando.as_ptr(), governance.as_ptr()),
+            1
+        );
+
+        test_mock::set_caller(admin);
+        assert_eq!(
+            set_governance_address(admin.as_ptr(), governance.as_ptr()),
+            0
+        );
+        let second = [43u8; 32];
+        assert_eq!(set_governance_address(admin.as_ptr(), second.as_ptr()), 3);
     }
 
     #[test]

@@ -769,8 +769,11 @@ function validateProgramsWalletBridgeParity() {
 function validateFrontendInputGuards() {
     const dexJs = fs.readFileSync(path.join(repoRoot, 'dex', 'dex.js'), 'utf8');
     const dexHtml = fs.readFileSync(path.join(repoRoot, 'dex', 'index.html'), 'utf8');
+    const explorerAddressJs = fs.readFileSync(path.join(repoRoot, 'explorer', 'js', 'address.js'), 'utf8');
+    const explorerJs = fs.readFileSync(path.join(repoRoot, 'explorer', 'js', 'explorer.js'), 'utf8');
     const faucetJs = fs.readFileSync(path.join(repoRoot, 'faucet', 'faucet.js'), 'utf8');
     const faucetHtml = fs.readFileSync(path.join(repoRoot, 'faucet', 'index.html'), 'utf8');
+    const websiteJs = fs.readFileSync(path.join(repoRoot, 'website', 'script.js'), 'utf8');
 
     const dexNumericGuardBody = extractFunctionBody(dexJs, 'applyDexNumericInputGuards');
     assert(
@@ -856,6 +859,33 @@ function validateFrontendInputGuards() {
             faucetGuardBody.includes("event.key === 'e' || event.key === 'E' || event.key === '+' || event.key === '-' || event.key === '.'") &&
             faucetGuardBody.includes('sanitizeFaucetInteger(captchaInput.value)'),
         'faucet captcha input accepts integer digits only'
+    );
+
+    assert(
+        explorerAddressJs.includes('function normalizeContractCallArgs(functionName, args, callerAddress)') &&
+            explorerAddressJs.includes("case 'register_identity'") &&
+            explorerAddressJs.includes("case 'register_name'") &&
+            explorerAddressJs.includes("case 'attest_skill'") &&
+            explorerAddressJs.includes('utf8ByteLength(name)') &&
+            explorerAddressJs.includes('const callArgs = JSON.stringify(normalizeContractCallArgs(functionName, args, callerAddress));'),
+        'explorer LichenID actions encode ordered WASM ABI args'
+    );
+
+    assert(
+        explorerAddressJs.includes("rpcCall('getRecentBlockhash', [])") &&
+            explorerAddressJs.includes('Recent blockhash unavailable') &&
+            explorerAddressJs.includes('if (endpoint !== currentEndpoint)') &&
+            explorerAddressJs.includes('Endpoint cannot be cleared by the current LichenID contract') &&
+            explorerAddressJs.includes("throw new Error('No changes to save')"),
+        'explorer LichenID profile updates use fresh blockhashes and avoid doomed no-op writes'
+    );
+
+    assert(
+        explorerJs.includes('async submitTransaction(txData)') &&
+            explorerJs.includes('const simulation = await this.simulateTransaction(txData);') &&
+            websiteJs.includes('async submitTransaction(txData)') &&
+            websiteJs.includes('const simulation = await this.simulateTransaction(txData);'),
+        'website and explorer RPC clients preflight before transaction submission'
     );
 }
 

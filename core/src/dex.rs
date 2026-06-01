@@ -96,6 +96,7 @@ pub struct DexMarginPosition {
     pub pair_id: u64,
     pub side: &'static str,
     pub margin_type: &'static str,
+    pub collateral_asset: &'static str,
     pub status: &'static str,
     pub size: u64,
     pub margin: u64,
@@ -501,6 +502,7 @@ pub fn decode_margin_position(data: &[u8]) -> Option<DexMarginPosition> {
     } else {
         "isolated"
     };
+    let collateral_asset = "lUSD";
     let status = match data[49] {
         0 => "open",
         1 => "closed",
@@ -531,6 +533,7 @@ pub fn decode_margin_position(data: &[u8]) -> Option<DexMarginPosition> {
         pair_id,
         side,
         margin_type,
+        collateral_asset,
         status,
         size,
         margin,

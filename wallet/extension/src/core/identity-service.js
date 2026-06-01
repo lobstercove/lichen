@@ -138,7 +138,9 @@ function isAddressLike(address) {
 
 function validateEndpoint(endpoint) {
   const value = String(endpoint || '').trim();
-  if (!value) return '';
+  if (!value) {
+    throw new Error('Endpoint cannot be cleared by the current LichenID contract');
+  }
 
   let parsed;
   try {
@@ -259,7 +261,7 @@ async function sendIdentityContractCall({ wallet, password, network, functionNam
 
   const rpc = new LichenRPC(await getConfiguredRpcEndpoint(network));
   const lichenidAddr = await getLichenIdProgramAddress(network);
-  const latestBlock = await rpc.getLatestBlock();
+  const blockhash = await rpc.getRecentBlockhash();
 
   try {
     const balanceResult = await rpc.getBalance(wallet.address);
@@ -293,14 +295,14 @@ async function sendIdentityContractCall({ wallet, password, network, functionNam
   const transaction = await buildSignedSingleInstructionTransaction({
     privateKeyHex,
     fromAddress: wallet.address,
-    blockhash: latestBlock.hash,
+    blockhash,
     programIdBytes: contractProgramId,
     accountPubkeys: [lichenIdPubkey],
     instructionDataBytes: new TextEncoder().encode(callPayload)
   });
 
   const txBase64 = encodeTransactionBase64(transaction);
-  const txHash = await rpc.sendTransaction(txBase64);
+  const txHash = await rpc.sendTransactionWithPreflight(txBase64);
   return { txHash };
 }
 

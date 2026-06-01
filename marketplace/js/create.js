@@ -110,8 +110,28 @@
         return btoa(binary);
     }
 
+    function getCrypto() {
+        var provider = (typeof window !== 'undefined' && window.crypto) || (typeof crypto !== 'undefined' && crypto);
+        if (!provider || typeof provider.getRandomValues !== 'function') {
+            throw new Error('Secure browser randomness is unavailable');
+        }
+        return provider;
+    }
+
+    function randomBytes(length) {
+        var bytes = new Uint8Array(length);
+        getCrypto().getRandomValues(bytes);
+        return bytes;
+    }
+
+    function cryptoRandomU32() {
+        var values = new Uint32Array(1);
+        getCrypto().getRandomValues(values);
+        return values[0];
+    }
+
     function makeTokenBaseId() {
-        return Date.now() * 1000 + Math.floor(Math.random() * 1000);
+        return Date.now() * 1000 + (cryptoRandomU32() % 1000);
     }
 
     function buildContractCallData(functionName, args, value) {
@@ -184,10 +204,12 @@
 
     async function deriveCollectionAccount(creatorAddress, name, symbol) {
         var creatorBytes = bs58decode(creatorAddress);
-        var seedBytes = new TextEncoder().encode(name + '|' + symbol + '|' + Date.now() + '|' + Math.random());
-        var preimage = new Uint8Array(creatorBytes.length + seedBytes.length);
+        var seedBytes = new TextEncoder().encode(name + '|' + symbol + '|' + Date.now() + '|');
+        var saltBytes = randomBytes(16);
+        var preimage = new Uint8Array(creatorBytes.length + seedBytes.length + saltBytes.length);
         preimage.set(creatorBytes, 0);
         preimage.set(seedBytes, creatorBytes.length);
+        preimage.set(saltBytes, creatorBytes.length + seedBytes.length);
         var digest = await sha256Bytes(preimage);
         return bs58encode(digest);
     }

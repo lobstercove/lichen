@@ -1284,6 +1284,14 @@ async function finalizeSendTransaction(request, context, approvalInput) {
 
     const txBase64 = encodeBase64Object(signedTx);
     const rpc = await getRpcForContext(context);
+    const simulation = await rpc.simulateTransaction(txBase64);
+    if (!simulation?.success) {
+      const error = simulation?.error || 'Transaction simulation failed';
+      const returnCode = simulation?.returnCode === undefined || simulation?.returnCode === null
+        ? ''
+        : `, returnCode=${simulation.returnCode}`;
+      return { ok: false, error: `Preflight failed: ${error}${returnCode}` };
+    }
     const txHash = await rpc.sendTransaction(txBase64);
 
     return {

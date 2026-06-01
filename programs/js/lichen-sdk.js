@@ -450,10 +450,22 @@ class LichenRPC {
     }
 
     /**
-     * Send transaction
+     * Submit a transaction without local preflight.
+     */
+    async submitTransaction(txBase64) {
+        return await this.call('sendTransaction', [txBase64]);
+    }
+
+    /**
+     * Send transaction after simulation preflight.
      */
     async sendTransaction(txBase64) {
-        return await this.call('sendTransaction', [txBase64]);
+        const simulation = await this.simulateTransaction(txBase64);
+        if (!simulation || simulation.success !== true) {
+            const detail = simulation && (simulation.error || simulation.logs || simulation.return_code);
+            throw new Error('Preflight failed' + (detail ? ': ' + String(detail) : ''));
+        }
+        return await this.submitTransaction(txBase64);
     }
 
     /**

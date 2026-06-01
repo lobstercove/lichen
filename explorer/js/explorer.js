@@ -70,7 +70,14 @@ class LichenRPC {
 
     // Transaction Operations
     async getTransaction(signature) { return this.call('getTransaction', [signature]); }
-    async sendTransaction(txData) { return this.call('sendTransaction', [txData]); }
+    async submitTransaction(txData) { return this.call('sendTransaction', [txData]); }
+    async sendTransaction(txData) {
+        const simulation = await this.simulateTransaction(txData);
+        if (!simulation?.success) {
+            throw new Error(simulation?.error || 'Transaction simulation failed');
+        }
+        return this.submitTransaction(txData);
+    }
 
     // Chain Statistics
     async getTotalBurned() { return this.call('getTotalBurned'); }

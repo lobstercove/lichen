@@ -82,6 +82,31 @@ export class LichenRPC {
     return this.call('sendTransaction', [txData]);
   }
 
+  simulateTransaction(txData) {
+    return this.call('simulateTransaction', [txData]);
+  }
+
+  async sendTransactionWithPreflight(txData) {
+    const simulation = await this.simulateTransaction(txData);
+    if (!simulation?.success) {
+      const error = simulation?.error || 'Transaction simulation failed';
+      const returnCode = simulation?.returnCode === undefined || simulation?.returnCode === null
+        ? ''
+        : `, returnCode=${simulation.returnCode}`;
+      throw new Error(`Preflight failed: ${error}${returnCode}`);
+    }
+    return this.sendTransaction(txData);
+  }
+
+  async getRecentBlockhash() {
+    const result = await this.call('getRecentBlockhash');
+    const blockhash = typeof result === 'string' ? result : result?.blockhash;
+    if (!/^[0-9a-fA-F]{64}$/.test(String(blockhash || ''))) {
+      throw new Error('RPC returned invalid recent blockhash');
+    }
+    return blockhash;
+  }
+
   getLatestBlock() {
     return this.call('getLatestBlock');
   }

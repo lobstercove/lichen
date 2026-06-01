@@ -25,6 +25,9 @@ const MM_SALE_COUNT_KEY: &[u8] = b"mm_sale_count";
 const MM_SALE_VOLUME_KEY: &[u8] = b"mm_sale_volume";
 const MIN_OFFER_PRICE: u64 = 1_000_000; // 0.001 LICN (assuming 1e9 base units)
 const MAX_ACTIVE_OFFERS_PER_WALLET: u64 = 64;
+const SLOT_DURATION_MS: u64 = 400;
+const AUCTION_MIN_DURATION_SLOTS: u64 = 60_000 / SLOT_DURATION_MS; // 1 minute
+const AUCTION_MAX_DURATION_SLOTS: u64 = 30 * 24 * 60 * 60 * 1000 / SLOT_DURATION_MS; // 30 days
 
 // Reentrancy guard
 const MM_REENTRANCY_KEY: &[u8] = b"mm_reentrancy";
@@ -1093,7 +1096,7 @@ unsafe fn parse_address(ptr: *const u8) -> Address {
 // AUCTION SYSTEM (English Auctions, OpenSea-parity)
 // ============================================================================
 
-/// Auction layout (185 bytes):
+/// Auction layout (211 bytes):
 ///   0..32   seller
 ///   32..64  nft_contract
 ///   64..72  token_id (u64 LE)
@@ -1101,8 +1104,8 @@ unsafe fn parse_address(ptr: *const u8) -> Address {
 ///   80..88  reserve_price (u64 LE)
 ///   88..96  highest_bid (u64 LE)
 ///   96..128 highest_bidder (32 bytes, zero = no bids)
-///   128..136 start_time (u64 LE, unix timestamp)
-///   136..144 end_time (u64 LE, unix timestamp)
+///   128..136 start_slot (u64 LE)
+///   136..144 end_slot (u64 LE)
 ///   144     status (0=cancelled, 1=active, 2=settled)
 ///   145..177 payment_token (32 bytes)
 ///   177..209 royalty_recipient (32 bytes)
@@ -1145,8 +1148,8 @@ pub extern "C" fn create_auction(
             log_info("Start price must be > 0");
             return 0;
         }
-        if duration < 60 || duration > 2_592_000 {
-            log_info("Duration must be 60s - 30 days");
+        if !(AUCTION_MIN_DURATION_SLOTS..=AUCTION_MAX_DURATION_SLOTS).contains(&duration) {
+            log_info("Duration must be 1 minute - 30 days in slots");
             return 0;
         }
 
@@ -1640,7 +1643,7 @@ pub extern "C" fn get_auction(nft_contract_ptr: *const u8, token_id: u64, out_pt
 ///   64..72  price (u64 LE)
 ///   72..104 payment_token (32 bytes)
 ///   104     active (1=active, 0=inactive)
-///   105..113 expiry (u64 LE, 0 = no expiry)
+///   105..113 expiry slot (u64 LE, 0 = no expiry)
 const COLLECTION_OFFER_SIZE: usize = 113;
 
 /// Make an offer on any NFT in a collection
@@ -1963,8 +1966,8 @@ pub extern "C" fn get_unpaid_payout(token_ptr: *const u8, recipient_ptr: *const 
 // OFFER EXPIRY
 // ============================================================================
 
-/// Make an offer with optional expiry
-/// Offer layout (with expiry): [offerer(32), price(8), payment_token(32), active(1), expiry(8)] = 81 bytes
+/// Make an offer with optional absolute slot expiry.
+/// Offer layout (with expiry): [offerer(32), price(8), payment_token(32), active(1), expiry_slot(8)] = 81 bytes
 const OFFER_EXPIRY_SIZE: usize = 81;
 
 #[no_mangle]
@@ -2914,7 +2917,7 @@ mod tests {
                 1,
                 1_000,
                 0,
-                60,
+                AUCTION_MIN_DURATION_SLOTS,
                 payment_token.0.as_ptr(),
             ),
             0

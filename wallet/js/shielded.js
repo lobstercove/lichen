@@ -214,14 +214,14 @@ async function signAndSubmitShieldedInstruction({ wallet, password, accounts, in
         throw new Error('Wallet password required');
     }
 
-    const latestBlock = await rpc.getLatestBlock();
+    const blockhash = await rpc.getRecentBlockhash();
     const message = {
         instructions: [{
             program_id: Array.from(new Uint8Array(32)),
             accounts: accounts.map((account) => Array.from(account)),
             data: Array.from(instructionData),
         }],
-        blockhash: latestBlock.hash,
+        blockhash,
     };
 
     const privateKey = await LichenCrypto.decryptPrivateKey(wallet.encryptedKey, password);

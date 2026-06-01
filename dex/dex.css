@@ -4981,8 +4981,8 @@
     }
 
     .tv-chart-container {
-        min-height: 300px;
         height: 300px;
+        min-height: 300px;
     }
 
     .positions-tabs {
@@ -5291,8 +5291,8 @@
     }
 
     .tv-chart-container {
-        min-height: 220px;
         height: 220px;
+        min-height: 220px;
     }
 
     .order-form-panel {

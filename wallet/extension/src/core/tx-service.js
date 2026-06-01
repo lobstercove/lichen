@@ -238,16 +238,16 @@ export async function registerEvmAddress({ wallet, privateKeyHex, network, setti
     instructionData[0] = 12;
     instructionData.set(evmBytes, 1);
 
-    const block = await rpc.getLatestBlock();
+    const blockhash = await rpc.getRecentBlockhash();
     const tx = await buildSignedSingleInstructionTransaction({
       privateKeyHex,
       fromAddress: wallet.address,
-      blockhash: block.hash,
+      blockhash,
       instructionDataBytes: instructionData
     });
 
     const txBase64 = encodeTransactionBase64(tx);
-    await rpc.sendTransaction(txBase64);
+    await rpc.sendTransactionWithPreflight(txBase64);
     console.log('EVM address registered:', evmAddress, '→', wallet.address);
 
     // 6) Cache after successful registration

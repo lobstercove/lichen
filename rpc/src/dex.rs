@@ -44,6 +44,13 @@ const AMM_POOL_COUNT_KEY: &str = core_dex::AMM_POOL_COUNT_KEY;
 const ROUTER_ROUTE_COUNT_KEY: &str = core_dex::ROUTER_ROUTE_COUNT_KEY;
 const MARGIN_POSITION_COUNT_KEY: &str = core_dex::MARGIN_POSITION_COUNT_KEY;
 const GOVERNANCE_PROPOSAL_COUNT_KEY: &str = core_dex::GOVERNANCE_PROPOSAL_COUNT_KEY;
+const GOVERNANCE_VOTING_PERIOD_SLOTS: u64 = 432_000;
+const GOVERNANCE_EXECUTION_DELAY_SLOTS: u64 = 9_000;
+const GOVERNANCE_MIN_QUORUM: u64 = 3;
+const GOVERNANCE_MIN_REPUTATION: u64 = 500;
+const GOVERNANCE_APPROVAL_THRESHOLD_PERCENT: u64 = 66;
+const GOVERNANCE_MIN_LISTING_LIQUIDITY_LICN: u64 = 10_000;
+const GOVERNANCE_MIN_TOKEN_HOLDERS: u64 = 10;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // JSON Response Types
@@ -229,6 +236,7 @@ pub struct MarginPositionJson {
     pub pair_id: u64,
     pub side: &'static str,
     pub margin_type: &'static str,
+    pub collateral_asset: &'static str,
     pub status: &'static str,
     pub size: u64,
     pub margin: u64,
@@ -251,6 +259,7 @@ pub struct MarginInfoJson {
     pub maintenance_bps: u64,
     pub position_count: u64,
     pub max_leverage: u64,
+    pub total_open_interest: u64,
 }
 
 #[derive(Serialize, Clone)]
@@ -354,6 +363,7 @@ pub struct ProposalJson {
     pub status: &'static str,
     pub created_slot: u64,
     pub end_slot: u64,
+    pub execute_after_slot: u64,
     pub yes_votes: u64,
     pub no_votes: u64,
     pub pair_id: u64,
@@ -491,6 +501,9 @@ impl From<core_dex::DexProposal> for ProposalJson {
             status: value.status,
             created_slot: value.created_slot,
             end_slot: value.end_slot,
+            execute_after_slot: value
+                .end_slot
+                .saturating_add(GOVERNANCE_EXECUTION_DELAY_SLOTS),
             yes_votes: value.yes_votes,
             no_votes: value.no_votes,
             pair_id: value.pair_id,
@@ -974,6 +987,7 @@ fn decode_margin_position(data: &[u8]) -> Option<MarginPositionJson> {
         pair_id: value.pair_id,
         side: value.side,
         margin_type: value.margin_type,
+        collateral_asset: value.collateral_asset,
         status: value.status,
         size: value.size,
         margin: value.margin,
@@ -2244,6 +2258,7 @@ async fn get_margin_info(State(state): State<Arc<RpcState>>) -> Response {
         last_funding_slot: read_u64(&state, DEX_MARGIN_PROGRAM, "mrg_last_fund"),
         maintenance_bps: read_u64(&state, DEX_MARGIN_PROGRAM, "mrg_maint_bps"),
         position_count: read_u64(&state, DEX_MARGIN_PROGRAM, MARGIN_POSITION_COUNT_KEY),
+        total_open_interest: read_u64(&state, DEX_MARGIN_PROGRAM, "mrg_total_oi"),
         max_leverage: {
             let v = read_u64(&state, DEX_MARGIN_PROGRAM, "mrg_max_lev");
             if v > 0 {
@@ -2783,6 +2798,7 @@ async fn get_margin_stats_rest(State(state): State<Arc<RpcState>>) -> Response {
         serde_json::json!({
             "positionCount": read_u64(&state, DEX_MARGIN_PROGRAM, MARGIN_POSITION_COUNT_KEY),
             "totalVolume": read_u64(&state, DEX_MARGIN_PROGRAM, "mrg_total_volume"),
+            "totalOpenInterest": read_u64(&state, DEX_MARGIN_PROGRAM, "mrg_total_oi"),
             "liquidationCount": read_u64(&state, DEX_MARGIN_PROGRAM, "mrg_liq_count"),
             "insuranceFund": read_u64(&state, DEX_MARGIN_PROGRAM, "mrg_insurance"),
         }),
@@ -2833,6 +2849,10 @@ async fn get_analytics_stats(State(state): State<Arc<RpcState>>) -> Response {
 
 async fn get_governance_stats(State(state): State<Arc<RpcState>>) -> Response {
     let slot = current_slot(&state);
+    let voting_period_hours =
+        GOVERNANCE_VOTING_PERIOD_SLOTS.saturating_mul(SLOT_DURATION_MS) / 3_600_000;
+    let execution_timelock_hours =
+        GOVERNANCE_EXECUTION_DELAY_SLOTS.saturating_mul(SLOT_DURATION_MS) / 3_600_000;
     // F14.4: Count active proposals
     let count = read_u64(
         &state,
@@ -2856,8 +2876,24 @@ async fn get_governance_stats(State(state): State<Arc<RpcState>>) -> Response {
             "activeProposals": active,
             "totalVotes": read_u64(&state, DEX_GOVERNANCE_PROGRAM, "gov_total_votes"),
             "voterCount": read_u64(&state, DEX_GOVERNANCE_PROGRAM, "gov_voter_count"),
-            "minQuorum": 3,
-            "min_quorum": 3,
+            "minQuorum": GOVERNANCE_MIN_QUORUM,
+            "min_quorum": GOVERNANCE_MIN_QUORUM,
+            "votingPeriodSlots": GOVERNANCE_VOTING_PERIOD_SLOTS,
+            "voting_period_slots": GOVERNANCE_VOTING_PERIOD_SLOTS,
+            "votingPeriodHours": voting_period_hours,
+            "voting_period_hours": voting_period_hours,
+            "executionTimelockSlots": GOVERNANCE_EXECUTION_DELAY_SLOTS,
+            "execution_timelock_slots": GOVERNANCE_EXECUTION_DELAY_SLOTS,
+            "executionTimelockHours": execution_timelock_hours,
+            "execution_timelock_hours": execution_timelock_hours,
+            "approvalThreshold": GOVERNANCE_APPROVAL_THRESHOLD_PERCENT,
+            "approval_threshold": GOVERNANCE_APPROVAL_THRESHOLD_PERCENT,
+            "minReputation": GOVERNANCE_MIN_REPUTATION,
+            "min_reputation": GOVERNANCE_MIN_REPUTATION,
+            "minListingLiquidity": GOVERNANCE_MIN_LISTING_LIQUIDITY_LICN,
+            "min_listing_liquidity": GOVERNANCE_MIN_LISTING_LIQUIDITY_LICN,
+            "minTokenHolders": GOVERNANCE_MIN_TOKEN_HOLDERS,
+            "min_token_holders": GOVERNANCE_MIN_TOKEN_HOLDERS,
         }),
         slot,
     )
@@ -3254,7 +3290,8 @@ mod tests {
         assert_eq!(m.entry_price, 50.0);
         assert_eq!(m.leverage, 5);
         assert_eq!(m.realized_pnl, 0);
-        assert_eq!(m.margin_type, "isolated"); // V1 = isolated
+        assert_eq!(m.margin_type, "isolated");
+        assert_eq!(m.collateral_asset, "lUSD");
         assert_eq!(m.sl_price, 0);
         assert_eq!(m.tp_price, 0);
     }
@@ -3283,12 +3320,14 @@ mod tests {
         buf[106..114].copy_from_slice(&sl.to_le_bytes());
         buf[114..122].copy_from_slice(&tp.to_le_bytes());
         buf[122] = 1; // cross
-        buf[123..128].fill(0);
+        buf[123] = 1; // lUSD collateral
+        buf[124..128].fill(0);
 
         let m = decode_margin_position(&buf).unwrap();
         assert_eq!(m.side, "short");
         assert_eq!(m.status, "closed");
         assert_eq!(m.margin_type, "cross");
+        assert_eq!(m.collateral_asset, "lUSD");
         assert_eq!(m.realized_pnl, 1000);
         assert_eq!(m.sl_price, sl);
         assert_eq!(m.tp_price, tp);
@@ -3415,6 +3454,7 @@ mod tests {
         assert_eq!(p.proposal_id, 1);
         assert_eq!(p.proposal_type, "new_pair");
         assert_eq!(p.status, "active");
+        assert_eq!(p.execute_after_slot, 9_200);
         assert_eq!(p.yes_votes, 50);
         assert_eq!(p.no_votes, 10);
         assert!(p.base_token.is_some()); // 120 >= 114, so new_pair includes base_token

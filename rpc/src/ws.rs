@@ -1727,6 +1727,10 @@ async fn handle_subscription_request(
                     Ok(serde_json::json!(
                         subscription_manager.unsubscribe(sub_id).await
                     ))
+                } else if let Some(sub_id) = params.get("subscription").and_then(|v| v.as_u64()) {
+                    Ok(serde_json::json!(
+                        subscription_manager.unsubscribe(sub_id).await
+                    ))
                 } else {
                     Err(WsError {
                         code: -32602,
@@ -2781,6 +2785,34 @@ mod tests {
             response.error.as_ref().map(|err| err.message.as_str()),
             Some("Invalid signature format")
         );
+    }
+
+    #[tokio::test]
+    async fn governance_unsubscribe_accepts_subscription_object() {
+        let subscription_manager = SubscriptionManager::new();
+        let subscribe = handle_subscription_request(
+            SubscriptionRequest {
+                _jsonrpc: "2.0".to_string(),
+                id: serde_json::json!(1),
+                method: "subscribeGovernance".to_string(),
+                params: None,
+            },
+            &subscription_manager,
+        )
+        .await;
+        assert_eq!(subscribe.result, Some(serde_json::json!(1)));
+
+        let unsubscribe = handle_subscription_request(
+            SubscriptionRequest {
+                _jsonrpc: "2.0".to_string(),
+                id: serde_json::json!(2),
+                method: "unsubscribeGovernance".to_string(),
+                params: Some(serde_json::json!({ "subscription": 1 })),
+            },
+            &subscription_manager,
+        )
+        .await;
+        assert_eq!(unsubscribe.result, Some(serde_json::json!(true)));
     }
 
     // ── Event matching logic (regression) ──

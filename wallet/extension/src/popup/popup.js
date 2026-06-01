@@ -1601,19 +1601,19 @@ async function handleSendNow() {
     const privateKeyHex = await decryptPrivateKey(wallet.encryptedKey, password);
 
     setStatus('Building transaction...');
-    const latestBlock = await rpc.getLatestBlock();
+    const blockhash = await rpc.getRecentBlockhash();
     const transaction = await buildSignedNativeTransferTransaction({
       privateKeyHex,
       fromAddress: wallet.address,
       toAddress: to,
       amountLicn: amountText,
-      blockhash: latestBlock.hash
+      blockhash
     });
 
     const txBase64 = encodeTransactionBase64(transaction);
 
-    setStatus('Broadcasting...');
-    const txSig = await rpc.sendTransaction(txBase64);
+    setStatus('Running transaction preflight...');
+    const txSig = await rpc.sendTransactionWithPreflight(txBase64);
 
     await notify('LichenWallet', 'Transaction submitted successfully');
     setStatus(`Sent • ${String(txSig).slice(0, 12)}...`);

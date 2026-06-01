@@ -8,6 +8,17 @@
 
 use prediction_market::*;
 
+const LUSD_UNIT: u64 = 1_000_000_000;
+const HALF_LUSD: u64 = LUSD_UNIT / 2;
+const ONE_LUSD: u64 = LUSD_UNIT;
+const TWO_LUSD: u64 = 2 * LUSD_UNIT;
+const THREE_LUSD: u64 = 3 * LUSD_UNIT;
+const FIVE_LUSD: u64 = 5 * LUSD_UNIT;
+const TEN_LUSD: u64 = 10 * LUSD_UNIT;
+const FORTY_LUSD: u64 = 40 * LUSD_UNIT;
+const HUNDRED_LUSD: u64 = 100 * LUSD_UNIT;
+const MARKET_CREATION_FEE: u64 = TEN_LUSD;
+
 // ============================================================================
 // TEST HELPERS
 // ============================================================================
@@ -35,7 +46,7 @@ fn setup_with_market() -> ([u8; 32], u64) {
     let close_slot: u64 = 1000 + 100_000;
 
     lichen_sdk::test_mock::set_caller(admin);
-    lichen_sdk::test_mock::set_value(10_000_000); // MARKET_CREATION_FEE
+    lichen_sdk::test_mock::set_value(MARKET_CREATION_FEE); // MARKET_CREATION_FEE
     let market_id = create_market(
         admin.as_ptr(),
         2, // CRYPTO category
@@ -56,7 +67,7 @@ fn setup_with_market() -> ([u8; 32], u64) {
 /// Create a binary market and add initial liquidity (10 lUSD, equal odds).
 fn setup_active_market() -> ([u8; 32], u64) {
     let (admin, market_id) = setup_with_market();
-    let amount: u64 = 10_000_000; // 10 lUSD
+    let amount: u64 = TEN_LUSD; // 10 lUSD
 
     lichen_sdk::test_mock::set_caller(admin);
     lichen_sdk::test_mock::set_value(amount);
@@ -79,7 +90,7 @@ fn setup_multi_outcome_market() -> ([u8; 32], u64) {
     let close_slot: u64 = 1000 + 200_000;
 
     lichen_sdk::test_mock::set_caller(admin);
-    lichen_sdk::test_mock::set_value(10_000_000); // MARKET_CREATION_FEE
+    lichen_sdk::test_mock::set_value(MARKET_CREATION_FEE); // MARKET_CREATION_FEE
     let market_id = create_market(
         admin.as_ptr(),
         1, // SPORTS
@@ -92,7 +103,7 @@ fn setup_multi_outcome_market() -> ([u8; 32], u64) {
     assert!(market_id > 0);
     let mid = market_id as u64;
 
-    let amount: u64 = 40_000_000; // 40 lUSD
+    let amount: u64 = FORTY_LUSD; // 40 lUSD
     lichen_sdk::test_mock::set_caller(admin);
     lichen_sdk::test_mock::set_value(amount);
     let result = add_initial_liquidity(admin.as_ptr(), mid, amount, core::ptr::null(), 0);
@@ -216,7 +227,7 @@ fn test_create_market_multiple() {
         qh[0] = i + 10;
         let q = b"Test question";
         lichen_sdk::test_mock::set_caller(admin);
-        lichen_sdk::test_mock::set_value(10_000_000); // MARKET_CREATION_FEE
+        lichen_sdk::test_mock::set_value(MARKET_CREATION_FEE); // MARKET_CREATION_FEE
         let mid = create_market(
             admin.as_ptr(),
             0,
@@ -349,7 +360,7 @@ fn test_create_market_rejects_too_long_duration() {
     let r = create_market(
         admin.as_ptr(),
         0,
-        1000 + 70_000_000,
+        1000 + 79_000_000,
         2,
         qh.as_ptr(),
         q.as_ptr(),
@@ -403,7 +414,7 @@ fn test_create_market_all_valid_categories() {
         qh[0] = cat + 200;
         let q = b"Category test";
         lichen_sdk::test_mock::set_caller(admin);
-        lichen_sdk::test_mock::set_value(10_000_000); // MARKET_CREATION_FEE
+        lichen_sdk::test_mock::set_value(MARKET_CREATION_FEE); // MARKET_CREATION_FEE
         let r = create_market(
             admin.as_ptr(),
             cat,
@@ -423,7 +434,7 @@ fn test_create_multi_outcome_market() {
     let qh = [42u8; 32];
     let q = b"Multi outcome test";
     lichen_sdk::test_mock::set_caller(admin);
-    lichen_sdk::test_mock::set_value(10_000_000); // MARKET_CREATION_FEE
+    lichen_sdk::test_mock::set_value(MARKET_CREATION_FEE); // MARKET_CREATION_FEE
     let mid = create_market(
         admin.as_ptr(),
         0,
@@ -447,7 +458,7 @@ fn test_create_multi_outcome_market() {
 #[test]
 fn test_add_initial_liquidity_basic() {
     let (admin, market_id) = setup_with_market();
-    let amount: u64 = 5_000_000;
+    let amount: u64 = FIVE_LUSD;
     lichen_sdk::test_mock::set_caller(admin);
     let r = add_initial_liquidity(admin.as_ptr(), market_id, amount, core::ptr::null(), 0);
     assert_eq!(r, 1, "Should succeed");
@@ -461,15 +472,15 @@ fn test_initial_liquidity_equal_odds_prices() {
     let (_admin, market_id) = setup_active_market();
     let p0 = read_price(market_id, 0);
     let p1 = read_price(market_id, 1);
-    assert_eq!(p0, 500_000, "YES price should be $0.50");
-    assert_eq!(p1, 500_000, "NO price should be $0.50");
-    assert_eq!(p0 + p1, 1_000_000, "Prices should sum to $1.00");
+    assert_eq!(p0, HALF_LUSD, "YES price should be $0.50");
+    assert_eq!(p1, HALF_LUSD, "NO price should be $0.50");
+    assert_eq!(p0 + p1, ONE_LUSD, "Prices should sum to $1.00");
 }
 
 #[test]
 fn test_initial_liquidity_custom_odds() {
     let (admin, market_id) = setup_with_market();
-    let amount: u64 = 10_000_000;
+    let amount: u64 = TEN_LUSD;
     let mut odds = [0u8; 4];
     odds[0..2].copy_from_slice(&7000u16.to_le_bytes());
     odds[2..4].copy_from_slice(&3000u16.to_le_bytes());
@@ -478,7 +489,7 @@ fn test_initial_liquidity_custom_odds() {
     assert_eq!(r, 1);
     let price_yes = read_price(market_id, 0);
     assert!(
-        price_yes > 600_000 && price_yes < 800_000,
+        price_yes > 600_000_000 && price_yes < 800_000_000,
         "YES price should be ~$0.70, got {}",
         price_yes
     );
@@ -489,7 +500,7 @@ fn test_initial_liquidity_rejects_non_creator() {
     let (_admin, market_id) = setup_with_market();
     let other = [2u8; 32];
     lichen_sdk::test_mock::set_caller(other);
-    let r = add_initial_liquidity(other.as_ptr(), market_id, 5_000_000, core::ptr::null(), 0);
+    let r = add_initial_liquidity(other.as_ptr(), market_id, FIVE_LUSD, core::ptr::null(), 0);
     assert_eq!(r, 0, "Non-creator must be rejected");
 }
 
@@ -505,7 +516,7 @@ fn test_initial_liquidity_rejects_below_minimum() {
 fn test_initial_liquidity_rejects_double_activation() {
     let (admin, market_id) = setup_active_market();
     lichen_sdk::test_mock::set_caller(admin);
-    let r = add_initial_liquidity(admin.as_ptr(), market_id, 5_000_000, core::ptr::null(), 0);
+    let r = add_initial_liquidity(admin.as_ptr(), market_id, FIVE_LUSD, core::ptr::null(), 0);
     assert_eq!(
         r, 0,
         "Cannot add initial liquidity to already ACTIVE market"
@@ -519,7 +530,7 @@ fn test_initial_liquidity_rejects_bad_odds_sum() {
     odds[0..2].copy_from_slice(&6000u16.to_le_bytes());
     odds[2..4].copy_from_slice(&5000u16.to_le_bytes());
     lichen_sdk::test_mock::set_caller(admin);
-    let r = add_initial_liquidity(admin.as_ptr(), market_id, 10_000_000, odds.as_ptr(), 4);
+    let r = add_initial_liquidity(admin.as_ptr(), market_id, TEN_LUSD, odds.as_ptr(), 4);
     assert_eq!(r, 0, "Odds not summing to 10000 must be rejected");
 }
 
@@ -531,7 +542,7 @@ fn test_initial_liquidity_rejects_bad_odds_sum() {
 fn test_binary_cpmm_initial_prices_50_50() {
     let (_admin, market_id) = setup_active_market();
     let p0 = read_price(market_id, 0);
-    assert_eq!(p0, 500_000, "Equal reserves → 50%");
+    assert_eq!(p0, HALF_LUSD, "Equal reserves → 50%");
 }
 
 #[test]
@@ -541,7 +552,7 @@ fn test_prices_always_sum_to_one_binary() {
     let p1 = read_price(market_id, 1);
     let sum = p0 + p1;
     assert!(
-        sum >= 999_999 && sum <= 1_000_001,
+        sum >= ONE_LUSD - 1 && sum <= ONE_LUSD + 1,
         "Prices must sum to ~1.00, got {}",
         sum
     );
@@ -553,7 +564,7 @@ fn test_buy_yes_increases_yes_price() {
     let trader = [2u8; 32];
     let price_before = read_price(market_id, 0);
     lichen_sdk::test_mock::set_caller(trader);
-    let r = buy_shares(trader.as_ptr(), market_id, 0, 1_000_000);
+    let r = buy_shares(trader.as_ptr(), market_id, 0, ONE_LUSD);
     assert!(r > 0, "buy_shares failed");
     let price_after = read_price(market_id, 0);
     assert!(
@@ -570,7 +581,7 @@ fn test_buy_no_decreases_yes_price() {
     let trader = [2u8; 32];
     let price_before = read_price(market_id, 0);
     lichen_sdk::test_mock::set_caller(trader);
-    let r = buy_shares(trader.as_ptr(), market_id, 1, 1_000_000);
+    let r = buy_shares(trader.as_ptr(), market_id, 1, ONE_LUSD);
     assert!(r > 0);
     let price_after = read_price(market_id, 0);
     assert!(
@@ -586,12 +597,12 @@ fn test_prices_sum_after_trade() {
     let (_admin, market_id) = setup_active_market();
     let trader = [2u8; 32];
     lichen_sdk::test_mock::set_caller(trader);
-    buy_shares(trader.as_ptr(), market_id, 0, 3_000_000);
+    buy_shares(trader.as_ptr(), market_id, 0, THREE_LUSD);
     let p0 = read_price(market_id, 0);
     let p1 = read_price(market_id, 1);
     let sum = p0 + p1;
     assert!(
-        sum >= 999_000 && sum <= 1_001_000,
+        sum >= ONE_LUSD - 2 && sum <= ONE_LUSD + 2,
         "Post-trade prices must sum to ~$1.00, got {} (p0={}, p1={})",
         sum,
         p0,
@@ -604,7 +615,7 @@ fn test_sell_reverses_buy_position() {
     let (_admin, market_id) = setup_active_market();
     let trader = [2u8; 32];
     lichen_sdk::test_mock::set_caller(trader);
-    let shares_bought = buy_shares(trader.as_ptr(), market_id, 0, 2_000_000);
+    let shares_bought = buy_shares(trader.as_ptr(), market_id, 0, TWO_LUSD);
     assert!(shares_bought > 0);
     let (pos_shares, _) = read_position(market_id, &trader, 0);
     assert!(pos_shares > 0);
@@ -621,7 +632,7 @@ fn test_mint_complete_set_no_price_impact() {
     let user = [2u8; 32];
     let price_before = read_price(market_id, 0);
     lichen_sdk::test_mock::set_caller(user);
-    let r = mint_complete_set(user.as_ptr(), market_id, 5_000_000);
+    let r = mint_complete_set(user.as_ptr(), market_id, FIVE_LUSD);
     assert_eq!(r, 1);
     let price_after = read_price(market_id, 0);
     assert_eq!(
@@ -635,18 +646,19 @@ fn test_redeem_complete_set_returns_collateral() {
     let (_admin, market_id) = setup_active_market();
     let user = [2u8; 32];
     lichen_sdk::test_mock::set_caller(user);
-    assert_eq!(mint_complete_set(user.as_ptr(), market_id, 3_000_000), 1);
+    assert_eq!(mint_complete_set(user.as_ptr(), market_id, THREE_LUSD), 1);
     for outcome in 0..2u8 {
         let (shares, _) = read_position(market_id, &user, outcome);
         assert_eq!(
-            shares, 3_000_000,
-            "Should have 3M shares of outcome {}",
+            shares, THREE_LUSD,
+            "Should have 3 lUSD of outcome {}",
             outcome
         );
     }
     lichen_sdk::test_mock::set_caller(user);
-    let returned = redeem_complete_set(user.as_ptr(), market_id, 3_000_000);
-    assert_eq!(returned, 3_000_000, "Should return full collateral");
+    let returned = redeem_complete_set(user.as_ptr(), market_id, THREE_LUSD);
+    assert_eq!(returned, THREE_LUSD as u32, "Should return full collateral");
+    assert_eq!(read_return_u64(), THREE_LUSD);
     for outcome in 0..2u8 {
         let (shares, _) = read_position(market_id, &user, outcome);
         assert_eq!(shares, 0);
@@ -657,10 +669,10 @@ fn test_redeem_complete_set_returns_collateral() {
 fn test_quote_buy_matches_actual_buy() {
     let (_admin, market_id) = setup_active_market();
     let trader = [2u8; 32];
-    assert_eq!(quote_buy(market_id, 0, 2_000_000), 1);
+    assert_eq!(quote_buy(market_id, 0, TWO_LUSD), 1);
     let quoted = read_return_u64();
     lichen_sdk::test_mock::set_caller(trader);
-    buy_shares(trader.as_ptr(), market_id, 0, 2_000_000);
+    buy_shares(trader.as_ptr(), market_id, 0, TWO_LUSD);
     let (actual, _) = read_position(market_id, &trader, 0);
     assert_eq!(
         quoted, actual,
@@ -682,7 +694,7 @@ fn test_sell_without_shares_rejected() {
     let (_admin, market_id) = setup_active_market();
     let trader = [2u8; 32];
     lichen_sdk::test_mock::set_caller(trader);
-    assert_eq!(sell_shares(trader.as_ptr(), market_id, 0, 1_000_000), 0);
+    assert_eq!(sell_shares(trader.as_ptr(), market_id, 0, ONE_LUSD), 0);
 }
 
 #[test]
@@ -690,7 +702,7 @@ fn test_invalid_outcome_index_rejected() {
     let (_admin, market_id) = setup_active_market();
     let trader = [2u8; 32];
     lichen_sdk::test_mock::set_caller(trader);
-    assert_eq!(buy_shares(trader.as_ptr(), market_id, 2, 1_000_000), 0);
+    assert_eq!(buy_shares(trader.as_ptr(), market_id, 2, ONE_LUSD), 0);
 }
 
 // ============================================================================
@@ -711,7 +723,7 @@ fn test_trading_rejected_after_close_slot() {
     let trader = [2u8; 32];
     lichen_sdk::test_mock::set_slot(101_001);
     lichen_sdk::test_mock::set_caller(trader);
-    assert_eq!(buy_shares(trader.as_ptr(), market_id, 0, 1_000_000), 0);
+    assert_eq!(buy_shares(trader.as_ptr(), market_id, 0, ONE_LUSD), 0);
 }
 
 #[test]
@@ -721,7 +733,7 @@ fn test_emergency_pause_stops_trading() {
     lichen_sdk::test_mock::set_caller(admin);
     assert_eq!(emergency_pause(admin.as_ptr()), 1);
     lichen_sdk::test_mock::set_caller(trader);
-    assert_eq!(buy_shares(trader.as_ptr(), market_id, 0, 1_000_000), 0);
+    assert_eq!(buy_shares(trader.as_ptr(), market_id, 0, ONE_LUSD), 0);
 }
 
 #[test]
@@ -733,7 +745,7 @@ fn test_emergency_unpause_resumes_trading() {
     lichen_sdk::test_mock::set_caller(admin);
     emergency_unpause(admin.as_ptr());
     lichen_sdk::test_mock::set_caller(trader);
-    assert!(buy_shares(trader.as_ptr(), market_id, 0, 1_000_000) > 0);
+    assert!(buy_shares(trader.as_ptr(), market_id, 0, ONE_LUSD) > 0);
 }
 
 #[test]
@@ -763,7 +775,7 @@ fn test_add_liquidity_to_active_market() {
     let (_admin, market_id) = setup_active_market();
     let lp = [3u8; 32];
     lichen_sdk::test_mock::set_caller(lp);
-    let r = add_liquidity(lp.as_ptr(), market_id, 5_000_000);
+    let r = add_liquidity(lp.as_ptr(), market_id, FIVE_LUSD);
     assert!(r > 0, "add_liquidity should return LP shares");
     assert_eq!(get_lp_balance(market_id, lp.as_ptr()), 1);
     let lp_bal = read_return_u64();
@@ -775,7 +787,7 @@ fn test_add_liquidity_rejects_non_active() {
     let (_admin, market_id) = setup_with_market();
     let lp = [3u8; 32];
     lichen_sdk::test_mock::set_caller(lp);
-    assert_eq!(add_liquidity(lp.as_ptr(), market_id, 5_000_000), 0);
+    assert_eq!(add_liquidity(lp.as_ptr(), market_id, FIVE_LUSD), 0);
 }
 
 #[test]
@@ -816,7 +828,7 @@ fn test_submit_resolution_rejects_active_market() {
             market_id,
             0,
             att_hash.as_ptr(),
-            100_000_000
+            HUNDRED_LUSD
         ),
         0
     );
@@ -857,7 +869,7 @@ fn test_voided_market_refund() {
     let (admin, market_id) = setup_active_market();
     let trader = [2u8; 32];
     lichen_sdk::test_mock::set_caller(trader);
-    buy_shares(trader.as_ptr(), market_id, 0, 2_000_000);
+    buy_shares(trader.as_ptr(), market_id, 0, TWO_LUSD);
     lichen_sdk::test_mock::set_caller(admin);
     assert_eq!(dao_void(admin.as_ptr(), market_id), 1);
     lichen_sdk::test_mock::set_caller(trader);
@@ -956,10 +968,10 @@ fn test_get_user_markets_tracking() {
     let trader = [2u8; 32];
     assert_eq!(get_user_markets(trader.as_ptr()), 0);
     lichen_sdk::test_mock::set_caller(trader);
-    buy_shares(trader.as_ptr(), market_id, 0, 1_000_000);
+    buy_shares(trader.as_ptr(), market_id, 0, ONE_LUSD);
     assert_eq!(get_user_markets(trader.as_ptr()), 1);
     lichen_sdk::test_mock::set_caller(trader);
-    buy_shares(trader.as_ptr(), market_id, 0, 1_000_000);
+    buy_shares(trader.as_ptr(), market_id, 0, ONE_LUSD);
     assert_eq!(
         get_user_markets(trader.as_ptr()),
         1,
@@ -971,10 +983,11 @@ fn test_get_user_markets_tracking() {
 fn test_fee_treasury_accumulates() {
     let (_admin, market_id) = setup_active_market();
     let trader = [2u8; 32];
-    assert_eq!(get_fee_treasury(), 0);
+    let initial_fees = get_fee_treasury();
+    assert_eq!(initial_fees, MARKET_CREATION_FEE);
     lichen_sdk::test_mock::set_caller(trader);
-    buy_shares(trader.as_ptr(), market_id, 0, 5_000_000);
-    assert!(get_fee_treasury() > 0, "Fees should accumulate");
+    buy_shares(trader.as_ptr(), market_id, 0, FIVE_LUSD);
+    assert!(get_fee_treasury() > initial_fees, "Fees should accumulate");
 }
 
 // ============================================================================
@@ -989,17 +1002,17 @@ fn test_multiple_traders_same_market() {
     let t3 = [4u8; 32];
 
     lichen_sdk::test_mock::set_caller(t1);
-    assert!(buy_shares(t1.as_ptr(), market_id, 0, 2_000_000) > 0);
+    assert!(buy_shares(t1.as_ptr(), market_id, 0, TWO_LUSD) > 0);
     lichen_sdk::test_mock::set_caller(t2);
-    assert!(buy_shares(t2.as_ptr(), market_id, 1, 1_000_000) > 0);
+    assert!(buy_shares(t2.as_ptr(), market_id, 1, ONE_LUSD) > 0);
     lichen_sdk::test_mock::set_caller(t3);
-    assert!(buy_shares(t3.as_ptr(), market_id, 0, 3_000_000) > 0);
+    assert!(buy_shares(t3.as_ptr(), market_id, 0, THREE_LUSD) > 0);
 
     let p0 = read_price(market_id, 0);
     let p1 = read_price(market_id, 1);
     let sum = p0 + p1;
     assert!(
-        sum >= 999_000 && sum <= 1_001_000,
+        sum >= ONE_LUSD - 2 && sum <= ONE_LUSD + 2,
         "Prices must sum to ~$1.00: {} (p0={}, p1={})",
         sum,
         p0,
@@ -1021,9 +1034,9 @@ fn test_redeem_complete_set_rejects_insufficient() {
     let (_admin, market_id) = setup_active_market();
     let user = [2u8; 32];
     lichen_sdk::test_mock::set_caller(user);
-    mint_complete_set(user.as_ptr(), market_id, 2_000_000);
+    mint_complete_set(user.as_ptr(), market_id, TWO_LUSD);
     lichen_sdk::test_mock::set_caller(user);
-    assert_eq!(redeem_complete_set(user.as_ptr(), market_id, 3_000_000), 0);
+    assert_eq!(redeem_complete_set(user.as_ptr(), market_id, THREE_LUSD), 0);
 }
 
 #[test]
@@ -1043,7 +1056,10 @@ fn test_large_buy_hits_circuit_breaker() {
     let (_admin, market_id) = setup_active_market();
     let trader = [2u8; 32];
     lichen_sdk::test_mock::set_caller(trader);
-    assert_eq!(buy_shares(trader.as_ptr(), market_id, 0, 60_000_000_000), 0);
+    assert_eq!(
+        buy_shares(trader.as_ptr(), market_id, 0, 60_000 * LUSD_UNIT),
+        0
+    );
 }
 
 #[test]
@@ -1051,7 +1067,7 @@ fn test_sell_more_than_owned_rejected() {
     let (_admin, market_id) = setup_active_market();
     let trader = [2u8; 32];
     lichen_sdk::test_mock::set_caller(trader);
-    buy_shares(trader.as_ptr(), market_id, 0, 1_000_000);
+    buy_shares(trader.as_ptr(), market_id, 0, ONE_LUSD);
     lichen_sdk::test_mock::set_caller(trader);
     assert_eq!(sell_shares(trader.as_ptr(), market_id, 0, u64::MAX), 0);
 }
@@ -1068,7 +1084,7 @@ fn test_multi_outcome_prices_sum_to_one() {
         total += read_price(market_id, i);
     }
     assert!(
-        total >= 999_000 && total <= 1_001_000,
+        total >= ONE_LUSD - 2 && total <= ONE_LUSD + 2,
         "4-outcome prices must sum to ~$1.00, got {}",
         total
     );
@@ -1079,7 +1095,7 @@ fn test_multi_outcome_initial_equal() {
     let (_admin, market_id) = setup_multi_outcome_market();
     let p0 = read_price(market_id, 0);
     assert!(
-        p0 > 200_000 && p0 < 300_000,
+        p0 > 200_000_000 && p0 < 300_000_000,
         "Each of 4 outcomes should be ~$0.25, got {}",
         p0
     );
@@ -1091,7 +1107,7 @@ fn test_multi_outcome_buy_increases_price() {
     let trader = [2u8; 32];
     let p_before = read_price(market_id, 0);
     lichen_sdk::test_mock::set_caller(trader);
-    assert!(buy_shares(trader.as_ptr(), market_id, 0, 2_000_000) > 0);
+    assert!(buy_shares(trader.as_ptr(), market_id, 0, TWO_LUSD) > 0);
     let p_after = read_price(market_id, 0);
     assert!(p_after > p_before);
 }
@@ -1101,13 +1117,13 @@ fn test_multi_outcome_prices_sum_after_trade() {
     let (_admin, market_id) = setup_multi_outcome_market();
     let trader = [2u8; 32];
     lichen_sdk::test_mock::set_caller(trader);
-    buy_shares(trader.as_ptr(), market_id, 2, 5_000_000);
+    buy_shares(trader.as_ptr(), market_id, 2, FIVE_LUSD);
     let mut total: u64 = 0;
     for i in 0..4u8 {
         total += read_price(market_id, i);
     }
     assert!(
-        total >= 998_000 && total <= 1_002_000,
+        total >= ONE_LUSD - 4 && total <= ONE_LUSD + 4,
         "Multi-outcome prices must sum to ~$1.00 after trade, got {}",
         total
     );
@@ -1123,7 +1139,7 @@ fn test_max_outcomes_8_accepted() {
     let qh = [88u8; 32];
     let q = b"8 outcome market";
     lichen_sdk::test_mock::set_caller(admin);
-    lichen_sdk::test_mock::set_value(10_000_000); // MARKET_CREATION_FEE
+    lichen_sdk::test_mock::set_value(MARKET_CREATION_FEE); // MARKET_CREATION_FEE
     assert!(
         create_market(
             admin.as_ptr(),
@@ -1168,9 +1184,9 @@ fn test_full_binary_lifecycle_to_void() {
     let t2 = [3u8; 32];
 
     lichen_sdk::test_mock::set_caller(t1);
-    assert!(buy_shares(t1.as_ptr(), market_id, 0, 3_000_000) > 0);
+    assert!(buy_shares(t1.as_ptr(), market_id, 0, THREE_LUSD) > 0);
     lichen_sdk::test_mock::set_caller(t2);
-    assert!(buy_shares(t2.as_ptr(), market_id, 1, 2_000_000) > 0);
+    assert!(buy_shares(t2.as_ptr(), market_id, 1, TWO_LUSD) > 0);
 
     let (s1, _) = read_position(market_id, &t1, 0);
     let (s2, _) = read_position(market_id, &t2, 1);
@@ -1191,7 +1207,7 @@ fn test_mint_then_sell_one_side() {
     let user = [2u8; 32];
 
     lichen_sdk::test_mock::set_caller(user);
-    mint_complete_set(user.as_ptr(), market_id, 5_000_000);
+    mint_complete_set(user.as_ptr(), market_id, FIVE_LUSD);
 
     let (yes_shares, _) = read_position(market_id, &user, 0);
     lichen_sdk::test_mock::set_caller(user);
@@ -1199,7 +1215,7 @@ fn test_mint_then_sell_one_side() {
     assert!(musd_back > 0);
 
     let (no_shares, _) = read_position(market_id, &user, 1);
-    assert_eq!(no_shares, 5_000_000);
+    assert_eq!(no_shares, FIVE_LUSD);
     let (yes_after, _) = read_position(market_id, &user, 0);
     assert_eq!(yes_after, 0);
 }
@@ -1210,7 +1226,7 @@ fn test_multiple_lps_and_withdrawal() {
     let lp2 = [3u8; 32];
 
     lichen_sdk::test_mock::set_caller(lp2);
-    let lp_shares = add_liquidity(lp2.as_ptr(), market_id, 5_000_000);
+    let lp_shares = add_liquidity(lp2.as_ptr(), market_id, FIVE_LUSD);
     assert!(lp_shares > 0);
 
     assert_eq!(get_lp_balance(market_id, admin.as_ptr()), 1);

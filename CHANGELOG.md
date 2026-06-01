@@ -5,6 +5,13 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.75] - 2026-06-01
+
+### Fixed
+- Hardens the DEX production surface for mainnet readiness: lUSD-backed margin collateral, governance/proposal wiring, launchpad refund behavior, rewards/genesis custody wiring, and full trade/prediction/pool/launch/rewards validation.
+- Aligns marketplace offers, collection offers, and auctions with deployed contract ABI and slot-based expiry semantics, including secure NFT/collection randomness and marketplace activity indexing for array-shaped frontend calls.
+- Adds preflight simulation to wallet, extension, programs SDK, monitoring, website, and explorer transaction paths, and fixes explorer LichenID contract calls to encode ordered WASM ABI arguments.
+
 ## [0.5.69] - 2026-05-28
 
 ### Fixed
