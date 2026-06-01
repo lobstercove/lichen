@@ -5,6 +5,14 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.77] - 2026-06-01
+
+### Added
+- Adds a guarded testnet-only DEX contract repair path to `lichen-validator` for coordinated stopped-state replacement of stale registry-backed DEX WASM/ABI payloads without resetting chain history or contract storage.
+
+### Fixed
+- Preserves DEX contract ownership, storage, version history, and previous-code hash evidence while repairing the live testnet DEX, wrapped-asset, oracle, prediction, and launchpad contract code to the release artifacts.
+
 ## [0.5.76] - 2026-06-01
 
 ### Fixed

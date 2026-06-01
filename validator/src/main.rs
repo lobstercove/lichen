@@ -40,18 +40,18 @@ use lichen_core::multisig::{
 use lichen_core::nft::decode_token_state;
 use lichen_core::{
     compute_bft_timestamp, compute_stake_weighted_median, compute_validators_hash, evm_tx_hash,
-    Account, Block, ContractInstruction, FeeConfig, FinalityTracker, ForkChoice, GenesisConfig,
-    GenesisPrices, GenesisStateBundle, GenesisStateChunk, GenesisWallet, Hash, Keypair,
-    MarketActivity, MarketActivityKind, Mempool, NftActivity, NftActivityKind, PqSignature,
-    Precommit, Prevote, ProgramCallActivity, Proposal, Pubkey, RoundStep, SlashingEvidence,
-    SlashingOffense, StakePool, StateStore, Transaction, TxProcessor, ValidatorInfo, ValidatorSet,
-    Vote, VoteAggregator, VoteAuthority, BASE_FEE, BOOTSTRAP_GRANT_AMOUNT, CHAIN_ID_METADATA_KEY,
-    CONTRACT_DEPLOY_FEE, CONTRACT_UPGRADE_FEE, EVM_PROGRAM_ID, GENESIS_DISTRIBUTION,
-    GENESIS_STATE_BUNDLE_VERSION, GENESIS_STATE_CHUNK_OPCODE, GENESIS_SUPPLY_SPORES,
-    MAX_TX_AGE_BLOCKS, NFT_COLLECTION_FEE, NFT_MINT_FEE, ORACLE_ASSET_MAX_LEN,
-    ORACLE_ASSET_MIN_LEN, ORACLE_STALENESS_SLOTS, SLASHING_EVIDENCE_CODEC_LIMIT_BYTES,
-    SYSTEM_PROGRAM_ID as CORE_SYSTEM_PROGRAM_ID, VALIDATOR_BOOTSTRAP_GRANTS_ENABLED_METADATA_KEY,
-    VALIDATOR_BOOTSTRAP_GRANTS_ENABLED_VALUE,
+    Account, Block, ContractAbi, ContractAccount, ContractInstruction, FeeConfig, FinalityTracker,
+    ForkChoice, GenesisConfig, GenesisPrices, GenesisStateBundle, GenesisStateChunk, GenesisWallet,
+    Hash, Keypair, MarketActivity, MarketActivityKind, Mempool, NftActivity, NftActivityKind,
+    PqSignature, Precommit, Prevote, ProgramCallActivity, Proposal, Pubkey, RoundStep,
+    SlashingEvidence, SlashingOffense, StakePool, StateStore, Transaction, TxProcessor,
+    ValidatorInfo, ValidatorSet, Vote, VoteAggregator, VoteAuthority, BASE_FEE,
+    BOOTSTRAP_GRANT_AMOUNT, CHAIN_ID_METADATA_KEY, CONTRACT_DEPLOY_FEE, CONTRACT_UPGRADE_FEE,
+    EVM_PROGRAM_ID, GENESIS_DISTRIBUTION, GENESIS_STATE_BUNDLE_VERSION, GENESIS_STATE_CHUNK_OPCODE,
+    GENESIS_SUPPLY_SPORES, MAX_TX_AGE_BLOCKS, NFT_COLLECTION_FEE, NFT_MINT_FEE,
+    ORACLE_ASSET_MAX_LEN, ORACLE_ASSET_MIN_LEN, ORACLE_STALENESS_SLOTS,
+    SLASHING_EVIDENCE_CODEC_LIMIT_BYTES, SYSTEM_PROGRAM_ID as CORE_SYSTEM_PROGRAM_ID,
+    VALIDATOR_BOOTSTRAP_GRANTS_ENABLED_METADATA_KEY, VALIDATOR_BOOTSTRAP_GRANTS_ENABLED_VALUE,
 };
 use lichen_genesis::{
     genesis_assign_achievements, genesis_auto_deploy, genesis_bootstrap_bridge_committee,
@@ -103,6 +103,26 @@ const DEFAULT_WATCHDOG_TIMEOUT_SECS: u64 = 120;
 const GENESIS_SYNC_INCOMPLETE_MARKER: &str = "genesis_sync_incomplete";
 const ACTIVATE_RESTRICTION_SCHEMA_FLAG: &str = "--activate-restriction-schema";
 const SHOW_RESTRICTION_SCHEMA_FLAG: &str = "--show-restriction-schema";
+const REPAIR_TESTNET_DEX_CONTRACTS_FLAG: &str = "--repair-testnet-dex-contracts";
+const DEX_REPAIR_CONFIRMATION: &str = "repair-dex-contracts:testnet:v0.5.77";
+const TESTNET_DEX_REPAIR_CONTRACTS: &[(&str, &str)] = &[
+    ("LUSD", "lusd_token"),
+    ("WSOL", "wsol_token"),
+    ("WETH", "weth_token"),
+    ("WBNB", "wbnb_token"),
+    ("WGAS", "wgas_token"),
+    ("WNEO", "wneo_token"),
+    ("ORACLE", "lichenoracle"),
+    ("DEX", "dex_core"),
+    ("DEXAMM", "dex_amm"),
+    ("DEXROUTER", "dex_router"),
+    ("DEXMARGIN", "dex_margin"),
+    ("DEXREWARDS", "dex_rewards"),
+    ("DEXGOV", "dex_governance"),
+    ("ANALYTICS", "dex_analytics"),
+    ("PREDICT", "prediction_market"),
+    ("SPOREPUMP", "sporepump"),
+];
 
 fn should_preserve_partial_genesis_entry(path: &Path) -> bool {
     matches!(
@@ -6478,6 +6498,208 @@ fn maybe_run_restriction_schema_admin(args: &[String]) -> Option<i32> {
     }
 }
 
+#[derive(Debug, Clone)]
+struct DexRepairReport {
+    symbol: String,
+    program: Pubkey,
+    changed: bool,
+    code_changed: bool,
+    abi_changed: bool,
+    before_hash: String,
+    after_hash: String,
+    before_version: u32,
+    after_version: u32,
+    owner: Pubkey,
+    abi_loaded: bool,
+}
+
+fn testnet_dex_repair_wasm_path(contracts_dir: &Path, dir_name: &str) -> PathBuf {
+    contracts_dir
+        .join(dir_name)
+        .join(format!("{dir_name}.wasm"))
+}
+
+fn testnet_dex_repair_abi_path(contracts_dir: &Path, dir_name: &str) -> PathBuf {
+    contracts_dir.join(dir_name).join("abi.json")
+}
+
+fn read_testnet_dex_repair_abi(path: &Path) -> Result<Option<ContractAbi>, String> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let bytes = fs::read(path).map_err(|err| format!("read {}: {err}", path.display()))?;
+    serde_json::from_slice(&bytes)
+        .map(Some)
+        .map_err(|err| format!("decode {}: {err}", path.display()))
+}
+
+fn testnet_dex_repair_abi_changed(
+    existing: &Option<ContractAbi>,
+    candidate: &Option<ContractAbi>,
+) -> bool {
+    let Some(candidate) = candidate else {
+        return false;
+    };
+    match existing {
+        Some(existing) => serde_json::to_vec(existing).ok() != serde_json::to_vec(candidate).ok(),
+        None => true,
+    }
+}
+
+fn repair_testnet_dex_contract(
+    state: &StateStore,
+    contracts_dir: &Path,
+    symbol: &str,
+    dir_name: &str,
+    dry_run: bool,
+) -> Result<DexRepairReport, String> {
+    let registry = state
+        .get_symbol_registry(symbol)?
+        .ok_or_else(|| format!("{symbol}: symbol not found"))?;
+    let program = registry.program;
+    let mut account: Account = state.get_account(&program)?.ok_or_else(|| {
+        format!(
+            "{symbol}: contract account {} not found",
+            program.to_base58()
+        )
+    })?;
+    if !account.executable {
+        return Err(format!(
+            "{symbol}: {} is not executable",
+            program.to_base58()
+        ));
+    }
+
+    let mut contract: ContractAccount = serde_json::from_slice(&account.data)
+        .map_err(|err| format!("{symbol}: decode contract account: {err}"))?;
+    let before_hash = contract.code_hash;
+    let before_version = contract.version;
+    let wasm = fs::read(testnet_dex_repair_wasm_path(contracts_dir, dir_name))
+        .map_err(|err| format!("{symbol}: read {dir_name}.wasm: {err}"))?;
+    let after_hash = Hash::hash(&wasm);
+    let abi = read_testnet_dex_repair_abi(&testnet_dex_repair_abi_path(contracts_dir, dir_name))?;
+    let code_changed = before_hash != after_hash;
+    let abi_changed = testnet_dex_repair_abi_changed(&contract.abi, &abi);
+    let changed = code_changed || abi_changed;
+
+    if changed && !dry_run {
+        if code_changed {
+            contract.previous_code_hash = Some(before_hash);
+            contract.code = wasm;
+            contract.code_hash = after_hash;
+            contract.version = contract.version.saturating_add(1);
+            contract.pending_upgrade = None;
+        }
+        if let Some(abi) = abi.clone() {
+            contract.abi = Some(abi);
+        }
+        account.data = serde_json::to_vec(&contract)
+            .map_err(|err| format!("{symbol}: encode repaired contract: {err}"))?;
+        state.put_account(&program, &account)?;
+    }
+
+    Ok(DexRepairReport {
+        symbol: symbol.to_string(),
+        program,
+        changed,
+        code_changed,
+        abi_changed,
+        before_hash: before_hash.to_hex(),
+        after_hash: after_hash.to_hex(),
+        before_version,
+        after_version: if code_changed && !dry_run {
+            before_version.saturating_add(1)
+        } else {
+            before_version
+        },
+        owner: contract.owner,
+        abi_loaded: abi.is_some(),
+    })
+}
+
+fn print_testnet_dex_repair_reports(reports: &[DexRepairReport], dry_run: bool, data_dir: &Path) {
+    println!("data_dir={}", data_dir.display());
+    println!("mode={}", if dry_run { "dry-run" } else { "write" });
+    println!("contracts={}", reports.len());
+    println!(
+        "changed={}",
+        reports.iter().filter(|report| report.changed).count()
+    );
+    for report in reports {
+        let mut fields = BTreeMap::new();
+        fields.insert("symbol", report.symbol.clone());
+        fields.insert("program", report.program.to_base58());
+        fields.insert("changed", report.changed.to_string());
+        fields.insert("code_changed", report.code_changed.to_string());
+        fields.insert("abi_changed", report.abi_changed.to_string());
+        fields.insert("owner", report.owner.to_base58());
+        fields.insert("before_hash", report.before_hash.clone());
+        fields.insert("after_hash", report.after_hash.clone());
+        fields.insert("before_version", report.before_version.to_string());
+        fields.insert("after_version", report.after_version.to_string());
+        fields.insert("abi_loaded", report.abi_loaded.to_string());
+        println!(
+            "{}",
+            fields
+                .iter()
+                .map(|(key, value)| format!("{key}={value}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+    }
+}
+
+fn maybe_run_testnet_dex_repair_admin(args: &[String]) -> Option<i32> {
+    if !has_flag(args, REPAIR_TESTNET_DEX_CONTRACTS_FLAG) {
+        return None;
+    }
+
+    let network = get_flag_value(args, &["--network"])
+        .map(|s| s.to_lowercase())
+        .unwrap_or_else(|| "testnet".to_string());
+    if network != "testnet" {
+        eprintln!("Refusing DEX contract repair on '{network}'; this utility is testnet-only");
+        return Some(1);
+    }
+
+    let dry_run = has_flag(args, "--dry-run");
+    let confirm = get_flag_value(args, &["--confirm"]);
+    if !dry_run && confirm != Some(DEX_REPAIR_CONFIRMATION) {
+        eprintln!("Refusing write without --confirm {DEX_REPAIR_CONFIRMATION}");
+        return Some(1);
+    }
+
+    let data_dir = restriction_schema_data_dir(args);
+    let contracts_dir = match get_flag_value(args, &["--contracts-dir"]) {
+        Some(path) => PathBuf::from(path),
+        None => {
+            eprintln!("Missing --contracts-dir for DEX contract repair");
+            return Some(2);
+        }
+    };
+    let cache_size_mb = get_flag_value(args, &["--cache-size-mb"]).and_then(|s| s.parse().ok());
+    let state = match StateStore::open_with_cache_mb(&data_dir, cache_size_mb) {
+        Ok(state) => state,
+        Err(err) => {
+            eprintln!("Failed to open state DB at {}: {}", data_dir.display(), err);
+            return Some(1);
+        }
+    };
+
+    let mut reports = Vec::new();
+    for (symbol, dir_name) in TESTNET_DEX_REPAIR_CONTRACTS {
+        match repair_testnet_dex_contract(&state, &contracts_dir, symbol, dir_name, dry_run) {
+            Ok(report) => reports.push(report),
+            Err(err) => {
+                eprintln!("{err}");
+                return Some(1);
+            }
+        }
+    }
+    print_testnet_dex_repair_reports(&reports, dry_run, &data_dir);
+    Some(0)
+}
+
 fn load_genesis_config_from_disk(genesis_path: &Path) -> Result<GenesisConfig, String> {
     info!("📜 Loading genesis from: {}", genesis_path.display());
     let config = GenesisConfig::from_file(genesis_path)
@@ -6900,6 +7122,9 @@ fn main() {
     }
 
     if let Some(exit_code) = maybe_run_restriction_schema_admin(&args) {
+        std::process::exit(exit_code);
+    }
+    if let Some(exit_code) = maybe_run_testnet_dex_repair_admin(&args) {
         std::process::exit(exit_code);
     }
 
@@ -20746,5 +20971,76 @@ mod tests {
         assert!(!second_report.changed);
         assert_eq!(second_report.before_schema, Some(true));
         assert_eq!(second_report.after_root, restriction_root);
+    }
+
+    #[test]
+    fn testnet_dex_repair_preserves_owner_and_storage_while_updating_code() {
+        let state_dir = tempfile::tempdir().expect("create state dir");
+        let contracts_dir = tempfile::tempdir().expect("create contracts dir");
+        let state = StateStore::open(state_dir.path()).expect("open state");
+        let owner = Pubkey([7u8; 32]);
+        let program = Pubkey([8u8; 32]);
+        let mut contract = ContractAccount::new(vec![0, 1, 2], owner);
+        contract.storage.insert(b"keep".to_vec(), b"value".to_vec());
+        let old_hash = contract.code_hash;
+        let mut account = Account::new(0, program);
+        account.executable = true;
+        account.data = serde_json::to_vec(&contract).expect("encode contract");
+        state
+            .put_account(&program, &account)
+            .expect("store contract account");
+        state
+            .register_symbol(
+                "DEX",
+                lichen_core::state::SymbolRegistryEntry {
+                    symbol: "DEX".to_string(),
+                    program,
+                    owner,
+                    name: None,
+                    template: None,
+                    metadata: None,
+                    decimals: None,
+                },
+            )
+            .expect("register symbol");
+
+        let contract_dir = contracts_dir.path().join("dex_core");
+        fs::create_dir_all(&contract_dir).expect("create contract dir");
+        fs::write(contract_dir.join("dex_core.wasm"), [3, 4, 5, 6]).expect("write wasm");
+        fs::write(
+            contract_dir.join("abi.json"),
+            br#"{"version":"1","name":"fixture","functions":[]}"#,
+        )
+        .expect("write abi");
+
+        let report =
+            repair_testnet_dex_contract(&state, contracts_dir.path(), "DEX", "dex_core", false)
+                .expect("repair contract");
+        assert!(report.changed);
+        assert!(report.code_changed);
+        assert!(report.abi_changed);
+        assert_eq!(report.owner, owner);
+
+        let updated_account = state.get_account(&program).unwrap().unwrap();
+        let updated: ContractAccount =
+            serde_json::from_slice(&updated_account.data).expect("decode updated contract");
+        assert_eq!(updated.owner, owner);
+        assert_eq!(
+            updated.storage.get(b"keep".as_slice()),
+            Some(&b"value".to_vec())
+        );
+        assert_eq!(updated.previous_code_hash, Some(old_hash));
+        assert_eq!(updated.code_hash, Hash::hash(&[3, 4, 5, 6]));
+        assert_eq!(updated.version, 2);
+        assert!(updated.abi.is_some());
+
+        let second_report =
+            repair_testnet_dex_contract(&state, contracts_dir.path(), "DEX", "dex_core", false)
+                .expect("repair contract again");
+        assert!(!second_report.changed);
+        assert!(!second_report.code_changed);
+        assert!(!second_report.abi_changed);
+        assert_eq!(second_report.before_version, 2);
+        assert_eq!(second_report.after_version, 2);
     }
 }

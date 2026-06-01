@@ -1688,6 +1688,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "dilithium-rs"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9b0aa9ae3a1b700e0ac9f707cdff5c3893f4f11a3b1b317c5113a422ef785809"
+dependencies = [
+ "getrandom 0.2.17",
+ "sha2 0.10.9",
+ "sha3 0.10.8",
+ "subtle",
+ "zeroize",
+]
+
+[[package]]
 name = "dlmalloc"
 version = "0.2.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2431,7 +2444,7 @@ checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
 
 [[package]]
 name = "lobstercove-lichen-core"
-version = "0.5.65"
+version = "0.5.77"
 dependencies = [
  "aes-gcm",
  "alloy-consensus",
@@ -2450,6 +2463,7 @@ dependencies = [
  "chacha20poly1305",
  "chrono",
  "derive_more 1.0.0",
+ "dilithium-rs",
  "ed25519-dalek",
  "getrandom 0.4.2",
  "hex",
