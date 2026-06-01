@@ -5,6 +5,12 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.76] - 2026-06-01
+
+### Fixed
+- Restores the release CI gates after the DEX margin lUSD collateral upgrade by updating adversarial margin setup to configure the collateral token, self-custody address, and insurance liquidity.
+- Gates the validator marketplace parser test helper to test builds so workspace Clippy passes with `-D warnings`.
+
 ## [0.5.75] - 2026-06-01
 
 ### Fixed

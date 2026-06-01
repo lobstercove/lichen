@@ -1751,6 +1751,7 @@ struct ParsedMarketArgs {
     buyer: Option<Pubkey>,
 }
 
+#[cfg(test)]
 fn parse_marketplace_args(args: &[u8]) -> ParsedMarketArgs {
     parse_marketplace_args_for_function("", args, 0)
 }

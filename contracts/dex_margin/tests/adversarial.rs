@@ -2,24 +2,33 @@
 //
 // Tests for: overflow, liquidation edge cases, PnL accounting, leverage abuse,
 // and margin manipulation attacks.
-// Updated for tiered leverage (up to 100x) and host-level collateral locking.
+// Updated for tiered leverage (up to 100x) and lUSD collateral custody.
 
 use dex_margin::*;
 
 fn setup() -> [u8; 32] {
     lichen_sdk::test_mock::reset();
     let admin = [1u8; 32];
-    let lichencoin = [9u8; 32];
+    let margin_contract = [8u8; 32];
+    let lusd = [9u8; 32];
     lichen_sdk::test_mock::set_caller(admin);
     assert_eq!(initialize(admin.as_ptr()), 0);
     assert_eq!(
-        set_lichencoin_address(admin.as_ptr(), lichencoin.as_ptr()),
+        set_collateral_token_address(admin.as_ptr(), lusd.as_ptr()),
+        0
+    );
+    assert_eq!(
+        set_self_address(admin.as_ptr(), margin_contract.as_ptr()),
         0
     );
     // Set mark price for pair 1: 1.0 (1_000_000_000)
     set_mark_price(admin.as_ptr(), 1, 1_000_000_000);
     // Enable margin for pair 1
     enable_margin_pair(admin.as_ptr(), 1);
+    lichen_sdk::storage_set(
+        b"mrg_insurance",
+        &lichen_sdk::u64_to_bytes(10_000_000_000_000_000),
+    );
     admin
 }
 
