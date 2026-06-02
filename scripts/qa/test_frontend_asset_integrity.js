@@ -46,6 +46,7 @@ const CSP_CONNECT_ALLOWLIST = [
     'https://cloudflareinsights.com',
     'https://static.cloudflareinsights.com',
 ];
+const DEX_CRITICAL_ASSET_VERSION = '20260602';
 
 let passed = 0;
 let failed = 0;
@@ -284,6 +285,33 @@ function validateProductionHeaders(portal) {
     assert(
         !/frame-ancestors[^\n]*http:\/\/localhost/.test(headers),
         `${portal.name}/_headers production frame-ancestors excludes localhost origins`
+    );
+}
+
+function validateDexCriticalAssetCaching() {
+    const dexHtml = fs.readFileSync(path.join(repoRoot, 'dex', 'index.html'), 'utf8');
+    const dexHeaders = fs.readFileSync(path.join(repoRoot, 'dex', '_headers'), 'utf8');
+    const scriptRefs = extractScriptRefs(dexHtml);
+    const criticalScripts = ['shared/utils.js', 'shared-config.js', 'dex.js'];
+    const versions = [];
+
+    for (const asset of criticalScripts) {
+        const ref = scriptRefs.find(({ ref }) => stripQueryAndHash(ref) === asset)?.ref || '';
+        const version = ref.match(/[?&]v=([0-9]{8})\b/)?.[1] || '';
+        if (version) versions.push(version);
+        assert(
+            version >= DEX_CRITICAL_ASSET_VERSION,
+            `DEX ${asset} uses a current cache-busting version token`
+        );
+        assert(
+            dexHeaders.includes(`\n/${asset}\n  Cache-Control: no-cache, max-age=0, must-revalidate`),
+            `DEX ${asset} has an exact no-cache Pages header`
+        );
+    }
+
+    assert(
+        versions.length === criticalScripts.length && new Set(versions).size === 1,
+        'DEX metadata-critical assets share one cache-busting version token'
     );
 }
 
@@ -1088,6 +1116,7 @@ for (const portal of portals) {
 validateMonitoringIncidentControls();
 validateMonitoringRiskConsole();
 validateDexChartPricePrecision();
+validateDexCriticalAssetCaching();
 validateDexWalletAndPairState();
 validateWalletConnectionOriginGuards();
 validateMarketplaceWalletBridgeParity();

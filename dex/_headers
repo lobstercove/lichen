@@ -16,6 +16,15 @@
 /shared/*
   Cache-Control: public, max-age=0, must-revalidate
 
+/shared/utils.js
+  Cache-Control: no-cache, max-age=0, must-revalidate
+
+/shared-config.js
+  Cache-Control: no-cache, max-age=0, must-revalidate
+
+/dex.js
+  Cache-Control: no-cache, max-age=0, must-revalidate
+
 /*.js
   Cache-Control: public, max-age=0, must-revalidate
 
