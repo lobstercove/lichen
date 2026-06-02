@@ -16596,13 +16596,17 @@ async fn run_validator() {
                         for proposal in proposals {
                             let expected_validators_hash =
                                 compute_validators_hash(&height_vs, &height_pool);
-                            let action = match validate_consensus_proposal_before_prevote(
-                                &state,
-                                &proposal,
-                                parent_hash,
-                                expected_validators_hash,
-                                &genesis_config.chain_id,
-                            ) {
+                            let validation = {
+                                let _canonical_apply_guard = block_apply_lock.lock().await;
+                                validate_consensus_proposal_before_prevote(
+                                    &state,
+                                    &proposal,
+                                    parent_hash,
+                                    expected_validators_hash,
+                                    &genesis_config.chain_id,
+                                )
+                            };
+                            let action = match validation {
                                 Ok(()) => match consensus_wal.log_proposal_block_result(
                                     proposal.height,
                                     proposal.round,
@@ -18201,11 +18205,27 @@ mod tests {
             3,
             "expected every BFT proposal build site to stay in the guarded loop section"
         );
+        let validation_guard = "let _canonical_apply_guard = block_apply_lock.lock().await;";
+        let validation_call = "validate_consensus_proposal_before_prevote(";
+        let mut validation_count = 0;
+        let mut offset = 0;
+        while let Some(relative) = section[offset..].find(validation_call) {
+            let pos = offset + relative;
+            let guard_window = &section[pos.saturating_sub(220)..pos];
+            assert!(
+                guard_window.contains(validation_guard),
+                "consensus proposal validation at byte {} must be guarded by the canonical apply lock",
+                pos
+            );
+            validation_count += 1;
+            offset = pos + validation_call.len();
+        }
+        assert_eq!(
+            validation_count, 3,
+            "expected every BFT proposal validation site to stay in the guarded loop section"
+        );
         assert!(
-            section
-                .matches("let _canonical_apply_guard = block_apply_lock.lock().await;")
-                .count()
-                >= 6,
+            section.matches(validation_guard).count() >= 7,
             "proposal validation and proposal building must wait for canonical apply completion"
         );
     }

@@ -5,6 +5,12 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.79] - 2026-06-02
+
+### Fixed
+- Guards the remaining BFT pending-proposal validation path after commit-height catch-up, preventing buffered future proposals from being checked against partially settled parent state on lagging validators.
+- Tightens validator regression coverage so every BFT proposal-validation site must hold the canonical apply lock before reading state roots.
+
 ## [0.5.78] - 2026-06-02
 
 ### Fixed
