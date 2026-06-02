@@ -28,6 +28,37 @@
 
     var fmp = (window.marketplaceUtils && window.marketplaceUtils.formatLicnPrice) || function (v, isLicn) { return Number(isLicn ? v : v / 1e9).toFixed(2); };
 
+    function readPriceFilterValue(input, label) {
+        var raw = String(input && input.value || '').trim();
+        if (!raw) return null;
+        var units = parseDecimalBaseUnits(raw, 9, label);
+        return Number(baseUnitsToDecimalString(units, 9));
+    }
+
+    function sanitizeMarketNumericInput(input) {
+        if (!input) return;
+        var value = String(input.value || '').replace(/[^\d.]/g, '');
+        var dot = value.indexOf('.');
+        if (dot !== -1) {
+            value = value.slice(0, dot + 1) + value.slice(dot + 1).replace(/\./g, '');
+        }
+        if (value !== input.value) input.value = value;
+    }
+
+    function applyMarketNumericInputGuards(root) {
+        (root || document).querySelectorAll('[data-market-numeric="true"]').forEach(function (input) {
+            if (input.dataset.marketNumberGuarded === '1') return;
+            input.dataset.marketNumberGuarded = '1';
+            input.addEventListener('keydown', function (event) {
+                if (['e', 'E', '+', '-'].indexOf(event.key) !== -1) event.preventDefault();
+            });
+            input.addEventListener('input', function () { sanitizeMarketNumericInput(input); });
+            input.addEventListener('paste', function () {
+                requestAnimationFrame(function () { sanitizeMarketNumericInput(input); });
+            });
+        });
+    }
+
     function lazyAddresses() {
         if (!CONTRACT_PROGRAM_ID) CONTRACT_PROGRAM_ID = bs58encode(new Uint8Array(32).fill(0xFF));
     }
@@ -518,8 +549,16 @@
             applyPriceBtn.addEventListener('click', function () {
                 var minEl = document.getElementById('minPrice');
                 var maxEl = document.getElementById('maxPrice');
-                priceMin = minEl && minEl.value ? parseFloat(minEl.value) : null;
-                priceMax = maxEl && maxEl.value ? parseFloat(maxEl.value) : null;
+                try {
+                    priceMin = readPriceFilterValue(minEl, 'Minimum price');
+                    priceMax = readPriceFilterValue(maxEl, 'Maximum price');
+                    if (priceMin !== null && priceMax !== null && priceMin > priceMax) {
+                        throw new Error('Minimum price cannot exceed maximum price');
+                    }
+                } catch (err) {
+                    showToast(err.message, 'error');
+                    return;
+                }
                 loadListings();
             });
         }
@@ -642,6 +681,7 @@
     // ===== Init =====
     document.addEventListener('DOMContentLoaded', function () {
         console.log('Lichen Market Browse loading...');
+        applyMarketNumericInputGuards(document);
         setupEvents();
         updateNav();
         loadCollections();

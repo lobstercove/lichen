@@ -11,7 +11,8 @@
     var CONTRACT_PROGRAM_ID = null; // resolved lazily
     var SYSTEM_PROGRAM_ID = null;   // resolved lazily
     var MOSS_STORAGE_PROGRAM_ID = null; // resolved lazily
-    var MINTING_FEE = 0.5; // default — overridden by on-chain value at init\n    var _mintingFeeLoaded = false;
+    var MINTING_FEE = 0.5; // default, overridden by on-chain value at init
+    var _mintingFeeLoaded = false;
     var CREATE_COLLECTION_OPCODE = 6;
     var MINT_NFT_OPCODE = 7;
 
@@ -29,6 +30,60 @@
             typeof window.getTrustedMarketNetwork === 'function' ? window.getTrustedMarketNetwork() : undefined
         );
     };
+
+    function marketSporesJsonNumber(spores, label) {
+        var units = typeof spores === 'bigint' ? spores : BigInt(String(spores || 0));
+        if (units > BigInt(Number.MAX_SAFE_INTEGER)) {
+            throw new Error((label || 'Amount') + ' exceeds the safe transaction size');
+        }
+        return Number(units);
+    }
+
+    function parseMarketIntegerRange(value, label, fallback, min, max) {
+        var raw = String(value || '').trim();
+        if (!raw) return fallback;
+        if (!/^\d+$/.test(raw)) throw new Error(label + ' must be a whole number');
+        var parsed = Number(raw);
+        if (!Number.isSafeInteger(parsed)) throw new Error(label + ' is too large');
+        if (min !== undefined && parsed < min) throw new Error(label + ' must be at least ' + min);
+        if (max !== undefined && parsed > max) throw new Error(label + ' must be at most ' + max);
+        return parsed;
+    }
+
+    function parseMarketOptionalLicnSpores(value, label) {
+        var raw = String(value || '').trim();
+        if (!raw) return 0n;
+        return parseDecimalBaseUnits(raw, 9, label || 'Amount');
+    }
+
+    function sanitizeMarketNumericInput(input) {
+        if (!input) return;
+        var integerOnly = input.dataset.decimal === 'false';
+        var value = String(input.value || '').replace(/[^\d.]/g, '');
+        if (integerOnly) {
+            value = value.replace(/\./g, '');
+        } else {
+            var dot = value.indexOf('.');
+            if (dot !== -1) {
+                value = value.slice(0, dot + 1) + value.slice(dot + 1).replace(/\./g, '');
+            }
+        }
+        if (value !== input.value) input.value = value;
+    }
+
+    function applyMarketNumericInputGuards(root) {
+        (root || document).querySelectorAll('[data-market-numeric="true"]').forEach(function (input) {
+            if (input.dataset.marketNumberGuarded === '1') return;
+            input.dataset.marketNumberGuarded = '1';
+            input.addEventListener('keydown', function (event) {
+                if (['e', 'E', '+', '-'].indexOf(event.key) !== -1) event.preventDefault();
+            });
+            input.addEventListener('input', function () { sanitizeMarketNumericInput(input); });
+            input.addEventListener('paste', function () {
+                requestAnimationFrame(function () { sanitizeMarketNumericInput(input); });
+            });
+        });
+    }
 
     function lazyAddresses() {
         if (!SYSTEM_PROGRAM_ID) SYSTEM_PROGRAM_ID = bs58encode(new Uint8Array(32));
@@ -351,7 +406,12 @@
 
     // ===== Price Breakdown =====
     function updatePriceBreakdown() {
-        var supply = parseInt((document.getElementById('nftSupply') || {}).value) || 1;
+        var supply;
+        try {
+            supply = parseMarketIntegerRange((document.getElementById('nftSupply') || {}).value, 'Supply', 1, 1, 1000);
+        } catch (_) {
+            supply = 1;
+        }
         var isNewCollection = (document.getElementById('nftCollection') || {}).value === 'new';
         var collectionFee = isNewCollection ? 1.0 : 0;
         var totalMintFee = MINTING_FEE * supply;
@@ -450,7 +510,12 @@
             return;
         }
 
-        var supply = parseInt((document.getElementById('nftSupply') || {}).value) || 1;
+        var supply;
+        try {
+            supply = parseMarketIntegerRange((document.getElementById('nftSupply') || {}).value, 'Supply', 1, 1, 1000);
+        } catch (_) {
+            supply = 1;
+        }
         var isNewCollection = (document.getElementById('nftCollection') || {}).value === 'new';
         var collectionFee = isNewCollection ? 1.0 : 0;
         var totalCost = (MINTING_FEE * supply) + collectionFee;
@@ -601,10 +666,15 @@
         var listingPriceInput = document.getElementById('nftListingPrice');
         if (listingPriceInput) {
             listingPriceInput.addEventListener('input', function () {
-                var price = parseFloat(listingPriceInput.value);
+                var priceSpores;
+                try {
+                    priceSpores = parseMarketOptionalLicnSpores(listingPriceInput.value, 'Listing price');
+                } catch (_) {
+                    priceSpores = 0n;
+                }
                 var previewPrice = document.getElementById('previewPrice');
                 if (previewPrice) {
-                    previewPrice.textContent = (price > 0) ? (price + ' LICN') : 'Not for sale';
+                    previewPrice.textContent = priceSpores > 0n ? (baseUnitsToDecimalString(priceSpores, 9) + ' LICN') : 'Not for sale';
                 }
             });
         }
@@ -658,8 +728,21 @@
         var name = nameInput ? nameInput.value.trim() : '';
         var description = descInput ? descInput.value.trim() : '';
         var collection = collectionSelect ? collectionSelect.value : '';
-        var supply = supplyInput ? parseInt(supplyInput.value) || 1 : 1;
-        var royalty = royaltyInput ? parseFloat(royaltyInput.value) || 0 : 0;
+        var supply;
+        var royalty;
+        var listingPriceInput = document.getElementById('nftListingPrice');
+        var listingPriceSporesBig;
+        try {
+            supply = parseMarketIntegerRange(supplyInput ? supplyInput.value : '', 'Supply', 1, 1, 1000);
+            var royaltyRaw = String(royaltyInput ? royaltyInput.value : '').trim();
+            royalty = royaltyRaw
+                ? Number(baseUnitsToDecimalString(parseDecimalBaseUnits(royaltyRaw, 1, 'Royalty'), 1))
+                : 0;
+            listingPriceSporesBig = parseMarketOptionalLicnSpores(listingPriceInput ? listingPriceInput.value : '', 'Listing price');
+        } catch (err) {
+            alert(err.message);
+            return;
+        }
 
         if (!name) { alert('Please enter an NFT name'); if (nameInput) nameInput.focus(); return; }
         if (name.length > 128) { alert('NFT name must be 128 characters or fewer'); return; }
@@ -768,13 +851,12 @@
             showToast('NFT "' + name + '" minted! Token IDs: ' + mintedSummary, 'success');
 
             // Auto-list for sale if listing price is set
-            var listingPriceInput = document.getElementById('nftListingPrice');
-            var listingPrice = listingPriceInput ? parseFloat(listingPriceInput.value) : 0;
-            if (listingPrice > 0) {
+            if (listingPriceSporesBig > 0n) {
                 try {
                     if (createBtn) createBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Listing for sale...';
                     var mp = await resolveMarketplaceProgram();
-                    var priceSpores = Math.round(listingPrice * 1e9);
+                    var priceSpores = marketSporesJsonNumber(listingPriceSporesBig, 'Listing price');
+                    var listingPriceLabel = baseUnitsToDecimalString(listingPriceSporesBig, 9);
                     var paymentToken = bs58encode(new Uint8Array(32)); // native LICN
                     var royaltyBps = Math.max(0, Math.min(5000, Math.round(Number(royalty || 0) * 100)));
                     var royaltyRecipient = currentWallet.address;
@@ -807,7 +889,7 @@
                             data: listCallData,
                         }]);
                     }
-                    showToast('Listed for ' + listingPrice + ' LICN!', 'success');
+                    showToast('Listed for ' + listingPriceLabel + ' LICN!', 'success');
                 } catch (listErr) {
                     showToast('Minted successfully but listing failed: ' + listErr.message, 'error');
                 }
@@ -974,6 +1056,7 @@
 
     // ===== Init =====
     document.addEventListener('DOMContentLoaded', function () {
+        applyMarketNumericInputGuards(document);
         setupEvents();
         setupUpload();
         setupLivePreview();

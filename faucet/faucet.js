@@ -185,7 +185,8 @@ document.getElementById('faucetForm').addEventListener('submit', async (e) => {
     e.preventDefault();
 
     const address = document.getElementById('address').value.trim();
-    const captcha = parseInt(document.getElementById('captcha').value);
+    const captchaValue = String(document.getElementById('captcha').value || '').trim();
+    const captcha = /^\d+$/.test(captchaValue) ? Number(captchaValue) : NaN;
     const submitBtn = document.getElementById('submitBtn');
     const successMessage = document.getElementById('successMessage');
     const errorMessage = document.getElementById('errorMessage');

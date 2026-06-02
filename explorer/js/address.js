@@ -18,16 +18,102 @@ let addressRefreshInFlight = false;
 let accountSubRegistered = false;
 
 const AGENT_TYPE_OPTIONS = [
-    { value: 0, label: 'General ⚡' },
-    { value: 1, label: 'Trading 📈' },
-    { value: 2, label: 'Development 💻' },
-    { value: 3, label: 'Analysis 🔬' },
-    { value: 4, label: 'Creative 🎨' },
-    { value: 5, label: 'Infrastructure 🏗' },
-    { value: 6, label: 'Governance 🏛' },
-    { value: 7, label: 'Oracle 🔮' },
-    { value: 8, label: 'Storage 💾' }
+    { value: 0, label: 'Unknown' },
+    { value: 1, label: 'Trading' },
+    { value: 2, label: 'Development' },
+    { value: 3, label: 'Analysis' },
+    { value: 4, label: 'Creative' },
+    { value: 5, label: 'Infrastructure' },
+    { value: 6, label: 'Governance' },
+    { value: 7, label: 'Oracle' },
+    { value: 8, label: 'Storage' },
+    { value: 9, label: 'General' },
+    { value: 10, label: 'Personal' }
 ];
+
+const EXPLORER_MAX_U64 = 18_446_744_073_709_551_615n;
+
+function parseExplorerDecimalBaseUnits(value, decimals = 9, label = 'Amount') {
+    const unitDecimals = Number(decimals);
+    if (!Number.isSafeInteger(unitDecimals) || unitDecimals < 0 || unitDecimals > 18) {
+        throw new Error('Decimal precision is invalid');
+    }
+    let text = String(value ?? '').trim();
+    if (text.startsWith('.')) text = `0${text}`;
+    if (!text || !/^\d+(?:\.\d*)?$/.test(text)) {
+        throw new Error(`${label} must be a decimal amount`);
+    }
+    const [wholeRaw, fractionRaw = ''] = text.split('.');
+    if (fractionRaw.length > unitDecimals) {
+        throw new Error(`${label} supports at most ${unitDecimals} decimal places`);
+    }
+    const scale = 10n ** BigInt(unitDecimals);
+    const whole = BigInt(wholeRaw || '0');
+    const fraction = unitDecimals === 0
+        ? 0n
+        : BigInt((fractionRaw + '0'.repeat(unitDecimals)).slice(0, unitDecimals) || '0');
+    const units = whole * scale + fraction;
+    if (units > EXPLORER_MAX_U64) throw new Error(`${label} is too large`);
+    return units;
+}
+
+function parseExplorerPositiveSpores(value, label = 'Amount') {
+    const units = parseExplorerDecimalBaseUnits(value, 9, label);
+    if (units <= 0n) throw new Error(`${label} must be greater than zero`);
+    return units;
+}
+
+function explorerBaseUnitsToDecimalString(value, decimals = 9) {
+    const units = typeof value === 'bigint' ? value : BigInt(String(value || 0));
+    const scale = 10n ** BigInt(decimals);
+    const whole = units / scale;
+    if (decimals === 0) return whole.toString();
+    const fraction = (units % scale).toString().padStart(decimals, '0').replace(/0+$/, '');
+    return fraction ? `${whole.toString()}.${fraction}` : whole.toString();
+}
+
+function explorerJsonSafeNumber(units, label = 'Amount') {
+    const value = typeof units === 'bigint' ? units : BigInt(String(units || 0));
+    if (value > BigInt(Number.MAX_SAFE_INTEGER)) {
+        throw new Error(`${label} exceeds the safe transaction size`);
+    }
+    return Number(value);
+}
+
+function parseExplorerIntegerRange(value, label, min, max) {
+    const raw = String(value || '').trim();
+    if (!/^\d+$/.test(raw)) throw new Error(`${label} must be a whole number`);
+    const parsed = Number(raw);
+    if (!Number.isSafeInteger(parsed)) throw new Error(`${label} is too large`);
+    if (min !== undefined && parsed < min) throw new Error(`${label} must be at least ${min}`);
+    if (max !== undefined && parsed > max) throw new Error(`${label} must be at most ${max}`);
+    return parsed;
+}
+
+function sanitizeExplorerNumericInput(input) {
+    if (!input) return;
+    const integerOnly = input.dataset.decimal === 'false';
+    let value = String(input.value || '').replace(/[^\d.]/g, '');
+    if (integerOnly) {
+        value = value.replace(/\./g, '');
+    } else {
+        const dot = value.indexOf('.');
+        if (dot !== -1) value = value.slice(0, dot + 1) + value.slice(dot + 1).replace(/\./g, '');
+    }
+    if (value !== input.value) input.value = value;
+}
+
+function applyExplorerNumericInputGuards(root = document) {
+    root.querySelectorAll('[data-explorer-numeric="true"], [data-explorer-integer="true"]').forEach((input) => {
+        if (input.dataset.explorerNumberGuarded === '1') return;
+        input.dataset.explorerNumberGuarded = '1';
+        input.addEventListener('keydown', (event) => {
+            if (['e', 'E', '+', '-'].includes(event.key)) event.preventDefault();
+        });
+        input.addEventListener('input', () => sanitizeExplorerNumericInput(input));
+        input.addEventListener('paste', () => requestAnimationFrame(() => sanitizeExplorerNumericInput(input)));
+    });
+}
 
 function isSystemProgramOwner(owner) {
     const SYS = typeof SYSTEM_PROGRAM_ID !== 'undefined'
@@ -823,6 +909,7 @@ function openActionModal({ title, icon = 'fas fa-pen', bodyHtml, confirmText = '
 
     modal.style.display = 'flex';
     modal.setAttribute('aria-hidden', 'false');
+    applyExplorerNumericInputGuards(modal);
 
     const closeButtons = [
         document.getElementById('addressModalCloseBtn'),
@@ -973,15 +1060,15 @@ async function getLichenIdProgramAddress() {
     throw new Error('LichenID program not found in symbol registry');
 }
 
-function buildTransferInstruction(fromAddress, toAddress, amountLicn) {
+function buildTransferInstruction(fromAddress, toAddress, amountSpores) {
     const fromPubkey = bs58decode(fromAddress);
     const toPubkey = bs58decode(toAddress);
     const systemProgram = new Uint8Array(32); // SYSTEM_PROGRAM_ID = [0; 32]
-    const amountSpores = Math.floor(Number(amountLicn) * 1_000_000_000);
+    const spores = typeof amountSpores === 'bigint' ? amountSpores : BigInt(String(amountSpores || 0));
     const instructionData = new Uint8Array(9);
     instructionData[0] = 0;
     const view = new DataView(instructionData.buffer);
-    view.setBigUint64(1, BigInt(amountSpores), true);
+    view.setBigUint64(1, spores, true);
 
     return {
         program_id: Array.from(systemProgram),
@@ -1134,7 +1221,8 @@ async function openSendModal() {
             </div>
             <div class="form-group">
                 <label for="sendAmountInput">Amount (LICN)</label>
-                <input id="sendAmountInput" type="number" min="0" step="0.000001" placeholder="0.0">
+                <input id="sendAmountInput" type="text" inputmode="decimal" data-explorer-numeric="true"
+                    data-min="0" placeholder="0.0">
             </div>
             <div class="form-group">
                 <label for="sendMemoInput">Memo (optional)</label>
@@ -1145,11 +1233,13 @@ async function openSendModal() {
         onConfirm: async () => {
             try {
                 const recipientInput = document.getElementById('sendRecipientInput')?.value || '';
-                const amount = Number(document.getElementById('sendAmountInput')?.value || 0);
-                if (!amount || amount <= 0) throw new Error('Enter a valid amount');
+                const amountSpores = parseExplorerPositiveSpores(
+                    document.getElementById('sendAmountInput')?.value || '',
+                    'Send amount'
+                );
 
                 const recipient = await resolveRecipient(recipientInput);
-                const instruction = buildTransferInstruction(wallet.address, recipient.address, amount);
+                const instruction = buildTransferInstruction(wallet.address, recipient.address, amountSpores);
                 showAddressToast('Sending transaction...');
                 const signature = await signAndSendInstructions(wallet, [instruction]);
                 showAddressToast(`Sent successfully: ${String(signature).slice(0, 16)}...`);
@@ -1412,15 +1502,15 @@ async function openAttestSkillModal(initialSkillName = '') {
             </div>
             <div class="form-group">
                 <label for="attestLevelInput">Level (1-5)</label>
-                <input id="attestLevelInput" type="number" min="1" max="5" step="1" value="5">
+                <input id="attestLevelInput" type="text" inputmode="numeric" data-explorer-integer="true"
+                    data-decimal="false" data-min="1" data-max="5" value="5">
             </div>
         `,
         onConfirm: async () => {
             try {
                 const skill = String(document.getElementById('attestSkillInput')?.value || '').trim();
-                const level = Number(document.getElementById('attestLevelInput')?.value || 0);
+                const level = parseExplorerIntegerRange(document.getElementById('attestLevelInput')?.value || '', 'Level', 1, 5);
                 if (!skill) throw new Error('Skill is required');
-                if (level < 1 || level > 5) throw new Error('Level must be between 1 and 5');
 
                 const lichenIdAddress = await getLichenIdProgramAddress();
 
@@ -1471,7 +1561,10 @@ async function openEditProfileModal() {
     const currentAgentType = Number(currentLichenProfile?.identity?.agent_type || 0);
     const currentEndpoint = String(currentLichenProfile?.agent?.endpoint || '').trim();
     const availabilityValue = Number(currentLichenProfile?.agent?.availability || 0);
-    const currentRateSpores = Number(currentLichenProfile?.agent?.rate || 0);
+    const currentRateSporesRaw = currentLichenProfile?.agent?.rate || 0;
+    const currentRateSpores = /^\d+$/.test(String(currentRateSporesRaw))
+        ? BigInt(String(currentRateSporesRaw))
+        : 0n;
 
     openActionModal({
         title: 'Edit Identity Profile',
@@ -1495,7 +1588,8 @@ async function openEditProfileModal() {
             </div>
             <div class="form-group">
                 <label for="profileRateInput">Rate (LICN/request)</label>
-                <input id="profileRateInput" type="number" min="0" step="0.000001" value="${currentRateSpores / 1_000_000_000}">
+                <input id="profileRateInput" type="text" inputmode="decimal" data-explorer-numeric="true"
+                    data-min="0" value="${explorerBaseUnitsToDecimalString(currentRateSpores, 9)}">
             </div>
             <div class="form-group">
                 <label for="profileMetadataInput">Metadata (JSON)</label>
@@ -1507,8 +1601,12 @@ async function openEditProfileModal() {
                 const type = Number(document.getElementById('profileTypeInput')?.value || 0);
                 const endpoint = String(document.getElementById('profileEndpointInput')?.value || '').trim();
                 const availability = Number(document.getElementById('profileAvailabilityInput')?.value || 0);
-                const rateLicn = Number(document.getElementById('profileRateInput')?.value || 0);
-                const rateSpores = Math.floor(rateLicn * 1_000_000_000);
+                const rateSporesBig = parseExplorerDecimalBaseUnits(
+                    document.getElementById('profileRateInput')?.value || '0',
+                    9,
+                    'Rate'
+                );
+                const rateSpores = explorerJsonSafeNumber(rateSporesBig, 'Rate');
                 const metadataText = String(document.getElementById('profileMetadataInput')?.value || '{}').trim();
                 const metadata = metadataText ? JSON.parse(metadataText) : {};
                 const metadataJson = JSON.stringify(metadata);
@@ -1559,7 +1657,7 @@ async function openEditProfileModal() {
                     }));
                 }
 
-                if (rateSpores !== currentRateSpores) {
+                if (rateSporesBig !== currentRateSpores) {
                     instructions.push(buildContractCallInstruction({
                         callerAddress: wallet.address,
                         contractAddress: lichenIdAddress,

@@ -106,6 +106,9 @@ function collectHtmlFiles(portal, currentDir, relativeDir, htmlFiles) {
 
         const relativePath = relativeDir ? `${relativeDir}/${entry.name}` : entry.name;
         const topLevel = relativePath.split('/')[0];
+        if (portal.name === 'dex' && topLevel === 'charting_library') {
+            continue;
+        }
         if (portal.excludedRoots.has(topLevel)) {
             continue;
         }
@@ -127,6 +130,42 @@ function getPortalHtmlFiles(portal) {
     const htmlFiles = [];
     collectHtmlFiles(portal, portalRoot, '', htmlFiles);
     return htmlFiles.sort();
+}
+
+function collectPortalSourceFiles(portal, currentDir, relativeDir, sourceFiles) {
+    const entries = fs.readdirSync(currentDir, { withFileTypes: true });
+    for (const entry of entries) {
+        if (entry.name.startsWith('.')) {
+            continue;
+        }
+
+        const relativePath = relativeDir ? `${relativeDir}/${entry.name}` : entry.name;
+        const topLevel = relativePath.split('/')[0];
+        if (portal.name === 'dex' && topLevel === 'charting_library') {
+            continue;
+        }
+        if (portal.excludedRoots.has(topLevel)) {
+            continue;
+        }
+
+        const absolutePath = path.join(currentDir, entry.name);
+        if (entry.isDirectory()) {
+            if (entry.name === 'node_modules' || entry.name === '__pycache__') continue;
+            collectPortalSourceFiles(portal, absolutePath, relativePath, sourceFiles);
+            continue;
+        }
+
+        if (entry.isFile() && /\.(?:html|js|css)$/.test(entry.name)) {
+            sourceFiles.push(absolutePath);
+        }
+    }
+}
+
+function getPortalSourceFiles(portal) {
+    const portalRoot = path.join(repoRoot, portal.name);
+    const sourceFiles = [];
+    collectPortalSourceFiles(portal, portalRoot, '', sourceFiles);
+    return sourceFiles.sort();
 }
 
 function extractScriptRefs(html) {
@@ -772,10 +811,30 @@ function validateFrontendInputGuards() {
     const programsJs = fs.readFileSync(path.join(repoRoot, 'programs', 'js', 'playground-complete.js'), 'utf8');
     const programsHtml = fs.readFileSync(path.join(repoRoot, 'programs', 'playground.html'), 'utf8');
     const explorerAddressJs = fs.readFileSync(path.join(repoRoot, 'explorer', 'js', 'address.js'), 'utf8');
+    const explorerBlocksJs = fs.readFileSync(path.join(repoRoot, 'explorer', 'js', 'blocks.js'), 'utf8');
+    const explorerBlocksHtml = fs.readFileSync(path.join(repoRoot, 'explorer', 'blocks.html'), 'utf8');
     const explorerJs = fs.readFileSync(path.join(repoRoot, 'explorer', 'js', 'explorer.js'), 'utf8');
     const faucetJs = fs.readFileSync(path.join(repoRoot, 'faucet', 'faucet.js'), 'utf8');
     const faucetHtml = fs.readFileSync(path.join(repoRoot, 'faucet', 'index.html'), 'utf8');
+    const marketplaceBrowseJs = fs.readFileSync(path.join(repoRoot, 'marketplace', 'js', 'browse.js'), 'utf8');
+    const marketplaceBrowseHtml = fs.readFileSync(path.join(repoRoot, 'marketplace', 'browse.html'), 'utf8');
+    const marketplaceCreateJs = fs.readFileSync(path.join(repoRoot, 'marketplace', 'js', 'create.js'), 'utf8');
+    const marketplaceCreateHtml = fs.readFileSync(path.join(repoRoot, 'marketplace', 'create.html'), 'utf8');
+    const marketplaceItemJs = fs.readFileSync(path.join(repoRoot, 'marketplace', 'js', 'item.js'), 'utf8');
+    const marketplaceProfileJs = fs.readFileSync(path.join(repoRoot, 'marketplace', 'js', 'profile.js'), 'utf8');
+    const monitoringJs = fs.readFileSync(path.join(repoRoot, 'monitoring', 'js', 'monitoring.js'), 'utf8');
+    const monitoringHtml = fs.readFileSync(path.join(repoRoot, 'monitoring', 'index.html'), 'utf8');
     const websiteJs = fs.readFileSync(path.join(repoRoot, 'website', 'script.js'), 'utf8');
+
+    const nativeNumberHits = portals.flatMap((portal) => (
+        getPortalSourceFiles(portal)
+            .filter((file) => /type=(["'])number\1|input\[type=(["'])number\2\]/.test(fs.readFileSync(file, 'utf8')))
+            .map((file) => toPosix(path.relative(repoRoot, file)))
+    ));
+    assert(
+        nativeNumberHits.length === 0,
+        `deployed static frontends avoid native number controls (${nativeNumberHits.join(', ') || 'none found'})`
+    );
 
     const dexNumericGuardBody = extractFunctionBody(dexJs, 'applyDexNumericInputGuards');
     assert(
@@ -901,10 +960,56 @@ function validateFrontendInputGuards() {
 
     assert(
         faucetJs.includes('function sanitizeFaucetInteger(') &&
+            !faucetHtml.includes('type="number"') &&
+            faucetJs.includes('const captchaValue = String') &&
             faucetHtml.includes('inputmode="numeric"') &&
             faucetGuardBody.includes("event.key === 'e' || event.key === 'E' || event.key === '+' || event.key === '-' || event.key === '.'") &&
             faucetGuardBody.includes('sanitizeFaucetInteger(captchaInput.value)'),
         'faucet captcha input accepts integer digits only'
+    );
+
+    assert(
+        marketplaceCreateJs.includes('var _mintingFeeLoaded = false;') &&
+            !marketplaceCreateJs.includes('init\\n    var _mintingFeeLoaded') &&
+            marketplaceCreateHtml.includes('data-market-numeric="true"') &&
+            marketplaceCreateJs.includes('function applyMarketNumericInputGuards(') &&
+            marketplaceCreateJs.includes('parseMarketIntegerRange(supplyInput ? supplyInput.value') &&
+            marketplaceCreateJs.includes('listingPriceSporesBig = parseMarketOptionalLicnSpores') &&
+            marketplaceCreateJs.includes('marketSporesJsonNumber(listingPriceSporesBig') &&
+            !marketplaceCreateHtml.includes('type="number"') &&
+            !marketplaceCreateJs.includes('Math.round(listingPrice * 1e9)'),
+        'marketplace create page validates mint/list numeric values before signed actions'
+    );
+
+    assert(
+        marketplaceItemJs.includes('function parseMarketLicnSpores(') &&
+            marketplaceItemJs.includes('marketSporesJsonNumber(priceSporesBig') &&
+            marketplaceItemJs.includes('listingPriceToSpores(currentListing') &&
+            marketplaceItemJs.includes('parseMarketOptionalInteger(expiryHoursText') &&
+            marketplaceItemJs.includes('applyMarketNumericInputGuards(actionContainer)') &&
+            !marketplaceItemJs.includes('type="number"') &&
+            !marketplaceItemJs.includes('Math.round(price * 1e9)') &&
+            !marketplaceItemJs.includes('Math.round(parseFloat'),
+        'marketplace item page uses exact spores for listing, buying, offers, auctions, and bids'
+    );
+
+    assert(
+        marketplaceProfileJs.includes('function parseMarketLicnSpores(') &&
+            marketplaceProfileJs.includes('listNFTForSale(nft, priceSpores)') &&
+            marketplaceProfileJs.includes('marketSporesJsonNumber(amountSpores') &&
+            marketplaceProfileJs.includes('updateListingPrice(nft, nextSpores)') &&
+            !marketplaceProfileJs.includes('Math.round(parseFloat') &&
+            !marketplaceProfileJs.includes('isNaN(parseFloat'),
+        'marketplace profile page uses exact spores for listing, offers, auctions, and bids'
+    );
+
+    assert(
+        marketplaceBrowseHtml.includes('data-market-numeric="true"') &&
+            marketplaceBrowseJs.includes('function readPriceFilterValue(') &&
+            marketplaceBrowseJs.includes('parseDecimalBaseUnits(raw, 9, label)') &&
+            marketplaceBrowseJs.includes('applyMarketNumericInputGuards(document)') &&
+            !marketplaceBrowseHtml.includes('type="number"'),
+        'marketplace browse price filters reject exponent and malformed decimal input'
     );
 
     assert(
@@ -924,6 +1029,36 @@ function validateFrontendInputGuards() {
             explorerAddressJs.includes('Endpoint cannot be cleared by the current LichenID contract') &&
             explorerAddressJs.includes("throw new Error('No changes to save')"),
         'explorer LichenID profile updates use fresh blockhashes and avoid doomed no-op writes'
+    );
+
+    assert(
+        explorerAddressJs.includes('function parseExplorerDecimalBaseUnits(') &&
+            explorerAddressJs.includes('function buildTransferInstruction(fromAddress, toAddress, amountSpores)') &&
+            explorerAddressJs.includes('parseExplorerPositiveSpores(') &&
+            explorerAddressJs.includes('explorerJsonSafeNumber(rateSporesBig') &&
+            explorerAddressJs.includes("{ value: 10, label: 'Personal' }") &&
+            explorerAddressJs.includes('applyExplorerNumericInputGuards(modal)') &&
+            !explorerAddressJs.includes('type="number"') &&
+            !explorerAddressJs.includes('Math.floor(Number(amountLicn) * 1_000_000_000)'),
+        'explorer signed action modals use exact base-unit parsing and full LichenID agent types'
+    );
+
+    assert(
+        explorerBlocksHtml.includes('data-explorer-integer="true"') &&
+            explorerBlocksJs.includes('function applyBlockIntegerInputGuards(') &&
+            explorerBlocksJs.includes("['e', 'E', '+', '-', '.'].includes(event.key)") &&
+            !explorerBlocksHtml.includes('type="number"'),
+        'explorer block filters use guarded integer text inputs'
+    );
+
+    assert(
+        monitoringHtml.includes('data-monitoring-integer="true"') &&
+            monitoringJs.includes('function applyMonitoringIntegerInputGuards(') &&
+            monitoringJs.includes("['e', 'E', '+', '-', '.'].includes(event.key)") &&
+            monitoringJs.includes("if (!/^\\d+$/.test(raw))") &&
+            monitoringJs.includes("return { error: 'Amount must be a non-negative integer.' };") &&
+            !monitoringHtml.includes('type="number"'),
+        'monitoring risk console rejects decimal/exponent truncation in integer blockchain inputs'
     );
 
     assert(

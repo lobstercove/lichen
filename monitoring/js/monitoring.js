@@ -1319,6 +1319,7 @@ function setBar(id, pct) {
 }
 
 function bindStaticControls() {
+    applyMonitoringIntegerInputGuards(document);
     document.getElementById('networkSelect')?.addEventListener('change', (event) => {
         switchNetwork(event.target.value);
     });
@@ -1407,6 +1408,23 @@ function bindStaticControls() {
         button.addEventListener('click', (event) => {
             setTPSRange(button.dataset.tpsRange, event);
         });
+    });
+}
+
+function applyMonitoringIntegerInputGuards(root = document) {
+    root.querySelectorAll('[data-monitoring-integer="true"]').forEach((input) => {
+        if (input.dataset.monitoringIntegerGuarded === '1') return;
+        input.dataset.monitoringIntegerGuarded = '1';
+        input.addEventListener('keydown', (event) => {
+            if (['e', 'E', '+', '-', '.'].includes(event.key)) event.preventDefault();
+        });
+        input.addEventListener('input', () => {
+            const sanitized = String(input.value || '').replace(/\D/g, '');
+            if (sanitized !== input.value) input.value = sanitized;
+        });
+        input.addEventListener('paste', () => requestAnimationFrame(() => {
+            input.value = String(input.value || '').replace(/\D/g, '');
+        }));
     });
 }
 
@@ -1782,11 +1800,14 @@ function riskConsoleTrim(value) {
 function parseRiskConsoleAmount() {
     const raw = riskConsoleTrim(riskConsoleElement('riskAmountValue')?.value);
     if (!raw) return { value: undefined };
-    const numeric = Number(raw);
-    if (!Number.isFinite(numeric) || numeric < 0) {
+    if (!/^\d+$/.test(raw)) {
         return { error: 'Amount must be a non-negative integer.' };
     }
-    return { value: Math.trunc(numeric) };
+    const numeric = Number(raw);
+    if (!Number.isSafeInteger(numeric)) {
+        return { error: 'Amount must fit in a safe integer.' };
+    }
+    return { value: numeric };
 }
 
 function readRiskConsoleSelection() {
@@ -2062,7 +2083,11 @@ function riskTtlSlots(context) {
         case 'guardian_72h':
             return { valid: true, slots: RISK_GUARDIAN_MAX_TTL_SLOTS, label: '72H' };
         case 'custom_slots': {
-            const numeric = Number(context.customTtlSlots);
+            const raw = riskConsoleTrim(context.customTtlSlots);
+            if (!/^\d+$/.test(raw)) {
+                return { valid: false, slots: null, label: 'BAD TTL', note: 'Custom TTL must be a positive slot count.' };
+            }
+            const numeric = Number(raw);
             if (!Number.isSafeInteger(numeric) || numeric <= 0) {
                 return { valid: false, slots: null, label: 'BAD TTL', note: 'Custom TTL must be a positive slot count.' };
             }

@@ -138,7 +138,8 @@
                         <label class="form-label" for="nftSupply">
                             Supply <span class="required">*</span>
                         </label>
-                        <input type="number" id="nftSupply" class="form-input" value="1" min="1" max="1000">
+                        <input type="text" id="nftSupply" class="form-input" value="1" inputmode="numeric"
+                            data-market-numeric="true" data-decimal="false" data-min="1" data-max="1000">
                         <p class="form-hint">Number of copies to mint</p>
                     </div>
 
@@ -147,7 +148,8 @@
                         <label class="form-label" for="nftRoyalty">
                             Royalty (%)
                         </label>
-                        <input type="number" id="nftRoyalty" class="form-input" value="10" min="0" max="10" step="0.5">
+                        <input type="text" id="nftRoyalty" class="form-input" value="10" inputmode="decimal"
+                            data-market-numeric="true" data-min="0" data-max="10">
                         <p class="form-hint">Creator earnings on secondary sales (max 10%)</p>
                     </div>
 
@@ -156,8 +158,9 @@
                         <label class="form-label" for="nftListingPrice">
                             Listing Price (LICN)
                         </label>
-                        <input type="number" id="nftListingPrice" class="form-input"
-                            placeholder="e.g. 10.0 — leave empty to mint without listing" min="0" step="0.001">
+                        <input type="text" id="nftListingPrice" class="form-input"
+                            placeholder="e.g. 10.0 — leave empty to mint without listing" inputmode="decimal"
+                            data-market-numeric="true" data-min="0">
                         <p class="form-hint">Set a price to list for sale immediately after minting. Leave empty to mint
                             only.</p>
                     </div>

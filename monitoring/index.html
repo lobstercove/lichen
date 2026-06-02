@@ -1366,7 +1366,8 @@
                         </label>
                         <label class="risk-console-field compact" id="riskAmountField">
                             <span>Amount</span>
-                            <input id="riskAmountValue" type="number" min="0" step="1" value="1">
+                            <input id="riskAmountValue" type="text" inputmode="numeric" data-monitoring-integer="true"
+                                data-min="0" value="1">
                         </label>
                         <button class="risk-console-submit" id="riskSearchBtn" type="submit"
                             aria-label="Query risk target" title="Query risk target">
@@ -1457,7 +1458,8 @@
                         </label>
                         <label class="risk-console-field is-hidden" id="riskCustomTtlField">
                             <span>Custom Slots</span>
-                            <input id="riskCustomTtlSlots" type="number" min="1" step="1" placeholder="1..648000">
+                            <input id="riskCustomTtlSlots" type="text" inputmode="numeric"
+                                data-monitoring-integer="true" data-min="1" placeholder="1..648000">
                         </label>
                     </form>
                     <div class="risk-validation-grid" id="riskValidationGrid">
@@ -1518,7 +1520,8 @@
                     <div class="risk-lifecycle-form" id="riskLifecycleForm">
                         <label class="risk-console-field" id="riskRestrictionIdField">
                             <span>Restriction ID</span>
-                            <input id="riskRestrictionIdValue" type="number" min="1" step="1"
+                            <input id="riskRestrictionIdValue" type="text" inputmode="numeric"
+                                data-monitoring-integer="true" data-min="1"
                                 placeholder="Required for ID workflows">
                         </label>
                         <label class="risk-console-field" id="riskLiftReasonField">
@@ -1534,7 +1537,8 @@
                         </label>
                         <label class="risk-console-field">
                             <span>Proposal ID</span>
-                            <input id="riskProposalIdValue" type="number" min="1" step="1"
+                            <input id="riskProposalIdValue" type="text" inputmode="numeric"
+                                data-monitoring-integer="true" data-min="1"
                                 placeholder="Existing proposal">
                         </label>
                         <button class="risk-action-button" id="riskApproveProposalBtn" type="button" disabled>

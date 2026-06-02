@@ -80,9 +80,11 @@
                         <div class="filter-group">
                             <h4 class="filter-title">Price Range (LICN)</h4>
                             <div class="price-inputs">
-                                <input type="number" id="minPrice" placeholder="Min" class="price-input">
+                                <input type="text" id="minPrice" placeholder="Min" class="price-input"
+                                    inputmode="decimal" data-market-numeric="true" data-min="0">
                                 <span>to</span>
-                                <input type="number" id="maxPrice" placeholder="Max" class="price-input">
+                                <input type="text" id="maxPrice" placeholder="Max" class="price-input"
+                                    inputmode="decimal" data-market-numeric="true" data-min="0">
                             </div>
                             <button class="btn btn-secondary btn-block" id="applyPriceBtn">Apply</button>
                         </div>

@@ -28,6 +28,32 @@
 
     var fmp = (window.marketplaceUtils && window.marketplaceUtils.formatLicnPrice) || function (v, isLicn) { var n = Number(isLicn ? v : v / 1e9); if (n >= 0.01) return n.toFixed(2); if (n >= 0.0001) return n.toFixed(4); if (n >= 0.000001) return n.toFixed(6); if (n > 0) return n.toFixed(9); return '0'; };
 
+    function marketSporesJsonNumber(spores, label) {
+        var units = typeof spores === 'bigint' ? spores : BigInt(String(spores || 0));
+        if (units > BigInt(Number.MAX_SAFE_INTEGER)) {
+            throw new Error((label || 'Amount') + ' exceeds the safe transaction size');
+        }
+        return Number(units);
+    }
+
+    function parseMarketLicnSpores(value, label, options) {
+        var allowZero = options && options.allowZero;
+        return allowZero
+            ? parseDecimalBaseUnits(value, 9, label || 'Amount')
+            : parsePositiveDecimalBaseUnits(value, 9, label || 'Amount');
+    }
+
+    function parseMarketOptionalInteger(value, label, fallback, min, max) {
+        var raw = String(value || '').trim();
+        if (!raw) return fallback;
+        if (!/^\d+$/.test(raw)) throw new Error(label + ' must be a whole number');
+        var parsed = Number(raw);
+        if (!Number.isSafeInteger(parsed)) throw new Error(label + ' is too large');
+        if (min !== undefined && parsed < min) throw new Error(label + ' must be at least ' + min);
+        if (max !== undefined && parsed > max) throw new Error(label + ' must be at most ' + max);
+        return parsed;
+    }
+
     function marketSlotDurationMs() {
         var configured = window.lichenMarketConfig && Number(window.lichenMarketConfig.slotDurationMs);
         return Number.isFinite(configured) && configured > 0 ? configured : 400;
@@ -636,9 +662,14 @@
         if (!nft || !isOwnProfile) return;
 
         var price = prompt('Enter listing price in LICN:');
-        if (!price || isNaN(parseFloat(price)) || parseFloat(price) <= 0) return;
+        var priceSpores;
+        try {
+            priceSpores = parseMarketLicnSpores(price || '', 'Listing price');
+        } catch (_) {
+            return;
+        }
 
-        listNFTForSale(nft, parseFloat(price));
+        listNFTForSale(nft, priceSpores);
     };
 
     window._profileMakeCollectionOffer = async function (index) {
@@ -652,25 +683,27 @@
         }
 
         var amount = prompt('Enter collection offer amount in LICN:');
-        if (!amount || isNaN(parseFloat(amount)) || parseFloat(amount) <= 0) return;
+        var amountSpores;
+        try {
+            amountSpores = parseMarketLicnSpores(amount || '', 'Collection offer amount');
+        } catch (_) {
+            return;
+        }
 
         var expiryHours = prompt('Enter expiry in hours (optional, leave blank for no expiry):');
         var expirySlot = 0;
         if (expiryHours && expiryHours.trim() !== '') {
-            var h = Number(expiryHours);
-            if (!Number.isFinite(h) || h < 0) {
-                showToast('Expiry must be a non-negative number', 'error');
-                return;
-            }
+            var h;
             try {
+                h = parseMarketOptionalInteger(expiryHours, 'Expiry', 0, 0, 8760);
                 expirySlot = await expiryHoursToSlot(h);
             } catch (err) {
-                showToast('Cannot calculate expiry: ' + err.message, 'error');
+                showToast(err.message, 'error');
                 return;
             }
         }
 
-        makeCollectionOffer(collectionId, Math.round(parseFloat(amount) * 1e9), expirySlot);
+        makeCollectionOffer(collectionId, marketSporesJsonNumber(amountSpores, 'Collection offer amount'), expirySlot);
     };
 
     window._profileCreateAuction = function (index) {
@@ -678,13 +711,24 @@
         if (!nft || !isOwnProfile || !currentWallet) return;
 
         var startPriceInput = prompt('Start price in LICN:');
-        if (!startPriceInput || isNaN(parseFloat(startPriceInput)) || parseFloat(startPriceInput) <= 0) return;
         var reserveInput = prompt('Reserve price in LICN (optional, default 0):');
         var durationInput = prompt('Duration in hours (default 24):');
 
-        var startSpores = Math.round(parseFloat(startPriceInput) * 1e9);
-        var reserveSpores = reserveInput && !isNaN(parseFloat(reserveInput)) ? Math.round(parseFloat(reserveInput) * 1e9) : 0;
-        var durationHours = durationInput && !isNaN(parseFloat(durationInput)) ? Math.max(1, Math.floor(parseFloat(durationInput))) : 24;
+        var startSporesBig;
+        var reserveSporesBig;
+        var durationHours;
+        try {
+            startSporesBig = parseMarketLicnSpores(startPriceInput || '', 'Start price');
+            reserveSporesBig = reserveInput && reserveInput.trim()
+                ? parseMarketLicnSpores(reserveInput, 'Reserve price', { allowZero: true })
+                : 0n;
+            durationHours = parseMarketOptionalInteger(durationInput, 'Duration', 24, 1, 720);
+        } catch (err) {
+            showToast(err.message, 'error');
+            return;
+        }
+        var startSpores = marketSporesJsonNumber(startSporesBig, 'Start price');
+        var reserveSpores = marketSporesJsonNumber(reserveSporesBig, 'Reserve price');
         var durationSlots = hoursToSlots(durationHours);
         if (durationSlots < 150) {
             showToast('Auction duration must be at least 1 minute', 'error');
@@ -703,8 +747,13 @@
         if (!nft || !currentWallet || isOwnProfile) return;
 
         var bidInput = prompt('Bid amount in LICN:');
-        if (!bidInput || isNaN(parseFloat(bidInput)) || parseFloat(bidInput) <= 0) return;
-        var bidSpores = Math.round(parseFloat(bidInput) * 1e9);
+        var bidSporesBig;
+        try {
+            bidSporesBig = parseMarketLicnSpores(bidInput || '', 'Bid amount');
+        } catch (_) {
+            return;
+        }
+        var bidSpores = marketSporesJsonNumber(bidSporesBig, 'Bid amount');
         submitAuctionBid(nft, bidSpores);
     };
 
@@ -791,7 +840,7 @@
         }
     }
 
-    async function listNFTForSale(nft, priceLicn) {
+    async function listNFTForSale(nft, priceSporesBig) {
         lazyAddresses();
         try {
             var mp = await resolveMarketplaceProgram();
@@ -799,7 +848,8 @@
 
             var nftContract = nft.collection || nft.contract_id || '';
             var tokenId = String(nft.token_id || nft.id);
-            var priceSpores = Math.round(priceLicn * 1e9);
+            var priceSpores = marketSporesJsonNumber(priceSporesBig, 'Listing price');
+            var priceLabel = baseUnitsToDecimalString(priceSporesBig, 9);
             var royaltyPercent = Number(nft.royalty || 0);
             var royaltyBps = Math.max(0, Math.min(5000, Math.round(royaltyPercent * 100)));
             var royaltyRecipient = nft.creator || currentWallet.address;
@@ -831,7 +881,7 @@
                 data: callData,
             }]);
 
-            showToast('Listed for ' + priceLicn + ' LICN!', 'success');
+            showToast('Listed for ' + priceLabel + ' LICN!', 'success');
 
             // Refresh
             allListings = await dataSource.getAllListings(500);
@@ -866,12 +916,17 @@
             ? Number(listing.price_licn || 0)
             : Number((listing.price || 0) / 1e9);
         var next = prompt('Enter new listing price in LICN:', currentPriceLicn > 0 ? String(currentPriceLicn) : '');
-        if (!next || isNaN(parseFloat(next)) || parseFloat(next) <= 0) return;
+        var nextSpores;
+        try {
+            nextSpores = parseMarketLicnSpores(next || '', 'New listing price');
+        } catch (_) {
+            return;
+        }
 
-        updateListingPrice(nft, parseFloat(next));
+        updateListingPrice(nft, nextSpores);
     };
 
-    async function updateListingPrice(nft, newPriceLicn) {
+    async function updateListingPrice(nft, newPriceSporesBig) {
         lazyAddresses();
         try {
             var mp = await resolveMarketplaceProgram();
@@ -879,7 +934,8 @@
 
             var nftContract = nft.collection || nft.contract_id || '';
             var tokenId = Number(nft.token_id || nft.id || 0);
-            var priceSpores = Math.round(newPriceLicn * 1e9);
+            var priceSpores = marketSporesJsonNumber(newPriceSporesBig, 'New listing price');
+            var priceLabel = baseUnitsToDecimalString(newPriceSporesBig, 9);
 
             var callData = buildContractCallData('update_listing_price', [
                 currentWallet.address,
@@ -894,7 +950,7 @@
                 data: callData,
             }]);
 
-            showToast('Price updated to ' + fmp(newPriceLicn, true) + ' LICN', 'success');
+            showToast('Price updated to ' + fmp(priceLabel, true) + ' LICN', 'success');
             allListings = await dataSource.getAllListings(500);
             loadCollectedNFTs();
         } catch (err) {

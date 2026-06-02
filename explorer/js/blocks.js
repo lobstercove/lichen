@@ -20,6 +20,7 @@ function renderBlockValidator(validator) {
 }
 
 function bindStaticControls() {
+    applyBlockIntegerInputGuards(document);
     document.getElementById('blocksApplyFiltersBtn')?.addEventListener('click', applyFilters);
     document.getElementById('blocksClearFiltersBtn')?.addEventListener('click', clearFilters);
     document.getElementById('prevPage')?.addEventListener('click', previousPage);
@@ -28,6 +29,23 @@ function bindStaticControls() {
         const copyButton = event.target.closest('.copy-hash[data-copy]');
         if (!copyButton) return;
         safeCopy(copyButton);
+    });
+}
+
+function applyBlockIntegerInputGuards(root = document) {
+    root.querySelectorAll('[data-explorer-integer="true"]').forEach((input) => {
+        if (input.dataset.explorerIntegerGuarded === '1') return;
+        input.dataset.explorerIntegerGuarded = '1';
+        input.addEventListener('keydown', (event) => {
+            if (['e', 'E', '+', '-', '.'].includes(event.key)) event.preventDefault();
+        });
+        input.addEventListener('input', () => {
+            const sanitized = String(input.value || '').replace(/\D/g, '');
+            if (sanitized !== input.value) input.value = sanitized;
+        });
+        input.addEventListener('paste', () => requestAnimationFrame(() => {
+            input.value = String(input.value || '').replace(/\D/g, '');
+        }));
     });
 }
 

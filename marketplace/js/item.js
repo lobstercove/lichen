@@ -26,6 +26,75 @@
 
     var fmp = (window.marketplaceUtils && window.marketplaceUtils.formatLicnPrice) || function (v, isLicn) { var n = Number(isLicn ? v : v / 1e9); if (n >= 0.01) return n.toFixed(2); if (n >= 0.0001) return n.toFixed(4); if (n >= 0.000001) return n.toFixed(6); if (n > 0) return n.toFixed(9); return '0'; };
 
+    function marketSporesJsonNumber(spores, label) {
+        var units = typeof spores === 'bigint' ? spores : BigInt(String(spores || 0));
+        if (units > BigInt(Number.MAX_SAFE_INTEGER)) {
+            throw new Error((label || 'Amount') + ' exceeds the safe transaction size');
+        }
+        return Number(units);
+    }
+
+    function marketLicnFromSpores(spores) {
+        return Number(baseUnitsToDecimalString(spores, 9));
+    }
+
+    function parseMarketLicnSpores(value, label, options) {
+        var allowZero = options && options.allowZero;
+        return allowZero
+            ? parseDecimalBaseUnits(value, 9, label || 'Amount')
+            : parsePositiveDecimalBaseUnits(value, 9, label || 'Amount');
+    }
+
+    function parseMarketOptionalInteger(value, label, fallback, min, max) {
+        var raw = String(value || '').trim();
+        if (!raw) return fallback;
+        if (!/^\d+$/.test(raw)) throw new Error(label + ' must be a whole number');
+        var parsed = Number(raw);
+        if (!Number.isSafeInteger(parsed)) throw new Error(label + ' is too large');
+        if (min !== undefined && parsed < min) throw new Error(label + ' must be at least ' + min);
+        if (max !== undefined && parsed > max) throw new Error(label + ' must be at most ' + max);
+        return parsed;
+    }
+
+    function listingPriceToSpores(listing, fallbackPrice) {
+        if (listing && listing.price_licn !== undefined && listing.price_licn !== null) {
+            return parseMarketLicnSpores(String(listing.price_licn), 'Listing price');
+        }
+        var raw = listing && listing.price !== undefined && listing.price !== null ? listing.price : fallbackPrice;
+        var text = String(raw || '0').trim();
+        if (/^\d+$/.test(text)) return BigInt(text);
+        return parseMarketLicnSpores(text, 'Listing price');
+    }
+
+    function sanitizeMarketNumericInput(input) {
+        if (!input) return;
+        var integerOnly = input.dataset.decimal === 'false';
+        var value = String(input.value || '').replace(/[^\d.]/g, '');
+        if (integerOnly) {
+            value = value.replace(/\./g, '');
+        } else {
+            var dot = value.indexOf('.');
+            if (dot !== -1) {
+                value = value.slice(0, dot + 1) + value.slice(dot + 1).replace(/\./g, '');
+            }
+        }
+        if (value !== input.value) input.value = value;
+    }
+
+    function applyMarketNumericInputGuards(root) {
+        (root || document).querySelectorAll('[data-market-numeric="true"]').forEach(function (input) {
+            if (input.dataset.marketNumberGuarded === '1') return;
+            input.dataset.marketNumberGuarded = '1';
+            input.addEventListener('keydown', function (event) {
+                if (['e', 'E', '+', '-'].indexOf(event.key) !== -1) event.preventDefault();
+            });
+            input.addEventListener('input', function () { sanitizeMarketNumericInput(input); });
+            input.addEventListener('paste', function () {
+                requestAnimationFrame(function () { sanitizeMarketNumericInput(input); });
+            });
+        });
+    }
+
     function marketSlotDurationMs() {
         var configured = window.lichenMarketConfig && Number(window.lichenMarketConfig.slotDurationMs);
         return Number.isFinite(configured) && configured > 0 ? configured : 400;
@@ -533,7 +602,7 @@
                     (fmp(listingPriceToLicn(currentListing, currentListing.price), true)) + ' LICN</div>' +
                     '<div style="margin-bottom:10px;">' +
                     '<label style="font-size:12px;opacity:0.7;display:block;margin-bottom:4px;">Update Price (LICN)</label>' +
-                    '<input type="number" id="updatePriceInput" class="form-input" min="0.001" step="0.001" placeholder="e.g. 12.5" ' +
+                    '<input type="text" id="updatePriceInput" class="form-input" inputmode="decimal" data-market-numeric="true" data-min="0" placeholder="e.g. 12.5" ' +
                     'style="width:100%;padding:10px 12px;border:1px solid var(--border-color);border-radius:8px;background:var(--bg-primary);color:var(--text-primary);font-size:14px;">' +
                     '</div>' +
                     '<button class="btn btn-large btn-primary btn-block" id="updatePriceBtn" style="margin-bottom:8px;">' +
@@ -549,7 +618,7 @@
                     '<h4 style="margin-bottom:12px;"><i class="fas fa-tag"></i> List for Sale</h4>' +
                     '<div style="margin-bottom:12px;">' +
                     '<label style="font-size:13px;opacity:0.7;display:block;margin-bottom:4px;">Price (LICN)</label>' +
-                    '<input type="number" id="listPriceInput" class="form-input" placeholder="e.g. 10.0" min="0.001" step="0.001" ' +
+                    '<input type="text" id="listPriceInput" class="form-input" placeholder="e.g. 10.0" inputmode="decimal" data-market-numeric="true" data-min="0" ' +
                     'style="width:100%;padding:10px 14px;border:1px solid var(--border-color);border-radius:8px;background:var(--bg-primary);color:var(--text-primary);font-size:16px;">' +
                     '</div>' +
                     '<button class="btn btn-large btn-secondary btn-block" id="acceptCollectionOfferBtn" style="margin-top:8px;">' +
@@ -571,7 +640,7 @@
                     '<i class="fas fa-hand-holding-usd"></i> Make Offer</button>' +
                     '<div style="margin-top:8px;">' +
                     '<label style="font-size:12px;opacity:0.7;display:block;margin-bottom:4px;">Offer Expiry (hours, optional)</label>' +
-                    '<input type="number" id="offerExpiryHours" class="form-input" min="0" step="1" placeholder="e.g. 24" ' +
+                    '<input type="text" id="offerExpiryHours" class="form-input" inputmode="numeric" data-market-numeric="true" data-decimal="false" data-min="0" placeholder="e.g. 24" ' +
                     'style="width:100%;padding:10px 12px;border:1px solid var(--border-color);border-radius:8px;background:var(--bg-primary);color:var(--text-primary);font-size:14px;">' +
                     '</div>';
                 document.getElementById('buyBtn').addEventListener('click', handleBuy);
@@ -600,7 +669,7 @@
                     '<i class="fas fa-times-circle"></i> Cancel Collection Offer</button>' +
                     '<div style="margin-top:8px;">' +
                     '<label style="font-size:12px;opacity:0.7;display:block;margin-bottom:4px;">Offer Expiry (hours, optional)</label>' +
-                    '<input type="number" id="offerExpiryHours" class="form-input" min="0" step="1" placeholder="e.g. 24" ' +
+                    '<input type="text" id="offerExpiryHours" class="form-input" inputmode="numeric" data-market-numeric="true" data-decimal="false" data-min="0" placeholder="e.g. 24" ' +
                     'style="width:100%;padding:10px 12px;border:1px solid var(--border-color);border-radius:8px;background:var(--bg-primary);color:var(--text-primary);font-size:14px;">' +
                     '</div>';
                 document.getElementById('makeOfferBtn').addEventListener('click', handleMakeOffer);
@@ -618,6 +687,7 @@
                 });
             }
         }
+        applyMarketNumericInputGuards(actionContainer);
     }
 
     // ===== List For Sale =====
@@ -626,12 +696,16 @@
         if (!currentWallet || !currentNFT) return;
 
         var priceInput = document.getElementById('listPriceInput');
-        var price = priceInput ? parseFloat(priceInput.value) : 0;
-        if (!price || price <= 0) {
+        var priceSporesBig;
+        try {
+            priceSporesBig = parseMarketLicnSpores(priceInput ? priceInput.value : '', 'Listing price');
+        } catch (err) {
             showToast('Please enter a valid price', 'error');
             if (priceInput) priceInput.focus();
             return;
         }
+        var priceSpores = marketSporesJsonNumber(priceSporesBig, 'Listing price');
+        var priceLabel = baseUnitsToDecimalString(priceSporesBig, 9);
 
         var listBtn = document.getElementById('listForSaleBtn');
         if (listBtn) { listBtn.disabled = true; listBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Listing...'; }
@@ -642,7 +716,6 @@
 
             var nftContract = currentNFT.collection || currentNFT.contract_id || '';
             var tokenId = String(currentNFT.token_id || currentNFT.id);
-            var priceSpores = Math.round(price * 1e9);
             var royaltyPercent = Number(currentNFT.royalty || 0);
             var royaltyBps = Math.max(0, Math.min(5000, Math.round(royaltyPercent * 100)));
             var royaltyRecipient = currentNFT.creator || currentWallet.address;
@@ -675,7 +748,7 @@
                 data: callData,
             }]);
 
-            showToast('NFT listed for ' + price + ' LICN!', 'success');
+            showToast('NFT listed for ' + priceLabel + ' LICN!', 'success');
             // Reload listing status
             await checkListingStatus();
 
@@ -730,12 +803,16 @@
         if (!currentWallet || !currentNFT || !currentListing) return;
 
         var updateInput = document.getElementById('updatePriceInput');
-        var newPrice = updateInput ? parseFloat(updateInput.value) : 0;
-        if (!newPrice || newPrice <= 0) {
+        var newPriceSporesBig;
+        try {
+            newPriceSporesBig = parseMarketLicnSpores(updateInput ? updateInput.value : '', 'New price');
+        } catch (err) {
             showToast('Please enter a valid new price', 'error');
             if (updateInput) updateInput.focus();
             return;
         }
+        var newPriceSpores = marketSporesJsonNumber(newPriceSporesBig, 'New price');
+        var newPriceLabel = baseUnitsToDecimalString(newPriceSporesBig, 9);
 
         var updateBtn = document.getElementById('updatePriceBtn');
         if (updateBtn) { updateBtn.disabled = true; updateBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Updating...'; }
@@ -746,8 +823,6 @@
 
             var nftContract = currentListing.nft_contract || currentNFT.collection || currentNFT.contract_id || '';
             var tokenId = Number(currentListing.token_id || currentNFT.token_id || currentNFT.id || 0);
-            var newPriceSpores = Math.round(newPrice * 1e9);
-
             var callData = buildContractCallData('update_listing_price', [
                 currentWallet.address,
                 nftContract,
@@ -761,7 +836,7 @@
                 data: callData,
             }]);
 
-            showToast('Listing price updated to ' + fmp(newPrice, true) + ' LICN', 'success');
+            showToast('Listing price updated to ' + fmp(newPriceLabel, true) + ' LICN', 'success');
             await checkListingStatus();
         } catch (err) {
             showToast('Update price failed: ' + err.message, 'error');
@@ -781,9 +856,10 @@
         // Balance check
         await refreshBalance();
         var price = currentListing ? currentListing.price : (currentNFT.price || 0);
-        var priceInLicn = currentListing
-            ? listingPriceToLicn(currentListing, price)
-            : Number(price || 0);
+        var priceSporesBig = currentListing
+            ? listingPriceToSpores(currentListing, price)
+            : parseMarketLicnSpores(String(price || 0), 'Listing price');
+        var priceInLicn = marketLicnFromSpores(priceSporesBig);
 
         if (userBalance < priceInLicn) {
             showToast('Insufficient balance. Need ' + Number(priceInLicn).toFixed(3) + ' LICN, have ' + userBalance.toFixed(4) + ' LICN.', 'error');
@@ -805,7 +881,7 @@
                 currentWallet.address,
                 nftContract,
                 tokenId
-            ], Math.round(priceInLicn * 1e9));
+            ], marketSporesJsonNumber(priceSporesBig, 'Purchase amount'));
 
             await window.lichenWallet.sendTransaction([{
                 program_id: CONTRACT_PROGRAM_ID,
@@ -838,17 +914,22 @@
 
         // Prompt for offer amount
         var offerAmount = prompt('Enter your offer amount in LICN:');
-        if (!offerAmount || isNaN(parseFloat(offerAmount)) || parseFloat(offerAmount) <= 0) {
+        var offerSporesBig;
+        try {
+            offerSporesBig = parseMarketLicnSpores(offerAmount || '', 'Offer amount');
+        } catch (_) {
             return;
         }
-        var offerLicn = parseFloat(offerAmount);
+        var offerSpores = marketSporesJsonNumber(offerSporesBig, 'Offer amount');
+        var offerLicn = marketLicnFromSpores(offerSporesBig);
 
         var expiryInput = document.getElementById('offerExpiryHours');
         var expiryHoursText = expiryInput ? expiryInput.value : '';
         var expiryHours = 0;
         if (expiryHoursText && expiryHoursText.trim() !== '') {
-            expiryHours = Number(expiryHoursText);
-            if (!Number.isFinite(expiryHours) || expiryHours < 0) {
+            try {
+                expiryHours = parseMarketOptionalInteger(expiryHoursText, 'Expiry', 0, 0, 8760);
+            } catch (err) {
                 showToast('Expiry must be a non-negative number of hours', 'error');
                 return;
             }
@@ -871,8 +952,6 @@
 
             var nftContract = currentNFT.collection || currentNFT.contract_id || '';
             var tokenId = String(currentNFT.token_id || currentNFT.id);
-            var offerSpores = Math.round(offerLicn * 1e9);
-
             // make_offer_with_expiry: offerer, nft_contract, token_id, price, payment_token, expiry
             var callData = buildContractCallData('make_offer_with_expiry', [
                 currentWallet.address,
@@ -892,7 +971,7 @@
             var expiryLabel = expirySlot > 0
                 ? (' (expires in ' + Math.floor(expiryHours) + 'h)')
                 : '';
-            showToast('Offer of ' + fmp(offerLicn, true) + ' LICN submitted!' + expiryLabel, 'success');
+            showToast('Offer of ' + fmp(baseUnitsToDecimalString(offerSporesBig, 9), true) + ' LICN submitted!' + expiryLabel, 'success');
 
         } catch (err) {
             showToast('Offer failed: ' + err.message, 'error');
@@ -911,13 +990,20 @@
         }
 
         var offerAmount = prompt('Enter your collection offer amount in LICN:');
-        if (!offerAmount || isNaN(parseFloat(offerAmount)) || parseFloat(offerAmount) <= 0) return;
-        var offerLicn = parseFloat(offerAmount);
-        var offerSpores = Math.round(offerLicn * 1e9);
+        var offerSporesBig;
+        try {
+            offerSporesBig = parseMarketLicnSpores(offerAmount || '', 'Collection offer amount');
+        } catch (_) {
+            return;
+        }
+        var offerSpores = marketSporesJsonNumber(offerSporesBig, 'Collection offer amount');
+        var offerLicn = marketLicnFromSpores(offerSporesBig);
 
         var expiryInput = document.getElementById('offerExpiryHours');
-        var expiryHours = expiryInput && expiryInput.value ? Number(expiryInput.value) : 0;
-        if (!Number.isFinite(expiryHours) || expiryHours < 0) {
+        var expiryHours;
+        try {
+            expiryHours = parseMarketOptionalInteger(expiryInput && expiryInput.value, 'Expiry', 0, 0, 8760);
+        } catch (err) {
             showToast('Expiry must be a non-negative number of hours', 'error');
             return;
         }
@@ -947,7 +1033,7 @@
                 data: callData,
             }]);
 
-            showToast('Collection offer submitted for ' + fmp(offerLicn, true) + ' LICN', 'success');
+            showToast('Collection offer submitted for ' + fmp(baseUnitsToDecimalString(offerSporesBig, 9), true) + ' LICN', 'success');
         } catch (err) {
             showToast('Collection offer failed: ' + err.message, 'error');
         }
@@ -1019,13 +1105,24 @@
         if (!currentWallet || !currentNFT) return;
 
         var startPriceInput = prompt('Start price in LICN:');
-        if (!startPriceInput || isNaN(parseFloat(startPriceInput)) || parseFloat(startPriceInput) <= 0) return;
         var reserveInput = prompt('Reserve price in LICN (optional, default 0):');
         var durationInput = prompt('Duration in hours (default 24):');
 
-        var startSpores = Math.round(parseFloat(startPriceInput) * 1e9);
-        var reserveSpores = reserveInput && !isNaN(parseFloat(reserveInput)) ? Math.round(parseFloat(reserveInput) * 1e9) : 0;
-        var durationHours = durationInput && !isNaN(parseFloat(durationInput)) ? Math.max(1, Math.floor(parseFloat(durationInput))) : 24;
+        var startSporesBig;
+        var reserveSporesBig;
+        var durationHours;
+        try {
+            startSporesBig = parseMarketLicnSpores(startPriceInput || '', 'Start price');
+            reserveSporesBig = reserveInput && reserveInput.trim()
+                ? parseMarketLicnSpores(reserveInput, 'Reserve price', { allowZero: true })
+                : 0n;
+            durationHours = parseMarketOptionalInteger(durationInput, 'Duration', 24, 1, 720);
+        } catch (err) {
+            showToast(err.message, 'error');
+            return;
+        }
+        var startSpores = marketSporesJsonNumber(startSporesBig, 'Start price');
+        var reserveSpores = marketSporesJsonNumber(reserveSporesBig, 'Reserve price');
         var durationSlots = hoursToSlots(durationHours);
         if (durationSlots < 150) {
             showToast('Auction duration must be at least 1 minute', 'error');
@@ -1070,8 +1167,13 @@
         if (!currentWallet || !currentNFT) return;
 
         var amountInput = prompt('Bid amount in LICN:');
-        if (!amountInput || isNaN(parseFloat(amountInput)) || parseFloat(amountInput) <= 0) return;
-        var bidSpores = Math.round(parseFloat(amountInput) * 1e9);
+        var bidSporesBig;
+        try {
+            bidSporesBig = parseMarketLicnSpores(amountInput || '', 'Bid amount');
+        } catch (_) {
+            return;
+        }
+        var bidSpores = marketSporesJsonNumber(bidSporesBig, 'Bid amount');
 
         try {
             var mp = await resolveMarketplaceProgram();
