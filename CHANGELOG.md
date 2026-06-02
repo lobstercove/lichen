@@ -5,6 +5,13 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.78] - 2026-06-02
+
+### Fixed
+- Prevents BFT from validating or proposing the next height from partial parent state by waiting for canonical post-block effects before waking the BFT loop and before proposal state reads/builds.
+- Adds validator regression coverage for the chainable sync notification order and the BFT canonical-apply barrier so state-root mismatch fixes cannot be dropped silently.
+- Documents the testnet checkpoint hard-link ownership issue found during rollout diagnostics; operators should keep live RocksDB SST files owned by the validator service user so checkpoints can be created under Linux protected-hardlink policy.
+
 ## [0.5.77] - 2026-06-01
 
 ### Added

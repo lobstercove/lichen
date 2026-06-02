@@ -10767,16 +10767,6 @@ async fn run_validator() {
                                 fork_choice.add_head(block_slot, block.hash(), weight);
                             }
 
-                            // PERF-OPT 1: Notify production loop that tip advanced
-                            // BEFORE casting vote or applying effects — lets the next
-                            // leader start preparing immediately.
-                            tip_notify_for_blocks.notify_waiters();
-
-                            // PERF-OPT 2: Cast vote FIRST, then apply effects.
-                            // Previously: apply_block_effects (heavy) → vote → broadcast
-                            // Now:        vote → fire-and-forget broadcast → apply effects
-                            // This cuts ~10-20ms off the critical path per block.
-
                             // VOTE-AUTHORITY: Atomically check-then-sign via VoteAuthority.
                             // This is the ONLY code path that can create a signed vote
                             // in the block receiver. VoteAuthority prevents all DoubleVote
@@ -10877,6 +10867,11 @@ async fn run_validator() {
                                 slot_duration_ms,
                             )
                             .await;
+                            // Wake BFT only after deterministic post-block effects
+                            // have completed. The next height's state root includes
+                            // parent block effects, so early notification can make a
+                            // slower node validate/propose from partial parent state.
+                            tip_notify_for_blocks.notify_waiters();
                             maybe_create_checkpoint(
                                 &state_for_blocks,
                                 block_slot,
@@ -15879,6 +15874,14 @@ async fn run_validator() {
     //
     // ── Main BFT event loop ──
     loop {
+        // Canonical apply barrier: block receiver/sync stores the block before
+        // deterministic post-block effects so duplicate guards can see it. BFT
+        // must not read parent state for the next height until those effects
+        // finish, otherwise contract/stake roots can diverge on slower nodes.
+        {
+            let _canonical_apply_guard = block_apply_lock.lock().await;
+        }
+
         // Check if chain tip advanced (block received via sync/P2P outside of BFT)
         let tip_slot = state.get_last_slot().unwrap_or(0);
         let observed_tip = sync_manager.get_highest_seen().await;
@@ -15939,13 +15942,17 @@ async fn run_validator() {
                 for proposal in proposals {
                     let expected_validators_hash =
                         compute_validators_hash(&height_vs, &height_pool);
-                    let action = match validate_consensus_proposal_before_prevote(
-                        &state,
-                        &proposal,
-                        parent_hash,
-                        expected_validators_hash,
-                        &genesis_config.chain_id,
-                    ) {
+                    let validation = {
+                        let _canonical_apply_guard = block_apply_lock.lock().await;
+                        validate_consensus_proposal_before_prevote(
+                            &state,
+                            &proposal,
+                            parent_hash,
+                            expected_validators_hash,
+                            &genesis_config.chain_id,
+                        )
+                    };
+                    let action = match validation {
                         Ok(()) => match consensus_wal.log_proposal_block_result(
                             proposal.height,
                             proposal.round,
@@ -16097,13 +16104,17 @@ async fn run_validator() {
                     ConsensusAction::None
                 } else {
                     let expected_validators_hash = compute_validators_hash(&height_vs, &height_pool);
-                    match validate_consensus_proposal_before_prevote(
-                        &state,
-                        &proposal,
-                        parent_hash,
-                        expected_validators_hash,
-                        &genesis_config.chain_id,
-                    ) {
+                    let validation = {
+                        let _canonical_apply_guard = block_apply_lock.lock().await;
+                        validate_consensus_proposal_before_prevote(
+                            &state,
+                            &proposal,
+                            parent_hash,
+                            expected_validators_hash,
+                            &genesis_config.chain_id,
+                        )
+                    };
+                    match validation {
                         Ok(()) => match consensus_wal.log_proposal_block_result(
                             proposal.height,
                             proposal.round,
@@ -16242,22 +16253,28 @@ async fn run_validator() {
                         "👑 BFT: We are proposer for height={} round={}",
                         bft.height, bft.round
                     );
-                    let mut mp = mempool.lock().await;
-                    let bft_ts =
-                        compute_proposed_timestamp(&state, &parent_hash, &height_vs, &height_pool);
-                    let (mut block, _) = block_producer::build_block(
-                        &state,
-                        &mut mp,
-                        &processor,
-                        &proposal_staging_root,
-                        bft.height,
-                        parent_hash,
-                        &validator_pubkey,
-                        Vec::new(),
-                        2000,
-                        bft_ts,
-                    );
-                    drop(mp);
+                    let (mut block, _) = {
+                        let _canonical_apply_guard = block_apply_lock.lock().await;
+                        let mut mp = mempool.lock().await;
+                        let bft_ts = compute_proposed_timestamp(
+                            &state,
+                            &parent_hash,
+                            &height_vs,
+                            &height_pool,
+                        );
+                        block_producer::build_block(
+                            &state,
+                            &mut mp,
+                            &processor,
+                            &proposal_staging_root,
+                            bft.height,
+                            parent_hash,
+                            &validator_pubkey,
+                            Vec::new(),
+                            2000,
+                            bft_ts,
+                        )
+                    };
                     block.header.validators_hash = compute_validators_hash(&height_vs, &height_pool);
                     block.sign_with_chain_id(&validator_keypair, &genesis_config.chain_id);
                     let proposal_action = bft.create_proposal(block, &height_vs, &height_pool);
@@ -16356,21 +16373,28 @@ async fn run_validator() {
                                 "👑 BFT: We are proposer for height={} round={}",
                                 bft.height, bft.round
                             );
-                            let mut mp = mempool.lock().await;
-                            let bft_ts = compute_proposed_timestamp(&state, &parent_hash, &height_vs, &height_pool);
-                            let (mut block, _) = block_producer::build_block(
-                                &state,
-                                &mut mp,
-                                &processor,
-                                &proposal_staging_root,
-                                bft.height,
-                                parent_hash,
-                                &validator_pubkey,
-                                Vec::new(),
-                                2000,
-                                bft_ts,
-                            );
-                            drop(mp);
+                            let (mut block, _) = {
+                                let _canonical_apply_guard = block_apply_lock.lock().await;
+                                let mut mp = mempool.lock().await;
+                                let bft_ts = compute_proposed_timestamp(
+                                    &state,
+                                    &parent_hash,
+                                    &height_vs,
+                                    &height_pool,
+                                );
+                                block_producer::build_block(
+                                    &state,
+                                    &mut mp,
+                                    &processor,
+                                    &proposal_staging_root,
+                                    bft.height,
+                                    parent_hash,
+                                    &validator_pubkey,
+                                    Vec::new(),
+                                    2000,
+                                    bft_ts,
+                                )
+                            };
                             block.header.validators_hash = compute_validators_hash(&height_vs, &height_pool);
                             block.sign_with_chain_id(&validator_keypair, &genesis_config.chain_id);
                             let proposal_action = bft.create_proposal(block, &height_vs, &height_pool);
@@ -16436,26 +16460,28 @@ async fn run_validator() {
                             "👑 BFT: We are proposer for height={} round={} (post-skip)",
                             bft.height, bft.round
                         );
-                        let mut mp = mempool.lock().await;
-                        let bft_ts = compute_proposed_timestamp(
-                            &state,
-                            &parent_hash,
-                            &height_vs,
-                            &height_pool,
-                        );
-                        let (mut block, _) = block_producer::build_block(
-                            &state,
-                            &mut mp,
-                            &processor,
-                            &proposal_staging_root,
-                            bft.height,
-                            parent_hash,
-                            &validator_pubkey,
-                            Vec::new(),
-                            2000,
-                            bft_ts,
-                        );
-                        drop(mp);
+                        let (mut block, _) = {
+                            let _canonical_apply_guard = block_apply_lock.lock().await;
+                            let mut mp = mempool.lock().await;
+                            let bft_ts = compute_proposed_timestamp(
+                                &state,
+                                &parent_hash,
+                                &height_vs,
+                                &height_pool,
+                            );
+                            block_producer::build_block(
+                                &state,
+                                &mut mp,
+                                &processor,
+                                &proposal_staging_root,
+                                bft.height,
+                                parent_hash,
+                                &validator_pubkey,
+                                Vec::new(),
+                                2000,
+                                bft_ts,
+                            )
+                        };
                         block.header.validators_hash =
                             compute_validators_hash(&height_vs, &height_pool);
                         block.sign_with_chain_id(&validator_keypair, &genesis_config.chain_id);
@@ -18105,6 +18131,9 @@ mod tests {
         let hook_pos = section
             .find("apply_post_block_effects_after_store(")
             .expect("post-store effects call");
+        let notify_pos = section
+            .find("tip_notify_for_blocks.notify_waiters()")
+            .expect("tip notification");
 
         assert!(
             validate_pos < store_pos,
@@ -18113,6 +18142,10 @@ mod tests {
         assert!(
             store_pos < hook_pos,
             "chainable sync must store the block before deterministic post-block hooks"
+        );
+        assert!(
+            hook_pos < notify_pos,
+            "chainable sync must not wake BFT before deterministic post-block hooks complete"
         );
         assert_eq!(
             section
@@ -18145,6 +18178,35 @@ mod tests {
             section.matches("reset_24h_stats_if_expired(").count(),
             0,
             "24h stats reset belongs inside the post-store hook wrapper"
+        );
+    }
+
+    #[test]
+    fn bft_state_reads_wait_for_canonical_apply_barrier() {
+        let source = include_str!("main.rs");
+        let start = source
+            .find("// ── Main BFT event loop ──")
+            .expect("BFT loop marker");
+        let end = source[start..]
+            .find("// Periodic slashing evidence housekeeping")
+            .expect("BFT loop end marker");
+        let section = &source[start..start + end];
+
+        assert!(
+            section.contains("Canonical apply barrier"),
+            "BFT loop must wait for canonical block application before observing tip state"
+        );
+        assert_eq!(
+            section.matches("block_producer::build_block(").count(),
+            3,
+            "expected every BFT proposal build site to stay in the guarded loop section"
+        );
+        assert!(
+            section
+                .matches("let _canonical_apply_guard = block_apply_lock.lock().await;")
+                .count()
+                >= 6,
+            "proposal validation and proposal building must wait for canonical apply completion"
         );
     }
 
