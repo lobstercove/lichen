@@ -1,0 +1,8 @@
+{
+  "release_signer": "8HitBNnh8qbhfne5NCv2yHrQFoD6xbmHcWaUSgCGtsk",
+  "scheme": "pq-v1",
+  "scope": [
+    "release-artifacts",
+    "signed-metadata-manifest"
+  ]
+}

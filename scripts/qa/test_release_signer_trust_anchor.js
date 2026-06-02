@@ -5,7 +5,8 @@ const fs = require('fs');
 const path = require('path');
 
 const repoRoot = path.join(__dirname, '..', '..');
-const keypairPath = path.join(repoRoot, 'keypairs', 'release-signing-key.json');
+const keypairPath = process.env.LICHEN_RELEASE_SIGNING_KEYPAIR || path.join(repoRoot, 'keypairs', 'release-signing-key.json');
+const trustAnchorPath = path.join(repoRoot, 'deploy', 'release-trust-anchor.json');
 const pqModulePath = path.join(repoRoot, 'monitoring', 'shared', 'pq.mjs');
 
 const sharedUtilsFiles = [
@@ -41,6 +42,10 @@ function readJson(relativePath) {
     return JSON.parse(readText(relativePath));
 }
 
+function readJsonPath(filePath) {
+    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+}
+
 function extractSharedMetadataSignerMap(source) {
     const match = source.match(/var LICHEN_SIGNED_METADATA_SIGNERS = Object\.freeze\(\{([\s\S]*?)\}\);/);
     if (!match) return null;
@@ -53,7 +58,7 @@ function extractSharedMetadataSignerMap(source) {
 }
 
 async function deriveReleaseSignerAddress() {
-    const keypair = readJson('keypairs/release-signing-key.json');
+    const keypair = readJsonPath(keypairPath);
     const seed = Array.isArray(keypair.privateKey) ? Uint8Array.from(keypair.privateKey) : null;
     if (!seed || seed.length !== 32) {
         throw new Error(`${keypairPath} must contain a 32-byte privateKey seed array`);
@@ -65,8 +70,18 @@ async function deriveReleaseSignerAddress() {
 }
 
 (async () => {
-    const releaseSigner = await deriveReleaseSignerAddress();
-    console.log(`Release signer derived from keypair: ${releaseSigner}`);
+    const trustAnchor = readJson('deploy/release-trust-anchor.json');
+    const releaseSigner = String(trustAnchor.release_signer || '').trim();
+    assert(/^[1-9A-HJ-NP-Za-km-z]+$/.test(releaseSigner), 'public release signer trust anchor is base58');
+    console.log(`Release signer public trust anchor: ${releaseSigner}`);
+
+    if (fs.existsSync(keypairPath)) {
+        const derivedSigner = await deriveReleaseSignerAddress();
+        console.log(`Release signer derived from local keypair: ${derivedSigner}`);
+        assert(derivedSigner === releaseSigner, 'local release keypair matches public trust anchor');
+    } else {
+        console.log(`Local release keypair not present; CI is validating public trust anchor ${trustAnchorPath}`);
+    }
 
     for (const relativePath of sharedUtilsFiles) {
         const signerMap = extractSharedMetadataSignerMap(readText(relativePath));
