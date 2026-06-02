@@ -115,7 +115,7 @@ function sanitizeHexInputValue(value) {
 
 function applyWalletInputGuards(root = document) {
     const scope = root || document;
-    scope.querySelectorAll('input[type="number"], input[data-input-kind="number"], input[data-wallet-numeric]').forEach((input) => {
+    scope.querySelectorAll('input[data-input-kind="number"], input[data-wallet-numeric]').forEach((input) => {
         if (input.dataset.walletNumericGuarded === '1') return;
         input.dataset.walletNumericGuarded = '1';
         if (!input.getAttribute('inputmode')) {
@@ -4006,22 +4006,33 @@ async function showSend() {
     if (sendAmtInput) {
         sendAmtInput.value = '';
         sendAmtInput.onblur = async function () {
-            let v = parseFloat(this.value);
-            if (isNaN(v) || v < 0) { this.value = ''; return; }
             const sel = document.getElementById('sendToken')?.value || 'LICN';
-            let maxSend = 0;
+            let amountBaseUnits;
             try {
-                const baseFee = getNetworkBaseFeeLicn();
+                amountBaseUnits = parseSendAmountBaseUnits(sel, this.value);
+            } catch (_) {
+                this.value = '';
+                return;
+            }
+            let maxSendBaseUnits = 0n;
+            try {
                 if (sel === 'LICN') {
-                    maxSend = Math.max(0, (window.walletBalance || 0) - baseFee);
+                    const balanceBaseUnits = parseDecimalBaseUnits(String(window.walletBalance || 0), 9, 'Wallet balance');
+                    const baseFeeSpores = getNetworkBaseFeeSpores();
+                    maxSendBaseUnits = balanceBaseUnits > baseFeeSpores ? balanceBaseUnits - baseFeeSpores : 0n;
                 } else if (sel === 'stLICN') {
                     const pos = await rpc.call('getStakingPosition', [getActiveWallet()?.address]);
-                    maxSend = (pos?.st_licn_amount || 0) / SPORES_PER_LICN;
+                    maxSendBaseUnits = u64ValueToBigInt(pos?.st_licn_amount || 0);
                 } else {
-                    maxSend = await getTokenBalanceFormatted(sel, getActiveWallet()?.address) || 0;
+                    const formattedBalance = await getTokenBalanceFormatted(sel, getActiveWallet()?.address) || '0';
+                    maxSendBaseUnits = parseDecimalBaseUnits(String(formattedBalance), tokenDecimalsForBaseUnits(sel), `${sel} balance`);
                 }
             } catch (_) { /* keep 0 */ }
-            if (v > maxSend) this.value = maxSend > 0 ? maxSend : '';
+            if (amountBaseUnits > maxSendBaseUnits) {
+                this.value = maxSendBaseUnits > 0n
+                    ? baseUnitsToDecimalString(maxSendBaseUnits, tokenDecimalsForBaseUnits(sel))
+                    : '';
+            }
         };
     }
 
@@ -5228,15 +5239,16 @@ function showPasswordModal(options) {
                 return `<div class="form-group"><label>${field.label}</label><select id="${field.id}" class="form-input">${optionsHTML}</select></div>`;
             }
             const val = field.value !== undefined ? ` value="${escapeHtml(String(field.value))}"` : '';
-            const minAttr = field.min !== undefined ? ` min="${field.min}"` : '';
-            const maxAttr = field.max !== undefined ? ` max="${field.max}"` : '';
-            const stepAttr = field.step !== undefined ? ` step="${field.step}"` : '';
             const isNumber = field.type === 'number';
-            const inputKind = isNumber ? ' data-input-kind="number"' : '';
             const integerAttr = isNumber && field.step !== undefined && Number(field.step) === 1 ? ' data-integer="true"' : '';
+            const minAttr = field.min !== undefined ? (isNumber ? ` data-min="${field.min}"` : ` min="${field.min}"`) : '';
+            const maxAttr = field.max !== undefined ? (isNumber ? ` data-max="${field.max}"` : ` max="${field.max}"`) : '';
+            const stepAttr = field.step !== undefined ? (isNumber ? ` data-step="${field.step}"` : ` step="${field.step}"`) : '';
+            const inputKind = isNumber ? ' data-input-kind="number" data-wallet-numeric="true"' : '';
             const addressAttr = /address|recipient|vouchee/i.test(`${field.id} ${field.label || ''}`) ? ' data-address-input="base58"' : '';
             const inputMode = isNumber ? ` inputmode="${integerAttr ? 'numeric' : 'decimal'}"` : '';
-            return `<div class="form-group"><label>${field.label}</label><input type="${field.type}" id="${field.id}" class="form-input" placeholder="${field.placeholder || ''}"${val}${minAttr}${maxAttr}${stepAttr}${inputKind}${integerAttr}${addressAttr}${inputMode}></div>`;
+            const inputType = isNumber ? 'text' : field.type;
+            return `<div class="form-group"><label>${field.label}</label><input type="${inputType}" id="${field.id}" class="form-input" placeholder="${field.placeholder || ''}"${val}${minAttr}${maxAttr}${stepAttr}${inputKind}${integerAttr}${addressAttr}${inputMode}></div>`;
         }).join('');
 
         modal.innerHTML = `

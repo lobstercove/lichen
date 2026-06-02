@@ -1,8 +1,9 @@
 import { LichenRPC, getConfiguredRpcEndpoint, getTrustedRpcEndpoint } from './rpc-service.js';
 import { base58Decode, decryptPrivateKey } from './crypto-service.js';
 import { buildSignedSingleInstructionTransaction, encodeTransactionBase64 } from './tx-service.js';
+import { baseUnitsToDecimalString, parseDecimalBaseUnits } from './amount-service.js';
 
-const BASE_FEE_LICN = 0.001;
+const BASE_FEE_SPORES = 1_000_000n;
 
 function ensureWalletAndPassword(wallet, password) {
   if (!wallet) throw new Error('No active wallet');
@@ -120,12 +121,21 @@ function validateNameFormat(normalized) {
   }
 }
 
-function parseAgentType(agentType) {
-  const value = Number(agentType ?? 9);
-  if (!Number.isInteger(value) || value < 0 || value > 9) {
-    throw new Error('Agent type must be an integer between 0 and 9');
+function parseIntegerRange(value, label, min, max, fallback = null) {
+  const text = String(value ?? '').trim();
+  if (!text && fallback !== null) return fallback;
+  if (!/^\d+$/.test(text)) {
+    throw new Error(`${label} must be an integer between ${min} and ${max}`);
   }
-  return value;
+  const parsed = Number(text);
+  if (!Number.isSafeInteger(parsed) || parsed < min || parsed > max) {
+    throw new Error(`${label} must be an integer between ${min} and ${max}`);
+  }
+  return parsed;
+}
+
+function parseAgentType(agentType) {
+  return parseIntegerRange(agentType, 'Agent type', 0, 10, 9);
 }
 
 function isAddressLike(address) {
@@ -161,14 +171,34 @@ function validateEndpoint(endpoint) {
 }
 
 function parseRateLicn(rateLicn) {
-  const parsed = Number(rateLicn ?? 0);
-  if (!Number.isFinite(parsed) || parsed < 0) {
-    throw new Error('Rate must be a non-negative number');
-  }
-  if (parsed > 1_000_000) {
+  const spores = parseDecimalBaseUnits(rateLicn ?? '0', 9, 'Rate');
+  if (spores > 1_000_000n * 1_000_000_000n) {
     throw new Error('Rate is above supported maximum');
   }
-  return parsed;
+  return spores;
+}
+
+function baseUnitBigInt(value) {
+  if (typeof value === 'bigint') return value >= 0n ? value : 0n;
+  if (typeof value === 'number') return Number.isSafeInteger(value) && value >= 0 ? BigInt(value) : 0n;
+  const text = String(value ?? '0').trim();
+  return /^\d+$/.test(text) ? BigInt(text) : 0n;
+}
+
+function valueLicnToSpores(valueLicn) {
+  if (typeof valueLicn === 'bigint') {
+    if (valueLicn < 0n) throw new Error('Transaction value must be non-negative');
+    return valueLicn;
+  }
+  return parseDecimalBaseUnits(valueLicn ?? '0', 9, 'Transaction value');
+}
+
+function sporesToJsonNumber(spores, label = 'Transaction value') {
+  const value = baseUnitBigInt(spores);
+  if (value > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error(`${label} is above the supported browser-safe transaction value`);
+  }
+  return Number(value);
 }
 
 export async function loadIdentitySnapshot(address, network) {
@@ -258,6 +288,8 @@ async function getLichenIdProgramAddress(network) {
 
 async function sendIdentityContractCall({ wallet, password, network, functionName, args, valueLicn = 0 }) {
   ensureWalletAndPassword(wallet, password);
+  const valueSpores = valueLicnToSpores(valueLicn);
+  const valueJson = sporesToJsonNumber(valueSpores);
 
   const rpc = new LichenRPC(await getConfiguredRpcEndpoint(network));
   const lichenidAddr = await getLichenIdProgramAddress(network);
@@ -265,10 +297,10 @@ async function sendIdentityContractCall({ wallet, password, network, functionNam
 
   try {
     const balanceResult = await rpc.getBalance(wallet.address);
-    const spendable = Number(balanceResult?.spendable ?? balanceResult?.balance ?? 0) / 1_000_000_000;
-    const required = Number(valueLicn || 0) + BASE_FEE_LICN;
-    if (Number.isFinite(spendable) && spendable < required) {
-      throw new Error(`Insufficient LICN: need ${required.toFixed(6)}, have ${spendable.toFixed(6)} spendable`);
+    const spendable = baseUnitBigInt(balanceResult?.spendable ?? balanceResult?.balance ?? 0);
+    const required = valueSpores + BASE_FEE_SPORES;
+    if (spendable < required) {
+      throw new Error(`Insufficient LICN: need ${baseUnitsToDecimalString(required, 9)}, have ${baseUnitsToDecimalString(spendable, 9)} spendable`);
     }
   } catch (error) {
     if (String(error?.message || '').includes('Insufficient LICN')) {
@@ -286,7 +318,7 @@ async function sendIdentityContractCall({ wallet, password, network, functionNam
     Call: {
       function: functionName,
       args: Array.from(argsBytes),
-      value: Math.floor(valueLicn * 1_000_000_000)
+      value: valueJson
     }
   });
 
@@ -327,10 +359,7 @@ export async function addIdentitySkill({ wallet, password, network, skillName, p
   if (!name) throw new Error('Skill name required');
   if (name.length > 64) throw new Error('Skill name must be 64 characters or less');
 
-  const prof = Number(proficiency ?? 50);
-  if (!Number.isFinite(prof) || prof < 1 || prof > 100) {
-    throw new Error('Proficiency must be between 1 and 100');
-  }
+  const prof = parseIntegerRange(proficiency, 'Proficiency', 1, 100, 50);
 
   return sendIdentityContractCall({
     wallet,
@@ -339,7 +368,7 @@ export async function addIdentitySkill({ wallet, password, network, skillName, p
     functionName: 'add_skill',
     args: {
       name,
-      proficiency: Math.round(prof)
+      proficiency: prof
     }
   });
 }
@@ -403,7 +432,7 @@ export async function setIdentityAvailability({ wallet, password, network, onlin
 }
 
 export async function setIdentityRate({ wallet, password, network, rateLicn }) {
-  const rateSpores = Math.floor(parseRateLicn(rateLicn) * 1_000_000_000);
+  const rateSpores = parseRateLicn(rateLicn);
 
   return sendIdentityContractCall({
     wallet,
@@ -411,7 +440,7 @@ export async function setIdentityRate({ wallet, password, network, rateLicn }) {
     network,
     functionName: 'set_rate',
     args: {
-      licn_per_unit: rateSpores
+      licn_per_unit: rateSpores.toString()
     }
   });
 }
@@ -429,7 +458,7 @@ export async function registerLichenName({ wallet, password, network, name, dura
     throw new Error('3-4 char names are auction-only');
   }
 
-  const years = Math.max(1, Math.min(10, Number(durationYears || 1)));
+  const years = parseIntegerRange(durationYears, 'Duration years', 1, 10, 1);
   const valueLicn = getNameCostPerYear(normalized.length) * years;
 
   return sendIdentityContractCall({
@@ -449,7 +478,7 @@ export async function renewLichenName({ wallet, password, network, name, additio
   const normalized = normalizeName(name);
   validateNameFormat(normalized);
 
-  const years = Math.max(1, Math.min(10, Number(additionalYears || 1)));
+  const years = parseIntegerRange(additionalYears, 'Additional years', 1, 10, 1);
   const valueLicn = getNameCostPerYear(normalized.length) * years;
 
   return sendIdentityContractCall({

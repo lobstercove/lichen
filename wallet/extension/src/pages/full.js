@@ -47,6 +47,7 @@ import {
 } from '../core/restriction-service.js';
 import {
   baseUnitsToDecimalString,
+  parseDecimalBaseUnits,
   parsePositiveDecimalBaseUnits
 } from '../core/amount-service.js';
 
@@ -159,7 +160,7 @@ function sanitizeExtHex(value) {
 
 function applyExtensionInputGuards(root = document) {
   const scope = root || document;
-  scope.querySelectorAll('input[type="number"], input[data-input-kind="number"], input[data-wallet-numeric]').forEach((input) => {
+  scope.querySelectorAll('input[data-input-kind="number"], input[data-wallet-numeric]').forEach((input) => {
     if (input.dataset.extNumericGuarded === '1') return;
     input.dataset.extNumericGuarded = '1';
     if (!input.getAttribute('inputmode')) input.setAttribute('inputmode', extNumberAllowsDecimal(input) ? 'decimal' : 'numeric');
@@ -372,6 +373,17 @@ function baseUnitBigIntExt(value) {
 
 function parseLicnAmountSporesExt(value, label = 'Amount') {
   return parsePositiveDecimalBaseUnits(value, 9, label);
+}
+
+function parseExtensionIntegerRange(value, label, min, max, fallback = null) {
+  const text = String(value ?? '').trim();
+  if (!text && fallback !== null) return fallback;
+  if (!/^\d+$/.test(text)) throw new Error(`${label} must be an integer between ${min} and ${max}`);
+  const parsed = Number(text);
+  if (!Number.isSafeInteger(parsed) || parsed < min || parsed > max) {
+    throw new Error(`${label} must be an integer between ${min} and ${max}`);
+  }
+  return parsed;
 }
 
 function formatLicnBaseUnitsExactExt(value) {
@@ -1638,7 +1650,7 @@ async function showStakeModal() {
     <div style="background:var(--bg);border:1px solid var(--border);border-radius:16px;padding:2rem;width:420px;max-width:90vw;">
       <h3 style="margin:0 0 1rem;"><i class="fas fa-layer-group" style="color:#3b82f6;"></i> Stake to Liquid Staking</h3>
       <label style="font-size:0.85rem;font-weight:600;display:block;margin-bottom:0.25rem;">Amount (LICN)</label>
-      <input type="number" id="stakeAmountInput" placeholder="0.00" style="width:100%;padding:0.75rem;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);margin-bottom:1rem;box-sizing:border-box;">
+      <input type="text" id="stakeAmountInput" placeholder="0.00" inputmode="decimal" data-wallet-numeric="true" data-min="0" style="width:100%;padding:0.75rem;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);margin-bottom:1rem;box-sizing:border-box;">
       <label style="font-size:0.85rem;font-weight:600;display:block;margin-bottom:0.25rem;">Lock Tier</label>
       <select id="stakeTierSelect" style="width:100%;padding:0.75rem;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);margin-bottom:1rem;box-sizing:border-box;">
         <option value="0">Flexible — 7-day cooldown, 1x rewards</option>
@@ -1656,6 +1668,7 @@ async function showStakeModal() {
     </div>
   `;
   document.body.appendChild(overlay);
+  applyExtensionInputGuards(overlay);
 
   overlay.querySelector('#stakeCancelBtn').addEventListener('click', () => overlay.remove());
   overlay.querySelector('#stakeConfirmBtn').addEventListener('click', async () => {
@@ -1709,7 +1722,7 @@ async function showUnstakeModal() {
       <h3 style="margin:0 0 1rem;"><i class="fas fa-unlock-alt" style="color:#f59e0b;"></i> Unstake from Liquid Staking</h3>
       <p style="font-size:0.85rem;color:var(--text-muted);margin-bottom:1rem;">After requesting, there is a <strong>7-day cooldown</strong> before you can claim your LICN.</p>
       <label style="font-size:0.85rem;font-weight:600;display:block;margin-bottom:0.25rem;">Amount (stLICN)</label>
-      <input type="number" id="unstakeAmountInput" placeholder="0.00" style="width:100%;padding:0.75rem;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);margin-bottom:1rem;box-sizing:border-box;">
+      <input type="text" id="unstakeAmountInput" placeholder="0.00" inputmode="decimal" data-wallet-numeric="true" data-min="0" style="width:100%;padding:0.75rem;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);margin-bottom:1rem;box-sizing:border-box;">
       <label style="font-size:0.85rem;font-weight:600;display:block;margin-bottom:0.25rem;">Wallet Password</label>
       <input type="password" id="unstakePasswordInput" placeholder="Enter password" style="width:100%;padding:0.75rem;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);margin-bottom:1.25rem;box-sizing:border-box;">
       <div style="display:flex;gap:0.75rem;">
@@ -1720,6 +1733,7 @@ async function showUnstakeModal() {
     </div>
   `;
   document.body.appendChild(overlay);
+  applyExtensionInputGuards(overlay);
 
   overlay.querySelector('#unstakeCancelBtn').addEventListener('click', () => overlay.remove());
   overlay.querySelector('#unstakeConfirmBtn').addEventListener('click', async () => {
@@ -2662,7 +2676,7 @@ function showShieldModal(type) {
     <div style="background:var(--bg);border:1px solid var(--border);border-radius:16px;padding:2rem;width:420px;max-width:90vw;">
       <h3 style="margin:0 0 1rem;"><i class="fas ${icons[type]}" style="color:#10b981;"></i> ${titles[type]}</h3>
       <label style="font-size:0.85rem;font-weight:600;display:block;margin-bottom:0.25rem;">Amount (LICN)</label>
-      <input type="number" id="shieldModalAmount" placeholder="0.00" min="0" step="0.0001" inputmode="decimal" data-wallet-numeric="true" style="width:100%;padding:0.75rem;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);margin-bottom:1rem;box-sizing:border-box;">
+      <input type="text" id="shieldModalAmount" placeholder="0.00" inputmode="decimal" data-wallet-numeric="true" data-min="0" style="width:100%;padding:0.75rem;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);margin-bottom:1rem;box-sizing:border-box;">
       ${extraField}
       <label style="font-size:0.85rem;font-weight:600;display:block;margin-bottom:0.25rem;">Wallet Password</label>
       <input type="password" id="shieldModalPassword" placeholder="Enter password" style="width:100%;padding:0.75rem;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);margin-bottom:1.25rem;box-sizing:border-box;">
@@ -3028,15 +3042,16 @@ function showIdentityPrompt(title, fields, onSubmit, onRender) {
     if (f.type === 'info') {
       return `<div style="font-size:0.82rem;color:var(--text-muted);margin-bottom:0.75rem;padding:0.5rem;background:var(--bg-tertiary);border-radius:8px;">${f.html}</div>`;
     }
-    const minAttr = f.min !== undefined ? ` min="${f.min}"` : '';
-    const maxAttr = f.max !== undefined ? ` max="${f.max}"` : '';
-    const stepAttr = f.step !== undefined ? ` step="${f.step}"` : '';
     const isNumber = f.type === 'number';
-    const inputKind = isNumber ? ' data-input-kind="number"' : '';
     const integerAttr = isNumber && f.step !== undefined && Number(f.step) === 1 ? ' data-integer="true"' : '';
+    const minAttr = f.min !== undefined ? (isNumber ? ` data-min="${f.min}"` : ` min="${f.min}"`) : '';
+    const maxAttr = f.max !== undefined ? (isNumber ? ` data-max="${f.max}"` : ` max="${f.max}"`) : '';
+    const stepAttr = f.step !== undefined ? (isNumber ? ` data-step="${f.step}"` : ` step="${f.step}"`) : '';
+    const inputKind = isNumber ? ' data-input-kind="number" data-wallet-numeric="true"' : '';
     const addressAttr = /address|recipient|vouchee/i.test(`${f.id} ${f.label || ''}`) ? ' data-address-input="base58"' : '';
     const inputMode = isNumber ? ` inputmode="${integerAttr ? 'numeric' : 'decimal'}"` : '';
-    return `<div class="form-group" style="margin-bottom:0.75rem;"><label style="font-size:0.82rem;color:var(--text-muted);display:block;margin-bottom:0.25rem;">${f.label}</label><input type="${f.type || 'text'}" id="idModal_${f.id}" class="form-input" placeholder="${f.placeholder || ''}" value="${f.value || ''}"${minAttr}${maxAttr}${stepAttr}${inputKind}${integerAttr}${addressAttr}${inputMode} style="width:100%;"></div>`;
+    const inputType = isNumber ? 'text' : (f.type || 'text');
+    return `<div class="form-group" style="margin-bottom:0.75rem;"><label style="font-size:0.82rem;color:var(--text-muted);display:block;margin-bottom:0.25rem;">${f.label}</label><input type="${inputType}" id="idModal_${f.id}" class="form-input" placeholder="${f.placeholder || ''}" value="${f.value || ''}"${minAttr}${maxAttr}${stepAttr}${inputKind}${integerAttr}${addressAttr}${inputMode} style="width:100%;"></div>`;
   }).join('');
 
   card.innerHTML = `
@@ -3185,7 +3200,10 @@ async function showIdentityRegisterNameModal() {
     }
     const updateCost = () => {
       const n = bareLichenNameExt(nameInput?.value || '');
-      const d = Math.max(1, Math.min(10, parseInt(durationInput?.value) || 1));
+      let d = 1;
+      try {
+        d = parseExtensionIntegerRange(durationInput?.value, 'Duration', 1, 10, 1);
+      } catch (_) { }
       if (n.length >= 5) {
         const costPerYear = n.length <= 3 ? 500 : n.length === 4 ? 100 : 20;
         const total = costPerYear * d;
@@ -3271,7 +3289,9 @@ async function showIdentityAgentConfigModal(data) {
     if (values.endpoint !== (data.endpoint || '')) {
       tasks.push(() => setIdentityEndpoint({ wallet, password: values.password, network: state.network?.selected, endpoint: values.endpoint }));
     }
-    if (Number(values.rate || 0) !== data.rate) {
+    const newRateSpores = parseDecimalBaseUnits(values.rate || '0', 9, 'Rate');
+    const oldRateSpores = parseDecimalBaseUnits(String(data.rate || 0), 9, 'Rate');
+    if (newRateSpores !== oldRateSpores) {
       tasks.push(() => setIdentityRate({ wallet, password: values.password, network: state.network?.selected, rateLicn: values.rate }));
     }
     const newOnline = values.availability === 'online';

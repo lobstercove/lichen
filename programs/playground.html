@@ -612,8 +612,8 @@
 
                     <div class="form-group">
                         <label>Initial Funding (LICN)</label>
-                        <input type="number" class="form-input" id="initialFunding" placeholder="1.0" value="1.0"
-                            step="0.1" min="0">
+                        <input type="text" class="form-input" id="initialFunding" placeholder="1.0" value="1.0"
+                            inputmode="decimal" data-programs-numeric="true" data-min="0">
                     </div>
 
                     <div class="form-group">
@@ -852,8 +852,8 @@
                         </div>
                         <div class="form-group">
                             <label>Amount (LICN)</label>
-                            <input type="number" class="form-input-sm" id="transferAmount" placeholder="0.00"
-                                step="0.01">
+                            <input type="text" class="form-input-sm" id="transferAmount" placeholder="0.00"
+                                inputmode="decimal" data-programs-numeric="true" data-min="0">
                         </div>
                         <button class="btn btn-primary btn-block btn-sm" id="transferBtn">
                             <i class="fas fa-paper-plane"></i> Send

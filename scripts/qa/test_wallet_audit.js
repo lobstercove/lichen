@@ -880,8 +880,10 @@ test('identity.js set_rate encoder matches LichenID ABI pointer+u64 layout', () 
 });
 
 test('identity.js set_rate update path submits licn_per_unit in spore units', () => {
-    assert(identitySrc.includes("buildContractCall('set_rate', { licn_per_unit: newRateSpores }, values.password)"),
-        'identity edit flow must pass set_rate as licn_per_unit spores');
+    assert(identitySrc.includes("newRateSpores = parseIdentityLicnSpores(values.rate || '0', 'Rate', { allowZero: true });"),
+        'identity edit flow should parse set_rate through strict base-unit helpers');
+    assert(identitySrc.includes("buildContractCall('set_rate', { licn_per_unit: newRateSpores.toString() }, values.password)"),
+        'identity edit flow must pass set_rate as integer spore units');
 });
 
 console.log('\nW-18: Wallet low-priority UX wiring');
@@ -954,10 +956,12 @@ test('wallet receive view hides EVM address until registration exists', () => {
 console.log('\nW-21: Name auction bid units and args wiring');
 
 test('identity.js bid_name_auction passes bid_amount in LICN and converts to spore units', () => {
-    assert(identitySrc.includes('bid_amount: bidAmount'),
-        'identity bid flow should pass bid_amount into bid_name_auction args');
-    assert(identitySrc.includes('Math.floor((params.bid_amount || 0) * 1_000_000_000)'),
-        'bid_name_auction encoder should convert bid_amount LICN into spore units');
+    assert(identitySrc.includes('bid_amount_spores: bidAmountSpores.toString()'),
+        'identity bid flow should pass integer spore bid amount into bid_name_auction args');
+    assert(identitySrc.includes('identityU64ToBigInt(params.bid_amount_spores)'),
+        'bid_name_auction encoder should use integer spore bid amounts');
+    assert(!identitySrc.includes('Math.floor((params.bid_amount || 0) * 1_000_000_000)'),
+        'bid_name_auction encoder should not use floating-point LICN conversion');
     assert(identitySrc.includes("buildContractCall('bid_name_auction'"),
         'identity bid flow should invoke bid_name_auction contract call');
 });
@@ -1363,6 +1367,11 @@ test('wallet locks unshield recipient to the active wallet address', () => {
 test('wallet applies numeric, base58, and hex input guards', () => {
     assert(walletSrc.includes('function applyWalletInputGuards('), 'wallet should centralize input guards');
     assert(walletSrc.includes('function sanitizeWalletNumberInput('), 'wallet should sanitize numeric fields');
+    assert(!walletHtml.includes('type="number"'), 'wallet should not use native number inputs for value-bearing fields');
+    assert(walletSrc.includes("const inputType = isNumber ? 'text' : field.type;"),
+        'wallet generated numeric modal fields should render as guarded text inputs');
+    assert(!walletSrc.includes('input[type="number"], input[data-input-kind="number"]'),
+        'wallet input guards should rely on explicit numeric data attributes instead of native number selectors');
     assert(walletSrc.includes("event.key === 'e' || event.key === 'E' || event.key === '+'"),
         'wallet numeric fields should reject exponent/plus shortcuts');
     assert(walletSrc.includes('input[data-address-input="base58"], #sendTo, #unshieldRecipient'),

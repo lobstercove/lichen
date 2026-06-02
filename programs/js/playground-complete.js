@@ -48,6 +48,145 @@ function sanitizeUrl(url) {
     }
 }
 
+function programsInputAllowsNegative(input) {
+    const minValue = Number(input?.dataset?.min ?? input?.getAttribute?.('min'));
+    return Number.isFinite(minValue) && minValue < 0;
+}
+
+function programsInputAllowsDecimal(input) {
+    if (input?.dataset?.decimal === 'false') return false;
+    if (input?.dataset?.programsNumeric === 'true') return true;
+    const stepValue = String(input?.getAttribute?.('step') || '').trim().toLowerCase();
+    if (!stepValue || stepValue === 'any') return true;
+    const numericStep = Number(stepValue);
+    return !Number.isFinite(numericStep) || !Number.isInteger(numericStep);
+}
+
+function sanitizeProgramsNumberInput(input, finalize = false) {
+    if (!input) return;
+    const allowNegative = programsInputAllowsNegative(input);
+    const allowDecimal = programsInputAllowsDecimal(input);
+    const rawValue = String(input.value || '');
+    let normalized = '';
+    let sawDot = false;
+    let sawSign = false;
+
+    for (const char of rawValue) {
+        if (char >= '0' && char <= '9') {
+            normalized += char;
+            continue;
+        }
+        if (char === '.' && allowDecimal && !sawDot) {
+            normalized += char;
+            sawDot = true;
+            continue;
+        }
+        if (char === '-' && allowNegative && !sawSign && normalized.length === 0) {
+            normalized += char;
+            sawSign = true;
+        }
+    }
+
+    if (normalized.startsWith('.')) {
+        normalized = `0${normalized}`;
+    } else if (normalized.startsWith('-.')) {
+        normalized = normalized.replace('-.', '-0.');
+    }
+
+    if (!finalize) {
+        if (normalized !== input.value) {
+            input.value = normalized;
+        }
+        return;
+    }
+
+    if (!normalized || normalized === '-' || normalized === '.' || normalized === '-.') {
+        input.value = '';
+        return;
+    }
+
+    let numericValue = Number(normalized);
+    if (!Number.isFinite(numericValue)) {
+        input.value = '';
+        return;
+    }
+
+    const minValue = Number(input.dataset.min ?? input.getAttribute('min'));
+    const maxValue = Number(input.dataset.max ?? input.getAttribute('max'));
+    if (Number.isFinite(minValue) && numericValue < minValue) {
+        numericValue = minValue;
+    }
+    if (Number.isFinite(maxValue) && numericValue > maxValue) {
+        numericValue = maxValue;
+    }
+    if (!allowDecimal) {
+        numericValue = Math.trunc(numericValue);
+    }
+
+    input.value = String(numericValue);
+}
+
+function applyProgramsInputGuards(root = document) {
+    root.querySelectorAll('input[data-programs-numeric="true"]').forEach((input) => {
+        if (input.dataset.programsNumericGuarded === '1') return;
+        input.dataset.programsNumericGuarded = '1';
+        if (!input.getAttribute('inputmode')) {
+            input.setAttribute('inputmode', programsInputAllowsDecimal(input) ? 'decimal' : 'numeric');
+        }
+        input.addEventListener('keydown', (event) => {
+            if (event.ctrlKey || event.metaKey || event.altKey) return;
+            if (event.key === 'e' || event.key === 'E' || event.key === '+') {
+                event.preventDefault();
+                return;
+            }
+            if (event.key === '-' && !programsInputAllowsNegative(input)) {
+                event.preventDefault();
+                return;
+            }
+            if (event.key === '.' && !programsInputAllowsDecimal(input)) {
+                event.preventDefault();
+            }
+        });
+        input.addEventListener('input', () => sanitizeProgramsNumberInput(input, false));
+        input.addEventListener('change', () => sanitizeProgramsNumberInput(input, true));
+        input.addEventListener('blur', () => sanitizeProgramsNumberInput(input, true));
+        input.addEventListener('paste', () => {
+            requestAnimationFrame(() => sanitizeProgramsNumberInput(input, false));
+        });
+    });
+}
+
+function observeProgramsInputGuards() {
+    if (window.__lichenProgramsNumericInputObserver) return;
+    window.__lichenProgramsNumericInputObserver = new MutationObserver((mutations) => {
+        for (const mutation of mutations) {
+            for (const node of mutation.addedNodes) {
+                if (node instanceof Element) {
+                    applyProgramsInputGuards(node);
+                }
+            }
+        }
+    });
+    window.__lichenProgramsNumericInputObserver.observe(document.body, {
+        childList: true,
+        subtree: true,
+    });
+}
+
+function parseProgramsDecimal(raw) {
+    const value = String(raw ?? '').trim();
+    if (!/^-?\d+(?:\.\d+)?$/.test(value)) return null;
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : null;
+}
+
+function parseProgramsInteger(raw) {
+    const value = String(raw ?? '').trim();
+    if (!/^-?\d+$/.test(value)) return null;
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : null;
+}
+
 // ============================================================================
 // COMPLETE STATE MANAGEMENT
 // ============================================================================
@@ -222,6 +361,8 @@ const Playground = {
 
         // Setup all event listeners
         this.setupEventListeners();
+        applyProgramsInputGuards();
+        observeProgramsInputGuards();
 
         // Load saved state from localStorage
         await this.loadSavedState();
@@ -1307,11 +1448,11 @@ const Playground = {
                     </div>
                     <div class="form-group">
                         <label>Decimals</label>
-                        <input type="number" class="form-input" id="tokenDecimalsInput" min="0" max="18" step="1">
+                        <input type="text" class="form-input" id="tokenDecimalsInput" inputmode="numeric" data-programs-numeric="true" data-decimal="false" data-min="0" data-max="18">
                     </div>
                     <div class="form-group">
                         <label>Initial Supply</label>
-                        <input type="text" class="form-input" id="tokenSupplyInput" placeholder="1000000">
+                        <input type="text" class="form-input" id="tokenSupplyInput" placeholder="1000000" inputmode="numeric" data-programs-numeric="true" data-decimal="false" data-min="0">
                     </div>
                     <div class="form-group">
                         <label>Website URL</label>
@@ -1435,11 +1576,11 @@ const Playground = {
                     </div>
                     <div class="form-group">
                         <label>Max Supply (0 = unlimited)</label>
-                        <input type="text" class="form-input" id="nftMaxSupplyInput" placeholder="10000">
+                        <input type="text" class="form-input" id="nftMaxSupplyInput" placeholder="10000" inputmode="numeric" data-programs-numeric="true" data-decimal="false" data-min="0">
                     </div>
                     <div class="form-group">
                         <label>Royalty (BPS)</label>
-                        <input type="number" class="form-input" id="nftRoyaltyInput" min="0" max="10000" step="1">
+                        <input type="text" class="form-input" id="nftRoyaltyInput" inputmode="numeric" data-programs-numeric="true" data-decimal="false" data-min="0" data-max="10000">
                     </div>
                     <div class="form-group">
                         <label>Mint Authority</label>
@@ -1512,17 +1653,17 @@ const Playground = {
                 <div class="template-options-grid">
                     <div class="form-group">
                         <label>Collateral Factor %</label>
-                        <input type="number" class="form-input" id="lendCollateralInput" min="25" max="95" step="1" value="${current.collateralFactor}">
+                        <input type="text" class="form-input" id="lendCollateralInput" inputmode="numeric" data-programs-numeric="true" data-decimal="false" data-min="25" data-max="95" value="${escapeHtml(String(current.collateralFactor))}">
                         <div class="template-options-note">Max borrow = this % of deposit value</div>
                     </div>
                     <div class="form-group">
                         <label>Liquidation Threshold %</label>
-                        <input type="number" class="form-input" id="lendLiqThreshInput" min="50" max="99" step="1" value="${current.liquidationThreshold}">
+                        <input type="text" class="form-input" id="lendLiqThreshInput" inputmode="numeric" data-programs-numeric="true" data-decimal="false" data-min="50" data-max="99" value="${escapeHtml(String(current.liquidationThreshold))}">
                         <div class="template-options-note">Position liquidated above this %</div>
                     </div>
                     <div class="form-group">
                         <label>Liquidation Bonus %</label>
-                        <input type="number" class="form-input" id="lendLiqBonusInput" min="1" max="20" step="1" value="${current.liquidationBonus}">
+                        <input type="text" class="form-input" id="lendLiqBonusInput" inputmode="numeric" data-programs-numeric="true" data-decimal="false" data-min="1" data-max="20" value="${escapeHtml(String(current.liquidationBonus))}">
                         <div class="template-options-note">Reward for liquidators</div>
                     </div>
                 </div>
@@ -1545,12 +1686,12 @@ const Playground = {
                 <div class="template-options-grid">
                     <div class="form-group">
                         <label>Platform Fee %</label>
-                        <input type="number" class="form-input" id="launchPlatformFeeInput" min="0" max="10" step="1" value="${current.platformFee}">
+                        <input type="text" class="form-input" id="launchPlatformFeeInput" inputmode="numeric" data-programs-numeric="true" data-decimal="false" data-min="0" data-max="10" value="${escapeHtml(String(current.platformFee))}">
                         <div class="template-options-note">Fee on every bonding-curve trade</div>
                     </div>
                     <div class="form-group">
                         <label>Graduation Market Cap</label>
-                        <input type="number" class="form-input" id="launchGradMcapInput" min="100000" max="10000000" step="1000" value="${current.graduationMcap}">
+                        <input type="text" class="form-input" id="launchGradMcapInput" inputmode="numeric" data-programs-numeric="true" data-decimal="false" data-min="100000" data-max="10000000" value="${escapeHtml(String(current.graduationMcap))}">
                         <div class="template-options-note">LICN market cap to graduate to LichenSwap</div>
                     </div>
                 </div>
@@ -1572,12 +1713,12 @@ const Playground = {
                 <div class="template-options-grid">
                     <div class="form-group">
                         <label>Performance Fee %</label>
-                        <input type="number" class="form-input" id="vaultPerfFeeInput" min="0" max="50" step="1" value="${current.performanceFee}">
+                        <input type="text" class="form-input" id="vaultPerfFeeInput" inputmode="numeric" data-programs-numeric="true" data-decimal="false" data-min="0" data-max="50" value="${escapeHtml(String(current.performanceFee))}">
                         <div class="template-options-note">Fee taken on harvested yield</div>
                     </div>
                     <div class="form-group">
                         <label>Max Strategies</label>
-                        <input type="number" class="form-input" id="vaultMaxStratInput" min="1" max="10" step="1" value="${current.maxStrategies}">
+                        <input type="text" class="form-input" id="vaultMaxStratInput" inputmode="numeric" data-programs-numeric="true" data-decimal="false" data-min="1" data-max="10" value="${escapeHtml(String(current.maxStrategies))}">
                         <div class="template-options-note">Maximum active yield strategies</div>
                     </div>
                 </div>
@@ -1599,22 +1740,22 @@ const Playground = {
                 <div class="template-options-grid">
                     <div class="form-group">
                         <label>Initial Reputation</label>
-                        <input type="number" class="form-input" id="idInitRepInput" min="1" max="10000" step="1" value="${current.initialReputation}">
+                        <input type="text" class="form-input" id="idInitRepInput" inputmode="numeric" data-programs-numeric="true" data-decimal="false" data-min="1" data-max="10000" value="${escapeHtml(String(current.initialReputation))}">
                         <div class="template-options-note">Rep score on registration</div>
                     </div>
                     <div class="form-group">
                         <label>Max Reputation</label>
-                        <input type="number" class="form-input" id="idMaxRepInput" min="1000" max="1000000" step="1000" value="${current.maxReputation}">
+                        <input type="text" class="form-input" id="idMaxRepInput" inputmode="numeric" data-programs-numeric="true" data-decimal="false" data-min="1000" data-max="1000000" value="${escapeHtml(String(current.maxReputation))}">
                         <div class="template-options-note">Reputation ceiling</div>
                     </div>
                     <div class="form-group">
                         <label>Vouch Cost</label>
-                        <input type="number" class="form-input" id="idVouchCostInput" min="1" max="100" step="1" value="${current.vouchCost}">
+                        <input type="text" class="form-input" id="idVouchCostInput" inputmode="numeric" data-programs-numeric="true" data-decimal="false" data-min="1" data-max="100" value="${escapeHtml(String(current.vouchCost))}">
                         <div class="template-options-note">Rep deducted from voucher</div>
                     </div>
                     <div class="form-group">
                         <label>Vouch Reward</label>
-                        <input type="number" class="form-input" id="idVouchRewardInput" min="1" max="200" step="1" value="${current.vouchReward}">
+                        <input type="text" class="form-input" id="idVouchRewardInput" inputmode="numeric" data-programs-numeric="true" data-decimal="false" data-min="1" data-max="200" value="${escapeHtml(String(current.vouchReward))}">
                         <div class="template-options-note">Rep gained by the vouched agent</div>
                     </div>
                 </div>
@@ -1639,7 +1780,7 @@ const Playground = {
                 <div class="template-options-grid">
                     <div class="form-group">
                         <label>Marketplace Fee (BPS)</label>
-                        <input type="number" class="form-input" id="mktFeeBpsInput" min="0" max="1000" step="25" value="${current.feeBps}">
+                        <input type="text" class="form-input" id="mktFeeBpsInput" inputmode="numeric" data-programs-numeric="true" data-decimal="false" data-min="0" data-max="1000" value="${escapeHtml(String(current.feeBps))}">
                         <div class="template-options-note">${feePercent}% — 100 BPS = 1%</div>
                     </div>
                 </div>
@@ -1660,12 +1801,12 @@ const Playground = {
                 <div class="template-options-grid">
                     <div class="form-group">
                         <label>Auction Duration (hours)</label>
-                        <input type="number" class="form-input" id="auctDurationInput" min="1" max="168" step="1" value="${current.durationHours}">
+                        <input type="text" class="form-input" id="auctDurationInput" inputmode="numeric" data-programs-numeric="true" data-decimal="false" data-min="1" data-max="168" value="${escapeHtml(String(current.durationHours))}">
                         <div class="template-options-note">Default: 24h — max 168h (7 days)</div>
                     </div>
                     <div class="form-group">
                         <label>Min Bid Increment %</label>
-                        <input type="number" class="form-input" id="auctMinBidInput" min="1" max="50" step="1" value="${current.minBidIncrement}">
+                        <input type="text" class="form-input" id="auctMinBidInput" inputmode="numeric" data-programs-numeric="true" data-decimal="false" data-min="1" data-max="50" value="${escapeHtml(String(current.minBidIncrement))}">
                         <div class="template-options-note">Each bid must exceed previous by this %</div>
                     </div>
                 </div>
@@ -1977,7 +2118,7 @@ const Playground = {
     normalizeNftRoyalty(raw) {
         const trimmed = (raw || '').trim();
         if (trimmed === '') return 0;
-        const parsed = Number.parseInt(trimmed, 10);
+        const parsed = parseProgramsInteger(trimmed);
         if (!Number.isFinite(parsed)) return null;
         if (parsed < 0 || parsed > 10000) return null;
         return parsed;
@@ -1991,7 +2132,7 @@ const Playground = {
     },
 
     normalizeTokenDecimals(raw) {
-        const parsed = Number.parseInt(raw, 10);
+        const parsed = parseProgramsInteger(raw);
         if (!Number.isFinite(parsed)) return null;
         if (parsed < 0 || parsed > 18) return null;
         return parsed;
@@ -2050,9 +2191,9 @@ const Playground = {
         this.applyLendingTemplateOptions(opts);
     },
     readLendingOptionsFromUI() {
-        const cf = parseInt(document.getElementById('lendCollateralInput')?.value, 10);
-        const lt = parseInt(document.getElementById('lendLiqThreshInput')?.value, 10);
-        const lb = parseInt(document.getElementById('lendLiqBonusInput')?.value, 10);
+        const cf = parseProgramsInteger(document.getElementById('lendCollateralInput')?.value);
+        const lt = parseProgramsInteger(document.getElementById('lendLiqThreshInput')?.value);
+        const lb = parseProgramsInteger(document.getElementById('lendLiqBonusInput')?.value);
         if (![cf, lt, lb].every(v => Number.isFinite(v))) return null;
         return { collateralFactor: Math.max(25, Math.min(95, cf)), liquidationThreshold: Math.max(50, Math.min(99, lt)), liquidationBonus: Math.max(1, Math.min(20, lb)) };
     },
@@ -2078,8 +2219,8 @@ const Playground = {
         this.applyLaunchpadTemplateOptions(opts);
     },
     readLaunchpadOptionsFromUI() {
-        const pf = parseInt(document.getElementById('launchPlatformFeeInput')?.value, 10);
-        const gm = parseInt(document.getElementById('launchGradMcapInput')?.value, 10);
+        const pf = parseProgramsInteger(document.getElementById('launchPlatformFeeInput')?.value);
+        const gm = parseProgramsInteger(document.getElementById('launchGradMcapInput')?.value);
         if (![pf, gm].every(v => Number.isFinite(v))) return null;
         return { platformFee: Math.max(0, Math.min(10, pf)), graduationMcap: Math.max(100000, Math.min(10000000, gm)) };
     },
@@ -2105,8 +2246,8 @@ const Playground = {
         this.applyVaultTemplateOptions(opts);
     },
     readVaultOptionsFromUI() {
-        const pf = parseInt(document.getElementById('vaultPerfFeeInput')?.value, 10);
-        const ms = parseInt(document.getElementById('vaultMaxStratInput')?.value, 10);
+        const pf = parseProgramsInteger(document.getElementById('vaultPerfFeeInput')?.value);
+        const ms = parseProgramsInteger(document.getElementById('vaultMaxStratInput')?.value);
         if (![pf, ms].every(v => Number.isFinite(v))) return null;
         return { performanceFee: Math.max(0, Math.min(50, pf)), maxStrategies: Math.max(1, Math.min(10, ms)) };
     },
@@ -2134,10 +2275,10 @@ const Playground = {
         this.applyIdentityTemplateOptions(opts);
     },
     readIdentityOptionsFromUI() {
-        const ir = parseInt(document.getElementById('idInitRepInput')?.value, 10);
-        const mr = parseInt(document.getElementById('idMaxRepInput')?.value, 10);
-        const vc = parseInt(document.getElementById('idVouchCostInput')?.value, 10);
-        const vr = parseInt(document.getElementById('idVouchRewardInput')?.value, 10);
+        const ir = parseProgramsInteger(document.getElementById('idInitRepInput')?.value);
+        const mr = parseProgramsInteger(document.getElementById('idMaxRepInput')?.value);
+        const vc = parseProgramsInteger(document.getElementById('idVouchCostInput')?.value);
+        const vr = parseProgramsInteger(document.getElementById('idVouchRewardInput')?.value);
         if (![ir, mr, vc, vr].every(v => Number.isFinite(v))) return null;
         return { initialReputation: Math.max(1, Math.min(10000, ir)), maxReputation: Math.max(1000, Math.min(1000000, mr)), vouchCost: Math.max(1, Math.min(100, vc)), vouchReward: Math.max(1, Math.min(200, vr)) };
     },
@@ -2162,7 +2303,7 @@ const Playground = {
         this.applyMarketplaceTemplateOptions(opts);
     },
     readMarketplaceOptionsFromUI() {
-        const fb = parseInt(document.getElementById('mktFeeBpsInput')?.value, 10);
+        const fb = parseProgramsInteger(document.getElementById('mktFeeBpsInput')?.value);
         if (!Number.isFinite(fb)) return null;
         return { feeBps: Math.max(0, Math.min(1000, fb)) };
     },
@@ -2189,8 +2330,8 @@ const Playground = {
         this.applyAuctionTemplateOptions(opts);
     },
     readAuctionOptionsFromUI() {
-        const dh = parseInt(document.getElementById('auctDurationInput')?.value, 10);
-        const mb = parseInt(document.getElementById('auctMinBidInput')?.value, 10);
+        const dh = parseProgramsInteger(document.getElementById('auctDurationInput')?.value);
+        const mb = parseProgramsInteger(document.getElementById('auctMinBidInput')?.value);
         if (![dh, mb].every(v => Number.isFinite(v))) return null;
         return { durationHours: Math.max(1, Math.min(168, dh)), minBidIncrement: Math.max(1, Math.min(50, mb)) };
     },
@@ -3091,12 +3232,16 @@ pub extern "C" fn total_minted() -> u64 {
             const programName = document.getElementById('programName')?.value || 'my_program';
             const verify = document.getElementById('verifyCode')?.checked || false;
             const fundingInput = document.getElementById('initialFunding')?.value || '0';
-            const fundingLicn = Number.parseFloat(fundingInput);
+            const fundingLicn = parseProgramsDecimal(fundingInput);
             if (!Number.isFinite(fundingLicn) || fundingLicn < 0) {
                 this.addTerminalLine('❌ Initial funding must be a non-negative number', 'error');
                 return;
             }
             const initialFunding = Math.round(fundingLicn * 1_000_000_000);
+            if (!Number.isSafeInteger(initialFunding)) {
+                this.addTerminalLine('❌ Initial funding is too large', 'error');
+                return;
+            }
             const programIdOverride = this.getProgramIdOverride();
             const upgradeAuthority = document.getElementById('upgradeAuthority')?.value || 'wallet';
             const customAuthority = document.getElementById('customAuthority')?.value || '';
@@ -4323,10 +4468,11 @@ pub extern "C" fn total_minted() -> u64 {
     // ========================================================================
 
     async sendTransfer() {
-        const recipient = document.getElementById('transferTo')?.value;
-        const amount = parseFloat(document.getElementById('transferAmount')?.value);
+        const recipient = (document.getElementById('transferTo')?.value || '').trim();
+        const transferAmountInput = document.getElementById('transferAmount')?.value;
+        const amount = parseProgramsDecimal(transferAmountInput);
 
-        if (!recipient || !amount) {
+        if (!recipient || !Number.isFinite(amount)) {
             this.addTerminalLine('❌ Recipient and amount required', 'error');
             return;
         }
@@ -4346,7 +4492,11 @@ pub extern "C" fn total_minted() -> u64 {
         this.addTerminalLine(`💸 Sending ${amount} LICN to ${recipient}...`, 'info');
 
         try {
-            const amountSpores = amount * 1_000_000_000;
+            const amountSpores = Math.round(amount * 1_000_000_000);
+            if (!Number.isSafeInteger(amountSpores)) {
+                this.addTerminalLine('❌ Amount is too large', 'error');
+                return;
+            }
 
             const tx = new Lichen.TransactionBuilder(this.rpc);
             await tx.setRecentBlockhash();

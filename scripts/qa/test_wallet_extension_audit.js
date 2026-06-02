@@ -1004,6 +1004,15 @@ test('CC-22 extension locks unshield recipient to the active wallet address', ()
 
 test('CC-23 extension applies numeric, base58, and hex input guards', () => {
   assert.ok(fullSrc.includes('function sanitizeExtNumberInput('), 'full page should sanitize numeric fields');
+  assert.ok(!fullHtmlSrc.includes('type="number"'), 'full page should not use native number inputs for value-bearing fields');
+  assert.ok(!popupHtmlSrc.includes('type="number"'), 'popup should not use native number inputs for value-bearing fields');
+  assert.ok(!fullSrc.includes('type="number"'), 'full page dynamic modals should not emit native number inputs');
+  assert.ok(!popupSrc.includes('input[type="number"], input[data-input-kind="number"]'),
+    'popup input guards should rely on explicit numeric data attributes instead of native number selectors');
+  assert.ok(!fullSrc.includes('input[type="number"], input[data-input-kind="number"]'),
+    'full-page input guards should rely on explicit numeric data attributes instead of native number selectors');
+  assert.ok(fullSrc.includes("const inputType = isNumber ? 'text' : (f.type || 'text');"),
+    'full-page identity numeric fields should render as guarded text inputs');
   assert.ok(fullSrc.includes("event.key === 'e' || event.key === 'E' || event.key === '+'"),
     'full page numeric fields should reject exponent/plus shortcuts');
   assert.ok(fullSrc.includes('input[data-address-input="base58"], #sendTo, #shieldModalRecipient[data-address-input="base58"]'),
@@ -1020,6 +1029,22 @@ test('CC-23 extension applies numeric, base58, and hex input guards', () => {
     'full-page send recipient should be base58-guarded');
   assert.ok(fullHtmlSrc.includes('id="sendAmount"') && fullHtmlSrc.includes('data-wallet-numeric="true"'),
     'full-page send amount should be numeric-guarded');
+});
+
+test('CC-23a extension identity value conversions use integer spores', () => {
+  assert.ok(identityServiceSrc.includes("import { baseUnitsToDecimalString, parseDecimalBaseUnits } from './amount-service.js';"),
+    'identity service should import base-unit amount helpers');
+  assert.ok(identityServiceSrc.includes('const valueSpores = valueLicnToSpores(valueLicn);'),
+    'identity service should convert attached LICN value to spores before preflight');
+  assert.ok(identityServiceSrc.includes('const required = valueSpores + BASE_FEE_SPORES;'),
+    'identity service should preflight spendable balance in spores');
+  assert.ok(identityServiceSrc.includes('value: valueJson'),
+    'identity service should serialize attached value from a checked integer spore value');
+  assert.ok(identityServiceSrc.includes('const rateSpores = parseRateLicn(rateLicn);') &&
+    identityServiceSrc.includes('licn_per_unit: rateSpores.toString()'),
+    'identity service should encode set_rate from strict spore units');
+  assert.ok(!identityServiceSrc.includes('Math.floor(parseRateLicn(rateLicn) * 1_000_000_000)'),
+    'identity service should not use floating-point rate conversion');
 });
 
 test('CC-23b extension blocks transparent transfers to the active wallet address', () => {

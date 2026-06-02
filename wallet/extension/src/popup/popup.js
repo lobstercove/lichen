@@ -150,7 +150,7 @@ function sanitizePopupBase58(value) {
 
 function applyPopupInputGuards(root = document) {
   const scope = root || document;
-  scope.querySelectorAll('input[type="number"], input[data-input-kind="number"], input[data-wallet-numeric]').forEach((input) => {
+  scope.querySelectorAll('input[data-input-kind="number"], input[data-wallet-numeric]').forEach((input) => {
     if (input.dataset.popupNumericGuarded === '1') return;
     input.dataset.popupNumericGuarded = '1';
     if (!input.getAttribute('inputmode')) input.setAttribute('inputmode', popupNumberAllowsDecimal(input) ? 'decimal' : 'numeric');

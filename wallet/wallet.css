@@ -2958,8 +2958,7 @@ div.staking-tier-card.staking-tier-active {
     .form-textarea,
     select,
     input[type="text"],
-    input[type="password"],
-    input[type="number"] {
+    input[type="password"] {
         font-size: 16px;
     }
 

@@ -80,6 +80,54 @@ function fmtLicn(spores) {
     return (Number(spores) / 1_000_000_000).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 9 });
 }
 
+function identityU64ToBigInt(value) {
+    if (typeof value === 'bigint') return value >= 0n ? value : 0n;
+    if (typeof value === 'number') {
+        return Number.isSafeInteger(value) && value >= 0 ? BigInt(value) : 0n;
+    }
+    const text = String(value ?? '0').trim();
+    return /^\d+$/.test(text) ? BigInt(text) : 0n;
+}
+
+function parseIdentityInteger(value, label, min, max, fallback = null) {
+    const text = String(value ?? '').trim();
+    if (!text && fallback !== null) return fallback;
+    if (!/^\d+$/.test(text)) {
+        throw new Error(`${label} must be an integer between ${min} and ${max}`);
+    }
+    const parsed = Number(text);
+    if (!Number.isSafeInteger(parsed) || parsed < min || parsed > max) {
+        throw new Error(`${label} must be an integer between ${min} and ${max}`);
+    }
+    return parsed;
+}
+
+function parseIdentityLicnSpores(value, label, { allowZero = false } = {}) {
+    return allowZero
+        ? parseDecimalBaseUnits(value, 9, label)
+        : parsePositiveDecimalBaseUnits(value, 9, label);
+}
+
+function identityLicnValueToSpores(value, label = 'Transaction value') {
+    if (typeof value === 'bigint') {
+        if (value < 0n) throw new Error(`${label} must be non-negative`);
+        return value;
+    }
+    return parseDecimalBaseUnits(String(value ?? 0), 9, label);
+}
+
+function identitySporesToJsonNumber(value, label = 'Transaction value') {
+    const spores = identityU64ToBigInt(value);
+    if (spores > BigInt(Number.MAX_SAFE_INTEGER)) {
+        throw new Error(`${label} is above the supported browser-safe transaction value`);
+    }
+    return Number(spores);
+}
+
+function identitySporesDisplay(value) {
+    return baseUnitsToDecimalString(identityU64ToBigInt(value), 9);
+}
+
 function fmtAddr(addr, len = 8) {
     if (!addr || addr.length < 16) return addr || '—';
     return addr.slice(0, len) + '…' + addr.slice(-4);
@@ -303,7 +351,9 @@ function encodeLichenIdArgs(callerPubkey, functionName, params) {
                 u32LE(nameBytes.length),
             ]);
             // Append bid_amount as raw I64 LE
-            const bidAmountSpores = Math.floor((params.bid_amount || 0) * 1_000_000_000);
+            const bidAmountSpores = params.bid_amount_spores !== undefined
+                ? identityU64ToBigInt(params.bid_amount_spores)
+                : parseIdentityLicnSpores(String(params.bid_amount || 0), 'Bid amount');
             const extra = u64LE(bidAmountSpores);
             const result = new Uint8Array(base.length + extra.length);
             result.set(base, 0);
@@ -344,15 +394,18 @@ async function getLichenIdProgramAddress() {
 async function buildContractCall(functionName, args, password, valueLicn = 0) {
     const wallet = getActiveWallet();
     if (!wallet) throw new Error('No active wallet');
+    const valueSpores = identityLicnValueToSpores(valueLicn, 'Transaction value');
+    const valueJson = identitySporesToJsonNumber(valueSpores, 'Transaction value');
 
     // Pre-flight: check LICN balance covers fee + value
     try {
         const balResult = await rpc.call('getBalance', [wallet.address]);
-        const spendable = (balResult?.spendable || balResult?.balance || 0) / 1_000_000_000;
-        const baseFee = 0.001; // 0.001 LICN base fee
-        const totalNeeded = valueLicn + baseFee;
-        if (spendable < totalNeeded) {
-            throw new Error(`Insufficient LICN: need ${totalNeeded.toLocaleString(undefined, { maximumFractionDigits: 9 })} (${valueLicn > 0 ? valueLicn + ' value + ' : ''}${baseFee} fee), have ${spendable.toLocaleString(undefined, { maximumFractionDigits: 9 })} spendable`);
+        const spendableSpores = identityU64ToBigInt(balResult?.spendable || balResult?.balance || 0);
+        const baseFeeSpores = typeof BASE_FEE_SPORES === 'number' ? BigInt(BASE_FEE_SPORES) : 1_000_000n;
+        const totalNeededSpores = valueSpores + baseFeeSpores;
+        if (spendableSpores < totalNeededSpores) {
+            const valueLabel = valueSpores > 0n ? `${identitySporesDisplay(valueSpores)} value + ` : '';
+            throw new Error(`Insufficient LICN: need ${identitySporesDisplay(totalNeededSpores)} (${valueLabel}${identitySporesDisplay(baseFeeSpores)} fee), have ${identitySporesDisplay(spendableSpores)} spendable`);
         }
     } catch (e) {
         if (e.message.includes('Insufficient')) throw e;
@@ -374,7 +427,7 @@ async function buildContractCall(functionName, args, password, valueLicn = 0) {
         Call: {
             function: functionName,
             args: Array.from(argsBytes),
-            value: Math.floor(valueLicn * 1_000_000_000)
+            value: valueJson
         }
     });
 
@@ -898,7 +951,7 @@ async function showRegisterIdentityModal() {
 
     try {
         showToast('Registering identity...');
-        const agentType = parseInt(values.agentType || '9');
+        const agentType = parseIdentityInteger(values.agentType, 'Agent type', 0, 10, 9);
         const tx = await buildContractCall('register_identity', {
             agent_type: agentType,
             name: displayName
@@ -949,7 +1002,8 @@ async function showEditProfileModal() {
 
     try {
         showToast('Updating agent type...');
-        const tx = await buildContractCall('update_agent_type', { agent_type: parseInt(values.agentType) }, values.password);
+        const agentType = parseIdentityInteger(values.agentType, 'Agent type', 0, 10, current);
+        const tx = await buildContractCall('update_agent_type', { agent_type: agentType }, values.password);
         const result = await rpc.sendTransaction(tx);
         if (result?.error) {
             showToast('Update failed: ' + (result.error || 'unknown'));
@@ -1004,7 +1058,10 @@ async function showRegisterNameModal() {
             }
             const updateCost = () => {
                 const n = bareLichenNameLabel(nameInput?.value || '');
-                const d = Math.max(1, Math.min(10, parseInt(durationInput?.value) || 1));
+                let d = 1;
+                try {
+                    d = parseIdentityInteger(durationInput?.value, 'Duration', 1, 10, 1);
+                } catch (_) { }
                 if (n.length >= 5) {
                     const costPerYear = getNameCostPerYear(n.length);
                     const total = costPerYear * d;
@@ -1021,7 +1078,13 @@ async function showRegisterNameModal() {
     if (!values || !values.password || !values.name) return;
 
     const name = bareLichenNameLabel(values.name);
-    const duration = Math.max(1, Math.min(10, parseInt(values.duration) || 1));
+    let duration;
+    try {
+        duration = parseIdentityInteger(values.duration, 'Duration', 1, 10, 1);
+    } catch (error) {
+        showToast(error.message);
+        return;
+    }
     const costPerYear = getNameCostPerYear(name.length);
     const totalCost = costPerYear * duration;
 
@@ -1078,7 +1141,13 @@ async function showRenewNameModal() {
     });
     if (!values || !values.password) return;
 
-    const years = Math.max(1, Math.min(10, parseInt(values.years) || 1));
+    let years;
+    try {
+        years = parseIdentityInteger(values.years, 'Additional years', 1, 10, 1);
+    } catch (error) {
+        showToast(error.message);
+        return;
+    }
     const totalCost = costPerYear * years;
 
     try {
@@ -1215,7 +1284,13 @@ async function showAddSkillModal() {
         return;
     }
 
-    const proficiency = Math.max(1, Math.min(100, parseInt(values.proficiency) || 50));
+    let proficiency;
+    try {
+        proficiency = parseIdentityInteger(values.proficiency, 'Proficiency', 1, 100, 50);
+    } catch (error) {
+        showToast(error.message);
+        return;
+    }
 
     try {
         showToast('Adding skill...');
@@ -1320,12 +1395,17 @@ async function showEditAgentModal() {
         }
 
         // Update rate if changed
-        const newRateLicn = parseFloat(values.rate || '0');
-        const newRateSpores = Math.floor(newRateLicn * 1_000_000_000);
-        const oldRateSpores = Number(agent.rate || 0);
+        let newRateSpores;
+        try {
+            newRateSpores = parseIdentityLicnSpores(values.rate || '0', 'Rate', { allowZero: true });
+        } catch (error) {
+            showToast(error.message);
+            return;
+        }
+        const oldRateSpores = identityU64ToBigInt(agent.rate || 0);
         if (newRateSpores !== oldRateSpores) {
             tasks.push(async () => {
-                const tx = await buildContractCall('set_rate', { licn_per_unit: newRateSpores }, values.password);
+                const tx = await buildContractCall('set_rate', { licn_per_unit: newRateSpores.toString() }, values.password);
                 return await rpc.sendTransaction(tx);
             });
         }
@@ -1461,18 +1541,21 @@ async function showBidAuctionModal(name) {
     });
     if (!values || !values.password || !values.amount) return;
 
-    const bidAmount = parseFloat(values.amount);
-    if (isNaN(bidAmount) || bidAmount <= 0) {
-        showToast('Invalid bid amount');
+    let bidAmountSpores;
+    try {
+        bidAmountSpores = parseIdentityLicnSpores(values.amount, 'Bid amount');
+    } catch (error) {
+        showToast(error.message);
         return;
     }
+    const bidAmount = identitySporesDisplay(bidAmountSpores);
 
     try {
         showToast(`Placing bid of ${bidAmount} LICN on ${name}.lichen...`);
         const tx = await buildContractCall('bid_name_auction', {
             name: name,
-            bid_amount: bidAmount
-        }, values.password, bidAmount);
+            bid_amount_spores: bidAmountSpores.toString()
+        }, values.password, bidAmountSpores);
         const result = await rpc.sendTransaction(tx);
         if (result?.error) {
             showToast('Bid failed: ' + (result.error || 'unknown'));
@@ -1519,14 +1602,21 @@ async function showCreateAuctionModal() {
         return;
     }
 
-    const reserveSpores = Math.floor(parseFloat(values.reserve || '100') * 1_000_000_000);
-    const endSlots = parseInt(values.endSlots || '432000');
+    let reserveSpores;
+    let endSlots;
+    try {
+        reserveSpores = parseIdentityLicnSpores(values.reserve || '100', 'Reserve bid');
+        endSlots = parseIdentityInteger(values.endSlots, 'Duration slots', 216000, 3024000, 432000);
+    } catch (error) {
+        showToast(error.message);
+        return;
+    }
 
     try {
         showToast(`Creating auction for ${name}.lichen...`);
         const tx = await buildContractCall('create_name_auction', {
             name: name,
-            reserve_bid: reserveSpores,
+            reserve_bid: reserveSpores.toString(),
             end_slot_offset: endSlots
         }, values.password);
         const result = await rpc.sendTransaction(tx);

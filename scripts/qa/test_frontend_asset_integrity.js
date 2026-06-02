@@ -769,6 +769,8 @@ function validateProgramsWalletBridgeParity() {
 function validateFrontendInputGuards() {
     const dexJs = fs.readFileSync(path.join(repoRoot, 'dex', 'dex.js'), 'utf8');
     const dexHtml = fs.readFileSync(path.join(repoRoot, 'dex', 'index.html'), 'utf8');
+    const programsJs = fs.readFileSync(path.join(repoRoot, 'programs', 'js', 'playground-complete.js'), 'utf8');
+    const programsHtml = fs.readFileSync(path.join(repoRoot, 'programs', 'playground.html'), 'utf8');
     const explorerAddressJs = fs.readFileSync(path.join(repoRoot, 'explorer', 'js', 'address.js'), 'utf8');
     const explorerJs = fs.readFileSync(path.join(repoRoot, 'explorer', 'js', 'explorer.js'), 'utf8');
     const faucetJs = fs.readFileSync(path.join(repoRoot, 'faucet', 'faucet.js'), 'utf8');
@@ -842,6 +844,50 @@ function validateFrontendInputGuards() {
             dexObserverBody.includes('applyDexNumericInputGuards(node)') &&
             dexJs.includes('observeDexNumericInputGuards();'),
         'DEX applies numeric guards to dynamically inserted inputs'
+    );
+
+    const programsNumericGuardBody = extractFunctionBody(programsJs, 'applyProgramsInputGuards');
+    const programsDynamicNumericInputIds = [
+        'tokenDecimalsInput',
+        'tokenSupplyInput',
+        'nftMaxSupplyInput',
+        'nftRoyaltyInput',
+        'lendCollateralInput',
+        'lendLiqThreshInput',
+        'lendLiqBonusInput',
+        'launchPlatformFeeInput',
+        'launchGradMcapInput',
+        'vaultPerfFeeInput',
+        'vaultMaxStratInput',
+        'idInitRepInput',
+        'idMaxRepInput',
+        'idVouchCostInput',
+        'idVouchRewardInput',
+        'mktFeeBpsInput',
+        'auctDurationInput',
+        'auctMinBidInput',
+    ];
+    assert(
+        programsJs.includes('function sanitizeProgramsNumberInput(') &&
+            !programsHtml.includes('type="number"') &&
+            !programsJs.includes('type="number"') &&
+            programsHtml.includes('id="initialFunding"') &&
+            programsHtml.includes('id="transferAmount"') &&
+            programsHtml.includes('data-programs-numeric="true"') &&
+            programsNumericGuardBody.includes('input[data-programs-numeric="true"]') &&
+            programsNumericGuardBody.includes("event.key === 'e' || event.key === 'E' || event.key === '+'") &&
+            programsNumericGuardBody.includes("event.key === '-' && !programsInputAllowsNegative(input)") &&
+            programsNumericGuardBody.includes("event.key === '.' && !programsInputAllowsDecimal(input)") &&
+            programsNumericGuardBody.includes("input.addEventListener('paste'") &&
+            programsJs.includes('observeProgramsInputGuards();') &&
+            programsJs.includes('parseProgramsDecimal(fundingInput)') &&
+            programsJs.includes('parseProgramsDecimal(transferAmountInput)') &&
+            programsDynamicNumericInputIds.every(id => {
+                const idIndex = programsJs.indexOf(`id="${id}"`);
+                const guardIndex = programsJs.indexOf('data-programs-numeric="true"', idIndex);
+                return idIndex !== -1 && guardIndex !== -1 && guardIndex - idIndex < 220;
+            }),
+        'Programs numeric inputs reject exponent/sign junk and sanitize pasted values'
     );
 
     const faucetGuardBody = extractFunctionBody(faucetJs, 'applyFaucetInputGuards');
