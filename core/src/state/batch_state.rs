@@ -91,6 +91,10 @@ impl StateStore {
             None
         };
 
+        if batch.stake_pool_overlay.is_some() || batch.mossstake_pool_overlay.is_some() {
+            self.clear_composite_state_root_cache_in_batch(&mut wb);
+        }
+
         self.db
             .write(wb)
             .map_err(|e| format!("Atomic batch commit failed: {}", e))?;

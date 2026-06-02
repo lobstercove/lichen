@@ -5,6 +5,14 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.80] - 2026-06-02
+
+### Fixed
+- Avoids full contract-storage Merkle scans for account-only proposal blocks by caching canonical account/contract subroots and fast-pathing empty batch overlays while preserving the existing state-root format.
+- Prevents stale composite state-root reuse by checking durable dirty markers, invalidating cached composite roots on stake-pool and MossStake writes, and recomputing restriction-schema roots instead of trusting stale cache metadata.
+- Skips stale BFT proposal validation and proposal builds when the canonical tip has already advanced under the apply barrier, reducing parent/state-root mismatch risk during sync catch-up.
+- Adds regression coverage for account-only proposal roots over populated contract storage, contract-storage proposal roots, dirty-marker cache drift, stake-pool cache invalidation, and BFT proposal apply-barrier scope.
+
 ## [0.5.79] - 2026-06-02
 
 ### Fixed

@@ -3840,6 +3840,11 @@ fn validate_consensus_proposal_before_prevote(
     validate_block_transactions_against_state(state, block, "consensus proposal", false, false)
 }
 
+fn canonical_tip_at_or_past_height(state: &StateStore, height: u64) -> Option<u64> {
+    let tip = state.get_last_slot().unwrap_or(0);
+    (tip >= height).then_some(tip)
+}
+
 /// Reverse the financial effects of a replaced block during fork choice.
 /// Attempts to debit the old producer's reward and credit treasury back.
 /// Fee distribution reversal is approximate — voter shares remain (small
@@ -15944,16 +15949,26 @@ async fn run_validator() {
                         compute_validators_hash(&height_vs, &height_pool);
                     let validation = {
                         let _canonical_apply_guard = block_apply_lock.lock().await;
-                        validate_consensus_proposal_before_prevote(
-                            &state,
-                            &proposal,
-                            parent_hash,
-                            expected_validators_hash,
-                            &genesis_config.chain_id,
-                        )
+                        if let Some(canonical_tip) =
+                            canonical_tip_at_or_past_height(&state, proposal.height)
+                        {
+                            debug!(
+                                "Skipping stale buffered proposal h={} r={} because canonical tip advanced to {}",
+                                proposal.height, proposal.round, canonical_tip
+                            );
+                            None
+                        } else {
+                            Some(validate_consensus_proposal_before_prevote(
+                                &state,
+                                &proposal,
+                                parent_hash,
+                                expected_validators_hash,
+                                &genesis_config.chain_id,
+                            ))
+                        }
                     };
                     let action = match validation {
-                        Ok(()) => match consensus_wal.log_proposal_block_result(
+                        Some(Ok(())) => match consensus_wal.log_proposal_block_result(
                             proposal.height,
                             proposal.round,
                             &proposal.block,
@@ -15967,10 +15982,11 @@ async fn run_validator() {
                                 ConsensusAction::None
                             }
                         },
-                        Err(err) => {
+                        Some(Err(err)) => {
                             warn!("{}", err);
                             ConsensusAction::None
                         }
+                        None => ConsensusAction::None,
                     };
                     execute_consensus_actions(
                         action,
@@ -16001,6 +16017,14 @@ async fn run_validator() {
                     )
                     .await;
                 }
+            }
+
+            if let Some(canonical_tip) = canonical_tip_at_or_past_height(&state, bft.height) {
+                debug!(
+                    "BFT height {} became stale while replaying buffered proposals; canonical tip is {}",
+                    bft.height, canonical_tip
+                );
+                continue;
             }
 
             // G-10 fix: Replay any buffered future messages for this height.
@@ -16035,6 +16059,14 @@ async fn run_validator() {
                 &bft_committing_slot,
             )
             .await;
+
+            if let Some(canonical_tip) = canonical_tip_at_or_past_height(&state, bft.height) {
+                debug!(
+                    "BFT height {} became stale after replaying future messages; canonical tip is {}",
+                    bft.height, canonical_tip
+                );
+                continue;
+            }
 
             // If drain already committed, loop back immediately
             if bft.step == RoundStep::Commit {
@@ -16106,16 +16138,26 @@ async fn run_validator() {
                     let expected_validators_hash = compute_validators_hash(&height_vs, &height_pool);
                     let validation = {
                         let _canonical_apply_guard = block_apply_lock.lock().await;
-                        validate_consensus_proposal_before_prevote(
-                            &state,
-                            &proposal,
-                            parent_hash,
-                            expected_validators_hash,
-                            &genesis_config.chain_id,
-                        )
+                        if let Some(canonical_tip) =
+                            canonical_tip_at_or_past_height(&state, proposal.height)
+                        {
+                            debug!(
+                                "Skipping stale proposal h={} r={} because canonical tip advanced to {}",
+                                proposal.height, proposal.round, canonical_tip
+                            );
+                            None
+                        } else {
+                            Some(validate_consensus_proposal_before_prevote(
+                                &state,
+                                &proposal,
+                                parent_hash,
+                                expected_validators_hash,
+                                &genesis_config.chain_id,
+                            ))
+                        }
                     };
                     match validation {
-                        Ok(()) => match consensus_wal.log_proposal_block_result(
+                        Some(Ok(())) => match consensus_wal.log_proposal_block_result(
                             proposal.height,
                             proposal.round,
                             &proposal.block,
@@ -16129,10 +16171,11 @@ async fn run_validator() {
                                 ConsensusAction::None
                             }
                         },
-                        Err(err) => {
+                        Some(Err(err)) => {
                             warn!("{}", err);
                             ConsensusAction::None
                         }
+                        None => ConsensusAction::None,
                     }
                 };
                 execute_consensus_actions(
@@ -16253,73 +16296,85 @@ async fn run_validator() {
                         "👑 BFT: We are proposer for height={} round={}",
                         bft.height, bft.round
                     );
-                    let (mut block, _) = {
+                    let maybe_block = {
                         let _canonical_apply_guard = block_apply_lock.lock().await;
-                        let mut mp = mempool.lock().await;
-                        let bft_ts = compute_proposed_timestamp(
+                        if let Some(canonical_tip) =
+                            canonical_tip_at_or_past_height(&state, bft.height)
+                        {
+                            debug!(
+                                "Skipping stale proposal build h={} r={} because canonical tip advanced to {}",
+                                bft.height, bft.round, canonical_tip
+                            );
+                            None
+                        } else {
+                            let mut mp = mempool.lock().await;
+                            let bft_ts = compute_proposed_timestamp(
+                                &state,
+                                &parent_hash,
+                                &height_vs,
+                                &height_pool,
+                            );
+                            Some(block_producer::build_block(
+                                &state,
+                                &mut mp,
+                                &processor,
+                                &proposal_staging_root,
+                                bft.height,
+                                parent_hash,
+                                &validator_pubkey,
+                                Vec::new(),
+                                2000,
+                                bft_ts,
+                            ))
+                        }
+                    };
+                    if let Some((mut block, _)) = maybe_block {
+                        block.header.validators_hash = compute_validators_hash(&height_vs, &height_pool);
+                        block.sign_with_chain_id(&validator_keypair, &genesis_config.chain_id);
+                        let proposal_action = bft.create_proposal(block, &height_vs, &height_pool);
+                        execute_consensus_actions(
+                            proposal_action,
+                            &bft,
+                            &mut consensus_wal,
                             &state,
-                            &parent_hash,
-                            &height_vs,
-                            &height_pool,
-                        );
-                        block_producer::build_block(
-                            &state,
-                            &mut mp,
+                            &validator_set,
+                            &stake_pool,
+                            &vote_aggregator,
+                            &mempool,
                             &processor,
-                            &proposal_staging_root,
-                            bft.height,
-                            parent_hash,
-                            &validator_pubkey,
-                            Vec::new(),
-                            2000,
-                            bft_ts,
+                            &finality_tracker,
+                            &p2p_peer_manager,
+                            &p2p_config,
+                            &ws_event_tx,
+                            &ws_dex_broadcaster,
+                            &shared_oracle_prices,
+                            &last_block_time_for_local,
+                            &mut last_dex_trade_count,
+                            &data_dir,
+                            &sync_manager,
+                            &mut parent_hash,
+                            slot_duration_ms,
+                            &validator_keypair,
+                            min_validator_stake,
+                            &block_apply_lock,
+                            &bft_committing_slot,
                         )
-                    };
-                    block.header.validators_hash = compute_validators_hash(&height_vs, &height_pool);
-                    block.sign_with_chain_id(&validator_keypair, &genesis_config.chain_id);
-                    let proposal_action = bft.create_proposal(block, &height_vs, &height_pool);
-                    execute_consensus_actions(
-                        proposal_action,
-                        &bft,
-                        &mut consensus_wal,
-                        &state,
-                        &validator_set,
-                        &stake_pool,
-                        &vote_aggregator,
-                        &mempool,
-                        &processor,
-                        &finality_tracker,
-                        &p2p_peer_manager,
-                        &p2p_config,
-                        &ws_event_tx,
-                        &ws_dex_broadcaster,
-                        &shared_oracle_prices,
-                        &last_block_time_for_local,
-                        &mut last_dex_trade_count,
-                        &data_dir,
-                        &sync_manager,
-                        &mut parent_hash,
-                        slot_duration_ms,
-                        &validator_keypair,
-                        min_validator_stake,
-                        &block_apply_lock,
-                        &bft_committing_slot,
-                    )
-                    .await;
-                    // Schedule timeout for post-proposal step.
-                    timeout_handle = match bft.step {
-                        RoundStep::Prevote => Some((
-                            RoundStep::Prevote,
-                            bft.round,
-                            Box::pin(tokio::time::sleep(bft.prevote_timeout())),
-                        )),
-                        RoundStep::Precommit => Some((
-                            RoundStep::Precommit,
-                            bft.round,
-                            Box::pin(tokio::time::sleep(bft.precommit_timeout())),
-                        )),
-                        _ => None,
-                    };
+                        .await;
+                        // Schedule timeout for post-proposal step.
+                        timeout_handle = match bft.step {
+                            RoundStep::Prevote => Some((
+                                RoundStep::Prevote,
+                                bft.round,
+                                Box::pin(tokio::time::sleep(bft.prevote_timeout())),
+                            )),
+                            RoundStep::Precommit => Some((
+                                RoundStep::Precommit,
+                                bft.round,
+                                Box::pin(tokio::time::sleep(bft.precommit_timeout())),
+                            )),
+                            _ => None,
+                        };
+                    }
                 }
             }
 
@@ -16368,63 +16423,81 @@ async fn run_validator() {
                     // Uses the SAME height-frozen snapshot for consistent leader election.
                     if bft.step == RoundStep::Propose
                         && bft.is_proposer(&height_vs, &height_pool, &parent_hash)
-                    {
+                        {
                             info!(
                                 "👑 BFT: We are proposer for height={} round={}",
                                 bft.height, bft.round
                             );
-                            let (mut block, _) = {
+                            let maybe_block = {
                                 let _canonical_apply_guard = block_apply_lock.lock().await;
-                                let mut mp = mempool.lock().await;
-                                let bft_ts = compute_proposed_timestamp(
-                                    &state,
-                                    &parent_hash,
-                                    &height_vs,
-                                    &height_pool,
-                                );
-                                block_producer::build_block(
-                                    &state,
-                                    &mut mp,
-                                    &processor,
-                                    &proposal_staging_root,
-                                    bft.height,
-                                    parent_hash,
-                                    &validator_pubkey,
-                                    Vec::new(),
-                                    2000,
-                                    bft_ts,
-                                )
+                                if let Some(canonical_tip) =
+                                    canonical_tip_at_or_past_height(&state, bft.height)
+                                {
+                                    debug!(
+                                        "Skipping stale timeout proposal build h={} r={} because canonical tip advanced to {}",
+                                        bft.height, bft.round, canonical_tip
+                                    );
+                                    None
+                                } else {
+                                    let mut mp = mempool.lock().await;
+                                    let bft_ts = compute_proposed_timestamp(
+                                        &state,
+                                        &parent_hash,
+                                        &height_vs,
+                                        &height_pool,
+                                    );
+                                    Some(block_producer::build_block(
+                                        &state,
+                                        &mut mp,
+                                        &processor,
+                                        &proposal_staging_root,
+                                        bft.height,
+                                        parent_hash,
+                                        &validator_pubkey,
+                                        Vec::new(),
+                                        2000,
+                                        bft_ts,
+                                    ))
+                                }
                             };
-                            block.header.validators_hash = compute_validators_hash(&height_vs, &height_pool);
-                            block.sign_with_chain_id(&validator_keypair, &genesis_config.chain_id);
-                            let proposal_action = bft.create_proposal(block, &height_vs, &height_pool);
-                            execute_consensus_actions(
-                                proposal_action,
-                                &bft,
-                                &mut consensus_wal,
-                                &state,
-                                &validator_set,
-                                &stake_pool,
-                                &vote_aggregator,
-                                &mempool,
-                                &processor,
-                                &finality_tracker,
-                                &p2p_peer_manager,
-                                &p2p_config,
-                                &ws_event_tx,
-                                &ws_dex_broadcaster,
-                                &shared_oracle_prices,
-                                &last_block_time_for_local,
-                                &mut last_dex_trade_count,
-                                &data_dir,
-                                &sync_manager,
-                                &mut parent_hash,
-                                slot_duration_ms,
-                                &validator_keypair,
-                                min_validator_stake,
-                                &block_apply_lock,
-                &bft_committing_slot,
-                            ).await;
+                            if let Some((mut block, _)) = maybe_block {
+                                block.header.validators_hash =
+                                    compute_validators_hash(&height_vs, &height_pool);
+                                block.sign_with_chain_id(
+                                    &validator_keypair,
+                                    &genesis_config.chain_id,
+                                );
+                                let proposal_action =
+                                    bft.create_proposal(block, &height_vs, &height_pool);
+                                execute_consensus_actions(
+                                    proposal_action,
+                                    &bft,
+                                    &mut consensus_wal,
+                                    &state,
+                                    &validator_set,
+                                    &stake_pool,
+                                    &vote_aggregator,
+                                    &mempool,
+                                    &processor,
+                                    &finality_tracker,
+                                    &p2p_peer_manager,
+                                    &p2p_config,
+                                    &ws_event_tx,
+                                    &ws_dex_broadcaster,
+                                    &shared_oracle_prices,
+                                    &last_block_time_for_local,
+                                    &mut last_dex_trade_count,
+                                    &data_dir,
+                                    &sync_manager,
+                                    &mut parent_hash,
+                                    slot_duration_ms,
+                                    &validator_keypair,
+                                    min_validator_stake,
+                                    &block_apply_lock,
+                                    &bft_committing_slot,
+                                )
+                                .await;
+                            }
                     }
                 }
             }
@@ -16460,74 +16533,87 @@ async fn run_validator() {
                             "👑 BFT: We are proposer for height={} round={} (post-skip)",
                             bft.height, bft.round
                         );
-                        let (mut block, _) = {
+                        let maybe_block = {
                             let _canonical_apply_guard = block_apply_lock.lock().await;
-                            let mut mp = mempool.lock().await;
-                            let bft_ts = compute_proposed_timestamp(
+                            if let Some(canonical_tip) =
+                                canonical_tip_at_or_past_height(&state, bft.height)
+                            {
+                                debug!(
+                                    "Skipping stale post-skip proposal build h={} r={} because canonical tip advanced to {}",
+                                    bft.height, bft.round, canonical_tip
+                                );
+                                None
+                            } else {
+                                let mut mp = mempool.lock().await;
+                                let bft_ts = compute_proposed_timestamp(
+                                    &state,
+                                    &parent_hash,
+                                    &height_vs,
+                                    &height_pool,
+                                );
+                                Some(block_producer::build_block(
+                                    &state,
+                                    &mut mp,
+                                    &processor,
+                                    &proposal_staging_root,
+                                    bft.height,
+                                    parent_hash,
+                                    &validator_pubkey,
+                                    Vec::new(),
+                                    2000,
+                                    bft_ts,
+                                ))
+                            }
+                        };
+                        if let Some((mut block, _)) = maybe_block {
+                            block.header.validators_hash =
+                                compute_validators_hash(&height_vs, &height_pool);
+                            block.sign_with_chain_id(&validator_keypair, &genesis_config.chain_id);
+                            let proposal_action =
+                                bft.create_proposal(block, &height_vs, &height_pool);
+                            execute_consensus_actions(
+                                proposal_action,
+                                &bft,
+                                &mut consensus_wal,
                                 &state,
-                                &parent_hash,
-                                &height_vs,
-                                &height_pool,
-                            );
-                            block_producer::build_block(
-                                &state,
-                                &mut mp,
+                                &validator_set,
+                                &stake_pool,
+                                &vote_aggregator,
+                                &mempool,
                                 &processor,
-                                &proposal_staging_root,
-                                bft.height,
-                                parent_hash,
-                                &validator_pubkey,
-                                Vec::new(),
-                                2000,
-                                bft_ts,
+                                &finality_tracker,
+                                &p2p_peer_manager,
+                                &p2p_config,
+                                &ws_event_tx,
+                                &ws_dex_broadcaster,
+                                &shared_oracle_prices,
+                                &last_block_time_for_local,
+                                &mut last_dex_trade_count,
+                                &data_dir,
+                                &sync_manager,
+                                &mut parent_hash,
+                                slot_duration_ms,
+                                &validator_keypair,
+                                min_validator_stake,
+                                &block_apply_lock,
+                                &bft_committing_slot,
                             )
-                        };
-                        block.header.validators_hash =
-                            compute_validators_hash(&height_vs, &height_pool);
-                        block.sign_with_chain_id(&validator_keypair, &genesis_config.chain_id);
-                        let proposal_action = bft.create_proposal(block, &height_vs, &height_pool);
-                        execute_consensus_actions(
-                            proposal_action,
-                            &bft,
-                            &mut consensus_wal,
-                            &state,
-                            &validator_set,
-                            &stake_pool,
-                            &vote_aggregator,
-                            &mempool,
-                            &processor,
-                            &finality_tracker,
-                            &p2p_peer_manager,
-                            &p2p_config,
-                            &ws_event_tx,
-                            &ws_dex_broadcaster,
-                            &shared_oracle_prices,
-                            &last_block_time_for_local,
-                            &mut last_dex_trade_count,
-                            &data_dir,
-                            &sync_manager,
-                            &mut parent_hash,
-                            slot_duration_ms,
-                            &validator_keypair,
-                            min_validator_stake,
-                            &block_apply_lock,
-                            &bft_committing_slot,
-                        )
-                        .await;
-                        // Schedule timeout for post-proposal step
-                        timeout_handle = match bft.step {
-                            RoundStep::Prevote => Some((
-                                RoundStep::Prevote,
-                                bft.round,
-                                Box::pin(tokio::time::sleep(bft.prevote_timeout())),
-                            )),
-                            RoundStep::Precommit => Some((
-                                RoundStep::Precommit,
-                                bft.round,
-                                Box::pin(tokio::time::sleep(bft.precommit_timeout())),
-                            )),
-                            _ => None,
-                        };
+                            .await;
+                            // Schedule timeout for post-proposal step
+                            timeout_handle = match bft.step {
+                                RoundStep::Prevote => Some((
+                                    RoundStep::Prevote,
+                                    bft.round,
+                                    Box::pin(tokio::time::sleep(bft.prevote_timeout())),
+                                )),
+                                RoundStep::Precommit => Some((
+                                    RoundStep::Precommit,
+                                    bft.round,
+                                    Box::pin(tokio::time::sleep(bft.precommit_timeout())),
+                                )),
+                                _ => None,
+                            };
+                        }
                     } else {
                         propose_timer = None;
                         timeout_handle = Some((
@@ -16598,16 +16684,26 @@ async fn run_validator() {
                                 compute_validators_hash(&height_vs, &height_pool);
                             let validation = {
                                 let _canonical_apply_guard = block_apply_lock.lock().await;
-                                validate_consensus_proposal_before_prevote(
-                                    &state,
-                                    &proposal,
-                                    parent_hash,
-                                    expected_validators_hash,
-                                    &genesis_config.chain_id,
-                                )
+                                if let Some(canonical_tip) =
+                                    canonical_tip_at_or_past_height(&state, proposal.height)
+                                {
+                                    debug!(
+                                        "Skipping stale buffered proposal h={} r={} after commit because canonical tip advanced to {}",
+                                        proposal.height, proposal.round, canonical_tip
+                                    );
+                                    None
+                                } else {
+                                    Some(validate_consensus_proposal_before_prevote(
+                                        &state,
+                                        &proposal,
+                                        parent_hash,
+                                        expected_validators_hash,
+                                        &genesis_config.chain_id,
+                                    ))
+                                }
                             };
                             let action = match validation {
-                                Ok(()) => match consensus_wal.log_proposal_block_result(
+                                Some(Ok(())) => match consensus_wal.log_proposal_block_result(
                                     proposal.height,
                                     proposal.round,
                                     &proposal.block,
@@ -16621,10 +16717,11 @@ async fn run_validator() {
                                         ConsensusAction::None
                                     }
                                 },
-                                Err(err) => {
+                                Some(Err(err)) => {
                                     warn!("{}", err);
                                     ConsensusAction::None
                                 }
+                                None => ConsensusAction::None,
                             };
                             execute_consensus_actions(
                                 action,
@@ -18200,20 +18297,40 @@ mod tests {
             section.contains("Canonical apply barrier"),
             "BFT loop must wait for canonical block application before observing tip state"
         );
+        let validation_guard = "let _canonical_apply_guard = block_apply_lock.lock().await;";
+        let build_call = "block_producer::build_block(";
+        let mut build_count = 0;
+        let mut build_offset = 0;
+        while let Some(relative) = section[build_offset..].find(build_call) {
+            let pos = build_offset + relative;
+            let block_start = section[..pos]
+                .rfind("let maybe_block = {")
+                .expect("proposal build must be inside a maybe_block scope");
+            let build_scope = &section[block_start..pos];
+            assert!(
+                build_scope.contains(validation_guard),
+                "proposal build at byte {} must be guarded by the canonical apply lock",
+                pos
+            );
+            build_count += 1;
+            build_offset = pos + build_call.len();
+        }
         assert_eq!(
-            section.matches("block_producer::build_block(").count(),
-            3,
+            build_count, 3,
             "expected every BFT proposal build site to stay in the guarded loop section"
         );
-        let validation_guard = "let _canonical_apply_guard = block_apply_lock.lock().await;";
+
         let validation_call = "validate_consensus_proposal_before_prevote(";
         let mut validation_count = 0;
         let mut offset = 0;
         while let Some(relative) = section[offset..].find(validation_call) {
             let pos = offset + relative;
-            let guard_window = &section[pos.saturating_sub(220)..pos];
+            let block_start = section[..pos]
+                .rfind("let validation = {")
+                .expect("proposal validation must be inside a validation scope");
+            let validation_scope = &section[block_start..pos];
             assert!(
-                guard_window.contains(validation_guard),
+                validation_scope.contains(validation_guard),
                 "consensus proposal validation at byte {} must be guarded by the canonical apply lock",
                 pos
             );

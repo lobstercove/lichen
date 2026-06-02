@@ -39,8 +39,12 @@ impl StateStore {
         let data = serde_json::to_vec(pool)
             .map_err(|e| format!("Failed to serialize MossStake pool: {}", e))?;
 
+        let mut batch = rocksdb::WriteBatch::default();
+        batch.put_cf(&cf, b"pool", data);
+        self.clear_composite_state_root_cache_in_batch(&mut batch);
+
         self.db
-            .put_cf(&cf, b"pool", data)
+            .write(batch)
             .map_err(|e| format!("Failed to store MossStake pool: {}", e))
     }
 }

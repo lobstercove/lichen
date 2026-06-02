@@ -8,6 +8,9 @@ const STATE_ROOT_PREFIX_WITH_RESTRICTIONS: u8 = 0x03;
 const STATE_ROOT_PREFIX_LEGACY: u8 = 0x02;
 const STATE_ROOT_SCHEMA_KEY: &[u8] = b"state_root_schema";
 const CACHED_STATE_ROOT_SCHEMA_KEY: &[u8] = b"cached_state_root_schema";
+const CACHED_STATE_ROOT_KEY: &[u8] = b"cached_state_root";
+const CACHED_ACCOUNTS_ROOT_KEY: &[u8] = b"cached_accounts_root";
+const CACHED_CONTRACT_ROOT_KEY: &[u8] = b"cached_contract_root";
 
 /// Merkle inclusion proof for an account in the state tree.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -172,7 +175,7 @@ impl StateStore {
 
     fn cache_state_root(&self, root: &Hash, include_restrictions: bool) {
         if let Some(cf_stats) = self.db.cf_handle(CF_STATS) {
-            if let Err(e) = self.db.put_cf(&cf_stats, b"cached_state_root", root.0) {
+            if let Err(e) = self.db.put_cf(&cf_stats, CACHED_STATE_ROOT_KEY, root.0) {
                 tracing::error!("Failed to cache state root: {e}");
             }
             if let Err(e) = self.db.put_cf(
@@ -183,6 +186,62 @@ impl StateStore {
                 tracing::error!("Failed to cache state-root schema: {e}");
             }
         }
+    }
+
+    pub(crate) fn clear_composite_state_root_cache_in_batch(&self, batch: &mut WriteBatch) {
+        if let Some(cf_stats) = self.db.cf_handle(CF_STATS) {
+            batch.delete_cf(&cf_stats, CACHED_STATE_ROOT_KEY);
+            batch.delete_cf(&cf_stats, CACHED_STATE_ROOT_SCHEMA_KEY);
+        }
+    }
+
+    fn cache_subroot(&self, key: &[u8], root: &Hash) {
+        if let Some(cf_stats) = self.db.cf_handle(CF_STATS) {
+            if let Err(e) = self.db.put_cf(&cf_stats, key, root.0) {
+                tracing::error!("Failed to cache Merkle subroot: {e}");
+            }
+        }
+    }
+
+    fn read_cached_hash(&self, key: &[u8]) -> Option<Hash> {
+        let cf_stats = self.db.cf_handle(CF_STATS)?;
+        match self.db.get_cf(&cf_stats, key) {
+            Ok(Some(data)) if data.len() == 32 => {
+                let mut bytes = [0u8; 32];
+                bytes.copy_from_slice(&data);
+                Some(Hash(bytes))
+            }
+            _ => None,
+        }
+    }
+
+    fn read_dirty_count(&self, key: &[u8]) -> Option<u64> {
+        let cf_stats = self.db.cf_handle(CF_STATS)?;
+        match self.db.get_cf(&cf_stats, key) {
+            Ok(Some(data)) if data.len() == 8 => {
+                Some(u64::from_le_bytes(data.as_slice().try_into().ok()?))
+            }
+            _ => None,
+        }
+    }
+
+    fn has_dirty_marker(&self, prefix: &[u8]) -> bool {
+        let Some(cf_stats) = self.db.cf_handle(CF_STATS) else {
+            return true;
+        };
+        let iter = self.db.iterator_cf(
+            &cf_stats,
+            rocksdb::IteratorMode::From(prefix, Direction::Forward),
+        );
+        iter.flatten()
+            .next()
+            .map(|(key, _)| key.starts_with(prefix))
+            .unwrap_or(false)
+    }
+
+    fn can_use_cached_subroot(&self, dirty_count_key: &[u8], dirty_prefix: &[u8]) -> bool {
+        self.read_dirty_count(dirty_count_key).unwrap_or(1) == 0
+            && !self.has_dirty_marker(dirty_prefix)
     }
 
     fn cached_state_root_schema(&self) -> Option<bool> {
@@ -218,7 +277,7 @@ impl StateStore {
         let current = self.get_state_root_schema();
         if let Some(current) = current {
             if current != include_restrictions {
-                if let Err(e) = self.db.delete_cf(&cf_stats, b"cached_state_root") {
+                if let Err(e) = self.db.delete_cf(&cf_stats, CACHED_STATE_ROOT_KEY) {
                     tracing::warn!("Failed to clear cached state root during schema switch: {e}");
                 }
                 if let Err(e) = self.db.delete_cf(&cf_stats, CACHED_STATE_ROOT_SCHEMA_KEY) {
@@ -500,6 +559,10 @@ impl StateStore {
     }
 
     fn compute_accounts_root_for_batch(&self, batch: &StateBatch) -> Hash {
+        if batch.account_overlay.is_empty() {
+            return self.compute_accounts_root();
+        }
+
         // Make sure canonical dirty markers have been folded into leaf cache.
         let _ = self.compute_accounts_root();
 
@@ -508,42 +571,77 @@ impl StateStore {
             None => return self.compute_accounts_root_full_scan(),
         };
 
-        let mut leaves = std::collections::BTreeMap::<Vec<u8>, Hash>::new();
-        for item in self
+        let mut overlay =
+            Vec::<(Vec<u8>, Option<Hash>)>::with_capacity(batch.account_overlay.len());
+        for (pubkey, account) in &batch.account_overlay {
+            if account.dormant {
+                overlay.push((pubkey.0.to_vec(), None));
+                continue;
+            }
+            match Self::serialized_account_value(account) {
+                Ok(value) => {
+                    overlay.push((
+                        pubkey.0.to_vec(),
+                        Some(Hash::hash_two_parts(&pubkey.0, &value)),
+                    ));
+                }
+                Err(err) => tracing::warn!("Failed to overlay account in state root: {}", err),
+            }
+        }
+        overlay.sort_by(|(left, _), (right, _)| left.cmp(right));
+
+        let mut leaves = Vec::<Hash>::new();
+        let mut overlay_iter = overlay.into_iter().peekable();
+        'leaf_scan: for item in self
             .db
             .iterator_cf(&cf_leaves, rocksdb::IteratorMode::Start)
             .flatten()
         {
             let (key, value) = item;
+            let key_vec = key.to_vec();
+            loop {
+                match overlay_iter
+                    .peek()
+                    .map(|(overlay_key, _)| overlay_key.as_slice().cmp(key_vec.as_slice()))
+                {
+                    Some(std::cmp::Ordering::Less) => {
+                        let (_, overlay_leaf) = overlay_iter.next().expect("peeked overlay entry");
+                        if let Some(leaf) = overlay_leaf {
+                            leaves.push(leaf);
+                        }
+                    }
+                    Some(std::cmp::Ordering::Equal) => {
+                        let (_, overlay_leaf) = overlay_iter.next().expect("peeked overlay entry");
+                        if let Some(leaf) = overlay_leaf {
+                            leaves.push(leaf);
+                        }
+                        continue 'leaf_scan;
+                    }
+                    _ => break,
+                }
+            }
+
             if value.len() == 32 {
                 let mut bytes = [0u8; 32];
                 bytes.copy_from_slice(&value);
-                leaves.insert(key.to_vec(), Hash(bytes));
+                leaves.push(Hash(bytes));
             }
         }
 
-        for (pubkey, account) in &batch.account_overlay {
-            if account.dormant {
-                leaves.remove(pubkey.0.as_slice());
-                continue;
-            }
-            match Self::serialized_account_value(account) {
-                Ok(value) => {
-                    leaves.insert(pubkey.0.to_vec(), Hash::hash_two_parts(&pubkey.0, &value));
-                }
-                Err(err) => tracing::warn!("Failed to overlay account in state root: {}", err),
+        for (_, overlay_leaf) in overlay_iter {
+            if let Some(leaf) = overlay_leaf {
+                leaves.push(leaf);
             }
         }
 
-        if leaves.is_empty() {
-            return Hash::default();
-        }
-
-        let ordered: Vec<Hash> = leaves.into_values().collect();
-        Self::merkle_root_from_leaves(&ordered)
+        Self::merkle_root_from_leaves(&leaves)
     }
 
     fn compute_contract_storage_root_for_batch(&self, batch: &StateBatch) -> Hash {
+        if batch.contract_storage_overlay.is_empty() {
+            return self.compute_contract_storage_root();
+        }
+
         // Make sure canonical dirty markers have been folded into leaf cache.
         let _ = self.compute_contract_storage_root();
 
@@ -552,37 +650,68 @@ impl StateStore {
             None => return self.compute_contract_storage_root_full_scan(),
         };
 
-        let mut leaves = std::collections::BTreeMap::<Vec<u8>, Hash>::new();
-        for item in self
+        let mut overlay =
+            Vec::<(Vec<u8>, Option<Hash>)>::with_capacity(batch.contract_storage_overlay.len());
+        for (full_key, value) in &batch.contract_storage_overlay {
+            match value {
+                Some(value) => {
+                    overlay.push((
+                        full_key.clone(),
+                        Some(Hash::hash_two_parts(full_key, value)),
+                    ));
+                }
+                None => {
+                    overlay.push((full_key.clone(), None));
+                }
+            }
+        }
+        overlay.sort_by(|(left, _), (right, _)| left.cmp(right));
+
+        let mut leaves = Vec::<Hash>::new();
+        let mut overlay_iter = overlay.into_iter().peekable();
+        'leaf_scan: for item in self
             .db
             .iterator_cf(&cf_leaves, rocksdb::IteratorMode::Start)
             .flatten()
         {
             let (key, value) = item;
+            let key_vec = key.to_vec();
+            loop {
+                match overlay_iter
+                    .peek()
+                    .map(|(overlay_key, _)| overlay_key.as_slice().cmp(key_vec.as_slice()))
+                {
+                    Some(std::cmp::Ordering::Less) => {
+                        let (_, overlay_leaf) = overlay_iter.next().expect("peeked overlay entry");
+                        if let Some(leaf) = overlay_leaf {
+                            leaves.push(leaf);
+                        }
+                    }
+                    Some(std::cmp::Ordering::Equal) => {
+                        let (_, overlay_leaf) = overlay_iter.next().expect("peeked overlay entry");
+                        if let Some(leaf) = overlay_leaf {
+                            leaves.push(leaf);
+                        }
+                        continue 'leaf_scan;
+                    }
+                    _ => break,
+                }
+            }
+
             if value.len() == 32 {
                 let mut bytes = [0u8; 32];
                 bytes.copy_from_slice(&value);
-                leaves.insert(key.to_vec(), Hash(bytes));
+                leaves.push(Hash(bytes));
             }
         }
 
-        for (full_key, value) in &batch.contract_storage_overlay {
-            match value {
-                Some(value) => {
-                    leaves.insert(full_key.clone(), Hash::hash_two_parts(full_key, value));
-                }
-                None => {
-                    leaves.remove(full_key.as_slice());
-                }
+        for (_, overlay_leaf) in overlay_iter {
+            if let Some(leaf) = overlay_leaf {
+                leaves.push(leaf);
             }
         }
 
-        if leaves.is_empty() {
-            return Hash::default();
-        }
-
-        let ordered: Vec<Hash> = leaves.into_values().collect();
-        Self::merkle_root_from_leaves(&ordered)
+        Self::merkle_root_from_leaves(&leaves)
     }
 
     fn compute_restrictions_root_for_batch(&self, batch: &StateBatch) -> Hash {
@@ -655,6 +784,12 @@ impl StateStore {
         }
 
         let dirty_prefix = b"dirty_acct:";
+        if self.can_use_cached_subroot(b"dirty_account_count", dirty_prefix) {
+            if let Some(root) = self.read_cached_hash(CACHED_ACCOUNTS_ROOT_KEY) {
+                return root;
+            }
+        }
+
         let iter = self.db.iterator_cf(
             &cf_stats,
             rocksdb::IteratorMode::From(dirty_prefix, Direction::Forward),
@@ -716,10 +851,14 @@ impl StateStore {
         }
 
         if leaves.is_empty() {
-            return Hash::default();
+            let root = Hash::default();
+            self.cache_subroot(CACHED_ACCOUNTS_ROOT_KEY, &root);
+            return root;
         }
 
-        Self::merkle_root_from_leaves(&leaves)
+        let root = Self::merkle_root_from_leaves(&leaves);
+        self.cache_subroot(CACHED_ACCOUNTS_ROOT_KEY, &root);
+        root
     }
 
     pub fn compute_contract_storage_root(&self) -> Hash {
@@ -748,6 +887,12 @@ impl StateStore {
         }
 
         let dirty_prefix = b"dirty_cstor:";
+        if self.can_use_cached_subroot(b"dirty_contract_count", dirty_prefix) {
+            if let Some(root) = self.read_cached_hash(CACHED_CONTRACT_ROOT_KEY) {
+                return root;
+            }
+        }
+
         let iter = self.db.iterator_cf(
             &cf_stats,
             rocksdb::IteratorMode::From(dirty_prefix, Direction::Forward),
@@ -800,10 +945,14 @@ impl StateStore {
         }
 
         if leaves.is_empty() {
-            return Hash::default();
+            let root = Hash::default();
+            self.cache_subroot(CACHED_CONTRACT_ROOT_KEY, &root);
+            return root;
         }
 
-        Self::merkle_root_from_leaves(&leaves)
+        let root = Self::merkle_root_from_leaves(&leaves);
+        self.cache_subroot(CACHED_CONTRACT_ROOT_KEY, &root);
+        root
     }
 
     fn compute_contract_storage_root_cold_start(&self) -> Hash {
@@ -839,10 +988,7 @@ impl StateStore {
             count += 1;
         }
 
-        if leaves.is_empty() {
-            return Hash::default();
-        }
-
+        let root = Self::merkle_root_from_leaves(&leaves);
         if let Some(cf_stats) = self.db.cf_handle(CF_STATS) {
             batch.put_cf(
                 &cf_stats,
@@ -850,12 +996,13 @@ impl StateStore {
                 count.to_le_bytes(),
             );
             batch.put_cf(&cf_stats, b"dirty_contract_count", 0u64.to_le_bytes());
+            batch.put_cf(&cf_stats, CACHED_CONTRACT_ROOT_KEY, root.0);
         }
         if let Err(e) = self.db.write(batch) {
             tracing::error!("Failed to write contract Merkle leaf cache: {e}");
         }
 
-        Self::merkle_root_from_leaves(&leaves)
+        root
     }
 
     fn compute_contract_storage_root_full_scan(&self) -> Hash {
@@ -908,6 +1055,16 @@ impl StateStore {
             {
                 tracing::error!("Failed to invalidate contract Merkle cache: {e}");
             }
+            for key in [
+                CACHED_STATE_ROOT_KEY,
+                CACHED_STATE_ROOT_SCHEMA_KEY,
+                CACHED_ACCOUNTS_ROOT_KEY,
+                CACHED_CONTRACT_ROOT_KEY,
+            ] {
+                if let Err(e) = self.db.delete_cf(&cf_stats, key) {
+                    tracing::warn!("Failed to clear cached Merkle root during invalidation: {e}");
+                }
+            }
             tracing::info!(
                 "🔄 Merkle leaf cache invalidated — cold start will run on next state root computation"
             );
@@ -950,19 +1107,17 @@ impl StateStore {
             count += 1;
         }
 
-        if leaves.is_empty() {
-            return Hash::default();
-        }
-
+        let root = Self::merkle_root_from_leaves(&leaves);
         if let Some(cf_stats) = self.db.cf_handle(CF_STATS) {
             batch.put_cf(&cf_stats, b"merkle_leaf_count", count.to_le_bytes());
             batch.put_cf(&cf_stats, b"dirty_account_count", 0u64.to_le_bytes());
+            batch.put_cf(&cf_stats, CACHED_ACCOUNTS_ROOT_KEY, root.0);
         }
         if let Err(e) = self.db.write(batch) {
             tracing::error!("Failed to write account Merkle leaf cache: {e}");
         }
 
-        Self::merkle_root_from_leaves(&leaves)
+        root
     }
 
     fn compute_accounts_root_full_scan(&self) -> Hash {
@@ -1062,24 +1217,15 @@ impl StateStore {
     pub fn compute_state_root_cached(&self) -> Hash {
         if let Some(cf) = self.db.cf_handle(CF_STATS) {
             let include_restrictions = self.get_state_root_schema().unwrap_or(false);
-            let accounts_dirty = match self.db.get_cf(&cf, b"dirty_account_count") {
-                Ok(Some(data)) if data.len() == 8 => {
-                    u64::from_le_bytes(data.as_slice().try_into().unwrap_or([0; 8]))
-                }
-                _ => 1,
-            };
-            let contract_dirty = match self.db.get_cf(&cf, b"dirty_contract_count") {
-                Ok(Some(data)) if data.len() == 8 => {
-                    u64::from_le_bytes(data.as_slice().try_into().unwrap_or([0; 8]))
-                }
-                _ => 1,
-            };
+            if include_restrictions {
+                return self.compute_state_root();
+            }
 
-            if accounts_dirty == 0
-                && contract_dirty == 0
+            if self.can_use_cached_subroot(b"dirty_account_count", b"dirty_acct:")
+                && self.can_use_cached_subroot(b"dirty_contract_count", b"dirty_cstor:")
                 && self.cached_state_root_schema() == Some(include_restrictions)
             {
-                if let Ok(Some(data)) = self.db.get_cf(&cf, b"cached_state_root") {
+                if let Ok(Some(data)) = self.db.get_cf(&cf, CACHED_STATE_ROOT_KEY) {
                     if data.len() == 32 {
                         let mut bytes = [0u8; 32];
                         bytes.copy_from_slice(&data);

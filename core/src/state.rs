@@ -1177,6 +1177,144 @@ mod tests {
     }
 
     #[test]
+    fn test_state_root_for_account_batch_reuses_contract_root_and_matches_commit() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+
+        let alice = Pubkey([1u8; 32]);
+        let bob = Pubkey([2u8; 32]);
+        let program = Pubkey([3u8; 32]);
+        state
+            .put_account(&alice, &Account::new(1000, alice))
+            .unwrap();
+        state.put_account(&bob, &Account::new(100, bob)).unwrap();
+        for index in 0..128u16 {
+            state
+                .put_contract_storage(&program, &index.to_be_bytes(), &index.to_le_bytes())
+                .unwrap();
+        }
+        let canonical_before = state.compute_state_root();
+        let cf_stats = state.db.cf_handle(CF_STATS).unwrap();
+        let contract_root_before = state
+            .db
+            .get_cf(&cf_stats, b"cached_contract_root")
+            .unwrap()
+            .expect("contract subroot should be cached");
+
+        let mut batch = state.begin_batch();
+        batch
+            .transfer(&alice, &bob, Account::licn_to_spores(25))
+            .unwrap();
+
+        let proposal_root = state.compute_state_root_for_batch(&batch);
+        let contract_root_after = state
+            .db
+            .get_cf(&cf_stats, b"cached_contract_root")
+            .unwrap()
+            .expect("contract subroot should remain cached");
+        assert_eq!(
+            contract_root_before, contract_root_after,
+            "account-only proposal root must not rewrite contract subroot"
+        );
+
+        state.commit_batch(batch).unwrap();
+        let committed_root = state.compute_state_root();
+        assert_ne!(
+            canonical_before, committed_root,
+            "account transfer should change the composite state root"
+        );
+        assert_eq!(
+            proposal_root, committed_root,
+            "account-only proposal root must match the committed canonical root"
+        );
+    }
+
+    #[test]
+    fn test_state_root_for_contract_batch_matches_commit() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+
+        let owner = Pubkey([4u8; 32]);
+        let program = Pubkey([5u8; 32]);
+        state
+            .put_account(&owner, &Account::new(1000, owner))
+            .unwrap();
+        state
+            .put_contract_storage(&program, b"remove", b"old")
+            .unwrap();
+        state
+            .put_contract_storage(&program, b"keep", b"stable")
+            .unwrap();
+        let canonical_before = state.compute_state_root();
+
+        let mut batch = state.begin_batch();
+        batch
+            .put_contract_storage(&program, b"insert", b"new")
+            .unwrap();
+        batch.delete_contract_storage(&program, b"remove").unwrap();
+
+        let proposal_root = state.compute_state_root_for_batch(&batch);
+        state.commit_batch(batch).unwrap();
+        let committed_root = state.compute_state_root();
+        assert_ne!(
+            canonical_before, committed_root,
+            "contract storage mutation should change the composite state root"
+        );
+        assert_eq!(
+            proposal_root, committed_root,
+            "contract proposal root must match the committed canonical root"
+        );
+    }
+
+    #[test]
+    fn test_cached_state_root_honors_dirty_marker_even_if_counter_is_zero() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+
+        let owner = Pubkey([6u8; 32]);
+        state
+            .put_account(&owner, &Account::new(100, owner))
+            .unwrap();
+        let root_before = state.compute_state_root_cached();
+
+        state
+            .put_account(&owner, &Account::new(200, owner))
+            .unwrap();
+        let cf_stats = state.db.cf_handle(CF_STATS).unwrap();
+        state
+            .db
+            .put_cf(&cf_stats, b"dirty_account_count", 0u64.to_le_bytes())
+            .unwrap();
+
+        let root_after = state.compute_state_root_cached();
+        assert_ne!(
+            root_before, root_after,
+            "dirty account marker must prevent stale composite root reuse"
+        );
+        assert_eq!(root_after, state.compute_state_root());
+    }
+
+    #[test]
+    fn test_cached_state_root_honors_stake_pool_writes() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+
+        let validator = Pubkey([7u8; 32]);
+        let root_before = state.compute_state_root_cached();
+        let mut pool = crate::consensus::StakePool::new();
+        pool.stake(validator, Account::licn_to_spores(100_000), 0)
+            .unwrap();
+        state.put_stake_pool(&pool).unwrap();
+
+        let root_after = state.compute_state_root_cached();
+        assert_ne!(
+            root_before, root_after,
+            "stake-pool writes must invalidate the cached composite root"
+        );
+        assert_eq!(root_after, state.compute_state_root());
+    }
+
+    #[test]
     fn test_state_root_schema_detects_and_persists_legacy_compatibility() {
         let temp = tempdir().unwrap();
         let state = StateStore::open(temp.path()).unwrap();
