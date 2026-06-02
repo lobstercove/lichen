@@ -512,8 +512,8 @@ Only the public address belongs in runbooks, signed metadata, and launch
 evidence. If the signer is rotated, regenerate the signed metadata manifest and
 release signatures from the new key before publishing the release.
 
-The private signing key is staged only long enough to generate the signed
-metadata manifest during post-genesis bootstrap, then removed or unmounted.
+The private signing key is staged only long enough to generate signed metadata
+manifests and release artifact signatures, then removed or unmounted.
 Never generate a replacement signing key on a VPS.
 
 ### Custody Seeds
