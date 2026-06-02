@@ -10,6 +10,8 @@ set -euo pipefail
 # This script installs an exact GitHub Release archive on each validator and
 # restarts one validator at a time. It never deletes chain state.
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 NETWORK="${1:-testnet}"
 case "$NETWORK" in
   testnet)
@@ -37,6 +39,7 @@ DISK_CRITICAL_PCT="${LICHEN_DISK_CRITICAL_PCT:-85}"
 MAX_BLOCK_AGE_SECS="${LICHEN_MAX_BLOCK_AGE_SECS:-15}"
 DEX_SMOKE_TIMEOUT_SECS="${LICHEN_DEX_SMOKE_TIMEOUT_SECS:-90}"
 ARTIFACT_DIR="${LICHEN_RELEASE_ARTIFACT_DIR:-/tmp/lichen-rolling-${NETWORK}-${RELEASE_TAG:-unset}}"
+RELEASE_SIGNING_ADDRESS="${LICHEN_RELEASE_SIGNING_ADDRESS:-8HitBNnh8qbhfne5NCv2yHrQFoD6xbmHcWaUSgCGtsk}"
 
 if [ -z "$RELEASE_TAG" ]; then
   echo "LICHEN_RELEASE_TAG is required." >&2
@@ -53,7 +56,7 @@ if [ -n "${LICHEN_OWNER_APPROVED_RESET:-}" ] || [ -n "${LICHEN_CLEAN_SLATE_REDEP
   exit 2
 fi
 
-for tool in gh sha256sum tar ssh scp; do
+for tool in gh node sha256sum tar ssh scp; do
   if ! command -v "$tool" >/dev/null 2>&1; then
     echo "Missing required tool: $tool" >&2
     exit 2
@@ -113,9 +116,30 @@ download_release_artifacts() {
       gh release download "$RELEASE_TAG" --repo "$RELEASE_REPO" \
         -p "$archive" \
         -D "$ARTIFACT_DIR" \
-        --clobber
+      --clobber
     fi
   done
+
+  SHA256SUMS_FILE="$ARTIFACT_DIR/SHA256SUMS" \
+  SHA256SUMS_SIG_FILE="$ARTIFACT_DIR/SHA256SUMS.sig" \
+  RELEASE_SIGNING_ADDRESS="$RELEASE_SIGNING_ADDRESS" \
+  PQ_MODULE_PATH="$REPO_ROOT/monitoring/shared/pq.mjs" \
+  node --input-type=module <<'NODE'
+import { readFile } from 'node:fs/promises';
+import { pathToFileURL } from 'node:url';
+
+const { publicKeyToAddress, verifySignature } = await import(pathToFileURL(process.env.PQ_MODULE_PATH).href);
+const message = new Uint8Array(await readFile(process.env.SHA256SUMS_FILE));
+const signature = JSON.parse(await readFile(process.env.SHA256SUMS_SIG_FILE, 'utf8'));
+const signer = await publicKeyToAddress(signature.public_key.bytes, signature.public_key.scheme_version || signature.scheme_version || 1);
+if (signer !== process.env.RELEASE_SIGNING_ADDRESS) {
+  throw new Error(`SHA256SUMS signer mismatch: got ${signer}, expected ${process.env.RELEASE_SIGNING_ADDRESS}`);
+}
+if (!(await verifySignature(signature, message, process.env.RELEASE_SIGNING_ADDRESS))) {
+  throw new Error('SHA256SUMS PQ signature verification failed');
+}
+console.log(`SHA256SUMS PQ signature verified by ${signer}`);
+NODE
 
   (cd "$ARTIFACT_DIR" && sha256sum -c SHA256SUMS --ignore-missing)
 }

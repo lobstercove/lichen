@@ -22,7 +22,11 @@ function indexOfOrThrow(needle) {
 const installCall = indexOfOrThrow('install_host "$host"');
 const healthCall = indexOfOrThrow('wait_healthy "$host"');
 const custodyCall = indexOfOrThrow('restart_custody_if_local "$host"');
+const signatureVerify = indexOfOrThrow('SHA256SUMS PQ signature verified by');
+const checksumVerify = indexOfOrThrow('sha256sum -c SHA256SUMS --ignore-missing');
 
+assert(signatureVerify < checksumVerify, 'release PQ signature must be verified before checksum verification');
+assert(checksumVerify < installCall, 'release artifacts must be verified before validator install');
 assert(installCall < healthCall, 'validator install must happen before health wait');
 assert(healthCall < custodyCall, 'custody restart must happen only after validator health');
 assert(script.includes('systemctl list-unit-files lichen-custody.service'), 'custody refresh must be conditional on service presence');

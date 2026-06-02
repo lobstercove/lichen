@@ -132,9 +132,9 @@ const LICHEN_CONFIG = (() => {
 
     /** Resolve a network key, falling back to the default if invalid. */
     function resolveNetwork(name) {
-        if (name === 'local') return networks['local-testnet'] ? 'local-testnet' : defaultNetwork;
+        if (name === 'local') return isProduction ? productionPrimaryNetwork : (networks['local-testnet'] ? 'local-testnet' : defaultNetwork);
         const resolved = networks[name] ? name : defaultNetwork;
-        if (isProduction && resolved === 'mainnet') {
+        if (isProduction && (resolved === 'mainnet' || networks[resolved]?.local)) {
             return productionPrimaryNetwork;
         }
         return resolved;

@@ -221,17 +221,68 @@ cd /tmp/lichen-release-mainnet
 sha256sum -c SHA256SUMS
 ```
 
+The rolling deploy script verifies the detached PQ signature over `SHA256SUMS`
+before it installs anything on a VPS. Do not bypass that gate during rollout.
+
 The release must be signed by the configured release-signing key. For the
 current trust anchor, the signer address is:
 
 ```text
-6MuUKtm7T39umn7276rbuiCeMeT1XMr5jpWKQqFXVtc
+8HitBNnh8qbhfne5NCv2yHrQFoD6xbmHcWaUSgCGtsk
 ```
 
-This signer is the post-public-history-cleanup trust anchor. Do not use the
-older pre-cleanup release signer for mainnet release assets or metadata.
+This signer must match the key used to create `SHA256SUMS.sig` and the signed
+metadata manifest. Do not rotate the public trust anchor unless the matching
+private signing key is staged offline and every client trust table is updated
+in the same release.
+
+Run the trust-anchor drift gate before every release and before every frontend
+publish:
+
+```bash
+node scripts/qa/test_release_signer_trust_anchor.js
+```
 
 Do not proceed if release verification fails.
+
+### Signed Metadata And Frontend Gate
+
+The DEX, wallet, programs, marketplace, explorer, monitoring, faucet, and
+developers frontends resolve contract symbols through the signed metadata
+manifest. They fail closed if the manifest signer is not the configured release
+trust anchor. Before deploying Cloudflare Pages or rolling validators, verify
+the public RPC serves a manifest signed by the current trust anchor and includes
+the DEX-critical symbols:
+
+```bash
+EXPECTED_RELEASE_SIGNER="8HitBNnh8qbhfne5NCv2yHrQFoD6xbmHcWaUSgCGtsk"
+RPC_URL="https://rpc.lichen.network"
+
+curl -fsS "$RPC_URL" \
+  -H 'Content-Type: application/json' \
+  --data '{"jsonrpc":"2.0","id":1,"method":"getSignedMetadataManifest","params":[]}' \
+  | EXPECTED_RELEASE_SIGNER="$EXPECTED_RELEASE_SIGNER" python3 -c '
+import json, os, sys
+d=json.load(sys.stdin)["result"]
+p=d.get("payload") or {}
+symbols={e.get("symbol") for e in p.get("symbol_registry", [])}
+required={"DEX","DEXAMM","DEXROUTER","DEXMARGIN","DEXREWARDS","DEXGOV","ANALYTICS","PREDICT","LUSD"}
+missing=sorted(required-symbols)
+print({"signer": d.get("signer"), "symbols": len(symbols), "missing": missing})
+assert d.get("signer") == os.environ["EXPECTED_RELEASE_SIGNER"]
+assert not missing
+'
+```
+
+For testnet, use `RPC_URL="https://testnet-rpc.lichen.network"` and keep the
+same signer unless the release signer has been intentionally rotated in code,
+runbooks, signed metadata, and release assets together.
+
+If this gate fails, do not deploy the frontend and do not roll validators. Fix
+the mismatch by regenerating signed metadata with the current release key, or
+by performing a deliberate signer rotation across the release key, all client
+trust tables, the validator updater, runbooks, and release signatures in one
+validated release.
 
 ## Phase 2: Host Preflight
 
@@ -454,11 +505,12 @@ Record only public keys in the launch log.
 The release-signing public address expected by clients is:
 
 ```text
-6MuUKtm7T39umn7276rbuiCeMeT1XMr5jpWKQqFXVtc
+8HitBNnh8qbhfne5NCv2yHrQFoD6xbmHcWaUSgCGtsk
 ```
 
-This keypair is generated and stored outside the repository. Only the public
-address belongs in git, runbooks, signed metadata, and launch evidence.
+Only the public address belongs in runbooks, signed metadata, and launch
+evidence. If the signer is rotated, regenerate the signed metadata manifest and
+release signatures from the new key before publishing the release.
 
 The private signing key is staged only long enough to generate the signed
 metadata manifest during post-genesis bootstrap, then removed or unmounted.
@@ -802,7 +854,7 @@ curl -fsS http://127.0.0.1:9899 \
 import json, sys
 d=json.load(sys.stdin)["result"]
 print(d["signer"])
-assert d["signer"] == "6MuUKtm7T39umn7276rbuiCeMeT1XMr5jpWKQqFXVtc"
+assert d["signer"] == "8HitBNnh8qbhfne5NCv2yHrQFoD6xbmHcWaUSgCGtsk"
 '
 ```
 

@@ -50,10 +50,11 @@ const ROLLBACK_CRASH_WINDOW_SECS: u64 = 60;
 // This is the compact Lichen address of the trusted PQ release signer.
 // `SHA256SUMS.sig` carries a self-contained `PqSignature`, and verification
 // succeeds only if the embedded signer public key hashes to this address.
-// To rotate after a suspected signer exposure: generate a new release keypair
-// outside the repository, update this constant, and cut a fresh release from
-// the sanitized public branch. Do not commit release-signing private keys.
-const RELEASE_SIGNING_ADDRESS_BASE58: &str = "6MuUKtm7T39umn7276rbuiCeMeT1XMr5jpWKQqFXVtc";
+// This must match the key used by scripts/sign-release.sh and signed metadata
+// generation. The CI release-signer trust-anchor gate derives the expected
+// address from keypairs/release-signing-key.json and checks this constant.
+// Rotate by replacing the signing key and every client trust anchor together.
+const RELEASE_SIGNING_ADDRESS_BASE58: &str = "8HitBNnh8qbhfne5NCv2yHrQFoD6xbmHcWaUSgCGtsk";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 

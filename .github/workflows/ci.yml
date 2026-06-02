@@ -81,6 +81,8 @@ jobs:
         run: node scripts/qa/test_legacy_bincode_codec_policy.js
       - name: Verify release audit summaries
         run: node scripts/qa/test_release_audit_summaries.js
+      - name: Verify release signer trust anchor
+        run: node scripts/qa/test_release_signer_trust_anchor.js
       - name: Verify deployment env examples
         run: node scripts/qa/test_deployment_env_examples.js
       - name: Verify DEX frontend wiring

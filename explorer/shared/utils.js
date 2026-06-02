@@ -379,10 +379,10 @@ if (typeof document !== 'undefined' && document.currentScript && document.curren
 
 var SIGNED_METADATA_MANIFEST_SCHEMA_VERSION = 1;
 var LICHEN_SIGNED_METADATA_SIGNERS = Object.freeze({
-    mainnet: '6MuUKtm7T39umn7276rbuiCeMeT1XMr5jpWKQqFXVtc',
-    testnet: '6MuUKtm7T39umn7276rbuiCeMeT1XMr5jpWKQqFXVtc',
-    'local-testnet': '6MuUKtm7T39umn7276rbuiCeMeT1XMr5jpWKQqFXVtc',
-    'local-mainnet': '6MuUKtm7T39umn7276rbuiCeMeT1XMr5jpWKQqFXVtc',
+    mainnet: '8HitBNnh8qbhfne5NCv2yHrQFoD6xbmHcWaUSgCGtsk',
+    testnet: '8HitBNnh8qbhfne5NCv2yHrQFoD6xbmHcWaUSgCGtsk',
+    'local-testnet': '8HitBNnh8qbhfne5NCv2yHrQFoD6xbmHcWaUSgCGtsk',
+    'local-mainnet': '8HitBNnh8qbhfne5NCv2yHrQFoD6xbmHcWaUSgCGtsk',
 });
 
 var _signedMetadataManifestCache = new Map();
