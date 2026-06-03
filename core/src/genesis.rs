@@ -134,7 +134,7 @@ fn default_wgas_usd_8dec() -> u64 {
 }
 
 fn default_state_commitment_schema() -> String {
-    "ordered_v0".to_string()
+    "sparse_v1".to_string()
 }
 
 impl Default for GenesisPrices {
@@ -1236,9 +1236,9 @@ mod tests {
     }
 
     #[test]
-    fn test_default_state_commitment_schema_is_ordered() {
+    fn test_default_state_commitment_schema_is_sparse() {
         let genesis = GenesisConfig::default_testnet();
-        assert_eq!(genesis.state_commitment_schema, "ordered_v0");
+        assert_eq!(genesis.state_commitment_schema, "sparse_v1");
         assert!(genesis.validate().is_ok());
     }
 

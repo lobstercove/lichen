@@ -65,7 +65,8 @@ genesis field below.
 
 ## Genesis / Reset
 
-For a reset testnet, local private testnet, or future mainnet genesis, set this in the genesis config before creating slot 0:
+For a reset testnet, local private testnet, or future mainnet genesis, new
+genesis configs default to `sparse_v1` before creating slot 0:
 
 ```json
 {
@@ -73,7 +74,7 @@ For a reset testnet, local private testnet, or future mainnet genesis, set this 
 }
 ```
 
-Omitting the field keeps the compatibility default:
+Use `ordered_v0` only when intentionally recreating a legacy compatibility chain:
 
 ```json
 {

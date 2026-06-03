@@ -5,6 +5,11 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.83] - 2026-06-03
+
+### Changed
+- Defaults new genesis configs to `state_commitment_schema="sparse_v1"` so reset testnets, local testnets, and future mainnet launches start sparse from slot 0 unless a legacy compatibility chain explicitly opts into `ordered_v0`.
+
 ## [0.5.82] - 2026-06-03
 
 ### Added
