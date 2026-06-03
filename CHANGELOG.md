@@ -5,6 +5,15 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.88] - 2026-06-04
+
+### Changed
+- Speeds up DEX pair and trader trade-history REST reads with a rebuildable in-memory trade index derived from canonical `dex_trade_{id}` storage, avoiding repeated global trade scans while preserving matching, settlement, and state semantics.
+
+### Fixed
+- Ensures pair-specific recent trade reads return the requested pair's latest trades even when other pairs dominate the most recent global trade IDs.
+- Removes the 1,000-global-trade lookback cap from trader trade-history reads by using the same canonical trade read model.
+
 ## [0.5.87] - 2026-06-03
 
 ### Fixed

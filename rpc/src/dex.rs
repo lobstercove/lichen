@@ -814,6 +814,47 @@ struct PairOrderIndex {
 static PAIR_ORDER_INDEX_CACHE: LazyLock<Mutex<HashMap<u64, PairOrderIndex>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
+#[derive(Clone, Default)]
+struct DexTradeIndex {
+    by_pair: HashMap<u64, Vec<u64>>,
+    by_taker: HashMap<String, Vec<u64>>,
+    scanned_trade_count: u64,
+}
+
+/// Incremental DEX trade read model. It is derived only from canonical
+/// dex_trade_{id} records and can be rebuilt after restart or local reset.
+static DEX_TRADE_INDEX_CACHE: LazyLock<Mutex<DexTradeIndex>> =
+    LazyLock::new(|| Mutex::new(DexTradeIndex::default()));
+
+fn refresh_trade_index<F>(index: &mut DexTradeIndex, latest_trade_count: u64, mut read_trade: F)
+where
+    F: FnMut(u64) -> Option<TradeJson>,
+{
+    if latest_trade_count < index.scanned_trade_count {
+        *index = DexTradeIndex::default();
+    }
+
+    let start = index.scanned_trade_count.saturating_add(1);
+    if start <= latest_trade_count {
+        for trade_id in start..=latest_trade_count {
+            if let Some(trade) = read_trade(trade_id) {
+                index
+                    .by_pair
+                    .entry(trade.pair_id)
+                    .or_default()
+                    .push(trade_id);
+                index
+                    .by_taker
+                    .entry(trade.taker)
+                    .or_default()
+                    .push(trade_id);
+            }
+        }
+    }
+
+    index.scanned_trade_count = latest_trade_count;
+}
+
 fn get_pair_order_ids(state: &crate::RpcState, pair_id: u64) -> Vec<u64> {
     let latest_order_count = read_u64(state, DEX_CORE_PROGRAM, DEX_ORDER_COUNT_KEY);
 
@@ -865,6 +906,30 @@ fn get_pair_order_ids(state: &crate::RpcState, pair_id: u64) -> Vec<u64> {
     }
 
     known_ids
+}
+
+fn get_indexed_pair_trade_ids(state: &crate::RpcState, pair_id: u64) -> Vec<u64> {
+    let latest_trade_count = read_u64(state, DEX_CORE_PROGRAM, DEX_TRADE_COUNT_KEY);
+    let mut cache = DEX_TRADE_INDEX_CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    refresh_trade_index(&mut cache, latest_trade_count, |trade_id| {
+        let key = trade_storage_key(trade_id);
+        read_bytes(state, DEX_CORE_PROGRAM, &key).and_then(|data| decode_trade(&data))
+    });
+    cache.by_pair.get(&pair_id).cloned().unwrap_or_default()
+}
+
+fn get_indexed_taker_trade_ids(state: &crate::RpcState, taker_hex: &str) -> Vec<u64> {
+    let latest_trade_count = read_u64(state, DEX_CORE_PROGRAM, DEX_TRADE_COUNT_KEY);
+    let mut cache = DEX_TRADE_INDEX_CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    refresh_trade_index(&mut cache, latest_trade_count, |trade_id| {
+        let key = trade_storage_key(trade_id);
+        read_bytes(state, DEX_CORE_PROGRAM, &key).and_then(|data| decode_trade(&data))
+    });
+    cache.by_taker.get(taker_hex).cloned().unwrap_or_default()
 }
 
 /// Build a hex-address→display-symbol map for known token contracts.
@@ -952,6 +1017,24 @@ fn decode_order(data: &[u8]) -> Option<OrderJson> {
 /// `timestamp` defaults to 0 — caller should compute from slot if possible.
 fn decode_trade(data: &[u8]) -> Option<TradeJson> {
     core_dex::decode_trade(data).map(Into::into)
+}
+
+fn enrich_trade_for_response(
+    state: &crate::RpcState,
+    mut trade: TradeJson,
+    slot: u64,
+    now_ms: u64,
+) -> TradeJson {
+    let maker_key = order_storage_key(trade.maker_order_id);
+    if let Some(maker_data) = read_bytes(state, DEX_CORE_PROGRAM, &maker_key) {
+        if maker_data.len() > 40 {
+            trade.side = if maker_data[40] == 0 { "sell" } else { "buy" };
+        }
+    }
+
+    let slot_age_ms = slot.saturating_sub(trade.slot) * SLOT_DURATION_MS;
+    trade.timestamp = now_ms.saturating_sub(slot_age_ms);
+    trade
 }
 
 /// Decode a pool from 96-byte blob
@@ -1251,15 +1334,8 @@ async fn get_trades(
     // F4.4: Support optional trader filter using either hex or base58 addresses.
     let trader_filter = normalize_account_lookup(q.trader.as_deref().unwrap_or(""));
     let slot = current_slot(&state);
-    let trade_count = read_u64(&state, DEX_CORE_PROGRAM, DEX_TRADE_COUNT_KEY);
 
     let mut trades = Vec::new();
-    // Read from most recent — trade IDs are 1-indexed, trade_count is highest ID
-    let start = if trade_count > limit as u64 {
-        trade_count - limit as u64 + 1
-    } else {
-        1
-    };
     // Genesis timestamp: use chain start time for slot→timestamp conversion
     // Slot duration: 400ms
     let now_ms = std::time::SystemTime::now()
@@ -1267,32 +1343,19 @@ async fn get_trades(
         .unwrap_or_default()
         .as_millis() as u64;
 
-    for i in (start..=trade_count).rev() {
+    for i in get_indexed_pair_trade_ids(&state, pair_id)
+        .into_iter()
+        .rev()
+    {
         let key = trade_storage_key(i);
         if let Some(data) = read_bytes(&state, DEX_CORE_PROGRAM, &key) {
-            if let Some(mut trade) = decode_trade(&data) {
-                if trade.pair_id == pair_id {
-                    // F4.4: Filter by trader address if specified
-                    if !trader_filter.is_empty() && trade.taker != trader_filter {
-                        continue;
-                    }
-                    // F3.2: Infer taker side from maker order
-                    // The maker's side is the opposite of the taker's side.
-                    let maker_key = order_storage_key(trade.maker_order_id);
-                    if let Some(maker_data) = read_bytes(&state, DEX_CORE_PROGRAM, &maker_key) {
-                        if maker_data.len() > 40 {
-                            // Byte 40 = side (0=buy, 1=sell); taker is opposite
-                            trade.side = if maker_data[40] == 0 { "sell" } else { "buy" };
-                        }
-                    }
-                    // F3.3: Approximate timestamp from slot delta
-                    // timestamp_ms ≈ now - (current_slot - trade_slot) * SLOT_DURATION_MS
-                    let slot_age_ms = slot.saturating_sub(trade.slot) * SLOT_DURATION_MS;
-                    trade.timestamp = now_ms.saturating_sub(slot_age_ms);
-                    trades.push(trade);
-                    if trades.len() >= limit {
-                        break;
-                    }
+            if let Some(trade) = decode_trade(&data) {
+                if !trader_filter.is_empty() && trade.taker != trader_filter {
+                    continue;
+                }
+                trades.push(enrich_trade_for_response(&state, trade, slot, now_ms));
+                if trades.len() >= limit {
+                    break;
                 }
             }
         }
@@ -2542,7 +2605,6 @@ async fn get_trader_trades(
     let limit = q.limit.unwrap_or(50).min(200);
     let slot = current_slot(&state);
     let addr_hex = normalize_account_lookup(&addr);
-    let trade_count = read_u64(&state, DEX_CORE_PROGRAM, DEX_TRADE_COUNT_KEY);
 
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -2550,29 +2612,16 @@ async fn get_trader_trades(
         .as_millis() as u64;
 
     let mut trades = Vec::new();
-    // Iterate recent trades and filter by taker address
-    let start = if trade_count > 1000 {
-        trade_count - 999
-    } else {
-        1
-    };
-    for i in (start..=trade_count).rev() {
+    for i in get_indexed_taker_trade_ids(&state, &addr_hex)
+        .into_iter()
+        .rev()
+    {
         let key = trade_storage_key(i);
         if let Some(data) = read_bytes(&state, DEX_CORE_PROGRAM, &key) {
-            if let Some(mut trade) = decode_trade(&data) {
-                if trade.taker == addr_hex {
-                    let maker_key = order_storage_key(trade.maker_order_id);
-                    if let Some(maker_data) = read_bytes(&state, DEX_CORE_PROGRAM, &maker_key) {
-                        if maker_data.len() > 40 {
-                            trade.side = if maker_data[40] == 0 { "sell" } else { "buy" };
-                        }
-                    }
-                    let slot_age_ms = slot.saturating_sub(trade.slot) * SLOT_DURATION_MS;
-                    trade.timestamp = now_ms.saturating_sub(slot_age_ms);
-                    trades.push(trade);
-                    if trades.len() >= limit {
-                        break;
-                    }
+            if let Some(trade) = decode_trade(&data) {
+                trades.push(enrich_trade_for_response(&state, trade, slot, now_ms));
+                if trades.len() >= limit {
+                    break;
                 }
             }
         }
@@ -3196,6 +3245,82 @@ mod tests {
         assert_eq!(t.maker_order_id, 77);
         assert_eq!(t.slot, 12345);
         assert_eq!(t.taker, hex::encode([0xFF; 32]));
+    }
+
+    fn trade_for_index(trade_id: u64, pair_id: u64, taker: &str) -> TradeJson {
+        TradeJson {
+            trade_id,
+            pair_id,
+            price: 1.0,
+            price_raw: PRICE_SCALE,
+            quantity: 1,
+            taker: taker.to_string(),
+            maker_order_id: 1,
+            slot: trade_id,
+            side: "buy",
+            timestamp: 0,
+        }
+    }
+
+    #[test]
+    fn trade_index_groups_interleaved_pairs_and_takers_incrementally() {
+        let mut source = std::collections::HashMap::from([
+            (1, trade_for_index(1, 2, "alice")),
+            (2, trade_for_index(2, 2, "bob")),
+            (3, trade_for_index(3, 1, "alice")),
+            (4, trade_for_index(4, 2, "alice")),
+            (5, trade_for_index(5, 3, "carol")),
+        ]);
+        let mut index = DexTradeIndex::default();
+
+        refresh_trade_index(&mut index, 5, |trade_id| source.get(&trade_id).cloned());
+
+        assert_eq!(
+            index.by_pair.get(&2).map(Vec::as_slice),
+            Some([1, 2, 4].as_slice())
+        );
+        assert_eq!(
+            index.by_taker.get("alice").map(Vec::as_slice),
+            Some([1, 3, 4].as_slice())
+        );
+
+        source.insert(6, trade_for_index(6, 2, "bob"));
+        refresh_trade_index(&mut index, 6, |trade_id| source.get(&trade_id).cloned());
+        refresh_trade_index(&mut index, 6, |trade_id| source.get(&trade_id).cloned());
+
+        assert_eq!(
+            index.by_pair.get(&2).map(Vec::as_slice),
+            Some([1, 2, 4, 6].as_slice())
+        );
+        assert_eq!(
+            index.by_taker.get("bob").map(Vec::as_slice),
+            Some([2, 6].as_slice())
+        );
+        assert_eq!(index.scanned_trade_count, 6);
+    }
+
+    #[test]
+    fn trade_index_rebuilds_when_trade_count_rewinds() {
+        let mut index = DexTradeIndex::default();
+        let source = std::collections::HashMap::from([
+            (1, trade_for_index(1, 1, "alice")),
+            (2, trade_for_index(2, 2, "bob")),
+            (3, trade_for_index(3, 2, "carol")),
+        ]);
+
+        refresh_trade_index(&mut index, 3, |trade_id| source.get(&trade_id).cloned());
+        assert_eq!(
+            index.by_pair.get(&2).map(Vec::as_slice),
+            Some([2, 3].as_slice())
+        );
+
+        refresh_trade_index(&mut index, 1, |trade_id| source.get(&trade_id).cloned());
+        assert_eq!(
+            index.by_pair.get(&1).map(Vec::as_slice),
+            Some([1].as_slice())
+        );
+        assert!(index.by_pair.get(&2).is_none());
+        assert_eq!(index.scanned_trade_count, 1);
     }
 
     // ── decode_pool ─────────────────────────────────────────────────────
