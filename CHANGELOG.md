@@ -5,6 +5,12 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.86] - 2026-06-03
+
+### Fixed
+- Makes validator-embedded `getAccountProof` reads wait behind the canonical block-apply barrier, so finalized proofs are generated only from a fully post-applied state root anchored by a stored block header or durable `post_state_v1` sidecar.
+- Adds regression coverage for the proof read barrier to prevent mid-commit hybrid state roots from leaking through public RPC under the 400 ms block cadence.
+
 ## [0.5.85] - 2026-06-03
 
 ### Fixed

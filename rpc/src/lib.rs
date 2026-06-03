@@ -2645,6 +2645,10 @@ fn parse_get_block_slot_param(
 #[derive(Clone)]
 struct RpcState {
     state: StateStore,
+    /// Optional canonical block-apply barrier supplied by embedded validators.
+    /// Proof endpoints use it so Merkle roots are generated only from a stable
+    /// fully post-applied state, never from the middle of block commit effects.
+    block_apply_lock: Option<Arc<tokio::sync::Mutex<()>>>,
     /// Channel to send transactions to mempool
     tx_sender: Option<mpsc::Sender<Transaction>>,
     /// Filesystem path for the hot state store, used by readiness checks.
@@ -4876,6 +4880,7 @@ pub async fn start_rpc_server(
     tx_sender: Option<mpsc::Sender<Transaction>>,
     stake_pool: Option<Arc<RwLock<StakePool>>>,
     live_validator_set: Option<Arc<RwLock<ValidatorSet>>>,
+    block_apply_lock: Option<Arc<tokio::sync::Mutex<()>>>,
     p2p: Option<Arc<dyn P2PNetworkTrait>>,
     chain_id: String,
     network_id: String,
@@ -4892,6 +4897,7 @@ pub async fn start_rpc_server(
         tx_sender,
         stake_pool,
         live_validator_set,
+        block_apply_lock,
         p2p,
         chain_id,
         network_id,
@@ -4943,6 +4949,7 @@ pub fn build_rpc_router(
         tx_sender,
         stake_pool,
         None,
+        None,
         p2p,
         chain_id,
         network_id,
@@ -4976,6 +4983,7 @@ pub fn build_rpc_router_with_min_validator_stake(
         tx_sender,
         stake_pool,
         None,
+        None,
         p2p,
         chain_id,
         network_id,
@@ -4995,6 +5003,7 @@ fn build_rpc_router_internal(
     tx_sender: Option<mpsc::Sender<Transaction>>,
     stake_pool: Option<Arc<RwLock<StakePool>>>,
     live_validator_set: Option<Arc<RwLock<ValidatorSet>>>,
+    block_apply_lock: Option<Arc<tokio::sync::Mutex<()>>>,
     p2p: Option<Arc<dyn P2PNetworkTrait>>,
     chain_id: String,
     network_id: String,
@@ -5061,6 +5070,7 @@ fn build_rpc_router_internal(
 
     let rpc_state = RpcState {
         state,
+        block_apply_lock,
         tx_sender,
         data_dir_path,
         p2p,
@@ -6523,6 +6533,11 @@ async fn handle_get_account_proof(
         code: -32602,
         message: "Invalid pubkey".to_string(),
     })?;
+
+    let _apply_guard = match state.block_apply_lock.as_ref() {
+        Some(lock) => Some(lock.lock().await),
+        None => None,
+    };
 
     let proof = state
         .state
@@ -20420,27 +20435,27 @@ mod tests {
         handle_build_terminate_contract_tx, handle_build_unban_code_hash_tx,
         handle_build_unrestrict_account_asset_tx, handle_build_unrestrict_account_tx,
         handle_can_receive, handle_can_send, handle_can_transfer, handle_create_bridge_deposit,
-        handle_get_account_asset_restriction_status, handle_get_account_restriction_status,
-        handle_get_all_symbol_registry, handle_get_asset_restriction_status,
-        handle_get_bridge_deposit, handle_get_bridge_route_restriction_status,
-        handle_get_code_hash_restriction_status, handle_get_contract_info,
-        handle_get_contract_lifecycle_status, handle_get_governance_events,
-        handle_get_governed_proposal, handle_get_incident_status, handle_get_lichenoracle_stats,
-        handle_get_neo_gas_rewards_position, handle_get_neo_gas_rewards_stats,
-        handle_get_neo_zk_proof_service_status, handle_get_program, handle_get_program_stats,
-        handle_get_recent_blocks, handle_get_recent_shielded_transactions,
-        handle_get_recent_transactions, handle_get_restriction, handle_get_restriction_status,
-        handle_get_service_fleet_status, handle_get_signed_metadata_manifest,
-        handle_get_wgas_stats, handle_get_wneo_stats, handle_list_active_restrictions,
-        handle_list_restrictions, handle_set_fee_config, handle_solana_get_account_info,
-        handle_solana_get_token_account_balance, handle_solana_get_token_accounts_by_owner,
-        handle_verify_neo_reserve_liability_proof, live_signed_metadata_source_rpc,
-        method_allowed_when_rpc_unready, parse_bridge_access_auth, parse_get_block_slot_param,
-        parse_governance_event, parse_rpc_request, parse_rpc_tier_probe, parse_topic_hash,
-        pq_signature_json, prediction_address_aliases, privileged_rpc_mutation_test_output,
-        put_cached_program_list_response, rpc_readiness, rpc_readiness_json, rpc_unready_error,
-        solana_method_allowed_when_rpc_unready, storage_key_with_pubkey_hex,
-        storage_key_with_u64_le, strip_admin_token_from_params,
+        handle_get_account_asset_restriction_status, handle_get_account_proof,
+        handle_get_account_restriction_status, handle_get_all_symbol_registry,
+        handle_get_asset_restriction_status, handle_get_bridge_deposit,
+        handle_get_bridge_route_restriction_status, handle_get_code_hash_restriction_status,
+        handle_get_contract_info, handle_get_contract_lifecycle_status,
+        handle_get_governance_events, handle_get_governed_proposal, handle_get_incident_status,
+        handle_get_lichenoracle_stats, handle_get_neo_gas_rewards_position,
+        handle_get_neo_gas_rewards_stats, handle_get_neo_zk_proof_service_status,
+        handle_get_program, handle_get_program_stats, handle_get_recent_blocks,
+        handle_get_recent_shielded_transactions, handle_get_recent_transactions,
+        handle_get_restriction, handle_get_restriction_status, handle_get_service_fleet_status,
+        handle_get_signed_metadata_manifest, handle_get_wgas_stats, handle_get_wneo_stats,
+        handle_list_active_restrictions, handle_list_restrictions, handle_set_fee_config,
+        handle_solana_get_account_info, handle_solana_get_token_account_balance,
+        handle_solana_get_token_accounts_by_owner, handle_verify_neo_reserve_liability_proof,
+        live_signed_metadata_source_rpc, method_allowed_when_rpc_unready, parse_bridge_access_auth,
+        parse_get_block_slot_param, parse_governance_event, parse_rpc_request,
+        parse_rpc_tier_probe, parse_topic_hash, pq_signature_json, prediction_address_aliases,
+        privileged_rpc_mutation_test_output, put_cached_program_list_response, rpc_readiness,
+        rpc_readiness_json, rpc_unready_error, solana_method_allowed_when_rpc_unready,
+        storage_key_with_pubkey_hex, storage_key_with_u64_le, strip_admin_token_from_params,
         validate_incoming_transaction_limits, validate_solana_encoding,
         validate_solana_transaction_details, verify_admin_auth, verify_bridge_access_auth_at,
         verify_bridge_access_auth_for_create_at, AirdropCooldowns, MethodTier, RateLimiter,
@@ -20483,6 +20498,7 @@ mod tests {
     ) -> RpcState {
         RpcState {
             state,
+            block_apply_lock: None,
             tx_sender: None,
             data_dir_path: None,
             p2p: None,
@@ -20525,6 +20541,66 @@ mod tests {
 
     fn make_test_rpc_state(state: StateStore) -> RpcState {
         make_test_rpc_state_with_program_cache_capacity(state, 16)
+    }
+
+    #[tokio::test]
+    async fn get_account_proof_waits_for_canonical_apply_barrier() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+
+        let account = Pubkey([0x44; 32]);
+        let account_b58 = account.to_base58();
+        state
+            .put_account(&account, &lichen_core::Account::new(5, Pubkey([0; 32])))
+            .unwrap();
+        let post_state_root = state.compute_state_root();
+
+        let validator = LichenKeypair::from_seed(&[9; 32]);
+        let now = current_unix_secs();
+        let genesis = Block::genesis(Hash::default(), now.saturating_sub(1), vec![]);
+        state.put_block(&genesis).unwrap();
+        let mut block = Block::new_with_timestamp(
+            1,
+            genesis.hash(),
+            Hash::hash(b"pre-post-root"),
+            validator.pubkey().0,
+            vec![],
+            now,
+        );
+        block.sign(&validator);
+        let block_hash = block.hash();
+        state.put_block(&block).unwrap();
+        state
+            .put_post_state_commitment_anchor(1, &block_hash, &post_state_root)
+            .unwrap();
+        state.set_last_slot(1).unwrap();
+        state.set_last_confirmed_slot(1).unwrap();
+        state.set_last_finalized_slot(1).unwrap();
+
+        let mut rpc_state = make_test_rpc_state(state);
+        let apply_lock = Arc::new(TokioMutex::new(()));
+        let apply_guard = apply_lock.lock().await;
+        rpc_state.block_apply_lock = Some(apply_lock.clone());
+
+        let mut proof_future = Box::pin(handle_get_account_proof(
+            &rpc_state,
+            Some(serde_json::json!([
+                account_b58,
+                {"commitment": "finalized"}
+            ])),
+        ));
+
+        tokio::select! {
+            result = &mut proof_future => {
+                panic!("getAccountProof completed while canonical apply barrier was held: {result:?}");
+            }
+            _ = tokio::time::sleep(Duration::from_millis(25)) => {}
+        }
+
+        drop(apply_guard);
+        let result = proof_future.await.unwrap();
+        assert_eq!(result["anchor"]["root_source"], "post_state_v1");
+        assert_eq!(result["anchor"]["slot"], 1);
     }
 
     fn current_unix_secs() -> u64 {

@@ -14299,6 +14299,7 @@ async fn run_validator() {
     let dex_bc_for_rpc = ws_dex_broadcaster.clone();
     let pred_bc_for_rpc = ws_prediction_broadcaster.clone();
     let validator_set_for_rpc = Some(validator_set.clone());
+    let block_apply_lock_for_rpc = block_apply_lock.clone();
     let data_dir_for_rpc_readiness = PathBuf::from(data_dir.clone());
     tokio::spawn(async move {
         if let Err(e) = start_rpc_server(
@@ -14307,6 +14308,7 @@ async fn run_validator() {
             tx_sender_for_rpc,
             stake_pool_for_rpc,
             validator_set_for_rpc,
+            Some(block_apply_lock_for_rpc),
             p2p_for_rpc,
             chain_id_for_rpc,
             network_id_for_rpc,
