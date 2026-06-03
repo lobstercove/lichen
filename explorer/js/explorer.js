@@ -586,14 +586,18 @@ async function updateDashboardStats() {
                 const breakdownEl = document.getElementById('accountBreakdown');
                 if (breakdownEl) breakdownEl.textContent = `${formatNumber(metrics.active_accounts || 0)} funded · ${formatNumber(totalContracts)} contracts`;
             }
-            // Wire burn percentage and slot duration from API (no hardcoding)
+            // Wire burn percentage and observed/target slot cadence from API.
             if (metrics.fee_burn_percent !== undefined) {
                 const burnEl = document.getElementById('burnPctLabel');
                 if (burnEl) burnEl.textContent = metrics.fee_burn_percent;
             }
-            if (metrics.slot_duration_ms !== undefined) {
+            const observedSlotMs = Number(metrics.observed_block_interval_ms || 0);
+            const targetSlotMs = Number(metrics.cadence_target_ms || metrics.slot_duration_ms || 0);
+            if (observedSlotMs > 0 || targetSlotMs > 0) {
                 const slotEl = document.getElementById('slotTimeLabel');
-                if (slotEl) slotEl.textContent = metrics.slot_duration_ms;
+                const targetEl = document.getElementById('slotTargetLabel');
+                if (slotEl) slotEl.textContent = Math.round(observedSlotMs || targetSlotMs);
+                if (targetEl) targetEl.textContent = Math.round(targetSlotMs || observedSlotMs);
             }
         }
 
@@ -676,7 +680,7 @@ async function updateDashboardStats() {
             shieldedBalance: '0 LICN', shieldedBalanceSpores: '0 spores', commitmentCount: '0',
             nullifierCount: '0', shieldedTxCount: '0',
             shieldedTxBreakdown: 'Shield: 0 | Unshield: 0 | Transfer: 0', merkleRoot: '0x0',
-            burnPctLabel: '—', slotTimeLabel: '—'
+            burnPctLabel: '—', slotTimeLabel: '—', slotTargetLabel: '—'
         };
         for (const [id, val] of Object.entries(resetMap)) {
             const el = document.getElementById(id);

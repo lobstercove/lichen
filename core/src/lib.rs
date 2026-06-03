@@ -127,6 +127,7 @@ pub use signing::{
 pub use state::AccountProof;
 pub use state::CheckpointMeta;
 pub use state::MerkleProof;
+pub use state::SparseStateCommitmentReport;
 pub use state::StateBatch;
 pub use state::StateStore;
 pub use state::SymbolRegistryEntry;

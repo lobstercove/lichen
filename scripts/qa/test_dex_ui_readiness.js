@@ -6,6 +6,7 @@ const path = require('path');
 
 const repoRoot = path.join(__dirname, '..', '..');
 const dexHtml = fs.readFileSync(path.join(repoRoot, 'dex', 'index.html'), 'utf8');
+const dexCss = fs.readFileSync(path.join(repoRoot, 'dex', 'dex.css'), 'utf8');
 const dexJs = fs.readFileSync(path.join(repoRoot, 'dex', 'dex.js'), 'utf8');
 const ciWorkflow = fs.readFileSync(path.join(repoRoot, '.github', 'workflows', 'ci.yml'), 'utf8');
 
@@ -105,6 +106,15 @@ const requiredStaticNumericIds = [
 
 assert(!dexHtml.includes('type="number"') && !dexJs.includes('type="number"'), 'DEX has no native number inputs');
 assert(requiredStaticNumericIds.every((id) => new RegExp(`id="${id}"[^>]*data-dex-numeric="true"`).test(dexHtml)), 'static DEX numeric inputs use guarded text controls');
+const walletGateInputRule = dexCss.match(/\.wallet-gated-disabled input,[\s\S]*?\.wallet-gated-disabled textarea \{[\s\S]*?\}/)?.[0] || '';
+const walletGateModeRule = dexCss.match(/\.wallet-gated-disabled \.preset-btn,[\s\S]*?\.wallet-gated-disabled \.predict-toggle-btn \{[\s\S]*?\}/)?.[0] || '';
+assert(
+    walletGateInputRule.includes('pointer-events: auto')
+        && !walletGateInputRule.includes('pointer-events: none')
+        && walletGateModeRule.includes('pointer-events: auto')
+        && !walletGateModeRule.includes('pointer-events: none'),
+    'wallet gate keeps editable DEX controls interactive while signing actions stay gated'
+);
 
 const sanitizerHarness = buildDexSanitizerHarness();
 const sanitizerCases = [
@@ -124,6 +134,23 @@ assert(
     }),
     'DEX numeric sanitizer preserves valid decimals and rejects invalid characters'
 );
+let transientResetRestoresLastValid = false;
+let intentionalStrictPositiveZeroClears = false;
+if (sanitizerHarness) {
+    const transientInput = makeDexInput('orderPrice', '0.15', { userEdited: '1' });
+    sanitizerHarness.sanitizeDexNumberInput(transientInput, false);
+    transientInput.value = '0';
+    sanitizerHarness.sanitizeDexNumberInput(transientInput, true);
+    transientResetRestoresLastValid = transientInput.value === '0.15';
+
+    const zeroInput = makeDexInput('orderPrice', '0.15', { userEdited: '1' });
+    sanitizerHarness.sanitizeDexNumberInput(zeroInput, false);
+    zeroInput.value = '0';
+    sanitizerHarness.sanitizeDexNumberInput(zeroInput, false);
+    sanitizerHarness.sanitizeDexNumberInput(zeroInput, true);
+    intentionalStrictPositiveZeroClears = zeroInput.value === '';
+}
+assert(transientResetRestoresLastValid && intentionalStrictPositiveZeroClears, 'DEX strict-positive sanitizer distinguishes transient resets from intentional zero input');
 
 const dynamicNumericClasses = [
     'edit-price-input',
@@ -144,6 +171,22 @@ const updateSubmitBtn = extractFunctionBody(dexJs, 'updateSubmitBtn');
 const syncOrderTypeUi = extractFunctionBody(dexJs, 'syncOrderTypeUi');
 const updateMarginInfo = extractFunctionBody(dexJs, 'updateMarginInfo');
 assert(updateSubmitBtn.includes('walletCanSign()') && updateSubmitBtn.includes('Reconnect wallet to sign'), 'trade submit button gates read-only wallet state');
+assert(
+    dexJs.includes('function setOrderPriceFromMarket(')
+        && dexJs.includes('inputIsBeingEdited(priceInput)')
+        && dexJs.includes("priceInput.dataset.userEdited = '1'")
+        && dexJs.includes('selectPair(pair, { userInitiated: true })'),
+    'market refreshes do not overwrite active trade price edits'
+);
+assert(
+    dexJs.includes('function getAvailableBalance(')
+        && updateSubmitBtn.includes('getAvailableBalance(quoteSymbol)')
+        && updateSubmitBtn.includes('getAvailableBalance(baseSymbol)')
+        && dexJs.includes('const available = getAvailableBalance(neededToken)')
+        && dexJs.includes("return getAvailableBalance('lUSD')")
+        && dexJs.includes("getAvailableBalance('LICN')"),
+    'trade, prediction, pool, and launch validations use normalized balances'
+);
 assert(
     dexJs.includes('function buildOpenPositionLimitArgs(')
         && dexJs.includes('function buildOpenPositionArgs(')
@@ -172,6 +215,19 @@ assert(!dexJs.includes('localStorage.dexPortfolioCache'), 'portfolio summary doe
 
 const applyWalletGateAll = extractFunctionBody(dexJs, 'applyWalletGateAll');
 assert(applyWalletGateAll.includes('.vote-btn, .finalize-btn, .execute-btn'), 'governance lifecycle buttons share wallet signing gate');
+assert(
+    dexHtml.includes('id="propVotingPeriod"')
+        && dexHtml.includes('id="govDefaultVotingPeriod"')
+        && dexHtml.includes('data-current="100" data-unit="x"')
+        && dexJs.includes('DEFAULT_PROTOCOL_PARAMS')
+        && dexJs.includes('syncGovernanceProtocolUi()')
+        && dexJs.includes('currentProposalVotingSlots()')
+        && dexJs.includes('new ArrayBuffer(105)')
+        && dexJs.includes('writeU64LE(v, 97, currentProposalVotingSlots())')
+        && dexJs.includes('new ArrayBuffer(53)')
+        && dexJs.includes('writeU64LE(v, 45, currentProposalVotingSlots())'),
+    'governance defaults are data-synced and proposal voting period is encoded on-chain'
+);
 assert(applyWalletGateAll.includes('.btn-predict-resolve, .btn-predict-challenge, .btn-predict-finalize, .btn-predict-claim, .btn-predict-claim-pos'), 'prediction lifecycle buttons share wallet signing gate');
 assert(applyWalletGateAll.includes("document.querySelectorAll('.margin-close-btn, .cancel-btn')") && applyWalletGateAll.includes('btn.disabled = !canSign'), 'cancel and margin close actions require signing readiness');
 assert(applyWalletGateAll.includes('.launch-quick-buy, .launch-quick-sell') && applyWalletGateAll.includes('updateLaunchTradeButton()') && applyWalletGateAll.includes('updateLaunchCreateButton()'), 'launchpad quick and primary actions share launch validation');

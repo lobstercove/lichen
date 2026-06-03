@@ -133,6 +133,10 @@ fn default_wgas_usd_8dec() -> u64 {
     165_000_000
 }
 
+fn default_state_commitment_schema() -> String {
+    "ordered_v0".to_string()
+}
+
 impl Default for GenesisPrices {
     fn default() -> Self {
         Self {
@@ -177,6 +181,13 @@ pub struct GenesisConfig {
 
     /// Feature flags
     pub features: FeatureFlags,
+
+    /// State commitment schema used for slot-0 root generation.
+    ///
+    /// `ordered_v0` preserves the original sorted-leaf commitment. `sparse_v1`
+    /// uses the compact sparse commitment and must be chosen before genesis.
+    #[serde(default = "default_state_commitment_schema")]
+    pub state_commitment_schema: String,
 
     /// Oracle prices at genesis — fetched once by the genesis creator,
     /// frozen forever, embedded in the genesis block for deterministic replay.
@@ -669,6 +680,16 @@ impl GenesisConfig {
             return Err("Finality threshold cannot exceed 100%".to_string());
         }
 
+        match self.state_commitment_schema.as_str() {
+            "ordered_v0" | "sparse_v1" => {}
+            other => {
+                return Err(format!(
+                    "Unsupported state_commitment_schema '{}'; expected ordered_v0 or sparse_v1",
+                    other
+                ));
+            }
+        }
+
         if self.consensus.validator_bootstrap_grants_enabled && is_mainnet_chain_id(&self.chain_id)
         {
             return Err(
@@ -986,6 +1007,7 @@ impl GenesisConfig {
                 enable_staking: true,
                 enable_slashing: true,
             },
+            state_commitment_schema: default_state_commitment_schema(),
             genesis_prices: GenesisPrices::default(),
             initial_restrictions: vec![],
         }
@@ -1042,6 +1064,7 @@ impl GenesisConfig {
                 enable_staking: true,
                 enable_slashing: true,
             },
+            state_commitment_schema: default_state_commitment_schema(),
             genesis_prices: GenesisPrices::default(),
             initial_restrictions: vec![],
         }
@@ -1210,6 +1233,31 @@ mod tests {
     fn test_total_supply() {
         let genesis = GenesisConfig::default_testnet();
         assert_eq!(genesis.total_supply_licn(), 0);
+    }
+
+    #[test]
+    fn test_default_state_commitment_schema_is_ordered() {
+        let genesis = GenesisConfig::default_testnet();
+        assert_eq!(genesis.state_commitment_schema, "ordered_v0");
+        assert!(genesis.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_accepts_sparse_state_commitment_schema() {
+        let mut genesis = GenesisConfig::default_testnet();
+        genesis.state_commitment_schema = "sparse_v1".to_string();
+        assert!(genesis.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_rejects_unknown_state_commitment_schema() {
+        let mut genesis = GenesisConfig::default_testnet();
+        genesis.state_commitment_schema = "fast_root".to_string();
+
+        let error = genesis
+            .validate()
+            .expect_err("unknown commitment schema must fail validation");
+        assert!(error.contains("state_commitment_schema"));
     }
 
     #[test]

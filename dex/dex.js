@@ -1242,6 +1242,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let _genesisOverridden = false;
     const MAX_OPEN_ORDERS_PER_USER = 500;
     const GOVERNANCE_SLOT_SECONDS = 0.4;
+    const GOVERNANCE_VOTING_PERIOD_SLOTS_DEFAULT = 432000;
     const GOVERNANCE_MIN_QUORUM_DEFAULT = 3;
     const GOVERNANCE_EXECUTION_DELAY_SLOTS_DEFAULT = 9000;
     const ENABLE_EXTERNAL_PRICE_WS = localStorage.getItem('dexEnableExternalPriceWs') === '1';
@@ -1255,6 +1256,23 @@ document.addEventListener('DOMContentLoaded', () => {
     const DISPLAY_INVERTED_WRAPPED_BASES = ['WSOL', 'WETH', 'WBNB', 'WNEO', 'WGAS'];
     const WRAPPED_DISPLAY_SYMBOLS = { WBNB: 'BNB', WNEO: 'NEO', WGAS: 'GAS' };
     const WHOLE_LOT_NEO_SYMBOLS = ['WNEO', 'NEO'];
+    const DEFAULT_PROTOCOL_PARAMS = {
+        approvalThreshold: 66,
+        votingPeriodHours: 48,
+        votingPeriodSlots: GOVERNANCE_VOTING_PERIOD_SLOTS_DEFAULT,
+        executionTimelockHours: 1,
+        executionTimelockSlots: GOVERNANCE_EXECUTION_DELAY_SLOTS_DEFAULT,
+        minReputation: 500,
+        minListingLiquidity: 10000,
+        minTokenHolders: 10,
+        maxLeverage: 100,
+        feeSplitTreasury: 40,
+        feeSplitLps: 30,
+        feeSplitStakers: 30,
+        maxPools: 100,
+        predictionFeePct: 2,
+        marginMaintenancePct: 10,
+    };
 
     function isDisplayInvertedPair(pair) {
         if (!pair) return false;
@@ -1338,6 +1356,7 @@ document.addEventListener('DOMContentLoaded', () => {
         _predictSlotAnchor: { slot: 0, ts: 0 },
         governanceMinQuorum: GOVERNANCE_MIN_QUORUM_DEFAULT,
         governanceExecutionDelaySlots: GOVERNANCE_EXECUTION_DELAY_SLOTS_DEFAULT,
+        protocolParams: { ...DEFAULT_PROTOCOL_PARAMS },
         rewardPending: { trading: 0, lp: 0, total: 0 },
         // Task 5.1: Slippage tolerance (loaded from localStorage)
         slippagePct: parseFloat(localStorage.getItem('dexSlippage')) || 0.5,
@@ -1345,6 +1364,118 @@ document.addEventListener('DOMContentLoaded', () => {
         notifPrefs: (() => { try { return JSON.parse(localStorage.getItem('dexNotifPrefs')) || { fills: true, partials: true, liquidation: true }; } catch { return { fills: true, partials: true, liquidation: true }; } })(),
     };
     let pairs = [], balances = {}, openOrders = [];
+
+    function formatProtocolHours(hours) {
+        const value = Number(hours || 0);
+        if (!Number.isFinite(value) || value <= 0) return '—';
+        if (value < 24) return `${value} hour${value === 1 ? '' : 's'}`;
+        if (value % 24 === 0) {
+            const days = value / 24;
+            return `${days} day${days === 1 ? '' : 's'}`;
+        }
+        return `${value} hours`;
+    }
+
+    function formatProtocolHoursCompact(hours) {
+        const value = Number(hours || 0);
+        if (!Number.isFinite(value) || value <= 0) return '—';
+        if (value < 24) return `${value}h`;
+        return value % 24 === 0 ? `${value / 24}d` : `${value}h`;
+    }
+
+    function governanceHoursToSlots(hours) {
+        const value = Number(hours || 0);
+        if (!Number.isFinite(value) || value <= 0) return GOVERNANCE_VOTING_PERIOD_SLOTS_DEFAULT;
+        return Math.trunc((value * 3600) / GOVERNANCE_SLOT_SECONDS);
+    }
+
+    function setProtocolParam(key, value) {
+        const numeric = Number(value);
+        if (Number.isFinite(numeric) && numeric > 0) {
+            state.protocolParams[key] = numeric;
+        }
+    }
+
+    function currentProposalVotingHours() {
+        const select = document.getElementById('propVotingPeriod');
+        const raw = Number(select?.value || state.protocolParams.votingPeriodHours || DEFAULT_PROTOCOL_PARAMS.votingPeriodHours);
+        if (!Number.isFinite(raw) || raw <= 0) return DEFAULT_PROTOCOL_PARAMS.votingPeriodHours;
+        return Math.min(720, Math.max(1, raw));
+    }
+
+    function currentProposalVotingSlots() {
+        return governanceHoursToSlots(currentProposalVotingHours());
+    }
+
+    function governanceParamValueMap() {
+        const p = state.protocolParams || DEFAULT_PROTOCOL_PARAMS;
+        return {
+            max_leverage: { current: p.maxLeverage, unit: 'x' },
+            min_liquidity: { current: p.minListingLiquidity, unit: 'LICN' },
+            fee_split_treasury: { current: p.feeSplitTreasury, unit: '%' },
+            fee_split_lps: { current: p.feeSplitLps, unit: '%' },
+            fee_split_stakers: { current: p.feeSplitStakers, unit: '%' },
+            max_pools: { current: p.maxPools, unit: 'pools' },
+            voting_period: { current: p.votingPeriodHours, unit: 'hours' },
+            approval_threshold: { current: p.approvalThreshold, unit: '%' },
+            execution_timelock: { current: p.executionTimelockHours, unit: 'hours' },
+            prediction_fee: { current: p.predictionFeePct, unit: '%' },
+            margin_maintenance: { current: p.marginMaintenancePct, unit: '%' },
+        };
+    }
+
+    function updateSelectedGovernanceParamInfo() {
+        const propParamName = document.getElementById('propParamName');
+        if (!propParamName) return;
+        const opt = propParamName.options[propParamName.selectedIndex];
+        const current = opt?.dataset?.current || '—';
+        const unit = opt?.dataset?.unit || '';
+        const desc = opt?.dataset?.desc || '';
+        const curEl = document.getElementById('propParamCurrent');
+        const unitEl = document.getElementById('propParamUnit');
+        const descEl = document.getElementById('propParamDesc');
+        if (curEl) curEl.textContent = `${current}${unit}`;
+        if (unitEl) unitEl.textContent = unit;
+        if (descEl) descEl.textContent = desc;
+    }
+
+    function syncGovernanceProtocolUi() {
+        const p = state.protocolParams || DEFAULT_PROTOCOL_PARAMS;
+        setTextById('govApprovalThreshold', `${p.approvalThreshold}%`);
+        setTextById('govDefaultVotingPeriod', formatProtocolHoursCompact(p.votingPeriodHours));
+        setTextById('govVotingStatSub', `${Number(p.votingPeriodSlots || GOVERNANCE_VOTING_PERIOD_SLOTS_DEFAULT).toLocaleString()} slots`);
+        setTextById('govReqReputation', `≥ ${formatNumber(p.minReputation)}`);
+        setTextById('govReqMinLiq', `${formatNumber(p.minListingLiquidity)} LICN`);
+        setTextById('govReqMinHolders', String(p.minTokenHolders));
+        setTextById('govReqVotePeriod', formatProtocolHours(p.votingPeriodHours));
+        setTextById('govReqTimelock', formatProtocolHours(p.executionTimelockHours));
+
+        const subtitle = document.getElementById('govSubtitle');
+        if (subtitle) {
+            subtitle.textContent = `Community-driven · ${p.approvalThreshold}% supermajority · configurable voting · ${formatProtocolHoursCompact(p.executionTimelockHours)} timelock`;
+        }
+
+        const votingSelect = document.getElementById('propVotingPeriod');
+        if (votingSelect && !votingSelect.dataset.defaultSynced) {
+            const defaultHours = String(p.votingPeriodHours || DEFAULT_PROTOCOL_PARAMS.votingPeriodHours);
+            if (votingSelect.querySelector(`option[value="${defaultHours}"]`)) {
+                votingSelect.value = defaultHours;
+            }
+            votingSelect.dataset.defaultSynced = '1';
+        }
+
+        const valueMap = governanceParamValueMap();
+        const propParamName = document.getElementById('propParamName');
+        if (propParamName) {
+            Array.from(propParamName.options).forEach((option) => {
+                const meta = valueMap[option.value];
+                if (!meta) return;
+                option.dataset.current = String(meta.current);
+                option.dataset.unit = meta.unit;
+            });
+            updateSelectedGovernanceParamInfo();
+        }
+    }
 
     // AUDIT-FIX F10.10 / P4-3: Contract addresses load from a trusted metadata RPC.
     // These are base58-encoded 32-byte pubkeys — the actual deployed addresses
@@ -1414,19 +1545,20 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
             const { data } = await api.get('/stats/governance');
             if (data) {
-                const votePeriod = data.voting_period_hours ?? 48;
-                const timelock = data.execution_timelock_hours ?? 1;
+                const votePeriod = Number(data.voting_period_hours ?? data.votingPeriodHours ?? DEFAULT_PROTOCOL_PARAMS.votingPeriodHours);
+                const votingSlots = Number(data.voting_period_slots ?? data.votingPeriodSlots ?? governanceHoursToSlots(votePeriod));
+                const timelock = Number(data.execution_timelock_hours ?? data.executionTimelockHours ?? DEFAULT_PROTOCOL_PARAMS.executionTimelockHours);
                 const timelockSlots = Number(data.execution_timelock_slots ?? data.executionTimelockSlots ?? GOVERNANCE_EXECUTION_DELAY_SLOTS_DEFAULT);
                 const minQuorum = Number(data.min_quorum ?? data.minQuorum ?? GOVERNANCE_MIN_QUORUM_DEFAULT);
-                const threshold = data.approval_threshold ?? 66;
-                const minRep = data.min_reputation ?? 500;
-                const minLiq = data.min_listing_liquidity ?? 100000;
-                const minHolders = data.min_token_holders ?? 10;
-                const maxPools = data.max_pools ?? 100;
-                const feeTreasury = data.fee_split_treasury ?? 40;
-                const feeLps = data.fee_split_lps ?? 30;
-                const feeStakers = data.fee_split_stakers ?? 30;
-                const predFee = data.prediction_fee ?? 2;
+                const threshold = Number(data.approval_threshold ?? data.approvalThreshold ?? DEFAULT_PROTOCOL_PARAMS.approvalThreshold);
+                const minRep = Number(data.min_reputation ?? data.minReputation ?? DEFAULT_PROTOCOL_PARAMS.minReputation);
+                const minLiq = Number(data.min_listing_liquidity ?? data.minListingLiquidity ?? DEFAULT_PROTOCOL_PARAMS.minListingLiquidity);
+                const minHolders = Number(data.min_token_holders ?? data.minTokenHolders ?? DEFAULT_PROTOCOL_PARAMS.minTokenHolders);
+                const maxPools = Number(data.max_pools ?? data.maxPools ?? DEFAULT_PROTOCOL_PARAMS.maxPools);
+                const feeTreasury = Number(data.fee_split_treasury ?? data.feeSplitTreasury ?? DEFAULT_PROTOCOL_PARAMS.feeSplitTreasury);
+                const feeLps = Number(data.fee_split_lps ?? data.feeSplitLps ?? DEFAULT_PROTOCOL_PARAMS.feeSplitLps);
+                const feeStakers = Number(data.fee_split_stakers ?? data.feeSplitStakers ?? DEFAULT_PROTOCOL_PARAMS.feeSplitStakers);
+                const predFee = Number(data.prediction_fee ?? data.predictionFee ?? DEFAULT_PROTOCOL_PARAMS.predictionFeePct);
 
                 if (Number.isFinite(minQuorum) && minQuorum > 0) {
                     state.governanceMinQuorum = minQuorum;
@@ -1434,20 +1566,28 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (Number.isFinite(timelockSlots) && timelockSlots > 0) {
                     state.governanceExecutionDelaySlots = timelockSlots;
                 }
+                setProtocolParam('approvalThreshold', threshold);
+                setProtocolParam('votingPeriodHours', votePeriod);
+                setProtocolParam('votingPeriodSlots', votingSlots);
+                setProtocolParam('executionTimelockHours', timelock);
+                setProtocolParam('executionTimelockSlots', timelockSlots);
+                setProtocolParam('minReputation', minRep);
+                setProtocolParam('minListingLiquidity', minLiq);
+                setProtocolParam('minTokenHolders', minHolders);
+                setProtocolParam('maxPools', maxPools);
+                setProtocolParam('feeSplitTreasury', feeTreasury);
+                setProtocolParam('feeSplitLps', feeLps);
+                setProtocolParam('feeSplitStakers', feeStakers);
+                setProtocolParam('predictionFeePct', predFee);
 
-                el('govReqReputation', `≥ ${formatNumber(minRep)}`);
-                el('govReqMinLiq', `${formatNumber(minLiq)} LICN`);
-                el('govReqMinHolders', String(minHolders));
-                el('govReqVotePeriod', `${votePeriod} hours`);
-                el('govReqTimelock', `${timelock} hour${timelock !== 1 ? 's' : ''}`);
                 el('pmReqReputation', `≥ ${formatNumber(minRep)}`);
-                el('pmReqDisputePeriod', `${votePeriod} hours`);
                 el('predictFeeLabel', `Fee (${predFee}%)`);
 
                 const feeSplitPill = document.getElementById('poolFeeSplitPill');
                 if (feeSplitPill) feeSplitPill.innerHTML = `<i class="fas fa-chart-pie"></i> Fee Split: ${feeTreasury}% Treasury · ${feeLps}% LPs · ${feeStakers}% Stakers`;
                 const maxPoolsPill = document.getElementById('poolMaxPoolsPill');
                 if (maxPoolsPill) maxPoolsPill.innerHTML = `<i class="fas fa-layer-group"></i> Max ${formatNumber(maxPools)} Pools`;
+                syncGovernanceProtocolUi();
             }
         } catch { /* governance stats unavailable — keep defaults */ }
 
@@ -1470,13 +1610,19 @@ document.addEventListener('DOMContentLoaded', () => {
                 const minRep = data.min_reputation ?? 500;
                 const minLiq = data.min_collateral ?? 100;
                 const feePct = data.trading_fee_bps ? (data.trading_fee_bps / 100) : 2;
+                const disputeSlots = Number(data.dispute_period_slots ?? data.disputePeriodSlots ?? 0);
+                const disputeHours = disputeSlots > 0 ? Math.round(disputeSlots * GOVERNANCE_SLOT_SECONDS / 3600) : 48;
                 const repPill = document.getElementById('pmRepPill');
                 if (repPill) repPill.innerHTML = `<i class="fas fa-id-badge"></i> ${formatNumber(minRep)}+ LichenID rep to create`;
                 el('pmReqMinLiq', `${formatNumber(minLiq)} lUSD`);
                 el('pmReqReputation', `≥ ${formatNumber(minRep)}`);
                 el('predictFeeLabel', `Fee (${feePct}%)`);
+                el('pmReqDisputePeriod', formatProtocolHours(disputeHours));
+                setProtocolParam('predictionFeePct', feePct);
+                syncGovernanceProtocolUi();
             }
         } catch { /* prediction config unavailable — keep defaults */ }
+        syncGovernanceProtocolUi();
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -1668,9 +1814,10 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (ta.symbol && ta.symbol !== 'LICN') {
                         const decimals = ta.decimals ?? 9;
                         const amt = ta.ui_amount || (ta.balance / Math.pow(10, decimals));
+                        const tokenSymbol = canonicalTokenSymbol(ta.symbol);
                         // Task 7.1: Derive USD value from pair prices
-                        const usd = computeTokenUsd(ta.symbol, amt);
-                        balances[ta.symbol] = { available: amt, usd };
+                        const usd = computeTokenUsd(tokenSymbol, amt);
+                        balances[tokenSymbol] = { available: amt, usd };
                     }
                 }
             }
@@ -1997,16 +2144,27 @@ document.addEventListener('DOMContentLoaded', () => {
             <div class="pair-item ${state.activePair?.id === p.id ? 'active' : ''}" data-pair="${escapeHtml(p.id)}">
                 <span>${escapeHtml(p.id)}</span><span class="pair-price">${formatPrice(p.price)}</span>
             </div>`).join('');
-        pairList.querySelectorAll('.pair-item').forEach(el => el.addEventListener('click', e => { e.stopPropagation(); const pair = pairs.find(p => p.id === el.dataset.pair); if (pair) selectPair(pair); pairDropdown.classList.remove('open'); }));
+        pairList.querySelectorAll('.pair-item').forEach(el => el.addEventListener('click', e => { e.stopPropagation(); const pair = pairs.find(p => p.id === el.dataset.pair); if (pair) selectPair(pair, { userInitiated: true }); pairDropdown.classList.remove('open'); }));
     }
     if (pairSearch) pairSearch.addEventListener('input', e => renderPairList(e.target.value));
 
-    async function selectPair(pair) {
+    function inputIsBeingEdited(input) {
+        return !!(input && (document.activeElement === input || input.dataset.userEdited === '1'));
+    }
+
+    function setOrderPriceFromMarket(price, { force = false } = {}) {
+        if (!priceInput) return;
+        if (!force && inputIsBeingEdited(priceInput)) return;
+        priceInput.value = price > 0 ? formatPriceRaw(price) : '';
+        if (force) priceInput.dataset.userEdited = '';
+    }
+
+    async function selectPair(pair, options = {}) {
         state.activePair = pair; state.activePairId = pair.pairId;
         state.lastPrice = pair.hasMarketPrice
             ? pair.price
             : ((pair.id === 'LICN/lUSD' || pair.base === 'LICN') ? LICHEN_GENESIS_PRICE : 0);
-        if (priceInput) priceInput.value = state.lastPrice > 0 ? formatPriceRaw(state.lastPrice) : '';
+        setOrderPriceFromMarket(state.lastPrice, { force: options.userInitiated === true });
         const fe = document.getElementById('feeEstimate'), re = document.getElementById('routeInfo');
         if (fe) fe.textContent = '—';
         if (re) re.textContent = '—';
@@ -2476,13 +2634,26 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function getMarginCollateralAvailable(symbol = MARGIN_COLLATERAL_SYMBOL) {
-        const canonical = canonicalTokenSymbol(symbol);
-        return Math.max(0,
-            balances[symbol]?.available ??
-            balances[canonical]?.available ??
-            balances[String(symbol || '').toUpperCase()]?.available ??
-            0
-        );
+        return getAvailableBalance(symbol);
+    }
+
+    function getAvailableBalance(symbol) {
+        const raw = String(symbol || '').trim();
+        const canonical = canonicalTokenSymbol(raw);
+        const upper = raw.toUpperCase();
+        const candidates = [
+            raw,
+            canonical,
+            upper,
+            upper === 'LUSD' ? 'lUSD' : null,
+            upper === 'LICN' ? 'LICN' : null,
+            upper && WRAPPED_DISPLAY_SYMBOLS[`W${upper}`] ? `w${upper.slice(0, 1)}${upper.slice(1).toLowerCase()}` : null,
+        ].filter(Boolean);
+        for (const key of candidates) {
+            const value = Number(balances[key]?.available);
+            if (Number.isFinite(value)) return Math.max(0, value);
+        }
+        return 0;
     }
 
     function getSpotMarketReferencePrice(side) {
@@ -2593,12 +2764,12 @@ document.addEventListener('DOMContentLoaded', () => {
             } else if (state.orderSide === 'buy') {
                 const quoteSymbol = state.activePair.quote;
                 const requiredQuote = notional * (1 + feeRate);
-                const availableQuote = balances[quoteSymbol]?.available || 0;
+                const availableQuote = getAvailableBalance(quoteSymbol);
                 if (requiredQuote > availableQuote) disabledReason = `Insufficient ${quoteSymbol}`;
             } else {
                 const baseSymbol = state.activePair.base;
                 const requiredBase = amount;
-                const availableBase = balances[baseSymbol]?.available || 0;
+                const availableBase = getAvailableBalance(baseSymbol);
                 if (requiredBase > availableBase) disabledReason = `Insufficient ${baseSymbol}`;
             }
         }
@@ -2734,8 +2905,14 @@ document.addEventListener('DOMContentLoaded', () => {
             if (re) re.textContent = '—';
         }
     }
-    if (priceInput) priceInput.addEventListener('input', calcTotal);
-    if (amountInput) amountInput.addEventListener('input', calcTotal);
+    if (priceInput) priceInput.addEventListener('input', () => {
+        priceInput.dataset.userEdited = '1';
+        calcTotal();
+    });
+    if (amountInput) amountInput.addEventListener('input', () => {
+        amountInput.dataset.userEdited = '1';
+        calcTotal();
+    });
     if (totalInput) totalInput.addEventListener('input', () => {
         if (!priceInput || !amountInput) return;
         const p = state.orderType === 'market'
@@ -2963,7 +3140,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const neededAmount = tradeMode === 'margin'
                 ? ((effectivePrice * amount) / leverageValue)
                 : (side === 'buy' ? (effectivePrice * amount) : amount);
-            const available = balances[neededToken]?.available || 0;
+            const available = getAvailableBalance(neededToken);
             if (neededAmount > available) {
                 return { ok: false, error: `Insufficient ${neededToken}: need ${formatAmount(neededAmount)}, have ${formatAmount(available)}`, code: 'BALANCE' };
             }
@@ -4884,8 +5061,8 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         const { tokenA, tokenB } = getPoolTokenSymbols(pool);
-        const availableA = Number(balances[tokenA]?.available || 0);
-        const availableB = Number(balances[tokenB]?.available || 0);
+        const availableA = getAvailableBalance(tokenA);
+        const availableB = getAvailableBalance(tokenB);
         if (amtA > availableA) return { ok: false, message: `Insufficient ${tokenA} balance` };
         if (amtB > availableB) return { ok: false, message: `Insufficient ${tokenB} balance` };
 
@@ -5362,6 +5539,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 el('marginInsurance', formatVolume(state.marginInsuranceFund / 1e9));
                 const maxLev = Number(data.maxLeverage ?? data.max_leverage ?? 0);
                 if (maxLev > 0) state.marginMaxLeverage = Math.min(100, maxLev);
+                if (maxLev > 0) setProtocolParam('maxLeverage', Math.min(100, maxLev));
+                const maintenanceBps = Number(data.maintenanceBps ?? data.maintenance_bps ?? 0);
+                if (maintenanceBps > 0) setProtocolParam('marginMaintenancePct', maintenanceBps / 100);
             }
         } catch { /* API unavailable */ }
         // Load margin info
@@ -5372,10 +5552,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 state.marginTotalOpenInterest = Number(data.totalOpenInterest || data.total_open_interest || state.marginTotalOpenInterest || 0);
                 const maxLev = Number(data.maxLeverage ?? data.max_leverage ?? 0);
                 if (maxLev > 0) state.marginMaxLeverage = Math.min(100, maxLev);
+                if (maxLev > 0) setProtocolParam('maxLeverage', Math.min(100, maxLev));
+                const maintenanceBps = Number(data.maintenanceBps ?? data.maintenance_bps ?? 0);
+                if (maintenanceBps > 0) setProtocolParam('marginMaintenancePct', maintenanceBps / 100);
             }
         } catch { /* keep defaults */ }
         applyLeverageConstraints();
         updateMarginInfo();
+        syncGovernanceProtocolUi();
         // Load funding rate
         try {
             const { data } = await api.get('/margin/funding-rate');
@@ -6333,6 +6517,11 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!contracts.dex_governance) return { ok: false, message: 'Governance contract not loaded' };
         if (Number(state.reputation || 0) < 500) return { ok: false, message: 'Requires LichenID reputation of at least 500' };
 
+        const votingHours = currentProposalVotingHours();
+        if (votingHours < 1 || votingHours > 720) {
+            return { ok: false, message: 'Voting period must be between 1 hour and 30 days' };
+        }
+
         const ptype = getActiveProposalType();
         if (ptype === 'pair') {
             const base = String(document.getElementById('propBaseToken')?.value || '').trim();
@@ -6382,16 +6571,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // F10E.5: Parameter selector — show current value + description
     const propParamName = document.getElementById('propParamName');
     if (propParamName) propParamName.addEventListener('change', () => {
-        const opt = propParamName.options[propParamName.selectedIndex];
-        const current = opt?.dataset?.current || '—';
-        const unit = opt?.dataset?.unit || '';
-        const desc = opt?.dataset?.desc || '';
-        const curEl = document.getElementById('propParamCurrent');
-        const unitEl = document.getElementById('propParamUnit');
-        const descEl = document.getElementById('propParamDesc');
-        if (curEl) curEl.textContent = `${current}${unit}`;
-        if (unitEl) unitEl.textContent = unit;
-        if (descEl) descEl.textContent = desc;
+        updateSelectedGovernanceParamInfo();
         updateProposalSubmitButton();
     });
 
@@ -6403,6 +6583,7 @@ document.addEventListener('DOMContentLoaded', () => {
         'propFeePair',
         'propDelistPair',
         'propDelistReason',
+        'propVotingPeriod',
         'propParamValue',
     ].forEach((id) => {
         document.getElementById(id)?.addEventListener('input', updateProposalSubmitButton);
@@ -6459,8 +6640,9 @@ document.addEventListener('DOMContentLoaded', () => {
             // Build binary args based on proposal type
             let govArgs;
             if (ptype === 'pair' && proposalData.base_token && proposalData.quote_token) {
-                // F14.1: opcode 1 — propose_new_pair(proposer[32], base_token[32], quote_token[32]) = 97 bytes
-                const buf = new ArrayBuffer(97);
+                // F14.1: opcode 1 — propose_new_pair(proposer[32], base_token[32], quote_token[32], voting_period_slots[8]) = 105 bytes
+                const buf = new ArrayBuffer(105);
+                const v = new DataView(buf);
                 const a = new Uint8Array(buf);
                 writeU8(a, 0, 1);
                 writePubkey(a, 1, wallet.address);
@@ -6473,12 +6655,13 @@ document.addEventListener('DOMContentLoaded', () => {
                     submitProposalBtn.disabled = false; submitProposalBtn.innerHTML = '<i class="fas fa-paper-plane"></i> Submit Proposal';
                     return;
                 }
+                writeU64LE(v, 97, currentProposalVotingSlots());
                 govArgs = a;
             } else if (ptype === 'fee' && proposalData.pair) {
-                // opcode 9: propose_fee_change(proposer, pair_id, maker_fee, taker_fee)
+                // opcode 9: propose_fee_change(proposer, pair_id, maker_fee, taker_fee, voting_period_slots)
                 const pairObj = pairs.find(p => p.id === proposalData.pair || String(p.pairId) === String(proposalData.pair));
                 const pairIdVal = pairObj?.pairId || parseInt(proposalData.pair) || 0;
-                const buf = new ArrayBuffer(45);
+                const buf = new ArrayBuffer(53);
                 const v = new DataView(buf);
                 const a = new Uint8Array(buf);
                 writeU8(a, 0, 9);
@@ -6486,6 +6669,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 writeU64LE(v, 33, pairIdVal);
                 v.setInt16(41, proposalData.maker_fee || -1, true);
                 v.setUint16(43, proposalData.taker_fee || 5, true);
+                writeU64LE(v, 45, currentProposalVotingSlots());
                 govArgs = a;
             } else if (ptype === 'delist') {
                 // Delist proposals not yet supported on-chain — governance contract lacks delist opcode
@@ -6625,12 +6809,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function getPredictLusdAvailable() {
-        return Number(
-            balances.lUSD?.available ??
-            balances.LUSD?.available ??
-            balances.lusd?.available ??
-            0
-        ) || 0;
+        return getAvailableBalance('lUSD');
     }
 
     function getPredictOutcomeNames() {
@@ -6892,12 +7071,25 @@ document.addEventListener('DOMContentLoaded', () => {
             if (normalized !== input.value) {
                 input.value = normalized;
             }
+            const liveValue = Number(normalized);
+            if (normalized && normalized !== '-' && normalized !== '.' && normalized !== '-.'
+                && Number.isFinite(liveValue)
+                && (!DEX_STRICT_POSITIVE_INPUT_IDS.has(input.id) || liveValue > 0)) {
+                input.dataset.dexLastValidValue = normalized;
+            } else if (!normalized || (DEX_STRICT_POSITIVE_INPUT_IDS.has(input.id) && Number.isFinite(liveValue) && liveValue <= 0)) {
+                delete input.dataset.dexLastValidValue;
+            }
             return;
         }
 
         if (!normalized || normalized === '-' || normalized === '.' || normalized === '-.') {
-            input.value = '';
-            return;
+            const lastValid = input.dataset.dexLastValidValue || '';
+            if (lastValid) {
+                normalized = lastValid;
+            } else {
+                input.value = '';
+                return;
+            }
         }
 
         let numericValue = Number(normalized);
@@ -6915,14 +7107,20 @@ document.addEventListener('DOMContentLoaded', () => {
             numericValue = maxValue;
         }
         if (DEX_STRICT_POSITIVE_INPUT_IDS.has(input.id) && numericValue <= 0) {
-            input.value = '';
-            return;
+            const lastValid = Number(input.dataset.dexLastValidValue || 0);
+            if (input.dataset.userEdited === '1' && Number.isFinite(lastValid) && lastValid > 0) {
+                numericValue = lastValid;
+            } else {
+                input.value = '';
+                return;
+            }
         }
         if (!allowDecimal) {
             numericValue = Math.trunc(numericValue);
         }
 
         input.value = String(numericValue);
+        if (input.value) input.dataset.dexLastValidValue = input.value;
     }
 
     function applyDexNumericInputGuards(root = document) {
@@ -8393,7 +8591,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const amount = readDexDecimal(document.getElementById('launchAmountInput'));
         if (amount <= 0) return { ok: false, message: 'Enter a positive amount' };
         if (amount > 9_000_000) return { ok: false, message: 'Amount too large, maximum 9M' };
-        if (launchState.tradeMode === 'buy' && amount > Number(balances.LICN?.available || 0)) {
+        if (launchState.tradeMode === 'buy' && amount > getAvailableBalance('LICN')) {
             return { ok: false, message: 'Insufficient LICN balance' };
         }
         if (launchState.tradeMode === 'sell') {
@@ -8425,7 +8623,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!state.connected) return { ok: false, message: 'Connect wallet to launch', gate: true };
         if (!walletCanSign()) return { ok: false, message: 'Reconnect wallet to sign', gate: true };
         if (!contracts.sporepump) return { ok: false, message: 'Launchpad contract not loaded' };
-        const licnBal = Number(balances.LICN?.available || 0);
+        const licnBal = getAvailableBalance('LICN');
         if (licnBal < 10) return { ok: false, message: `Need 10 LICN to launch, available ${formatAmount(licnBal)}` };
         return { ok: true, message: 'Ready to launch token' };
     }
@@ -8890,6 +9088,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function formatPrice(p) { if (p == null || isNaN(p)) return '0.00'; if (p === 0) return '0.00'; const a = Math.abs(p), sign = p < 0 ? '-' : ''; if (a >= 1000) return sign + a.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); if (a >= 1) return sign + a.toFixed(4); if (a >= 0.001) return sign + a.toFixed(6); return sign + a.toFixed(8); }
     function formatPriceRaw(p) { if (p == null || isNaN(p)) return '0.00'; if (p === 0) return '0.00'; const a = Math.abs(p), sign = p < 0 ? '-' : ''; if (a >= 1000) return sign + a.toFixed(2); if (a >= 1) return sign + a.toFixed(4); if (a >= 0.001) return sign + a.toFixed(6); return sign + a.toFixed(8); }
+    function formatNumber(n) { const value = Number(n); if (!Number.isFinite(value)) return '0'; return value.toLocaleString('en-US', { maximumFractionDigits: 2 }); }
     function formatAmount(a) { if (a == null || isNaN(a) || a === 0) return '0'; if (a >= 1e6) return (a / 1e6).toFixed(2) + 'M'; if (a >= 1000) return a.toLocaleString('en-US', { maximumFractionDigits: 2 }); if (a >= 0.0001) return a.toFixed(4); if (a >= 0.000001) return a.toFixed(6); return '< 0.000001'; }
     function formatVolume(v) { if (v == null || isNaN(v)) return '--'; if (v === 0) return '$0.00'; if (v >= 1e9) return '$' + (v / 1e9).toFixed(2) + 'B'; if (v >= 1e6) return '$' + (v / 1e6).toFixed(2) + 'M'; if (v >= 1e3) return '$' + (v / 1e3).toFixed(1) + 'K'; return '$' + v.toFixed(2); }
 
@@ -9030,7 +9229,7 @@ document.addEventListener('DOMContentLoaded', () => {
             updateOrderBookLabels(state.activePair);
             updateOrderFormPairLabels(state.activePair);
             updatePairStats(state.activePair); updateTickerDisplay(); updateMarginInfo();
-            if (priceInput) priceInput.value = formatPriceRaw(state.lastPrice);
+            setOrderPriceFromMarket(state.lastPrice);
             await Promise.all([loadOrderBook(), loadRecentTrades()]);
             scheduleTradingViewInit();
             connectWebSocket(); subscribePair(state.activePairId); subscribeAllTickers();

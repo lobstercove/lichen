@@ -375,7 +375,20 @@ function extractFunctionBody(source, functionName) {
         .filter((index) => index >= 0)
         .sort((a, b) => a - b)[0] ?? -1;
     if (signatureIndex === -1) return '';
-    const bodyStart = source.indexOf('{', signatureIndex);
+    const paramsStart = source.indexOf('(', signatureIndex);
+    if (paramsStart === -1) return '';
+    let paramsDepth = 0;
+    let paramsEnd = -1;
+    for (let i = paramsStart; i < source.length; i++) {
+        if (source[i] === '(') paramsDepth++;
+        if (source[i] === ')') paramsDepth--;
+        if (paramsDepth === 0) {
+            paramsEnd = i;
+            break;
+        }
+    }
+    if (paramsEnd === -1) return '';
+    const bodyStart = source.indexOf('{', paramsEnd);
     if (bodyStart === -1) return '';
 
     let depth = 0;
@@ -705,8 +718,11 @@ function validateDexWalletAndPairState() {
     );
 
     const selectPairBody = extractFunctionBody(js, 'selectPair');
+    const guardedPriceBody = extractFunctionBody(js, 'setOrderPriceFromMarket');
     assert(
-        selectPairBody.includes('priceInput.value = state.lastPrice > 0 ? formatPriceRaw(state.lastPrice)') &&
+        selectPairBody.includes('setOrderPriceFromMarket(state.lastPrice, { force: options.userInitiated === true });') &&
+            guardedPriceBody.includes('inputIsBeingEdited(priceInput)') &&
+            guardedPriceBody.includes('formatPriceRaw(price)') &&
             selectPairBody.includes('updateOrderFormPairLabels(pair);') &&
             selectPairBody.includes('calcTotal();') &&
             selectPairBody.includes('updateSubmitBtn();'),

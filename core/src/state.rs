@@ -36,7 +36,7 @@ mod stats_metadata;
 mod storage_bootstrap;
 mod validator_state;
 
-pub use merkle_state::{AccountProof, MerkleProof};
+pub use merkle_state::{AccountProof, MerkleProof, SparseStateCommitmentReport};
 pub use metrics_state::{Metrics, MetricsStore};
 pub use snapshot_io::CheckpointMeta;
 
@@ -102,7 +102,9 @@ const CF_EVENTS_BY_SLOT: &str = "events_by_slot"; // slot(8,BE) + seq(8,BE) -> e
 const CF_CONTRACT_STORAGE: &str = "contract_storage"; // Contract storage (LichenID reputation etc.)
 const CF_MERKLE_LEAVES: &str = "merkle_leaves"; // pubkey(32) -> leaf_hash(32) (incremental Merkle cache)
 const CF_CONTRACT_MERKLE_LEAVES: &str = "contract_merkle_leaves"; // full_key(32+N) hash -> leaf_hash(32) (contract storage Merkle cache)
-                                                                  // Shielded pool (ZK privacy layer)
+const CF_ACCOUNT_MERKLE_NODES: &str = "account_merkle_nodes"; // compact sparse state tree nodes keyed by node hash
+const CF_CONTRACT_MERKLE_NODES: &str = "contract_merkle_nodes"; // compact sparse contract-storage tree nodes keyed by node hash
+                                                                // Shielded pool (ZK privacy layer)
 const CF_SHIELDED_COMMITMENTS: &str = "shielded_commitments"; // index(8,LE) -> commitment_leaf(32)
 const CF_SHIELDED_NOTE_PAYLOADS: &str = "shielded_note_payloads"; // index(8,BE) -> encrypted note payload JSON
 const CF_SHIELDED_NULLIFIERS: &str = "shielded_nullifiers"; // nullifier(32) -> 0x01 (spent flag)

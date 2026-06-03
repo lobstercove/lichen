@@ -4616,8 +4616,8 @@
 .wallet-gated-disabled input,
 .wallet-gated-disabled select,
 .wallet-gated-disabled textarea {
-    opacity: 0.4;
-    pointer-events: none;
+    opacity: 1;
+    pointer-events: auto;
 }
 
 .wallet-gated-disabled .preset-btn,
@@ -4632,8 +4632,8 @@
 .wallet-gated-disabled .margin-inline-type,
 /* F12.4 FIX: HTML uses predict-toggle-btn, not predict-outcome-btn */
 .wallet-gated-disabled .predict-toggle-btn {
-    opacity: 0.4;
-    pointer-events: none;
+    opacity: 1;
+    pointer-events: auto;
 }
 
 .wallet-gated-disabled .predict-toggle-btn .toggle-label,
@@ -4642,8 +4642,8 @@
 }
 
 .wallet-gated-disabled .leverage-slider {
-    opacity: 0.4;
-    pointer-events: none;
+    opacity: 1;
+    pointer-events: auto;
 }
 
 /* Parameter / Delist proposal info boxes */

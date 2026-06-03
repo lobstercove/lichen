@@ -37,7 +37,7 @@ const MIN_REPUTATION_CREATE: u64 = 500;
 const MIN_REPUTATION_RESOLVE: u64 = 1_000;
 const MARKET_CREATION_FEE: u64 = 10 * PRICE_SCALE; // 10 lUSD
 const DISPUTE_BOND: u64 = 100 * PRICE_SCALE; // 100 lUSD
-const DISPUTE_PERIOD_SLOTS: u64 = 172_800; // 48h at 400ms/slot
+const DISPUTE_PERIOD_SLOTS: u64 = 432_000; // 48h at 400ms/slot
 
 // ─────────────────────────────────────────────────────────────────────────────
 // JSON Response Types

@@ -44,12 +44,12 @@ use lichen_core::{
     ForkChoice, GenesisConfig, GenesisPrices, GenesisStateBundle, GenesisStateChunk, GenesisWallet,
     Hash, Keypair, MarketActivity, MarketActivityKind, Mempool, NftActivity, NftActivityKind,
     PqSignature, Precommit, Prevote, ProgramCallActivity, Proposal, Pubkey, RoundStep,
-    SlashingEvidence, SlashingOffense, StakePool, StateStore, Transaction, TxProcessor,
-    ValidatorInfo, ValidatorSet, Vote, VoteAggregator, VoteAuthority, BASE_FEE,
-    BOOTSTRAP_GRANT_AMOUNT, CHAIN_ID_METADATA_KEY, CONTRACT_DEPLOY_FEE, CONTRACT_UPGRADE_FEE,
-    EVM_PROGRAM_ID, GENESIS_DISTRIBUTION, GENESIS_STATE_BUNDLE_VERSION, GENESIS_STATE_CHUNK_OPCODE,
-    GENESIS_SUPPLY_SPORES, MAX_TX_AGE_BLOCKS, NFT_COLLECTION_FEE, NFT_MINT_FEE,
-    ORACLE_ASSET_MAX_LEN, ORACLE_ASSET_MIN_LEN, ORACLE_STALENESS_SLOTS,
+    SlashingEvidence, SlashingOffense, SparseStateCommitmentReport, StakePool, StateStore,
+    Transaction, TxProcessor, ValidatorInfo, ValidatorSet, Vote, VoteAggregator, VoteAuthority,
+    BASE_FEE, BOOTSTRAP_GRANT_AMOUNT, CHAIN_ID_METADATA_KEY, CONTRACT_DEPLOY_FEE,
+    CONTRACT_UPGRADE_FEE, EVM_PROGRAM_ID, GENESIS_DISTRIBUTION, GENESIS_STATE_BUNDLE_VERSION,
+    GENESIS_STATE_CHUNK_OPCODE, GENESIS_SUPPLY_SPORES, MAX_TX_AGE_BLOCKS, NFT_COLLECTION_FEE,
+    NFT_MINT_FEE, ORACLE_ASSET_MAX_LEN, ORACLE_ASSET_MIN_LEN, ORACLE_STALENESS_SLOTS,
     SLASHING_EVIDENCE_CODEC_LIMIT_BYTES, SYSTEM_PROGRAM_ID as CORE_SYSTEM_PROGRAM_ID,
     VALIDATOR_BOOTSTRAP_GRANTS_ENABLED_METADATA_KEY, VALIDATOR_BOOTSTRAP_GRANTS_ENABLED_VALUE,
 };
@@ -103,6 +103,10 @@ const DEFAULT_WATCHDOG_TIMEOUT_SECS: u64 = 120;
 const GENESIS_SYNC_INCOMPLETE_MARKER: &str = "genesis_sync_incomplete";
 const ACTIVATE_RESTRICTION_SCHEMA_FLAG: &str = "--activate-restriction-schema";
 const SHOW_RESTRICTION_SCHEMA_FLAG: &str = "--show-restriction-schema";
+const REBUILD_SPARSE_STATE_COMMITMENT_FLAG: &str = "--rebuild-sparse-state-commitment";
+const ACTIVATE_SPARSE_STATE_COMMITMENT_FLAG: &str = "--activate-sparse-state-commitment";
+const SHOW_STATE_COMMITMENT_SCHEMA_FLAG: &str = "--show-state-commitment-schema";
+const SPARSE_STATE_COMMITMENT_CONFIRMATION: &str = "sparse-state-commitment:v1";
 const REPAIR_TESTNET_DEX_CONTRACTS_FLAG: &str = "--repair-testnet-dex-contracts";
 const DEX_REPAIR_CONFIRMATION: &str = "repair-dex-contracts:testnet:v0.5.77";
 const TESTNET_DEX_REPAIR_CONTRACTS: &[(&str, &str)] = &[
@@ -6503,6 +6507,88 @@ fn maybe_run_restriction_schema_admin(args: &[String]) -> Option<i32> {
     }
 }
 
+fn print_sparse_state_commitment_report(
+    data_dir: &Path,
+    report: &SparseStateCommitmentReport,
+    ready: bool,
+) {
+    println!("data_dir={}", data_dir.display());
+    println!(
+        "before_schema={}",
+        StateStore::state_commitment_schema_label(report.before_schema)
+    );
+    println!(
+        "after_schema={}",
+        StateStore::state_commitment_schema_label(report.after_schema)
+    );
+    println!("ready={ready}");
+    println!("activated={}", report.activated);
+    println!("accounts_root={}", report.accounts_root.to_hex());
+    println!("contract_root={}", report.contract_root.to_hex());
+    println!("accounts_leaf_count={}", report.accounts_leaf_count);
+    println!("contract_leaf_count={}", report.contract_leaf_count);
+    println!("accounts_node_count={}", report.accounts_node_count);
+    println!("contract_node_count={}", report.contract_node_count);
+}
+
+fn maybe_run_sparse_state_commitment_admin(args: &[String]) -> Option<i32> {
+    let rebuild = has_flag(args, REBUILD_SPARSE_STATE_COMMITMENT_FLAG);
+    let activate = has_flag(args, ACTIVATE_SPARSE_STATE_COMMITMENT_FLAG);
+    let show = has_flag(args, SHOW_STATE_COMMITMENT_SCHEMA_FLAG);
+    if !rebuild && !activate && !show {
+        return None;
+    }
+    if show && (rebuild || activate) {
+        eprintln!(
+            "{} cannot be combined with {} or {}",
+            SHOW_STATE_COMMITMENT_SCHEMA_FLAG,
+            REBUILD_SPARSE_STATE_COMMITMENT_FLAG,
+            ACTIVATE_SPARSE_STATE_COMMITMENT_FLAG
+        );
+        return Some(2);
+    }
+    if activate {
+        let confirm = get_flag_value(args, &["--confirm"]);
+        if confirm != Some(SPARSE_STATE_COMMITMENT_CONFIRMATION) {
+            eprintln!(
+                "Refusing activation without --confirm {SPARSE_STATE_COMMITMENT_CONFIRMATION}"
+            );
+            return Some(1);
+        }
+    }
+
+    let data_dir = restriction_schema_data_dir(args);
+    let cache_size_mb = get_flag_value(args, &["--cache-size-mb"]).and_then(|s| s.parse().ok());
+    let state = match StateStore::open_with_cache_mb(&data_dir, cache_size_mb) {
+        Ok(state) => state,
+        Err(err) => {
+            eprintln!("Failed to open state DB at {}: {}", data_dir.display(), err);
+            return Some(1);
+        }
+    };
+
+    let result = if show {
+        state.verify_sparse_state_commitment()
+    } else {
+        state.rebuild_sparse_state_commitment(activate)
+    };
+
+    match result {
+        Ok(report) => {
+            print_sparse_state_commitment_report(
+                &data_dir,
+                &report,
+                state.is_sparse_state_commitment_ready(),
+            );
+            Some(0)
+        }
+        Err(err) => {
+            eprintln!("{}", err);
+            Some(1)
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct DexRepairReport {
     symbol: String,
@@ -7127,6 +7213,9 @@ fn main() {
     }
 
     if let Some(exit_code) = maybe_run_restriction_schema_admin(&args) {
+        std::process::exit(exit_code);
+    }
+    if let Some(exit_code) = maybe_run_sparse_state_commitment_admin(&args) {
         std::process::exit(exit_code);
     }
     if let Some(exit_code) = maybe_run_testnet_dex_repair_admin(&args) {
@@ -15890,8 +15979,29 @@ async fn run_validator() {
         // Check if chain tip advanced (block received via sync/P2P outside of BFT)
         let tip_slot = state.get_last_slot().unwrap_or(0);
         let observed_tip = sync_manager.get_highest_seen().await;
-        if should_pause_live_bft_for_sync(tip_slot, bft.height, observed_tip) {
+        if should_yield_live_bft_for_catch_up(tip_slot, bft.height, observed_tip) {
             bft_committing_slot.store(0, Ordering::Release);
+            let mut dropped_bft_messages = 0usize;
+            while proposal_rx.try_recv().is_ok() {
+                dropped_bft_messages += 1;
+            }
+            while prevote_rx.try_recv().is_ok() {
+                dropped_bft_messages += 1;
+            }
+            while precommit_rx.try_recv().is_ok() {
+                dropped_bft_messages += 1;
+            }
+            dropped_bft_messages += pending_consensus_proposals
+                .values()
+                .map(Vec::len)
+                .sum::<usize>();
+            pending_consensus_proposals.clear();
+            if dropped_bft_messages > 0 {
+                debug!(
+                    "🔄 Dropped {} buffered BFT message(s) while catching up (tip={}, bft_height={}, observed={})",
+                    dropped_bft_messages, tip_slot, bft.height, observed_tip
+                );
+            }
             if let Some((start, end)) = sync_manager.should_sync(tip_slot).await {
                 info!(
                     "⏳ BFT pausing for block sync (tip={}, bft_height={}, observed={}); requesting {}..{}",
@@ -16110,7 +16220,7 @@ async fn run_validator() {
         {
             sync_manager.decay_highest_seen(tip_slot, 10).await;
             let network_highest = sync_manager.get_highest_seen().await;
-            if network_highest > tip_slot.saturating_add(LIVE_BFT_CATCH_UP_GAP) {
+            if should_yield_live_bft_for_catch_up(tip_slot, bft.height, network_highest) {
                 debug!(
                     "🔄 BFT paused for catch-up: local tip {} peer tip {}",
                     tip_slot, network_highest
@@ -16124,6 +16234,16 @@ async fn run_validator() {
             // ── Incoming proposal ──
             Some(proposal) = proposal_rx.recv() => {
                 sync_manager.note_seen_bounded(proposal.height, 500).await;
+                let live_tip = state.get_last_slot().unwrap_or(0);
+                let network_highest = sync_manager.get_highest_seen().await;
+                if should_yield_live_bft_for_catch_up(live_tip, bft.height, network_highest) {
+                    bft_committing_slot.store(0, Ordering::Release);
+                    debug!(
+                        "Dropping proposal h={} r={} while catching up (tip={}, bft_height={}, observed={})",
+                        proposal.height, proposal.round, live_tip, bft.height, network_highest
+                    );
+                    continue;
+                }
                 let action = if proposal.height > bft.height {
                     if proposal.height <= bft.height + FUTURE_CONSENSUS_PROPOSAL_BUFFER_HEIGHTS {
                         pending_consensus_proposals
@@ -16210,6 +16330,16 @@ async fn run_validator() {
             // ── Incoming prevote ──
             Some(prevote) = prevote_rx.recv() => {
                 sync_manager.note_seen_bounded(prevote.height, 500).await;
+                let live_tip = state.get_last_slot().unwrap_or(0);
+                let network_highest = sync_manager.get_highest_seen().await;
+                if should_yield_live_bft_for_catch_up(live_tip, bft.height, network_highest) {
+                    bft_committing_slot.store(0, Ordering::Release);
+                    debug!(
+                        "Dropping prevote h={} r={} while catching up (tip={}, bft_height={}, observed={})",
+                        prevote.height, prevote.round, live_tip, bft.height, network_highest
+                    );
+                    continue;
+                }
                 let action = bft.on_prevote(prevote, &height_vs, &height_pool);
                 execute_consensus_actions(
                     action,
@@ -16243,6 +16373,16 @@ async fn run_validator() {
             // ── Incoming precommit ──
             Some(precommit) = precommit_rx.recv() => {
                 sync_manager.note_seen_bounded(precommit.height, 500).await;
+                let live_tip = state.get_last_slot().unwrap_or(0);
+                let network_highest = sync_manager.get_highest_seen().await;
+                if should_yield_live_bft_for_catch_up(live_tip, bft.height, network_highest) {
+                    bft_committing_slot.store(0, Ordering::Release);
+                    debug!(
+                        "Dropping precommit h={} r={} while catching up (tip={}, bft_height={}, observed={})",
+                        precommit.height, precommit.round, live_tip, bft.height, network_highest
+                    );
+                    continue;
+                }
                 let action = bft.on_precommit(precommit, &height_vs, &height_pool);
                 execute_consensus_actions(
                     action,
@@ -16902,6 +17042,15 @@ fn classify_bft_commit_storage(
 
 fn should_pause_live_bft_for_sync(current_tip: u64, bft_height: u64, observed_tip: u64) -> bool {
     bft_height > current_tip.saturating_add(1) || observed_tip > current_tip.saturating_add(2)
+}
+
+fn should_yield_live_bft_for_catch_up(
+    current_tip: u64,
+    bft_height: u64,
+    observed_tip: u64,
+) -> bool {
+    should_pause_live_bft_for_sync(current_tip, bft_height, observed_tip)
+        || observed_tip > current_tip.saturating_add(LIVE_BFT_CATCH_UP_GAP)
 }
 
 async fn request_block_range_from_peers(
@@ -17767,6 +17916,14 @@ mod tests {
         assert!(!should_pause_live_bft_for_sync(10, 11, 12));
         assert!(should_pause_live_bft_for_sync(10, 12, 12));
         assert!(should_pause_live_bft_for_sync(10, 11, 13));
+        assert!(!should_yield_live_bft_for_catch_up(10, 11, 12));
+        assert!(should_yield_live_bft_for_catch_up(10, 12, 12));
+        assert!(should_yield_live_bft_for_catch_up(10, 11, 13));
+        assert!(should_yield_live_bft_for_catch_up(
+            10,
+            11,
+            10 + LIVE_BFT_CATCH_UP_GAP + 1
+        ));
     }
 
     #[test]
@@ -18345,6 +18502,54 @@ mod tests {
             section.matches(validation_guard).count() >= 7,
             "proposal validation and proposal building must wait for canonical apply completion"
         );
+    }
+
+    #[test]
+    fn live_bft_drops_consensus_messages_while_catching_up() {
+        let source = include_str!("main.rs");
+        let start = source
+            .find("// ── Main BFT event loop ──")
+            .expect("BFT loop marker");
+        let end = source[start..]
+            .find("// Periodic slashing evidence housekeeping")
+            .expect("BFT loop end marker");
+        let section = &source[start..start + end];
+
+        assert!(
+            section.contains("Dropped {} buffered BFT message(s) while catching up"),
+            "catch-up pause must clear buffered consensus messages"
+        );
+        assert!(
+            section.contains("pending_consensus_proposals.clear();"),
+            "catch-up pause must clear future proposal buffers"
+        );
+
+        for (branch_marker, action_marker) in [
+            (
+                "Some(proposal) = proposal_rx.recv()",
+                "validate_consensus_proposal_before_prevote(",
+            ),
+            ("Some(prevote) = prevote_rx.recv()", "bft.on_prevote("),
+            ("Some(precommit) = precommit_rx.recv()", "bft.on_precommit("),
+        ] {
+            let branch_start = section.find(branch_marker).expect(branch_marker);
+            let action = section[branch_start..]
+                .find(action_marker)
+                .map(|idx| branch_start + idx)
+                .expect(action_marker);
+            let branch_prefix = &section[branch_start..action];
+            assert!(
+                branch_prefix.contains("should_yield_live_bft_for_catch_up("),
+                "{} must drop messages before {} while the node is catching up",
+                branch_marker,
+                action_marker
+            );
+            assert!(
+                branch_prefix.contains("continue;"),
+                "{} must continue the BFT loop instead of processing stale consensus messages",
+                branch_marker
+            );
+        }
     }
 
     fn make_genesis_state_chunk_tx(state_root: Hash, bundle: &GenesisStateBundle) -> Transaction {

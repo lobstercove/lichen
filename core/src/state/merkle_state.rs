@@ -1,16 +1,71 @@
 use rocksdb::Direction;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 use super::*;
 use crate::codec::{append_legacy_bincode, deserialize_legacy_bincode, serialize_legacy_bincode};
 
 const STATE_ROOT_PREFIX_WITH_RESTRICTIONS: u8 = 0x03;
 const STATE_ROOT_PREFIX_LEGACY: u8 = 0x02;
+const STATE_ROOT_PREFIX_SPARSE_WITH_RESTRICTIONS: u8 = 0x13;
+const STATE_ROOT_PREFIX_SPARSE_LEGACY: u8 = 0x12;
 const STATE_ROOT_SCHEMA_KEY: &[u8] = b"state_root_schema";
+const STATE_COMMITMENT_SCHEMA_KEY: &[u8] = b"state_commitment_schema";
+const CACHED_STATE_COMMITMENT_SCHEMA_KEY: &[u8] = b"cached_state_commitment_schema";
 const CACHED_STATE_ROOT_SCHEMA_KEY: &[u8] = b"cached_state_root_schema";
 const CACHED_STATE_ROOT_KEY: &[u8] = b"cached_state_root";
 const CACHED_ACCOUNTS_ROOT_KEY: &[u8] = b"cached_accounts_root";
 const CACHED_CONTRACT_ROOT_KEY: &[u8] = b"cached_contract_root";
+const SPARSE_ACCOUNTS_ROOT_KEY: &[u8] = b"sparse_accounts_root";
+const SPARSE_CONTRACT_ROOT_KEY: &[u8] = b"sparse_contract_root";
+const SPARSE_ACCOUNTS_LEAF_COUNT_KEY: &[u8] = b"sparse_accounts_leaf_count";
+const SPARSE_CONTRACT_LEAF_COUNT_KEY: &[u8] = b"sparse_contract_leaf_count";
+const SPARSE_STATE_READY_KEY: &[u8] = b"sparse_state_commitment_ready";
+const STATE_COMMITMENT_SCHEMA_ORDERED_V0: u8 = 0;
+const STATE_COMMITMENT_SCHEMA_SPARSE_V1: u8 = 1;
+const SPARSE_NODE_DOMAIN_LEAF: u8 = 0xA0;
+const SPARSE_NODE_DOMAIN_BRANCH: u8 = 0xA1;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SparseStateCommitmentReport {
+    pub before_schema: u8,
+    pub after_schema: u8,
+    pub accounts_root: Hash,
+    pub contract_root: Hash,
+    pub accounts_leaf_count: u64,
+    pub contract_leaf_count: u64,
+    pub accounts_node_count: u64,
+    pub contract_node_count: u64,
+    pub activated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SparseNode {
+    Leaf {
+        path: [u8; 32],
+        leaf_hash: Hash,
+    },
+    Branch {
+        prefix_bits: u16,
+        prefix: [u8; 32],
+        left: Hash,
+        right: Hash,
+    },
+}
+
+#[derive(Debug, Clone)]
+struct SparseLeafEntry {
+    leaf_key: Vec<u8>,
+    path: [u8; 32],
+    leaf_hash: Hash,
+}
+
+#[derive(Debug, Clone)]
+struct SparseLeafChange {
+    leaf_key: Vec<u8>,
+    path: [u8; 32],
+    leaf_hash: Option<Hash>,
+}
 
 /// Merkle inclusion proof for an account in the state tree.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -139,12 +194,20 @@ pub(super) fn generate_proof(tree: &[Vec<Hash>], leaf_index: usize) -> Option<Me
 }
 
 impl StateStore {
-    fn state_root_prefix(include_restrictions: bool) -> u8 {
-        if include_restrictions {
-            STATE_ROOT_PREFIX_WITH_RESTRICTIONS
-        } else {
-            STATE_ROOT_PREFIX_LEGACY
+    fn state_root_prefix_for_commitment(schema: u8, include_restrictions: bool) -> u8 {
+        match (schema, include_restrictions) {
+            (STATE_COMMITMENT_SCHEMA_SPARSE_V1, true) => STATE_ROOT_PREFIX_SPARSE_WITH_RESTRICTIONS,
+            (STATE_COMMITMENT_SCHEMA_SPARSE_V1, false) => STATE_ROOT_PREFIX_SPARSE_LEGACY,
+            (_, true) => STATE_ROOT_PREFIX_WITH_RESTRICTIONS,
+            (_, false) => STATE_ROOT_PREFIX_LEGACY,
         }
+    }
+
+    fn active_state_root_prefix(&self, include_restrictions: bool) -> u8 {
+        Self::state_root_prefix_for_commitment(
+            self.get_state_commitment_schema(),
+            include_restrictions,
+        )
     }
 
     fn compose_state_root(
@@ -160,9 +223,28 @@ impl StateStore {
         } else {
             None
         };
+        self.compose_state_root_with_restrictions_root(
+            accounts_root,
+            contract_root,
+            stake_pool_hash,
+            mossstake_pool_hash,
+            include_restrictions,
+            restrictions_root,
+        )
+    }
+
+    fn compose_state_root_with_restrictions_root(
+        &self,
+        accounts_root: Hash,
+        contract_root: Hash,
+        stake_pool_hash: Hash,
+        mossstake_pool_hash: Hash,
+        include_restrictions: bool,
+        restrictions_root: Option<Hash>,
+    ) -> Hash {
         let mut composite =
             Vec::with_capacity(1 + 32 + 32 + 32 + 32 + restrictions_root.map_or(0, |_| 32));
-        composite.push(Self::state_root_prefix(include_restrictions));
+        composite.push(self.active_state_root_prefix(include_restrictions));
         composite.extend_from_slice(&accounts_root.0);
         composite.extend_from_slice(&contract_root.0);
         composite.extend_from_slice(&stake_pool_hash.0);
@@ -185,6 +267,13 @@ impl StateStore {
             ) {
                 tracing::error!("Failed to cache state-root schema: {e}");
             }
+            if let Err(e) = self.db.put_cf(
+                &cf_stats,
+                CACHED_STATE_COMMITMENT_SCHEMA_KEY,
+                [self.get_state_commitment_schema()],
+            ) {
+                tracing::error!("Failed to cache state commitment schema: {e}");
+            }
         }
     }
 
@@ -192,6 +281,7 @@ impl StateStore {
         if let Some(cf_stats) = self.db.cf_handle(CF_STATS) {
             batch.delete_cf(&cf_stats, CACHED_STATE_ROOT_KEY);
             batch.delete_cf(&cf_stats, CACHED_STATE_ROOT_SCHEMA_KEY);
+            batch.delete_cf(&cf_stats, CACHED_STATE_COMMITMENT_SCHEMA_KEY);
         }
     }
 
@@ -256,6 +346,710 @@ impl StateStore {
         }
     }
 
+    fn cached_state_commitment_schema(&self) -> Option<u8> {
+        let cf_stats = self.db.cf_handle(CF_STATS)?;
+        match self
+            .db
+            .get_cf(&cf_stats, CACHED_STATE_COMMITMENT_SCHEMA_KEY)
+        {
+            Ok(Some(data)) if data.len() == 1 => Some(data[0]),
+            _ => None,
+        }
+    }
+
+    pub fn get_state_commitment_schema(&self) -> u8 {
+        let Some(cf_stats) = self.db.cf_handle(CF_STATS) else {
+            return STATE_COMMITMENT_SCHEMA_ORDERED_V0;
+        };
+        match self.db.get_cf(&cf_stats, STATE_COMMITMENT_SCHEMA_KEY) {
+            Ok(Some(data)) if data.len() == 1 => match data[0] {
+                STATE_COMMITMENT_SCHEMA_SPARSE_V1 => STATE_COMMITMENT_SCHEMA_SPARSE_V1,
+                _ => STATE_COMMITMENT_SCHEMA_ORDERED_V0,
+            },
+            _ => STATE_COMMITMENT_SCHEMA_ORDERED_V0,
+        }
+    }
+
+    pub fn uses_sparse_state_commitment(&self) -> bool {
+        self.get_state_commitment_schema() == STATE_COMMITMENT_SCHEMA_SPARSE_V1
+    }
+
+    pub fn set_state_commitment_schema(&self, schema: u8) -> Result<(), String> {
+        let normalized = match schema {
+            STATE_COMMITMENT_SCHEMA_SPARSE_V1 => STATE_COMMITMENT_SCHEMA_SPARSE_V1,
+            _ => STATE_COMMITMENT_SCHEMA_ORDERED_V0,
+        };
+        let cf_stats = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "State stats CF is unavailable".to_string())?;
+
+        if normalized == STATE_COMMITMENT_SCHEMA_SPARSE_V1
+            && !self.is_sparse_state_commitment_ready()
+        {
+            return Err("Sparse state commitment must be rebuilt before activation".to_string());
+        }
+
+        self.db
+            .put_cf(&cf_stats, STATE_COMMITMENT_SCHEMA_KEY, [normalized])
+            .map_err(|e| e.to_string())?;
+        for key in [
+            CACHED_STATE_ROOT_KEY,
+            CACHED_STATE_ROOT_SCHEMA_KEY,
+            CACHED_STATE_COMMITMENT_SCHEMA_KEY,
+        ] {
+            if let Err(e) = self.db.delete_cf(&cf_stats, key) {
+                tracing::warn!(
+                    "Failed to clear cached state root during commitment schema switch: {e}"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    pub fn state_commitment_schema_label(schema: u8) -> &'static str {
+        match schema {
+            STATE_COMMITMENT_SCHEMA_SPARSE_V1 => "sparse_v1",
+            _ => "ordered_v0",
+        }
+    }
+
+    pub fn is_sparse_state_commitment_ready(&self) -> bool {
+        let Some(cf_stats) = self.db.cf_handle(CF_STATS) else {
+            return false;
+        };
+        matches!(
+            self.db.get_cf(&cf_stats, SPARSE_STATE_READY_KEY),
+            Ok(Some(data)) if data.as_slice() == b"1"
+        )
+    }
+
+    fn sparse_bit(path: &[u8; 32], bit_index: u16) -> bool {
+        let idx = bit_index as usize;
+        let byte = path[idx / 8];
+        let shift = 7 - (idx % 8);
+        (byte & (1u8 << shift)) != 0
+    }
+
+    fn sparse_common_prefix_bits(left: &[u8; 32], right: &[u8; 32]) -> u16 {
+        for byte_index in 0..32 {
+            let diff = left[byte_index] ^ right[byte_index];
+            if diff != 0 {
+                return (byte_index * 8 + diff.leading_zeros() as usize) as u16;
+            }
+        }
+        256
+    }
+
+    fn sparse_normalize_prefix(path: &[u8; 32], prefix_bits: u16) -> [u8; 32] {
+        if prefix_bits >= 256 {
+            return *path;
+        }
+        let mut out = *path;
+        let full_bytes = (prefix_bits / 8) as usize;
+        let rem_bits = (prefix_bits % 8) as usize;
+        if full_bytes < 32 {
+            if rem_bits == 0 {
+                out[full_bytes..].fill(0);
+            } else {
+                let mask = 0xffu8 << (8 - rem_bits);
+                out[full_bytes] &= mask;
+                out[(full_bytes + 1)..].fill(0);
+            }
+        }
+        out
+    }
+
+    fn sparse_prefix_matches(path: &[u8; 32], prefix: &[u8; 32], prefix_bits: u16) -> bool {
+        Self::sparse_normalize_prefix(path, prefix_bits)
+            == Self::sparse_normalize_prefix(prefix, prefix_bits)
+    }
+
+    fn sparse_encode_node(node: &SparseNode) -> Vec<u8> {
+        match node {
+            SparseNode::Leaf { path, leaf_hash } => {
+                let mut out = Vec::with_capacity(1 + 32 + 32);
+                out.push(SPARSE_NODE_DOMAIN_LEAF);
+                out.extend_from_slice(path);
+                out.extend_from_slice(&leaf_hash.0);
+                out
+            }
+            SparseNode::Branch {
+                prefix_bits,
+                prefix,
+                left,
+                right,
+            } => {
+                let mut out = Vec::with_capacity(1 + 2 + 32 + 32 + 32);
+                out.push(SPARSE_NODE_DOMAIN_BRANCH);
+                out.extend_from_slice(&prefix_bits.to_be_bytes());
+                out.extend_from_slice(&Self::sparse_normalize_prefix(prefix, *prefix_bits));
+                out.extend_from_slice(&left.0);
+                out.extend_from_slice(&right.0);
+                out
+            }
+        }
+    }
+
+    fn sparse_decode_node(data: &[u8]) -> Result<SparseNode, String> {
+        match data.first().copied() {
+            Some(SPARSE_NODE_DOMAIN_LEAF) if data.len() == 65 => {
+                let mut path = [0u8; 32];
+                path.copy_from_slice(&data[1..33]);
+                let mut leaf = [0u8; 32];
+                leaf.copy_from_slice(&data[33..65]);
+                Ok(SparseNode::Leaf {
+                    path,
+                    leaf_hash: Hash(leaf),
+                })
+            }
+            Some(SPARSE_NODE_DOMAIN_BRANCH) if data.len() == 99 => {
+                let prefix_bits = u16::from_be_bytes([data[1], data[2]]);
+                if prefix_bits >= 256 {
+                    return Err(format!("Invalid sparse branch prefix length {prefix_bits}"));
+                }
+                let mut prefix = [0u8; 32];
+                prefix.copy_from_slice(&data[3..35]);
+                let mut left = [0u8; 32];
+                left.copy_from_slice(&data[35..67]);
+                let mut right = [0u8; 32];
+                right.copy_from_slice(&data[67..99]);
+                Ok(SparseNode::Branch {
+                    prefix_bits,
+                    prefix: Self::sparse_normalize_prefix(&prefix, prefix_bits),
+                    left: Hash(left),
+                    right: Hash(right),
+                })
+            }
+            Some(tag) => Err(format!(
+                "Invalid sparse node tag/length tag={tag:#x} len={}",
+                data.len()
+            )),
+            None => Err("Empty sparse node payload".to_string()),
+        }
+    }
+
+    fn sparse_put_overlay_node(
+        overlay: &mut BTreeMap<[u8; 32], Vec<u8>>,
+        node: SparseNode,
+    ) -> Hash {
+        let encoded = Self::sparse_encode_node(&node);
+        let hash = Hash::hash(&encoded);
+        overlay.insert(hash.0, encoded);
+        hash
+    }
+
+    fn sparse_read_node(
+        &self,
+        cf_name: &str,
+        overlay: &BTreeMap<[u8; 32], Vec<u8>>,
+        node_hash: Hash,
+    ) -> Result<SparseNode, String> {
+        if node_hash == Hash::default() {
+            return Err("Cannot read empty sparse node".to_string());
+        }
+        if let Some(data) = overlay.get(&node_hash.0) {
+            return Self::sparse_decode_node(data);
+        }
+        let cf = self
+            .db
+            .cf_handle(cf_name)
+            .ok_or_else(|| format!("Sparse node CF '{cf_name}' not found"))?;
+        match self.db.get_cf(&cf, node_hash.0) {
+            Ok(Some(data)) => Self::sparse_decode_node(&data),
+            Ok(None) => Err(format!("Sparse node {} missing in {}", node_hash, cf_name)),
+            Err(e) => Err(format!("Failed to read sparse node {}: {}", node_hash, e)),
+        }
+    }
+
+    fn sparse_make_leaf(
+        overlay: &mut BTreeMap<[u8; 32], Vec<u8>>,
+        path: [u8; 32],
+        leaf_hash: Hash,
+    ) -> Hash {
+        Self::sparse_put_overlay_node(overlay, SparseNode::Leaf { path, leaf_hash })
+    }
+
+    fn sparse_make_branch(
+        overlay: &mut BTreeMap<[u8; 32], Vec<u8>>,
+        prefix_bits: u16,
+        prefix: [u8; 32],
+        left: Hash,
+        right: Hash,
+    ) -> Hash {
+        debug_assert!(prefix_bits < 256);
+        debug_assert_ne!(left, Hash::default());
+        debug_assert_ne!(right, Hash::default());
+        Self::sparse_put_overlay_node(
+            overlay,
+            SparseNode::Branch {
+                prefix_bits,
+                prefix: Self::sparse_normalize_prefix(&prefix, prefix_bits),
+                left,
+                right,
+            },
+        )
+    }
+
+    fn sparse_join_subtrees(
+        &self,
+        cf_name: &str,
+        overlay: &mut BTreeMap<[u8; 32], Vec<u8>>,
+        left_hash: Hash,
+        left_path: [u8; 32],
+        right_hash: Hash,
+        right_path: [u8; 32],
+    ) -> Result<Hash, String> {
+        if left_hash == Hash::default() {
+            return Ok(right_hash);
+        }
+        if right_hash == Hash::default() {
+            return Ok(left_hash);
+        }
+        let prefix_bits = Self::sparse_common_prefix_bits(&left_path, &right_path);
+        if prefix_bits >= 256 {
+            return Err("Sparse tree path collision".to_string());
+        }
+        let prefix = Self::sparse_normalize_prefix(&left_path, prefix_bits);
+        let left_bit = Self::sparse_bit(&left_path, prefix_bits);
+        let right_bit = Self::sparse_bit(&right_path, prefix_bits);
+        if left_bit == right_bit {
+            return Err(format!(
+                "Sparse tree branch construction failed at prefix length {prefix_bits}"
+            ));
+        }
+        let (left, right) = if !left_bit {
+            (left_hash, right_hash)
+        } else {
+            (right_hash, left_hash)
+        };
+        let _ = cf_name;
+        Ok(Self::sparse_make_branch(
+            overlay,
+            prefix_bits,
+            prefix,
+            left,
+            right,
+        ))
+    }
+
+    fn sparse_update_node(
+        &self,
+        cf_name: &str,
+        overlay: &mut BTreeMap<[u8; 32], Vec<u8>>,
+        node_hash: Hash,
+        path: [u8; 32],
+        new_leaf_hash: Option<Hash>,
+    ) -> Result<Hash, String> {
+        if node_hash == Hash::default() {
+            return Ok(match new_leaf_hash {
+                Some(leaf_hash) => Self::sparse_make_leaf(overlay, path, leaf_hash),
+                None => Hash::default(),
+            });
+        }
+
+        match self.sparse_read_node(cf_name, overlay, node_hash)? {
+            SparseNode::Leaf {
+                path: old_path,
+                leaf_hash: old_leaf_hash,
+            } => {
+                if old_path == path {
+                    return Ok(match new_leaf_hash {
+                        Some(leaf_hash) if leaf_hash == old_leaf_hash => node_hash,
+                        Some(leaf_hash) => Self::sparse_make_leaf(overlay, path, leaf_hash),
+                        None => Hash::default(),
+                    });
+                }
+                let Some(leaf_hash) = new_leaf_hash else {
+                    return Ok(node_hash);
+                };
+                let new_node_hash = Self::sparse_make_leaf(overlay, path, leaf_hash);
+                self.sparse_join_subtrees(
+                    cf_name,
+                    overlay,
+                    node_hash,
+                    old_path,
+                    new_node_hash,
+                    path,
+                )
+            }
+            SparseNode::Branch {
+                prefix_bits,
+                prefix,
+                left,
+                right,
+            } => {
+                if !Self::sparse_prefix_matches(&path, &prefix, prefix_bits) {
+                    let Some(leaf_hash) = new_leaf_hash else {
+                        return Ok(node_hash);
+                    };
+                    let new_node_hash = Self::sparse_make_leaf(overlay, path, leaf_hash);
+                    return self.sparse_join_subtrees(
+                        cf_name,
+                        overlay,
+                        node_hash,
+                        prefix,
+                        new_node_hash,
+                        path,
+                    );
+                }
+
+                let use_right = Self::sparse_bit(&path, prefix_bits);
+                let old_child = if use_right { right } else { left };
+                let new_child =
+                    self.sparse_update_node(cf_name, overlay, old_child, path, new_leaf_hash)?;
+                if new_child == old_child {
+                    return Ok(node_hash);
+                }
+
+                let (new_left, new_right) = if use_right {
+                    (left, new_child)
+                } else {
+                    (new_child, right)
+                };
+                match (new_left == Hash::default(), new_right == Hash::default()) {
+                    (true, true) => Ok(Hash::default()),
+                    (true, false) => Ok(new_right),
+                    (false, true) => Ok(new_left),
+                    (false, false) => Ok(Self::sparse_make_branch(
+                        overlay,
+                        prefix_bits,
+                        prefix,
+                        new_left,
+                        new_right,
+                    )),
+                }
+            }
+        }
+    }
+
+    fn sparse_account_path(pubkey: &Pubkey) -> [u8; 32] {
+        pubkey.0
+    }
+
+    fn sparse_contract_path(full_key: &[u8]) -> [u8; 32] {
+        Hash::hash(full_key).0
+    }
+
+    fn read_stats_hash_or_default(&self, key: &[u8]) -> Hash {
+        self.read_cached_hash(key).unwrap_or_default()
+    }
+
+    fn read_stats_u64(&self, key: &[u8]) -> u64 {
+        self.read_dirty_count(key).unwrap_or(0)
+    }
+
+    fn sparse_compute_root_from_entries(
+        &self,
+        cf_name: &str,
+        entries: &[SparseLeafEntry],
+    ) -> Result<(Hash, BTreeMap<[u8; 32], Vec<u8>>), String> {
+        let mut ordered = entries.to_vec();
+        ordered.sort_by(|left, right| {
+            left.path
+                .cmp(&right.path)
+                .then_with(|| left.leaf_key.cmp(&right.leaf_key))
+        });
+
+        let mut overlay = BTreeMap::<[u8; 32], Vec<u8>>::new();
+        let mut root = Hash::default();
+        let mut last_path: Option<[u8; 32]> = None;
+        for entry in ordered {
+            if Some(entry.path) == last_path {
+                return Err("Sparse state commitment path collision".to_string());
+            }
+            root = self.sparse_update_node(
+                cf_name,
+                &mut overlay,
+                root,
+                entry.path,
+                Some(entry.leaf_hash),
+            )?;
+            last_path = Some(entry.path);
+        }
+
+        Ok((root, overlay))
+    }
+
+    fn sparse_root_with_changes(
+        &self,
+        cf_name: &str,
+        current_root: Hash,
+        changes: &[SparseLeafChange],
+    ) -> Result<(Hash, BTreeMap<[u8; 32], Vec<u8>>), String> {
+        let mut ordered = changes.to_vec();
+        ordered.sort_by(|left, right| {
+            left.path
+                .cmp(&right.path)
+                .then_with(|| left.leaf_key.cmp(&right.leaf_key))
+        });
+        let mut overlay = BTreeMap::<[u8; 32], Vec<u8>>::new();
+        let mut root = current_root;
+        let mut last_path: Option<[u8; 32]> = None;
+        for change in ordered {
+            if Some(change.path) == last_path {
+                return Err("Sparse state commitment path collision in change set".to_string());
+            }
+            root = self.sparse_update_node(
+                cf_name,
+                &mut overlay,
+                root,
+                change.path,
+                change.leaf_hash,
+            )?;
+            last_path = Some(change.path);
+        }
+        Ok((root, overlay))
+    }
+
+    fn clear_sparse_node_cf(&self, cf_name: &str, batch: &mut WriteBatch) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(cf_name)
+            .ok_or_else(|| format!("Sparse node CF '{cf_name}' not found"))?;
+        for item in self
+            .db
+            .iterator_cf(&cf, rocksdb::IteratorMode::Start)
+            .flatten()
+        {
+            let (key, _) = item;
+            batch.delete_cf(&cf, &*key);
+        }
+        Ok(())
+    }
+
+    fn write_sparse_overlay_nodes(
+        &self,
+        cf_name: &str,
+        overlay: &BTreeMap<[u8; 32], Vec<u8>>,
+        batch: &mut WriteBatch,
+    ) -> Result<u64, String> {
+        let cf = self
+            .db
+            .cf_handle(cf_name)
+            .ok_or_else(|| format!("Sparse node CF '{cf_name}' not found"))?;
+        for (hash, data) in overlay {
+            batch.put_cf(&cf, hash, data);
+        }
+        Ok(overlay.len() as u64)
+    }
+
+    fn clear_leaf_cf(&self, cf_name: &str, batch: &mut WriteBatch) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(cf_name)
+            .ok_or_else(|| format!("Merkle leaf CF '{cf_name}' not found"))?;
+        for item in self
+            .db
+            .iterator_cf(&cf, rocksdb::IteratorMode::Start)
+            .flatten()
+        {
+            let (key, _) = item;
+            batch.delete_cf(&cf, &*key);
+        }
+        Ok(())
+    }
+
+    fn write_sparse_leaf_entries(
+        &self,
+        cf_name: &str,
+        entries: &[SparseLeafEntry],
+        batch: &mut WriteBatch,
+    ) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(cf_name)
+            .ok_or_else(|| format!("Merkle leaf CF '{cf_name}' not found"))?;
+        for entry in entries {
+            batch.put_cf(&cf, &entry.leaf_key, entry.leaf_hash.0);
+        }
+        Ok(())
+    }
+
+    fn collect_sparse_account_entries(&self) -> Result<Vec<SparseLeafEntry>, String> {
+        let cf_accounts = self
+            .db
+            .cf_handle(CF_ACCOUNTS)
+            .ok_or_else(|| "Accounts CF not found".to_string())?;
+        let mut entries = Vec::new();
+        for item in self
+            .db
+            .iterator_cf(&cf_accounts, rocksdb::IteratorMode::Start)
+            .flatten()
+        {
+            let (key, value) = item;
+            if key.len() != 32 || Self::deserialize_account_check_dormant(&value) {
+                continue;
+            }
+            let mut pubkey = [0u8; 32];
+            pubkey.copy_from_slice(&key);
+            entries.push(SparseLeafEntry {
+                leaf_key: pubkey.to_vec(),
+                path: pubkey,
+                leaf_hash: Hash::hash_two_parts(&pubkey, &value),
+            });
+        }
+        Ok(entries)
+    }
+
+    fn collect_sparse_contract_entries(&self) -> Result<Vec<SparseLeafEntry>, String> {
+        let cf_storage = self
+            .db
+            .cf_handle(CF_CONTRACT_STORAGE)
+            .ok_or_else(|| "Contract storage CF not found".to_string())?;
+        let mut entries = Vec::new();
+        for item in self
+            .db
+            .iterator_cf(&cf_storage, rocksdb::IteratorMode::Start)
+            .flatten()
+        {
+            let (key, value) = item;
+            let leaf_key = key.to_vec();
+            entries.push(SparseLeafEntry {
+                path: Self::sparse_contract_path(&leaf_key),
+                leaf_hash: Hash::hash_two_parts(&leaf_key, &value),
+                leaf_key,
+            });
+        }
+        Ok(entries)
+    }
+
+    fn rebuild_sparse_accounts_commitment(&self) -> Result<(Hash, u64, u64), String> {
+        let entries = self.collect_sparse_account_entries()?;
+        let (root, overlay) =
+            self.sparse_compute_root_from_entries(CF_ACCOUNT_MERKLE_NODES, &entries)?;
+        let mut batch = WriteBatch::default();
+        self.clear_sparse_node_cf(CF_ACCOUNT_MERKLE_NODES, &mut batch)?;
+        self.clear_leaf_cf(CF_MERKLE_LEAVES, &mut batch)?;
+        self.write_sparse_leaf_entries(CF_MERKLE_LEAVES, &entries, &mut batch)?;
+        let node_count =
+            self.write_sparse_overlay_nodes(CF_ACCOUNT_MERKLE_NODES, &overlay, &mut batch)?;
+        let cf_stats = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        let leaf_count = entries.len() as u64;
+        batch.put_cf(&cf_stats, SPARSE_ACCOUNTS_ROOT_KEY, root.0);
+        batch.put_cf(
+            &cf_stats,
+            SPARSE_ACCOUNTS_LEAF_COUNT_KEY,
+            leaf_count.to_le_bytes(),
+        );
+        batch.put_cf(&cf_stats, b"merkle_leaf_count", leaf_count.to_le_bytes());
+        batch.put_cf(&cf_stats, b"dirty_account_count", 0u64.to_le_bytes());
+        batch.delete_cf(&cf_stats, CACHED_ACCOUNTS_ROOT_KEY);
+        batch.delete_cf(&cf_stats, CACHED_STATE_ROOT_KEY);
+        batch.delete_cf(&cf_stats, CACHED_STATE_ROOT_SCHEMA_KEY);
+        batch.delete_cf(&cf_stats, CACHED_STATE_COMMITMENT_SCHEMA_KEY);
+        self.db
+            .write(batch)
+            .map_err(|e| format!("Failed to rebuild sparse account commitment: {e}"))?;
+        Ok((root, leaf_count, node_count))
+    }
+
+    fn rebuild_sparse_contract_commitment(&self) -> Result<(Hash, u64, u64), String> {
+        let entries = self.collect_sparse_contract_entries()?;
+        let (root, overlay) =
+            self.sparse_compute_root_from_entries(CF_CONTRACT_MERKLE_NODES, &entries)?;
+        let mut batch = WriteBatch::default();
+        self.clear_sparse_node_cf(CF_CONTRACT_MERKLE_NODES, &mut batch)?;
+        self.clear_leaf_cf(CF_CONTRACT_MERKLE_LEAVES, &mut batch)?;
+        self.write_sparse_leaf_entries(CF_CONTRACT_MERKLE_LEAVES, &entries, &mut batch)?;
+        let node_count =
+            self.write_sparse_overlay_nodes(CF_CONTRACT_MERKLE_NODES, &overlay, &mut batch)?;
+        let cf_stats = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        let leaf_count = entries.len() as u64;
+        batch.put_cf(&cf_stats, SPARSE_CONTRACT_ROOT_KEY, root.0);
+        batch.put_cf(
+            &cf_stats,
+            SPARSE_CONTRACT_LEAF_COUNT_KEY,
+            leaf_count.to_le_bytes(),
+        );
+        batch.put_cf(
+            &cf_stats,
+            b"contract_merkle_leaf_count",
+            leaf_count.to_le_bytes(),
+        );
+        batch.put_cf(&cf_stats, b"dirty_contract_count", 0u64.to_le_bytes());
+        batch.delete_cf(&cf_stats, CACHED_CONTRACT_ROOT_KEY);
+        batch.delete_cf(&cf_stats, CACHED_STATE_ROOT_KEY);
+        batch.delete_cf(&cf_stats, CACHED_STATE_ROOT_SCHEMA_KEY);
+        batch.delete_cf(&cf_stats, CACHED_STATE_COMMITMENT_SCHEMA_KEY);
+        self.db
+            .write(batch)
+            .map_err(|e| format!("Failed to rebuild sparse contract commitment: {e}"))?;
+        Ok((root, leaf_count, node_count))
+    }
+
+    pub fn rebuild_sparse_state_commitment(
+        &self,
+        activate: bool,
+    ) -> Result<SparseStateCommitmentReport, String> {
+        let before_schema = self.get_state_commitment_schema();
+        let (accounts_root, accounts_leaf_count, accounts_node_count) =
+            self.rebuild_sparse_accounts_commitment()?;
+        let (contract_root, contract_leaf_count, contract_node_count) =
+            self.rebuild_sparse_contract_commitment()?;
+        let cf_stats = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        self.db
+            .put_cf(&cf_stats, SPARSE_STATE_READY_KEY, b"1")
+            .map_err(|e| format!("Failed to mark sparse commitment ready: {e}"))?;
+        if activate {
+            self.set_state_commitment_schema(STATE_COMMITMENT_SCHEMA_SPARSE_V1)?;
+        }
+        Ok(SparseStateCommitmentReport {
+            before_schema,
+            after_schema: self.get_state_commitment_schema(),
+            accounts_root,
+            contract_root,
+            accounts_leaf_count,
+            contract_leaf_count,
+            accounts_node_count,
+            contract_node_count,
+            activated: activate,
+        })
+    }
+
+    pub fn verify_sparse_state_commitment(&self) -> Result<SparseStateCommitmentReport, String> {
+        let before_schema = self.get_state_commitment_schema();
+        let account_entries = self.collect_sparse_account_entries()?;
+        let contract_entries = self.collect_sparse_contract_entries()?;
+        let (accounts_root, account_nodes) =
+            self.sparse_compute_root_from_entries(CF_ACCOUNT_MERKLE_NODES, &account_entries)?;
+        let (contract_root, contract_nodes) =
+            self.sparse_compute_root_from_entries(CF_CONTRACT_MERKLE_NODES, &contract_entries)?;
+        let stored_accounts_root = self.read_stats_hash_or_default(SPARSE_ACCOUNTS_ROOT_KEY);
+        let stored_contract_root = self.read_stats_hash_or_default(SPARSE_CONTRACT_ROOT_KEY);
+        if self.is_sparse_state_commitment_ready()
+            && (accounts_root != stored_accounts_root || contract_root != stored_contract_root)
+        {
+            return Err(format!(
+                "Sparse commitment verification failed: accounts computed={} stored={} contracts computed={} stored={}",
+                accounts_root.to_hex(),
+                stored_accounts_root.to_hex(),
+                contract_root.to_hex(),
+                stored_contract_root.to_hex()
+            ));
+        }
+        Ok(SparseStateCommitmentReport {
+            before_schema,
+            after_schema: before_schema,
+            accounts_root,
+            contract_root,
+            accounts_leaf_count: account_entries.len() as u64,
+            contract_leaf_count: contract_entries.len() as u64,
+            accounts_node_count: account_nodes.len() as u64,
+            contract_node_count: contract_nodes.len() as u64,
+            activated: false,
+        })
+    }
+
     pub fn get_state_root_schema(&self) -> Option<bool> {
         let cf_stats = self.db.cf_handle(CF_STATS)?;
         match self.db.get_cf(&cf_stats, STATE_ROOT_SCHEMA_KEY) {
@@ -317,7 +1111,7 @@ impl StateStore {
             hex::encode(&stake_pool_hash.0[..8]),
             hex::encode(&mossstake_pool_hash.0[..8]),
             hex::encode(&restrictions_root.0[..8]),
-            STATE_ROOT_PREFIX_WITH_RESTRICTIONS,
+            self.active_state_root_prefix(true),
             hex::encode(&root.0[..8]),
         );
         root
@@ -341,7 +1135,7 @@ impl StateStore {
             hex::encode(&contract_root.0[..8]),
             hex::encode(&stake_pool_hash.0[..8]),
             hex::encode(&mossstake_pool_hash.0[..8]),
-            STATE_ROOT_PREFIX_LEGACY,
+            self.active_state_root_prefix(false),
             hex::encode(&root.0[..8]),
         );
         root
@@ -400,6 +1194,13 @@ impl StateStore {
 
     /// Generate an inclusion proof for the given account.
     pub fn get_account_proof(&self, pubkey: &Pubkey) -> Option<AccountProof> {
+        if self.uses_sparse_state_commitment() {
+            tracing::warn!(
+                "Account inclusion proofs for sparse state commitment are not exposed by the legacy proof format"
+            );
+            return None;
+        }
+
         let cf_accounts = self.db.cf_handle(CF_ACCOUNTS)?;
         let account_data = self.db.get_cf(&cf_accounts, pubkey.0).ok()??;
 
@@ -445,7 +1246,7 @@ impl StateStore {
             None
         };
         let mut composite = Vec::with_capacity(1 + 32 + 32 + 32 + 32);
-        composite.push(Self::state_root_prefix(include_restrictions));
+        composite.push(self.active_state_root_prefix(include_restrictions));
         composite.extend_from_slice(&root.0);
         composite.extend_from_slice(&contract_root.0);
         composite.extend_from_slice(&stake_pool_hash.0);
@@ -501,7 +1302,7 @@ impl StateStore {
             restrictions_root
                 .map(|root| hex::encode(&root.0[..8]))
                 .unwrap_or_else(|| "disabled".to_string()),
-            Self::state_root_prefix(include_restrictions),
+            self.active_state_root_prefix(include_restrictions),
             hex::encode(&root.0[..8]),
         );
         self.cache_state_root(&root, include_restrictions);
@@ -515,8 +1316,28 @@ impl StateStore {
     /// incremental Merkle leaf caches up to date, then overlays the batch's
     /// account/contract/restriction changes in memory.
     pub fn compute_state_root_for_batch(&self, batch: &StateBatch) -> Hash {
-        let accounts_root = self.compute_accounts_root_for_batch(batch);
-        let contract_root = self.compute_contract_storage_root_for_batch(batch);
+        let accounts_root = if self.uses_sparse_state_commitment() {
+            match self.compute_sparse_accounts_root_for_batch(batch) {
+                Ok(root) => root,
+                Err(err) => {
+                    tracing::error!("Sparse proposal account root failed: {err}");
+                    self.compute_accounts_root_for_batch(batch)
+                }
+            }
+        } else {
+            self.compute_accounts_root_for_batch(batch)
+        };
+        let contract_root = if self.uses_sparse_state_commitment() {
+            match self.compute_sparse_contract_storage_root_for_batch(batch) {
+                Ok(root) => root,
+                Err(err) => {
+                    tracing::error!("Sparse proposal contract root failed: {err}");
+                    self.compute_contract_storage_root_for_batch(batch)
+                }
+            }
+        } else {
+            self.compute_contract_storage_root_for_batch(batch)
+        };
         let stake_pool_hash = batch
             .stake_pool_overlay
             .as_ref()
@@ -539,7 +1360,7 @@ impl StateStore {
 
         let mut composite =
             Vec::with_capacity(1 + 32 + 32 + 32 + 32 + restrictions_root.map_or(0, |_| 32));
-        composite.push(Self::state_root_prefix(include_restrictions));
+        composite.push(self.active_state_root_prefix(include_restrictions));
         composite.extend_from_slice(&accounts_root.0);
         composite.extend_from_slice(&contract_root.0);
         composite.extend_from_slice(&stake_pool_hash.0);
@@ -758,7 +1579,291 @@ impl StateStore {
         }
     }
 
+    fn dirty_account_keys(&self) -> Vec<[u8; 32]> {
+        let Some(cf_stats) = self.db.cf_handle(CF_STATS) else {
+            return Vec::new();
+        };
+        let dirty_prefix = b"dirty_acct:";
+        let iter = self.db.iterator_cf(
+            &cf_stats,
+            rocksdb::IteratorMode::From(dirty_prefix, Direction::Forward),
+        );
+        let mut dirty_keys = Vec::new();
+        for item in iter.flatten() {
+            let (key, _) = item;
+            if !key.starts_with(dirty_prefix) {
+                break;
+            }
+            if key.len() == dirty_prefix.len() + 32 {
+                let mut pk = [0u8; 32];
+                pk.copy_from_slice(&key[dirty_prefix.len()..]);
+                dirty_keys.push(pk);
+            }
+        }
+        dirty_keys
+    }
+
+    fn dirty_contract_storage_keys(&self) -> Vec<Vec<u8>> {
+        let Some(cf_stats) = self.db.cf_handle(CF_STATS) else {
+            return Vec::new();
+        };
+        let dirty_prefix = b"dirty_cstor:";
+        let iter = self.db.iterator_cf(
+            &cf_stats,
+            rocksdb::IteratorMode::From(dirty_prefix, Direction::Forward),
+        );
+        let mut dirty_keys = Vec::new();
+        for item in iter.flatten() {
+            let (key, _) = item;
+            if !key.starts_with(dirty_prefix) {
+                break;
+            }
+            dirty_keys.push(key[dirty_prefix.len()..].to_vec());
+        }
+        dirty_keys
+    }
+
+    fn compute_sparse_accounts_root(&self) -> Result<Hash, String> {
+        if !self.is_sparse_state_commitment_ready() {
+            let _ = self.rebuild_sparse_state_commitment(false)?;
+        }
+
+        let dirty_keys = self.dirty_account_keys();
+        let current_root = self.read_stats_hash_or_default(SPARSE_ACCOUNTS_ROOT_KEY);
+        if dirty_keys.is_empty()
+            && self.can_use_cached_subroot(b"dirty_account_count", b"dirty_acct:")
+        {
+            return Ok(current_root);
+        }
+
+        let cf_accounts = self
+            .db
+            .cf_handle(CF_ACCOUNTS)
+            .ok_or_else(|| "Accounts CF not found".to_string())?;
+        let cf_leaves = self
+            .db
+            .cf_handle(CF_MERKLE_LEAVES)
+            .ok_or_else(|| "Account Merkle leaves CF not found".to_string())?;
+        let cf_stats = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+
+        let mut changes = Vec::<SparseLeafChange>::with_capacity(dirty_keys.len());
+        let mut leaf_count = self.read_stats_u64(SPARSE_ACCOUNTS_LEAF_COUNT_KEY);
+        for pk in &dirty_keys {
+            let old_exists = self
+                .db
+                .get_cf(&cf_leaves, pk)
+                .map_err(|e| format!("Failed to read account leaf cache: {e}"))?
+                .is_some();
+            let leaf_hash = match self.db.get_cf(&cf_accounts, pk) {
+                Ok(Some(value)) if !Self::deserialize_account_check_dormant(&value) => {
+                    Some(Hash::hash_two_parts(pk, &value))
+                }
+                Ok(Some(_)) | Ok(None) => None,
+                Err(e) => return Err(format!("Failed to read dirty account: {e}")),
+            };
+            match (old_exists, leaf_hash.is_some()) {
+                (false, true) => leaf_count = leaf_count.saturating_add(1),
+                (true, false) => leaf_count = leaf_count.saturating_sub(1),
+                _ => {}
+            }
+            changes.push(SparseLeafChange {
+                leaf_key: pk.to_vec(),
+                path: Self::sparse_account_path(&Pubkey(*pk)),
+                leaf_hash,
+            });
+        }
+
+        let (root, overlay) =
+            self.sparse_root_with_changes(CF_ACCOUNT_MERKLE_NODES, current_root, &changes)?;
+        let mut batch = WriteBatch::default();
+        self.write_sparse_overlay_nodes(CF_ACCOUNT_MERKLE_NODES, &overlay, &mut batch)?;
+        for change in &changes {
+            match change.leaf_hash {
+                Some(hash) => batch.put_cf(&cf_leaves, &change.leaf_key, hash.0),
+                None => batch.delete_cf(&cf_leaves, &change.leaf_key),
+            }
+            let mut dirty_key = [0u8; 43];
+            dirty_key[..11].copy_from_slice(b"dirty_acct:");
+            dirty_key[11..43].copy_from_slice(&change.leaf_key);
+            batch.delete_cf(&cf_stats, dirty_key);
+        }
+        batch.put_cf(&cf_stats, SPARSE_ACCOUNTS_ROOT_KEY, root.0);
+        batch.put_cf(
+            &cf_stats,
+            SPARSE_ACCOUNTS_LEAF_COUNT_KEY,
+            leaf_count.to_le_bytes(),
+        );
+        batch.put_cf(&cf_stats, b"merkle_leaf_count", leaf_count.to_le_bytes());
+        batch.put_cf(&cf_stats, b"dirty_account_count", 0u64.to_le_bytes());
+        batch.delete_cf(&cf_stats, CACHED_ACCOUNTS_ROOT_KEY);
+        batch.delete_cf(&cf_stats, CACHED_STATE_ROOT_KEY);
+        batch.delete_cf(&cf_stats, CACHED_STATE_ROOT_SCHEMA_KEY);
+        batch.delete_cf(&cf_stats, CACHED_STATE_COMMITMENT_SCHEMA_KEY);
+        self.db
+            .write(batch)
+            .map_err(|e| format!("Failed to write sparse account root update: {e}"))?;
+        Ok(root)
+    }
+
+    fn compute_sparse_contract_storage_root(&self) -> Result<Hash, String> {
+        if !self.is_sparse_state_commitment_ready() {
+            let _ = self.rebuild_sparse_state_commitment(false)?;
+        }
+
+        let dirty_keys = self.dirty_contract_storage_keys();
+        let current_root = self.read_stats_hash_or_default(SPARSE_CONTRACT_ROOT_KEY);
+        if dirty_keys.is_empty()
+            && self.can_use_cached_subroot(b"dirty_contract_count", b"dirty_cstor:")
+        {
+            return Ok(current_root);
+        }
+
+        let cf_storage = self
+            .db
+            .cf_handle(CF_CONTRACT_STORAGE)
+            .ok_or_else(|| "Contract storage CF not found".to_string())?;
+        let cf_leaves = self
+            .db
+            .cf_handle(CF_CONTRACT_MERKLE_LEAVES)
+            .ok_or_else(|| "Contract Merkle leaves CF not found".to_string())?;
+        let cf_stats = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+
+        let mut changes = Vec::<SparseLeafChange>::with_capacity(dirty_keys.len());
+        let mut leaf_count = self.read_stats_u64(SPARSE_CONTRACT_LEAF_COUNT_KEY);
+        for full_key in &dirty_keys {
+            let old_exists = self
+                .db
+                .get_cf(&cf_leaves, full_key)
+                .map_err(|e| format!("Failed to read contract leaf cache: {e}"))?
+                .is_some();
+            let leaf_hash = match self.db.get_cf(&cf_storage, full_key) {
+                Ok(Some(value)) => Some(Hash::hash_two_parts(full_key, &value)),
+                Ok(None) => None,
+                Err(e) => return Err(format!("Failed to read dirty contract storage: {e}")),
+            };
+            match (old_exists, leaf_hash.is_some()) {
+                (false, true) => leaf_count = leaf_count.saturating_add(1),
+                (true, false) => leaf_count = leaf_count.saturating_sub(1),
+                _ => {}
+            }
+            changes.push(SparseLeafChange {
+                leaf_key: full_key.clone(),
+                path: Self::sparse_contract_path(full_key),
+                leaf_hash,
+            });
+        }
+
+        let (root, overlay) =
+            self.sparse_root_with_changes(CF_CONTRACT_MERKLE_NODES, current_root, &changes)?;
+        let mut batch = WriteBatch::default();
+        self.write_sparse_overlay_nodes(CF_CONTRACT_MERKLE_NODES, &overlay, &mut batch)?;
+        for change in &changes {
+            match change.leaf_hash {
+                Some(hash) => batch.put_cf(&cf_leaves, &change.leaf_key, hash.0),
+                None => batch.delete_cf(&cf_leaves, &change.leaf_key),
+            }
+            let mut marker_key = Vec::with_capacity(b"dirty_cstor:".len() + change.leaf_key.len());
+            marker_key.extend_from_slice(b"dirty_cstor:");
+            marker_key.extend_from_slice(&change.leaf_key);
+            batch.delete_cf(&cf_stats, &marker_key);
+        }
+        batch.put_cf(&cf_stats, SPARSE_CONTRACT_ROOT_KEY, root.0);
+        batch.put_cf(
+            &cf_stats,
+            SPARSE_CONTRACT_LEAF_COUNT_KEY,
+            leaf_count.to_le_bytes(),
+        );
+        batch.put_cf(
+            &cf_stats,
+            b"contract_merkle_leaf_count",
+            leaf_count.to_le_bytes(),
+        );
+        batch.put_cf(&cf_stats, b"dirty_contract_count", 0u64.to_le_bytes());
+        batch.delete_cf(&cf_stats, CACHED_CONTRACT_ROOT_KEY);
+        batch.delete_cf(&cf_stats, CACHED_STATE_ROOT_KEY);
+        batch.delete_cf(&cf_stats, CACHED_STATE_ROOT_SCHEMA_KEY);
+        batch.delete_cf(&cf_stats, CACHED_STATE_COMMITMENT_SCHEMA_KEY);
+        self.db
+            .write(batch)
+            .map_err(|e| format!("Failed to write sparse contract root update: {e}"))?;
+        Ok(root)
+    }
+
+    fn compute_sparse_accounts_root_for_batch(&self, batch: &StateBatch) -> Result<Hash, String> {
+        let canonical_root = self.compute_sparse_accounts_root()?;
+        if batch.account_overlay.is_empty() {
+            return Ok(canonical_root);
+        }
+        let mut changes = Vec::<SparseLeafChange>::with_capacity(batch.account_overlay.len());
+        for (pubkey, account) in &batch.account_overlay {
+            let leaf_hash = if account.dormant {
+                None
+            } else {
+                match Self::serialized_account_value(account) {
+                    Ok(value) => Some(Hash::hash_two_parts(&pubkey.0, &value)),
+                    Err(err) => {
+                        tracing::warn!("Failed to overlay account in sparse state root: {err}");
+                        continue;
+                    }
+                }
+            };
+            changes.push(SparseLeafChange {
+                leaf_key: pubkey.0.to_vec(),
+                path: Self::sparse_account_path(pubkey),
+                leaf_hash,
+            });
+        }
+        let (root, _) =
+            self.sparse_root_with_changes(CF_ACCOUNT_MERKLE_NODES, canonical_root, &changes)?;
+        Ok(root)
+    }
+
+    fn compute_sparse_contract_storage_root_for_batch(
+        &self,
+        batch: &StateBatch,
+    ) -> Result<Hash, String> {
+        let canonical_root = self.compute_sparse_contract_storage_root()?;
+        if batch.contract_storage_overlay.is_empty() {
+            return Ok(canonical_root);
+        }
+        let mut changes =
+            Vec::<SparseLeafChange>::with_capacity(batch.contract_storage_overlay.len());
+        for (full_key, value) in &batch.contract_storage_overlay {
+            changes.push(SparseLeafChange {
+                leaf_key: full_key.clone(),
+                path: Self::sparse_contract_path(full_key),
+                leaf_hash: value
+                    .as_ref()
+                    .map(|value| Hash::hash_two_parts(full_key, value)),
+            });
+        }
+        let (root, _) =
+            self.sparse_root_with_changes(CF_CONTRACT_MERKLE_NODES, canonical_root, &changes)?;
+        Ok(root)
+    }
+
     pub fn compute_accounts_root(&self) -> Hash {
+        if self.uses_sparse_state_commitment() {
+            return match self.compute_sparse_accounts_root() {
+                Ok(root) => root,
+                Err(err) => {
+                    tracing::error!("Sparse account root computation failed: {err}");
+                    self.compute_accounts_root_full_scan()
+                }
+            };
+        }
+        if self.is_sparse_state_commitment_ready() {
+            if let Err(err) = self.compute_sparse_accounts_root() {
+                tracing::warn!("Sparse account shadow update failed: {err}");
+            }
+        }
+
         let cf_accounts = match self.db.cf_handle(CF_ACCOUNTS) {
             Some(handle) => handle,
             None => return Hash::default(),
@@ -862,6 +1967,21 @@ impl StateStore {
     }
 
     pub fn compute_contract_storage_root(&self) -> Hash {
+        if self.uses_sparse_state_commitment() {
+            return match self.compute_sparse_contract_storage_root() {
+                Ok(root) => root,
+                Err(err) => {
+                    tracing::error!("Sparse contract root computation failed: {err}");
+                    self.compute_contract_storage_root_full_scan()
+                }
+            };
+        }
+        if self.is_sparse_state_commitment_ready() {
+            if let Err(err) = self.compute_sparse_contract_storage_root() {
+                tracing::warn!("Sparse contract shadow update failed: {err}");
+            }
+        }
+
         let cf_storage = match self.db.cf_handle(CF_CONTRACT_STORAGE) {
             Some(h) => h,
             None => return Hash::default(),
@@ -956,6 +2076,16 @@ impl StateStore {
     }
 
     fn compute_contract_storage_root_cold_start(&self) -> Hash {
+        if self.uses_sparse_state_commitment() {
+            return match self.rebuild_sparse_contract_commitment() {
+                Ok((root, _, _)) => root,
+                Err(err) => {
+                    tracing::error!("Sparse contract cold-start rebuild failed: {err}");
+                    self.compute_contract_storage_root_full_scan()
+                }
+            };
+        }
+
         let cf_storage = match self.db.cf_handle(CF_CONTRACT_STORAGE) {
             Some(h) => h,
             None => return Hash::default(),
@@ -1058,6 +2188,7 @@ impl StateStore {
             for key in [
                 CACHED_STATE_ROOT_KEY,
                 CACHED_STATE_ROOT_SCHEMA_KEY,
+                CACHED_STATE_COMMITMENT_SCHEMA_KEY,
                 CACHED_ACCOUNTS_ROOT_KEY,
                 CACHED_CONTRACT_ROOT_KEY,
             ] {
@@ -1072,6 +2203,16 @@ impl StateStore {
     }
 
     fn compute_accounts_root_cold_start(&self) -> Hash {
+        if self.uses_sparse_state_commitment() {
+            return match self.rebuild_sparse_accounts_commitment() {
+                Ok((root, _, _)) => root,
+                Err(err) => {
+                    tracing::error!("Sparse account cold-start rebuild failed: {err}");
+                    self.compute_accounts_root_full_scan()
+                }
+            };
+        }
+
         let cf_accounts = match self.db.cf_handle(CF_ACCOUNTS) {
             Some(h) => h,
             None => return Hash::default(),
@@ -1224,6 +2365,7 @@ impl StateStore {
             if self.can_use_cached_subroot(b"dirty_account_count", b"dirty_acct:")
                 && self.can_use_cached_subroot(b"dirty_contract_count", b"dirty_cstor:")
                 && self.cached_state_root_schema() == Some(include_restrictions)
+                && self.cached_state_commitment_schema() == Some(self.get_state_commitment_schema())
             {
                 if let Ok(Some(data)) = self.db.get_cf(&cf, CACHED_STATE_ROOT_KEY) {
                     if data.len() == 32 {

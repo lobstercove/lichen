@@ -1634,6 +1634,22 @@ fn main() {
         );
     }
 
+    if genesis_config.state_commitment_schema == "sparse_v1" {
+        match state.rebuild_sparse_state_commitment(true) {
+            Ok(report) => info!(
+                "  ✓ sparse_v1 state commitment activated at genesis (accounts={} account_nodes={} contracts={} contract_nodes={})",
+                report.accounts_leaf_count,
+                report.accounts_node_count,
+                report.contract_leaf_count,
+                report.contract_node_count
+            ),
+            Err(e) => {
+                error!("Failed to activate sparse_v1 state commitment at genesis: {}", e);
+                std::process::exit(1);
+            }
+        }
+    }
+
     // Persist metrics before exporting canonical genesis state. Metrics live in
     // CF_STATS outside the state root, but imported validators need the same
     // operational counters and protocol parameters immediately after slot 0.

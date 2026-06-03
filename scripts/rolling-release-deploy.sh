@@ -219,6 +219,17 @@ if [ "$installed_sha" != "$EXPECTED_VALIDATOR_SHA" ]; then
   exit 1
 fi
 
+for bin in lichen-validator lichen-genesis lichen zk-prove lichen-custody lichen-faucet; do
+  if [ -x "$root/$bin" ]; then
+    expected_bin_sha="$(sha256sum "$root/$bin" | awk '{print $1}')"
+    installed_bin_sha="$(sha256sum "/usr/local/bin/$bin" | awk '{print $1}')"
+    if [ "$installed_bin_sha" != "$expected_bin_sha" ]; then
+      echo "Installed ${bin} hash mismatch: got ${installed_bin_sha}, expected ${expected_bin_sha}"
+      exit 1
+    fi
+  fi
+done
+
 sudo systemctl stop "$SERVICE" || true
 sleep 2
 if systemctl is-active --quiet "$SERVICE"; then

@@ -284,6 +284,38 @@ by performing a deliberate signer rotation across the release key, all client
 trust tables, the validator updater, runbooks, and release signatures in one
 validated release.
 
+After the metadata gate passes, run the frontend asset gate before publishing
+any portal:
+
+```bash
+node scripts/qa/test_frontend_asset_integrity.js
+```
+
+For DEX publishes, also verify the custom domain sees the newly versioned
+metadata-critical assets. Do not rely on the `.pages.dev` preview alone:
+
+```bash
+DEX_URL="https://dex.lichen.network"
+DEX_ASSET_VERSION="$(grep -o 'dex.js?v=[0-9]*' dex/index.html | head -1 | cut -d= -f2)"
+
+curl -fsSL "$DEX_URL/index.html" | grep "shared/utils.js?v=$DEX_ASSET_VERSION"
+curl -fsSL "$DEX_URL/index.html" | grep "shared-config.js?v=$DEX_ASSET_VERSION"
+curl -fsSL "$DEX_URL/index.html" | grep "dex.js?v=$DEX_ASSET_VERSION"
+curl -fsSL "$DEX_URL/shared/utils.js?v=$DEX_ASSET_VERSION" | grep "$EXPECTED_RELEASE_SIGNER"
+curl -fsSI "$DEX_URL/shared/utils.js?v=$DEX_ASSET_VERSION" | grep -i '^cache-control:'
+```
+
+Hard stop if the custom domain still references an old `v=` token, the live
+`shared/utils.js` does not contain the current signer, or the DEX signed
+metadata smoke cannot resolve `DEX`, `DEXAMM`, `DEXROUTER`, `DEXMARGIN`,
+`DEXREWARDS`, `DEXGOV`, `ANALYTICS`, and `PREDICT`. If Cloudflare applies a
+zone-level cache rule with a positive JavaScript TTL, either purge/disable that
+rule before public release or bump every metadata-critical asset token and
+record the cache-control evidence in the launch log. A stale cached frontend
+can hide a correct live symbol registry and fail closed with missing DEX
+contracts; that is a frontend deployment failure, not a reason to reset chain
+state.
+
 ## Phase 2: Host Preflight
 
 Run this from the local operator machine. It prints versions and service state,

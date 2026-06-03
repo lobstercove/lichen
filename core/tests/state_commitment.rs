@@ -201,6 +201,144 @@ fn cold_start_and_incremental_root_agree() {
     );
 }
 
+#[test]
+fn sparse_state_commitment_rebuild_is_deterministic() {
+    let dir_a = TempDir::new().unwrap();
+    let dir_b = TempDir::new().unwrap();
+    let state_a = StateStore::open(dir_a.path()).unwrap();
+    let state_b = StateStore::open(dir_b.path()).unwrap();
+    let treasury = Pubkey::new([9u8; 32]);
+    state_a
+        .put_account(&treasury, &Account::new(1000, treasury))
+        .unwrap();
+    state_b
+        .put_account(&treasury, &Account::new(1000, treasury))
+        .unwrap();
+    state_a.set_treasury_pubkey(&treasury).unwrap();
+    state_b.set_treasury_pubkey(&treasury).unwrap();
+
+    let accounts = [
+        Pubkey::new([31u8; 32]),
+        Pubkey::new([7u8; 32]),
+        Pubkey::new([99u8; 32]),
+        Pubkey::new([42u8; 32]),
+    ];
+    for pk in accounts {
+        state_a.put_account(&pk, &Account::new(10, pk)).unwrap();
+    }
+    for pk in accounts.into_iter().rev() {
+        state_b.put_account(&pk, &Account::new(10, pk)).unwrap();
+    }
+
+    let program = Pubkey::new([55u8; 32]);
+    for key in [b"alpha".as_slice(), b"gamma".as_slice(), b"beta".as_slice()] {
+        state_a.put_contract_storage(&program, key, key).unwrap();
+    }
+    for key in [b"beta".as_slice(), b"alpha".as_slice(), b"gamma".as_slice()] {
+        state_b.put_contract_storage(&program, key, key).unwrap();
+    }
+
+    let report_a = state_a.rebuild_sparse_state_commitment(false).unwrap();
+    let report_b = state_b.rebuild_sparse_state_commitment(false).unwrap();
+
+    assert_eq!(report_a.accounts_root, report_b.accounts_root);
+    assert_eq!(report_a.contract_root, report_b.contract_root);
+    assert_eq!(report_a.accounts_leaf_count, report_b.accounts_leaf_count);
+    assert_eq!(report_a.contract_leaf_count, report_b.contract_leaf_count);
+    assert_eq!(report_a.after_schema, 0, "rebuild alone must not activate");
+    assert_eq!(report_b.after_schema, 0, "rebuild alone must not activate");
+
+    state_a.verify_sparse_state_commitment().unwrap();
+    state_b.verify_sparse_state_commitment().unwrap();
+}
+
+#[test]
+fn sparse_state_commitment_proposal_root_matches_commit() {
+    let (state, _dir) = make_state();
+
+    let alice = Pubkey::new([1u8; 32]);
+    let bob = Pubkey::new([2u8; 32]);
+    let carol = Pubkey::new([3u8; 32]);
+    let program = Pubkey::new([4u8; 32]);
+
+    state
+        .put_account(&alice, &Account::new(1000, alice))
+        .unwrap();
+    state.put_account(&bob, &Account::new(100, bob)).unwrap();
+    state.put_account(&carol, &Account::new(25, carol)).unwrap();
+    state
+        .put_contract_storage(&program, b"remove", b"old")
+        .unwrap();
+    state
+        .put_contract_storage(&program, b"keep", b"stable")
+        .unwrap();
+
+    let activation = state.rebuild_sparse_state_commitment(true).unwrap();
+    assert_eq!(activation.after_schema, 1);
+    assert!(state.uses_sparse_state_commitment());
+    let before = state.compute_state_root();
+
+    let mut batch = state.begin_batch();
+    batch
+        .transfer(&alice, &bob, Account::licn_to_spores(25))
+        .unwrap();
+    let mut dormant = batch.get_account(&carol).unwrap().unwrap();
+    dormant.dormant = true;
+    batch.put_account(&carol, &dormant).unwrap();
+    batch
+        .put_contract_storage(&program, b"insert", b"new")
+        .unwrap();
+    batch.delete_contract_storage(&program, b"remove").unwrap();
+
+    let proposal_root = state.compute_state_root_for_batch(&batch);
+    state.commit_batch(batch).unwrap();
+    let committed_root = state.compute_state_root();
+    let cold_root = state.compute_state_root_cold_start();
+
+    assert_ne!(before, committed_root);
+    assert_eq!(proposal_root, committed_root);
+    assert_eq!(committed_root, cold_root);
+    state.verify_sparse_state_commitment().unwrap();
+}
+
+#[test]
+fn sparse_state_commitment_shadow_stays_current_before_activation() {
+    let (state, _dir) = make_state();
+
+    let alice = Pubkey::new([11u8; 32]);
+    let bob = Pubkey::new([12u8; 32]);
+    let program = Pubkey::new([13u8; 32]);
+    state
+        .put_account(&alice, &Account::new(1000, alice))
+        .unwrap();
+    state.put_account(&bob, &Account::new(10, bob)).unwrap();
+    state
+        .put_contract_storage(&program, b"quote", b"old")
+        .unwrap();
+
+    let report = state.rebuild_sparse_state_commitment(false).unwrap();
+    assert_eq!(report.after_schema, 0);
+    assert!(!state.uses_sparse_state_commitment());
+
+    let mut batch = state.begin_batch();
+    batch
+        .transfer(&alice, &bob, Account::licn_to_spores(5))
+        .unwrap();
+    batch
+        .put_contract_storage(&program, b"quote", b"new")
+        .unwrap();
+    batch
+        .put_contract_storage(&program, b"fresh", b"value")
+        .unwrap();
+    state.commit_batch(batch).unwrap();
+
+    let legacy_root = state.compute_state_root();
+    assert_ne!(legacy_root, Hash::default());
+    state
+        .verify_sparse_state_commitment()
+        .expect("shadow sparse roots must stay current while ordered_v0 is active");
+}
+
 // ─── Test: empty pools produce a known distinct root from no-pool ────────────
 
 #[test]

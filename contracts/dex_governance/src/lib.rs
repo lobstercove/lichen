@@ -4,7 +4,7 @@
 //   - Proposal-based pair listing via community voting
 //   - Fee change proposals with time-locks
 //   - LichenID reputation-gated proposals (min 500 rep)
-//   - 48-hour voting period, 66% approval threshold
+//   - Configurable per-proposal voting period, 66% approval threshold
 //   - Emergency delisting by admin
 //   - Listing requirements: min liquidity, min holders
 //   - Emergency pause, reentrancy guard
@@ -29,7 +29,9 @@ use lichen_sdk::{
 // ============================================================================
 
 const SLOT_DURATION_MS: u64 = 400;
-const VOTING_PERIOD_SLOTS: u64 = 432_000; // ~48 hours at 400ms/slot
+const VOTING_PERIOD_SLOTS: u64 = 432_000; // default: ~48 hours at 400ms/slot
+const MIN_VOTING_PERIOD_SLOTS: u64 = 9_000; // 1 hour at 400ms/slot
+const MAX_VOTING_PERIOD_SLOTS: u64 = 6_480_000; // 30 days at 400ms/slot
 const APPROVAL_THRESHOLD_BPS: u64 = 6600; // 66%
 const EXECUTION_DELAY_SLOTS: u64 = 9_000; // 1 hour timelock after voting at 400ms/slot
 const MIN_REPUTATION: u64 = 500;
@@ -300,6 +302,21 @@ fn decode_prop_no(data: &[u8]) -> u64 {
         0
     }
 }
+
+fn normalize_voting_period_slots(requested_slots: u64) -> Option<u64> {
+    if requested_slots == 0 {
+        return Some(VOTING_PERIOD_SLOTS);
+    }
+    if !(MIN_VOTING_PERIOD_SLOTS..=MAX_VOTING_PERIOD_SLOTS).contains(&requested_slots) {
+        return None;
+    }
+    Some(requested_slots)
+}
+
+fn proposal_end_slot(current_slot: u64, requested_slots: u64) -> Result<u64, u32> {
+    let voting_slots = normalize_voting_period_slots(requested_slots).ok_or(7u32)?;
+    current_slot.checked_add(voting_slots).ok_or(6)
+}
 fn decode_prop_type(data: &[u8]) -> u8 {
     if data.len() > 40 {
         data[40]
@@ -529,8 +546,14 @@ pub fn set_core_address(caller: *const u8, core_addr: *const u8) -> u32 {
 
 /// Propose a new trading pair
 /// Returns: 0=success, 1=paused, 2=max proposals, 3=reentrancy,
-///          4=invalid quote, 5=insufficient reputation, 6=slot overflow
-pub fn propose_new_pair(proposer: *const u8, base_token: *const u8, quote_token: *const u8) -> u32 {
+///          4=invalid quote, 5=insufficient reputation, 6=slot overflow,
+///          7=invalid voting period
+pub fn propose_new_pair_with_period(
+    proposer: *const u8,
+    base_token: *const u8,
+    quote_token: *const u8,
+    voting_period_slots: u64,
+) -> u32 {
     if !reentrancy_enter() {
         return 3;
     }
@@ -574,11 +597,11 @@ pub fn propose_new_pair(proposer: *const u8, base_token: *const u8, quote_token:
     }
 
     let current_slot = get_slot();
-    let end_slot = match current_slot.checked_add(VOTING_PERIOD_SLOTS) {
-        Some(value) => value,
-        None => {
+    let end_slot = match proposal_end_slot(current_slot, voting_period_slots) {
+        Ok(value) => value,
+        Err(code) => {
             reentrancy_exit();
-            return 6;
+            return code;
         }
     };
     let prop_id = count + 1;
@@ -604,14 +627,20 @@ pub fn propose_new_pair(proposer: *const u8, base_token: *const u8, quote_token:
     0
 }
 
+pub fn propose_new_pair(proposer: *const u8, base_token: *const u8, quote_token: *const u8) -> u32 {
+    propose_new_pair_with_period(proposer, base_token, quote_token, 0)
+}
+
 /// Propose a fee change for an existing pair.
 /// Returns: 0=success, 1=paused, 2=max proposals, 3=reentrancy,
-///          4=invalid pair/fee, 5=insufficient reputation, 6=slot overflow
-pub fn propose_fee_change(
+///          4=invalid pair/fee, 5=insufficient reputation, 6=slot overflow,
+///          7=invalid voting period
+pub fn propose_fee_change_with_period(
     proposer: *const u8,
     pair_id: u64,
     new_maker_fee: i16,
     new_taker_fee: u16,
+    voting_period_slots: u64,
 ) -> u32 {
     if !reentrancy_enter() {
         return 3;
@@ -652,11 +681,11 @@ pub fn propose_fee_change(
     }
 
     let current_slot = get_slot();
-    let end_slot = match current_slot.checked_add(VOTING_PERIOD_SLOTS) {
-        Some(value) => value,
-        None => {
+    let end_slot = match proposal_end_slot(current_slot, voting_period_slots) {
+        Ok(value) => value,
+        Err(code) => {
             reentrancy_exit();
-            return 6;
+            return code;
         }
     };
     let prop_id = count + 1;
@@ -679,6 +708,15 @@ pub fn propose_fee_change(
     log_info("Fee change proposal created");
     reentrancy_exit();
     0
+}
+
+pub fn propose_fee_change(
+    proposer: *const u8,
+    pair_id: u64,
+    new_maker_fee: i16,
+    new_taker_fee: u16,
+) -> u32 {
+    propose_fee_change_with_period(proposer, pair_id, new_maker_fee, new_taker_fee, 0)
 }
 
 /// Vote on a proposal
@@ -1185,12 +1223,18 @@ pub extern "C" fn call() -> u32 {
             }
         }
         1 => {
-            // propose_new_pair
+            // propose_new_pair(proposer, base, quote, optional voting_period_slots)
             if args.len() >= 1 + 32 + 32 + 32 {
-                let r = propose_new_pair(
+                let voting_period_slots = if args.len() >= 1 + 32 + 32 + 32 + 8 {
+                    bytes_to_u64(&args[97..105])
+                } else {
+                    0
+                };
+                let r = propose_new_pair_with_period(
                     args[1..33].as_ptr(),
                     args[33..65].as_ptr(),
                     args[65..97].as_ptr(),
+                    voting_period_slots,
                 );
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
                 _rc = r as u32;
@@ -1252,15 +1296,21 @@ pub extern "C" fn call() -> u32 {
             }
         }
         9 => {
-            // propose_fee_change
+            // propose_fee_change(proposer, pair_id, maker_fee, taker_fee, optional voting_period_slots)
             if args.len() >= 1 + 32 + 8 + 2 + 2 {
                 let maker = i16::from_le_bytes([args[41], args[42]]);
                 let taker = u16::from_le_bytes([args[43], args[44]]);
-                let r = propose_fee_change(
+                let voting_period_slots = if args.len() >= 1 + 32 + 8 + 2 + 2 + 8 {
+                    bytes_to_u64(&args[45..53])
+                } else {
+                    0
+                };
+                let r = propose_fee_change_with_period(
                     args[1..33].as_ptr(),
                     bytes_to_u64(&args[33..41]),
                     maker,
                     taker,
+                    voting_period_slots,
                 );
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
                 _rc = r as u32;
@@ -1446,6 +1496,50 @@ mod tests {
             0
         );
         assert_eq!(get_proposal_count(), 1);
+        let pd = storage_get(&proposal_key(1)).unwrap();
+        assert_eq!(decode_prop_end_slot(&pd), 100 + VOTING_PERIOD_SLOTS);
+    }
+
+    #[test]
+    fn test_propose_new_pair_custom_voting_period() {
+        let _admin = setup_with_reputation();
+        let proposer = [2u8; 32];
+        let base = [10u8; 32];
+        let quote = [20u8; 32];
+        let custom_period = 86_400;
+        test_mock::set_slot(100);
+        test_mock::set_caller(proposer);
+        assert_eq!(
+            propose_new_pair_with_period(
+                proposer.as_ptr(),
+                base.as_ptr(),
+                quote.as_ptr(),
+                custom_period
+            ),
+            0
+        );
+        let pd = storage_get(&proposal_key(1)).unwrap();
+        assert_eq!(decode_prop_end_slot(&pd), 100 + custom_period);
+    }
+
+    #[test]
+    fn test_propose_new_pair_rejects_invalid_voting_period() {
+        let _admin = setup_with_reputation();
+        let proposer = [2u8; 32];
+        let base = [10u8; 32];
+        let quote = [20u8; 32];
+        test_mock::set_slot(100);
+        test_mock::set_caller(proposer);
+        assert_eq!(
+            propose_new_pair_with_period(
+                proposer.as_ptr(),
+                base.as_ptr(),
+                quote.as_ptr(),
+                MIN_VOTING_PERIOD_SLOTS - 1
+            ),
+            7
+        );
+        assert_eq!(get_proposal_count(), 0);
     }
 
     #[test]
@@ -1456,6 +1550,21 @@ mod tests {
         test_mock::set_caller(proposer);
         assert_eq!(propose_fee_change(proposer.as_ptr(), 1, -2, 10), 0);
         assert_eq!(get_proposal_count(), 1);
+    }
+
+    #[test]
+    fn test_propose_fee_change_custom_voting_period() {
+        let _admin = setup_with_reputation();
+        let proposer = [2u8; 32];
+        let custom_period = 604_800;
+        test_mock::set_slot(100);
+        test_mock::set_caller(proposer);
+        assert_eq!(
+            propose_fee_change_with_period(proposer.as_ptr(), 1, -2, 10, custom_period),
+            0
+        );
+        let pd = storage_get(&proposal_key(1)).unwrap();
+        assert_eq!(decode_prop_end_slot(&pd), 100 + custom_period);
     }
 
     #[test]

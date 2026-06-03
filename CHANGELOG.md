@@ -5,6 +5,22 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.81] - 2026-06-03
+
+### Added
+- Adds `sparse_v1`, a compact sparse state commitment for account and contract-storage roots, with deterministic rebuild/backfill, dirty-key incremental updates, pre-activation shadow maintenance, and guarded validator admin commands for testnet rollout.
+- Adds `state_commitment_schema` genesis support so reset testnets, local testnets, and future mainnet launches can start directly with `sparse_v1` instead of migrating after slot 0.
+- Adds a sparse state commitment rollout runbook covering local gates, rolling backfill, coordinated activation, genesis/reset configuration, and the temporary ordered-proof caveat.
+
+### Changed
+- Explorer cadence now reports observed block interval separately from the configured 400ms target so public status stays honest during production tuning.
+
+### Fixed
+- Fixes DEX numeric input resets, data-synced governance defaults, configurable proposal voting periods, and the DEX governance WASM/ABI needed for the current testnet upgrade.
+- Drops buffered proposals, prevotes, and precommits while a live validator is catching up to a higher peer tip, preventing lagging nodes from validating or voting against stale parent state.
+- Extends rolling release verification so every shipped binary installed from a release archive, including `lichen-custody` and `lichen-faucet`, must match the signed archive hash before rollout continues.
+- Adds DEX Pages deployment gates for signed metadata trust anchors, versioned metadata-critical assets, and custom-domain cache-control evidence so stale frontend bundles cannot hide a healthy symbol registry.
+
 ## [0.5.80] - 2026-06-02
 
 ### Fixed

@@ -15,7 +15,7 @@
     <link rel="icon" href="favicon.ico">
     <link rel="stylesheet" href="shared-base-styles.css">
     <link rel="stylesheet" href="shared-theme.css">
-    <link rel="stylesheet" href="dex.css?v=20260602">
+    <link rel="stylesheet" href="dex.css?v=20260603">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link
@@ -24,10 +24,10 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css"
         integrity="sha512-DTOQO9RWCH3ppGqcWaEA1BIZOC6xxalwEsw9c2QQeAIftl+Vegovlnee1c9QX4TctnWMn13TZye+giMm8e2LwA=="
         crossorigin="anonymous" referrerpolicy="no-referrer" />
-    <script src="shared/utils.js?v=20260602"></script>
-    <script src="shared/wallet-connect.js?v=20260602"></script>
-    <script src="shared/env.js?v=20260602"></script>
-    <script src="shared-config.js?v=20260602"></script>
+    <script src="shared/utils.js?v=20260603"></script>
+    <script src="shared/wallet-connect.js?v=20260603"></script>
+    <script src="shared/env.js?v=20260603"></script>
+    <script src="shared-config.js?v=20260603"></script>
 </head>
 
 <body>
@@ -1162,7 +1162,7 @@
                 <div class="page-header-bar">
                     <div class="page-header-left">
                         <h2><i class="fas fa-landmark"></i> Governance</h2>
-                        <span class="page-subtitle">Community-driven · 66% supermajority · 48h voting · 1h
+                        <span class="page-subtitle" id="govSubtitle">Community-driven · 66% supermajority · configurable voting · 1h
                             timelock</span>
                     </div>
                     <div class="page-header-pills">
@@ -1187,14 +1187,14 @@
                 <div class="pool-stat-card">
                     <div class="stat-icon-wrap"><i class="fas fa-check-double"></i></div>
                     <div class="pool-stat-label">Approval Threshold</div>
-                    <div class="pool-stat-value">66%</div>
+                    <div class="pool-stat-value" id="govApprovalThreshold">66%</div>
                     <div class="stat-sub">Supermajority required</div>
                 </div>
                 <div class="pool-stat-card">
                     <div class="stat-icon-wrap"><i class="fas fa-hourglass-half"></i></div>
-                    <div class="pool-stat-label">Voting Period</div>
-                    <div class="pool-stat-value">48h</div>
-                    <div class="stat-sub">172,800 slots</div>
+                    <div class="pool-stat-label">Default Voting</div>
+                    <div class="pool-stat-value" id="govDefaultVotingPeriod">48h</div>
+                    <div class="stat-sub" id="govVotingStatSub">432,000 slots</div>
                 </div>
             </div>
 
@@ -1239,6 +1239,20 @@
                                 <button class="proposal-type-btn" data-ptype="param"><i class="fas fa-sliders-h"></i>
                                     Parameters</button>
                             </div>
+                        </div>
+
+                        <div class="form-group">
+                            <label>Voting Period</label>
+                            <select class="form-select" id="propVotingPeriod">
+                                <option value="6">6 hours</option>
+                                <option value="12">12 hours</option>
+                                <option value="24">24 hours</option>
+                                <option value="48" selected>48 hours</option>
+                                <option value="72">72 hours</option>
+                                <option value="168">7 days</option>
+                                <option value="336">14 days</option>
+                                <option value="720">30 days</option>
+                            </select>
                         </div>
 
                         <!-- New Pair Fields -->
@@ -1317,7 +1331,7 @@
                             <div class="form-group">
                                 <label>Protocol Parameter</label>
                                 <select class="form-select" id="propParamName">
-                                    <option value="max_leverage" data-current="5" data-unit="x"
+                                    <option value="max_leverage" data-current="100" data-unit="x"
                                         data-desc="Maximum leverage multiplier for margin trading positions.">Max
                                         Leverage</option>
                                     <option value="min_liquidity" data-current="10000" data-unit="LICN"
@@ -1354,7 +1368,7 @@
                             </div>
                             <div class="param-current-value">
                                 <span style="color:var(--text-muted);font-size:0.82rem;">Current Value</span>
-                                <span class="mono-value" id="propParamCurrent">5x</span>
+                                <span class="mono-value" id="propParamCurrent">100x</span>
                             </div>
                             <div class="form-group">
                                 <label>Proposed Value</label>
@@ -1687,7 +1701,7 @@
     </div>
 
     <script src="charting_library/charting_library.standalone.js"></script>
-    <script src="dex.js?v=20260602"></script>
+    <script src="dex.js?v=20260603"></script>
 </body>
 
 </html>
