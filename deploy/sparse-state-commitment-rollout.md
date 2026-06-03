@@ -56,6 +56,13 @@ systemctl start lichen-validator
 
 No persistent service or timer is required for this command. If a temporary unit is used operationally, remove it after it exits.
 
+For an existing signed chain, historical block headers and commit
+signatures are not rewritten. The activation point is the coordinated
+restart height: new blocks after activation use the `sparse_v1` state-root
+prefix and sparse account/contract roots. Reset testnets, local testnets,
+and mainnet genesis can start with `sparse_v1` at slot 0 by setting the
+genesis field below.
+
 ## Genesis / Reset
 
 For a reset testnet, local private testnet, or future mainnet genesis, set this in the genesis config before creating slot 0:
@@ -74,6 +81,8 @@ Omitting the field keeps the compatibility default:
 }
 ```
 
-## Activation Caveat
+## Account Proofs
 
-The legacy ordered account-proof API is not exposed while `sparse_v1` is active. Add or approve sparse proof support before mainnet activation if any public consumer depends on account inclusion proofs.
+`getAccountProof` returns `proof_type=ordered_v0` before activation and
+`proof_type=sparse_v1` after activation. Sparse proofs verify against the
+account sparse root inside the active composite state commitment.

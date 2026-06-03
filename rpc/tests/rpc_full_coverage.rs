@@ -397,6 +397,71 @@ fn app_with_anchored_account_proof() -> (axum::Router, String) {
     (app, funded_b58)
 }
 
+fn app_with_account_proof_older_matching_anchor() -> (axum::Router, String) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = StateStore::open(dir.path()).expect("state");
+    let _ = Box::leak(Box::new(dir));
+
+    let funded = Pubkey([0x43u8; 32]);
+    let funded_b58 = funded.to_base58();
+    let acct = Account::new(5, Pubkey([0u8; 32]));
+    state.put_account(&funded, &acct).expect("put funded");
+
+    let validator = Keypair::from_seed(&[8u8; 32]);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let genesis = Block::genesis(Hash::default(), now.saturating_sub(2), vec![]);
+    state.put_block(&genesis).expect("put genesis");
+
+    let mut anchored = Block::new_with_timestamp(
+        1,
+        genesis.hash(),
+        state.compute_state_root(),
+        validator.pubkey().0,
+        vec![],
+        now.saturating_sub(1),
+    );
+    anchored.sign(&validator);
+    state.put_block(&anchored).expect("put matching block");
+
+    let mut newer = Block::new_with_timestamp(
+        2,
+        anchored.hash(),
+        Hash::hash(b"newer-root-not-current-state"),
+        validator.pubkey().0,
+        vec![],
+        now,
+    );
+    newer.sign(&validator);
+    state.put_block(&newer).expect("put newer block");
+    state.set_last_slot(2).expect("set last slot");
+    state
+        .set_last_confirmed_slot(2)
+        .expect("set confirmed slot");
+    state
+        .set_last_finalized_slot(2)
+        .expect("set finalized slot");
+
+    let app = build_rpc_router(
+        state,
+        None,
+        None,
+        None,
+        "lichen-test".to_string(),
+        "lichen-test".to_string(),
+        None,
+        Some(FinalityTracker::new(2, 2)),
+        None,
+        None,
+        None,
+    );
+
+    (app, funded_b58)
+}
+
 /// Helper: assert result or error (valid JSON-RPC response)
 fn assert_valid_rpc(resp: &serde_json::Value) {
     assert_eq!(resp["jsonrpc"], "2.0", "must be jsonrpc 2.0");
@@ -479,6 +544,26 @@ async fn test_native_get_account_proof_returns_anchored_finalized_context() {
         1
     );
     assert!(result["anchor"]["block_signature"].is_object());
+}
+
+#[tokio::test]
+async fn test_native_get_account_proof_uses_recent_matching_anchor() {
+    let (app, addr) = app_with_account_proof_older_matching_anchor();
+    let resp = rpc_p(
+        &app,
+        "/",
+        "getAccountProof",
+        json!([addr, {"commitment": "finalized"}]),
+    )
+    .await
+    .unwrap();
+    assert_valid_rpc(&resp);
+
+    let result = &resp["result"];
+    assert_eq!(result["pubkey"], addr);
+    assert_eq!(result["inclusion_proof"]["proof_type"], "ordered_v0");
+    assert_eq!(result["anchor"]["commitment"], "finalized");
+    assert_eq!(result["anchor"]["slot"], 1);
 }
 
 #[tokio::test]

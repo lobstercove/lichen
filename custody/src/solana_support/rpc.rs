@@ -180,6 +180,20 @@ pub(crate) async fn solana_get_latest_blockhash(
     decode_solana_pubkey(value)
 }
 
+pub(crate) async fn solana_send_transaction(
+    client: &reqwest::Client,
+    url: &str,
+    tx_bytes: &[u8],
+) -> Result<String, String> {
+    let tx_base64 = base64::engine::general_purpose::STANDARD.encode(tx_bytes);
+    let params = json!([tx_base64, { "encoding": "base64" }]);
+    let result = solana_rpc_call(client, url, "sendTransaction", params).await?;
+    result
+        .as_str()
+        .map(|value| value.to_string())
+        .ok_or_else(|| "missing tx signature".to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::solana_signature_confirmation_result;
@@ -252,18 +266,4 @@ mod tests {
             Some(false)
         );
     }
-}
-
-pub(crate) async fn solana_send_transaction(
-    client: &reqwest::Client,
-    url: &str,
-    tx_bytes: &[u8],
-) -> Result<String, String> {
-    let tx_base64 = base64::engine::general_purpose::STANDARD.encode(tx_bytes);
-    let params = json!([tx_base64, { "encoding": "base64" }]);
-    let result = solana_rpc_call(client, url, "sendTransaction", params).await?;
-    result
-        .as_str()
-        .map(|value| value.to_string())
-        .ok_or_else(|| "missing tx signature".to_string())
 }

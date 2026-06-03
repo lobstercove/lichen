@@ -36,7 +36,9 @@ mod stats_metadata;
 mod storage_bootstrap;
 mod validator_state;
 
-pub use merkle_state::{AccountProof, MerkleProof, SparseStateCommitmentReport};
+pub use merkle_state::{
+    AccountProof, MerkleProof, SparseMerkleProof, SparseProofStep, SparseStateCommitmentReport,
+};
 pub use metrics_state::{Metrics, MetricsStore};
 pub use snapshot_io::CheckpointMeta;
 

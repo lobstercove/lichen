@@ -30,6 +30,10 @@ const SPARSE_NODE_DOMAIN_BRANCH: u8 = 0xA1;
 pub struct SparseStateCommitmentReport {
     pub before_schema: u8,
     pub after_schema: u8,
+    pub active: bool,
+    pub last_slot: u64,
+    pub current_state_root: Hash,
+    pub latest_block_state_root: Option<Hash>,
     pub accounts_root: Hash,
     pub contract_root: Hash,
     pub accounts_leaf_count: u64,
@@ -112,12 +116,98 @@ impl MerkleProof {
     }
 }
 
+/// Branch step for a sparse_v1 account proof.
+///
+/// `target_went_right` records which child contains the proven account at this
+/// branch. The sibling hash is enough to recompute the branch hash because the
+/// proof also carries the compressed branch prefix.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SparseProofStep {
+    pub prefix_bits: u16,
+    pub prefix: [u8; 32],
+    pub sibling: Hash,
+    pub target_went_right: bool,
+}
+
+/// Sparse_v1 account inclusion proof.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SparseMerkleProof {
+    pub leaf_hash: Hash,
+    pub path: [u8; 32],
+    pub steps: Vec<SparseProofStep>,
+}
+
+impl SparseMerkleProof {
+    pub fn verify(&self, expected_root: &Hash) -> bool {
+        for step in &self.steps {
+            if step.prefix_bits >= 256 {
+                return false;
+            }
+            if !StateStore::sparse_prefix_matches(&self.path, &step.prefix, step.prefix_bits) {
+                return false;
+            }
+            if StateStore::sparse_bit(&self.path, step.prefix_bits) != step.target_went_right {
+                return false;
+            }
+        }
+        if self
+            .steps
+            .windows(2)
+            .any(|pair| pair[0].prefix_bits >= pair[1].prefix_bits)
+        {
+            return false;
+        }
+
+        let leaf_node = SparseNode::Leaf {
+            path: self.path,
+            leaf_hash: self.leaf_hash,
+        };
+        let mut current = Hash::hash(&StateStore::sparse_encode_node(&leaf_node));
+        for step in self.steps.iter().rev() {
+            let (left, right) = if step.target_went_right {
+                (step.sibling, current)
+            } else {
+                (current, step.sibling)
+            };
+            if left == Hash::default() || right == Hash::default() {
+                return false;
+            }
+            let branch_node = SparseNode::Branch {
+                prefix_bits: step.prefix_bits,
+                prefix: StateStore::sparse_normalize_prefix(&step.prefix, step.prefix_bits),
+                left,
+                right,
+            };
+            current = Hash::hash(&StateStore::sparse_encode_node(&branch_node));
+        }
+        current == *expected_root
+    }
+
+    pub fn verify_account(
+        &self,
+        expected_root: &Hash,
+        pubkey: &Pubkey,
+        account_data: &[u8],
+    ) -> bool {
+        if self.path != StateStore::sparse_account_path(pubkey) {
+            return false;
+        }
+        let computed_leaf = Hash::hash_two_parts(&pubkey.0, account_data);
+        if computed_leaf != self.leaf_hash {
+            return false;
+        }
+        self.verify(expected_root)
+    }
+}
+
 /// Full account proof returned by `get_account_proof`, suitable for RPC responses.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccountProof {
     pub pubkey: Pubkey,
     pub account_data: Vec<u8>,
     pub proof: MerkleProof,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sparse_proof: Option<SparseMerkleProof>,
     pub state_root: Hash,
 }
 
@@ -1006,16 +1096,26 @@ impl StateStore {
         if activate {
             self.set_state_commitment_schema(STATE_COMMITMENT_SCHEMA_SPARSE_V1)?;
         }
+        let last_slot = self.get_last_slot().unwrap_or(0);
+        let latest_block_state_root = self
+            .get_block_by_slot(last_slot)
+            .ok()
+            .flatten()
+            .map(|block| block.header.state_root);
         Ok(SparseStateCommitmentReport {
             before_schema,
             after_schema: self.get_state_commitment_schema(),
+            active: self.uses_sparse_state_commitment(),
+            last_slot,
+            current_state_root: self.compute_state_root_cold_start(),
+            latest_block_state_root,
             accounts_root,
             contract_root,
             accounts_leaf_count,
             contract_leaf_count,
             accounts_node_count,
             contract_node_count,
-            activated: activate,
+            activated: self.uses_sparse_state_commitment(),
         })
     }
 
@@ -1040,16 +1140,26 @@ impl StateStore {
                 stored_contract_root.to_hex()
             ));
         }
+        let last_slot = self.get_last_slot().unwrap_or(0);
+        let latest_block_state_root = self
+            .get_block_by_slot(last_slot)
+            .ok()
+            .flatten()
+            .map(|block| block.header.state_root);
         Ok(SparseStateCommitmentReport {
             before_schema,
             after_schema: before_schema,
+            active: self.uses_sparse_state_commitment(),
+            last_slot,
+            current_state_root: self.compute_state_root_cold_start(),
+            latest_block_state_root,
             accounts_root,
             contract_root,
             accounts_leaf_count: account_entries.len() as u64,
             contract_leaf_count: contract_entries.len() as u64,
             accounts_node_count: account_nodes.len() as u64,
             contract_node_count: contract_nodes.len() as u64,
-            activated: false,
+            activated: self.uses_sparse_state_commitment(),
         })
     }
 
@@ -1195,17 +1305,128 @@ impl StateStore {
         }
     }
 
-    /// Generate an inclusion proof for the given account.
-    pub fn get_account_proof(&self, pubkey: &Pubkey) -> Option<AccountProof> {
-        if self.uses_sparse_state_commitment() {
-            tracing::warn!(
-                "Account inclusion proofs for sparse state commitment are not exposed by the legacy proof format"
-            );
+    fn build_sparse_account_proof(
+        &self,
+        root: Hash,
+        pubkey: &Pubkey,
+        leaf_hash: Hash,
+    ) -> Option<SparseMerkleProof> {
+        if root == Hash::default() {
             return None;
         }
 
+        let path = Self::sparse_account_path(pubkey);
+        let overlay = BTreeMap::new();
+        let mut node_hash = root;
+        let mut steps = Vec::new();
+
+        loop {
+            match self
+                .sparse_read_node(CF_ACCOUNT_MERKLE_NODES, &overlay, node_hash)
+                .ok()?
+            {
+                SparseNode::Leaf {
+                    path: leaf_path,
+                    leaf_hash: stored_leaf_hash,
+                } => {
+                    if leaf_path != path || stored_leaf_hash != leaf_hash {
+                        return None;
+                    }
+                    return Some(SparseMerkleProof {
+                        leaf_hash,
+                        path,
+                        steps,
+                    });
+                }
+                SparseNode::Branch {
+                    prefix_bits,
+                    prefix,
+                    left,
+                    right,
+                } => {
+                    if !Self::sparse_prefix_matches(&path, &prefix, prefix_bits) {
+                        return None;
+                    }
+                    let target_went_right = Self::sparse_bit(&path, prefix_bits);
+                    let (child, sibling) = if target_went_right {
+                        (right, left)
+                    } else {
+                        (left, right)
+                    };
+                    if child == Hash::default() || sibling == Hash::default() {
+                        return None;
+                    }
+                    steps.push(SparseProofStep {
+                        prefix_bits,
+                        prefix: Self::sparse_normalize_prefix(&prefix, prefix_bits),
+                        sibling,
+                        target_went_right,
+                    });
+                    if steps.len() > 256 {
+                        return None;
+                    }
+                    node_hash = child;
+                }
+            }
+        }
+    }
+
+    fn get_sparse_account_proof(
+        &self,
+        pubkey: &Pubkey,
+        account_data: Vec<u8>,
+    ) -> Option<AccountProof> {
+        let leaf_hash = Hash::hash_two_parts(&pubkey.0, &account_data);
+        let accounts_root = match self.compute_sparse_accounts_root() {
+            Ok(root) => root,
+            Err(err) => {
+                tracing::warn!("Sparse account proof unavailable: {err}");
+                return None;
+            }
+        };
+        let sparse_proof = self.build_sparse_account_proof(accounts_root, pubkey, leaf_hash)?;
+        if !sparse_proof.verify_account(&accounts_root, pubkey, &account_data) {
+            return None;
+        }
+
+        let contract_root = match self.compute_sparse_contract_storage_root() {
+            Ok(root) => root,
+            Err(err) => {
+                tracing::warn!("Sparse account proof contract root unavailable: {err}");
+                return None;
+            }
+        };
+        let stake_pool_hash = self.compute_stake_pool_hash();
+        let mossstake_pool_hash = self.compute_mossstake_pool_hash();
+        let include_restrictions = self.get_state_root_schema().unwrap_or(false);
+        let composite_root = self.compose_state_root(
+            accounts_root,
+            contract_root,
+            stake_pool_hash,
+            mossstake_pool_hash,
+            include_restrictions,
+        );
+
+        Some(AccountProof {
+            pubkey: *pubkey,
+            account_data,
+            proof: MerkleProof {
+                leaf_hash,
+                siblings: Vec::new(),
+                path: Vec::new(),
+            },
+            sparse_proof: Some(sparse_proof),
+            state_root: composite_root,
+        })
+    }
+
+    /// Generate an inclusion proof for the given account.
+    pub fn get_account_proof(&self, pubkey: &Pubkey) -> Option<AccountProof> {
         let cf_accounts = self.db.cf_handle(CF_ACCOUNTS)?;
         let account_data = self.db.get_cf(&cf_accounts, pubkey.0).ok()??;
+        if self.uses_sparse_state_commitment() {
+            return self.get_sparse_account_proof(pubkey, account_data);
+        }
 
         let cf_leaves = self.db.cf_handle(CF_MERKLE_LEAVES)?;
         let mut leaf_hashes: Vec<Hash> = Vec::new();
@@ -1263,6 +1484,7 @@ impl StateStore {
             pubkey: *pubkey,
             account_data,
             proof,
+            sparse_proof: None,
             state_root: composite_root,
         })
     }
@@ -1273,6 +1495,15 @@ impl StateStore {
         pubkey: &Pubkey,
         account_data: &[u8],
         proof: &MerkleProof,
+    ) -> bool {
+        proof.verify_account(root, pubkey, account_data)
+    }
+
+    pub fn verify_sparse_account_proof(
+        root: &Hash,
+        pubkey: &Pubkey,
+        account_data: &[u8],
+        proof: &SparseMerkleProof,
     ) -> bool {
         proof.verify_account(root, pubkey, account_data)
     }

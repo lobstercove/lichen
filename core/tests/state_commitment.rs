@@ -302,6 +302,52 @@ fn sparse_state_commitment_proposal_root_matches_commit() {
 }
 
 #[test]
+fn sparse_state_commitment_account_proof_verifies_after_activation() {
+    let (state, _dir) = make_state();
+
+    let alice = Pubkey::new([21u8; 32]);
+    let bob = Pubkey::new([22u8; 32]);
+    state
+        .put_account(&alice, &Account::new(1000, alice))
+        .unwrap();
+    state.put_account(&bob, &Account::new(100, bob)).unwrap();
+
+    let activation = state.rebuild_sparse_state_commitment(true).unwrap();
+    assert_eq!(activation.after_schema, 1);
+    assert!(state.uses_sparse_state_commitment());
+
+    let state_root = state.compute_state_root();
+    let accounts_root = state.compute_accounts_root();
+    let proof = state.get_account_proof(&alice).unwrap();
+    let sparse_proof = proof
+        .sparse_proof
+        .as_ref()
+        .expect("sparse mode must return sparse_v1 account proof");
+
+    assert!(proof.proof.siblings.is_empty());
+    assert!(proof.proof.path.is_empty());
+    assert_eq!(proof.state_root, state_root);
+    assert!(sparse_proof.verify(&accounts_root));
+    assert!(sparse_proof.verify_account(&accounts_root, &alice, &proof.account_data));
+    assert!(StateStore::verify_sparse_account_proof(
+        &accounts_root,
+        &alice,
+        &proof.account_data,
+        sparse_proof
+    ));
+
+    let old_sparse_proof = sparse_proof.clone();
+    state.put_account(&bob, &Account::new(250, bob)).unwrap();
+    let updated_accounts_root = state.compute_accounts_root();
+    assert_ne!(accounts_root, updated_accounts_root);
+    assert!(!old_sparse_proof.verify(&updated_accounts_root));
+
+    let updated_proof = state.get_account_proof(&alice).unwrap();
+    let updated_sparse_proof = updated_proof.sparse_proof.as_ref().unwrap();
+    assert!(updated_sparse_proof.verify(&updated_accounts_root));
+}
+
+#[test]
 fn sparse_state_commitment_shadow_stays_current_before_activation() {
     let (state, _dir) = make_state();
 
@@ -318,6 +364,8 @@ fn sparse_state_commitment_shadow_stays_current_before_activation() {
 
     let report = state.rebuild_sparse_state_commitment(false).unwrap();
     assert_eq!(report.after_schema, 0);
+    assert!(!report.active);
+    assert!(!report.activated);
     assert!(!state.uses_sparse_state_commitment());
 
     let mut batch = state.begin_batch();
@@ -337,6 +385,31 @@ fn sparse_state_commitment_shadow_stays_current_before_activation() {
     state
         .verify_sparse_state_commitment()
         .expect("shadow sparse roots must stay current while ordered_v0 is active");
+}
+
+#[test]
+fn sparse_state_commitment_verify_reports_activation_state() {
+    let (state, _dir) = make_state();
+    let alice = Pubkey::new([31u8; 32]);
+    state
+        .put_account(&alice, &Account::new(1000, alice))
+        .unwrap();
+
+    let shadow_report = state.rebuild_sparse_state_commitment(false).unwrap();
+    assert!(!shadow_report.active);
+    assert!(!shadow_report.activated);
+    assert_eq!(shadow_report.last_slot, 0);
+    assert_eq!(shadow_report.latest_block_state_root, Some(Hash::default()));
+
+    let active_report = state.rebuild_sparse_state_commitment(true).unwrap();
+    assert!(active_report.active);
+    assert!(active_report.activated);
+    assert_eq!(active_report.after_schema, 1);
+
+    let verify_report = state.verify_sparse_state_commitment().unwrap();
+    assert!(verify_report.active);
+    assert!(verify_report.activated);
+    assert_eq!(verify_report.current_state_root, state.compute_state_root());
 }
 
 // ─── Test: empty pools produce a known distinct root from no-pool ────────────

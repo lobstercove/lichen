@@ -5,6 +5,17 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.82] - 2026-06-03
+
+### Added
+- Adds `sparse_v1` account proof generation and RPC serialization so sparse-active nodes return `proof_type=sparse_v1` inclusion proofs instead of dropping account proof support.
+- Adds sparse state-commitment admin output for active schema, current computed state root, latest stored block state root, and latest slot so coordinated activation can be verified unambiguously on stopped validator DBs.
+
+### Fixed
+- Fixes sparse state-commitment verification reporting so `--show-state-commitment-schema` reports `active=true` / `activated=true` when the sparse schema is actually persisted.
+- Keeps account proof anchoring fail-closed when the current local state root is not committed by a stored block header, avoiding unauthenticated proof responses.
+- Clarifies sparse rollout docs for existing signed chains: historical block headers are not rewritten, while reset testnets and mainnet genesis can start with `sparse_v1` at slot 0.
+
 ## [0.5.81] - 2026-06-03
 
 ### Added

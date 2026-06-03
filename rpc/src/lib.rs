@@ -4171,26 +4171,12 @@ fn resolve_commitment_slot(state: &RpcState, commitment: &str) -> Result<u64, Rp
     }
 }
 
-fn anchored_block_context(
-    state: &RpcState,
-    commitment: &str,
-) -> Result<(u64, lichen_core::Block, serde_json::Value), RpcError> {
-    let slot = resolve_commitment_slot(state, commitment)?;
-    let block = state
-        .state
-        .get_block_by_slot(slot)
-        .map_err(|e| RpcError {
-            code: -32000,
-            message: format!("Database error: {}", e),
-        })?
-        .ok_or_else(|| RpcError {
-            code: -32001,
-            message: format!(
-                "No block available at {} commitment slot {}",
-                commitment, slot
-            ),
-        })?;
+const ACCOUNT_PROOF_ANCHOR_LOOKBACK_SLOTS: u64 = 512;
 
+fn build_anchor_context(
+    commitment: &str,
+    block: lichen_core::Block,
+) -> (u64, lichen_core::Block, serde_json::Value) {
     let block_hash = block.hash();
     let context = serde_json::json!({
         "slot": block.header.slot,
@@ -4213,8 +4199,36 @@ fn anchored_block_context(
         }).collect::<Vec<_>>(),
         "commit_validator_count": block.commit_signatures.len(),
     });
+    (block.header.slot, block, context)
+}
 
-    Ok((slot, block, context))
+fn anchored_block_context_for_state_root(
+    state: &RpcState,
+    commitment: &str,
+    state_root: &Hash,
+) -> Result<(u64, lichen_core::Block, serde_json::Value), RpcError> {
+    let max_slot = resolve_commitment_slot(state, commitment)?;
+    let start_slot = max_slot.saturating_sub(ACCOUNT_PROOF_ANCHOR_LOOKBACK_SLOTS);
+
+    for slot in (start_slot..=max_slot).rev() {
+        let block = state.state.get_block_by_slot(slot).map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Database error: {}", e),
+        })?;
+        if let Some(block) = block {
+            if block.header.state_root == *state_root {
+                return Ok(build_anchor_context(commitment, block));
+            }
+        }
+    }
+
+    Err(RpcError {
+        code: -32001,
+        message: format!(
+            "Account proof state root is not anchored to any {} block in slots {}..={}",
+            commitment, start_slot, max_slot
+        ),
+    })
 }
 
 /// Collect unique account keys from a transaction in Solana-compatible order.
@@ -6418,7 +6432,7 @@ async fn handle_get_block_commit(
 /// Returns: {
 ///   pubkey,
 ///   account_data,
-///   inclusion_proof: { leaf_hash, siblings, path },
+///   inclusion_proof: { proof_type, leaf_hash, siblings, path, sparse_path?, steps? },
 ///   anchor: { slot, commitment, block_hash, parent_hash, state_root, tx_root,
 ///             validators_hash, timestamp, validator, block_signature,
 ///             commit_signatures, commit_validator_count }
@@ -6471,29 +6485,45 @@ async fn handle_get_account_proof(
         })
         .unwrap_or("finalized");
 
-    let (anchor_slot, anchor_block, anchor_context) =
-        anchored_block_context(state, requested_commitment)?;
+    let (_anchor_slot, _anchor_block, anchor_context) =
+        anchored_block_context_for_state_root(state, requested_commitment, &proof.state_root)?;
 
-    if anchor_block.header.state_root != proof.state_root {
-        return Err(RpcError {
-            code: -32001,
-            message: format!(
-                "Account proof is not anchored to the {} block at slot {}",
-                requested_commitment, anchor_slot
-            ),
-        });
-    }
+    let inclusion_proof = if let Some(sparse_proof) = proof.sparse_proof.as_ref() {
+        let steps: Vec<serde_json::Value> = sparse_proof
+            .steps
+            .iter()
+            .map(|step| {
+                serde_json::json!({
+                    "prefix_bits": step.prefix_bits,
+                    "prefix": hex::encode(step.prefix),
+                    "sibling": step.sibling.to_hex(),
+                    "target_went_right": step.target_went_right,
+                })
+            })
+            .collect();
 
-    let siblings_hex: Vec<String> = proof.proof.siblings.iter().map(|h| h.to_hex()).collect();
+        serde_json::json!({
+            "proof_type": "sparse_v1",
+            "leaf_hash": sparse_proof.leaf_hash.to_hex(),
+            "siblings": Vec::<String>::new(),
+            "path": Vec::<bool>::new(),
+            "sparse_path": hex::encode(sparse_proof.path),
+            "steps": steps,
+        })
+    } else {
+        let siblings_hex: Vec<String> = proof.proof.siblings.iter().map(|h| h.to_hex()).collect();
+        serde_json::json!({
+            "proof_type": "ordered_v0",
+            "leaf_hash": proof.proof.leaf_hash.to_hex(),
+            "siblings": siblings_hex,
+            "path": proof.proof.path,
+        })
+    };
 
     Ok(serde_json::json!({
         "pubkey": pubkey_str,
         "account_data": hex::encode(&proof.account_data),
-        "inclusion_proof": {
-            "leaf_hash": proof.proof.leaf_hash.to_hex(),
-            "siblings": siblings_hex,
-            "path": proof.proof.path,
-        },
+        "inclusion_proof": inclusion_proof,
         "anchor": anchor_context,
     }))
 }

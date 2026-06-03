@@ -6522,7 +6522,17 @@ fn print_sparse_state_commitment_report(
         StateStore::state_commitment_schema_label(report.after_schema)
     );
     println!("ready={ready}");
+    println!("active={}", report.active);
     println!("activated={}", report.activated);
+    println!("last_slot={}", report.last_slot);
+    println!("current_state_root={}", report.current_state_root.to_hex());
+    println!(
+        "latest_block_state_root={}",
+        report
+            .latest_block_state_root
+            .map(|root| root.to_hex())
+            .unwrap_or_else(|| "none".to_string())
+    );
     println!("accounts_root={}", report.accounts_root.to_hex());
     println!("contract_root={}", report.contract_root.to_hex());
     println!("accounts_leaf_count={}", report.accounts_leaf_count);
