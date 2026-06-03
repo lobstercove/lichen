@@ -67,6 +67,9 @@ struct SparseLeafChange {
     leaf_hash: Option<Hash>,
 }
 
+type SparseNodeOverlay = BTreeMap<[u8; 32], Vec<u8>>;
+type SparseRootOverlay = (Hash, SparseNodeOverlay);
+
 /// Merkle inclusion proof for an account in the state tree.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MerkleProof {
@@ -743,7 +746,7 @@ impl StateStore {
         &self,
         cf_name: &str,
         entries: &[SparseLeafEntry],
-    ) -> Result<(Hash, BTreeMap<[u8; 32], Vec<u8>>), String> {
+    ) -> Result<SparseRootOverlay, String> {
         let mut ordered = entries.to_vec();
         ordered.sort_by(|left, right| {
             left.path
@@ -776,7 +779,7 @@ impl StateStore {
         cf_name: &str,
         current_root: Hash,
         changes: &[SparseLeafChange],
-    ) -> Result<(Hash, BTreeMap<[u8; 32], Vec<u8>>), String> {
+    ) -> Result<SparseRootOverlay, String> {
         let mut ordered = changes.to_vec();
         ordered.sort_by(|left, right| {
             left.path
