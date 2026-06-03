@@ -87,3 +87,9 @@ Use `ordered_v0` only when intentionally recreating a legacy compatibility chain
 `getAccountProof` returns `proof_type=ordered_v0` before activation and
 `proof_type=sparse_v1` after activation. Sparse proofs verify against the
 account sparse root inside the active composite state commitment.
+
+On an existing signed chain, block headers keep their original header state root.
+Validators also write a `post_state_v1` sidecar anchor after deterministic
+post-block hooks complete. RPC accepts that anchor only when its block hash
+matches the canonical stored block for the slot and its post-state root matches
+the account proof root.

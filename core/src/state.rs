@@ -69,6 +69,15 @@ pub struct ContractStorageStats {
     pub total_value_size: usize,
 }
 
+/// Durable post-block state commitment derived after deterministic post-block
+/// hooks have completed for a stored block.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PostStateCommitmentAnchor {
+    pub slot: u64,
+    pub block_hash: Hash,
+    pub state_root: Hash,
+}
+
 /// Column family names
 const CF_ACCOUNTS: &str = "accounts";
 const CF_BLOCKS: &str = "blocks";
@@ -4238,5 +4247,26 @@ mod tests {
         // Querying slot < 1000 returns None
         assert!(state.get_account_at_slot(&pk, 999).unwrap().is_none());
         assert!(state.get_account_at_slot(&pk, 0).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_post_state_commitment_anchor_roundtrip() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+
+        let block_hash = Hash::hash(b"block-7");
+        let state_root = Hash::hash(b"post-state-root-7");
+        state
+            .put_post_state_commitment_anchor(7, &block_hash, &state_root)
+            .unwrap();
+
+        let anchor = state
+            .get_post_state_commitment_anchor(7)
+            .unwrap()
+            .expect("post-state anchor");
+        assert_eq!(anchor.slot, 7);
+        assert_eq!(anchor.block_hash, block_hash);
+        assert_eq!(anchor.state_root, state_root);
+        assert!(state.get_post_state_commitment_anchor(8).unwrap().is_none());
     }
 }

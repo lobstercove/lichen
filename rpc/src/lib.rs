@@ -4149,21 +4149,31 @@ fn commitment_rank(commitment: &str) -> u8 {
 }
 
 fn resolve_commitment_slot(state: &RpcState, commitment: &str) -> Result<u64, RpcError> {
+    let last_slot = state.state.get_last_slot().map_err(|e| RpcError {
+        code: -32000,
+        message: format!("Database error: {}", e),
+    })?;
+
     match commitment {
-        "finalized" => Ok(if let Some(ref ft) = state.finality {
-            ft.finalized_slot()
-        } else {
-            state.state.get_last_finalized_slot().unwrap_or(0)
-        }),
-        "confirmed" => Ok(if let Some(ref ft) = state.finality {
-            ft.confirmed_slot()
-        } else {
-            state.state.get_last_confirmed_slot().unwrap_or(0)
-        }),
-        "processed" => state.state.get_last_slot().map_err(|e| RpcError {
-            code: -32000,
-            message: format!("Database error: {}", e),
-        }),
+        "finalized" => {
+            let durable = state.state.get_last_finalized_slot().unwrap_or(0);
+            let tracked = state
+                .finality
+                .as_ref()
+                .map(FinalityTracker::finalized_slot)
+                .unwrap_or(0);
+            Ok(durable.max(tracked).min(last_slot))
+        }
+        "confirmed" => {
+            let durable = state.state.get_last_confirmed_slot().unwrap_or(0);
+            let tracked = state
+                .finality
+                .as_ref()
+                .map(FinalityTracker::confirmed_slot)
+                .unwrap_or(0);
+            Ok(durable.max(tracked).min(last_slot))
+        }
+        "processed" => Ok(last_slot),
         other => Err(RpcError {
             code: -32602,
             message: format!("Unsupported commitment: {}", other),
@@ -4184,7 +4194,40 @@ fn build_anchor_context(
         "block_hash": block_hash.to_hex(),
         "commit_round": block.commit_round,
         "parent_hash": block.header.parent_hash.to_hex(),
+        "root_source": "header_state_root",
         "state_root": block.header.state_root.to_hex(),
+        "tx_root": block.header.tx_root.to_hex(),
+        "validators_hash": block.header.validators_hash.to_hex(),
+        "timestamp": block.header.timestamp,
+        "validator": Pubkey(block.header.validator).to_base58(),
+        "block_signature": pq_signature_option_json(block.header.signature.as_ref()),
+        "commit_signatures": block.commit_signatures.iter().map(|cs| {
+            serde_json::json!({
+                "validator": Pubkey(cs.validator).to_base58(),
+                "signature": pq_signature_json(&cs.signature),
+                "timestamp": cs.timestamp,
+            })
+        }).collect::<Vec<_>>(),
+        "commit_validator_count": block.commit_signatures.len(),
+    });
+    (block.header.slot, block, context)
+}
+
+fn build_post_state_anchor_context(
+    commitment: &str,
+    block: lichen_core::Block,
+    post_state_root: Hash,
+) -> (u64, lichen_core::Block, serde_json::Value) {
+    let block_hash = block.hash();
+    let context = serde_json::json!({
+        "slot": block.header.slot,
+        "commitment": commitment,
+        "block_hash": block_hash.to_hex(),
+        "commit_round": block.commit_round,
+        "parent_hash": block.header.parent_hash.to_hex(),
+        "root_source": "post_state_v1",
+        "state_root": post_state_root.to_hex(),
+        "header_state_root": block.header.state_root.to_hex(),
         "tx_root": block.header.tx_root.to_hex(),
         "validators_hash": block.header.validators_hash.to_hex(),
         "timestamp": block.header.timestamp,
@@ -4218,6 +4261,23 @@ fn anchored_block_context_for_state_root(
         if let Some(block) = block {
             if block.header.state_root == *state_root {
                 return Ok(build_anchor_context(commitment, block));
+            }
+            let post_anchor = state
+                .state
+                .get_post_state_commitment_anchor(slot)
+                .map_err(|e| RpcError {
+                    code: -32000,
+                    message: format!("Database error: {}", e),
+                })?;
+            if let Some(anchor) = post_anchor {
+                let block_hash = block.hash();
+                if anchor.block_hash == block_hash && anchor.state_root == *state_root {
+                    return Ok(build_post_state_anchor_context(
+                        commitment,
+                        block,
+                        anchor.state_root,
+                    ));
+                }
             }
         }
     }

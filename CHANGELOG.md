@@ -5,6 +5,14 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.84] - 2026-06-03
+
+### Added
+- Adds durable post-state commitment anchors keyed by finalized block slot and block hash so current testnet account proofs can anchor to the deterministic post-block state root without rewriting historical signed headers.
+
+### Fixed
+- Fixes `getAccountProof` on sparse-active testnet by accepting verified `post_state_v1` anchors when the block header state root represents the pre-post-hook transition boundary.
+
 ## [0.5.83] - 2026-06-03
 
 ### Changed

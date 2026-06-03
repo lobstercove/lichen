@@ -4814,6 +4814,102 @@ async fn apply_post_block_effects_after_store(
     run_analytics_bridge_from_state(state, block.header.slot, slot_duration_ms);
     run_sltp_triggers_from_state(state);
     reset_24h_stats_if_expired(state, block.header.timestamp);
+    record_post_block_state_commitment_anchor(state, block, "post-block effects");
+}
+
+fn record_post_block_state_commitment_anchor(state: &StateStore, block: &Block, context: &str) {
+    if block.header.slot == 0 {
+        return;
+    }
+
+    let block_hash = block.hash();
+    let post_state_root = state.compute_state_root_cached();
+    match state.get_post_state_commitment_anchor(block.header.slot) {
+        Ok(Some(existing))
+            if existing.block_hash == block_hash && existing.state_root == post_state_root =>
+        {
+            return;
+        }
+        Ok(Some(existing)) => {
+            warn!(
+                "⚠️  Replacing post-state commitment anchor at slot {} during {}: old_block={} old_root={} new_block={} new_root={}",
+                block.header.slot,
+                context,
+                existing.block_hash.to_hex(),
+                existing.state_root.to_hex(),
+                block_hash.to_hex(),
+                post_state_root.to_hex(),
+            );
+        }
+        Ok(None) => {}
+        Err(e) => {
+            warn!(
+                "⚠️  Failed to read post-state commitment anchor at slot {} during {}: {}",
+                block.header.slot, context, e
+            );
+        }
+    }
+
+    if let Err(e) =
+        state.put_post_state_commitment_anchor(block.header.slot, &block_hash, &post_state_root)
+    {
+        warn!(
+            "⚠️  Failed to store post-state commitment anchor at slot {} during {}: {}",
+            block.header.slot, context, e
+        );
+    } else {
+        debug!(
+            "🧾 Post-state commitment anchored slot {} block={} root={} ({})",
+            block.header.slot,
+            block_hash.to_hex(),
+            post_state_root.to_hex(),
+            context,
+        );
+    }
+}
+
+fn ensure_tip_post_state_commitment_anchor(state: &StateStore) -> Result<(), String> {
+    let tip = state.get_last_slot()?;
+    if tip == 0 {
+        return Ok(());
+    }
+
+    let Some(block) = state.get_block_by_slot(tip)? else {
+        return Err(format!(
+            "stored tip slot {} is missing its canonical block",
+            tip
+        ));
+    };
+
+    let block_hash = block.hash();
+    let post_state_root = state.compute_state_root_cached();
+    match state.get_post_state_commitment_anchor(tip)? {
+        Some(existing)
+            if existing.block_hash == block_hash && existing.state_root == post_state_root =>
+        {
+            Ok(())
+        }
+        Some(existing) => {
+            warn!(
+                "⚠️  Repairing tip post-state commitment anchor at slot {}: old_block={} old_root={} new_block={} new_root={}",
+                tip,
+                existing.block_hash.to_hex(),
+                existing.state_root.to_hex(),
+                block_hash.to_hex(),
+                post_state_root.to_hex(),
+            );
+            state.put_post_state_commitment_anchor(tip, &block_hash, &post_state_root)
+        }
+        None => {
+            info!(
+                "🧾 Startup: anchoring tip {} post-state root {} to block {}",
+                tip,
+                post_state_root.to_hex(),
+                block_hash.to_hex(),
+            );
+            state.put_post_state_commitment_anchor(tip, &block_hash, &post_state_root)
+        }
+    }
 }
 
 fn tip_post_block_effects_complete(state: &StateStore, block: &Block) -> Result<bool, String> {
@@ -8757,6 +8853,10 @@ async fn run_validator() {
     .await
     {
         error!("Failed startup post-block recovery: {}", e);
+        std::process::exit(1);
+    }
+    if let Err(e) = ensure_tip_post_state_commitment_anchor(&state) {
+        error!("Failed startup post-state commitment anchor repair: {}", e);
         std::process::exit(1);
     }
 
@@ -17564,6 +17664,7 @@ async fn execute_consensus_actions(
 
             // Rolling 24h window reset
             reset_24h_stats_if_expired(state, block.header.timestamp);
+            record_post_block_state_commitment_anchor(state, &block, "BFT commit");
 
             // Finality tracking
             {

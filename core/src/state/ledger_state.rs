@@ -3,6 +3,16 @@ use crate::codec::{append_legacy_bincode, deserialize_legacy_bincode, serialize_
 
 use super::*;
 
+const POST_STATE_COMMITMENT_ANCHOR_PREFIX: &[u8] = b"post_state_commitment_anchor:";
+
+fn post_state_commitment_anchor_key(slot: u64) -> Vec<u8> {
+    let mut key =
+        Vec::with_capacity(POST_STATE_COMMITMENT_ANCHOR_PREFIX.len() + std::mem::size_of::<u64>());
+    key.extend_from_slice(POST_STATE_COMMITMENT_ANCHOR_PREFIX);
+    key.extend_from_slice(&slot.to_be_bytes());
+    key
+}
+
 impl StateStore {
     /// Get the last processed slot
     pub fn get_last_slot(&self) -> Result<u64, String> {
@@ -369,6 +379,68 @@ impl StateStore {
             }
             Ok(None) => Ok(None),
             Err(e) => Err(format!("Database error: {}", e)),
+        }
+    }
+
+    /// Store the post-block state root for a canonical block after all
+    /// deterministic post-block hooks have run. This is a sidecar commitment:
+    /// it does not mutate consensus state and is not included in the state root.
+    pub fn put_post_state_commitment_anchor(
+        &self,
+        slot: u64,
+        block_hash: &Hash,
+        state_root: &Hash,
+    ) -> Result<(), String> {
+        let slot_cf = self
+            .db
+            .cf_handle(CF_SLOTS)
+            .ok_or_else(|| "Slots CF not found".to_string())?;
+
+        let mut value = Vec::with_capacity(64);
+        value.extend_from_slice(&block_hash.0);
+        value.extend_from_slice(&state_root.0);
+
+        self.db
+            .put_cf(&slot_cf, post_state_commitment_anchor_key(slot), value)
+            .map_err(|e| format!("Failed to store post-state commitment anchor: {}", e))
+    }
+
+    pub fn get_post_state_commitment_anchor(
+        &self,
+        slot: u64,
+    ) -> Result<Option<PostStateCommitmentAnchor>, String> {
+        let slot_cf = self
+            .db
+            .cf_handle(CF_SLOTS)
+            .ok_or_else(|| "Slots CF not found".to_string())?;
+
+        match self
+            .db
+            .get_cf(&slot_cf, post_state_commitment_anchor_key(slot))
+        {
+            Ok(Some(data)) => {
+                if data.len() != 64 {
+                    return Err(format!(
+                        "Invalid post-state commitment anchor length for slot {}: {}",
+                        slot,
+                        data.len()
+                    ));
+                }
+                let mut block_hash = [0u8; 32];
+                block_hash.copy_from_slice(&data[..32]);
+                let mut state_root = [0u8; 32];
+                state_root.copy_from_slice(&data[32..64]);
+                Ok(Some(PostStateCommitmentAnchor {
+                    slot,
+                    block_hash: Hash(block_hash),
+                    state_root: Hash(state_root),
+                }))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(format!(
+                "Failed to read post-state commitment anchor for slot {}: {}",
+                slot, e
+            )),
         }
     }
 

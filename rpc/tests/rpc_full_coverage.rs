@@ -462,6 +462,128 @@ fn app_with_account_proof_older_matching_anchor() -> (axum::Router, String) {
     (app, funded_b58)
 }
 
+fn app_with_post_state_account_proof_anchor() -> (axum::Router, String) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = StateStore::open(dir.path()).expect("state");
+    let _ = Box::leak(Box::new(dir));
+
+    let funded = Pubkey([0x44u8; 32]);
+    let funded_b58 = funded.to_base58();
+    let acct = Account::new(5, Pubkey([0u8; 32]));
+    state.put_account(&funded, &acct).expect("put funded");
+    let post_state_root = state.compute_state_root();
+
+    let validator = Keypair::from_seed(&[9u8; 32]);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let genesis = Block::genesis(Hash::default(), now.saturating_sub(1), vec![]);
+    state.put_block(&genesis).expect("put genesis");
+
+    let mut block = Block::new_with_timestamp(
+        1,
+        genesis.hash(),
+        Hash::hash(b"pre-post-hook-header-root"),
+        validator.pubkey().0,
+        vec![],
+        now,
+    );
+    block.sign(&validator);
+    let block_hash = block.hash();
+    state
+        .put_block(&block)
+        .expect("put post-state anchor block");
+    state
+        .put_post_state_commitment_anchor(1, &block_hash, &post_state_root)
+        .expect("put post-state anchor");
+    state.set_last_slot(1).expect("set last slot");
+    state
+        .set_last_confirmed_slot(1)
+        .expect("set confirmed slot");
+    state
+        .set_last_finalized_slot(1)
+        .expect("set finalized slot");
+
+    let app = build_rpc_router(
+        state,
+        None,
+        None,
+        None,
+        "lichen-test".to_string(),
+        "lichen-test".to_string(),
+        None,
+        Some(FinalityTracker::new(1, 1)),
+        None,
+        None,
+        None,
+    );
+
+    (app, funded_b58)
+}
+
+fn app_with_post_state_account_proof_anchor_and_lagging_tracker() -> (axum::Router, String) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = StateStore::open(dir.path()).expect("state");
+    let _ = Box::leak(Box::new(dir));
+
+    let funded = Pubkey([0x45u8; 32]);
+    let funded_b58 = funded.to_base58();
+    let acct = Account::new(5, Pubkey([0u8; 32]));
+    state.put_account(&funded, &acct).expect("put funded");
+    let post_state_root = state.compute_state_root();
+
+    let validator = Keypair::from_seed(&[10u8; 32]);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let genesis = Block::genesis(Hash::default(), now.saturating_sub(1), vec![]);
+    state.put_block(&genesis).expect("put genesis");
+
+    let mut block = Block::new_with_timestamp(
+        2,
+        genesis.hash(),
+        Hash::hash(b"lagging-tracker-header-root"),
+        validator.pubkey().0,
+        vec![],
+        now,
+    );
+    block.sign(&validator);
+    let block_hash = block.hash();
+    state
+        .put_block(&block)
+        .expect("put post-state anchor block");
+    state
+        .put_post_state_commitment_anchor(2, &block_hash, &post_state_root)
+        .expect("put post-state anchor");
+    state.set_last_slot(2).expect("set last slot");
+    state
+        .set_last_confirmed_slot(2)
+        .expect("set confirmed slot");
+    state
+        .set_last_finalized_slot(2)
+        .expect("set finalized slot");
+
+    let app = build_rpc_router(
+        state,
+        None,
+        None,
+        None,
+        "lichen-test".to_string(),
+        "lichen-test".to_string(),
+        None,
+        Some(FinalityTracker::new(1, 1)),
+        None,
+        None,
+        None,
+    );
+
+    (app, funded_b58)
+}
+
 /// Helper: assert result or error (valid JSON-RPC response)
 fn assert_valid_rpc(resp: &serde_json::Value) {
     assert_eq!(resp["jsonrpc"], "2.0", "must be jsonrpc 2.0");
@@ -564,6 +686,49 @@ async fn test_native_get_account_proof_uses_recent_matching_anchor() {
     assert_eq!(result["inclusion_proof"]["proof_type"], "ordered_v0");
     assert_eq!(result["anchor"]["commitment"], "finalized");
     assert_eq!(result["anchor"]["slot"], 1);
+}
+
+#[tokio::test]
+async fn test_native_get_account_proof_uses_post_state_anchor() {
+    let (app, addr) = app_with_post_state_account_proof_anchor();
+    let resp = rpc_p(
+        &app,
+        "/",
+        "getAccountProof",
+        json!([addr, {"commitment": "finalized"}]),
+    )
+    .await
+    .unwrap();
+    assert_valid_rpc(&resp);
+
+    let result = &resp["result"];
+    assert_eq!(result["pubkey"], addr);
+    assert_eq!(result["inclusion_proof"]["proof_type"], "ordered_v0");
+    assert_eq!(result["anchor"]["commitment"], "finalized");
+    assert_eq!(result["anchor"]["slot"], 1);
+    assert_eq!(result["anchor"]["root_source"], "post_state_v1");
+    assert!(result["anchor"]["state_root"].as_str().is_some());
+    assert!(result["anchor"]["header_state_root"].as_str().is_some());
+}
+
+#[tokio::test]
+async fn test_native_get_account_proof_uses_durable_finality_when_tracker_lags() {
+    let (app, addr) = app_with_post_state_account_proof_anchor_and_lagging_tracker();
+    let resp = rpc_p(
+        &app,
+        "/",
+        "getAccountProof",
+        json!([addr, {"commitment": "finalized"}]),
+    )
+    .await
+    .unwrap();
+    assert_valid_rpc(&resp);
+
+    let result = &resp["result"];
+    assert_eq!(result["pubkey"], addr);
+    assert_eq!(result["anchor"]["commitment"], "finalized");
+    assert_eq!(result["anchor"]["slot"], 2);
+    assert_eq!(result["anchor"]["root_source"], "post_state_v1");
 }
 
 #[tokio::test]
