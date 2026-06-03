@@ -5,6 +5,12 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.85] - 2026-06-03
+
+### Fixed
+- Recomputes the post-block state root when writing `post_state_v1` account-proof anchors, avoiding stale composite-root cache reuse on sparse-active validators.
+- Keeps finalized account-proof anchoring stable when durable finalized metadata is ahead of the in-memory finality cursor during block commit.
+
 ## [0.5.84] - 2026-06-03
 
 ### Added

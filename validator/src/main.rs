@@ -4823,7 +4823,7 @@ fn record_post_block_state_commitment_anchor(state: &StateStore, block: &Block, 
     }
 
     let block_hash = block.hash();
-    let post_state_root = state.compute_state_root_cached();
+    let post_state_root = state.compute_state_root();
     match state.get_post_state_commitment_anchor(block.header.slot) {
         Ok(Some(existing))
             if existing.block_hash == block_hash && existing.state_root == post_state_root =>
@@ -4882,7 +4882,7 @@ fn ensure_tip_post_state_commitment_anchor(state: &StateStore) -> Result<(), Str
     };
 
     let block_hash = block.hash();
-    let post_state_root = state.compute_state_root_cached();
+    let post_state_root = state.compute_state_root();
     match state.get_post_state_commitment_anchor(tip)? {
         Some(existing)
             if existing.block_hash == block_hash && existing.state_root == post_state_root =>
