@@ -4912,6 +4912,24 @@ fn ensure_tip_post_state_commitment_anchor(state: &StateStore) -> Result<(), Str
     }
 }
 
+fn repair_active_sparse_state_commitment_before_tip_anchor(
+    state: &StateStore,
+) -> Result<(), String> {
+    if !state.uses_sparse_state_commitment() {
+        return Ok(());
+    }
+
+    let report = state.rebuild_sparse_state_commitment(false)?;
+    info!(
+        "🧾 Startup: repaired active sparse state commitment before tip anchoring: slot={} root={} accounts={} contracts={}",
+        report.last_slot,
+        report.current_state_root.to_hex(),
+        report.accounts_leaf_count,
+        report.contract_leaf_count,
+    );
+    Ok(())
+}
+
 fn tip_post_block_effects_complete(state: &StateStore, block: &Block) -> Result<bool, String> {
     let slot = block.header.slot;
     if slot == 0 || block.header.validator == [0u8; 32] {
@@ -8853,6 +8871,10 @@ async fn run_validator() {
     .await
     {
         error!("Failed startup post-block recovery: {}", e);
+        std::process::exit(1);
+    }
+    if let Err(e) = repair_active_sparse_state_commitment_before_tip_anchor(&state) {
+        error!("Failed startup sparse state commitment repair: {}", e);
         std::process::exit(1);
     }
     if let Err(e) = ensure_tip_post_state_commitment_anchor(&state) {

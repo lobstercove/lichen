@@ -5,6 +5,13 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.87] - 2026-06-03
+
+### Fixed
+- Repairs active sparse state-commitment metadata during validator startup before writing the tip `post_state_v1` sidecar, preventing stale sparse roots from being anchored after an upgrade or restart.
+- Lets `getAccountProof` repair a missing current-tip `post_state_v1` sidecar under the canonical apply barrier only when the proof root equals the current DB root and the requested commitment slot is exactly the local tip.
+- Makes sparse state-commitment verification reporting compute the displayed current root from verified full-scan roots without using the mutating cold-start rebuild path.
+
 ## [0.5.86] - 2026-06-03
 
 ### Fixed

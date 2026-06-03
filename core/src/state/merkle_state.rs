@@ -1146,12 +1146,20 @@ impl StateStore {
             .ok()
             .flatten()
             .map(|block| block.header.state_root);
+        let include_restrictions = self.get_state_root_schema().unwrap_or(false);
+        let current_state_root = self.compose_state_root(
+            accounts_root,
+            contract_root,
+            self.compute_stake_pool_hash(),
+            self.compute_mossstake_pool_hash(),
+            include_restrictions,
+        );
         Ok(SparseStateCommitmentReport {
             before_schema,
             after_schema: before_schema,
             active: self.uses_sparse_state_commitment(),
             last_slot,
-            current_state_root: self.compute_state_root_cold_start(),
+            current_state_root,
             latest_block_state_root,
             accounts_root,
             contract_root,

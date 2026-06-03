@@ -4295,6 +4295,89 @@ fn anchored_block_context_for_state_root(
     })
 }
 
+fn repair_tip_post_state_anchor_for_state_root(
+    state: &RpcState,
+    commitment: &str,
+    state_root: &Hash,
+) -> Result<Option<(u64, lichen_core::Block, serde_json::Value)>, RpcError> {
+    let commitment_slot = resolve_commitment_slot(state, commitment)?;
+    let last_slot = state.state.get_last_slot().map_err(|e| RpcError {
+        code: -32000,
+        message: format!("Database error: {}", e),
+    })?;
+    if commitment_slot == 0 || commitment_slot != last_slot {
+        return Ok(None);
+    }
+
+    let current_root = state.state.compute_state_root();
+    if current_root != *state_root {
+        return Ok(None);
+    }
+
+    let block = state
+        .state
+        .get_block_by_slot(commitment_slot)
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Database error: {}", e),
+        })?
+        .ok_or_else(|| RpcError {
+            code: -32001,
+            message: format!(
+                "Account proof state root is current, but canonical tip block {} is missing",
+                commitment_slot
+            ),
+        })?;
+    let block_hash = block.hash();
+
+    if let Some(existing) = state
+        .state
+        .get_post_state_commitment_anchor(commitment_slot)
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Database error: {}", e),
+        })?
+    {
+        if existing.block_hash != block_hash {
+            warn!(
+                "Refusing account-proof post-state anchor repair at slot {}: existing block={} canonical block={}",
+                commitment_slot,
+                existing.block_hash.to_hex(),
+                block_hash.to_hex(),
+            );
+            return Ok(None);
+        }
+        if existing.state_root == *state_root {
+            return Ok(Some(build_post_state_anchor_context(
+                commitment,
+                block,
+                existing.state_root,
+            )));
+        }
+    }
+
+    warn!(
+        "Repairing missing current-tip account-proof post-state anchor: slot={} commitment={} block={} root={}",
+        commitment_slot,
+        commitment,
+        block_hash.to_hex(),
+        state_root.to_hex(),
+    );
+    state
+        .state
+        .put_post_state_commitment_anchor(commitment_slot, &block_hash, state_root)
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Failed to store post-state commitment anchor: {}", e),
+        })?;
+
+    Ok(Some(build_post_state_anchor_context(
+        commitment,
+        block,
+        *state_root,
+    )))
+}
+
 /// Collect unique account keys from a transaction in Solana-compatible order.
 fn collect_account_keys(tx: &Transaction) -> Vec<Pubkey> {
     let mut account_keys: Vec<Pubkey> = Vec::new();
@@ -6561,7 +6644,21 @@ async fn handle_get_account_proof(
         .unwrap_or("finalized");
 
     let (_anchor_slot, _anchor_block, anchor_context) =
-        anchored_block_context_for_state_root(state, requested_commitment, &proof.state_root)?;
+        match anchored_block_context_for_state_root(state, requested_commitment, &proof.state_root)
+        {
+            Ok(anchor) => anchor,
+            Err(err) if err.code == -32001 => {
+                match repair_tip_post_state_anchor_for_state_root(
+                    state,
+                    requested_commitment,
+                    &proof.state_root,
+                )? {
+                    Some(anchor) => anchor,
+                    None => return Err(err),
+                }
+            }
+            Err(err) => return Err(err),
+        };
 
     let inclusion_proof = if let Some(sparse_proof) = proof.sparse_proof.as_ref() {
         let steps: Vec<serde_json::Value> = sparse_proof
@@ -20601,6 +20698,56 @@ mod tests {
         let result = proof_future.await.unwrap();
         assert_eq!(result["anchor"]["root_source"], "post_state_v1");
         assert_eq!(result["anchor"]["slot"], 1);
+    }
+
+    #[tokio::test]
+    async fn get_account_proof_repairs_missing_current_tip_post_state_anchor() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+
+        let account = Pubkey([0x45; 32]);
+        let account_b58 = account.to_base58();
+        state
+            .put_account(&account, &lichen_core::Account::new(7, Pubkey([0; 32])))
+            .unwrap();
+        let post_state_root = state.compute_state_root();
+
+        let validator = LichenKeypair::from_seed(&[10; 32]);
+        let now = current_unix_secs();
+        let genesis = Block::genesis(Hash::default(), now.saturating_sub(1), vec![]);
+        state.put_block(&genesis).unwrap();
+        let mut block = Block::new_with_timestamp(
+            1,
+            genesis.hash(),
+            Hash::hash(b"missing-post-state-anchor-header-root"),
+            validator.pubkey().0,
+            vec![],
+            now,
+        );
+        block.sign(&validator);
+        let block_hash = block.hash();
+        state.put_block(&block).unwrap();
+        state.set_last_slot(1).unwrap();
+        state.set_last_confirmed_slot(1).unwrap();
+        state.set_last_finalized_slot(1).unwrap();
+
+        let rpc_state = make_test_rpc_state(state.clone());
+        let result = handle_get_account_proof(
+            &rpc_state,
+            Some(serde_json::json!([
+                account_b58,
+                {"commitment": "finalized"}
+            ])),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result["anchor"]["root_source"], "post_state_v1");
+        assert_eq!(result["anchor"]["slot"], 1);
+        assert_eq!(result["anchor"]["state_root"], post_state_root.to_hex());
+        let repaired = state.get_post_state_commitment_anchor(1).unwrap().unwrap();
+        assert_eq!(repaired.block_hash, block_hash);
+        assert_eq!(repaired.state_root, post_state_root);
     }
 
     fn current_unix_secs() -> u64 {
