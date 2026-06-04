@@ -2,6 +2,8 @@
 
 Official Rust SDK for building on Lichen blockchain.
 
+Current source crate version: `0.1.5`.
+
 ## Features
 
 - ✅ **Production-Ready** - Type-safe, async RPC client

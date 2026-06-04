@@ -476,7 +476,10 @@ test('E-10.3 identity-service pins LichenID resolution to trusted metadata RPC',
 });
 
 test('E-10.4 popup bridge flow uses authenticated bridge-service helpers', () => {
-  assert.ok(popupSrc.includes('hasBridgeAccessAuth(wallet)'), 'popup bridge flow should check for existing bridge auth');
+  assert.ok(
+    popupSrc.includes('hasBridgeAccessAuth(wallet, { chain, asset })'),
+    'popup bridge flow should check for route-scoped existing bridge auth'
+  );
   assert.ok(popupSrc.includes('requestBridgeDepositAddress({'), 'popup bridge flow should request deposits through bridge-service');
   assert.ok(popupSrc.includes('getBridgeDepositStatus({'), 'popup bridge status polling should use bridge-service');
   assert.ok(popupSrc.includes('Wallet password (for bridge authorization):'), 'popup bridge flow should prompt for wallet password before bridge auth');

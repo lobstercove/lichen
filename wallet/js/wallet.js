@@ -854,7 +854,7 @@ function renderWalletBalanceBreakdown() {
 
     const parts = [`<i class="fas fa-wallet" style="opacity:0.5;"></i> Spendable: <strong>${fmtToken(snapshot.spendable, 4)}</strong>`];
     if (snapshot.staked > 0) parts.push(`<i class="fas fa-lock" style="opacity:0.5;"></i> Staked: <strong>${fmtToken(snapshot.staked, 4)}</strong>`);
-    if (snapshot.mossStaked > 0) parts.push(`<i class="fas fa-coins" style="opacity:0.5;"></i> Liquid Staking: <strong>${fmtToken(snapshot.mossStaked, 4)}</strong>`);
+    if (snapshot.mossStaked > 0) parts.push(`<i class="fas fa-coins" style="opacity:0.5;"></i> Liquid Staking Value: <strong>${fmtToken(snapshot.mossStaked, 4)}</strong>`);
     if (shielded > 0) parts.push(`<i class="fas fa-shield-alt" style="opacity:0.5;"></i> Shielded: <strong>${fmtToken(shielded, 4)}</strong>`);
     if (snapshot.locked > 0) parts.push(`<i class="fas fa-lock" style="opacity:0.5;"></i> Locked: <strong>${fmtToken(snapshot.locked, 4)}</strong>`);
 
@@ -2908,7 +2908,7 @@ async function refreshBalance(options = {}) {
             spendable: parseFloat(balance.spendable_licn) || 0,
             staked: parseFloat(balance.staked_licn) || 0,
             locked: parseFloat(balance.locked_licn) || 0,
-            mossStaked: parseFloat(balance.moss_staked_licn) || 0,
+            mossStaked: parseFloat(balance.moss_value_licn ?? balance.moss_staked_licn) || 0,
         };
         renderWalletBalanceBreakdown();
     } catch (error) {
@@ -3390,7 +3390,7 @@ async function loadStaking(options = {}) {
                         <div class="tab-banner-icon"><i class="fas fa-water"></i></div>
                         <div class="tab-banner-text">
                             <h3>Liquid Staking</h3>
-                            <p>Stake LICN, receive stLICN. Earn rewards while keeping liquidity. Choose a lock tier for boosted rewards.</p>
+                            <p>Stake LICN, receive stLICN. Rewards auto-compound into the redeemable value. Choose a lock tier for boosted rewards.</p>
                         </div>
                     </div>
 
@@ -3400,11 +3400,11 @@ async function loadStaking(options = {}) {
                             <div class="staking-stat-value" id="userStLicn">0</div>
                         </div>
                         <div class="staking-stat-card">
-                            <div class="staking-stat-label">Current Value</div>
+                            <div class="staking-stat-label">Redeemable Value</div>
                             <div class="staking-stat-value green" id="userStakeValue">0 LICN</div>
                         </div>
                         <div class="staking-stat-card">
-                            <div class="staking-stat-label">Rewards Earned</div>
+                            <div class="staking-stat-label">Est. Exchange Gain</div>
                             <div class="staking-stat-value amber" id="userRewardsEarned">0 LICN</div>
                         </div>
                         <div class="staking-stat-card">
@@ -3430,7 +3430,7 @@ async function loadStaking(options = {}) {
 
                     <div class="staking-info-box">
                         <i class="fas fa-info-circle"></i>
-                        <strong>How it works:</strong> Stake LICN to receive stLICN (liquid receipt). Rewards auto-compound — your stLICN value grows over time.
+                        <strong>How it works:</strong> Stake LICN to receive stLICN (liquid receipt). Rewards auto-compound into the redeemable value — they are not a separate claimable balance.
                         <strong>Flexible tier</strong> has a 7-day cooldown to unstake. <strong>Locked tiers</strong> earn boosted rewards but funds are locked for the chosen duration.
                         After a lock expires, you can unstake with the standard 7-day cooldown.
                     </div>
@@ -3617,7 +3617,11 @@ async function loadMossStakePosition(address, options = {}) {
 
         // Rewards
         const rewardsEl = document.getElementById('userRewardsEarned');
-        if (rewardsEl) rewardsEl.textContent = `${fmtToken(position.rewards_earned / SPORES_PER_LICN)} LICN`;
+        if (rewardsEl) {
+            const exchangeGain = Math.max(0, Number(position.current_value_licn || 0) - Number(position.licn_deposited || 0));
+            rewardsEl.textContent = `${fmtToken(exchangeGain / SPORES_PER_LICN)} LICN`;
+            rewardsEl.title = 'Estimated gain from the current stLICN exchange rate. This is already included in Redeemable Value.';
+        }
 
         // Tier info
         const tierEl = document.getElementById('userLockTier');
@@ -4184,14 +4188,26 @@ function buildBridgeAccessMessageV2(userId, chain, asset, issuedAt, expiresAt, n
     return `${BRIDGE_AUTH_DOMAIN_V2}\naction=${BRIDGE_AUTH_CREATE_ACTION}\nuser_id=${userId}\nchain=${canonicalChain}\nasset=${normalizedAsset}\nroute=${canonicalChain}:${normalizedAsset}\nissued_at=${issuedAt}\nexpires_at=${expiresAt}\nnonce=${nonce}\n`;
 }
 
-function hasValidBridgeAuth(wallet) {
-    if (!wallet || !activeBridgeAuth) return false;
-    const now = Math.floor(Date.now() / 1000);
-    return activeBridgeAuth.user_id === wallet.address && activeBridgeAuth.expires_at > now + 30;
+function bridgeAuthMatchesRoute(auth, chain = '', asset = '') {
+    const canonicalChain = String(chain || '').trim().toLowerCase();
+    const normalizedAsset = String(asset || '').trim().toLowerCase();
+    if (!canonicalChain && !normalizedAsset) return true;
+    return auth?.version === 2
+        && auth.chain === canonicalChain
+        && auth.asset === normalizedAsset
+        && auth.route === `${canonicalChain}:${normalizedAsset}`;
 }
 
-function currentBridgeAuthPayload(wallet) {
-    if (!hasValidBridgeAuth(wallet)) return null;
+function hasValidBridgeAuth(wallet, { chain = '', asset = '' } = {}) {
+    if (!wallet || !activeBridgeAuth) return false;
+    const now = Math.floor(Date.now() / 1000);
+    return activeBridgeAuth.user_id === wallet.address
+        && activeBridgeAuth.expires_at > now + 30
+        && bridgeAuthMatchesRoute(activeBridgeAuth, chain, asset);
+}
+
+function currentBridgeAuthPayload(wallet, { chain = '', asset = '' } = {}) {
+    if (!hasValidBridgeAuth(wallet, { chain, asset })) return null;
     const payload = {
         issued_at: activeBridgeAuth.issued_at,
         expires_at: activeBridgeAuth.expires_at,
@@ -4206,7 +4222,7 @@ function currentBridgeAuthPayload(wallet) {
 }
 
 async function ensureBridgeAccessAuth(wallet, { forceRefresh = false, chain = '', asset = '' } = {}) {
-    if (!forceRefresh && hasValidBridgeAuth(wallet)) return activeBridgeAuth;
+    if (!forceRefresh && hasValidBridgeAuth(wallet, { chain, asset })) return activeBridgeAuth;
 
     const values = await showPasswordModal({
         title: forceRefresh ? 'Authorize New Deposit Request' : 'Authorize Bridge Access',
@@ -4346,6 +4362,68 @@ async function assertBridgeRouteOpen(chain, asset, chainName) {
     return status;
 }
 
+function renderBridgeDepositAddress({ container, address, depositId, asset, chainName }) {
+    if (!container) return;
+    const safeAddress = escapeHtml(address);
+    const safeDepositId = escapeHtml(depositId);
+    const safeAsset = escapeHtml(asset.toUpperCase());
+    const safeChainName = escapeHtml(chainName);
+
+    container.style.display = 'block';
+    container.innerHTML = `
+        <p style="margin-bottom: 0.75rem; text-align:center;">Send <strong>${safeAsset}</strong> on ${safeChainName}</p>
+        <div class="qr-code bridge-deposit-qr" id="bridgeDepositQrCode"></div>
+        <div style="margin-bottom: 1rem;">
+            <label style="display: block; font-size: 0.85rem; color: var(--text-muted); margin-bottom: 0.5rem; font-weight: 600;">
+                <i class="fas fa-link"></i> ${safeChainName} ${safeAsset} Deposit Address
+            </label>
+            <div class="address-display">
+                <input type="text" id="bridgeDepositAddressInput" class="form-input" readonly value="${safeAddress}" style="font-family: 'JetBrains Mono', monospace; font-size: 0.82rem;">
+                <button class="btn-circle" id="bridgeCopyDepositAddress" title="Copy deposit address">
+                    <i class="fas fa-copy"></i>
+                </button>
+            </div>
+        </div>
+        <p id="bridgeCopyHint" style="text-align: center; font-size: 0.75rem; color: var(--text-muted); margin-top: -0.35rem;">Copy or scan this address</p>
+        <div id="depositStatus" style="margin-top: 1rem; padding: 0.6rem 0.8rem; background: rgba(255,255,255,0.03); border-radius: 8px; font-size: 0.82rem;">
+            <i class="fas fa-clock" style="color: var(--accent);"></i>
+            <span>Waiting for deposit...</span>
+        </div>
+        <p style="margin-top: 0.75rem; font-size: 0.78rem; color: var(--text-muted);">
+            Only send ${safeAsset} on ${safeChainName}. This address is reserved for 24 hours while unfunded. If it expires, request a new address.<br>
+            Deposit ID: <code style="font-size: 0.72rem;">${safeDepositId}</code>
+        </p>
+    `;
+
+    const qr = document.getElementById('bridgeDepositQrCode');
+    if (qr) {
+        try {
+            new QRCode(qr, {
+                text: address,
+                width: 200,
+                height: 200,
+                colorDark: '#1a1a2e',
+                colorLight: '#ffffff',
+                correctLevel: QRCode.CorrectLevel.H
+            });
+        } catch {
+            qr.innerHTML = `<div style="width: 200px; height: 200px; background: white; border-radius: 8px; display: flex; align-items: center; justify-content: center; color: #1a1a2e; padding: 1rem; text-align: center;"><i class="fas fa-qrcode" style="font-size: 4rem;"></i></div>`;
+        }
+    }
+
+    const copy = () => {
+        navigator.clipboard.writeText(address).then(() => {
+            const hint = document.getElementById('bridgeCopyHint');
+            if (hint) {
+                hint.textContent = 'Copied!';
+                setTimeout(() => { hint.textContent = 'Copy or scan this address'; }, 1500);
+            }
+        });
+    };
+    document.getElementById('bridgeCopyDepositAddress')?.addEventListener('click', copy);
+    document.getElementById('bridgeDepositAddressInput')?.addEventListener('click', copy);
+}
+
 async function requestDepositAddress(chain, asset, chainName, icon) {
     const wallet = getActiveWallet();
     if (!wallet) return;
@@ -4367,7 +4445,7 @@ async function requestDepositAddress(chain, asset, chainName, icon) {
     let bridgeAuth;
     try {
         bridgeAuth = await ensureBridgeAccessAuth(wallet, {
-            forceRefresh: true,
+            forceRefresh: false,
             chain,
             asset
         });
@@ -4392,7 +4470,7 @@ async function requestDepositAddress(chain, asset, chainName, icon) {
             user_id: wallet.address,
             chain: chain,
             asset: asset,
-            auth: currentBridgeAuthPayload(wallet) || bridgeAuth
+            auth: currentBridgeAuthPayload(wallet, { chain, asset }) || bridgeAuth
         }]);
 
         const depositAddress = data.address;
@@ -4402,46 +4480,11 @@ async function requestDepositAddress(chain, asset, chainName, icon) {
             throw new Error('Invalid response from bridge service');
         }
 
-        // Escape server-provided values
-        const safeAddress = escapeHtml(depositAddress);
-        const safeDepositId = escapeHtml(depositId);
         const safeAsset = escapeHtml(asset.toUpperCase());
-        const safeChainName = escapeHtml(chainName);
 
         // Hide loading, show deposit result in the SAME modal
         if (loadingState) loadingState.style.display = 'none';
-        if (depositResult) {
-            depositResult.style.display = 'block';
-            depositResult.innerHTML = `
-                <p style="margin-bottom: 0.75rem;">Send <strong>${safeAsset}</strong> to this ${safeChainName} address:</p>
-                <div id="depositAddrBox" style="padding: 0.75rem; background: rgba(255,255,255,0.06); border: 1px solid var(--border); border-radius: 10px; font-family: monospace; font-size: 0.78rem; word-break: break-all; cursor: pointer;">
-                    ${safeAddress}
-                </div>
-                <p id="copyHint" style="text-align: center; font-size: 0.75rem; color: var(--text-muted); margin-top: 0.35rem;">Click to copy</p>
-                <div id="depositStatus" style="margin-top: 1rem; padding: 0.6rem 0.8rem; background: rgba(255,255,255,0.03); border-radius: 8px; font-size: 0.82rem;">
-                    <i class="fas fa-clock" style="color: var(--accent);"></i> 
-                    <span>Waiting for deposit...</span>
-                </div>
-                <p style="margin-top: 0.75rem; font-size: 0.78rem; color: var(--text-muted);">
-                    Only send ${safeAsset} on ${safeChainName}. This address is reserved for 24 hours while unfunded. If it expires, request a new address.<br>
-                    Deposit ID: <code style="font-size: 0.72rem;">${safeDepositId}</code>
-                </p>
-            `;
-
-            // Attach copy handler
-            const addrBox = document.getElementById('depositAddrBox');
-            if (addrBox) {
-                addrBox.addEventListener('click', () => {
-                    navigator.clipboard.writeText(depositAddress).then(() => {
-                        const hint = document.getElementById('copyHint');
-                        if (hint) {
-                            hint.textContent = 'Copied!';
-                            setTimeout(() => { hint.textContent = 'Click to copy'; }, 1500);
-                        }
-                    });
-                });
-            }
-        }
+        renderBridgeDepositAddress({ container: depositResult, address: depositAddress, depositId, asset, chainName });
 
         // Start polling deposit status via RPC proxy
         startDepositPolling(depositId);

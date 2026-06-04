@@ -640,6 +640,77 @@
         return /admin|owner|pause|unpause|upgrade|mint|burn|approve|treasury|governance|set_/i.test(String(text || ''));
     }
 
+    function readByte(data, offset) {
+        const bytes = Array.isArray(data) || data instanceof Uint8Array ? data : [];
+        return bytes.length > offset ? Number(bytes[offset] || 0) : null;
+    }
+
+    function formatDexScaled(value, symbol) {
+        return typeof value === 'bigint'
+            ? formatBaseUnits(value, 9, symbol)
+            : '—';
+    }
+
+    function decodeKnownContractArgs(callName, argsBytes) {
+        const args = Array.isArray(argsBytes) || argsBytes instanceof Uint8Array ? argsBytes : [];
+        const opcode = readByte(args, 0);
+
+        if (callName === 'approve' && args.length >= 72) {
+            return {
+                callName: 'Token spend approval',
+                destination: pubkeyLabel(args.slice(32, 64)),
+                amount: formatDexScaled(readU64Le(args, 64), 'units'),
+                token: 'Contract token approval',
+                tokenDecimals: 'contract registry / token-specific',
+                warnings: ['Approves the spender shown above up to the displayed amount.']
+            };
+        }
+
+        if (callName !== 'call' || opcode === null) return null;
+
+        if (opcode === 2 && args.length === 75) {
+            const side = readByte(args, 41) === 0 ? 'buy' : 'sell';
+            const typeByte = readByte(args, 42) || 0;
+            const orderType = ['limit', 'market', 'stop-limit', 'post-only'][typeByte & 0x7f] || 'order';
+            const reduceOnly = (typeByte & 0x80) !== 0;
+            return {
+                callName: `DEX place ${orderType} ${side} order${reduceOnly ? ' (reduce-only)' : ''}`,
+                destination: `Pair #${String(readU64Le(args, 33) ?? '—')}`,
+                amount: `${formatDexScaled(readU64Le(args, 51), 'base')} @ ${formatDexScaled(readU64Le(args, 43), 'quote')}`,
+                token: 'DEX order',
+                tokenDecimals: '9',
+                warnings: []
+            };
+        }
+
+        const labels = {
+            3: args.length === 41 ? 'DEX cancel order' : 'DEX AMM add liquidity',
+            4: args.length === 57 ? 'DEX AMM remove liquidity' : 'DEX governance execute proposal',
+            5: args.length === 41 ? 'DEX AMM collect fees' : 'DEX margin remove collateral',
+            6: 'DEX margin liquidate position',
+            16: 'DEX modify order',
+            17: 'DEX cancel all orders',
+            24: 'DEX margin set stop-loss / take-profit',
+            25: 'DEX margin partial close',
+            27: 'DEX margin close limit',
+            28: 'DEX margin partial close limit',
+            32: 'DEX margin open limit position'
+        };
+
+        if (labels[opcode]) {
+            return {
+                callName: labels[opcode],
+                destination: args.length >= 41 ? `ID #${String(readU64Le(args, 33) ?? '—')}` : '—',
+                amount: '—',
+                token: 'DEX action',
+                tokenDecimals: '9',
+                warnings: []
+            };
+        }
+
+        return null;
+    }
+
     function decodeContractCallIntent(data) {
         const payloadText = bytesToUtf8(data);
         const payload = parseJsonText(payloadText);
@@ -663,6 +734,9 @@
         const warnings = [];
 
         if (Array.isArray(call.args)) {
+            const known = decodeKnownContractArgs(callName, call.args);
+            if (known) return known;
+
             const argsText = bytesToUtf8(call.args);
             const args = parseJsonText(argsText);
             if (args && typeof args === 'object') {

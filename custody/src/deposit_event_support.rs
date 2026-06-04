@@ -43,6 +43,9 @@ pub(crate) fn persist_deposit_observations(
     let status_cf = db
         .cf_handle(CF_STATUS_INDEX)
         .ok_or_else(|| "missing status_index cf".to_string())?;
+    let indexes_cf = db
+        .cf_handle(CF_INDEXES)
+        .ok_or_else(|| "missing indexes cf".to_string())?;
     let sweep_cf = db
         .cf_handle(CF_SWEEP_JOBS)
         .ok_or_else(|| "missing sweep_jobs cf".to_string())?;
@@ -103,6 +106,9 @@ pub(crate) fn persist_deposit_observations(
             status_index_key("deposits", final_status, &deposit.deposit_id).as_bytes(),
             b"",
         );
+        if !is_active_deposit_status(final_status) {
+            delete_active_deposit_route_index_from_batch(&mut batch, indexes_cf, &deposit);
+        }
 
         if let Some(job) = &observation.sweep_job {
             let job_bytes =
@@ -152,6 +158,11 @@ pub(super) fn update_deposit_status(db: &DB, deposit_id: &str, status: &str) -> 
     store_deposit(db, &record)?;
     if let Err(error) = update_status_index(db, "deposits", &old_status, status, deposit_id) {
         tracing::error!("Failed update_status_index: {error}");
+    }
+    if !is_active_deposit_status(status) {
+        if let Err(error) = clear_active_deposit_route_index(db, &record) {
+            tracing::error!("Failed clear_active_deposit_route_index: {error}");
+        }
     }
     Ok(())
 }

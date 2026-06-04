@@ -841,6 +841,25 @@ test('serializeMessageBincode validates blockhash format', () => {
         'wallet.js should reuse shared/utils serializer instead of a local duplicate');
 });
 
+test('serializeMessageBincode includes optional compute budget fields in signed bytes', () => {
+    const fnMatch = walletSharedUtilsSrc.match(/function serializeMessageBincode\(message\)[\s\S]*?^}/m);
+    assert(fnMatch, 'serializeMessageBincode must exist in shared/utils.js');
+    const serializeMessageBincode = (new Function(fnMatch[0] + '\nreturn serializeMessageBincode;'))();
+
+    const blockhash = 'b'.repeat(64);
+    const withoutBudget = serializeMessageBincode({ instructions: [], blockhash });
+    const withBudget = serializeMessageBincode({ instructions: [], blockhash, compute_budget: 1400000 });
+
+    assert.strictEqual(withoutBudget.length, 42, 'empty message without compute budget should include two None tags');
+    assert.strictEqual(withoutBudget[40], 0, 'compute_budget None tag should be 0');
+    assert.strictEqual(withoutBudget[41], 0, 'compute_unit_price None tag should be 0');
+    assert.strictEqual(withBudget.length, 50, 'Some(compute_budget) should add an 8-byte u64 payload');
+    assert.strictEqual(withBudget[40], 1, 'compute_budget Some tag should be 1');
+    const view = new DataView(withBudget.buffer, withBudget.byteOffset + 41, 8);
+    assert.strictEqual(Number(view.getBigUint64(0, true)), 1400000, 'compute_budget u64 must be serialized little-endian');
+    assert.strictEqual(withBudget[49], 0, 'compute_unit_price should remain None');
+});
+
 console.log('\nW-13: Shielded RPC method wiring');
 
 test('shielded.js prefers isNullifierSpent over legacy checkNullifier', () => {

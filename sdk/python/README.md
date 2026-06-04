@@ -2,6 +2,8 @@
 
 Official Python SDK for interacting with Lichen blockchain.
 
+Current source package version: `1.0.0`.
+
 ## Installation
 
 ```bash
@@ -38,7 +40,7 @@ asyncio.run(main())
 
 ## Features
 
-- ✅ Complete async RPC client (24 endpoints)
+- ✅ Core async RPC client for chain, account, transaction, network, and restriction reads
 - ✅ WebSocket subscriptions (real-time events)
 - ✅ Native PQ keypairs and self-contained signatures
 - ✅ Transaction builder

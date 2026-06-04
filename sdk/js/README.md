@@ -2,6 +2,8 @@
 
 Official SDK for interacting with Lichen blockchain.
 
+Current source package version: `1.0.5`.
+
 ## Installation
 
 ```bash
@@ -37,7 +39,7 @@ See the [JavaScript SDK reference](https://developers.lichen.network/sdk-js.html
 
 ## Features
 
-- ✅ Complete RPC client (24 endpoints)
+- ✅ Core RPC client for chain, account, transaction, network, restriction, and Neo route reads
 - ✅ WebSocket subscriptions (real-time events)
 - ✅ Native PQ keypairs and self-contained signatures
 - ✅ Transaction builder

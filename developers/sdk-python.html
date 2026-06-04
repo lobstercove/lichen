@@ -120,15 +120,20 @@
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">bash</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
-                    <pre><code>pip install ./sdk/python</code></pre>
+                    <pre><code># Published package
+pip install lichen-sdk
+
+# From a repo checkout
+pip install ./sdk/python</code></pre>
                 </div>
                 <div class="callout callout-info">
                     <p>Requires Python 3.9+. Dependencies: <code>httpx</code>, <code>websockets</code>,
                         <code>base58</code>, <code>cryptography</code>, <code>dilithium-py</code>.
                     </p>
-                    <p>The import package is <code>lichen</code>. The examples below use public testnet endpoints; swap
-                        to <code>https://rpc.lichen.network</code> and <code>wss://rpc.lichen.network/ws</code> only
-                        when targeting mainnet.</p>
+                    <p>The import package is <code>lichen</code>; the current source package version is
+                        <code>1.0.0</code>. The examples below use public testnet endpoints; swap to
+                        <code>https://rpc.lichen.network</code> and <code>wss://rpc.lichen.network/ws</code> only when
+                        targeting mainnet.</p>
                 </div>
             </section>
 

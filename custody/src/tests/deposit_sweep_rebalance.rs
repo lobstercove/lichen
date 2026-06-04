@@ -193,6 +193,106 @@ async fn test_create_deposit_reuses_existing_deposit_for_identical_v2_bridge_aut
 }
 
 #[tokio::test]
+async fn test_create_deposit_reuses_active_route_for_fresh_bridge_auth() {
+    let state = test_state();
+    let (user_id, first_auth) =
+        test_bridge_access_auth_payload_v2_with_nonce(27, "ethereum", "eth", "route-reuse-one");
+    let (_, second_auth) =
+        test_bridge_access_auth_payload_v2_with_nonce(27, "ethereum", "eth", "route-reuse-two");
+
+    let first = create_deposit(
+        State(state.clone()),
+        test_auth_headers(),
+        Json(CreateDepositRequest {
+            user_id: user_id.clone(),
+            chain: "ethereum".to_string(),
+            asset: "eth".to_string(),
+            auth: Some(first_auth),
+        }),
+    )
+    .await
+    .expect("first deposit creation should succeed");
+
+    let second = create_deposit(
+        State(state.clone()),
+        test_auth_headers(),
+        Json(CreateDepositRequest {
+            user_id,
+            chain: "ethereum".to_string(),
+            asset: "eth".to_string(),
+            auth: Some(second_auth),
+        }),
+    )
+    .await
+    .expect("fresh bridge auth should reuse the active route reservation");
+
+    assert_eq!(first.0.deposit_id, second.0.deposit_id);
+    assert_eq!(first.0.address, second.0.address);
+
+    let dr = state.deposit_rate.lock().await;
+    assert_eq!(dr.count_this_minute, 1);
+}
+
+#[tokio::test]
+async fn test_create_deposit_allocates_new_route_after_confirmation() {
+    let state = test_state();
+    let (user_id, first_auth) =
+        test_bridge_access_auth_payload_v2_with_nonce(28, "ethereum", "eth", "route-confirm-one");
+    let (_, second_auth) =
+        test_bridge_access_auth_payload_v2_with_nonce(28, "ethereum", "eth", "route-confirm-two");
+
+    let first = create_deposit(
+        State(state.clone()),
+        test_auth_headers(),
+        Json(CreateDepositRequest {
+            user_id: user_id.clone(),
+            chain: "ethereum".to_string(),
+            asset: "eth".to_string(),
+            auth: Some(first_auth),
+        }),
+    )
+    .await
+    .expect("first deposit creation should succeed");
+
+    let observation = DepositObservationWrite {
+        event: DepositEvent {
+            event_id: Uuid::new_v4().to_string(),
+            deposit_id: first.0.deposit_id.clone(),
+            tx_hash: "route-confirmed-tx".to_string(),
+            confirmations: 12,
+            amount: Some(1),
+            status: "confirmed".to_string(),
+            observed_at: chrono::Utc::now().timestamp(),
+        },
+        sweep_job: None,
+        markers: Vec::new(),
+    };
+    persist_deposit_observation(&state.db, &observation)
+        .expect("confirming deposit should clear active route index");
+
+    {
+        let mut dr = state.deposit_rate.lock().await;
+        dr.per_user.clear();
+    }
+
+    let second = create_deposit(
+        State(state.clone()),
+        test_auth_headers(),
+        Json(CreateDepositRequest {
+            user_id,
+            chain: "ethereum".to_string(),
+            asset: "eth".to_string(),
+            auth: Some(second_auth),
+        }),
+    )
+    .await
+    .expect("confirmed route should allocate a fresh deposit");
+
+    assert_ne!(first.0.deposit_id, second.0.deposit_id);
+    assert_ne!(first.0.address, second.0.address);
+}
+
+#[tokio::test]
 async fn test_create_deposit_neox_gas_and_neo_use_chain_id_scoped_path() {
     let mut state = test_state();
     state.config.neox_rpc_url = Some("http://localhost:9545".to_string());
@@ -475,8 +575,8 @@ async fn test_create_deposit_rate_limit_rejection_returns_bad_request_status() {
     });
     let second_payload = json!({
         "user_id": payload["user_id"].clone(),
-        "chain": "solana",
-        "asset": "sol",
+        "chain": "ethereum",
+        "asset": "eth",
         "auth": second_auth,
     });
     let client = reqwest::Client::new();

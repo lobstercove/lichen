@@ -30,18 +30,30 @@ function buildBridgeAccessMessageV2(userId, chain, asset, issuedAt, expiresAt, n
   return `${BRIDGE_AUTH_DOMAIN_V2}\naction=${BRIDGE_AUTH_CREATE_ACTION}\nuser_id=${userId}\nchain=${canonicalChain}\nasset=${normalizedAsset}\nroute=${canonicalChain}:${normalizedAsset}\nissued_at=${issuedAt}\nexpires_at=${expiresAt}\nnonce=${nonce}\n`;
 }
 
-function hasValidBridgeAccessAuth(wallet) {
+function bridgeAuthMatchesRoute(auth, chain = '', asset = '') {
+  const canonicalChain = canonicalBridgeChain(chain);
+  const normalizedAsset = String(asset || '').trim().toLowerCase();
+  if (!canonicalChain && !normalizedAsset) return true;
+  return auth?.version === 2
+    && auth.chain === canonicalChain
+    && auth.asset === normalizedAsset
+    && auth.route === `${canonicalChain}:${normalizedAsset}`;
+}
+
+function hasValidBridgeAccessAuth(wallet, { chain = '', asset = '' } = {}) {
   if (!wallet?.address || !activeBridgeAuth) return false;
   const now = Math.floor(Date.now() / 1000);
-  return activeBridgeAuth.user_id === wallet.address && activeBridgeAuth.expires_at > now + 30;
+  return activeBridgeAuth.user_id === wallet.address
+    && activeBridgeAuth.expires_at > now + 30
+    && bridgeAuthMatchesRoute(activeBridgeAuth, chain, asset);
 }
 
-export function hasBridgeAccessAuth(wallet) {
-  return hasValidBridgeAccessAuth(wallet);
+export function hasBridgeAccessAuth(wallet, route = {}) {
+  return hasValidBridgeAccessAuth(wallet, route);
 }
 
-function currentBridgeAuthPayload(wallet) {
-  if (!hasValidBridgeAccessAuth(wallet)) return null;
+function currentBridgeAuthPayload(wallet, { chain = '', asset = '' } = {}) {
+  if (!hasValidBridgeAccessAuth(wallet, { chain, asset })) return null;
   const payload = {
     issued_at: activeBridgeAuth.issued_at,
     expires_at: activeBridgeAuth.expires_at,
@@ -56,8 +68,8 @@ function currentBridgeAuthPayload(wallet) {
 }
 
 async function ensureBridgeAccessAuth(wallet, password, { forceRefresh = false, chain = '', asset = '' } = {}) {
-  if (!forceRefresh && hasValidBridgeAccessAuth(wallet)) {
-    return currentBridgeAuthPayload(wallet);
+  if (!forceRefresh && hasValidBridgeAccessAuth(wallet, { chain, asset })) {
+    return currentBridgeAuthPayload(wallet, { chain, asset });
   }
   if (!wallet?.encryptedKey) {
     throw new Error('Bridge authorization requires an unlocked wallet');
@@ -252,7 +264,7 @@ export async function requestBridgeDepositAddress({ wallet, password, chain, ass
   await assertBridgeRouteOpen({ chain: canonicalChain, asset: normalizedAsset, network });
 
   const auth = await ensureBridgeAccessAuth(wallet, password, {
-    forceRefresh: true,
+    forceRefresh: false,
     chain: canonicalChain,
     asset: normalizedAsset
   });

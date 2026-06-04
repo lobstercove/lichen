@@ -96,6 +96,18 @@ pub(super) async fn create_deposit(
     let _replay_guard = state.bridge_auth_replay_lock.lock().await;
     prune_expired_bridge_auth_replays(&state.db, now, BRIDGE_AUTH_REPLAY_PRUNE_BATCH)
         .map_err(|e| Json(ErrorResponse::db(&e)))?;
+    if let Some(existing) = find_reusable_active_deposit(
+        &state.db,
+        &user_id,
+        &chain,
+        &asset,
+        i64::try_from(now).unwrap_or(i64::MAX),
+        state.config.deposit_ttl_secs,
+    )
+    .map_err(|e| Json(ErrorResponse::db(&e)))?
+    {
+        return Ok(Json(existing));
+    }
     if let Some(existing) = find_existing_bridge_auth_replay(
         &state.db,
         BRIDGE_AUTH_REPLAY_ACTION_CREATE_DEPOSIT,

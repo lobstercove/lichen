@@ -200,6 +200,20 @@ pub(super) fn test_bridge_access_auth_payload_v2(
     chain: &str,
     asset: &str,
 ) -> (String, Value) {
+    test_bridge_access_auth_payload_v2_with_nonce(
+        seed,
+        chain,
+        asset,
+        &format!("test-bridge-auth-v2-{}", seed),
+    )
+}
+
+pub(super) fn test_bridge_access_auth_payload_v2_with_nonce(
+    seed: u8,
+    chain: &str,
+    asset: &str,
+    nonce: &str,
+) -> (String, Value) {
     let keypair = Keypair::from_seed(&[seed; 32]);
     let user_id = keypair.pubkey().to_base58();
     let issued_at = std::time::SystemTime::now()
@@ -209,9 +223,8 @@ pub(super) fn test_bridge_access_auth_payload_v2(
     let expires_at = issued_at + 600;
     let chain = chain.trim().to_lowercase();
     let asset = asset.trim().to_lowercase();
-    let nonce = format!("test-bridge-auth-v2-{}", seed);
     let message =
-        bridge_access_message_v2_create(&user_id, &chain, &asset, issued_at, expires_at, &nonce);
+        bridge_access_message_v2_create(&user_id, &chain, &asset, issued_at, expires_at, nonce);
 
     (
         user_id.clone(),

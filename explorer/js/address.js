@@ -2042,7 +2042,7 @@ function displayAddressData(data) {
                 const mossRow = document.createElement('div');
                 mossRow.className = parentRow.className;
                 mossRow.innerHTML = `
-                    <div class="detail-label">MossStake (Liquid)</div>
+                    <div class="detail-label">MossStake Redeemable Value</div>
                     <div class="detail-value" id="mossStakedLicn">0 LICN</div>
                 `;
                 parentRow.parentElement.insertBefore(mossRow, parentRow.nextSibling);
@@ -2051,7 +2051,7 @@ function displayAddressData(data) {
         }
     }
     if (mossStakedEl) {
-        const mossVal = data.mossValue || data.mossStaked || 0;
+        const mossVal = data.mossValue || 0;
         mossStakedEl.textContent = mossVal > 0 ? `${formatLicnExact(mossVal)} LICN` : '0 LICN';
     }
 

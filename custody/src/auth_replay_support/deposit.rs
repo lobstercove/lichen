@@ -114,6 +114,9 @@ pub(crate) fn persist_new_deposit_with_bridge_auth_replay(
     let status_cf = db
         .cf_handle(CF_STATUS_INDEX)
         .ok_or_else(|| "missing status_index cf".to_string())?;
+    let indexes_cf = db
+        .cf_handle(CF_INDEXES)
+        .ok_or_else(|| "missing indexes cf".to_string())?;
     let replay_cf = db
         .cf_handle(CF_BRIDGE_AUTH_REPLAY)
         .ok_or_else(|| "missing bridge_auth_replay cf".to_string())?;
@@ -140,6 +143,7 @@ pub(crate) fn persist_new_deposit_with_bridge_auth_replay(
         format!("status:deposits:issued:{}", record.deposit_id).as_bytes(),
         b"",
     );
+    put_active_deposit_route_index(&mut batch, indexes_cf, record);
     batch.put_cf(
         replay_cf,
         super::keys::bridge_auth_replay_lookup_key(action, digest).as_bytes(),

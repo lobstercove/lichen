@@ -89,6 +89,7 @@
                 <a href="#validator-info" class="sidebar-link">validator info</a>
                 <a href="#validator-performance" class="sidebar-link">validator performance</a>
                 <a href="#validator-list" class="sidebar-link">validator list</a>
+                <a href="#sparse-state-commitment" class="sidebar-link">sparse state commitment</a>
             </div>
             <div class="sidebar-divider"></div>
             <div class="sidebar-section">
@@ -219,7 +220,7 @@
 
             <div class="callout callout-info">
                 <div class="callout-title"><i class="fas fa-terminal"></i> Surface Coverage</div>
-                Implementation-verified for <code>v0.5.61</code>: the CLI covers wallet, identity, validator, staking,
+                Implementation-verified for <code>v0.5.90</code>: the CLI covers wallet, identity, validator, staking,
                 contract, token, governance, restriction, symbol, NFT, DeFi, and utility commands, plus the global
                 <code>--rpc-url</code> and <code>--output</code> flags documented below.
             </div>
@@ -282,7 +283,7 @@
                 <pre><code>$ lichen --rpc-url https://testnet-rpc.lichen.network balance
 $ lichen --output json status
 $ lichen --version
-lichen 0.5.10</code></pre>
+lichen 0.5.90</code></pre>
             </div>
 
             <!-- ================================================================ -->
@@ -873,6 +874,36 @@ $ lichen --output json identity export --keypair /var/lib/lichen/state-testnet/v
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Total: 2 validators, 205000.0 LICN staked</code></pre>
+                </div>
+            </div>
+
+            <div class="cmd-section" id="sparse-state-commitment">
+                <h3><code>lichen-validator</code> sparse state-commitment flags</h3>
+                <p>Sparse state-commitment maintenance is handled by the validator binary, not by the wallet
+                    <code>lichen</code> CLI. These flags open the stopped validator state DB and report, rebuild, or
+                    activate the <code>sparse_v1</code> commitment used by current account proofs.</p>
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code># Verify active schema and sparse readiness
+lichen-validator --show-state-commitment-schema \
+  --data-dir /var/lib/lichen/state-testnet
+
+# Rebuild sparse commitment without activation
+lichen-validator --rebuild-sparse-state-commitment \
+  --data-dir /var/lib/lichen/state-testnet
+
+# Coordinated activation; requires the exact confirmation token
+lichen-validator --activate-sparse-state-commitment \
+  --confirm sparse-state-commitment:v1 \
+  --data-dir /var/lib/lichen/state-testnet</code></pre>
+                </div>
+                <div class="callout callout-warning">
+                    <div class="callout-title"><i class="fas fa-triangle-exclamation"></i> Coordination Required</div>
+                    Activation changes produced state roots. Run the rebuild/show commands on stopped validators first,
+                    then activate only as part of a coordinated validator-set upgrade.
                 </div>
             </div>
 

@@ -2758,6 +2758,10 @@ div.staking-tier-card.staking-tier-active {
     border-radius: 20px;
     width: 100%;
     max-width: 480px;
+    max-height: calc(100vh - 2rem);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
     box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
     transform: translateY(16px) scale(0.97);
     transition: transform 0.3s ease;
@@ -2791,12 +2795,14 @@ div.staking-tier-card.staking-tier-active {
 
 .password-modal-body {
     padding: 1.5rem;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
 }
 
 .password-modal-actions {
     display: flex;
     gap: 0.75rem;
-    padding: 0.75rem 1.5rem 1.5rem;
+    padding: 0.75rem 0 0;
 }
 
 .password-modal-actions .btn {

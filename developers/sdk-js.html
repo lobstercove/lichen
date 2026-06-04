@@ -125,8 +125,9 @@
                 <div class="callout callout-info">
                     <p>The SDK requires Node.js 20.19+ or a browser environment with <code>fetch</code> support. WebSocket
                         features require the <code>ws</code> package in Node.js (included as a dependency).</p>
-                    <p>The published package name is <code>@lobstercove/lichen-sdk</code>. Monorepo contributors can
-                        still install from the local <code>sdk/js/</code> directory when iterating in-tree. The
+                    <p>The published package name is <code>@lobstercove/lichen-sdk</code>; the current source package
+                        version is <code>1.0.5</code>. Monorepo contributors can still install from the local
+                        <code>sdk/js/</code> directory when iterating in-tree. The
                         examples below use public testnet endpoints; swap
                         to <code>https://rpc.lichen.network</code> and <code>wss://rpc.lichen.network/ws</code> only
                         when targeting mainnet.</p>
@@ -725,7 +726,10 @@ console.log(entry.program);</code></pre>
 
             <div class="method-card">
                 <h3 class="method-name">getProgramAccounts(programId: PublicKey): Promise&lt;any[]&gt;</h3>
-                <p class="method-desc">List all accounts currently owned by a program.</p>
+                <p class="method-desc">Compatibility wrapper for RPC deployments that expose
+                    <code>getProgramAccounts</code>. The stock <code>v0.5.90</code> validator RPC does not dispatch this
+                    method; use <code>getProgramStorage</code>, <code>getProgram</code>, or app-specific indexed reads on
+                    public Lichen nodes.</p>
             </div>
 
             <div class="method-card">

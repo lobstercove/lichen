@@ -857,6 +857,23 @@ function serializeMessageBincode(message) {
         view.setBigUint64(0, BigInt(n), true);
         parts.push(new Uint8Array(buf));
     }
+    function normalizeOptionalU64(value, fieldName) {
+        if (value === undefined || value === null) return null;
+        var numeric = typeof value === 'bigint' ? value : BigInt(value);
+        if (numeric < 0n) {
+            throw new Error('Invalid ' + fieldName + ': expected a non-negative integer');
+        }
+        return numeric > 0n ? numeric : null;
+    }
+    function writeOptionalU64(value, fieldName) {
+        var numeric = normalizeOptionalU64(value, fieldName);
+        if (numeric === null) {
+            parts.push(new Uint8Array([0x00]));
+            return;
+        }
+        parts.push(new Uint8Array([0x01]));
+        writeU64LE(numeric);
+    }
     function writeBytes(bytes) { parts.push(new Uint8Array(bytes)); }
 
     var ixs = message.instructions || [];
@@ -879,10 +896,8 @@ function serializeMessageBincode(message) {
     var hashBytes = new Uint8Array(32);
     for (var h = 0; h < 32; h++) hashBytes[h] = parseInt(hashHex.substr(h * 2, 2), 16);
     writeBytes(hashBytes);
-    // compute_budget: Option<u64> = None (0x00)
-    parts.push(new Uint8Array([0x00]));
-    // compute_unit_price: Option<u64> = None (0x00)
-    parts.push(new Uint8Array([0x00]));
+    writeOptionalU64(message.compute_budget ?? message.computeBudget, 'compute_budget');
+    writeOptionalU64(message.compute_unit_price ?? message.computeUnitPrice, 'compute_unit_price');
 
     var totalLen = parts.reduce(function (s, p) { return s + p.length; }, 0);
     var result = new Uint8Array(totalLen);

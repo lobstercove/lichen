@@ -320,7 +320,7 @@ function getFullBalanceSnapshot(result) {
     stakedLicn: sporesToLicn(result?.staked ?? result?.staked_spores ?? 0),
     pendingRewardsLicn: sporesToLicn(result?.pending_rewards ?? result?.pendingRewards ?? 0),
     lockedLicn: sporesToLicn(result?.locked ?? result?.locked_spores ?? 0),
-    mossStakedLicn: sporesToLicn(result?.moss_staked ?? result?.mossStaked ?? 0)
+    mossStakedLicn: sporesToLicn(result?.moss_value ?? result?.mossValue ?? result?.moss_staked ?? result?.mossStaked ?? 0)
   };
 }
 
@@ -1296,7 +1296,7 @@ async function refreshBalance() {
       if (hasBreakdown) {
         const parts = [`<i class="fas fa-wallet" style="opacity:0.5;"></i> Spendable: <strong>${balanceSnapshot.spendableLicn.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`];
         if (balanceSnapshot.stakedLicn > 0) parts.push(`<i class="fas fa-lock" style="opacity:0.5;"></i> Staked: <strong>${balanceSnapshot.stakedLicn.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`);
-        if (balanceSnapshot.mossStakedLicn > 0) parts.push(`<i class="fas fa-coins" style="opacity:0.5;"></i> Liquid Staking: <strong>${balanceSnapshot.mossStakedLicn.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`);
+        if (balanceSnapshot.mossStakedLicn > 0) parts.push(`<i class="fas fa-coins" style="opacity:0.5;"></i> Liquid Staking Value: <strong>${balanceSnapshot.mossStakedLicn.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`);
         if (shieldedSpores > 0n) parts.push(`<i class="fas fa-shield-alt" style="opacity:0.5;"></i> Shielded: <strong>${formatLicnBaseUnitsFixedExt(shieldedSpores)}</strong>`);
         if (balanceSnapshot.pendingRewardsLicn > 0) parts.push(`<i class="fas fa-gift" style="opacity:0.5;"></i> Rewards: <strong>${balanceSnapshot.pendingRewardsLicn.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`);
         if (balanceSnapshot.lockedLicn > 0) parts.push(`<i class="fas fa-hourglass" style="opacity:0.5;"></i> Locked: <strong>${balanceSnapshot.lockedLicn.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`);
@@ -1497,7 +1497,7 @@ async function loadStakingTab() {
 
     const stLicn = Number(position?.st_licn_amount || 0) / 1e9;
     const value = Number(position?.current_value_licn || 0) / 1e9;
-    const rewards = Number(position?.rewards_earned || 0) / 1e9;
+    const exchangeGain = Math.max(0, Number(position?.current_value_licn || 0) - Number(position?.licn_deposited || 0)) / 1e9;
     const totalStaked = Number(poolInfo?.total_licn_staked || 0) / 1e9;
     const lockTier = position?.lock_tier_name || 'Flexible';
     const multiplier = position?.reward_multiplier || 1.0;
@@ -1533,7 +1533,7 @@ async function loadStakingTab() {
           <i class="fas fa-water" style="color:#3b82f6;"></i> Liquid Staking
         </h3>
         <p style="margin:0;font-size:0.85rem;color:var(--text-muted);">
-          Stake LICN to receive stLICN. Rewards auto-compound. Choose a lock tier for boosted rewards.
+          Stake LICN to receive stLICN. Rewards auto-compound into the redeemable value. Choose a lock tier for boosted rewards.
         </p>
       </div>
 
@@ -1543,12 +1543,12 @@ async function loadStakingTab() {
           <div style="font-size:1.2rem;font-weight:700;color:var(--text);">${stLicn.toLocaleString(undefined, { maximumFractionDigits: 4 })}</div>
         </div>
         <div style="background:var(--card-bg);padding:1rem;border-radius:10px;border:1px solid var(--border);text-align:center;">
-          <div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:0.25rem;">Value</div>
+          <div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:0.25rem;">Redeemable Value</div>
           <div style="font-size:1.2rem;font-weight:700;color:var(--text);">${value.toLocaleString(undefined, { maximumFractionDigits: 4 })} LICN</div>
         </div>
         <div style="background:var(--card-bg);padding:1rem;border-radius:10px;border:1px solid var(--border);text-align:center;">
-          <div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:0.25rem;">Rewards Earned</div>
-          <div style="font-size:1.2rem;font-weight:700;color:#10b981;">${rewards.toLocaleString(undefined, { maximumFractionDigits: 4 })} LICN</div>
+          <div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:0.25rem;">Est. Exchange Gain</div>
+          <div title="Estimated gain from the current stLICN exchange rate. This is already included in Redeemable Value." style="font-size:1.2rem;font-weight:700;color:#10b981;">${exchangeGain.toLocaleString(undefined, { maximumFractionDigits: 4 })} LICN</div>
         </div>
       </div>
 
@@ -3715,6 +3715,35 @@ function escapeHtmlExt(str) {
   return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#x27;');
 }
 
+function renderExtQrCode(container, text, size = 180) {
+  if (!container) return;
+  container.innerHTML = '';
+  const QR = window.QRCode || globalThis.QRCode;
+  if (!QR) {
+    container.innerHTML = `
+      <div style="padding:1rem;border:1px dashed var(--border);border-radius:12px;text-align:center;color:var(--text-muted);">
+        <div style="font-size:1.4rem;margin-bottom:0.35rem;"><i class="fas fa-qrcode"></i></div>
+        <div style="font-size:0.82rem;">QR unavailable</div>
+      </div>`;
+    return;
+  }
+  try {
+    new QR(container, {
+      text,
+      width: size,
+      height: size,
+      colorDark: '#1a1a2e',
+      colorLight: '#ffffff',
+      correctLevel: QR.CorrectLevel.M,
+    });
+  } catch {
+    container.innerHTML = `
+      <div style="padding:1rem;border:1px dashed var(--border);border-radius:12px;text-align:center;color:var(--text-muted);">
+        <div style="font-size:1.4rem;"><i class="fas fa-qrcode"></i></div>
+      </div>`;
+  }
+}
+
 async function startExtensionDeposit(chain) {
   const wallet = getActiveWallet();
   if (!wallet) { showToast('No active wallet', 'error'); return; }
@@ -3767,15 +3796,19 @@ async function executeExtensionDeposit(chain, asset, chainLabel, container) {
   container.querySelectorAll('[data-bridge-asset]').forEach(b => b.style.display = 'none');
 
   try {
-    if (hasBridgeAccessAuth(wallet) && resultEl) {
-      resultEl.innerHTML = '<p style="text-align:center;"><i class="fas fa-key"></i> Refreshing bridge authorization for a new deposit request...</p>';
+    const hasCachedBridgeAuth = hasBridgeAccessAuth(wallet, { chain, asset });
+    if (hasCachedBridgeAuth && resultEl) {
+      resultEl.innerHTML = '<p style="text-align:center;"><i class="fas fa-key"></i> Using active bridge authorization...</p>';
     }
 
-    const password = await promptPassword('Enter wallet password to sign bridge access authorization:');
-    if (!password) {
-      if (resultEl) resultEl.innerHTML = '<p style="color:#EF476F;text-align:center;">Bridge authorization cancelled.</p>';
-      container.querySelectorAll('[data-bridge-asset]').forEach(b => b.style.display = '');
-      return;
+    let password = '';
+    if (!hasCachedBridgeAuth) {
+      password = await promptPassword('Enter wallet password to sign bridge access authorization:');
+      if (!password) {
+        if (resultEl) resultEl.innerHTML = '<p style="color:#EF476F;text-align:center;">Bridge authorization cancelled.</p>';
+        container.querySelectorAll('[data-bridge-asset]').forEach(b => b.style.display = '');
+        return;
+      }
     }
 
     const response = await requestBridgeDepositAddress({
@@ -3794,18 +3827,33 @@ async function executeExtensionDeposit(chain, asset, chainLabel, container) {
     if (resultEl) {
       resultEl.innerHTML = `
         <div style="background:rgba(0, 201, 219,0.06);border-radius:8px;padding:1rem;text-align:left;">
-          <div style="margin-bottom:0.5rem;"><strong>Send ${safeAsset} on ${escapeHtmlExt(chainLabel)} to:</strong></div>
-          <div class="mono" style="word-break:break-all;background:rgba(0,0,0,0.15);padding:0.5rem;border-radius:6px;margin-bottom:0.5rem;cursor:pointer;" id="extDepositAddr">${safeAddr}</div>
+          <div style="margin-bottom:0.75rem;text-align:center;"><strong>Send ${safeAsset} on ${escapeHtmlExt(chainLabel)}</strong></div>
+          <div class="qr-code" id="extDepositQrCode"></div>
+          <div class="address-display">
+            <input id="extDepositAddr" class="form-input" readonly value="${safeAddr}" style="font-family:'JetBrains Mono',monospace;font-size:0.82rem;">
+            <button class="btn-circle" id="extCopyDepositAddr" title="Copy deposit address"><i class="fas fa-copy"></i></button>
+          </div>
+          <div id="extCopyHint" style="text-align:center;font-size:0.8rem;color:var(--text-muted);margin-bottom:0.5rem;">Copy or scan this address</div>
           <div style="font-size:0.8rem;color:var(--text-muted);margin-bottom:0.5rem;">Deposit ID: ${safeId}</div>
           <div style="font-size:0.8rem;color:var(--text-muted);margin-bottom:0.5rem;">Reserved for 24 hours while unfunded. If it expires, request a new address.</div>
           <div id="extDepositStatus" style="font-size:0.85rem;"><i class="fas fa-clock" style="color:var(--text-muted);"></i> Waiting for deposit...</div>
         </div>
       `;
-      container.querySelector('#extDepositAddr')?.addEventListener('click', () => {
+      renderExtQrCode(container.querySelector('#extDepositQrCode'), response.address, 180);
+      const copyAddress = () => {
         navigator.clipboard.writeText(response.address)
-          .then(() => showToast('Deposit address copied!', 'success'))
+          .then(() => {
+            const hint = container.querySelector('#extCopyHint');
+            if (hint) {
+              hint.textContent = 'Copied!';
+              setTimeout(() => { hint.textContent = 'Copy or scan this address'; }, 1500);
+            }
+            showToast('Deposit address copied!', 'success');
+          })
           .catch(() => showToast('Copy failed', 'error'));
-      });
+      };
+      container.querySelector('#extDepositAddr')?.addEventListener('click', copyAddress);
+      container.querySelector('#extCopyDepositAddr')?.addEventListener('click', copyAddress);
     }
 
     // Start polling

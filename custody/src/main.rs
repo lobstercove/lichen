@@ -45,6 +45,7 @@ mod deposit_derivation;
 mod deposit_event_support;
 mod deposit_monitor_support;
 mod deposit_persistence;
+mod deposit_reservation_support;
 mod event_api_support;
 mod evm_support;
 mod hex_support;
@@ -135,6 +136,10 @@ use deposit_event_support::{
 };
 use deposit_monitor_support::{evm_watcher_loop, evm_watcher_loop_for_chains, solana_watcher_loop};
 use deposit_persistence::{fetch_deposit, store_deposit};
+use deposit_reservation_support::{
+    clear_active_deposit_route_index, delete_active_deposit_route_index_from_batch,
+    find_reusable_active_deposit, is_active_deposit_status, put_active_deposit_route_index,
+};
 use event_api_support::{create_ws_events_ticket, list_events, ws_events};
 #[cfg(test)]
 use evm_support::to_be_bytes;

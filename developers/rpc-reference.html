@@ -163,6 +163,7 @@
             <div class="sidebar-section">
                 <h3 class="sidebar-heading">Live Additions</h3>
                 <a href="#getSignedMetadataManifest" class="sidebar-link">getSignedMetadataManifest</a>
+                <a href="#dex-rest-indexed-reads" class="sidebar-link">DEX REST Reads</a>
                 <a href="#live-methods" class="sidebar-link">Implemented Methods</a>
             </div>
         </aside>
@@ -185,7 +186,7 @@
                     <code>8900</code>.
                 </p>
                 <div class="callout callout-info">
-                    <p><strong>Implementation-verified surface for v0.5.61:</strong> the live server exposes native,
+                    <p><strong>Implementation-verified surface for v0.5.90:</strong> the live server exposes native,
                         Solana-compatible, and EVM-compatible JSON-RPC dispatch, plus REST route families across the
                         DEX, prediction market, launchpad, shielded APIs, and Neo X route/rewards reads.</p>
                 </div>
@@ -564,15 +565,23 @@
                 </div>
                 <div class="method-section">
                     <h4 class="method-section-title">Returns</h4>
-                    <p>Object — <code>{ pubkey, accountData, inclusionProof, anchor }</code></p>
+                    <p>Object — <code>{ pubkey, account_data, inclusion_proof, anchor }</code>. The
+                        <code>inclusion_proof.proof_type</code> is <code>sparse_v1</code> on sparse-active chains and
+                        <code>ordered_v0</code> on legacy ordered commitments.
+                    </p>
                 </div>
                 <div class="method-section">
                     <h4 class="method-section-title">Notes</h4>
                     <ul>
                         <li>Returns an error if the account does not exist or if the proof cannot be anchored to the
                             requested block context.</li>
-                        <li>Proofs are inclusion proofs over the current cached account leaf set; they do not provide
-                            non-existence proofs.</li>
+                        <li><code>sparse_v1</code> proofs include <code>sparse_path</code> and <code>steps</code>;
+                            ordered proofs include <code>siblings</code> and <code>path</code>.</li>
+                        <li><code>anchor.root_source</code> is <code>header_state_root</code> when the proof root matches
+                            the block header, or <code>post_state_v1</code> when it matches the canonical post-block
+                            sidecar anchor for that slot.</li>
+                        <li>Proof reads wait behind the canonical block-apply barrier. They are existing-account
+                            inclusion proofs and do not provide non-existence proofs.</li>
                     </ul>
                 </div>
                 <div class="code-block">
@@ -586,8 +595,23 @@
 {"jsonrpc":"2.0","id":1,"result":{
   "pubkey":"7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU",
   "account_data":"deadbeef...",
-  "inclusion_proof":{"leaf_hash":"...","siblings":["..."],"path":[true,false]},
-  "anchor":{"slot":1,"commitment":"finalized","state_root":"...","commit_round":0}
+  "inclusion_proof":{
+    "proof_type":"sparse_v1",
+    "leaf_hash":"...",
+    "siblings":[],
+    "path":[],
+    "sparse_path":"...",
+    "steps":[{"prefix_bits":12,"prefix":"...","sibling":"...","target_went_right":true}]
+  },
+  "anchor":{
+    "slot":1,
+    "commitment":"finalized",
+    "root_source":"post_state_v1",
+    "state_root":"...",
+    "header_state_root":"...",
+    "block_hash":"...",
+    "commit_round":0
+  }
 }}</code></pre>
                 </div>
             </div>
@@ -2113,6 +2137,33 @@
 }}</code></pre>
                 </div>
             </div>
+
+            <section id="dex-rest-indexed-reads">
+                <h2>DEX REST Indexed Reads</h2>
+                <p>The DEX market-data API is exposed through REST routes under <code>/api/v1</code>. Current
+                    orderbook, pair-trade, and trader-trade reads use persisted block-apply indexes that are rebuilt or
+                    backfilled from canonical DEX contract storage during startup, rather than scanning every order or
+                    trade on each request.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Indexed Routes</h4>
+                    <ul>
+                        <li><code>GET /api/v1/pairs/:id/orderbook?depth=20</code> — L2 orderbook levels from the
+                            persisted orderbook-level index. <code>depth</code> is capped at <code>100</code>.</li>
+                        <li><code>GET /api/v1/pairs/:id/trades?limit=50</code> — recent pair trades from the pair trade
+                            index. <code>limit</code> is capped at <code>200</code>.</li>
+                        <li><code>GET /api/v1/pairs/:id/trades?trader=&lt;address&gt;&amp;limit=50</code> — pair trades
+                            filtered by taker address, accepting hex or Base58 account input.</li>
+                        <li><code>GET /api/v1/traders/:address/trades?limit=50</code> — trader trade history across
+                            pairs from the taker trade index.</li>
+                    </ul>
+                </div>
+                <div class="callout callout-info">
+                    <p><strong>Read semantics:</strong> responses include the node's current slot and reflect canonical
+                        indexed state. If an older database is upgraded, the validator backfills the DEX indexes before
+                        serving the accelerated reads; clients should treat transient index read errors as node
+                        health/backfill issues rather than missing pairs.</p>
+                </div>
+            </section>
 
             <!-- Neo X Route / Rewards -->
             <section id="neo-x-route-rewards">

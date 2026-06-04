@@ -69,6 +69,10 @@ pub(super) async fn deposit_cleanup_loop(state: CustodyState) {
                             ) {
                                 tracing::error!("Failed update_status_index: {error}");
                             }
+                            if let Err(error) = clear_active_deposit_route_index(&state.db, &record)
+                            {
+                                tracing::error!("Failed clear_active_deposit_route_index: {error}");
+                            }
                         }
                     }
                 }

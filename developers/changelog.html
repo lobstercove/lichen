@@ -79,6 +79,38 @@
         <!-- Timeline -->
         <div class="changelog-timeline">
 
+            <!-- ============ v0.5.90 ============ -->
+            <div class="changelog-entry">
+                <div class="changelog-header">
+                    <span class="changelog-version">v0.5.90</span>
+                    <span class="changelog-date">June 4, 2026</span>
+                </div>
+                <h3 class="changelog-title">Trusted Sparse Startup and Indexed Reads</h3>
+
+                <div class="changelog-section" data-type="improved">
+                    <h4><i class="fas fa-arrow-up" style="color: var(--accent)"></i> Improvements</h4>
+                    <ul>
+                        <li><strong>Sparse startup repair</strong> &mdash; active sparse validators skip a full startup
+                            rebuild when trusted sparse metadata is clean, while older or dirty stores still force one
+                            repair before tip anchoring.</li>
+                        <li><strong>Atomic sparse markers</strong> &mdash; account and contract-storage sparse dirty
+                            markers are committed in the same RocksDB batch as the state mutation, closing the restart
+                            window that previously required unnecessary full sparse rebuilds.</li>
+                    </ul>
+                </div>
+
+                <div class="changelog-section" data-type="fixed">
+                    <h4><i class="fas fa-bug" style="color: var(--warning)"></i> Fixes</h4>
+                    <ul>
+                        <li><strong>Interrupted sparse repairs</strong> &mdash; sparse commitment metadata is marked
+                            not-ready and untrusted before rebuild, then trusted only after a successful rebuild.</li>
+                        <li><strong>Clean rebuild reporting</strong> &mdash; stale dirty markers are cleared during full
+                            sparse account and contract commitment rebuilds, avoiding a second full state-root rebuild
+                            when reporting the rebuilt sparse root.</li>
+                    </ul>
+                </div>
+            </div>
+
             <!-- ============ v0.5.61 ============ -->
             <div class="changelog-entry">
                 <div class="changelog-header">

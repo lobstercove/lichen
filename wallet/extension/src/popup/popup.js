@@ -795,7 +795,7 @@ function getPopupBalanceSnapshot(result) {
     stakedLicn: sporesToLicn(result?.staked ?? result?.staked_spores ?? 0),
     pendingRewardsLicn: sporesToLicn(result?.pending_rewards ?? result?.pendingRewards ?? 0),
     lockedLicn: sporesToLicn(result?.locked ?? result?.locked_spores ?? 0),
-    mossStakedLicn: sporesToLicn(result?.moss_staked ?? result?.mossStaked ?? 0)
+    mossStakedLicn: sporesToLicn(result?.moss_value ?? result?.mossValue ?? result?.moss_staked ?? result?.mossStaked ?? 0)
   };
 }
 
@@ -1065,7 +1065,7 @@ async function loadAssets() {
     const spendableRaw = Number(result?.spendable ?? result?.spores ?? 0);
     const totalRaw = Number(result?.spores ?? spendableRaw);
     const stakedRaw = Number(result?.staked ?? 0);
-    const mossRaw = Number(result?.moss_staked ?? 0);
+    const mossRaw = Number(result?.moss_value ?? result?.mossValue ?? result?.moss_staked ?? 0);
     const lockedRaw = Number(result?.locked ?? 0);
     const div = 1_000_000_000;
     const decimals = displayDecimals();
@@ -1076,7 +1076,7 @@ async function loadAssets() {
       const parts = [];
       parts.push(`Spendable: ${fmt(spendableRaw / div)}`);
       if (stakedRaw > 0) parts.push(`Staked: ${fmt(stakedRaw / div)}`);
-      if (mossRaw > 0) parts.push(`Liquid Staking: ${fmt(mossRaw / div)}`);
+      if (mossRaw > 0) parts.push(`Liquid Staking Value: ${fmt(mossRaw / div)}`);
       if (lockedRaw > 0) parts.push(`Locked: ${fmt(lockedRaw / div)}`);
       breakdownHtml = `<span style="font-size:10px;color:#888;margin-top:2px">${parts.join(' · ')}</span>`;
     }
@@ -1392,7 +1392,7 @@ async function loadExtensionStaking() {
 
     const stLicn = Number(position?.st_licn_amount || 0) / 1e9;
     const stakeValue = Number(position?.current_value_licn || 0) / 1e9;
-    const rewards = Number(position?.rewards_earned || 0) / 1e9;
+    const exchangeGain = Math.max(0, Number(position?.current_value_licn || 0) - Number(position?.licn_deposited || 0)) / 1e9;
     const tierName = position?.lock_tier_name || 'Flexible';
     const multiplier = Number(position?.reward_multiplier || 1);
     const totalPool = Number(poolInfo?.total_licn_staked || 0) / 1e9;
@@ -1400,8 +1400,8 @@ async function loadExtensionStaking() {
 
     const cards = [
       { label: 'Your stLICN', value: fmt(stLicn), color: 'var(--text)' },
-      { label: 'Current Value', value: fmt(stakeValue) + ' LICN', color: '#10b981' },
-      { label: 'Rewards Earned', value: fmt(rewards) + ' LICN', color: '#f59e0b' },
+      { label: 'Redeemable Value', value: fmt(stakeValue) + ' LICN', color: '#10b981' },
+      { label: 'Est. Exchange Gain', value: fmt(exchangeGain) + ' LICN', color: '#f59e0b' },
       { label: 'Your Tier', value: tierName, color: '#a78bfa' },
       { label: 'Multiplier', value: multiplier.toFixed(1) + 'x', color: 'var(--text)' },
       { label: 'Pool Total', value: fmt(totalPool) + ' LICN', color: 'var(--text)' },
@@ -1493,7 +1493,7 @@ async function refreshBalance() {
       if (hasBreakdown) {
         const parts = [`<i class="fas fa-wallet"></i> Spendable: <strong>${balanceSnapshot.spendableLicn.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`];
         if (balanceSnapshot.stakedLicn > 0) parts.push(`<i class="fas fa-lock"></i> Staked: <strong>${balanceSnapshot.stakedLicn.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`);
-        if (balanceSnapshot.mossStakedLicn > 0) parts.push(`<i class="fas fa-coins"></i> Liquid Staking: <strong>${balanceSnapshot.mossStakedLicn.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`);
+        if (balanceSnapshot.mossStakedLicn > 0) parts.push(`<i class="fas fa-coins"></i> Liquid Staking Value: <strong>${balanceSnapshot.mossStakedLicn.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`);
         if (shieldedSpores > 0n) parts.push(`<i class="fas fa-shield-alt"></i> Shielded: <strong>${formatLicnBaseUnitsFixedPopup(shieldedSpores)}</strong>`);
         if (balanceSnapshot.pendingRewardsLicn > 0) parts.push(`<i class="fas fa-gift"></i> Rewards: <strong>${balanceSnapshot.pendingRewardsLicn.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`);
         if (balanceSnapshot.lockedLicn > 0) parts.push(`<i class="fas fa-hourglass"></i> Locked: <strong>${balanceSnapshot.lockedLicn.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`);
@@ -2200,6 +2200,35 @@ function generateReceiveQrCode() {
   } catch { /* QR lib not loaded */ }
 }
 
+function renderPopupQrCode(container, text, size = 160) {
+  if (!container) return;
+  container.innerHTML = '';
+  const QR = window.QRCode || globalThis.QRCode;
+  if (!QR) {
+    container.innerHTML = `
+      <div style="padding:1rem;border:1px dashed var(--border);border-radius:12px;text-align:center;color:var(--text-muted);">
+        <div style="font-size:1.2rem;margin-bottom:0.35rem;"><i class="fas fa-qrcode"></i></div>
+        <div style="font-size:0.78rem;">QR unavailable</div>
+      </div>`;
+    return;
+  }
+  try {
+    new QR(container, {
+      text,
+      width: size,
+      height: size,
+      colorDark: '#1a1a2e',
+      colorLight: '#ffffff',
+      correctLevel: QR.CorrectLevel.M,
+    });
+  } catch {
+    container.innerHTML = `
+      <div style="padding:1rem;border:1px dashed var(--border);border-radius:12px;text-align:center;color:var(--text-muted);">
+        <div style="font-size:1.2rem;"><i class="fas fa-qrcode"></i></div>
+      </div>`;
+  }
+}
+
 // ===== Shield panel =====
 
 let shieldedPopupState = {
@@ -2495,13 +2524,16 @@ async function requestExtBridgeDeposit(chain, asset, chainName) {
   if (loadingEl) loadingEl.style.display = 'block';
 
   try {
-    const hasCachedBridgeAuth = hasBridgeAccessAuth(wallet);
+    const hasCachedBridgeAuth = hasBridgeAccessAuth(wallet, { chain, asset });
     if (hasCachedBridgeAuth && loadingEl) {
-      loadingEl.innerHTML = '<i class="fas fa-key"></i> Refreshing bridge authorization...';
+      loadingEl.innerHTML = '<i class="fas fa-key"></i> Using active bridge authorization...';
     }
-    const password = await securePasswordPrompt('Wallet password (for bridge authorization):');
-    if (!password) {
-      throw new Error('Bridge authorization cancelled');
+    let password = '';
+    if (!hasCachedBridgeAuth) {
+      password = await securePasswordPrompt('Wallet password (for bridge authorization):');
+      if (!password) {
+        throw new Error('Bridge authorization cancelled');
+      }
     }
 
     const data = await requestBridgeDepositAddress({
@@ -2519,21 +2551,26 @@ async function requestExtBridgeDeposit(chain, asset, chainName) {
       resultEl.style.display = 'block';
       resultEl.innerHTML = `
         <p style="font-size:0.82rem;margin-bottom:0.5rem;">Send <strong>${escapeHtml(asset.toUpperCase())}</strong> to this ${escapeHtml(chainName)} address:</p>
-        <div id="extDepositAddr" style="padding:0.6rem;background:rgba(255,255,255,0.06);border:1px solid var(--border);border-radius:8px;font-family:monospace;font-size:0.72rem;word-break:break-all;cursor:pointer;">
-          ${escapeHtml(data.address)}
+        <div class="qr-code" id="extDepositQrCode" style="margin-bottom:0.75rem;"></div>
+        <div class="address-display" style="padding:0.55rem 0.7rem;">
+          <input id="extDepositAddr" class="form-input" readonly value="${escapeHtml(data.address)}" style="font-family:'JetBrains Mono',monospace;font-size:0.72rem;">
+          <button class="btn-circle" id="extCopyDepositAddr" title="Copy deposit address"><i class="fas fa-copy"></i></button>
         </div>
-        <p id="extCopyHint" style="text-align:center;font-size:0.7rem;color:var(--text-muted);margin-top:0.25rem;">Click to copy</p>
+        <p id="extCopyHint" style="text-align:center;font-size:0.7rem;color:var(--text-muted);margin-top:0.25rem;">Copy or scan this address</p>
         <div id="extDepositStatus" style="margin-top:0.75rem;padding:0.5rem;background:rgba(255,255,255,0.03);border-radius:8px;font-size:0.78rem;">
           <i class="fas fa-clock" style="color:var(--accent);"></i> Waiting for deposit...
         </div>
         <p style="font-size:0.7rem;color:var(--text-muted);margin-top:0.5rem;">Only send ${escapeHtml(asset.toUpperCase())} on ${escapeHtml(chainName)}. Reserved for 24h while unfunded; request a new address if it expires. ID: <code style="font-size:0.68rem;">${escapeHtml(data.deposit_id)}</code></p>
       `;
-      document.getElementById('extDepositAddr')?.addEventListener('click', () => {
+      renderPopupQrCode(document.getElementById('extDepositQrCode'), data.address, 160);
+      const copyAddress = () => {
         navigator.clipboard.writeText(data.address).then(() => {
           const h = document.getElementById('extCopyHint');
-          if (h) { h.textContent = 'Copied!'; setTimeout(() => { h.textContent = 'Click to copy'; }, 1500); }
+          if (h) { h.textContent = 'Copied!'; setTimeout(() => { h.textContent = 'Copy or scan this address'; }, 1500); }
         });
-      });
+      };
+      document.getElementById('extDepositAddr')?.addEventListener('click', copyAddress);
+      document.getElementById('extCopyDepositAddr')?.addEventListener('click', copyAddress);
     }
 
     // Poll deposit status
