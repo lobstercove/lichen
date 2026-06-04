@@ -3,7 +3,7 @@
   "name": "LichenWallet",
   "short_name": "LichenWallet",
   "description": "Secure, fast, and agent-friendly wallet for Lichen.",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "homepage_url": "https://wallet.lichen.network",
   "minimum_chrome_version": "120",
   "icons": {

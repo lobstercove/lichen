@@ -79,13 +79,13 @@
         <!-- Timeline -->
         <div class="changelog-timeline">
 
-            <!-- ============ v0.5.92 ============ -->
+            <!-- ============ v0.5.93 ============ -->
             <div class="changelog-entry">
                 <div class="changelog-header">
-                    <span class="changelog-version">v0.5.92</span>
+                    <span class="changelog-version">v0.5.93</span>
                     <span class="changelog-date">June 4, 2026</span>
                 </div>
-                <h3 class="changelog-title">MossStake Tier-Weighted Redemption</h3>
+                <h3 class="changelog-title">MossStake Tier-Weighted Redemption and Wall-Clock Locks</h3>
 
                 <div class="changelog-section" data-type="improved">
                     <h4><i class="fas fa-arrow-up" style="color: var(--accent)"></i> Improvements</h4>
@@ -95,6 +95,9 @@
                             receive through unstake.</li>
                         <li><strong>Weighted tier APY</strong> &mdash; tier estimates are derived from the live weighted
                             pool composition instead of naively multiplying the pool average by a tier multiplier.</li>
+                        <li><strong>Wall-clock staking periods</strong> &mdash; lock tiers and unstake cooldowns are now
+                            enforced from block Unix timestamps, so faster blocks cannot shorten 7-day, 30-day,
+                            180-day, or 365-day staking periods.</li>
                         <li><strong>Clear staking UX</strong> &mdash; wallet and extension staking panels now show
                             accrued rewards and explain that boosted locked tiers are position-bound.</li>
                     </ul>
@@ -105,6 +108,8 @@
                     <ul>
                         <li><strong>stLICN backing</strong> &mdash; Flexible stLICN transfers carry principal and
                             accrued reward backing pro-rata to the recipient.</li>
+                        <li><strong>Current testnet migration</strong> &mdash; legacy MossStake positions and pending
+                            unstake requests are lazily backfilled from historical block timestamps without a reset.</li>
                         <li><strong>Locked-tier integrity</strong> &mdash; boosted locked positions can no longer bypass
                             lock semantics by transferring stLICN into a fresh flexible position.</li>
                         <li><strong>RPC value alignment</strong> &mdash; <code>getBalance</code> and

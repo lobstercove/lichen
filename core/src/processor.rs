@@ -1166,6 +1166,62 @@ mod tests {
     }
 
     #[test]
+    fn test_mossstake_claim_requires_wall_clock_cooldown() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+
+        let deposit_amount = Account::licn_to_spores(100);
+        let tx = make_mossstake_deposit_tx(&alice_kp, alice, deposit_amount, genesis_hash);
+        let r1 = processor.process_transaction(&tx, &validator);
+        assert!(r1.success, "deposit should succeed: {:?}", r1.error);
+
+        let pool = state.get_mossstake_pool().unwrap();
+        let st_licn = pool.positions.get(&alice).unwrap().st_licn_amount;
+        let tx = make_mossstake_unstake_tx(&alice_kp, alice, st_licn, genesis_hash);
+        let r2 = processor.process_transaction(&tx, &validator);
+        assert!(r2.success, "unstake should succeed: {:?}", r2.error);
+
+        let early_block = crate::Block::new_with_timestamp(
+            2_000_000,
+            genesis_hash,
+            Hash::hash(b"early_state"),
+            [0u8; 32],
+            Vec::new(),
+            3_600,
+        );
+        let early_hash = early_block.hash();
+        state.put_block(&early_block).unwrap();
+        state.set_last_slot(2_000_000).unwrap();
+
+        let tx = make_mossstake_claim_tx(&alice_kp, alice, early_hash);
+        let early = processor.process_transaction(&tx, &validator);
+        assert!(
+            !early.success,
+            "many fast slots must not bypass the 7-day wall-clock cooldown"
+        );
+
+        let mature_block = crate::Block::new_with_timestamp(
+            2_000_001,
+            early_hash,
+            Hash::hash(b"mature_state"),
+            [0u8; 32],
+            Vec::new(),
+            crate::mossstake::MOSSSTAKE_UNSTAKE_COOLDOWN_SECONDS,
+        );
+        let mature_hash = mature_block.hash();
+        state.put_block(&mature_block).unwrap();
+        state.set_last_slot(2_000_001).unwrap();
+
+        let tx = make_mossstake_claim_tx(&alice_kp, alice, mature_hash);
+        let mature = processor.process_transaction(&tx, &validator);
+        assert!(
+            mature.success,
+            "claim should succeed once wall-clock cooldown is complete: {:?}",
+            mature.error
+        );
+    }
+
+    #[test]
     fn test_mossstake_unstake_more_than_staked_fails() {
         let (processor, _state, alice_kp, alice, _treasury, genesis_hash) = setup();
         let validator = Pubkey([42u8; 32]);
