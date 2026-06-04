@@ -2977,17 +2977,17 @@ async fn put_cached_program_list_response(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RpcReadSlotCacheProfile {
-    ExplicitBlockSlot,
-    ExplicitAccountSlot,
-    TransactionSlot,
-    CurrentProcessedSlot,
+    ExplicitBlock,
+    ExplicitAccount,
+    Transaction,
+    CurrentProcessed,
 }
 
 fn rpc_read_slot_cache_profile(method: &str) -> Option<RpcReadSlotCacheProfile> {
     match method {
-        "getBlockCommit" => Some(RpcReadSlotCacheProfile::ExplicitBlockSlot),
-        "getAccountAtSlot" => Some(RpcReadSlotCacheProfile::ExplicitAccountSlot),
-        "getTransactionProof" => Some(RpcReadSlotCacheProfile::TransactionSlot),
+        "getBlockCommit" => Some(RpcReadSlotCacheProfile::ExplicitBlock),
+        "getAccountAtSlot" => Some(RpcReadSlotCacheProfile::ExplicitAccount),
+        "getTransactionProof" => Some(RpcReadSlotCacheProfile::Transaction),
         "getBlock"
         | "getRecentBlocks"
         | "getRecentTransactions"
@@ -2996,7 +2996,7 @@ fn rpc_read_slot_cache_profile(method: &str) -> Option<RpcReadSlotCacheProfile> 
         | "getTransactionHistory"
         | "getAccountTxCount"
         | "getProgramCalls"
-        | "getProgramStorage" => Some(RpcReadSlotCacheProfile::CurrentProcessedSlot),
+        | "getProgramStorage" => Some(RpcReadSlotCacheProfile::CurrentProcessed),
         _ => None,
     }
 }
@@ -3057,12 +3057,12 @@ fn rpc_read_slot_cache_key(
 ) -> Option<String> {
     let profile = rpc_read_slot_cache_profile(method)?;
     let slot = match profile {
-        RpcReadSlotCacheProfile::ExplicitBlockSlot => {
+        RpcReadSlotCacheProfile::ExplicitBlock => {
             parse_get_block_slot_param(params.as_ref(), false).ok()?
         }
-        RpcReadSlotCacheProfile::ExplicitAccountSlot => account_at_slot_cache_slot(params)?,
-        RpcReadSlotCacheProfile::TransactionSlot => transaction_proof_cache_slot(state, params)?,
-        RpcReadSlotCacheProfile::CurrentProcessedSlot => {
+        RpcReadSlotCacheProfile::ExplicitAccount => account_at_slot_cache_slot(params)?,
+        RpcReadSlotCacheProfile::Transaction => transaction_proof_cache_slot(state, params)?,
+        RpcReadSlotCacheProfile::CurrentProcessed => {
             if !rpc_block_apply_idle(state) {
                 return None;
             }
