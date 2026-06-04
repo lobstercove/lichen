@@ -189,15 +189,17 @@ REMOTE
 
 install_host() {
   local host="$1"
-  local arch archive root expected_validator_sha
+  local arch archive root expected_validator_sha expected_custody_sha expected_faucet_sha
   arch="$(ssh_run "$host" "uname -m")"
   archive="$(archive_for_arch "$arch")"
   root="$(archive_root "$archive")"
   expected_validator_sha="$(archive_bin_sha "$archive" "$root" lichen-validator)"
+  expected_custody_sha="$(archive_bin_sha "$archive" "$root" lichen-custody)"
+  expected_faucet_sha="$(archive_bin_sha "$archive" "$root" lichen-faucet)"
 
   echo "Install ${RELEASE_TAG} on ${host} (${archive})"
   scp_to "$ARTIFACT_DIR/$archive" "$host" "/tmp/$archive"
-  ssh_run "$host" "NETWORK='$NETWORK' SERVICE='$SERVICE' ARCHIVE='/tmp/$archive' EXPECTED_VALIDATOR_SHA='$expected_validator_sha' bash -s" <<'REMOTE'
+  ssh_run "$host" "NETWORK='$NETWORK' SERVICE='$SERVICE' ARCHIVE='/tmp/$archive' EXPECTED_VALIDATOR_SHA='$expected_validator_sha' EXPECTED_CUSTODY_SHA='$expected_custody_sha' EXPECTED_FAUCET_SHA='$expected_faucet_sha' bash -s" <<'REMOTE'
 set -euo pipefail
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp" "$ARCHIVE"' EXIT
@@ -214,11 +216,22 @@ for bin in lichen-validator lichen-genesis lichen zk-prove; do
   test -x "$root/$bin"
   sudo install -m 755 "$root/$bin" "/usr/local/bin/$bin"
 done
-for bin in lichen-custody lichen-faucet; do
-  if [ -f "$root/$bin" ]; then
-    sudo install -m 755 "$root/$bin" "/usr/local/bin/$bin"
+
+install_optional_service_bin() {
+  local bin="$1"
+  local expected_sha="$2"
+  if [ -z "$expected_sha" ]; then
+    return 0
   fi
-done
+  if [ ! -f "$root/$bin" ]; then
+    echo "Release archive is missing expected service binary: $bin"
+    exit 1
+  fi
+  sudo install -m 755 "$root/$bin" "/usr/local/bin/$bin"
+}
+
+install_optional_service_bin lichen-custody "$EXPECTED_CUSTODY_SHA"
+install_optional_service_bin lichen-faucet "$EXPECTED_FAUCET_SHA"
 
 if [ -f "$root/seeds.json" ]; then
   sudo install -m 644 "$root/seeds.json" /etc/lichen/seeds.json
@@ -232,16 +245,26 @@ if [ "$installed_sha" != "$EXPECTED_VALIDATOR_SHA" ]; then
   exit 1
 fi
 
-for bin in lichen-validator lichen-genesis lichen zk-prove lichen-custody lichen-faucet; do
-  if [ -f "$root/$bin" ]; then
-    expected_bin_sha="$(sha256sum "$root/$bin" | awk '{print $1}')"
-    installed_bin_sha="$(sha256sum "/usr/local/bin/$bin" | awk '{print $1}')"
-    if [ "$installed_bin_sha" != "$expected_bin_sha" ]; then
-      echo "Installed ${bin} hash mismatch: got ${installed_bin_sha}, expected ${expected_bin_sha}"
-      exit 1
-    fi
+check_installed_bin_hash() {
+  local bin="$1"
+  local expected_sha="$2"
+  local installed_bin_sha
+  if [ -z "$expected_sha" ]; then
+    return 0
   fi
+  installed_bin_sha="$(sha256sum "/usr/local/bin/$bin" | awk '{print $1}')"
+  if [ "$installed_bin_sha" != "$expected_sha" ]; then
+    echo "Installed ${bin} hash mismatch: got ${installed_bin_sha}, expected ${expected_sha}"
+    exit 1
+  fi
+}
+
+for bin in lichen-validator lichen-genesis lichen zk-prove; do
+  expected_bin_sha="$(sha256sum "$root/$bin" | awk '{print $1}')"
+  check_installed_bin_hash "$bin" "$expected_bin_sha"
 done
+check_installed_bin_hash lichen-custody "$EXPECTED_CUSTODY_SHA"
+check_installed_bin_hash lichen-faucet "$EXPECTED_FAUCET_SHA"
 
 sudo systemctl stop "$SERVICE" || true
 sleep 2

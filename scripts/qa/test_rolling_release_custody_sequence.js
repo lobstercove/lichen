@@ -29,10 +29,16 @@ assert(signatureVerify < checksumVerify, 'release PQ signature must be verified 
 assert(checksumVerify < installCall, 'release artifacts must be verified before validator install');
 assert(installCall < healthCall, 'validator install must happen before health wait');
 assert(healthCall < custodyCall, 'custody restart must happen only after validator health');
-assert(script.includes('for bin in lichen-custody lichen-faucet; do\n  if [ -f "$root/$bin" ]; then'),
-  'optional Linux service binaries must be installed when present in the archive');
-assert(script.includes('for bin in lichen-validator lichen-genesis lichen zk-prove lichen-custody lichen-faucet; do\n  if [ -f "$root/$bin" ]; then'),
-  'installed service binary hash checks must run when the archive file exists');
+assert(script.includes("expected_custody_sha=\"$(archive_bin_sha \"$archive\" \"$root\" lichen-custody)\""),
+  'custody release hash must be computed before install');
+assert(script.includes('install_optional_service_bin lichen-custody "$EXPECTED_CUSTODY_SHA"'),
+  'custody binary must be installed when expected in the archive');
+assert(script.includes('install_optional_service_bin lichen-faucet "$EXPECTED_FAUCET_SHA"'),
+  'faucet binary must be installed when expected in the archive');
+assert(script.includes('check_installed_bin_hash lichen-custody "$EXPECTED_CUSTODY_SHA"'),
+  'custody binary hash must be verified immediately after install');
+assert(script.includes('check_installed_bin_hash lichen-faucet "$EXPECTED_FAUCET_SHA"'),
+  'faucet binary hash must be verified immediately after install');
 assert(!script.includes('for bin in lichen-custody lichen-faucet; do\n  if [ -x "$root/$bin" ]; then'),
   'optional service install must not depend on temp extract executable checks');
 assert(script.includes('systemctl list-unit-files --no-legend lichen-custody.service'), 'custody refresh must be conditional on service presence');
