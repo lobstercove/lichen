@@ -21,6 +21,7 @@ const SPARSE_CONTRACT_ROOT_KEY: &[u8] = b"sparse_contract_root";
 const SPARSE_ACCOUNTS_LEAF_COUNT_KEY: &[u8] = b"sparse_accounts_leaf_count";
 const SPARSE_CONTRACT_LEAF_COUNT_KEY: &[u8] = b"sparse_contract_leaf_count";
 const SPARSE_STATE_READY_KEY: &[u8] = b"sparse_state_commitment_ready";
+const SPARSE_DIRTY_MARKERS_ATOMIC_KEY: &[u8] = b"sparse_dirty_markers_atomic_v1";
 const STATE_COMMITMENT_SCHEMA_ORDERED_V0: u8 = 0;
 const STATE_COMMITMENT_SCHEMA_SPARSE_V1: u8 = 1;
 const SPARSE_NODE_DOMAIN_LEAF: u8 = 0xA0;
@@ -517,6 +518,26 @@ impl StateStore {
         )
     }
 
+    pub fn uses_trusted_sparse_dirty_markers(&self) -> bool {
+        let Some(cf_stats) = self.db.cf_handle(CF_STATS) else {
+            return false;
+        };
+        matches!(
+            self.db.get_cf(&cf_stats, SPARSE_DIRTY_MARKERS_ATOMIC_KEY),
+            Ok(Some(data)) if data.as_slice() == b"1"
+        )
+    }
+
+    pub fn can_skip_active_sparse_startup_rebuild(&self) -> bool {
+        self.uses_sparse_state_commitment()
+            && self.is_sparse_state_commitment_ready()
+            && self.uses_trusted_sparse_dirty_markers()
+            && self.read_cached_hash(SPARSE_ACCOUNTS_ROOT_KEY).is_some()
+            && self.read_cached_hash(SPARSE_CONTRACT_ROOT_KEY).is_some()
+            && self.can_use_cached_subroot(b"dirty_account_count", b"dirty_acct:")
+            && self.can_use_cached_subroot(b"dirty_contract_count", b"dirty_cstor:")
+    }
+
     fn sparse_bit(path: &[u8; 32], bit_index: u16) -> bool {
         let idx = bit_index as usize;
         let byte = path[idx / 8];
@@ -1009,6 +1030,7 @@ impl StateStore {
 
     fn rebuild_sparse_accounts_commitment(&self) -> Result<(Hash, u64, u64), String> {
         let entries = self.collect_sparse_account_entries()?;
+        let dirty_keys = self.dirty_account_keys();
         let (root, overlay) =
             self.sparse_compute_root_from_entries(CF_ACCOUNT_MERKLE_NODES, &entries)?;
         let mut batch = WriteBatch::default();
@@ -1022,6 +1044,12 @@ impl StateStore {
             .cf_handle(CF_STATS)
             .ok_or_else(|| "Stats CF not found".to_string())?;
         let leaf_count = entries.len() as u64;
+        for pk in dirty_keys {
+            let mut dirty_key = [0u8; 43];
+            dirty_key[..11].copy_from_slice(b"dirty_acct:");
+            dirty_key[11..43].copy_from_slice(&pk);
+            batch.delete_cf(&cf_stats, dirty_key);
+        }
         batch.put_cf(&cf_stats, SPARSE_ACCOUNTS_ROOT_KEY, root.0);
         batch.put_cf(
             &cf_stats,
@@ -1042,6 +1070,7 @@ impl StateStore {
 
     fn rebuild_sparse_contract_commitment(&self) -> Result<(Hash, u64, u64), String> {
         let entries = self.collect_sparse_contract_entries()?;
+        let dirty_keys = self.dirty_contract_storage_keys();
         let (root, overlay) =
             self.sparse_compute_root_from_entries(CF_CONTRACT_MERKLE_NODES, &entries)?;
         let mut batch = WriteBatch::default();
@@ -1055,6 +1084,12 @@ impl StateStore {
             .cf_handle(CF_STATS)
             .ok_or_else(|| "Stats CF not found".to_string())?;
         let leaf_count = entries.len() as u64;
+        for full_key in dirty_keys {
+            let mut marker_key = Vec::with_capacity(b"dirty_cstor:".len() + full_key.len());
+            marker_key.extend_from_slice(b"dirty_cstor:");
+            marker_key.extend_from_slice(&full_key);
+            batch.delete_cf(&cf_stats, marker_key);
+        }
         batch.put_cf(&cf_stats, SPARSE_CONTRACT_ROOT_KEY, root.0);
         batch.put_cf(
             &cf_stats,
@@ -1082,17 +1117,26 @@ impl StateStore {
         activate: bool,
     ) -> Result<SparseStateCommitmentReport, String> {
         let before_schema = self.get_state_commitment_schema();
-        let (accounts_root, accounts_leaf_count, accounts_node_count) =
-            self.rebuild_sparse_accounts_commitment()?;
-        let (contract_root, contract_leaf_count, contract_node_count) =
-            self.rebuild_sparse_contract_commitment()?;
         let cf_stats = self
             .db
             .cf_handle(CF_STATS)
             .ok_or_else(|| "Stats CF not found".to_string())?;
         self.db
+            .put_cf(&cf_stats, SPARSE_STATE_READY_KEY, b"0")
+            .map_err(|e| format!("Failed to mark sparse commitment rebuilding: {e}"))?;
+        self.db
+            .put_cf(&cf_stats, SPARSE_DIRTY_MARKERS_ATOMIC_KEY, b"0")
+            .map_err(|e| format!("Failed to mark sparse dirty markers untrusted: {e}"))?;
+        let (accounts_root, accounts_leaf_count, accounts_node_count) =
+            self.rebuild_sparse_accounts_commitment()?;
+        let (contract_root, contract_leaf_count, contract_node_count) =
+            self.rebuild_sparse_contract_commitment()?;
+        self.db
             .put_cf(&cf_stats, SPARSE_STATE_READY_KEY, b"1")
             .map_err(|e| format!("Failed to mark sparse commitment ready: {e}"))?;
+        self.db
+            .put_cf(&cf_stats, SPARSE_DIRTY_MARKERS_ATOMIC_KEY, b"1")
+            .map_err(|e| format!("Failed to mark sparse dirty markers atomic: {e}"))?;
         if activate {
             self.set_state_commitment_schema(STATE_COMMITMENT_SCHEMA_SPARSE_V1)?;
         }
@@ -1102,12 +1146,21 @@ impl StateStore {
             .ok()
             .flatten()
             .map(|block| block.header.state_root);
+        let include_restrictions = self.get_state_root_schema().unwrap_or(false);
+        let current_state_root = self.compose_state_root(
+            accounts_root,
+            contract_root,
+            self.compute_stake_pool_hash(),
+            self.compute_mossstake_pool_hash(),
+            include_restrictions,
+        );
+        self.cache_state_root(&current_state_root, include_restrictions);
         Ok(SparseStateCommitmentReport {
             before_schema,
             after_schema: self.get_state_commitment_schema(),
             active: self.uses_sparse_state_commitment(),
             last_slot,
-            current_state_root: self.compute_state_root_cold_start(),
+            current_state_root,
             latest_block_state_root,
             accounts_root,
             contract_root,
@@ -2622,6 +2675,41 @@ impl StateStore {
         self.compute_state_root()
     }
 
+    pub(crate) fn stage_account_dirty_marker(
+        &self,
+        batch: &mut WriteBatch,
+        pubkey: &Pubkey,
+    ) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        let mut key = [0u8; 43];
+        key[..11].copy_from_slice(b"dirty_acct:");
+        key[11..43].copy_from_slice(&pubkey.0);
+        batch.put_cf(&cf, key, []);
+        batch.put_cf(&cf, b"dirty_account_count", 1u64.to_le_bytes());
+        Ok(())
+    }
+
+    pub(crate) fn stage_contract_storage_dirty_marker(
+        &self,
+        batch: &mut WriteBatch,
+        full_key: &[u8],
+    ) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        let prefix = b"dirty_cstor:";
+        let mut dirty_key = Vec::with_capacity(prefix.len() + full_key.len());
+        dirty_key.extend_from_slice(prefix);
+        dirty_key.extend_from_slice(full_key);
+        batch.put_cf(&cf, &dirty_key, []);
+        batch.put_cf(&cf, b"dirty_contract_count", 1u64.to_le_bytes());
+        Ok(())
+    }
+
     pub fn mark_account_dirty_with_key(&self, pubkey: &Pubkey) {
         if let Some(cf) = self.db.cf_handle(CF_STATS) {
             let mut key = [0u8; 43];
@@ -2636,6 +2724,10 @@ impl StateStore {
                 .put_cf(&cf, b"dirty_account_count", 1u64.to_le_bytes())
             {
                 tracing::warn!("Failed to write dirty_account_count: {}", e);
+            }
+
+            if let Err(e) = self.db.put_cf(&cf, SPARSE_DIRTY_MARKERS_ATOMIC_KEY, b"0") {
+                tracing::warn!("Failed to mark sparse dirty markers untrusted: {}", e);
             }
         }
     }
@@ -2654,6 +2746,9 @@ impl StateStore {
                 .put_cf(&cf, b"dirty_contract_count", 1u64.to_le_bytes())
             {
                 tracing::warn!("Failed to write dirty_contract_count: {}", e);
+            }
+            if let Err(e) = self.db.put_cf(&cf, SPARSE_DIRTY_MARKERS_ATOMIC_KEY, b"0") {
+                tracing::warn!("Failed to mark sparse dirty markers untrusted: {}", e);
             }
         }
     }

@@ -116,8 +116,12 @@ impl StateStore {
         append_legacy_bincode(&mut value, account, "account")
             .map_err(|e| format!("Failed to serialize account: {}", e))?;
 
+        let mut batch = WriteBatch::default();
+        batch.put_cf(&cf, pubkey.0, &value);
+
+        self.stage_account_dirty_marker(&mut batch, pubkey)?;
         self.db
-            .put_cf(&cf, pubkey.0, &value)
+            .write(batch)
             .map_err(|e| format!("Failed to store account: {}", e))?;
 
         if self.is_archive_mode() {
@@ -142,8 +146,6 @@ impl StateStore {
         } else if old_balance > 0 && new_balance == 0 {
             self.metrics.decrement_active_accounts();
         }
-
-        self.mark_account_dirty_with_key(pubkey);
 
         Ok(())
     }
@@ -242,12 +244,11 @@ impl StateStore {
             .map_err(|e| format!("Serialize to: {}", e))?;
         batch.put_cf(&cf, from.0, &from_bytes);
         batch.put_cf(&cf, to.0, &to_bytes);
+        self.stage_account_dirty_marker(&mut batch, from)?;
+        self.stage_account_dirty_marker(&mut batch, to)?;
         self.db
             .write(batch)
             .map_err(|e| format!("Atomic transfer write failed: {}", e))?;
-
-        self.mark_account_dirty_with_key(from);
-        self.mark_account_dirty_with_key(to);
 
         if !to_existed {
             self.metrics.increment_accounts();
@@ -335,6 +336,7 @@ impl StateStore {
             append_legacy_bincode(&mut value, account, "account")
                 .map_err(|e| format!("Failed to serialize account: {}", e))?;
             batch.put_cf(&cf, pubkey.0, &value);
+            self.stage_account_dirty_marker(&mut batch, pubkey)?;
             meta.push((pubkey, is_new, old_balance, account.spores));
         }
 
@@ -359,7 +361,7 @@ impl StateStore {
             .write(batch)
             .map_err(|e| format!("Atomic account write failed: {}", e))?;
 
-        for (pubkey, is_new, old_balance, new_balance) in meta {
+        for (_pubkey, is_new, old_balance, new_balance) in meta {
             if is_new {
                 self.metrics.increment_accounts();
             }
@@ -368,7 +370,6 @@ impl StateStore {
             } else if old_balance > 0 && new_balance == 0 {
                 self.metrics.decrement_active_accounts();
             }
-            self.mark_account_dirty_with_key(pubkey);
         }
 
         Ok(())
@@ -417,6 +418,7 @@ impl StateStore {
             append_legacy_bincode(&mut value, account, "account")
                 .map_err(|e| format!("Failed to serialize account: {}", e))?;
             batch.put_cf(&cf, pubkey.0, &value);
+            self.stage_account_dirty_marker(&mut batch, pubkey)?;
             meta.push((pubkey, is_new, old_balance, account.spores));
         }
 
@@ -441,7 +443,7 @@ impl StateStore {
             .write(batch)
             .map_err(|e| format!("Atomic mint account write failed: {}", e))?;
 
-        for (pubkey, is_new, old_balance, new_balance) in meta {
+        for (_pubkey, is_new, old_balance, new_balance) in meta {
             if is_new {
                 self.metrics.increment_accounts();
             }
@@ -450,7 +452,6 @@ impl StateStore {
             } else if old_balance > 0 && new_balance == 0 {
                 self.metrics.decrement_active_accounts();
             }
-            self.mark_account_dirty_with_key(pubkey);
         }
 
         Ok(())
@@ -498,6 +499,7 @@ impl StateStore {
         append_legacy_bincode(&mut acct_bytes, acct, "account")
             .map_err(|e| format!("Failed to serialize account: {}", e))?;
         batch.put_cf(&cf_accounts, acct_key.0, &acct_bytes);
+        self.stage_account_dirty_marker(&mut batch, acct_key)?;
 
         let pool_bytes = serde_json::to_vec(pool)
             .map_err(|e| format!("Failed to serialize MossStake pool: {}", e))?;
@@ -516,8 +518,6 @@ impl StateStore {
         } else if old_balance > 0 && new_balance == 0 {
             self.metrics.decrement_active_accounts();
         }
-        self.mark_account_dirty_with_key(acct_key);
-
         Ok(())
     }
 

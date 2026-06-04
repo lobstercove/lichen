@@ -412,6 +412,38 @@ fn sparse_state_commitment_verify_reports_activation_state() {
     assert_eq!(verify_report.current_state_root, state.compute_state_root());
 }
 
+#[test]
+fn active_sparse_startup_rebuild_skip_requires_clean_atomic_dirty_markers() {
+    let (state, _dir) = make_state();
+    let alice = Pubkey::new([41u8; 32]);
+    let bob = Pubkey::new([42u8; 32]);
+    let program = Pubkey::new([43u8; 32]);
+
+    state
+        .put_account(&alice, &Account::new(1000, alice))
+        .unwrap();
+    state.put_account(&bob, &Account::new(100, bob)).unwrap();
+    state
+        .put_contract_storage(&program, b"quote", b"old")
+        .unwrap();
+
+    assert!(!state.can_skip_active_sparse_startup_rebuild());
+    state.rebuild_sparse_state_commitment(true).unwrap();
+    assert!(state.can_skip_active_sparse_startup_rebuild());
+
+    state.put_account(&bob, &Account::new(250, bob)).unwrap();
+    assert!(!state.can_skip_active_sparse_startup_rebuild());
+    state.compute_state_root();
+    assert!(state.can_skip_active_sparse_startup_rebuild());
+
+    state
+        .put_contract_storage(&program, b"quote", b"new")
+        .unwrap();
+    assert!(!state.can_skip_active_sparse_startup_rebuild());
+    state.compute_state_root();
+    assert!(state.can_skip_active_sparse_startup_rebuild());
+}
+
 // ─── Test: empty pools produce a known distinct root from no-pool ────────────
 
 #[test]

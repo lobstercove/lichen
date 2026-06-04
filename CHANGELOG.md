@@ -5,6 +5,16 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.90] - 2026-06-04
+
+### Changed
+- Makes active sparse-state startup repair idempotent: validators skip the full sparse commitment rebuild on clean trusted sparse metadata, while still forcing one repair for older or dirty stores.
+- Commits account and contract-storage sparse dirty markers in the same RocksDB batch as the state mutation, closing the startup crash window that previously required a full sparse rebuild every restart.
+
+### Fixed
+- Marks sparse commitment metadata not-ready/untrusted before rebuild and trusted only after successful full rebuild, so interrupted repairs cannot be reused as clean startup state.
+- Clears stale dirty markers during full sparse account and contract commitment rebuilds and avoids a second full state-root rebuild when reporting the rebuilt sparse root.
+
 ## [0.5.89] - 2026-06-04
 
 ### Added

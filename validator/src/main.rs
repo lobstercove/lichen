@@ -4928,6 +4928,17 @@ fn repair_active_sparse_state_commitment_before_tip_anchor(
         return Ok(());
     }
 
+    if state.can_skip_active_sparse_startup_rebuild() {
+        let last_slot = state.get_last_slot().unwrap_or(0);
+        let current_root = state.compute_state_root_cached();
+        info!(
+            "🧾 Startup: active sparse state commitment is clean; skipped full sparse rebuild: slot={} root={}",
+            last_slot,
+            current_root.to_hex(),
+        );
+        return Ok(());
+    }
+
     let report = state.rebuild_sparse_state_commitment(false)?;
     info!(
         "🧾 Startup: repaired active sparse state commitment before tip anchoring: slot={} root={} accounts={} contracts={}",

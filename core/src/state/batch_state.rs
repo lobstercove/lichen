@@ -108,6 +108,14 @@ impl StateStore {
             self.clear_composite_state_root_cache_in_batch(&mut wb);
         }
 
+        for pubkey in &dirty_pubkeys {
+            self.stage_account_dirty_marker(&mut wb, pubkey)?;
+        }
+
+        for key in &dirty_contract_keys {
+            self.stage_contract_storage_dirty_marker(&mut wb, key)?;
+        }
+
         self.db
             .write(wb)
             .map_err(|e| format!("Atomic batch commit failed: {}", e))?;
@@ -132,14 +140,6 @@ impl StateStore {
             }
         }
         self.metrics.save(&self.db)?;
-
-        for pubkey in &dirty_pubkeys {
-            self.mark_account_dirty_with_key(pubkey);
-        }
-
-        for key in &dirty_contract_keys {
-            self.mark_contract_storage_dirty(key);
-        }
 
         Ok(())
     }

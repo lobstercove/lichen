@@ -94,10 +94,10 @@ impl StateStore {
             Some(value),
         )?;
         self.apply_dex_orderbook_level_deltas(&mut batch, &dex_level_deltas)?;
+        self.stage_contract_storage_dirty_marker(&mut batch, &key)?;
         self.db
             .write(batch)
             .map_err(|e| format!("Failed to store contract storage: {}", e))?;
-        self.mark_contract_storage_dirty(&key);
         Ok(())
     }
 
@@ -144,10 +144,10 @@ impl StateStore {
             None,
         )?;
         self.apply_dex_orderbook_level_deltas(&mut batch, &dex_level_deltas)?;
+        self.stage_contract_storage_dirty_marker(&mut batch, &key)?;
         self.db
             .write(batch)
             .map_err(|e| format!("Failed to delete contract storage: {}", e))?;
-        self.mark_contract_storage_dirty(&key);
         Ok(())
     }
 
