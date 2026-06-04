@@ -275,6 +275,82 @@ impl MossStakePool {
         }
     }
 
+    /// Current redeemable value for a position.
+    ///
+    /// Rewards are distributed into each position according to its tier-weighted
+    /// shares, so redemption must use the position accounting rather than the
+    /// pool-wide average exchange rate. The global exchange rate remains useful
+    /// for minting new shares at the current average pool price.
+    pub fn position_value(&self, position: &StakingPosition) -> u64 {
+        position
+            .licn_deposited
+            .saturating_add(position.rewards_earned)
+    }
+
+    fn split_position_value_for_unstake(
+        position: &StakingPosition,
+        st_licn_amount: u64,
+    ) -> Result<(u64, u64, u64), String> {
+        if position.st_licn_amount == 0 {
+            return Err("Position has no stLICN".to_string());
+        }
+        if position.st_licn_amount < st_licn_amount {
+            return Err(format!(
+                "Insufficient stLICN: have {}, need {}",
+                position.st_licn_amount, st_licn_amount
+            ));
+        }
+
+        if st_licn_amount == position.st_licn_amount {
+            let licn_to_receive = position
+                .licn_deposited
+                .saturating_add(position.rewards_earned);
+            return Ok((
+                position.licn_deposited,
+                position.rewards_earned,
+                licn_to_receive,
+            ));
+        }
+
+        let principal_out = ((st_licn_amount as u128 * position.licn_deposited as u128)
+            / position.st_licn_amount as u128) as u64;
+        let rewards_out = ((st_licn_amount as u128 * position.rewards_earned as u128)
+            / position.st_licn_amount as u128) as u64;
+        Ok((
+            principal_out,
+            rewards_out,
+            principal_out.saturating_add(rewards_out),
+        ))
+    }
+
+    fn assert_transferable_position(
+        position: &StakingPosition,
+        current_slot: u64,
+    ) -> Result<(), String> {
+        if position.lock_tier != LockTier::Flexible {
+            return Err(format!(
+                "{} positions are not transferable. Unstake after the lock expires to receive LICN, or use the Flexible tier for liquid stLICN.",
+                position.lock_tier.display_name()
+            ));
+        }
+        if position.lock_until > current_slot {
+            return Err(format!(
+                "Position locked until slot {}; locked MossStake positions are not transferable",
+                position.lock_until
+            ));
+        }
+        Ok(())
+    }
+
+    fn total_weighted_st_licn(&self) -> u128 {
+        self.positions
+            .values()
+            .map(|p| {
+                (p.st_licn_amount as u128 * p.lock_tier.reward_multiplier_bp() as u128) / 10_000
+            })
+            .sum()
+    }
+
     /// Stake LICN, mint stLICN
     pub fn stake(
         &mut self,
@@ -380,11 +456,13 @@ impl MossStakePool {
             ));
         }
 
-        // Calculate LICN to receive (lock exchange rate now)
-        let licn_to_receive = self.st_licn_token.st_licn_to_licn(st_licn_amount);
+        let (principal_out, rewards_out, licn_to_receive) =
+            Self::split_position_value_for_unstake(position, st_licn_amount)?;
 
         // Burn stLICN from user
         position.st_licn_amount -= st_licn_amount;
+        position.licn_deposited = position.licn_deposited.saturating_sub(principal_out);
+        position.rewards_earned = position.rewards_earned.saturating_sub(rewards_out);
 
         // Update pool (stLICN burned, but LICN still locked for 7 days)
         self.st_licn_token.total_supply -= st_licn_amount;
@@ -412,6 +490,15 @@ impl MossStakePool {
             .entry(user)
             .or_default()
             .push(request.clone());
+
+        if let Some(position) = self.positions.get(&user) {
+            if position.st_licn_amount == 0
+                && position.licn_deposited == 0
+                && position.rewards_earned == 0
+            {
+                self.positions.remove(&user);
+            }
+        }
 
         Ok(request)
     }
@@ -471,55 +558,52 @@ impl MossStakePool {
             return Err("Cannot transfer stLICN to self".to_string());
         }
 
-        // Deduct from sender
+        let sender_view = self
+            .positions
+            .get(&from)
+            .ok_or_else(|| "Sender has no staking position".to_string())?;
+        Self::assert_transferable_position(sender_view, current_slot)?;
+        if sender_view.st_licn_amount < st_licn_amount {
+            return Err(format!(
+                "Insufficient stLICN: have {}, need {}",
+                sender_view.st_licn_amount, st_licn_amount
+            ));
+        }
+        if let Some(receiver) = self.positions.get(&to) {
+            Self::assert_transferable_position(receiver, current_slot)?;
+        }
+
+        let (deposited_transfer, rewards_transfer, _) =
+            Self::split_position_value_for_unstake(sender_view, st_licn_amount)?;
+
+        // Deduct from sender after all failure checks have passed.
         let sender = self
             .positions
             .get_mut(&from)
             .ok_or_else(|| "Sender has no staking position".to_string())?;
-        if sender.st_licn_amount < st_licn_amount {
-            return Err(format!(
-                "Insufficient stLICN: have {}, need {}",
-                sender.st_licn_amount, st_licn_amount
-            ));
-        }
         sender.st_licn_amount -= st_licn_amount;
-        // Proportionally reduce the deposited tracking
-        let proportion = if sender.st_licn_amount == 0 {
-            // Sent everything: transfer the remaining licn_deposited proportion
-            let deposited_transfer = sender.licn_deposited;
-            sender.licn_deposited = 0;
-            deposited_transfer
-        } else {
-            // Partial: pro-rata
-            let total_before = sender.st_licn_amount + st_licn_amount;
-            if total_before == 0 {
-                0
-            } else {
-                let transfer_deposited = ((st_licn_amount as u128 * sender.licn_deposited as u128)
-                    / total_before as u128) as u64;
-                sender.licn_deposited -= transfer_deposited;
-                transfer_deposited
-            }
-        };
+        sender.licn_deposited = sender.licn_deposited.saturating_sub(deposited_transfer);
+        sender.rewards_earned = sender.rewards_earned.saturating_sub(rewards_transfer);
 
         // Remove sender position if empty
-        if sender.st_licn_amount == 0 && sender.licn_deposited == 0 {
+        if sender.st_licn_amount == 0 && sender.licn_deposited == 0 && sender.rewards_earned == 0 {
             self.positions.remove(&from);
         }
 
         // Credit to receiver
         if let Some(receiver) = self.positions.get_mut(&to) {
             receiver.st_licn_amount += st_licn_amount;
-            receiver.licn_deposited += proportion;
+            receiver.licn_deposited += deposited_transfer;
+            receiver.rewards_earned += rewards_transfer;
         } else {
             self.positions.insert(
                 to,
                 StakingPosition {
                     owner: to,
                     st_licn_amount,
-                    licn_deposited: proportion,
+                    licn_deposited: deposited_transfer,
                     deposited_at: current_slot,
-                    rewards_earned: 0,
+                    rewards_earned: rewards_transfer,
                     lock_tier: LockTier::Flexible,
                     lock_until: 0,
                 },
@@ -541,13 +625,7 @@ impl MossStakePool {
         self.st_licn_token.exchange_rate_fp = self.st_licn_token.calculate_exchange_rate_fp();
 
         // Calculate total weighted stLICN across all positions
-        let total_weighted: u128 = self
-            .positions
-            .values()
-            .map(|p| {
-                (p.st_licn_amount as u128 * p.lock_tier.reward_multiplier_bp() as u128) / 10_000
-            })
-            .sum();
+        let total_weighted = self.total_weighted_st_licn();
 
         if total_weighted == 0 {
             return;
@@ -577,7 +655,7 @@ impl MossStakePool {
     /// Get user's position with current value
     pub fn get_position(&self, user: &Pubkey) -> Option<(StakingPosition, u64)> {
         self.positions.get(user).map(|pos| {
-            let current_value = self.st_licn_token.st_licn_to_licn(pos.st_licn_amount);
+            let current_value = self.position_value(pos);
             (pos.clone(), current_value)
         })
     }
@@ -596,6 +674,28 @@ impl MossStakePool {
         let annual_rewards = daily_rewards * 365;
         // APY in basis points: (annual / staked) * 10000
         ((annual_rewards * 10_000) / self.st_licn_token.total_licn_staked as u128) as u64
+    }
+
+    /// Estimate tier APY against the current weighted pool composition.
+    ///
+    /// Multipliers affect relative reward share, so they do not simply multiply
+    /// the pool average when all positions use the same tier. This mirrors
+    /// staking systems that divide a fixed reward budget by weighted stake.
+    pub fn calculate_tier_apy_bp(
+        &self,
+        blocks_per_day: u64,
+        block_reward: u64,
+        tier: LockTier,
+    ) -> u64 {
+        let total_weighted = self.total_weighted_st_licn();
+        if total_weighted == 0 || self.st_licn_token.exchange_rate_fp == 0 {
+            return 0;
+        }
+
+        let daily_rewards = blocks_per_day as u128 * block_reward as u128;
+        let annual_rewards = daily_rewards * 365;
+        ((annual_rewards * tier.reward_multiplier_bp() as u128 * RATE_PRECISION)
+            / (total_weighted * self.st_licn_token.exchange_rate_fp as u128)) as u64
     }
 
     /// Calculate APY as f64 percentage (for display/API only — NOT for consensus)
@@ -756,5 +856,119 @@ mod tests {
             .collect::<Vec<_>>()
             .windows(2)
             .all(|w| w[0] <= w[1]));
+    }
+
+    #[test]
+    fn test_weighted_rewards_are_redeemed_by_position() {
+        let mut pool = MossStakePool::new();
+        let alice = Pubkey::from_base58("11111111111111111111111111111112").unwrap();
+        let bob = Pubkey::from_base58("6YkFWKH9HQZFVEy4QPw82xRx5qHRk84vU1H2Hk7JLj1H").unwrap();
+
+        pool.stake_with_tier(alice, 1_000, 0, LockTier::Flexible)
+            .unwrap();
+        pool.stake_with_tier(bob, 1_000, 0, LockTier::Lock30)
+            .unwrap();
+
+        pool.distribute_rewards(260);
+
+        let (_, alice_value) = pool.get_position(&alice).unwrap();
+        let (_, bob_value) = pool.get_position(&bob).unwrap();
+        assert_eq!(alice_value, 1_100);
+        assert_eq!(bob_value, 1_160);
+
+        let alice_request = pool.request_unstake(alice, 1_000, 0).unwrap();
+        assert_eq!(alice_request.licn_to_receive, 1_100);
+
+        let bob_request = pool
+            .request_unstake(bob, 1_000, LockTier::Lock30.lock_duration_slots())
+            .unwrap();
+        assert_eq!(bob_request.licn_to_receive, 1_160);
+        assert_eq!(pool.st_licn_token.total_licn_staked, 0);
+    }
+
+    #[test]
+    fn test_flexible_transfer_carries_reward_backing_pro_rata() {
+        let mut pool = MossStakePool::new();
+        let alice = Pubkey::from_base58("6YkFWKH9HQZFVEy4QPw82xRx5qHRk84vU1H2Hk7JLj1H").unwrap();
+        let bob = Pubkey::from_base58("BwVDmnwtfVBiRYB4iWxWrb5M9fAfQD9hbMmnQMw3MRvV").unwrap();
+
+        pool.stake(alice, 1_000, 0).unwrap();
+        pool.distribute_rewards(100);
+        pool.transfer(alice, bob, 400, 10).unwrap();
+
+        let (alice_pos, alice_value) = pool.get_position(&alice).unwrap();
+        let (bob_pos, bob_value) = pool.get_position(&bob).unwrap();
+        assert_eq!(alice_pos.licn_deposited, 600);
+        assert_eq!(alice_pos.rewards_earned, 60);
+        assert_eq!(alice_value, 660);
+        assert_eq!(bob_pos.licn_deposited, 400);
+        assert_eq!(bob_pos.rewards_earned, 40);
+        assert_eq!(bob_value, 440);
+
+        let request = pool.request_unstake(bob, 400, 20).unwrap();
+        assert_eq!(request.licn_to_receive, 440);
+    }
+
+    #[test]
+    fn test_locked_tier_positions_are_not_transferable() {
+        let mut pool = MossStakePool::new();
+        let alice = Pubkey::from_base58("6YkFWKH9HQZFVEy4QPw82xRx5qHRk84vU1H2Hk7JLj1H").unwrap();
+        let bob = Pubkey::from_base58("BwVDmnwtfVBiRYB4iWxWrb5M9fAfQD9hbMmnQMw3MRvV").unwrap();
+
+        pool.stake_with_tier(alice, 1_000, 0, LockTier::Lock30)
+            .unwrap();
+        let err = pool.transfer(alice, bob, 100, 10).unwrap_err();
+        assert!(
+            err.contains("not transferable"),
+            "locked-tier transfer should be rejected, got {err}"
+        );
+    }
+
+    #[test]
+    fn test_transfer_to_locked_position_does_not_mutate_sender() {
+        let mut pool = MossStakePool::new();
+        let alice = Pubkey::from_base58("11111111111111111111111111111112").unwrap();
+        let bob = Pubkey::from_base58("6YkFWKH9HQZFVEy4QPw82xRx5qHRk84vU1H2Hk7JLj1H").unwrap();
+
+        pool.stake(alice, 1_000, 0).unwrap();
+        pool.distribute_rewards(100);
+        pool.stake_with_tier(bob, 1_000, 0, LockTier::Lock30)
+            .unwrap();
+
+        let before = pool.get_position(&alice).unwrap().0;
+        let err = pool.transfer(alice, bob, 400, 10).unwrap_err();
+        assert!(
+            err.contains("not transferable"),
+            "transfer into locked position should be rejected, got {err}"
+        );
+        let after = pool.get_position(&alice).unwrap().0;
+        assert_eq!(after.st_licn_amount, before.st_licn_amount);
+        assert_eq!(after.licn_deposited, before.licn_deposited);
+        assert_eq!(after.rewards_earned, before.rewards_earned);
+    }
+
+    #[test]
+    fn test_tier_apy_uses_weighted_pool_composition() {
+        let mut pool = MossStakePool::new();
+        let alice = Pubkey::from_base58("11111111111111111111111111111112").unwrap();
+        let bob = Pubkey::from_base58("6YkFWKH9HQZFVEy4QPw82xRx5qHRk84vU1H2Hk7JLj1H").unwrap();
+
+        pool.stake_with_tier(alice, 1_000, 0, LockTier::Lock30)
+            .unwrap();
+        pool.stake_with_tier(bob, 1_000, 0, LockTier::Lock30)
+            .unwrap();
+
+        let average_apy = pool.calculate_apy_bp(1, 100);
+        let lock30_apy = pool.calculate_tier_apy_bp(1, 100, LockTier::Lock30);
+        let flexible_apy = pool.calculate_tier_apy_bp(1, 100, LockTier::Flexible);
+
+        assert_eq!(
+            lock30_apy, average_apy,
+            "when every position has the same multiplier, the multiplier cancels out"
+        );
+        assert!(
+            flexible_apy < lock30_apy,
+            "a lower multiplier should estimate a lower APY in a locked pool"
+        );
     }
 }

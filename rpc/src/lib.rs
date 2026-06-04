@@ -6372,12 +6372,9 @@ async fn handle_get_balance(
                 .get_mossstake_pool()
                 .ok()
                 .and_then(|pool| {
-                    pool.positions.get(&pubkey).map(|p| {
-                        (
-                            p.licn_deposited,
-                            pool.st_licn_token.st_licn_to_licn(p.st_licn_amount),
-                        )
-                    })
+                    pool.positions
+                        .get(&pubkey)
+                        .map(|p| (p.licn_deposited, pool.position_value(p)))
                 })
                 .unwrap_or((0, 0));
 
@@ -18055,8 +18052,7 @@ async fn handle_get_staking_position(
         message: format!("Failed to get MossStake pool: {}", e),
     })?;
 
-    if let Some(position) = pool.positions.get(&user) {
-        let current_value = pool.st_licn_token.st_licn_to_licn(position.st_licn_amount);
+    if let Some((position, current_value)) = pool.get_position(&user) {
         let tier = position.lock_tier as u8;
         let tier_name = position.lock_tier.display_name();
         let multiplier = position.lock_tier.reward_multiplier_bp() as f64 / 10_000.0;
@@ -18098,7 +18094,7 @@ async fn handle_get_mossstake_pool_info(state: &RpcState) -> Result<serde_json::
     })?;
 
     // Derive active validators count and APY from the consensus StakePool
-    let (active_validators, apy_percent) = if let Some(ref sp_arc) = state.stake_pool {
+    let (active_validators, apy_percent, tier_apys) = if let Some(ref sp_arc) = state.stake_pool {
         let sp = sp_arc.read().await;
         let stats = sp.get_stats();
         let slots_per_day = SLOTS_PER_YEAR / 365;
@@ -18112,9 +18108,35 @@ async fn handle_get_mossstake_pool_info(state: &RpcState) -> Result<serde_json::
             * lichen_core::MOSSSTAKE_BLOCK_SHARE_BPS as u128)
             / 10_000u128) as u64;
         let apy_bp = pool.calculate_apy_bp(slots_per_day, mossstake_reward);
-        (stats.active_validators, apy_bp as f64 / 100.0)
+        let tier_apys = [
+            pool.calculate_tier_apy_bp(
+                slots_per_day,
+                mossstake_reward,
+                lichen_core::LockTier::Flexible,
+            ) as f64
+                / 100.0,
+            pool.calculate_tier_apy_bp(
+                slots_per_day,
+                mossstake_reward,
+                lichen_core::LockTier::Lock30,
+            ) as f64
+                / 100.0,
+            pool.calculate_tier_apy_bp(
+                slots_per_day,
+                mossstake_reward,
+                lichen_core::LockTier::Lock180,
+            ) as f64
+                / 100.0,
+            pool.calculate_tier_apy_bp(
+                slots_per_day,
+                mossstake_reward,
+                lichen_core::LockTier::Lock365,
+            ) as f64
+                / 100.0,
+        ];
+        (stats.active_validators, apy_bp as f64 / 100.0, tier_apys)
     } else {
-        (0, 0.0)
+        (0, 0.0, [0.0, 0.0, 0.0, 0.0])
     };
 
     Ok(serde_json::json!({
@@ -18125,10 +18147,10 @@ async fn handle_get_mossstake_pool_info(state: &RpcState) -> Result<serde_json::
         "average_apy_percent": apy_percent,
         "total_stakers": pool.positions.len(),
         "tiers": [
-            { "id": 0, "name": "Flexible", "lock_days": 0, "multiplier": 1.0, "apy_percent": apy_percent },
-            { "id": 1, "name": "30-Day Lock", "lock_days": 30, "multiplier": 1.6, "apy_percent": apy_percent * 1.6 },
-            { "id": 2, "name": "180-Day Lock", "lock_days": 180, "multiplier": 2.4, "apy_percent": apy_percent * 2.4 },
-            { "id": 3, "name": "365-Day Lock", "lock_days": 365, "multiplier": 3.6, "apy_percent": apy_percent * 3.6 },
+            { "id": 0, "name": "Flexible", "lock_days": 0, "multiplier": 1.0, "apy_percent": tier_apys[0] },
+            { "id": 1, "name": "30-Day Lock", "lock_days": 30, "multiplier": 1.6, "apy_percent": tier_apys[1] },
+            { "id": 2, "name": "180-Day Lock", "lock_days": 180, "multiplier": 2.4, "apy_percent": tier_apys[2] },
+            { "id": 3, "name": "365-Day Lock", "lock_days": 365, "multiplier": 3.6, "apy_percent": tier_apys[3] },
         ],
         "cooldown_days": 7
     }))

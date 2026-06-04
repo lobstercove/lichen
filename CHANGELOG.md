@@ -5,6 +5,18 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.92] - 2026-06-04
+
+### Changed
+- Makes MossStake redemption use authoritative position accounting (`licn_deposited + rewards_earned`) so tier-weighted rewards are what users actually receive when unstaking.
+- Computes MossStake tier APY estimates from the live weighted pool composition instead of multiplying the pool average by a tier multiplier.
+- Updates wallet and extension MossStake wording to show accrued rewards included in redeemable value and to explain that boosted locked tiers are position-bound.
+
+### Fixed
+- Carries principal and accrued reward backing pro-rata when transferable Flexible stLICN is sent to another account.
+- Rejects transfers from boosted locked MossStake tiers, preventing locked positions from bypassing the lock by moving stLICN to a fresh flexible position.
+- Reports `getBalance` and `getStakingPosition` MossStake values through the same position-value path used by unstake redemption.
+
 ## [0.5.91] - 2026-06-04
 
 ### Added

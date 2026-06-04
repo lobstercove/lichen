@@ -1497,7 +1497,7 @@ async function loadStakingTab() {
 
     const stLicn = Number(position?.st_licn_amount || 0) / 1e9;
     const value = Number(position?.current_value_licn || 0) / 1e9;
-    const exchangeGain = Math.max(0, Number(position?.current_value_licn || 0) - Number(position?.licn_deposited || 0)) / 1e9;
+    const accruedRewards = Math.max(0, Number(position?.current_value_licn || 0) - Number(position?.licn_deposited || 0)) / 1e9;
     const totalStaked = Number(poolInfo?.total_licn_staked || 0) / 1e9;
     const lockTier = position?.lock_tier_name || 'Flexible';
     const multiplier = position?.reward_multiplier || 1.0;
@@ -1533,7 +1533,7 @@ async function loadStakingTab() {
           <i class="fas fa-water" style="color:#3b82f6;"></i> Liquid Staking
         </h3>
         <p style="margin:0;font-size:0.85rem;color:var(--text-muted);">
-          Stake LICN to receive stLICN. Rewards auto-compound into the redeemable value. Choose a lock tier for boosted rewards.
+          Stake LICN to receive stLICN. Rewards accrue into the redeemable value. Flexible stays liquid; locked tiers are position-bound for boosted rewards.
         </p>
       </div>
 
@@ -1547,8 +1547,8 @@ async function loadStakingTab() {
           <div style="font-size:1.2rem;font-weight:700;color:var(--text);">${value.toLocaleString(undefined, { maximumFractionDigits: 4 })} LICN</div>
         </div>
         <div style="background:var(--card-bg);padding:1rem;border-radius:10px;border:1px solid var(--border);text-align:center;">
-          <div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:0.25rem;">Est. Exchange Gain</div>
-          <div title="Estimated gain from the current stLICN exchange rate. This is already included in Redeemable Value." style="font-size:1.2rem;font-weight:700;color:#10b981;">${exchangeGain.toLocaleString(undefined, { maximumFractionDigits: 4 })} LICN</div>
+          <div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:0.25rem;">Accrued Rewards</div>
+          <div title="Tier-weighted accrued rewards. This is already included in Redeemable Value." style="font-size:1.2rem;font-weight:700;color:#10b981;">${accruedRewards.toLocaleString(undefined, { maximumFractionDigits: 4 })} LICN</div>
         </div>
       </div>
 
@@ -1582,7 +1582,7 @@ async function loadStakingTab() {
       <div style="background:var(--card-bg);padding:1rem;border-radius:10px;border:1px solid var(--border);margin-bottom:1rem;font-size:0.85rem;color:var(--text-muted);">
         <i class="fas fa-info-circle" style="color:#3b82f6;"></i>
         <strong>Flexible:</strong> 7-day cooldown, 1x rewards.
-        <strong>Locked tiers</strong> earn boosted rewards but funds are locked for the chosen duration.
+        <strong>Locked tiers</strong> earn boosted rewards and are position-bound for the chosen duration.
       </div>
 
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1rem;">

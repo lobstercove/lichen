@@ -17,8 +17,9 @@ use axum::http::header::AUTHORIZATION;
 use axum::http::Request;
 use lichen_core::{
     contract::ContractAccount, Account, Block, CommitSignature, FeeConfig, FinalityTracker, Hash,
-    Instruction, Keypair, Message, MossStakePool, Precommit, Pubkey, StakeInfo, StakePool,
-    StateStore, SymbolRegistryEntry, Transaction, BOOTSTRAP_GRANT_AMOUNT, CONTRACT_PROGRAM_ID,
+    Instruction, Keypair, LockTier, Message, MossStakePool, Precommit, Pubkey, StakeInfo,
+    StakePool, StateStore, SymbolRegistryEntry, Transaction, BOOTSTRAP_GRANT_AMOUNT,
+    CONTRACT_PROGRAM_ID,
 };
 use lichen_rpc::{build_rpc_router, build_rpc_router_with_min_validator_stake};
 use serde_json::json;
@@ -1054,6 +1055,32 @@ async fn test_native_get_staking_position() {
     .await
     .unwrap();
     assert_valid_rpc(&resp);
+}
+
+#[tokio::test]
+async fn test_native_get_staking_position_uses_tier_weighted_rewards() {
+    let (app, flexible, locked) = app_with_weighted_mossstake_pool();
+
+    let flexible_resp = rpc_p(&app, "/", "getStakingPosition", json!([flexible]))
+        .await
+        .unwrap();
+    assert_valid_rpc(&flexible_resp);
+    assert_eq!(flexible_resp["result"]["licn_deposited"], json!(1_000));
+    assert_eq!(flexible_resp["result"]["rewards_earned"], json!(100));
+    assert_eq!(flexible_resp["result"]["current_value_licn"], json!(1_100));
+
+    let locked_resp = rpc_p(&app, "/", "getStakingPosition", json!([locked]))
+        .await
+        .unwrap();
+    assert_valid_rpc(&locked_resp);
+    assert_eq!(locked_resp["result"]["licn_deposited"], json!(1_000));
+    assert_eq!(locked_resp["result"]["rewards_earned"], json!(160));
+    assert_eq!(locked_resp["result"]["current_value_licn"], json!(1_160));
+    assert_ne!(
+        locked_resp["result"]["current_value_licn"],
+        json!(1_130),
+        "current_value_licn must not use the pool-wide average exchange rate"
+    );
 }
 
 #[tokio::test]
@@ -3128,6 +3155,43 @@ fn app_with_mossstake_pool(licn_staked: u64) -> (axum::Router, MossStakePool) {
     );
 
     (app, moss_pool)
+}
+
+fn app_with_weighted_mossstake_pool() -> (axum::Router, String, String) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = StateStore::open(dir.path()).expect("state");
+    put_ready_tip(&state, 1);
+    let _ = Box::leak(Box::new(dir));
+
+    let flexible = Pubkey([9u8; 32]);
+    let locked = Pubkey([10u8; 32]);
+    let mut moss_pool = MossStakePool::new();
+    moss_pool
+        .stake_with_tier(flexible, 1_000, 0, LockTier::Flexible)
+        .expect("stake flexible");
+    moss_pool
+        .stake_with_tier(locked, 1_000, 0, LockTier::Lock30)
+        .expect("stake locked");
+    moss_pool.distribute_rewards(260);
+    state
+        .put_mossstake_pool(&moss_pool)
+        .expect("put mossstake pool");
+
+    let app = build_rpc_router(
+        state,
+        None,
+        Some(Arc::new(RwLock::new(StakePool::new()))),
+        None,
+        "lichen-test".to_string(),
+        "lichen-test".to_string(),
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+
+    (app, flexible.to_base58(), locked.to_base58())
 }
 
 // ── getBalance positive path (native "/") ────────────────────────────────────

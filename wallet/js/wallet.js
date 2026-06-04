@@ -3390,7 +3390,7 @@ async function loadStaking(options = {}) {
                         <div class="tab-banner-icon"><i class="fas fa-water"></i></div>
                         <div class="tab-banner-text">
                             <h3>Liquid Staking</h3>
-                            <p>Stake LICN, receive stLICN. Rewards auto-compound into the redeemable value. Choose a lock tier for boosted rewards.</p>
+                            <p>Stake LICN, receive stLICN. Rewards accrue into the redeemable value. Flexible stays liquid; locked tiers are position-bound for boosted rewards.</p>
                         </div>
                     </div>
 
@@ -3404,7 +3404,7 @@ async function loadStaking(options = {}) {
                             <div class="staking-stat-value green" id="userStakeValue">0 LICN</div>
                         </div>
                         <div class="staking-stat-card">
-                            <div class="staking-stat-label">Est. Exchange Gain</div>
+                            <div class="staking-stat-label">Accrued Rewards</div>
                             <div class="staking-stat-value amber" id="userRewardsEarned">0 LICN</div>
                         </div>
                         <div class="staking-stat-card">
@@ -3430,8 +3430,8 @@ async function loadStaking(options = {}) {
 
                     <div class="staking-info-box">
                         <i class="fas fa-info-circle"></i>
-                        <strong>How it works:</strong> Stake LICN to receive stLICN (liquid receipt). Rewards auto-compound into the redeemable value — they are not a separate claimable balance.
-                        <strong>Flexible tier</strong> has a 7-day cooldown to unstake. <strong>Locked tiers</strong> earn boosted rewards but funds are locked for the chosen duration.
+                        <strong>How it works:</strong> Stake LICN to receive stLICN. Rewards accrue into the redeemable value — they are not a separate claimable balance.
+                        <strong>Flexible tier</strong> stays transferable and has a 7-day cooldown to unstake. <strong>Locked tiers</strong> earn boosted tier-weighted rewards and are position-bound for the chosen duration.
                         After a lock expires, you can unstake with the standard 7-day cooldown.
                     </div>
 
@@ -3618,9 +3618,9 @@ async function loadMossStakePosition(address, options = {}) {
         // Rewards
         const rewardsEl = document.getElementById('userRewardsEarned');
         if (rewardsEl) {
-            const exchangeGain = Math.max(0, Number(position.current_value_licn || 0) - Number(position.licn_deposited || 0));
-            rewardsEl.textContent = `${fmtToken(exchangeGain / SPORES_PER_LICN)} LICN`;
-            rewardsEl.title = 'Estimated gain from the current stLICN exchange rate. This is already included in Redeemable Value.';
+            const accruedRewards = Math.max(0, Number(position.current_value_licn || 0) - Number(position.licn_deposited || 0));
+            rewardsEl.textContent = `${fmtToken(accruedRewards / SPORES_PER_LICN)} LICN`;
+            rewardsEl.title = 'Tier-weighted accrued rewards. This is already included in Redeemable Value.';
         }
 
         // Tier info

@@ -1344,8 +1344,15 @@ console.log('\n── MossStake Display Safety ──');
 test('MossStake tier cards show deterministic reward multipliers', () => {
     assert(walletSrc.includes('function formatMossStakeRewardLabel('), 'wallet should use a MossStake reward formatter');
     assert(walletSrc.includes('formatMossStakeRewardLabel(t.apy_percent, t.multiplier)'), 'wallet tier cards should use reward labels');
+    assert(walletSrc.includes('Accrued Rewards'), 'wallet should label MossStake gain as accrued rewards');
+    assert(!walletSrc.includes('Est. Exchange Gain'), 'wallet should not call tier-weighted rewards exchange gain');
+    assert(walletSrc.includes('position-bound'), 'wallet should explain locked MossStake tiers are position-bound');
     assert(extensionFullSrc.includes('function formatMossStakeRewardLabel('), 'extension full page should use reward labels');
     assert(extensionPopupSrc.includes('function formatMossStakeRewardLabel('), 'extension popup should use reward labels');
+    assert(extensionFullSrc.includes('Accrued Rewards'), 'extension full page should label MossStake gain as accrued rewards');
+    assert(extensionPopupSrc.includes('Accrued Rewards'), 'extension popup should label MossStake gain as accrued rewards');
+    assert(!extensionFullSrc.includes('Est. Exchange Gain'), 'extension full page should not call tier-weighted rewards exchange gain');
+    assert(!extensionPopupSrc.includes('Est. Exchange Gain'), 'extension popup should not call tier-weighted rewards exchange gain');
     assert(!walletSrc.includes('MOSSSTAKE_APY_DISPLAY_CAP_PERCENT'), 'wallet should not render unstable APY caps');
     assert(!extensionFullSrc.includes('MOSSSTAKE_APY_DISPLAY_CAP_PERCENT'), 'extension full page should not render unstable APY caps');
     assert(!extensionPopupSrc.includes('MOSSSTAKE_APY_DISPLAY_CAP_PERCENT'), 'extension popup should not render unstable APY caps');

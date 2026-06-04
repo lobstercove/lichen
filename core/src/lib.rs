@@ -93,7 +93,8 @@ pub use marketplace::{
 };
 pub use mempool::Mempool;
 pub use mossstake::{
-    MossStakePool, StLicnToken, StakingPosition, UnstakeRequest, MOSSSTAKE_BLOCK_SHARE_BPS,
+    LockTier, MossStakePool, StLicnToken, StakingPosition, UnstakeRequest,
+    MOSSSTAKE_BLOCK_SHARE_BPS,
 };
 pub use multisig::{DistributionWallet, GenesisWallet, MultiSigConfig, GENESIS_DISTRIBUTION};
 pub use nft::{

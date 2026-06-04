@@ -955,9 +955,15 @@ test('CC-19 extension MossStake tier cards use deterministic reward labels', () 
   assert.ok(fullSrc.includes('function formatMossStakeRewardLabel('), 'full page should define MossStake reward formatter');
   assert.ok(fullSrc.includes('const displayTiers = tierDefaults.map'), 'full page should derive tier labels from pool metadata');
   assert.ok(fullSrc.includes('formatMossStakeRewardLabel(tier.apyPercent, tier.multiplier)'), 'full page tiers should use reward labels');
+  assert.ok(fullSrc.includes('Accrued Rewards'), 'full page should label MossStake gain as accrued rewards');
+  assert.ok(fullSrc.includes('position-bound'), 'full page should explain locked MossStake tiers are position-bound');
+  assert.ok(!fullSrc.includes('Est. Exchange Gain'), 'full page should not call tier-weighted rewards exchange gain');
   assert.ok(popupSrc.includes('function formatMossStakeRewardLabel('), 'popup should define MossStake reward formatter');
   assert.ok(popupSrc.includes('const displayTiers = tierDefaults.map'), 'popup should derive tier labels from pool metadata');
   assert.ok(popupSrc.includes('formatMossStakeRewardLabel(tier.apyPercent, tier.multiplier)'), 'popup tiers should use reward labels');
+  assert.ok(popupSrc.includes('Accrued Rewards'), 'popup should label MossStake gain as accrued rewards');
+  assert.ok(popupHtmlSrc.includes('position-bound'), 'popup HTML should explain locked MossStake tiers are position-bound');
+  assert.ok(!popupSrc.includes('Est. Exchange Gain'), 'popup should not call tier-weighted rewards exchange gain');
   assert.ok(!fullSrc.includes('MOSSSTAKE_APY_DISPLAY_CAP_PERCENT'), 'full page should not render unstable APY caps');
   assert.ok(!popupSrc.includes('MOSSSTAKE_APY_DISPLAY_CAP_PERCENT'), 'popup should not render unstable APY caps');
 });

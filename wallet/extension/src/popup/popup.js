@@ -1392,7 +1392,7 @@ async function loadExtensionStaking() {
 
     const stLicn = Number(position?.st_licn_amount || 0) / 1e9;
     const stakeValue = Number(position?.current_value_licn || 0) / 1e9;
-    const exchangeGain = Math.max(0, Number(position?.current_value_licn || 0) - Number(position?.licn_deposited || 0)) / 1e9;
+    const accruedRewards = Math.max(0, Number(position?.current_value_licn || 0) - Number(position?.licn_deposited || 0)) / 1e9;
     const tierName = position?.lock_tier_name || 'Flexible';
     const multiplier = Number(position?.reward_multiplier || 1);
     const totalPool = Number(poolInfo?.total_licn_staked || 0) / 1e9;
@@ -1401,7 +1401,7 @@ async function loadExtensionStaking() {
     const cards = [
       { label: 'Your stLICN', value: fmt(stLicn), color: 'var(--text)' },
       { label: 'Redeemable Value', value: fmt(stakeValue) + ' LICN', color: '#10b981' },
-      { label: 'Est. Exchange Gain', value: fmt(exchangeGain) + ' LICN', color: '#f59e0b' },
+      { label: 'Accrued Rewards', value: fmt(accruedRewards) + ' LICN', color: '#f59e0b' },
       { label: 'Your Tier', value: tierName, color: '#a78bfa' },
       { label: 'Multiplier', value: multiplier.toFixed(1) + 'x', color: 'var(--text)' },
       { label: 'Pool Total', value: fmt(totalPool) + ' LICN', color: 'var(--text)' },
