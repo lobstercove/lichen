@@ -215,7 +215,7 @@ for bin in lichen-validator lichen-genesis lichen zk-prove; do
   sudo install -m 755 "$root/$bin" "/usr/local/bin/$bin"
 done
 for bin in lichen-custody lichen-faucet; do
-  if [ -x "$root/$bin" ]; then
+  if [ -f "$root/$bin" ]; then
     sudo install -m 755 "$root/$bin" "/usr/local/bin/$bin"
   fi
 done
@@ -233,7 +233,7 @@ if [ "$installed_sha" != "$EXPECTED_VALIDATOR_SHA" ]; then
 fi
 
 for bin in lichen-validator lichen-genesis lichen zk-prove lichen-custody lichen-faucet; do
-  if [ -x "$root/$bin" ]; then
+  if [ -f "$root/$bin" ]; then
     expected_bin_sha="$(sha256sum "$root/$bin" | awk '{print $1}')"
     installed_bin_sha="$(sha256sum "/usr/local/bin/$bin" | awk '{print $1}')"
     if [ "$installed_bin_sha" != "$expected_bin_sha" ]; then

@@ -29,7 +29,13 @@ assert(signatureVerify < checksumVerify, 'release PQ signature must be verified 
 assert(checksumVerify < installCall, 'release artifacts must be verified before validator install');
 assert(installCall < healthCall, 'validator install must happen before health wait');
 assert(healthCall < custodyCall, 'custody restart must happen only after validator health');
-assert(script.includes('systemctl list-unit-files lichen-custody.service'), 'custody refresh must be conditional on service presence');
+assert(script.includes('for bin in lichen-custody lichen-faucet; do\n  if [ -f "$root/$bin" ]; then'),
+  'optional Linux service binaries must be installed when present in the archive');
+assert(script.includes('for bin in lichen-validator lichen-genesis lichen zk-prove lichen-custody lichen-faucet; do\n  if [ -f "$root/$bin" ]; then'),
+  'installed service binary hash checks must run when the archive file exists');
+assert(!script.includes('for bin in lichen-custody lichen-faucet; do\n  if [ -x "$root/$bin" ]; then'),
+  'optional service install must not depend on temp extract executable checks');
+assert(script.includes('systemctl list-unit-files --no-legend lichen-custody.service'), 'custody refresh must be conditional on service presence');
 assert(script.includes('sudo systemctl restart lichen-custody.service'), 'custody service must be restarted after RPC is healthy');
 assert(script.includes('http://127.0.0.1:9105/health'), 'custody health must be verified after restart');
 
