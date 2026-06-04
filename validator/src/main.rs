@@ -1166,6 +1166,27 @@ fn hash_stake_pool(pool: &StakePool) -> Hash {
     pool.canonical_hash()
 }
 
+fn instruction_may_mutate_stake_pool(ix: &lichen_core::Instruction) -> bool {
+    if ix.program_id != CORE_SYSTEM_PROGRAM_ID {
+        return false;
+    }
+
+    match ix.data.first().copied() {
+        Some(9 | 10 | 11 | 26 | 27 | 31) => true,
+        Some(0..=8 | 12..=25 | 28..=30 | 32..=37) => false,
+        _ => true,
+    }
+}
+
+fn block_may_mutate_stake_pool(block: &Block) -> bool {
+    block.transactions.iter().any(|tx| {
+        tx.message
+            .instructions
+            .iter()
+            .any(instruction_may_mutate_stake_pool)
+    })
+}
+
 fn reconcile_live_stake_pool_from_state(live_pool: &mut StakePool, loaded_pool: StakePool) -> bool {
     if hash_stake_pool(live_pool) == hash_stake_pool(&loaded_pool) {
         return false;
@@ -2012,7 +2033,6 @@ fn emit_dex_events(
     }
 
     // Emit orderbook + ticker updates for affected pairs
-    let order_count = state.get_program_storage_u64("DEX", b"dex_order_count");
     for pair_id in &affected_pairs {
         // P9-VAL-06: Read per-pair last price (ana_lp_{pair_id}) instead of global last trade
         let lp_key = format!("ana_lp_{}", pair_id);
@@ -2051,73 +2071,31 @@ fn emit_dex_events(
         }
 
         // ── WS broadcast: orderbook snapshot for affected pair ──
-        let mut bids: std::collections::HashMap<u64, (u64, u32)> = std::collections::HashMap::new();
-        let mut asks: std::collections::HashMap<u64, (u64, u32)> = std::collections::HashMap::new();
-        for oid in 1..=order_count {
-            let okey = format!("dex_order_{}", oid);
-            if let Some(od) = state.get_program_storage("DEX", okey.as_bytes()) {
-                if od.len() >= 128 {
-                    let opid = u64::from_le_bytes(od[32..40].try_into().unwrap_or([0; 8]));
-                    if opid != *pair_id {
-                        continue;
-                    }
-                    let ostatus = od[66];
-                    if ostatus != 0 && ostatus != 1 {
-                        continue;
-                    } // only open/partial
-                    let oqty = u64::from_le_bytes(od[50..58].try_into().unwrap_or([0; 8]));
-                    let ofilled = u64::from_le_bytes(od[58..66].try_into().unwrap_or([0; 8]));
-                    let remaining = oqty.saturating_sub(ofilled);
-                    if remaining == 0 {
-                        continue;
-                    }
-                    let oprice = u64::from_le_bytes(od[42..50].try_into().unwrap_or([0; 8]));
-                    let side_byte = od[40];
-                    let entry = if side_byte == 0 {
-                        bids.entry(oprice).or_insert((0, 0))
-                    } else {
-                        asks.entry(oprice).or_insert((0, 0))
-                    };
-                    entry.0 += remaining;
-                    entry.1 += 1;
-                }
+        match state.get_dex_orderbook_levels(*pair_id, 20) {
+            Ok((bids, asks)) => {
+                let bid_levels: Vec<lichen_rpc::dex_ws::PriceLevel> = bids
+                    .into_iter()
+                    .map(|level| lichen_rpc::dex_ws::PriceLevel {
+                        price: level.price_raw as f64 / PRICE_SCALE,
+                        quantity: level.quantity,
+                        orders: level.orders.min(u32::MAX as u64) as u32,
+                    })
+                    .collect();
+                let ask_levels: Vec<lichen_rpc::dex_ws::PriceLevel> = asks
+                    .into_iter()
+                    .map(|level| lichen_rpc::dex_ws::PriceLevel {
+                        price: level.price_raw as f64 / PRICE_SCALE,
+                        quantity: level.quantity,
+                        orders: level.orders.min(u32::MAX as u64) as u32,
+                    })
+                    .collect();
+                dex_broadcaster.emit_orderbook(*pair_id, bid_levels, ask_levels, slot);
             }
+            Err(err) => warn!(
+                "⚠️  Failed to read indexed DEX orderbook for pair {}: {}",
+                pair_id, err
+            ),
         }
-        let bid_levels: Vec<lichen_rpc::dex_ws::PriceLevel> = {
-            let mut v: Vec<_> = bids
-                .into_iter()
-                .map(|(p, (q, c))| lichen_rpc::dex_ws::PriceLevel {
-                    price: p as f64 / PRICE_SCALE,
-                    quantity: q,
-                    orders: c,
-                })
-                .collect();
-            v.sort_by(|a, b| {
-                b.price
-                    .partial_cmp(&a.price)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
-            v.truncate(20);
-            v
-        };
-        let ask_levels: Vec<lichen_rpc::dex_ws::PriceLevel> = {
-            let mut v: Vec<_> = asks
-                .into_iter()
-                .map(|(p, (q, c))| lichen_rpc::dex_ws::PriceLevel {
-                    price: p as f64 / PRICE_SCALE,
-                    quantity: q,
-                    orders: c,
-                })
-                .collect();
-            v.sort_by(|a, b| {
-                a.price
-                    .partial_cmp(&b.price)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
-            v.truncate(20);
-            v
-        };
-        dex_broadcaster.emit_orderbook(*pair_id, bid_levels, ask_levels, slot);
     }
 
     // ── WS broadcast: order status updates for affected orders ──
@@ -2150,6 +2128,36 @@ fn emit_dex_events(
                     }
                 }
             }
+        }
+    }
+}
+
+fn sync_dex_indexes_for_startup(state: &StateStore, context: &str) {
+    match state.sync_dex_indexes_from_contract_storage() {
+        Ok(report) => {
+            if let Some(program) = report.dex_program {
+                info!(
+                    "✓ DEX indexes synced ({}): program={}, reset={}, orders {}/{}, trades {}/{}, indexed orders={}, trades={}",
+                    context,
+                    program.to_base58(),
+                    report.schema_reset,
+                    report.order_cursor,
+                    report.latest_order_count,
+                    report.trade_cursor,
+                    report.latest_trade_count,
+                    report.orders_indexed,
+                    report.trades_indexed,
+                );
+            } else {
+                info!(
+                    "DEX index sync skipped ({}): DEX symbol is not registered yet",
+                    context
+                );
+            }
+        }
+        Err(err) => {
+            error!("Failed to sync DEX indexes ({}): {}", context, err);
+            std::process::exit(1);
         }
     }
 }
@@ -2863,7 +2871,9 @@ fn emit_program_and_nft_events(
 
     for tx in &block.transactions {
         // Emit Transaction event for every tx in the block
-        drop(ws_event_tx.send(lichen_rpc::ws::Event::Transaction(tx.clone())));
+        drop(ws_event_tx.send(lichen_rpc::ws::Event::Transaction(
+            lichen_rpc::ws::TransactionFanoutSummary::from_transaction(tx),
+        )));
 
         // Emit AccountChange events for all accounts touched by this tx
         let mut seen_accounts = std::collections::HashSet::new();
@@ -4224,18 +4234,17 @@ async fn apply_block_effects(
         return;
     }
 
-    // Reload in-memory stake pool from on-chain state to pick up effects
-    // from consensus-processed transactions (e.g., RegisterValidator opcode 26,
-    // Stake, Unstake). Without this, the in-memory pool would miss changes
-    // applied by TxProcessor during block transaction processing.
-    if let Ok(fresh_pool) = state.get_stake_pool() {
-        let entry_count = fresh_pool.stake_entries().len();
-        let mut pool = stake_pool.write().await;
-        *pool = fresh_pool;
-        drop(pool);
-        if !block.transactions.is_empty() || entry_count > 1 {
+    // Reload only when block execution could have mutated the persisted stake pool.
+    // Empty, transfer-only, DEX, contract, oracle, and governance-readiness blocks
+    // keep the in-memory pool authoritative and avoid a full pool deserialize per slot.
+    if block_may_mutate_stake_pool(block) {
+        if let Ok(fresh_pool) = state.get_stake_pool() {
+            let entry_count = fresh_pool.stake_entries().len();
+            let mut pool = stake_pool.write().await;
+            *pool = fresh_pool;
+            drop(pool);
             info!(
-                "📊 apply_block_effects slot {}: reloaded pool with {} entries from state",
+                "📊 apply_block_effects slot {}: reloaded pool with {} entries after stake-pool transaction",
                 block.header.slot, entry_count
             );
         }
@@ -7840,6 +7849,7 @@ async fn run_validator() {
     }
 
     configure_archive_mode(&state, &args, cold_store_path.is_some());
+    sync_dex_indexes_for_startup(&state, "startup");
 
     // Create transaction processor
     let processor = Arc::new(TxProcessor::new(state.clone()));
@@ -17666,7 +17676,9 @@ async fn execute_consensus_actions(
             emit_program_and_nft_events(state, ws_event_tx, &block);
 
             // Broadcast block event to WebSocket subscribers
-            drop(ws_event_tx.send(lichen_rpc::ws::Event::Block(block.clone())));
+            drop(ws_event_tx.send(lichen_rpc::ws::Event::Block(
+                lichen_rpc::ws::BlockFanoutSummary::from_block(&block),
+            )));
             drop(ws_event_tx.send(lichen_rpc::ws::Event::Slot(height)));
 
             // DEX events + analytics bridge + SL/TP triggers
@@ -17904,6 +17916,37 @@ mod tests {
             commit_round: 0,
             commit_signatures: vec![],
         }
+    }
+
+    #[test]
+    fn stake_pool_reload_detector_ignores_empty_and_non_stake_blocks() {
+        let empty = make_block_with_txs(vec![]);
+        assert!(!block_may_mutate_stake_pool(&empty));
+
+        let transfer = make_block_with_txs(vec![make_tx_with_opcode(CORE_SYSTEM_PROGRAM_ID, 0)]);
+        assert!(!block_may_mutate_stake_pool(&transfer));
+
+        let contract_call = make_block_with_txs(vec![make_tx_with_opcode(EVM_PROGRAM_ID, 9)]);
+        assert!(!block_may_mutate_stake_pool(&contract_call));
+    }
+
+    #[test]
+    fn stake_pool_reload_detector_tracks_known_stake_pool_opcodes() {
+        for opcode in [9, 10, 11, 26, 27, 31] {
+            let block =
+                make_block_with_txs(vec![make_tx_with_opcode(CORE_SYSTEM_PROGRAM_ID, opcode)]);
+            assert!(
+                block_may_mutate_stake_pool(&block),
+                "opcode {} must reload stake pool",
+                opcode
+            );
+        }
+    }
+
+    #[test]
+    fn stake_pool_reload_detector_fails_open_for_unknown_system_opcodes() {
+        let block = make_block_with_txs(vec![make_tx_with_opcode(CORE_SYSTEM_PROGRAM_ID, 250)]);
+        assert!(block_may_mutate_stake_pool(&block));
     }
 
     fn make_signed_transfer_tx(

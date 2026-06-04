@@ -514,6 +514,21 @@ test('wallet.js wraps JSON.parse in try-catch', () => {
         'loadWalletState must wrap JSON.parse in try/catch');
 });
 
+test('wallet.js persists encrypted browser wallet state for popup reconnects', () => {
+    assert(walletSrc.includes("const PERSISTENT_WALLET_STATE_KEY = 'lichenWalletEncryptedState';"),
+        'Wallet must use a dedicated encrypted browser storage key');
+    assert(walletSrc.includes('function persistEncryptedBrowserWalletState()'),
+        'Wallet must persist encrypted wallet records outside the popup session');
+    assert(walletSrc.includes('localStorage.setItem(PERSISTENT_WALLET_STATE_KEY, JSON.stringify(storedState));'),
+        'Persistent wallet storage must save the serialized encrypted wallet record');
+    assert(walletSrc.includes('const persistentState = localStorage.getItem(PERSISTENT_WALLET_STATE_KEY);'),
+        'Wallet load must restore encrypted browser wallet state after popup reopen');
+    assert(walletSrc.includes('persistSessionWalletState();') && walletSrc.includes('persistEncryptedBrowserWalletState();'),
+        'Wallet saves must keep active popup and encrypted browser state in sync');
+    assert(!walletSrc.includes('Save wallet secrets in sessionStorage only'),
+        'Wallet must not regress to popup-session-only custody');
+});
+
 // ---- Additional integration tests ----
 console.log('\nIntegration: Crypto module');
 
@@ -621,7 +636,12 @@ test('wallet-connect.js exposes popup-backed web wallet provider without local c
     assert(walletConnectSrc.includes('function PopupLichenProvider('), 'PopupLichenProvider must exist');
     assert(walletConnectSrc.includes('function getPopupLichenProvider()'), 'Popup provider singleton accessor missing');
     assert(walletConnectSrc.includes("window.getPopupLichenProvider = window.getPopupLichenProvider || getPopupLichenProvider;"), 'Popup provider must be exported globally');
-    assert(walletConnectSrc.includes("var WALLET_POPUP_STATE_KEY = 'lichen_web_wallet_popup_state_v1';"), 'Popup provider must persist approved web-wallet session state locally');
+    assert(walletConnectSrc.includes("var WALLET_POPUP_STATE_KEY = 'lichen_web_wallet_popup_state_v1';"), 'Popup provider must track web-wallet session state locally');
+    assert(walletConnectSrc.includes('PopupLichenProvider.prototype._handlePopupClosed') && walletConnectSrc.includes('this._setDisconnected();'),
+        'Popup provider must clear signing readiness when the web-wallet popup closes');
+    assert(walletConnectSrc.includes("Object.prototype.hasOwnProperty.call(state, 'hasWallet')")
+        && walletConnectSrc.includes('hasWallet: hasWallet'),
+        'Popup provider must preserve hasWallet from the web-wallet bridge state');
     assert(!walletConnectSrc.includes('createWallet') && !walletConnectSrc.includes('LichenPQ.generateKeypair'),
         'Popup provider must not fall back to local wallet generation');
     assert(walletConnectSrc.includes("url.searchParams.set('network', getSelectedWalletNetwork());"),
@@ -643,6 +663,8 @@ test('dapp-bridge restricts popup flow to trusted origins with expiring approval
     assert(walletBridgeSrc.includes('const RETURN_TO_URL = params.get(\'returnTo\');'), 'Bridge must inspect the popup return target');
     assert(walletBridgeSrc.includes('if (returnToOrigin && isLoopbackOrigin(window.location.origin) && isLoopbackOrigin(returnToOrigin)) {'), 'Bridge must trust loopback return origins during local development');
     assert(walletBridgeSrc.includes('Untrusted dApp origin'), 'Bridge must reject untrusted origins');
+    assert(walletBridgeSrc.includes('const walletExists = hasWallet();') && walletBridgeSrc.includes('hasWallet: walletExists'),
+        'Bridge provider state must expose whether the web wallet has any wallet loaded');
 });
 
 test('dapp-bridge requires password-gated approval for signing and uses canonical wallet helpers', () => {
@@ -650,7 +672,8 @@ test('dapp-bridge requires password-gated approval for signing and uses canonica
     assert(walletBridgeSrc.includes('const approvalValues = await requestApproval(request);'), 'Bridge must require explicit approval before connect/sign actions');
     assert(walletBridgeSrc.includes('const REQUESTED_NETWORK = normalizeRequestedNetwork(params.get(\'network\'));'), 'Bridge must honor the requested popup network');
     assert(walletBridgeSrc.includes('const networkReady = await ensureRequestedNetwork();'), 'Bridge must wait for the requested network before interactive actions');
-    assert(walletBridgeSrc.includes('function schedulePopupClose()'), 'Bridge must close the popup after interactive requests complete');
+    assert(walletBridgeSrc.includes('function schedulePopupClose()'), 'Bridge must define popup completion handling');
+    assert(walletBridgeSrc.includes('encrypted browser wallet is reopened') && !walletBridgeSrc.includes('window.close()'), 'Bridge must keep popup signers open after interactive requests');
     assert(walletBridgeSrc.includes('overflow-wrap:anywhere') && walletBridgeSrc.includes('word-break:break-word'), 'Bridge approval and hint UI must wrap long origins and addresses inside the popup');
     assert(walletBridgeSrc.includes('const values = await showPasswordModal({'), 'Bridge signing flow must use the wallet password modal');
     assert(walletBridgeSrc.includes('serializeMessageBincode(txObject.message || {})'), 'Bridge must sign canonical serialized transaction messages');

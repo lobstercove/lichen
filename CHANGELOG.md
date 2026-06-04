@@ -5,6 +5,19 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.89] - 2026-06-04
+
+### Added
+- Adds durable DEX pair/orderbook/trade read indexes with startup backfill, so orderbook, recent trade, trader history, and quote reads use canonical persisted snapshots instead of repeated contract-storage scans.
+- Adds a bounded slot-aware native RPC read cache for deterministic heavy reads, keyed by method, canonical params, and anchoring slot.
+- Adds lightweight WebSocket block and transaction fanout summaries so explorer subscriptions no longer broadcast cloned full blocks or transactions.
+
+### Changed
+- Reloads the in-memory stake pool after block execution only for stake-pool-mutating system instructions, while failing open for unknown future system opcodes.
+
+### Fixed
+- Keeps DEX read APIs aligned with the same execution state while allowing current testnet nodes to backfill the new persisted indexes without reset.
+
 ## [0.5.88] - 2026-06-04
 
 ### Changed

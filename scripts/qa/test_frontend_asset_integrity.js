@@ -755,17 +755,15 @@ function validateDexWalletAndPairState() {
         'DEX router quote debounce guards against stale pair writes'
     );
 
-    const providerStart = walletConnect.indexOf('PopupLichenProvider.prototype.getProviderState = function ()');
-    const providerEnd = walletConnect.indexOf('PopupLichenProvider.prototype.isConnected', providerStart);
-    const providerStateBody = providerStart >= 0 && providerEnd > providerStart
+    const providerStart = walletConnect.indexOf('PopupLichenProvider.prototype._handlePopupClosed = function ()');
+    const providerEnd = walletConnect.indexOf('PopupLichenProvider.prototype._startWindowMonitor', providerStart);
+    const providerCloseBody = providerStart >= 0 && providerEnd > providerStart
         ? walletConnect.slice(providerStart, providerEnd)
         : '';
     assert(
-        providerStateBody.includes('if (!this.isWindowOpen())') &&
-            providerStateBody.includes('return Promise.resolve(this._lastState);') &&
-            !providerStateBody.includes('this._setDisconnected();') &&
-            !walletConnect.includes('!provider.isWindowOpen()) {\n        return [];'),
-        'DEX web-wallet provider preserves approved state when the popup is closed'
+        providerCloseBody.includes('pending.reject(new Error(\'Web wallet window closed before the request completed\'))') &&
+            providerCloseBody.includes('this._setDisconnected();'),
+        'DEX web-wallet provider clears live signing state when the popup is closed'
     );
 }
 
@@ -930,7 +928,9 @@ function validateFrontendInputGuards() {
     assert(
         dexHtml.includes('id="orderSubmitHint"') &&
             dexHtml.includes('id="marginCollateral"') &&
-            updateSubmitBody.includes('Reconnect wallet to sign') &&
+            updateSubmitBody.includes('walletSigningGateMessage()') &&
+            dexJs.includes('Reconnect wallet to sign') &&
+            dexJs.includes('Import web wallet to sign') &&
             updateSubmitBody.includes('Margin stop-limit entries are not live yet') &&
             dexJs.includes("if (mode === 'margin') state.orderType = 'limit';") &&
             !syncOrderTypeBody.includes('marginOnlyHidden') &&

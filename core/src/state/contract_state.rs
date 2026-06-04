@@ -64,8 +64,38 @@ impl StateStore {
         let mut key = Vec::with_capacity(32 + storage_key.len());
         key.extend_from_slice(&program.0);
         key.extend_from_slice(storage_key);
+        let is_dex_indexed_key = Self::should_stage_dex_contract_storage_index(storage_key);
+        let _dex_index_guard = if is_dex_indexed_key {
+            Some(
+                self.dex_index_lock
+                    .lock()
+                    .map_err(|e| format!("dex_index_lock poisoned: {}", e))?,
+            )
+        } else {
+            None
+        };
+        let old_value = if is_dex_indexed_key {
+            self.db
+                .get_cf(&cf, &key)
+                .map_err(|e| format!("Failed to read previous contract storage: {}", e))?
+                .map(|data| data.to_vec())
+        } else {
+            None
+        };
+        let mut batch = WriteBatch::default();
+        let mut dex_level_deltas = std::collections::HashMap::new();
+        batch.put_cf(&cf, &key, value);
+        self.stage_dex_contract_storage_indexes(
+            &mut batch,
+            &mut dex_level_deltas,
+            program,
+            storage_key,
+            old_value.as_deref(),
+            Some(value),
+        )?;
+        self.apply_dex_orderbook_level_deltas(&mut batch, &dex_level_deltas)?;
         self.db
-            .put_cf(&cf, &key, value)
+            .write(batch)
             .map_err(|e| format!("Failed to store contract storage: {}", e))?;
         self.mark_contract_storage_dirty(&key);
         Ok(())
@@ -84,8 +114,38 @@ impl StateStore {
         let mut key = Vec::with_capacity(32 + storage_key.len());
         key.extend_from_slice(&program.0);
         key.extend_from_slice(storage_key);
+        let is_dex_indexed_key = Self::should_stage_dex_contract_storage_index(storage_key);
+        let _dex_index_guard = if is_dex_indexed_key {
+            Some(
+                self.dex_index_lock
+                    .lock()
+                    .map_err(|e| format!("dex_index_lock poisoned: {}", e))?,
+            )
+        } else {
+            None
+        };
+        let old_value = if is_dex_indexed_key {
+            self.db
+                .get_cf(&cf, &key)
+                .map_err(|e| format!("Failed to read previous contract storage: {}", e))?
+                .map(|data| data.to_vec())
+        } else {
+            None
+        };
+        let mut batch = WriteBatch::default();
+        let mut dex_level_deltas = std::collections::HashMap::new();
+        batch.delete_cf(&cf, &key);
+        self.stage_dex_contract_storage_indexes(
+            &mut batch,
+            &mut dex_level_deltas,
+            program,
+            storage_key,
+            old_value.as_deref(),
+            None,
+        )?;
+        self.apply_dex_orderbook_level_deltas(&mut batch, &dex_level_deltas)?;
         self.db
-            .delete_cf(&cf, &key)
+            .write(batch)
             .map_err(|e| format!("Failed to delete contract storage: {}", e))?;
         self.mark_contract_storage_dirty(&key);
         Ok(())

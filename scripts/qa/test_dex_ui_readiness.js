@@ -170,7 +170,55 @@ assert(dexJs.includes('id="marginCloseLimitPriceInput" type="text"') && dexJs.in
 const updateSubmitBtn = extractFunctionBody(dexJs, 'updateSubmitBtn');
 const syncOrderTypeUi = extractFunctionBody(dexJs, 'syncOrderTypeUi');
 const updateMarginInfo = extractFunctionBody(dexJs, 'updateMarginInfo');
-assert(updateSubmitBtn.includes('walletCanSign()') && updateSubmitBtn.includes('Reconnect wallet to sign'), 'trade submit button gates read-only wallet state');
+const readWalletProviderSnapshot = extractFunctionBody(dexJs, 'readWalletProviderSnapshot');
+assert(
+    updateSubmitBtn.includes('walletCanSign()')
+        && updateSubmitBtn.includes('walletSigningGateMessage()')
+        && dexJs.includes('Reconnect wallet to sign')
+        && dexJs.includes('Import web wallet to sign'),
+    'trade submit button gates read-only wallet state'
+);
+assert(
+    dexJs.includes('function walletIsConnected()')
+        && updateSubmitBtn.includes('walletIsConnected()')
+        && dexJs.includes("if (!walletIsConnected()) return { ok: false, error: 'Connect wallet first', code: 'NO_WALLET' };")
+        && dexJs.includes('await syncDexWithExtensionState({ timeoutMs: 400 });'),
+    'trade submit preflight syncs provider state and uses shared wallet connection readiness'
+);
+assert(
+    dexJs.includes('function ensureWalletSigningReady(options = {})')
+        && dexJs.includes('function requestWalletProviderConnection(providerType = null)')
+        && updateSubmitBtn.includes('const recoverableWalletGate = connected && !canSign')
+        && updateSubmitBtn.includes('submitBtn.disabled = Boolean(disabledReason) && !recoverableWalletGate')
+        && dexJs.includes('const ready = await ensureWalletSigningReady({ notify: true, timeoutMs: 400 });'),
+    'read-only connected trade submit stays clickable and reacquires signer approval before preflight'
+);
+assert(
+    readWalletProviderSnapshot.includes('livePopupSession')
+        && readWalletProviderSnapshot.includes('exposedAccounts')
+        && readWalletProviderSnapshot.includes("providerType !== 'web-wallet' || windowOpen"),
+    'web wallet signing readiness requires a live popup session, not cached popup state'
+);
+assert(
+    dexJs.includes('function webWalletNeedsWalletSetup(providerState = lastExtensionProviderState)')
+        && readWalletProviderSnapshot.includes("Object.prototype.hasOwnProperty.call(providerState, 'hasWallet')")
+        && dexJs.includes('Import web wallet to sign')
+        && dexJs.includes('Web Wallet Account Missing')
+        && dexJs.includes('A saved DEX address is not enough to sign.'),
+    'web wallet reconnect distinguishes an empty popup from a locked or inactive signer'
+);
+assert(
+    dexJs.includes('restoreWalletConnectionState(currentAddress, reconnectProviderType)')
+        && dexJs.includes('const needsConnectionReconcile = !walletIsConnected()')
+        && dexJs.includes('await connectWalletTo(currentAddress, shortWalletAddress(currentAddress),'),
+    'provider sync repairs stale DEX connected state before showing signing-ready actions'
+);
+assert(
+    dexJs.includes("providerState.hasWallet === false")
+        && dexJs.includes("providerType: 'extension'")
+        && dexJs.includes('Switched away from the empty web-wallet popup.'),
+    'provider sync falls back to a ready matching extension when saved web-wallet state is empty'
+);
 assert(
     dexJs.includes('function setOrderPriceFromMarket(')
         && dexJs.includes('inputIsBeingEdited(priceInput)')

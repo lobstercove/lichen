@@ -15,7 +15,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use crate::RpcState;
@@ -68,16 +68,6 @@ struct ApiResponse<T: Serialize> {
 
 impl<T: Serialize> ApiResponse<T> {
     fn ok(data: T, slot: u64) -> Json<ApiResponse<T>> {
-        Json(ApiResponse {
-            success: true,
-            data: Some(data),
-            error: None,
-            slot,
-        })
-    }
-
-    /// Return a pre-built JSON value wrapped in the standard API envelope.
-    fn ok_raw(data: T, slot: u64) -> Json<ApiResponse<T>> {
         Json(ApiResponse {
             success: true,
             data: Some(data),
@@ -804,134 +794,6 @@ const SYMBOL_CACHE_TTL_SECS: u64 = 30;
 static TICKERS_CACHE: Mutex<Option<(Instant, Vec<TickerJson>, u64)>> = Mutex::new(None);
 const TICKERS_CACHE_TTL_SECS: u64 = 2;
 
-#[derive(Clone, Default)]
-struct PairOrderIndex {
-    order_ids: Vec<u64>,
-    scanned_order_count: u64,
-}
-
-/// Pair -> known order IDs cache. Reduces repeated O(total_orders) scans in hot paths.
-static PAIR_ORDER_INDEX_CACHE: LazyLock<Mutex<HashMap<u64, PairOrderIndex>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-
-#[derive(Clone, Default)]
-struct DexTradeIndex {
-    by_pair: HashMap<u64, Vec<u64>>,
-    by_taker: HashMap<String, Vec<u64>>,
-    scanned_trade_count: u64,
-}
-
-/// Incremental DEX trade read model. It is derived only from canonical
-/// dex_trade_{id} records and can be rebuilt after restart or local reset.
-static DEX_TRADE_INDEX_CACHE: LazyLock<Mutex<DexTradeIndex>> =
-    LazyLock::new(|| Mutex::new(DexTradeIndex::default()));
-
-fn refresh_trade_index<F>(index: &mut DexTradeIndex, latest_trade_count: u64, mut read_trade: F)
-where
-    F: FnMut(u64) -> Option<TradeJson>,
-{
-    if latest_trade_count < index.scanned_trade_count {
-        *index = DexTradeIndex::default();
-    }
-
-    let start = index.scanned_trade_count.saturating_add(1);
-    if start <= latest_trade_count {
-        for trade_id in start..=latest_trade_count {
-            if let Some(trade) = read_trade(trade_id) {
-                index
-                    .by_pair
-                    .entry(trade.pair_id)
-                    .or_default()
-                    .push(trade_id);
-                index
-                    .by_taker
-                    .entry(trade.taker)
-                    .or_default()
-                    .push(trade_id);
-            }
-        }
-    }
-
-    index.scanned_trade_count = latest_trade_count;
-}
-
-fn get_pair_order_ids(state: &crate::RpcState, pair_id: u64) -> Vec<u64> {
-    let latest_order_count = read_u64(state, DEX_CORE_PROGRAM, DEX_ORDER_COUNT_KEY);
-
-    let (mut known_ids, mut scanned_order_count) = {
-        let mut cache = PAIR_ORDER_INDEX_CACHE
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let entry = cache.entry(pair_id).or_default();
-        (entry.order_ids.clone(), entry.scanned_order_count)
-    };
-
-    if scanned_order_count == 0 {
-        for order_id in 1..=latest_order_count {
-            let key = order_storage_key(order_id);
-            if let Some(data) = read_bytes(state, DEX_CORE_PROGRAM, &key) {
-                if let Some(order) = decode_order(&data) {
-                    if order.pair_id == pair_id {
-                        known_ids.push(order_id);
-                    }
-                }
-            }
-        }
-        scanned_order_count = latest_order_count;
-    } else if latest_order_count > scanned_order_count {
-        for order_id in (scanned_order_count + 1)..=latest_order_count {
-            let key = order_storage_key(order_id);
-            if let Some(data) = read_bytes(state, DEX_CORE_PROGRAM, &key) {
-                if let Some(order) = decode_order(&data) {
-                    if order.pair_id == pair_id {
-                        known_ids.push(order_id);
-                    }
-                }
-            }
-        }
-        scanned_order_count = latest_order_count;
-    }
-
-    {
-        let mut cache = PAIR_ORDER_INDEX_CACHE
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        cache.insert(
-            pair_id,
-            PairOrderIndex {
-                order_ids: known_ids.clone(),
-                scanned_order_count,
-            },
-        );
-    }
-
-    known_ids
-}
-
-fn get_indexed_pair_trade_ids(state: &crate::RpcState, pair_id: u64) -> Vec<u64> {
-    let latest_trade_count = read_u64(state, DEX_CORE_PROGRAM, DEX_TRADE_COUNT_KEY);
-    let mut cache = DEX_TRADE_INDEX_CACHE
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    refresh_trade_index(&mut cache, latest_trade_count, |trade_id| {
-        let key = trade_storage_key(trade_id);
-        read_bytes(state, DEX_CORE_PROGRAM, &key).and_then(|data| decode_trade(&data))
-    });
-    cache.by_pair.get(&pair_id).cloned().unwrap_or_default()
-}
-
-fn get_indexed_taker_trade_ids(state: &crate::RpcState, taker_hex: &str) -> Vec<u64> {
-    let latest_trade_count = read_u64(state, DEX_CORE_PROGRAM, DEX_TRADE_COUNT_KEY);
-    let mut cache = DEX_TRADE_INDEX_CACHE
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    refresh_trade_index(&mut cache, latest_trade_count, |trade_id| {
-        let key = trade_storage_key(trade_id);
-        read_bytes(state, DEX_CORE_PROGRAM, &key).and_then(|data| decode_trade(&data))
-    });
-    cache.by_taker.get(taker_hex).cloned().unwrap_or_default()
-}
-
 /// Build a hex-address→display-symbol map for known token contracts.
 /// Uses the symbol registry to resolve contract names to pubkey addresses,
 /// then maps to human-readable token symbols.
@@ -1207,7 +1069,7 @@ async fn get_pair(State(state): State<Arc<RpcState>>, Path(pair_id): Path<u64>) 
 }
 
 /// GET /api/v1/pairs/:id/orderbook — L2 order book
-/// Uses per-pair cache + persistent pair-order index to avoid repeated O(total_orders) scans.
+/// Reads the persisted DEX block-apply index instead of scanning canonical orders.
 async fn get_orderbook(
     State(state): State<Arc<RpcState>>,
     Path(pair_id): Path<u64>,
@@ -1216,101 +1078,27 @@ async fn get_orderbook(
     let depth = q.depth.unwrap_or(20).min(100);
     let slot = current_slot(&state);
 
-    // Check orderbook cache — if fresh (< 1 second old), return immediately
-    {
-        let cache = state.orderbook_cache.read().await;
-        if let Some((cached_at, cached_json)) = cache.get(&pair_id) {
-            if cached_at.elapsed() < std::time::Duration::from_secs(1) {
-                // Re-apply depth limit from cached full book
-                let mut result = cached_json.clone();
-                if let Some(obj) = result.as_object_mut() {
-                    if let Some(bids) = obj.get_mut("bids").and_then(|b| b.as_array_mut()) {
-                        bids.truncate(depth);
-                    }
-                    if let Some(asks) = obj.get_mut("asks").and_then(|a| a.as_array_mut()) {
-                        asks.truncate(depth);
-                    }
-                    obj.insert("slot".to_string(), serde_json::json!(slot));
-                }
-                return ApiResponse::<serde_json::Value>::ok_raw(result, slot).into_response();
-            }
-        }
-    }
-
-    // Cache miss or stale: rebuild using pair-specific order-id index
-    let mut bids: HashMap<u64, (u64, u32)> = HashMap::new(); // price → (total_qty, order_count)
-    let mut asks: HashMap<u64, (u64, u32)> = HashMap::new();
-
-    let pair_order_ids = get_pair_order_ids(&state, pair_id);
-
-    for order_id in pair_order_ids {
-        let key = order_storage_key(order_id);
-        if let Some(data) = read_bytes(&state, DEX_CORE_PROGRAM, &key) {
-            if let Some(order) = decode_order(&data) {
-                if order.status != "open" && order.status != "partial" {
-                    continue;
-                }
-                let remaining = order.quantity - order.filled;
-                if remaining == 0 {
-                    continue;
-                }
-
-                let entry = if order.side == "buy" {
-                    bids.entry(order.price_raw).or_insert((0, 0))
-                } else {
-                    asks.entry(order.price_raw).or_insert((0, 0))
-                };
-                entry.0 += remaining;
-                entry.1 += 1;
-            }
-        }
-    }
-
-    // Sort bids descending by price
-    let mut bid_levels: Vec<OrderBookLevel> = bids
+    let (bid_levels_raw, ask_levels_raw) =
+        match state.state.get_dex_orderbook_levels(pair_id, depth) {
+            Ok(levels) => levels,
+            Err(err) => return api_err(&format!("failed to read indexed orderbook: {}", err)),
+        };
+    let bid_levels: Vec<OrderBookLevel> = bid_levels_raw
         .into_iter()
-        .map(|(p, (q, c))| OrderBookLevel {
-            price: p as f64 / PRICE_SCALE as f64,
-            quantity: q,
-            orders: c,
+        .map(|level| OrderBookLevel {
+            price: level.price_raw as f64 / PRICE_SCALE as f64,
+            quantity: level.quantity,
+            orders: level.orders.min(u32::MAX as u64) as u32,
         })
         .collect();
-    bid_levels.sort_by(|a, b| {
-        b.price
-            .partial_cmp(&a.price)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-
-    // Sort asks ascending by price
-    let mut ask_levels: Vec<OrderBookLevel> = asks
+    let ask_levels: Vec<OrderBookLevel> = ask_levels_raw
         .into_iter()
-        .map(|(p, (q, c))| OrderBookLevel {
-            price: p as f64 / PRICE_SCALE as f64,
-            quantity: q,
-            orders: c,
+        .map(|level| OrderBookLevel {
+            price: level.price_raw as f64 / PRICE_SCALE as f64,
+            quantity: level.quantity,
+            orders: level.orders.min(u32::MAX as u64) as u32,
         })
         .collect();
-    ask_levels.sort_by(|a, b| {
-        a.price
-            .partial_cmp(&b.price)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-
-    // Cache the full book (before truncation)
-    let full_book_json = serde_json::json!({
-        "pair_id": pair_id,
-        "bids": bid_levels,
-        "asks": ask_levels,
-        "slot": slot,
-    });
-    {
-        let mut cache = state.orderbook_cache.write().await;
-        cache.insert(pair_id, (std::time::Instant::now(), full_book_json));
-    }
-
-    // Truncate to requested depth
-    bid_levels.truncate(depth);
-    ask_levels.truncate(depth);
 
     ApiResponse::ok(
         OrderBookJson {
@@ -1343,16 +1131,25 @@ async fn get_trades(
         .unwrap_or_default()
         .as_millis() as u64;
 
-    for i in get_indexed_pair_trade_ids(&state, pair_id)
-        .into_iter()
-        .rev()
-    {
+    let trade_ids = if trader_filter.is_empty() {
+        match state.state.get_dex_pair_trade_ids(pair_id, limit) {
+            Ok(ids) => ids,
+            Err(err) => return api_err(&format!("failed to read indexed trades: {}", err)),
+        }
+    } else {
+        match state
+            .state
+            .get_dex_pair_taker_trade_ids(pair_id, &trader_filter, limit)
+        {
+            Ok(ids) => ids,
+            Err(err) => return api_err(&format!("failed to read indexed trades: {}", err)),
+        }
+    };
+
+    for i in trade_ids {
         let key = trade_storage_key(i);
         if let Some(data) = read_bytes(&state, DEX_CORE_PROGRAM, &key) {
             if let Some(trade) = decode_trade(&data) {
-                if !trader_filter.is_empty() && trade.taker != trader_filter {
-                    continue;
-                }
                 trades.push(enrich_trade_for_response(&state, trade, slot, now_ms));
                 if trades.len() >= limit {
                     break;
@@ -1897,60 +1694,31 @@ fn quote_clob_swap(
     let token_in_lower = token_in.to_lowercase();
     let is_buying_base = token_in_lower != pair.base_token.to_lowercase();
 
-    // Collect open orders on the opposing side, sorted by best price
-    // (price_raw, remaining_qty) — sorted by best price
-    let mut opposing_orders: Vec<(u64, u64)> = Vec::new();
+    let (bids, asks) = state.state.get_dex_orderbook_levels(pair_id, 1_000).ok()?;
+    let opposing_levels = if is_buying_base { asks } else { bids };
 
-    let pair_order_ids = get_pair_order_ids(state, pair_id);
-    for order_id in pair_order_ids {
-        let key = order_storage_key(order_id);
-        if let Some(data) = read_bytes(state, DEX_CORE_PROGRAM, &key) {
-            if let Some(order) = decode_order(&data) {
-                if order.status != "open" && order.status != "partial" {
-                    continue;
-                }
-                let remaining = order.quantity.saturating_sub(order.filled);
-                if remaining == 0 {
-                    continue;
-                }
-                // For buying base, we want sells (asks); for selling base, we want buys (bids)
-                let wanted_side = if is_buying_base { "sell" } else { "buy" };
-                if order.side != wanted_side {
-                    continue;
-                }
-                opposing_orders.push((order.price_raw, remaining));
-            }
-        }
-    }
-
-    if opposing_orders.is_empty() {
+    if opposing_levels.is_empty() {
         return None;
     }
 
-    // Sort: for buying base → asks ascending (cheapest first)
-    //       for selling base → bids descending (highest first)
-    if is_buying_base {
-        opposing_orders.sort_by_key(|&(price, _)| price);
-    } else {
-        opposing_orders.sort_by_key(|&(price, _)| std::cmp::Reverse(price));
-    }
-
-    let best_price = opposing_orders[0].0;
+    let best_price = opposing_levels[0].price_raw;
 
     // Walk the order book matching amount_in against resting orders
     let mut remaining_in = amount_in;
     let mut total_out: u64 = 0;
     let mut last_fill_price: u64 = 0;
 
-    for (price_raw, qty_available) in &opposing_orders {
+    for level in &opposing_levels {
         if remaining_in == 0 {
             break;
         }
+        let price_raw = level.price_raw;
+        let qty_available = level.quantity;
 
         if is_buying_base {
             // Buying base with quote: at this price, each base unit costs price_raw (scaled)
-            let can_buy = if *price_raw > 0 {
-                (remaining_in as u128 * PRICE_SCALE as u128 / *price_raw as u128) as u64
+            let can_buy = if price_raw > 0 {
+                (remaining_in as u128 * PRICE_SCALE as u128 / price_raw as u128) as u64
             } else {
                 continue;
             };
@@ -1958,16 +1726,15 @@ fn quote_clob_swap(
             if can_buy == 0 {
                 continue;
             }
-            let fill_qty = can_buy.min(*qty_available);
-            let fill_cost = (fill_qty as u128 * *price_raw as u128 / PRICE_SCALE as u128) as u64;
+            let fill_qty = can_buy.min(qty_available);
+            let fill_cost = (fill_qty as u128 * price_raw as u128 / PRICE_SCALE as u128) as u64;
 
             total_out += fill_qty;
             remaining_in = remaining_in.saturating_sub(fill_cost.max(1));
         } else {
             // Selling base for quote: each base unit earns price_raw (scaled)
-            let fill_qty = remaining_in.min(*qty_available);
-            let fill_proceeds =
-                (fill_qty as u128 * *price_raw as u128 / PRICE_SCALE as u128) as u64;
+            let fill_qty = remaining_in.min(qty_available);
+            let fill_proceeds = (fill_qty as u128 * price_raw as u128 / PRICE_SCALE as u128) as u64;
 
             // AUDIT-FIX F-11: Skip if integer truncation produces zero proceeds
             if fill_proceeds == 0 {
@@ -1977,7 +1744,7 @@ fn quote_clob_swap(
             remaining_in = remaining_in.saturating_sub(fill_qty);
         }
 
-        last_fill_price = *price_raw;
+        last_fill_price = price_raw;
     }
 
     // AUDIT-FIX F-6/F-11: If total_out is zero after all fills, the trade amount
@@ -2612,10 +2379,11 @@ async fn get_trader_trades(
         .as_millis() as u64;
 
     let mut trades = Vec::new();
-    for i in get_indexed_taker_trade_ids(&state, &addr_hex)
-        .into_iter()
-        .rev()
-    {
+    let trade_ids = match state.state.get_dex_taker_trade_ids(&addr_hex, limit) {
+        Ok(ids) => ids,
+        Err(err) => return api_err(&format!("failed to read indexed trader trades: {}", err)),
+    };
+    for i in trade_ids {
         let key = trade_storage_key(i);
         if let Some(data) = read_bytes(&state, DEX_CORE_PROGRAM, &key) {
             if let Some(trade) = decode_trade(&data) {
@@ -3245,82 +3013,6 @@ mod tests {
         assert_eq!(t.maker_order_id, 77);
         assert_eq!(t.slot, 12345);
         assert_eq!(t.taker, hex::encode([0xFF; 32]));
-    }
-
-    fn trade_for_index(trade_id: u64, pair_id: u64, taker: &str) -> TradeJson {
-        TradeJson {
-            trade_id,
-            pair_id,
-            price: 1.0,
-            price_raw: PRICE_SCALE,
-            quantity: 1,
-            taker: taker.to_string(),
-            maker_order_id: 1,
-            slot: trade_id,
-            side: "buy",
-            timestamp: 0,
-        }
-    }
-
-    #[test]
-    fn trade_index_groups_interleaved_pairs_and_takers_incrementally() {
-        let mut source = std::collections::HashMap::from([
-            (1, trade_for_index(1, 2, "alice")),
-            (2, trade_for_index(2, 2, "bob")),
-            (3, trade_for_index(3, 1, "alice")),
-            (4, trade_for_index(4, 2, "alice")),
-            (5, trade_for_index(5, 3, "carol")),
-        ]);
-        let mut index = DexTradeIndex::default();
-
-        refresh_trade_index(&mut index, 5, |trade_id| source.get(&trade_id).cloned());
-
-        assert_eq!(
-            index.by_pair.get(&2).map(Vec::as_slice),
-            Some([1, 2, 4].as_slice())
-        );
-        assert_eq!(
-            index.by_taker.get("alice").map(Vec::as_slice),
-            Some([1, 3, 4].as_slice())
-        );
-
-        source.insert(6, trade_for_index(6, 2, "bob"));
-        refresh_trade_index(&mut index, 6, |trade_id| source.get(&trade_id).cloned());
-        refresh_trade_index(&mut index, 6, |trade_id| source.get(&trade_id).cloned());
-
-        assert_eq!(
-            index.by_pair.get(&2).map(Vec::as_slice),
-            Some([1, 2, 4, 6].as_slice())
-        );
-        assert_eq!(
-            index.by_taker.get("bob").map(Vec::as_slice),
-            Some([2, 6].as_slice())
-        );
-        assert_eq!(index.scanned_trade_count, 6);
-    }
-
-    #[test]
-    fn trade_index_rebuilds_when_trade_count_rewinds() {
-        let mut index = DexTradeIndex::default();
-        let source = std::collections::HashMap::from([
-            (1, trade_for_index(1, 1, "alice")),
-            (2, trade_for_index(2, 2, "bob")),
-            (3, trade_for_index(3, 2, "carol")),
-        ]);
-
-        refresh_trade_index(&mut index, 3, |trade_id| source.get(&trade_id).cloned());
-        assert_eq!(
-            index.by_pair.get(&2).map(Vec::as_slice),
-            Some([2, 3].as_slice())
-        );
-
-        refresh_trade_index(&mut index, 1, |trade_id| source.get(&trade_id).cloned());
-        assert_eq!(
-            index.by_pair.get(&1).map(Vec::as_slice),
-            Some([1].as_slice())
-        );
-        assert!(index.by_pair.get(&2).is_none());
-        assert_eq!(index.scanned_trade_count, 1);
     }
 
     // ── decode_pool ─────────────────────────────────────────────────────

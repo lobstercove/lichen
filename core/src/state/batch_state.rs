@@ -22,6 +22,7 @@ impl StateStore {
             account_overlay: std::collections::HashMap::new(),
             transaction_overlay: std::collections::HashSet::new(),
             contract_storage_overlay: std::collections::HashMap::new(),
+            dex_orderbook_level_deltas: std::collections::HashMap::new(),
             stake_pool_overlay: None,
             mossstake_pool_overlay: None,
             new_accounts: 0,
@@ -59,8 +60,20 @@ impl StateStore {
     pub fn commit_batch(&self, batch: StateBatch) -> Result<(), String> {
         let dirty_pubkeys: Vec<Pubkey> = batch.account_overlay.keys().cloned().collect();
         let dirty_contract_keys: Vec<Vec<u8>> = batch.dirty_contract_keys.clone();
+        let dex_orderbook_level_deltas = batch.dex_orderbook_level_deltas.clone();
 
         let mut wb = batch.batch;
+        let _dex_index_guard = if dex_orderbook_level_deltas.is_empty() {
+            None
+        } else {
+            let guard = self
+                .dex_index_lock
+                .lock()
+                .map_err(|e| format!("dex_index_lock poisoned: {}", e))?;
+            self.apply_dex_orderbook_level_deltas(&mut wb, &dex_orderbook_level_deltas)?;
+            Some(guard)
+        };
+
         let _burned_guard = if batch.burned_delta > 0 {
             let guard = self
                 .burned_lock
@@ -155,6 +168,7 @@ impl StateBatch {
             account_overlay: self.account_overlay.clone(),
             transaction_overlay: self.transaction_overlay.clone(),
             contract_storage_overlay: self.contract_storage_overlay.clone(),
+            dex_orderbook_level_deltas: self.dex_orderbook_level_deltas.clone(),
             stake_pool_overlay: self.stake_pool_overlay.clone(),
             mossstake_pool_overlay: self.mossstake_pool_overlay.clone(),
             new_accounts: self.new_accounts,
@@ -756,7 +770,25 @@ impl StateBatch {
         let mut key = Vec::with_capacity(32 + storage_key.len());
         key.extend_from_slice(&program.0);
         key.extend_from_slice(storage_key);
+        let old_value = if StateStore::should_stage_dex_contract_storage_index(storage_key) {
+            match self.contract_storage_overlay.get(&key) {
+                Some(value) => value.clone(),
+                None => self
+                    .db
+                    .get_cf(&cf, &key)
+                    .map_err(|e| format!("Database error: {}", e))?
+                    .map(|data| data.to_vec()),
+            }
+        } else {
+            None
+        };
         self.batch.put_cf(&cf, &key, value);
+        self.stage_dex_contract_storage_indexes(
+            program,
+            storage_key,
+            old_value.as_deref(),
+            Some(value),
+        )?;
         self.contract_storage_overlay
             .insert(key.clone(), Some(value.to_vec()));
         self.dirty_contract_keys.push(key);
@@ -775,7 +807,20 @@ impl StateBatch {
         let mut key = Vec::with_capacity(32 + storage_key.len());
         key.extend_from_slice(&program.0);
         key.extend_from_slice(storage_key);
+        let old_value = if StateStore::should_stage_dex_contract_storage_index(storage_key) {
+            match self.contract_storage_overlay.get(&key) {
+                Some(value) => value.clone(),
+                None => self
+                    .db
+                    .get_cf(&cf, &key)
+                    .map_err(|e| format!("Database error: {}", e))?
+                    .map(|data| data.to_vec()),
+            }
+        } else {
+            None
+        };
         self.batch.delete_cf(&cf, &key);
+        self.stage_dex_contract_storage_indexes(program, storage_key, old_value.as_deref(), None)?;
         self.contract_storage_overlay.insert(key.clone(), None);
         self.dirty_contract_keys.push(key);
         Ok(())

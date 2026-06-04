@@ -16,7 +16,6 @@
     const REQUEST_TTL_MS = 10 * 60 * 1000;
     const FINALIZED_RESPONSE_TTL_MS = 5 * 60 * 1000;
     const LOOP_INTERVAL_MS = 500;
-    const CLOSE_DELAY_MS = 150;
     const HINT_ID = 'walletDappBridgeHint';
     const SIGNING_METHODS = new Set(['licn_signMessage', 'licn_signTransaction', 'licn_sendTransaction']);
     const NETWORK_CHANGE_METHODS = new Set(['licn_switchNetwork', 'licn_addNetwork']);
@@ -347,6 +346,7 @@
 
     function buildProviderState(origin) {
         const wallet = getActiveWalletSafe();
+        const walletExists = hasWallet();
         const approved = isOriginApproved(origin);
         const network = getCurrentNetwork();
         const isLocked = Boolean(walletState?.isLocked);
@@ -360,6 +360,7 @@
             network,
             activeAddress,
             accounts: activeAddress ? [activeAddress] : [],
+            hasWallet: walletExists,
             isLocked,
             version: '0.1.0',
             providerType: 'web-wallet',
@@ -396,13 +397,8 @@
     }
 
     function schedulePopupClose() {
-        setTimeout(() => {
-            try {
-                window.close();
-            } catch {
-                // Ignore popup close failures.
-            }
-        }, CLOSE_DELAY_MS);
+        // Keeping the popup open preserves the live signer. Closing it makes the
+        // connected dApp read-only until the encrypted browser wallet is reopened.
     }
 
     function emitProviderEvent(eventName, payload) {

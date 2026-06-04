@@ -89,6 +89,7 @@ const BLOCK_LIST_MAX_LIMIT: usize =
 const MARKET_LISTINGS_UNFILTERED_MAX_LIMIT: usize = 200;
 const PROGRAM_LIST_CACHE_TTL_MS: u128 = 1000;
 const PROGRAM_LIST_CACHE_MAX_ENTRIES: usize = 512;
+const RPC_READ_SLOT_CACHE_MAX_ENTRIES: usize = 4096;
 const SERVICE_FLEET_CACHE_TTL_MS: u128 = 10_000;
 const SIGNED_METADATA_MANIFEST_SCHEMA_VERSION: u64 = 1;
 const LIVE_SIGNED_METADATA_SOURCE_RPC: &str = "live-rpc";
@@ -2684,12 +2685,12 @@ struct RpcState {
     metrics_cache: Arc<RwLock<(Instant, Option<serde_json::Value>)>>,
     /// Cached responses for high-frequency list endpoints.
     program_list_response_cache: Arc<RwLock<LruCache<String, (Instant, serde_json::Value)>>>,
+    /// Slot-aware cache for deterministic read RPCs.
+    /// Keys include method, canonical params, and the slot that anchored the response.
+    read_slot_cache: Arc<RwLock<LruCache<String, serde_json::Value>>>,
     /// AUDIT-FIX RPC-4: Per-address airdrop cooldown to prevent abuse.
     /// Bounded + async lock to avoid blocking runtime and unbounded growth.
     airdrop_cooldowns: Arc<RwLock<AirdropCooldowns>>,
-    /// DEX orderbook cache — per-pair aggregated book levels, refreshed at most once per second.
-    /// Eliminates O(total_orders) scan per request; cached result served in O(1).
-    orderbook_cache: Arc<RwLock<HashMap<u64, (Instant, serde_json::Value)>>>,
     /// Custody service URL for bridge deposit proxy (e.g. http://localhost:9105)
     custody_url: Option<String>,
     /// Bearer token for custody API auth
@@ -2972,6 +2973,114 @@ async fn put_cached_program_list_response(
 
     prune_stale_program_list_entries(&mut guard);
     guard.put(key, (Instant::now(), response));
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RpcReadSlotCacheProfile {
+    ExplicitBlockSlot,
+    ExplicitAccountSlot,
+    TransactionSlot,
+    CurrentProcessedSlot,
+}
+
+fn rpc_read_slot_cache_profile(method: &str) -> Option<RpcReadSlotCacheProfile> {
+    match method {
+        "getBlockCommit" => Some(RpcReadSlotCacheProfile::ExplicitBlockSlot),
+        "getAccountAtSlot" => Some(RpcReadSlotCacheProfile::ExplicitAccountSlot),
+        "getTransactionProof" => Some(RpcReadSlotCacheProfile::TransactionSlot),
+        "getBlock"
+        | "getRecentBlocks"
+        | "getRecentTransactions"
+        | "getRecentShieldedTransactions"
+        | "getTransactionsByAddress"
+        | "getTransactionHistory"
+        | "getAccountTxCount"
+        | "getProgramCalls"
+        | "getProgramStorage" => Some(RpcReadSlotCacheProfile::CurrentProcessedSlot),
+        _ => None,
+    }
+}
+
+fn rpc_block_apply_idle(state: &RpcState) -> bool {
+    match state.block_apply_lock.as_ref() {
+        Some(lock) => lock.try_lock().is_ok(),
+        None => true,
+    }
+}
+
+fn canonicalize_json_for_cache(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Array(values) => {
+            serde_json::Value::Array(values.iter().map(canonicalize_json_for_cache).collect())
+        }
+        serde_json::Value::Object(map) => {
+            let mut sorted = serde_json::Map::new();
+            for (key, value) in map.iter().collect::<BTreeMap<_, _>>() {
+                sorted.insert(key.clone(), canonicalize_json_for_cache(value));
+            }
+            serde_json::Value::Object(sorted)
+        }
+        _ => value.clone(),
+    }
+}
+
+fn canonical_params_cache_fragment(params: &Option<serde_json::Value>) -> String {
+    let normalized = params.as_ref().map(canonicalize_json_for_cache);
+    serde_json::to_string(&normalized).unwrap_or_else(|_| "null".to_string())
+}
+
+fn account_at_slot_cache_slot(params: &Option<serde_json::Value>) -> Option<u64> {
+    params
+        .as_ref()
+        .and_then(|v| v.as_array())
+        .and_then(|arr| arr.get(1))
+        .and_then(|v| v.as_u64())
+}
+
+fn transaction_proof_cache_slot(
+    state: &RpcState,
+    params: &Option<serde_json::Value>,
+) -> Option<u64> {
+    let sig_str = params
+        .as_ref()
+        .and_then(|v| v.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|v| v.as_str())?;
+    let sig_hash = Hash::from_hex(sig_str).ok()?;
+    state.state.get_tx_slot(&sig_hash).ok().flatten()
+}
+
+fn rpc_read_slot_cache_key(
+    state: &RpcState,
+    method: &str,
+    params: &Option<serde_json::Value>,
+) -> Option<String> {
+    let profile = rpc_read_slot_cache_profile(method)?;
+    let slot = match profile {
+        RpcReadSlotCacheProfile::ExplicitBlockSlot => {
+            parse_get_block_slot_param(params.as_ref(), false).ok()?
+        }
+        RpcReadSlotCacheProfile::ExplicitAccountSlot => account_at_slot_cache_slot(params)?,
+        RpcReadSlotCacheProfile::TransactionSlot => transaction_proof_cache_slot(state, params)?,
+        RpcReadSlotCacheProfile::CurrentProcessedSlot => {
+            if !rpc_block_apply_idle(state) {
+                return None;
+            }
+            state.state.get_last_slot().ok()?
+        }
+    };
+    let params_key = canonical_params_cache_fragment(params);
+    Some(format!("{}:{}:{}", method, slot, params_key))
+}
+
+async fn get_cached_read_slot_response(state: &RpcState, key: &str) -> Option<serde_json::Value> {
+    let mut guard = state.read_slot_cache.write().await;
+    guard.get(key).cloned()
+}
+
+async fn put_cached_read_slot_response(state: &RpcState, key: String, response: serde_json::Value) {
+    let mut guard = state.read_slot_cache.write().await;
+    guard.put(key, response);
 }
 
 /// AUDIT-FIX HIGH-03: Exact allowlist instead of substring matching.
@@ -5188,8 +5297,10 @@ fn build_rpc_router_internal(
         program_list_response_cache: Arc::new(RwLock::new(LruCache::new(
             NonZeroUsize::new(PROGRAM_LIST_CACHE_MAX_ENTRIES).unwrap(),
         ))),
+        read_slot_cache: Arc::new(RwLock::new(LruCache::new(
+            NonZeroUsize::new(RPC_READ_SLOT_CACHE_MAX_ENTRIES).unwrap(),
+        ))),
         airdrop_cooldowns: Arc::new(RwLock::new(AirdropCooldowns::default())),
-        orderbook_cache: Arc::new(RwLock::new(HashMap::new())),
         custody_url: std::env::var("CUSTODY_URL").ok().filter(|s| !s.is_empty()),
         custody_auth_token: std::env::var("CUSTODY_API_AUTH_TOKEN")
             .ok()
@@ -5394,6 +5505,20 @@ async fn handle_rpc(
                 error.code,
                 error.message,
             );
+        }
+    }
+
+    let cache_params = req.params.clone();
+    let read_slot_cache_key = rpc_read_slot_cache_key(&state, &req.method, &cache_params);
+    if let Some(ref key) = read_slot_cache_key {
+        if let Some(result) = get_cached_read_slot_response(&state, key).await {
+            let response = RpcResponse {
+                jsonrpc: "2.0".to_string(),
+                id: req.id,
+                result: Some(result),
+                error: None,
+            };
+            return encode_rpc_response(&headers, response);
         }
     }
 
@@ -5726,6 +5851,12 @@ async fn handle_rpc(
 
         _ => Err(method_not_found_error()),
     };
+
+    if let (Some(key), Ok(result_value)) = (read_slot_cache_key, result.as_ref()) {
+        if rpc_read_slot_cache_key(&state, &req.method, &cache_params).as_ref() == Some(&key) {
+            put_cached_read_slot_response(&state, key, result_value.clone()).await;
+        }
+    }
 
     let response = match result {
         Ok(result) => RpcResponse {
@@ -20523,15 +20654,16 @@ mod tests {
         classify_method, classify_solana_method_tier, clear_privileged_rpc_mutation_test_sink,
         constant_time_eq, decode_contract_result_u64, disk_readiness_from_counts,
         encode_readonly_return_data_b64, encode_rpc_response, filter_signatures_for_address,
-        get_cached_program_list_response, handle_build_ban_code_hash_tx,
-        handle_build_extend_restriction_tx, handle_build_lift_restriction_tx,
-        handle_build_pause_bridge_route_tx, handle_build_quarantine_contract_tx,
-        handle_build_restrict_account_asset_tx, handle_build_restrict_account_tx,
-        handle_build_resume_bridge_route_tx, handle_build_resume_contract_tx,
-        handle_build_set_frozen_asset_amount_tx, handle_build_suspend_contract_tx,
-        handle_build_terminate_contract_tx, handle_build_unban_code_hash_tx,
-        handle_build_unrestrict_account_asset_tx, handle_build_unrestrict_account_tx,
-        handle_can_receive, handle_can_send, handle_can_transfer, handle_create_bridge_deposit,
+        get_cached_program_list_response, get_cached_read_slot_response,
+        handle_build_ban_code_hash_tx, handle_build_extend_restriction_tx,
+        handle_build_lift_restriction_tx, handle_build_pause_bridge_route_tx,
+        handle_build_quarantine_contract_tx, handle_build_restrict_account_asset_tx,
+        handle_build_restrict_account_tx, handle_build_resume_bridge_route_tx,
+        handle_build_resume_contract_tx, handle_build_set_frozen_asset_amount_tx,
+        handle_build_suspend_contract_tx, handle_build_terminate_contract_tx,
+        handle_build_unban_code_hash_tx, handle_build_unrestrict_account_asset_tx,
+        handle_build_unrestrict_account_tx, handle_can_receive, handle_can_send,
+        handle_can_transfer, handle_create_bridge_deposit,
         handle_get_account_asset_restriction_status, handle_get_account_proof,
         handle_get_account_restriction_status, handle_get_all_symbol_registry,
         handle_get_asset_restriction_status, handle_get_bridge_deposit,
@@ -20550,16 +20682,18 @@ mod tests {
         live_signed_metadata_source_rpc, method_allowed_when_rpc_unready, parse_bridge_access_auth,
         parse_get_block_slot_param, parse_governance_event, parse_rpc_request,
         parse_rpc_tier_probe, parse_topic_hash, pq_signature_json, prediction_address_aliases,
-        privileged_rpc_mutation_test_output, put_cached_program_list_response, rpc_readiness,
-        rpc_readiness_json, rpc_unready_error, solana_method_allowed_when_rpc_unready,
-        storage_key_with_pubkey_hex, storage_key_with_u64_le, strip_admin_token_from_params,
+        privileged_rpc_mutation_test_output, put_cached_program_list_response,
+        put_cached_read_slot_response, rpc_read_slot_cache_key, rpc_readiness, rpc_readiness_json,
+        rpc_unready_error, solana_method_allowed_when_rpc_unready, storage_key_with_pubkey_hex,
+        storage_key_with_u64_le, strip_admin_token_from_params,
         validate_incoming_transaction_limits, validate_solana_encoding,
         validate_solana_transaction_details, verify_admin_auth, verify_bridge_access_auth_at,
         verify_bridge_access_auth_for_create_at, AirdropCooldowns, MethodTier, RateLimiter,
         RpcError, RpcResponse, RpcState, AIRDROP_COOLDOWN_MAX_ENTRIES, AIRDROP_COOLDOWN_SECS,
         BRIDGE_ACCESS_DOMAIN_V2, BRIDGE_AUTH_ACTION_CREATE_DEPOSIT, PROGRAM_LIST_CACHE_TTL_MS,
-        RPC_DISK_CRITICAL_MIN_AVAILABLE_BYTES, SOLANA_SPL_TOKEN_PROGRAM_ID,
-        SOLANA_TOKEN_ACCOUNT_SPACE, SYSTEM_PROPOSE_GOVERNANCE_ACTION_IX,
+        RPC_DISK_CRITICAL_MIN_AVAILABLE_BYTES, RPC_READ_SLOT_CACHE_MAX_ENTRIES,
+        SOLANA_SPL_TOKEN_PROGRAM_ID, SOLANA_TOKEN_ACCOUNT_SPACE,
+        SYSTEM_PROPOSE_GOVERNANCE_ACTION_IX,
     };
     use axum::{
         body::{to_bytes, Body},
@@ -20617,8 +20751,10 @@ mod tests {
             program_list_response_cache: Arc::new(RwLock::new(LruCache::new(
                 NonZeroUsize::new(program_cache_capacity).unwrap(),
             ))),
+            read_slot_cache: Arc::new(RwLock::new(LruCache::new(
+                NonZeroUsize::new(RPC_READ_SLOT_CACHE_MAX_ENTRIES).unwrap(),
+            ))),
             airdrop_cooldowns: Arc::new(RwLock::new(AirdropCooldowns::default())),
-            orderbook_cache: Arc::new(RwLock::new(HashMap::new())),
             custody_url: None,
             custody_auth_token: None,
             incident_status_path: None,
@@ -21559,6 +21695,63 @@ mod tests {
 
         assert_eq!(error.code, -32000);
         assert!(error.message.contains("lifecycle suspended"));
+    }
+
+    #[tokio::test]
+    async fn read_slot_cache_key_canonicalizes_params_for_current_slot_reads() {
+        let dir = tempdir().unwrap();
+        let state = StateStore::open(dir.path()).unwrap();
+        state.set_last_slot(42).unwrap();
+        let rpc_state = make_test_rpc_state_with_program_cache_capacity(state, 2);
+
+        let params_a = Some(serde_json::json!([{"limit": 25, "before_slot": 99}]));
+        let params_b = Some(serde_json::json!([{"before_slot": 99, "limit": 25}]));
+
+        assert_eq!(
+            rpc_read_slot_cache_key(&rpc_state, "getRecentBlocks", &params_a),
+            rpc_read_slot_cache_key(&rpc_state, "getRecentBlocks", &params_b)
+        );
+    }
+
+    #[tokio::test]
+    async fn read_slot_cache_key_changes_when_processed_slot_changes() {
+        let dir = tempdir().unwrap();
+        let state = StateStore::open(dir.path()).unwrap();
+        state.set_last_slot(41).unwrap();
+        let rpc_state = make_test_rpc_state_with_program_cache_capacity(state, 2);
+        let params = Some(serde_json::json!([{"limit": 10}]));
+
+        let key_at_41 = rpc_read_slot_cache_key(&rpc_state, "getRecentTransactions", &params)
+            .expect("cache key at slot 41");
+        rpc_state.state.set_last_slot(42).unwrap();
+        let key_at_42 = rpc_read_slot_cache_key(&rpc_state, "getRecentTransactions", &params)
+            .expect("cache key at slot 42");
+
+        assert_ne!(key_at_41, key_at_42);
+    }
+
+    #[tokio::test]
+    async fn read_slot_cache_stores_successful_values_by_exact_key() {
+        let dir = tempdir().unwrap();
+        let state = StateStore::open(dir.path()).unwrap();
+        let rpc_state = make_test_rpc_state_with_program_cache_capacity(state, 2);
+        let params = Some(serde_json::json!([7]));
+        let key =
+            rpc_read_slot_cache_key(&rpc_state, "getBlock", &params).expect("block cache key");
+
+        put_cached_read_slot_response(
+            &rpc_state,
+            key.clone(),
+            serde_json::json!({"slot": 7, "cached": true}),
+        )
+        .await;
+
+        assert_eq!(
+            get_cached_read_slot_response(&rpc_state, &key).await,
+            Some(serde_json::json!({"slot": 7, "cached": true}))
+        );
+        assert!(rpc_read_slot_cache_key(&rpc_state, "sendTransaction", &params).is_none());
+        assert!(rpc_read_slot_cache_key(&rpc_state, "getAccountProof", &params).is_none());
     }
 
     #[tokio::test]

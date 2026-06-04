@@ -226,6 +226,7 @@ function popupProviderDisconnectedState(previous) {
         network: previous && previous.network ? previous.network : network,
         activeAddress: '',
         accounts: [],
+        hasWallet: false,
         isLocked: false,
         providerType: 'web-wallet'
     };
@@ -240,6 +241,9 @@ function normalizePopupProviderState(state, previous) {
     var accounts = Array.isArray(state.accounts)
         ? state.accounts.map(function (address) { return typeof address === 'string' ? address.trim() : ''; }).filter(Boolean)
         : [];
+    var hasWallet = Object.prototype.hasOwnProperty.call(state, 'hasWallet')
+        ? Boolean(state.hasWallet)
+        : Boolean(accounts.length || state.activeAddress);
 
     return {
         connected: Boolean(state.connected),
@@ -248,7 +252,8 @@ function normalizePopupProviderState(state, previous) {
         network: typeof state.network === 'string' ? state.network : fallback.network,
         activeAddress: accounts[0] || '',
         accounts: accounts,
-        isLocked: Boolean(state.isLocked),
+        hasWallet: hasWallet,
+        isLocked: hasWallet ? Boolean(state.isLocked) : false,
         providerType: 'web-wallet'
     };
 }
@@ -276,6 +281,7 @@ function writeStoredPopupProviderState(state) {
             chainId: typeof state.chainId === 'string' ? state.chainId : '',
             network: typeof state.network === 'string' ? state.network : '',
             accounts: state.accounts,
+            hasWallet: true,
             isLocked: Boolean(state.isLocked),
             providerType: 'web-wallet'
         }));
@@ -358,6 +364,7 @@ PopupLichenProvider.prototype._handlePopupClosed = function () {
             pending.reject(new Error('Web wallet window closed before the request completed'));
         }
     });
+    this._setDisconnected();
 };
 
 PopupLichenProvider.prototype._startWindowMonitor = function () {
@@ -409,6 +416,7 @@ PopupLichenProvider.prototype._updateStateFromMethod = function (method, result)
             activeAddress: accounts[0] || '',
             chainId: this._lastState.chainId,
             network: this._lastState.network,
+            hasWallet: accounts.length > 0,
             isLocked: false
         }, this._lastState);
         this._persistState();
@@ -438,6 +446,7 @@ PopupLichenProvider.prototype._handleMessage = function (event) {
                 chainId: this._lastState.chainId,
                 network: this._lastState.network,
                 accounts: accounts,
+                hasWallet: accounts.length ? true : this._lastState.hasWallet,
                 isLocked: accounts.length === 0 ? true : false
             }, this._lastState);
         } else if (event.data.event === 'chainChanged') {

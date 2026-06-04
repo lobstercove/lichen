@@ -21,6 +21,7 @@ mod archive_state;
 mod batch_state;
 mod cold_storage;
 mod contract_state;
+mod dex_index;
 mod evm_state;
 mod ledger_state;
 mod merkle_state;
@@ -36,6 +37,7 @@ mod stats_metadata;
 mod storage_bootstrap;
 mod validator_state;
 
+pub use dex_index::{DexIndexBackfillReport, DexOrderbookLevel};
 pub use merkle_state::{
     AccountProof, MerkleProof, SparseMerkleProof, SparseProofStep, SparseStateCommitmentReport,
 };
@@ -111,6 +113,11 @@ const CF_SOLANA_HOLDER_TOKEN_ACCOUNTS: &str = "solana_holder_token_accounts"; //
 const CF_SYMBOL_BY_PROGRAM: &str = "symbol_by_program"; // Program pubkey -> symbol (reverse index for O(1) lookup)
 const CF_EVENTS_BY_SLOT: &str = "events_by_slot"; // slot(8,BE) + seq(8,BE) -> event_key (secondary index)
 const CF_CONTRACT_STORAGE: &str = "contract_storage"; // Contract storage (LichenID reputation etc.)
+const CF_DEX_ORDERS_BY_PAIR: &str = "dex_orders_by_pair"; // pair_id(BE) + order_id(BE)
+const CF_DEX_TRADES_BY_PAIR: &str = "dex_trades_by_pair"; // pair_id(BE) + trade_id(BE)
+const CF_DEX_TRADES_BY_TAKER: &str = "dex_trades_by_taker"; // taker(32) + trade_id(BE)
+const CF_DEX_TRADES_BY_PAIR_TAKER: &str = "dex_trades_by_pair_taker"; // pair_id(BE) + taker(32) + trade_id(BE)
+const CF_DEX_ORDERBOOK_LEVELS: &str = "dex_orderbook_levels"; // pair_id(BE) + side + price_raw(BE)
 const CF_MERKLE_LEAVES: &str = "merkle_leaves"; // pubkey(32) -> leaf_hash(32) (incremental Merkle cache)
 const CF_CONTRACT_MERKLE_LEAVES: &str = "contract_merkle_leaves"; // full_key(32+N) hash -> leaf_hash(32) (contract storage Merkle cache)
 const CF_ACCOUNT_MERKLE_NODES: &str = "account_merkle_nodes"; // compact sparse state tree nodes keyed by node hash
@@ -284,6 +291,8 @@ pub struct StateStore {
     /// preventing lost-update races when parallel TX groups debit payers and
     /// credit the treasury concurrently.
     treasury_lock: Arc<std::sync::Mutex<()>>,
+    /// Serialize DEX derived orderbook-level read-modify-write updates.
+    dex_index_lock: Arc<std::sync::Mutex<()>>,
     /// AUDIT-FIX C-7: Per-instance blockhash cache (was previously a static global).
     /// Populated lazily on first `get_recent_blockhashes`, kept warm by `push_blockhash_cache`.
     blockhash_cache: Arc<Mutex<Option<BlockhashCache>>>,
@@ -314,6 +323,8 @@ pub struct StateBatch {
     /// Contract storage overlay keyed by full storage key
     /// (`program_pubkey || storage_key`). `None` represents a deletion.
     contract_storage_overlay: std::collections::HashMap<Vec<u8>, Option<Vec<u8>>>,
+    /// DEX orderbook aggregate level deltas staged by contract storage changes.
+    dex_orderbook_level_deltas: std::collections::HashMap<Vec<u8>, (i128, i128)>,
     /// In-memory overlay for stake pool (set on put, read on get)
     stake_pool_overlay: Option<crate::consensus::StakePool>,
     /// In-memory overlay for MossStake pool (set on put, read on get)

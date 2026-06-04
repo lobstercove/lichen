@@ -6,17 +6,18 @@ use rocksdb::{BlockBasedOptions, Cache, ColumnFamilyDescriptor, Options, SliceTr
 use super::{
     MetricsStore, StateStore, CF_ACCOUNTS, CF_ACCOUNT_MERKLE_NODES, CF_ACCOUNT_SNAPSHOTS,
     CF_ACCOUNT_TXS, CF_BLOCKS, CF_CONTRACT_MERKLE_LEAVES, CF_CONTRACT_MERKLE_NODES,
-    CF_CONTRACT_STORAGE, CF_EVENTS, CF_EVENTS_BY_SLOT, CF_EVM_ACCOUNTS, CF_EVM_LOGS_BY_SLOT,
-    CF_EVM_MAP, CF_EVM_RECEIPTS, CF_EVM_STORAGE, CF_EVM_TXS, CF_HOLDER_TOKENS, CF_MARKET_ACTIVITY,
-    CF_MERKLE_LEAVES, CF_MOSSSTAKE, CF_NFT_ACTIVITY, CF_NFT_BY_COLLECTION, CF_NFT_BY_OWNER,
-    CF_PENDING_VALIDATOR_CHANGES, CF_PROGRAMS, CF_PROGRAM_CALLS, CF_RESTRICTIONS,
-    CF_RESTRICTION_INDEX_CODE_HASH, CF_RESTRICTION_INDEX_TARGET, CF_SHIELDED_COMMITMENTS,
-    CF_SHIELDED_NOTE_PAYLOADS, CF_SHIELDED_NULLIFIERS, CF_SHIELDED_POOL, CF_SHIELDED_TXS, CF_SLOTS,
-    CF_SOLANA_HOLDER_TOKEN_ACCOUNTS, CF_SOLANA_TOKEN_ACCOUNTS, CF_STAKE_POOL, CF_STATS,
-    CF_SYMBOL_BY_PROGRAM, CF_SYMBOL_REGISTRY, CF_TOKEN_BALANCES, CF_TOKEN_TRANSFERS,
-    CF_TRANSACTIONS, CF_TX_BY_SLOT, CF_TX_META, CF_TX_TO_SLOT, CF_VALIDATORS, COLD_CF_ACCOUNT_TXS,
-    COLD_CF_BLOCKS, COLD_CF_EVENTS, COLD_CF_PROGRAM_CALLS, COLD_CF_TOKEN_TRANSFERS,
-    COLD_CF_TRANSACTIONS, COLD_CF_TX_TO_SLOT,
+    CF_CONTRACT_STORAGE, CF_DEX_ORDERBOOK_LEVELS, CF_DEX_ORDERS_BY_PAIR, CF_DEX_TRADES_BY_PAIR,
+    CF_DEX_TRADES_BY_PAIR_TAKER, CF_DEX_TRADES_BY_TAKER, CF_EVENTS, CF_EVENTS_BY_SLOT,
+    CF_EVM_ACCOUNTS, CF_EVM_LOGS_BY_SLOT, CF_EVM_MAP, CF_EVM_RECEIPTS, CF_EVM_STORAGE, CF_EVM_TXS,
+    CF_HOLDER_TOKENS, CF_MARKET_ACTIVITY, CF_MERKLE_LEAVES, CF_MOSSSTAKE, CF_NFT_ACTIVITY,
+    CF_NFT_BY_COLLECTION, CF_NFT_BY_OWNER, CF_PENDING_VALIDATOR_CHANGES, CF_PROGRAMS,
+    CF_PROGRAM_CALLS, CF_RESTRICTIONS, CF_RESTRICTION_INDEX_CODE_HASH, CF_RESTRICTION_INDEX_TARGET,
+    CF_SHIELDED_COMMITMENTS, CF_SHIELDED_NOTE_PAYLOADS, CF_SHIELDED_NULLIFIERS, CF_SHIELDED_POOL,
+    CF_SHIELDED_TXS, CF_SLOTS, CF_SOLANA_HOLDER_TOKEN_ACCOUNTS, CF_SOLANA_TOKEN_ACCOUNTS,
+    CF_STAKE_POOL, CF_STATS, CF_SYMBOL_BY_PROGRAM, CF_SYMBOL_REGISTRY, CF_TOKEN_BALANCES,
+    CF_TOKEN_TRANSFERS, CF_TRANSACTIONS, CF_TX_BY_SLOT, CF_TX_META, CF_TX_TO_SLOT, CF_VALIDATORS,
+    COLD_CF_ACCOUNT_TXS, COLD_CF_BLOCKS, COLD_CF_EVENTS, COLD_CF_PROGRAM_CALLS,
+    COLD_CF_TOKEN_TRANSFERS, COLD_CF_TRANSACTIONS, COLD_CF_TX_TO_SLOT,
 };
 
 impl StateStore {
@@ -46,6 +47,7 @@ impl StateStore {
             burned_lock: Arc::new(std::sync::Mutex::new(())),
             minted_lock: Arc::new(std::sync::Mutex::new(())),
             treasury_lock: Arc::new(std::sync::Mutex::new(())),
+            dex_index_lock: Arc::new(std::sync::Mutex::new(())),
             blockhash_cache: Arc::new(Mutex::new(None)),
             archive_mode: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })
@@ -365,6 +367,20 @@ fn build_hot_cf_descriptors(shared_cache: &Cache) -> Vec<ColumnFamilyDescriptor>
         ColumnFamilyDescriptor::new(CF_PROGRAMS, point_lookup_options(shared_cache, 32)),
         ColumnFamilyDescriptor::new(CF_SYMBOL_REGISTRY, small_cf_options(shared_cache)),
         ColumnFamilyDescriptor::new(CF_CONTRACT_STORAGE, prefix_scan_options(shared_cache, 32)),
+        ColumnFamilyDescriptor::new(CF_DEX_ORDERS_BY_PAIR, prefix_scan_options(shared_cache, 8)),
+        ColumnFamilyDescriptor::new(CF_DEX_TRADES_BY_PAIR, prefix_scan_options(shared_cache, 8)),
+        ColumnFamilyDescriptor::new(
+            CF_DEX_TRADES_BY_TAKER,
+            prefix_scan_options(shared_cache, 32),
+        ),
+        ColumnFamilyDescriptor::new(
+            CF_DEX_TRADES_BY_PAIR_TAKER,
+            prefix_scan_options(shared_cache, 40),
+        ),
+        ColumnFamilyDescriptor::new(
+            CF_DEX_ORDERBOOK_LEVELS,
+            prefix_scan_options(shared_cache, 9),
+        ),
         ColumnFamilyDescriptor::new(CF_MERKLE_LEAVES, point_lookup_options(shared_cache, 32)),
         ColumnFamilyDescriptor::new(
             CF_CONTRACT_MERKLE_LEAVES,

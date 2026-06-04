@@ -423,6 +423,33 @@ document.addEventListener('DOMContentLoaded', () => {
         return !!(wallet.address && wallet.signingReady);
     }
 
+    function connectedWalletAddress() {
+        return normalizeWalletAddress(state.walletAddress || wallet.address || '');
+    }
+
+    function walletIsConnected() {
+        return !!(state.connected && connectedWalletAddress());
+    }
+
+    function webWalletNeedsWalletSetup(providerState = lastExtensionProviderState) {
+        const currentAddress = connectedWalletAddress();
+        const providerType = wallet.providerType
+            || getSavedWalletProvider(currentAddress)
+            || providerState?.preferredProvider
+            || providerState?.providerType
+            || '';
+        if (providerType !== 'web-wallet') return false;
+        const webWalletState = providerState?.webWalletState
+            || (providerState?.providerType === 'web-wallet' ? providerState : null);
+        return Boolean(webWalletState?.windowOpen && webWalletState.hasWallet === false);
+    }
+
+    function walletSigningGateMessage() {
+        return webWalletNeedsWalletSetup()
+            ? 'Import web wallet to sign'
+            : 'Reconnect wallet to sign';
+    }
+
     async function resolveExtensionProviderForAddress(address, timeoutMs = 0) {
         let provider = null;
 
@@ -2714,7 +2741,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function updateSubmitBtn() {
         if (!submitBtn) return;
-        const connected = !!(state.connected && (state.walletAddress || wallet.address));
+        const connected = walletIsConnected();
         const canSign = walletCanSign();
         const sideLabel = state.tradeMode === 'margin'
             ? (state.orderSide === 'buy' ? 'Long' : 'Short')
@@ -2735,7 +2762,7 @@ document.addEventListener('DOMContentLoaded', () => {
             disabledReason = 'Connect wallet to trade';
             disabledHtml = '<i class="fas fa-wallet"></i> Connect Wallet to Trade';
         } else if (!canSign) {
-            disabledReason = 'Reconnect wallet to sign';
+            disabledReason = walletSigningGateMessage();
             disabledHtml = walletReconnectPromptHtml();
         } else if (!state.activePair) disabledReason = 'Select a trading pair';
         else if (state.tradeMode === 'margin' && state.orderType === 'stop-limit') disabledReason = 'Margin stop-limit entries are not live yet';
@@ -2774,8 +2801,10 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }
 
-        submitBtn.disabled = Boolean(disabledReason);
+        const recoverableWalletGate = connected && !canSign;
+        submitBtn.disabled = Boolean(disabledReason) && !recoverableWalletGate;
         submitBtn.title = disabledReason;
+        submitBtn.classList.toggle('btn-wallet-gate', recoverableWalletGate);
         if (disabledReason) {
             if (disabledHtml) submitBtn.innerHTML = disabledHtml;
             updateOrderSubmitHint(disabledReason, 'warning');
@@ -3024,7 +3053,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // Returns { ok: true } or { ok: false, error: string, code: string }.
     async function preflightOrder({ side, orderType, price, amount, stopPrice, pair, tradeMode, leverage }) {
         // 1. Wallet & connectivity
-        if (!state.connected) return { ok: false, error: 'Connect wallet first', code: 'NO_WALLET' };
+        if (!walletIsConnected()) return { ok: false, error: 'Connect wallet first', code: 'NO_WALLET' };
         if (!walletCanSign()) return { ok: false, error: 'Reconnect wallet to sign transactions', code: 'NO_KEYPAIR' };
 
         const effectivePrice = orderType === 'market'
@@ -3189,6 +3218,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // === Order submission via signed sendTransaction ===
     if (submitBtn) submitBtn.addEventListener('click', async () => {
+        await syncDexWithExtensionState({ timeoutMs: 400 });
+        if (walletIsConnected() && !walletCanSign()) {
+            submitBtn.disabled = true;
+            submitBtn.textContent = 'Reconnecting wallet...';
+            const ready = await ensureWalletSigningReady({ notify: true, timeoutMs: 400 });
+            if (!ready) {
+                updateSubmitBtn();
+                return;
+            }
+        }
         const rawPrice = readDexDecimal(priceInput);
         const price = state.orderType === 'market'
             ? (state.tradeMode === 'margin' ? getSpotMarketReferencePrice(state.orderSide) : getSpotMarketWorstPrice(state.orderSide))
@@ -3552,6 +3591,20 @@ document.addEventListener('DOMContentLoaded', () => {
         return existing;
     }
 
+    function restoreWalletConnectionState(address, providerType = null) {
+        const normalized = normalizeWalletAddress(address);
+        if (!normalized) return false;
+        const resolvedProviderType = providerType || wallet.providerType || getSavedWalletProvider(normalized) || 'extension';
+        state.connected = true;
+        state.walletAddress = normalized;
+        wallet.address = normalized;
+        wallet.shortAddr = shortWalletAddress(normalized);
+        wallet.providerType = resolvedProviderType;
+        localStorage.setItem(ACTIVE_WALLET_KEY, normalized);
+        ensureSavedConnectedWallet(normalized, resolvedProviderType);
+        return true;
+    }
+
     function purgeLegacyLocalWalletArtifacts() {
         try { sessionStorage.removeItem(LEGACY_LOCAL_WALLET_SESSION_KEY); } catch { }
         try {
@@ -3613,29 +3666,34 @@ document.addEventListener('DOMContentLoaded', () => {
             return disconnected;
         }
 
+        const windowOpen = providerType === 'web-wallet' && typeof provider.isWindowOpen === 'function'
+            ? provider.isWindowOpen()
+            : false;
         const providerState = typeof provider.getProviderState === 'function'
             ? await provider.getProviderState().catch(() => null)
             : null;
         const accounts = Array.isArray(providerState?.accounts)
             ? providerState.accounts.map(normalizeWalletAddress).filter(Boolean)
             : [];
-        const windowOpen = providerType === 'web-wallet' && typeof provider.isWindowOpen === 'function'
-            ? provider.isWindowOpen()
-            : false;
+        const livePopupSession = providerType !== 'web-wallet' || windowOpen;
+        const exposedAccounts = livePopupSession ? accounts : [];
+        const connected = livePopupSession && Boolean(providerState?.connected);
+        const providerReportsWallet = providerState && Object.prototype.hasOwnProperty.call(providerState, 'hasWallet');
+        const hasWallet = providerType === 'extension'
+            ? (providerReportsWallet ? Boolean(providerState.hasWallet) : true)
+            : (livePopupSession
+                ? (providerReportsWallet ? Boolean(providerState.hasWallet) : Boolean(accounts.length || providerState?.activeAddress))
+                : false);
 
         return {
             available: providerType === 'extension'
                 ? true
-                : Boolean(windowOpen || providerState?.connected || accounts.length > 0),
-            connected: Boolean(providerState?.connected),
-            hasWallet: providerType === 'extension'
-                ? (providerState && Object.prototype.hasOwnProperty.call(providerState, 'hasWallet')
-                    ? Boolean(providerState.hasWallet)
-                    : true)
-                : false,
-            isLocked: Boolean(providerState?.isLocked),
-            accounts,
-            activeAddress: accounts[0] || '',
+                : Boolean(windowOpen || connected || exposedAccounts.length > 0),
+            connected,
+            hasWallet,
+            isLocked: hasWallet ? Boolean(providerState?.isLocked) : false,
+            accounts: exposedAccounts,
+            activeAddress: exposedAccounts[0] || '',
             provider,
             providerType,
             windowOpen,
@@ -3717,6 +3775,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function walletReconnectPromptHtml(providerType = wallet.providerType || getSavedWalletProvider(state.walletAddress || wallet.address || '') || lastExtensionProviderState.providerType || 'extension') {
         if (providerType === 'web-wallet') {
+            if (webWalletNeedsWalletSetup()) {
+                return '<i class="fas fa-download"></i> Import Web Wallet to Sign';
+            }
             if (lastExtensionProviderState.isLocked) {
                 return '<i class="fas fa-lock"></i> Unlock Web Wallet to Sign';
             }
@@ -3946,6 +4007,31 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
             }
 
+            if (providerState.hasWallet === false && providerState.windowOpen) {
+                title.textContent = currentAddress && currentProviderType === 'web-wallet'
+                    ? 'Web Wallet Account Missing'
+                    : 'Create or Import Web Wallet';
+                description.textContent = currentAddress && currentProviderType === 'web-wallet'
+                    ? `${currentLabel} is saved in the DEX as read-only, but the open web wallet popup has no wallet loaded for signing. Import or create the matching wallet in the popup, then approve access.`
+                    : 'The open web wallet popup has no wallet loaded yet. Create or import a wallet there, then approve access to this DEX.';
+                setWalletActionButton(wmExtensionBtn, {
+                    label: '<i class="fas fa-arrow-up-right-from-square"></i> Open Web Wallet Setup',
+                    action: 'focus-web-wallet',
+                });
+                if (icon) {
+                    icon.className = 'fas fa-wallet';
+                }
+                if (status) {
+                    status.className = 'wm-extension-status warning';
+                    status.textContent = 'No wallet loaded';
+                }
+                if (helper) {
+                    helper.className = 'wm-extension-helper';
+                    helper.textContent = 'A saved DEX address is not enough to sign. The web wallet popup must contain the encrypted wallet for that address.';
+                }
+                return;
+            }
+
             if (providerState.isLocked) {
                 title.textContent = 'Web Wallet Locked';
                 description.textContent = currentLabel
@@ -3961,7 +4047,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
                 if (helper) {
                     helper.className = 'wm-extension-helper';
-                    helper.textContent = 'Unlock and approve in the popup. After approval the popup can close and the DEX will stay connected.';
+                    helper.textContent = 'Unlock and approve in the popup. Keep it open for live signing, or reconnect later to reopen the encrypted browser wallet.';
                 }
                 return;
             }
@@ -3983,7 +4069,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                     if (helper) {
                         helper.className = 'wm-extension-helper';
-                        helper.textContent = 'The web wallet keeps keys outside the DEX. After approval the popup can close, and it will reopen automatically when signing needs confirmation.';
+                        helper.textContent = 'The web wallet keeps keys outside the DEX. Closing the popup makes the DEX read-only until you reopen and approve the signer again.';
                     }
                     return;
                 }
@@ -4060,7 +4146,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             if (helper) {
                 helper.className = 'wm-extension-helper';
-                helper.textContent = `The web wallet opens in a secure popup and keeps signing outside the DEX. Download the ${extensionDownloadTarget} later if you want a persistent in-page signer.`;
+                helper.textContent = `The web wallet opens in a secure popup and keeps signing outside the DEX. Download the ${extensionDownloadTarget} later if you want a dedicated in-page signer.`;
             }
             return;
         }
@@ -4231,8 +4317,29 @@ document.addEventListener('DOMContentLoaded', () => {
             return providerState;
         }
 
+        const extensionFallbackState = providerState.extensionState || null;
+        if (reconnectProviderType === 'web-wallet'
+            && providerState.hasWallet === false
+            && extensionFallbackState?.connected
+            && !extensionFallbackState.isLocked
+            && extensionFallbackState.activeAddress === currentAddress) {
+            const modalVisible = Boolean(walletModal && !walletModal.classList.contains('hidden'));
+            await connectWalletTo(currentAddress, shortWalletAddress(currentAddress), {
+                signingReady: true,
+                providerType: 'extension',
+            });
+            if (modalVisible) {
+                closeWalletModalFn();
+            }
+            if (notify || modalVisible) {
+                showNotification('Extension ready to sign. Switched away from the empty web-wallet popup.', 'success');
+            }
+            return extensionFallbackState;
+        }
+
         if (!providerState.available || !providerState.connected || providerState.isLocked || !providerState.activeAddress) {
             const wasReady = wallet.signingReady;
+            restoreWalletConnectionState(currentAddress, reconnectProviderType);
             wallet.signingReady = false;
             wallet.keypair = null;
             wallet.providerType = reconnectProviderType;
@@ -4242,7 +4349,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 showNotification(
                     providerState.isLocked
                         ? `${providerTypeTitle(reconnectProviderType)} locked. Unlock it to sign new orders.`
-                        : reconnectProviderType === 'web-wallet'
+                        : reconnectProviderType === 'web-wallet' && providerState.hasWallet === false
+                            ? 'Web wallet has no wallet loaded. Import or create the matching wallet in the popup to sign.'
+                            : reconnectProviderType === 'web-wallet'
                             ? 'Web wallet session not active. Reopen it to sign new orders.'
                             : 'Extension session not active. Reconnect it to sign new orders.',
                     'warning'
@@ -4255,6 +4364,23 @@ document.addEventListener('DOMContentLoaded', () => {
 
         if (providerState.activeAddress === currentAddress) {
             const becameReady = !wallet.signingReady || wallet.providerType !== providerState.providerType;
+            const needsConnectionReconcile = !walletIsConnected()
+                || state.walletAddress !== currentAddress
+                || wallet.address !== currentAddress;
+            if (needsConnectionReconcile) {
+                const modalVisible = Boolean(walletModal && !walletModal.classList.contains('hidden'));
+                await connectWalletTo(currentAddress, shortWalletAddress(currentAddress), {
+                    signingReady: true,
+                    providerType: providerState.providerType,
+                });
+                if (modalVisible) {
+                    closeWalletModalFn();
+                }
+                if (notify || modalVisible || becameReady) {
+                    showNotification(`${providerTypeTitle(providerState.providerType)} ready to sign.`, 'success');
+                }
+                return providerState;
+            }
             wallet.signingReady = true;
             wallet.keypair = { connected: true };
             wallet.providerType = providerState.providerType;
@@ -4297,14 +4423,61 @@ document.addEventListener('DOMContentLoaded', () => {
 
     async function handleWalletConnect(providerType) {
         const label = providerTypeTitle(providerType);
-        await wallet.connect({ provider: providerType });
-        ensureSavedConnectedWallet(wallet.address, providerType);
+        const connectedWallet = await requestWalletProviderConnection(providerType);
+        closeWalletModalFn();
+        showNotification(`${label} connected: ${connectedWallet.shortAddr}`, 'success');
+    }
+
+    async function requestWalletProviderConnection(providerType = null) {
+        const currentAddress = connectedWalletAddress();
+        const resolvedProviderType = providerType
+            || wallet.providerType
+            || getSavedWalletProvider(currentAddress)
+            || lastExtensionProviderState.preferredProvider
+            || lastExtensionProviderState.providerType
+            || 'extension';
+        await wallet.connect({ provider: resolvedProviderType });
+        const connectedProviderType = wallet.providerType || resolvedProviderType;
+        ensureSavedConnectedWallet(wallet.address, connectedProviderType);
         await connectWalletTo(wallet.address, wallet.shortAddr, {
             signingReady: true,
-            providerType,
+            providerType: connectedProviderType,
         });
-        closeWalletModalFn();
-        showNotification(`${label} connected: ${wallet.shortAddr}`, 'success');
+        return {
+            address: wallet.address,
+            shortAddr: wallet.shortAddr || shortWalletAddress(wallet.address),
+            providerType: connectedProviderType,
+        };
+    }
+
+    async function ensureWalletSigningReady(options = {}) {
+        const { notify = false, timeoutMs = 400 } = options;
+        if (walletCanSign()) return true;
+
+        await syncDexWithExtensionState({ timeoutMs });
+        if (walletCanSign()) return true;
+
+        const currentAddress = connectedWalletAddress();
+        if (!currentAddress) return false;
+
+        const providerType = wallet.providerType
+            || getSavedWalletProvider(currentAddress)
+            || lastExtensionProviderState.preferredProvider
+            || lastExtensionProviderState.providerType
+            || 'extension';
+        try {
+            const connectedWallet = await requestWalletProviderConnection(providerType);
+            if (notify) {
+                showNotification(`${providerTypeTitle(connectedWallet.providerType)} ready to sign.`, 'success');
+            }
+            return walletCanSign();
+        } catch (error) {
+            await syncDexWithExtensionState({ timeoutMs }).catch(() => { });
+            if (notify) {
+                showNotification(`Reconnect failed: ${error.message}`, 'warning');
+            }
+            return false;
+        }
     }
 
     async function handleWalletProviderAction(action) {
@@ -4396,23 +4569,24 @@ document.addEventListener('DOMContentLoaded', () => {
 
     async function connectWalletTo(address, shortAddr, options = {}) {
         const { signingReady = false, providerType = null } = options;
-        state.connected = true; state.walletAddress = address;
-        localStorage.setItem(ACTIVE_WALLET_KEY, address);
-        const resolvedProviderType = providerType || wallet.providerType || getSavedWalletProvider(address) || null;
+        const normalizedAddress = normalizeWalletAddress(address);
+        if (!normalizedAddress) throw new Error('Wallet address unavailable');
+        const resolvedProviderType = providerType || wallet.providerType || getSavedWalletProvider(normalizedAddress) || null;
+        restoreWalletConnectionState(normalizedAddress, resolvedProviderType);
         // AUDIT-FIX I4-01: Keep wallet object in sync (address + compatibility flag)
         let resolvedSigningReady = !!signingReady;
         if (!resolvedSigningReady) {
-            const resolved = await resolveWalletSigningState(address, resolvedProviderType);
+            const resolved = await resolveWalletSigningState(normalizedAddress, resolvedProviderType);
             resolvedSigningReady = !!resolved.signingReady;
         }
         if (resolvedProviderType) {
-            ensureSavedConnectedWallet(address, resolvedProviderType);
+            ensureSavedConnectedWallet(normalizedAddress, resolvedProviderType);
         }
-        await wallet.connectAddress(address, { signingReady: resolvedSigningReady, providerType: resolvedProviderType });
+        await wallet.connectAddress(normalizedAddress, { signingReady: resolvedSigningReady, providerType: resolvedProviderType });
         // M16: Resolve .lichen name and fetch LichenID profile for connected trader
-        let displayLabel = shortAddr;
+        let displayLabel = shortAddr || shortWalletAddress(normalizedAddress);
         try {
-            const reverseResult = await api.rpc('reverseLichenName', [address]);
+            const reverseResult = await api.rpc('reverseLichenName', [normalizedAddress]);
             if (reverseResult && reverseResult.name) {
                 state.lichenName = formatLichenNameLabel(reverseResult.name);
                 displayLabel = state.lichenName;
@@ -4421,7 +4595,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         } catch { state.lichenName = null; }
         try {
-            const profileResult = await api.rpc('getLichenIdProfile', [address]);
+            const profileResult = await api.rpc('getLichenIdProfile', [normalizedAddress]);
             if (profileResult) {
                 state.lichenIdProfile = profileResult;
                 state.reputation = profileResult.reputation || 0;
@@ -4437,7 +4611,7 @@ document.addEventListener('DOMContentLoaded', () => {
         toggleWalletPanels(true);
         applyWalletGateAll();
         resetWalletModalInputs();
-        await Promise.all([loadBalances(address), loadUserOrders(address)]);
+        await Promise.all([loadBalances(normalizedAddress), loadUserOrders(normalizedAddress)]);
         renderBalances(); renderOpenOrders(); loadTradeHistory(); loadMarginStats(); loadMarginPositions(); loadMarginHistory();
         loadPredictionHistory();
         await refreshExtensionTabState();
@@ -4630,7 +4804,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // F10E.1/E2/E4/E9/E10 — Wallet-Gate All Interactive Forms
     // ═══════════════════════════════════════════════════════════════════════
     function updateRewardsClaimButtons() {
-        const connected = !!(state.connected && (state.walletAddress || wallet.address));
+        const connected = walletIsConnected();
         const canSign = walletCanSign();
         const pending = state.rewardPending || { trading: 0, lp: 0, referral: 0, total: 0 };
         const rules = [
@@ -4669,16 +4843,16 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function applyWalletGateAll() {
-        const connected = !!(state.connected && (state.walletAddress || wallet.address));
+        const connected = walletIsConnected();
         const canSign = walletCanSign();
 
         // --- Trade view: Order Form Panel (F15.2: gate entire panel including tabs/type/mode) ---
         const orderFormPanel = document.querySelector('.order-form-panel');
         if (orderFormPanel) orderFormPanel.classList.toggle('wallet-gated-disabled', !connected);
         if (submitBtn) {
-            if (canSign) {
+            if (connected) {
                 submitBtn.disabled = false;
-                submitBtn.classList.remove('btn-wallet-gate');
+                submitBtn.classList.toggle('btn-wallet-gate', !canSign);
                 updateSubmitBtn();
             } else {
                 submitBtn.disabled = true;
@@ -5041,7 +5215,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function getAddLiquidityValidation() {
-        if (!state.connected) return { ok: false, message: 'Connect wallet to add liquidity', gate: true };
+        if (!walletIsConnected()) return { ok: false, message: 'Connect wallet to add liquidity', gate: true };
         if (!walletCanSign()) return { ok: false, message: 'Reconnect wallet to sign', gate: true };
         const pool = getSelectedLiquidityPool();
         if (!pool) return { ok: false, message: 'Select a liquidity pool' };
@@ -5076,7 +5250,7 @@ document.addEventListener('DOMContentLoaded', () => {
         button.disabled = !validation.ok;
         button.className = validation.gate ? 'btn btn-full btn-wallet-gate' : 'btn btn-full btn-buy';
         button.innerHTML = validation.gate
-            ? (state.connected ? walletReconnectPromptHtml() : '<i class="fas fa-wallet"></i> Connect Wallet')
+            ? (walletIsConnected() ? walletReconnectPromptHtml() : '<i class="fas fa-wallet"></i> Connect Wallet')
             : 'Add Liquidity';
         button.title = validation.ok ? '' : validation.message;
         updateDexActionHint('addLiqHint', validation.message, validation.ok ? 'ready' : 'warning');
@@ -6512,7 +6686,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function getProposalSubmitValidation() {
-        if (!state.connected) return { ok: false, message: 'Connect wallet to propose', gate: true };
+        if (!walletIsConnected()) return { ok: false, message: 'Connect wallet to propose', gate: true };
         if (!walletCanSign()) return { ok: false, message: 'Reconnect wallet to sign', gate: true };
         if (!contracts.dex_governance) return { ok: false, message: 'Governance contract not loaded' };
         if (Number(state.reputation || 0) < 500) return { ok: false, message: 'Requires LichenID reputation of at least 500' };
@@ -6551,7 +6725,7 @@ document.addEventListener('DOMContentLoaded', () => {
         button.disabled = !validation.ok;
         button.className = validation.gate ? 'btn btn-full btn-wallet-gate' : 'btn btn-full btn-primary';
         button.innerHTML = validation.gate
-            ? (state.connected ? walletReconnectPromptHtml() : '<i class="fas fa-wallet"></i> Connect Wallet to Propose')
+            ? (walletIsConnected() ? walletReconnectPromptHtml() : '<i class="fas fa-wallet"></i> Connect Wallet to Propose')
             : '<i class="fas fa-paper-plane"></i> Submit Proposal';
         button.title = validation.ok ? '' : validation.message;
         updateDexActionHint('proposalSubmitHint', validation.message, validation.ok ? 'ready' : 'warning');
@@ -6819,7 +6993,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function getPredictCreateValidation() {
-        if (!state.connected) return { ok: false, message: 'Connect wallet to create a market', gate: true };
+        if (!walletIsConnected()) return { ok: false, message: 'Connect wallet to create a market', gate: true };
         if (!walletCanSign()) return { ok: false, message: 'Reconnect wallet to sign', gate: true };
 
         const question = sanitizePredictTextValue(document.getElementById('predictQuestion')?.value, 200).trim();
@@ -6861,7 +7035,7 @@ document.addEventListener('DOMContentLoaded', () => {
             ? 'btn btn-full btn-wallet-gate'
             : 'btn btn-full btn-primary';
         button.innerHTML = validation.gate
-            ? (state.connected ? walletReconnectPromptHtml() : '<i class="fas fa-wallet"></i> Connect Wallet to Create')
+            ? (walletIsConnected() ? walletReconnectPromptHtml() : '<i class="fas fa-wallet"></i> Connect Wallet to Create')
             : '<i class="fas fa-rocket"></i> Create Market';
         button.title = validation.ok ? '' : validation.message;
         updateDexActionHint('predictCreateHint', validation.message, validation.ok ? 'ready' : 'warning');
@@ -8582,7 +8756,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function getLaunchTradeValidation() {
-        if (!state.connected) return { ok: false, message: 'Connect wallet to trade', gate: true };
+        if (!walletIsConnected()) return { ok: false, message: 'Connect wallet to trade', gate: true };
         if (!walletCanSign()) return { ok: false, message: 'Reconnect wallet to sign', gate: true };
         if (!contracts.sporepump) return { ok: false, message: 'Launchpad contract not loaded' };
         const token = getSelectedLaunchToken();
@@ -8613,14 +8787,14 @@ document.addEventListener('DOMContentLoaded', () => {
             ? 'btn btn-full btn-wallet-gate'
             : `btn btn-full ${side === 'buy' ? 'btn-buy' : 'btn-sell'}`;
         button.innerHTML = validation.gate
-            ? (state.connected ? walletReconnectPromptHtml() : '<i class="fas fa-wallet"></i> Connect Wallet to Trade')
+            ? (walletIsConnected() ? walletReconnectPromptHtml() : '<i class="fas fa-wallet"></i> Connect Wallet to Trade')
             : `<i class="fas fa-bolt"></i> ${side === 'buy' ? 'Buy Tokens' : 'Sell Tokens'}`;
         button.title = validation.ok ? '' : validation.message;
         updateDexActionHint('launchTradeHint', validation.message, validation.ok ? 'ready' : 'warning');
     }
 
     function getLaunchCreateValidation() {
-        if (!state.connected) return { ok: false, message: 'Connect wallet to launch', gate: true };
+        if (!walletIsConnected()) return { ok: false, message: 'Connect wallet to launch', gate: true };
         if (!walletCanSign()) return { ok: false, message: 'Reconnect wallet to sign', gate: true };
         if (!contracts.sporepump) return { ok: false, message: 'Launchpad contract not loaded' };
         const licnBal = getAvailableBalance('LICN');
@@ -8635,7 +8809,7 @@ document.addEventListener('DOMContentLoaded', () => {
         button.disabled = !validation.ok;
         button.className = validation.gate ? 'btn btn-full btn-wallet-gate' : 'btn btn-full btn-primary';
         button.innerHTML = validation.gate
-            ? (state.connected ? walletReconnectPromptHtml() : '<i class="fas fa-wallet"></i> Connect Wallet to Launch')
+            ? (walletIsConnected() ? walletReconnectPromptHtml() : '<i class="fas fa-wallet"></i> Connect Wallet to Launch')
             : '<i class="fas fa-rocket"></i> Launch Token (10 LICN)';
         button.title = validation.ok ? '' : validation.message;
         updateDexActionHint('launchCreateHint', validation.message, validation.ok ? 'ready' : 'warning');

@@ -15,6 +15,7 @@ let walletState = {
 
 const LEGACY_WALLET_STATE_KEY = 'lichenWalletState';
 const SESSION_WALLET_STATE_KEY = 'lichenWalletSessionState';
+const PERSISTENT_WALLET_STATE_KEY = 'lichenWalletEncryptedState';
 const WALLET_PREFERENCES_KEY = 'lichenWalletPreferences';
 let pendingWalletSecurityNotice = null;
 
@@ -1905,26 +1906,52 @@ function parseStoredWalletState(stored) {
     }
 }
 
+function serializeWalletStateForStorage() {
+    return {
+        ...walletState,
+        wallets: Array.isArray(walletState.wallets) ? walletState.wallets : [],
+        activeWalletId: walletState.activeWalletId || null,
+        isLocked: walletState.isLocked !== false,
+        network: walletState.network || getWalletDefaultNetwork(),
+        settings: sanitizeWalletSettings(walletState.settings)
+    };
+}
+
 function persistSessionWalletState() {
+    const storedState = serializeWalletStateForStorage();
     try {
-        sessionStorage.setItem(SESSION_WALLET_STATE_KEY, JSON.stringify({
-            ...walletState,
-            settings: sanitizeWalletSettings(walletState.settings)
-        }));
+        if (storedState.wallets.length) {
+            sessionStorage.setItem(SESSION_WALLET_STATE_KEY, JSON.stringify(storedState));
+        } else {
+            sessionStorage.removeItem(SESSION_WALLET_STATE_KEY);
+        }
     } catch (error) {
         console.warn('Failed to persist session wallet state:', error);
     }
 }
 
+function persistEncryptedBrowserWalletState() {
+    const storedState = serializeWalletStateForStorage();
+    try {
+        if (storedState.wallets.length) {
+            localStorage.setItem(PERSISTENT_WALLET_STATE_KEY, JSON.stringify(storedState));
+        } else {
+            localStorage.removeItem(PERSISTENT_WALLET_STATE_KEY);
+        }
+    } catch (error) {
+        console.warn('Failed to persist encrypted browser wallet state:', error);
+    }
+}
+
 function renderSessionOnlyWarningBox() {
     const popupCopy = isBridgePopupSession();
-    const title = popupCopy ? 'Signing session only.' : 'Browser session wallet.';
+    const title = popupCopy ? 'Popup signing session.' : 'Encrypted browser wallet.';
     const body = popupCopy
-        ? 'This popup unlocks your wallet only to approve the requesting app. Closing it ends this signing session.'
-        : 'Your encrypted wallet stays in this browser session, not long-lived browser storage. Use the extension for persistent wallet custody.';
+        ? 'This popup unlocks your encrypted browser wallet only to approve the requesting app. Closing it ends the live signing session.'
+        : 'Your wallet record is encrypted with your password and can be reopened in this browser. Use the extension for dedicated wallet custody.';
     return `
         <div class="warning-box">
-            <i class="fas fa-hourglass-half warning-icon"></i>
+            <i class="fas fa-shield-alt warning-icon"></i>
             <div>
                 <strong>${title}</strong>
                 <p>${body}</p>
@@ -1934,11 +1961,11 @@ function renderSessionOnlyWarningBox() {
 }
 
 function showSessionOnlyWalletToast(actionMessage) {
-    showToast(`${actionMessage} This web wallet now stores secrets for this tab only.`);
+    showToast(`${actionMessage} Your encrypted wallet can be reopened in this browser.`);
 }
 
-// WL-09 / D-01: Load wallet state from sessionStorage.
-// Legacy localStorage wallet material is migrated into the active tab once and then purged.
+// WL-09 / D-01: Load encrypted wallet state from the active popup first, then browser storage.
+// Legacy wallet storage is migrated into the encrypted browser wallet key and then purged.
 function loadWalletState() {
     const persistedSettings = loadWalletPreferences();
     walletState = createDefaultWalletState();
@@ -1955,9 +1982,21 @@ function loadWalletState() {
 
     if (!stored) {
         try {
+            const persistentState = localStorage.getItem(PERSISTENT_WALLET_STATE_KEY);
+            if (persistentState) {
+                stored = persistentState;
+            }
+        } catch {
+            // Ignore localStorage failures.
+        }
+    }
+
+    if (!stored) {
+        try {
             const legacySessionState = sessionStorage.getItem(LEGACY_WALLET_STATE_KEY);
             if (legacySessionState) {
                 stored = legacySessionState;
+                migratedLegacySecrets = true;
             }
         } catch {
             // Ignore sessionStorage failures.
@@ -1984,19 +2023,21 @@ function loadWalletState() {
             ...sanitizeWalletSettings(parsedState.settings)
         };
         persistSessionWalletState();
+        persistEncryptedBrowserWalletState();
 
         if (migratedLegacySecrets) {
-            pendingWalletSecurityNotice = 'Legacy browser wallet storage was moved into this tab only.';
+            pendingWalletSecurityNotice = 'Legacy wallet storage was migrated to encrypted browser wallet storage.';
         }
     }
 
     clearLegacyWalletState();
 }
 
-// WL-09 / D-01: Save wallet secrets in sessionStorage only.
+// WL-09 / D-01: Save encrypted wallet secrets in browser storage; plaintext never leaves memory.
 function saveWalletState() {
     walletState.settings = sanitizeWalletSettings(walletState.settings);
     persistSessionWalletState();
+    persistEncryptedBrowserWalletState();
     saveWalletPreferences();
     clearLegacyWalletState();
 }

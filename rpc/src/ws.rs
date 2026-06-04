@@ -265,12 +265,54 @@ pub struct GovernanceEventPayload {
     pub slot: u64,
 }
 
+/// Prebuilt block summary used by the WS fanout path.
+/// Keeps the broadcast channel lightweight and avoids cloning full blocks for
+/// explorer subscriptions that only expose summary fields.
+#[derive(Debug, Clone)]
+pub struct BlockFanoutSummary {
+    pub slot: u64,
+    pub hash: String,
+    pub parent_hash: String,
+    pub transaction_count: usize,
+    pub timestamp: u64,
+}
+
+impl BlockFanoutSummary {
+    pub fn from_block(block: &Block) -> Self {
+        Self {
+            slot: block.header.slot,
+            hash: block.hash().to_hex(),
+            parent_hash: block.header.parent_hash.to_hex(),
+            transaction_count: block.transactions.len(),
+            timestamp: block.header.timestamp,
+        }
+    }
+}
+
+/// Prebuilt transaction summary used by the WS fanout path.
+#[derive(Debug, Clone)]
+pub struct TransactionFanoutSummary {
+    pub signatures: Vec<serde_json::Value>,
+    pub instruction_count: usize,
+    pub recent_blockhash: String,
+}
+
+impl TransactionFanoutSummary {
+    pub fn from_transaction(tx: &Transaction) -> Self {
+        Self {
+            signatures: tx.signatures.iter().map(crate::pq_signature_json).collect(),
+            instruction_count: tx.message.instructions.len(),
+            recent_blockhash: tx.message.recent_blockhash.to_hex(),
+        }
+    }
+}
+
 /// Event types that can be subscribed to
 #[derive(Debug, Clone)]
 pub enum Event {
     Slot(u64),
-    Block(Block),
-    Transaction(Transaction),
+    Block(BlockFanoutSummary),
+    Transaction(TransactionFanoutSummary),
     AccountChange {
         pubkey: Pubkey,
         balance: u64,
@@ -1900,18 +1942,16 @@ fn create_notification(sub_id: u64, event: &Event) -> Notification {
             "slot": slot,
         }),
         Event::Block(block) => serde_json::json!({
-            "slot": block.header.slot,
-            "hash": block.hash().to_hex(),
-            "parent_hash": block.header.parent_hash.to_hex(),
-            "transactions": block.transactions.len(),
-            "timestamp": block.header.timestamp,
+            "slot": block.slot,
+            "hash": block.hash,
+            "parent_hash": block.parent_hash,
+            "transactions": block.transaction_count,
+            "timestamp": block.timestamp,
         }),
         Event::Transaction(tx) => serde_json::json!({
-            "signatures": tx.signatures.iter()
-                .map(crate::pq_signature_json)
-                .collect::<Vec<_>>(),
-            "instructions": tx.message.instructions.len(),
-            "recent_blockhash": tx.message.recent_blockhash.to_hex(),
+            "signatures": tx.signatures,
+            "instructions": tx.instruction_count,
+            "recent_blockhash": tx.recent_blockhash,
         }),
         Event::AccountChange { pubkey, balance } => serde_json::json!({
             "pubkey": pubkey.to_base58(),
@@ -2077,6 +2117,7 @@ use futures_util::SinkExt;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lichen_core::{Instruction, Message};
 
     // ── PredictionChannel parsing ──
 
@@ -2479,6 +2520,65 @@ mod tests {
         assert_eq!(notif.params.subscription, 1);
         let result = &notif.params.result;
         assert_eq!(result["slot"], 42);
+    }
+
+    #[test]
+    fn create_notification_block_uses_prebuilt_summary() {
+        let tx = Transaction::new(Message::new(
+            vec![Instruction {
+                program_id: Pubkey([3u8; 32]),
+                accounts: vec![Pubkey([4u8; 32])],
+                data: vec![1, 2, 3],
+            }],
+            Hash([7u8; 32]),
+        ));
+        let block = Block::new_with_timestamp(
+            42,
+            Hash([1u8; 32]),
+            Hash([2u8; 32]),
+            [9u8; 32],
+            vec![tx],
+            1_778_494_000,
+        );
+
+        let summary = BlockFanoutSummary::from_block(&block);
+        let notif = create_notification(11, &Event::Block(summary));
+        let result = &notif.params.result;
+
+        assert_eq!(result["slot"], 42);
+        assert_eq!(result["parent_hash"], Hash([1u8; 32]).to_hex());
+        assert_eq!(result["transactions"], 1);
+        assert_eq!(result["timestamp"], 1_778_494_000);
+        assert!(result["hash"].as_str().is_some_and(|hash| hash.len() == 64));
+    }
+
+    #[test]
+    fn create_notification_transaction_uses_prebuilt_summary() {
+        let mut tx = Transaction::new(Message::new(
+            vec![
+                Instruction {
+                    program_id: Pubkey([3u8; 32]),
+                    accounts: vec![Pubkey([4u8; 32])],
+                    data: vec![1, 2, 3],
+                },
+                Instruction {
+                    program_id: Pubkey([5u8; 32]),
+                    accounts: vec![Pubkey([6u8; 32])],
+                    data: vec![4, 5, 6],
+                },
+            ],
+            Hash([8u8; 32]),
+        ));
+        let keypair = lichen_core::Keypair::from_seed(&[0xAB; 32]);
+        tx.signatures.push(keypair.sign(&tx.message.serialize()));
+
+        let summary = TransactionFanoutSummary::from_transaction(&tx);
+        let notif = create_notification(12, &Event::Transaction(summary));
+        let result = &notif.params.result;
+
+        assert_eq!(result["instructions"], 2);
+        assert_eq!(result["recent_blockhash"], Hash([8u8; 32]).to_hex());
+        assert_eq!(result["signatures"].as_array().map(Vec::len), Some(1));
     }
 
     #[test]
