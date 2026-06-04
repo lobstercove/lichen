@@ -79,6 +79,38 @@
         <!-- Timeline -->
         <div class="changelog-timeline">
 
+            <!-- ============ v0.5.91 ============ -->
+            <div class="changelog-entry">
+                <div class="changelog-header">
+                    <span class="changelog-version">v0.5.91</span>
+                    <span class="changelog-date">June 4, 2026</span>
+                </div>
+                <h3 class="changelog-title">Wallet DEX Signing and Bridge Deposit UX</h3>
+
+                <div class="changelog-section" data-type="new">
+                    <h4><i class="fas fa-plus" style="color: var(--success)"></i> New</h4>
+                    <ul>
+                        <li><strong>Bridge deposit QR displays</strong> &mdash; wallet and extension bridge deposits now
+                            use the same QR, copy, and readonly-address presentation as the regular receive flow.</li>
+                        <li><strong>Custody active-route reservations</strong> &mdash; fresh route-bound deposit
+                            authorizations reuse an existing issued or pending same-route address until the deposit is
+                            finalized or expired.</li>
+                    </ul>
+                </div>
+
+                <div class="changelog-section" data-type="fixed">
+                    <h4><i class="fas fa-bug" style="color: var(--warning)"></i> Fixes</h4>
+                    <ul>
+                        <li><strong>DEX order signatures</strong> &mdash; wallet, extension, DEX, and shared frontend
+                            serializers include optional compute-budget fields in the canonical signed message bytes.</li>
+                        <li><strong>Authorization prompts</strong> &mdash; token approve and DEX place-order calls are
+                            decoded into human-readable signing intent instead of unknown contract data.</li>
+                        <li><strong>MossStake display</strong> &mdash; wallet and explorer labels now distinguish
+                            redeemable liquid-staking value from estimated exchange-rate gain.</li>
+                    </ul>
+                </div>
+            </div>
+
             <!-- ============ v0.5.90 ============ -->
             <div class="changelog-entry">
                 <div class="changelog-header">

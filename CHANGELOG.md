@@ -5,6 +5,20 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.91] - 2026-06-04
+
+### Added
+- Adds active same-route bridge deposit reservations in custody so fresh route-bound bridge authorizations reuse an existing issued/pending deposit address until it is confirmed, credited, swept, or expired.
+- Adds QR-code bridge deposit displays to the web wallet and extension to match the regular receive flow.
+
+### Changed
+- Updates wallet and explorer MossStake wording to show redeemable liquid-staking value and exchange-rate gain without implying rewards are separately additive.
+- Makes web wallet and extension approval popups scroll on constrained windows.
+
+### Fixed
+- Serializes optional compute-budget fields into the wallet/DEX signed transaction message bytes, fixing valid DEX order submissions that previously failed chain-side signature verification.
+- Decodes token approve and DEX place-order signing intents in wallet authorization prompts instead of showing unknown contract data.
+
 ## [0.5.90] - 2026-06-04
 
 ### Changed
