@@ -6,6 +6,7 @@ set -euo pipefail
 # Usage:
 #   LICHEN_RELEASE_TAG=v0.5.36 bash scripts/rolling-release-deploy.sh testnet
 #   LICHEN_RELEASE_TAG=v0.5.36 bash scripts/rolling-release-deploy.sh mainnet
+#   LICHEN_RELEASE_TAG=v0.5.36 LICHEN_VERIFY_RELEASE_ONLY=1 bash scripts/rolling-release-deploy.sh testnet
 #
 # This script installs an exact GitHub Release archive on each validator and
 # restarts one validator at a time. It never deletes chain state.
@@ -95,6 +96,22 @@ archive_for_arch() {
   esac
 }
 
+archive_root() {
+  local archive="$1"
+  tar tzf "$ARTIFACT_DIR/$archive" | awk -F/ 'NR==1 { print $1 }'
+}
+
+archive_bin_sha() {
+  local archive="$1"
+  local root="$2"
+  local bin="$3"
+  if tar tzf "$ARTIFACT_DIR/$archive" | grep -qx "$root/$bin"; then
+    tar xOf "$ARTIFACT_DIR/$archive" "$root/$bin" |
+      sha256sum |
+      awk '{print $1}'
+  fi
+}
+
 download_release_artifacts() {
   mkdir -p "$ARTIFACT_DIR"
   gh release download "$RELEASE_TAG" --repo "$RELEASE_REPO" \
@@ -175,12 +192,8 @@ install_host() {
   local arch archive root expected_validator_sha
   arch="$(ssh_run "$host" "uname -m")"
   archive="$(archive_for_arch "$arch")"
-  root="$(tar tzf "$ARTIFACT_DIR/$archive" | awk -F/ 'NR==1 { print $1 }')"
-  expected_validator_sha="$(
-    tar xOf "$ARTIFACT_DIR/$archive" "$root/lichen-validator" |
-      sha256sum |
-      awk '{print $1}'
-  )"
+  root="$(archive_root "$archive")"
+  expected_validator_sha="$(archive_bin_sha "$archive" "$root" lichen-validator)"
 
   echo "Install ${RELEASE_TAG} on ${host} (${archive})"
   scp_to "$ARTIFACT_DIR/$archive" "$host" "/tmp/$archive"
@@ -263,13 +276,121 @@ fi
 
 service_pids="$after_pid $(pgrep -P "$after_pid" || true)"
 for pid in $service_pids; do
+  exe_target="$(sudo readlink "/proc/${pid}/exe" 2>/dev/null || true)"
+  if [[ "$exe_target" == *" (deleted)" ]]; then
+    echo "Running validator process ${pid} still uses deleted executable: ${exe_target}"
+    exit 1
+  fi
   exe_sha="$(sudo sha256sum "/proc/${pid}/exe" 2>/dev/null | awk '{print $1}')"
   if [ "$exe_sha" != "$EXPECTED_VALIDATOR_SHA" ]; then
-    exe_target="$(sudo readlink -f "/proc/${pid}/exe" 2>/dev/null || true)"
     echo "Running validator process ${pid} hash mismatch: exe=${exe_target} got=${exe_sha:-unreadable} expected=${EXPECTED_VALIDATOR_SHA}"
     exit 1
   fi
 done
+REMOTE
+}
+
+verify_host_release() {
+  local host="$1"
+  local arch archive root expected_validator_sha expected_custody_sha expected_faucet_sha
+  arch="$(ssh_run "$host" "uname -m")"
+  archive="$(archive_for_arch "$arch")"
+  root="$(archive_root "$archive")"
+  expected_validator_sha="$(archive_bin_sha "$archive" "$root" lichen-validator)"
+  expected_custody_sha="$(archive_bin_sha "$archive" "$root" lichen-custody)"
+  expected_faucet_sha="$(archive_bin_sha "$archive" "$root" lichen-faucet)"
+
+  echo "Verify installed release ${host}"
+  ssh_run "$host" "SERVICE='$SERVICE' EXPECTED_VALIDATOR_SHA='$expected_validator_sha' EXPECTED_CUSTODY_SHA='$expected_custody_sha' EXPECTED_FAUCET_SHA='$expected_faucet_sha' bash -s" <<'REMOTE'
+set -euo pipefail
+
+unit_exists() {
+  local unit="$1"
+  systemctl list-unit-files --no-legend "$unit" 2>/dev/null |
+    awk '{print $1}' |
+    grep -Fxq "$unit"
+}
+
+collect_pids() {
+  local pid="$1"
+  local child
+  printf '%s\n' "$pid"
+  for child in $(pgrep -P "$pid" 2>/dev/null || true); do
+    collect_pids "$child"
+  done
+}
+
+check_file_hash() {
+  local path="$1"
+  local expected="$2"
+  local label="$3"
+  local actual
+  if [ -z "$expected" ]; then
+    return 0
+  fi
+  if [ ! -x "$path" ]; then
+    echo "Expected ${label} binary is missing or not executable: ${path}"
+    exit 1
+  fi
+  actual="$(sha256sum "$path" | awk '{print $1}')"
+  if [ "$actual" != "$expected" ]; then
+    echo "${label} binary hash mismatch: got=${actual} expected=${expected}"
+    exit 1
+  fi
+}
+
+check_pid_hash() {
+  local pid="$1"
+  local expected="$2"
+  local label="$3"
+  local target actual
+  target="$(sudo readlink "/proc/${pid}/exe" 2>/dev/null || true)"
+  if [ -z "$target" ]; then
+    echo "${label} process ${pid} executable is unreadable."
+    exit 1
+  fi
+  if [[ "$target" == *" (deleted)" ]]; then
+    echo "${label} process ${pid} still uses deleted executable: ${target}"
+    exit 1
+  fi
+  actual="$(sudo sha256sum "/proc/${pid}/exe" 2>/dev/null | awk '{print $1}')"
+  if [ "$actual" != "$expected" ]; then
+    echo "${label} process ${pid} hash mismatch: exe=${target} got=${actual:-unreadable} expected=${expected}"
+    exit 1
+  fi
+}
+
+check_service_tree_hash() {
+  local unit="$1"
+  local expected="$2"
+  local label="$3"
+  local main_pid pid
+  if [ -z "$expected" ]; then
+    return 0
+  fi
+  if ! unit_exists "$unit"; then
+    return 0
+  fi
+  if ! systemctl is-active --quiet "$unit"; then
+    return 0
+  fi
+  main_pid="$(systemctl show "$unit" -p MainPID --value || true)"
+  if [ -z "$main_pid" ] || [ "$main_pid" = "0" ]; then
+    echo "${label} unit is active but has no MainPID."
+    exit 1
+  fi
+  for pid in $(collect_pids "$main_pid" | sort -u); do
+    check_pid_hash "$pid" "$expected" "$label"
+  done
+}
+
+check_file_hash /usr/local/bin/lichen-validator "$EXPECTED_VALIDATOR_SHA" lichen-validator
+check_file_hash /usr/local/bin/lichen-custody "$EXPECTED_CUSTODY_SHA" lichen-custody
+check_file_hash /usr/local/bin/lichen-faucet "$EXPECTED_FAUCET_SHA" lichen-faucet
+
+check_service_tree_hash "$SERVICE" "$EXPECTED_VALIDATOR_SHA" "$SERVICE"
+check_service_tree_hash lichen-custody.service "$EXPECTED_CUSTODY_SHA" lichen-custody.service
+check_service_tree_hash lichen-faucet.service "$EXPECTED_FAUCET_SHA" lichen-faucet.service
 REMOTE
 }
 
@@ -311,7 +432,7 @@ restart_custody_if_local() {
   echo "Refresh custody after validator health ${host}"
   ssh_run "$host" "RPC_PORT='$RPC_PORT' MAX_BLOCK_AGE_SECS='$MAX_BLOCK_AGE_SECS' bash -s" <<'REMOTE'
 set -euo pipefail
-if ! systemctl list-unit-files lichen-custody.service >/dev/null 2>&1; then
+if ! systemctl list-unit-files --no-legend lichen-custody.service 2>/dev/null | awk '{print $1}' | grep -Fxq lichen-custody.service; then
   exit 0
 fi
 if ! systemctl is-enabled --quiet lichen-custody.service 2>/dev/null && \
@@ -357,7 +478,7 @@ restart_faucet_if_local() {
   echo "Refresh faucet after validator health ${host}"
   ssh_run "$host" "bash -s" <<'REMOTE'
 set -euo pipefail
-if ! systemctl list-unit-files lichen-faucet.service >/dev/null 2>&1; then
+if ! systemctl list-unit-files --no-legend lichen-faucet.service 2>/dev/null | awk '{print $1}' | grep -Fxq lichen-faucet.service; then
   exit 0
 fi
 if ! systemctl is-enabled --quiet lichen-faucet.service 2>/dev/null && \
@@ -456,6 +577,14 @@ echo "Hosts: ${HOSTS}"
 
 download_release_artifacts
 
+if [ "${LICHEN_VERIFY_RELEASE_ONLY:-}" = "1" ]; then
+  for host in $HOSTS; do
+    verify_host_release "$host"
+  done
+  echo "RELEASE VERIFY COMPLETE"
+  exit 0
+fi
+
 for host in $HOSTS; do
   preflight_host "$host"
 done
@@ -465,6 +594,11 @@ for host in $HOSTS; do
   wait_healthy "$host"
   restart_custody_if_local "$host"
   restart_faucet_if_local "$host"
+  verify_host_release "$host"
+done
+
+for host in $HOSTS; do
+  verify_host_release "$host"
 done
 
 public_smoke
