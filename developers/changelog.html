@@ -79,6 +79,25 @@
         <!-- Timeline -->
         <div class="changelog-timeline">
 
+            <!-- ============ v0.5.95 ============ -->
+            <div class="changelog-entry">
+                <div class="changelog-header">
+                    <span class="changelog-version">v0.5.95</span>
+                    <span class="changelog-date">June 5, 2026</span>
+                </div>
+                <h3 class="changelog-title">BTC Release CI Hardening</h3>
+
+                <div class="changelog-section" data-type="fixed">
+                    <h4><i class="fas fa-bug" style="color: var(--warning)"></i> Fixes</h4>
+                    <ul>
+                        <li><strong>Bitcoin withdrawal builder</strong> &mdash; the BTC payment transaction helper now
+                            uses a typed request object and Clippy-clean SegWit output hashing.</li>
+                        <li><strong>Wallet bridge audit</strong> &mdash; BTC is covered by the wallet-side bridge asset
+                            validator while preserving Neo X GAS/NEO route checks.</li>
+                    </ul>
+                </div>
+            </div>
+
             <!-- ============ v0.5.94 ============ -->
             <div class="changelog-entry">
                 <div class="changelog-header">

@@ -222,7 +222,7 @@ pub(crate) fn build_bitcoin_sweep_tx_hex(
         value: output_value,
         script_pub_key: treasury_script,
     };
-    let hash_outputs = double_sha256(&serialize_output_items(&[output.clone()]));
+    let hash_outputs = double_sha256(&serialize_output_items(std::slice::from_ref(&output)));
 
     let mut signatures = Vec::with_capacity(utxos.len());
     for (index, utxo) in utxos.iter().enumerate() {
@@ -248,16 +248,30 @@ pub(crate) fn build_bitcoin_sweep_tx_hex(
     Ok((hex::encode(tx), output_value))
 }
 
+pub(crate) struct BitcoinPaymentRequest<'a> {
+    pub(crate) derivation_path: &'a str,
+    pub(crate) master_seed: &'a str,
+    pub(crate) available_utxos: &'a [BitcoinUtxo],
+    pub(crate) dest_address: &'a str,
+    pub(crate) change_address: &'a str,
+    pub(crate) amount_sats: u64,
+    pub(crate) network: &'a str,
+    pub(crate) fee_rate_sats_vb: u64,
+}
+
 pub(crate) fn build_bitcoin_payment_tx_hex(
-    derivation_path: &str,
-    master_seed: &str,
-    available_utxos: &[BitcoinUtxo],
-    dest_address: &str,
-    change_address: &str,
-    amount_sats: u64,
-    network: &str,
-    fee_rate_sats_vb: u64,
+    request: BitcoinPaymentRequest<'_>,
 ) -> Result<(String, u64, u64), String> {
+    let BitcoinPaymentRequest {
+        derivation_path,
+        master_seed,
+        available_utxos,
+        dest_address,
+        change_address,
+        amount_sats,
+        network,
+        fee_rate_sats_vb,
+    } = request;
     if amount_sats == 0 {
         return Err("bitcoin payment amount must be > 0".to_string());
     }

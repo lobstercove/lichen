@@ -1,4 +1,5 @@
 use super::*;
+use crate::bitcoin_support::BitcoinPaymentRequest;
 
 pub(super) async fn broadcast_self_custody_bitcoin_withdrawal(
     state: &CustodyState,
@@ -21,15 +22,15 @@ pub(super) async fn broadcast_self_custody_bitcoin_withdrawal(
         state.config.btc_confirmations,
     )
     .await?;
-    let (tx_hex, _sent_sats, _fee_sats) = build_bitcoin_payment_tx_hex(
-        bitcoin_treasury_derivation_path(),
-        &state.config.master_seed,
-        &utxos,
-        &job.dest_address,
-        &treasury,
+    let (tx_hex, _sent_sats, _fee_sats) = build_bitcoin_payment_tx_hex(BitcoinPaymentRequest {
+        derivation_path: bitcoin_treasury_derivation_path(),
+        master_seed: &state.config.master_seed,
+        available_utxos: &utxos,
+        dest_address: &job.dest_address,
+        change_address: &treasury,
         amount_sats,
-        &state.config.btc_network,
-        state.config.btc_fee_rate_sats_vb,
-    )?;
+        network: &state.config.btc_network,
+        fee_rate_sats_vb: state.config.btc_fee_rate_sats_vb,
+    })?;
     bitcoin_send_raw_transaction(&state.http, &state.config, &tx_hex).await
 }

@@ -5,6 +5,12 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.95] - 2026-06-05
+
+### Fixed
+- Keeps the BTC/wBTC release CI-clean by replacing the Bitcoin withdrawal builder's long parameter list with a typed request object and removing an unnecessary cloned output in SegWit signing.
+- Updates wallet bridge audit coverage so BTC remains allowed in the deposit validator while preserving Neo X GAS/NEO route checks.
+
 ## [0.5.94] - 2026-06-05
 
 ### Added
