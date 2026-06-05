@@ -41,6 +41,7 @@ MAX_BLOCK_AGE_SECS="${LICHEN_MAX_BLOCK_AGE_SECS:-15}"
 DEX_SMOKE_TIMEOUT_SECS="${LICHEN_DEX_SMOKE_TIMEOUT_SECS:-90}"
 ARTIFACT_DIR="${LICHEN_RELEASE_ARTIFACT_DIR:-/tmp/lichen-rolling-${NETWORK}-${RELEASE_TAG:-unset}}"
 RELEASE_SIGNING_ADDRESS="${LICHEN_RELEASE_SIGNING_ADDRESS:-8HitBNnh8qbhfne5NCv2yHrQFoD6xbmHcWaUSgCGtsk}"
+REMOTE_RELEASE_DOWNLOAD="${LICHEN_REMOTE_RELEASE_DOWNLOAD:-1}"
 
 if [ -z "$RELEASE_TAG" ]; then
   echo "LICHEN_RELEASE_TAG is required." >&2
@@ -110,6 +111,16 @@ archive_bin_sha() {
       sha256sum |
       awk '{print $1}'
   fi
+}
+
+archive_sha() {
+  local archive="$1"
+  awk -v archive="$archive" '$2 == archive || $2 == "./" archive { print $1; exit }' "$ARTIFACT_DIR/SHA256SUMS"
+}
+
+release_asset_url() {
+  local archive="$1"
+  printf 'https://github.com/%s/releases/download/%s/%s' "$RELEASE_REPO" "$RELEASE_TAG" "$archive"
 }
 
 download_release_artifacts() {
@@ -189,16 +200,33 @@ REMOTE
 
 install_host() {
   local host="$1"
-  local arch archive root expected_validator_sha expected_custody_sha expected_faucet_sha
+  local arch archive root expected_archive_sha expected_validator_sha expected_custody_sha expected_faucet_sha release_url
   arch="$(ssh_run "$host" "uname -m")"
   archive="$(archive_for_arch "$arch")"
   root="$(archive_root "$archive")"
+  expected_archive_sha="$(archive_sha "$archive")"
   expected_validator_sha="$(archive_bin_sha "$archive" "$root" lichen-validator)"
   expected_custody_sha="$(archive_bin_sha "$archive" "$root" lichen-custody)"
   expected_faucet_sha="$(archive_bin_sha "$archive" "$root" lichen-faucet)"
+  release_url="$(release_asset_url "$archive")"
 
   echo "Install ${RELEASE_TAG} on ${host} (${archive})"
-  scp_to "$ARTIFACT_DIR/$archive" "$host" "/tmp/$archive"
+  if [ "$REMOTE_RELEASE_DOWNLOAD" = "1" ]; then
+    ssh_run "$host" "ARCHIVE='/tmp/$archive' ARCHIVE_URL='$release_url' EXPECTED_ARCHIVE_SHA='$expected_archive_sha' bash -s" <<'REMOTE'
+set -euo pipefail
+tmp_archive="${ARCHIVE}.tmp"
+rm -f "$tmp_archive" "$ARCHIVE"
+curl -fL --retry 5 --retry-delay 2 --connect-timeout 15 -o "$tmp_archive" "$ARCHIVE_URL"
+actual_sha="$(sha256sum "$tmp_archive" | awk '{print $1}')"
+if [ "$actual_sha" != "$EXPECTED_ARCHIVE_SHA" ]; then
+  echo "Downloaded release archive hash mismatch: got=${actual_sha} expected=${EXPECTED_ARCHIVE_SHA}"
+  exit 1
+fi
+mv "$tmp_archive" "$ARCHIVE"
+REMOTE
+  else
+    scp_to "$ARTIFACT_DIR/$archive" "$host" "/tmp/$archive"
+  fi
   ssh_run "$host" "NETWORK='$NETWORK' SERVICE='$SERVICE' ARCHIVE='/tmp/$archive' EXPECTED_VALIDATOR_SHA='$expected_validator_sha' EXPECTED_CUSTODY_SHA='$expected_custody_sha' EXPECTED_FAUCET_SHA='$expected_faucet_sha' bash -s" <<'REMOTE'
 set -euo pipefail
 tmp="$(mktemp -d)"
