@@ -35,11 +35,27 @@ pub(crate) fn load_config() -> CustodyConfig {
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(NEOX_TESTNET_T4_CHAIN_ID);
+    let btc_rpc_url = std::env::var("CUSTODY_BTC_RPC_URL").ok();
+    let btc_rpc_user = std::env::var("CUSTODY_BTC_RPC_USER").ok();
+    let btc_rpc_password = std::env::var("CUSTODY_BTC_RPC_PASSWORD").ok();
+    let btc_network = std::env::var("CUSTODY_BTC_NETWORK")
+        .ok()
+        .and_then(|value| normalize_bitcoin_network(&value).ok().map(str::to_string))
+        .unwrap_or_else(|| "mainnet".to_string());
     let neox_confirmations = std::env::var("CUSTODY_NEOX_CONFIRMATIONS")
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(evm_confirmations);
+    let btc_confirmations = std::env::var("CUSTODY_BTC_CONFIRMATIONS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(6);
+    let btc_fee_rate_sats_vb = std::env::var("CUSTODY_BTC_FEE_RATE_SATS_VB")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(5);
     let treasury_neox_address = std::env::var("CUSTODY_TREASURY_NEOX").ok();
+    let treasury_btc_address = std::env::var("CUSTODY_TREASURY_BTC").ok();
     let solana_fee_payer_keypair_path = std::env::var("CUSTODY_SOLANA_FEE_PAYER").ok();
     let solana_treasury_owner = std::env::var("CUSTODY_SOLANA_TREASURY_OWNER")
         .ok()
@@ -78,6 +94,7 @@ pub(crate) fn load_config() -> CustodyConfig {
     let wbnb_contract_addr = std::env::var("CUSTODY_WBNB_TOKEN_ADDR").ok();
     let wgas_contract_addr = std::env::var("CUSTODY_WGAS_TOKEN_ADDR").ok();
     let wneo_contract_addr = std::env::var("CUSTODY_WNEO_TOKEN_ADDR").ok();
+    let wbtc_contract_addr = std::env::var("CUSTODY_WBTC_TOKEN_ADDR").ok();
     let neox_neo_token_contract = std::env::var("CUSTODY_NEOX_NEO_TOKEN_ADDR").ok();
     let rebalance_threshold_bps = std::env::var("CUSTODY_REBALANCE_THRESHOLD_BPS")
         .ok()
@@ -166,15 +183,22 @@ pub(crate) fn load_config() -> CustodyConfig {
         bnb_chain_id,
         neox_rpc_url,
         neox_chain_id,
+        btc_rpc_url,
+        btc_rpc_user,
+        btc_rpc_password,
+        btc_network,
         solana_confirmations,
         evm_confirmations,
         neox_confirmations,
+        btc_confirmations,
+        btc_fee_rate_sats_vb,
         poll_interval_secs,
         treasury_solana_address,
         treasury_evm_address,
         treasury_eth_address,
         treasury_bnb_address,
         treasury_neox_address,
+        treasury_btc_address,
         solana_fee_payer_keypair_path,
         solana_treasury_owner,
         solana_usdc_mint,
@@ -193,6 +217,7 @@ pub(crate) fn load_config() -> CustodyConfig {
         wbnb_contract_addr,
         wgas_contract_addr,
         wneo_contract_addr,
+        wbtc_contract_addr,
         neox_neo_token_contract,
         rebalance_threshold_bps,
         rebalance_target_bps,

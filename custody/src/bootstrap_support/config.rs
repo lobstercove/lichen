@@ -72,6 +72,10 @@ fn log_chain_configuration(config: &CustodyConfig) {
             .or(config.treasury_evm_address.as_ref())
     );
     info!("  Neo X Treasury:  {:?}", config.treasury_neox_address);
+    info!(
+        "  BTC Treasury:    {:?} ({})",
+        config.treasury_btc_address, config.btc_network
+    );
 
     if config.solana_rpc_url.is_some() {
         if let Some(path) = config.solana_fee_payer_keypair_path.as_ref() {

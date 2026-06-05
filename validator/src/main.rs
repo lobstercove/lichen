@@ -116,6 +116,7 @@ const TESTNET_DEX_REPAIR_CONTRACTS: &[(&str, &str)] = &[
     ("WBNB", "wbnb_token"),
     ("WGAS", "wgas_token"),
     ("WNEO", "wneo_token"),
+    ("WBTC", "wbtc_token"),
     ("ORACLE", "lichenoracle"),
     ("DEX", "dex_core"),
     ("DEXAMM", "dex_amm"),
@@ -298,6 +299,7 @@ struct SharedOraclePrices {
     wbnb_micro: Arc<AtomicU64>,
     wneo_micro: Arc<AtomicU64>,
     wgas_micro: Arc<AtomicU64>,
+    wbtc_micro: Arc<AtomicU64>,
     ws_healthy: Arc<AtomicBool>,
     /// Epoch-millis of the last WS message received (for staleness detection)
     last_ws_update_ms: Arc<AtomicU64>,
@@ -311,6 +313,7 @@ impl SharedOraclePrices {
             wbnb_micro: Arc::new(AtomicU64::new(0)),
             wneo_micro: Arc::new(AtomicU64::new(0)),
             wgas_micro: Arc::new(AtomicU64::new(0)),
+            wbtc_micro: Arc::new(AtomicU64::new(0)),
             ws_healthy: Arc::new(AtomicBool::new(false)),
             last_ws_update_ms: Arc::new(AtomicU64::new(0)),
         }
@@ -321,21 +324,25 @@ fn symbol_registered(state: &StateStore, symbol: &str) -> bool {
     matches!(state.get_symbol_registry(symbol), Ok(Some(_)))
 }
 
-fn neo_wrapped_oracle_assets_enabled(state: &StateStore) -> (bool, bool) {
+fn wrapped_oracle_assets_enabled(state: &StateStore) -> (bool, bool, bool) {
     (
         symbol_registered(state, "WNEO"),
         symbol_registered(state, "WGAS"),
+        symbol_registered(state, "WBTC"),
     )
 }
 
 fn oracle_asset_symbols(state: &StateStore) -> Vec<&'static str> {
-    let (wneo_enabled, wgas_enabled) = neo_wrapped_oracle_assets_enabled(state);
+    let (wneo_enabled, wgas_enabled, wbtc_enabled) = wrapped_oracle_assets_enabled(state);
     let mut assets = vec!["LICN", "wSOL", "wETH", "wBNB"];
     if wneo_enabled {
         assets.push("wNEO");
     }
     if wgas_enabled {
         assets.push("wGAS");
+    }
+    if wbtc_enabled {
+        assets.push("wBTC");
     }
     assets
 }
@@ -348,12 +355,14 @@ struct OraclePairPriceInputs {
     wbnb_usd: f64,
     wneo_usd: f64,
     wgas_usd: f64,
+    wbtc_usd: f64,
 }
 
 fn oracle_pair_prices(
     inputs: OraclePairPriceInputs,
     wneo_enabled: bool,
     wgas_enabled: bool,
+    wbtc_enabled: bool,
 ) -> Vec<(u64, f64)> {
     let OraclePairPriceInputs {
         licn_usd,
@@ -362,6 +371,7 @@ fn oracle_pair_prices(
         wbnb_usd,
         wneo_usd,
         wgas_usd,
+        wbtc_usd,
     } = inputs;
     let mut pair_prices = vec![
         (1, licn_usd),
@@ -411,6 +421,17 @@ fn oracle_pair_prices(
             11,
             if licn_usd > 0.0 {
                 wgas_usd / licn_usd
+            } else {
+                0.0
+            },
+        ));
+    }
+    if wbtc_enabled {
+        pair_prices.push((12, wbtc_usd));
+        pair_prices.push((
+            13,
+            if licn_usd > 0.0 {
+                wbtc_usd / licn_usd
             } else {
                 0.0
             },
@@ -3317,13 +3338,16 @@ fn apply_oracle_from_block(state: &StateStore, block: &Block) {
         lichen_core::consensus::consensus_oracle_price_from_state(state, "wNEO").unwrap_or(0.0);
     let wgas_usd =
         lichen_core::consensus::consensus_oracle_price_from_state(state, "wGAS").unwrap_or(0.0);
-    let (wneo_enabled, wgas_enabled) = neo_wrapped_oracle_assets_enabled(state);
+    let wbtc_usd =
+        lichen_core::consensus::consensus_oracle_price_from_state(state, "wBTC").unwrap_or(0.0);
+    let (wneo_enabled, wgas_enabled, wbtc_enabled) = wrapped_oracle_assets_enabled(state);
 
     if wsol_usd <= 0.0
         && weth_usd <= 0.0
         && wbnb_usd <= 0.0
         && (!wneo_enabled || wneo_usd <= 0.0)
         && (!wgas_enabled || wgas_usd <= 0.0)
+        && (!wbtc_enabled || wbtc_usd <= 0.0)
     {
         return;
     }
@@ -3370,9 +3394,11 @@ fn apply_oracle_from_block(state: &StateStore, block: &Block) {
             wbnb_usd,
             wneo_usd,
             wgas_usd,
+            wbtc_usd,
         },
         wneo_enabled,
         wgas_enabled,
+        wbtc_enabled,
     );
 
     if dex_pk.0 != [0u8; 32] {
@@ -5618,9 +5644,9 @@ struct VerifiedCheckpointAnchor {
 /// Override via LICHEN_ORACLE_REST_URL (e.g. for Binance US: https://api.binance.us/api/v3/...)
 const MICRO_SCALE: f64 = 1_000_000.0;
 const DEFAULT_BINANCE_WS_URL: &str =
-    "wss://stream.binance.com:9443/ws/solusdt@aggTrade/ethusdt@aggTrade/bnbusdt@aggTrade/neousdt@aggTrade/gasusdt@aggTrade";
+    "wss://stream.binance.com:9443/ws/solusdt@aggTrade/ethusdt@aggTrade/bnbusdt@aggTrade/neousdt@aggTrade/gasusdt@aggTrade/btcusdt@aggTrade";
 const DEFAULT_BINANCE_REST_URL: &str =
-    "https://api.binance.com/api/v3/ticker/price?symbols=[%22SOLUSDT%22,%22ETHUSDT%22,%22BNBUSDT%22,%22NEOUSDT%22,%22GASUSDT%22]";
+    "https://api.binance.com/api/v3/ticker/price?symbols=[%22SOLUSDT%22,%22ETHUSDT%22,%22BNBUSDT%22,%22NEOUSDT%22,%22GASUSDT%22,%22BTCUSDT%22]";
 
 fn reset_24h_stats_if_expired(state: &StateStore, block_ts: u64) {
     let analytics_pk = match state.get_symbol_registry("ANALYTICS") {
@@ -5875,6 +5901,7 @@ fn spawn_oracle_price_feeder(
         let wbnb_micro = shared_prices.wbnb_micro.clone();
         let wneo_micro = shared_prices.wneo_micro.clone();
         let wgas_micro = shared_prices.wgas_micro.clone();
+        let wbtc_micro = shared_prices.wbtc_micro.clone();
         let ws_healthy = shared_prices.ws_healthy.clone();
 
         // Spawn WebSocket reader task FIRST so prices start flowing immediately
@@ -5956,6 +5983,7 @@ fn spawn_oracle_price_feeder(
             let mut cur_wbnb = wbnb_micro.load(Ordering::Relaxed);
             let mut cur_wneo = wneo_micro.load(Ordering::Relaxed);
             let mut cur_wgas = wgas_micro.load(Ordering::Relaxed);
+            let mut cur_wbtc = wbtc_micro.load(Ordering::Relaxed);
 
             // REST fallback if WebSocket is not healthy, no prices yet,
             // or WS data is stale (no message received within 15 seconds).
@@ -5977,7 +6005,8 @@ fn spawn_oracle_price_feeder(
                     && cur_weth == 0
                     && cur_wbnb == 0
                     && cur_wneo == 0
-                    && cur_wgas == 0)
+                    && cur_wgas == 0
+                    && cur_wbtc == 0)
             {
                 if let Ok(resp) = http.get(&rest_url).send().await {
                     if let Ok(tickers) = resp.json::<Vec<BinanceTicker>>().await {
@@ -6008,6 +6037,10 @@ fn spawn_oracle_price_feeder(
                                     wgas_micro.store(micro, Ordering::Relaxed);
                                     cur_wgas = micro;
                                 }
+                                "BTCUSDT" => {
+                                    wbtc_micro.store(micro, Ordering::Relaxed);
+                                    cur_wbtc = micro;
+                                }
                                 _ => {}
                             }
                         }
@@ -6021,7 +6054,7 @@ fn spawn_oracle_price_feeder(
             // This feeder submits signed native oracle attestation txs and
             // reads consensus-written state to broadcast WS events.
 
-            let (wneo_enabled, wgas_enabled) = neo_wrapped_oracle_assets_enabled(&state);
+            let (wneo_enabled, wgas_enabled, wbtc_enabled) = wrapped_oracle_assets_enabled(&state);
             let mut attestation_prices = vec![
                 ("LICN", GenesisPrices::default().licn_usd_8dec),
                 ("wSOL", cur_wsol.saturating_mul(100)),
@@ -6033,6 +6066,9 @@ fn spawn_oracle_price_feeder(
             }
             if wgas_enabled {
                 attestation_prices.push(("wGAS", cur_wgas.saturating_mul(100)));
+            }
+            if wbtc_enabled {
+                attestation_prices.push(("wBTC", cur_wbtc.saturating_mul(100)));
             }
             for (asset, price_raw) in attestation_prices {
                 if price_raw == 0 {
@@ -6058,12 +6094,14 @@ fn spawn_oracle_price_feeder(
             let wbnb_usd = cur_wbnb as f64 / MICRO_SCALE;
             let wneo_usd = cur_wneo as f64 / MICRO_SCALE;
             let wgas_usd = cur_wgas as f64 / MICRO_SCALE;
+            let wbtc_usd = cur_wbtc as f64 / MICRO_SCALE;
 
             if wsol_usd <= 0.0
                 && weth_usd <= 0.0
                 && wbnb_usd <= 0.0
                 && wneo_usd <= 0.0
                 && wgas_usd <= 0.0
+                && wbtc_usd <= 0.0
             {
                 continue;
             }
@@ -6080,9 +6118,11 @@ fn spawn_oracle_price_feeder(
                     wbnb_usd,
                     wneo_usd,
                     wgas_usd,
+                    wbtc_usd,
                 },
                 wneo_enabled,
                 wgas_enabled,
+                wbtc_enabled,
             );
 
             for (pair_id, price_f64) in &pair_prices {
@@ -6163,8 +6203,8 @@ fn spawn_oracle_price_feeder(
             }
 
             debug!(
-                "🔮 Oracle candles updated: wSOL=${:.2} wETH=${:.2} wBNB=${:.2} wNEO=${:.2} wGAS=${:.2}",
-                wsol_usd, weth_usd, wbnb_usd, wneo_usd, wgas_usd
+                "🔮 Oracle candles updated: wSOL=${:.2} wETH=${:.2} wBNB=${:.2} wNEO=${:.2} wGAS=${:.2} wBTC=${:.2}",
+                wsol_usd, weth_usd, wbnb_usd, wneo_usd, wgas_usd, wbtc_usd
             );
         }
     });
@@ -6178,7 +6218,7 @@ async fn binance_ws_loop(prices: SharedOraclePrices, ws_url: String) {
 
     // Read timeout: if no WS message arrives within this window,
     // treat the connection as dead and reconnect.  Binance aggTrade
-    // streams for SOL/ETH/BNB/NEO/GAS produce messages during
+    // streams for SOL/ETH/BNB/NEO/GAS/BTC produce messages during
     // active trading.  30s silence is a clear signal of a stale
     // connection (TCP half-open, silent Binance-side close, etc.).
     const WS_READ_TIMEOUT: Duration = Duration::from_secs(30);
@@ -6240,6 +6280,9 @@ async fn binance_ws_loop(prices: SharedOraclePrices, ws_url: String) {
                                             }
                                             "GASUSDT" => {
                                                 prices.wgas_micro.store(micro, Ordering::Relaxed)
+                                            }
+                                            "BTCUSDT" => {
+                                                prices.wbtc_micro.store(micro, Ordering::Relaxed)
                                             }
                                             _ => {}
                                         }
@@ -19848,7 +19891,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_oracle_from_block_skips_neo_pairs_until_symbols_exist() {
+    fn apply_oracle_from_block_skips_optional_wrapped_pairs_until_symbols_exist() {
         let temp_dir = tempfile::tempdir().expect("create temp dir");
         let state = StateStore::open(temp_dir.path()).expect("open state");
 
@@ -19873,6 +19916,9 @@ mod tests {
         state
             .put_oracle_consensus_price("wGAS", 165_000_000, 8, 7, 3)
             .expect("seed wGAS consensus price");
+        state
+            .put_oracle_consensus_price("wBTC", 10_000_000_000_000, 8, 7, 3)
+            .expect("seed wBTC consensus price");
 
         let mut block = make_block_with_txs(vec![]);
         block.header.slot = 8;
@@ -19907,6 +19953,14 @@ mod tests {
             .get_contract_storage(&dex_program, b"dex_band_8")
             .expect("read wNEO DEX band")
             .is_none());
+        assert!(state
+            .get_contract_storage(&oracle_program, b"price_wBTC")
+            .expect("read wBTC oracle storage")
+            .is_none());
+        assert!(state
+            .get_contract_storage(&dex_program, b"dex_band_12")
+            .expect("read wBTC DEX band")
+            .is_none());
 
         register_test_symbol(&state, "WNEO", Pubkey([4u8; 32]));
         apply_oracle_from_block(&state, &block);
@@ -19923,6 +19977,22 @@ mod tests {
             .get_contract_storage(&dex_program, b"dex_band_10")
             .expect("read inactive wGAS DEX band")
             .is_none());
+        assert!(state
+            .get_contract_storage(&dex_program, b"dex_band_12")
+            .expect("read inactive wBTC DEX band")
+            .is_none());
+
+        register_test_symbol(&state, "WBTC", Pubkey([6u8; 32]));
+        apply_oracle_from_block(&state, &block);
+
+        assert!(state
+            .get_contract_storage(&oracle_program, b"price_wBTC")
+            .expect("read active wBTC oracle storage")
+            .is_some());
+        assert!(state
+            .get_contract_storage(&dex_program, b"dex_band_12")
+            .expect("read active wBTC DEX band")
+            .is_some());
     }
 
     #[test]

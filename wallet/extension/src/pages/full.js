@@ -3697,7 +3697,8 @@ const BRIDGE_CHAINS_EXT = {
   solana: { label: 'Solana', assets: ['sol', 'usdc', 'usdt'] },
   ethereum: { label: 'Ethereum', assets: ['eth', 'usdc', 'usdt'] },
   bsc: { label: 'BNB Chain', assets: ['bnb', 'usdc', 'usdt'] },
-  neox: { label: 'Neo X', detail: 'Chain ID 47763 · GAS and whole-lot NEO deposits.', assets: ['gas', 'neo'] }
+  neox: { label: 'Neo X', detail: 'Chain ID 47763 · GAS and whole-lot NEO deposits.', assets: ['gas', 'neo'] },
+  bitcoin: { label: 'Bitcoin', detail: 'Native SegWit BTC deposits.', assets: ['btc'] }
 };
 let extDepositPollTimer = null;
 let extActiveDepositId = null;
@@ -3749,7 +3750,7 @@ async function startExtensionDeposit(chain) {
   if (!wallet) { showToast('No active wallet', 'error'); return; }
   if (!isValidAddress(wallet.address)) { showToast('Invalid wallet address', 'error'); return; }
 
-  const chainLabels = { solana: 'Solana', ethereum: 'Ethereum', bsc: 'BNB Chain', neox: 'Neo X' };
+  const chainLabels = { solana: 'Solana', ethereum: 'Ethereum', bsc: 'BNB Chain', neox: 'Neo X', bitcoin: 'Bitcoin' };
   const chainLabel = chainLabels[chain] || chain;
   const chainAssets = (BRIDGE_CHAINS_EXT[chain] || { assets: ['usdc', 'usdt'] }).assets;
   const chainDetail = BRIDGE_CHAINS_EXT[chain]?.detail || '';
@@ -3935,6 +3936,11 @@ function restoreDepositTab(container) {
         <div class="deposit-card-info"><strong>Bridge from Neo X</strong><span>GAS · NEO</span></div>
         <i class="fas fa-chevron-right" style="color:var(--text-muted);"></i>
       </div>
+      <div class="deposit-card" id="depositBTC">
+        <div class="deposit-card-icon" style="background:rgba(247,147,26,0.12);color:#F7931A;"><i class="fab fa-bitcoin"></i></div>
+        <div class="deposit-card-info"><strong>Bridge from Bitcoin</strong><span>BTC</span></div>
+        <i class="fas fa-chevron-right" style="color:var(--text-muted);"></i>
+      </div>
       <div class="deposit-card disabled">
         <div class="deposit-card-icon" style="background:rgba(0, 201, 219,0.12);color:var(--primary);"><i class="fas fa-credit-card"></i></div>
         <div class="deposit-card-info"><strong>Buy with Fiat</strong><span>Coming with mainnet launch</span></div>
@@ -3950,6 +3956,7 @@ function restoreDepositTab(container) {
   container.querySelector('#depositETH')?.addEventListener('click', () => startExtensionDeposit('ethereum'));
   container.querySelector('#depositBNB')?.addEventListener('click', () => startExtensionDeposit('bsc'));
   container.querySelector('#depositNEOX')?.addEventListener('click', () => startExtensionDeposit('neox'));
+  container.querySelector('#depositBTC')?.addEventListener('click', () => startExtensionDeposit('bitcoin'));
 }
 
 /* ──────────────────────────────────────────
@@ -4203,6 +4210,7 @@ function wireEvents() {
   $('depositETH')?.addEventListener('click', () => startExtensionDeposit('ethereum'));
   $('depositBNB')?.addEventListener('click', () => startExtensionDeposit('bsc'));
   $('depositNEOX')?.addEventListener('click', () => startExtensionDeposit('neox'));
+  $('depositBTC')?.addEventListener('click', () => startExtensionDeposit('bitcoin'));
 
   // Settings modal
   $('navSettingsBtn')?.addEventListener('click', () => { loadSettingsValues(); openModal('settingsModal'); });

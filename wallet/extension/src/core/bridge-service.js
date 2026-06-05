@@ -1,8 +1,8 @@
 import { LichenRPC, getTrustedRpcEndpoint } from './rpc-service.js';
 import { decryptPrivateKey, isValidAddress, privateKeyToKeypair, signTransaction } from './crypto-service.js';
 
-const SUPPORTED_CHAINS = ['solana', 'ethereum', 'bsc', 'bnb', 'neox', 'neo-x', 'neo_x'];
-const SUPPORTED_ASSETS = ['usdc', 'usdt', 'sol', 'eth', 'bnb', 'gas', 'neo'];
+const SUPPORTED_CHAINS = ['solana', 'ethereum', 'bsc', 'bnb', 'neox', 'neo-x', 'neo_x', 'bitcoin', 'btc'];
+const SUPPORTED_ASSETS = ['usdc', 'usdt', 'sol', 'eth', 'bnb', 'gas', 'neo', 'btc'];
 const BRIDGE_AUTH_TTL_SECS = 24 * 60 * 60;
 const BRIDGE_AUTH_DOMAIN_V2 = 'LICHEN_BRIDGE_ACCESS_V2';
 const BRIDGE_AUTH_CREATE_ACTION = 'createBridgeDeposit';
@@ -155,6 +155,7 @@ function canonicalBridgeChain(chain) {
   const normalized = String(chain || '').trim().toLowerCase();
   if (normalized === 'bnb') return 'bsc';
   if (normalized === 'neo-x' || normalized === 'neo_x') return 'neox';
+  if (normalized === 'btc') return 'bitcoin';
   return normalized;
 }
 

@@ -170,6 +170,7 @@ expected = {
     "wbnb_token": "WBNB",
     "wgas_token": "WGAS",
     "wneo_token": "WNEO",
+    "wbtc_token": "WBTC",
     "lichenbridge": "BRIDGE",
     "lichenmarket": "MARKET",
     "lichenoracle": "ORACLE",
@@ -305,6 +306,7 @@ expected = {
     "wbnb_token": "WBNB",
     "wgas_token": "WGAS",
     "wneo_token": "WNEO",
+    "wbtc_token": "WBTC",
     "lichenbridge": "BRIDGE",
     "lichenmarket": "MARKET",
     "lichenoracle": "ORACLE",
@@ -441,6 +443,7 @@ symbol_to_contract = {
     "WBNB": "wbnb_token",
     "WGAS": "wgas_token",
     "WNEO": "wneo_token",
+    "WBTC": "wbtc_token",
     "DEX": "dex_core",
     "DEXAMM": "dex_amm",
     "DEXROUTER": "dex_router",
@@ -500,6 +503,7 @@ manifest = {
         "wBNB": sorted_contracts.get("wbnb_token"),
         "wGAS": sorted_contracts.get("wgas_token"),
         "wNEO": sorted_contracts.get("wneo_token"),
+        "wBTC": sorted_contracts.get("wbtc_token"),
     },
     "dex_contracts": {
         name: sorted_contracts[name]
@@ -529,6 +533,8 @@ manifest = {
         "wNEO/LICN",
         "wGAS/lUSD",
         "wGAS/LICN",
+        "wBTC/lUSD",
+        "wBTC/LICN",
     ],
 }
 

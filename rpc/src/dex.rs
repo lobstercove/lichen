@@ -816,6 +816,7 @@ fn build_token_symbol_map(state: &crate::RpcState) -> HashMap<String, String> {
         ("WBNB", "wBNB"),
         ("WGAS", "wGAS"),
         ("WNEO", "wNEO"),
+        ("WBTC", "wBTC"),
         ("MOSS", "MOSS"),
         ("PUNKS", "PUNKS"),
         ("BOUNTY", "BOUNTY"),
@@ -2420,7 +2421,7 @@ async fn post_vote(Path(_proposal_id): Path<u64>) -> Response {
 /// GET /api/v1/oracle/prices — All oracle price feeds
 async fn get_oracle_prices(State(state): State<Arc<RpcState>>) -> Response {
     let slot = current_slot(&state);
-    let assets = ["LICN", "wSOL", "wETH", "wBNB", "wNEO", "wGAS"];
+    let assets = ["LICN", "wSOL", "wETH", "wBNB", "wNEO", "wGAS", "wBTC"];
     let mut feeds = Vec::new();
 
     for asset in &assets {
@@ -2505,6 +2506,14 @@ fn oracle_price_for_pair(state: &lichen_core::StateStore, pair_id: u64) -> Optio
         11 => consensus_oracle_price_from_state(state, "wGAS").map(|wgas| {
             if licn_usd > 0.0 {
                 wgas / licn_usd
+            } else {
+                0.0
+            }
+        }),
+        12 => consensus_oracle_price_from_state(state, "wBTC"),
+        13 => consensus_oracle_price_from_state(state, "wBTC").map(|wbtc| {
+            if licn_usd > 0.0 {
+                wbtc / licn_usd
             } else {
                 0.0
             }

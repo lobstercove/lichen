@@ -51,6 +51,20 @@ pub(super) fn determine_withdrawal_signing_mode(
             }
             Ok(Some(WithdrawalSigningMode::PqApprovalQuorum))
         }
+        chain if is_bitcoin_chain(chain) => {
+            if state.config.signer_endpoints.len() > 1 {
+                return Err(
+                    "threshold Bitcoin withdrawals are disabled until custody has a real threshold executor; PQ approval quorum plus local treasury signing is banned".to_string(),
+                );
+            }
+            if outbound_asset != "btc" {
+                return Err(format!(
+                    "threshold Bitcoin withdrawals support native BTC, not {}",
+                    outbound_asset
+                ));
+            }
+            Ok(Some(WithdrawalSigningMode::PqApprovalQuorum))
+        }
         chain if is_evm_chain(chain) => {
             if state.config.signer_threshold > 1 && state.config.signer_endpoints.len() > 1 {
                 let route = evm_route_for_chain(&state.config, chain)

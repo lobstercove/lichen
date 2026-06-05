@@ -34,6 +34,7 @@ mod asset_support;
 mod audit_support;
 mod auth_replay_support;
 mod balance_cache_support;
+mod bitcoin_support;
 mod bootstrap_support;
 mod chain_config;
 mod chain_confirmation_support;
@@ -101,6 +102,12 @@ use auth_replay_support::{
 use balance_cache_support::{
     get_last_balance, get_last_balance_with_key, set_last_balance_with_key,
 };
+use bitcoin_support::{
+    bitcoin_scan_confirmed_utxos, bitcoin_send_raw_transaction, bitcoin_treasury_derivation_path,
+    bitcoin_tx_confirmed, build_bitcoin_payment_tx_hex, build_bitcoin_sweep_tx_hex,
+    derive_bitcoin_address, derive_bitcoin_treasury_address, is_bitcoin_chain,
+    normalize_bitcoin_network, validate_bitcoin_address_for_network,
+};
 use bootstrap_support::{
     build_custody_app, build_custody_state, custody_listen_addr, prepare_custody_config,
     spawn_background_workers,
@@ -134,7 +141,9 @@ use deposit_event_support::{
     deposit_event_already_processed, persist_deposit_observation, persist_deposit_observations,
     update_deposit_status, DepositObservationMarker, DepositObservationWrite,
 };
-use deposit_monitor_support::{evm_watcher_loop, evm_watcher_loop_for_chains, solana_watcher_loop};
+use deposit_monitor_support::{
+    bitcoin_watcher_loop, evm_watcher_loop, evm_watcher_loop_for_chains, solana_watcher_loop,
+};
 use deposit_persistence::{fetch_deposit, store_deposit};
 use deposit_reservation_support::{
     clear_active_deposit_route_index, delete_active_deposit_route_index_from_batch,

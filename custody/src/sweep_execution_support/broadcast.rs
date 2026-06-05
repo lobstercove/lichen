@@ -1,8 +1,10 @@
 use super::*;
 
+mod bitcoin;
 mod evm;
 mod solana;
 
+use self::bitcoin::broadcast_bitcoin_sweep;
 use self::evm::broadcast_evm_sweep;
 use self::solana::broadcast_solana_sweep;
 
@@ -24,6 +26,10 @@ pub(super) async fn broadcast_sweep(
             .as_ref()
             .ok_or_else(|| "missing CUSTODY_SOLANA_RPC_URL".to_string())?;
         return broadcast_solana_sweep(state, url, job).await;
+    }
+
+    if is_bitcoin_chain(&job.chain) {
+        return broadcast_bitcoin_sweep(state, job).await;
     }
 
     if is_evm_chain(&job.chain) {

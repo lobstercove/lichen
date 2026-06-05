@@ -87,6 +87,7 @@ pub(super) fn evm_token_contract_for_asset(
 ///   BNB on BSC:                  18 decimals (wei)
 ///   GAS on Neo X:                18 decimals (read-only WGAS10 verification)
 ///   NEO on Neo X:                18 decimals (official Neo X NEO ERC-20, whole-NEO lots only)
+///   BTC on Bitcoin:               8 decimals (satoshis)
 ///   SOL on Solana:               9 decimals (lamports)
 ///
 /// ERC-20 / SPL tokens:
@@ -101,6 +102,7 @@ pub(super) fn source_chain_decimals(chain: &str, asset: &str) -> Result<u32, Str
         ("bsc" | "bnb", "bnb") => Ok(18),
         ("neox" | "neo-x" | "neo_x", "gas") => Ok(18),
         ("neox" | "neo-x" | "neo_x", "neo") => Ok(18),
+        ("btc" | "bitcoin", "btc") => Ok(8),
         ("eth" | "ethereum", "usdt" | "usdc") => Ok(6),
         ("bsc" | "bnb", "usdt" | "usdc") => Ok(18),
         ("sol" | "solana", "sol") => Ok(9),
@@ -154,6 +156,7 @@ pub(super) fn spores_to_chain_amount(
 ///   bnb (any chain)          → wBNB contract
 ///   gas on Neo X             → wGAS contract
 ///   neo on Neo X             → wNEO contract only when NEO source route is configured
+///   btc on Bitcoin           → wBTC contract
 ///   usdt, usdc (any chain)   → lUSD contract (unified stablecoin)
 pub(super) fn resolve_token_contract(
     config: &CustodyConfig,
@@ -169,6 +172,7 @@ pub(super) fn resolve_token_contract(
         "neo" if canonical_chain == Some("neox") && config.neox_neo_token_contract.is_some() => {
             config.wneo_contract_addr.clone()
         }
+        "btc" if is_bitcoin_chain(chain) => config.wbtc_contract_addr.clone(),
         "usdt" | "usdc" if stablecoin_source_route_configured(config, chain, asset) => {
             config.musd_contract_addr.clone()
         }

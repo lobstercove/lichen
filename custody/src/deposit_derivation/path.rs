@@ -14,6 +14,7 @@ pub(super) fn derive_deposit_address(
 ) -> Result<String, String> {
     match (chain, asset) {
         ("sol", _) | ("solana", _) => derive_solana_address(path, master_seed),
+        ("btc", "btc") | ("bitcoin", "btc") => derive_bitcoin_address(path, master_seed, "mainnet"),
         _ if is_supported_evm_chain(chain) => derive_evm_address(path, master_seed),
         _ => Err(format!("Unsupported chain: {}", chain)),
     }

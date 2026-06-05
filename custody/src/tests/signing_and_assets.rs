@@ -48,6 +48,38 @@ fn test_determine_withdrawal_signing_mode_rejects_multi_signer_solana_threshold_
 }
 
 #[test]
+fn test_determine_withdrawal_signing_mode_routes_single_signer_bitcoin_to_pq_approval() {
+    let mut state = test_state();
+    state.config.signer_endpoints = vec!["http://signer-1".to_string()];
+    state.config.signer_threshold = 1;
+    state.config.signer_pq_addresses = vec![test_pq_signer(31).0];
+    let mut job = test_withdrawal_job();
+    job.dest_chain = "bitcoin".to_string();
+    job.asset = "wBTC".to_string();
+
+    let mode = determine_withdrawal_signing_mode(&state, &job, "btc").unwrap();
+
+    assert_eq!(mode, Some(WithdrawalSigningMode::PqApprovalQuorum));
+}
+
+#[test]
+fn test_determine_withdrawal_signing_mode_rejects_multi_signer_bitcoin_threshold_mode() {
+    let mut state = test_state();
+    state.config.signer_endpoints =
+        vec!["http://signer-1".to_string(), "http://signer-2".to_string()];
+    state.config.signer_threshold = 2;
+    state.config.signer_pq_addresses = vec![test_pq_signer(32).0, test_pq_signer(33).0];
+    let mut job = test_withdrawal_job();
+    job.dest_chain = "bitcoin".to_string();
+    job.asset = "wBTC".to_string();
+
+    let err = determine_withdrawal_signing_mode(&state, &job, "btc")
+        .expect_err("multi-signer Bitcoin withdrawals must fail closed");
+
+    assert!(err.contains("threshold Bitcoin withdrawals are disabled"));
+}
+
+#[test]
 fn test_determine_withdrawal_signing_mode_routes_threshold_evm_to_safe() {
     let mut state = test_state();
     state.config.signer_endpoints = vec![
@@ -554,9 +586,11 @@ fn test_ensure_solana_config_missing_fee_payer() {
 }
 
 #[test]
-fn test_derive_deposit_address_unsupported_chain() {
-    let result = derive_deposit_address("bitcoin", "btc", "m/44'/0'/0'/0/0", "test_seed");
-    assert!(result.is_err());
+fn test_derive_deposit_address_bitcoin_uses_bech32_format() {
+    let address = derive_deposit_address("bitcoin", "btc", "m/44'/0'/0'/0/0", "test_seed")
+        .expect("derive bitcoin address");
+    assert!(address.starts_with("bc1"));
+    validate_bitcoin_address_for_network(&address, "mainnet").expect("valid mainnet btc address");
 }
 
 #[test]

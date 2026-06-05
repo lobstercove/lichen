@@ -138,6 +138,28 @@ pub(super) async fn process_broadcasting_withdrawals(state: &CustodyState) -> Re
                     false
                 }
             }
+            chain if is_bitcoin_chain(chain) => {
+                if let Some(ref tx_hash) = job.outbound_tx_hash {
+                    match bitcoin_tx_confirmed(&state.http, &state.config, tx_hash).await {
+                        Ok(Some(confirmed)) => confirmed,
+                        Ok(None) => false,
+                        Err(error) if terminal_confirmation_error(&error) => {
+                            mark_withdrawal_confirmed_tx_failed(state, &mut job, error)?;
+                            continue;
+                        }
+                        Err(error) => {
+                            tracing::warn!(
+                                "withdrawal confirmation check failed for {}: {}",
+                                job.job_id,
+                                error
+                            );
+                            false
+                        }
+                    }
+                } else {
+                    false
+                }
+            }
             chain if is_evm_chain(chain) => {
                 if let (Some(url), Some(ref tx_hash)) = (
                     rpc_url_for_chain(&state.config, chain),

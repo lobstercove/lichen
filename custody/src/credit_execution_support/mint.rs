@@ -127,6 +127,7 @@ pub(super) async fn submit_wrapped_credit(
         "bnb" => "wBNB",
         "gas" => "wGAS",
         "neo" => "wNEO",
+        "btc" => "wBTC",
         _ => "UNKNOWN",
     };
     info!(

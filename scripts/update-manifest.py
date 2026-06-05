@@ -38,6 +38,7 @@ manifest = {
         'wbnb_token': entries.get('WBNB', ''),
         'wgas_token': entries.get('WGAS', ''),
         'wneo_token': entries.get('WNEO', ''),
+        'wbtc_token': entries.get('WBTC', ''),
         'dex_core': entries.get('DEX', ''),
         'dex_amm': entries.get('DEXAMM', ''),
         'dex_router': entries.get('DEXROUTER', ''),
@@ -56,6 +57,7 @@ manifest = {
         'wBNB': entries.get('WBNB', ''),
         'wGAS': entries.get('WGAS', ''),
         'wNEO': entries.get('WNEO', ''),
+        'wBTC': entries.get('WBTC', ''),
         'MOSS': entries.get('MOSS', ''),
     },
     'dex_contracts': {
@@ -75,6 +77,7 @@ manifest = {
         'LICN/lUSD', 'wSOL/lUSD', 'wETH/lUSD', 'wBNB/lUSD',
         'wSOL/LICN', 'wETH/LICN', 'wBNB/LICN',
         'wNEO/lUSD', 'wNEO/LICN', 'wGAS/lUSD', 'wGAS/LICN',
+        'wBTC/lUSD', 'wBTC/LICN',
     ],
 }
 

@@ -12,7 +12,7 @@ usage() {
   cat <<'EOF'
 Usage: sudo bash scripts/sync-custody-wrapped-contracts.sh [--env-file PATH] [--rpc-url URL]
 
-The script reads LUSD/WSOL/WETH/WBNB/WGAS/WNEO from getSymbolRegistry and
+The script reads LUSD/WSOL/WETH/WBNB/WGAS/WNEO/WBTC from getSymbolRegistry and
 updates only the matching CUSTODY_*_TOKEN_ADDR keys in the custody env file.
 EOF
 }
@@ -101,6 +101,7 @@ keys=(
   CUSTODY_WBNB_TOKEN_ADDR
   CUSTODY_WGAS_TOKEN_ADDR
   CUSTODY_WNEO_TOKEN_ADDR
+  CUSTODY_WBTC_TOKEN_ADDR
 )
 
 {
@@ -110,6 +111,7 @@ keys=(
   printf 'CUSTODY_WBNB_TOKEN_ADDR=%s\n' "$(fetch_program WBNB)"
   printf 'CUSTODY_WGAS_TOKEN_ADDR=%s\n' "$(fetch_program WGAS)"
   printf 'CUSTODY_WNEO_TOKEN_ADDR=%s\n' "$(fetch_program WNEO)"
+  printf 'CUSTODY_WBTC_TOKEN_ADDR=%s\n' "$(fetch_program WBTC)"
 } > "$tmp"
 
 awk -v keys="$(IFS=" "; echo "${keys[*]}")" '

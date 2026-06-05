@@ -16,15 +16,15 @@ Genesis creates Lichen-side state: wrapped-token contracts, symbol registry
 entries, custody treasury material, custody master seeds, the deposit derivation
 seed, and signer/password wiring.
 
-Genesis does not create or choose Solana, Ethereum, BNB Chain, or Neo X RPC
-providers; source-chain token mints/contracts; source-chain gas; or the funded
-Solana fee payer. Those values live in `/etc/lichen/custody-env`, normally
-merged from an operator-owned route profile.
+Genesis does not create or choose Solana, Ethereum, BNB Chain, Neo X, or
+Bitcoin RPC providers; source-chain token mints/contracts; source-chain gas or
+fees; or the funded Solana fee payer. Those values live in
+`/etc/lichen/custody-env`, normally merged from an operator-owned route profile.
 
 If `CUSTODY_TREASURY_SOLANA`, `CUSTODY_TREASURY_ETH`,
-`CUSTODY_TREASURY_BNB`, or `CUSTODY_TREASURY_NEOX` are unset, custody derives
-deterministic treasury addresses from the custody master seed. Explicit
-treasury env vars are optional pins.
+`CUSTODY_TREASURY_BNB`, `CUSTODY_TREASURY_NEOX`, or `CUSTODY_TREASURY_BTC` are
+unset, custody derives deterministic treasury addresses from the custody master
+seed. Explicit treasury env vars are optional pins.
 
 Neo X is an EVM-compatible sidechain, so Neo X treasury, deposit, multisig, and
 token contract values use Ethereum-style `0x...` addresses. Do not use Neo N3
@@ -37,7 +37,7 @@ separate integration with different address derivation and signing.
 Set required routes before a clean-slate deploy:
 
 ```bash
-export CUSTODY_REQUIRED_ROUTES=solana,ethereum,bnb,neox
+export CUSTODY_REQUIRED_ROUTES=solana,ethereum,bnb,neox,bitcoin
 ```
 
 Use a smaller list only when a route is deliberately disabled. Use
@@ -77,6 +77,15 @@ CUSTODY_NEOX_RPC_URL=https://mainnet-1.rpc.banelabs.org
 CUSTODY_NEOX_CHAIN_ID=47763
 CUSTODY_NEOX_CONFIRMATIONS=12
 CUSTODY_NEOX_NEO_TOKEN_ADDR=0xc28736dc83f4fd43d6fb832Fd93c3eE7bB26828f
+
+# Bitcoin test route. Use testnet or regtest for non-mainnet drills.
+CUSTODY_BTC_RPC_URL=REPLACE_WITH_BITCOIN_TEST_RPC_URL
+CUSTODY_BTC_RPC_USER=REPLACE_WITH_BITCOIN_RPC_USER
+CUSTODY_BTC_RPC_PASSWORD=REPLACE_WITH_BITCOIN_RPC_PASSWORD
+CUSTODY_BTC_NETWORK=testnet
+CUSTODY_BTC_CONFIRMATIONS=6
+CUSTODY_BTC_FEE_RATE_SATS_VB=5
+CUSTODY_TREASURY_BTC=REPLACE_WITH_TESTNET_BTC_TREASURY_ADDRESS
 ```
 
 Controlled source devchains run on the genesis/US host:
@@ -137,6 +146,15 @@ CUSTODY_NEOX_RPC_URL=REPLACE_WITH_NEO_X_MAINNET_RPC_URL
 CUSTODY_NEOX_CHAIN_ID=47763
 CUSTODY_NEOX_CONFIRMATIONS=12
 CUSTODY_NEOX_NEO_TOKEN_ADDR=REPLACE_WITH_NEO_X_NEO_CONTRACT
+
+# Bitcoin mainnet.
+CUSTODY_BTC_RPC_URL=REPLACE_WITH_BITCOIN_MAINNET_RPC_URL
+CUSTODY_BTC_RPC_USER=REPLACE_WITH_BITCOIN_RPC_USER
+CUSTODY_BTC_RPC_PASSWORD=REPLACE_WITH_BITCOIN_RPC_PASSWORD
+CUSTODY_BTC_NETWORK=mainnet
+CUSTODY_BTC_CONFIRMATIONS=6
+CUSTODY_BTC_FEE_RATE_SATS_VB=5
+CUSTODY_TREASURY_BTC=REPLACE_WITH_BTC_TREASURY_ADDRESS
 ```
 
 Before mainnet launch, verify token decimals and issuer policy against primary
@@ -264,6 +282,16 @@ Neo X:
   `0x...` Neo X treasury for sweep and withdrawal gas. Neo X NEO is an EVM token
   route configured through `CUSTODY_NEOX_NEO_TOKEN_ADDR`; it is not a Neo N3
   `N...` address route.
+
+Bitcoin:
+
+- `CUSTODY_BTC_RPC_URL`, `CUSTODY_BTC_NETWORK`,
+  `CUSTODY_BTC_CONFIRMATIONS`, and `CUSTODY_BTC_FEE_RATE_SATS_VB` must match
+  the selected Bitcoin network.
+- Mainnet BTC deposits and withdrawals use native SegWit `bc1...` addresses.
+  Testnet and regtest use the matching `tb1...` or `bcrt1...` HRP.
+- The BTC treasury needs spendable UTXOs for withdrawals; sweep fees are paid
+  from the swept deposit amount.
 
 ## Treasury Movement Policy
 

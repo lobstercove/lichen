@@ -144,6 +144,15 @@ pub(crate) fn validate_withdrawal_request_destination(
                 })));
             }
         }
+        chain if is_bitcoin_chain(chain) => {
+            if let Err(error) =
+                validate_bitcoin_address_for_network(&req.dest_address, &config.btc_network)
+            {
+                return Err(Json(json!({
+                    "error": format!("invalid Bitcoin destination address: {}", error)
+                })));
+            }
+        }
         _ => {
             return Err(Json(json!({
                 "error": format!("unsupported destination chain: {}", req.dest_chain)
@@ -158,6 +167,7 @@ pub(crate) fn validate_withdrawal_request_destination(
         "wbnb" => "bnb",
         "wgas" => "gas",
         "wneo" => "neo",
+        "wbtc" => "btc",
         _ => {
             return Err(Json(json!({
                 "error": format!("unsupported withdrawal asset: {}", req.asset)
@@ -171,6 +181,7 @@ pub(crate) fn validate_withdrawal_request_destination(
         "bnb" => req.dest_chain == "bsc" || req.dest_chain == "bnb",
         "gas" => canonical_evm_chain(&req.dest_chain) == Some("neox"),
         "neo" => canonical_evm_chain(&req.dest_chain) == Some("neox"),
+        "btc" => is_bitcoin_chain(&req.dest_chain),
         "stablecoin" => {
             req.dest_chain == "solana"
                 || req.dest_chain == "ethereum"
@@ -195,6 +206,17 @@ pub(crate) fn validate_withdrawal_request_destination(
             return Err(Json(json!({
                 "error": "missing CUSTODY_NEOX_NEO_TOKEN_ADDR for Neo X NEO withdrawal route"
             })));
+        }
+    }
+    if asset_lower == "wbtc" {
+        if config.btc_rpc_url.is_none() {
+            return Err(Json(json!({ "error": "missing CUSTODY_BTC_RPC_URL" })));
+        }
+        if config.treasury_btc_address.is_none() {
+            return Err(Json(json!({ "error": "missing CUSTODY_TREASURY_BTC" })));
+        }
+        if let Err(error) = spores_to_chain_amount(req.amount, &req.dest_chain, "btc") {
+            return Err(Json(json!({ "error": error })));
         }
     }
     if asset_lower == "musd" {

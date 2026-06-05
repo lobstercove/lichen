@@ -5799,6 +5799,7 @@ async fn handle_rpc(
         "getWbnbStats" => handle_get_wbnb_stats(&state).await,
         "getWneoStats" => handle_get_wneo_stats(&state).await,
         "getWgasStats" => handle_get_wgas_stats(&state).await,
+        "getWbtcStats" => handle_get_wbtc_stats(&state).await,
         "getNeoGasRewardsStats" => handle_get_neo_gas_rewards_stats(&state).await,
         "getNeoGasRewardsPosition" => handle_get_neo_gas_rewards_position(&state, req.params).await,
         "getNeoZkProofServiceStatus" => handle_get_neo_zk_proof_service_status().await,
@@ -12164,13 +12165,16 @@ fn ensure_bridge_route_not_paused(
 }
 
 fn is_known_bridge_deposit_chain(chain: &str) -> bool {
-    matches!(chain, "solana" | "ethereum" | "bnb" | "bsc" | "neox")
+    matches!(
+        chain,
+        "solana" | "ethereum" | "bnb" | "bsc" | "neox" | "bitcoin" | "btc"
+    )
 }
 
 fn is_known_bridge_deposit_asset(asset: &str) -> bool {
     matches!(
         asset,
-        "sol" | "eth" | "bnb" | "usdc" | "usdt" | "gas" | "neo"
+        "sol" | "eth" | "bnb" | "usdc" | "usdt" | "gas" | "neo" | "btc"
     )
 }
 
@@ -12180,6 +12184,7 @@ fn is_supported_bridge_deposit_route(chain: &str, asset: &str) -> bool {
         "ethereum" => matches!(asset, "eth" | "usdc" | "usdt"),
         "bnb" | "bsc" => matches!(asset, "bnb" | "usdc" | "usdt"),
         "neox" => matches!(asset, "gas" | "neo"),
+        "bitcoin" | "btc" => asset == "btc",
         _ => false,
     }
 }
@@ -19916,6 +19921,11 @@ async fn handle_get_wgas_stats(state: &RpcState) -> Result<serde_json::Value, Rp
     wrapped_token_stats(state, "WGAS", "wgas")
 }
 
+/// getWbtcStats — Wrapped BTC stats
+async fn handle_get_wbtc_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
+    wrapped_token_stats(state, "WBTC", "wbtc")
+}
+
 /// getNeoGasRewardsStats — NEO GAS rewards vault accounting and configuration stats
 async fn handle_get_neo_gas_rewards_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
     let program = resolve_symbol_pubkey(state, NEO_GAS_REWARDS_SYMBOL)?;
@@ -20519,7 +20529,7 @@ async fn handle_get_lichendao_stats(state: &RpcState) -> Result<serde_json::Valu
 async fn handle_get_lichenoracle_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
     resolve_symbol_pubkey(state, "ORACLE")?;
     let mut tracked_assets = vec!["LICN", "wSOL", "wETH", "wBNB"];
-    for (symbol, asset) in [("WNEO", "wNEO"), ("WGAS", "wGAS")] {
+    for (symbol, asset) in [("WNEO", "wNEO"), ("WGAS", "wGAS"), ("WBTC", "wBTC")] {
         if state
             .state
             .get_symbol_registry(symbol)
@@ -20577,6 +20587,7 @@ async fn handle_get_dex_pairs(state: &RpcState) -> Result<serde_json::Value, Rpc
         ("WBNB", "wBNB"),
         ("WGAS", "wGAS"),
         ("WNEO", "wNEO"),
+        ("WBTC", "wBTC"),
     ];
     let mut symbol_for_addr: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
@@ -20658,7 +20669,9 @@ async fn handle_get_dex_pairs(state: &RpcState) -> Result<serde_json::Value, Rpc
 
 /// getOraclePrices — Returns current oracle prices for all known assets.
 async fn handle_get_oracle_prices(state: &RpcState) -> Result<serde_json::Value, RpcError> {
-    let assets = ["LICN", "wSOL", "wETH", "wBNB", "wNEO", "wGAS", "lUSD"];
+    let assets = [
+        "LICN", "wSOL", "wETH", "wBNB", "wNEO", "wGAS", "wBTC", "lUSD",
+    ];
     let mut prices = serde_json::Map::new();
     prices.insert("source".to_string(), serde_json::json!("native_consensus"));
     for asset in &assets {
@@ -20697,16 +20710,17 @@ mod tests {
         handle_get_program, handle_get_program_stats, handle_get_recent_blocks,
         handle_get_recent_shielded_transactions, handle_get_recent_transactions,
         handle_get_restriction, handle_get_restriction_status, handle_get_service_fleet_status,
-        handle_get_signed_metadata_manifest, handle_get_wgas_stats, handle_get_wneo_stats,
-        handle_list_active_restrictions, handle_list_restrictions, handle_set_fee_config,
-        handle_solana_get_account_info, handle_solana_get_token_account_balance,
-        handle_solana_get_token_accounts_by_owner, handle_verify_neo_reserve_liability_proof,
-        live_signed_metadata_source_rpc, method_allowed_when_rpc_unready, parse_bridge_access_auth,
-        parse_get_block_slot_param, parse_governance_event, parse_rpc_request,
-        parse_rpc_tier_probe, parse_topic_hash, pq_signature_json, prediction_address_aliases,
-        privileged_rpc_mutation_test_output, put_cached_program_list_response,
-        put_cached_read_slot_response, rpc_read_slot_cache_key, rpc_readiness, rpc_readiness_json,
-        rpc_unready_error, solana_method_allowed_when_rpc_unready, storage_key_with_pubkey_hex,
+        handle_get_signed_metadata_manifest, handle_get_wbtc_stats, handle_get_wgas_stats,
+        handle_get_wneo_stats, handle_list_active_restrictions, handle_list_restrictions,
+        handle_set_fee_config, handle_solana_get_account_info,
+        handle_solana_get_token_account_balance, handle_solana_get_token_accounts_by_owner,
+        handle_verify_neo_reserve_liability_proof, live_signed_metadata_source_rpc,
+        method_allowed_when_rpc_unready, parse_bridge_access_auth, parse_get_block_slot_param,
+        parse_governance_event, parse_rpc_request, parse_rpc_tier_probe, parse_topic_hash,
+        pq_signature_json, prediction_address_aliases, privileged_rpc_mutation_test_output,
+        put_cached_program_list_response, put_cached_read_slot_response, rpc_read_slot_cache_key,
+        rpc_readiness, rpc_readiness_json, rpc_unready_error,
+        solana_method_allowed_when_rpc_unready, storage_key_with_pubkey_hex,
         storage_key_with_u64_le, strip_admin_token_from_params,
         validate_incoming_transaction_limits, validate_solana_encoding,
         validate_solana_transaction_details, verify_admin_auth, verify_bridge_access_auth_at,
@@ -25093,6 +25107,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_create_bridge_deposit_forwards_bitcoin_btc_to_custody() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+
+        let custody_state = MockCustodyState::default();
+        let custody_url = spawn_mock_server(
+            Router::new()
+                .route("/deposits", post(mock_custody_create_deposit))
+                .with_state(custody_state.clone()),
+        )
+        .await;
+
+        let mut rpc_state = make_test_rpc_state(state);
+        rpc_state.custody_url = Some(custody_url);
+        rpc_state.custody_auth_token = Some("test-auth-token".to_string());
+
+        let response = handle_create_bridge_deposit(
+            &rpc_state,
+            Some(serde_json::json!([signed_bridge_deposit_payload(
+                55, "bitcoin", "btc"
+            )])),
+        )
+        .await
+        .expect("Bitcoin BTC bridge deposit creation should reach custody");
+
+        assert_eq!(
+            response["deposit_id"],
+            "11111111-1111-1111-1111-111111111111"
+        );
+
+        let requests = custody_state.requests.lock().await;
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0]["chain"], serde_json::json!("bitcoin"));
+        assert_eq!(requests[0]["asset"], serde_json::json!("btc"));
+    }
+
+    #[tokio::test]
     async fn test_create_bridge_deposit_rejects_cross_chain_asset_pair() {
         let tmp = tempdir().unwrap();
         let state = StateStore::open(tmp.path()).unwrap();
@@ -25746,11 +25797,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_oracle_stats_require_neo_feeds_only_when_neo_symbols_registered() {
+    async fn test_oracle_stats_require_optional_feeds_only_when_symbols_registered() {
         let tmp = tempdir().unwrap();
         let state = StateStore::open(tmp.path()).unwrap();
         let oracle = Pubkey([0x40u8; 32]);
         let wneo = Pubkey([0x41u8; 32]);
+        let wbtc = Pubkey([0x44u8; 32]);
 
         state
             .register_symbol(
@@ -25821,6 +25873,41 @@ mod tests {
             .expect("neo-ready oracle stats should serialize");
         assert_eq!(neo_ready_stats["consensus_feeds"], serde_json::json!(5u64));
         assert_eq!(neo_ready_stats["operational"], serde_json::json!(true));
+
+        state
+            .register_symbol(
+                "WBTC",
+                SymbolRegistryEntry {
+                    symbol: "WBTC".to_string(),
+                    program: wbtc,
+                    owner: Pubkey([0x45u8; 32]),
+                    name: Some("Wrapped BTC".to_string()),
+                    template: Some("wrapped".to_string()),
+                    metadata: None,
+                    decimals: Some(9),
+                },
+            )
+            .unwrap();
+        let missing_btc_feed_stats = handle_get_lichenoracle_stats(&rpc_state)
+            .await
+            .expect("btc-aware oracle stats should serialize");
+        assert_eq!(
+            missing_btc_feed_stats["consensus_feeds"],
+            serde_json::json!(5u64)
+        );
+        assert_eq!(
+            missing_btc_feed_stats["operational"],
+            serde_json::json!(false)
+        );
+
+        state
+            .put_oracle_consensus_price("wBTC", 10_000_000_000_000, 8, 15, 3)
+            .unwrap();
+        let btc_ready_stats = handle_get_lichenoracle_stats(&rpc_state)
+            .await
+            .expect("btc-ready oracle stats should serialize");
+        assert_eq!(btc_ready_stats["consensus_feeds"], serde_json::json!(6u64));
+        assert_eq!(btc_ready_stats["operational"], serde_json::json!(true));
     }
 
     #[tokio::test]
@@ -25829,6 +25916,7 @@ mod tests {
         let state = StateStore::open(tmp.path()).unwrap();
         let wneo = Pubkey([0x44u8; 32]);
         let wgas = Pubkey([0x45u8; 32]);
+        let wbtc = Pubkey([0x48u8; 32]);
 
         state
             .register_symbol(
@@ -25859,6 +25947,20 @@ mod tests {
             )
             .unwrap();
         state
+            .register_symbol(
+                "WBTC",
+                SymbolRegistryEntry {
+                    symbol: "WBTC".to_string(),
+                    program: wbtc,
+                    owner: Pubkey([0x49u8; 32]),
+                    name: Some("Wrapped BTC".to_string()),
+                    template: Some("wrapped".to_string()),
+                    metadata: None,
+                    decimals: Some(9),
+                },
+            )
+            .unwrap();
+        state
             .put_contract_storage(&wneo, b"wneo_supply", &2_000_000_000u64.to_le_bytes())
             .unwrap();
         state
@@ -25875,6 +25977,15 @@ mod tests {
             .unwrap();
         state
             .put_contract_storage(&wgas, b"wgas_paused", &[1])
+            .unwrap();
+        state
+            .put_contract_storage(&wbtc, b"wbtc_supply", &7_000_000_000u64.to_le_bytes())
+            .unwrap();
+        state
+            .put_contract_storage(&wbtc, b"wbtc_reserve_att", &7_500_000_000u64.to_le_bytes())
+            .unwrap();
+        state
+            .put_contract_storage(&wbtc, b"wbtc_att_count", &4u64.to_le_bytes())
             .unwrap();
 
         let rpc_state = make_test_rpc_state(state);
@@ -25899,6 +26010,16 @@ mod tests {
             serde_json::json!(6_000_000_000u64)
         );
         assert_eq!(wgas_stats["paused"], serde_json::json!(true));
+
+        let wbtc_stats = handle_get_wbtc_stats(&rpc_state)
+            .await
+            .expect("wBTC stats should serialize");
+        assert_eq!(wbtc_stats["supply"], serde_json::json!(7_000_000_000u64));
+        assert_eq!(
+            wbtc_stats["reserve_attested"],
+            serde_json::json!(7_500_000_000u64)
+        );
+        assert_eq!(wbtc_stats["attestation_count"], serde_json::json!(4u64));
     }
 
     #[tokio::test]

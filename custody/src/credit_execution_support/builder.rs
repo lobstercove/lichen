@@ -7,7 +7,8 @@ pub(crate) fn build_credit_job(
     let native_solana =
         sweep.chain.eq_ignore_ascii_case("solana") && sweep.asset.eq_ignore_ascii_case("sol");
     let native_evm = is_evm_chain(&sweep.chain) && !is_evm_token_asset(&sweep.chain, &sweep.asset);
-    let amount_source = if native_solana || native_evm {
+    let native_bitcoin = is_bitcoin_chain(&sweep.chain) && sweep.asset.eq_ignore_ascii_case("btc");
+    let amount_source = if native_solana || native_evm || native_bitcoin {
         sweep.credited_amount.as_ref().or(sweep.amount.as_ref())
     } else {
         sweep.amount.as_ref()

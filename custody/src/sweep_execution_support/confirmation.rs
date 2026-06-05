@@ -17,6 +17,10 @@ pub(super) async fn check_sweep_confirmation(
         return solana_get_signature_confirmed(&state.http, url, tx_hash).await;
     }
 
+    if is_bitcoin_chain(&job.chain) {
+        return bitcoin_tx_confirmed(&state.http, &state.config, tx_hash).await;
+    }
+
     if is_evm_chain(&job.chain) {
         let url = rpc_url_for_chain(&state.config, &job.chain)
             .ok_or_else(|| format!("missing RPC URL for chain {}", job.chain))?;

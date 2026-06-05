@@ -68,10 +68,10 @@
         <!-- Header -->
         <div class="doc-header">
             <h1><i class="fas fa-file-contract"></i> Lichen Contracts Reference</h1>
-            <p>Complete documentation of 31 genesis-deployed smart contracts plus the native LICN asset</p>
+            <p>Complete documentation of 32 genesis-deployed smart contracts plus the native LICN asset</p>
             <div class="doc-stats">
                 <div class="doc-stat">
-                    <div class="num">31</div>
+                    <div class="num">32</div>
                     <div class="label">Contracts</div>
                 </div>
                 <div class="doc-stat">
@@ -92,7 +92,7 @@
         <!-- Architecture -->
         <div class="cr-section">
             <h2><i class="fas fa-sitemap"></i> Contract Architecture</h2>
-            <p>Lichen's genesis catalog currently deploys 31 contracts across DeFi, DEX, NFTs, Identity,
+            <p>Lichen's genesis catalog currently deploys 32 contracts across DeFi, DEX, NFTs, Identity,
                 Infrastructure, Governance, Prediction, and Wrapped Assets. LICN is the native coin and is documented
                 here as a native asset, not a deployed WASM contract.</p>
             <div class="callout callout-info">
@@ -2780,6 +2780,14 @@ curl -X POST https://testnet-rpc.lichen.network \
                         emergency_pause, emergency_unpause, transfer_admin, accept_admin, set_minter,
                         set_attester, complete_bootstrap; whole-NEO lot enforcement is part of the wrapped NEO
                         implementation</td>
+                </tr>
+                <tr>
+                    <td>wbtc_token</td>
+                    <td>initialize, mint, burn, transfer, approve, transfer_from, attest_reserves, balance_of,
+                        allowance, total_supply, total_minted, total_burned, get_reserve_ratio,
+                        get_last_attestation_slot, get_attestation_count, get_epoch_remaining, get_transfer_count,
+                        emergency_pause, emergency_unpause, transfer_admin, accept_admin, set_minter,
+                        set_attester, complete_bootstrap</td>
                 </tr>
                 <tr>
                     <td>neo_gas_rewards</td>

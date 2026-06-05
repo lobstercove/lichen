@@ -176,8 +176,8 @@ if (typeof window !== 'undefined') {
 
 // Live token prices — fetched from DEX oracle via RPC, with offline fallbacks.
 // Fallback values used ONLY when RPC is unreachable (never displayed as "live").
-const _OFFLINE_FALLBACK_PRICES = { LICN: 0.10, lUSD: 1.0, wSOL: 150.0, wETH: 3000.0, wBNB: 600.0, wNEO: 3.0, wGAS: 1.5 };
-const livePrices = { LICN: 0, lUSD: 1.0, wSOL: 0, wETH: 0, wBNB: 0, wNEO: 0, wGAS: 0 };
+const _OFFLINE_FALLBACK_PRICES = { LICN: 0.10, lUSD: 1.0, wSOL: 150.0, wETH: 3000.0, wBNB: 600.0, wNEO: 3.0, wGAS: 1.5, wBTC: 100000.0 };
+const livePrices = { LICN: 0, lUSD: 1.0, wSOL: 0, wETH: 0, wBNB: 0, wNEO: 0, wGAS: 0, wBTC: 0 };
 const priceMetadata = {
     LICN: { source: 'unavailable', timestamp: 0, fallback: false },
     lUSD: { source: 'stablecoin-peg', timestamp: 0, fallback: true },
@@ -186,6 +186,7 @@ const priceMetadata = {
     wBNB: { source: 'unavailable', timestamp: 0, fallback: false },
     wNEO: { source: 'unavailable', timestamp: 0, fallback: false },
     wGAS: { source: 'unavailable', timestamp: 0, fallback: false },
+    wBTC: { source: 'unavailable', timestamp: 0, fallback: false },
 };
 const PRICE_STALE_MS = 5 * 60 * 1000;
 const WHOLE_NEO_LOT = 1_000_000_000;
@@ -193,7 +194,7 @@ let _pricesLoaded = false;
 
 function priceSymbolKey(symbol) {
     const upper = String(symbol || '').trim().toUpperCase();
-    const map = { LICN: 'LICN', LUSD: 'lUSD', WSOL: 'wSOL', WETH: 'wETH', WBNB: 'wBNB', WNEO: 'wNEO', WGAS: 'wGAS' };
+    const map = { LICN: 'LICN', LUSD: 'lUSD', WSOL: 'wSOL', WETH: 'wETH', WBNB: 'wBNB', WNEO: 'wNEO', WGAS: 'wGAS', WBTC: 'wBTC' };
     return map[upper] || symbol;
 }
 
@@ -319,6 +320,7 @@ function wrappedReserveRpcMethod(symbol) {
     return {
         wNEO: 'getWneoStats',
         wGAS: 'getWgasStats',
+        wBTC: 'getWbtcStats',
     }[symbol] || null;
 }
 
@@ -1055,6 +1057,7 @@ const DEFAULT_TOKEN_REGISTRY = {
     wBNB: { symbol: 'wBNB', name: 'Wrapped BNB', decimals: 9, icon: 'fas fa-coins', address: null, color: '#F0B90B', logoUrl: 'https://s2.coinmarketcap.com/static/img/coins/128x128/1839.png' },
     wNEO: { symbol: 'wNEO', name: 'Wrapped NEO', decimals: 9, icon: 'fas fa-cubes', address: null, color: '#00E599', logoUrl: 'https://s2.coinmarketcap.com/static/img/coins/128x128/1376.png', reserveAsset: 'NEO', notice: 'Whole NEO lots only until official divisibility is enabled.' },
     wGAS: { symbol: 'wGAS', name: 'Wrapped GAS', decimals: 9, icon: 'fas fa-fire-flame-simple', address: null, color: '#58BF00', logoUrl: null, reserveAsset: 'GAS' },
+    wBTC: { symbol: 'wBTC', name: 'Wrapped BTC', decimals: 9, icon: 'fab fa-bitcoin', address: null, color: '#F7931A', logoUrl: 'https://s2.coinmarketcap.com/static/img/coins/128x128/1.png', reserveAsset: 'BTC' },
 };
 
 const TOKEN_REGISTRY = {};
@@ -1086,6 +1089,7 @@ async function loadTokenRegistry() {
             WBNB: 'wBNB',
             WNEO: 'wNEO',
             WGAS: 'wGAS',
+            WBTC: 'wBTC',
         };
 
         entries.forEach((entry) => {
@@ -2945,7 +2949,7 @@ async function loadAssets(options = {}) {
     // Fetch all token balances in parallel
     const tokenBalances = await getAllTokenBalances(wallet.address);
     const [reserveStats, neoGasRewards] = await Promise.all([
-        fetchWrappedReserveStats(['wNEO', 'wGAS']),
+        fetchWrappedReserveStats(['wNEO', 'wGAS', 'wBTC']),
         fetchNeoGasRewardsSnapshot(wallet.address),
     ]);
     if (!isCurrentWalletView(wallet, generation)) return;
@@ -4297,7 +4301,8 @@ async function showDepositInfo(chain) {
         SOL: { name: 'Solana', chain: 'solana', color: '#9945FF', icon: 'fas fa-sun', iconImage: 'https://s2.coinmarketcap.com/static/img/coins/128x128/5426.png', tokens: ['SOL', 'USDC', 'USDT'] },
         ETH: { name: 'Ethereum', chain: 'ethereum', color: '#627EEA', icon: 'fab fa-ethereum', iconImage: 'https://s2.coinmarketcap.com/static/img/coins/128x128/1027.png', tokens: ['ETH', 'USDC', 'USDT'] },
         BNB: { name: 'BNB Chain', chain: 'bnb', color: '#F0B90B', icon: 'fas fa-coins', iconImage: 'https://s2.coinmarketcap.com/static/img/coins/128x128/1839.png', tokens: ['BNB', 'USDC', 'USDT'] },
-        NEOX: { name: 'Neo X', chain: 'neox', color: '#00E599', icon: 'fas fa-cubes', iconImage: 'https://s2.coinmarketcap.com/static/img/coins/128x128/1376.png', tokens: ['GAS', 'NEO'], detail: 'Chain ID 47763 · GAS and whole-lot NEO deposits.' }
+        NEOX: { name: 'Neo X', chain: 'neox', color: '#00E599', icon: 'fas fa-cubes', iconImage: 'https://s2.coinmarketcap.com/static/img/coins/128x128/1376.png', tokens: ['GAS', 'NEO'], detail: 'Chain ID 47763 · GAS and whole-lot NEO deposits.' },
+        BTC: { name: 'Bitcoin', chain: 'bitcoin', color: '#F7931A', icon: 'fab fa-bitcoin', iconImage: 'https://s2.coinmarketcap.com/static/img/coins/128x128/1.png', tokens: ['BTC'], detail: 'Native SegWit BTC deposits.' }
     };
     const info = chainInfo[chain];
     if (!info) return;
@@ -4429,8 +4434,8 @@ async function requestDepositAddress(chain, asset, chainName, icon) {
     if (!wallet) return;
 
     // Validate inputs
-    const validChains = ['solana', 'ethereum', 'bnb', 'neox'];
-    const validAssets = ['usdc', 'usdt', 'sol', 'eth', 'bnb', 'gas', 'neo'];
+    const validChains = ['solana', 'ethereum', 'bnb', 'neox', 'bitcoin'];
+    const validAssets = ['usdc', 'usdt', 'sol', 'eth', 'bnb', 'gas', 'neo', 'btc'];
     if (!validChains.includes(chain)) { showToast('Invalid chain selected', 'error'); return; }
     if (!validAssets.includes(asset)) { showToast('Invalid asset selected', 'error'); return; }
     if (!wallet.address || wallet.address.length < 32 || wallet.address.length > 44) { showToast('Invalid wallet address', 'error'); return; }

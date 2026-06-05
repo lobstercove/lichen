@@ -1174,6 +1174,21 @@ fn test_resolve_token_contract_neox_gas_and_neo() {
 }
 
 #[test]
+fn test_resolve_token_contract_bitcoin_btc() {
+    let mut config = test_config();
+    config.wbtc_contract_addr = Some("WBTC_CONTRACT_111".to_string());
+    assert_eq!(
+        resolve_token_contract(&config, "bitcoin", "btc"),
+        Some("WBTC_CONTRACT_111".to_string())
+    );
+    assert_eq!(
+        resolve_token_contract(&config, "btc", "btc"),
+        Some("WBTC_CONTRACT_111".to_string())
+    );
+    assert_eq!(resolve_token_contract(&config, "bitcoin", "eth"), None);
+}
+
+#[test]
 fn test_resolve_token_contract_unconfigured() {
     let config = test_config(); // all contract addrs are None
     assert_eq!(resolve_token_contract(&config, "solana", "sol"), None);

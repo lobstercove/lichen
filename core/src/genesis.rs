@@ -123,6 +123,9 @@ pub struct GenesisPrices {
     /// wGAS/USD price with 8 decimals
     #[serde(default = "default_wgas_usd_8dec")]
     pub wgas_usd_8dec: u64,
+    /// wBTC/USD price with 8 decimals
+    #[serde(default = "default_wbtc_usd_8dec")]
+    pub wbtc_usd_8dec: u64,
 }
 
 fn default_wneo_usd_8dec() -> u64 {
@@ -131,6 +134,10 @@ fn default_wneo_usd_8dec() -> u64 {
 
 fn default_wgas_usd_8dec() -> u64 {
     165_000_000
+}
+
+fn default_wbtc_usd_8dec() -> u64 {
+    10_000_000_000_000
 }
 
 fn default_state_commitment_schema() -> String {
@@ -146,6 +153,7 @@ impl Default for GenesisPrices {
             wbnb_usd_8dec: 60_978_000_000,          // $609.78
             wneo_usd_8dec: default_wneo_usd_8dec(), // $3.075
             wgas_usd_8dec: default_wgas_usd_8dec(), // $1.65
+            wbtc_usd_8dec: default_wbtc_usd_8dec(), // $100,000.00
         }
     }
 }

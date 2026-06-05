@@ -29,6 +29,7 @@ fn resolve_withdrawal_contract(config: &CustodyConfig, asset: &str) -> Result<St
         "wbnb" => config.wbnb_contract_addr.clone(),
         "wgas" => config.wgas_contract_addr.clone(),
         "wneo" if config.neox_neo_token_contract.is_some() => config.wneo_contract_addr.clone(),
+        "wbtc" => config.wbtc_contract_addr.clone(),
         _ => None,
     }
     .ok_or_else(|| {
@@ -57,6 +58,7 @@ fn withdrawal_route_asset(asset: &str, preferred_stablecoin: &str) -> Result<Str
         "wbnb" => Ok("bnb".to_string()),
         "wgas" => Ok("gas".to_string()),
         "wneo" => Ok("neo".to_string()),
+        "wbtc" => Ok("btc".to_string()),
         _ => Err(format!(
             "unsupported withdrawal asset for custody route restriction check: {}",
             asset

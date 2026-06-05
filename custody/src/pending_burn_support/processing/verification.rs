@@ -10,6 +10,7 @@ fn expected_burn_contract<'a>(state: &'a CustodyState, asset: &str) -> Option<&'
         "wbnb" => state.config.wbnb_contract_addr.as_deref(),
         "wgas" => state.config.wgas_contract_addr.as_deref(),
         "wneo" => state.config.wneo_contract_addr.as_deref(),
+        "wbtc" => state.config.wbtc_contract_addr.as_deref(),
         "musd" => state.config.musd_contract_addr.as_deref(),
         _ => None,
     }

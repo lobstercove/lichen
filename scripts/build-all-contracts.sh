@@ -69,6 +69,7 @@ WRAPPED_TOKEN_CONTRACTS=(
     wbnb_token
     wgas_token
     wneo_token
+    wbtc_token
 )
 
 NEO_PRODUCT_CONTRACTS=(

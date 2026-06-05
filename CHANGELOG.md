@@ -5,6 +5,18 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.94] - 2026-06-05
+
+### Added
+- Adds WBTC as a first-class wrapped asset for future genesis, including contract artifact, symbol registry entry, oracle feed, DEX pairs, wallet/extension route surfaces, and developer documentation.
+- Adds real Bitcoin custody support for BTC deposits, deterministic native SegWit addresses, Bitcoin Core-backed UTXO detection, signed P2WPKH sweeps, wBTC mint credits, wBTC burns, and BTC withdrawals.
+- Adds a repeatable Bitcoin Core regtest smoke that exercises `createBridgeDeposit`, BTC deposit, sweep, wBTC mint, burn, BTC withdrawal, and confirmation end to end.
+
+### Fixed
+- Allows the RPC custody proxy to forward `bitcoin:btc` bridge deposit requests.
+- Treats unconfirmed Bitcoin sweep and withdrawal transactions as pending until the configured confirmation threshold is reached.
+- Corrects Bitcoin SegWit v0 signing by hashing BIP143 outputs without the transaction output-count prefix and normalizing ECDSA signatures to low-S form.
+
 ## [0.5.93] - 2026-06-04
 
 ### Changed

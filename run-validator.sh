@@ -180,9 +180,9 @@ ensure_local_genesis() {
 
 	# Fetch real-time prices from Binance for genesis pool pricing
 	PRICE_JSON=$(curl -gsf --max-time 10 \
-		'https://api.binance.us/api/v3/ticker/price?symbols=["SOLUSDT","ETHUSDT","BNBUSDT","NEOUSDT","GASUSDT"]' 2>/dev/null \
+		'https://api.binance.us/api/v3/ticker/price?symbols=["SOLUSDT","ETHUSDT","BNBUSDT","NEOUSDT","GASUSDT","BTCUSDT"]' 2>/dev/null \
 		|| curl -gsf --max-time 10 \
-		'https://api.binance.com/api/v3/ticker/price?symbols=["SOLUSDT","ETHUSDT","BNBUSDT","NEOUSDT","GASUSDT"]' 2>/dev/null \
+		'https://api.binance.com/api/v3/ticker/price?symbols=["SOLUSDT","ETHUSDT","BNBUSDT","NEOUSDT","GASUSDT","BTCUSDT"]' 2>/dev/null \
 		|| echo '[]')
 	if [ "$PRICE_JSON" != "[]" ] && command -v python3 &>/dev/null; then
 		if PRICE_EXPORTS=$(PRICE_JSON="$PRICE_JSON" python3 -c "
@@ -190,7 +190,7 @@ import json, os, sys
 try:
     data = json.loads(os.environ['PRICE_JSON'])
     m = {d['symbol']: float(d['price']) for d in data}
-    for symbol in ['SOLUSDT', 'ETHUSDT', 'BNBUSDT', 'NEOUSDT', 'GASUSDT']:
+    for symbol in ['SOLUSDT', 'ETHUSDT', 'BNBUSDT', 'NEOUSDT', 'GASUSDT', 'BTCUSDT']:
         if symbol not in m:
             raise KeyError(symbol)
     print(f'export GENESIS_SOL_USD={m[\"SOLUSDT\"]:.2f}')
@@ -198,6 +198,7 @@ try:
     print(f'export GENESIS_BNB_USD={m[\"BNBUSDT\"]:.2f}')
     print(f'export GENESIS_NEO_USD={m[\"NEOUSDT\"]:.2f}')
     print(f'export GENESIS_GAS_USD={m[\"GASUSDT\"]:.2f}')
+    print(f'export GENESIS_BTC_USD={m[\"BTCUSDT\"]:.2f}')
 except Exception:
     sys.exit(1)
 " 2>/dev/null); then
@@ -208,9 +209,9 @@ except Exception:
 		if [[ -n "$PRICE_EXPORTS" ]]; then
 			eval "$PRICE_EXPORTS"
 			export GENESIS_LICN_USD="${GENESIS_LICN_USD:-0.10}"
-			echo "  Genesis prices: SOL=\$${GENESIS_SOL_USD} ETH=\$${GENESIS_ETH_USD} BNB=\$${GENESIS_BNB_USD} NEO=\$${GENESIS_NEO_USD} GAS=\$${GENESIS_GAS_USD} LICN=\$${GENESIS_LICN_USD}"
+			echo "  Genesis prices: SOL=\$${GENESIS_SOL_USD} ETH=\$${GENESIS_ETH_USD} BNB=\$${GENESIS_BNB_USD} NEO=\$${GENESIS_NEO_USD} GAS=\$${GENESIS_GAS_USD} BTC=\$${GENESIS_BTC_USD} LICN=\$${GENESIS_LICN_USD}"
 		else
-			echo "  Could not prefetch complete SOL/ETH/BNB/NEO/GAS prices; lichen-genesis will try live sources"
+			echo "  Could not prefetch complete SOL/ETH/BNB/NEO/GAS/BTC prices; lichen-genesis will try live sources"
 		fi
 	else
 		echo "  Could not prefetch prices; lichen-genesis will try live sources"

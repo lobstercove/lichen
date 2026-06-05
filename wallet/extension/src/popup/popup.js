@@ -2495,6 +2495,7 @@ function showExtBridgeTokens(chain) {
     ETH: { name: 'Ethereum', chain: 'ethereum', tokens: ['ETH', 'USDC', 'USDT'] },
     BNB: { name: 'BNB Chain', chain: 'bnb', tokens: ['BNB', 'USDC', 'USDT'] },
     NEOX: { name: 'Neo X', chain: 'neox', tokens: ['GAS', 'NEO'], detail: 'Chain ID 47763 · GAS and whole-lot NEO deposits.' },
+    BTC: { name: 'Bitcoin', chain: 'bitcoin', tokens: ['BTC'], detail: 'Native SegWit BTC deposits.' },
   };
   const info = chainInfo[chain];
   if (!info) return;

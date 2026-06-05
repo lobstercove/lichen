@@ -16,6 +16,13 @@ pub(crate) fn spawn_background_workers(state: &CustodyState) {
         });
     }
 
+    if state.config.btc_rpc_url.is_some() {
+        let watcher_state = state.clone();
+        tokio::spawn(async move {
+            bitcoin_watcher_loop(watcher_state).await;
+        });
+    }
+
     // Per-chain EVM watchers: each configured route polls its own RPC endpoint.
     for route in configured_evm_routes(&state.config) {
         let Some(url) = route.rpc_url.clone() else {

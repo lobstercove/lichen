@@ -448,6 +448,7 @@ fn validate_genesis_prices(prices: &GenesisPrices, source: &str) -> Result<(), S
         ("wBNB", prices.wbnb_usd_8dec),
         ("wNEO", prices.wneo_usd_8dec),
         ("wGAS", prices.wgas_usd_8dec),
+        ("wBTC", prices.wbtc_usd_8dec),
     ];
     let missing: Vec<&str> = required
         .iter()
@@ -485,6 +486,7 @@ fn load_genesis_prices_file(path: &Path) -> Result<GenesisPrices, String> {
         "wbnb_usd_8dec",
         "wneo_usd_8dec",
         "wgas_usd_8dec",
+        "wbtc_usd_8dec",
     ] {
         if value.get(key).is_none() {
             return Err(format!(
@@ -510,14 +512,21 @@ fn genesis_prices_from_env() -> Result<Option<GenesisPrices>, String> {
     let bnb = std::env::var("GENESIS_BNB_USD").ok();
     let neo = std::env::var("GENESIS_NEO_USD").ok();
     let gas = std::env::var("GENESIS_GAS_USD").ok();
-    if sol.is_none() && eth.is_none() && bnb.is_none() && neo.is_none() && gas.is_none() {
+    let btc = std::env::var("GENESIS_BTC_USD").ok();
+    if sol.is_none()
+        && eth.is_none()
+        && bnb.is_none()
+        && neo.is_none()
+        && gas.is_none()
+        && btc.is_none()
+    {
         return Ok(None);
     }
 
     let parse_env_price = |name: &str, value: Option<String>| -> Result<u64, String> {
         let value = value.ok_or_else(|| {
             format!(
-                "partial genesis price environment override: {name} is missing; set GENESIS_SOL_USD, GENESIS_ETH_USD, GENESIS_BNB_USD, GENESIS_NEO_USD, and GENESIS_GAS_USD together"
+                "partial genesis price environment override: {name} is missing; set GENESIS_SOL_USD, GENESIS_ETH_USD, GENESIS_BNB_USD, GENESIS_NEO_USD, GENESIS_GAS_USD, and GENESIS_BTC_USD together"
             )
         })?;
         let usd = value
@@ -533,6 +542,7 @@ fn genesis_prices_from_env() -> Result<Option<GenesisPrices>, String> {
         wbnb_usd_8dec: parse_env_price("GENESIS_BNB_USD", bnb)?,
         wneo_usd_8dec: parse_env_price("GENESIS_NEO_USD", neo)?,
         wgas_usd_8dec: parse_env_price("GENESIS_GAS_USD", gas)?,
+        wbtc_usd_8dec: parse_env_price("GENESIS_BTC_USD", btc)?,
     };
     validate_genesis_prices(&prices, "environment")?;
     Ok(Some(prices))
@@ -556,7 +566,7 @@ fn fetch_binance_genesis_prices() -> Result<GenesisPrices, String> {
         price: String,
     }
 
-    let url = "https://api.binance.com/api/v3/ticker/price?symbols=[%22SOLUSDT%22,%22ETHUSDT%22,%22BNBUSDT%22,%22NEOUSDT%22,%22GASUSDT%22]";
+    let url = "https://api.binance.com/api/v3/ticker/price?symbols=[%22SOLUSDT%22,%22ETHUSDT%22,%22BNBUSDT%22,%22NEOUSDT%22,%22GASUSDT%22,%22BTCUSDT%22]";
     let body = fetch_url(url).map_err(|err| format!("Binance price fetch failed: {err}"))?;
     let tickers: Vec<Ticker> = serde_json::from_str(&body)
         .map_err(|err| format!("Failed to parse Binance price JSON: {err}"))?;
@@ -566,6 +576,7 @@ fn fetch_binance_genesis_prices() -> Result<GenesisPrices, String> {
     let mut wbnb = None;
     let mut wneo = None;
     let mut wgas = None;
+    let mut wbtc = None;
     for t in &tickers {
         let usd: f64 = t
             .price
@@ -578,6 +589,7 @@ fn fetch_binance_genesis_prices() -> Result<GenesisPrices, String> {
             "BNBUSDT" => wbnb = Some(price_8dec),
             "NEOUSDT" => wneo = Some(price_8dec),
             "GASUSDT" => wgas = Some(price_8dec),
+            "BTCUSDT" => wbtc = Some(price_8dec),
             _ => {}
         }
     }
@@ -588,13 +600,14 @@ fn fetch_binance_genesis_prices() -> Result<GenesisPrices, String> {
         wbnb_usd_8dec: wbnb.ok_or_else(|| "Binance response missing BNBUSDT".to_string())?,
         wneo_usd_8dec: wneo.ok_or_else(|| "Binance response missing NEOUSDT".to_string())?,
         wgas_usd_8dec: wgas.ok_or_else(|| "Binance response missing GASUSDT".to_string())?,
+        wbtc_usd_8dec: wbtc.ok_or_else(|| "Binance response missing BTCUSDT".to_string())?,
     };
     validate_genesis_prices(&prices, "Binance")?;
     Ok(prices)
 }
 
 fn fetch_coingecko_genesis_prices() -> Result<GenesisPrices, String> {
-    let url = "https://api.coingecko.com/api/v3/simple/price?ids=solana,ethereum,binancecoin,neo,gas&vs_currencies=usd";
+    let url = "https://api.coingecko.com/api/v3/simple/price?ids=solana,ethereum,binancecoin,neo,gas,bitcoin&vs_currencies=usd";
     let body = fetch_url(url).map_err(|err| format!("CoinGecko price fetch failed: {err}"))?;
     let value: serde_json::Value = serde_json::from_str(&body)
         .map_err(|err| format!("Failed to parse CoinGecko price JSON: {err}"))?;
@@ -615,6 +628,7 @@ fn fetch_coingecko_genesis_prices() -> Result<GenesisPrices, String> {
         wbnb_usd_8dec: read_price("binancecoin", "wBNB")?,
         wneo_usd_8dec: read_price("neo", "wNEO")?,
         wgas_usd_8dec: read_price("gas", "wGAS")?,
+        wbtc_usd_8dec: read_price("bitcoin", "wBTC")?,
     };
     validate_genesis_prices(&prices, "CoinGecko")?;
     Ok(prices)
@@ -654,7 +668,7 @@ fn resolve_genesis_prices(
             Ok(prices)
         }
         Err(err) if network == "mainnet" => Err(format!(
-            "Mainnet genesis requires explicit or live market prices. Provide --genesis-prices-file or GENESIS_SOL_USD/GENESIS_ETH_USD/GENESIS_BNB_USD/GENESIS_NEO_USD/GENESIS_GAS_USD, or fix live price access. Live fetch errors: {err}"
+            "Mainnet genesis requires explicit or live market prices. Provide --genesis-prices-file or GENESIS_SOL_USD/GENESIS_ETH_USD/GENESIS_BNB_USD/GENESIS_NEO_USD/GENESIS_GAS_USD/GENESIS_BTC_USD, or fix live price access. Live fetch errors: {err}"
         )),
         Err(err) => {
             warn!(
@@ -668,13 +682,14 @@ fn resolve_genesis_prices(
 
 fn log_genesis_prices(prices: &GenesisPrices) {
     info!(
-        "  ✓ Genesis prices frozen: LICN=${:.4}, SOL=${:.2}, ETH=${:.2}, BNB=${:.2}, NEO=${:.2}, GAS=${:.2}",
+        "  ✓ Genesis prices frozen: LICN=${:.4}, SOL=${:.2}, ETH=${:.2}, BNB=${:.2}, NEO=${:.2}, GAS=${:.2}, BTC=${:.2}",
         prices.licn_usd_8dec as f64 / 100_000_000.0,
         prices.wsol_usd_8dec as f64 / 100_000_000.0,
         prices.weth_usd_8dec as f64 / 100_000_000.0,
         prices.wbnb_usd_8dec as f64 / 100_000_000.0,
         prices.wneo_usd_8dec as f64 / 100_000_000.0,
         prices.wgas_usd_8dec as f64 / 100_000_000.0,
+        prices.wbtc_usd_8dec as f64 / 100_000_000.0,
     );
 }
 
@@ -1744,6 +1759,7 @@ mod tests {
                 "wbnb_usd_8dec": 60_978_000_000u64,
                 "wneo_usd_8dec": 307_500_000u64,
                 "wgas_usd_8dec": 165_000_000u64,
+                "wbtc_usd_8dec": 10_000_000_000_000u64,
                 "source": "operator-snapshot"
             })
             .to_string(),
@@ -1766,7 +1782,8 @@ mod tests {
                 "weth_usd_8dec": 199_934_000_000u64,
                 "wbnb_usd_8dec": 60_978_000_000u64,
                 "wneo_usd_8dec": 307_500_000u64,
-                "wgas_usd_8dec": 165_000_000u64
+                "wgas_usd_8dec": 165_000_000u64,
+                "wbtc_usd_8dec": 10_000_000_000_000u64
             })
             .to_string(),
         )
@@ -1787,7 +1804,8 @@ mod tests {
                 "wsol_usd_8dec": 8_678_000_000u64,
                 "weth_usd_8dec": 199_934_000_000u64,
                 "wbnb_usd_8dec": 60_978_000_000u64,
-                "wgas_usd_8dec": 165_000_000u64
+                "wgas_usd_8dec": 165_000_000u64,
+                "wbtc_usd_8dec": 10_000_000_000_000u64
             })
             .to_string(),
         )

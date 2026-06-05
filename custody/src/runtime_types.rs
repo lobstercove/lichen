@@ -96,10 +96,22 @@ pub(super) struct CustodyConfig {
     pub(super) neox_rpc_url: Option<String>,
     /// Neo X chain ID used for derivation domain separation and RPC checks.
     pub(super) neox_chain_id: u64,
+    /// Bitcoin Core RPC URL for native BTC deposits/sweeps.
+    pub(super) btc_rpc_url: Option<String>,
+    /// Optional Bitcoin Core RPC basic auth user.
+    pub(super) btc_rpc_user: Option<String>,
+    /// Optional Bitcoin Core RPC basic auth password.
+    pub(super) btc_rpc_password: Option<String>,
+    /// Bitcoin network: mainnet, testnet/signet, or regtest.
+    pub(super) btc_network: String,
     pub(super) solana_confirmations: u64,
     pub(super) evm_confirmations: u64,
     /// Per-chain EVM confirmations: Neo X-specific.
     pub(super) neox_confirmations: u64,
+    /// Native BTC confirmations required before sweeping/minting.
+    pub(super) btc_confirmations: u64,
+    /// Bitcoin sweep fee rate in sat/vbyte.
+    pub(super) btc_fee_rate_sats_vb: u64,
     pub(super) poll_interval_secs: u64,
     pub(super) treasury_solana_address: Option<String>,
     pub(super) treasury_evm_address: Option<String>,
@@ -109,6 +121,8 @@ pub(super) struct CustodyConfig {
     pub(super) treasury_bnb_address: Option<String>,
     /// Per-chain EVM treasury: separate Neo X treasury address.
     pub(super) treasury_neox_address: Option<String>,
+    /// Native Bitcoin treasury address.
+    pub(super) treasury_btc_address: Option<String>,
     pub(super) solana_fee_payer_keypair_path: Option<String>,
     pub(super) solana_treasury_owner: Option<String>,
     pub(super) solana_usdc_mint: String,
@@ -134,6 +148,7 @@ pub(super) struct CustodyConfig {
     pub(super) wbnb_contract_addr: Option<String>,
     pub(super) wgas_contract_addr: Option<String>,
     pub(super) wneo_contract_addr: Option<String>,
+    pub(super) wbtc_contract_addr: Option<String>,
     /// Neo X NEO source token contract required by the neox/neo custody route.
     pub(super) neox_neo_token_contract: Option<String>,
     // Reserve rebalance settings

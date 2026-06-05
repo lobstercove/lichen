@@ -6,14 +6,14 @@
 set -euo pipefail
 
 ENV_FILE="/etc/lichen/custody-env"
-ROUTES="${CUSTODY_REQUIRED_ROUTES:-solana,ethereum,bnb,neox}"
+ROUTES="${CUSTODY_REQUIRED_ROUTES:-solana,ethereum,bnb,neox,bitcoin}"
 REQUIRE_WRAPPED=0
 
 usage() {
   cat <<'EOF'
 Usage: bash scripts/verify-custody-routes.sh [--env-file PATH] [--routes LIST] [--require-wrapped]
 
-LIST is a comma-separated route set such as solana,ethereum,bnb,neox.
+LIST is a comma-separated route set such as solana,ethereum,bnb,neox,bitcoin.
 Use --routes none when source-chain custody is intentionally disabled.
 Use --require-wrapped after genesis/symbol-registry sync to require Lichen-side
 wrapped-token contract pins as well as source-chain route values.
@@ -185,6 +185,15 @@ verify_neox() {
   require_wrapped_key neox CUSTODY_WNEO_TOKEN_ADDR
 }
 
+verify_bitcoin() {
+  require_key bitcoin CUSTODY_BTC_RPC_URL
+  require_key bitcoin CUSTODY_BTC_NETWORK
+  require_uint_key bitcoin CUSTODY_BTC_CONFIRMATIONS
+  require_uint_key bitcoin CUSTODY_BTC_FEE_RATE_SATS_VB
+  require_key bitcoin CUSTODY_TREASURY_BTC
+  require_wrapped_key bitcoin CUSTODY_WBTC_TOKEN_ADDR
+}
+
 normalized_routes="$(printf '%s' "$ROUTES" | tr '[:upper:]' '[:lower:]' | tr ',' ' ')"
 for route in $normalized_routes; do
   case "$route" in
@@ -192,6 +201,7 @@ for route in $normalized_routes; do
     eth|ethereum) verify_ethereum ;;
     bsc|bnb) verify_bnb ;;
     neo-x|neo_x|neox) verify_neox ;;
+    btc|bitcoin) verify_bitcoin ;;
     none) ;;
     *)
       echo "FATAL: unsupported custody route in --routes: $route" >&2

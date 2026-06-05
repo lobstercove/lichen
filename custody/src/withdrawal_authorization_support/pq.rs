@@ -38,6 +38,12 @@ fn withdrawal_authorization_executor_address(
         "solana" | "sol" => {
             derive_solana_address("custody/treasury/solana", &state.config.master_seed)
         }
+        chain if is_bitcoin_chain(chain) => state
+            .config
+            .treasury_btc_address
+            .clone()
+            .or_else(|| derive_bitcoin_treasury_address(&state.config).ok())
+            .ok_or_else(|| "missing CUSTODY_TREASURY_BTC".to_string()),
         chain if is_evm_chain(chain) => derive_evm_address(
             evm_executor_derivation_path(chain),
             &state.config.master_seed,

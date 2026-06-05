@@ -69,6 +69,20 @@ pub(super) async fn create_deposit(
         evm_token_contract_for_asset(&state.config, &chain, &asset)
             .map_err(|e| Json(ErrorResponse::invalid(&e)))?;
     }
+    if is_bitcoin_chain(&chain) {
+        if asset != "btc" {
+            return Err(ErrorResponse::invalid(&format!(
+                "unsupported Bitcoin deposit asset: {}",
+                asset
+            )));
+        }
+        if state.config.btc_rpc_url.is_none() {
+            return Err(ErrorResponse::invalid("missing CUSTODY_BTC_RPC_URL"));
+        }
+        if state.config.wbtc_contract_addr.is_none() {
+            return Err(ErrorResponse::invalid("missing CUSTODY_WBTC_TOKEN_ADDR"));
+        }
+    }
     if canonical_evm_chain(&chain) == Some("neox") {
         match asset.as_str() {
             "gas" => {}
@@ -175,6 +189,9 @@ pub(super) async fn create_deposit(
             derive_deposit_address(&chain, &asset, &derivation_path, deposit_seed)
                 .map_err(|e| Json(ErrorResponse::invalid(&e)))?
         }
+    } else if is_bitcoin_chain(&chain) {
+        derive_bitcoin_address(&derivation_path, deposit_seed, &state.config.btc_network)
+            .map_err(|e| Json(ErrorResponse::invalid(&e)))?
     } else {
         derive_deposit_address(&chain, &asset, &derivation_path, deposit_seed)
             .map_err(|e| Json(ErrorResponse::invalid(&e)))?

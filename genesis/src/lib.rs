@@ -56,13 +56,14 @@ fn price_8dec_to_f64(price: u64) -> f64 {
     price as f64 / 100_000_000.0
 }
 
-fn genesis_pair_prices(prices: &GenesisPrices) -> [(u64, f64); 11] {
+fn genesis_pair_prices(prices: &GenesisPrices) -> [(u64, f64); 13] {
     let licn_usd = price_8dec_to_f64(prices.licn_usd_8dec);
     let wsol_usd = price_8dec_to_f64(prices.wsol_usd_8dec);
     let weth_usd = price_8dec_to_f64(prices.weth_usd_8dec);
     let wbnb_usd = price_8dec_to_f64(prices.wbnb_usd_8dec);
     let wneo_usd = price_8dec_to_f64(prices.wneo_usd_8dec);
     let wgas_usd = price_8dec_to_f64(prices.wgas_usd_8dec);
+    let wbtc_usd = price_8dec_to_f64(prices.wbtc_usd_8dec);
 
     [
         (1, licn_usd),
@@ -76,6 +77,8 @@ fn genesis_pair_prices(prices: &GenesisPrices) -> [(u64, f64); 11] {
         (9, wneo_usd / licn_usd),
         (10, wgas_usd),
         (11, wgas_usd / licn_usd),
+        (12, wbtc_usd),
+        (13, wbtc_usd / licn_usd),
     ]
 }
 
@@ -87,6 +90,7 @@ pub const GENESIS_CONTRACT_CATALOG: &[(&str, &str, &str, &str)] = &[
     ("wbnb_token", "WBNB", "Wrapped BNB", "wrapped"),
     ("wgas_token", "WGAS", "Wrapped GAS", "wrapped"),
     ("wneo_token", "WNEO", "Wrapped NEO", "wrapped"),
+    ("wbtc_token", "WBTC", "Wrapped BTC", "wrapped"),
     // DEX
     ("dex_core", "DEX", "Lichen DEX Core", "dex"),
     ("dex_amm", "DEXAMM", "DEX AMM Engine", "dex"),
@@ -263,6 +267,11 @@ pub fn genesis_auto_deploy(state: &StateStore, deployer_pubkey: &Pubkey, label: 
                         "fas fa-coins",
                         "https://s2.coinmarketcap.com/static/img/coins/128x128/1839.png",
                     ),
+                    "WBTC" | "wBTC" => (
+                        "Wrapped Bitcoin (BTC) on Lichen — bridged 1:1 from the Bitcoin network.",
+                        "fab fa-bitcoin",
+                        "https://s2.coinmarketcap.com/static/img/coins/128x128/1.png",
+                    ),
                     "WGAS" | "wGAS" => (
                         "Wrapped GAS on Lichen — backed 1:1 by GAS reserves on Neo X.",
                         "fas fa-gas-pump",
@@ -354,7 +363,13 @@ fn require_genesis_governance_authority(state: &StateStore, phase: &str) -> Resu
 fn uses_operational_token_admin(dir_name: &str) -> bool {
     matches!(
         dir_name,
-        "lusd_token" | "wsol_token" | "weth_token" | "wbnb_token" | "wgas_token" | "wneo_token"
+        "lusd_token"
+            | "wsol_token"
+            | "weth_token"
+            | "wbnb_token"
+            | "wgas_token"
+            | "wneo_token"
+            | "wbtc_token"
     )
 }
 
@@ -366,6 +381,7 @@ fn operational_token_contracts() -> &'static [&'static str] {
         "wbnb_token",
         "wgas_token",
         "wneo_token",
+        "wbtc_token",
     ]
 }
 
@@ -890,6 +906,11 @@ pub fn genesis_initialize_contracts(
             function: "initialize",
             args: named_init_args(&operational_token_admin),
         },
+        InitSpec {
+            dir_name: "wbtc_token",
+            function: "initialize",
+            args: named_init_args(&operational_token_admin),
+        },
         // ── Layer 1: Identity ──
         InitSpec {
             dir_name: "lichenid",
@@ -1404,10 +1425,14 @@ pub fn genesis_initialize_contracts(
             .get("wneo_token")
             .map(|p| p.0)
             .unwrap_or([0u8; 32]);
+        let wbtc_addr = address_map
+            .get("wbtc_token")
+            .map(|p| p.0)
+            .unwrap_or([0u8; 32]);
 
         // (token_in, token_out, pair_id, pool_id, label)
         type RoutePair = ([u8; 32], [u8; 32], u64, u64, &'static str);
-        let route_pairs: [RoutePair; 11] = [
+        let route_pairs: [RoutePair; 13] = [
             (licn_addr, lusd_addr, 1, 1, "LICN/lUSD"),
             (wsol_addr, lusd_addr, 2, 2, "wSOL/lUSD"),
             (weth_addr, lusd_addr, 3, 3, "wETH/lUSD"),
@@ -1419,6 +1444,8 @@ pub fn genesis_initialize_contracts(
             (wneo_addr, licn_addr, 9, 9, "wNEO/LICN"),
             (wgas_addr, lusd_addr, 10, 10, "wGAS/lUSD"),
             (wgas_addr, licn_addr, 11, 11, "wGAS/LICN"),
+            (wbtc_addr, lusd_addr, 12, 12, "wBTC/lUSD"),
+            (wbtc_addr, licn_addr, 13, 13, "wBTC/LICN"),
         ];
 
         for (token_in, token_out, pair_id, pool_id, label) in &route_pairs {
@@ -1973,6 +2000,11 @@ pub fn genesis_initialize_contracts(
                 owner_key: "wneo_token",
                 agent_type: 0,
             },
+            GenesisName {
+                label: "wbtc",
+                owner_key: "wbtc_token",
+                agent_type: 0,
+            },
             // ── DEX ──
             GenesisName {
                 label: "dex",
@@ -2378,6 +2410,9 @@ pub fn genesis_create_trading_pairs(
     let wbnb_addr = derive_contract_address(deployer_pubkey, "wbnb_token")
         .map(|p| p.0)
         .unwrap_or([0u8; 32]);
+    let wbtc_addr = derive_contract_address(deployer_pubkey, "wbtc_token")
+        .map(|p| p.0)
+        .unwrap_or([0u8; 32]);
 
     // Resolve dex_governance for allowed-quote setup
     let dex_gov_pk = derive_contract_address(deployer_pubkey, "dex_governance");
@@ -2399,9 +2434,9 @@ pub fn genesis_create_trading_pairs(
 
     const WNEO_WHOLE_LOT: u64 = 1_000_000_000;
 
-    // All genesis CLOB pairs: 6 lUSD-quoted + 5 LICN-quoted = 11 pairs.
+    // All genesis CLOB pairs: 7 lUSD-quoted + 6 LICN-quoted = 13 pairs.
     // wNEO markets use a whole-token lot size to preserve Neo's whole-unit semantics.
-    let pairs: [(&str, [u8; 32], [u8; 32], u64); 11] = [
+    let pairs: [(&str, [u8; 32], [u8; 32], u64); 13] = [
         ("LICN/lUSD", licn_addr, lusd_addr, lot_size),
         ("wSOL/lUSD", wsol_addr, lusd_addr, lot_size),
         ("wETH/lUSD", weth_addr, lusd_addr, lot_size),
@@ -2413,6 +2448,8 @@ pub fn genesis_create_trading_pairs(
         ("wNEO/LICN", wneo_addr, licn_addr, WNEO_WHOLE_LOT),
         ("wGAS/lUSD", wgas_addr, lusd_addr, lot_size),
         ("wGAS/LICN", wgas_addr, licn_addr, lot_size),
+        ("wBTC/lUSD", wbtc_addr, lusd_addr, lot_size),
+        ("wBTC/LICN", wbtc_addr, licn_addr, lot_size),
     ];
 
     let mut created_pairs: usize = 0;
@@ -2499,10 +2536,11 @@ pub fn genesis_create_trading_pairs(
     let bnb_usd = price_8dec_to_f64(prices.wbnb_usd_8dec);
     let neo_usd = price_8dec_to_f64(prices.wneo_usd_8dec);
     let gas_usd = price_8dec_to_f64(prices.wgas_usd_8dec);
+    let btc_usd = price_8dec_to_f64(prices.wbtc_usd_8dec);
 
     info!(
-        "  Genesis prices: LICN=${:.4}, SOL=${:.2}, ETH=${:.2}, BNB=${:.2}, NEO=${:.2}, GAS=${:.2}",
-        licn_usd, sol_usd, eth_usd, bnb_usd, neo_usd, gas_usd
+        "  Genesis prices: LICN=${:.4}, SOL=${:.2}, ETH=${:.2}, BNB=${:.2}, NEO=${:.2}, GAS=${:.2}, BTC=${:.2}",
+        licn_usd, sol_usd, eth_usd, bnb_usd, neo_usd, gas_usd, btc_usd
     );
 
     // sqrt_price = floor(sqrt(price) * 2^32)
@@ -2511,7 +2549,7 @@ pub fn genesis_create_trading_pairs(
 
     let fee_tier: u8 = 2; // FEE_TIER_30BPS
 
-    let pool_configs: [(&str, [u8; 32], [u8; 32], u64); 11] = [
+    let pool_configs: [(&str, [u8; 32], [u8; 32], u64); 13] = [
         ("LICN/lUSD", licn_addr, lusd_addr, sqrt_price(licn_usd)),
         ("wSOL/lUSD", wsol_addr, lusd_addr, sqrt_price(sol_usd)),
         ("wETH/lUSD", weth_addr, lusd_addr, sqrt_price(eth_usd)),
@@ -2547,6 +2585,13 @@ pub fn genesis_create_trading_pairs(
             wgas_addr,
             licn_addr,
             sqrt_price(gas_usd / licn_usd),
+        ),
+        ("wBTC/lUSD", wbtc_addr, lusd_addr, sqrt_price(btc_usd)),
+        (
+            "wBTC/LICN",
+            wbtc_addr,
+            licn_addr,
+            sqrt_price(btc_usd / licn_usd),
         ),
     ];
 
@@ -2779,7 +2824,7 @@ pub fn genesis_seed_oracle(
         return Err("initial LICN oracle price submission failed".to_string());
     }
 
-    let external_feeds: [(&[u8], u64, String); 5] = [
+    let external_feeds: [(&[u8], u64, String); 6] = [
         (
             b"wSOL",
             prices.wsol_usd_8dec,
@@ -2804,6 +2849,11 @@ pub fn genesis_seed_oracle(
             b"wGAS",
             prices.wgas_usd_8dec,
             format!("${:.2}", price_8dec_to_f64(prices.wgas_usd_8dec)),
+        ),
+        (
+            b"wBTC",
+            prices.wbtc_usd_8dec,
+            format!("${:.2}", price_8dec_to_f64(prices.wbtc_usd_8dec)),
         ),
     ];
 
@@ -2899,7 +2949,7 @@ pub fn genesis_seed_oracle(
     genesis_seed_analytics_prices(state, deployer_pubkey, genesis_timestamp, prices);
 
     info!("──────────────────────────────────────────────────────");
-    info!("  Genesis oracle seeding complete (LICN + wSOL + wETH + wBNB + wNEO + wGAS)");
+    info!("  Genesis oracle seeding complete (LICN + wSOL + wETH + wBNB + wNEO + wGAS + wBTC)");
     info!("──────────────────────────────────────────────────────");
     Ok(())
 }
@@ -3099,6 +3149,7 @@ pub fn genesis_seed_consensus_oracle_prices(state: &StateStore, slot: u64, price
         ("wBNB", prices.wbnb_usd_8dec),
         ("wNEO", prices.wneo_usd_8dec),
         ("wGAS", prices.wgas_usd_8dec),
+        ("wBTC", prices.wbtc_usd_8dec),
     ] {
         if let Err(e) = state.put_oracle_consensus_price(asset, price_raw, 8, slot, 0) {
             warn!("  Failed to seed consensus oracle price for {asset}: {e}");
@@ -3315,7 +3366,8 @@ pub fn genesis_assign_achievements(
                 (38, "Stable Sender"),
                 (123, "Token Contract User"),
             ],
-            "wsol_token" | "weth_token" | "wbnb_token" | "wgas_token" | "wneo_token" => &[
+            "wsol_token" | "weth_token" | "wbnb_token" | "wgas_token" | "wneo_token"
+            | "wbtc_token" => &[
                 (54, "Wrapper"),
                 (55, "Unwrapper"),
                 (123, "Token Contract User"),
@@ -3445,6 +3497,7 @@ pub fn genesis_assign_achievements(
         "wbnb_token",
         "wgas_token",
         "wneo_token",
+        "wbtc_token",
         "dex_core",
         "dex_amm",
         "dex_router",
@@ -3703,14 +3756,17 @@ mod tests {
     fn test_genesis_pair_prices_are_deterministic() {
         let prices = GenesisPrices::default();
         let pair_prices = genesis_pair_prices(&prices);
-        assert_eq!(pair_prices.len(), 11);
+        assert_eq!(pair_prices.len(), 13);
         assert_eq!(pair_prices[0].0, 1);
+        assert_eq!(pair_prices[11].0, 12);
+        assert_eq!(pair_prices[12].0, 13);
         assert!((pair_prices[0].1 - 0.10).abs() < f64::EPSILON);
         assert!((pair_prices[1].1 - 81.84).abs() < f64::EPSILON);
         assert!((pair_prices[2].1 - 1999.34).abs() < f64::EPSILON);
         assert!((pair_prices[5].1 - 609.78).abs() < f64::EPSILON);
         assert!((pair_prices[7].1 - 3.075).abs() < f64::EPSILON);
         assert!((pair_prices[9].1 - 1.65).abs() < f64::EPSILON);
+        assert!((pair_prices[11].1 - 100_000.0).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -3812,6 +3868,7 @@ mod tests {
         assert!(uses_operational_token_admin("wbnb_token"));
         assert!(uses_operational_token_admin("wgas_token"));
         assert!(uses_operational_token_admin("wneo_token"));
+        assert!(uses_operational_token_admin("wbtc_token"));
         assert!(!uses_operational_token_admin("dex_core"));
         assert!(!uses_operational_token_admin("lichenbridge"));
     }

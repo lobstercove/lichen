@@ -1,5 +1,6 @@
 use super::*;
 
+mod bitcoin;
 mod evm;
 mod solana;
 
@@ -36,6 +37,26 @@ pub(super) async fn broadcast_outbound_withdrawal(
             }
 
             solana::broadcast_self_custody_solana_withdrawal(state, url, job, &outbound_asset).await
+        }
+        chain if is_bitcoin_chain(chain) => {
+            let outbound_asset = match job.asset.to_lowercase().as_str() {
+                "wbtc" => "btc".to_string(),
+                _ => return Err(format!("unsupported Bitcoin withdrawal: {}", job.asset)),
+            };
+            if matches!(
+                determine_withdrawal_signing_mode(state, job, &outbound_asset)?,
+                Some(WithdrawalSigningMode::PqApprovalQuorum)
+            ) {
+                let approval_count =
+                    valid_pq_withdrawal_approvers(state, job, &outbound_asset)?.len();
+                if approval_count < required_signer_threshold {
+                    return Err(format!(
+                        "insufficient PQ withdrawal approvals: have {}, need {}",
+                        approval_count, required_signer_threshold
+                    ));
+                }
+            }
+            bitcoin::broadcast_self_custody_bitcoin_withdrawal(state, job).await
         }
         chain if is_evm_chain(chain) => {
             let url = rpc_url_for_chain(&state.config, &job.dest_chain)

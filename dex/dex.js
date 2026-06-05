@@ -603,6 +603,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (upper === 'BNB' || upper === 'WBNB') return 'wBNB';
         if (upper === 'NEO' || upper === 'WNEO') return 'wNEO';
         if (upper === 'GAS' || upper === 'WGAS') return 'wGAS';
+        if (upper === 'BTC' || upper === 'WBTC') return 'wBTC';
         return symbol;
     }
 
@@ -1280,8 +1281,8 @@ document.addEventListener('DOMContentLoaded', () => {
     // in LICN per wrapped asset. The UI displays these as LICN/wrapped with price in
     // wrapped per LICN. All data from the API/WS must be inverted to match
     // the display convention before reaching the chart.
-    const DISPLAY_INVERTED_WRAPPED_BASES = ['WSOL', 'WETH', 'WBNB', 'WNEO', 'WGAS'];
-    const WRAPPED_DISPLAY_SYMBOLS = { WBNB: 'BNB', WNEO: 'NEO', WGAS: 'GAS' };
+    const DISPLAY_INVERTED_WRAPPED_BASES = ['WSOL', 'WETH', 'WBNB', 'WNEO', 'WGAS', 'WBTC'];
+    const WRAPPED_DISPLAY_SYMBOLS = { WBNB: 'BNB', WNEO: 'NEO', WGAS: 'GAS', WBTC: 'BTC' };
     const WHOLE_LOT_NEO_SYMBOLS = ['WNEO', 'NEO'];
     const DEFAULT_PROTOCOL_PARAMS = {
         approvalThreshold: 66,
@@ -1349,7 +1350,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function oracleAssetForPair(pair) {
         const base = String(pair?.base || pair?.baseSymbol || 'LICN').trim().toUpperCase();
-        const map = { LICN: 'LICN', SOL: 'wSOL', WSOL: 'wSOL', ETH: 'wETH', WETH: 'wETH', BNB: 'wBNB', WBNB: 'wBNB', NEO: 'wNEO', WNEO: 'wNEO', GAS: 'wGAS', WGAS: 'wGAS' };
+        const map = { LICN: 'LICN', SOL: 'wSOL', WSOL: 'wSOL', ETH: 'wETH', WETH: 'wETH', BNB: 'wBNB', WBNB: 'wBNB', NEO: 'wNEO', WNEO: 'wNEO', GAS: 'wGAS', WGAS: 'wGAS', BTC: 'wBTC', WBTC: 'wBTC' };
         return map[base] || base;
     }
 
@@ -1537,6 +1538,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     wBNB: map['WBNB'] || null,
                     wNEO: map['WNEO'] || null,
                     wGAS: map['WGAS'] || null,
+                    wBTC: map['WBTC'] || null,
                 };
                 // Contract addresses loaded from symbol registry
             }
@@ -5018,9 +5020,10 @@ document.addEventListener('DOMContentLoaded', () => {
             else if ((base === 'WBNB' || base === 'BNB') && oracleRefPrices['wBNB'] > 0) extPrice = oracleRefPrices['wBNB'];
             else if ((base === 'WNEO' || base === 'NEO') && oracleRefPrices['wNEO'] > 0) extPrice = oracleRefPrices['wNEO'];
             else if ((base === 'WGAS' || base === 'GAS') && oracleRefPrices['wGAS'] > 0) extPrice = oracleRefPrices['wGAS'];
+            else if ((base === 'WBTC' || base === 'BTC') && oracleRefPrices['wBTC'] > 0) extPrice = oracleRefPrices['wBTC'];
 
             // Safety guard: display-inverted pairs should NEVER show price > 1
-            // (LICN/wSOL, LICN/wETH, LICN/wBNB, LICN/wNEO, LICN/wGAS)
+            // (LICN/wSOL, LICN/wETH, LICN/wBNB, LICN/wNEO, LICN/wGAS, LICN/wBTC)
             // If price > 1 it means the raw on-chain LICN-denominated price leaked through
             if (!p.hasMarketPrice && extPrice <= 0 && isDisplayInvertedPair(p) && p.price > 1) {
                 p.price = invertPrice(p.price);

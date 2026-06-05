@@ -961,6 +961,8 @@ fn test_source_chain_decimals() {
     assert_eq!(source_chain_decimals("bnb", "bnb").unwrap(), 18);
     assert_eq!(source_chain_decimals("neox", "gas").unwrap(), 18);
     assert_eq!(source_chain_decimals("neox", "neo").unwrap(), 18);
+    assert_eq!(source_chain_decimals("bitcoin", "btc").unwrap(), 8);
+    assert_eq!(source_chain_decimals("btc", "btc").unwrap(), 8);
     assert_eq!(source_chain_decimals("solana", "sol").unwrap(), 9);
     assert_eq!(source_chain_decimals("sol", "sol").unwrap(), 9);
 
@@ -997,6 +999,14 @@ fn test_spores_to_chain_amount() {
         spores_to_chain_amount(1_000_000_000, "solana", "sol").unwrap(),
         1_000_000_000u128
     );
+
+    // BTC: 1 wBTC = 1_000_000_000 spores → 100_000_000 satoshis
+    assert_eq!(
+        spores_to_chain_amount(1_000_000_000, "bitcoin", "btc").unwrap(),
+        100_000_000u128
+    );
+    assert_eq!(spores_to_chain_amount(10, "bitcoin", "btc").unwrap(), 1u128);
+    assert!(spores_to_chain_amount(1, "bitcoin", "btc").is_err());
 
     // USDT on Ethereum: 100 lUSD = 100_000_000_000 spores → 100_000_000 atoms (6 dec)
     assert_eq!(

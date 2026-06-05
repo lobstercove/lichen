@@ -38,7 +38,7 @@ const STALE_ACTIVE_PATTERNS = [
     '29 production smart contracts',
     'Full reference for all 28',
     'All four wrapped',
-    'Genesis catalog total** | | **32**',
+    'Genesis catalog total** | | **31**',
     '28 for genesis',
     '28 manifest symbols',
     'all 28 contracts',
@@ -216,7 +216,7 @@ function main() {
             'last_attestation_slot',
             'dex_rewards.configure_lp_campaign',
         ], FILES.rpcPortal);
-        assertIncludes(docs.rpcPortal, 'v0.5.61', FILES.rpcPortal);
+        assertIncludes(docs.rpcPortal, 'v0.5.94', FILES.rpcPortal);
         assertIncludes(docs.rpcPortal, 'neo-x-route-rewards', FILES.rpcPortal);
     });
 
@@ -240,7 +240,7 @@ function main() {
 
     test('CLI docs expose route status, governed route payloads, and Neo symbol lookups', () => {
         assertAllIncludes(docs.cliPortal, [
-            'v0.5.61',
+            'v0.5.94',
             'lichen restriction status bridge-route neox gas',
             'lichen restriction status bridge-route neox neo',
             'lichen restriction build pause-bridge-route neox gas',
@@ -259,16 +259,16 @@ function main() {
         ], FILES.cliPortal);
     });
 
-    test('contract docs and expected-contracts include Neo contracts with current counts', () => {
-        assert(expectedContracts.length === 31, 'expected-contracts.json must list 31 genesis contracts');
+    test('contract docs and expected-contracts include wrapped asset contracts with current counts', () => {
+        assert(expectedContracts.length === 32, 'expected-contracts.json must list 32 genesis contracts');
         const productionExpectedContracts = readJson(FILES.productionExpectedContracts).contracts;
-        assert(productionExpectedContracts.length === 31, 'tests/expected-contracts.json must list 31 genesis contracts');
-        ['wgas_token', 'wneo_token', 'neo_gas_rewards'].forEach((contractName) => {
+        assert(productionExpectedContracts.length === 32, 'tests/expected-contracts.json must list 32 genesis contracts');
+        ['wgas_token', 'wneo_token', 'wbtc_token', 'neo_gas_rewards'].forEach((contractName) => {
             assert(expectedContracts.includes(contractName), `expected-contracts.json missing ${contractName}`);
             assert(productionExpectedContracts.includes(contractName), `tests/expected-contracts.json missing ${contractName}`);
         });
         assertAllIncludes(docs.contractPortal, [
-            '31 genesis-deployed smart contracts',
+            '32 genesis-deployed smart contracts',
             '82,336',
             'Source Exports',
             '578',
@@ -277,11 +277,12 @@ function main() {
             'neo_gas_rewards',
             'wgas_token',
             'wneo_token',
+            'wbtc_token',
             'dex_rewards.configure_lp_campaign',
             'submit_agent_job',
             'get_agent_compute_controls',
         ], FILES.contractPortal);
-        ['wbnb_token', 'wgas_token', 'wneo_token', 'neo_gas_rewards'].forEach((contractName) => {
+        ['wbnb_token', 'wgas_token', 'wneo_token', 'wbtc_token', 'neo_gas_rewards'].forEach((contractName) => {
             assert(
                 countLiteral(docs.contractPortal, `<td>${contractName}</td>`) === 1,
                 `${FILES.contractPortal} must list ${contractName} exactly once in the live export matrix`
@@ -328,18 +329,21 @@ function main() {
         assertAllIncludes(docs.rustSdkPortal, ['get_neo_gas_rewards_stats', 'BridgeChain::NeoX', 'verify_neo_reserve_liability_proof'], FILES.rustSdkPortal);
     });
 
-    testWhenPresent(['wrappedAssets', 'custodyDeployment'], 'wrapped asset and custody docs cover wBNB, wGAS, wNEO, route env, and 31-contract catalog', () => {
+    testWhenPresent(['wrappedAssets', 'custodyDeployment'], 'wrapped asset and custody docs cover wBNB, wGAS, wNEO, wBTC, route env, and 32-contract catalog', () => {
         assertAllIncludes(docs.wrappedAssets, [
             'wBNB',
             'wGAS',
             'wNEO',
+            'wBTC',
             'Neo X GAS',
             'Neo X NEO',
+            'BTC',
             'whole-NEO lots',
             'CUSTODY_WBNB_TOKEN_ADDR',
             'CUSTODY_WGAS_TOKEN_ADDR',
             'CUSTODY_WNEO_TOKEN_ADDR',
-            '**Genesis catalog total** | | **31**',
+            'CUSTODY_WBTC_TOKEN_ADDR',
+            '**Genesis catalog total** | | **32**',
         ], FILES.wrappedAssets);
         assertAllIncludes(docs.custodyDeployment, [
             'CUSTODY_WBNB_TOKEN_ADDR',

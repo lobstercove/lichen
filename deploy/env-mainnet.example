@@ -28,6 +28,6 @@ CUSTODY_API_AUTH_TOKEN=REPLACE_WITH_64_HEX_CUSTODY_API_TOKEN
 # LICHEN_ADMIN_TOKEN=REPLACE_WITH_OPERATOR_ADMIN_TOKEN
 
 # Oracle price-feed overrides for hosts that cannot reach the default upstream.
-# LICHEN_ORACLE_WS_URL=wss://stream.binance.us:9443/ws/solusdt@aggTrade/ethusdt@aggTrade/bnbusdt@aggTrade
-# LICHEN_ORACLE_REST_URL=https://api.binance.us/api/v3/ticker/price?symbols=["SOLUSDT","ETHUSDT","BNBUSDT"]
+# LICHEN_ORACLE_WS_URL=wss://stream.binance.us:9443/ws/solusdt@aggTrade/ethusdt@aggTrade/bnbusdt@aggTrade/neousdt@aggTrade/gasusdt@aggTrade/btcusdt@aggTrade
+# LICHEN_ORACLE_REST_URL=https://api.binance.us/api/v3/ticker/price?symbols=["SOLUSDT","ETHUSDT","BNBUSDT","NEOUSDT","GASUSDT","BTCUSDT"]
 # LICHEN_DISABLE_ORACLE=1

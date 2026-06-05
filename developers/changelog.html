@@ -79,6 +79,41 @@
         <!-- Timeline -->
         <div class="changelog-timeline">
 
+            <!-- ============ v0.5.94 ============ -->
+            <div class="changelog-entry">
+                <div class="changelog-header">
+                    <span class="changelog-version">v0.5.94</span>
+                    <span class="changelog-date">June 5, 2026</span>
+                </div>
+                <h3 class="changelog-title">BTC and wBTC Route Readiness</h3>
+
+                <div class="changelog-section" data-type="new">
+                    <h4><i class="fas fa-plus" style="color: var(--success)"></i> New</h4>
+                    <ul>
+                        <li><strong>wBTC asset support</strong> &mdash; WBTC is wired into future genesis, symbol
+                            registry metadata, oracle feeds, DEX pairs, wallet and extension bridge surfaces, and
+                            developer references.</li>
+                        <li><strong>Bitcoin custody route</strong> &mdash; custody now supports deterministic native
+                            SegWit BTC deposit addresses, Bitcoin Core-backed deposit detection, sweeps, wBTC mint
+                            credits, burns, and BTC withdrawals.</li>
+                        <li><strong>Regtest smoke gate</strong> &mdash; the local BTC smoke covers deposit, sweep,
+                            credit, burn, withdrawal, and confirmation against Bitcoin Core regtest.</li>
+                    </ul>
+                </div>
+
+                <div class="changelog-section" data-type="fixed">
+                    <h4><i class="fas fa-bug" style="color: var(--warning)"></i> Fixes</h4>
+                    <ul>
+                        <li><strong>BTC RPC route</strong> &mdash; <code>createBridgeDeposit</code> now forwards
+                            <code>bitcoin:btc</code> requests to custody.</li>
+                        <li><strong>Bitcoin confirmation state</strong> &mdash; unconfirmed Bitcoin sweep and withdrawal
+                            transactions remain pending until the configured confirmation threshold is reached.</li>
+                        <li><strong>SegWit signing</strong> &mdash; BTC sweep and withdrawal transactions now use the
+                            correct BIP143 output digest and low-S ECDSA signatures.</li>
+                    </ul>
+                </div>
+            </div>
+
             <!-- ============ v0.5.93 ============ -->
             <div class="changelog-entry">
                 <div class="changelog-header">

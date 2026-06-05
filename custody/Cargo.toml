@@ -1,6 +1,6 @@
 [package]
 name = "lichen-custody"
-version = "0.5.93"
+version = "0.5.94"
 edition = "2021"
 authors = ["Lichen Labs <hello@lichen.network>"]
 description = "Lichen custody service"
@@ -19,6 +19,7 @@ http = "1"
 k256 = { version = "0.13", features = ["ecdsa"] }
 rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+ripemd = "0.1"
 rocksdb = "0.21"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
