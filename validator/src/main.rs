@@ -102,8 +102,10 @@ const EXIT_CODE_RESTART: i32 = 75;
 /// pending blocks or is actively syncing.
 const DEFAULT_WATCHDOG_TIMEOUT_SECS: u64 = 120;
 const GENESIS_SYNC_INCOMPLETE_MARKER: &str = "genesis_sync_incomplete";
+#[cfg(test)]
 const STAKE_POOL_PRODUCTION_COUNTER_REPAIR_METADATA_KEY: &str =
     "stake_pool_production_counter_repair_v1";
+#[cfg(test)]
 const STAKE_POOL_PRODUCTION_COUNTER_REPAIR_PROGRESS_INTERVAL: u64 = 100_000;
 const ACTIVATE_RESTRICTION_SCHEMA_FLAG: &str = "--activate-restriction-schema";
 const SHOW_RESTRICTION_SCHEMA_FLAG: &str = "--show-restriction-schema";
@@ -4930,6 +4932,7 @@ fn record_post_block_state_commitment_anchor(state: &StateStore, block: &Block, 
     }
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct StakePoolProductionCounterRepairMarker {
     tip_slot: u64,
@@ -4937,6 +4940,7 @@ struct StakePoolProductionCounterRepairMarker {
     pool_hash: Hash,
 }
 
+#[cfg(test)]
 fn encode_stake_pool_production_counter_repair_marker(
     marker: StakePoolProductionCounterRepairMarker,
 ) -> Vec<u8> {
@@ -4949,6 +4953,7 @@ fn encode_stake_pool_production_counter_repair_marker(
     .into_bytes()
 }
 
+#[cfg(test)]
 fn decode_stake_pool_production_counter_repair_marker(
     bytes: &[u8],
 ) -> Option<StakePoolProductionCounterRepairMarker> {
@@ -4967,6 +4972,7 @@ fn decode_stake_pool_production_counter_repair_marker(
     })
 }
 
+#[cfg(test)]
 fn store_stake_pool_production_counter_repair_marker(
     state: &StateStore,
     tip_slot: u64,
@@ -4985,6 +4991,7 @@ fn store_stake_pool_production_counter_repair_marker(
     )
 }
 
+#[cfg(test)]
 fn repair_stake_pool_production_counters_from_blocks(
     state: &StateStore,
     context: &str,
@@ -8964,13 +8971,6 @@ async fn run_validator() {
     if !genesis_sync_incomplete(&state)
         && (state.get_last_slot().unwrap_or(0) > 0 || !is_joining_network)
     {
-        if let Err(err) = repair_stake_pool_production_counters_from_blocks(&state, "startup") {
-            error!(
-                "❌ Failed to repair deterministic StakePool counters: {}",
-                err
-            );
-            std::process::exit(1);
-        }
         if let Err(err) = verify_mossstake_slot_only_not_premature(&state, "startup") {
             error!("❌ MossStake slot-only activation check failed: {}", err);
             std::process::exit(1);
