@@ -135,6 +135,31 @@ function bridgeDepositUserMessage(error) {
   return message || 'Failed to connect to bridge service';
 }
 
+function bridgeRouteReadinessMessage(status, asset, chain) {
+  if (!status || typeof status !== 'object') return '';
+  const readinessKnown = ['route_ready', 'deposit_ready', 'custody_configured', 'custody_status']
+    .some((key) => Object.prototype.hasOwnProperty.call(status, key));
+  if (!readinessKnown) return '';
+  if (status.route_ready === true || (status.deposit_ready === true && status.route_paused !== true && status.paused !== true)) {
+    return '';
+  }
+  const assetLabel = String(asset || '').toUpperCase();
+  const chainLabel = canonicalBridgeChain(chain) || 'selected chain';
+  if (status.custody_status === 'not_configured' || status.custody_configured === false) {
+    return `${assetLabel} deposits from ${chainLabel} are not live on testnet yet.`;
+  }
+  if (status.custody_status && status.custody_status !== 'ok') {
+    return `${assetLabel} deposits from ${chainLabel} are temporarily unavailable.`;
+  }
+  if (Array.isArray(status.missing_config) && status.missing_config.length > 0) {
+    return `${assetLabel} deposits from ${chainLabel} are not live on testnet yet.`;
+  }
+  if (status.deposit_ready === false || status.route_ready === false) {
+    return `${assetLabel} deposits from ${chainLabel} are not live on testnet yet.`;
+  }
+  return '';
+}
+
 function normalizeBridgeRecord(record = {}, fallback = {}) {
   const depositId = String(record.deposit_id || fallback.deposit_id || '').trim();
   if (!depositId) return null;
@@ -190,7 +215,15 @@ async function assertBridgeRouteOpen({ chain, asset, network }) {
     const ids = routeRestrictionIds(status);
     throw new Error(`Bridge route paused for ${String(asset || '').toUpperCase()} on ${canonicalBridgeChain(chain)}${ids ? ` (${ids})` : ''}`);
   }
+  const readinessMessage = bridgeRouteReadinessMessage(status, asset, chain);
+  if (readinessMessage) {
+    throw new Error(readinessMessage);
+  }
   return status;
+}
+
+export async function preflightBridgeDepositRoute({ chain, asset, network }) {
+  return assertBridgeRouteOpen({ chain, asset, network });
 }
 
 async function loadBridgeCacheRecords() {

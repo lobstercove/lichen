@@ -29,7 +29,7 @@ async def main():
         if account.get("symbol")
     }
 
-    for symbol in ("LUSD", "WBNB", "WETH", "WSOL", "WNEO", "WGAS"):
+    for symbol in ("LUSD", "WBNB", "WETH", "WSOL", "WNEO", "WGAS", "WBTC"):
         account = token_accounts.get(symbol)
         ui_amount = account.get("ui_amount", 0) if account else 0
         print(f"  {symbol}: {ui_amount:,.3f}")

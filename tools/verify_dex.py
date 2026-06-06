@@ -14,6 +14,7 @@ PAIR_NAMES = {
     1: "LICN/lUSD", 2: "wSOL/lUSD", 3: "wETH/lUSD",
     4: "wSOL/LICN", 5: "wETH/LICN", 6: "wBNB/lUSD", 7: "wBNB/LICN",
     8: "wNEO/lUSD", 9: "wNEO/LICN", 10: "wGAS/lUSD", 11: "wGAS/LICN",
+    12: "wBTC/lUSD", 13: "wBTC/LICN",
 }
 
 async def main():
@@ -35,7 +36,7 @@ async def main():
             dex_addr = prog
         elif sym == "DEXAMM":
             dex_amm_addr = prog
-        elif sym in ("LUSD", "WSOL", "WETH", "WBNB", "WNEO", "WGAS"):
+        elif sym in ("LUSD", "WSOL", "WETH", "WBNB", "WNEO", "WGAS", "WBTC"):
             token_addrs[sym] = prog
 
     print(f"DEX Core: {dex_addr}")

@@ -137,6 +137,7 @@ impl TxProcessor {
             meta.0 = None;
             meta.1.clear();
             meta.2 = 0;
+            meta.3.clear();
         }
 
         if let Err(e) = tx.validate_structure() {
@@ -705,6 +706,18 @@ impl TxProcessor {
 
     /// Simulate a transaction without persisting.
     pub fn simulate_transaction(&self, tx: &Transaction) -> SimulationResult {
+        {
+            let mut meta = self.contract_meta.lock().unwrap_or_else(|e| e.into_inner());
+            meta.0 = None;
+            meta.1.clear();
+            meta.2 = 0;
+            meta.3.clear();
+        }
+        *self
+            .tx_compute_budget
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = 0;
+
         let mut logs = Vec::new();
         let mut last_return_code: Option<i64> = None;
 
@@ -785,6 +798,10 @@ impl TxProcessor {
         }
 
         let compute_budget = tx.message.effective_compute_budget();
+        *self
+            .tx_compute_budget
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = compute_budget;
         let fee_config = self
             .state
             .get_fee_config()

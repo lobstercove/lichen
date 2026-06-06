@@ -186,7 +186,7 @@
                     <code>8900</code>.
                 </p>
                 <div class="callout callout-info">
-                    <p><strong>Implementation-verified surface for v0.5.95:</strong> the live server exposes native,
+                    <p><strong>Implementation-verified surface for v0.5.97:</strong> the live server exposes native,
                         Solana-compatible, and EVM-compatible JSON-RPC dispatch, plus REST route families across the
                         DEX, prediction market, launchpad, shielded APIs, and Neo X route/rewards reads.</p>
                 </div>
@@ -2171,10 +2171,12 @@
                 <p>These methods are the public read surface for Neo X integration. They are read-only. Rewards and
                     liquidity controls remain fail-closed until the public beta and liquidity corridor gates are approved
                     for the selected network.</p>
-                <p>DEX pair reads use the same indexed <code>getDexPairs</code> path as the existing markets. The Neo
-                    pairs are fixed by genesis/post-genesis deployment: <code>wNEO/lUSD</code> pair/pool ID
+                <p>DEX pair reads use the same indexed <code>getDexPairs</code> path as the existing markets. Fresh
+                    genesis includes all launch wrapped markets: <code>wNEO/lUSD</code> pair/pool ID
                     <code>8</code>, <code>wNEO/LICN</code> ID <code>9</code>, <code>wGAS/lUSD</code> ID
-                    <code>10</code>, and <code>wGAS/LICN</code> ID <code>11</code>.</p>
+                    <code>10</code>, <code>wGAS/LICN</code> ID <code>11</code>, <code>wBTC/lUSD</code> ID
+                    <code>12</code>, and <code>wBTC/LICN</code> ID <code>13</code>. Legacy/live-chain additions are
+                    additive only and must not rewrite historical state.</p>
                 <p><code>wNEO</code> order entry and LP flows must preserve whole-NEO lots. Neo LP reward fields only
                     accrue after a governed <code>dex_rewards.configure_lp_campaign</code> payload is approved; pair
                     visibility alone does not mean incentives are active.</p>

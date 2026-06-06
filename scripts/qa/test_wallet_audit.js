@@ -1106,6 +1106,23 @@ test('wallet.js pins bridge control-plane methods to trusted RPC', () => {
         'bridge authorization should reject encrypted keys that do not match the active wallet');
     assert(walletSrc.includes('bridgeDepositUserMessage(error)'),
         'bridge deposit flow should map custody/auth failures to user-safe messages');
+    assert(walletSrc.includes('bridgeRouteReadinessMessage(status, asset, chainName)'),
+        'bridge deposit flow should reject non-ready custody routes before bridge authorization');
+    assert(walletSrc.includes("['route_ready', 'deposit_ready', 'custody_configured', 'custody_status']"),
+        'bridge route preflight should consume custody readiness fields');
+    assert(walletSrc.includes('renderBridgeDepositError({ container: depositResult, message })'),
+        'bridge deposit flow should render custody route failures inline in the modal');
+    assert(walletSrc.indexOf('await assertBridgeRouteOpen(chain, asset, chainName)') < walletSrc.indexOf('await ensureBridgeAccessAuth(wallet'),
+        'bridge route status must be checked before asking the wallet to sign bridge auth');
+});
+
+test('wallet.js compact balance shows stLICN amount instead of redeemable liquid staking value', () => {
+    assert(walletSrc.includes('stLICN Staked: <strong>${fmtToken(snapshot.stLicn, 4)}</strong>'),
+        'balance card should show the actual stLICN position amount');
+    assert(walletSrc.includes("rpc.call('getStakingPosition', [wallet.address])"),
+        'balance card should fetch staking position for stLICN amount');
+    assert(!walletSrc.includes('Liquid Staking Value: <strong>${fmtToken(snapshot.mossStaked, 4)}</strong>'),
+        'balance card must not label redeemable LICN value as liquid staking value');
 });
 
 test('wallet.js exposes Neo X bridge controls with route status and reserve context', () => {

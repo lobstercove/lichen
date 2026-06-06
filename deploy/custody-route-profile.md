@@ -14,7 +14,8 @@ route-specific dust tests pass.
 
 Genesis creates Lichen-side state: wrapped-token contracts, symbol registry
 entries, custody treasury material, custody master seeds, the deposit derivation
-seed, and signer/password wiring.
+seed, signer/password wiring, and mandatory CLOB pairs, AMM pools, and router
+routes for all launch wrapped assets, including wNEO, wGAS, and wBTC.
 
 Genesis does not create or choose Solana, Ethereum, BNB Chain, Neo X, or
 Bitcoin RPC providers; source-chain token mints/contracts; source-chain gas or
@@ -415,5 +416,7 @@ wsol -> solana: job 93bf72ff-97da-4f99-b0b3-362b67e17379
   outbound 4FBJE741zXEdiKTZaHPDNph6cDKxrvFCLBiEkAboo93dyFy4EdMZRWcJvkM7mjJ1cQoeGZCUhucKHMuHQFoadpP2
 ```
 
-Keep a route out of `CUSTODY_REQUIRED_ROUTES` and hide it from wallet surfaces
-until this smoke test passes.
+Keep a source-chain custody route out of `CUSTODY_REQUIRED_ROUTES` and hide it
+from wallet surfaces until this smoke test passes. This does not remove or make
+optional the genesis-native wrapped token contract, DEX pair, AMM pool, or
+router route.

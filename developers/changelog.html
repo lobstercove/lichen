@@ -79,6 +79,28 @@
         <!-- Timeline -->
         <div class="changelog-timeline">
 
+            <!-- ============ v0.5.97 ============ -->
+            <div class="changelog-entry">
+                <div class="changelog-header">
+                    <span class="changelog-version">v0.5.97</span>
+                    <span class="changelog-date">June 6, 2026</span>
+                </div>
+                <h3 class="changelog-title">Governed DEX Simulation Parity</h3>
+
+                <div class="changelog-section" data-type="fixed">
+                    <h4><i class="fas fa-bug" style="color: var(--warning)"></i> Fixes</h4>
+                    <ul>
+                        <li><strong>Governed contract-call preflight</strong> &mdash; simulation now installs the same
+                            transaction compute budget used by block execution before running rollback governance
+                            checks, so nested DEX admin calls no longer false-fail as zero-budget executions.</li>
+                        <li><strong>RPC send preflight</strong> &mdash; governed system proposal and execution actions now
+                            use the same rollback simulation path as explicit <code>simulateTransaction</code> calls.</li>
+                        <li><strong>Contract metadata reset</strong> &mdash; transaction processing now clears stale
+                            contract return data at the same boundary as return codes, logs, and compute metadata.</li>
+                    </ul>
+                </div>
+            </div>
+
             <!-- ============ v0.5.95 ============ -->
             <div class="changelog-entry">
                 <div class="changelog-header">

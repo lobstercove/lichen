@@ -841,7 +841,7 @@ pub fn genesis_initialize_contracts(
     let lusd_addr = address_map
         .get("lusd_token")
         .map(|p| p.0)
-        .unwrap_or([0u8; 32]);
+        .ok_or_else(|| "mandatory genesis contract lusd_token missing".to_string())?;
 
     // DAO: governance_token = LICN address, treasury = community_treasury wallet,
     // min_proposal_threshold = 10,000 LICN in spores (10_000 * 1e9)
@@ -1387,9 +1387,15 @@ pub fn genesis_initialize_contracts(
     // ── DEX Router: wire dex_core, dex_amm, lichenswap addresses ──
     // Opcode 1 = set_addresses. Format: [1][admin 32B][dex_core 32B][dex_amm 32B][lichenswap 32B]
     if let Some(router_pk) = address_map.get("dex_router") {
-        let dex_core_addr = address_map.get("dex_core").map(|p| p.0).unwrap_or(admin);
-        let dex_amm_addr = address_map.get("dex_amm").map(|p| p.0).unwrap_or(admin);
-        let lichenswap_addr = address_map.get("lichenswap").map(|p| p.0).unwrap_or(admin);
+        let required_contract_addr = |name: &str| -> Result<[u8; 32], String> {
+            address_map
+                .get(name)
+                .map(|p| p.0)
+                .ok_or_else(|| format!("mandatory genesis contract {} missing", name))
+        };
+        let dex_core_addr = required_contract_addr("dex_core")?;
+        let dex_amm_addr = required_contract_addr("dex_amm")?;
+        let lichenswap_addr = required_contract_addr("lichenswap")?;
         let mut args = Vec::with_capacity(129);
         args.push(1u8); // opcode 1 = set_addresses
         args.extend_from_slice(&admin);
@@ -1399,36 +1405,18 @@ pub fn genesis_initialize_contracts(
         if exec_as_governance(router_pk, "call", &args, "dex_router(set_addresses)") {
             info!("  SET dex_router(set_addresses)");
         } else {
-            warn!("  WARN: Failed to set dex_router addresses");
+            return Err("failed to set mandatory dex_router addresses".to_string());
         }
 
-        // ── DEX Router: register genesis routes (10 routes for 5 pairs) ──
+        // ── DEX Router: register mandatory genesis routes: CLOB + AMM for all 13 launch pairs ──
         // Opcode 2 = register_route. 115 bytes:
         // [opcode 1B][caller 32B][token_in 32B][token_out 32B][route_type 1B][pool_id 8B][secondary_id 8B][split_percent 1B]
-        let wsol_addr = address_map
-            .get("wsol_token")
-            .map(|p| p.0)
-            .unwrap_or([0u8; 32]);
-        let weth_addr = address_map
-            .get("weth_token")
-            .map(|p| p.0)
-            .unwrap_or([0u8; 32]);
-        let wbnb_addr = address_map
-            .get("wbnb_token")
-            .map(|p| p.0)
-            .unwrap_or([0u8; 32]);
-        let wgas_addr = address_map
-            .get("wgas_token")
-            .map(|p| p.0)
-            .unwrap_or([0u8; 32]);
-        let wneo_addr = address_map
-            .get("wneo_token")
-            .map(|p| p.0)
-            .unwrap_or([0u8; 32]);
-        let wbtc_addr = address_map
-            .get("wbtc_token")
-            .map(|p| p.0)
-            .unwrap_or([0u8; 32]);
+        let wsol_addr = required_contract_addr("wsol_token")?;
+        let weth_addr = required_contract_addr("weth_token")?;
+        let wbnb_addr = required_contract_addr("wbnb_token")?;
+        let wgas_addr = required_contract_addr("wgas_token")?;
+        let wneo_addr = required_contract_addr("wneo_token")?;
+        let wbtc_addr = required_contract_addr("wbtc_token")?;
 
         // (token_in, token_out, pair_id, pool_id, label)
         type RoutePair = ([u8; 32], [u8; 32], u64, u64, &'static str);
@@ -1467,7 +1455,7 @@ pub fn genesis_initialize_contracts(
             ) {
                 info!("  ROUTE CLOB {} (pair_id={})", label, pair_id);
             } else {
-                warn!("  WARN: Failed to register CLOB route {}", label);
+                return Err(format!("failed to register mandatory CLOB route {}", label));
             }
 
             // AMM route: route_type=1, id=pool_id
@@ -1488,7 +1476,7 @@ pub fn genesis_initialize_contracts(
             ) {
                 info!("  ROUTE AMM {} (pool_id={})", label, pool_id);
             } else {
-                warn!("  WARN: Failed to register AMM route {}", label);
+                return Err(format!("failed to register mandatory AMM route {}", label));
             }
         }
         info!(
@@ -1497,6 +1485,8 @@ pub fn genesis_initialize_contracts(
             route_pairs.len(),
             route_pairs.len()
         );
+    } else {
+        return Err("mandatory genesis contract dex_router missing".to_string());
     }
 
     // ── DEX Core → DEX Analytics: wire analytics address for trade recording ──
@@ -2355,9 +2345,9 @@ pub fn genesis_initialize_contracts(
 
 // ========================================================================
 //  GENESIS PHASE 3 — Create trading pairs and AMM pools at genesis.
-//  Auto-lists LICN/lUSD pair on dex_core and creates the corresponding
-//  AMM pool on dex_amm.  WSOL/lUSD and WETH/lUSD are deferred until the
-//  bridge & custody systems are live and tokens have real supply.
+//  Fresh local testnets and mainnet create all 13 launch CLOB pairs, AMM
+//  pools, and router routes at genesis: LICN/lUSD plus wSOL, wETH, wBNB,
+//  wNEO, wGAS, and wBTC markets against lUSD and LICN.
 // ========================================================================
 
 pub fn genesis_create_trading_pairs(
@@ -2365,57 +2355,37 @@ pub fn genesis_create_trading_pairs(
     deployer_pubkey: &Pubkey,
     label: &str,
     prices: &GenesisPrices,
-) {
+) -> Result<(), String> {
     info!("──────────────────────────────────────────────────────");
     info!("  {} Creating trading pairs & AMM pools", label);
     info!("──────────────────────────────────────────────────────");
 
     let governance_authority =
-        match require_genesis_governance_authority(state, "genesis trading pair creation") {
-            Ok(authority) => authority,
-            Err(err) => {
-                error!("  FAIL: {}", err);
-                return;
-            }
-        };
+        require_genesis_governance_authority(state, "genesis trading pair creation")?;
     let admin = governance_authority.0;
 
     // Resolve contract addresses
-    let dex_core_pk = match derive_contract_address(deployer_pubkey, "dex_core") {
-        Some(pk) => pk,
-        None => {
-            error!("  FAIL: Cannot derive dex_core address");
-            return;
-        }
+    let required_contract = |dir_name: &str| -> Result<Pubkey, String> {
+        derive_contract_address(deployer_pubkey, dir_name).ok_or_else(|| {
+            format!(
+                "mandatory genesis contract {} address not derived",
+                dir_name
+            )
+        })
     };
-    let dex_amm_pk = match derive_contract_address(deployer_pubkey, "dex_amm") {
-        Some(pk) => pk,
-        None => {
-            error!("  FAIL: Cannot derive dex_amm address");
-            return;
-        }
-    };
+    let required_contract_addr =
+        |dir_name: &str| -> Result<[u8; 32], String> { required_contract(dir_name).map(|p| p.0) };
+    let dex_core_pk = required_contract("dex_core")?;
+    let dex_amm_pk = required_contract("dex_amm")?;
+    let dex_gov_pk = required_contract("dex_governance")?;
 
     // Resolve token addresses — LICN is native (zero sentinel), not a contract
     let licn_addr: [u8; 32] = [0u8; 32];
-    let lusd_addr = derive_contract_address(deployer_pubkey, "lusd_token")
-        .map(|p| p.0)
-        .unwrap_or([0u8; 32]);
-    let wsol_addr = derive_contract_address(deployer_pubkey, "wsol_token")
-        .map(|p| p.0)
-        .unwrap_or([0u8; 32]);
-    let weth_addr = derive_contract_address(deployer_pubkey, "weth_token")
-        .map(|p| p.0)
-        .unwrap_or([0u8; 32]);
-    let wbnb_addr = derive_contract_address(deployer_pubkey, "wbnb_token")
-        .map(|p| p.0)
-        .unwrap_or([0u8; 32]);
-    let wbtc_addr = derive_contract_address(deployer_pubkey, "wbtc_token")
-        .map(|p| p.0)
-        .unwrap_or([0u8; 32]);
-
-    // Resolve dex_governance for allowed-quote setup
-    let dex_gov_pk = derive_contract_address(deployer_pubkey, "dex_governance");
+    let lusd_addr = required_contract_addr("lusd_token")?;
+    let wsol_addr = required_contract_addr("wsol_token")?;
+    let weth_addr = required_contract_addr("weth_token")?;
+    let wbnb_addr = required_contract_addr("wbnb_token")?;
+    let wbtc_addr = required_contract_addr("wbtc_token")?;
 
     // Genesis pair parameters (reasonable defaults for launch):
     // tick_size: 1 (minimum price increment in spores)
@@ -2425,12 +2395,8 @@ pub fn genesis_create_trading_pairs(
     let lot_size: u64 = 1_000_000;
     let min_order: u64 = 1_000;
 
-    let wgas_addr = derive_contract_address(deployer_pubkey, "wgas_token")
-        .map(|p| p.0)
-        .unwrap_or([0u8; 32]);
-    let wneo_addr = derive_contract_address(deployer_pubkey, "wneo_token")
-        .map(|p| p.0)
-        .unwrap_or([0u8; 32]);
+    let wgas_addr = required_contract_addr("wgas_token")?;
+    let wneo_addr = required_contract_addr("wneo_token")?;
 
     const WNEO_WHOLE_LOT: u64 = 1_000_000_000;
 
@@ -2479,24 +2445,22 @@ pub fn genesis_create_trading_pairs(
 
     // ── Step 1b: Set allowed quote tokens on dex_governance too ──
     // opcode 15 = add_allowed_quote: [0x0F][caller 32B][quote_addr 32B]
-    if let Some(ref gov_pk) = dex_gov_pk {
-        for (sym, addr) in &[("lUSD", lusd_addr), ("LICN", licn_addr)] {
-            let mut args = Vec::with_capacity(65);
-            args.push(0x0F); // opcode 15 = add_allowed_quote
-            args.extend_from_slice(&admin);
-            args.extend_from_slice(addr);
+    for (sym, addr) in &[("lUSD", lusd_addr), ("LICN", licn_addr)] {
+        let mut args = Vec::with_capacity(65);
+        args.push(0x0F); // opcode 15 = add_allowed_quote
+        args.extend_from_slice(&admin);
+        args.extend_from_slice(addr);
 
-            if genesis_exec_contract(
-                state,
-                gov_pk,
-                &governance_authority,
-                "call",
-                &args,
-                &format!("dex_governance.add_allowed_quote({})", sym),
-            ) {
-                info!("  ALLOWED QUOTE {} (dex_governance)", sym);
-                allowed_quotes_set += 1;
-            }
+        if genesis_exec_contract(
+            state,
+            &dex_gov_pk,
+            &governance_authority,
+            "call",
+            &args,
+            &format!("dex_governance.add_allowed_quote({})", sym),
+        ) {
+            info!("  ALLOWED QUOTE {} (dex_governance)", sym);
+            allowed_quotes_set += 1;
         }
     }
 
@@ -2623,6 +2587,27 @@ pub fn genesis_create_trading_pairs(
         created_pairs, created_pools, allowed_quotes_set
     );
     info!("──────────────────────────────────────────────────────");
+    if allowed_quotes_set != 4 {
+        return Err(format!(
+            "mandatory DEX allowed-quote setup incomplete: expected 4, created {}",
+            allowed_quotes_set
+        ));
+    }
+    if created_pairs != pairs.len() {
+        return Err(format!(
+            "mandatory DEX pair setup incomplete: expected {}, created {}",
+            pairs.len(),
+            created_pairs
+        ));
+    }
+    if created_pools != pool_configs.len() {
+        return Err(format!(
+            "mandatory DEX AMM pool setup incomplete: expected {}, created {}",
+            pool_configs.len(),
+            created_pools
+        ));
+    }
+    Ok(())
 }
 
 // ========================================================================
@@ -2946,7 +2931,7 @@ pub fn genesis_seed_oracle(
     // ── Step 4: Seed initial analytics prices for oracle-priced pairs ──
     // Write ana_lp_{pair_id} so the RPC /pairs endpoint shows prices from
     // the very first request, before the background price feeder starts.
-    genesis_seed_analytics_prices(state, deployer_pubkey, genesis_timestamp, prices);
+    genesis_seed_analytics_prices(state, deployer_pubkey, genesis_timestamp, prices)?;
 
     info!("──────────────────────────────────────────────────────");
     info!("  Genesis oracle seeding complete (LICN + wSOL + wETH + wBNB + wNEO + wGAS + wBTC)");
@@ -2966,12 +2951,11 @@ pub fn genesis_seed_analytics_prices(
     deployer_pubkey: &Pubkey,
     genesis_timestamp: u64,
     prices: &GenesisPrices,
-) {
+) -> Result<(), String> {
     let analytics_pk = match derive_contract_address(deployer_pubkey, "dex_analytics") {
         Some(pk) => pk,
         None => {
-            warn!("  SKIP analytics price seeding: dex_analytics not derived");
-            return;
+            return Err("mandatory genesis contract dex_analytics address not derived".to_string());
         }
     };
 
@@ -3049,6 +3033,7 @@ pub fn genesis_seed_analytics_prices(
                 .expect("genesis: put_contract_storage analytics current candle failed");
         }
     }
+    Ok(())
 }
 
 // ========================================================================

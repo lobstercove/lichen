@@ -21,7 +21,7 @@ async def main():
     print(f'  LICN:  {licn:>15,.3f}')
 
     reg = await conn._rpc('getAllSymbolRegistry')
-    for sym in ['LUSD', 'WSOL', 'WETH', 'WBNB']:
+    for sym in ['LUSD', 'WSOL', 'WETH', 'WBNB', 'WNEO', 'WGAS', 'WBTC']:
         for e in reg.get('entries', []):
             if e.get('symbol') == sym:
                 addr = e['program']

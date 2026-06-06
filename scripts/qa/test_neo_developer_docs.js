@@ -170,6 +170,9 @@ function main() {
             'wNEO/LICN',
             'wGAS/lUSD',
             'wGAS/LICN',
+            'wBTC/lUSD',
+            'wBTC/LICN',
+            'Fresh genesis includes the full launch wrapped-market set',
             'BridgeChain::NeoX',
             'BridgeAsset::Gas',
         ], FILES.developerGuide);
@@ -179,7 +182,7 @@ function main() {
         assertAllIncludes(docs.developerHome, [
             'Neo X Integration',
             'rpc-reference.html#neo-x-route-rewards',
-            'wNEO/wGAS pairs',
+            'genesis-native wNEO, wGAS, and wBTC wrapped markets',
         ], FILES.developerHome);
         assertAllIncludes(docs.searchIndex, [
             'Neo X Integration',
@@ -216,7 +219,7 @@ function main() {
             'last_attestation_slot',
             'dex_rewards.configure_lp_campaign',
         ], FILES.rpcPortal);
-        assertIncludes(docs.rpcPortal, 'v0.5.95', FILES.rpcPortal);
+        assertIncludes(docs.rpcPortal, 'v0.5.97', FILES.rpcPortal);
         assertIncludes(docs.rpcPortal, 'neo-x-route-rewards', FILES.rpcPortal);
     });
 
@@ -235,18 +238,23 @@ function main() {
             'wNEO/LICN',
             'wGAS/lUSD',
             'wGAS/LICN',
+            'wBTC/lUSD',
+            'wBTC/LICN',
+            '"BTC": ...',
         ], FILES.rpcMarkdown);
     });
 
     test('CLI docs expose route status, governed route payloads, and Neo symbol lookups', () => {
         assertAllIncludes(docs.cliPortal, [
-            'v0.5.95',
+            'v0.5.97',
+            'lichen 0.5.97',
             'lichen restriction status bridge-route neox gas',
             'lichen restriction status bridge-route neox neo',
             'lichen restriction build pause-bridge-route neox gas',
             'lichen restriction build resume-bridge-route neox gas',
             'lichen symbol lookup WNEO',
             'lichen symbol lookup WGAS',
+            'lichen symbol lookup WBTC',
             'lichen symbol lookup NEOGASRWD',
             'neo-rpc-reads',
             'getWgasStats',
@@ -257,6 +265,9 @@ function main() {
             'zk-prove reserve-liability',
             'zk-prove verify-reserve-liability',
         ], FILES.cliPortal);
+        assertAllIncludes(docs.gettingStarted, ['lichen 0.5.97'], FILES.gettingStarted);
+        assertNotIncludes(docs.cliPortal, 'lichen 0.5.44', FILES.cliPortal);
+        assertNotIncludes(docs.gettingStarted, 'lichen 0.5.44', FILES.gettingStarted);
     });
 
     test('contract docs and expected-contracts include wrapped asset contracts with current counts', () => {
@@ -335,6 +346,9 @@ function main() {
             'wGAS',
             'wNEO',
             'wBTC',
+            'wBTC/lUSD',
+            'wBTC/LICN',
+            'Fresh local-testnet and mainnet genesis deploys all wrapped tokens',
             'Neo X GAS',
             'Neo X NEO',
             'BTC',
@@ -349,6 +363,7 @@ function main() {
             'CUSTODY_WBNB_TOKEN_ADDR',
             'CUSTODY_WGAS_TOKEN_ADDR',
             'CUSTODY_WNEO_TOKEN_ADDR',
+            'CUSTODY_WBTC_TOKEN_ADDR',
             'EVM Route Registry',
             'neox',
             'whole-NEO',

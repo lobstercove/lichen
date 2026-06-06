@@ -14,6 +14,8 @@ Usage: sudo bash scripts/sync-custody-wrapped-contracts.sh [--env-file PATH] [--
 
 The script reads LUSD/WSOL/WETH/WBNB/WGAS/WNEO/WBTC from getSymbolRegistry and
 updates only the matching CUSTODY_*_TOKEN_ADDR keys in the custody env file.
+It does not remove source-chain route keys, custody DB state, chain state, DEX
+pairs, DEX pools, DEX routes, or historical blocks.
 EOF
 }
 

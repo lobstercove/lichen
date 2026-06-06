@@ -29,6 +29,7 @@ const LICHEN_SDK_CONFIG = (() => {
                 ws: 'wss://rpc.lichen.network/ws',
                 explorer: 'https://explorer.lichen.network',
                 compiler: null,
+                faucet: null,
                 chainId: 1
             },
             testnet: {
@@ -36,6 +37,7 @@ const LICHEN_SDK_CONFIG = (() => {
                 ws: 'wss://testnet-rpc.lichen.network/ws',
                 explorer: 'https://explorer.lichen.network',
                 compiler: null,
+                faucet: 'https://faucet.lichen.network',
                 chainId: 2
             },
             local: {
@@ -43,6 +45,7 @@ const LICHEN_SDK_CONFIG = (() => {
                 ws: 'ws://localhost:8900',
                 explorer: 'http://localhost:3007',
                 compiler: 'http://localhost:8901/compile',
+                faucet: 'http://localhost:9100',
                 chainId: 999
             }
         },
@@ -63,11 +66,15 @@ const LICHEN_SDK_CONFIG = (() => {
     const networks = {};
     for (const [key, net] of Object.entries(fallback.networks)) {
         const s = shared.networks?.[key] || {};
+        const sharedFaucet = typeof shared.faucet === 'string' && shared.faucet.trim()
+            ? shared.faucet.trim()
+            : null;
         networks[key] = {
             rpc: s.rpc || net.rpc,
             ws: s.ws || net.ws,
             explorer: s.explorer || net.explorer,
             compiler: s.compiler || net.compiler || null,
+            faucet: s.faucet || sharedFaucet || net.faucet || null,
             chainId: net.chainId,
             ...(s.local !== undefined ? { local: s.local } : {}),
         };
@@ -774,26 +781,62 @@ class LichenRPC {
     /**
      * Request testnet/local tokens from faucet
      */
-    async requestFaucet(pubkey, amount = 100) {
+    faucetBaseUrl() {
+        return String(this.config.faucet || '').trim().replace(/\/+$/, '');
+    }
+
+    async getFaucetConfig() {
+        if (this.network === 'mainnet') {
+            throw new Error('Faucet not available on mainnet');
+        }
+        const faucetBase = this.faucetBaseUrl();
+        if (!faucetBase) {
+            throw new Error('Faucet endpoint unavailable for this network');
+        }
+        const response = await fetch(`${faucetBase}/faucet/config`);
+        const bodyText = await response.text();
+        let payload = null;
+        try {
+            payload = bodyText ? JSON.parse(bodyText) : null;
+        } catch {
+            payload = null;
+        }
+        if (!response.ok) {
+            const message = payload?.error || payload?.message || response.statusText || `HTTP ${response.status}`;
+            throw new Error(`Faucet config failed: ${message}`);
+        }
+        return payload || {};
+    }
+
+    async requestFaucet(pubkey, amount = 10) {
         if (this.network === 'mainnet') {
             throw new Error('Faucet not available on mainnet');
         }
 
-        // Call faucet endpoint (separate service)
-        const faucetUrl = this.config.rpc.includes('/rpc')
-            ? this.config.rpc.replace('/rpc', '/faucet')
-            : `${this.config.rpc.replace(/\/$/, '')}/faucet`;
-        const response = await fetch(`${faucetUrl}/request`, {
+        const faucetBase = this.faucetBaseUrl();
+        if (!faucetBase) {
+            throw new Error('Faucet endpoint unavailable for this network');
+        }
+
+        const response = await fetch(`${faucetBase}/faucet/request`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ address: pubkey, amount })
         });
-
-        if (!response.ok) {
-            throw new Error(`Faucet request failed: ${response.statusText}`);
+        const bodyText = await response.text();
+        let payload = null;
+        try {
+            payload = bodyText ? JSON.parse(bodyText) : null;
+        } catch {
+            payload = null;
         }
 
-        return await response.json();
+        if (!response.ok || payload?.success === false) {
+            const message = payload?.error || payload?.message || response.statusText || `HTTP ${response.status}`;
+            throw new Error(`Faucet request failed: ${message}`);
+        }
+
+        return payload || {};
     }
 
     sleep(ms) {

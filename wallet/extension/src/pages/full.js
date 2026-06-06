@@ -20,8 +20,12 @@ import {
 } from '../core/crypto-service.js';
 import { buildSignedNativeTransferTransaction, buildSignedSingleInstructionTransaction, encodeTransactionBase64, registerEvmAddress } from '../core/tx-service.js';
 import { notify } from '../core/notification-service.js';
-import { requestBridgeDepositAddress, getBridgeDepositStatus } from '../core/bridge-service.js';
-import { hasBridgeAccessAuth } from '../core/bridge-service.js';
+import {
+  getBridgeDepositStatus,
+  hasBridgeAccessAuth,
+  preflightBridgeDepositRoute,
+  requestBridgeDepositAddress
+} from '../core/bridge-service.js';
 import {
   loadIdentityDetails,
   registerIdentity,
@@ -1292,11 +1296,13 @@ async function refreshBalance() {
     const breakdownEl = $('balanceBreakdown');
     if (breakdownEl) {
       const shieldedSpores = extensionShieldedBalanceSpores();
-      const hasBreakdown = balanceSnapshot.stakedLicn > 0 || balanceSnapshot.lockedLicn > 0 || balanceSnapshot.mossStakedLicn > 0 || balanceSnapshot.pendingRewardsLicn > 0 || shieldedSpores > 0n;
+      const stakingPosition = await rpc().call('getStakingPosition', [wallet.address]).catch(() => null);
+      const stLicnBalance = Number(stakingPosition?.st_licn_amount || 0) / 1_000_000_000;
+      const hasBreakdown = balanceSnapshot.stakedLicn > 0 || balanceSnapshot.lockedLicn > 0 || stLicnBalance > 0 || balanceSnapshot.pendingRewardsLicn > 0 || shieldedSpores > 0n;
       if (hasBreakdown) {
         const parts = [`<i class="fas fa-wallet" style="opacity:0.5;"></i> Spendable: <strong>${balanceSnapshot.spendableLicn.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`];
         if (balanceSnapshot.stakedLicn > 0) parts.push(`<i class="fas fa-lock" style="opacity:0.5;"></i> Staked: <strong>${balanceSnapshot.stakedLicn.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`);
-        if (balanceSnapshot.mossStakedLicn > 0) parts.push(`<i class="fas fa-coins" style="opacity:0.5;"></i> Liquid Staking Value: <strong>${balanceSnapshot.mossStakedLicn.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`);
+        if (stLicnBalance > 0) parts.push(`<i class="fas fa-coins" style="opacity:0.5;"></i> stLICN Staked: <strong>${stLicnBalance.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`);
         if (shieldedSpores > 0n) parts.push(`<i class="fas fa-shield-alt" style="opacity:0.5;"></i> Shielded: <strong>${formatLicnBaseUnitsFixedExt(shieldedSpores)}</strong>`);
         if (balanceSnapshot.pendingRewardsLicn > 0) parts.push(`<i class="fas fa-gift" style="opacity:0.5;"></i> Rewards: <strong>${balanceSnapshot.pendingRewardsLicn.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`);
         if (balanceSnapshot.lockedLicn > 0) parts.push(`<i class="fas fa-hourglass" style="opacity:0.5;"></i> Locked: <strong>${balanceSnapshot.lockedLicn.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`);
@@ -3797,6 +3803,8 @@ async function executeExtensionDeposit(chain, asset, chainLabel, container) {
   container.querySelectorAll('[data-bridge-asset]').forEach(b => b.style.display = 'none');
 
   try {
+    await preflightBridgeDepositRoute({ chain, asset, network });
+
     const hasCachedBridgeAuth = hasBridgeAccessAuth(wallet, { chain, asset });
     if (hasCachedBridgeAuth && resultEl) {
       resultEl.innerHTML = '<p style="text-align:center;"><i class="fas fa-key"></i> Using active bridge authorization...</p>';

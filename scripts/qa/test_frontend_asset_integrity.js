@@ -812,6 +812,7 @@ function validateProgramsWalletBridgeParity() {
     const html = fs.readFileSync(path.join(repoRoot, 'programs', 'playground.html'), 'utf8');
     const js = fs.readFileSync(path.join(repoRoot, 'programs', 'js', 'playground-complete.js'), 'utf8');
     const sdk = fs.readFileSync(path.join(repoRoot, 'programs', 'js', 'lichen-sdk.js'), 'utf8');
+    const dexJs = fs.readFileSync(path.join(repoRoot, 'dex', 'dex.js'), 'utf8');
 
     const helperIndex = html.indexOf('src="shared/wallet-connect.js"');
     const sdkIndex = html.indexOf('src="js/lichen-sdk.js"');
@@ -839,11 +840,70 @@ function validateProgramsWalletBridgeParity() {
         'Programs playground supports DEX-style extension and web-wallet provider actions'
     );
 
+    const dexWalletStateCopy = [
+        'Create or Import Web Wallet',
+        'Web Wallet Locked',
+        'Web Wallet Connected',
+        'Reconnect Web Wallet Session',
+        'Connect with Web Wallet',
+        'Extension Not Detected',
+        'Extension Has No Wallet Loaded',
+        'Set Up Extension Wallet',
+        'Extension Locked',
+        'Extension Connected',
+        'Reconnect Extension Session',
+        'Connect Wallet Extension',
+    ];
+    assert(
+        dexWalletStateCopy.every((text) => dexJs.includes(text) && js.includes(text)) &&
+            js.includes("const livePopupSession = providerType !== 'web-wallet' || windowOpen;") &&
+            js.includes('const exposedAccounts = livePopupSession ? accounts : [];') &&
+            js.includes("const usingWebWallet = providerState.providerType === 'web-wallet';") &&
+            js.includes("const activeStateLabel = this.walletCanSign() ? 'Active' : 'Read-only';") &&
+            !js.includes('Programs transactions'),
+        'Programs wallet modal uses the same DEX provider states, closed-popup handling, and read-only wallet labeling'
+    );
+
+    const staleProgramsWalletCopy = [
+        'to trade\n                        securely',
+        'saved in the DEX',
+        'access to this DEX',
+        'A saved DEX address',
+        'sign orders, approvals, and cancellations',
+        'approve orders, approvals, and cancellations',
+        'outside the DEX',
+        'switch the DEX signer',
+        'approve trading requests',
+        'approve the DEX connection',
+        'The DEX refreshes automatically',
+        'the DEX will follow it automatically',
+        'trade securely',
+    ];
+    assert(
+        html.includes('deploy\n                        and test programs securely') &&
+            js.includes('sign deployments, calls, and metadata updates') &&
+            js.includes('approve program requests') &&
+            staleProgramsWalletCopy.every((text) => !html.includes(text) && !js.includes(text)),
+        'Programs wallet modal copy is program-developer specific while preserving the shared DEX flow'
+    );
+
     assert(
         sdk.includes("wallet?.providerType === 'web-wallet'") &&
             sdk.includes('const popupProvider = getPopupLichenProvider();') &&
             sdk.includes('wallet?.provider && await matchesWalletAddress(wallet.provider)'),
         'Programs SDK resolves popup and injected wallet providers for transaction approval'
+    );
+
+    assert(
+        sdk.includes('faucetBaseUrl()') &&
+            sdk.includes('getFaucetConfig()') &&
+            sdk.includes('`${faucetBase}/faucet/request`') &&
+            sdk.includes('payload?.error || payload?.message || response.statusText') &&
+            !sdk.includes("this.config.rpc.includes('/rpc')") &&
+            js.includes("this.network === 'mainnet' || this.network === 'local-mainnet'") &&
+            js.includes('getFaucetConfig().catch(() => null)') &&
+            js.includes('max_per_request'),
+        'Programs faucet uses the configured faucet service, surfaces JSON errors, respects faucet max, and rejects local mainnet'
     );
 }
 

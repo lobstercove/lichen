@@ -21,6 +21,8 @@ EXPECTED_POOLS = {
     9: "wNEO/LICN",
     10: "wGAS/lUSD",
     11: "wGAS/LICN",
+    12: "wBTC/lUSD",
+    13: "wBTC/LICN",
 }
 
 reserve = load_genesis_keypair('reserve_pool', NETWORK)

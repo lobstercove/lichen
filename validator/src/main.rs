@@ -10507,12 +10507,17 @@ async fn run_validator() {
                                         err
                                     );
                                 };
-                                genesis_create_trading_pairs(
+                                if let Err(err) = genesis_create_trading_pairs(
                                     &state_for_blocks,
                                     &gpk,
                                     "📡 [sync]",
                                     &genesis_prices,
-                                );
+                                ) {
+                                    tracing::error!(
+                                        "genesis DEX pair/pool creation during sync failed: {}",
+                                        err
+                                    );
+                                };
                                 genesis_set_fee_exempt_contracts(
                                     &state_for_blocks,
                                     &gpk,
@@ -10542,12 +10547,17 @@ async fn run_validator() {
                                     block.header.timestamp,
                                     &genesis_prices,
                                 );
-                                genesis_seed_analytics_prices(
+                                if let Err(err) = genesis_seed_analytics_prices(
                                     &state_for_blocks,
                                     &gpk,
                                     block.header.timestamp,
                                     &genesis_prices,
-                                );
+                                ) {
+                                    tracing::error!(
+                                        "genesis analytics seeding during sync failed: {}",
+                                        err
+                                    );
+                                };
 
                                 // 9. Genesis identities & achievements
                                 {

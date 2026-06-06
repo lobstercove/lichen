@@ -3,8 +3,8 @@
 
 Per DEX_LIQUIDITY_STRATEGY.md:
   Phase 1:  Graduated LICN/lUSD sell-wall + buy-wall on CLOB (25 levels each)
-  Phase 1b: Orders on all 11 trading pairs at oracle cross-rates
-  Phase 2:  Concentrated liquidity positions on all 11 AMM pools
+  Phase 1b: Orders on all 13 trading pairs at oracle cross-rates
+  Phase 2:  Concentrated liquidity positions on all 13 AMM pools
 
 Uses the reserve_pool wallet (50M LICN) as the initial protocol market maker.
 Pre-requisite: run mint_protocol_lusd.py first to mint lUSD + testnet wrapped tokens.
@@ -31,6 +31,7 @@ PAIR_IDS = {
     "LICN/lUSD": 1, "wSOL/lUSD": 2, "wETH/lUSD": 3,
     "wSOL/LICN": 4, "wETH/LICN": 5, "wBNB/lUSD": 6, "wBNB/LICN": 7,
     "wNEO/lUSD": 8, "wNEO/LICN": 9, "wGAS/lUSD": 10, "wGAS/LICN": 11,
+    "wBTC/lUSD": 12, "wBTC/LICN": 13,
 }
 POOL_IDS = PAIR_IDS  # Same ordering
 
@@ -62,8 +63,9 @@ def fetch_external_prices():
         'BNB': 650.06,
         'NEO': 3.075,
         'GAS': 1.65,
+        'BTC': 67_500.0,
     }
-    symbols = ["SOLUSDT", "ETHUSDT", "BNBUSDT", "NEOUSDT", "GASUSDT"]
+    symbols = ["SOLUSDT", "ETHUSDT", "BNBUSDT", "NEOUSDT", "GASUSDT", "BTCUSDT"]
     urls = [
         'https://api.binance.us/api/v3/ticker/price?symbols=' + urllib.parse.quote(json.dumps(symbols)),
         'https://api.binance.com/api/v3/ticker/price?symbols=' + urllib.parse.quote(json.dumps(symbols)),
@@ -74,6 +76,7 @@ def fetch_external_prices():
         'BNBUSDT': 'BNB',
         'NEOUSDT': 'NEO',
         'GASUSDT': 'GAS',
+        'BTCUSDT': 'BTC',
     }
     prices = {}
     for url in urls:
@@ -107,6 +110,7 @@ async def fetch_chain_prices(conn):
         "wBNB": "BNB",
         "wNEO": "NEO",
         "wGAS": "GAS",
+        "wBTC": "BTC",
     }
     prices = {}
     for chain_sym, local_sym in mapping.items():
@@ -119,7 +123,7 @@ async def fetch_chain_prices(conn):
 def apply_price_overrides(prices):
     """Apply explicit operator overrides last."""
     prices = dict(prices)
-    for sym in ("SOL", "ETH", "BNB", "NEO", "GAS"):
+    for sym in ("SOL", "ETH", "BNB", "NEO", "GAS", "BTC"):
         env_key = f"LICHEN_{sym}_USD_PRICE"
         if env_key in os.environ:
             prices[sym] = float(os.environ[env_key])
@@ -397,6 +401,8 @@ async def main():
             contracts["wneo"] = PublicKey.from_base58(prog)
         elif sym == "WGAS":
             contracts["wgas"] = PublicKey.from_base58(prog)
+        elif sym == "WBTC":
+            contracts["wbtc"] = PublicKey.from_base58(prog)
 
     dex_core = contracts.get("dex_core")
     dex_amm = contracts.get("dex_amm")
@@ -412,12 +418,14 @@ async def main():
     wbnb = contracts.get("wbnb")
     wneo = contracts.get("wneo")
     wgas = contracts.get("wgas")
+    wbtc = contracts.get("wbtc")
     print(f"  lusd:          {lusd}")
     print(f"  wsol:          {wsol}")
     print(f"  weth:          {weth}")
     print(f"  wbnb:          {wbnb}")
     print(f"  wneo:          {wneo}")
     print(f"  wgas:          {wgas}")
+    print(f"  wbtc:          {wbtc}")
 
     # ── Pre-approve DEX contracts to escrow tokens from reserve_pool ──
     MAX_APPROVE = 2**63 - 1  # max u64-safe approval amount
@@ -429,10 +437,11 @@ async def main():
         ("wBNB", wbnb),
         ("wNEO", wneo),
         ("wGAS", wgas),
+        ("wBTC", wbtc),
     ]:
         if not token:
-            print(f"    {label}: contract not found, skipping")
-            continue
+            print(f"    {label}: contract not found")
+            sys.exit(1)
         approve_amount = MAX_APPROVE
         if label == "wNEO":
             approve_amount -= approve_amount % SPORES
@@ -462,6 +471,7 @@ async def main():
     bnb = prices['BNB']
     neo = prices['NEO']
     gas = prices['GAS']
+    btc = prices['BTC']
 
     total_orders = 0
 
@@ -543,13 +553,16 @@ async def main():
         ("wBNB/lUSD", 6, bnb,       20,  10, False, False),
         ("wNEO/lUSD", 8, neo,       500, 10, False, False),
         ("wGAS/lUSD", 10, gas,      1000, 10, False, False),
+        ("wBTC/lUSD", 12, btc,      1,    10, False, False),
         ("wSOL/LICN", 4, sol / licn, 50,  10, False, True),
         ("wETH/LICN", 5, eth / licn, 5,   10, False, True),
         ("wBNB/LICN", 7, bnb / licn, 20,  10, False, True),
         ("wNEO/LICN", 9, neo / licn, 500, 10, False, True),
         ("wGAS/LICN", 11, gas / licn, 1000, 10, False, True),
+        ("wBTC/LICN", 13, btc / licn, 1,  10, False, True),
     ]
 
+    clob_seed_failures = []
     for name, pid, base_price, lot, nlevels, base_native, quote_native in wrapped_pairs:
         pair_orders = 0
         pair_failures = {}
@@ -584,8 +597,13 @@ async def main():
         print(f"    {name}: {pair_orders} orders placed")
         for reason, count in sorted(pair_failures.items()):
             print(f"      {count} failed: {reason}")
+        if pair_failures or pair_orders == 0:
+            clob_seed_failures.append(name)
 
     print(f"\n  Total CLOB orders: {total_orders}")
+    if clob_seed_failures:
+        print(f"  ERROR: mandatory CLOB seeding incomplete for {', '.join(clob_seed_failures)}")
+        sys.exit(1)
 
     # ═════════════════════════════════════════════════════════════════════
     #  Phase 2: AMM Concentrated Liquidity
@@ -608,6 +626,8 @@ async def main():
         ("wNEO/LICN", 9, neo / licn, neo / licn * 0.6, neo / licn * 1.5, 2_500,    75_000,   "b"),
         ("wGAS/lUSD", 10, gas,       gas * 0.7,        gas * 1.4,       10_000,    16_500,   None),
         ("wGAS/LICN", 11, gas / licn, gas / licn * 0.6, gas / licn * 1.5, 10_000,  165_000,  "b"),
+        ("wBTC/lUSD", 12, btc,       btc * 0.7,        btc * 1.4,       5,         250_000,  None),
+        ("wBTC/LICN", 13, btc / licn, btc / licn * 0.6, btc / licn * 1.5, 5,       500_000,  "b"),
     ]
 
     pools_seeded = 0
@@ -643,6 +663,8 @@ async def main():
     print(f"  CLOB orders placed:  {total_orders}")
     print(f"  AMM pools seeded:    {pools_seeded}/{expected_pools}")
     print(f"  Market maker wallet: {reserve.address()}")
+    if pools_seeded != expected_pools:
+        sys.exit(1)
 
 
 asyncio.run(main())

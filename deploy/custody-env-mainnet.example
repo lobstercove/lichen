@@ -24,6 +24,8 @@ CUSTODY_TREASURY_KEYPAIR=/etc/lichen/custody-treasury-mainnet.json
 CUSTODY_REQUIRED_ROUTES=solana,ethereum,bnb,neox,bitcoin
 
 # Source-chain RPC routes. Keep a route unset until it is intentionally live.
+# Fresh genesis still creates all wrapped token contracts plus DEX pairs, pools,
+# and routes; this only gates public source-chain custody access.
 # Mainnet source routes must keep Ethereum CUSTODY_ETH_CHAIN_ID=1 and BSC
 # CUSTODY_BNB_CHAIN_ID=56 unless governance explicitly approves another route.
 # CUSTODY_SOLANA_RPC_URL=REPLACE_WITH_SOLANA_RPC_URL

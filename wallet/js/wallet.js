@@ -847,7 +847,7 @@ function renderWalletBalanceBreakdown() {
 
     const sporesPerLicn = typeof SPORES_PER_LICN === 'number' ? SPORES_PER_LICN : 1_000_000_000;
     const shielded = Math.max(0, Number(window.currentShieldedBalanceSpores || 0)) / sporesPerLicn;
-    const hasBreakdown = snapshot.staked > 0 || snapshot.locked > 0 || snapshot.mossStaked > 0 || shielded > 0;
+    const hasBreakdown = snapshot.staked > 0 || snapshot.locked > 0 || snapshot.stLicn > 0 || shielded > 0;
     if (!hasBreakdown) {
         breakdownEl.innerHTML = '';
         breakdownEl.style.display = 'none';
@@ -856,7 +856,7 @@ function renderWalletBalanceBreakdown() {
 
     const parts = [`<i class="fas fa-wallet" style="opacity:0.5;"></i> Spendable: <strong>${fmtToken(snapshot.spendable, 4)}</strong>`];
     if (snapshot.staked > 0) parts.push(`<i class="fas fa-lock" style="opacity:0.5;"></i> Staked: <strong>${fmtToken(snapshot.staked, 4)}</strong>`);
-    if (snapshot.mossStaked > 0) parts.push(`<i class="fas fa-coins" style="opacity:0.5;"></i> Liquid Staking Value: <strong>${fmtToken(snapshot.mossStaked, 4)}</strong>`);
+    if (snapshot.stLicn > 0) parts.push(`<i class="fas fa-coins" style="opacity:0.5;"></i> stLICN Staked: <strong>${fmtToken(snapshot.stLicn, 4)}</strong>`);
     if (shielded > 0) parts.push(`<i class="fas fa-shield-alt" style="opacity:0.5;"></i> Shielded: <strong>${fmtToken(shielded, 4)}</strong>`);
     if (snapshot.locked > 0) parts.push(`<i class="fas fa-lock" style="opacity:0.5;"></i> Locked: <strong>${fmtToken(snapshot.locked, 4)}</strong>`);
 
@@ -2907,12 +2907,15 @@ async function refreshBalance(options = {}) {
         balanceUsdEl.textContent = `${fmtUsd(totalUsd, sym)} ${currency}${usdValuationSuffix(valuationQuotes)}`;
         balanceUsdEl.title = usdValuationTitle(valuationQuotes);
 
-        // Balance breakdown — show spendable/staked/locked/moss split when non-trivial
+        const stakingPosition = await rpc.call('getStakingPosition', [wallet.address]).catch(() => null);
+        if (!isCurrentWalletView(wallet, generation)) return;
+
+        // Balance breakdown — show spendable/staked/locked/stLICN split when non-trivial
         window.currentWalletBalanceBreakdown = {
             spendable: parseFloat(balance.spendable_licn) || 0,
             staked: parseFloat(balance.staked_licn) || 0,
             locked: parseFloat(balance.locked_licn) || 0,
-            mossStaked: parseFloat(balance.moss_value_licn ?? balance.moss_staked_licn) || 0,
+            stLicn: Number(stakingPosition?.st_licn_amount || 0) / SPORES_PER_LICN,
         };
         renderWalletBalanceBreakdown();
     } catch (error) {
@@ -4293,6 +4296,31 @@ function bridgeDepositUserMessage(error) {
     return message || 'Failed to connect to bridge service';
 }
 
+function bridgeRouteReadinessMessage(status, asset, chainName) {
+    if (!status || typeof status !== 'object') return '';
+    const readinessKnown = ['route_ready', 'deposit_ready', 'custody_configured', 'custody_status']
+        .some(key => Object.prototype.hasOwnProperty.call(status, key));
+    if (!readinessKnown) return '';
+    if (status.route_ready === true || (status.deposit_ready === true && status.route_paused !== true && status.paused !== true)) {
+        return '';
+    }
+    const assetLabel = String(asset || '').toUpperCase();
+    const chainLabel = chainName || status.chain || 'selected chain';
+    if (status.custody_status === 'not_configured' || status.custody_configured === false) {
+        return `${assetLabel} deposits from ${chainLabel} are not live on testnet yet.`;
+    }
+    if (status.custody_status && status.custody_status !== 'ok') {
+        return `${assetLabel} deposits from ${chainLabel} are temporarily unavailable.`;
+    }
+    if (Array.isArray(status.missing_config) && status.missing_config.length > 0) {
+        return `${assetLabel} deposits from ${chainLabel} are not live on testnet yet.`;
+    }
+    if (status.deposit_ready === false || status.route_ready === false) {
+        return `${assetLabel} deposits from ${chainLabel} are not live on testnet yet.`;
+    }
+    return '';
+}
+
 async function showDepositInfo(chain) {
     const wallet = getActiveWallet();
     if (!wallet) return;
@@ -4364,7 +4392,22 @@ async function assertBridgeRouteOpen(chain, asset, chainName) {
         const suffix = ids ? ` (${ids})` : '';
         throw new Error(`Bridge route paused for ${asset.toUpperCase()} on ${chainName}${suffix}`);
     }
+    const readinessMessage = bridgeRouteReadinessMessage(status, asset, chainName);
+    if (readinessMessage) {
+        throw new Error(readinessMessage);
+    }
     return status;
+}
+
+function renderBridgeDepositError({ container, message, icon = 'fas fa-exclamation-circle' }) {
+    if (!container) return;
+    container.style.display = 'block';
+    container.innerHTML = `
+        <div style="padding:0.8rem 0.9rem;border:1px solid rgba(239,71,111,0.35);background:rgba(239,71,111,0.08);border-radius:8px;color:var(--text-secondary);font-size:0.84rem;">
+            <i class="${escapeHtml(icon)}" style="color:#EF476F;"></i>
+            <span>${escapeHtml(message)}</span>
+        </div>
+    `;
 }
 
 function renderBridgeDepositAddress({ container, address, depositId, asset, chainName }) {
@@ -4433,6 +4476,15 @@ async function requestDepositAddress(chain, asset, chainName, icon) {
     const wallet = getActiveWallet();
     if (!wallet) return;
 
+    const tokenSelect = document.getElementById('bridgeTokenSelect');
+    const loadingState = document.getElementById('bridgeLoadingState');
+    const depositResult = document.getElementById('bridgeDepositResult');
+    const helpText = document.getElementById('bridgeHelpText');
+    if (depositResult) {
+        depositResult.innerHTML = '';
+        depositResult.style.display = 'none';
+    }
+
     // Validate inputs
     const validChains = ['solana', 'ethereum', 'bnb', 'neox', 'bitcoin'];
     const validAssets = ['usdc', 'usdt', 'sol', 'eth', 'bnb', 'gas', 'neo', 'btc'];
@@ -4443,7 +4495,12 @@ async function requestDepositAddress(chain, asset, chainName, icon) {
     try {
         await assertBridgeRouteOpen(chain, asset, chainName);
     } catch (error) {
-        showToast(error.message || 'Bridge route unavailable', 'error');
+        const message = bridgeDepositUserMessage(error);
+        renderBridgeDepositError({ container: depositResult, message });
+        if (tokenSelect) tokenSelect.style.display = 'flex';
+        if (loadingState) loadingState.style.display = 'none';
+        if (helpText) helpText.style.display = 'block';
+        showToast(message || 'Bridge route unavailable', 'error');
         return;
     }
 
@@ -4458,12 +4515,6 @@ async function requestDepositAddress(chain, asset, chainName, icon) {
         showToast(error.message || 'Bridge authorization failed', 'error');
         return;
     }
-
-    // Show loading state in the CURRENT modal (don't close it)
-    const tokenSelect = document.getElementById('bridgeTokenSelect');
-    const loadingState = document.getElementById('bridgeLoadingState');
-    const depositResult = document.getElementById('bridgeDepositResult');
-    const helpText = document.getElementById('bridgeHelpText');
 
     if (tokenSelect) tokenSelect.style.display = 'none';
     if (loadingState) loadingState.style.display = 'block';
@@ -4501,7 +4552,9 @@ async function requestDepositAddress(chain, asset, chainName, icon) {
         if (tokenSelect) tokenSelect.style.display = 'flex';
         if (loadingState) loadingState.style.display = 'none';
         if (helpText) helpText.style.display = 'block';
-        showToast(bridgeDepositUserMessage(error), 'error');
+        const message = bridgeDepositUserMessage(error);
+        renderBridgeDepositError({ container: depositResult, message });
+        showToast(message, 'error');
     }
 }
 

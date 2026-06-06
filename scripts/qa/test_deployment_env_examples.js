@@ -346,6 +346,101 @@ for (const [relPath, expected] of Object.entries(custodyExpected)) {
   requireNoInlineCustodySeeds(env, relPath);
 }
 
+const genesisSource = read('genesis/src/lib.rs');
+assert(
+  genesisSource.includes('let pairs: [(&str, [u8; 32], [u8; 32], u64); 13]') &&
+    genesisSource.includes('let pool_configs: [(&str, [u8; 32], [u8; 32], u64); 13]') &&
+    genesisSource.includes('"wBTC/lUSD"') &&
+    genesisSource.includes('"wBTC/LICN"') &&
+    genesisSource.includes('mandatory DEX pair setup incomplete') &&
+    genesisSource.includes('mandatory DEX AMM pool setup incomplete') &&
+    !genesisSource.includes('derive_contract_address(deployer_pubkey, "wbtc_token")\n        .map(|p| p.0)\n        .unwrap_or([0u8; 32])'),
+  'fresh genesis must fail closed with all 13 launch DEX pairs/pools including WBTC',
+);
+
+const deployDex = read('tools/deploy_dex.py');
+const seedDexLiquidity = read('tools/seed_dex_liquidity.py');
+const checkAmmPools = read('tools/check_amm_pools.py');
+const verifyDex = read('tools/verify_dex.py');
+const verifyOrderbook = read('tools/verify_orderbook.py');
+const checkBalances = read('tools/check_balances.py');
+const verifyBalances = read('tools/verify_balances.py');
+const protocolGovernanceHelper = read('cli/src/bin/protocol_governance_contract_call.rs');
+[
+  deployDex,
+  seedDexLiquidity,
+  checkAmmPools,
+  verifyDex,
+  verifyOrderbook,
+].forEach((source, index) => {
+  assert(source.includes('wBTC/lUSD') && source.includes('wBTC/LICN'), `DEX tool ${index} missing WBTC launch pairs`);
+});
+assert(
+  deployDex.includes('legacy/manual repair') &&
+    deployDex.includes('mandatory token address unknown') &&
+    seedDexLiquidity.includes('all 13 trading pairs') &&
+    seedDexLiquidity.includes('all 13 AMM pools'),
+  'DEX deployment/liquidity tools must document mandatory genesis and fail closed on missing WBTC state',
+);
+assert(
+  checkBalances.includes('"WBTC"') && verifyBalances.includes("'WBTC'"),
+  'reserve balance verification tools must include WBTC with the other launch wrapped assets',
+);
+assert(
+  protocolGovernanceHelper.includes('compute_budget: Option<u64>') &&
+    protocolGovernanceHelper.includes('compute_budget,') &&
+    protocolGovernanceHelper.includes('compute_budget: Option<u64>,'),
+  'protocol governance helper must expose explicit transaction compute budget for DEX admin executions',
+);
+
+const custodyRouteProfile = read('deploy/custody-route-profile.md');
+const mainnetRunbook = read('deploy/mainnet-launch-runbook.md');
+const mainnetRunbookDoc = read('docs/deployment/MAINNET_LAUNCH_RUNBOOK.md');
+const productionDeployment = read('docs/deployment/PRODUCTION_DEPLOYMENT.md');
+const dexLiquidityStrategy = read('docs/strategy/DEX_LIQUIDITY_STRATEGY.md');
+const btcRolloutPlan = read('docs/deployment/BTC_WRAPPED_ASSET_ROLLOUT_PLAN.md');
+assert(
+  custodyRouteProfile.includes('mandatory CLOB pairs, AMM pools, and router') &&
+    mainnetRunbook.includes('not a DEX market optionality switch') &&
+    mainnetRunbookDoc.includes('not a DEX market optionality switch') &&
+    productionDeployment.includes('mandatory 13 launch DEX CLOB pairs'),
+  'deployment docs must separate source-chain custody gating from genesis-native DEX markets',
+);
+assert(
+  dexLiquidityStrategy.includes('13 trading pairs') &&
+    dexLiquidityStrategy.includes('290 CLOB orders') &&
+    dexLiquidityStrategy.includes('13 AMM pools') &&
+    dexLiquidityStrategy.includes('LICHEN_BTC_USD_PRICE'),
+  'DEX liquidity strategy must document the 13-market WBTC launch set',
+);
+assert(
+  btcRolloutPlan.includes('sync-custody-wrapped-contracts.sh \\\n  --rpc-url https://testnet-rpc.lichen.network \\\n  --env-file /etc/lichen/custody-env') &&
+    btcRolloutPlan.includes('apply-custody-route-profile.sh \\\n  --profile /etc/lichen/custody-routes-testnet.env \\\n  --target /etc/lichen/custody-env') &&
+    btcRolloutPlan.includes('verify-custody-routes.sh \\\n  --env-file /etc/lichen/custody-env') &&
+    !btcRolloutPlan.includes('sync-custody-wrapped-contracts.sh https://testnet-rpc.lichen.network /etc/lichen/custody.env') &&
+    !btcRolloutPlan.includes('apply-custody-route-profile.sh testnet /etc/lichen/custody.env'),
+  'BTC rollout plan must use current flag-style custody route scripts',
+);
+assert(
+  btcRolloutPlan.includes('Governance contract-call executions must carry an explicit `--compute-budget 1400000`') &&
+    btcRolloutPlan.includes('simulateTransaction` preflight path false-failed') &&
+    btcRolloutPlan.includes('d0175a9043c66bf36516f78b0b26ffccbe572ad087884777b109c23ca26b5260') &&
+    btcRolloutPlan.includes('c5b5aeb5248f85e451a1415d3587d6de73f38d78f7d35fcd9843181369ec48a7'),
+  'BTC rollout plan must record the epoch-6 governed execution signatures and compute budget',
+);
+assert(
+  productionDeployment.includes('Current signed-release target for this runbook is `v0.5.97`') &&
+    productionDeployment.includes('32 manifest symbols') &&
+    productionDeployment.includes('mandatory 13 DEX CLOB pairs, AMM pools, and router routes') &&
+    productionDeployment.includes('wBTC/lUSD') &&
+    productionDeployment.includes('wBTC/LICN') &&
+    productionDeployment.includes('export LICHEN_RELEASE_TAG=v0.5.97') &&
+    !productionDeployment.includes('signed release `v0.5.44`') &&
+    !productionDeployment.includes('31 manifest symbols') &&
+    !productionDeployment.includes('such as `v0.5.50`'),
+  'production clean-slate checklist must match current v0.5.97/32-symbol/13-market expectations',
+);
+
 const faucetExample = parseExampleEnv('deploy/faucet-env.example');
 for (const [key, value] of faucetUnit.inlineEnv.entries()) {
   assert(faucetExample.active.get(key) === value, `faucet example drifted for ${key}`);

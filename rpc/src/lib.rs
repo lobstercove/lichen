@@ -7998,6 +7998,13 @@ fn transaction_has_contract_call_preflight(tx: &Transaction) -> bool {
     })
 }
 
+fn transaction_has_governed_system_preflight(tx: &Transaction) -> bool {
+    tx.message.instructions.iter().any(|ix| {
+        ix.program_id == lichen_core::SYSTEM_PROGRAM_ID
+            && matches!(ix.data.first().copied(), Some(21 | 22 | 32..=37))
+    })
+}
+
 fn transaction_has_mandatory_shielded_preflight(tx: &Transaction) -> bool {
     tx.message.instructions.iter().any(|ix| {
         ix.program_id == lichen_core::SYSTEM_PROGRAM_ID
@@ -8169,7 +8176,10 @@ pub(crate) async fn preflight_transaction_submission(
             })?;
     }
 
-    if !skip_preflight && transaction_has_contract_call_preflight(tx) {
+    if !skip_preflight
+        && (transaction_has_contract_call_preflight(tx)
+            || transaction_has_governed_system_preflight(tx))
+    {
         let processor = TxProcessor::new(state.state.clone());
         let sim = processor.simulate_transaction(tx);
         if !sim.success {
@@ -12131,18 +12141,173 @@ fn bridge_route_restriction_status_json(
     })
 }
 
+async fn custody_bridge_route_readiness(
+    state: &RpcState,
+    chain: &str,
+    asset: &str,
+) -> serde_json::Value {
+    let route_key = format!("{}:{}", chain, asset);
+    let Some(custody_url) = state.custody_url.as_deref() else {
+        return serde_json::json!({
+            "custody_status": "not_configured",
+            "custody_configured": false,
+            "deposit_ready": false,
+            "route_ready": false,
+            "missing_config": ["CUSTODY_URL"],
+        });
+    };
+    let Some(auth_token) = state.custody_auth_token.as_deref() else {
+        return serde_json::json!({
+            "custody_status": "auth_not_configured",
+            "custody_configured": true,
+            "deposit_ready": false,
+            "route_ready": false,
+            "missing_config": ["CUSTODY_AUTH_TOKEN"],
+        });
+    };
+
+    let response = match reqwest::Client::new()
+        .get(format!("{}/status", custody_url))
+        .header("Authorization", format!("Bearer {}", auth_token))
+        .timeout(Duration::from_secs(3))
+        .send()
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => {
+            return serde_json::json!({
+                "custody_status": "unreachable",
+                "custody_configured": true,
+                "deposit_ready": false,
+                "route_ready": false,
+                "missing_config": [],
+                "message": format!("Bridge service unavailable: {}", error),
+            });
+        }
+    };
+
+    let status = response.status();
+    let body: serde_json::Value = match response.json().await {
+        Ok(body) => body,
+        Err(error) => {
+            return serde_json::json!({
+                "custody_status": "invalid_response",
+                "custody_configured": true,
+                "deposit_ready": false,
+                "route_ready": false,
+                "missing_config": [],
+                "message": format!("Bridge service invalid response: {}", error),
+            });
+        }
+    };
+
+    if !status.is_success() {
+        return serde_json::json!({
+            "custody_status": "error",
+            "custody_configured": true,
+            "deposit_ready": false,
+            "route_ready": false,
+            "missing_config": [],
+            "message": body
+                .get("message")
+                .and_then(|value| value.as_str())
+                .unwrap_or("Bridge service status request failed"),
+        });
+    }
+
+    let Some(route) = body.get("routes").and_then(|routes| routes.get(&route_key)) else {
+        return serde_json::json!({
+            "custody_status": "route_unknown",
+            "custody_configured": true,
+            "deposit_ready": false,
+            "route_ready": false,
+            "missing_config": [],
+        });
+    };
+
+    let mut readiness = route.clone();
+    if let Some(object) = readiness.as_object_mut() {
+        object.insert("custody_status".to_string(), serde_json::json!("ok"));
+        object.insert("custody_configured".to_string(), serde_json::json!(true));
+        let deposit_ready = object
+            .get("deposit_ready")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false);
+        object.insert("route_ready".to_string(), serde_json::json!(deposit_ready));
+    }
+    readiness
+}
+
+async fn enrich_bridge_route_restriction_status_with_custody(
+    state: &RpcState,
+    response: &mut serde_json::Value,
+    chain: &str,
+    asset: &str,
+    route_paused: bool,
+) {
+    let readiness = custody_bridge_route_readiness(state, chain, asset).await;
+    let deposit_ready = readiness
+        .get("deposit_ready")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    if let Some(object) = response.as_object_mut() {
+        object.insert(
+            "custody_status".to_string(),
+            readiness
+                .get("custody_status")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!("unknown")),
+        );
+        object.insert(
+            "custody_configured".to_string(),
+            readiness
+                .get("custody_configured")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!(false)),
+        );
+        object.insert(
+            "deposit_ready".to_string(),
+            readiness
+                .get("deposit_ready")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!(false)),
+        );
+        object.insert(
+            "route_ready".to_string(),
+            serde_json::json!(deposit_ready && !route_paused),
+        );
+        object.insert(
+            "missing_config".to_string(),
+            readiness
+                .get("missing_config")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!([])),
+        );
+        if let Some(network) = readiness.get("source_network") {
+            object.insert("source_network".to_string(), network.clone());
+        }
+        if let Some(message) = readiness.get("message") {
+            object.insert("custody_message".to_string(), message.clone());
+        }
+    }
+}
+
 async fn handle_get_bridge_route_restriction_status(
     state: &RpcState,
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
     let (chain, asset) = parse_bridge_route_status_param(params)?;
     let (slot, active_records) = active_bridge_route_pauses(state, &chain, &asset)?;
-    Ok(bridge_route_restriction_status_json(
+    let mut response = bridge_route_restriction_status_json(&chain, &asset, slot, &active_records);
+    enrich_bridge_route_restriction_status_with_custody(
+        state,
+        &mut response,
         &chain,
         &asset,
-        slot,
-        &active_records,
-    ))
+        !active_records.is_empty(),
+    )
+    .await;
+    Ok(response)
 }
 
 fn ensure_bridge_route_not_paused(
@@ -20722,20 +20887,20 @@ mod tests {
         rpc_readiness, rpc_readiness_json, rpc_unready_error,
         solana_method_allowed_when_rpc_unready, storage_key_with_pubkey_hex,
         storage_key_with_u64_le, strip_admin_token_from_params,
-        validate_incoming_transaction_limits, validate_solana_encoding,
-        validate_solana_transaction_details, verify_admin_auth, verify_bridge_access_auth_at,
-        verify_bridge_access_auth_for_create_at, AirdropCooldowns, MethodTier, RateLimiter,
-        RpcError, RpcResponse, RpcState, AIRDROP_COOLDOWN_MAX_ENTRIES, AIRDROP_COOLDOWN_SECS,
-        BRIDGE_ACCESS_DOMAIN_V2, BRIDGE_AUTH_ACTION_CREATE_DEPOSIT, PROGRAM_LIST_CACHE_TTL_MS,
-        RPC_DISK_CRITICAL_MIN_AVAILABLE_BYTES, RPC_READ_SLOT_CACHE_MAX_ENTRIES,
-        SOLANA_SPL_TOKEN_PROGRAM_ID, SOLANA_TOKEN_ACCOUNT_SPACE,
+        transaction_has_governed_system_preflight, validate_incoming_transaction_limits,
+        validate_solana_encoding, validate_solana_transaction_details, verify_admin_auth,
+        verify_bridge_access_auth_at, verify_bridge_access_auth_for_create_at, AirdropCooldowns,
+        MethodTier, RateLimiter, RpcError, RpcResponse, RpcState, AIRDROP_COOLDOWN_MAX_ENTRIES,
+        AIRDROP_COOLDOWN_SECS, BRIDGE_ACCESS_DOMAIN_V2, BRIDGE_AUTH_ACTION_CREATE_DEPOSIT,
+        PROGRAM_LIST_CACHE_TTL_MS, RPC_DISK_CRITICAL_MIN_AVAILABLE_BYTES,
+        RPC_READ_SLOT_CACHE_MAX_ENTRIES, SOLANA_SPL_TOKEN_PROGRAM_ID, SOLANA_TOKEN_ACCOUNT_SPACE,
         SYSTEM_PROPOSE_GOVERNANCE_ACTION_IX,
     };
     use axum::{
         body::{to_bytes, Body},
         extract::State,
         http::{HeaderMap, Method, Request, StatusCode},
-        routing::post,
+        routing::{get, post},
         Json, Router,
     };
     use lichen_core::account::Keypair as LichenKeypair;
@@ -20810,6 +20975,33 @@ mod tests {
 
     fn make_test_rpc_state(state: StateStore) -> RpcState {
         make_test_rpc_state_with_program_cache_capacity(state, 16)
+    }
+
+    #[test]
+    fn governed_system_actions_require_send_preflight() {
+        for opcode in [21u8, 22, 32, 33, 34, 35, 36, 37] {
+            let ix = lichen_core::Instruction {
+                program_id: SYSTEM_PROGRAM_ID,
+                accounts: vec![Pubkey([0x01; 32])],
+                data: vec![opcode],
+            };
+            let tx = Transaction::new(lichen_core::Message::new(vec![ix], Hash([0x22; 32])));
+            assert!(
+                transaction_has_governed_system_preflight(&tx),
+                "opcode {opcode} must run rollback simulation during sendTransaction preflight"
+            );
+        }
+
+        let plain_transfer_ix = lichen_core::Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![Pubkey([0x01; 32]), Pubkey([0x02; 32])],
+            data: vec![0u8],
+        };
+        let tx = Transaction::new(lichen_core::Message::new(
+            vec![plain_transfer_ix],
+            Hash([0x22; 32]),
+        ));
+        assert!(!transaction_has_governed_system_preflight(&tx));
     }
 
     #[tokio::test]
@@ -22244,6 +22436,28 @@ mod tests {
             "deposit_seed_source": "treasury_root",
             "created_at": 0,
             "status": "issued"
+        }))
+    }
+
+    async fn mock_custody_status_btc_not_ready(headers: HeaderMap) -> Json<serde_json::Value> {
+        let auth = headers
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default();
+        assert_eq!(auth, "Bearer test-auth-token");
+        Json(serde_json::json!({
+            "signers": { "configured": 3, "threshold": 2 },
+            "routes": {
+                "bitcoin:btc": {
+                    "chain": "bitcoin",
+                    "asset": "btc",
+                    "route": "bitcoin:btc",
+                    "configured": false,
+                    "deposit_ready": false,
+                    "missing_config": ["CUSTODY_BTC_RPC_URL"],
+                    "source_network": "mainnet"
+                }
+            }
         }))
     }
 
@@ -24087,6 +24301,37 @@ mod tests {
             response["active_restrictions"][0]["mode"],
             serde_json::json!("route_paused")
         );
+    }
+
+    #[tokio::test]
+    async fn test_get_bridge_route_restriction_status_includes_custody_readiness() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+        let custody_url = spawn_mock_server(
+            Router::new().route("/status", get(mock_custody_status_btc_not_ready)),
+        )
+        .await;
+        let mut rpc_state = make_test_rpc_state(state);
+        rpc_state.custody_url = Some(custody_url);
+        rpc_state.custody_auth_token = Some("test-auth-token".to_string());
+
+        let response = handle_get_bridge_route_restriction_status(
+            &rpc_state,
+            Some(serde_json::json!([{ "chain": "bitcoin", "asset": "btc" }])),
+        )
+        .await
+        .expect("bridge route restriction status should include custody readiness");
+
+        assert_eq!(response["route_paused"], serde_json::json!(false));
+        assert_eq!(response["custody_status"], serde_json::json!("ok"));
+        assert_eq!(response["custody_configured"], serde_json::json!(true));
+        assert_eq!(response["deposit_ready"], serde_json::json!(false));
+        assert_eq!(response["route_ready"], serde_json::json!(false));
+        assert_eq!(
+            response["missing_config"],
+            serde_json::json!(["CUSTODY_BTC_RPC_URL"])
+        );
+        assert_eq!(response["source_network"], serde_json::json!("mainnet"));
     }
 
     #[tokio::test]

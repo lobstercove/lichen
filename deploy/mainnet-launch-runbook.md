@@ -112,6 +112,9 @@ Neo X route policy gate:
 - The current Neo X public bridge docs describe GAS bridging and say the bridge
   currently supports GAS. They do not establish a day-one NEO token route by
   themselves.
+- Fresh genesis still includes wNEO, wGAS, wBTC, and all 13 launch DEX
+  pairs/pools/routes. The policy gate below controls public source-chain
+  custody activation only; it is not a DEX market optionality switch.
 - The custody verifier currently treats `CUSTODY_REQUIRED_ROUTES=neox` as a
   requirement for both `wGAS` and `wNEO`, because it requires
   `CUSTODY_NEOX_NEO_TOKEN_ADDR`.
@@ -490,9 +493,11 @@ CUSTODY_BTC_FEE_RATE_SATS_VB=5
 CUSTODY_TREASURY_BTC=REPLACE_WITH_BTC_TREASURY_ADDRESS
 ```
 
-If a route is not approved, remove it from `CUSTODY_REQUIRED_ROUTES` and keep it
-hidden from public wallet surfaces. Do not leave a route in
-`CUSTODY_REQUIRED_ROUTES` with placeholder values.
+If a source-chain custody route is not approved, remove it from
+`CUSTODY_REQUIRED_ROUTES` and keep it hidden from public wallet surfaces. Do not
+leave a route in `CUSTODY_REQUIRED_ROUTES` with placeholder values. This does
+not remove the genesis-native wrapped token contract, DEX pair, AMM pool, or
+router route.
 
 Install the filled profile on the genesis/US VPS first:
 

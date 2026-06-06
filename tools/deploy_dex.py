@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """
-Post-Genesis Deployment — Wrapped Token + DEX Contracts
+Legacy Manual DEX Repair — Wrapped Token + DEX Contracts
 ========================================================
 
-This script deploys and initializes all wrapped-asset tokens and DEX contracts
-on a running Lichen validator. Run once after genesis to bring the full
-DEX trading infrastructure online.
+Fresh local testnets and mainnet must create wrapped tokens plus all 13 launch
+DEX pairs, pools, and routes at genesis. This script is retained only for
+legacy/manual repair on a running validator and must not be used as the normal
+fresh-chain deployment path. The mandatory launch set includes wBTC/lUSD and
+wBTC/LICN.
 
 Deployment order matters:
   Phase 1 — Wrapped tokens (lusd_token, wsol_token, weth_token, wbnb_token,
-            wgas_token, wneo_token)
+            wgas_token, wneo_token, wbtc_token)
             These are the quote/base assets the DEX trades.
   Phase 2 — DEX core    (dex_core, dex_amm, dex_router)
             Core trading engine. dex_core gets the token addresses.
@@ -63,6 +65,7 @@ PHASE_1_TOKENS = [
     {"name": "wbnb_token",  "wasm": "wbnb_token.wasm"},
     {"name": "wgas_token",  "wasm": "wgas_token.wasm"},
     {"name": "wneo_token",  "wasm": "wneo_token.wasm"},
+    {"name": "wbtc_token",  "wasm": "wbtc_token.wasm"},
 ]
 
 PHASE_2_DEX_CORE = [
@@ -493,6 +496,7 @@ async def phase_initialize_dex(
             "wBNB":  addrs.get("wbnb_token"),
             "wGAS":  addrs.get("wgas_token"),
             "wNEO":  addrs.get("wneo_token"),
+            "wBTC":  addrs.get("wbtc_token"),
             "LICN":  NATIVE_LICN,
         }
 
@@ -513,14 +517,15 @@ async def phase_initialize_dex(
             ("wNEO", "LICN", DEFAULT_LOT),
             ("wGAS", "lUSD", DEFAULT_LOT),
             ("wGAS", "LICN", DEFAULT_LOT),
+            ("wBTC", "lUSD", DEFAULT_LOT),
+            ("wBTC", "LICN", DEFAULT_LOT),
         ]
 
         for expected_pair_id, (base_sym, quote_sym, pair_lot) in enumerate(pairs, start=1):
             base_pk = symbol_addrs.get(base_sym)
             quote_pk = symbol_addrs.get(quote_sym)
             if not base_pk or not quote_pk:
-                print(f"  ⚠️  create_pair({base_sym}/{quote_sym}): token address unknown, skipping")
-                continue
+                raise RuntimeError(f"create_pair({base_sym}/{quote_sym}): mandatory token address unknown")
             data = (bytes([1])
                     + bytes(deployer.address().to_bytes())
                     + bytes(base_pk.to_bytes())
@@ -534,7 +539,7 @@ async def phase_initialize_dex(
                 print(f"  ✅ create_pair({base_sym}/{quote_sym}) — sig={sig}")
                 created_route_specs.append((base_sym, quote_sym, expected_pair_id, base_pk, quote_pk))
             except Exception as e:
-                print(f"  ⚠️  create_pair({base_sym}/{quote_sym}) failed: {e}")
+                raise RuntimeError(f"create_pair({base_sym}/{quote_sym}) failed: {e}") from e
 
         # ── Set preferred quote token (opcode 4) ──────────────
         # Opcode 4: set_preferred_quote(caller[32], quote_addr[32])
@@ -582,7 +587,7 @@ async def phase_initialize_dex(
                     conn, deployer, addrs["dex_router"], "call", list(data))
                 print(f"  ✅ register_route({base_sym}/{quote_sym}, CLOB pair {pair_id}) — sig={sig}")
             except Exception as e:
-                print(f"  ⚠️  register_route({base_sym}/{quote_sym}) failed: {e}")
+                raise RuntimeError(f"register_route({base_sym}/{quote_sym}) failed: {e}") from e
 
     # ── Wire rewards for CLOB fee mining and AMM LP campaign accrual ─────
     if "dex_rewards" in addrs:

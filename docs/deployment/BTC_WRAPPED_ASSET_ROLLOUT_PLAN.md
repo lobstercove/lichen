@@ -2,12 +2,12 @@
 
 This plan adds Bitcoin as a first-class wrapped asset on Lichen:
 
-- future genesis includes a deterministic `wbtc_token` contract and WBTC symbol registry entry;
-- the live chain can add WBTC post-genesis without rewriting historical state;
+- fresh local-testnet and mainnet genesis includes deterministic `wbtc_token`/`WBTC` plus DEX pair/pool IDs `12` and `13`;
+- existing live chains can activate WBTC additively from registry/metadata without replaying history, deleting state, or rewriting historical roots;
 - custody can issue Bitcoin deposit addresses, detect BTC deposits, sweep to treasury, mint wBTC, burn wBTC, and broadcast BTC withdrawals;
 - DEX, wallet, extension, explorer-facing RPC, manifests, and deployment docs expose BTC consistently.
 
-The current codebase does not already implement Bitcoin custody. It only has a BIP-44 coin-type entry for Bitcoin, and tests currently assert that `derive_deposit_address("bitcoin", "btc", ...)` is unsupported. BTC therefore requires a real route implementation, not a token-list-only change.
+The current codebase includes the WBTC contract, registry/oracle/DEX wiring, and Bitcoin custody route support. Operators still must provide real Bitcoin RPC credentials and complete deposit, sweep, burn, and withdrawal smoke tests before exposing the BTC route in public wallet surfaces.
 
 ## Current Source Of Truth
 
@@ -70,12 +70,12 @@ Update genesis:
 - include WBTC in contract identity achievements;
 - add `wbtc_usd_8dec` to `GenesisPrices` with a serde default for old config compatibility;
 - add BTC to genesis price file validation, env overrides, Binance fetch, CoinGecko fetch, and genesis price logging;
-- seed `wBTC/lUSD` and `wBTC/LICN` pairs and AMM pools in future genesis;
+- seed `wBTC/lUSD` and `wBTC/LICN` pairs and AMM pools in every fresh genesis;
 - register router routes for the new pair and pool IDs.
 
 ### Live Testnet Upgrade Path
 
-The live v0.5.93 testnet must not replay history differently. BTC activation is post-genesis and additive:
+Existing live testnets must not replay history differently. BTC activation on those chains is post-genesis and additive:
 
 - deploy `wbtc_token` using the existing contract deployment flow;
 - register `WBTC` in the symbol registry;
@@ -240,6 +240,14 @@ Do not change the live three VPSes until the local three-validator gate passes. 
 9. Restart custody.
 10. Run a dust-sized BTC deposit/withdrawal smoke test.
 
+Release rollout safety checks are mandatory before any live restart:
+
+- verify `SHA256SUMS.sig` against the pinned release signer and then verify the archive hash from `SHA256SUMS`;
+- require `lichen-validator`, `lichen-genesis`, `lichen`, `zk-prove`, `lichen-custody`, and `lichen-faucet` inside the selected release archive before touching a VPS;
+- install binaries with temp+rename and verify `/usr/local/bin/*` hashes immediately after install;
+- after every service restart, verify `/proc/<pid>/exe` is not a deleted executable and its hash matches the signed release archive;
+- stop the rollout on the first mismatch. Do not continue to the next validator until the mismatched host has matching file and running-process hashes.
+
 Concrete additive command skeleton, to run only after a clean release is present on every host:
 
 ```bash
@@ -265,9 +273,17 @@ LICHEN_RPC_URL=https://testnet-rpc.lichen.network \
   python3 scripts/update-manifest.py
 
 # On every custody host, fetch wrapped-token addresses and enforce the BTC route config.
-./scripts/sync-custody-wrapped-contracts.sh https://testnet-rpc.lichen.network /etc/lichen/custody.env
-./scripts/apply-custody-route-profile.sh testnet /etc/lichen/custody.env
-./scripts/verify-custody-routes.sh /etc/lichen/custody.env --require-wrapped
+sudo bash scripts/sync-custody-wrapped-contracts.sh \
+  --rpc-url https://testnet-rpc.lichen.network \
+  --env-file /etc/lichen/custody-env
+sudo bash scripts/apply-custody-route-profile.sh \
+  --profile /etc/lichen/custody-routes-testnet.env \
+  --target /etc/lichen/custody-env \
+  --routes solana,ethereum,bnb,neox,bitcoin
+sudo bash scripts/verify-custody-routes.sh \
+  --env-file /etc/lichen/custody-env \
+  --routes solana,ethereum,bnb,neox,bitcoin \
+  --require-wrapped
 ```
 
 Required custody values before enabling the BTC route:
@@ -284,6 +300,68 @@ CUSTODY_WBTC_TOKEN_ADDR=<live WBTC program from the symbol registry>
 ```
 
 If BTC custody is not yet ready but WBTC contract and DEX support are ready, leave `CUSTODY_BTC_RPC_URL` unset and do not expose the Bitcoin deposit card in production frontends. The contract can exist before the route is public, but the UI must not present an unusable bridge path.
+
+## Live v0.5.95 Testnet Execution Record
+
+On 2026-06-05, the live testnet WBTC contract was deployed and registered without rewriting historical state:
+
+- WBTC contract: `6zQChEy6XacfQR52892oAMpntavfpb6mBUvLRkyXxno1`;
+- deployer/admin: `63XtXerx8x1w5HjQXPBPLE9Q6P3qyvWWuCEjdzMbAiC`;
+- deploy transaction: `4a49145b6fe7e9e3cbc3fb5729a8f24eb8b9ec79e0042e6878319a68ccc81732`;
+- registry symbol: `WBTC`, display symbol `wBTC`, template `wrapped`, decimals `9`;
+- all three validators run `lichen-validator 0.5.95`;
+- local BTC regtest custody smoke passed before VPS rollout;
+- all public frontend portals were redeployed after the signed metadata refresh.
+
+The live DEX additions are governed protocol contract-call proposals, not database edits, RPC shims, or frontend-only changes. They were proposed against the governed DEX admin authority and approved by four authorized genesis governance accounts. The proposals are timelocked until epoch 6, which starts at slot `2_592_000`.
+
+| Proposal | Target | Action |
+| --- | --- | --- |
+| 2 | `dex_core` | create `wBTC/lUSD` CLOB pair with pair id 12 |
+| 3 | `dex_core` | create `wBTC/LICN` CLOB pair with pair id 13 |
+| 4 | `dex_amm` | create `wBTC/lUSD` AMM pool with pool id 12 |
+| 5 | `dex_amm` | create `wBTC/LICN` AMM pool with pool id 13 |
+| 6 | `dex_router` | register `wBTC/lUSD` CLOB route |
+| 7 | `dex_router` | register `wBTC/lUSD` AMM route |
+| 8 | `dex_router` | register `wBTC/LICN` CLOB route |
+| 9 | `dex_router` | register `wBTC/LICN` AMM route |
+
+The US seed runs a durable executor service:
+
+```bash
+systemctl status lichen-wbtc-dex-execute-testnet.service
+tail -f /home/ubuntu/wbtc-dex-execute-epoch6.log
+```
+
+The service waits for epoch 6, then executes proposals `2..9` in order with the governed community treasury key. It is idempotent across restarts: if a proposal was already executed, it logs that state and continues. Governance contract-call executions must carry an explicit `--compute-budget 1400000`; for this rollout, the current `simulateTransaction` preflight path false-failed on the nested governed DEX admin calls, so final verification used finalized transaction status plus REST pair/pool/route state.
+
+Epoch 6 execution finalized on 2026-06-06 with these transaction signatures:
+
+| Proposal | Signature | Result |
+| --- | --- | --- |
+| 2 | `d0175a9043c66bf36516f78b0b26ffccbe572ad087884777b109c23ca26b5260` | `wBTC/lUSD` CLOB pair created |
+| 3 | `5fa0d94669abfcccb368ba8238502fb1f42f664d6eca378281a7f5e196526ec8` | `wBTC/LICN` CLOB pair created |
+| 4 | `7fd9c42887b84fe96b92a928c07f824656c12dadcaecfe9508f0e55ab3bdfe37` | `wBTC/lUSD` AMM pool created |
+| 5 | `07c7007a25023ee314a9ba8f31f139a6a0720c17954ec1bd6899f87fee1356b6` | `wBTC/LICN` AMM pool created |
+| 6 | `fdd64cff73c26b8e9f095fe33959fb204c07e4fdc8b3053cd90f519adb8feff6` | `wBTC/lUSD` CLOB route registered |
+| 7 | `516d579eef02d8514a72ebe55e7a639ef7d3c70a0244e382dacd38f5352ee44e` | `wBTC/lUSD` AMM route registered |
+| 8 | `2a49cde4a4bf8a28b1807f483a6beb92e41ded5897acc7f114a006ab7893f754` | `wBTC/LICN` CLOB route registered |
+| 9 | `c5b5aeb5248f85e451a1415d3587d6de73f38d78f7d35fcd9843181369ec48a7` | `wBTC/LICN` AMM route registered |
+
+Post-execution verification:
+
+```bash
+curl -s http://127.0.0.1:8899/api/v1/pairs | python3 -m json.tool
+curl -s http://127.0.0.1:8899/api/v1/pools | python3 -m json.tool
+curl -s http://127.0.0.1:8899/api/v1/routes | python3 -m json.tool
+```
+
+Expected visible state after execution:
+
+- pair count increases from 11 to 13 and includes `wBTC/lUSD` and `wBTC/LICN`;
+- pool count increases from 11 to 13 and includes the matching WBTC pools;
+- route count increases from 22 to 26 and includes CLOB plus AMM routes for both WBTC pairs;
+- `/api/v1/oracle/prices` continues to expose a live non-stale `wBTC` feed.
 
 ## Non-Goals
 

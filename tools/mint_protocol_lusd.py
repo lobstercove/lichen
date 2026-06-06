@@ -13,9 +13,10 @@ Per DEX_LIQUIDITY_STRATEGY.md §3.1:
     wBNB  = 100K/epoch   (wbnb_token)
     wNEO  = 100K/epoch   (wneo_token, whole-NEO lots only)
     wGAS  = 100K/epoch   (wgas_token)
+    wBTC  = 1K/epoch     (wbtc_token)
 
-On testnet, also mints synthetic test amounts of wSOL, wETH, wBNB, wNEO, and
-wGAS so all 11 AMM pools can be seeded with liquidity. On mainnet, wrapped
+On testnet, also mints synthetic test amounts of wSOL, wETH, wBNB, wNEO, wGAS,
+and wBTC so all 13 AMM pools can be seeded with liquidity. On mainnet, wrapped
 asset liquidity must come from real custody deposits/reserve attestations, so
 this script skips synthetic wrapped mints unless explicitly overridden.
 
@@ -44,6 +45,7 @@ EPOCH_CAPS = {
     "WBNB": 100_000,       # 100K wBNB per epoch
     "WNEO": 100_000,       # 100K wNEO per epoch, whole-NEO lots only
     "WGAS": 100_000,       # 100K wGAS per epoch
+    "WBTC": 1_000,         # 1K wBTC per epoch
 }
 
 # Amounts to mint (whole tokens) — will be batched per-epoch if needed
@@ -54,9 +56,10 @@ MINT_AMOUNTS = {
     "WBNB": 5_000,         # testnet: ~$3M at ~$610/BNB
     "WNEO": 50_000,        # testnet: whole-NEO liquidity for pairs 8/9
     "WGAS": 75_000,        # testnet: GAS liquidity for pairs 10/11
+    "WBTC": 100,           # testnet: BTC liquidity for pairs 12/13
 }
 
-WRAPPED_SYMBOLS = {"WSOL", "WETH", "WBNB", "WNEO", "WGAS"}
+WRAPPED_SYMBOLS = {"WSOL", "WETH", "WBNB", "WNEO", "WGAS", "WBTC"}
 
 
 async def main():

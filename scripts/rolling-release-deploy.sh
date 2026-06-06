@@ -113,6 +113,28 @@ archive_bin_sha() {
   fi
 }
 
+require_archive_bin_sha() {
+  local archive="$1"
+  local root="$2"
+  local bin="$3"
+  local sha
+  sha="$(archive_bin_sha "$archive" "$root" "$bin")"
+  if [ -z "$sha" ]; then
+    echo "Release archive ${archive} is missing required binary: ${bin}" >&2
+    return 1
+  fi
+  printf '%s\n' "$sha"
+}
+
+validate_release_archive() {
+  local archive="$1"
+  local root="$2"
+  local bin
+  for bin in lichen-validator lichen-genesis lichen zk-prove lichen-custody lichen-faucet; do
+    require_archive_bin_sha "$archive" "$root" "$bin" >/dev/null
+  done
+}
+
 archive_sha() {
   local archive="$1"
   awk -v archive="$archive" '$2 == archive || $2 == "./" archive { print $1; exit }' "$ARTIFACT_DIR/SHA256SUMS"
@@ -170,6 +192,10 @@ console.log(`SHA256SUMS PQ signature verified by ${signer}`);
 NODE
 
   (cd "$ARTIFACT_DIR" && sha256sum -c SHA256SUMS --ignore-missing)
+
+  for archive in "${archives[@]}"; do
+    validate_release_archive "$archive" "$(archive_root "$archive")"
+  done
 }
 
 preflight_host() {
@@ -205,9 +231,9 @@ install_host() {
   archive="$(archive_for_arch "$arch")"
   root="$(archive_root "$archive")"
   expected_archive_sha="$(archive_sha "$archive")"
-  expected_validator_sha="$(archive_bin_sha "$archive" "$root" lichen-validator)"
-  expected_custody_sha="$(archive_bin_sha "$archive" "$root" lichen-custody)"
-  expected_faucet_sha="$(archive_bin_sha "$archive" "$root" lichen-faucet)"
+  expected_validator_sha="$(require_archive_bin_sha "$archive" "$root" lichen-validator)"
+  expected_custody_sha="$(require_archive_bin_sha "$archive" "$root" lichen-custody)"
+  expected_faucet_sha="$(require_archive_bin_sha "$archive" "$root" lichen-faucet)"
   release_url="$(release_asset_url "$archive")"
 
   echo "Install ${RELEASE_TAG} on ${host} (${archive})"
@@ -240,9 +266,15 @@ if [ -z "$root" ]; then
   exit 1
 fi
 
-for bin in lichen-validator lichen-genesis lichen zk-prove; do
+install_release_bin() {
+  local bin="$1"
   test -x "$root/$bin"
-  sudo install -m 755 "$root/$bin" "/usr/local/bin/$bin"
+  sudo install -m 755 "$root/$bin" "/usr/local/bin/$bin.new"
+  sudo mv -f "/usr/local/bin/$bin.new" "/usr/local/bin/$bin"
+}
+
+for bin in lichen-validator lichen-genesis lichen zk-prove; do
+  install_release_bin "$bin"
 done
 
 install_optional_service_bin() {
@@ -255,7 +287,7 @@ install_optional_service_bin() {
     echo "Release archive is missing expected service binary: $bin"
     exit 1
   fi
-  sudo install -m 755 "$root/$bin" "/usr/local/bin/$bin"
+  install_release_bin "$bin"
 }
 
 install_optional_service_bin lichen-custody "$EXPECTED_CUSTODY_SHA"
@@ -295,12 +327,18 @@ check_installed_bin_hash lichen-custody "$EXPECTED_CUSTODY_SHA"
 check_installed_bin_hash lichen-faucet "$EXPECTED_FAUCET_SHA"
 
 sudo systemctl stop "$SERVICE" || true
-sleep 2
+for _ in $(seq 1 20); do
+  if ! systemctl is-active --quiet "$SERVICE"; then
+    break
+  fi
+  sleep 1
+done
 if systemctl is-active --quiet "$SERVICE"; then
   echo "Service still active after stop; killing service control group before restart."
   sudo systemctl kill --kill-who=control-group -s SIGKILL "$SERVICE" || true
   sleep 2
 fi
+sudo systemctl reset-failed "$SERVICE" || true
 sudo systemctl start "$SERVICE"
 
 for _ in $(seq 1 60); do
@@ -347,9 +385,9 @@ verify_host_release() {
   arch="$(ssh_run "$host" "uname -m")"
   archive="$(archive_for_arch "$arch")"
   root="$(archive_root "$archive")"
-  expected_validator_sha="$(archive_bin_sha "$archive" "$root" lichen-validator)"
-  expected_custody_sha="$(archive_bin_sha "$archive" "$root" lichen-custody)"
-  expected_faucet_sha="$(archive_bin_sha "$archive" "$root" lichen-faucet)"
+  expected_validator_sha="$(require_archive_bin_sha "$archive" "$root" lichen-validator)"
+  expected_custody_sha="$(require_archive_bin_sha "$archive" "$root" lichen-custody)"
+  expected_faucet_sha="$(require_archive_bin_sha "$archive" "$root" lichen-faucet)"
 
   echo "Verify installed release ${host}"
   ssh_run "$host" "SERVICE='$SERVICE' EXPECTED_VALIDATOR_SHA='$expected_validator_sha' EXPECTED_CUSTODY_SHA='$expected_custody_sha' EXPECTED_FAUCET_SHA='$expected_faucet_sha' bash -s" <<'REMOTE'
@@ -508,7 +546,19 @@ sys.exit(0 if result.get("status") == "ok" and age <= max_age else 1)
   sleep 2
 done
 
-sudo systemctl restart lichen-custody.service
+sudo systemctl stop lichen-custody.service || true
+for _ in $(seq 1 20); do
+  if ! systemctl is-active --quiet lichen-custody.service; then
+    break
+  fi
+  sleep 1
+done
+if systemctl is-active --quiet lichen-custody.service; then
+  sudo systemctl kill --kill-who=control-group -s SIGKILL lichen-custody.service || true
+  sleep 2
+fi
+sudo systemctl reset-failed lichen-custody.service || true
+sudo systemctl start lichen-custody.service
 for _ in $(seq 1 30); do
   if curl -fsS "http://127.0.0.1:9105/health" >/dev/null; then
     exit 0
@@ -537,7 +587,19 @@ if ! systemctl is-enabled --quiet lichen-faucet.service 2>/dev/null && \
   exit 0
 fi
 
-sudo systemctl restart lichen-faucet.service
+sudo systemctl stop lichen-faucet.service || true
+for _ in $(seq 1 20); do
+  if ! systemctl is-active --quiet lichen-faucet.service; then
+    break
+  fi
+  sleep 1
+done
+if systemctl is-active --quiet lichen-faucet.service; then
+  sudo systemctl kill --kill-who=control-group -s SIGKILL lichen-faucet.service || true
+  sleep 2
+fi
+sudo systemctl reset-failed lichen-faucet.service || true
+sudo systemctl start lichen-faucet.service
 for _ in $(seq 1 30); do
   if curl -fsS "http://127.0.0.1:9100/health" >/dev/null; then
     exit 0

@@ -3736,7 +3736,8 @@ pub extern "C" fn total_minted() -> u64 {
             const isActive = w.id === this.activeWalletId;
             const label = w.name || this.truncateAddress(w.address);
             const provider = this.providerTypeTitle(w.provider);
-            return `<div class="wm-wallet-item ${isActive ? 'active-wallet' : ''}"><span class="wm-wallet-addr">${escapeHtml(label)} <small>${escapeHtml(provider)}</small></span><div class="wm-wallet-actions">${isActive ? '<span class="btn btn-small btn-secondary" style="opacity:0.6;cursor:default;">Active</span>' : `<button class="btn btn-small btn-primary wm-switch-btn" data-idx="${i}">Switch</button>`}<button class="btn btn-small btn-secondary wm-remove-btn" data-idx="${i}"><i class="fas fa-times"></i></button></div></div>`;
+            const activeStateLabel = this.walletCanSign() ? 'Active' : 'Read-only';
+            return `<div class="wm-wallet-item ${isActive ? 'active-wallet' : ''}"><span class="wm-wallet-addr">${escapeHtml(label)} <small>${escapeHtml(provider)}</small></span><div class="wm-wallet-actions">${isActive ? `<span class="btn btn-small btn-secondary" style="opacity:0.6;cursor:default;">${activeStateLabel}</span>` : `<button class="btn btn-small btn-primary wm-switch-btn" data-idx="${i}">Switch</button>`}<button class="btn btn-small btn-secondary wm-remove-btn" data-idx="${i}"><i class="fas fa-times"></i></button></div></div>`;
         }).join('') + '<div class="wm-disconnect-all"><button class="btn btn-small btn-secondary" id="wmDisconnectAll">Disconnect All</button></div>';
 
         list.querySelectorAll('.wm-switch-btn').forEach(btn => btn.addEventListener('click', () => {
@@ -3801,6 +3802,69 @@ pub extern "C" fn total_minted() -> u64 {
         return providerType === 'web-wallet' ? 'web wallet' : 'extension';
     },
 
+    detectExtensionBrowser() {
+        const userAgentDataBrands = Array.isArray(navigator.userAgentData?.brands)
+            ? navigator.userAgentData.brands.map((brand) => String(brand?.brand || ''))
+            : [];
+        const userAgent = String(navigator.userAgent || '');
+
+        if (userAgentDataBrands.some((brand) => /Microsoft Edge/i.test(brand)) || /\bEdg\//.test(userAgent)) {
+            return 'edge';
+        }
+        if (/\bBrave\//.test(userAgent)) {
+            return 'brave';
+        }
+        if (userAgentDataBrands.some((brand) => /Chrom(e|ium)/i.test(brand)) || /\bChrome\//.test(userAgent) || /\bChromium\//.test(userAgent)) {
+            return 'chrome';
+        }
+        return 'browser';
+    },
+
+    extensionBrowserLabel(browser = this.detectExtensionBrowser()) {
+        const labels = {
+            chrome: 'Chrome',
+            brave: 'Brave',
+            edge: 'Edge',
+            browser: 'Browser'
+        };
+        return labels[browser] || labels.browser;
+    },
+
+    extensionDownloadCopy(browser = this.detectExtensionBrowser()) {
+        const browserName = this.extensionBrowserLabel(browser);
+        return browserName === 'Browser' ? 'browser extension' : `${browserName} extension`;
+    },
+
+    extensionDownloadButtonLabel(browser = this.detectExtensionBrowser()) {
+        const browserName = this.extensionBrowserLabel(browser);
+        return browserName === 'Browser'
+            ? '<i class="fas fa-download"></i> Download Extension'
+            : `<i class="fas fa-download"></i> Download for ${browserName}`;
+    },
+
+    readExtensionInstallUrls() {
+        return typeof window !== 'undefined' && window.LICHEN_EXTENSION_INSTALL_URLS && typeof window.LICHEN_EXTENSION_INSTALL_URLS === 'object'
+            ? window.LICHEN_EXTENSION_INSTALL_URLS
+            : null;
+    },
+
+    resolveExtensionInstallUrl(browser = this.detectExtensionBrowser()) {
+        const installUrls = this.readExtensionInstallUrls();
+        const directUrl = installUrls && typeof installUrls[browser] === 'string'
+            ? installUrls[browser].trim()
+            : '';
+        const fallbackUrl = installUrls && typeof installUrls.default === 'string'
+            ? installUrls.default.trim()
+            : '';
+        const targetUrl = directUrl || fallbackUrl;
+
+        return {
+            browser,
+            url: targetUrl || this.walletSiteUrl('extension'),
+            configured: Boolean(targetUrl)
+        };
+    },
+
     buildExternalWallet(address, providerType = 'extension', provider = null) {
         return {
             address,
@@ -3808,8 +3872,13 @@ pub extern "C" fn total_minted() -> u64 {
             isExternal: true,
             providerType,
             provider,
+            signingReady: Boolean(provider),
             export: () => ({ provider: providerType, publicKey: address })
         };
+    },
+
+    walletCanSign() {
+        return Boolean(this.wallet?.signingReady || this.wallet?.provider);
     },
 
     buildExtensionWallet(address) {
@@ -3877,20 +3946,25 @@ pub extern "C" fn total_minted() -> u64 {
         const windowOpen = providerType === 'web-wallet' && typeof provider.isWindowOpen === 'function'
             ? provider.isWindowOpen()
             : false;
+        const livePopupSession = providerType !== 'web-wallet' || windowOpen;
+        const exposedAccounts = livePopupSession ? accounts : [];
+        const connected = livePopupSession && Boolean(providerState?.connected);
+        const providerReportsWallet = providerState && Object.prototype.hasOwnProperty.call(providerState, 'hasWallet');
+        const hasWallet = providerType === 'extension'
+            ? (providerReportsWallet ? Boolean(providerState.hasWallet) : true)
+            : (livePopupSession
+                ? (providerReportsWallet ? Boolean(providerState.hasWallet) : Boolean(accounts.length || providerState?.activeAddress))
+                : false);
 
         return {
             available: providerType === 'extension'
                 ? true
-                : Boolean(windowOpen || providerState?.connected || accounts.length),
-            connected: Boolean(providerState?.connected),
-            hasWallet: providerType === 'extension'
-                ? (providerState && Object.prototype.hasOwnProperty.call(providerState, 'hasWallet')
-                    ? Boolean(providerState.hasWallet)
-                    : true)
-                : Boolean(accounts.length),
-            isLocked: Boolean(providerState?.isLocked),
-            accounts,
-            activeAddress: accounts[0] || '',
+                : Boolean(windowOpen || connected || exposedAccounts.length),
+            connected,
+            hasWallet,
+            isLocked: hasWallet ? Boolean(providerState?.isLocked) : false,
+            accounts: exposedAccounts,
+            activeAddress: exposedAccounts[0] || '',
             provider,
             providerType,
             windowOpen
@@ -3957,18 +4031,40 @@ pub extern "C" fn total_minted() -> u64 {
 
     async syncWalletProviderState(options = {}) {
         const { notify = false, timeoutMs = 0 } = options;
+        const wasReady = this.walletCanSign();
         const providerState = await this.refreshWalletProviderState(timeoutMs);
         const currentAddress = this.normalizeWalletAddress(this.wallet?.address || '');
         const activeEntry = this.wallets.find(item => item.id === this.activeWalletId);
         const reconnectProviderType = this.wallet?.providerType || activeEntry?.provider || providerState.providerType || 'extension';
+        const extensionFallbackState = providerState.extensionState || null;
+
+        if (reconnectProviderType === 'web-wallet'
+            && providerState.hasWallet === false
+            && extensionFallbackState?.connected
+            && !extensionFallbackState.isLocked
+            && extensionFallbackState.activeAddress === currentAddress) {
+            this.wallet = this.buildExternalWallet(currentAddress, 'extension', extensionFallbackState.provider);
+            this.wallet.signingReady = true;
+            this.addWalletToStore(this.wallet, this.providerTypeTitle('extension'));
+            await this.refreshBalance();
+            this.updateWalletDisplay();
+            this.updateProgramIdPreview();
+            this.renderWalletList();
+            if (notify) {
+                this.addTerminalLine('✅ Extension ready to sign. Switched away from the empty web-wallet popup.', 'success');
+            }
+            return extensionFallbackState;
+        }
 
         if (providerState.available && providerState.connected && !providerState.isLocked && providerState.activeAddress) {
             const providerType = providerState.providerType;
             this.wallet = this.buildExternalWallet(providerState.activeAddress, providerType, providerState.provider);
+            this.wallet.signingReady = true;
             this.addWalletToStore(this.wallet, this.providerTypeTitle(providerType));
             await this.refreshBalance();
             this.updateWalletDisplay();
             this.updateProgramIdPreview();
+            this.renderWalletList();
             if (notify && (!currentAddress || currentAddress !== providerState.activeAddress)) {
                 this.addTerminalLine(`✅ ${this.providerTypeTitle(providerType)} connected: ${providerState.activeAddress}`, 'success');
             }
@@ -3977,8 +4073,20 @@ pub extern "C" fn total_minted() -> u64 {
 
         if (currentAddress) {
             this.wallet = this.buildExternalWallet(currentAddress, reconnectProviderType, null);
+            this.wallet.signingReady = false;
             this.updateWalletDisplay();
             this.updateProgramIdPreview();
+            this.renderWalletList();
+            if (notify && wasReady) {
+                const message = providerState.isLocked
+                    ? `${this.providerTypeTitle(reconnectProviderType)} locked. Unlock it to sign new transactions.`
+                    : reconnectProviderType === 'web-wallet' && providerState.hasWallet === false
+                        ? 'Web wallet has no wallet loaded. Import or create the matching wallet in the popup to sign.'
+                        : reconnectProviderType === 'web-wallet'
+                            ? 'Web wallet session not active. Reopen it to sign new transactions.'
+                            : 'Extension session not active. Reconnect it to sign new transactions.';
+                this.addTerminalLine(`⚠️ ${message}`, 'warning');
+            }
         }
 
         return providerState;
@@ -4003,12 +4111,18 @@ pub extern "C" fn total_minted() -> u64 {
         const icon = document.getElementById('wmExtensionIcon');
         const extensionBtn = document.getElementById('wmExtensionBtn');
         const webWalletBtn = document.getElementById('wmOpenWebWalletBtn');
-        if (!title || !description) return;
+        if (!title || !description || !extensionBtn) return;
 
         const currentAddress = this.normalizeWalletAddress(this.wallet?.address || '');
         const activeAddress = this.normalizeWalletAddress(providerState.activeAddress);
         const currentLabel = this.shortWalletAddress(currentAddress);
         const activeLabel = this.shortWalletAddress(activeAddress);
+        const activeEntry = this.wallets.find(item => item.id === this.activeWalletId);
+        const currentProviderType = this.wallet?.providerType || activeEntry?.provider || providerState.preferredProvider || providerState.providerType || 'extension';
+        const usingWebWallet = providerState.providerType === 'web-wallet';
+        const extensionHasWallet = providerState.hasWallet !== false;
+        const extensionDownloadActionLabel = this.extensionDownloadButtonLabel();
+        const extensionDownloadTarget = this.extensionDownloadCopy();
 
         if (helper) {
             helper.className = 'wm-extension-helper hidden';
@@ -4020,111 +4134,282 @@ pub extern "C" fn total_minted() -> u64 {
         }
         if (icon) icon.className = 'fas fa-plug';
 
-        const webState = providerState.webWalletState || {};
-        const webLabel = webState.connected && webState.activeAddress
-            ? `<i class="fas fa-circle-check"></i> Use ${this.shortWalletAddress(webState.activeAddress)}`
-            : webState.windowOpen
-                ? '<i class="fas fa-up-right-from-square"></i> Focus Web Wallet'
-                : '<i class="fas fa-up-right-from-square"></i> Open Web Wallet';
         this.setWalletActionButton(webWalletBtn, {
-            label: webLabel,
-            action: webState.connected && webState.activeAddress ? 'connect-web-wallet' : (webState.windowOpen ? 'focus-web-wallet' : 'connect-web-wallet'),
-            hidden: !providerState.webWalletSupported
+            hidden: true
         });
 
-        if (!providerState.extensionDetected) {
-            title.textContent = 'Connect Wallet';
-            description.textContent = 'Connect through the Lichen web wallet popup or install the browser extension.';
+        this.setWalletActionButton(extensionBtn, {
+            label: '<i class="fas fa-plug"></i> Connect Extension',
+            action: 'connect-extension'
+        });
+
+        if (usingWebWallet) {
+            if (icon) {
+                icon.className = 'fas fa-wallet';
+            }
+
+            if (providerState.extensionDetected) {
+                this.setWalletActionButton(webWalletBtn, {
+                    label: '<i class="fas fa-plug"></i> Connect Extension',
+                    action: 'connect-extension'
+                });
+            } else {
+                this.setWalletActionButton(webWalletBtn, {
+                    label: extensionDownloadActionLabel,
+                    action: 'get-extension'
+                });
+            }
+
+            if (providerState.hasWallet === false && providerState.windowOpen) {
+                title.textContent = currentAddress && currentProviderType === 'web-wallet'
+                    ? 'Web Wallet Account Missing'
+                    : 'Create or Import Web Wallet';
+                description.textContent = currentAddress && currentProviderType === 'web-wallet'
+                    ? `${currentLabel} is saved in Programs as read-only, but the open web wallet popup has no wallet loaded for signing. Import or create the matching wallet in the popup, then approve access.`
+                    : 'The open web wallet popup has no wallet loaded yet. Create or import a wallet there, then approve access to Programs.';
+                this.setWalletActionButton(extensionBtn, {
+                    label: '<i class="fas fa-arrow-up-right-from-square"></i> Open Web Wallet Setup',
+                    action: 'focus-web-wallet'
+                });
+                if (icon) {
+                    icon.className = 'fas fa-wallet';
+                }
+                if (status) {
+                    status.className = 'wm-extension-status warning';
+                    status.textContent = 'No wallet loaded';
+                }
+                if (helper) {
+                    helper.className = 'wm-extension-helper';
+                    helper.textContent = 'A saved Programs address is not enough to sign. The web wallet popup must contain the encrypted wallet for that address.';
+                }
+                return;
+            }
+
+            if (providerState.isLocked) {
+                title.textContent = 'Web Wallet Locked';
+                description.textContent = currentLabel
+                    ? `${currentLabel} is connected in read-only mode. Unlock the web wallet popup to sign deployments, calls, and metadata updates.`
+                    : 'Unlock the web wallet popup to approve deployments, calls, and metadata updates.';
+                this.setWalletActionButton(extensionBtn, {
+                    label: '<i class="fas fa-arrow-up-right-from-square"></i> Focus Web Wallet',
+                    action: 'focus-web-wallet'
+                });
+                if (status) {
+                    status.className = 'wm-extension-status warning';
+                    status.textContent = 'Locked';
+                }
+                if (helper) {
+                    helper.className = 'wm-extension-helper';
+                    helper.textContent = 'Unlock and approve in the popup. Keep it open for live signing, or reconnect later to reopen the encrypted browser wallet.';
+                }
+                return;
+            }
+
+            if (providerState.connected && activeAddress) {
+                if (currentAddress && activeAddress === currentAddress && this.walletCanSign()) {
+                    title.textContent = 'Web Wallet Connected';
+                    description.textContent = `${activeLabel} is connected. The popup will reopen only when the web wallet needs your approval again.`;
+                    this.setWalletActionButton(extensionBtn, {
+                        label: '<i class="fas fa-arrow-up-right-from-square"></i> Focus Web Wallet',
+                        action: 'focus-web-wallet'
+                    });
+                    if (icon) {
+                        icon.className = 'fas fa-circle-check';
+                    }
+                    if (status) {
+                        status.className = 'wm-extension-status ready';
+                        status.textContent = 'Ready to sign';
+                    }
+                    if (helper) {
+                        helper.className = 'wm-extension-helper';
+                        helper.textContent = 'The web wallet keeps keys outside Programs. Closing the popup makes Programs read-only until you reopen and approve the signer again.';
+                    }
+                    return;
+                }
+
+                if (currentAddress && activeAddress !== currentAddress) {
+                    title.textContent = 'Switch to Active Web Wallet';
+                    description.textContent = `${activeLabel} is active in the web wallet right now. Connecting here will switch the Programs signer to that wallet.`;
+                    this.setWalletActionButton(extensionBtn, {
+                        label: `<i class="fas fa-right-left"></i> Use ${activeLabel}`,
+                        action: 'connect-web-wallet'
+                    });
+                    if (status) {
+                        status.className = 'wm-extension-status warning';
+                        status.textContent = 'Different wallet active';
+                    }
+                    return;
+                }
+            }
+
+            if (currentAddress && currentProviderType === 'web-wallet') {
+                title.textContent = 'Reconnect Web Wallet Session';
+                description.textContent = `${currentLabel} is connected in read-only mode. Reopen the web wallet popup and approve access again to resume signing.`;
+                this.setWalletActionButton(extensionBtn, {
+                    label: '<i class="fas fa-arrow-up-right-from-square"></i> Reconnect Web Wallet',
+                    action: 'connect-web-wallet'
+                });
+                if (status) {
+                    status.className = 'wm-extension-status warning';
+                    status.textContent = 'Read-only mode';
+                }
+                if (helper) {
+                    helper.className = 'wm-extension-helper';
+                    helper.textContent = 'The secure popup can be reopened whenever you need to sign again.';
+                }
+                return;
+            }
+
+            title.textContent = 'Connect with Web Wallet';
+            description.textContent = 'Open the Lichen web wallet in a secure popup to create or import a wallet and approve program requests.';
+            this.setWalletActionButton(extensionBtn, {
+                label: '<i class="fas fa-arrow-up-right-from-square"></i> Connect with Web Wallet',
+                action: 'connect-web-wallet'
+            });
             if (status) {
                 status.className = 'wm-extension-status info';
-                status.textContent = 'Extension not detected';
-            }
-            this.setWalletActionButton(extensionBtn, {
-                label: '<i class="fas fa-download"></i> Download Extension',
-                action: 'get-extension'
-            });
-            return;
-        }
-
-        if (providerState.hasWallet === false) {
-            title.textContent = 'Extension Ready';
-            description.textContent = currentLabel
-                ? `${currentLabel} is connected in read-only mode. Open the extension and import or create a wallet to sign.`
-                : 'Open the extension and import or create a wallet before signing Programs transactions.';
-            if (status) {
-                status.className = 'wm-extension-status warning';
-                status.textContent = 'No wallet';
+                status.textContent = providerState.webWalletWindowOpen ? 'Approval required' : 'Popup flow';
             }
             if (helper) {
                 helper.className = 'wm-extension-helper';
-                helper.textContent = 'After creating or importing a wallet in the extension, return here and refresh.';
+                helper.textContent = `The web wallet keeps keys outside Programs and signs only after approval. You can still download the ${extensionDownloadTarget} later for an in-page signer.`;
             }
+            return;
+        }
+
+        if (!providerState.extensionDetected) {
+            if (icon) {
+                icon.className = 'fas fa-wallet';
+            }
+            title.textContent = currentAddress ? 'Extension Not Detected' : 'Connect a Wallet';
+            description.textContent = currentLabel
+                ? `${currentLabel} is connected in read-only mode. Connect with the Lichen web wallet now, or download the ${extensionDownloadTarget} to resume signing.`
+                : `Connect with the Lichen web wallet in a secure popup, or download the ${extensionDownloadTarget} for an in-page signer.`;
             this.setWalletActionButton(extensionBtn, {
-                label: '<i class="fas fa-up-right-from-square"></i> Open Extension',
+                label: '<i class="fas fa-arrow-up-right-from-square"></i> Connect with Web Wallet',
+                action: 'connect-web-wallet'
+            });
+            this.setWalletActionButton(webWalletBtn, {
+                label: extensionDownloadActionLabel,
+                action: 'get-extension'
+            });
+            if (status) {
+                status.className = 'wm-extension-status info';
+                status.textContent = 'Extension missing';
+            }
+            if (helper) {
+                helper.className = 'wm-extension-helper';
+                helper.textContent = `The web wallet opens in a secure popup and keeps signing outside Programs. Download the ${extensionDownloadTarget} later if you want a dedicated in-page signer.`;
+            }
+            return;
+        }
+
+        if (providerState.webWalletSupported && !(providerState.connected && activeAddress)) {
+            this.setWalletActionButton(webWalletBtn, {
+                label: '<i class="fas fa-arrow-up-right-from-square"></i> Connect with Web Wallet',
+                action: 'connect-web-wallet'
+            });
+        }
+
+        if (!extensionHasWallet) {
+            if (icon) {
+                icon.className = 'fas fa-wallet';
+            }
+            title.textContent = currentLabel ? 'Extension Has No Wallet Loaded' : 'Set Up Extension Wallet';
+            description.textContent = currentLabel
+                ? `${currentLabel} is still available in read-only mode in Programs. Open the extension to import or create a wallet, then reconnect signing.`
+                : 'The extension is installed, but no wallet is loaded right now. Open it to create or import a wallet, then approve the Programs connection.';
+            this.setWalletActionButton(extensionBtn, {
+                label: '<i class="fas fa-arrow-up-right-from-square"></i> Open Extension',
                 action: 'open-extension'
             });
+            if (status) {
+                status.className = 'wm-extension-status info';
+                status.textContent = 'No wallet in extension';
+            }
+            if (helper) {
+                helper.className = 'wm-extension-helper';
+                helper.textContent = 'Opening the extension lets you import or create a wallet before reconnecting the signer.';
+            }
             return;
         }
 
         if (providerState.isLocked) {
             title.textContent = 'Extension Locked';
             description.textContent = currentLabel
-                ? `${currentLabel} is connected in read-only mode. Unlock the extension to sign.`
-                : 'Unlock the extension to approve Programs transactions.';
-            if (icon) icon.className = 'fas fa-lock';
+                ? `${currentLabel} is connected in read-only mode. Unlock the extension to sign deployments, calls, and metadata updates.`
+                : 'Unlock the extension to approve deployments, calls, and metadata updates.';
+            this.setWalletActionButton(extensionBtn, {
+                label: '<i class="fas fa-arrow-up-right-from-square"></i> Open Extension',
+                action: 'open-extension'
+            });
+            if (icon) {
+                icon.className = 'fas fa-lock';
+            }
             if (status) {
                 status.className = 'wm-extension-status warning';
                 status.textContent = 'Locked';
             }
-            this.setWalletActionButton(extensionBtn, {
-                label: '<i class="fas fa-up-right-from-square"></i> Open Extension',
-                action: 'open-extension'
-            });
+            if (helper) {
+                helper.className = 'wm-extension-helper';
+                helper.textContent = 'Open the extension to unlock it. Programs refreshes automatically when you come back.';
+            }
             return;
         }
 
         if (providerState.connected && activeAddress) {
-            if (currentAddress && activeAddress === currentAddress && this.wallet?.provider) {
+            if (currentAddress && activeAddress === currentAddress && this.walletCanSign()) {
                 title.textContent = 'Extension Connected';
-                description.textContent = `${activeLabel} is ready to sign Programs transactions.`;
-                if (status) {
-                    status.className = 'wm-extension-status ready';
-                    status.textContent = 'Ready to sign';
-                }
+                description.textContent = `${activeLabel} is ready to sign. If you switch the active wallet inside the extension, Programs will follow it automatically.`;
                 this.setWalletActionButton(extensionBtn, {
                     label: '<i class="fas fa-rotate-right"></i> Refresh Extension',
                     action: 'refresh-provider'
                 });
+                if (icon) {
+                    icon.className = 'fas fa-circle-check';
+                }
+                if (status) {
+                    status.className = 'wm-extension-status ready';
+                    status.textContent = 'Ready to sign';
+                }
                 return;
             }
 
-            title.textContent = currentAddress ? 'Switch to Active Extension Wallet' : 'Connect Extension Wallet';
-            description.textContent = currentAddress
-                ? `${activeLabel} is active in the extension. Connecting here will switch Programs to that wallet.`
-                : `${activeLabel} is active in the extension. Connect it to use Programs.`;
-            if (status) {
-                status.className = currentAddress ? 'wm-extension-status warning' : 'wm-extension-status info';
-                status.textContent = currentAddress ? 'Different wallet active' : 'Permission ready';
+            if (currentAddress && activeAddress !== currentAddress) {
+                title.textContent = 'Switch to Active Extension Wallet';
+                description.textContent = `${activeLabel} is active in the extension right now. Connecting here will switch the Programs signer to that wallet.`;
+                this.setWalletActionButton(extensionBtn, {
+                    label: `<i class="fas fa-right-left"></i> Use ${activeLabel}`,
+                    action: 'connect-extension'
+                });
+                if (status) {
+                    status.className = 'wm-extension-status warning';
+                    status.textContent = 'Different wallet active';
+                }
+                return;
             }
+        }
+
+        if (currentAddress) {
+            title.textContent = 'Reconnect Extension Session';
+            description.textContent = `${currentLabel} is connected in read-only mode. Reconnect the same extension wallet to resume signing.`;
             this.setWalletActionButton(extensionBtn, {
-                label: `<i class="fas fa-right-left"></i> Use ${activeLabel}`,
+                label: '<i class="fas fa-plug"></i> Reconnect Extension',
                 action: 'connect-extension'
             });
+            if (status) {
+                status.className = 'wm-extension-status warning';
+                status.textContent = 'Read-only mode';
+            }
             return;
         }
 
-        title.textContent = currentAddress ? 'Reconnect Extension Session' : 'Connect Wallet Extension';
-        description.textContent = currentAddress
-            ? `${currentLabel} is connected in read-only mode. Reconnect the matching extension wallet to sign.`
-            : 'Connect your Lichen Wallet browser extension. Private keys never leave the extension.';
+        title.textContent = 'Connect Wallet Extension';
+        description.textContent = 'Connect your Lichen Wallet browser extension to deploy and test programs securely. Your private keys never leave the extension.';
         if (status) {
-            status.className = currentAddress ? 'wm-extension-status warning' : 'wm-extension-status info';
-            status.textContent = currentAddress ? 'Read-only mode' : 'Permission required';
+            status.className = 'wm-extension-status info';
+            status.textContent = providerState.connected ? 'Extension ready' : 'Permission required';
         }
-        this.setWalletActionButton(extensionBtn, {
-            label: currentAddress ? '<i class="fas fa-plug"></i> Reconnect Extension' : '<i class="fas fa-plug"></i> Connect Extension',
-            action: 'connect-extension'
-        });
     },
 
     async connectWalletProvider(providerType) {
@@ -4136,6 +4421,7 @@ pub extern "C" fn total_minted() -> u64 {
         }
         const provider = connector.getProvider?.() || await this.resolveWalletProviderCandidate(providerType, providerType === 'extension' ? 400 : 0);
         this.wallet = this.buildExternalWallet(address, providerType, provider);
+        this.wallet.signingReady = true;
         this.addWalletToStore(this.wallet, this.providerTypeTitle(providerType));
         await this.refreshBalance();
         this.updateWalletDisplay();
@@ -4147,16 +4433,24 @@ pub extern "C" fn total_minted() -> u64 {
         await this.refreshWalletProviderState();
     },
 
-    openWalletSite(entry = 'web-wallet') {
+    walletSiteUrl(entry = 'web-wallet') {
         if (typeof getWalletAppUrl === 'function') {
-            const url = getWalletAppUrl(entry);
-            window.open(url.toString(), '_blank', 'noopener,noreferrer');
-            return;
+            return getWalletAppUrl(entry).toString();
         }
         const base = typeof LICHEN_CONFIG !== 'undefined' && LICHEN_CONFIG.wallet
             ? LICHEN_CONFIG.wallet
             : 'https://wallet.lichen.network';
-        window.open(base, '_blank', 'noopener,noreferrer');
+        try {
+            const url = new URL(base, window.location.origin);
+            if (entry) url.searchParams.set('entry', entry);
+            return url.toString();
+        } catch {
+            return base;
+        }
+    },
+
+    openWalletSite(entry = 'web-wallet') {
+        window.open(this.walletSiteUrl(entry), '_blank', 'noopener,noreferrer');
     },
 
     focusWebWallet(entry = 'web-wallet') {
@@ -4187,7 +4481,9 @@ pub extern "C" fn total_minted() -> u64 {
     },
 
     openExtensionInstallPage() {
-        this.openWalletSite('extension');
+        const installTarget = this.resolveExtensionInstallUrl();
+        window.open(installTarget.url, '_blank', 'noopener,noreferrer');
+        return installTarget;
     },
 
     async handleWalletProviderAction(action) {
@@ -4218,8 +4514,20 @@ pub extern "C" fn total_minted() -> u64 {
                     return;
                 }
                 case 'get-extension':
-                    this.openExtensionInstallPage();
-                    this.addTerminalLine('ℹ️ Opened the wallet site with extension install details.', 'info');
+                    {
+                        const installTarget = this.openExtensionInstallPage();
+                        const browserName = this.extensionBrowserLabel(installTarget.browser);
+                        if (installTarget.configured) {
+                            this.addTerminalLine(
+                                browserName === 'Browser'
+                                    ? 'ℹ️ Opened the extension download page.'
+                                    : `ℹ️ Opened the ${browserName} extension download page.`,
+                                'info'
+                            );
+                        } else {
+                            this.addTerminalLine('ℹ️ Opened the wallet site with extension install details.', 'info');
+                        }
+                    }
                     return;
                 case 'refresh-provider':
                     await this.syncWalletProviderState({ timeoutMs: 400, notify: true });
@@ -4440,7 +4748,7 @@ pub extern "C" fn total_minted() -> u64 {
             return;
         }
 
-        if (this.network === 'mainnet') {
+        if (this.network === 'mainnet' || this.network === 'local-mainnet') {
             this.addTerminalLine('❌ Faucet not available on mainnet', 'error');
             return;
         }
@@ -4448,11 +4756,16 @@ pub extern "C" fn total_minted() -> u64 {
         this.addTerminalLine('💧 Requesting testnet LICN...', 'info');
 
         try {
-            const amount = this.network === 'local' ? 1000 : 100;
+            const config = await this.rpc.getFaucetConfig().catch(() => null);
+            const maxPerRequest = Number(config?.max_per_request);
+            const amount = Number.isFinite(maxPerRequest) && maxPerRequest > 0 ? maxPerRequest : 10;
             const result = await this.rpc.requestFaucet(this.wallet.address, amount);
+            const receivedAmount = result.amount ?? amount;
 
-            this.addTerminalLine(`✅ Received ${amount} LICN!`, 'success');
-            this.addTerminalLine(`   Signature: ${result.signature}`, 'info');
+            this.addTerminalLine(`✅ Received ${receivedAmount} LICN!`, 'success');
+            if (result.signature) {
+                this.addTerminalLine(`   Signature: ${result.signature}`, 'info');
+            }
 
             // Refresh balance after a delay
             setTimeout(() => this.refreshBalance(), 2000);

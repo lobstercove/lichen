@@ -17,6 +17,8 @@ PAIR_NAMES = {
     9: "wNEO/LICN",
     10: "wGAS/lUSD",
     11: "wGAS/LICN",
+    12: "wBTC/lUSD",
+    13: "wBTC/LICN",
 }
 
 def fetch_orderbook(pair_id=1, depth=25):

@@ -1,7 +1,12 @@
 import { loadState, saveState } from '../core/state-store.js';
 import { getRpcEndpoint, LichenRPC } from '../core/rpc-service.js';
 import { clearAutoLockAlarm, scheduleAutoLock } from '../core/lock-service.js';
-import { hasBridgeAccessAuth, requestBridgeDepositAddress, getBridgeDepositStatus } from '../core/bridge-service.js';
+import {
+  getBridgeDepositStatus,
+  hasBridgeAccessAuth,
+  preflightBridgeDepositRoute,
+  requestBridgeDepositAddress
+} from '../core/bridge-service.js';
 import {
   decryptPrivateKey,
   encryptPrivateKey,
@@ -1065,18 +1070,19 @@ async function loadAssets() {
     const spendableRaw = Number(result?.spendable ?? result?.spores ?? 0);
     const totalRaw = Number(result?.spores ?? spendableRaw);
     const stakedRaw = Number(result?.staked ?? 0);
-    const mossRaw = Number(result?.moss_value ?? result?.mossValue ?? result?.moss_staked ?? 0);
+    const stakingPosition = await rpc.call('getStakingPosition', [wallet.address]).catch(() => null);
+    const stLicnRaw = Number(stakingPosition?.st_licn_amount || 0);
     const lockedRaw = Number(result?.locked ?? 0);
     const div = 1_000_000_000;
     const decimals = displayDecimals();
     const fmt = v => v.toLocaleString(undefined, { maximumFractionDigits: decimals });
 
     let breakdownHtml = '';
-    if (stakedRaw > 0 || mossRaw > 0 || lockedRaw > 0) {
+    if (stakedRaw > 0 || stLicnRaw > 0 || lockedRaw > 0) {
       const parts = [];
       parts.push(`Spendable: ${fmt(spendableRaw / div)}`);
       if (stakedRaw > 0) parts.push(`Staked: ${fmt(stakedRaw / div)}`);
-      if (mossRaw > 0) parts.push(`Liquid Staking Value: ${fmt(mossRaw / div)}`);
+      if (stLicnRaw > 0) parts.push(`stLICN Staked: ${fmt(stLicnRaw / div)}`);
       if (lockedRaw > 0) parts.push(`Locked: ${fmt(lockedRaw / div)}`);
       breakdownHtml = `<span style="font-size:10px;color:#888;margin-top:2px">${parts.join(' · ')}</span>`;
     }
@@ -1489,11 +1495,13 @@ async function refreshBalance() {
     const breakdownEl = document.getElementById('balanceBreakdown');
     if (breakdownEl) {
       const shieldedSpores = baseUnitBigIntPopup(shieldedPopupState?.shieldedBalance || 0);
-      const hasBreakdown = balanceSnapshot.stakedLicn > 0 || balanceSnapshot.lockedLicn > 0 || balanceSnapshot.mossStakedLicn > 0 || balanceSnapshot.pendingRewardsLicn > 0 || shieldedSpores > 0n;
+      const stakingPosition = await rpc.call('getStakingPosition', [wallet.address]).catch(() => null);
+      const stLicnBalance = Number(stakingPosition?.st_licn_amount || 0) / 1_000_000_000;
+      const hasBreakdown = balanceSnapshot.stakedLicn > 0 || balanceSnapshot.lockedLicn > 0 || stLicnBalance > 0 || balanceSnapshot.pendingRewardsLicn > 0 || shieldedSpores > 0n;
       if (hasBreakdown) {
         const parts = [`<i class="fas fa-wallet"></i> Spendable: <strong>${balanceSnapshot.spendableLicn.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`];
         if (balanceSnapshot.stakedLicn > 0) parts.push(`<i class="fas fa-lock"></i> Staked: <strong>${balanceSnapshot.stakedLicn.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`);
-        if (balanceSnapshot.mossStakedLicn > 0) parts.push(`<i class="fas fa-coins"></i> Liquid Staking Value: <strong>${balanceSnapshot.mossStakedLicn.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`);
+        if (stLicnBalance > 0) parts.push(`<i class="fas fa-coins"></i> stLICN Staked: <strong>${stLicnBalance.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`);
         if (shieldedSpores > 0n) parts.push(`<i class="fas fa-shield-alt"></i> Shielded: <strong>${formatLicnBaseUnitsFixedPopup(shieldedSpores)}</strong>`);
         if (balanceSnapshot.pendingRewardsLicn > 0) parts.push(`<i class="fas fa-gift"></i> Rewards: <strong>${balanceSnapshot.pendingRewardsLicn.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`);
         if (balanceSnapshot.lockedLicn > 0) parts.push(`<i class="fas fa-hourglass"></i> Locked: <strong>${balanceSnapshot.lockedLicn.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`);
@@ -2525,6 +2533,12 @@ async function requestExtBridgeDeposit(chain, asset, chainName) {
   if (loadingEl) loadingEl.style.display = 'block';
 
   try {
+    await preflightBridgeDepositRoute({
+      chain,
+      asset,
+      network: state?.network?.selected || 'local-testnet'
+    });
+
     const hasCachedBridgeAuth = hasBridgeAccessAuth(wallet, { chain, asset });
     if (hasCachedBridgeAuth && loadingEl) {
       loadingEl.innerHTML = '<i class="fas fa-key"></i> Using active bridge authorization...';
@@ -2580,6 +2594,10 @@ async function requestExtBridgeDeposit(chain, asset, chainName) {
   } catch (e) {
     if (loadingEl) loadingEl.style.display = 'none';
     if (selectEl) selectEl.style.display = 'block';
+    if (resultEl) {
+      resultEl.style.display = 'block';
+      resultEl.innerHTML = `<p style="color:#EF476F;text-align:center;">Bridge request failed: ${escapeHtml(e?.message || e)}</p>`;
+    }
     setStatus(`Bridge error: ${e?.message || e}`);
   }
 }

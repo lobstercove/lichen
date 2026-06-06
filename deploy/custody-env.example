@@ -19,6 +19,8 @@ CUSTODY_TREASURY_KEYPAIR=/etc/lichen/custody-treasury-testnet.json
 CUSTODY_REQUIRED_ROUTES=solana,ethereum,bnb,neox,bitcoin
 
 # Source-chain RPC routes. Keep a route unset until it is intentionally live.
+# Fresh genesis still creates all wrapped token contracts plus DEX pairs, pools,
+# and routes; this only gates public source-chain custody access.
 # For Lichen testnet with source-chain testnets, set Ethereum Sepolia
 # CUSTODY_ETH_CHAIN_ID=11155111 and BSC testnet CUSTODY_BNB_CHAIN_ID=97.
 # CUSTODY_SOLANA_RPC_URL=REPLACE_WITH_SOLANA_RPC_URL

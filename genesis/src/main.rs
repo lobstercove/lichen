@@ -1585,7 +1585,13 @@ fn main() {
         error!("Failed to bootstrap bridge committee: {}", err);
         std::process::exit(1);
     };
-    genesis_create_trading_pairs(&state, &genesis_pubkey, "GENESIS:", gp);
+    if let Err(err) = genesis_create_trading_pairs(&state, &genesis_pubkey, "GENESIS:", gp) {
+        error!(
+            "Failed to create mandatory genesis DEX pairs/pools: {}",
+            err
+        );
+        std::process::exit(1);
+    };
     genesis_set_fee_exempt_contracts(&state, &genesis_pubkey, "GENESIS:");
     if let Err(err) = genesis_seed_oracle(
         &state,
@@ -1599,7 +1605,11 @@ fn main() {
         std::process::exit(1);
     };
     genesis_seed_margin_prices(&state, &genesis_pubkey, genesis_timestamp, gp);
-    genesis_seed_analytics_prices(&state, &genesis_pubkey, genesis_timestamp, gp);
+    if let Err(err) = genesis_seed_analytics_prices(&state, &genesis_pubkey, genesis_timestamp, gp)
+    {
+        error!("Failed to seed mandatory genesis analytics prices: {}", err);
+        std::process::exit(1);
+    };
     genesis_seed_consensus_oracle_prices(&state, 0, gp);
 
     // ════════════════════════════════════════════════════════════════════

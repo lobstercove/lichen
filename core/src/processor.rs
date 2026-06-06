@@ -8968,7 +8968,25 @@ mod tests {
             accounts: vec![bob],
             data: execute_data,
         };
-        let execute_tx = make_signed_tx(&bob_kp, execute_ix, fresh_blockhash);
+        let mut message = crate::transaction::Message::new(vec![execute_ix], fresh_blockhash);
+        message.compute_budget = Some(crate::transaction::MAX_COMPUTE_BUDGET);
+        let mut execute_tx = Transaction::new(message);
+        execute_tx
+            .signatures
+            .push(bob_kp.sign(&execute_tx.message.serialize()));
+        let sim = processor.simulate_transaction(&execute_tx);
+        assert!(
+            sim.success,
+            "simulation should accept governed contract call with explicit max compute budget: {:?}",
+            sim.error
+        );
+        assert!(
+            state
+                .get_contract_storage(&contract_addr, b"last_args")
+                .unwrap()
+                .is_none(),
+            "simulation must not persist governed contract call storage"
+        );
         let result = processor.process_transaction(&execute_tx, &validator);
         assert!(
             result.success,

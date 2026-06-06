@@ -745,14 +745,25 @@ test('CC-4e extension bridge surfaces expose Neo X GAS with route-status preflig
   assert.ok(bridgeServiceSrc.includes("'neox'"), 'bridge-service missing Neo X support');
   assert.ok(bridgeServiceSrc.includes("'gas'"), 'bridge-service missing GAS asset support');
   assert.ok(bridgeServiceSrc.includes('getBridgeRouteRestrictionStatus'), 'bridge-service should preflight bridge route status');
+  assert.ok(bridgeServiceSrc.includes('preflightBridgeDepositRoute'), 'bridge-service should export route readiness preflight');
+  assert.ok(bridgeServiceSrc.includes("['route_ready', 'deposit_ready', 'custody_configured', 'custody_status']"), 'bridge-service should consume custody readiness fields');
   assert.ok(bridgeServiceSrc.includes('privateKeyToKeypair'), 'bridge-service should derive the active address from decrypted key material before signing');
   assert.ok(bridgeServiceSrc.includes('keypair.address !== wallet.address'), 'bridge-service should reject encrypted keys that do not match the active wallet');
   assert.ok(bridgeServiceSrc.includes('bridgeDepositUserMessage(error)'), 'bridge-service should normalize custody/auth failures before surfacing them');
+  assert.ok(fullSrc.includes('await preflightBridgeDepositRoute({ chain, asset, network })'), 'full-page bridge flow should preflight before password prompt');
+  assert.ok(popupSrc.includes('await preflightBridgeDepositRoute({'), 'popup bridge flow should preflight before password prompt');
   assert.ok(fullSrc.includes("Bridge from Neo X"), 'full.js missing Neo X bridge card label');
   assert.ok(fullSrc.includes("startExtensionDeposit('neox')"), 'full.js missing Neo X click handler wiring');
   assert.ok(popupSrc.includes("NEOX: { name: 'Neo X'"), 'popup.js missing Neo X chain metadata');
   assert.ok(popupHtmlSrc.includes('data-bridge-chain="NEOX"'), 'popup.html missing Neo X deposit button');
   assert.ok(homeHtmlSrc.includes('option value="neox"'), 'home.html bridge chain dropdown missing Neo X option');
+});
+
+test('CC-4f extension compact balance shows stLICN amount instead of redeemable liquid staking value', () => {
+  assert.ok(fullSrc.includes('stLICN Staked: <strong>${stLicnBalance.toLocaleString'), 'full-page balance card should show stLICN amount');
+  assert.ok(popupSrc.includes('stLICN Staked: <strong>${stLicnBalance.toLocaleString'), 'popup balance card should show stLICN amount');
+  assert.ok(!fullSrc.includes('Liquid Staking Value: <strong>${balanceSnapshot.mossStakedLicn.toLocaleString'), 'full-page balance card should not show redeemable LICN as liquid staking value');
+  assert.ok(!popupSrc.includes('Liquid Staking Value: <strong>${balanceSnapshot.mossStakedLicn.toLocaleString'), 'popup balance card should not show redeemable LICN as liquid staking value');
 });
 
 test('CC-5 no other inline onclick handlers in extension JS files', () => {
