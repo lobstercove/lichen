@@ -111,7 +111,9 @@ impl TxProcessor {
     }
 
     fn legacy_testnet_bootstrap_grants_enabled(&self) -> Result<bool, String> {
-        let Some(chain_id_bytes) = self.state.get_metadata(crate::signing::CHAIN_ID_METADATA_KEY)?
+        let Some(chain_id_bytes) = self
+            .state
+            .get_metadata(crate::signing::CHAIN_ID_METADATA_KEY)?
         else {
             return Ok(false);
         };

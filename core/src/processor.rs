@@ -3588,7 +3588,9 @@ mod tests {
     fn test_register_validator_legacy_testnet_replay_enables_bootstrap_grants_before_cutoff() {
         let (processor, state, _alice_kp, _alice, treasury, genesis_hash) = setup();
         let chain_id = "lichen-testnet-1";
-        state.put_metadata(CHAIN_ID_METADATA_KEY, chain_id.as_bytes()).unwrap();
+        state
+            .put_metadata(CHAIN_ID_METADATA_KEY, chain_id.as_bytes())
+            .unwrap();
         state.set_last_slot(128).unwrap();
         let block_producer = Pubkey([42u8; 32]);
         fund_treasury_for_validator_bootstrap(&state, treasury);
@@ -3621,7 +3623,9 @@ mod tests {
     fn test_register_validator_legacy_testnet_bootstrap_grants_close_at_cutoff() {
         let (processor, state, _alice_kp, _alice, treasury, genesis_hash) = setup();
         let chain_id = "lichen-testnet-1";
-        state.put_metadata(CHAIN_ID_METADATA_KEY, chain_id.as_bytes()).unwrap();
+        state
+            .put_metadata(CHAIN_ID_METADATA_KEY, chain_id.as_bytes())
+            .unwrap();
         let cutoff_block = crate::Block::new_with_timestamp(
             2_710_766,
             genesis_hash,
@@ -3667,7 +3671,9 @@ mod tests {
     fn test_register_validator_mainnet_does_not_use_legacy_testnet_bootstrap_policy() {
         let (processor, state, _alice_kp, _alice, treasury, genesis_hash) = setup();
         let chain_id = "lichen-mainnet-1";
-        state.put_metadata(CHAIN_ID_METADATA_KEY, chain_id.as_bytes()).unwrap();
+        state
+            .put_metadata(CHAIN_ID_METADATA_KEY, chain_id.as_bytes())
+            .unwrap();
         state.set_last_slot(128).unwrap();
         let block_producer = Pubkey([42u8; 32]);
         fund_treasury_for_validator_bootstrap(&state, treasury);
