@@ -4868,6 +4868,14 @@ async fn apply_post_block_effects_after_store(
     run_analytics_bridge_from_state(state, block.header.slot, slot_duration_ms);
     run_sltp_triggers_from_state(state);
     reset_24h_stats_if_expired(state, block.header.timestamp);
+    if let Err(e) = maybe_activate_legacy_testnet_mossstake_slot_only(
+        state,
+        block.header.slot,
+        "post-block boundary",
+    ) {
+        error!("Failed post-block MossStake slot-only activation: {}", e);
+        std::process::exit(1);
+    }
     record_post_block_state_commitment_anchor(state, block, "post-block effects");
 }
 
@@ -5122,6 +5130,81 @@ fn clean_mossstake_wall_clock_state(state: &StateStore, context: &str) -> Result
         info!("🔧 {}: enabled MossStake slot-only mode", context);
     }
     Ok(true)
+}
+
+const LEGACY_TESTNET_MOSSSTAKE_SLOT_ONLY_ACTIVATION_PARENT_SLOT: u64 = 2_710_766;
+
+fn state_chain_id_metadata(state: &StateStore) -> Option<String> {
+    state
+        .get_metadata(CHAIN_ID_METADATA_KEY)
+        .ok()
+        .flatten()
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+}
+
+fn genesis_bundle_declares_mossstake_slot_only(state: &StateStore) -> Result<bool, String> {
+    let Some(genesis) = state.get_block_by_slot(0)? else {
+        return Ok(false);
+    };
+    let Some(bundle) = extract_genesis_state_bundle(&genesis)? else {
+        return Ok(false);
+    };
+    Ok(bundle
+        .categories
+        .iter()
+        .find(|category| category.name == "stats")
+        .map(|category| {
+            category.entries.iter().any(|(key, value)| {
+                key == MOSSSTAKE_SLOT_ONLY_METADATA_KEY.as_bytes() && value.as_slice() == b"1"
+            })
+        })
+        .unwrap_or(false))
+}
+
+fn uses_legacy_testnet_mossstake_history(state: &StateStore) -> Result<bool, String> {
+    let Some(chain_id) = state_chain_id_metadata(state) else {
+        return Ok(false);
+    };
+    if !chain_id.to_ascii_lowercase().contains("testnet") {
+        return Ok(false);
+    }
+    Ok(!genesis_bundle_declares_mossstake_slot_only(state)?)
+}
+
+fn verify_mossstake_slot_only_not_premature(
+    state: &StateStore,
+    context: &str,
+) -> Result<(), String> {
+    if !uses_legacy_testnet_mossstake_history(state)? {
+        return Ok(());
+    }
+    let tip = state.get_last_slot().unwrap_or(0);
+    if tip < LEGACY_TESTNET_MOSSSTAKE_SLOT_ONLY_ACTIVATION_PARENT_SLOT
+        && state.is_mossstake_slot_only()
+    {
+        return Err(format!(
+            "{}: legacy testnet DB has MossStake slot-only marker at slot {}, before activation parent slot {}; this local chain state was migrated too early and must be discarded/resynced from peers with validator identity preserved",
+            context,
+            tip,
+            LEGACY_TESTNET_MOSSSTAKE_SLOT_ONLY_ACTIVATION_PARENT_SLOT
+        ));
+    }
+    Ok(())
+}
+
+fn maybe_activate_legacy_testnet_mossstake_slot_only(
+    state: &StateStore,
+    parent_slot: u64,
+    context: &str,
+) -> Result<bool, String> {
+    if !uses_legacy_testnet_mossstake_history(state)? {
+        return Ok(false);
+    }
+    if parent_slot < LEGACY_TESTNET_MOSSSTAKE_SLOT_ONLY_ACTIVATION_PARENT_SLOT {
+        return Ok(false);
+    }
+
+    clean_mossstake_wall_clock_state(state, context)
 }
 
 fn genesis_sync_incomplete(state: &StateStore) -> bool {
@@ -8888,8 +8971,8 @@ async fn run_validator() {
             );
             std::process::exit(1);
         }
-        if let Err(err) = clean_mossstake_wall_clock_state(&state, "startup") {
-            error!("❌ Failed to migrate MossStake to slot-only state: {}", err);
+        if let Err(err) = verify_mossstake_slot_only_not_premature(&state, "startup") {
+            error!("❌ MossStake slot-only activation check failed: {}", err);
             std::process::exit(1);
         }
     }
@@ -9219,6 +9302,13 @@ async fn run_validator() {
     }
     if let Err(e) = repair_active_sparse_state_commitment_before_tip_anchor(&state) {
         error!("Failed startup sparse state commitment repair: {}", e);
+        std::process::exit(1);
+    }
+    let startup_tip = state.get_last_slot().unwrap_or(0);
+    if let Err(e) =
+        maybe_activate_legacy_testnet_mossstake_slot_only(&state, startup_tip, "startup boundary")
+    {
+        error!("Failed startup MossStake slot-only activation: {}", e);
         std::process::exit(1);
     }
     if let Err(e) = ensure_tip_post_state_commitment_anchor(&state) {
@@ -17957,6 +18047,14 @@ async fn execute_consensus_actions(
 
             // Rolling 24h window reset
             reset_24h_stats_if_expired(state, block.header.timestamp);
+            if let Err(e) = maybe_activate_legacy_testnet_mossstake_slot_only(
+                state,
+                height,
+                "BFT commit boundary",
+            ) {
+                error!("Failed BFT MossStake slot-only activation: {}", e);
+                std::process::exit(1);
+            }
             record_post_block_state_commitment_anchor(state, &block, "BFT commit");
 
             // Finality tracking
@@ -20781,6 +20879,130 @@ mod tests {
         assert_eq!(cleaned_request.claimable_at_unix_seconds, 0);
 
         assert!(!clean_mossstake_wall_clock_state(&state, "test").expect("second clean is no-op"));
+    }
+
+    #[test]
+    fn legacy_testnet_mossstake_slot_only_activation_waits_for_boundary() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let alice = Keypair::generate().pubkey();
+        let mut pool = MossStakePool::new();
+
+        state
+            .put_metadata(CHAIN_ID_METADATA_KEY, b"lichen-testnet-1")
+            .expect("put chain id");
+        pool.stake_with_tier(alice, 1_000, 42, LockTier::Lock30)
+            .expect("stake position");
+        pool.positions
+            .get_mut(&alice)
+            .expect("position")
+            .deposited_at_unix_seconds = 1_700_000_000;
+        let legacy_hash = pool.legacy_canonical_hash();
+        let slot_only_hash = pool.canonical_hash();
+        state.put_mossstake_pool(&pool).expect("put legacy pool");
+
+        assert!(
+            uses_legacy_testnet_mossstake_history(&state).expect("detect legacy testnet"),
+            "testnet without a slot-only genesis bundle must replay legacy history"
+        );
+        assert!(
+            !maybe_activate_legacy_testnet_mossstake_slot_only(
+                &state,
+                LEGACY_TESTNET_MOSSSTAKE_SLOT_ONLY_ACTIVATION_PARENT_SLOT - 1,
+                "test pre-boundary",
+            )
+            .expect("pre-boundary activation check"),
+            "pre-boundary replay must not clean MossStake"
+        );
+        assert_eq!(state.compute_mossstake_pool_hash(), legacy_hash);
+        assert_eq!(
+            state
+                .get_metadata(MOSSSTAKE_SLOT_ONLY_METADATA_KEY)
+                .expect("read marker"),
+            None
+        );
+
+        assert!(
+            maybe_activate_legacy_testnet_mossstake_slot_only(
+                &state,
+                LEGACY_TESTNET_MOSSSTAKE_SLOT_ONLY_ACTIVATION_PARENT_SLOT,
+                "test boundary",
+            )
+            .expect("boundary activation"),
+            "boundary slot must activate slot-only MossStake"
+        );
+        assert_eq!(state.compute_mossstake_pool_hash(), slot_only_hash);
+        assert_eq!(
+            state
+                .get_metadata(MOSSSTAKE_SLOT_ONLY_METADATA_KEY)
+                .expect("read marker")
+                .as_deref(),
+            Some(b"1".as_slice())
+        );
+    }
+
+    #[test]
+    fn legacy_testnet_startup_rejects_premature_mossstake_slot_only_marker() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let block = Block::new(
+            LEGACY_TESTNET_MOSSSTAKE_SLOT_ONLY_ACTIVATION_PARENT_SLOT - 10,
+            Hash::default(),
+            Hash::default(),
+            [1u8; 32],
+            vec![],
+        );
+
+        state
+            .put_metadata(CHAIN_ID_METADATA_KEY, b"lichen-testnet-1")
+            .expect("put chain id");
+        state
+            .put_metadata(MOSSSTAKE_SLOT_ONLY_METADATA_KEY, b"1")
+            .expect("put premature marker");
+        state
+            .put_block_atomic(&block, Some(block.header.slot), Some(block.header.slot))
+            .expect("put pre-boundary block");
+
+        let err = verify_mossstake_slot_only_not_premature(&state, "test")
+            .expect_err("premature marker should be rejected");
+        assert!(err.contains("before activation parent slot"));
+    }
+
+    #[test]
+    fn testnet_genesis_slot_only_marker_is_not_legacy_history() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let state_root = Hash([9u8; 32]);
+        let bundle = GenesisStateBundle {
+            version: GENESIS_STATE_BUNDLE_VERSION,
+            state_root: state_root.0,
+            categories: vec![lichen_core::GenesisStateCategory {
+                name: "stats".to_string(),
+                entries: vec![(
+                    MOSSSTAKE_SLOT_ONLY_METADATA_KEY.as_bytes().to_vec(),
+                    b"1".to_vec(),
+                )],
+            }],
+        };
+        let tx = make_genesis_state_chunk_tx(state_root, &bundle);
+        let genesis = Block::genesis(state_root, 1_778_000_000, vec![tx]);
+
+        state
+            .put_metadata(CHAIN_ID_METADATA_KEY, b"lichen-testnet-1")
+            .expect("put chain id");
+        state
+            .put_metadata(MOSSSTAKE_SLOT_ONLY_METADATA_KEY, b"1")
+            .expect("put genesis marker");
+        state
+            .put_block_atomic(&genesis, Some(0), Some(0))
+            .expect("put genesis block");
+
+        assert!(
+            !uses_legacy_testnet_mossstake_history(&state).expect("detect genesis marker"),
+            "a genesis slot-only marker means the chain is clean from slot 0"
+        );
+        verify_mossstake_slot_only_not_premature(&state, "test")
+            .expect("fresh slot-only genesis must be allowed");
     }
 
     #[test]
