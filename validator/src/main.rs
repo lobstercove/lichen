@@ -1183,6 +1183,14 @@ fn load_local_account_stake(state: &StateStore, validator: &Pubkey) -> Option<u6
         .map(|account| account.staked)
 }
 
+fn resolve_snapshot_stake_from_local_account(
+    state: &StateStore,
+    validator: &Pubkey,
+    min_validator_stake: u64,
+) -> Option<u64> {
+    load_local_account_stake(state, validator).filter(|stake| *stake >= min_validator_stake)
+}
+
 fn load_local_stake_pool_amount(stake_pool: &StakePool, validator: &Pubkey) -> Option<u64> {
     stake_pool
         .get_stake(validator)
@@ -14369,36 +14377,21 @@ async fn run_validator() {
                                     }
                                 };
                                 if should_upsert {
-                                    // GUARD: Only upsert stake entries for validators
-                                    // that exist in our local validator set AND have
-                                    // confirmed on-chain stake. This prevents a joining
-                                    // node (pre-registration) from contaminating the
-                                    // producing node's pool and breaking solo BFT.
-                                    //
-                                    // With full TX replay during sync, on-chain state
-                                    // is always correct — verify on-chain stake in
-                                    // both InitialSync and LiveSync.
-                                    let vs = validator_set_for_snapshot_apply.read().await;
-                                    let is_known_validator =
-                                        vs.get_validator(&entry_validator).is_some();
-                                    drop(vs);
-                                    if !is_known_validator {
-                                        warn!(
-                                            "⚠️  Snapshot: skipping stake entry for unknown validator {} from peer {} (not in local validator set)",
-                                            entry.validator.to_base58(),
-                                            response.requester
-                                        );
-                                        continue;
-                                    }
-
-                                    // Always verify on-chain stake — full TX replay
-                                    // ensures on-chain state is correct at every height.
+                                    // Always verify on-chain stake from locally replayed
+                                    // account state. A fresh joiner may receive stake-pool
+                                    // and validator-set snapshots in either order; requiring
+                                    // the validator set first creates a circular gate that
+                                    // prevents checkpoint warp sync. The local account stake
+                                    // check keeps the trust anchor in replayed chain state
+                                    // instead of the peer snapshot.
                                     let resolved_stake = {
-                                        let Some(local_account_stake) = load_local_account_stake(
-                                            &state_for_snapshot_apply,
-                                            &entry_validator,
-                                        )
-                                        .filter(|stake| *stake >= min_validator_stake) else {
+                                        let Some(local_account_stake) =
+                                            resolve_snapshot_stake_from_local_account(
+                                                &state_for_snapshot_apply,
+                                                &entry_validator,
+                                                min_validator_stake,
+                                            )
+                                        else {
                                             debug!(
                                                 "Snapshot: skipping stake entry for {} from {} (no on-chain stake)",
                                                 entry.validator.to_base58(),
@@ -21260,6 +21253,49 @@ mod tests {
 
         assert_eq!(merged.last_active_slot, 25);
         assert_eq!(merged.stake, existing.stake);
+    }
+
+    #[test]
+    fn snapshot_stake_resolution_requires_local_on_chain_minimum() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let validator_pubkey = Keypair::generate().pubkey();
+
+        assert_eq!(
+            resolve_snapshot_stake_from_local_account(
+                &state,
+                &validator_pubkey,
+                MIN_VALIDATOR_STAKE
+            ),
+            None
+        );
+
+        let mut account = Account::new(0, SYSTEM_ACCOUNT_OWNER);
+        account.staked = MIN_VALIDATOR_STAKE - 1;
+        state
+            .put_account(&validator_pubkey, &account)
+            .expect("persist underfunded validator account");
+        assert_eq!(
+            resolve_snapshot_stake_from_local_account(
+                &state,
+                &validator_pubkey,
+                MIN_VALIDATOR_STAKE
+            ),
+            None
+        );
+
+        account.staked = MIN_VALIDATOR_STAKE;
+        state
+            .put_account(&validator_pubkey, &account)
+            .expect("persist funded validator account");
+        assert_eq!(
+            resolve_snapshot_stake_from_local_account(
+                &state,
+                &validator_pubkey,
+                MIN_VALIDATOR_STAKE
+            ),
+            Some(MIN_VALIDATOR_STAKE)
+        );
     }
 
     #[test]
