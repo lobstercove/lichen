@@ -382,6 +382,70 @@ impl StateStore {
         }
     }
 
+    /// Iterate canonical blocks from the slot index in ascending slot order.
+    ///
+    /// CF_SLOTS also contains metadata entries, so only exact slot->hash rows
+    /// (`8-byte key`, `32-byte value`) are visited. The block value is resolved
+    /// through `get_block`, preserving the existing hot/cold storage fallback.
+    pub fn for_each_canonical_block_in_range<F>(
+        &self,
+        start_slot: u64,
+        end_slot: u64,
+        mut visit: F,
+    ) -> Result<u64, String>
+    where
+        F: FnMut(u64, &Block) -> Result<(), String>,
+    {
+        if end_slot < start_slot {
+            return Ok(0);
+        }
+
+        let slot_cf = self
+            .db
+            .cf_handle(CF_SLOTS)
+            .ok_or_else(|| "Slots CF not found".to_string())?;
+
+        let seek_key = start_slot.to_be_bytes();
+        let mut read_opts = rocksdb::ReadOptions::default();
+        read_opts.set_total_order_seek(true);
+
+        let iter = self.db.iterator_cf_opt(
+            &slot_cf,
+            read_opts,
+            rocksdb::IteratorMode::From(&seek_key, Direction::Forward),
+        );
+
+        let mut visited = 0u64;
+        for item in iter {
+            let (key, value) = item.map_err(|e| format!("Slot index iterator error: {}", e))?;
+
+            if key.len() != 8 || value.len() != 32 {
+                continue;
+            }
+
+            let slot = u64::from_be_bytes(
+                key.as_ref()
+                    .try_into()
+                    .map_err(|_| "Invalid slot index key".to_string())?,
+            );
+            if slot < start_slot {
+                continue;
+            }
+            if slot > end_slot {
+                break;
+            }
+
+            let mut hash_bytes = [0u8; 32];
+            hash_bytes.copy_from_slice(value.as_ref());
+            if let Some(block) = self.get_block(&Hash(hash_bytes))? {
+                visit(slot, &block)?;
+                visited = visited.saturating_add(1);
+            }
+        }
+
+        Ok(visited)
+    }
+
     /// Store the post-block state root for a canonical block after all
     /// deterministic post-block hooks have run. This is a sidecar commitment:
     /// it does not mutate consensus state and is not included in the state root.

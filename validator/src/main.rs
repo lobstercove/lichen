@@ -102,6 +102,9 @@ const EXIT_CODE_RESTART: i32 = 75;
 /// pending blocks or is actively syncing.
 const DEFAULT_WATCHDOG_TIMEOUT_SECS: u64 = 120;
 const GENESIS_SYNC_INCOMPLETE_MARKER: &str = "genesis_sync_incomplete";
+const STAKE_POOL_PRODUCTION_COUNTER_REPAIR_METADATA_KEY: &str =
+    "stake_pool_production_counter_repair_v1";
+const STAKE_POOL_PRODUCTION_COUNTER_REPAIR_PROGRESS_INTERVAL: u64 = 100_000;
 const ACTIVATE_RESTRICTION_SCHEMA_FLAG: &str = "--activate-restriction-schema";
 const SHOW_RESTRICTION_SCHEMA_FLAG: &str = "--show-restriction-schema";
 const REBUILD_SPARSE_STATE_COMMITMENT_FLAG: &str = "--rebuild-sparse-state-commitment";
@@ -4919,6 +4922,61 @@ fn record_post_block_state_commitment_anchor(state: &StateStore, block: &Block, 
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct StakePoolProductionCounterRepairMarker {
+    tip_slot: u64,
+    tip_hash: Hash,
+    pool_hash: Hash,
+}
+
+fn encode_stake_pool_production_counter_repair_marker(
+    marker: StakePoolProductionCounterRepairMarker,
+) -> Vec<u8> {
+    format!(
+        "{}:{}:{}",
+        marker.tip_slot,
+        marker.tip_hash.to_hex(),
+        marker.pool_hash.to_hex()
+    )
+    .into_bytes()
+}
+
+fn decode_stake_pool_production_counter_repair_marker(
+    bytes: &[u8],
+) -> Option<StakePoolProductionCounterRepairMarker> {
+    let text = std::str::from_utf8(bytes).ok()?;
+    let mut parts = text.split(':');
+    let tip_slot = parts.next()?.parse().ok()?;
+    let tip_hash = Hash::from_hex(parts.next()?).ok()?;
+    let pool_hash = Hash::from_hex(parts.next()?).ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some(StakePoolProductionCounterRepairMarker {
+        tip_slot,
+        tip_hash,
+        pool_hash,
+    })
+}
+
+fn store_stake_pool_production_counter_repair_marker(
+    state: &StateStore,
+    tip_slot: u64,
+    tip_hash: Hash,
+    pool_hash: Hash,
+) -> Result<(), String> {
+    state.put_metadata(
+        STAKE_POOL_PRODUCTION_COUNTER_REPAIR_METADATA_KEY,
+        &encode_stake_pool_production_counter_repair_marker(
+            StakePoolProductionCounterRepairMarker {
+                tip_slot,
+                tip_hash,
+                pool_hash,
+            },
+        ),
+    )
+}
+
 fn repair_stake_pool_production_counters_from_blocks(
     state: &StateStore,
     context: &str,
@@ -4930,25 +4988,64 @@ fn repair_stake_pool_production_counters_from_blocks(
 
     let mut pool = state.get_stake_pool().unwrap_or_else(|_| StakePool::new());
     let before_hash = pool.canonical_hash();
+    let tip_hash = state.get_block_by_slot(tip)?.map(|block| block.hash());
+    if let Some(tip_hash) = tip_hash {
+        if let Some(marker_bytes) =
+            state.get_metadata(STAKE_POOL_PRODUCTION_COUNTER_REPAIR_METADATA_KEY)?
+        {
+            if decode_stake_pool_production_counter_repair_marker(&marker_bytes)
+                == Some(StakePoolProductionCounterRepairMarker {
+                    tip_slot: tip,
+                    tip_hash,
+                    pool_hash: before_hash,
+                })
+            {
+                info!(
+                    "🔧 {}: StakePool production counters already verified through tip {} ({})",
+                    context,
+                    tip,
+                    tip_hash.to_hex()
+                );
+                return Ok(false);
+            }
+        }
+    }
+
+    info!(
+        "🔧 {}: scanning canonical blocks to verify StakePool production counters through tip {}",
+        context, tip
+    );
+
     let mut produced: HashMap<Pubkey, (u64, u64)> = HashMap::new();
     let mut scanned_blocks = 0u64;
+    let mut counted_blocks = 0u64;
 
-    for slot in 1..=tip {
-        let Some(block) = state.get_block_by_slot(slot)? else {
-            continue;
-        };
+    let canonical_blocks = state.for_each_canonical_block_in_range(1, tip, |slot, block| {
+        scanned_blocks = scanned_blocks.saturating_add(1);
+        if scanned_blocks.is_multiple_of(STAKE_POOL_PRODUCTION_COUNTER_REPAIR_PROGRESS_INTERVAL) {
+            info!(
+                "🔧 {}: scanned {} canonical blocks for StakePool production repair (latest slot {})",
+                context, scanned_blocks, slot
+            );
+        }
         if block.header.validator == [0u8; 32] {
-            continue;
+            return Ok(());
         }
         let producer = Pubkey(block.header.validator);
         if pool.get_stake(&producer).is_none() {
-            continue;
+            return Ok(());
         }
         let entry = produced.entry(producer).or_insert((0, 0));
         entry.0 = entry.0.saturating_add(1);
         entry.1 = entry.1.max(slot);
-        scanned_blocks = scanned_blocks.saturating_add(1);
-    }
+        counted_blocks = counted_blocks.saturating_add(1);
+        Ok(())
+    })?;
+
+    info!(
+        "🔧 {}: scanned {} canonical blocks and counted {} staked producer blocks through tip {}",
+        context, canonical_blocks, counted_blocks, tip
+    );
 
     for entry in pool.stake_entries() {
         let (blocks_produced, last_produced_slot) =
@@ -4967,14 +5064,24 @@ fn repair_stake_pool_production_counters_from_blocks(
 
     let after_hash = pool.canonical_hash();
     if after_hash == before_hash {
+        if let Some(tip_hash) = tip_hash {
+            store_stake_pool_production_counter_repair_marker(state, tip, tip_hash, after_hash)?;
+        }
+        info!(
+            "🔧 {}: StakePool production counters already matched canonical blocks through tip {}",
+            context, tip
+        );
         return Ok(false);
     }
 
     state.put_stake_pool(&pool)?;
+    if let Some(tip_hash) = tip_hash {
+        store_stake_pool_production_counter_repair_marker(state, tip, tip_hash, after_hash)?;
+    }
     warn!(
         "🔧 {}: repaired StakePool production counters from {} canonical blocks through tip {} ({} -> {})",
         context,
-        scanned_blocks,
+        canonical_blocks,
         tip,
         before_hash.to_hex(),
         after_hash.to_hex(),
