@@ -1302,7 +1302,7 @@ async function refreshBalance() {
       if (hasBreakdown) {
         const parts = [`<i class="fas fa-wallet" style="opacity:0.5;"></i> Spendable: <strong>${balanceSnapshot.spendableLicn.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`];
         if (balanceSnapshot.stakedLicn > 0) parts.push(`<i class="fas fa-lock" style="opacity:0.5;"></i> Staked: <strong>${balanceSnapshot.stakedLicn.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`);
-        if (stLicnBalance > 0) parts.push(`<i class="fas fa-coins" style="opacity:0.5;"></i> stLICN Staked: <strong>${stLicnBalance.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`);
+        if (stLicnBalance > 0) parts.push(`<i class="fas fa-coins" style="opacity:0.5;"></i> Staking: <strong>${stLicnBalance.toLocaleString(undefined, { maximumFractionDigits: 4 })} stLICN</strong>`);
         if (shieldedSpores > 0n) parts.push(`<i class="fas fa-shield-alt" style="opacity:0.5;"></i> Shielded: <strong>${formatLicnBaseUnitsFixedExt(shieldedSpores)}</strong>`);
         if (balanceSnapshot.pendingRewardsLicn > 0) parts.push(`<i class="fas fa-gift" style="opacity:0.5;"></i> Rewards: <strong>${balanceSnapshot.pendingRewardsLicn.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`);
         if (balanceSnapshot.lockedLicn > 0) parts.push(`<i class="fas fa-hourglass" style="opacity:0.5;"></i> Locked: <strong>${balanceSnapshot.lockedLicn.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`);

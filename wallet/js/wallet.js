@@ -856,7 +856,7 @@ function renderWalletBalanceBreakdown() {
 
     const parts = [`<i class="fas fa-wallet" style="opacity:0.5;"></i> Spendable: <strong>${fmtToken(snapshot.spendable, 4)}</strong>`];
     if (snapshot.staked > 0) parts.push(`<i class="fas fa-lock" style="opacity:0.5;"></i> Staked: <strong>${fmtToken(snapshot.staked, 4)}</strong>`);
-    if (snapshot.stLicn > 0) parts.push(`<i class="fas fa-coins" style="opacity:0.5;"></i> stLICN Staked: <strong>${fmtToken(snapshot.stLicn, 4)}</strong>`);
+    if (snapshot.stLicn > 0) parts.push(`<i class="fas fa-coins" style="opacity:0.5;"></i> Staking: <strong>${fmtToken(snapshot.stLicn, 4)} stLICN</strong>`);
     if (shielded > 0) parts.push(`<i class="fas fa-shield-alt" style="opacity:0.5;"></i> Shielded: <strong>${fmtToken(shielded, 4)}</strong>`);
     if (snapshot.locked > 0) parts.push(`<i class="fas fa-lock" style="opacity:0.5;"></i> Locked: <strong>${fmtToken(snapshot.locked, 4)}</strong>`);
 

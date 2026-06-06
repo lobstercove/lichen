@@ -1082,7 +1082,7 @@ async function loadAssets() {
       const parts = [];
       parts.push(`Spendable: ${fmt(spendableRaw / div)}`);
       if (stakedRaw > 0) parts.push(`Staked: ${fmt(stakedRaw / div)}`);
-      if (stLicnRaw > 0) parts.push(`stLICN Staked: ${fmt(stLicnRaw / div)}`);
+      if (stLicnRaw > 0) parts.push(`Staking: ${fmt(stLicnRaw / div)} stLICN`);
       if (lockedRaw > 0) parts.push(`Locked: ${fmt(lockedRaw / div)}`);
       breakdownHtml = `<span style="font-size:10px;color:#888;margin-top:2px">${parts.join(' · ')}</span>`;
     }
@@ -1501,7 +1501,7 @@ async function refreshBalance() {
       if (hasBreakdown) {
         const parts = [`<i class="fas fa-wallet"></i> Spendable: <strong>${balanceSnapshot.spendableLicn.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`];
         if (balanceSnapshot.stakedLicn > 0) parts.push(`<i class="fas fa-lock"></i> Staked: <strong>${balanceSnapshot.stakedLicn.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`);
-        if (stLicnBalance > 0) parts.push(`<i class="fas fa-coins"></i> stLICN Staked: <strong>${stLicnBalance.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`);
+        if (stLicnBalance > 0) parts.push(`<i class="fas fa-coins"></i> Staking: <strong>${stLicnBalance.toLocaleString(undefined, { maximumFractionDigits: 4 })} stLICN</strong>`);
         if (shieldedSpores > 0n) parts.push(`<i class="fas fa-shield-alt"></i> Shielded: <strong>${formatLicnBaseUnitsFixedPopup(shieldedSpores)}</strong>`);
         if (balanceSnapshot.pendingRewardsLicn > 0) parts.push(`<i class="fas fa-gift"></i> Rewards: <strong>${balanceSnapshot.pendingRewardsLicn.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`);
         if (balanceSnapshot.lockedLicn > 0) parts.push(`<i class="fas fa-hourglass"></i> Locked: <strong>${balanceSnapshot.lockedLicn.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`);

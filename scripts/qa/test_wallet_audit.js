@@ -1117,12 +1117,18 @@ test('wallet.js pins bridge control-plane methods to trusted RPC', () => {
 });
 
 test('wallet.js compact balance shows stLICN amount instead of redeemable liquid staking value', () => {
-    assert(walletSrc.includes('stLICN Staked: <strong>${fmtToken(snapshot.stLicn, 4)}</strong>'),
-        'balance card should show the actual stLICN position amount');
+    assert(walletSrc.includes('Staking: <strong>${fmtToken(snapshot.stLicn, 4)} stLICN</strong>'),
+        'balance card should show the actual stLICN position amount with units');
     assert(walletSrc.includes("rpc.call('getStakingPosition', [wallet.address])"),
         'balance card should fetch staking position for stLICN amount');
     assert(!walletSrc.includes('Liquid Staking Value: <strong>${fmtToken(snapshot.mossStaked, 4)}</strong>'),
         'balance card must not label redeemable LICN value as liquid staking value');
+    assert(explorerAddressSrc.includes("rpcCall('getStakingPosition', [address])"),
+        'explorer address page should fetch staking position for stLICN account summary');
+    assert(explorerAddressSrc.includes('Staking (stLICN)'),
+        'explorer account summary should label staking as stLICN shares');
+    assert(!explorerAddressSrc.includes('MossStake Redeemable Value'),
+        'explorer account summary must not show redeemable LICN as the account staking balance');
 });
 
 test('wallet.js exposes Neo X bridge controls with route status and reserve context', () => {

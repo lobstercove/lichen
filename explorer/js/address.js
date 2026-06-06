@@ -1952,12 +1952,13 @@ async function loadTreasuryStats(address) {
 
 // ===== Fetch Account from RPC =====
 async function fetchAccountFromRPC(address) {
-    // Parallel fetch: balance + account + tx count + token accounts
-    const [balanceData, accountData, txCountData, tokenData] = await Promise.all([
+    // Parallel fetch: balance + account + tx count + token accounts + liquid staking receipt balance
+    const [balanceData, accountData, txCountData, tokenData, stakingPosition] = await Promise.all([
         rpcCall('getBalance', [address]).catch(() => null),
         rpcCall('getAccount', [address]).catch(() => null),
         rpcCall('getAccountTxCount', [address]).catch(() => null),
         rpcCall('getTokenAccounts', [address]).catch(() => null),
+        rpcCall('getStakingPosition', [address]).catch(() => null),
     ]);
 
     if (!balanceData) return null;
@@ -1974,8 +1975,7 @@ async function fetchAccountFromRPC(address) {
         spendable: parseFloat(balanceData.spendable_licn),
         staked: parseFloat(balanceData.staked_licn),
         locked: parseFloat(balanceData.locked_licn),
-        mossStaked: parseFloat(balanceData.moss_staked_licn || '0'),
-        mossValue: parseFloat(balanceData.moss_value_licn || '0'),
+        stLicn: Number(stakingPosition?.st_licn_amount || 0) / 1_000_000_000,
         owner: accountData?.owner || (typeof SYSTEM_PROGRAM_ID !== 'undefined' ? SYSTEM_PROGRAM_ID : '11111111111111111111111111111111'),
         executable: accountData?.executable || false,
         data_len: accountData?.data_len || 0,
@@ -1991,7 +1991,7 @@ function createEmptyAccountData(address) {
         address, base58: address,
         evm: lichenToEvmAddress(address) || 'Unavailable',
         spores: 0, licn: 0, spendable: 0, staked: 0, locked: 0,
-        mossStaked: 0, mossValue: 0,
+        stLicn: 0,
         data: [], owner: typeof SYSTEM_PROGRAM_ID !== 'undefined' ? SYSTEM_PROGRAM_ID : '11111111111111111111111111111111',
         executable: false, rentEpoch: 0, txCount: 0, tokens: [], type: 'User', active: false
     };
@@ -2031,10 +2031,10 @@ function displayAddressData(data) {
     document.getElementById('stakedLicn').textContent = `${formatLicnExact(data.staked)} LICN`;
     document.getElementById('lockedLicn').textContent = `${formatLicnExact(data.locked)} LICN`;
 
-    // MossStake liquid staking display
-    let mossStakedEl = document.getElementById('mossStakedLicn');
-    if (!mossStakedEl) {
-        // Inject MossStake row after staked row
+    // Liquid staking receipt balance display.
+    let stakingStLicnEl = document.getElementById('stakingStLicn');
+    if (!stakingStLicnEl) {
+        // Inject liquid staking row after native validator staking row.
         const stakedEl = document.getElementById('stakedLicn');
         if (stakedEl) {
             const parentRow = stakedEl.closest('.detail-row') || stakedEl.parentElement;
@@ -2042,17 +2042,17 @@ function displayAddressData(data) {
                 const mossRow = document.createElement('div');
                 mossRow.className = parentRow.className;
                 mossRow.innerHTML = `
-                    <div class="detail-label">MossStake Redeemable Value</div>
-                    <div class="detail-value" id="mossStakedLicn">0 LICN</div>
+                    <div class="detail-label">Staking (stLICN)</div>
+                    <div class="detail-value" id="stakingStLicn">0 stLICN</div>
                 `;
                 parentRow.parentElement.insertBefore(mossRow, parentRow.nextSibling);
-                mossStakedEl = document.getElementById('mossStakedLicn');
+                stakingStLicnEl = document.getElementById('stakingStLicn');
             }
         }
     }
-    if (mossStakedEl) {
-        const mossVal = data.mossValue || 0;
-        mossStakedEl.textContent = mossVal > 0 ? `${formatLicnExact(mossVal)} LICN` : '0 LICN';
+    if (stakingStLicnEl) {
+        const stLicn = data.stLicn || 0;
+        stakingStLicnEl.textContent = stLicn > 0 ? `${formatLicnExact(stLicn)} stLICN` : '0 stLICN';
     }
 
     const ownerEl = document.getElementById('ownerProgram');

@@ -1172,6 +1172,14 @@ function validateFrontendInputGuards() {
             websiteJs.includes('const simulation = await this.simulateTransaction(txData);'),
         'website and explorer RPC clients preflight before transaction submission'
     );
+
+    assert(
+        explorerAddressJs.includes("rpcCall('getStakingPosition', [address])") &&
+            explorerAddressJs.includes('Staking (stLICN)') &&
+            explorerAddressJs.includes('`${formatLicnExact(stLicn)} stLICN`') &&
+            !explorerAddressJs.includes('MossStake Redeemable Value'),
+        'explorer account summary shows stLICN receipt balance instead of redeemable LICN value'
+    );
 }
 
 console.log('\n── Frontend Asset Integrity ──');

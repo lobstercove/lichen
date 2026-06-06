@@ -760,8 +760,10 @@ test('CC-4e extension bridge surfaces expose Neo X GAS with route-status preflig
 });
 
 test('CC-4f extension compact balance shows stLICN amount instead of redeemable liquid staking value', () => {
-  assert.ok(fullSrc.includes('stLICN Staked: <strong>${stLicnBalance.toLocaleString'), 'full-page balance card should show stLICN amount');
-  assert.ok(popupSrc.includes('stLICN Staked: <strong>${stLicnBalance.toLocaleString'), 'popup balance card should show stLICN amount');
+  assert.ok(fullSrc.includes('Staking: <strong>${stLicnBalance.toLocaleString'), 'full-page balance card should show stLICN amount');
+  assert.ok(fullSrc.includes('} stLICN</strong>'), 'full-page balance card should include stLICN units');
+  assert.ok(popupSrc.includes('Staking: <strong>${stLicnBalance.toLocaleString'), 'popup balance card should show stLICN amount');
+  assert.ok(popupSrc.includes('Staking: ${fmt(stLicnRaw / div)} stLICN'), 'popup compact asset row should show stLICN amount with units');
   assert.ok(!fullSrc.includes('Liquid Staking Value: <strong>${balanceSnapshot.mossStakedLicn.toLocaleString'), 'full-page balance card should not show redeemable LICN as liquid staking value');
   assert.ok(!popupSrc.includes('Liquid Staking Value: <strong>${balanceSnapshot.mossStakedLicn.toLocaleString'), 'popup balance card should not show redeemable LICN as liquid staking value');
 });
