@@ -501,7 +501,11 @@ impl StateStore {
         batch.put_cf(&cf_accounts, acct_key.0, &acct_bytes);
         self.stage_account_dirty_marker(&mut batch, acct_key)?;
 
-        let pool_bytes = serde_json::to_vec(pool)
+        let mut normalized_pool = pool.clone();
+        if self.is_mossstake_slot_only() {
+            normalized_pool.clear_wall_clock_times();
+        }
+        let pool_bytes = serde_json::to_vec(&normalized_pool)
             .map_err(|e| format!("Failed to serialize MossStake pool: {}", e))?;
         batch.put_cf(&cf_moss, b"pool", &pool_bytes);
 
@@ -534,7 +538,11 @@ impl StateStore {
 
         let mut batch = WriteBatch::default();
 
-        let pool_bytes = serde_json::to_vec(pool)
+        let mut normalized_pool = pool.clone();
+        if self.is_mossstake_slot_only() {
+            normalized_pool.clear_wall_clock_times();
+        }
+        let pool_bytes = serde_json::to_vec(&normalized_pool)
             .map_err(|e| format!("Failed to serialize MossStake pool: {}", e))?;
         batch.put_cf(&cf_moss, b"pool", &pool_bytes);
 

@@ -567,10 +567,29 @@ impl StateBatch {
             .db
             .cf_handle(CF_MOSSSTAKE)
             .ok_or_else(|| "MossStake CF not found".to_string())?;
-        let data = serde_json::to_vec(pool)
+        let slot_only = matches!(
+            self.db
+                .cf_handle(CF_STATS)
+                .and_then(|cf| {
+                    self.db
+                        .get_cf(
+                            &cf,
+                            crate::mossstake::MOSSSTAKE_SLOT_ONLY_METADATA_KEY.as_bytes(),
+                        )
+                        .ok()
+                        .flatten()
+                })
+                .as_deref(),
+            Some(b"1")
+        );
+        let mut normalized_pool = pool.clone();
+        if slot_only {
+            normalized_pool.clear_wall_clock_times();
+        }
+        let data = serde_json::to_vec(&normalized_pool)
             .map_err(|e| format!("Failed to serialize MossStake pool: {}", e))?;
         self.batch.put_cf(&cf, b"pool", &data);
-        self.mossstake_pool_overlay = Some(pool.clone());
+        self.mossstake_pool_overlay = Some(normalized_pool);
         Ok(())
     }
 

@@ -1166,7 +1166,7 @@ mod tests {
     }
 
     #[test]
-    fn test_mossstake_claim_requires_wall_clock_cooldown() {
+    fn test_mossstake_claim_requires_slot_cooldown() {
         let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
         let validator = Pubkey([42u8; 32]);
 
@@ -1181,8 +1181,9 @@ mod tests {
         let r2 = processor.process_transaction(&tx, &validator);
         assert!(r2.success, "unstake should succeed: {:?}", r2.error);
 
+        let early_slot = crate::consensus::UNSTAKE_COOLDOWN_SLOTS - 1;
         let early_block = crate::Block::new_with_timestamp(
-            2_000_000,
+            early_slot,
             genesis_hash,
             Hash::hash(b"early_state"),
             [0u8; 32],
@@ -1191,32 +1192,30 @@ mod tests {
         );
         let early_hash = early_block.hash();
         state.put_block(&early_block).unwrap();
-        state.set_last_slot(2_000_000).unwrap();
+        state.set_last_slot(early_slot).unwrap();
 
         let tx = make_mossstake_claim_tx(&alice_kp, alice, early_hash);
         let early = processor.process_transaction(&tx, &validator);
-        assert!(
-            !early.success,
-            "many fast slots must not bypass the 7-day wall-clock cooldown"
-        );
+        assert!(!early.success, "claim before the slot cooldown must fail");
 
+        let mature_slot = crate::consensus::UNSTAKE_COOLDOWN_SLOTS;
         let mature_block = crate::Block::new_with_timestamp(
-            2_000_001,
+            mature_slot,
             early_hash,
             Hash::hash(b"mature_state"),
             [0u8; 32],
             Vec::new(),
-            crate::mossstake::MOSSSTAKE_UNSTAKE_COOLDOWN_SECONDS,
+            3_601,
         );
         let mature_hash = mature_block.hash();
         state.put_block(&mature_block).unwrap();
-        state.set_last_slot(2_000_001).unwrap();
+        state.set_last_slot(mature_slot).unwrap();
 
         let tx = make_mossstake_claim_tx(&alice_kp, alice, mature_hash);
         let mature = processor.process_transaction(&tx, &validator);
         assert!(
             mature.success,
-            "claim should succeed once wall-clock cooldown is complete: {:?}",
+            "claim should succeed once slot cooldown is complete: {:?}",
             mature.error
         );
     }

@@ -643,6 +643,87 @@ mod tests {
     }
 
     #[test]
+    fn mossstake_slot_only_marker_controls_legacy_wall_clock_storage() {
+        let temp_dir = tempdir().unwrap();
+        let state = StateStore::open(temp_dir.path()).unwrap();
+        let alice = Pubkey([7u8; 32]);
+        let mut pool = MossStakePool::new();
+
+        pool.stake_with_tier(alice, 1_000, 42, crate::mossstake::LockTier::Lock30)
+            .unwrap();
+        pool.request_unstake(
+            alice,
+            100,
+            42 + crate::mossstake::LockTier::Lock30.lock_duration_slots(),
+        )
+        .unwrap();
+        pool.positions
+            .get_mut(&alice)
+            .unwrap()
+            .deposited_at_unix_seconds = 1_700_000_000;
+        pool.positions
+            .get_mut(&alice)
+            .unwrap()
+            .lock_until_unix_seconds = 1_702_592_000;
+        let request = pool
+            .unstake_requests
+            .get_mut(&alice)
+            .unwrap()
+            .first_mut()
+            .unwrap();
+        request.requested_at_unix_seconds = 1_702_592_000;
+        request.claimable_at_unix_seconds = 1_703_196_800;
+
+        let legacy_hash = pool.legacy_canonical_hash();
+        let slot_only_hash = pool.canonical_hash();
+        assert_ne!(legacy_hash, slot_only_hash);
+
+        state.put_mossstake_pool(&pool).unwrap();
+        assert_eq!(state.compute_mossstake_pool_hash(), legacy_hash);
+        let loaded = state.get_mossstake_pool().unwrap();
+        assert_eq!(
+            loaded
+                .positions
+                .get(&alice)
+                .unwrap()
+                .deposited_at_unix_seconds,
+            1_700_000_000
+        );
+
+        state
+            .put_metadata(crate::mossstake::MOSSSTAKE_SLOT_ONLY_METADATA_KEY, b"1")
+            .unwrap();
+        state.put_mossstake_pool(&pool).unwrap();
+        assert_eq!(state.compute_mossstake_pool_hash(), slot_only_hash);
+        let loaded = state.get_mossstake_pool().unwrap();
+        let loaded_position = loaded.positions.get(&alice).unwrap();
+        assert_eq!(loaded_position.deposited_at_unix_seconds, 0);
+        assert_eq!(loaded_position.lock_until_unix_seconds, 0);
+        let loaded_request = loaded
+            .unstake_requests
+            .get(&alice)
+            .unwrap()
+            .first()
+            .unwrap();
+        assert_eq!(loaded_request.requested_at_unix_seconds, 0);
+        assert_eq!(loaded_request.claimable_at_unix_seconds, 0);
+
+        let mut batch = state.begin_batch();
+        batch.put_mossstake_pool(&pool).unwrap();
+        state.commit_batch(batch).unwrap();
+        let loaded = state.get_mossstake_pool().unwrap();
+        assert_eq!(
+            loaded
+                .positions
+                .get(&alice)
+                .unwrap()
+                .deposited_at_unix_seconds,
+            0
+        );
+        assert_eq!(state.compute_mossstake_pool_hash(), slot_only_hash);
+    }
+
+    #[test]
     fn test_transfer() {
         let temp_dir = tempdir().unwrap();
         let state = StateStore::open(temp_dir.path()).unwrap();

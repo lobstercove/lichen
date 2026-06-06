@@ -13,6 +13,7 @@ use lichen_core::keypair_file::{
     copy_secure_file, load_keypair_with_password_policy, plaintext_keypair_compat_allowed,
     require_runtime_keypair_password,
 };
+use lichen_core::mossstake::MOSSSTAKE_SLOT_ONLY_METADATA_KEY;
 use lichen_core::multisig::{
     bridge_committee_admin_config_for_roles, governed_wallet_config_for_role,
     incident_guardian_config_for_roles, oracle_committee_admin_config_for_roles,
@@ -1674,6 +1675,12 @@ fn main() {
             }
         }
     }
+
+    if let Err(e) = state.put_metadata(MOSSSTAKE_SLOT_ONLY_METADATA_KEY, b"1") {
+        error!("Failed to enable slot-only MossStake at genesis: {}", e);
+        std::process::exit(1);
+    }
+    info!("  ✓ MossStake slot-only mode enabled at genesis");
 
     // Persist metrics before exporting canonical genesis state. Metrics live in
     // CF_STATS outside the state root, but imported validators need the same

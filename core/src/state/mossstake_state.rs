@@ -1,6 +1,16 @@
 use super::*;
 
 impl StateStore {
+    pub fn is_mossstake_slot_only(&self) -> bool {
+        matches!(
+            self.get_metadata(crate::mossstake::MOSSSTAKE_SLOT_ONLY_METADATA_KEY)
+                .ok()
+                .flatten()
+                .as_deref(),
+            Some(b"1")
+        )
+    }
+
     /// Update spendable balance for a native account.
     pub fn set_spendable_balance(&self, pubkey: &Pubkey, spores: u64) -> Result<(), String> {
         let mut account = self
@@ -36,7 +46,11 @@ impl StateStore {
             .cf_handle(CF_MOSSSTAKE)
             .ok_or_else(|| "MossStake CF not found".to_string())?;
 
-        let data = serde_json::to_vec(pool)
+        let mut normalized_pool = pool.clone();
+        if self.is_mossstake_slot_only() {
+            normalized_pool.clear_wall_clock_times();
+        }
+        let data = serde_json::to_vec(&normalized_pool)
             .map_err(|e| format!("Failed to serialize MossStake pool: {}", e))?;
 
         let mut batch = rocksdb::WriteBatch::default();

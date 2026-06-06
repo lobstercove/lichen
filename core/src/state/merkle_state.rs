@@ -1641,7 +1641,13 @@ impl StateStore {
         let mossstake_pool_hash = batch
             .mossstake_pool_overlay
             .as_ref()
-            .map(|pool| pool.canonical_hash())
+            .map(|pool| {
+                if self.is_mossstake_slot_only() {
+                    pool.canonical_hash()
+                } else {
+                    pool.legacy_canonical_hash()
+                }
+            })
             .unwrap_or_else(|| self.compute_mossstake_pool_hash());
         let include_restrictions = self.get_state_root_schema().unwrap_or(false);
 
@@ -1869,7 +1875,13 @@ impl StateStore {
 
     pub fn compute_mossstake_pool_hash(&self) -> Hash {
         match self.get_mossstake_pool() {
-            Ok(pool) => pool.canonical_hash(),
+            Ok(pool) => {
+                if self.is_mossstake_slot_only() {
+                    pool.canonical_hash()
+                } else {
+                    pool.legacy_canonical_hash()
+                }
+            }
             Err(_) => Hash::default(),
         }
     }

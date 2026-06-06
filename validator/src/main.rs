@@ -31,6 +31,7 @@ use lichen_core::keypair_file::{
     load_keypair_with_password_policy, plaintext_keypair_compat_allowed,
     require_runtime_keypair_password,
 };
+use lichen_core::mossstake::MOSSSTAKE_SLOT_ONLY_METADATA_KEY;
 use lichen_core::multisig::{
     bridge_committee_admin_config_for_roles, governed_wallet_config_for_role,
     incident_guardian_config_for_roles, oracle_committee_admin_config_for_roles,
@@ -1429,8 +1430,17 @@ fn apply_genesis_state_bundle(
     state: &StateStore,
     bundle: &GenesisStateBundle,
 ) -> Result<(), String> {
+    if let Some(stats_category) = bundle
+        .categories
+        .iter()
+        .find(|category| category.name == "stats")
+    {
+        state.import_snapshot_category("stats", &stats_category.entries)?;
+    }
+
     for category in &bundle.categories {
         match category.name.as_str() {
+            "stats" => {}
             "stake_pool" => {
                 let Some((_, data)) = category.entries.first() else {
                     return Err("genesis stake_pool category is empty".to_string());
@@ -4376,10 +4386,11 @@ async fn apply_block_effects(
             let pool_snapshot = pool.clone();
             drop(pool);
             if let Err(e) = state.put_stake_pool(&pool_snapshot) {
-                warn!(
-                    "⚠️  Failed to persist stake pool block-production update: {}",
-                    e
+                error!(
+                    "❌ CRITICAL: failed to persist stake pool block-production update for slot {}: {}",
+                    slot, e
                 );
+                std::process::exit(1);
             }
         }
 
@@ -4437,10 +4448,11 @@ async fn apply_block_effects(
                     let pool_snapshot = pool.clone();
                     drop(pool);
                     if let Err(e) = state.put_stake_pool(&pool_snapshot) {
-                        warn!(
-                            "⚠️  Failed to persist stake pool epoch reward update: {}",
-                            e
+                        error!(
+                            "❌ CRITICAL: failed to persist stake pool epoch reward update at slot {}: {}",
+                            slot, e
                         );
+                        std::process::exit(1);
                     }
                     result
                 };
@@ -4611,7 +4623,11 @@ async fn apply_block_effects(
                 let pool_snapshot = pool.clone();
                 drop(pool);
                 if let Err(e) = state.put_stake_pool(&pool_snapshot) {
-                    warn!("⚠️  Failed to persist stake pool fee update: {}", e);
+                    error!(
+                        "❌ CRITICAL: failed to persist stake pool fee update at slot {}: {}",
+                        slot, e
+                    );
+                    std::process::exit(1);
                 }
                 result
             } else {
@@ -4903,6 +4919,115 @@ fn record_post_block_state_commitment_anchor(state: &StateStore, block: &Block, 
     }
 }
 
+fn repair_stake_pool_production_counters_from_blocks(
+    state: &StateStore,
+    context: &str,
+) -> Result<bool, String> {
+    let tip = state.get_last_slot().unwrap_or(0);
+    if tip == 0 {
+        return Ok(false);
+    }
+
+    let mut pool = state.get_stake_pool().unwrap_or_else(|_| StakePool::new());
+    let before_hash = pool.canonical_hash();
+    let mut produced: HashMap<Pubkey, (u64, u64)> = HashMap::new();
+    let mut scanned_blocks = 0u64;
+
+    for slot in 1..=tip {
+        let Some(block) = state.get_block_by_slot(slot)? else {
+            continue;
+        };
+        if block.header.validator == [0u8; 32] {
+            continue;
+        }
+        let producer = Pubkey(block.header.validator);
+        if pool.get_stake(&producer).is_none() {
+            continue;
+        }
+        let entry = produced.entry(producer).or_insert((0, 0));
+        entry.0 = entry.0.saturating_add(1);
+        entry.1 = entry.1.max(slot);
+        scanned_blocks = scanned_blocks.saturating_add(1);
+    }
+
+    for entry in pool.stake_entries() {
+        let (blocks_produced, last_produced_slot) =
+            produced.get(&entry.validator).copied().unwrap_or((0, 0));
+        let needs_update = entry.blocks_produced != blocks_produced
+            || entry.last_reward_slot != last_produced_slot;
+        if !needs_update {
+            continue;
+        }
+        let Some(stake_info) = pool.get_stake_mut(&entry.validator) else {
+            continue;
+        };
+        stake_info.blocks_produced = blocks_produced;
+        stake_info.last_reward_slot = last_produced_slot;
+    }
+
+    let after_hash = pool.canonical_hash();
+    if after_hash == before_hash {
+        return Ok(false);
+    }
+
+    state.put_stake_pool(&pool)?;
+    warn!(
+        "🔧 {}: repaired StakePool production counters from {} canonical blocks through tip {} ({} -> {})",
+        context,
+        scanned_blocks,
+        tip,
+        before_hash.to_hex(),
+        after_hash.to_hex(),
+    );
+    Ok(true)
+}
+
+fn clean_mossstake_wall_clock_state(state: &StateStore, context: &str) -> Result<bool, String> {
+    let mut pool = state.get_mossstake_pool()?;
+    let before_hash = if state.is_mossstake_slot_only() {
+        pool.canonical_hash()
+    } else {
+        pool.legacy_canonical_hash()
+    };
+    let changed = pool.clear_wall_clock_times();
+    let slot_only_enabled = matches!(
+        state
+            .get_metadata(MOSSSTAKE_SLOT_ONLY_METADATA_KEY)?
+            .as_deref(),
+        Some(b"1")
+    );
+
+    if !changed && slot_only_enabled {
+        return Ok(false);
+    }
+
+    state.put_metadata(MOSSSTAKE_SLOT_ONLY_METADATA_KEY, b"1")?;
+    state.put_mossstake_pool(&pool)?;
+    let after_hash = pool.canonical_hash();
+    if changed {
+        warn!(
+            "🔧 {}: cleared legacy MossStake wall-clock fields and enabled slot-only mode ({} -> {})",
+            context,
+            before_hash.to_hex(),
+            after_hash.to_hex(),
+        );
+    } else {
+        info!("🔧 {}: enabled MossStake slot-only mode", context);
+    }
+    Ok(true)
+}
+
+fn genesis_sync_incomplete(state: &StateStore) -> bool {
+    matches!(
+        state
+            .get_metadata(GENESIS_SYNC_INCOMPLETE_MARKER)
+            .ok()
+            .flatten()
+            .as_deref(),
+        Some(b"1")
+    )
+}
+
 fn ensure_tip_post_state_commitment_anchor(state: &StateStore) -> Result<(), String> {
     let tip = state.get_last_slot()?;
     if tip == 0 {
@@ -4997,6 +5122,16 @@ fn tip_post_block_effects_complete(state: &StateStore, block: &Block) -> Result<
         None => return Ok(false),
     }
 
+    let producer = Pubkey(block.header.validator);
+    let pool = state.get_stake_pool().unwrap_or_else(|_| StakePool::new());
+    if pool
+        .get_stake(&producer)
+        .map(|stake_info| stake_info.last_reward_slot < slot)
+        .unwrap_or(false)
+    {
+        return Ok(false);
+    }
+
     let fee_config = state
         .get_fee_config()
         .unwrap_or_else(|_| lichen_core::FeeConfig::default_from_constants());
@@ -5068,6 +5203,28 @@ async fn recover_tip_post_block_effects_if_needed(
         tip
     );
     Ok(())
+}
+
+async fn activate_pending_validators_before_replay_height(
+    state: &StateStore,
+    validator_set: &Arc<RwLock<ValidatorSet>>,
+    stake_pool: &Arc<RwLock<StakePool>>,
+    block_slot: u64,
+    min_validator_stake: u64,
+) {
+    if block_slot == 0 {
+        return;
+    }
+
+    let pool = stake_pool.read().await.clone();
+    activate_pending_validators_for_height(
+        state,
+        validator_set,
+        &pool,
+        block_slot,
+        min_validator_stake,
+    )
+    .await;
 }
 
 async fn activate_pending_validators_for_height(
@@ -8614,6 +8771,22 @@ async fn run_validator() {
         validator_set.read().await.validators().len()
     );
 
+    if !genesis_sync_incomplete(&state)
+        && (state.get_last_slot().unwrap_or(0) > 0 || !is_joining_network)
+    {
+        if let Err(err) = repair_stake_pool_production_counters_from_blocks(&state, "startup") {
+            error!(
+                "❌ Failed to repair deterministic StakePool counters: {}",
+                err
+            );
+            std::process::exit(1);
+        }
+        if let Err(err) = clean_mossstake_wall_clock_state(&state, "startup") {
+            error!("❌ Failed to migrate MossStake to slot-only state: {}", err);
+            std::process::exit(1);
+        }
+    }
+
     // ============================================================================
     // VALIDATOR ACCOUNT CREATION / BOOTSTRAP GRANT
     // ============================================================================
@@ -9463,51 +9636,15 @@ async fn run_validator() {
                                 sync_mgr.complete_sync().await;
                                 continue;
                             }
-                            let mut peer_infos = peer_mgr_for_sync.get_peer_infos();
-                            peer_infos.sort_by(|a, b| {
-                                b.1.cmp(&a.1)
-                                    .then_with(|| a.0.to_string().cmp(&b.0.to_string()))
-                            });
-                            let all_peers: Vec<std::net::SocketAddr> = peer_infos
-                                .into_iter()
-                                .take(SYNC_REQUEST_FANOUT.max(1))
-                                .map(|(addr, _)| addr)
-                                .collect();
-                            let mut chunk_start = start;
-                            let mut chunk_idx: usize = 0;
-                            while chunk_start <= end {
-                                let chunk_end = std::cmp::min(
-                                    chunk_start + sync::P2P_BLOCK_RANGE_LIMIT - 1,
-                                    end,
-                                );
-                                if all_peers.is_empty() {
-                                    let request_msg = P2PMessage::new(
-                                        MessageType::BlockRangeRequest {
-                                            start_slot: chunk_start,
-                                            end_slot: chunk_end,
-                                        },
-                                        local_addr,
-                                    );
-                                    peer_mgr_for_sync.broadcast(request_msg).await;
-                                } else {
-                                    let peer_addr = &all_peers[chunk_idx % all_peers.len()];
-                                    let request_msg = P2PMessage::new(
-                                        MessageType::BlockRangeRequest {
-                                            start_slot: chunk_start,
-                                            end_slot: chunk_end,
-                                        },
-                                        local_addr,
-                                    );
-                                    if let Err(e) = peer_mgr_for_sync
-                                        .send_to_peer(peer_addr, request_msg)
-                                        .await
-                                    {
-                                        tracing::warn!("sync chunk request to peer failed: {e}");
-                                    }
-                                }
-                                chunk_start = chunk_end + 1;
-                                chunk_idx += 1;
-                            }
+                            let sync_peer_manager = Some(peer_mgr_for_sync.clone());
+                            request_block_range_from_peers(
+                                &sync_peer_manager,
+                                local_addr,
+                                start,
+                                end,
+                                "periodic",
+                            )
+                            .await;
                             for slot in start..=end {
                                 sync_mgr.mark_requested(slot).await;
                             }
@@ -10694,6 +10831,14 @@ async fn run_validator() {
                                 continue;
                             }
 
+                            activate_pending_validators_before_replay_height(
+                                &state_for_blocks,
+                                &validator_set_for_blocks,
+                                &stake_pool_for_blocks,
+                                pending_slot,
+                                min_validator_stake,
+                            )
+                            .await;
                             let chain_id = runtime_genesis_config_for_blocks
                                 .read()
                                 .await
@@ -10845,57 +10990,15 @@ async fn run_validator() {
                             continue;
                         }
 
-                        let mut peer_infos = peer_mgr_for_sync.get_peer_infos();
-                        peer_infos.sort_by(|a, b| {
-                            b.1.cmp(&a.1)
-                                .then_with(|| a.0.to_string().cmp(&b.0.to_string()))
-                        });
-                        let all_peers: Vec<std::net::SocketAddr> = peer_infos
-                            .into_iter()
-                            .take(SYNC_REQUEST_FANOUT.max(1))
-                            .map(|(addr, _)| addr)
-                            .collect();
-
-                        let mut chunk_start = start;
-                        let mut chunk_idx: usize = 0;
-                        while chunk_start <= end {
-                            let chunk_end =
-                                std::cmp::min(chunk_start + sync::P2P_BLOCK_RANGE_LIMIT - 1, end);
-
-                            if all_peers.is_empty() {
-                                let request_msg = P2PMessage::new(
-                                    MessageType::BlockRangeRequest {
-                                        start_slot: chunk_start,
-                                        end_slot: chunk_end,
-                                    },
-                                    local_addr,
-                                );
-                                peer_mgr_for_sync.broadcast(request_msg).await;
-                            } else {
-                                let peer_addr = &all_peers[chunk_idx % all_peers.len()];
-                                let request_msg = P2PMessage::new(
-                                    MessageType::BlockRangeRequest {
-                                        start_slot: chunk_start,
-                                        end_slot: chunk_end,
-                                    },
-                                    local_addr,
-                                );
-                                if let Err(e) =
-                                    peer_mgr_for_sync.send_to_peer(peer_addr, request_msg).await
-                                {
-                                    warn!(
-                                        "⚠️  Failed post-genesis sync request {}-{} to {}: {}",
-                                        chunk_start, chunk_end, peer_addr, e
-                                    );
-                                }
-                            }
-                            info!(
-                                "📡 Sent post-genesis block range request: {} to {}",
-                                chunk_start, chunk_end
-                            );
-                            chunk_start = chunk_end + 1;
-                            chunk_idx += 1;
-                        }
+                        let sync_peer_manager = Some(peer_mgr_for_sync.clone());
+                        request_block_range_from_peers(
+                            &sync_peer_manager,
+                            local_addr,
+                            start,
+                            end,
+                            "post-genesis",
+                        )
+                        .await;
 
                         // State-slot-based sync completion (same as main sync path)
                         let sync_mgr_complete = sync_mgr.clone();
@@ -10994,6 +11097,16 @@ async fn run_validator() {
                             continue;
                         }
 
+                        if is_sync_block {
+                            activate_pending_validators_before_replay_height(
+                                &state_for_blocks,
+                                &validator_set_for_blocks,
+                                &stake_pool_for_blocks,
+                                block_slot,
+                                min_validator_stake,
+                            )
+                            .await;
+                        }
                         let chain_id = runtime_genesis_config_for_blocks
                             .read()
                             .await
@@ -11205,6 +11318,14 @@ async fn run_validator() {
                                     continue;
                                 }
 
+                                activate_pending_validators_before_replay_height(
+                                    &state_for_blocks,
+                                    &validator_set_for_blocks,
+                                    &stake_pool_for_blocks,
+                                    pending_slot,
+                                    min_validator_stake,
+                                )
+                                .await;
                                 let chain_id = runtime_genesis_config_for_blocks
                                     .read()
                                     .await
@@ -11430,75 +11551,15 @@ async fn run_validator() {
                         // sync deadlock because the responder rejects oversized
                         // range requests.
                         //
-                        // P2-5: Round-robin chunk→peer assignment distributes
-                        // pipeline stages across peers. Peer A serves chunk 0,
-                        // peer B serves chunk 1, etc. This parallelizes
-                        // download across all available peers rather than
-                        // having every peer serve every chunk (which wastes
-                        // bandwidth on duplicates during large syncs).
-                        let mut peer_infos = peer_mgr_for_sync.get_peer_infos();
-                        peer_infos.sort_by(|a, b| {
-                            b.1.cmp(&a.1)
-                                .then_with(|| a.0.to_string().cmp(&b.0.to_string()))
-                        });
-                        let all_peers: Vec<std::net::SocketAddr> = peer_infos
-                            .into_iter()
-                            .take(SYNC_REQUEST_FANOUT.max(1))
-                            .map(|(addr, _)| addr)
-                            .collect();
-
-                        let mut chunk_start = start;
-                        let mut chunk_idx: usize = 0;
-                        while chunk_start <= end {
-                            let chunk_end =
-                                std::cmp::min(chunk_start + sync::P2P_BLOCK_RANGE_LIMIT - 1, end);
-
-                            if all_peers.is_empty() {
-                                let request_msg = P2PMessage::new(
-                                    MessageType::BlockRangeRequest {
-                                        start_slot: chunk_start,
-                                        end_slot: chunk_end,
-                                    },
-                                    local_addr,
-                                );
-                                peer_mgr_for_sync.broadcast(request_msg).await;
-                            } else {
-                                // P2-5: Round-robin — assign each chunk to a
-                                // different peer to maximize parallelism.
-                                let peer_addr = &all_peers[chunk_idx % all_peers.len()];
-                                let request_msg = P2PMessage::new(
-                                    MessageType::BlockRangeRequest {
-                                        start_slot: chunk_start,
-                                        end_slot: chunk_end,
-                                    },
-                                    local_addr,
-                                );
-                                if let Err(e) =
-                                    peer_mgr_for_sync.send_to_peer(peer_addr, request_msg).await
-                                {
-                                    warn!(
-                                        "⚠️  Failed sync request {}-{} to {}: {}",
-                                        chunk_start, chunk_end, peer_addr, e
-                                    );
-                                    peer_mgr_for_sync.record_violation(peer_addr);
-                                } else {
-                                    peer_mgr_for_sync.record_success(peer_addr);
-                                }
-                            }
-                            info!(
-                                "📡 Sent block range request: {} to {} (chunk {}, peer {})",
-                                chunk_start,
-                                chunk_end,
-                                chunk_end - chunk_start + 1,
-                                if all_peers.is_empty() {
-                                    "broadcast".to_string()
-                                } else {
-                                    all_peers[chunk_idx % all_peers.len()].to_string()
-                                }
-                            );
-                            chunk_start = chunk_end + 1;
-                            chunk_idx += 1;
-                        }
+                        let sync_peer_manager = Some(peer_mgr_for_sync.clone());
+                        request_block_range_from_peers(
+                            &sync_peer_manager,
+                            local_addr,
+                            start,
+                            end,
+                            "catch-up",
+                        )
+                        .await;
 
                         // Mark slots as requested in sync manager
                         for slot in start..=end {
@@ -11679,6 +11740,14 @@ async fn run_validator() {
                             if (incoming_weight > existing_weight && oracle_prefers_incoming)
                                 || longest_chain_rule
                             {
+                                activate_pending_validators_before_replay_height(
+                                    &state_for_blocks,
+                                    &validator_set_for_blocks,
+                                    &stake_pool_for_blocks,
+                                    block_slot,
+                                    min_validator_stake,
+                                )
+                                .await;
                                 let chain_id = runtime_genesis_config_for_blocks
                                     .read()
                                     .await
@@ -11813,6 +11882,14 @@ async fn run_validator() {
                                             continue;
                                         }
 
+                                        activate_pending_validators_before_replay_height(
+                                            &state_for_blocks,
+                                            &validator_set_for_blocks,
+                                            &stake_pool_for_blocks,
+                                            pending_slot,
+                                            min_validator_stake,
+                                        )
+                                        .await;
                                         let chain_id = runtime_genesis_config_for_blocks
                                             .read()
                                             .await
@@ -17292,47 +17369,56 @@ async fn request_block_range_from_peers(
         .collect();
 
     let mut chunk_start = start_slot;
-    let mut chunk_idx: usize = 0;
     while chunk_start <= end_slot {
         let chunk_end = std::cmp::min(chunk_start + sync::P2P_BLOCK_RANGE_LIMIT - 1, end_slot);
-        let request_msg = P2PMessage::new(
-            MessageType::BlockRangeRequest {
-                start_slot: chunk_start,
-                end_slot: chunk_end,
-            },
-            local_addr,
-        );
 
         if all_peers.is_empty() {
+            let request_msg = P2PMessage::new(
+                MessageType::BlockRangeRequest {
+                    start_slot: chunk_start,
+                    end_slot: chunk_end,
+                },
+                local_addr,
+            );
             pm.broadcast(request_msg).await;
+            info!(
+                "📡 Sent {} sync request: {} to {} (chunk {}, peer {})",
+                reason,
+                chunk_start,
+                chunk_end,
+                chunk_end - chunk_start + 1,
+                "broadcast",
+            );
         } else {
-            let peer_addr = &all_peers[chunk_idx % all_peers.len()];
-            if let Err(e) = pm.send_to_peer(peer_addr, request_msg).await {
-                warn!(
-                    "⚠️  Failed {} sync request {}-{} to {}: {}",
-                    reason, chunk_start, chunk_end, peer_addr, e
+            for peer_addr in &all_peers {
+                let request_msg = P2PMessage::new(
+                    MessageType::BlockRangeRequest {
+                        start_slot: chunk_start,
+                        end_slot: chunk_end,
+                    },
+                    local_addr,
                 );
-                pm.record_violation(peer_addr);
-            } else {
-                pm.record_success(peer_addr);
+                if let Err(e) = pm.send_to_peer(peer_addr, request_msg).await {
+                    warn!(
+                        "⚠️  Failed {} sync request {}-{} to {}: {}",
+                        reason, chunk_start, chunk_end, peer_addr, e
+                    );
+                    pm.record_violation(peer_addr);
+                } else {
+                    pm.record_success(peer_addr);
+                    info!(
+                        "📡 Sent {} sync request: {} to {} (chunk {}, peer {})",
+                        reason,
+                        chunk_start,
+                        chunk_end,
+                        chunk_end - chunk_start + 1,
+                        peer_addr,
+                    );
+                }
             }
         }
 
-        info!(
-            "📡 Sent {} sync request: {} to {} (chunk {}, peer {})",
-            reason,
-            chunk_start,
-            chunk_end,
-            chunk_end - chunk_start + 1,
-            if all_peers.is_empty() {
-                "broadcast".to_string()
-            } else {
-                all_peers[chunk_idx % all_peers.len()].to_string()
-            }
-        );
-
         chunk_start = chunk_end + 1;
-        chunk_idx += 1;
     }
 }
 
@@ -17935,6 +18021,7 @@ async fn execute_consensus_actions(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lichen_core::mossstake::{LockTier, MossStakePool, MOSSSTAKE_SLOT_ONLY_METADATA_KEY};
     use lichen_core::{Instruction, Message, MIN_VALIDATOR_STAKE};
 
     // ── Helper builders ─────────────────────────────────────────────
@@ -19500,9 +19587,17 @@ mod tests {
     }
 
     fn committed_block_for_auth_test(proposer: &Keypair, committers: &[&Keypair]) -> Block {
+        committed_block_for_auth_test_at_slot(proposer, committers, 1)
+    }
+
+    fn committed_block_for_auth_test_at_slot(
+        proposer: &Keypair,
+        committers: &[&Keypair],
+        slot: u64,
+    ) -> Block {
         let timestamp = 1_000;
         let mut block = Block::new_with_timestamp(
-            1,
+            slot,
             Hash::default(),
             Hash::hash(b"synced-block-auth-root"),
             proposer.pubkey().0,
@@ -19516,7 +19611,7 @@ mod tests {
         block.commit_signatures = committers
             .iter()
             .map(|committer| {
-                let signable = Precommit::signable_bytes(1, 0, &Some(block_hash), timestamp);
+                let signable = Precommit::signable_bytes(slot, 0, &Some(block_hash), timestamp);
                 lichen_core::CommitSignature {
                     validator: committer.pubkey().0,
                     signature: committer.sign(&signable),
@@ -19567,6 +19662,48 @@ mod tests {
         let err = verify_synced_block_consensus_authenticity(&block, &validator_set, &stake_pool)
             .expect_err("pending proposer must be rejected");
         assert!(err.contains("pending activation"));
+    }
+
+    #[test]
+    fn replay_height_activation_allows_newly_active_synced_proposer() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let validator_kp = Keypair::generate();
+        let validator_pk = validator_kp.pubkey();
+        let start_slot = 32;
+        let replay_height = start_slot + 101;
+
+        let mut pending_validator = test_validator_info(validator_pk);
+        pending_validator.pending_activation = true;
+        pending_validator.stake = 0;
+        pending_validator.joined_slot = start_slot;
+
+        let mut validator_set = ValidatorSet::new();
+        validator_set.add_validator(pending_validator);
+        let validator_set = Arc::new(RwLock::new(validator_set));
+
+        let mut stake_pool = StakePool::new();
+        stake_pool
+            .stake(validator_pk, MIN_VALIDATOR_STAKE, start_slot)
+            .expect("stake validator");
+        let stake_pool = Arc::new(RwLock::new(stake_pool));
+
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        runtime.block_on(activate_pending_validators_before_replay_height(
+            &state,
+            &validator_set,
+            &stake_pool,
+            replay_height,
+            MIN_VALIDATOR_STAKE,
+        ));
+
+        let validator_set = runtime.block_on(async { validator_set.read().await.clone() });
+        let stake_pool = runtime.block_on(async { stake_pool.read().await.clone() });
+        let block =
+            committed_block_for_auth_test_at_slot(&validator_kp, &[&validator_kp], replay_height);
+
+        verify_synced_block_consensus_authenticity(&block, &validator_set, &stake_pool)
+            .expect("replay must activate validator before validating its first eligible block");
     }
 
     #[test]
@@ -20417,6 +20554,187 @@ mod tests {
         let persisted = state.get_stake_pool().expect("read stake pool after no-op");
         let entry = persisted.get_stake(&producer).expect("producer stake");
         assert_eq!(entry.blocks_produced, 1);
+    }
+
+    #[test]
+    fn startup_repair_rebuilds_stake_pool_production_counters_from_blocks() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let producer_a = Keypair::generate().pubkey();
+        let producer_b = Keypair::generate().pubkey();
+        let non_staked = Keypair::generate().pubkey();
+
+        let mut pool = StakePool::new();
+        pool.stake(producer_a, MIN_VALIDATOR_STAKE, 0)
+            .expect("stake producer a");
+        pool.stake(producer_b, MIN_VALIDATOR_STAKE, 0)
+            .expect("stake producer b");
+        pool.get_stake_mut(&producer_a)
+            .expect("producer a stake")
+            .blocks_produced = 99;
+        pool.get_stake_mut(&producer_a)
+            .expect("producer a stake")
+            .last_reward_slot = 99;
+        pool.get_stake_mut(&producer_b)
+            .expect("producer b stake")
+            .blocks_produced = 0;
+        pool.get_stake_mut(&producer_b)
+            .expect("producer b stake")
+            .last_reward_slot = 0;
+        state.put_stake_pool(&pool).expect("put stale stake pool");
+
+        for (slot, producer) in [
+            (1, producer_a),
+            (2, producer_b),
+            (3, producer_a),
+            (4, non_staked),
+        ] {
+            let block = Block::new(slot, Hash::default(), Hash::default(), producer.0, vec![]);
+            state
+                .put_block_atomic(&block, Some(slot), Some(slot))
+                .expect("put canonical block");
+        }
+
+        assert!(
+            repair_stake_pool_production_counters_from_blocks(&state, "test")
+                .expect("repair counters"),
+            "stale counters should be repaired"
+        );
+
+        let repaired = state.get_stake_pool().expect("read repaired stake pool");
+        let stake_a = repaired.get_stake(&producer_a).expect("producer a stake");
+        assert_eq!(stake_a.blocks_produced, 2);
+        assert_eq!(stake_a.last_reward_slot, 3);
+        let stake_b = repaired.get_stake(&producer_b).expect("producer b stake");
+        assert_eq!(stake_b.blocks_produced, 1);
+        assert_eq!(stake_b.last_reward_slot, 2);
+
+        assert!(
+            !repair_stake_pool_production_counters_from_blocks(&state, "test")
+                .expect("second repair is no-op")
+        );
+    }
+
+    #[test]
+    fn startup_clean_mossstake_wall_clock_state_enables_slot_only_storage() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let alice = Keypair::generate().pubkey();
+        let mut pool = MossStakePool::new();
+
+        pool.stake_with_tier(alice, 1_000, 42, LockTier::Lock30)
+            .expect("stake MossStake position");
+        pool.request_unstake(alice, 100, 42 + LockTier::Lock30.lock_duration_slots())
+            .expect("request unstake");
+        pool.positions
+            .get_mut(&alice)
+            .expect("position")
+            .deposited_at_unix_seconds = 1_700_000_000;
+        pool.positions
+            .get_mut(&alice)
+            .expect("position")
+            .lock_until_unix_seconds = 1_702_592_000;
+        let request = pool
+            .unstake_requests
+            .get_mut(&alice)
+            .expect("requests")
+            .first_mut()
+            .expect("request");
+        request.requested_at_unix_seconds = 1_702_592_000;
+        request.claimable_at_unix_seconds = 1_703_196_800;
+
+        let legacy_hash = pool.legacy_canonical_hash();
+        let slot_only_hash = pool.canonical_hash();
+        state.put_mossstake_pool(&pool).expect("put legacy pool");
+        assert_eq!(state.compute_mossstake_pool_hash(), legacy_hash);
+
+        assert!(
+            clean_mossstake_wall_clock_state(&state, "test").expect("clean MossStake"),
+            "legacy pool should be migrated"
+        );
+        assert_eq!(
+            state
+                .get_metadata(MOSSSTAKE_SLOT_ONLY_METADATA_KEY)
+                .expect("read MossStake marker")
+                .as_deref(),
+            Some(b"1".as_slice())
+        );
+        assert_eq!(state.compute_mossstake_pool_hash(), slot_only_hash);
+        let cleaned = state.get_mossstake_pool().expect("read cleaned pool");
+        let cleaned_position = cleaned.positions.get(&alice).expect("cleaned position");
+        assert_eq!(cleaned_position.deposited_at_unix_seconds, 0);
+        assert_eq!(cleaned_position.lock_until_unix_seconds, 0);
+        let cleaned_request = cleaned
+            .unstake_requests
+            .get(&alice)
+            .expect("cleaned requests")
+            .first()
+            .expect("cleaned request");
+        assert_eq!(cleaned_request.requested_at_unix_seconds, 0);
+        assert_eq!(cleaned_request.claimable_at_unix_seconds, 0);
+
+        assert!(!clean_mossstake_wall_clock_state(&state, "test").expect("second clean is no-op"));
+    }
+
+    #[test]
+    fn genesis_bundle_import_applies_stats_before_mossstake_pool() {
+        let source_dir = tempfile::tempdir().expect("create source dir");
+        let source = StateStore::open(source_dir.path()).expect("open source state");
+        let target_dir = tempfile::tempdir().expect("create target dir");
+        let target = StateStore::open(target_dir.path()).expect("open target state");
+        let alice = Keypair::generate().pubkey();
+        let mut legacy_pool = MossStakePool::new();
+
+        legacy_pool
+            .stake_with_tier(alice, 1_000, 42, LockTier::Lock30)
+            .expect("stake position");
+        legacy_pool
+            .positions
+            .get_mut(&alice)
+            .expect("position")
+            .deposited_at_unix_seconds = 1_700_000_000;
+
+        source
+            .put_metadata(MOSSSTAKE_SLOT_ONLY_METADATA_KEY, b"1")
+            .expect("put source slot-only marker");
+        source
+            .put_mossstake_pool(&legacy_pool)
+            .expect("put normalized source pool");
+        let expected_root = source.compute_state_root_cold_start();
+
+        let bundle = GenesisStateBundle {
+            version: GENESIS_STATE_BUNDLE_VERSION,
+            state_root: expected_root.0,
+            categories: vec![
+                lichen_core::GenesisStateCategory {
+                    name: "mossstake_pool".to_string(),
+                    entries: vec![(
+                        b"pool".to_vec(),
+                        serialize_legacy_bincode(&legacy_pool, "test genesis MossStake pool")
+                            .expect("serialize legacy pool"),
+                    )],
+                },
+                lichen_core::GenesisStateCategory {
+                    name: "stats".to_string(),
+                    entries: vec![(
+                        MOSSSTAKE_SLOT_ONLY_METADATA_KEY.as_bytes().to_vec(),
+                        b"1".to_vec(),
+                    )],
+                },
+            ],
+        };
+
+        apply_genesis_state_bundle(&target, &bundle).expect("apply reversed bundle");
+        let imported = target.get_mossstake_pool().expect("read imported pool");
+        assert_eq!(
+            imported
+                .positions
+                .get(&alice)
+                .expect("imported position")
+                .deposited_at_unix_seconds,
+            0
+        );
+        assert_eq!(target.compute_state_root_cold_start(), expected_root);
     }
 
     fn test_validator_info(pubkey: Pubkey) -> ValidatorInfo {
