@@ -9,6 +9,13 @@ const REGISTER_VALIDATOR_SELF_FUNDED_LEN: usize = 42;
 const REGISTER_VALIDATOR_MODE_OFFSET: usize = 33;
 const REGISTER_VALIDATOR_MODE_GRANT: u8 = 0;
 const REGISTER_VALIDATOR_MODE_SELF_FUNDED: u8 = 1;
+// The original lichen-testnet-1 history contains bootstrap-grant
+// RegisterValidator transactions even though the local genesis config written
+// by later deployments has this metadata disabled. The flag was never part of
+// the state root, so historical replay must derive this policy from immutable
+// chain identity plus slot. It closes at the first post-repair boundary.
+const LEGACY_TESTNET_BOOTSTRAP_GRANTS_CHAIN_ID: &str = "lichen-testnet-1";
+const LEGACY_TESTNET_BOOTSTRAP_GRANTS_DISABLE_PARENT_SLOT: u64 = 2_710_766;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ValidatorRegistrationMode {
@@ -91,11 +98,32 @@ impl TxProcessor {
     }
 
     fn validator_bootstrap_grants_enabled(&self) -> Result<bool, String> {
-        Ok(self
+        let metadata_enabled = self
             .state
             .get_metadata(crate::consensus::VALIDATOR_BOOTSTRAP_GRANTS_ENABLED_METADATA_KEY)?
             .as_deref()
-            == Some(crate::consensus::VALIDATOR_BOOTSTRAP_GRANTS_ENABLED_VALUE))
+            == Some(crate::consensus::VALIDATOR_BOOTSTRAP_GRANTS_ENABLED_VALUE);
+        if metadata_enabled {
+            return Ok(true);
+        }
+
+        self.legacy_testnet_bootstrap_grants_enabled()
+    }
+
+    fn legacy_testnet_bootstrap_grants_enabled(&self) -> Result<bool, String> {
+        let Some(chain_id_bytes) = self.state.get_metadata(crate::signing::CHAIN_ID_METADATA_KEY)?
+        else {
+            return Ok(false);
+        };
+        let Ok(chain_id) = std::str::from_utf8(&chain_id_bytes) else {
+            return Ok(false);
+        };
+        if chain_id != LEGACY_TESTNET_BOOTSTRAP_GRANTS_CHAIN_ID {
+            return Ok(false);
+        }
+
+        let current_slot = self.b_get_last_slot().unwrap_or(0);
+        Ok(current_slot < LEGACY_TESTNET_BOOTSTRAP_GRANTS_DISABLE_PARENT_SLOT)
     }
 
     fn system_register_validator_bootstrap_grant(

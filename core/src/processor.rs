@@ -2867,6 +2867,19 @@ mod tests {
         tx
     }
 
+    fn make_signed_tx_for_chain_id(
+        kp: &Keypair,
+        ix: Instruction,
+        recent_blockhash: Hash,
+        chain_id: &str,
+    ) -> Transaction {
+        let message = crate::transaction::Message::new(vec![ix], recent_blockhash);
+        let mut tx = Transaction::new(message);
+        let sig = kp.sign(&tx.message.signing_bytes_for_chain_id(chain_id));
+        tx.signatures.push(sig);
+        tx
+    }
+
     #[test]
     fn test_create_account_success() {
         let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
@@ -3420,6 +3433,23 @@ mod tests {
         make_signed_tx(kp, ix, recent_blockhash)
     }
 
+    fn make_register_validator_tx_for_chain_id(
+        kp: &Keypair,
+        validator: Pubkey,
+        fingerprint: [u8; 32],
+        recent_blockhash: Hash,
+        chain_id: &str,
+    ) -> Transaction {
+        let mut data = vec![26u8];
+        data.extend_from_slice(&fingerprint);
+        let ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![validator],
+            data,
+        };
+        make_signed_tx_for_chain_id(kp, ix, recent_blockhash, chain_id)
+    }
+
     fn make_self_funded_register_validator_tx(
         kp: &Keypair,
         validator: Pubkey,
@@ -3538,6 +3568,121 @@ mod tests {
         let fingerprint = [0x22; 32];
 
         let tx = make_register_validator_tx(&validator_kp, validator, fingerprint, genesis_hash);
+        let result = processor.process_transaction(&tx, &block_producer);
+        assert!(!result.success);
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("bootstrap grants are disabled"));
+        assert_validator_registration_not_granted(
+            &state,
+            treasury,
+            &before_treasury,
+            validator,
+            fingerprint,
+        );
+    }
+
+    #[test]
+    fn test_register_validator_legacy_testnet_replay_enables_bootstrap_grants_before_cutoff() {
+        let (processor, state, _alice_kp, _alice, treasury, genesis_hash) = setup();
+        let chain_id = "lichen-testnet-1";
+        state.put_metadata(CHAIN_ID_METADATA_KEY, chain_id.as_bytes()).unwrap();
+        state.set_last_slot(128).unwrap();
+        let block_producer = Pubkey([42u8; 32]);
+        fund_treasury_for_validator_bootstrap(&state, treasury);
+        let validator_kp = Keypair::generate();
+        let validator = validator_kp.pubkey();
+        let fingerprint = [0x72; 32];
+
+        let tx = make_register_validator_tx_for_chain_id(
+            &validator_kp,
+            validator,
+            fingerprint,
+            genesis_hash,
+            chain_id,
+        );
+        let result = processor.process_transaction(&tx, &block_producer);
+        assert!(
+            result.success,
+            "legacy testnet replay should accept historical bootstrap grant: {:?}",
+            result.error
+        );
+
+        let pool = state.get_stake_pool().unwrap();
+        let stake = pool.get_stake(&validator).unwrap();
+        assert_eq!(stake.amount, crate::consensus::BOOTSTRAP_GRANT_AMOUNT);
+        assert_eq!(stake.start_slot, 128);
+        assert_eq!(pool.fingerprint_owner(&fingerprint), Some(&validator));
+    }
+
+    #[test]
+    fn test_register_validator_legacy_testnet_bootstrap_grants_close_at_cutoff() {
+        let (processor, state, _alice_kp, _alice, treasury, genesis_hash) = setup();
+        let chain_id = "lichen-testnet-1";
+        state.put_metadata(CHAIN_ID_METADATA_KEY, chain_id.as_bytes()).unwrap();
+        let cutoff_block = crate::Block::new_with_timestamp(
+            2_710_766,
+            genesis_hash,
+            Hash::default(),
+            [0u8; 32],
+            Vec::new(),
+            0,
+        );
+        let cutoff_hash = cutoff_block.hash();
+        state.put_block(&cutoff_block).unwrap();
+        state.set_last_slot(2_710_766).unwrap();
+        let block_producer = Pubkey([42u8; 32]);
+        fund_treasury_for_validator_bootstrap(&state, treasury);
+        let before_treasury = state.get_account(&treasury).unwrap().unwrap();
+        let validator_kp = Keypair::generate();
+        let validator = validator_kp.pubkey();
+        let fingerprint = [0x73; 32];
+
+        let tx = make_register_validator_tx_for_chain_id(
+            &validator_kp,
+            validator,
+            fingerprint,
+            cutoff_hash,
+            chain_id,
+        );
+        let result = processor.process_transaction(&tx, &block_producer);
+        assert!(!result.success);
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("bootstrap grants are disabled"));
+        assert_validator_registration_not_granted(
+            &state,
+            treasury,
+            &before_treasury,
+            validator,
+            fingerprint,
+        );
+    }
+
+    #[test]
+    fn test_register_validator_mainnet_does_not_use_legacy_testnet_bootstrap_policy() {
+        let (processor, state, _alice_kp, _alice, treasury, genesis_hash) = setup();
+        let chain_id = "lichen-mainnet-1";
+        state.put_metadata(CHAIN_ID_METADATA_KEY, chain_id.as_bytes()).unwrap();
+        state.set_last_slot(128).unwrap();
+        let block_producer = Pubkey([42u8; 32]);
+        fund_treasury_for_validator_bootstrap(&state, treasury);
+        let before_treasury = state.get_account(&treasury).unwrap().unwrap();
+        let validator_kp = Keypair::generate();
+        let validator = validator_kp.pubkey();
+        let fingerprint = [0x74; 32];
+
+        let tx = make_register_validator_tx_for_chain_id(
+            &validator_kp,
+            validator,
+            fingerprint,
+            genesis_hash,
+            chain_id,
+        );
         let result = processor.process_transaction(&tx, &block_producer);
         assert!(!result.success);
         assert!(result
