@@ -429,16 +429,16 @@ assert(
   'BTC rollout plan must record the epoch-6 governed execution signatures and compute budget',
 );
 assert(
-  productionDeployment.includes('Current signed-release target for this runbook is `v0.5.98`') &&
+  productionDeployment.includes('Current signed-release target for this runbook is `v0.5.116`') &&
     productionDeployment.includes('32 manifest symbols') &&
     productionDeployment.includes('mandatory 13 DEX CLOB pairs, AMM pools, and router routes') &&
     productionDeployment.includes('wBTC/lUSD') &&
     productionDeployment.includes('wBTC/LICN') &&
-    productionDeployment.includes('export LICHEN_RELEASE_TAG=v0.5.98') &&
+    productionDeployment.includes('export LICHEN_RELEASE_TAG=v0.5.116') &&
     !productionDeployment.includes('signed release `v0.5.44`') &&
     !productionDeployment.includes('31 manifest symbols') &&
     !productionDeployment.includes('such as `v0.5.50`'),
-  'production clean-slate checklist must match current v0.5.98/32-symbol/13-market expectations',
+  'production clean-slate checklist must match current v0.5.116/32-symbol/13-market expectations',
 );
 
 const faucetExample = parseExampleEnv('deploy/faucet-env.example');

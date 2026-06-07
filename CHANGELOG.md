@@ -5,6 +5,12 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.116] - 2026-06-08
+
+### Fixed
+- Embeds the fourth public seed in fallback testnet and mainnet network defaults, keeping fresh nodes aligned even before `seeds.json` is loaded.
+- Updates the production deployment QA expectation to the current signed release target so release CI checks the same runbook version operators deploy.
+
 ## [0.5.115] - 2026-06-08
 
 ### Fixed
