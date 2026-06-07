@@ -7,7 +7,7 @@ Ultra-low fees · Sub-second BFT block commitment · Agent-native identity · Mu
 [![License: Apache--2.0%20%2B%20MIT](https://img.shields.io/badge/License-Apache--2.0%20%2B%20MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.88+-00C9DB.svg)](https://www.rust-lang.org)
 
-**Current release:** signed `v0.5.110` with first-class BTC/wBTC support, slot-only MossStake state, deterministic legacy testnet bootstrap-grant replay, fresh-join warp snapshot backpressure, live BFT restart catch-up recovery, local three-validator first-start sync validation, and the v0.5.93 stable validator base without replaying historical state.
+**Current release:** signed `v0.5.115` with first-class BTC/wBTC support, slot-only MossStake state, deterministic legacy testnet bootstrap-grant replay, fresh-join warp snapshot backpressure, live BFT restart catch-up recovery, four-validator public testnet validation, and the v0.5.93 stable validator base without replaying historical state.
 
 **Website:** https://lichen.network  
 **Documentation:** https://developers.lichen.network  
@@ -434,6 +434,7 @@ Full platform-specific instructions: [developers.lichen.network/validator.html](
 | US East | `seed-01.lichen.network:8001` |
 | EU West | `seed-02.lichen.network:8001` |
 | AP Southeast | `seed-03.lichen.network:8001` |
+| India | `seed-04.lichen.network:8001` |
 
 Domain names are preferred over raw IPs for bootstrap because they let the foundation rotate infrastructure without forcing validators to change CLI flags or wait for a new binary release.
 

@@ -22,6 +22,7 @@ function indexOfOrThrow(needle) {
 const installCall = indexOfOrThrow('install_host "$host"');
 const healthCall = indexOfOrThrow('wait_healthy "$host"');
 const custodyCall = indexOfOrThrow('restart_custody_if_local "$host"');
+const faucetCall = indexOfOrThrow('restart_faucet_if_local "$host"');
 const signatureVerify = indexOfOrThrow('SHA256SUMS PQ signature verified by');
 const checksumVerify = indexOfOrThrow('sha256sum -c SHA256SUMS --ignore-missing');
 
@@ -29,6 +30,7 @@ assert(signatureVerify < checksumVerify, 'release PQ signature must be verified 
 assert(checksumVerify < installCall, 'release artifacts must be verified before validator install');
 assert(installCall < healthCall, 'validator install must happen before health wait');
 assert(healthCall < custodyCall, 'custody restart must happen only after validator health');
+assert(custodyCall < faucetCall, 'faucet restart must happen after custody refresh');
 assert(script.includes('expected_custody_sha="$(require_archive_bin_sha "$archive" "$root" lichen-custody)"'),
   'custody release hash must be required before install');
 assert(script.includes('require_archive_bin_sha "$archive" "$root" lichen-custody'),
@@ -54,5 +56,8 @@ assert(script.includes('sudo systemctl stop lichen-custody.service || true'), 'c
 assert(script.includes('sudo systemctl kill --kill-who=control-group -s SIGKILL lichen-custody.service || true'), 'custody service stale cgroup must be killed before start');
 assert(script.includes('sudo systemctl start lichen-custody.service'), 'custody service must be started after RPC is healthy');
 assert(script.includes('http://127.0.0.1:9105/health'), 'custody health must be verified after restart');
+assert(script.includes('sudo systemctl start lichen-faucet.service'), 'faucet service must be started after RPC is healthy');
+assert(script.includes('http://127.0.0.1:9100/health'), 'faucet health must be verified after restart');
+assert(script.includes('unit is enabled but inactive'), 'release verification must fail enabled inactive optional services');
 
 console.log('rolling release custody sequencing QA passed');

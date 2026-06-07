@@ -199,7 +199,7 @@ After code and WASM are updated:
 3. Rebuild changed contract WASM, including `wbtc_token`.
 4. Reset the local testnet state.
 5. Start three local validators from fresh genesis.
-6. Verify all three validators advance slots and agree on the tip.
+6. Verify all validators advance slots and agree on the tip.
 7. Verify `WBTC` exists in `getAllSymbolRegistry`.
 8. Verify `getWbtcStats` returns the WBTC contract state.
 9. Verify DEX pair count includes `wBTC/lUSD` and `wBTC/LICN`.
@@ -227,10 +227,10 @@ The VPS deployment commands should only be prepared after this local gate passes
 
 ## VPS Deployment Gate
 
-Do not change the live three VPSes until the local three-validator gate passes. The VPS rollout should be:
+Do not change the live four VPSes until the local validation gate passes. The VPS rollout should be:
 
 1. Build release artifacts locally or in CI.
-2. Deploy validator/RPC/custody binaries consistently to all three VPSes.
+2. Deploy validator/RPC/custody binaries consistently to all four VPSes.
 3. Deploy `wbtc_token` once on the live chain.
 4. Register `WBTC`.
 5. Refresh signed metadata and deploy frontends.
@@ -309,7 +309,7 @@ On 2026-06-05, the live testnet WBTC contract was deployed and registered withou
 - deployer/admin: `63XtXerx8x1w5HjQXPBPLE9Q6P3qyvWWuCEjdzMbAiC`;
 - deploy transaction: `4a49145b6fe7e9e3cbc3fb5729a8f24eb8b9ec79e0042e6878319a68ccc81732`;
 - registry symbol: `WBTC`, display symbol `wBTC`, template `wrapped`, decimals `9`;
-- all three validators run `lichen-validator 0.5.95`;
+- the then-live validator fleet ran `lichen-validator 0.5.95`;
 - local BTC regtest custody smoke passed before VPS rollout;
 - all public frontend portals were redeployed after the signed metadata refresh.
 

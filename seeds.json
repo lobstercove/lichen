@@ -29,12 +29,22 @@
         "operator": "Lichen Foundation",
         "rpc": "https://testnet-rpc.lichen.network",
         "role": "seed"
+      },
+      {
+        "id": "seed-04",
+        "address": "seed-04.lichen.network:7001",
+        "pubkey": "",
+        "region": "india",
+        "operator": "Lichen Foundation",
+        "rpc": "https://testnet-rpc.lichen.network",
+        "role": "seed"
       }
     ],
     "bootstrap_peers": [
       "seed-01.lichen.network:7001",
       "seed-02.lichen.network:7001",
-      "seed-03.lichen.network:7001"
+      "seed-03.lichen.network:7001",
+      "seed-04.lichen.network:7001"
     ],
     "rpc_endpoints": [
       "https://testnet-rpc.lichen.network"
@@ -76,12 +86,22 @@
         "operator": "Lichen Foundation",
         "rpc": "https://rpc.lichen.network",
         "role": "seed"
+      },
+      {
+        "id": "seed-04",
+        "address": "seed-04.lichen.network:8001",
+        "pubkey": "",
+        "region": "india",
+        "operator": "Lichen Foundation",
+        "rpc": "https://rpc.lichen.network",
+        "role": "seed"
       }
     ],
     "bootstrap_peers": [
       "seed-01.lichen.network:8001",
       "seed-02.lichen.network:8001",
-      "seed-03.lichen.network:8001"
+      "seed-03.lichen.network:8001",
+      "seed-04.lichen.network:8001"
     ],
     "rpc_endpoints": [
       "https://rpc.lichen.network"

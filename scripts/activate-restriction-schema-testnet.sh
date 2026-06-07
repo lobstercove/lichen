@@ -12,12 +12,12 @@
 # This script is intentionally testnet-only and requires explicit owner approval.
 #
 # Usage:
-#   LICHEN_OWNER_APPROVED_RESTRICTION_SCHEMA_ACTIVATION='owner-approved:restriction-schema:testnet:15.204.229.189,37.59.97.61,15.235.142.253' \
-#   LICHEN_RESTRICTION_SCHEMA_ACTIVATION_CONFIRM='activate-restriction-schema:testnet:15.204.229.189,37.59.97.61,15.235.142.253' \
+#   LICHEN_OWNER_APPROVED_RESTRICTION_SCHEMA_ACTIVATION='owner-approved:restriction-schema:testnet:15.204.229.189,37.59.97.61,15.235.142.253,148.113.43.247' \
+#   LICHEN_RESTRICTION_SCHEMA_ACTIVATION_CONFIRM='activate-restriction-schema:testnet:15.204.229.189,37.59.97.61,15.235.142.253,148.113.43.247' \
 #     bash scripts/activate-restriction-schema-testnet.sh
 #
 # Optional:
-#   LICHEN_ACTIVATION_VPSES='15.204.229.189 37.59.97.61 15.235.142.253'
+#   LICHEN_ACTIVATION_VPSES='15.204.229.189 37.59.97.61 15.235.142.253 148.113.43.247'
 #   LICHEN_RESTRICTION_SCHEMA_EVIDENCE_DIR='artifacts/restriction-schema-activation/<run-id>'
 #
 # ============================================================================
@@ -34,7 +34,7 @@ if [ "$NETWORK" != "testnet" ]; then
   exit 1
 fi
 
-DEFAULT_VPSES="15.204.229.189 37.59.97.61 15.235.142.253"
+DEFAULT_VPSES="15.204.229.189 37.59.97.61 15.235.142.253 148.113.43.247"
 read -r -a ALL_VPSES <<< "${LICHEN_ACTIVATION_VPSES:-$DEFAULT_VPSES}"
 if [ "${#ALL_VPSES[@]}" -eq 0 ]; then
   echo "No VPS hosts configured." >&2

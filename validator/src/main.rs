@@ -14441,6 +14441,27 @@ async fn run_validator() {
                             }
                             staging_state.invalidate_merkle_cache();
 
+                            if staging_state.uses_sparse_state_commitment() {
+                                match staging_state.rebuild_sparse_state_commitment(false) {
+                                    Ok(report) => {
+                                        info!(
+                                            "✅ Rebuilt staging sparse state commitment for snapshot slot {}: root={} accounts={} contracts={}",
+                                            snapshot_slot,
+                                            report.current_state_root.to_hex(),
+                                            report.accounts_leaf_count,
+                                            report.contract_leaf_count
+                                        );
+                                    }
+                                    Err(e) => {
+                                        warn!(
+                                            "⚠️  Failed to rebuild staging sparse state commitment: {}",
+                                            e
+                                        );
+                                        break 'staging false;
+                                    }
+                                }
+                            }
+
                             // Verify state root on staging
                             let expected_root = state_root;
                             if validate_state_root_with_schema(

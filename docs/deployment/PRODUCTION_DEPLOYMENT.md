@@ -14,7 +14,7 @@ Use this document as the canonical workflow for:
 
 This runbook intentionally prefers the scripts that are verified in the current tree over older narrative docs.
 
-Mainnet launch must use the gated checklist in [MAINNET_LAUNCH_RUNBOOK.md](MAINNET_LAUNCH_RUNBOOK.md). That runbook is the owner-facing package for launching the 3-validator mainnet first, then enabling custody only after post-genesis verification and route-specific dust tests pass.
+Mainnet launch must use the gated checklist in [MAINNET_LAUNCH_RUNBOOK.md](MAINNET_LAUNCH_RUNBOOK.md). That runbook is the owner-facing package for launching the 4-validator mainnet first, then enabling custody only after post-genesis verification and route-specific dust tests pass.
 
 Mandatory state/sync policy: [TESTNET_STATE_AND_SYNC_POLICY.md](TESTNET_STATE_AND_SYNC_POLICY.md). For any shared testnet, staging, or mainnet-like network, do not reset state and do not distribute a copied validator state directory unless the network owner explicitly approves that exact reset. Joining validators must sync from their own state directories.
 
@@ -25,8 +25,8 @@ Restriction schema activation policy: [RESTRICTION_SCHEMA_ACTIVATION.md](RESTRIC
 | Workflow | Supported entrypoint |
 | --- | --- |
 | **VPS rolling signed-release update** | Non-destructive default for code-only upgrades: `LICHEN_RELEASE_TAG=vX.Y.Z scripts/rolling-release-deploy.sh testnet` |
-| **VPS clean-slate redeploy** | Owner-approved only: `LICHEN_OWNER_APPROVED_RESET='owner-approved:testnet:15.204.229.189,37.59.97.61,15.235.142.253' LICHEN_CLEAN_SLATE_REDEPLOY_CONFIRM='clean-slate:testnet:15.204.229.189,37.59.97.61,15.235.142.253' scripts/clean-slate-redeploy.sh testnet` |
-| **Testnet restriction schema activation** | Owner-approved only: `LICHEN_OWNER_APPROVED_RESTRICTION_SCHEMA_ACTIVATION='owner-approved:restriction-schema:testnet:15.204.229.189,37.59.97.61,15.235.142.253' LICHEN_RESTRICTION_SCHEMA_ACTIVATION_CONFIRM='activate-restriction-schema:testnet:15.204.229.189,37.59.97.61,15.235.142.253' scripts/activate-restriction-schema-testnet.sh` |
+| **VPS clean-slate redeploy** | Owner-approved only: `LICHEN_OWNER_APPROVED_RESET='owner-approved:testnet:15.204.229.189,37.59.97.61,15.235.142.253,148.113.43.247' LICHEN_CLEAN_SLATE_REDEPLOY_CONFIRM='clean-slate:testnet:15.204.229.189,37.59.97.61,15.235.142.253,148.113.43.247' scripts/clean-slate-redeploy.sh testnet` |
+| **Testnet restriction schema activation** | Owner-approved only: `LICHEN_OWNER_APPROVED_RESTRICTION_SCHEMA_ACTIVATION='owner-approved:restriction-schema:testnet:15.204.229.189,37.59.97.61,15.235.142.253,148.113.43.247' LICHEN_RESTRICTION_SCHEMA_ACTIVATION_CONFIRM='activate-restriction-schema:testnet:15.204.229.189,37.59.97.61,15.235.142.253,148.113.43.247' scripts/activate-restriction-schema-testnet.sh` |
 | Local validator development | `scripts/start-local-3validators.sh` |
 | **Local production-parity stack** | `scripts/start-local-stack.sh testnet` |
 | VPS initial provisioning | `deploy/setup.sh` |
@@ -146,7 +146,7 @@ Workflow parity rule:
 
 - The parity model is seed-first, not "three equivalent local validators".
 - Validator 1 or seed-01 creates genesis and owns the first post-genesis bootstrap.
-- Validators 2 and 3 are joiners against that already-created chain.
+- Validators 2, 3, and 4 are joiners against that already-created chain.
 - Local parity work is only considered valid when it follows that same logical sequence before tests run.
 
 Phase-by-phase equivalence:
@@ -154,9 +154,9 @@ Phase-by-phase equivalence:
 | Phase | Local full stack | VPS clean-slate redeploy |
 | --- | --- | --- |
 | Reset state | Reset repo-local `data/state-*` paths before launch when a fresh chain is required | Stop services and wipe `/var/lib/lichen/*` before redeploy |
-| Seed genesis | Validator 1 pre-generates all three validator identities, creates or refreshes local genesis state, and embeds the 3-key bridge/oracle operator set while only validator 1 is active at slot zero | `seed-01` pre-generates all three VPS validator identities, creates the new genesis state, and embeds the 3-key bridge/oracle operator set while only `seed-01` is active at slot zero |
+| Seed genesis | Validator 1 pre-generates all validator identities, creates or refreshes local genesis state, and embeds the full bridge/oracle operator set while only validator 1 is active at slot zero | `seed-01` pre-generates all four VPS validator identities, creates the new genesis state, and embeds the 4-key bridge/oracle operator set while only `seed-01` is active at slot zero |
 | Post-genesis bootstrap | `scripts/start-local-stack.sh` waits for the genesis artifacts and then runs `scripts/first-boot-deploy.sh` on validator 1 | `scripts/clean-slate-redeploy.sh` runs `scripts/first-boot-deploy.sh` on `seed-01` after genesis |
-| Joiners come online | Validators 2 and 3 keep their own keypairs, start from empty state directories, verify the canonical genesis/network identifier, then obtain all post-genesis chain state through normal sync from peers | `seed-02` and `seed-03` keep their own keypairs, receive only service configuration/secrets for their own host, verify the canonical genesis/network identifier, and sync chain state from seed peers |
+| Joiners come online | Validators 2, 3, and 4 keep their own keypairs, start from empty state directories, verify the canonical genesis/network identifier, then obtain all post-genesis chain state through normal sync from peers | `seed-02`, `seed-03`, and `seed-04` keep their own keypairs, receive only service configuration/secrets for their own host, verify the canonical genesis/network identifier, and sync chain state from seed peers |
 | Auxiliary services | Custody and faucet start from the genesis-derived local key material | Custody and faucet start from the seed host's provisioned key material |
 | Validation gate | Run E2E and matrix workloads against the local stack, then rerun without reset | Run final staging or VPS verification for systemd, ingress, firewall, and long-lived state |
 
@@ -1052,7 +1052,7 @@ Firewall minimums:
 - testnet P2P: `7001/tcp`
 - mainnet P2P: `8001/tcp`
 
-Expose RPC, WS, faucet, and custody only through the reverse proxy layout you actually operate. The supported repo-managed layout lives in `deploy/Caddyfile.common`, `deploy/Caddyfile.testnet`, `deploy/Caddyfile.testnet-us`, `deploy/Caddyfile.mainnet`, and `deploy/Caddyfile.mainnet-us`, uses internal TLS at the VPS edge for Cloudflare-origin traffic, and is installed by `deploy/setup.sh`.
+Expose RPC, WS, faucet, and custody only through the reverse proxy layout you actually operate. The supported repo-managed layout lives in `deploy/Caddyfile.common`, `deploy/Caddyfile.testnet`, `deploy/Caddyfile.testnet-us`, `deploy/Caddyfile.mainnet`, and `deploy/Caddyfile.mainnet-us`; `deploy/setup.sh` installs the standard network fragments plus the custody fragments on every VPS and uses internal TLS at the VPS edge for Cloudflare-origin traffic.
 
 ### Step 10: backup, restore, and disaster recovery
 
@@ -1429,7 +1429,7 @@ export GENESIS_ETH_USD=2650.00
 export GENESIS_BNB_USD=620.00
 ```
 
-Bridge and oracle committees are also genesis state. A clean 3-validator deployment must pre-generate all three validator keypairs before `lichen-genesis`, then pass each planned validator pubkey with both `--bridge-validator <pubkey>` and `--oracle-operator <pubkey>`. Do not patch these committees after genesis for a clean reset.
+Bridge and oracle committees are also genesis state. A clean 4-validator deployment must pre-generate all four validator keypairs before `lichen-genesis`, then pass each planned validator pubkey with both `--bridge-validator <pubkey>` and `--oracle-operator <pubkey>`. Do not patch these committees after genesis for a clean reset.
 
 ---
 
@@ -1518,16 +1518,16 @@ Do not distribute `genesis-wallet.json` or `genesis-keys/` to validator joiners.
 
 ## Complete clean-slate VPS redeployment checklist
 
-This is the full step-by-step procedure for stopping everything, flushing all state, and redeploying from scratch so VPSes match the local 3-validator setup exactly.
+This is the full step-by-step procedure for stopping everything, flushing all state, and redeploying from scratch so VPSes match the live validator set exactly.
 
-Current signed-release target for this runbook is `v0.5.98`: the GitHub Release archive must be installed on all three VPSes, the seed creates genesis, and `seed-02` plus `seed-03` start from empty chain state and join from peers without a state copy. A passing verifier must report all three validators healthy with bridge `3/2`, oracle feeds including BTC, empty faucet history, 32 manifest symbols, and the mandatory 13 DEX CLOB pairs, AMM pools, and router routes including `wBTC/lUSD` and `wBTC/LICN`. Use `scripts/rolling-release-deploy.sh` for non-destructive code-only updates; do not flush state for that path.
+Current signed-release target for this runbook is `v0.5.115`: the GitHub Release archive must be installed on all four VPSes, the seed creates genesis, and `seed-02`, `seed-03`, plus `seed-04` start from empty chain state and join from peers without a state copy. A passing verifier must report all four validators healthy with bridge `4/2`, oracle feeds including BTC, empty faucet history, 32 manifest symbols, and the mandatory 13 DEX CLOB pairs, AMM pools, and router routes including `wBTC/lUSD` and `wBTC/LICN`. Use `scripts/rolling-release-deploy.sh` for non-destructive code-only updates; do not flush state for that path.
 
 ### One-command automated redeploy (recommended)
 
 ```bash
-export LICHEN_OWNER_APPROVED_RESET='owner-approved:testnet:15.204.229.189,37.59.97.61,15.235.142.253'
-export LICHEN_CLEAN_SLATE_REDEPLOY_CONFIRM='clean-slate:testnet:15.204.229.189,37.59.97.61,15.235.142.253'
-export LICHEN_RELEASE_TAG=v0.5.98
+export LICHEN_OWNER_APPROVED_RESET='owner-approved:testnet:15.204.229.189,37.59.97.61,15.235.142.253,148.113.43.247'
+export LICHEN_CLEAN_SLATE_REDEPLOY_CONFIRM='clean-slate:testnet:15.204.229.189,37.59.97.61,15.235.142.253,148.113.43.247'
+export LICHEN_RELEASE_TAG=v0.5.115
 bash scripts/clean-slate-redeploy.sh testnet
 ```
 
@@ -1541,19 +1541,19 @@ Use this path for any partial bootstrap or slot-0 bootstrap mismatch observed on
 
 | Phase | What it does | Typical time |
 |-------|-------------|-------------|
-| 1. Stop | Stops all services on all 3 VPSes, opens UFW port for cross-VPS RPC | ~9s |
+| 1. Stop | Stops all services on all 4 VPSes, opens UFW port for cross-VPS RPC | ~9s |
 | 2. Flush | Removes all state, custody DB, manifests | ~7s |
 | 3. Sync + Build | Rsyncs code to all VPSes, builds binaries + WASM contracts on genesis VPS, distributes WASM to joiners | ~37s |
-| 4. Validator identities | Pre-generates the validator keypair on each VPS and uses those exact three pubkeys for bridge/oracle genesis committees | ~5s |
-| 5. Genesis | Prepares wallet, fetches live prices, creates genesis block with seed-only consensus plus 3-key bridge/oracle committees, starts genesis validator | ~14s |
+| 4. Validator identities | Pre-generates the validator keypair on each VPS and uses those exact four pubkeys for bridge/oracle genesis committees | ~5s |
+| 5. Genesis | Prepares wallet, fetches live prices, creates genesis block with seed-only consensus plus 4-key bridge/oracle committees, starts genesis validator | ~14s |
 | 6. Post-genesis | Runs `vps-post-genesis.sh`, installs signing key, verifies bridge/oracle readiness via `first-boot-deploy.sh`, provisions custody seeds | ~13s |
 | 7. Service secrets | Bundles only custody/faucet/signing service secrets and signed metadata, then distributes those to joining VPSes; no RocksDB chain state is copied | ~20s |
 | 8. Start joiners | Starts validators from their pre-generated keypairs and empty chain state, waits for genesis/block sync from peers, starts network-specific custody, and starts faucet on testnet only | ~30s to 5m |
-| 9. Verify | Checks health/slot/genesis treasury or joiner treasury absence/protocol bootstrap/faucet/manifest on all 3 nodes, plus Cloudflare RPC health/protocol and public faucet health | ~37s |
+| 9. Verify | Checks health/slot/genesis treasury or joiner treasury absence/protocol bootstrap/faucet/manifest on all 4 nodes, plus Cloudflare RPC health/protocol and public faucet health | ~37s |
 
 Key design decisions:
 - **No chain-state distribution**: Joining validators do not receive `CURRENT`, `MANIFEST-*`, `*.sst`, `genesis-wallet.json`, `genesis-keys/`, `known-peers.json`, or consensus WAL from the seed. They fetch the authoritative genesis config from seed RPC using `seeds.json`, then replay/sync blocks through the normal network path. This is the same model external agent-operated validators use.
-- **Bridge/oracle bootstrap**: All three validator pubkeys are generated before genesis and embedded as bridge validators plus oracle operators. Only the seed validator is in the slot-zero consensus set so block production can start before joiners are online.
+- **Bridge/oracle bootstrap**: All four validator pubkeys are generated before genesis and embedded as bridge validators plus oracle operators. Only the seed validator is in the slot-zero consensus set so block production can start before joiners are online.
 - **WASM distribution**: WASM contracts are built only on the genesis VPS and distributed via tarball — not compiled independently on each VPS.
 - **Atomic service secrets**: Service secrets (custody treasury, custody seeds, faucet keypair on testnet, signed metadata manifest, signing key) are bundled into a single tarball per joining VPS — no partial copies. Validator chain state and treasury genesis keys are not included.
 - **Cloudflare verification is service-aware**: `testnet-rpc.lichen.network` may round-robin to independent joiner validators that correctly do not hold raw genesis treasury material. The clean-slate verifier must validate public funding through `https://faucet.lichen.network`, not raw `requestAirdrop` on every public RPC origin.
@@ -1571,7 +1571,7 @@ Use this to map symptoms to action quickly:
 5. If chain state appears inconsistent across all nodes (health diverges, repeated root errors, repeated stalls), escalate to manual incident review and perform an owner-approved VPS nuclear reset only after evidence is captured.
 
 Prerequisites:
-- SSH access to all 3 VPSes (port 2222, user `ubuntu`, key-based auth)
+- SSH access to all 4 VPSes (port 2222, user `ubuntu`, key-based auth)
 - `deploy/setup.sh` already run on all VPSes (systemd units, users, dirs exist)
 - `keypairs/release-signing-key.json` present in repo
 - Code committed and pushed to main
@@ -1584,14 +1584,14 @@ If the automated script fails or you need to debug, follow these phases manually
 
 - Latest code committed and pushed
 - All CI checks green
-- SSH access to all 3 VPSes (port 2222, user `ubuntu`)
+- SSH access to all 4 VPSes (port 2222, user `ubuntu`)
 - `keypairs/release-signing-key.json` present in repo
 - `LICHEN_KEYPAIR_PASSWORD` known (or will be auto-generated by setup.sh)
 
-### Phase 1: Stop everything (all 3 VPSes)
+### Phase 1: Stop everything (all 4 VPSes)
 
 ```bash
-for VPS in 15.204.229.189 37.59.97.61 15.235.142.253; do
+for VPS in 15.204.229.189 37.59.97.61 15.235.142.253 148.113.43.247; do
   echo "=== Stopping $VPS ==="
   ssh -p 2222 ubuntu@$VPS '
     sudo systemctl stop lichen-faucet 2>/dev/null || true
@@ -1602,10 +1602,10 @@ for VPS in 15.204.229.189 37.59.97.61 15.235.142.253; do
 done
 ```
 
-### Phase 2: Flush state (all 3 VPSes)
+### Phase 2: Flush state (all 4 VPSes)
 
 ```bash
-for VPS in 15.204.229.189 37.59.97.61 15.235.142.253; do
+for VPS in 15.204.229.189 37.59.97.61 15.235.142.253 148.113.43.247; do
   echo "=== Flushing $VPS ==="
   ssh -p 2222 ubuntu@$VPS '
     sudo rm -rf /var/lib/lichen/state-testnet
@@ -1622,7 +1622,7 @@ done
 ### Phase 3: Rsync code to all VPSes
 
 ```bash
-for VPS in 15.204.229.189 37.59.97.61 15.235.142.253; do
+for VPS in 15.204.229.189 37.59.97.61 15.235.142.253 148.113.43.247; do
   echo "=== Syncing to $VPS ==="
   rsync -az --delete \
     --exclude '.git' \
@@ -1640,7 +1640,7 @@ done
 ### Phase 4: Build on all VPSes
 
 ```bash
-for VPS in 15.204.229.189 37.59.97.61 15.235.142.253; do
+for VPS in 15.204.229.189 37.59.97.61 15.235.142.253 148.113.43.247; do
   echo "=== Building on $VPS ==="
   ssh -p 2222 ubuntu@$VPS '
     cd ~/lichen
@@ -1658,7 +1658,7 @@ done
 ### Phase 5: Run setup.sh on all VPSes
 
 ```bash
-for VPS in 15.204.229.189 37.59.97.61 15.235.142.253; do
+for VPS in 15.204.229.189 37.59.97.61 15.235.142.253 148.113.43.247; do
   echo "=== Setup on $VPS ==="
   ssh -p 2222 ubuntu@$VPS '
     cd ~/lichen
@@ -1672,7 +1672,7 @@ This auto-detects the US VPS and configures Binance US oracle endpoints.
 ### Phase 6: Copy signing key to all VPSes
 
 ```bash
-for VPS in 37.59.97.61 15.235.142.253; do
+for VPS in 37.59.97.61 15.235.142.253 148.113.43.247; do
   scp -P 2222 keypairs/release-signing-key.json ubuntu@$VPS:~/release-signing-key.json
   ssh -p 2222 ubuntu@$VPS '
     sudo install -m 640 -o root -g lichen ~/release-signing-key.json /etc/lichen/secrets/release-signing-keypair-testnet.json
@@ -1736,7 +1736,8 @@ ssh -p 2222 ubuntu@15.204.229.189 '
     --initial-validator "$VALIDATOR_PUBKEY" \
     --bridge-validator "$US_VALIDATOR_PUBKEY" --oracle-operator "$US_VALIDATOR_PUBKEY" \
     --bridge-validator "$EU_VALIDATOR_PUBKEY" --oracle-operator "$EU_VALIDATOR_PUBKEY" \
-    --bridge-validator "$SEA_VALIDATOR_PUBKEY" --oracle-operator "$SEA_VALIDATOR_PUBKEY"
+    --bridge-validator "$SEA_VALIDATOR_PUBKEY" --oracle-operator "$SEA_VALIDATOR_PUBKEY" \
+    --bridge-validator "$IN_VALIDATOR_PUBKEY" --oracle-operator "$IN_VALIDATOR_PUBKEY"
 
   # Start the genesis validator
   sudo systemctl start lichen-validator-testnet
@@ -1802,7 +1803,7 @@ flow because future agent-operated validators will join the same way.
 Only secrets and the signed metadata manifest need to be distributed:
 
 ```bash
-for VPS in 37.59.97.61 15.235.142.253; do
+for VPS in 37.59.97.61 15.235.142.253 148.113.43.247; do
   echo "=== Distributing secrets to $VPS ==="
 
   # Ensure the state directory exists but is empty (validator creates its own keypair on first start)
@@ -1838,7 +1839,7 @@ done
 ### Phase 10: Start joining VPSes
 
 ```bash
-for VPS in 37.59.97.61 15.235.142.253; do
+for VPS in 37.59.97.61 15.235.142.253 148.113.43.247; do
   echo "=== Starting $VPS ==="
   ssh -p 2222 ubuntu@$VPS '
     sudo systemctl start lichen-validator-testnet
@@ -1856,7 +1857,7 @@ done
 ### Phase 11: Verify everything
 
 ```bash
-for VPS in 15.204.229.189 37.59.97.61 15.235.142.253; do
+for VPS in 15.204.229.189 37.59.97.61 15.235.142.253 148.113.43.247; do
   echo "=== Verifying $VPS ==="
   ssh -p 2222 ubuntu@$VPS '
     echo "--- Health ---"
@@ -2138,7 +2139,7 @@ sleep 15  # wait for genesis creation + first blocks
 LICHEN_LOCAL_DEV=1 ./run-validator.sh testnet 2 --dev-mode &
 LICHEN_LOCAL_DEV=1 ./run-validator.sh testnet 3 --dev-mode &
 
-# 4. Verify all 3 are healthy and at the same slot
+# 4. Verify all local validators are healthy and at the same slot
 sleep 10
 for port in 8899 8901 8903; do
   echo "Port $port:"
@@ -2152,13 +2153,13 @@ done
 
 ```bash
 # 1. Stop services on ALL VPSes
-for HOST in seed-01 seed-02 seed-03; do
+for HOST in seed-01 seed-02 seed-03 seed-04; do
   ssh -p 2222 ubuntu@$HOST.lichen.network \
     'sudo systemctl stop lichen-validator-testnet lichen-custody lichen-faucet'
 done
 
 # 2. Wipe state on ALL VPSes (preserve keypairs!)
-for HOST in seed-01 seed-02 seed-03; do
+for HOST in seed-01 seed-02 seed-03 seed-04; do
   ssh -p 2222 ubuntu@$HOST.lichen.network '
     sudo cp /var/lib/lichen/state-testnet/validator-keypair.json /tmp/vk-backup.json
     sudo rm -rf /var/lib/lichen/state-testnet
@@ -2177,7 +2178,7 @@ done
 # 5. Copy signed metadata manifest to joining VPSes — follow Step 6
 
 # 6. Start validators on ALL VPSes
-for HOST in seed-01 seed-02 seed-03; do
+for HOST in seed-01 seed-02 seed-03 seed-04; do
   ssh -p 2222 ubuntu@$HOST.lichen.network \
     'sudo systemctl start lichen-validator-testnet'
 done
@@ -2186,8 +2187,8 @@ done
 ssh -p 2222 ubuntu@seed-01.lichen.network \
   'sudo systemctl start lichen-custody && sudo systemctl start lichen-faucet'
 
-# 8. Verify all 3 are healthy
-for HOST in seed-01 seed-02 seed-03; do
+# 8. Verify all 4 are healthy
+for HOST in seed-01 seed-02 seed-03 seed-04; do
   echo "=== $HOST ==="
   ssh -p 2222 ubuntu@$HOST.lichen.network \
     'curl -s http://127.0.0.1:8899 -X POST -H "Content-Type: application/json" \
@@ -2279,8 +2280,8 @@ The static portal calls the API at `https://faucet.lichen.network/faucet/request
 
 1. `shared-config.js` sets `faucet: 'https://faucet.lichen.network'` in production
 2. `faucet.js` reads `LICHEN_CONFIG.faucet` as `FAUCET_API`
-3. DNS for `faucet.lichen.network` routes through Cloudflare to the US VPS
-4. Caddy (`Caddyfile.testnet-us`) reverse proxies all traffic to `127.0.0.1:9100`
+3. DNS for `faucet.lichen.network` routes through Cloudflare to the active seed-origin fleet
+4. Caddy (`deploy/Caddyfile.testnet`) reverse proxies API traffic to `127.0.0.1:9100` on each active origin
 5. The faucet-service CORS layer allows `https://faucet.lichen.network` and all portal origins
 
 The faucet service only serves API endpoints (`/health`, `/faucet/config`, `/faucet/status`, `/faucet/airdrops`, `/faucet/request`). It does NOT serve static HTML — that comes from Cloudflare Pages.

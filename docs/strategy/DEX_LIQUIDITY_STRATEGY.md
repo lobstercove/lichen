@@ -277,7 +277,7 @@ lUSD is a **protocol-issued stablecoin**, not an algorithmic or CDP-based stable
 
 ## 9. VPS Deployment Runbook — DEX Liquidity Seeding
 
-After a fresh genesis on the VPS cluster (3 validators), run these scripts **in order** from the repo root on the seed node (US VPS / seed-01). All scripts read keypairs from `data/state-testnet/genesis-keys/` (testnet) or `data/state-mainnet/genesis-keys/` (mainnet).
+After a fresh genesis on the VPS cluster (4 validators), run these scripts **in order** from the repo root on the seed node (US VPS / seed-01). All scripts read keypairs from `data/state-testnet/genesis-keys/` (testnet) or `data/state-mainnet/genesis-keys/` (mainnet).
 
 ### Prerequisites
 

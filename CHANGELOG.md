@@ -5,6 +5,11 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.115] - 2026-06-08
+
+### Fixed
+- Rebuilds the sparse state commitment in staging before warp snapshot state-root verification, so fresh validators can import a corroborated sparse snapshot from empty state without rejecting the canonical root.
+
 ## [0.5.95] - 2026-06-05
 
 ### Fixed

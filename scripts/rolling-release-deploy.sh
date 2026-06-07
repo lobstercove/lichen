@@ -18,7 +18,7 @@ case "$NETWORK" in
   testnet)
     SERVICE="lichen-validator-testnet"
     RPC_PORT="8899"
-    DEFAULT_HOSTS="15.204.229.189 37.59.97.61 15.235.142.253"
+    DEFAULT_HOSTS="15.204.229.189 37.59.97.61 15.235.142.253 148.113.43.247"
     ;;
   mainnet)
     SERVICE="lichen-validator-mainnet"
@@ -453,14 +453,23 @@ check_service_tree_hash() {
   local unit="$1"
   local expected="$2"
   local label="$3"
-  local main_pid pid
+  local main_pid pid service_required
   if [ -z "$expected" ]; then
     return 0
   fi
   if ! unit_exists "$unit"; then
     return 0
   fi
+  if systemctl is-enabled --quiet "$unit" 2>/dev/null; then
+    service_required=1
+  else
+    service_required=0
+  fi
   if ! systemctl is-active --quiet "$unit"; then
+    if [ "$service_required" = "1" ]; then
+      echo "${label} unit is enabled but inactive."
+      exit 1
+    fi
     return 0
   fi
   main_pid="$(systemctl show "$unit" -p MainPID --value || true)"

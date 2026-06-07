@@ -14,7 +14,7 @@ pass.
 - Planning and pre-staging are reversible. Genesis is not casual.
 - Mainnet validator services may be installed while disabled/inactive before
   genesis. That is expected.
-- Start the Lichen chain first. Enable custody only after all three validators
+- Start the Lichen chain first. Enable custody only after all four validators
   are healthy, synced, and serving the same genesis.
 - Do not expose public custody or wallet routes until that exact route passes a
   dust deposit and dust withdrawal on mainnet.
@@ -31,13 +31,14 @@ pass.
 
 ## Current Host Shape
 
-Current three-validator VPS set:
+Current four-validator VPS set:
 
 | Role | IP | Expected mainnet services |
 | --- | --- | --- |
 | US seed / primary | `15.204.229.189` | `lichen-validator-mainnet`, `lichen-custody-mainnet` |
 | EU joiner | `37.59.97.61` | `lichen-validator-mainnet`, `lichen-custody-mainnet` |
 | SEA joiner | `15.235.142.253` | `lichen-validator-mainnet`, `lichen-custody-mainnet` |
+| IN joiner / seed-04 | `148.113.43.247` | `lichen-validator-mainnet`, `lichen-custody-mainnet` |
 
 Mainnet ports and public endpoints:
 
@@ -131,7 +132,7 @@ command summary, and result.
 | Gate | Result required |
 | --- | --- |
 | Release gate | CI green, signed GitHub Release exists, `SHA256SUMS` and signature verified |
-| Host gate | all three VPSes have expected binaries, service files, env files, Caddy config, firewall |
+| Host gate | all four VPSes have expected binaries, service files, env files, Caddy config, firewall |
 | State gate | no stale mainnet chain state or custody DB unless explicitly approved |
 | External route gate | production RPCs, token/mint addresses, chain IDs, and asset policy approved |
 | Key gate | validator keys, custody seeds, signer tokens, signing keys, Solana fee payer, treasury keys installed with correct ownership |
@@ -147,7 +148,7 @@ Hard stop conditions:
 - Any host runs a binary hash that does not match the signed release package.
 - Any host has an unexpected non-empty mainnet state directory before genesis.
 - Mainnet genesis prices cannot be sourced from an audited file or live provider.
-- Fewer than three unique validator pubkeys are embedded in bridge/oracle
+- Fewer than four unique validator pubkeys are embedded in bridge/oracle
   genesis committees.
 - A joiner requires copied chain state to sync.
 - Any source RPC returns the wrong chain ID.
@@ -174,7 +175,7 @@ Record:
 - release URL
 - `SHA256SUMS` hash
 - release signer address
-- three VPS IPs and hostnames
+- four VPS IPs and hostnames
 - planned genesis time
 - planned validator public keys after generated
 - planned source custody routes
@@ -190,7 +191,7 @@ Use the signed release that passed CI. For the current package:
 
 ```bash
 export LICHEN_RELEASE_TAG=v0.5.74
-export LICHEN_MAINNET_VPS_HOSTS="15.204.229.189 37.59.97.61 15.235.142.253"
+export LICHEN_MAINNET_VPS_HOSTS="15.204.229.189 37.59.97.61 15.235.142.253 148.113.43.247"
 ```
 
 Required release checks:
@@ -700,7 +701,7 @@ explicit owner-approved reset string recorded in the launch log.
 
 ### 7.3 Prepare Validator Keypairs
 
-Create or confirm validator keypairs on all three hosts without starting the
+Create or confirm validator keypairs on all four hosts without starting the
 validator service:
 
 ```bash
@@ -748,7 +749,7 @@ The wallet artifacts stay on the genesis host only.
 
 ### 7.5 Create Genesis On US Seed
 
-Use the three planned validator pubkeys for bridge and oracle committees. Only
+Use the four planned validator pubkeys for bridge and oracle committees. Only
 the US seed is the initial slot-zero consensus validator.
 
 ```bash
@@ -758,6 +759,7 @@ export PRICE_FILE=/secure/launch/genesis-prices-mainnet.json
 export SEED_VALIDATOR_PUBKEY=REPLACE_WITH_US_VALIDATOR_PUBKEY
 export EU_VALIDATOR_PUBKEY=REPLACE_WITH_EU_VALIDATOR_PUBKEY
 export SEA_VALIDATOR_PUBKEY=REPLACE_WITH_SEA_VALIDATOR_PUBKEY
+export IN_VALIDATOR_PUBKEY=REPLACE_WITH_IN_VALIDATOR_PUBKEY
 export KP_PASS="$(sudo awk -F= '/^LICHEN_KEYPAIR_PASSWORD=/{print substr($0, index($0,$2))}' /etc/lichen/env-mainnet)"
 
 sudo -u lichen env \
@@ -774,9 +776,11 @@ sudo -u lichen env \
     --bridge-validator "$SEED_VALIDATOR_PUBKEY" \
     --bridge-validator "$EU_VALIDATOR_PUBKEY" \
     --bridge-validator "$SEA_VALIDATOR_PUBKEY" \
+    --bridge-validator "$IN_VALIDATOR_PUBKEY" \
     --oracle-operator "$SEED_VALIDATOR_PUBKEY" \
     --oracle-operator "$EU_VALIDATOR_PUBKEY" \
     --oracle-operator "$SEA_VALIDATOR_PUBKEY" \
+    --oracle-operator "$IN_VALIDATOR_PUBKEY" \
     --genesis-prices-file "$PRICE_FILE"
 ```
 
@@ -858,8 +862,8 @@ curl -fsS https://rpc.lichen.network \
 
 Required result:
 
-- all three validators report healthy
-- all three advance slots
+- all four validators report healthy
+- all four advance slots
 - public RPC reports healthy and fresh block age
 - bridge committee count and threshold are correct
 - oracle committee/feed count is correct
@@ -945,7 +949,7 @@ This must pass before custody starts.
 
 Start custody only after:
 
-- all three validators are healthy
+- all four validators are healthy
 - post-genesis bootstrap passed
 - wrapped contract pins are synced
 - source route verifier passes with `--require-wrapped`
@@ -1221,10 +1225,10 @@ Before public launch:
 
 - [ ] CI is green for the exact release commit.
 - [ ] Release is signed and attached assets verify.
-- [ ] All three VPSes run the signed release binaries.
+- [ ] All four VPSes run the signed release binaries.
 - [ ] Mainnet state was empty before genesis.
 - [ ] Genesis hash is recorded.
-- [ ] All three validators are healthy and advancing.
+- [ ] All four validators are healthy and advancing.
 - [ ] Public RPC is healthy.
 - [ ] Signed metadata signer matches the trust anchor.
 - [ ] Custody route profile is installed and secret-safe.
