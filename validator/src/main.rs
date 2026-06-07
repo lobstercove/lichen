@@ -115,6 +115,7 @@ const SHOW_STATE_COMMITMENT_SCHEMA_FLAG: &str = "--show-state-commitment-schema"
 const SPARSE_STATE_COMMITMENT_CONFIRMATION: &str = "sparse-state-commitment:v1";
 const REPAIR_TESTNET_DEX_CONTRACTS_FLAG: &str = "--repair-testnet-dex-contracts";
 const DEX_REPAIR_CONFIRMATION: &str = "repair-dex-contracts:testnet:v0.5.77";
+const SHOW_CONTRACT_STORAGE_DIGEST_FLAG: &str = "--show-contract-storage-digest";
 const TESTNET_DEX_REPAIR_CONTRACTS: &[(&str, &str)] = &[
     ("LUSD", "lusd_token"),
     ("WSOL", "wsol_token"),
@@ -2614,11 +2615,11 @@ fn run_sltp_triggers_from_state(state: &StateStore) {
 
 /// P9-VAL-04: Deterministic analytics bridge — uses state-persisted cursor
 /// so both producers and receivers execute the same analytics writes.
-fn run_analytics_bridge_from_state(state: &StateStore, slot: u64, slot_duration_ms: u64) {
+fn run_analytics_bridge_from_state(state: &StateStore, slot: u64, block_timestamp: u64) {
     let cursor = state.get_program_storage_u64("DEX", b"dex_analytics_bridge_cursor");
     let current = state.get_program_storage_u64("DEX", b"dex_trade_count");
     if current > cursor {
-        bridge_dex_trades_to_analytics(state, cursor, current, slot, slot_duration_ms);
+        bridge_dex_trades_to_analytics(state, cursor, current, slot, block_timestamp);
         // Persist the new cursor so subsequent blocks pick up from here
         if let Ok(Some(dex_entry)) = state.get_symbol_registry("DEX") {
             if let Err(e) = state.put_contract_storage(
@@ -2637,7 +2638,7 @@ fn bridge_dex_trades_to_analytics(
     from_trade: u64,
     to_trade: u64,
     slot: u64,
-    slot_duration_ms: u64,
+    block_timestamp: u64,
 ) {
     const PRICE_SCALE: f64 = 1_000_000_000.0;
 
@@ -2647,15 +2648,9 @@ fn bridge_dex_trades_to_analytics(
         _ => return, // no analytics contract deployed
     };
 
-    // P9-VAL-04: Use deterministic slot-derived timestamp instead of SystemTime::now()
-    let genesis_ts = state
-        .get_block_by_slot(0)
-        .ok()
-        .flatten()
-        .map(|b| b.header.timestamp)
-        .unwrap_or(0);
-    // AUDIT-FIX E-1: Use passed-in slot_duration_ms from genesis config
-    let now_ts = genesis_ts + (slot * slot_duration_ms / 1000);
+    // Use the committed block timestamp. It is part of canonical block data,
+    // unlike any local runtime cadence setting used by a given validator.
+    let now_ts = block_timestamp;
 
     // Candle intervals matching dex_analytics: 1m, 5m, 15m, 1h, 4h, 1d, 3d, 1w, 1y
     const CANDLE_INTERVALS: [u64; 9] = [60, 300, 900, 3600, 14400, 86400, 259200, 604800, 31536000];
@@ -4885,7 +4880,7 @@ async fn apply_post_block_effects_after_store(
     stake_pool: &Arc<RwLock<StakePool>>,
     block: &Block,
     min_validator_stake: u64,
-    slot_duration_ms: u64,
+    _slot_duration_ms: u64,
 ) {
     apply_block_effects(
         state,
@@ -4912,7 +4907,7 @@ async fn apply_post_block_effects_after_store(
         .await;
     }
 
-    run_analytics_bridge_from_state(state, block.header.slot, slot_duration_ms);
+    run_analytics_bridge_from_state(state, block.header.slot, block.header.timestamp);
     run_sltp_triggers_from_state(state);
     reset_24h_stats_if_expired(state, block.header.timestamp);
     if let Err(e) = maybe_activate_legacy_testnet_mossstake_slot_only(
@@ -7377,6 +7372,205 @@ fn maybe_run_testnet_dex_repair_admin(args: &[String]) -> Option<i32> {
     Some(0)
 }
 
+fn digest_contract_entries<'a, I>(entries: I) -> (usize, usize, String)
+where
+    I: IntoIterator<Item = (&'a [u8], &'a [u8])>,
+{
+    let mut hasher = Sha256::new();
+    let mut count = 0usize;
+    let mut bytes = 0usize;
+    for (key, value) in entries {
+        count += 1;
+        bytes += value.len();
+        hasher.update((key.len() as u64).to_le_bytes());
+        hasher.update(key);
+        hasher.update((value.len() as u64).to_le_bytes());
+        hasher.update(value);
+    }
+    (count, bytes, hex::encode(hasher.finalize()))
+}
+
+fn printable_storage_key(key: &[u8]) -> String {
+    if key
+        .iter()
+        .all(|byte| byte.is_ascii_graphic() || *byte == b' ')
+    {
+        String::from_utf8_lossy(key).into_owned()
+    } else {
+        format!("0x{}", hex::encode(key))
+    }
+}
+
+fn print_contract_digest_line(symbol: &str, label: &str, count: usize, bytes: usize, hash: &str) {
+    println!(
+        "storage symbol={} prefix={} count={} bytes={} digest={}",
+        symbol, label, count, bytes, hash
+    );
+}
+
+fn maybe_run_contract_storage_digest_admin(args: &[String]) -> Option<i32> {
+    if !has_flag(args, SHOW_CONTRACT_STORAGE_DIGEST_FLAG) {
+        return None;
+    }
+
+    let data_dir = restriction_schema_data_dir(args);
+    let cache_size_mb = get_flag_value(args, &["--cache-size-mb"]).and_then(|s| s.parse().ok());
+    let state = match StateStore::open_with_cache_mb(&data_dir, cache_size_mb) {
+        Ok(state) => state,
+        Err(err) => {
+            eprintln!("Failed to open state DB at {}: {}", data_dir.display(), err);
+            return Some(1);
+        }
+    };
+
+    println!("data_dir={}", data_dir.display());
+    match state.get_last_slot() {
+        Ok(slot) => {
+            println!("last_slot={slot}");
+            match state.get_block_by_slot(slot) {
+                Ok(Some(block)) => {
+                    println!("tip_block_hash={}", block.hash().to_hex());
+                    println!("tip_header_state_root={}", block.header.state_root.to_hex());
+                    println!("tip_timestamp={}", block.header.timestamp);
+                    println!(
+                        "tip_validator={}",
+                        Pubkey(block.header.validator).to_base58()
+                    );
+                    println!("tip_tx_count={}", block.transactions.len());
+                    match state.get_post_state_commitment_anchor(slot) {
+                        Ok(Some(anchor)) => {
+                            println!("tip_post_anchor_block={}", anchor.block_hash.to_hex());
+                            println!("tip_post_anchor_root={}", anchor.state_root.to_hex());
+                        }
+                        Ok(None) => println!("tip_post_anchor=none"),
+                        Err(err) => println!("tip_post_anchor_error={err}"),
+                    }
+                }
+                Ok(None) => println!("tip_block=missing"),
+                Err(err) => println!("tip_block_error={err}"),
+            }
+        }
+        Err(err) => println!("last_slot_error={err}"),
+    }
+    println!("current_state_root={}", state.compute_state_root().to_hex());
+    println!(
+        "current_state_root_cold={}",
+        state.compute_state_root_cold_start().to_hex()
+    );
+    println!(
+        "mossstake_slot_only_marker={}",
+        state
+            .get_metadata(MOSSSTAKE_SLOT_ONLY_METADATA_KEY)
+            .ok()
+            .flatten()
+            .map(|value| String::from_utf8_lossy(&value).into_owned())
+            .unwrap_or_else(|| "none".to_string())
+    );
+
+    let symbols = match get_flag_value(args, &["--symbols"]) {
+        Some(value) => value
+            .split(',')
+            .map(|symbol| symbol.trim().to_uppercase())
+            .filter(|symbol| !symbol.is_empty())
+            .collect::<Vec<_>>(),
+        None => match state.get_all_symbol_registry(usize::MAX) {
+            Ok(entries) => entries.into_iter().map(|entry| entry.symbol).collect(),
+            Err(err) => {
+                eprintln!("Failed to read symbol registry: {err}");
+                return Some(1);
+            }
+        },
+    };
+
+    let prefix_filters: &[&[u8]] = &[
+        b"ana_",
+        b"ana_c_",
+        b"ana_cc_",
+        b"ana_cur_",
+        b"ana_lp_",
+        b"ana_last_trade_ts_",
+        b"ana_24h_",
+        b"ana_24h_ts_",
+        b"ana_rec_count",
+        b"ana_total_volume",
+        b"ana_trader_count",
+        b"dex_trade_",
+        b"dex_trade_count",
+        b"dex_analytics_bridge_cursor",
+        b"dex_sltp_trigger_cursor",
+        b"dex_band_",
+        b"mrg_",
+        b"price_",
+    ];
+
+    for symbol in symbols {
+        let entry = match state.get_symbol_registry(&symbol) {
+            Ok(Some(entry)) => entry,
+            Ok(None) => continue,
+            Err(err) => {
+                eprintln!("Failed to read symbol {symbol}: {err}");
+                return Some(1);
+            }
+        };
+        let mut entries = match state.load_contract_storage_map(&entry.program) {
+            Ok(entries) => entries,
+            Err(err) => {
+                eprintln!("Failed to read storage for {symbol}: {err}");
+                return Some(1);
+            }
+        };
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        let (count, bytes, digest) =
+            digest_contract_entries(entries.iter().map(|(key, value)| (&key[..], &value[..])));
+        print_contract_digest_line(&symbol, "all", count, bytes, &digest);
+
+        for prefix in prefix_filters {
+            let filtered = entries
+                .iter()
+                .filter(|(key, _)| key.starts_with(prefix))
+                .map(|(key, value)| (&key[..], &value[..]));
+            let (count, bytes, digest) = digest_contract_entries(filtered);
+            if count > 0 {
+                print_contract_digest_line(
+                    &symbol,
+                    &printable_storage_key(prefix),
+                    count,
+                    bytes,
+                    &digest,
+                );
+            }
+        }
+
+        let sample_keys = entries
+            .iter()
+            .filter(|(key, _)| {
+                key.starts_with(b"ana_last_trade_ts_")
+                    || key.starts_with(b"ana_cur_")
+                    || key == b"dex_analytics_bridge_cursor"
+                    || key == b"dex_trade_count"
+            })
+            .take(64)
+            .map(|(key, value)| {
+                let value_text = if value.len() == 8 {
+                    u64::from_le_bytes(value[0..8].try_into().unwrap_or([0; 8])).to_string()
+                } else {
+                    format!("0x{}", hex::encode(value))
+                };
+                format!("{}={}", printable_storage_key(key), value_text)
+            })
+            .collect::<Vec<_>>();
+        if !sample_keys.is_empty() {
+            println!(
+                "storage_samples symbol={} {}",
+                symbol,
+                sample_keys.join(" ")
+            );
+        }
+    }
+
+    Some(0)
+}
+
 fn load_genesis_config_from_disk(genesis_path: &Path) -> Result<GenesisConfig, String> {
     info!("📜 Loading genesis from: {}", genesis_path.display());
     let config = GenesisConfig::from_file(genesis_path)
@@ -7805,6 +7999,9 @@ fn main() {
         std::process::exit(exit_code);
     }
     if let Some(exit_code) = maybe_run_testnet_dex_repair_admin(&args) {
+        std::process::exit(exit_code);
+    }
+    if let Some(exit_code) = maybe_run_contract_storage_digest_admin(&args) {
         std::process::exit(exit_code);
     }
 
@@ -18254,7 +18451,7 @@ async fn execute_consensus_actions(
                         emit_dex_events(&state_c, &bc_c, prev, current_trade_count, slot_c);
                     });
                 }
-                run_analytics_bridge_from_state(state, height, slot_duration_ms);
+                run_analytics_bridge_from_state(state, height, block.header.timestamp);
                 run_sltp_triggers_from_state(state);
             }
 
