@@ -467,6 +467,7 @@ const SNAPSHOT_SERVE_REFILL_UNITS_PER_SEC: u64 = 8;
 const MAX_SNAPSHOT_CHUNK_SIZE: u64 = 2000;
 const SNAPSHOT_ENTRIES_CODEC_LIMIT_BYTES: u64 = 16 * 1024 * 1024;
 const SNAPSHOT_PROGRESS_RETRY_SECS: u64 = 15;
+const FRESH_JOIN_BOOTSTRAP_REPLAY_SLOTS: u64 = sync::P2P_BLOCK_RANGE_LIMIT;
 
 fn deserialize_snapshot_value<T>(data: &[u8], context: &str) -> Result<T, String>
 where
@@ -485,6 +486,19 @@ fn sync_catch_up_actions(mode: sync::SyncMode) -> SyncCatchUpActions {
     SyncCatchUpActions {
         request_checkpoint_metadata: mode == sync::SyncMode::Warp,
         request_block_ranges: mode != sync::SyncMode::Warp,
+    }
+}
+
+fn select_catch_up_mode(current_slot: u64, gap: u64) -> sync::SyncMode {
+    // Fresh joiners must replay the bootstrap prefix before warp snapshots.
+    // Those blocks create the local validator/stake registry used to verify
+    // checkpoint peers and imported stake-pool entries.
+    if current_slot < FRESH_JOIN_BOOTSTRAP_REPLAY_SLOTS {
+        sync::SyncMode::Full
+    } else if gap > sync::WARP_SYNC_THRESHOLD {
+        sync::SyncMode::Warp
+    } else {
+        sync::SyncMode::Full
     }
 }
 /// Maximum number of automatic restarts before the supervisor gives up.
@@ -9807,11 +9821,9 @@ async fn run_validator() {
                         if let Some((start, end)) = sync_mgr.should_sync(current_slot).await {
                             let highest_seen = sync_mgr.get_highest_seen().await;
                             let gap = highest_seen.saturating_sub(current_slot);
-                            if gap > sync::WARP_SYNC_THRESHOLD {
-                                sync_mgr.set_sync_mode(sync::SyncMode::Warp).await;
-                            } else {
-                                sync_mgr.set_sync_mode(sync::SyncMode::Full).await;
-                            }
+                            sync_mgr
+                                .set_sync_mode(select_catch_up_mode(current_slot, gap))
+                                .await;
                             info!("🔄 Periodic sync check: behind by {} blocks ({} to {})", gap, start, end);
                             sync_mgr.start_sync(start, end).await;
                             let current_mode = sync_mgr.get_sync_mode().await;
@@ -11161,11 +11173,9 @@ async fn run_validator() {
                         let gap = highest_seen
                             .saturating_sub(post_genesis_slot)
                             .max(end.saturating_sub(post_genesis_slot));
-                        if gap > sync::WARP_SYNC_THRESHOLD {
-                            sync_mgr.set_sync_mode(sync::SyncMode::Warp).await;
-                        } else {
-                            sync_mgr.set_sync_mode(sync::SyncMode::Full).await;
-                        }
+                        sync_mgr
+                            .set_sync_mode(select_catch_up_mode(post_genesis_slot, gap))
+                            .await;
                         info!("🔄 Post-genesis sync: blocks {} to {}", start, end);
                         sync_mgr.start_sync(start, end).await;
                         let current_mode = sync_mgr.get_sync_mode().await;
@@ -11710,11 +11720,9 @@ async fn run_validator() {
                         let gap = highest_seen
                             .saturating_sub(current_slot)
                             .max(end.saturating_sub(current_slot));
-                        if gap > sync::WARP_SYNC_THRESHOLD {
-                            sync_mgr.set_sync_mode(sync::SyncMode::Warp).await;
-                        } else {
-                            sync_mgr.set_sync_mode(sync::SyncMode::Full).await;
-                        }
+                        sync_mgr
+                            .set_sync_mode(select_catch_up_mode(current_slot, gap))
+                            .await;
                         info!("🔄 Triggering sync: blocks {} to {}", start, end);
 
                         // Mark that we're starting sync
@@ -20013,6 +20021,41 @@ mod tests {
 
         assert!(!actions.request_checkpoint_metadata);
         assert!(actions.request_block_ranges);
+    }
+
+    #[test]
+    fn fresh_join_bootstrap_prefix_forces_full_sync_before_warp() {
+        assert_eq!(
+            select_catch_up_mode(0, sync::WARP_SYNC_THRESHOLD + 1),
+            sync::SyncMode::Full,
+            "fresh joiners must replay genesis-adjacent bootstrap blocks before warp"
+        );
+        assert_eq!(
+            select_catch_up_mode(
+                FRESH_JOIN_BOOTSTRAP_REPLAY_SLOTS - 1,
+                sync::WARP_SYNC_THRESHOLD + 1
+            ),
+            sync::SyncMode::Full,
+            "the final bootstrap-prefix block must still be requested as a block range"
+        );
+    }
+
+    #[test]
+    fn warp_sync_still_activates_after_bootstrap_prefix() {
+        assert_eq!(
+            select_catch_up_mode(
+                FRESH_JOIN_BOOTSTRAP_REPLAY_SLOTS,
+                sync::WARP_SYNC_THRESHOLD + 1
+            ),
+            sync::SyncMode::Warp
+        );
+        assert_eq!(
+            select_catch_up_mode(
+                FRESH_JOIN_BOOTSTRAP_REPLAY_SLOTS + 1,
+                sync::WARP_SYNC_THRESHOLD
+            ),
+            sync::SyncMode::Full
+        );
     }
 
     #[test]
