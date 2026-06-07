@@ -16302,31 +16302,52 @@ async fn run_validator() {
         }
     };
 
-    // Drain stale BFT messages that accumulated during sync.
-    // Without this, the proposal channel stays full of old-height proposals
-    // and new proposals from the leader get dropped → joining node misses
-    // current rounds and proposes its own blocks (fork).
+    // Start the first height
+    let start_height = state.get_last_slot().unwrap_or(0) + 1;
+    // Drain BFT messages that accumulated during sync, but preserve current
+    // and future-height messages. On restart a peer can legitimately propose
+    // the next height before this node flips from catch-up to BFT; discarding
+    // that proposal makes the node miss the round and prevote nil.
+    let mut startup_buffered_proposals: BTreeMap<u64, Vec<Proposal>> = BTreeMap::new();
+    let mut startup_buffered_prevotes = Vec::new();
+    let mut startup_buffered_precommits = Vec::new();
     {
-        let mut drained = 0u64;
-        while proposal_rx.try_recv().is_ok() {
-            drained += 1;
+        let mut discarded_old = 0u64;
+        let mut retained = 0u64;
+        while let Ok(proposal) = proposal_rx.try_recv() {
+            if proposal.height >= start_height {
+                startup_buffered_proposals
+                    .entry(proposal.height)
+                    .or_default()
+                    .push(proposal);
+                retained += 1;
+            } else {
+                discarded_old += 1;
+            }
         }
-        while prevote_rx.try_recv().is_ok() {
-            drained += 1;
+        while let Ok(prevote) = prevote_rx.try_recv() {
+            if prevote.height >= start_height {
+                startup_buffered_prevotes.push(prevote);
+                retained += 1;
+            } else {
+                discarded_old += 1;
+            }
         }
-        while precommit_rx.try_recv().is_ok() {
-            drained += 1;
+        while let Ok(precommit) = precommit_rx.try_recv() {
+            if precommit.height >= start_height {
+                startup_buffered_precommits.push(precommit);
+                retained += 1;
+            } else {
+                discarded_old += 1;
+            }
         }
-        if drained > 0 {
+        if retained > 0 || discarded_old > 0 {
             info!(
-                "🔄 Drained {} stale BFT messages before entering consensus",
-                drained
+                "🔄 Buffered {} startup BFT message(s) for height {}+; discarded {} old message(s)",
+                retained, start_height, discarded_old
             );
         }
     }
-
-    // Start the first height
-    let start_height = state.get_last_slot().unwrap_or(0) + 1;
     let recovered_bft_round =
         wal_recovery.max_recovered_round_for_height(start_height, &validator_pubkey);
     bft.start_height(start_height);
@@ -16405,10 +16426,181 @@ async fn run_validator() {
     )
     .await;
     let mut pending_consensus_proposals: BTreeMap<u64, Vec<Proposal>> = BTreeMap::new();
+    let mut startup_current_proposals = Vec::new();
+    for (height, proposals) in startup_buffered_proposals {
+        if height == start_height {
+            startup_current_proposals.extend(proposals);
+        } else if height <= start_height + FUTURE_CONSENSUS_PROPOSAL_BUFFER_HEIGHTS {
+            pending_consensus_proposals
+                .entry(height)
+                .or_default()
+                .extend(proposals);
+        }
+    }
+
+    if !startup_current_proposals.is_empty() {
+        info!(
+            "📥 BFT: Replaying {} buffered startup proposal(s) for height {}",
+            startup_current_proposals.len(),
+            start_height
+        );
+        for proposal in startup_current_proposals {
+            let expected_validators_hash = compute_validators_hash(&height_vs, &height_pool);
+            let validation = {
+                let _canonical_apply_guard = block_apply_lock.lock().await;
+                if let Some(canonical_tip) =
+                    canonical_tip_at_or_past_height(&state, proposal.height)
+                {
+                    debug!(
+                        "Skipping stale startup proposal h={} r={} because canonical tip advanced to {}",
+                        proposal.height, proposal.round, canonical_tip
+                    );
+                    None
+                } else {
+                    Some(validate_consensus_proposal_before_prevote(
+                        &state,
+                        &proposal,
+                        parent_hash,
+                        expected_validators_hash,
+                        &genesis_config.chain_id,
+                    ))
+                }
+            };
+            let action = match validation {
+                Some(Ok(())) => match consensus_wal.log_proposal_block_result(
+                    proposal.height,
+                    proposal.round,
+                    &proposal.block,
+                ) {
+                    Ok(()) => bft.on_proposal(proposal, &height_vs, &height_pool),
+                    Err(err) => {
+                        error!(
+                            "📋 WAL: Refusing to prevote without durable startup proposal block: {}",
+                            err
+                        );
+                        ConsensusAction::None
+                    }
+                },
+                Some(Err(err)) => {
+                    warn!("{}", err);
+                    ConsensusAction::None
+                }
+                None => ConsensusAction::None,
+            };
+            execute_consensus_actions(
+                action,
+                &bft,
+                &mut consensus_wal,
+                &state,
+                &validator_set,
+                &stake_pool,
+                &vote_aggregator,
+                &mempool,
+                &processor,
+                &finality_tracker,
+                &p2p_peer_manager,
+                &p2p_config,
+                &ws_event_tx,
+                &ws_dex_broadcaster,
+                &shared_oracle_prices,
+                &last_block_time_for_local,
+                &mut last_dex_trade_count,
+                &data_dir,
+                &sync_manager,
+                &mut parent_hash,
+                slot_duration_ms,
+                &validator_keypair,
+                min_validator_stake,
+                &block_apply_lock,
+                &bft_committing_slot,
+            )
+            .await;
+        }
+    }
+
+    if !startup_buffered_prevotes.is_empty() {
+        info!(
+            "📥 BFT: Replaying {} buffered startup prevote(s) for height {}+",
+            startup_buffered_prevotes.len(),
+            start_height
+        );
+        for prevote in startup_buffered_prevotes {
+            let action = bft.on_prevote(prevote, &height_vs, &height_pool);
+            execute_consensus_actions(
+                action,
+                &bft,
+                &mut consensus_wal,
+                &state,
+                &validator_set,
+                &stake_pool,
+                &vote_aggregator,
+                &mempool,
+                &processor,
+                &finality_tracker,
+                &p2p_peer_manager,
+                &p2p_config,
+                &ws_event_tx,
+                &ws_dex_broadcaster,
+                &shared_oracle_prices,
+                &last_block_time_for_local,
+                &mut last_dex_trade_count,
+                &data_dir,
+                &sync_manager,
+                &mut parent_hash,
+                slot_duration_ms,
+                &validator_keypair,
+                min_validator_stake,
+                &block_apply_lock,
+                &bft_committing_slot,
+            )
+            .await;
+        }
+    }
+    if !startup_buffered_precommits.is_empty() {
+        info!(
+            "📥 BFT: Replaying {} buffered startup precommit(s) for height {}+",
+            startup_buffered_precommits.len(),
+            start_height
+        );
+        for precommit in startup_buffered_precommits {
+            let action = bft.on_precommit(precommit, &height_vs, &height_pool);
+            execute_consensus_actions(
+                action,
+                &bft,
+                &mut consensus_wal,
+                &state,
+                &validator_set,
+                &stake_pool,
+                &vote_aggregator,
+                &mempool,
+                &processor,
+                &finality_tracker,
+                &p2p_peer_manager,
+                &p2p_config,
+                &ws_event_tx,
+                &ws_dex_broadcaster,
+                &shared_oracle_prices,
+                &last_block_time_for_local,
+                &mut last_dex_trade_count,
+                &data_dir,
+                &sync_manager,
+                &mut parent_hash,
+                slot_duration_ms,
+                &validator_keypair,
+                min_validator_stake,
+                &block_apply_lock,
+                &bft_committing_slot,
+            )
+            .await;
+        }
+    }
 
     // If we're the proposer for round 0, arm the slot-cadence timer.
     {
-        if bft.is_proposer(&height_vs, &height_pool, &parent_hash) {
+        if bft.step == RoundStep::Commit {
+            propose_timer = None;
+            timeout_handle = None;
+        } else if bft.is_proposer(&height_vs, &height_pool, &parent_hash) {
             let delay_ms = proposal_slot_delay_ms(
                 &state,
                 &parent_hash,
@@ -19088,6 +19280,43 @@ mod tests {
                 branch_marker
             );
         }
+    }
+
+    #[test]
+    fn startup_bft_drain_preserves_current_height_messages() {
+        let source = include_str!("main.rs");
+        let start = source
+            .find("// Drain BFT messages that accumulated during sync, but preserve current")
+            .expect("startup BFT drain marker");
+        let end = source[start..]
+            .find("let recovered_bft_round =")
+            .expect("WAL recovery marker");
+        let section = &source[start..start + end];
+
+        assert!(
+            section.contains("proposal.height >= start_height"),
+            "startup proposal drain must retain current and future-height proposals"
+        );
+        assert!(
+            section.contains("prevote.height >= start_height"),
+            "startup prevote drain must retain current and future-height prevotes"
+        );
+        assert!(
+            section.contains("precommit.height >= start_height"),
+            "startup precommit drain must retain current and future-height precommits"
+        );
+        assert!(
+            section.contains("startup_buffered_proposals"),
+            "startup drain must buffer retained proposals for validation/replay"
+        );
+        assert!(
+            section.contains("Buffered {} startup BFT message(s)"),
+            "startup drain must log retained/discarded message counts"
+        );
+        assert!(
+            !section.contains("while proposal_rx.try_recv().is_ok()"),
+            "startup drain must not blindly discard proposal messages"
+        );
     }
 
     fn make_genesis_state_chunk_tx(state_root: Hash, bundle: &GenesisStateBundle) -> Transaction {
