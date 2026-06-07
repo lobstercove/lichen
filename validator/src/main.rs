@@ -722,6 +722,17 @@ struct SnapshotExportSessionState {
     meta: lichen_core::CheckpointMeta,
 }
 
+#[derive(Clone)]
+struct VerifiedCheckpointCacheEntry {
+    meta: lichen_core::CheckpointMeta,
+    checkpoint_path: String,
+    block: Block,
+    verified_at: Instant,
+}
+
+const SNAPSHOT_VERIFIED_CHECKPOINT_CACHE_TTL_SECS: u64 = 300;
+const SNAPSHOT_RESPONSE_RECONNECT_COOLDOWN_SECS: u64 = 30;
+
 #[derive(Debug, Deserialize)]
 struct SeedsFile {
     testnet: Option<SeedNetwork>,
@@ -5826,6 +5837,47 @@ fn latest_verified_checkpoint(
     None
 }
 
+fn latest_verified_checkpoint_cached(
+    cache: &mut Option<VerifiedCheckpointCacheEntry>,
+    data_dir: &str,
+    state: &StateStore,
+    validator_set: &ValidatorSet,
+    stake_pool: &StakePool,
+    chain_id: &str,
+) -> Option<(lichen_core::CheckpointMeta, String, Block)> {
+    if let Some(cached) = cache.as_ref() {
+        if cached.verified_at.elapsed().as_secs() < SNAPSHOT_VERIFIED_CHECKPOINT_CACHE_TTL_SECS {
+            return Some((
+                cached.meta.clone(),
+                cached.checkpoint_path.clone(),
+                cached.block.clone(),
+            ));
+        }
+    }
+
+    let started = Instant::now();
+    let verified = latest_verified_checkpoint(data_dir, state, validator_set, stake_pool, chain_id);
+    if started.elapsed().as_secs() >= 2 {
+        warn!(
+            "⚠️  Verified checkpoint lookup took {}s",
+            started.elapsed().as_secs()
+        );
+    }
+
+    if let Some((meta, checkpoint_path, block)) = verified {
+        *cache = Some(VerifiedCheckpointCacheEntry {
+            meta: meta.clone(),
+            checkpoint_path: checkpoint_path.clone(),
+            block: block.clone(),
+            verified_at: Instant::now(),
+        });
+        Some((meta, checkpoint_path, block))
+    } else {
+        *cache = None;
+        None
+    }
+}
+
 #[cfg(test)]
 fn verify_committed_block_authenticity(
     block: &Block,
@@ -8956,6 +9008,7 @@ async fn run_validator() {
         // P3-6: External address for NAT traversal and self-seed filtering.
         external_addr: configured_external_addr,
         consensus_chain_id: genesis_config.chain_id.clone(),
+        consensus_gossip_enabled: !sync_only_mode,
     };
 
     let has_genesis_block = state.get_block_by_slot(0).unwrap_or(None).is_some();
@@ -13096,14 +13149,14 @@ async fn run_validator() {
                     continue;
                 }
 
-                if !peer_mgr_for_responses
-                    .get_peers()
-                    .contains(&request.requester)
+                if !ensure_peer_for_response(
+                    &peer_mgr_for_responses,
+                    request.requester,
+                    local_addr_for_responses,
+                    "block range request",
+                )
+                .await
                 {
-                    warn!(
-                        "⚠️  Ignoring block range request from unknown peer {}",
-                        request.requester
-                    );
                     continue;
                 }
 
@@ -13241,12 +13294,14 @@ async fn run_validator() {
         tokio::spawn(async move {
             info!("🔄 Status request handler started");
             while let Some(request) = status_request_rx.recv().await {
-                if !peer_mgr_for_status.get_peers().contains(&request.requester) {
-                    warn!(
-                        "⚠️  Ignoring status request from unknown peer {}",
-                        request.requester
-                    );
-                    peer_mgr_for_status.record_violation(&request.requester);
+                if !ensure_peer_for_response(
+                    &peer_mgr_for_status,
+                    request.requester,
+                    local_addr_for_status,
+                    "status request",
+                )
+                .await
+                {
                     continue;
                 }
                 let current_slot = state_for_status.get_last_slot().unwrap_or(0);
@@ -13394,6 +13449,9 @@ async fn run_validator() {
                 SnapshotExportSessionKey,
                 std::time::Instant,
             > = std::collections::HashMap::new();
+            let mut verified_checkpoint_cache: Option<VerifiedCheckpointCacheEntry> = None;
+            let mut response_reconnect_failures: HashMap<std::net::SocketAddr, Instant> =
+                HashMap::new();
             while let Some(request) = snapshot_request_rx.recv().await {
                 // AUDIT-FIX M1: Evict cursors idle for >30 minutes
                 {
@@ -13415,17 +13473,36 @@ async fn run_validator() {
                         }
                     });
                 }
-                if !peer_mgr_for_snapshot
+                let requester_connected = peer_mgr_for_snapshot
                     .get_peers()
-                    .contains(&request.requester)
+                    .iter()
+                    .any(|peer| *peer == request.requester);
+                if !requester_connected {
+                    if response_reconnect_failures
+                        .get(&request.requester)
+                        .is_some_and(|last| {
+                            last.elapsed().as_secs() < SNAPSHOT_RESPONSE_RECONNECT_COOLDOWN_SECS
+                        })
+                    {
+                        debug!(
+                            "Skipping snapshot response reconnect to {} during cooldown",
+                            request.requester
+                        );
+                        continue;
+                    }
+                }
+                if !ensure_peer_for_response(
+                    &peer_mgr_for_snapshot,
+                    request.requester,
+                    local_addr_for_snapshot,
+                    "snapshot request",
+                )
+                .await
                 {
-                    warn!(
-                        "⚠️  Ignoring snapshot request from unknown peer {}",
-                        request.requester
-                    );
-                    peer_mgr_for_snapshot.record_violation(&request.requester);
+                    response_reconnect_failures.insert(request.requester, Instant::now());
                     continue;
                 }
+                response_reconnect_failures.remove(&request.requester);
 
                 let snapshot_cost = if request.is_meta_request {
                     1
@@ -13463,7 +13540,8 @@ async fn run_validator() {
                     ) = {
                         let vs = validator_set_for_snapshot.read().await;
                         let pool = stake_pool_for_snapshot.read().await;
-                        match latest_verified_checkpoint(
+                        match latest_verified_checkpoint_cached(
+                            &mut verified_checkpoint_cache,
                             &data_dir_for_snapshot,
                             &state_for_snapshot_serve,
                             &vs,
@@ -13522,7 +13600,8 @@ async fn run_validator() {
                         None => {
                             let vs = validator_set_for_snapshot.read().await;
                             let pool = stake_pool_for_snapshot.read().await;
-                            match latest_verified_checkpoint(
+                            match latest_verified_checkpoint_cached(
+                                &mut verified_checkpoint_cache,
                                 &data_dir_for_snapshot,
                                 &state_for_snapshot_serve,
                                 &vs,
@@ -13767,7 +13846,8 @@ async fn run_validator() {
                         ) = {
                             let vs = validator_set_for_snapshot.read().await;
                             let pool = stake_pool_for_snapshot.read().await;
-                            match latest_verified_checkpoint(
+                            match latest_verified_checkpoint_cached(
+                                &mut verified_checkpoint_cache,
                                 &data_dir_for_snapshot,
                                 &state_for_snapshot_serve,
                                 &vs,
@@ -14561,6 +14641,50 @@ async fn run_validator() {
                         }
                         state_for_snapshot_apply.invalidate_merkle_cache();
 
+                        if state_for_snapshot_apply.uses_sparse_state_commitment() {
+                            match state_for_snapshot_apply.rebuild_sparse_state_commitment(false) {
+                                Ok(report) => {
+                                    if report.current_state_root != Hash(state_root) {
+                                        error!(
+                                            "FATAL: verified snapshot live sparse rebuild root mismatch at slot {}: rebuilt={} expected={}",
+                                            snapshot_slot,
+                                            report.current_state_root.to_hex(),
+                                            Hash(state_root).to_hex()
+                                        );
+                                        std::process::exit(1);
+                                    }
+                                    info!(
+                                        "✅ Rebuilt live sparse state commitment for snapshot slot {}: root={} accounts={} contracts={}",
+                                        snapshot_slot,
+                                        report.current_state_root.to_hex(),
+                                        report.accounts_leaf_count,
+                                        report.contract_leaf_count
+                                    );
+                                }
+                                Err(e) => {
+                                    error!(
+                                        "FATAL: failed to rebuild live sparse state commitment after verified snapshot import at slot {}: {}",
+                                        snapshot_slot, e
+                                    );
+                                    std::process::exit(1);
+                                }
+                            }
+                        }
+
+                        if let Err(e) = validate_state_root_with_schema(
+                            &state_for_snapshot_apply,
+                            snapshot_slot,
+                            Hash(state_root),
+                            "snapshot live import",
+                            true,
+                        ) {
+                            error!(
+                                "FATAL: verified snapshot live import failed state-root validation at slot {}: {}",
+                                snapshot_slot, e
+                            );
+                            std::process::exit(1);
+                        }
+
                         // Store the authenticated checkpoint header so the next
                         // canonical block can verify its parent hash, then move
                         // the local tip/commit cursors to the verified snapshot.
@@ -15131,7 +15255,11 @@ async fn run_validator() {
         );
     }
 
-    info!("⚡ Starting consensus-based block production");
+    if sync_only_mode {
+        info!("🔎 Sync-only mode: block production and validator announcements are disabled");
+    } else {
+        info!("⚡ Starting consensus-based block production");
+    }
     info!("Validator: {}", validator_pubkey);
     info!(
         "Block time: {}ms",
@@ -15160,74 +15288,78 @@ async fn run_validator() {
     if let Some(ref p2p_pm) = p2p_peer_manager {
         info!("🌐 Multi-validator mode: Broadcasting blocks to peers");
 
-        // Broadcast validator announcement periodically for network discovery
-        let peer_mgr_for_announce = p2p_pm.clone();
-        let local_addr = p2p_config.listen_addr;
-        let validator_pubkey_for_announce = validator_pubkey;
-        let stake_pool_for_announce = stake_pool.clone();
-        let state_for_announce = state.clone();
-        let validator_set_for_self_announce = validator_set.clone();
-        let validator_seed_for_announce = validator_keypair.to_seed();
-        let machine_fingerprint_for_announce = machine_fingerprint;
-        tokio::spawn(async move {
-            // Wait for initial peer connections
-            time::sleep(Duration::from_secs(2)).await;
+        if sync_only_mode {
+            info!("🔎 Sync-only mode: signed validator announcements are disabled");
+        } else {
+            // Broadcast validator announcement periodically for network discovery
+            let peer_mgr_for_announce = p2p_pm.clone();
+            let local_addr = p2p_config.listen_addr;
+            let validator_pubkey_for_announce = validator_pubkey;
+            let stake_pool_for_announce = stake_pool.clone();
+            let state_for_announce = state.clone();
+            let validator_set_for_self_announce = validator_set.clone();
+            let validator_seed_for_announce = validator_keypair.to_seed();
+            let machine_fingerprint_for_announce = machine_fingerprint;
+            tokio::spawn(async move {
+                // Wait for initial peer connections
+                time::sleep(Duration::from_secs(2)).await;
 
-            // Announce periodically so new validators can discover us
-            let mut interval = time::interval(Duration::from_secs(10));
-            loop {
-                let validator_stake = {
-                    let pool = stake_pool_for_announce.read().await;
-                    pool.get_stake(&validator_pubkey_for_announce)
-                        .map(|s| s.total_stake())
-                        .unwrap_or(0)
-                };
-                let current_slot = state_for_announce.get_last_slot().unwrap_or(0);
-                {
-                    let mut vs = validator_set_for_self_announce.write().await;
-                    let _ = note_validator_activity(
-                        &mut vs,
+                // Announce periodically so new validators can discover us
+                let mut interval = time::interval(Duration::from_secs(10));
+                loop {
+                    let validator_stake = {
+                        let pool = stake_pool_for_announce.read().await;
+                        pool.get_stake(&validator_pubkey_for_announce)
+                            .map(|s| s.total_stake())
+                            .unwrap_or(0)
+                    };
+                    let current_slot = state_for_announce.get_last_slot().unwrap_or(0);
+                    {
+                        let mut vs = validator_set_for_self_announce.write().await;
+                        let _ = note_validator_activity(
+                            &mut vs,
+                            &validator_pubkey_for_announce,
+                            current_slot,
+                            false,
+                        );
+                    }
+
+                    // T2.3 fix: Sign announcement with validator keypair
+                    let announce_keypair = Keypair::from_seed(&validator_seed_for_announce);
+                    let sign_message = validator_announcement_signing_message(
                         &validator_pubkey_for_announce,
+                        validator_stake,
                         current_slot,
-                        false,
+                        &machine_fingerprint_for_announce,
+                        Some(updater::VERSION),
+                    )
+                    .expect("validator version should always produce a valid announcement payload");
+                    let signature = announce_keypair.sign(&sign_message);
+
+                    let announce_msg = P2PMessage::new(
+                        MessageType::ValidatorAnnounce {
+                            pubkey: validator_pubkey_for_announce,
+                            stake: validator_stake,
+                            current_slot,
+                            version: updater::VERSION.to_string(),
+                            signature,
+                            machine_fingerprint: machine_fingerprint_for_announce,
+                        },
+                        local_addr,
+                    );
+
+                    interval.tick().await;
+
+                    peer_mgr_for_announce.broadcast(announce_msg).await;
+                    info!(
+                        "📣 Broadcasted signed validator announcement: {} (stake: {}, slot: {})",
+                        validator_pubkey_for_announce.to_base58(),
+                        validator_stake,
+                        current_slot
                     );
                 }
-
-                // T2.3 fix: Sign announcement with validator keypair
-                let announce_keypair = Keypair::from_seed(&validator_seed_for_announce);
-                let sign_message = validator_announcement_signing_message(
-                    &validator_pubkey_for_announce,
-                    validator_stake,
-                    current_slot,
-                    &machine_fingerprint_for_announce,
-                    Some(updater::VERSION),
-                )
-                .expect("validator version should always produce a valid announcement payload");
-                let signature = announce_keypair.sign(&sign_message);
-
-                let announce_msg = P2PMessage::new(
-                    MessageType::ValidatorAnnounce {
-                        pubkey: validator_pubkey_for_announce,
-                        stake: validator_stake,
-                        current_slot,
-                        version: updater::VERSION.to_string(),
-                        signature,
-                        machine_fingerprint: machine_fingerprint_for_announce,
-                    },
-                    local_addr,
-                );
-
-                interval.tick().await;
-
-                peer_mgr_for_announce.broadcast(announce_msg).await;
-                info!(
-                    "📣 Broadcasted signed validator announcement: {} (stake: {}, slot: {})",
-                    validator_pubkey_for_announce.to_base58(),
-                    validator_stake,
-                    current_slot
-                );
-            }
-        });
+            });
+        }
 
         // Proactive ping loop — send Ping to all peers every 5s for real-time liveness
         let peer_mgr_for_ping = p2p_pm.clone();
@@ -18215,6 +18347,45 @@ async fn request_block_range_from_peers(
     }
 }
 
+async fn ensure_peer_for_response(
+    peer_mgr: &Arc<lichen_p2p::PeerManager>,
+    requester: SocketAddr,
+    local_addr: SocketAddr,
+    label: &str,
+) -> bool {
+    if requester == local_addr || peer_mgr.is_self_endpoint(&requester) {
+        debug!("Skipping self-targeted {} from {}", label, requester);
+        return false;
+    }
+    if peer_mgr.get_peers().contains(&requester) {
+        return true;
+    }
+
+    match time::timeout(Duration::from_secs(5), peer_mgr.connect_peer(requester)).await {
+        Ok(Ok(())) => {
+            info!(
+                "🔁 Reconnected to {} to serve {} after request queue delay",
+                requester, label
+            );
+            true
+        }
+        Ok(Err(err)) => {
+            warn!(
+                "⚠️  Cannot serve {} from {}: peer is not connected and reconnect failed: {}",
+                label, requester, err
+            );
+            false
+        }
+        Err(_) => {
+            warn!(
+                "⚠️  Cannot serve {} from {}: reconnect timed out",
+                label, requester
+            );
+            false
+        }
+    }
+}
+
 /// Execute one or more ConsensusActions returned by the BFT engine.
 ///
 /// This is the bridge between the pure state machine (ConsensusEngine) and
@@ -18279,15 +18450,15 @@ async fn execute_consensus_actions(
                 hex::encode(&proposal.block.hash().0[..4])
             );
             if let Some(ref pm) = p2p_peer_manager {
-                let peers_count = pm.get_peers().len();
+                let peers_count = pm.validator_peers().len();
                 info!(
-                    "📡 BFT SEND: Broadcasting proposal to {} peers",
+                    "📡 BFT SEND: Broadcasting proposal to {} validator peers",
                     peers_count
                 );
                 let msg = P2PMessage::new(MessageType::Proposal(proposal), p2p_config.listen_addr);
                 let pm_c = pm.clone();
                 tokio::spawn(async move {
-                    pm_c.broadcast(msg).await;
+                    pm_c.broadcast_to_validators(msg).await;
                 });
             } else {
                 warn!("📡 BFT SEND: No P2P peer manager — proposal NOT sent!");
@@ -18332,8 +18503,11 @@ async fn execute_consensus_actions(
                     .unwrap_or_else(|| "nil".to_string())
             );
             if let Some(ref pm) = p2p_peer_manager {
-                let peers_count = pm.get_peers().len();
-                info!("📡 BFT SEND: Broadcasting prevote to {} peers", peers_count);
+                let peers_count = pm.validator_peers().len();
+                info!(
+                    "📡 BFT SEND: Broadcasting prevote to {} validator peers",
+                    peers_count
+                );
                 let msg = P2PMessage::new(MessageType::Prevote(prevote), p2p_config.listen_addr);
                 let pm_c = pm.clone();
                 tokio::spawn(async move {
@@ -18393,9 +18567,9 @@ async fn execute_consensus_actions(
                     .unwrap_or_else(|| "nil".to_string())
             );
             if let Some(ref pm) = p2p_peer_manager {
-                let peers_count = pm.get_peers().len();
+                let peers_count = pm.validator_peers().len();
                 info!(
-                    "📡 BFT SEND: Broadcasting precommit to {} peers",
+                    "📡 BFT SEND: Broadcasting precommit to {} validator peers",
                     peers_count
                 );
                 let msg =
@@ -19914,6 +20088,86 @@ mod tests {
             Some(restriction)
         );
         assert_eq!(dest.get_program_count(), 1);
+    }
+
+    #[test]
+    fn snapshot_import_rebuilds_sparse_commitment_before_contract_overlay() {
+        let source_dir = tempfile::tempdir().expect("source temp dir");
+        let target_dir = tempfile::tempdir().expect("target temp dir");
+        let source = StateStore::open(source_dir.path()).expect("open source");
+        let target = StateStore::open(target_dir.path()).expect("open target");
+
+        let owner = Pubkey([7u8; 32]);
+        let program = Pubkey([8u8; 32]);
+        source
+            .put_account(&owner, &Account::new(42, owner))
+            .expect("put account");
+        source.index_program(&program).expect("index program");
+        register_test_symbol(&source, "TEST", program);
+        for index in 0..16u16 {
+            source
+                .put_contract_storage(&program, &index.to_be_bytes(), &index.to_le_bytes())
+                .expect("put contract storage");
+        }
+        source
+            .rebuild_sparse_state_commitment(true)
+            .expect("activate source sparse commitment");
+
+        let mut source_batch = source.begin_batch();
+        source_batch
+            .put_contract_storage(&program, b"updated-key", b"updated-value")
+            .expect("stage source contract update");
+        let expected_overlay_root = source.compute_state_root_for_batch(&source_batch);
+
+        for category in [
+            "accounts",
+            "contract_storage",
+            "programs",
+            "symbol_registry",
+            "symbol_by_program",
+            "stats",
+        ] {
+            target
+                .import_snapshot_category(category, &export_test_category(&source, category))
+                .expect("import snapshot category");
+        }
+        target
+            .reconcile_account_count()
+            .expect("reconcile accounts");
+        target
+            .reconcile_active_account_count()
+            .expect("reconcile active accounts");
+        target
+            .reconcile_program_count()
+            .expect("reconcile programs");
+        target.invalidate_merkle_cache();
+        assert!(target.uses_sparse_state_commitment());
+
+        let mut target_batch_before_rebuild = target.begin_batch();
+        target_batch_before_rebuild
+            .put_contract_storage(&program, b"updated-key", b"updated-value")
+            .expect("stage target contract update before rebuild");
+        let pre_rebuild_overlay_root =
+            target.compute_state_root_for_batch(&target_batch_before_rebuild);
+        assert_ne!(
+            pre_rebuild_overlay_root, expected_overlay_root,
+            "imported snapshot stats alone must not be enough for sparse overlay roots"
+        );
+
+        let report = target
+            .rebuild_sparse_state_commitment(false)
+            .expect("rebuild target sparse commitment");
+        assert_eq!(report.current_state_root, source.compute_state_root());
+
+        let mut target_batch_after_rebuild = target.begin_batch();
+        target_batch_after_rebuild
+            .put_contract_storage(&program, b"updated-key", b"updated-value")
+            .expect("stage target contract update after rebuild");
+        assert_eq!(
+            target.compute_state_root_for_batch(&target_batch_after_rebuild),
+            expected_overlay_root,
+            "snapshot receiver must rebuild sparse nodes before replay/proposal overlays"
+        );
     }
 
     #[test]

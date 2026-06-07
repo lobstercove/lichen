@@ -239,6 +239,10 @@ pub struct P2PConfig {
     pub external_addr: Option<SocketAddr>,
     /// Chain id used to validate consensus activity signatures for peer liveness.
     pub consensus_chain_id: String,
+    /// Whether this node participates in the consensus reactor by relaying and
+    /// enqueueing BFT proposals/votes. Sync-only nodes keep P2P sync/RPC paths
+    /// live but must not touch live BFT traffic.
+    pub consensus_gossip_enabled: bool,
 }
 
 impl Default for P2PConfig {
@@ -256,6 +260,7 @@ impl Default for P2PConfig {
             reserved_relay_peers: Vec::new(),
             external_addr: None,
             consensus_chain_id: String::new(),
+            consensus_gossip_enabled: true,
         }
     }
 }
@@ -471,6 +476,9 @@ pub struct P2PNetwork {
     /// Chain id used to validate consensus activity signatures for peer liveness.
     consensus_chain_id: String,
 
+    /// False for sync-only nodes.
+    consensus_gossip_enabled: bool,
+
     /// AUDIT-FIX H11: Track last announcement slot per validator pubkey
     /// to reject stale/replayed validator announcements.
     last_announce_slot: std::sync::Mutex<std::collections::HashMap<[u8; 32], u64>>,
@@ -593,6 +601,7 @@ impl P2PNetwork {
             precommit_tx,
             consensus_activity_tx,
             consensus_chain_id: config.consensus_chain_id,
+            consensus_gossip_enabled: config.consensus_gossip_enabled,
             last_announce_slot: std::sync::Mutex::new(std::collections::HashMap::new()),
         })
     }
@@ -689,7 +698,10 @@ impl P2PNetwork {
                 | MessageType::SlashingEvidence(_)
                 | MessageType::CompactBlockMsg(_)
         );
-        if (is_relay_or_seed && is_gossip_message) || is_bft_message {
+        let should_relay_bft = is_bft_message && self.consensus_gossip_enabled;
+        let should_relay_gossip =
+            is_relay_or_seed && is_gossip_message && (!is_bft_message || should_relay_bft);
+        if should_relay_gossip || should_relay_bft {
             self.peer_manager
                 .broadcast_except(&message, &peer_addr)
                 .await;
@@ -727,6 +739,13 @@ impl P2PNetwork {
             }
 
             MessageType::Proposal(proposal) => {
+                if !self.consensus_gossip_enabled {
+                    debug!(
+                        "P2P: Ignoring BFT proposal h={} r={} from {} in non-consensus mode",
+                        proposal.height, proposal.round, peer_addr
+                    );
+                    return Ok(());
+                }
                 info!(
                     "📥 BFT RECV: Proposal h={} r={} from peer {}",
                     proposal.height, proposal.round, peer_addr
@@ -746,6 +765,13 @@ impl P2PNetwork {
             }
 
             MessageType::Prevote(prevote) => {
+                if !self.consensus_gossip_enabled {
+                    debug!(
+                        "P2P: Ignoring BFT prevote h={} r={} from {} in non-consensus mode",
+                        prevote.height, prevote.round, peer_addr
+                    );
+                    return Ok(());
+                }
                 info!(
                     "📥 BFT RECV: Prevote h={} r={} from peer {}",
                     prevote.height, prevote.round, peer_addr
@@ -765,6 +791,13 @@ impl P2PNetwork {
             }
 
             MessageType::Precommit(precommit) => {
+                if !self.consensus_gossip_enabled {
+                    debug!(
+                        "P2P: Ignoring BFT precommit h={} r={} from {} in non-consensus mode",
+                        precommit.height, precommit.round, peer_addr
+                    );
+                    return Ok(());
+                }
                 info!(
                     "📥 BFT RECV: Precommit h={} r={} from peer {}",
                     precommit.height, precommit.round, peer_addr
