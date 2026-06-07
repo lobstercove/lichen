@@ -1192,6 +1192,26 @@ fn note_validator_activity(
     }
 }
 
+fn note_validator_activity_best_effort(
+    validator_set: &Arc<RwLock<ValidatorSet>>,
+    pubkey: &Pubkey,
+    slot: u64,
+    count_vote: bool,
+) {
+    match validator_set.try_write() {
+        Ok(mut live_vs) => {
+            let _ = note_validator_activity(&mut live_vs, pubkey, slot, count_vote);
+        }
+        Err(_) => {
+            debug!(
+                "Skipping non-critical validator activity update for {} at slot {}",
+                pubkey.to_base58(),
+                slot
+            );
+        }
+    }
+}
+
 fn load_local_account_stake(state: &StateStore, validator: &Pubkey) -> Option<u64> {
     state
         .get_account(validator)
@@ -17857,6 +17877,8 @@ async fn execute_consensus_actions(
         }
 
         ConsensusAction::BroadcastProposal(proposal) => {
+            let activity_pubkey = proposal.proposer;
+            let activity_height = proposal.height;
             if proposal.proposer == bft.validator_pubkey {
                 if let Err(e) = consensus_wal.log_proposal_block_result(
                     proposal.height,
@@ -17869,15 +17891,6 @@ async fn execute_consensus_actions(
                     );
                     return;
                 }
-            }
-            {
-                let mut live_vs = validator_set.write().await;
-                let _ = note_validator_activity(
-                    &mut live_vs,
-                    &proposal.proposer,
-                    proposal.height,
-                    false,
-                );
             }
             info!(
                 "📡 BFT SEND: Proposal h={} r={} hash={}",
@@ -17899,9 +17912,17 @@ async fn execute_consensus_actions(
             } else {
                 warn!("📡 BFT SEND: No P2P peer manager — proposal NOT sent!");
             }
+            note_validator_activity_best_effort(
+                validator_set,
+                &activity_pubkey,
+                activity_height,
+                false,
+            );
         }
 
         ConsensusAction::BroadcastPrevote(prevote) => {
+            let activity_pubkey = prevote.validator;
+            let activity_height = prevote.height;
             if prevote.validator == bft.validator_pubkey {
                 if let Some(block_hash) = prevote.block_hash {
                     if !consensus_wal.has_proposal_block(prevote.height, block_hash) {
@@ -17920,15 +17941,6 @@ async fn execute_consensus_actions(
                     );
                     return;
                 }
-            }
-            {
-                let mut live_vs = validator_set.write().await;
-                let _ = note_validator_activity(
-                    &mut live_vs,
-                    &prevote.validator,
-                    prevote.height,
-                    false,
-                );
             }
             info!(
                 "📡 BFT SEND: Prevote h={} r={} block={}",
@@ -17950,9 +17962,17 @@ async fn execute_consensus_actions(
             } else {
                 warn!("📡 BFT SEND: No P2P peer manager — prevote NOT sent!");
             }
+            note_validator_activity_best_effort(
+                validator_set,
+                &activity_pubkey,
+                activity_height,
+                false,
+            );
         }
 
         ConsensusAction::BroadcastPrecommit(precommit) => {
+            let activity_pubkey = precommit.validator;
+            let activity_height = precommit.height;
             if precommit.validator == bft.validator_pubkey {
                 if let Some(block_hash) = precommit.block_hash {
                     if !consensus_wal.has_proposal_block(precommit.height, block_hash) {
@@ -17983,15 +18003,6 @@ async fn execute_consensus_actions(
                     }
                 }
             }
-            {
-                let mut live_vs = validator_set.write().await;
-                let _ = note_validator_activity(
-                    &mut live_vs,
-                    &precommit.validator,
-                    precommit.height,
-                    false,
-                );
-            }
             info!(
                 "📡 BFT SEND: Precommit h={} r={} block={}",
                 precommit.height,
@@ -18016,6 +18027,12 @@ async fn execute_consensus_actions(
             } else {
                 warn!("📡 BFT SEND: No P2P peer manager — precommit NOT sent!");
             }
+            note_validator_activity_best_effort(
+                validator_set,
+                &activity_pubkey,
+                activity_height,
+                false,
+            );
         }
 
         ConsensusAction::CommitBlock {
@@ -21494,6 +21511,47 @@ mod tests {
         assert_eq!(validator.last_active_slot, 9);
         assert_eq!(validator.votes_cast, 1);
         assert_eq!(validator.last_observed_block_slot, 9);
+    }
+
+    #[test]
+    fn best_effort_validator_activity_does_not_wait_for_locked_set() {
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        runtime.block_on(async {
+            let pubkey = Keypair::generate().pubkey();
+            let mut set = ValidatorSet::new();
+            set.add_validator(ValidatorInfo {
+                pubkey,
+                stake: 1,
+                reputation: 100,
+                blocks_proposed: 0,
+                votes_cast: 0,
+                correct_votes: 0,
+                joined_slot: 1,
+                last_active_slot: 3,
+                last_observed_at_ms: 0,
+                last_observed_block_at_ms: 0,
+                last_observed_block_slot: 0,
+                commission_rate: 500,
+                transactions_processed: 0,
+                pending_activation: false,
+            });
+            let validator_set = Arc::new(RwLock::new(set));
+
+            let guard = validator_set.write().await;
+            note_validator_activity_best_effort(&validator_set, &pubkey, 9, true);
+            assert_eq!(
+                guard.get_validator(&pubkey).unwrap().last_active_slot,
+                3,
+                "best-effort activity update must skip instead of waiting on a held write lock"
+            );
+            drop(guard);
+
+            note_validator_activity_best_effort(&validator_set, &pubkey, 9, true);
+            let guard = validator_set.read().await;
+            let validator = guard.get_validator(&pubkey).unwrap();
+            assert_eq!(validator.last_active_slot, 9);
+            assert_eq!(validator.votes_cast, 1);
+        });
     }
 
     #[test]
