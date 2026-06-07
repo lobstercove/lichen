@@ -956,7 +956,10 @@ fn should_gate_bft_on_network_sync(
 }
 
 fn needs_pre_consensus_tip_catch_up(current_slot: u64, network_slot: u64) -> bool {
-    network_slot > current_slot
+    // Peer gossip can advertise the next BFT height before a block is
+    // committed. Requiring exact catch-up here can deadlock restarted
+    // validators at tip N while everyone waits for non-existent block N+1.
+    network_slot > current_slot.saturating_add(1)
 }
 
 fn should_reconsider_duplicate_block(
@@ -21871,8 +21874,9 @@ mod tests {
     }
 
     #[test]
-    fn pre_consensus_tip_catch_up_requires_exact_tip() {
-        assert!(needs_pre_consensus_tip_catch_up(306_993, 306_994));
+    fn pre_consensus_tip_catch_up_allows_live_next_height() {
+        assert!(!needs_pre_consensus_tip_catch_up(306_993, 306_994));
+        assert!(needs_pre_consensus_tip_catch_up(306_992, 306_994));
         assert!(!needs_pre_consensus_tip_catch_up(306_994, 306_994));
         assert!(!needs_pre_consensus_tip_catch_up(306_995, 306_994));
     }
