@@ -13475,21 +13475,19 @@ async fn run_validator() {
                 }
                 let requester_connected = peer_mgr_for_snapshot
                     .get_peers()
-                    .iter()
-                    .any(|peer| *peer == request.requester);
-                if !requester_connected {
-                    if response_reconnect_failures
+                    .contains(&request.requester);
+                if !requester_connected
+                    && response_reconnect_failures
                         .get(&request.requester)
                         .is_some_and(|last| {
                             last.elapsed().as_secs() < SNAPSHOT_RESPONSE_RECONNECT_COOLDOWN_SECS
                         })
-                    {
-                        debug!(
-                            "Skipping snapshot response reconnect to {} during cooldown",
-                            request.requester
-                        );
-                        continue;
-                    }
+                {
+                    debug!(
+                        "Skipping snapshot response reconnect to {} during cooldown",
+                        request.requester
+                    );
+                    continue;
                 }
                 if !ensure_peer_for_response(
                     &peer_mgr_for_snapshot,
