@@ -25,6 +25,7 @@ const MAX_GET_BLOCK_TXS_HASHES: usize = MAX_TX_PER_BLOCK;
 const MAX_BLOCK_TXS_TRANSACTIONS: usize = MAX_TX_PER_BLOCK;
 const MAX_EXPENSIVE_REQUESTS_PER_WINDOW: u32 = 30;
 const SYNC_BLOCK_QUEUE_SEND_TIMEOUT: Duration = Duration::from_millis(500);
+const SNAPSHOT_REQUEST_QUEUE_SEND_TIMEOUT: Duration = Duration::from_secs(2);
 
 fn is_rejected_find_node_response_addr(addr: &SocketAddr) -> bool {
     let ip = addr.ip();
@@ -613,6 +614,34 @@ impl P2PNetwork {
         error!("🦞 P2P: Message loop exited (message_rx closed)");
     }
 
+    async fn enqueue_snapshot_request(
+        &self,
+        peer_addr: SocketAddr,
+        label: &'static str,
+        request: SnapshotRequestMsg,
+    ) {
+        match tokio::time::timeout(
+            SNAPSHOT_REQUEST_QUEUE_SEND_TIMEOUT,
+            self.snapshot_request_tx.send(request),
+        )
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                warn!(
+                    "P2P: Snapshot request channel closed while enqueueing {} from {} ({})",
+                    label, peer_addr, e
+                );
+            }
+            Err(_) => {
+                warn!(
+                    "P2P: Snapshot request channel backpressure timed out while enqueueing {} from {}",
+                    label, peer_addr
+                );
+            }
+        }
+    }
+
     /// Handle incoming message
     async fn handle_message(
         &self,
@@ -1030,12 +1059,8 @@ impl P2PNetwork {
                     state_snapshot_params: None,
                     is_meta_request: false,
                 };
-                if let Err(e) = self.snapshot_request_tx.try_send(request) {
-                    warn!(
-                        "P2P: Snapshot request channel full, dropping from {} ({})",
-                        peer_addr, e
-                    );
-                }
+                self.enqueue_snapshot_request(peer_addr, "snapshot request", request)
+                    .await;
             }
 
             MessageType::SnapshotResponse {
@@ -1070,12 +1095,8 @@ impl P2PNetwork {
                     state_snapshot_params: Some((category, chunk_index, chunk_size)),
                     is_meta_request: false,
                 };
-                if let Err(e) = self.snapshot_request_tx.try_send(request) {
-                    warn!(
-                        "P2P: State snapshot request channel full, dropping from {} ({})",
-                        peer_addr, e
-                    );
-                }
+                self.enqueue_snapshot_request(peer_addr, "state snapshot request", request)
+                    .await;
             }
 
             MessageType::StateSnapshotResponse {
@@ -1116,12 +1137,8 @@ impl P2PNetwork {
                     state_snapshot_params: None,
                     is_meta_request: true,
                 };
-                if let Err(e) = self.snapshot_request_tx.try_send(request) {
-                    warn!(
-                        "P2P: Checkpoint meta request channel full, dropping from {} ({})",
-                        peer_addr, e
-                    );
-                }
+                self.enqueue_snapshot_request(peer_addr, "checkpoint meta request", request)
+                    .await;
             }
 
             MessageType::CheckpointMetaResponse {

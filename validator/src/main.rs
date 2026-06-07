@@ -9368,7 +9368,7 @@ async fn run_validator() {
     let (status_response_tx, mut status_response_rx) = mpsc::channel::<StatusResponseMsg>(100);
     let (consistency_report_tx, mut consistency_report_rx) =
         mpsc::channel::<ConsistencyReportMsg>(50);
-    let (snapshot_request_tx, mut snapshot_request_rx) = mpsc::channel::<SnapshotRequestMsg>(50);
+    let (snapshot_request_tx, mut snapshot_request_rx) = mpsc::channel::<SnapshotRequestMsg>(2_000);
     let (snapshot_response_tx, mut snapshot_response_rx) =
         mpsc::channel::<SnapshotResponseMsg>(500);
     let (slashing_evidence_tx, mut slashing_evidence_rx) =
