@@ -7,9 +7,11 @@ use crate::chain_status_support::handle_chain_status;
 use crate::chain_validator_command_support::handle_chain_validator_command;
 use crate::cli_args::Commands;
 use crate::client::RpcClient;
+use crate::keypair_manager::KeypairManager;
 
 pub(super) async fn handle_chain_command(
     client: &RpcClient,
+    keypair_mgr: &KeypairManager,
     rpc_url: &str,
     command: Commands,
 ) -> Result<()> {
@@ -23,7 +25,9 @@ pub(super) async fn handle_chain_command(
         Commands::Network(net_cmd) => {
             handle_chain_network_command(client, rpc_url, net_cmd).await?
         }
-        Commands::Validator(val_cmd) => handle_chain_validator_command(client, val_cmd).await?,
+        Commands::Validator(val_cmd) => {
+            handle_chain_validator_command(client, keypair_mgr, val_cmd).await?
+        }
         Commands::Status => handle_chain_status(client).await?,
         Commands::Metrics => handle_chain_metrics(client).await?,
         _ => bail!("unsupported chain command"),

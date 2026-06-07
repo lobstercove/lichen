@@ -49,7 +49,9 @@ async fn main() -> Result<()> {
         | Commands::Network(_)
         | Commands::Validator(_)
         | Commands::Status
-        | Commands::Metrics) => handle_chain_command(&client, &cli.rpc_url, command).await?,
+        | Commands::Metrics) => {
+            handle_chain_command(&client, &keypair_mgr, &cli.rpc_url, command).await?
+        }
 
         command @ (Commands::Token(_)
         | Commands::Gov(_)

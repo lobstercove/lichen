@@ -358,6 +358,23 @@ pub(super) enum ValidatorCommands {
 
     /// Show all validators (same as top-level 'validators' command)
     List,
+
+    /// Print the local machine fingerprint used for validator registration
+    Fingerprint,
+
+    /// Submit a self-funded RegisterValidator transaction
+    Register {
+        /// Amount in spores to self-fund as validator stake
+        amount: u64,
+
+        /// Keypair file for the validator account
+        #[arg(short, long)]
+        keypair: Option<PathBuf>,
+
+        /// 32-byte machine fingerprint as hex; defaults to local host fingerprint
+        #[arg(long)]
+        fingerprint_hex: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]

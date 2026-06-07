@@ -5,6 +5,11 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.117] - 2026-06-08
+
+### Added
+- Adds `lichen validator fingerprint` and `lichen validator register` for post-bootstrap validator admission through the existing self-funded `RegisterValidator` consensus instruction.
+
 ## [0.5.116] - 2026-06-08
 
 ### Fixed

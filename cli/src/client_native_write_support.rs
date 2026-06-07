@@ -82,6 +82,22 @@ impl RpcClient {
         submit_signed_instruction(self, keypair, instruction).await
     }
 
+    /// Register a validator through the self-funded RegisterValidator path.
+    pub async fn register_validator_self_funded(
+        &self,
+        keypair: &Keypair,
+        fingerprint: [u8; 32],
+        amount: u64,
+    ) -> Result<String> {
+        let instruction = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![keypair.pubkey()],
+            data: build_register_validator_self_funded_data(fingerprint, amount),
+        };
+
+        submit_signed_instruction(self, keypair, instruction).await
+    }
+
     /// Unstake LICN tokens
     pub async fn unstake(&self, keypair: &Keypair, amount: u64) -> Result<String> {
         let instruction = Instruction {
@@ -95,5 +111,35 @@ impl RpcClient {
         };
 
         submit_signed_instruction(self, keypair, instruction).await
+    }
+}
+
+pub(crate) fn build_register_validator_self_funded_data(
+    fingerprint: [u8; 32],
+    amount: u64,
+) -> Vec<u8> {
+    let mut data = Vec::with_capacity(42);
+    data.push(26u8);
+    data.extend_from_slice(&fingerprint);
+    data.push(1u8);
+    data.extend_from_slice(&amount.to_le_bytes());
+    data
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn register_validator_self_funded_data_matches_wire_format() {
+        let fingerprint = [0x42u8; 32];
+        let amount = 75_000_000_000_000u64;
+        let data = build_register_validator_self_funded_data(fingerprint, amount);
+
+        assert_eq!(data.len(), 42);
+        assert_eq!(data[0], 26);
+        assert_eq!(&data[1..33], &fingerprint);
+        assert_eq!(data[33], 1);
+        assert_eq!(&data[34..42], &amount.to_le_bytes());
     }
 }
