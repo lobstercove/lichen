@@ -7,7 +7,7 @@ Ultra-low fees · Sub-second BFT block commitment · Agent-native identity · Mu
 [![License: Apache--2.0%20%2B%20MIT](https://img.shields.io/badge/License-Apache--2.0%20%2B%20MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.88+-00C9DB.svg)](https://www.rust-lang.org)
 
-**Current release:** signed `v0.5.109` with first-class BTC/wBTC support, slot-only MossStake state, deterministic legacy testnet bootstrap-grant replay, fresh-join warp snapshot backpressure, live BFT restart catch-up recovery, local three-validator first-start sync validation, and the v0.5.93 stable validator base without replaying historical state.
+**Current release:** signed `v0.5.110` with first-class BTC/wBTC support, slot-only MossStake state, deterministic legacy testnet bootstrap-grant replay, fresh-join warp snapshot backpressure, live BFT restart catch-up recovery, local three-validator first-start sync validation, and the v0.5.93 stable validator base without replaying historical state.
 
 **Website:** https://lichen.network  
 **Documentation:** https://developers.lichen.network  
@@ -135,9 +135,9 @@ https://github.com/lobstercove/lichen/releases/download/<tag>/lichen-validator-<
 ```
 
 Examples:
-- `https://github.com/lobstercove/lichen/releases/download/v0.5.109/lichen-validator-linux-x86_64.tar.gz`
-- `https://github.com/lobstercove/lichen/releases/download/v0.5.109/lichen-validator-darwin-aarch64.tar.gz`
-- `https://github.com/lobstercove/lichen/releases/download/v0.5.109/lichen-validator-windows-x86_64.tar.gz`
+- `https://github.com/lobstercove/lichen/releases/download/v0.5.110/lichen-validator-linux-x86_64.tar.gz`
+- `https://github.com/lobstercove/lichen/releases/download/v0.5.110/lichen-validator-darwin-aarch64.tar.gz`
+- `https://github.com/lobstercove/lichen/releases/download/v0.5.110/lichen-validator-windows-x86_64.tar.gz`
 
 Linux x86_64:
 

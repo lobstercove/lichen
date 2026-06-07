@@ -116,6 +116,8 @@ const SPARSE_STATE_COMMITMENT_CONFIRMATION: &str = "sparse-state-commitment:v1";
 const REPAIR_TESTNET_DEX_CONTRACTS_FLAG: &str = "--repair-testnet-dex-contracts";
 const DEX_REPAIR_CONFIRMATION: &str = "repair-dex-contracts:testnet:v0.5.77";
 const SHOW_CONTRACT_STORAGE_DIGEST_FLAG: &str = "--show-contract-storage-digest";
+const REPAIR_ANALYTICS_24H_WINDOW_FLAG: &str = "--repair-analytics-24h-window";
+const ANALYTICS_24H_REPAIR_CONFIRMATION: &str = "repair-analytics-24h:v1";
 const TESTNET_DEX_REPAIR_CONTRACTS: &[(&str, &str)] = &[
     ("LUSD", "lusd_token"),
     ("WSOL", "wsol_token"),
@@ -7571,6 +7573,184 @@ fn maybe_run_contract_storage_digest_admin(args: &[String]) -> Option<i32> {
     Some(0)
 }
 
+#[derive(Debug, Default)]
+struct Analytics24hRepairReport {
+    tip: u64,
+    block_hash: Hash,
+    block_timestamp: u64,
+    before_root: Hash,
+    after_root: Hash,
+    pair_count: u64,
+    changed_pairs: u64,
+    changed_values: u64,
+    dry_run: bool,
+}
+
+fn read_analytics_u64(state: &StateStore, analytics_pk: &Pubkey, key: &[u8]) -> Option<u64> {
+    match state.get_contract_storage(analytics_pk, key) {
+        Ok(Some(data)) if data.len() >= 8 => {
+            Some(u64::from_le_bytes(data[0..8].try_into().unwrap_or([0; 8])))
+        }
+        _ => None,
+    }
+}
+
+fn encode_analytics_24h_stats(price: u64) -> Vec<u8> {
+    let mut stats = Vec::with_capacity(48);
+    stats.extend_from_slice(&0u64.to_le_bytes());
+    stats.extend_from_slice(&price.to_le_bytes());
+    stats.extend_from_slice(&price.to_le_bytes());
+    stats.extend_from_slice(&price.to_le_bytes());
+    stats.extend_from_slice(&price.to_le_bytes());
+    stats.extend_from_slice(&0u64.to_le_bytes());
+    stats
+}
+
+fn repair_analytics_24h_window(
+    state: &StateStore,
+    dry_run: bool,
+) -> Result<Analytics24hRepairReport, String> {
+    let analytics_pk = state
+        .get_symbol_registry("ANALYTICS")?
+        .ok_or_else(|| "ANALYTICS symbol not found".to_string())?
+        .program;
+
+    let tip = state.get_last_slot()?;
+    if tip == 0 {
+        return Err("refusing analytics 24h repair at genesis".to_string());
+    }
+    let block = state
+        .get_block_by_slot(tip)?
+        .ok_or_else(|| format!("canonical tip block {tip} is missing"))?;
+    let block_hash = block.hash();
+    let block_timestamp = block.header.timestamp;
+    let before_root = state.compute_state_root();
+    let pair_count = state.get_program_storage_u64("DEX", b"dex_pair_count");
+
+    let mut report = Analytics24hRepairReport {
+        tip,
+        block_hash,
+        block_timestamp,
+        before_root,
+        after_root: before_root,
+        pair_count,
+        changed_pairs: 0,
+        changed_values: 0,
+        dry_run,
+    };
+
+    for pair_id in 1..=pair_count {
+        let lp_key = format!("ana_lp_{}", pair_id);
+        let stats_key = format!("ana_24h_{}", pair_id);
+        let ts_key = format!("ana_24h_ts_{}", pair_id);
+
+        let current_price = read_analytics_u64(state, &analytics_pk, lp_key.as_bytes())
+            .or_else(|| {
+                state
+                    .get_contract_storage(&analytics_pk, stats_key.as_bytes())
+                    .ok()
+                    .flatten()
+                    .and_then(|data| {
+                        if data.len() >= 40 {
+                            Some(u64::from_le_bytes(
+                                data[32..40].try_into().unwrap_or([0; 8]),
+                            ))
+                        } else {
+                            None
+                        }
+                    })
+            })
+            .unwrap_or(0);
+        if current_price == 0 {
+            continue;
+        }
+
+        let desired_stats = encode_analytics_24h_stats(current_price);
+        let desired_ts = block_timestamp.to_le_bytes();
+        let current_stats = state
+            .get_contract_storage(&analytics_pk, stats_key.as_bytes())?
+            .unwrap_or_default();
+        let current_ts = state
+            .get_contract_storage(&analytics_pk, ts_key.as_bytes())?
+            .unwrap_or_default();
+
+        let mut pair_changed = false;
+        if current_stats != desired_stats {
+            pair_changed = true;
+            report.changed_values = report.changed_values.saturating_add(1);
+            if !dry_run {
+                state.put_contract_storage(&analytics_pk, stats_key.as_bytes(), &desired_stats)?;
+            }
+        }
+        if current_ts != desired_ts {
+            pair_changed = true;
+            report.changed_values = report.changed_values.saturating_add(1);
+            if !dry_run {
+                state.put_contract_storage(&analytics_pk, ts_key.as_bytes(), &desired_ts)?;
+            }
+        }
+        if pair_changed {
+            report.changed_pairs = report.changed_pairs.saturating_add(1);
+        }
+    }
+
+    if !dry_run {
+        report.after_root = state.compute_state_root();
+        state.put_post_state_commitment_anchor(tip, &block_hash, &report.after_root)?;
+    }
+
+    Ok(report)
+}
+
+fn print_analytics_24h_repair_report(data_dir: &Path, report: &Analytics24hRepairReport) {
+    println!("data_dir={}", data_dir.display());
+    println!("mode={}", if report.dry_run { "dry-run" } else { "write" });
+    println!("tip={}", report.tip);
+    println!("tip_block_hash={}", report.block_hash.to_hex());
+    println!("tip_timestamp={}", report.block_timestamp);
+    println!("pair_count={}", report.pair_count);
+    println!("changed_pairs={}", report.changed_pairs);
+    println!("changed_values={}", report.changed_values);
+    println!("before_root={}", report.before_root.to_hex());
+    println!("after_root={}", report.after_root.to_hex());
+}
+
+fn maybe_run_analytics_24h_repair_admin(args: &[String]) -> Option<i32> {
+    if !has_flag(args, REPAIR_ANALYTICS_24H_WINDOW_FLAG) {
+        return None;
+    }
+
+    let dry_run = has_flag(args, "--dry-run");
+    if !dry_run {
+        let confirm = get_flag_value(args, &["--confirm"]);
+        if confirm != Some(ANALYTICS_24H_REPAIR_CONFIRMATION) {
+            eprintln!("Refusing write without --confirm {ANALYTICS_24H_REPAIR_CONFIRMATION}");
+            return Some(1);
+        }
+    }
+
+    let data_dir = restriction_schema_data_dir(args);
+    let cache_size_mb = get_flag_value(args, &["--cache-size-mb"]).and_then(|s| s.parse().ok());
+    let state = match StateStore::open_with_cache_mb(&data_dir, cache_size_mb) {
+        Ok(state) => state,
+        Err(err) => {
+            eprintln!("Failed to open state DB at {}: {}", data_dir.display(), err);
+            return Some(1);
+        }
+    };
+
+    match repair_analytics_24h_window(&state, dry_run) {
+        Ok(report) => {
+            print_analytics_24h_repair_report(&data_dir, &report);
+            Some(0)
+        }
+        Err(err) => {
+            eprintln!("{err}");
+            Some(1)
+        }
+    }
+}
+
 fn load_genesis_config_from_disk(genesis_path: &Path) -> Result<GenesisConfig, String> {
     info!("📜 Loading genesis from: {}", genesis_path.display());
     let config = GenesisConfig::from_file(genesis_path)
@@ -8002,6 +8182,9 @@ fn main() {
         std::process::exit(exit_code);
     }
     if let Some(exit_code) = maybe_run_contract_storage_digest_admin(&args) {
+        std::process::exit(exit_code);
+    }
+    if let Some(exit_code) = maybe_run_analytics_24h_repair_admin(&args) {
         std::process::exit(exit_code);
     }
 
