@@ -105,6 +105,7 @@ const GENESIS_SYNC_INCOMPLETE_MARKER: &str = "genesis_sync_incomplete";
 #[cfg(test)]
 const STAKE_POOL_PRODUCTION_COUNTER_REPAIR_METADATA_KEY: &str =
     "stake_pool_production_counter_repair_v1";
+#[cfg(test)]
 const STAKE_POOL_PRODUCTION_COUNTER_REPAIR_PROGRESS_INTERVAL: u64 = 100_000;
 const ACTIVATE_RESTRICTION_SCHEMA_FLAG: &str = "--activate-restriction-schema";
 const SHOW_RESTRICTION_SCHEMA_FLAG: &str = "--show-restriction-schema";
@@ -116,9 +117,11 @@ const REPAIR_TESTNET_DEX_CONTRACTS_FLAG: &str = "--repair-testnet-dex-contracts"
 const DEX_REPAIR_CONFIRMATION: &str = "repair-dex-contracts:testnet:v0.5.77";
 const SHOW_CONTRACT_STORAGE_DIGEST_FLAG: &str = "--show-contract-storage-digest";
 const SHOW_STAKE_POOL_DIGEST_FLAG: &str = "--show-stake-pool-digest";
+const EXPORT_STAKE_POOL_SINGLETON_FLAG: &str = "--export-stake-pool-singleton";
+const IMPORT_STAKE_POOL_SINGLETON_FLAG: &str = "--import-stake-pool-singleton";
 const REPAIR_STAKE_POOL_PRODUCTION_COUNTERS_FLAG: &str = "--repair-stake-pool-production-counters";
-const STAKE_POOL_PRODUCTION_COUNTER_REPAIR_CONFIRMATION: &str =
-    "repair-stake-pool-production-counters:canonical-blocks";
+const STAKE_POOL_SINGLETON_SNAPSHOT_VERSION: u32 = 1;
+const STAKE_POOL_SINGLETON_IMPORT_CONFIRMATION: &str = "import-stake-pool-singleton:matching-tip";
 const VERIFY_WARP_SNAPSHOT_ROUNDTRIP_FLAG: &str = "--verify-warp-snapshot-roundtrip";
 const REPAIR_ANALYTICS_24H_WINDOW_FLAG: &str = "--repair-analytics-24h-window";
 const ANALYTICS_24H_REPAIR_CONFIRMATION: &str = "repair-analytics-24h:v1";
@@ -520,6 +523,135 @@ fn import_ordered_snapshot_category(
         }
         category_name => state.import_snapshot_category(category_name, entries),
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StakePoolSingletonSnapshot {
+    version: u32,
+    tip_slot: u64,
+    tip_block_hash: Hash,
+    tip_header_state_root: Hash,
+    state_root: Hash,
+    stake_pool_hash: Hash,
+    stake_pool: StakePool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StakePoolSingletonImportReport {
+    tip_slot: u64,
+    tip_block_hash: Hash,
+    before_stake_pool_hash: Hash,
+    after_stake_pool_hash: Hash,
+    after_state_root: Hash,
+    changed: bool,
+}
+
+fn build_stake_pool_singleton_snapshot(
+    state: &StateStore,
+) -> Result<StakePoolSingletonSnapshot, String> {
+    let tip_slot = state
+        .get_last_slot()
+        .map_err(|err| format!("failed to read tip slot: {err}"))?;
+    let tip_block = state
+        .get_block_by_slot(tip_slot)?
+        .ok_or_else(|| format!("missing canonical tip block at slot {tip_slot}"))?;
+    let stake_pool = state.get_stake_pool()?;
+    let state_root = state.compute_state_root_cold_start();
+    Ok(StakePoolSingletonSnapshot {
+        version: STAKE_POOL_SINGLETON_SNAPSHOT_VERSION,
+        tip_slot,
+        tip_block_hash: tip_block.hash(),
+        tip_header_state_root: tip_block.header.state_root,
+        state_root,
+        stake_pool_hash: stake_pool.canonical_hash(),
+        stake_pool,
+    })
+}
+
+fn decode_stake_pool_singleton_snapshot(
+    bytes: &[u8],
+) -> Result<StakePoolSingletonSnapshot, String> {
+    let snapshot: StakePoolSingletonSnapshot = deserialize_legacy_bincode_strict(
+        bytes,
+        bytes.len() as u64,
+        "stake-pool singleton snapshot",
+    )?;
+    if snapshot.version != STAKE_POOL_SINGLETON_SNAPSHOT_VERSION {
+        return Err(format!(
+            "unsupported stake-pool singleton snapshot version {}",
+            snapshot.version
+        ));
+    }
+    let actual_hash = snapshot.stake_pool.canonical_hash();
+    if actual_hash != snapshot.stake_pool_hash {
+        return Err(format!(
+            "stake-pool snapshot hash mismatch: declared={} actual={}",
+            snapshot.stake_pool_hash.to_hex(),
+            actual_hash.to_hex()
+        ));
+    }
+    Ok(snapshot)
+}
+
+fn import_stake_pool_singleton_snapshot(
+    state: &StateStore,
+    snapshot: &StakePoolSingletonSnapshot,
+) -> Result<StakePoolSingletonImportReport, String> {
+    if snapshot.version != STAKE_POOL_SINGLETON_SNAPSHOT_VERSION {
+        return Err(format!(
+            "unsupported stake-pool singleton snapshot version {}",
+            snapshot.version
+        ));
+    }
+
+    let local_tip_slot = state
+        .get_last_slot()
+        .map_err(|err| format!("failed to read local tip slot: {err}"))?;
+    if local_tip_slot != snapshot.tip_slot {
+        return Err(format!(
+            "refusing stake-pool import at different tip: local_slot={} snapshot_slot={}",
+            local_tip_slot, snapshot.tip_slot
+        ));
+    }
+    let local_tip_block = state
+        .get_block_by_slot(local_tip_slot)?
+        .ok_or_else(|| format!("missing local tip block at slot {local_tip_slot}"))?;
+    let local_tip_hash = local_tip_block.hash();
+    if local_tip_hash != snapshot.tip_block_hash {
+        return Err(format!(
+            "refusing stake-pool import at different tip block: local={} snapshot={}",
+            local_tip_hash.to_hex(),
+            snapshot.tip_block_hash.to_hex()
+        ));
+    }
+
+    let before_pool = state.get_stake_pool()?;
+    let before_hash = before_pool.canonical_hash();
+    let changed = before_hash != snapshot.stake_pool_hash;
+    if changed {
+        state.put_stake_pool(&snapshot.stake_pool)?;
+    }
+
+    let after_state_root = state.compute_state_root_cold_start();
+    if after_state_root != snapshot.state_root {
+        if changed {
+            let _ = state.put_stake_pool(&before_pool);
+        }
+        return Err(format!(
+            "refusing stake-pool import because state root after import does not match snapshot: after={} snapshot={}",
+            after_state_root.to_hex(),
+            snapshot.state_root.to_hex()
+        ));
+    }
+
+    Ok(StakePoolSingletonImportReport {
+        tip_slot: local_tip_slot,
+        tip_block_hash: local_tip_hash,
+        before_stake_pool_hash: before_hash,
+        after_stake_pool_hash: snapshot.stake_pool_hash,
+        after_state_root,
+        changed,
+    })
 }
 
 #[cfg(test)]
@@ -5093,6 +5225,7 @@ fn record_post_block_state_commitment_anchor(state: &StateStore, block: &Block, 
     }
 }
 
+#[cfg(test)]
 fn repair_stake_pool_production_counters_from_blocks(
     state: &StateStore,
     context: &str,
@@ -7851,19 +7984,110 @@ fn maybe_run_stake_pool_digest_admin(args: &[String]) -> Option<i32> {
     Some(0)
 }
 
-fn maybe_run_stake_pool_production_counter_repair_admin(args: &[String]) -> Option<i32> {
-    if !has_flag(args, REPAIR_STAKE_POOL_PRODUCTION_COUNTERS_FLAG) {
+fn maybe_run_stake_pool_singleton_export_admin(args: &[String]) -> Option<i32> {
+    if !has_flag(args, EXPORT_STAKE_POOL_SINGLETON_FLAG) {
         return None;
     }
 
-    let confirm = get_flag_value(args, &["--confirm"]);
-    if confirm != Some(STAKE_POOL_PRODUCTION_COUNTER_REPAIR_CONFIRMATION) {
+    let output_path = match get_flag_value(args, &["--output"]).map(PathBuf::from) {
+        Some(path) => path,
+        None => {
+            eprintln!("Missing --output <path> for {EXPORT_STAKE_POOL_SINGLETON_FLAG}");
+            return Some(1);
+        }
+    };
+    let data_dir = restriction_schema_data_dir(args);
+    let secondary_dir = get_flag_value(args, &["--secondary-dir"]).map(PathBuf::from);
+    let cache_size_mb = get_flag_value(args, &["--cache-size-mb"]).and_then(|s| s.parse().ok());
+    let state = match secondary_dir.as_ref() {
+        Some(path) => StateStore::open_secondary_with_cache_mb(&data_dir, path, cache_size_mb),
+        None => StateStore::open_with_cache_mb(&data_dir, cache_size_mb),
+    };
+    let state = match state {
+        Ok(state) => state,
+        Err(err) => {
+            eprintln!("Failed to open state DB at {}: {}", data_dir.display(), err);
+            return Some(1);
+        }
+    };
+    if secondary_dir.is_some() {
+        if let Err(err) = state.try_catch_up_with_primary() {
+            eprintln!("{err}");
+            return Some(1);
+        }
+    }
+
+    let snapshot = match build_stake_pool_singleton_snapshot(&state) {
+        Ok(snapshot) => snapshot,
+        Err(err) => {
+            eprintln!("Failed to build stake-pool singleton snapshot: {err}");
+            return Some(1);
+        }
+    };
+    let data = match serialize_legacy_bincode(&snapshot, "stake-pool singleton snapshot") {
+        Ok(data) => data,
+        Err(err) => {
+            eprintln!("Failed to encode stake-pool singleton snapshot: {err}");
+            return Some(1);
+        }
+    };
+    if let Some(parent) = output_path.parent() {
+        if let Err(err) = fs::create_dir_all(parent) {
+            eprintln!(
+                "Failed to create output directory {}: {}",
+                parent.display(),
+                err
+            );
+            return Some(1);
+        }
+    }
+    if let Err(err) = fs::write(&output_path, &data) {
         eprintln!(
-            "Refusing write without --confirm {STAKE_POOL_PRODUCTION_COUNTER_REPAIR_CONFIRMATION}"
+            "Failed to write stake-pool singleton snapshot {}: {}",
+            output_path.display(),
+            err
         );
         return Some(1);
     }
 
+    println!("data_dir={}", data_dir.display());
+    if let Some(path) = &secondary_dir {
+        println!("secondary_dir={}", path.display());
+    }
+    println!("output={}", output_path.display());
+    println!("bytes={}", data.len());
+    println!("tip_slot={}", snapshot.tip_slot);
+    println!("tip_block_hash={}", snapshot.tip_block_hash.to_hex());
+    println!(
+        "tip_header_state_root={}",
+        snapshot.tip_header_state_root.to_hex()
+    );
+    println!("state_root={}", snapshot.state_root.to_hex());
+    println!("stake_pool_hash={}", snapshot.stake_pool_hash.to_hex());
+    println!(
+        "stake_pool_entries={}",
+        snapshot.stake_pool.stake_entries().len()
+    );
+    Some(0)
+}
+
+fn maybe_run_stake_pool_singleton_import_admin(args: &[String]) -> Option<i32> {
+    if !has_flag(args, IMPORT_STAKE_POOL_SINGLETON_FLAG) {
+        return None;
+    }
+
+    let confirm = get_flag_value(args, &["--confirm"]);
+    if confirm != Some(STAKE_POOL_SINGLETON_IMPORT_CONFIRMATION) {
+        eprintln!("Refusing write without --confirm {STAKE_POOL_SINGLETON_IMPORT_CONFIRMATION}");
+        return Some(1);
+    }
+    let input_path = match get_flag_value(args, &["--input"]).map(PathBuf::from) {
+        Some(path) => path,
+        None => {
+            eprintln!("Missing --input <path> for {IMPORT_STAKE_POOL_SINGLETON_FLAG}");
+            return Some(1);
+        }
+    };
     let data_dir = restriction_schema_data_dir(args);
     let cache_size_mb = get_flag_value(args, &["--cache-size-mb"]).and_then(|s| s.parse().ok());
     let state = match StateStore::open_with_cache_mb(&data_dir, cache_size_mb) {
@@ -7873,31 +8097,70 @@ fn maybe_run_stake_pool_production_counter_repair_admin(args: &[String]) -> Opti
             return Some(1);
         }
     };
+    let data = match fs::read(&input_path) {
+        Ok(data) => data,
+        Err(err) => {
+            eprintln!(
+                "Failed to read stake-pool singleton snapshot {}: {}",
+                input_path.display(),
+                err
+            );
+            return Some(1);
+        }
+    };
+    let snapshot = match decode_stake_pool_singleton_snapshot(&data) {
+        Ok(snapshot) => snapshot,
+        Err(err) => {
+            eprintln!("Failed to decode stake-pool singleton snapshot: {err}");
+            return Some(1);
+        }
+    };
 
     println!("data_dir={}", data_dir.display());
-    match state.get_last_slot() {
-        Ok(slot) => println!("last_slot={slot}"),
-        Err(err) => println!("last_slot_error={err}"),
-    }
-    match state.get_stake_pool() {
-        Ok(pool) => println!("stake_pool_hash_before={}", pool.canonical_hash().to_hex()),
-        Err(err) => println!("stake_pool_hash_before_error={err}"),
-    }
+    println!("input={}", input_path.display());
+    println!("snapshot_tip_slot={}", snapshot.tip_slot);
+    println!(
+        "snapshot_tip_block_hash={}",
+        snapshot.tip_block_hash.to_hex()
+    );
+    println!("snapshot_state_root={}", snapshot.state_root.to_hex());
+    println!(
+        "snapshot_stake_pool_hash={}",
+        snapshot.stake_pool_hash.to_hex()
+    );
 
-    match repair_stake_pool_production_counters_from_blocks(&state, "admin repair") {
-        Ok(changed) => {
-            match state.get_stake_pool() {
-                Ok(pool) => println!("stake_pool_hash_after={}", pool.canonical_hash().to_hex()),
-                Err(err) => println!("stake_pool_hash_after_error={err}"),
-            }
-            println!("stake_pool_repaired={changed}");
+    match import_stake_pool_singleton_snapshot(&state, &snapshot) {
+        Ok(report) => {
+            println!("tip_slot={}", report.tip_slot);
+            println!("tip_block_hash={}", report.tip_block_hash.to_hex());
+            println!(
+                "stake_pool_hash_before={}",
+                report.before_stake_pool_hash.to_hex()
+            );
+            println!(
+                "stake_pool_hash_after={}",
+                report.after_stake_pool_hash.to_hex()
+            );
+            println!("state_root_after={}", report.after_state_root.to_hex());
+            println!("stake_pool_imported={}", report.changed);
             Some(0)
         }
         Err(err) => {
-            eprintln!("Failed to repair stake pool production counters: {err}");
+            eprintln!("Failed to import stake-pool singleton snapshot: {err}");
             Some(1)
         }
     }
+}
+
+fn maybe_run_stake_pool_production_counter_repair_admin(args: &[String]) -> Option<i32> {
+    if !has_flag(args, REPAIR_STAKE_POOL_PRODUCTION_COUNTERS_FLAG) {
+        return None;
+    }
+
+    eprintln!(
+        "{REPAIR_STAKE_POOL_PRODUCTION_COUNTERS_FLAG} is disabled in this release because snapshot/warp validators may not have complete local block history. Use --export-stake-pool-singleton on the trusted source and --import-stake-pool-singleton --confirm {STAKE_POOL_SINGLETON_IMPORT_CONFIRMATION} on a target with the same tip slot and block hash."
+    );
+    Some(1)
 }
 
 fn export_roundtrip_snapshot_entries(
@@ -8760,6 +9023,12 @@ fn main() {
         std::process::exit(exit_code);
     }
     if let Some(exit_code) = maybe_run_stake_pool_digest_admin(&args) {
+        std::process::exit(exit_code);
+    }
+    if let Some(exit_code) = maybe_run_stake_pool_singleton_export_admin(&args) {
+        std::process::exit(exit_code);
+    }
+    if let Some(exit_code) = maybe_run_stake_pool_singleton_import_admin(&args) {
         std::process::exit(exit_code);
     }
     if let Some(exit_code) = maybe_run_stake_pool_production_counter_repair_admin(&args) {
@@ -13926,7 +14195,10 @@ async fn run_validator() {
                     }
                 }
                 if report.stake_pool_hash != local_pool_hash {
-                    warn!("⚠️  Stake pool mismatch with {}", report.requester);
+                    warn!(
+                        "⚠️  Stake pool mismatch with {}; requesting authenticated checkpoint metadata",
+                        report.requester
+                    );
                     let key = (report.requester, 1u8);
                     let should_request = last_request
                         .get(&key)
@@ -13934,16 +14206,14 @@ async fn run_validator() {
                         .unwrap_or(true);
                     if should_request {
                         let request = P2PMessage::new(
-                            MessageType::SnapshotRequest {
-                                kind: SnapshotKind::StakePool,
-                            },
+                            MessageType::CheckpointMetaRequest,
                             local_addr_for_consistency,
                         );
                         if let Err(e) = peer_mgr_for_consistency
                             .send_to_peer(&report.requester, request)
                             .await
                         {
-                            warn!("⚠️  Failed to request stake pool snapshot: {}", e);
+                            warn!("⚠️  Failed to request checkpoint metadata: {}", e);
                             peer_mgr_for_consistency.record_violation(&report.requester);
                         } else {
                             last_request.insert(key, std::time::Instant::now());
@@ -15412,6 +15682,13 @@ async fn run_validator() {
                             if remote_pool.stake_entries().is_empty() {
                                 warn!(
                                     "⚠️  Ignoring empty stake pool snapshot from {}",
+                                    response.requester
+                                );
+                                continue;
+                            }
+                            if snapshot_sync_for_apply.lock().await.is_ready() {
+                                warn!(
+                                    "⚠️  Ignoring post-bootstrap stake pool singleton snapshot from {}; use verified checkpoint sync or guarded singleton import",
                                     response.requester
                                 );
                                 continue;
@@ -21816,6 +22093,144 @@ mod tests {
         assert_eq!(ix.data[14], 8);
         assert_eq!(tx.message.recent_blockhash, tip.hash());
         assert_eq!(tx.signatures.len(), 1);
+    }
+
+    #[test]
+    fn stake_pool_singleton_import_repairs_matching_tip_pool() {
+        let source_dir = tempfile::tempdir().expect("create source dir");
+        let target_dir = tempfile::tempdir().expect("create target dir");
+        let source = StateStore::open(source_dir.path()).expect("open source");
+        let target = StateStore::open(target_dir.path()).expect("open target");
+        let validator_kp = Keypair::generate();
+        let validator = validator_kp.pubkey();
+
+        let mut tip = Block::new_with_timestamp(
+            12,
+            Hash::hash(b"singleton-parent"),
+            Hash::hash(b"singleton-header-root"),
+            validator.0,
+            Vec::new(),
+            1_778_500_000,
+        );
+        tip.sign(&validator_kp);
+        source
+            .put_block_atomic(&tip, Some(12), Some(12))
+            .expect("put source tip");
+        target
+            .put_block_atomic(&tip, Some(12), Some(12))
+            .expect("put target tip");
+
+        let mut source_pool = StakePool::new();
+        source_pool
+            .stake(validator, MIN_VALIDATOR_STAKE, 0)
+            .expect("stake source validator");
+        {
+            let entry = source_pool
+                .get_stake_mut(&validator)
+                .expect("source stake entry");
+            entry.blocks_produced = 10;
+            entry.last_reward_slot = 12;
+        }
+        source
+            .put_stake_pool(&source_pool)
+            .expect("put source stake pool");
+
+        let mut target_pool = source_pool.clone();
+        {
+            let entry = target_pool
+                .get_stake_mut(&validator)
+                .expect("target stake entry");
+            entry.blocks_produced = 3;
+            entry.last_reward_slot = 4;
+        }
+        target
+            .put_stake_pool(&target_pool)
+            .expect("put target stake pool");
+        assert_ne!(source_pool.canonical_hash(), target_pool.canonical_hash());
+
+        let snapshot =
+            build_stake_pool_singleton_snapshot(&source).expect("build singleton snapshot");
+        let encoded = serialize_legacy_bincode(&snapshot, "test singleton snapshot")
+            .expect("encode singleton snapshot");
+        let decoded =
+            decode_stake_pool_singleton_snapshot(&encoded).expect("decode singleton snapshot");
+        let report = import_stake_pool_singleton_snapshot(&target, &decoded)
+            .expect("import singleton snapshot");
+
+        assert!(report.changed);
+        assert_eq!(report.tip_slot, 12);
+        assert_eq!(report.after_stake_pool_hash, source_pool.canonical_hash());
+        assert_eq!(
+            target
+                .get_stake_pool()
+                .expect("read repaired pool")
+                .canonical_hash(),
+            source_pool.canonical_hash()
+        );
+        assert_eq!(target.compute_state_root_cold_start(), snapshot.state_root);
+    }
+
+    #[test]
+    fn stake_pool_singleton_import_rejects_different_tip_block() {
+        let source_dir = tempfile::tempdir().expect("create source dir");
+        let target_dir = tempfile::tempdir().expect("create target dir");
+        let source = StateStore::open(source_dir.path()).expect("open source");
+        let target = StateStore::open(target_dir.path()).expect("open target");
+        let validator_kp = Keypair::generate();
+        let validator = validator_kp.pubkey();
+
+        let mut source_tip = Block::new_with_timestamp(
+            12,
+            Hash::hash(b"singleton-parent"),
+            Hash::hash(b"source-header-root"),
+            validator.0,
+            Vec::new(),
+            1_778_500_000,
+        );
+        source_tip.sign(&validator_kp);
+        source
+            .put_block_atomic(&source_tip, Some(12), Some(12))
+            .expect("put source tip");
+
+        let mut target_tip = Block::new_with_timestamp(
+            12,
+            Hash::hash(b"singleton-parent"),
+            Hash::hash(b"target-header-root"),
+            validator.0,
+            Vec::new(),
+            1_778_500_001,
+        );
+        target_tip.sign(&validator_kp);
+        target
+            .put_block_atomic(&target_tip, Some(12), Some(12))
+            .expect("put target tip");
+
+        let mut source_pool = StakePool::new();
+        source_pool
+            .stake(validator, MIN_VALIDATOR_STAKE, 0)
+            .expect("stake source validator");
+        source
+            .put_stake_pool(&source_pool)
+            .expect("put source pool");
+        let mut target_pool = source_pool.clone();
+        target_pool.record_block_produced(&validator);
+        target
+            .put_stake_pool(&target_pool)
+            .expect("put target pool");
+
+        let snapshot =
+            build_stake_pool_singleton_snapshot(&source).expect("build singleton snapshot");
+        let err = import_stake_pool_singleton_snapshot(&target, &snapshot)
+            .expect_err("different tip block must be rejected");
+
+        assert!(err.contains("different tip block"));
+        assert_eq!(
+            target
+                .get_stake_pool()
+                .expect("read target pool")
+                .canonical_hash(),
+            target_pool.canonical_hash()
+        );
     }
 
     #[test]
