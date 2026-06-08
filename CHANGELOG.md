@@ -5,6 +5,11 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.123] - 2026-06-08
+
+### Fixed
+- Starts initial block catch-up from the first missing descendant instead of re-requesting the already canonical local tip, preventing fresh validators from looping on duplicate-tip responses while pending children are available.
+
 ## [0.5.122] - 2026-06-08
 
 ### Fixed
