@@ -399,6 +399,11 @@ const mainnetRunbookDoc = read('docs/deployment/MAINNET_LAUNCH_RUNBOOK.md');
 const productionDeployment = read('docs/deployment/PRODUCTION_DEPLOYMENT.md');
 const dexLiquidityStrategy = read('docs/strategy/DEX_LIQUIDITY_STRATEGY.md');
 const btcRolloutPlan = read('docs/deployment/BTC_WRAPPED_ASSET_ROLLOUT_PLAN.md');
+const cleanSlateRedeployPath = path.join(root, 'scripts', 'clean-slate-redeploy.sh');
+const cleanSlateRedeploy = fs.existsSync(cleanSlateRedeployPath)
+  ? fs.readFileSync(cleanSlateRedeployPath, 'utf8')
+  : '';
+const rollingReleaseDeploy = read('scripts/rolling-release-deploy.sh');
 assert(
   custodyRouteProfile.includes('mandatory CLOB pairs, AMM pools, and router') &&
     mainnetRunbook.includes('not a DEX market optionality switch') &&
@@ -429,17 +434,44 @@ assert(
   'BTC rollout plan must record the epoch-6 governed execution signatures and compute budget',
 );
 assert(
-  productionDeployment.includes('Current signed-release target for this runbook is `v0.5.117`') &&
+  productionDeployment.includes('Current signed-release target for this runbook is `v0.5.118`') &&
     productionDeployment.includes('32 manifest symbols') &&
     productionDeployment.includes('mandatory 13 DEX CLOB pairs, AMM pools, and router routes') &&
     productionDeployment.includes('wBTC/lUSD') &&
     productionDeployment.includes('wBTC/LICN') &&
-    productionDeployment.includes('export LICHEN_RELEASE_TAG=v0.5.117') &&
+    productionDeployment.includes('export LICHEN_RELEASE_TAG=v0.5.118') &&
     !productionDeployment.includes('signed release `v0.5.44`') &&
     !productionDeployment.includes('31 manifest symbols') &&
     !productionDeployment.includes('such as `v0.5.50`'),
-  'production clean-slate checklist must match current v0.5.117/32-symbol/13-market expectations',
+  'production clean-slate checklist must match current v0.5.118/32-symbol/13-market expectations',
 );
+for (const expected of [
+  '7LFPJ8gqmAtjbhfRg1P4VXmTQJV4AeZxzws3UsA6SVq',
+  '6RMeoigHdJWB47pEZEMSj5gvT7nbJPYSfPqjcur9vMJ',
+  '6TghL7ioQz5R8pfrX1Qcfy8rNMzRP5F2pndmmRQ2sPm',
+  '6XhsGituXoWSd1wLtutZgdJve6gLrdSi7YhEx1ZDFHW',
+]) {
+  assert(
+    rollingReleaseDeploy.includes(expected) &&
+      productionDeployment.includes(expected),
+    `deployment paths pin validator identity ${expected}`,
+  );
+  if (cleanSlateRedeploy) {
+    assert(cleanSlateRedeploy.includes(expected), `local clean-slate script pins validator identity ${expected}`);
+  }
+}
+assert(
+  productionDeployment.includes('Do not restore from `/var/lib/lichen/validator-keypair-testnet.json` unless you first prove') &&
+    productionDeployment.includes('empty chain database but keeps its own'),
+  'deployment docs must preserve known validator identities',
+);
+if (cleanSlateRedeploy) {
+  assert(
+    cleanSlateRedeploy.includes('JOINING_VPSES=("37.59.97.61" "15.235.142.253" "148.113.43.247")') &&
+      cleanSlateRedeploy.includes('CUSTODY_REQUIRED_ROUTES="${CUSTODY_REQUIRED_ROUTES:-solana,ethereum,bnb,neox,bitcoin}"'),
+    'local clean-slate script must include seed-04 and default BTC custody',
+  );
+}
 
 const faucetExample = parseExampleEnv('deploy/faucet-env.example');
 for (const [key, value] of faucetUnit.inlineEnv.entries()) {

@@ -986,9 +986,11 @@ impl StateStore {
             .cf_handle(CF_ACCOUNTS)
             .ok_or_else(|| "Accounts CF not found".to_string())?;
         let mut entries = Vec::new();
+        let mut read_opts = rocksdb::ReadOptions::default();
+        read_opts.set_total_order_seek(true);
         for item in self
             .db
-            .iterator_cf(&cf_accounts, rocksdb::IteratorMode::Start)
+            .iterator_cf_opt(&cf_accounts, read_opts, rocksdb::IteratorMode::Start)
             .flatten()
         {
             let (key, value) = item;
@@ -1012,9 +1014,11 @@ impl StateStore {
             .cf_handle(CF_CONTRACT_STORAGE)
             .ok_or_else(|| "Contract storage CF not found".to_string())?;
         let mut entries = Vec::new();
+        let mut read_opts = rocksdb::ReadOptions::default();
+        read_opts.set_total_order_seek(true);
         for item in self
             .db
-            .iterator_cf(&cf_storage, rocksdb::IteratorMode::Start)
+            .iterator_cf_opt(&cf_storage, read_opts, rocksdb::IteratorMode::Start)
             .flatten()
         {
             let (key, value) = item;

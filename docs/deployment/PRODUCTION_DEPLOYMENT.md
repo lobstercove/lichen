@@ -41,7 +41,7 @@ Choose the least destructive path that matches the evidence:
 | --- | --- | --- |
 | Code-only validator, RPC, P2P, indexing, or performance fix | `LICHEN_RELEASE_TAG=vX.Y.Z scripts/rolling-release-deploy.sh <testnet|mainnet>` | Do not reset or copy state. Install the signed release and restart one validator at a time. |
 | One node is stale because of local disk/log pressure, bad service state, or a host rebuild | Fix disk/log pressure first, then rejoin only that node from its own preserved validator identity | Do not wipe the whole network. Do not copy RocksDB state from another validator. Delete that node's local `state-<net>` only when the operator explicitly approves that single-node rejoin. |
-| Genesis contents must change, launch rehearsal must start from block 0, or every node has provably inconsistent chain state | Owner-approved `scripts/clean-slate-redeploy.sh <testnet|mainnet>` | Destructive. Stop services, flush all validator state, create genesis on the seed, then start joiners from empty state so they sync from peers. |
+| Genesis contents must change, launch rehearsal must start from block 0, or every node has provably inconsistent chain state | Owner-approved `scripts/clean-slate-redeploy.sh <testnet|mainnet>` | Destructive. Stop services, preserve and verify each validator keypair, flush chain state, create genesis on the seed, then start joiners from empty chain state so they sync from peers. |
 | Contract metadata, custody, faucet, Caddy, firewall, or secret ownership issue while the chain is healthy | Fix the affected service/run `deploy/setup.sh` or `scripts/first-boot-deploy.sh` as documented | Do not touch validator state. |
 
 Rolling-release rules:
@@ -156,7 +156,7 @@ Phase-by-phase equivalence:
 | Reset state | Reset repo-local `data/state-*` paths before launch when a fresh chain is required | Stop services and wipe `/var/lib/lichen/*` before redeploy |
 | Seed genesis | Validator 1 pre-generates all validator identities, creates or refreshes local genesis state, and embeds the full bridge/oracle operator set while only validator 1 is active at slot zero | `seed-01` pre-generates all four VPS validator identities, creates the new genesis state, and embeds the 4-key bridge/oracle operator set while only `seed-01` is active at slot zero |
 | Post-genesis bootstrap | `scripts/start-local-stack.sh` waits for the genesis artifacts and then runs `scripts/first-boot-deploy.sh` on validator 1 | `scripts/clean-slate-redeploy.sh` runs `scripts/first-boot-deploy.sh` on `seed-01` after genesis |
-| Joiners come online | Validators 2, 3, and 4 keep their own keypairs, start from empty state directories, verify the canonical genesis/network identifier, then obtain all post-genesis chain state through normal sync from peers | `seed-02`, `seed-03`, and `seed-04` keep their own keypairs, receive only service configuration/secrets for their own host, verify the canonical genesis/network identifier, and sync chain state from seed peers |
+| Joiners come online | Validators 2, 3, and 4 keep their own keypairs, start from empty chain state directories, verify the canonical genesis/network identifier, then obtain all post-genesis chain state through normal sync from peers | `seed-02`, `seed-03`, and `seed-04` keep their own keypairs, receive only service configuration/secrets for their own host, verify the canonical genesis/network identifier, and sync chain state from seed peers |
 | Auxiliary services | Custody and faucet start from the genesis-derived local key material | Custody and faucet start from the seed host's provisioned key material |
 | Validation gate | Run E2E and matrix workloads against the local stack, then rerun without reset | Run final staging or VPS verification for systemd, ingress, firewall, and long-lived state |
 
@@ -353,7 +353,7 @@ What the full-stack launcher does, in order:
 - starts custody service
 - starts faucet service on testnet
 - runs `scripts/first-boot-deploy.sh` against validator 1
-- starts validators 2 and 3 from empty state directories with their own validator keypairs
+- starts validators 2 and 3 from empty chain state directories with their own validator keypairs
 - validators 2 and 3 fetch the canonical genesis config from validator 1's RPC and sync/replay blocks from peers
 
 What still differs from VPS deployment:
@@ -486,7 +486,7 @@ Fresh-genesis Neo deployment is a separate owner-approved reset or launch path:
 
 1. Stop services and flush state only through `scripts/clean-slate-redeploy.sh` with the exact reset approval variables.
 2. Seed-01 creates genesis with the approved `LICHEN_GENESIS_NEO_GAS_REWARDS_*` values and a passing NX-900 manifest.
-3. Other validators join from empty state and sync from peers. No RocksDB state, genesis wallet, genesis keys, peer cache, or consensus WAL may be copied.
+3. Other validators join from empty chain state, keep their own validator keypairs, and sync from peers. No RocksDB state, genesis wallet, genesis keys, peer cache, or consensus WAL may be copied.
 
 Developer-facing route, rewards, DEX, SDK, and PQ evidence examples live in `docs/guides/NEO_DEVELOPER_INTEGRATION.md`. Keep those examples aligned with this gate: examples may prove local integration, but public rewards activation still requires this manifest.
 
@@ -497,7 +497,7 @@ export LICHEN_NEO_PUBLIC_BETA_GATE_REQUIRED=1
 export LICHEN_NEO_PUBLIC_BETA_GATE_MANIFEST=tests/artifacts/nx-900-testnet-rehearsal-YYYYMMDD/neo-public-beta-gate-testnet.LOCAL_REHEARSAL_ONLY.json
 ```
 
-For the clean seed/joiner proof, run V1 first and then start V2/V3 from empty state:
+For the clean seed/joiner proof, run V1 first and then start V2/V3 from empty chain state with their own validator keypairs:
 
 ```bash
 ./scripts/start-local-3validators.sh start-reset-seed
@@ -742,27 +742,50 @@ lichen identity export --keypair /var/lib/lichen/state-testnet/validator-keypair
 lichen identity export --keypair /var/lib/lichen/state-testnet/validator-keypair.json --reveal-seed
 ```
 
-1. Start the validator once so it generates `validator-keypair.json`.
-2. Record `publicKeyBase58` from that file.
-3. Stop the service and clear any temporary state.
+1. Start the validator once so it generates `validator-keypair.json`, or verify the existing state-scoped keypair.
+2. Record `publicKeyBase58` from that file and compare it to the expected host identity.
+3. Stop the service, preserve the state-scoped keypair into a timestamped evidence directory, verify the preserved copy, and only then clear temporary state.
 4. Prepare wallet artifacts.
 5. Create the genesis DB.
 6. Start the validator again.
+
+Known public testnet validator identities:
+
+| Host | Role | Validator identity |
+|------|------|--------------------|
+| `15.204.229.189` | seed-01 / US | `7LFPJ8gqmAtjbhfRg1P4VXmTQJV4AeZxzws3UsA6SVq` |
+| `37.59.97.61` | seed-02 / EU | `6RMeoigHdJWB47pEZEMSj5gvT7nbJPYSfPqjcur9vMJ` |
+| `15.235.142.253` | seed-03 / SEA | `6TghL7ioQz5R8pfrX1Qcfy8rNMzRP5F2pndmmRQ2sPm` |
+| `148.113.43.247` | seed-04 / IN | `6XhsGituXoWSd1wLtutZgdJve6gLrdSi7YhEx1ZDFHW` |
 
 Concrete sequence for testnet:
 
 ```bash
 sudo systemctl start lichen-validator-testnet
-sudo install -D -m 600 -o lichen -g lichen \
-  /var/lib/lichen/state-testnet/validator-keypair.json \
-  /var/lib/lichen/validator-keypair-testnet.json
-sudo python3 -c "import json; print(json.load(open('/var/lib/lichen/state-testnet/validator-keypair.json'))['publicKeyBase58'])"
+EXPECTED_VALIDATOR_PUBKEY='<EXPECTED_HOST_VALIDATOR_IDENTITY>'
+VALIDATOR_PUBKEY=$(sudo python3 -c "import json; print(json.load(open('/var/lib/lichen/state-testnet/validator-keypair.json'))['publicKeyBase58'])")
+test "$VALIDATOR_PUBKEY" = "$EXPECTED_VALIDATOR_PUBKEY"
 sudo systemctl stop lichen-validator-testnet
+
+PRESERVE="/var/lib/lichen/identity-preserve-state-testnet-$(date -u +%Y%m%dT%H%M%SZ)"
+sudo install -d -m 700 -o root -g root "$PRESERVE/state-testnet"
+sudo install -m 600 -o lichen -g lichen \
+  /var/lib/lichen/state-testnet/validator-keypair.json \
+  "$PRESERVE/state-testnet/validator-keypair.json"
+sudo python3 - "$PRESERVE/state-testnet/validator-keypair.json" "$EXPECTED_VALIDATOR_PUBKEY" <<'PY'
+import json
+import sys
+with open(sys.argv[1], encoding="utf-8") as fh:
+    pubkey = json.load(fh)["publicKeyBase58"]
+if pubkey != sys.argv[2]:
+    raise SystemExit(f"preserved validator key mismatch: {pubkey} != {sys.argv[2]}")
+PY
+
 sudo rm -rf /var/lib/lichen/state-testnet
 sudo rm -rf /var/lib/lichen/.lichen
 sudo install -d -m 750 -o lichen -g lichen /var/lib/lichen/state-testnet
 sudo install -m 600 -o lichen -g lichen \
-  /var/lib/lichen/validator-keypair-testnet.json \
+  "$PRESERVE/state-testnet/validator-keypair.json" \
   /var/lib/lichen/state-testnet/validator-keypair.json
 
 cd ~/lichen
@@ -782,7 +805,7 @@ sudo -u lichen HOME=/var/lib/lichen LICHEN_HOME=/var/lib/lichen LICHEN_CONTRACTS
 sudo systemctl start lichen-validator-testnet
 ```
 
-Preserve the generated `validator-keypair.json` across the state wipe. If you delete it and restart the service on a different keypair than the one baked into genesis, the node will come up at stake `0`, stay at slot `0`, and never produce the founding blocks.
+Preserve the generated `validator-keypair.json` across the state wipe and verify the preserved copy before deletion. Do not restore from `/var/lib/lichen/validator-keypair-testnet.json` unless you first prove that file's `publicKeyBase58` matches the expected host identity; stale fallback key files can silently replace a real validator identity.
 
 `lichen-genesis` fetches live genesis market prices from Binance first, then CoinGecko. Testnet may fall back to compiled defaults if both sources are unavailable; mainnet refuses that fallback. For mainnet or an audited reset, pass `--genesis-prices-file <path>` with `licn_usd_8dec`, `wsol_usd_8dec`, `weth_usd_8dec`, `wbnb_usd_8dec`, `wneo_usd_8dec`, `wgas_usd_8dec`, and `wbtc_usd_8dec` fields, or export `GENESIS_SOL_USD`, `GENESIS_ETH_USD`, `GENESIS_BNB_USD`, `GENESIS_NEO_USD`, `GENESIS_GAS_USD`, and `GENESIS_BTC_USD` from a trusted snapshot.
 
@@ -1520,14 +1543,14 @@ Do not distribute `genesis-wallet.json` or `genesis-keys/` to validator joiners.
 
 This is the full step-by-step procedure for stopping everything, flushing all state, and redeploying from scratch so VPSes match the live validator set exactly.
 
-Current signed-release target for this runbook is `v0.5.117`: the GitHub Release archive must be installed on all four VPSes, the seed creates genesis, and `seed-02`, `seed-03`, plus `seed-04` start from empty chain state and join from peers without a state copy. A passing verifier must report all four validators healthy with bridge `4/2`, oracle feeds including BTC, empty faucet history, 32 manifest symbols, and the mandatory 13 DEX CLOB pairs, AMM pools, and router routes including `wBTC/lUSD` and `wBTC/LICN`. Use `scripts/rolling-release-deploy.sh` for non-destructive code-only updates; do not flush state for that path.
+Current signed-release target for this runbook is `v0.5.118`: the GitHub Release archive must be installed on all four VPSes, the seed creates genesis, and `seed-02`, `seed-03`, plus `seed-04` start from empty chain state and join from peers without a state copy. A passing verifier must report all four validators healthy with bridge `4/2`, oracle feeds including BTC, empty faucet history, 32 manifest symbols, and the mandatory 13 DEX CLOB pairs, AMM pools, and router routes including `wBTC/lUSD` and `wBTC/LICN`. Use `scripts/rolling-release-deploy.sh` for non-destructive code-only updates; do not flush state for that path.
 
 ### One-command automated redeploy (recommended)
 
 ```bash
 export LICHEN_OWNER_APPROVED_RESET='owner-approved:testnet:15.204.229.189,37.59.97.61,15.235.142.253,148.113.43.247'
 export LICHEN_CLEAN_SLATE_REDEPLOY_CONFIRM='clean-slate:testnet:15.204.229.189,37.59.97.61,15.235.142.253,148.113.43.247'
-export LICHEN_RELEASE_TAG=v0.5.117
+export LICHEN_RELEASE_TAG=v0.5.118
 bash scripts/clean-slate-redeploy.sh testnet
 ```
 
@@ -1608,12 +1631,32 @@ done
 for VPS in 15.204.229.189 37.59.97.61 15.235.142.253 148.113.43.247; do
   echo "=== Flushing $VPS ==="
   ssh -p 2222 ubuntu@$VPS '
+    case "$(hostname -I | awk "{print \$1}")" in
+      15.204.229.189) EXPECTED_VALIDATOR_PUBKEY="7LFPJ8gqmAtjbhfRg1P4VXmTQJV4AeZxzws3UsA6SVq" ;;
+      37.59.97.61) EXPECTED_VALIDATOR_PUBKEY="6RMeoigHdJWB47pEZEMSj5gvT7nbJPYSfPqjcur9vMJ" ;;
+      15.235.142.253) EXPECTED_VALIDATOR_PUBKEY="6TghL7ioQz5R8pfrX1Qcfy8rNMzRP5F2pndmmRQ2sPm" ;;
+      148.113.43.247) EXPECTED_VALIDATOR_PUBKEY="6XhsGituXoWSd1wLtutZgdJve6gLrdSi7YhEx1ZDFHW" ;;
+      *) EXPECTED_VALIDATOR_PUBKEY="" ;;
+    esac
+    if [ -n "$EXPECTED_VALIDATOR_PUBKEY" ]; then
+      ACTUAL_VALIDATOR_PUBKEY=$(sudo python3 -c "import json; print(json.load(open(\"/var/lib/lichen/state-testnet/validator-keypair.json\"))[\"publicKeyBase58\"])")
+      test "$ACTUAL_VALIDATOR_PUBKEY" = "$EXPECTED_VALIDATOR_PUBKEY"
+    fi
+    PRESERVE="/var/lib/lichen/identity-preserve-state-testnet-$(date -u +%Y%m%dT%H%M%SZ)"
+    sudo install -d -m 700 -o root -g root "$PRESERVE/state-testnet"
+    sudo install -m 600 -o lichen -g lichen \
+      /var/lib/lichen/state-testnet/validator-keypair.json \
+      "$PRESERVE/state-testnet/validator-keypair.json"
     sudo rm -rf /var/lib/lichen/state-testnet
     sudo rm -rf /var/lib/lichen/.lichen
     sudo rm -rf /var/lib/lichen/custody-db
     sudo rm -f /etc/lichen/signed-metadata-manifest-testnet.json
     sudo rm -f /var/lib/lichen/faucet-keypair-testnet.json
     sudo rm -f /var/lib/lichen/airdrops.json
+    sudo install -d -m 750 -o lichen -g lichen /var/lib/lichen/state-testnet
+    sudo install -m 600 -o lichen -g lichen \
+      "$PRESERVE/state-testnet/validator-keypair.json" \
+      /var/lib/lichen/state-testnet/validator-keypair.json
     echo "State flushed"
   '
 done
@@ -1702,15 +1745,20 @@ ssh -p 2222 ubuntu@15.204.229.189 '
   echo "Validator pubkey: $VALIDATOR_PUBKEY"
   sudo systemctl stop lichen-validator-testnet
 
-  # Preserve validator keypair, wipe state
-  sudo install -D -m 600 -o lichen -g lichen \
+  # Preserve validator keypair, verify it, then wipe state
+  EXPECTED_VALIDATOR_PUBKEY="$VALIDATOR_PUBKEY"
+  PRESERVE="/var/lib/lichen/identity-preserve-state-testnet-$(date -u +%Y%m%dT%H%M%SZ)"
+  sudo install -d -m 700 -o root -g root "$PRESERVE/state-testnet"
+  sudo install -m 600 -o lichen -g lichen \
     /var/lib/lichen/state-testnet/validator-keypair.json \
-    /var/lib/lichen/validator-keypair-testnet.json
+    "$PRESERVE/state-testnet/validator-keypair.json"
+  PRESERVED_VALIDATOR_PUBKEY=$(sudo python3 -c "import json; print(json.load(open(\"$PRESERVE/state-testnet/validator-keypair.json\"))[\"publicKeyBase58\"])")
+  test "$PRESERVED_VALIDATOR_PUBKEY" = "$EXPECTED_VALIDATOR_PUBKEY"
   sudo rm -rf /var/lib/lichen/state-testnet
   sudo rm -rf /var/lib/lichen/.lichen
   sudo install -d -m 750 -o lichen -g lichen /var/lib/lichen/state-testnet
   sudo install -m 600 -o lichen -g lichen \
-    /var/lib/lichen/validator-keypair-testnet.json \
+    "$PRESERVE/state-testnet/validator-keypair.json" \
     /var/lib/lichen/state-testnet/validator-keypair.json
 
   # Prepare wallet
@@ -1796,9 +1844,10 @@ ssh -p 2222 ubuntu@15.204.229.189 '
 ### Phase 9: Distribute secrets to joining VPSes
 
 Joining validators sync the blockchain from the genesis seed node via P2P — **do NOT copy state**.
-Each joining validator starts with an empty `state-testnet/` directory and catches up by
-requesting blocks from the seed node(s) listed in `seeds.json`. This is the production-correct
-flow because future agent-operated validators will join the same way.
+Each joining validator starts with an empty chain database but keeps its own
+`validator-keypair.json`, then catches up by requesting blocks from the seed
+node(s) listed in `seeds.json`. This is the production-correct flow because
+future agent-operated validators join the same way.
 
 Only secrets and the signed metadata manifest need to be distributed:
 
@@ -1806,11 +1855,20 @@ Only secrets and the signed metadata manifest need to be distributed:
 for VPS in 37.59.97.61 15.235.142.253 148.113.43.247; do
   echo "=== Distributing secrets to $VPS ==="
 
-  # Ensure the state directory exists but is empty (validator creates its own keypair on first start)
+  # Ensure the state directory contains only this host's preserved validator keypair.
+  # Do not copy RocksDB state from another validator.
   ssh -p 2222 ubuntu@$VPS '
+    PRESERVE="/var/lib/lichen/identity-preserve-state-testnet-$(date -u +%Y%m%dT%H%M%SZ)"
+    sudo install -d -m 700 -o root -g root "$PRESERVE/state-testnet"
+    sudo install -m 600 -o lichen -g lichen \
+      /var/lib/lichen/state-testnet/validator-keypair.json \
+      "$PRESERVE/state-testnet/validator-keypair.json"
     sudo rm -rf /var/lib/lichen/state-testnet
     sudo mkdir -p /var/lib/lichen/state-testnet
     sudo chown -R lichen:lichen /var/lib/lichen/state-testnet
+    sudo install -m 600 -o lichen -g lichen \
+      "$PRESERVE/state-testnet/validator-keypair.json" \
+      /var/lib/lichen/state-testnet/validator-keypair.json
   '
 
   # Copy custody secrets
@@ -2094,7 +2152,7 @@ command find /var/lib/lichen/contracts -maxdepth 2 -name '*.wasm' | sort | xargs
 
 Also, the wiped validator's new pubkey registers as a separate entry in the validator set. With N+1 validators and only N-1 online (original minus the ghost), BFT quorum (2/3+) may be unreachable.
 
-**Current release behavior**: `v0.5.117` keeps endpoint pinning strict for configured seed and reserved peers, keeps durable cached peers in `known-peers.json` instead of promoting them into configured seed identity pins, treats non-reserved inbound and outbound learned validators as fresh transport locators after the native PQ handshake verifies their node identity, and persists consensus proposal values in the WAL before any non-nil vote can reference them. This lets an external agent reinstall from a clean state and reuse the same public P2P address without manual TOFU cleanup on seed nodes, while resumed validators keep signed-vote protection without freezing on an unrecoverable legacy lock value.
+**Current release behavior**: `v0.5.118` keeps endpoint pinning strict for configured seed and reserved peers, keeps durable cached peers in `known-peers.json` instead of promoting them into configured seed identity pins, treats non-reserved inbound and outbound learned validators as fresh transport locators after the native PQ handshake verifies their node identity, and persists consensus proposal values in the WAL before any non-nil vote can reference them. This lets an external agent reinstall from a clean state and reuse the same public P2P address without manual TOFU cleanup on seed nodes, while resumed validators keep signed-vote protection without freezing on an unrecoverable legacy lock value.
 
 **Fix for local dev**: Remove the wiped validator's entry from all other validators' TOFU stores, then restart all validators from scratch:
 
@@ -2158,16 +2216,20 @@ for HOST in seed-01 seed-02 seed-03 seed-04; do
     'sudo systemctl stop lichen-validator-testnet lichen-custody lichen-faucet'
 done
 
-# 2. Wipe state on ALL VPSes (preserve keypairs!)
+# 2. Wipe state on ALL VPSes (preserve and verify host-local keypairs!)
 for HOST in seed-01 seed-02 seed-03 seed-04; do
   ssh -p 2222 ubuntu@$HOST.lichen.network '
-    sudo cp /var/lib/lichen/state-testnet/validator-keypair.json /tmp/vk-backup.json
+    PRESERVE="/var/lib/lichen/identity-preserve-state-testnet-$(date -u +%Y%m%dT%H%M%SZ)"
+    sudo install -d -m 700 -o root -g root "$PRESERVE/state-testnet"
+    sudo install -m 600 -o lichen -g lichen \
+      /var/lib/lichen/state-testnet/validator-keypair.json \
+      "$PRESERVE/state-testnet/validator-keypair.json"
     sudo rm -rf /var/lib/lichen/state-testnet
     sudo rm -rf /var/lib/lichen/.lichen
     sudo install -d -m 750 -o lichen -g lichen /var/lib/lichen/state-testnet
-    sudo install -m 600 -o lichen -g lichen /tmp/vk-backup.json \
+    sudo install -m 600 -o lichen -g lichen \
+      "$PRESERVE/state-testnet/validator-keypair.json" \
       /var/lib/lichen/state-testnet/validator-keypair.json
-    sudo rm /tmp/vk-backup.json
   '
 done
 

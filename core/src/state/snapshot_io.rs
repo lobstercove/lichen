@@ -91,7 +91,16 @@ impl StateStore {
         self.create_raw_checkpoint(checkpoint_dir)?;
         let checkpoint_store = Self::open_checkpoint(checkpoint_dir)
             .map_err(|e| format!("Failed to open created checkpoint: {}", e))?;
-        let state_root = checkpoint_store.compute_state_root_cached();
+        let cached_root = checkpoint_store.compute_state_root_cached();
+        let state_root = checkpoint_store.compute_state_root_cold_start();
+        if cached_root != state_root {
+            tracing::warn!(
+                "Checkpoint root cache mismatch at slot {}: cached={} cold={}",
+                slot,
+                cached_root.to_hex(),
+                state_root.to_hex()
+            );
+        }
         let total_accounts = checkpoint_store.metrics.get_total_accounts();
         let meta = CheckpointMeta {
             slot,
@@ -240,9 +249,11 @@ impl StateStore {
             .cf_handle(CF_CONTRACT_STORAGE)
             .ok_or_else(|| "Contract storage CF not found".to_string())?;
         let mut count = 0u64;
+        let mut read_opts = rocksdb::ReadOptions::default();
+        read_opts.set_total_order_seek(true);
         for _ in self
             .db
-            .iterator_cf(&cf, rocksdb::IteratorMode::Start)
+            .iterator_cf_opt(&cf, read_opts, rocksdb::IteratorMode::Start)
             .flatten()
         {
             count = count.saturating_add(1);
@@ -415,9 +426,11 @@ impl StateStore {
                 Some(value) => value,
                 None => {
                     let mut count = 0u64;
+                    let mut read_opts = rocksdb::ReadOptions::default();
+                    read_opts.set_total_order_seek(true);
                     for _ in self
                         .db
-                        .iterator_cf(&cf, rocksdb::IteratorMode::Start)
+                        .iterator_cf_opt(&cf, read_opts, rocksdb::IteratorMode::Start)
                         .flatten()
                     {
                         count = count.saturating_add(1);
@@ -429,13 +442,17 @@ impl StateStore {
             0
         };
 
+        let mut read_opts = rocksdb::ReadOptions::default();
+        read_opts.set_total_order_seek(true);
         let iter = if let Some(after) = after_key {
-            self.db.iterator_cf(
+            self.db.iterator_cf_opt(
                 &cf,
+                read_opts,
                 rocksdb::IteratorMode::From(after, rocksdb::Direction::Forward),
             )
         } else {
-            self.db.iterator_cf(&cf, rocksdb::IteratorMode::Start)
+            self.db
+                .iterator_cf_opt(&cf, read_opts, rocksdb::IteratorMode::Start)
         };
 
         let mut entries = Vec::with_capacity(limit.min(10_000) as usize);

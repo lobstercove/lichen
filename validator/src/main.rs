@@ -116,6 +116,8 @@ const SPARSE_STATE_COMMITMENT_CONFIRMATION: &str = "sparse-state-commitment:v1";
 const REPAIR_TESTNET_DEX_CONTRACTS_FLAG: &str = "--repair-testnet-dex-contracts";
 const DEX_REPAIR_CONFIRMATION: &str = "repair-dex-contracts:testnet:v0.5.77";
 const SHOW_CONTRACT_STORAGE_DIGEST_FLAG: &str = "--show-contract-storage-digest";
+const SHOW_STAKE_POOL_DIGEST_FLAG: &str = "--show-stake-pool-digest";
+const VERIFY_WARP_SNAPSHOT_ROUNDTRIP_FLAG: &str = "--verify-warp-snapshot-roundtrip";
 const REPAIR_ANALYTICS_24H_WINDOW_FLAG: &str = "--repair-analytics-24h-window";
 const ANALYTICS_24H_REPAIR_CONFIRMATION: &str = "repair-analytics-24h:v1";
 const TESTNET_DEX_REPAIR_CONTRACTS: &[(&str, &str)] = &[
@@ -472,11 +474,75 @@ const SNAPSHOT_ENTRIES_CODEC_LIMIT_BYTES: u64 = 16 * 1024 * 1024;
 const SNAPSHOT_PROGRESS_RETRY_SECS: u64 = 15;
 const FRESH_JOIN_BOOTSTRAP_REPLAY_SLOTS: u64 = sync::P2P_BLOCK_RANGE_LIMIT;
 
+type SnapshotEntry = (Vec<u8>, Vec<u8>);
+type SnapshotEntries = Vec<SnapshotEntry>;
+
 fn deserialize_snapshot_value<T>(data: &[u8], context: &str) -> Result<T, String>
 where
     T: serde::de::DeserializeOwned,
 {
     deserialize_legacy_bincode_strict(data, data.len() as u64, context)
+}
+
+fn import_ordered_snapshot_category(
+    state: &StateStore,
+    category: &str,
+    entries: &[SnapshotEntry],
+) -> Result<usize, String> {
+    match category {
+        "validator_set" => {
+            let Some((_, data)) = entries.first() else {
+                return Err("validator_set snapshot category is empty".to_string());
+            };
+            let set: ValidatorSet = deserialize_snapshot_value(data, "validator_set snapshot")?;
+            state
+                .save_validator_set(&set)
+                .map(|_| set.validators().len())
+        }
+        "stake_pool" => {
+            let Some((_, data)) = entries.first() else {
+                return Err("stake_pool snapshot category is empty".to_string());
+            };
+            let pool: StakePool = deserialize_snapshot_value(data, "stake_pool snapshot")?;
+            state
+                .put_stake_pool(&pool)
+                .map(|_| pool.stake_entries().len())
+        }
+        "mossstake_pool" => {
+            let Some((_, data)) = entries.first() else {
+                return Err("mossstake_pool snapshot category is empty".to_string());
+            };
+            let pool: lichen_core::MossStakePool =
+                deserialize_snapshot_value(data, "mossstake_pool snapshot")?;
+            state.put_mossstake_pool(&pool).map(|_| 1)
+        }
+        category_name => state.import_snapshot_category(category_name, entries),
+    }
+}
+
+#[cfg(test)]
+fn import_ordered_snapshot_categories<'a>(
+    state: &StateStore,
+    categories: impl IntoIterator<Item = (&'a str, &'a [SnapshotEntry])>,
+) -> Result<(), String> {
+    let mut category_map: HashMap<&'a str, &'a [SnapshotEntry]> = HashMap::new();
+    for (name, entries) in categories {
+        category_map.insert(name, entries);
+    }
+
+    for category_name in WARP_SNAPSHOT_CATEGORIES {
+        let Some(entries) = category_map.remove(category_name) else {
+            continue;
+        };
+        import_ordered_snapshot_category(state, category_name, entries)
+            .map_err(|err| format!("{} import failed: {}", category_name, err))?;
+    }
+
+    if let Some(extra) = category_map.keys().next() {
+        return Err(format!("unsupported snapshot category: {}", extra));
+    }
+
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1170,6 +1236,13 @@ struct ValidatorHashEntry {
     pending_activation: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DowntimeObservation {
+    pubkey: Pubkey,
+    missed_slots: u64,
+    severely_behind: bool,
+}
+
 fn hash_validator_set(set: &ValidatorSet) -> Hash {
     let entries: Vec<ValidatorHashEntry> = set
         .sorted_validators()
@@ -1183,6 +1256,39 @@ fn hash_validator_set(set: &ValidatorSet) -> Hash {
 
     let data = serde_json::to_vec(&entries).unwrap_or_default();
     Hash::hash(&data)
+}
+
+fn collect_validator_downtime_observations(
+    set: &ValidatorSet,
+    self_pubkey: &Pubkey,
+    current_slot: u64,
+) -> Vec<DowntimeObservation> {
+    let num_validators = set.validators().len() as u64;
+    // Keep the old operational thresholds, but only report observations. Local
+    // downtime views must not mutate persisted consensus metadata.
+    let downtime_threshold = (200 * num_validators).max(1000);
+    let severe_threshold: u64 = 5000;
+
+    set.validators()
+        .iter()
+        .filter_map(|validator_info| {
+            if validator_info.pubkey == *self_pubkey {
+                return None;
+            }
+
+            let missed_slots = current_slot.saturating_sub(validator_info.last_active_slot);
+            let slots_since_join = current_slot.saturating_sub(validator_info.joined_slot);
+            if slots_since_join < 2000 || missed_slots < downtime_threshold {
+                return None;
+            }
+
+            Some(DowntimeObservation {
+                pubkey: validator_info.pubkey,
+                missed_slots,
+                severely_behind: missed_slots >= severe_threshold,
+            })
+        })
+        .collect()
 }
 
 fn now_unix_ms() -> u64 {
@@ -4986,65 +5092,6 @@ fn record_post_block_state_commitment_anchor(state: &StateStore, block: &Block, 
 }
 
 #[cfg(test)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct StakePoolProductionCounterRepairMarker {
-    tip_slot: u64,
-    tip_hash: Hash,
-    pool_hash: Hash,
-}
-
-#[cfg(test)]
-fn encode_stake_pool_production_counter_repair_marker(
-    marker: StakePoolProductionCounterRepairMarker,
-) -> Vec<u8> {
-    format!(
-        "{}:{}:{}",
-        marker.tip_slot,
-        marker.tip_hash.to_hex(),
-        marker.pool_hash.to_hex()
-    )
-    .into_bytes()
-}
-
-#[cfg(test)]
-fn decode_stake_pool_production_counter_repair_marker(
-    bytes: &[u8],
-) -> Option<StakePoolProductionCounterRepairMarker> {
-    let text = std::str::from_utf8(bytes).ok()?;
-    let mut parts = text.split(':');
-    let tip_slot = parts.next()?.parse().ok()?;
-    let tip_hash = Hash::from_hex(parts.next()?).ok()?;
-    let pool_hash = Hash::from_hex(parts.next()?).ok()?;
-    if parts.next().is_some() {
-        return None;
-    }
-    Some(StakePoolProductionCounterRepairMarker {
-        tip_slot,
-        tip_hash,
-        pool_hash,
-    })
-}
-
-#[cfg(test)]
-fn store_stake_pool_production_counter_repair_marker(
-    state: &StateStore,
-    tip_slot: u64,
-    tip_hash: Hash,
-    pool_hash: Hash,
-) -> Result<(), String> {
-    state.put_metadata(
-        STAKE_POOL_PRODUCTION_COUNTER_REPAIR_METADATA_KEY,
-        &encode_stake_pool_production_counter_repair_marker(
-            StakePoolProductionCounterRepairMarker {
-                tip_slot,
-                tip_hash,
-                pool_hash,
-            },
-        ),
-    )
-}
-
-#[cfg(test)]
 fn repair_stake_pool_production_counters_from_blocks(
     state: &StateStore,
     context: &str,
@@ -5056,28 +5103,6 @@ fn repair_stake_pool_production_counters_from_blocks(
 
     let mut pool = state.get_stake_pool().unwrap_or_else(|_| StakePool::new());
     let before_hash = pool.canonical_hash();
-    let tip_hash = state.get_block_by_slot(tip)?.map(|block| block.hash());
-    if let Some(tip_hash) = tip_hash {
-        if let Some(marker_bytes) =
-            state.get_metadata(STAKE_POOL_PRODUCTION_COUNTER_REPAIR_METADATA_KEY)?
-        {
-            if decode_stake_pool_production_counter_repair_marker(&marker_bytes)
-                == Some(StakePoolProductionCounterRepairMarker {
-                    tip_slot: tip,
-                    tip_hash,
-                    pool_hash: before_hash,
-                })
-            {
-                info!(
-                    "🔧 {}: StakePool production counters already verified through tip {} ({})",
-                    context,
-                    tip,
-                    tip_hash.to_hex()
-                );
-                return Ok(false);
-            }
-        }
-    }
 
     info!(
         "🔧 {}: scanning canonical blocks to verify StakePool production counters through tip {}",
@@ -5132,9 +5157,6 @@ fn repair_stake_pool_production_counters_from_blocks(
 
     let after_hash = pool.canonical_hash();
     if after_hash == before_hash {
-        if let Some(tip_hash) = tip_hash {
-            store_stake_pool_production_counter_repair_marker(state, tip, tip_hash, after_hash)?;
-        }
         info!(
             "🔧 {}: StakePool production counters already matched canonical blocks through tip {}",
             context, tip
@@ -5143,9 +5165,6 @@ fn repair_stake_pool_production_counters_from_blocks(
     }
 
     state.put_stake_pool(&pool)?;
-    if let Some(tip_hash) = tip_hash {
-        store_stake_pool_production_counter_repair_marker(state, tip, tip_hash, after_hash)?;
-    }
     warn!(
         "🔧 {}: repaired StakePool production counters from {} canonical blocks through tip {} ({} -> {})",
         context,
@@ -7468,16 +7487,30 @@ fn maybe_run_contract_storage_digest_admin(args: &[String]) -> Option<i32> {
     }
 
     let data_dir = restriction_schema_data_dir(args);
+    let secondary_dir = get_flag_value(args, &["--secondary-dir"]).map(PathBuf::from);
     let cache_size_mb = get_flag_value(args, &["--cache-size-mb"]).and_then(|s| s.parse().ok());
-    let state = match StateStore::open_with_cache_mb(&data_dir, cache_size_mb) {
+    let state = match secondary_dir.as_ref() {
+        Some(path) => StateStore::open_secondary_with_cache_mb(&data_dir, path, cache_size_mb),
+        None => StateStore::open_with_cache_mb(&data_dir, cache_size_mb),
+    };
+    let state = match state {
         Ok(state) => state,
         Err(err) => {
             eprintln!("Failed to open state DB at {}: {}", data_dir.display(), err);
             return Some(1);
         }
     };
+    if secondary_dir.is_some() {
+        if let Err(err) = state.try_catch_up_with_primary() {
+            eprintln!("{err}");
+            return Some(1);
+        }
+    }
 
     println!("data_dir={}", data_dir.display());
+    if let Some(path) = &secondary_dir {
+        println!("secondary_dir={}", path.display());
+    }
     match state.get_last_slot() {
         Ok(slot) => {
             println!("last_slot={slot}");
@@ -7506,11 +7539,45 @@ fn maybe_run_contract_storage_digest_admin(args: &[String]) -> Option<i32> {
         }
         Err(err) => println!("last_slot_error={err}"),
     }
-    println!("current_state_root={}", state.compute_state_root().to_hex());
-    println!(
-        "current_state_root_cold={}",
-        state.compute_state_root_cold_start().to_hex()
-    );
+    if let Some(range) = get_flag_value(args, &["--slot-range"]) {
+        match range.split_once(':') {
+            Some((start, end)) => match (start.parse::<u64>(), end.parse::<u64>()) {
+                (Ok(start), Ok(end)) if start <= end && end.saturating_sub(start) <= 100 => {
+                    for slot in start..=end {
+                        match state.get_block_by_slot(slot) {
+                            Ok(Some(block)) => println!(
+                                "block slot={} hash={} validator={} state_root={} txs={}",
+                                slot,
+                                block.hash().to_hex(),
+                                Pubkey(block.header.validator).to_base58(),
+                                block.header.state_root.to_hex(),
+                                block.transactions.len()
+                            ),
+                            Ok(None) => println!("block slot={} missing", slot),
+                            Err(err) => println!("block slot={} error={}", slot, err),
+                        }
+                    }
+                }
+                _ => {
+                    eprintln!("Invalid --slot-range; expected start:end with <=100 slots");
+                    return Some(1);
+                }
+            },
+            None => {
+                eprintln!("Invalid --slot-range; expected start:end");
+                return Some(1);
+            }
+        }
+    }
+    if secondary_dir.is_none() {
+        println!("current_state_root={}", state.compute_state_root().to_hex());
+        println!(
+            "current_state_root_cold={}",
+            state.compute_state_root_cold_start().to_hex()
+        );
+    } else {
+        println!("state_root_recompute=skipped_secondary");
+    }
     println!(
         "mossstake_slot_only_marker={}",
         state
@@ -7623,6 +7690,389 @@ fn maybe_run_contract_storage_digest_admin(args: &[String]) -> Option<i32> {
     }
 
     Some(0)
+}
+
+fn maybe_run_stake_pool_digest_admin(args: &[String]) -> Option<i32> {
+    if !has_flag(args, SHOW_STAKE_POOL_DIGEST_FLAG) {
+        return None;
+    }
+
+    let data_dir = restriction_schema_data_dir(args);
+    let secondary_dir = get_flag_value(args, &["--secondary-dir"]).map(PathBuf::from);
+    let cache_size_mb = get_flag_value(args, &["--cache-size-mb"]).and_then(|s| s.parse().ok());
+    let state = match secondary_dir.as_ref() {
+        Some(path) => StateStore::open_secondary_with_cache_mb(&data_dir, path, cache_size_mb),
+        None => StateStore::open_with_cache_mb(&data_dir, cache_size_mb),
+    };
+    let state = match state {
+        Ok(state) => state,
+        Err(err) => {
+            eprintln!("Failed to open state DB at {}: {}", data_dir.display(), err);
+            return Some(1);
+        }
+    };
+    if secondary_dir.is_some() {
+        if let Err(err) = state.try_catch_up_with_primary() {
+            eprintln!("{err}");
+            return Some(1);
+        }
+    }
+
+    println!("data_dir={}", data_dir.display());
+    if let Some(path) = &secondary_dir {
+        println!("secondary_dir={}", path.display());
+    }
+    match state.get_last_slot() {
+        Ok(slot) => {
+            println!("last_slot={slot}");
+            match state.get_block_by_slot(slot) {
+                Ok(Some(block)) => {
+                    println!("tip_block_hash={}", block.hash().to_hex());
+                    println!("tip_header_state_root={}", block.header.state_root.to_hex());
+                    println!(
+                        "tip_validator={}",
+                        Pubkey(block.header.validator).to_base58()
+                    );
+                }
+                Ok(None) => println!("tip_block=missing"),
+                Err(err) => println!("tip_block_error={err}"),
+            }
+        }
+        Err(err) => println!("last_slot_error={err}"),
+    }
+    if let Some(range) = get_flag_value(args, &["--slot-range"]) {
+        match range.split_once(':') {
+            Some((start, end)) => match (start.parse::<u64>(), end.parse::<u64>()) {
+                (Ok(start), Ok(end)) if start <= end && end.saturating_sub(start) <= 100 => {
+                    for slot in start..=end {
+                        match state.get_block_by_slot(slot) {
+                            Ok(Some(block)) => println!(
+                                "block slot={} hash={} validator={} state_root={} txs={}",
+                                slot,
+                                block.hash().to_hex(),
+                                Pubkey(block.header.validator).to_base58(),
+                                block.header.state_root.to_hex(),
+                                block.transactions.len()
+                            ),
+                            Ok(None) => println!("block slot={} missing", slot),
+                            Err(err) => println!("block slot={} error={}", slot, err),
+                        }
+                    }
+                }
+                _ => {
+                    eprintln!("Invalid --slot-range; expected start:end with <=100 slots");
+                    return Some(1);
+                }
+            },
+            None => {
+                eprintln!("Invalid --slot-range; expected start:end");
+                return Some(1);
+            }
+        }
+    }
+    if secondary_dir.is_none() {
+        println!("current_state_root={}", state.compute_state_root().to_hex());
+        println!(
+            "current_state_root_cold={}",
+            state.compute_state_root_cold_start().to_hex()
+        );
+    } else {
+        println!("state_root_recompute=skipped_secondary");
+    }
+
+    let pool = match state.get_stake_pool() {
+        Ok(pool) => pool,
+        Err(err) => {
+            eprintln!("Failed to read stake pool: {err}");
+            return Some(1);
+        }
+    };
+    let stats = pool.get_stats();
+    println!("stake_pool_hash={}", pool.canonical_hash().to_hex());
+    println!("stake_pool_entries={}", pool.stake_entries().len());
+    println!("stake_pool_total_staked={}", pool.total_stake());
+    println!("stake_pool_total_slashed={}", pool.total_slashed());
+    println!(
+        "stake_pool_bootstrap_grants_issued={}",
+        pool.bootstrap_grants_issued()
+    );
+    println!(
+        "stake_pool_stats active_validators={} total_unclaimed_rewards={}",
+        stats.active_validators, stats.total_unclaimed_rewards
+    );
+
+    let mut entries = pool.stake_entries();
+    entries.sort_by_key(|entry| entry.validator.0);
+    for entry in entries {
+        println!(
+            "stake_entry validator={} amount={} delegated={} active={} rewards_earned={} last_reward_slot={} blocks_produced={} earned_amount={} bootstrap_debt={} total_claimed={} total_debt_repaid={} bootstrap_index={} start_slot={} last_migration_slot={} penalty_boost_until={}",
+            entry.validator.to_base58(),
+            entry.amount,
+            entry.delegated_amount,
+            entry.is_active,
+            entry.rewards_earned,
+            entry.last_reward_slot,
+            entry.blocks_produced,
+            entry.earned_amount,
+            entry.bootstrap_debt,
+            entry.total_claimed,
+            entry.total_debt_repaid,
+            entry.bootstrap_index,
+            entry.start_slot,
+            entry.last_migration_slot,
+            entry.penalty_boost_until,
+        );
+    }
+
+    Some(0)
+}
+
+fn export_roundtrip_snapshot_entries(
+    state: &StateStore,
+    category: &str,
+    chunk_size: u64,
+) -> Result<SnapshotEntries, String> {
+    match category {
+        "validator_set" => {
+            let set = state.load_validator_set()?;
+            return Ok(vec![(
+                b"validator_set".to_vec(),
+                serialize_legacy_bincode(&set, "validator_set snapshot")?,
+            )]);
+        }
+        "stake_pool" => {
+            let pool = state.get_stake_pool()?;
+            return Ok(vec![(
+                b"stake_pool".to_vec(),
+                serialize_legacy_bincode(&pool, "stake_pool snapshot")?,
+            )]);
+        }
+        "mossstake_pool" => {
+            let pool = state.get_mossstake_pool()?;
+            return Ok(vec![(
+                b"mossstake_pool".to_vec(),
+                serialize_legacy_bincode(&pool, "mossstake_pool snapshot")?,
+            )]);
+        }
+        _ => {}
+    }
+
+    let mut entries = Vec::new();
+    let mut cursor: Option<Vec<u8>> = None;
+    loop {
+        let page = state.export_snapshot_category_cursor_untracked(
+            category,
+            cursor.as_deref(),
+            chunk_size,
+        )?;
+        entries.extend(page.entries);
+        if !page.has_more {
+            break;
+        }
+        let Some(next_cursor) = page.next_cursor else {
+            return Err(format!(
+                "{} snapshot export had more entries but no cursor",
+                category
+            ));
+        };
+        cursor = Some(next_cursor);
+    }
+
+    Ok(entries)
+}
+
+fn print_roundtrip_root_components(label: &str, state: &StateStore) {
+    println!(
+        "{}_root={}",
+        label,
+        state.compute_state_root_cold_start().to_hex()
+    );
+    println!(
+        "{}_accounts_root={}",
+        label,
+        state.compute_accounts_root().to_hex()
+    );
+    println!(
+        "{}_contracts_root={}",
+        label,
+        state.compute_contract_storage_root().to_hex()
+    );
+    println!(
+        "{}_stake_pool_hash={}",
+        label,
+        state.compute_stake_pool_hash().to_hex()
+    );
+    println!(
+        "{}_mossstake_pool_hash={}",
+        label,
+        state.compute_mossstake_pool_hash().to_hex()
+    );
+    println!(
+        "{}_restrictions_root={}",
+        label,
+        state.compute_restrictions_root().to_hex()
+    );
+}
+
+struct RoundtripTempStateDir {
+    path: PathBuf,
+}
+
+impl Drop for RoundtripTempStateDir {
+    fn drop(&mut self) {
+        if let Err(err) = fs::remove_dir_all(&self.path) {
+            if err.kind() != std::io::ErrorKind::NotFound {
+                eprintln!(
+                    "Warning: failed to remove temporary roundtrip DB {}: {}",
+                    self.path.display(),
+                    err
+                );
+            }
+        }
+    }
+}
+
+fn maybe_run_warp_snapshot_roundtrip_admin(args: &[String]) -> Option<i32> {
+    if !has_flag(args, VERIFY_WARP_SNAPSHOT_ROUNDTRIP_FLAG) {
+        return None;
+    }
+
+    let data_dir = restriction_schema_data_dir(args);
+    let secondary_dir = get_flag_value(args, &["--secondary-dir"]).map(PathBuf::from);
+    let cache_size_mb = get_flag_value(args, &["--cache-size-mb"]).and_then(|s| s.parse().ok());
+    let chunk_size = get_flag_value(args, &["--chunk-size"])
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(1000)
+        .clamp(1, MAX_SNAPSHOT_CHUNK_SIZE);
+
+    let source = match secondary_dir.as_ref() {
+        Some(path) => StateStore::open_secondary_with_cache_mb(&data_dir, path, cache_size_mb),
+        None => StateStore::open_with_cache_mb(&data_dir, cache_size_mb),
+    };
+    let source = match source {
+        Ok(state) => state,
+        Err(err) => {
+            eprintln!(
+                "Failed to open source state DB at {}: {}",
+                data_dir.display(),
+                err
+            );
+            return Some(1);
+        }
+    };
+    if secondary_dir.is_some() {
+        if let Err(err) = source.try_catch_up_with_primary() {
+            eprintln!("{err}");
+            return Some(1);
+        }
+    }
+
+    let target_path = env::temp_dir().join(format!(
+        "lichen-warp-snapshot-roundtrip-{}-{}",
+        std::process::id(),
+        current_unix_millis()
+    ));
+    if let Err(err) = fs::remove_dir_all(&target_path) {
+        if err.kind() != std::io::ErrorKind::NotFound {
+            eprintln!(
+                "Failed to clear temporary roundtrip DB {}: {}",
+                target_path.display(),
+                err
+            );
+            return Some(1);
+        }
+    }
+    let _target_guard = RoundtripTempStateDir {
+        path: target_path.clone(),
+    };
+    let target = match StateStore::open(&target_path) {
+        Ok(state) => state,
+        Err(err) => {
+            eprintln!("Failed to open temporary roundtrip DB: {}", err);
+            return Some(1);
+        }
+    };
+
+    println!("source_dir={}", data_dir.display());
+    if let Some(path) = &secondary_dir {
+        println!("secondary_dir={}", path.display());
+    }
+    println!("target_dir={}", target_path.display());
+    println!("chunk_size={chunk_size}");
+    if let Ok(slot) = source.get_last_slot() {
+        println!("source_last_slot={slot}");
+    }
+
+    for category_name in WARP_SNAPSHOT_CATEGORIES {
+        let entries = match export_roundtrip_snapshot_entries(&source, category_name, chunk_size) {
+            Ok(entries) => entries,
+            Err(err) => {
+                eprintln!(
+                    "Failed to export {} snapshot category: {}",
+                    category_name, err
+                );
+                return Some(1);
+            }
+        };
+        let count = entries.len();
+        if let Err(err) = import_ordered_snapshot_category(&target, category_name, &entries) {
+            eprintln!(
+                "Failed to import {} snapshot category: {}",
+                category_name, err
+            );
+            return Some(1);
+        }
+        println!("category={} entries={}", category_name, count);
+    }
+
+    for (label, result) in [
+        ("account", target.reconcile_account_count()),
+        ("active_account", target.reconcile_active_account_count()),
+        ("program", target.reconcile_program_count()),
+        ("validator", target.reconcile_validator_count()),
+    ] {
+        if let Err(err) = result {
+            eprintln!("Failed to reconcile {} count: {}", label, err);
+            return Some(1);
+        }
+    }
+    target.invalidate_merkle_cache();
+    if target.uses_sparse_state_commitment() {
+        match target.rebuild_sparse_state_commitment(false) {
+            Ok(report) => println!(
+                "target_sparse_rebuild_root={} accounts={} contracts={}",
+                report.current_state_root.to_hex(),
+                report.accounts_leaf_count,
+                report.contract_leaf_count
+            ),
+            Err(err) => {
+                eprintln!("Failed to rebuild target sparse state commitment: {}", err);
+                return Some(1);
+            }
+        }
+    }
+
+    let expected_root = source.compute_state_root_cold_start();
+    print_roundtrip_root_components("source", &source);
+    print_roundtrip_root_components("target", &target);
+
+    match validate_state_root_with_schema(
+        &target,
+        source.get_last_slot().unwrap_or_default(),
+        expected_root,
+        "warp snapshot roundtrip",
+        true,
+    ) {
+        Ok(()) => {
+            println!("roundtrip_status=ok");
+            Some(0)
+        }
+        Err(err) => {
+            eprintln!("roundtrip_status=mismatch");
+            eprintln!("{err}");
+            Some(1)
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -8234,6 +8684,12 @@ fn main() {
         std::process::exit(exit_code);
     }
     if let Some(exit_code) = maybe_run_contract_storage_digest_admin(&args) {
+        std::process::exit(exit_code);
+    }
+    if let Some(exit_code) = maybe_run_stake_pool_digest_admin(&args) {
+        std::process::exit(exit_code);
+    }
+    if let Some(exit_code) = maybe_run_warp_snapshot_roundtrip_admin(&args) {
         std::process::exit(exit_code);
     }
     if let Some(exit_code) = maybe_run_analytics_24h_repair_admin(&args) {
@@ -14359,66 +14815,25 @@ async fn run_validator() {
                                     }
                                 };
 
-                            // Import buffered entries into staging
-                            for (cat, entries) in &staged_snapshot_entries {
-                                let res = match cat.as_str() {
-                                    "validator_set" => {
-                                        let Some((_, data)) = entries.first() else {
-                                            break 'staging false;
-                                        };
-                                        match deserialize_snapshot_value::<ValidatorSet>(
-                                            data,
-                                            "validator_set snapshot",
-                                        ) {
-                                            Ok(set) => staging_state
-                                                .save_validator_set(&set)
-                                                .map(|_| set.validators().len()),
-                                            Err(e) => Err(format!(
-                                                "Failed to deserialize validator_set snapshot: {}",
-                                                e
-                                            )),
-                                        }
-                                    }
-                                    "stake_pool" => {
-                                        let Some((_, data)) = entries.first() else {
-                                            break 'staging false;
-                                        };
-                                        match deserialize_snapshot_value::<StakePool>(
-                                            data,
-                                            "stake_pool snapshot",
-                                        ) {
-                                            Ok(pool) => staging_state
-                                                .put_stake_pool(&pool)
-                                                .map(|_| pool.stake_entries().len()),
-                                            Err(e) => Err(format!(
-                                                "Failed to deserialize stake_pool snapshot: {}",
-                                                e
-                                            )),
-                                        }
-                                    }
-                                    "mossstake_pool" => {
-                                        let Some((_, data)) = entries.first() else {
-                                            break 'staging false;
-                                        };
-                                        match deserialize_snapshot_value::<lichen_core::MossStakePool>(
-                                            data,
-                                            "mossstake_pool snapshot",
-                                        ) {
-                                            Ok(pool) => {
-                                                staging_state.put_mossstake_pool(&pool).map(|_| 1)
-                                            }
-                                            Err(e) => Err(format!(
-                                                "Failed to deserialize mossstake_pool snapshot: {}",
-                                                e
-                                            )),
-                                        }
-                                    }
-                                    category => {
-                                        staging_state.import_snapshot_category(category, entries)
-                                    }
+                            // Import buffered entries into staging in canonical
+                            // snapshot order. Stats must be present before
+                            // MossStake is stored so legacy wall-clock fields
+                            // are normalized exactly like genesis bundle import.
+                            for category_name in WARP_SNAPSHOT_CATEGORIES {
+                                let Some(entries) = staged_snapshot_entries.get(*category_name)
+                                else {
+                                    warn!(
+                                        "⚠️  Missing {} snapshot category during staging import",
+                                        category_name
+                                    );
+                                    break 'staging false;
                                 };
-                                if let Err(e) = res {
-                                    warn!("⚠️  Staging import of {} failed: {}", cat, e);
+                                if let Err(e) = import_ordered_snapshot_category(
+                                    &staging_state,
+                                    category_name,
+                                    entries,
+                                ) {
+                                    warn!("⚠️  Staging import of {} failed: {}", category_name, e);
                                     break 'staging false;
                                 }
                             }
@@ -14464,30 +14879,32 @@ async fn run_validator() {
 
                             // Verify state root on staging
                             let expected_root = state_root;
-                            if validate_state_root_with_schema(
+                            match validate_state_root_with_schema(
                                 &staging_state,
                                 snapshot_slot,
                                 Hash(expected_root),
                                 "snapshot staging",
                                 true,
-                            )
-                            .is_ok()
-                            {
-                                let computed_root = staging_state.compute_state_root();
-                                info!(
-                                    "✅ State root verified on staging: {} (matches snapshot)",
-                                    hex::encode(&computed_root.0[..8])
-                                );
-                                true
-                            } else {
-                                let computed_root = staging_state.compute_state_root();
-                                warn!(
-                                    "⚠️  State root MISMATCH on staging! Computed {} vs expected {}. \
-                                     Snapshot rejected — live DB untouched.",
-                                    hex::encode(&computed_root.0[..8]),
-                                    hex::encode(&expected_root[..8]),
-                                );
-                                false
+                            ) {
+                                Ok(()) => {
+                                    let computed_root = staging_state.compute_state_root();
+                                    info!(
+                                        "✅ State root verified on staging: {} (matches snapshot)",
+                                        hex::encode(&computed_root.0[..8])
+                                    );
+                                    true
+                                }
+                                Err(err) => {
+                                    let computed_root = staging_state.compute_state_root();
+                                    warn!(
+                                        "⚠️  State root MISMATCH on staging! Computed {} vs expected {}. \
+                                         Snapshot rejected — live DB untouched. {}",
+                                        hex::encode(&computed_root.0[..8]),
+                                        hex::encode(&expected_root[..8]),
+                                        err,
+                                    );
+                                    false
+                                }
                             }
                         };
 
@@ -14540,8 +14957,16 @@ async fn run_validator() {
                         }
 
                         // ── Commit verified entries to live DB ──────────────
-                        for (cat, entries) in staged_snapshot_entries.drain() {
-                            let res = match cat.as_str() {
+                        for category_name in WARP_SNAPSHOT_CATEGORIES {
+                            let Some(entries) = staged_snapshot_entries.remove(*category_name)
+                            else {
+                                warn!(
+                                    "⚠️  Missing {} snapshot category during live commit",
+                                    category_name
+                                );
+                                continue;
+                            };
+                            let res = match *category_name {
                                 "validator_set" => {
                                     let Some((_, data)) = entries.first() else {
                                         warn!("⚠️  Missing validator_set snapshot payload");
@@ -14628,13 +15053,17 @@ async fn run_validator() {
                             match res {
                                 Ok(count) => info!(
                                     "✅ Committed {} verified {} entries to live DB",
-                                    count, cat
+                                    count, category_name
                                 ),
                                 Err(e) => {
-                                    warn!("⚠️  Failed to commit {} entries to live DB: {}", cat, e)
+                                    warn!(
+                                        "⚠️  Failed to commit {} entries to live DB: {}",
+                                        category_name, e
+                                    )
                                 }
                             }
                         }
+                        staged_snapshot_entries.clear();
 
                         for (label, result) in [
                             (
@@ -15592,7 +16021,7 @@ async fn run_validator() {
         });
     }
 
-    // Periodic downtime MONITORING (reputation impact only — NO slashing).
+    // Periodic downtime MONITORING (observational only — NO state mutation).
     //
     // DESIGN RATIONALE (matching Solana/Ethereum approach):
     // Real blockchains do NOT slash validators for downtime:
@@ -15606,9 +16035,10 @@ async fn run_validator() {
     //
     // This monitor:
     //   1. Tracks which validators are behind on last_active_slot
-    //   2. Applies a small REPUTATION penalty (not stake) — reducing reward share
-    //   3. Logs warnings for operational visibility
-    //   4. Does NOT create SlashingEvidence, does NOT broadcast, does NOT slash
+    //   2. Logs warnings for operational visibility
+    //   3. Does NOT create SlashingEvidence, does NOT broadcast, does NOT slash
+    //   4. Does NOT mutate/persist ValidatorSet. Local downtime views are
+    //      non-deterministic and must not alter consensus metadata.
     let validator_set_for_downtime = validator_set.clone();
     let state_for_downtime = state.clone();
     let validator_pubkey_for_downtime = validator_pubkey;
@@ -15619,68 +16049,27 @@ async fn run_validator() {
             interval.tick().await;
             let current_slot = state_for_downtime.get_last_slot().unwrap_or(0);
 
-            let mut vs = validator_set_for_downtime.write().await;
-            let num_validators = vs.validators().len() as u64;
-            // A validator is "behind" if it hasn't been active for 500+ slots (~200s)
-            let downtime_threshold = (200 * num_validators).max(1000);
-            // Eviction threshold: 5000 slots (~33 min) of total inactivity
-            let eviction_threshold: u64 = 5000;
-
-            // Collect validators that are severely behind (for logging only)
-            let mut severely_behind: Vec<(Pubkey, u64)> = Vec::new();
-
-            for validator_info in vs.validators_mut() {
-                if validator_info.pubkey == validator_pubkey_for_downtime {
-                    continue; // Don't monitor ourselves
-                }
-
-                let missed_slots = current_slot.saturating_sub(validator_info.last_active_slot);
-                let slots_since_join = current_slot.saturating_sub(validator_info.joined_slot);
-
-                // Grace period for new validators (2000 slots ≈ 800s)
-                if slots_since_join < 2000 {
-                    continue;
-                }
-
-                // Log severely behind validators (do NOT evict — that's non-deterministic)
-                if missed_slots >= eviction_threshold {
-                    severely_behind.push((validator_info.pubkey, missed_slots));
-                    // Still apply reputation penalty
-                }
-
-                if missed_slots >= downtime_threshold {
-                    let rep_penalty = ((missed_slots / 500) as u64).min(5);
-                    let old_rep = validator_info.reputation;
-                    validator_info.reputation = validator_info
-                        .reputation
-                        .saturating_sub(rep_penalty)
-                        .max(50);
-
-                    if rep_penalty > 0 {
-                        warn!(
-                            "⏸️  Validator {} behind by {} slots — reputation {} → {} (no slashing)",
-                            validator_info.pubkey.to_base58(),
-                            missed_slots,
-                            old_rep,
-                            validator_info.reputation
-                        );
-                    }
-                }
-            }
-
-            // Log severely behind validators (removal only through consensus TX)
-            for (pubkey, missed) in &severely_behind {
-                warn!(
-                    "⏸️  Validator {} severely behind ({} slots) — use DeregisterValidator to remove",
-                    pubkey.to_base58(),
-                    missed
-                );
-            }
-
-            let vs_snapshot = vs.clone();
+            let vs = validator_set_for_downtime.read().await;
+            let observations = collect_validator_downtime_observations(
+                &vs,
+                &validator_pubkey_for_downtime,
+                current_slot,
+            );
             drop(vs);
-            if let Err(e) = state_for_downtime.save_validator_set(&vs_snapshot) {
-                tracing::error!("Failed to save validator set in downtime handler: {e}");
+
+            for observation in observations {
+                warn!(
+                    "⏸️  Validator {} behind by {} slots — monitoring only (no local reputation/state write)",
+                    observation.pubkey.to_base58(),
+                    observation.missed_slots
+                );
+                if observation.severely_behind {
+                    warn!(
+                        "⏸️  Validator {} severely behind ({} slots) — use DeregisterValidator to remove",
+                        observation.pubkey.to_base58(),
+                        observation.missed_slots
+                    );
+                }
             }
         }
     });
@@ -21743,6 +22132,13 @@ mod tests {
                 .expect("repair counters"),
             "stale counters should be repaired"
         );
+        assert_eq!(
+            state
+                .get_metadata(STAKE_POOL_PRODUCTION_COUNTER_REPAIR_METADATA_KEY)
+                .expect("read repair marker"),
+            None,
+            "repair must not write marker metadata into consensus state"
+        );
 
         let repaired = state.get_stake_pool().expect("read repaired stake pool");
         let stake_a = repaired.get_stake(&producer_a).expect("producer a stake");
@@ -22004,6 +22400,61 @@ mod tests {
         assert_eq!(target.compute_state_root_cold_start(), expected_root);
     }
 
+    #[test]
+    fn warp_snapshot_import_applies_stats_before_mossstake_pool() {
+        let source_dir = tempfile::tempdir().expect("create source dir");
+        let source = StateStore::open(source_dir.path()).expect("open source state");
+        let target_dir = tempfile::tempdir().expect("create target dir");
+        let target = StateStore::open(target_dir.path()).expect("open target state");
+        let alice = Keypair::generate().pubkey();
+        let mut legacy_pool = MossStakePool::new();
+
+        legacy_pool
+            .stake_with_tier(alice, 1_000, 42, LockTier::Lock30)
+            .expect("stake position");
+        legacy_pool
+            .positions
+            .get_mut(&alice)
+            .expect("position")
+            .deposited_at_unix_seconds = 1_700_000_000;
+
+        source
+            .put_metadata(MOSSSTAKE_SLOT_ONLY_METADATA_KEY, b"1")
+            .expect("put source slot-only marker");
+        source
+            .put_mossstake_pool(&legacy_pool)
+            .expect("put normalized source pool");
+        let expected_root = source.compute_state_root_cold_start();
+
+        let mossstake_entries = vec![(
+            b"pool".to_vec(),
+            serialize_legacy_bincode(&legacy_pool, "test MossStake pool")
+                .expect("serialize legacy pool"),
+        )];
+        let stats_entries = vec![(
+            MOSSSTAKE_SLOT_ONLY_METADATA_KEY.as_bytes().to_vec(),
+            b"1".to_vec(),
+        )];
+
+        let reversed_categories = vec![
+            ("mossstake_pool", mossstake_entries.as_slice()),
+            ("stats", stats_entries.as_slice()),
+        ];
+        import_ordered_snapshot_categories(&target, reversed_categories)
+            .expect("apply reversed warp snapshot categories");
+
+        let imported = target.get_mossstake_pool().expect("read imported pool");
+        assert_eq!(
+            imported
+                .positions
+                .get(&alice)
+                .expect("imported position")
+                .deposited_at_unix_seconds,
+            0
+        );
+        assert_eq!(target.compute_state_root_cold_start(), expected_root);
+    }
+
     fn test_validator_info(pubkey: Pubkey) -> ValidatorInfo {
         ValidatorInfo {
             pubkey,
@@ -22118,6 +22569,50 @@ mod tests {
             three_signature_balances.iter().all(|balance| *balance > 0),
             "all active validators must receive deterministic fee credit"
         );
+    }
+
+    #[test]
+    fn downtime_observations_do_not_mutate_validator_state() {
+        let self_pubkey = Keypair::generate().pubkey();
+        let peer_pubkey = Keypair::generate().pubkey();
+        let mut validator_set = ValidatorSet::new();
+        validator_set.add_validator(test_validator_info(self_pubkey));
+        validator_set.add_validator(ValidatorInfo {
+            pubkey: peer_pubkey,
+            reputation: 750,
+            blocks_proposed: 12,
+            votes_cast: 4,
+            correct_votes: 4,
+            stake: MIN_VALIDATOR_STAKE,
+            joined_slot: 0,
+            last_active_slot: 0,
+            last_observed_at_ms: 123,
+            last_observed_block_at_ms: 456,
+            last_observed_block_slot: 7,
+            commission_rate: 500,
+            transactions_processed: 0,
+            pending_activation: false,
+        });
+
+        let observations =
+            collect_validator_downtime_observations(&validator_set, &self_pubkey, 6_000);
+
+        assert_eq!(
+            observations,
+            vec![DowntimeObservation {
+                pubkey: peer_pubkey,
+                missed_slots: 6_000,
+                severely_behind: true,
+            }]
+        );
+        let peer = validator_set
+            .get_validator(&peer_pubkey)
+            .expect("peer validator remains present");
+        assert_eq!(peer.reputation, 750);
+        assert_eq!(peer.last_active_slot, 0);
+        assert_eq!(peer.last_observed_at_ms, 123);
+        assert_eq!(peer.last_observed_block_at_ms, 456);
+        assert_eq!(peer.last_observed_block_slot, 7);
     }
 
     #[test]

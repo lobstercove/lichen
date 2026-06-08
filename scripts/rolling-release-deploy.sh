@@ -43,6 +43,16 @@ ARTIFACT_DIR="${LICHEN_RELEASE_ARTIFACT_DIR:-/tmp/lichen-rolling-${NETWORK}-${RE
 RELEASE_SIGNING_ADDRESS="${LICHEN_RELEASE_SIGNING_ADDRESS:-8HitBNnh8qbhfne5NCv2yHrQFoD6xbmHcWaUSgCGtsk}"
 REMOTE_RELEASE_DOWNLOAD="${LICHEN_REMOTE_RELEASE_DOWNLOAD:-1}"
 
+expected_validator_pubkey_for_host() {
+  case "${NETWORK}:$1" in
+    testnet:15.204.229.189) echo "7LFPJ8gqmAtjbhfRg1P4VXmTQJV4AeZxzws3UsA6SVq" ;;
+    testnet:37.59.97.61) echo "6RMeoigHdJWB47pEZEMSj5gvT7nbJPYSfPqjcur9vMJ" ;;
+    testnet:15.235.142.253) echo "6TghL7ioQz5R8pfrX1Qcfy8rNMzRP5F2pndmmRQ2sPm" ;;
+    testnet:148.113.43.247) echo "6XhsGituXoWSd1wLtutZgdJve6gLrdSi7YhEx1ZDFHW" ;;
+    *) echo "" ;;
+  esac
+}
+
 if [ -z "$RELEASE_TAG" ]; then
   echo "LICHEN_RELEASE_TAG is required." >&2
   exit 2
@@ -200,8 +210,10 @@ NODE
 
 preflight_host() {
   local host="$1"
+  local expected_pubkey
+  expected_pubkey="$(expected_validator_pubkey_for_host "$host")"
   echo "Preflight ${host}"
-  ssh_run "$host" "NETWORK='$NETWORK' RPC_PORT='$RPC_PORT' DISK_CRITICAL_PCT='$DISK_CRITICAL_PCT' bash -s" <<'REMOTE'
+  ssh_run "$host" "NETWORK='$NETWORK' RPC_PORT='$RPC_PORT' DISK_CRITICAL_PCT='$DISK_CRITICAL_PCT' EXPECTED_PUBKEY='$expected_pubkey' bash -s" <<'REMOTE'
 set -euo pipefail
 pct="$(df -P / | awk 'NR==2 { gsub(/%/, "", $5); print $5 }')"
 if [ "$pct" -ge "$DISK_CRITICAL_PCT" ]; then
@@ -218,6 +230,26 @@ if [ -n "$backups" ]; then
 fi
 
 sudo du -sh /var/lib/lichen /var/log/journal /var/log/sudo-io 2>/dev/null || true
+STATE="/var/lib/lichen/state-${NETWORK}"
+if [ -n "$EXPECTED_PUBKEY" ]; then
+  if ! sudo test -f "$STATE/validator-keypair.json"; then
+    echo "Expected validator identity $EXPECTED_PUBKEY but $STATE/validator-keypair.json is missing; refusing deploy."
+    exit 1
+  fi
+  active_pubkey="$(sudo python3 - "$STATE/validator-keypair.json" <<'PY'
+import json
+import sys
+with open(sys.argv[1], encoding="utf-8") as fh:
+    print(json.load(fh)["publicKeyBase58"])
+PY
+)"
+  if [ "$active_pubkey" != "$EXPECTED_PUBKEY" ]; then
+    echo "Validator identity mismatch; refusing to restart ${NETWORK} validator."
+    echo "  expected: $EXPECTED_PUBKEY"
+    echo "  actual:   $active_pubkey"
+    exit 1
+  fi
+fi
 curl -fsS "http://127.0.0.1:${RPC_PORT}/" \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"getHealth","params":[]}' >/dev/null

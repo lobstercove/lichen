@@ -52,6 +52,49 @@ impl StateStore {
             archive_mode: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })
     }
+
+    /// Open a live primary database as a RocksDB secondary for read-only diagnostics.
+    ///
+    /// The secondary uses the same column-family descriptors as the normal hot DB
+    /// but does not take the primary lock, so admin read commands can inspect a
+    /// running validator without stopping systemd or copying RocksDB state.
+    pub fn open_secondary_with_cache_mb<P: AsRef<Path>>(
+        primary_path: P,
+        secondary_path: P,
+        cache_mb: Option<usize>,
+    ) -> Result<Self, String> {
+        let db_arc = Arc::new(open_hot_db_secondary(
+            primary_path,
+            secondary_path,
+            cache_mb,
+        )?);
+        let metrics = Arc::new(MetricsStore::new());
+
+        metrics.load(&db_arc)?;
+
+        Ok(StateStore {
+            db: db_arc,
+            cold_db: None,
+            metrics,
+            event_seq_lock: Arc::new(std::sync::Mutex::new(())),
+            transfer_seq_lock: Arc::new(std::sync::Mutex::new(())),
+            tx_slot_seq_lock: Arc::new(std::sync::Mutex::new(())),
+            block_write_lock: Arc::new(std::sync::Mutex::new(())),
+            burned_lock: Arc::new(std::sync::Mutex::new(())),
+            minted_lock: Arc::new(std::sync::Mutex::new(())),
+            treasury_lock: Arc::new(std::sync::Mutex::new(())),
+            dex_index_lock: Arc::new(std::sync::Mutex::new(())),
+            blockhash_cache: Arc::new(Mutex::new(None)),
+            archive_mode: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        })
+    }
+
+    /// Refresh a secondary DB view from its primary.
+    pub fn try_catch_up_with_primary(&self) -> Result<(), String> {
+        self.db
+            .try_catch_up_with_primary()
+            .map_err(|e| format!("Failed to catch up secondary DB with primary: {}", e))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -463,6 +506,30 @@ pub(super) fn open_hot_db<P: AsRef<Path>>(path: P, cache_mb: Option<usize>) -> R
 
     DB::open_cf_descriptors(&db_opts, path, build_hot_cf_descriptors(&shared_cache))
         .map_err(|e| format!("Failed to open database: {}", e))
+}
+
+pub(super) fn open_hot_db_secondary<P: AsRef<Path>>(
+    primary_path: P,
+    secondary_path: P,
+    cache_mb: Option<usize>,
+) -> Result<DB, String> {
+    let mut db_opts = Options::default();
+    db_opts.create_if_missing(false);
+    db_opts.create_missing_column_families(false);
+    apply_global_tuning(&mut db_opts, hot_db_tuning_profile());
+    db_opts.increase_parallelism(num_cpus());
+
+    let cache_size_mb = detect_cache_size_mb(cache_mb);
+    tracing::info!("🗄️  RocksDB secondary shared cache: {} MB", cache_size_mb);
+    let shared_cache = Cache::new_lru_cache(cache_size_mb * 1024 * 1024);
+
+    DB::open_cf_descriptors_as_secondary(
+        &db_opts,
+        primary_path,
+        secondary_path,
+        build_hot_cf_descriptors(&shared_cache),
+    )
+    .map_err(|e| format!("Failed to open secondary database: {}", e))
 }
 
 pub(super) fn open_cold_db<P: AsRef<Path>>(cold_path: P) -> Result<DB, String> {
