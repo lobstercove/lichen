@@ -5,13 +5,6 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.5.120] - 2026-06-08
-
-### Fixed
-- Adds a guarded stake-pool singleton export/import for legacy testnet recovery: the import verifies the same tip slot and tip block hash, writes only the root-bearing stake pool, and rolls back if the resulting state root does not match the exported source.
-- Prevents post-bootstrap single-peer stake-pool snapshots from mutating live consensus state; stake-pool divergence now requests authenticated checkpoint metadata instead of applying an unverified singleton merge.
-- Disables the exposed local-history stake-pool production counter repair command because warp/snapshot validators may not have complete historical canonical block records.
-
 ## [0.5.119] - 2026-06-08
 
 ### Fixed

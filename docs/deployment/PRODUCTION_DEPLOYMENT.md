@@ -1543,45 +1543,30 @@ Do not distribute `genesis-wallet.json` or `genesis-keys/` to validator joiners.
 
 This is the full step-by-step procedure for stopping everything, flushing all state, and redeploying from scratch so VPSes match the live validator set exactly.
 
-Current signed-release target for this runbook is `v0.5.120`: the GitHub Release archive must be installed on all four VPSes, the seed creates genesis, and `seed-02`, `seed-03`, plus `seed-04` start from empty chain state and join from peers without a state copy. A passing verifier must report all four validators healthy with bridge `4/2`, oracle feeds including BTC, empty faucet history, 32 manifest symbols, and the mandatory 13 DEX CLOB pairs, AMM pools, and router routes including `wBTC/lUSD` and `wBTC/LICN`. Use `scripts/rolling-release-deploy.sh` for non-destructive code-only updates; do not flush state for that path.
+Current signed-release target for this runbook is `v0.5.119`: the GitHub Release archive must be installed on all four VPSes, the seed creates genesis, and `seed-02`, `seed-03`, plus `seed-04` start from empty chain state and join from peers without a state copy. A passing verifier must report all four validators healthy with bridge `4/2`, oracle feeds including BTC, empty faucet history, 32 manifest symbols, and the mandatory 13 DEX CLOB pairs, AMM pools, and router routes including `wBTC/lUSD` and `wBTC/LICN`. Use `scripts/rolling-release-deploy.sh` for non-destructive code-only updates; do not flush state for that path.
 
-### Legacy testnet stake-pool singleton repair
+### Legacy testnet stake-pool counter repair
 
-Use this only when two validators have the same canonical tip block but report different stake-pool digests. The source must be an operator-trusted validator at the canonical tip. The target must already have that exact same tip slot and tip block hash. Stop the target validator service first so the DB opens as primary, preserve validator identity files, import only the stake-pool singleton, then restart.
-
-Export the source singleton:
-
-```bash
-sudo -u lichen /usr/local/bin/lichen-validator \
-  --export-stake-pool-singleton \
-  --output /var/lib/lichen/stake-pool-singleton.bin \
-  --data-dir /var/lib/lichen/state-testnet \
-  --cache-size-mb 512
-```
-
-Copy `/var/lib/lichen/stake-pool-singleton.bin` to the target, then import it:
+Use this only when two validators have the same canonical tip block but report different stake-pool digests because historical post-block production counters were not applied identically. Stop the validator service first so the DB opens as primary, preserve validator identity files, run the confirmed repair, then restart:
 
 ```bash
 sudo systemctl stop lichen-validator-testnet
 sudo -u lichen /usr/local/bin/lichen-validator \
-  --import-stake-pool-singleton \
-  --input /var/lib/lichen/stake-pool-singleton.bin \
-  --confirm import-stake-pool-singleton:matching-tip \
+  --repair-stake-pool-production-counters \
+  --confirm repair-stake-pool-production-counters:canonical-blocks \
   --data-dir /var/lib/lichen/state-testnet \
   --cache-size-mb 512
 sudo systemctl start lichen-validator-testnet
 ```
 
-The import verifies the target tip slot and tip block hash before writing, writes only the serialized stake-pool singleton, recomputes the full state root, and rolls back if the resulting root does not match the exported source. It does not copy RocksDB state, regenerate identities, alter genesis, or rewrite accounts/contracts.
-
-The older `--repair-stake-pool-production-counters` operator command is disabled. Do not rebuild root-bearing stake-pool counters from local block records on validators that may have joined by warp snapshot or otherwise have incomplete historical block storage.
+The command scans canonical stored blocks and rewrites only the stake-pool `blocks_produced` and `last_reward_slot` counters to the values implied by those blocks. It prints before/after stake-pool hashes and does not copy RocksDB state, regenerate identities, or alter genesis.
 
 ### One-command automated redeploy (recommended)
 
 ```bash
 export LICHEN_OWNER_APPROVED_RESET='owner-approved:testnet:15.204.229.189,37.59.97.61,15.235.142.253,148.113.43.247'
 export LICHEN_CLEAN_SLATE_REDEPLOY_CONFIRM='clean-slate:testnet:15.204.229.189,37.59.97.61,15.235.142.253,148.113.43.247'
-export LICHEN_RELEASE_TAG=v0.5.120
+export LICHEN_RELEASE_TAG=v0.5.119
 bash scripts/clean-slate-redeploy.sh testnet
 ```
 
@@ -2183,7 +2168,7 @@ command find /var/lib/lichen/contracts -maxdepth 2 -name '*.wasm' | sort | xargs
 
 Also, the wiped validator's new pubkey registers as a separate entry in the validator set. With N+1 validators and only N-1 online (original minus the ghost), BFT quorum (2/3+) may be unreachable.
 
-**Current release behavior**: `v0.5.120` keeps endpoint pinning strict for configured seed and reserved peers, keeps durable cached peers in `known-peers.json` instead of promoting them into configured seed identity pins, treats non-reserved inbound and outbound learned validators as fresh transport locators after the native PQ handshake verifies their node identity, and persists consensus proposal values in the WAL before any non-nil vote can reference them. This lets an external agent reinstall from a clean state and reuse the same public P2P address without manual TOFU cleanup on seed nodes, while resumed validators keep signed-vote protection without freezing on an unrecoverable legacy lock value.
+**Current release behavior**: `v0.5.119` keeps endpoint pinning strict for configured seed and reserved peers, keeps durable cached peers in `known-peers.json` instead of promoting them into configured seed identity pins, treats non-reserved inbound and outbound learned validators as fresh transport locators after the native PQ handshake verifies their node identity, and persists consensus proposal values in the WAL before any non-nil vote can reference them. This lets an external agent reinstall from a clean state and reuse the same public P2P address without manual TOFU cleanup on seed nodes, while resumed validators keep signed-vote protection without freezing on an unrecoverable legacy lock value.
 
 **Fix for local dev**: Remove the wiped validator's entry from all other validators' TOFU stores, then restart all validators from scratch:
 
