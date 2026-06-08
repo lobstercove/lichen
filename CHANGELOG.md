@@ -5,11 +5,12 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.5.126] - 2026-06-08
+## [0.5.127] - 2026-06-08
 
 ### Fixed
 - Includes shielded RocksDB column families in warp snapshots so fresh or repaired validators import the privacy pool, commitments, note payloads, nullifiers, and shielded transaction index instead of serving an empty shielded RPC state from a synced checkpoint.
 - Adds an explicit guarded shielded-state rebuild command that reconstructs only shielded pool/index column families from local canonical blocks, with dry-run output and write confirmation, so hollow RPC origins can be repaired without copying another validator's RocksDB state.
+- Adds a guarded shielded-state bundle export/import command for testnet operators to replace only the shielded column families from an archive origin when a checkpoint-joined validator lacks the historical shielded transaction blocks needed for local replay.
 - Adds a `sparse_shielded_v2` state commitment schema that can include shielded state in future block roots after explicit activation, plus cache invalidation and diagnostics for shielded state-root components.
 
 ## [0.5.123] - 2026-06-08

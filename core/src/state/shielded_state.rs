@@ -392,6 +392,27 @@ impl StateStore {
     }
 
     #[cfg(feature = "zk")]
+    pub fn clear_shielded_state_categories(&self) -> Result<u64, String> {
+        let mut batch = WriteBatch::default();
+        let mut deleted_entries = 0u64;
+        for cf_name in [
+            CF_SHIELDED_COMMITMENTS,
+            CF_SHIELDED_NOTE_PAYLOADS,
+            CF_SHIELDED_NULLIFIERS,
+            CF_SHIELDED_POOL,
+            CF_SHIELDED_TXS,
+        ] {
+            deleted_entries =
+                deleted_entries.saturating_add(self.queue_clear_shielded_cf(&mut batch, cf_name)?);
+        }
+        self.db
+            .write(batch)
+            .map_err(|e| format!("Failed to clear shielded state categories: {}", e))?;
+        self.clear_composite_state_root_cache();
+        Ok(deleted_entries)
+    }
+
+    #[cfg(feature = "zk")]
     pub fn rebuild_shielded_state_from_canonical_blocks(
         &self,
         dry_run: bool,

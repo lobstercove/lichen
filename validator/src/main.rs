@@ -116,7 +116,10 @@ const SHOW_CONTRACT_STORAGE_DIGEST_FLAG: &str = "--show-contract-storage-digest"
 const SHOW_STAKE_POOL_DIGEST_FLAG: &str = "--show-stake-pool-digest";
 const VERIFY_WARP_SNAPSHOT_ROUNDTRIP_FLAG: &str = "--verify-warp-snapshot-roundtrip";
 const REBUILD_SHIELDED_STATE_FROM_BLOCKS_FLAG: &str = "--rebuild-shielded-state-from-blocks";
+const EXPORT_SHIELDED_STATE_BUNDLE_FLAG: &str = "--export-shielded-state-bundle";
+const IMPORT_SHIELDED_STATE_BUNDLE_FLAG: &str = "--import-shielded-state-bundle";
 const SHIELDED_STATE_REBUILD_CONFIRMATION: &str = "rebuild-shielded-state:v1";
+const SHIELDED_STATE_BUNDLE_IMPORT_CONFIRMATION: &str = "shielded-state-bundle:v1";
 const REPAIR_ANALYTICS_24H_WINDOW_FLAG: &str = "--repair-analytics-24h-window";
 const ANALYTICS_24H_REPAIR_CONFIRMATION: &str = "repair-analytics-24h:v1";
 const TESTNET_DEX_REPAIR_CONTRACTS: &[(&str, &str)] = &[
@@ -475,6 +478,7 @@ const FRESH_JOIN_BOOTSTRAP_REPLAY_SLOTS: u64 = sync::P2P_BLOCK_RANGE_LIMIT;
 
 type SnapshotEntry = (Vec<u8>, Vec<u8>);
 type SnapshotEntries = Vec<SnapshotEntry>;
+type ShieldedStateBundle = Vec<(String, SnapshotEntries)>;
 
 fn deserialize_snapshot_value<T>(data: &[u8], context: &str) -> Result<T, String>
 where
@@ -3396,6 +3400,14 @@ const WARP_SNAPSHOT_CATEGORIES: &[&str] = &[
     "validator_set",
     "stake_pool",
     "mossstake_pool",
+];
+
+const SHIELDED_STATE_BUNDLE_CATEGORIES: &[&str] = &[
+    "shielded_commitments",
+    "shielded_note_payloads",
+    "shielded_nullifiers",
+    "shielded_pool",
+    "shielded_txs",
 ];
 
 fn block_vote_weight(
@@ -8132,6 +8144,183 @@ fn print_shielded_state_rebuild_report(
     println!("deleted_entries={}", report.deleted_entries);
 }
 
+fn shielded_state_bundle_counts(bundle: &ShieldedStateBundle) -> Vec<(String, usize)> {
+    bundle
+        .iter()
+        .map(|(category, entries)| (category.clone(), entries.len()))
+        .collect()
+}
+
+fn export_shielded_state_bundle(
+    state: &StateStore,
+    chunk_size: u64,
+) -> Result<ShieldedStateBundle, String> {
+    let mut bundle = Vec::with_capacity(SHIELDED_STATE_BUNDLE_CATEGORIES.len());
+    for category in SHIELDED_STATE_BUNDLE_CATEGORIES {
+        let entries = export_roundtrip_snapshot_entries(state, category, chunk_size)
+            .map_err(|err| format!("{} export failed: {}", category, err))?;
+        bundle.push(((*category).to_string(), entries));
+    }
+    Ok(bundle)
+}
+
+fn validate_shielded_state_bundle(
+    bundle: ShieldedStateBundle,
+) -> Result<HashMap<String, SnapshotEntries>, String> {
+    let mut categories = HashMap::new();
+    for (category, entries) in bundle {
+        if !SHIELDED_STATE_BUNDLE_CATEGORIES.contains(&category.as_str()) {
+            return Err(format!(
+                "shielded state bundle contains unsupported category: {}",
+                category
+            ));
+        }
+        if categories.insert(category.clone(), entries).is_some() {
+            return Err(format!(
+                "shielded state bundle contains duplicate category: {}",
+                category
+            ));
+        }
+    }
+
+    for category in SHIELDED_STATE_BUNDLE_CATEGORIES {
+        if !categories.contains_key(*category) {
+            return Err(format!(
+                "shielded state bundle is missing required category: {}",
+                category
+            ));
+        }
+    }
+
+    Ok(categories)
+}
+
+fn maybe_run_shielded_state_bundle_admin(args: &[String]) -> Option<i32> {
+    let export_path = get_flag_value(args, &[EXPORT_SHIELDED_STATE_BUNDLE_FLAG]).map(PathBuf::from);
+    let import_path = get_flag_value(args, &[IMPORT_SHIELDED_STATE_BUNDLE_FLAG]).map(PathBuf::from);
+
+    match (export_path, import_path) {
+        (None, None) => None,
+        (Some(_), Some(_)) => {
+            eprintln!(
+                "{} and {} are mutually exclusive",
+                EXPORT_SHIELDED_STATE_BUNDLE_FLAG, IMPORT_SHIELDED_STATE_BUNDLE_FLAG
+            );
+            Some(2)
+        }
+        (Some(path), None) => {
+            let data_dir = restriction_schema_data_dir(args);
+            let chunk_size = get_flag_value(args, &["--chunk-size"])
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(2_000);
+            let state = match StateStore::open(&data_dir) {
+                Ok(state) => state,
+                Err(err) => {
+                    eprintln!("Failed to open state DB at {}: {}", data_dir.display(), err);
+                    return Some(1);
+                }
+            };
+            let bundle = match export_shielded_state_bundle(&state, chunk_size) {
+                Ok(bundle) => bundle,
+                Err(err) => {
+                    eprintln!("Failed to export shielded state bundle: {}", err);
+                    return Some(1);
+                }
+            };
+            let counts = shielded_state_bundle_counts(&bundle);
+            let bytes = match serialize_legacy_bincode_limited(
+                &bundle,
+                SNAPSHOT_ENTRIES_CODEC_LIMIT_BYTES,
+                "shielded state bundle",
+            ) {
+                Ok(bytes) => bytes,
+                Err(err) => {
+                    eprintln!("Failed to encode shielded state bundle: {}", err);
+                    return Some(1);
+                }
+            };
+            if let Err(err) = fs::write(&path, bytes) {
+                eprintln!("Failed to write {}: {}", path.display(), err);
+                return Some(1);
+            }
+            println!("data_dir={}", data_dir.display());
+            println!("output={}", path.display());
+            for (category, count) in counts {
+                println!("category={} entries={}", category, count);
+            }
+            Some(0)
+        }
+        (None, Some(path)) => {
+            let confirm = get_flag_value(args, &["--confirm"]);
+            if confirm != Some(SHIELDED_STATE_BUNDLE_IMPORT_CONFIRMATION) {
+                eprintln!(
+                    "Refusing write without --confirm {SHIELDED_STATE_BUNDLE_IMPORT_CONFIRMATION}"
+                );
+                return Some(1);
+            }
+            let data_dir = restriction_schema_data_dir(args);
+            let bytes = match fs::read(&path) {
+                Ok(bytes) => bytes,
+                Err(err) => {
+                    eprintln!("Failed to read {}: {}", path.display(), err);
+                    return Some(1);
+                }
+            };
+            let bundle = match deserialize_legacy_bincode_strict::<ShieldedStateBundle>(
+                &bytes,
+                SNAPSHOT_ENTRIES_CODEC_LIMIT_BYTES,
+                "shielded state bundle",
+            ) {
+                Ok(bundle) => bundle,
+                Err(err) => {
+                    eprintln!("Failed to decode shielded state bundle: {}", err);
+                    return Some(1);
+                }
+            };
+            let mut categories = match validate_shielded_state_bundle(bundle) {
+                Ok(categories) => categories,
+                Err(err) => {
+                    eprintln!("{}", err);
+                    return Some(1);
+                }
+            };
+            let state = match StateStore::open(&data_dir) {
+                Ok(state) => state,
+                Err(err) => {
+                    eprintln!("Failed to open state DB at {}: {}", data_dir.display(), err);
+                    return Some(1);
+                }
+            };
+            let deleted = match state.clear_shielded_state_categories() {
+                Ok(deleted) => deleted,
+                Err(err) => {
+                    eprintln!(
+                        "Failed to clear existing shielded state categories: {}",
+                        err
+                    );
+                    return Some(1);
+                }
+            };
+            println!("data_dir={}", data_dir.display());
+            println!("input={}", path.display());
+            println!("deleted_entries={}", deleted);
+            for category in SHIELDED_STATE_BUNDLE_CATEGORIES {
+                let entries = categories
+                    .remove(*category)
+                    .expect("validated shielded category");
+                match import_ordered_snapshot_category(&state, category, &entries) {
+                    Ok(imported) => println!("category={} imported={}", category, imported),
+                    Err(err) => {
+                        eprintln!("Failed to import {}: {}", category, err);
+                        return Some(1);
+                    }
+                }
+            }
+            Some(0)
+        }
+    }
+}
+
 fn maybe_run_shielded_state_rebuild_admin(args: &[String]) -> Option<i32> {
     if !has_flag(args, REBUILD_SHIELDED_STATE_FROM_BLOCKS_FLAG) {
         return None;
@@ -8782,6 +8971,9 @@ fn main() {
         std::process::exit(exit_code);
     }
     if let Some(exit_code) = maybe_run_warp_snapshot_roundtrip_admin(&args) {
+        std::process::exit(exit_code);
+    }
+    if let Some(exit_code) = maybe_run_shielded_state_bundle_admin(&args) {
         std::process::exit(exit_code);
     }
     if let Some(exit_code) = maybe_run_shielded_state_rebuild_admin(&args) {
