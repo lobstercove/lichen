@@ -115,6 +115,8 @@ const DEX_REPAIR_CONFIRMATION: &str = "repair-dex-contracts:testnet:v0.5.77";
 const SHOW_CONTRACT_STORAGE_DIGEST_FLAG: &str = "--show-contract-storage-digest";
 const SHOW_STAKE_POOL_DIGEST_FLAG: &str = "--show-stake-pool-digest";
 const VERIFY_WARP_SNAPSHOT_ROUNDTRIP_FLAG: &str = "--verify-warp-snapshot-roundtrip";
+const REBUILD_SHIELDED_STATE_FROM_BLOCKS_FLAG: &str = "--rebuild-shielded-state-from-blocks";
+const SHIELDED_STATE_REBUILD_CONFIRMATION: &str = "rebuild-shielded-state:v1";
 const REPAIR_ANALYTICS_24H_WINDOW_FLAG: &str = "--repair-analytics-24h-window";
 const ANALYTICS_24H_REPAIR_CONFIRMATION: &str = "repair-analytics-24h:v1";
 const TESTNET_DEX_REPAIR_CONTRACTS: &[(&str, &str)] = &[
@@ -8105,6 +8107,66 @@ fn maybe_run_warp_snapshot_roundtrip_admin(args: &[String]) -> Option<i32> {
     }
 }
 
+fn print_shielded_state_rebuild_report(
+    data_dir: &Path,
+    report: &lichen_core::state::ShieldedStateRebuildReport,
+) {
+    println!("data_dir={}", data_dir.display());
+    println!("mode={}", if report.dry_run { "dry-run" } else { "write" });
+    println!("start_slot={}", report.start_slot);
+    println!("end_slot={}", report.end_slot);
+    println!("scanned_blocks={}", report.scanned_blocks);
+    println!("scanned_transactions={}", report.scanned_transactions);
+    println!("shielded_transactions={}", report.shielded_transactions);
+    println!("shield_count={}", report.shield_count);
+    println!("unshield_count={}", report.unshield_count);
+    println!("transfer_count={}", report.transfer_count);
+    println!("commitment_count={}", report.commitment_count);
+    println!("nullifier_count={}", report.nullifier_count);
+    println!("total_shielded={}", report.total_shielded);
+    println!(
+        "total_shielded_licn={:.9}",
+        report.total_shielded as f64 / 1_000_000_000.0
+    );
+    println!("merkle_root={}", hex::encode(report.merkle_root));
+    println!("deleted_entries={}", report.deleted_entries);
+}
+
+fn maybe_run_shielded_state_rebuild_admin(args: &[String]) -> Option<i32> {
+    if !has_flag(args, REBUILD_SHIELDED_STATE_FROM_BLOCKS_FLAG) {
+        return None;
+    }
+
+    let dry_run = has_flag(args, "--dry-run");
+    if !dry_run {
+        let confirm = get_flag_value(args, &["--confirm"]);
+        if confirm != Some(SHIELDED_STATE_REBUILD_CONFIRMATION) {
+            eprintln!("Refusing write without --confirm {SHIELDED_STATE_REBUILD_CONFIRMATION}");
+            return Some(1);
+        }
+    }
+
+    let data_dir = restriction_schema_data_dir(args);
+    let state = match StateStore::open(&data_dir) {
+        Ok(state) => state,
+        Err(err) => {
+            eprintln!("Failed to open state DB at {}: {}", data_dir.display(), err);
+            return Some(1);
+        }
+    };
+
+    match state.rebuild_shielded_state_from_canonical_blocks(dry_run) {
+        Ok(report) => {
+            print_shielded_state_rebuild_report(&data_dir, &report);
+            Some(0)
+        }
+        Err(err) => {
+            eprintln!("Failed to rebuild shielded state: {err}");
+            Some(1)
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 struct Analytics24hRepairReport {
     tip: u64,
@@ -8720,6 +8782,9 @@ fn main() {
         std::process::exit(exit_code);
     }
     if let Some(exit_code) = maybe_run_warp_snapshot_roundtrip_admin(&args) {
+        std::process::exit(exit_code);
+    }
+    if let Some(exit_code) = maybe_run_shielded_state_rebuild_admin(&args) {
         std::process::exit(exit_code);
     }
     if let Some(exit_code) = maybe_run_analytics_24h_repair_admin(&args) {

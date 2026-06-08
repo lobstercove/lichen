@@ -42,6 +42,7 @@ pub use merkle_state::{
     AccountProof, MerkleProof, SparseMerkleProof, SparseProofStep, SparseStateCommitmentReport,
 };
 pub use metrics_state::{Metrics, MetricsStore};
+pub use shielded_state::ShieldedStateRebuildReport;
 pub use snapshot_io::CheckpointMeta;
 
 #[cfg(test)]
@@ -3404,6 +3405,166 @@ mod tests {
             proposal_root,
             "batched shielded proposal root must match committed root"
         );
+    }
+
+    #[cfg(feature = "zk")]
+    #[test]
+    fn test_rebuild_shielded_state_from_canonical_blocks() {
+        use crate::transaction::{Instruction, Message, Transaction};
+
+        fn shield_tx(slot: u64, amount: u64, commitment: [u8; 32]) -> (u64, Transaction) {
+            let mut data = vec![23u8];
+            data.extend_from_slice(&amount.to_le_bytes());
+            data.extend_from_slice(&commitment);
+            data.push(0x01);
+            (
+                slot,
+                Transaction {
+                    signatures: Vec::new(),
+                    message: Message::new(
+                        vec![Instruction {
+                            program_id: crate::SYSTEM_PROGRAM_ID,
+                            accounts: vec![Pubkey([slot as u8; 32])],
+                            data,
+                        }],
+                        Hash::default(),
+                    ),
+                    tx_type: Default::default(),
+                },
+            )
+        }
+
+        fn unshield_tx(
+            slot: u64,
+            amount: u64,
+            nullifier: [u8; 32],
+            merkle_root: [u8; 32],
+        ) -> (u64, Transaction) {
+            let mut data = vec![24u8];
+            data.extend_from_slice(&amount.to_le_bytes());
+            data.extend_from_slice(&nullifier);
+            data.extend_from_slice(&merkle_root);
+            data.extend_from_slice(&[0xAA; 32]);
+            data.push(0x01);
+            (
+                slot,
+                Transaction {
+                    signatures: Vec::new(),
+                    message: Message::new(
+                        vec![Instruction {
+                            program_id: crate::SYSTEM_PROGRAM_ID,
+                            accounts: vec![Pubkey([slot as u8; 32])],
+                            data,
+                        }],
+                        Hash::default(),
+                    ),
+                    tx_type: Default::default(),
+                },
+            )
+        }
+
+        fn shielded_transfer_tx(
+            slot: u64,
+            nullifier_a: [u8; 32],
+            nullifier_b: [u8; 32],
+            commitment_c: [u8; 32],
+            commitment_d: [u8; 32],
+            merkle_root: [u8; 32],
+        ) -> (u64, Transaction) {
+            let mut data = vec![25u8];
+            data.extend_from_slice(&nullifier_a);
+            data.extend_from_slice(&nullifier_b);
+            data.extend_from_slice(&commitment_c);
+            data.extend_from_slice(&commitment_d);
+            data.extend_from_slice(&merkle_root);
+            data.push(0x01);
+            (
+                slot,
+                Transaction {
+                    signatures: Vec::new(),
+                    message: Message::new(
+                        vec![Instruction {
+                            program_id: crate::SYSTEM_PROGRAM_ID,
+                            accounts: Vec::new(),
+                            data,
+                        }],
+                        Hash::default(),
+                    ),
+                    tx_type: Default::default(),
+                },
+            )
+        }
+
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+        let stale_commitment = [0xFE; 32];
+        state
+            .insert_shielded_commitment(99, &stale_commitment)
+            .unwrap();
+        let mut stale_pool = crate::zk::ShieldedPoolState::new();
+        stale_pool.commitment_count = 100;
+        stale_pool.total_shielded = 1;
+        state.put_shielded_pool_state(&stale_pool).unwrap();
+
+        let c0 = [0x10; 32];
+        let c1 = [0x11; 32];
+        let c2 = [0x12; 32];
+        let n0 = [0x20; 32];
+        let n1 = [0x21; 32];
+        let n2 = [0x22; 32];
+        for (slot, tx) in [
+            shield_tx(1, 100_000_000, c0),
+            shielded_transfer_tx(2, n0, n1, c1, c2, [0x30; 32]),
+            unshield_tx(3, 20_000_000, n2, [0x31; 32]),
+        ] {
+            let block = Block::new(slot, Hash::default(), Hash::default(), [0u8; 32], vec![tx]);
+            state
+                .put_block_atomic(&block, Some(slot), Some(slot))
+                .unwrap();
+        }
+
+        let dry_run = state
+            .rebuild_shielded_state_from_canonical_blocks(true)
+            .unwrap();
+        assert!(dry_run.dry_run);
+        assert_eq!(dry_run.commitment_count, 3);
+        assert_eq!(dry_run.total_shielded, 80_000_000);
+        assert_eq!(
+            state.get_shielded_pool_state().unwrap().commitment_count,
+            100,
+            "dry run must not change the live shielded pool"
+        );
+
+        let report = state
+            .rebuild_shielded_state_from_canonical_blocks(false)
+            .unwrap();
+        assert!(!report.dry_run);
+        assert_eq!(report.scanned_blocks, 3);
+        assert_eq!(report.scanned_transactions, 3);
+        assert_eq!(report.shielded_transactions, 3);
+        assert_eq!(report.shield_count, 1);
+        assert_eq!(report.unshield_count, 1);
+        assert_eq!(report.transfer_count, 1);
+        assert_eq!(report.commitment_count, 3);
+        assert_eq!(report.nullifier_count, 3);
+        assert_eq!(report.total_shielded, 80_000_000);
+
+        let pool = state.get_shielded_pool_state().unwrap();
+        assert_eq!(pool.commitment_count, 3);
+        assert_eq!(pool.total_shielded, 80_000_000);
+        assert_eq!(pool.merkle_root, report.merkle_root);
+        assert_eq!(state.get_shielded_commitment(0).unwrap(), Some(c0));
+        assert_eq!(state.get_shielded_commitment(1).unwrap(), Some(c1));
+        assert_eq!(state.get_shielded_commitment(2).unwrap(), Some(c2));
+        assert_eq!(state.get_shielded_commitment(99).unwrap(), None);
+        assert!(state.is_nullifier_spent(&n0).unwrap());
+        assert!(state.is_nullifier_spent(&n1).unwrap());
+        assert!(state.is_nullifier_spent(&n2).unwrap());
+        let recent = state.get_recent_shielded_txs(10, None).unwrap();
+        assert_eq!(recent.len(), 3);
+        assert_eq!(recent[0].1, 3);
+        assert_eq!(recent[1].1, 2);
+        assert_eq!(recent[2].1, 1);
     }
 
     // ── P2-3: Cold storage tests ──
