@@ -21,11 +21,13 @@ pub struct ShieldedStateRebuildReport {
 const SHIELDED_NOTE_PAYLOAD_MAGIC: &[u8; 4] = b"LNP1";
 const MAX_SHIELDED_NOTE_PAYLOAD_BYTES: usize = 4096;
 
+type ShieldedNoteEnvelope = (Vec<u8>, Vec<u8>);
+
 fn parse_shielded_note_envelope(
     data: &[u8],
     envelope_offset: usize,
     action: &str,
-) -> Result<Option<(Vec<u8>, Vec<u8>)>, String> {
+) -> Result<Option<ShieldedNoteEnvelope>, String> {
     if data.len() < envelope_offset + SHIELDED_NOTE_PAYLOAD_MAGIC.len()
         || &data[envelope_offset..envelope_offset + SHIELDED_NOTE_PAYLOAD_MAGIC.len()]
             != SHIELDED_NOTE_PAYLOAD_MAGIC
