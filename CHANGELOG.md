@@ -5,6 +5,12 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.119] - 2026-06-08
+
+### Fixed
+- Completes deterministic post-block effects before accepting a duplicate BFT commit at the current tip, preventing stored-block/reward-counter races from leaving validators with matching blocks but different stake-pool bytes.
+- Adds a confirmed operator repair command for legacy testnet stake-pool production counters, rebuilding `blocks_produced` and `last_reward_slot` from canonical stored blocks with before/after hashes.
+
 ## [0.5.118] - 2026-06-08
 
 ### Fixed

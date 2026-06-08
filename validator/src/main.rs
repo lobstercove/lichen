@@ -105,7 +105,6 @@ const GENESIS_SYNC_INCOMPLETE_MARKER: &str = "genesis_sync_incomplete";
 #[cfg(test)]
 const STAKE_POOL_PRODUCTION_COUNTER_REPAIR_METADATA_KEY: &str =
     "stake_pool_production_counter_repair_v1";
-#[cfg(test)]
 const STAKE_POOL_PRODUCTION_COUNTER_REPAIR_PROGRESS_INTERVAL: u64 = 100_000;
 const ACTIVATE_RESTRICTION_SCHEMA_FLAG: &str = "--activate-restriction-schema";
 const SHOW_RESTRICTION_SCHEMA_FLAG: &str = "--show-restriction-schema";
@@ -117,6 +116,9 @@ const REPAIR_TESTNET_DEX_CONTRACTS_FLAG: &str = "--repair-testnet-dex-contracts"
 const DEX_REPAIR_CONFIRMATION: &str = "repair-dex-contracts:testnet:v0.5.77";
 const SHOW_CONTRACT_STORAGE_DIGEST_FLAG: &str = "--show-contract-storage-digest";
 const SHOW_STAKE_POOL_DIGEST_FLAG: &str = "--show-stake-pool-digest";
+const REPAIR_STAKE_POOL_PRODUCTION_COUNTERS_FLAG: &str = "--repair-stake-pool-production-counters";
+const STAKE_POOL_PRODUCTION_COUNTER_REPAIR_CONFIRMATION: &str =
+    "repair-stake-pool-production-counters:canonical-blocks";
 const VERIFY_WARP_SNAPSHOT_ROUNDTRIP_FLAG: &str = "--verify-warp-snapshot-roundtrip";
 const REPAIR_ANALYTICS_24H_WINDOW_FLAG: &str = "--repair-analytics-24h-window";
 const ANALYTICS_24H_REPAIR_CONFIRMATION: &str = "repair-analytics-24h:v1";
@@ -5091,7 +5093,6 @@ fn record_post_block_state_commitment_anchor(state: &StateStore, block: &Block, 
     }
 }
 
-#[cfg(test)]
 fn repair_stake_pool_production_counters_from_blocks(
     state: &StateStore,
     context: &str,
@@ -5442,34 +5443,57 @@ async fn recover_tip_post_block_effects_if_needed(
         ));
     };
 
-    if tip_post_block_effects_complete(state, &block)? {
-        return Ok(());
-    }
-
-    warn!(
-        "🔧 Startup recovery: completing deterministic post-block effects for stored tip {} before syncing next block",
-        tip
-    );
-    apply_post_block_effects_after_store(
+    recover_stored_block_post_effects_if_needed(
         state,
         validator_set,
         stake_pool,
         &block,
         min_validator_stake,
         slot_duration_ms,
+        "Startup recovery",
+    )
+    .await?;
+
+    Ok(())
+}
+
+async fn recover_stored_block_post_effects_if_needed(
+    state: &StateStore,
+    validator_set: &Arc<RwLock<ValidatorSet>>,
+    stake_pool: &Arc<RwLock<StakePool>>,
+    block: &Block,
+    min_validator_stake: u64,
+    slot_duration_ms: u64,
+    context: &str,
+) -> Result<(), String> {
+    if tip_post_block_effects_complete(state, block)? {
+        return Ok(());
+    }
+
+    warn!(
+        "🔧 {}: completing deterministic post-block effects for stored slot {} before continuing",
+        context, block.header.slot
+    );
+    apply_post_block_effects_after_store(
+        state,
+        validator_set,
+        stake_pool,
+        block,
+        min_validator_stake,
+        slot_duration_ms,
     )
     .await;
 
-    if !tip_post_block_effects_complete(state, &block)? {
+    if !tip_post_block_effects_complete(state, block)? {
         return Err(format!(
             "post-block effects for stored tip {} are still incomplete after recovery",
-            tip
+            block.header.slot
         ));
     }
 
     info!(
-        "✅ Startup recovery completed deterministic post-block effects for stored tip {}",
-        tip
+        "✅ {} completed deterministic post-block effects for stored slot {}",
+        context, block.header.slot
     );
     Ok(())
 }
@@ -7827,6 +7851,55 @@ fn maybe_run_stake_pool_digest_admin(args: &[String]) -> Option<i32> {
     Some(0)
 }
 
+fn maybe_run_stake_pool_production_counter_repair_admin(args: &[String]) -> Option<i32> {
+    if !has_flag(args, REPAIR_STAKE_POOL_PRODUCTION_COUNTERS_FLAG) {
+        return None;
+    }
+
+    let confirm = get_flag_value(args, &["--confirm"]);
+    if confirm != Some(STAKE_POOL_PRODUCTION_COUNTER_REPAIR_CONFIRMATION) {
+        eprintln!(
+            "Refusing write without --confirm {STAKE_POOL_PRODUCTION_COUNTER_REPAIR_CONFIRMATION}"
+        );
+        return Some(1);
+    }
+
+    let data_dir = restriction_schema_data_dir(args);
+    let cache_size_mb = get_flag_value(args, &["--cache-size-mb"]).and_then(|s| s.parse().ok());
+    let state = match StateStore::open_with_cache_mb(&data_dir, cache_size_mb) {
+        Ok(state) => state,
+        Err(err) => {
+            eprintln!("Failed to open state DB at {}: {}", data_dir.display(), err);
+            return Some(1);
+        }
+    };
+
+    println!("data_dir={}", data_dir.display());
+    match state.get_last_slot() {
+        Ok(slot) => println!("last_slot={slot}"),
+        Err(err) => println!("last_slot_error={err}"),
+    }
+    match state.get_stake_pool() {
+        Ok(pool) => println!("stake_pool_hash_before={}", pool.canonical_hash().to_hex()),
+        Err(err) => println!("stake_pool_hash_before_error={err}"),
+    }
+
+    match repair_stake_pool_production_counters_from_blocks(&state, "admin repair") {
+        Ok(changed) => {
+            match state.get_stake_pool() {
+                Ok(pool) => println!("stake_pool_hash_after={}", pool.canonical_hash().to_hex()),
+                Err(err) => println!("stake_pool_hash_after_error={err}"),
+            }
+            println!("stake_pool_repaired={changed}");
+            Some(0)
+        }
+        Err(err) => {
+            eprintln!("Failed to repair stake pool production counters: {err}");
+            Some(1)
+        }
+    }
+}
+
 fn export_roundtrip_snapshot_entries(
     state: &StateStore,
     category: &str,
@@ -8687,6 +8760,9 @@ fn main() {
         std::process::exit(exit_code);
     }
     if let Some(exit_code) = maybe_run_stake_pool_digest_admin(&args) {
+        std::process::exit(exit_code);
+    }
+    if let Some(exit_code) = maybe_run_stake_pool_production_counter_repair_admin(&args) {
         std::process::exit(exit_code);
     }
     if let Some(exit_code) = maybe_run_warp_snapshot_roundtrip_admin(&args) {
@@ -19022,8 +19098,25 @@ async fn execute_consensus_actions(
             match classify_bft_commit_storage(height, current_tip, stored_hash, block_hash) {
                 BftCommitStorageDecision::FreshNextBlock => {}
                 BftCommitStorageDecision::DuplicateAtTip => {
+                    if let Err(err) = recover_stored_block_post_effects_if_needed(
+                        state,
+                        validator_set,
+                        stake_pool,
+                        &block,
+                        min_validator_stake,
+                        slot_duration_ms,
+                        "BFT duplicate-tip recovery",
+                    )
+                    .await
+                    {
+                        error!(
+                            "FATAL: failed to complete duplicate-tip post-block effects at height {}: {}",
+                            height, err
+                        );
+                        std::process::exit(1);
+                    }
                     info!(
-                        "🔐 BFT: Block {} already applied at tip — skipping duplicate canonical side effects",
+                        "🔐 BFT: Block {} already applied at tip — duplicate canonical side effects complete",
                         height
                     );
                     sync_manager.record_progress(height).await;
