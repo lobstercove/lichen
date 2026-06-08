@@ -5,6 +5,12 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.122] - 2026-06-08
+
+### Fixed
+- Prevents stale same-slot checkpoint repair checks from comparing a replayed live database against an older checkpoint after later blocks already exist locally.
+- Keeps speculative BFT proposal, prevote, and precommit heights out of durable block-sync targets so catch-up only chases blocks that peers have actually advertised or served.
+
 ## [0.5.121] - 2026-06-08
 
 ### Fixed

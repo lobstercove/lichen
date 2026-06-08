@@ -6048,6 +6048,28 @@ fn same_slot_checkpoint_root_mismatch(
     checkpoint_slot > 0 && local_slot == checkpoint_slot && local_root != checkpoint_root
 }
 
+fn has_replayed_past_checkpoint(state: &StateStore, checkpoint_slot: u64) -> bool {
+    checkpoint_slot
+        .checked_add(1)
+        .and_then(|next_slot| state.get_block_by_slot(next_slot).ok().flatten())
+        .is_some()
+}
+
+fn checkpoint_root_for_same_slot_repair(
+    state: &StateStore,
+    local_slot: u64,
+    checkpoint_slot: u64,
+) -> Option<Hash> {
+    if checkpoint_slot > 0
+        && local_slot == checkpoint_slot
+        && !has_replayed_past_checkpoint(state, checkpoint_slot)
+    {
+        Some(state.compute_state_root_cold_start())
+    } else {
+        None
+    }
+}
+
 fn verified_checkpoint_snapshot_needed(
     local_slot: u64,
     checkpoint_slot: u64,
@@ -14388,11 +14410,12 @@ async fn run_validator() {
                         );
                         let local_slot = state_for_snapshot_apply.get_last_slot().unwrap_or(0);
                         let checkpoint_root = Hash(state_root);
-                        let local_root = if slot == local_slot && slot > 0 {
-                            state_for_snapshot_apply.compute_state_root_cold_start()
-                        } else {
-                            Hash::default()
-                        };
+                        let local_root = checkpoint_root_for_same_slot_repair(
+                            &state_for_snapshot_apply,
+                            local_slot,
+                            slot,
+                        )
+                        .unwrap_or_default();
                         let same_slot_root_mismatch = same_slot_checkpoint_root_mismatch(
                             local_slot,
                             slot,
@@ -14892,12 +14915,12 @@ async fn run_validator() {
                         let local_slot_before_commit =
                             state_for_snapshot_apply.get_last_slot().unwrap_or(0);
                         let snapshot_root = Hash(state_root);
-                        let local_root_before_commit =
-                            if local_slot_before_commit == snapshot_slot && snapshot_slot > 0 {
-                                state_for_snapshot_apply.compute_state_root_cold_start()
-                            } else {
-                                Hash::default()
-                            };
+                        let local_root_before_commit = checkpoint_root_for_same_slot_repair(
+                            &state_for_snapshot_apply,
+                            local_slot_before_commit,
+                            snapshot_slot,
+                        )
+                        .unwrap_or_default();
                         let same_slot_root_repair = same_slot_checkpoint_root_mismatch(
                             local_slot_before_commit,
                             snapshot_slot,
@@ -17571,7 +17594,6 @@ async fn run_validator() {
         tokio::select! {
             // ── Incoming proposal ──
             Some(proposal) = proposal_rx.recv() => {
-                sync_manager.note_seen_bounded(proposal.height, 500).await;
                 let live_tip = state.get_last_slot().unwrap_or(0);
                 let network_highest = sync_manager.get_highest_seen().await;
                 if should_yield_live_bft_for_catch_up(live_tip, bft.height, network_highest) {
@@ -17667,7 +17689,6 @@ async fn run_validator() {
 
             // ── Incoming prevote ──
             Some(prevote) = prevote_rx.recv() => {
-                sync_manager.note_seen_bounded(prevote.height, 500).await;
                 let live_tip = state.get_last_slot().unwrap_or(0);
                 let network_highest = sync_manager.get_highest_seen().await;
                 if should_yield_live_bft_for_catch_up(live_tip, bft.height, network_highest) {
@@ -17710,7 +17731,6 @@ async fn run_validator() {
 
             // ── Incoming precommit ──
             Some(precommit) = precommit_rx.recv() => {
-                sync_manager.note_seen_bounded(precommit.height, 500).await;
                 let live_tip = state.get_last_slot().unwrap_or(0);
                 let network_highest = sync_manager.get_highest_seen().await;
                 if should_yield_live_bft_for_catch_up(live_tip, bft.height, network_highest) {
@@ -21099,6 +21119,52 @@ mod tests {
             local_root,
             checkpoint_root,
         ));
+    }
+
+    #[test]
+    fn checkpoint_root_repair_guard_ignores_stale_slot_after_replay() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let validator = Pubkey([42u8; 32]);
+        let checkpoint_slot = 100;
+        let checkpoint_root = state.compute_state_root_cold_start();
+        let checkpoint = Block::new_with_timestamp(
+            checkpoint_slot,
+            Hash::default(),
+            checkpoint_root,
+            validator.0,
+            Vec::new(),
+            checkpoint_slot,
+        );
+        state.put_block(&checkpoint).expect("put checkpoint");
+        state
+            .set_last_slot(checkpoint_slot)
+            .expect("set checkpoint tip");
+
+        assert_eq!(
+            checkpoint_root_for_same_slot_repair(&state, checkpoint_slot, checkpoint_slot),
+            Some(checkpoint_root),
+        );
+
+        let next_block = Block::new_with_timestamp(
+            checkpoint_slot + 1,
+            checkpoint.hash(),
+            Hash([7u8; 32]),
+            validator.0,
+            Vec::new(),
+            checkpoint_slot + 1,
+        );
+        state.put_block(&next_block).expect("put next block");
+        state
+            .set_last_slot(checkpoint_slot)
+            .expect("simulate stale slot metadata");
+
+        assert!(has_replayed_past_checkpoint(&state, checkpoint_slot));
+        assert_eq!(
+            checkpoint_root_for_same_slot_repair(&state, checkpoint_slot, checkpoint_slot),
+            None,
+            "a stale last_slot view must not compare the live replayed root to an older checkpoint",
+        );
     }
 
     #[test]
