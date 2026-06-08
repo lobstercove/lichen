@@ -5,6 +5,12 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.121] - 2026-06-08
+
+### Fixed
+- Keeps sync recovery deterministic when a synced block replays to a state root different from the committed header: the block is rejected, live consensus root checks stay fatal, and the node pivots to authenticated checkpoint metadata so it can import a verified full checkpoint instead of restarting on the same divergent local replay.
+- Routes warp-sync checkpoint metadata probes through one peer-selection helper and sends far parent-gap recovery to verified checkpoint sync after the bootstrap prefix, avoiding doomed large block-range replay on already-divergent state.
+
 ## [0.5.120] - 2026-06-08
 
 ### Fixed

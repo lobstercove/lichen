@@ -553,6 +553,15 @@ fn sync_catch_up_actions(mode: sync::SyncMode) -> SyncCatchUpActions {
     }
 }
 
+fn parent_gap_should_probe_checkpoint(current_slot: u64, block_slot: u64) -> bool {
+    block_slot > current_slot.saturating_add(1)
+        && sync_catch_up_actions(select_catch_up_mode(
+            current_slot,
+            block_slot.saturating_sub(current_slot),
+        ))
+        .request_checkpoint_metadata
+}
+
 fn select_catch_up_mode(current_slot: u64, gap: u64) -> sync::SyncMode {
     // Fresh joiners must replay the bootstrap prefix before warp snapshots.
     // Those blocks create the local validator/stake registry used to verify
@@ -10674,21 +10683,12 @@ async fn run_validator() {
                                     "⚡ Warp sync: gap is {} blocks — probing state snapshot metadata; block replay paused",
                                     gap
                                 );
-                                let peer_infos = peer_mgr_for_sync.get_peer_infos();
-                                for (peer_addr, _) in peer_infos.iter().take(3) {
-                                    let meta_request = P2PMessage::new(
-                                        MessageType::CheckpointMetaRequest,
-                                        local_addr,
-                                    );
-                                    if let Err(e) = peer_mgr_for_sync
-                                        .send_to_peer(peer_addr, meta_request)
-                                        .await
-                                    {
-                                        tracing::warn!(
-                                            "checkpoint meta request to peer failed: {e}"
-                                        );
-                                    }
-                                }
+                                request_checkpoint_metadata_from_peers(
+                                    &peer_mgr_for_sync,
+                                    local_addr,
+                                    "periodic warp sync",
+                                )
+                                .await;
                             }
                             if !actions.request_block_ranges {
                                 sync_mgr.complete_sync().await;
@@ -12026,20 +12026,12 @@ async fn run_validator() {
                                 "⚡ Warp sync: gap is {} blocks — probing state snapshot metadata; block replay paused",
                                 gap
                             );
-                            let peer_infos = peer_mgr_for_sync.get_peer_infos();
-                            for (peer_addr, _) in peer_infos.iter().take(3) {
-                                let meta_request =
-                                    P2PMessage::new(MessageType::CheckpointMetaRequest, local_addr);
-                                if let Err(e) = peer_mgr_for_sync
-                                    .send_to_peer(peer_addr, meta_request)
-                                    .await
-                                {
-                                    warn!(
-                                        "⚠️  Failed checkpoint meta request to {}: {}",
-                                        peer_addr, e
-                                    );
-                                }
-                            }
+                            request_checkpoint_metadata_from_peers(
+                                &peer_mgr_for_sync,
+                                local_addr,
+                                "post-genesis warp sync",
+                            )
+                            .await;
                         }
                         if !actions.request_block_ranges {
                             sync_mgr.complete_sync().await;
@@ -12195,6 +12187,22 @@ async fn run_validator() {
                                 false,
                             ) {
                                 warn!("{}", err);
+                                if is_sync_block {
+                                    warn!(
+                                        "⚠️  Rejecting synced block {} after staged state-root mismatch; switching to verified checkpoint repair",
+                                        block_slot
+                                    );
+                                    sync_mgr.set_sync_mode(sync::SyncMode::Warp).await;
+                                    sync_mgr.complete_sync().await;
+                                    sync_mgr.record_sync_failure().await;
+                                    request_checkpoint_metadata_from_peers(
+                                        &peer_mgr_for_sync,
+                                        local_addr,
+                                        "sync state-root mismatch",
+                                    )
+                                    .await;
+                                    continue;
+                                }
                                 error!(
                                     "FATAL: refusing to replay synced block {} into canonical state after staging state-root mismatch",
                                     block_slot
@@ -12489,13 +12497,28 @@ async fn run_validator() {
                         // block(s) instead of waiting for the next 5-second sync probe.
                         // This closes gaps faster during normal operation.
                         if block_slot > current_slot + 1 {
-                            let gap_start = current_slot + 1;
-                            let gap_end = block_slot.saturating_sub(1);
-                            info!(
-                                "🔗 Requesting missing blocks {} to {} (parent gap for slot {})",
-                                gap_start, gap_end, block_slot
-                            );
-                            missing_gap = Some((gap_start, gap_end));
+                            if parent_gap_should_probe_checkpoint(current_slot, block_slot) {
+                                info!(
+                                    "⚡ Parent gap {} -> {} exceeds replay threshold; probing checkpoint metadata instead of requesting block ranges",
+                                    current_slot, block_slot
+                                );
+                                sync_mgr.set_sync_mode(sync::SyncMode::Warp).await;
+                                sync_mgr.complete_sync().await;
+                                request_checkpoint_metadata_from_peers(
+                                    &peer_mgr_for_sync,
+                                    local_addr,
+                                    "parent-gap checkpoint repair",
+                                )
+                                .await;
+                            } else {
+                                let gap_start = current_slot + 1;
+                                let gap_end = block_slot.saturating_sub(1);
+                                info!(
+                                    "🔗 Requesting missing blocks {} to {} (parent gap for slot {})",
+                                    gap_start, gap_end, block_slot
+                                );
+                                missing_gap = Some((gap_start, gap_end));
+                            }
                         }
 
                         sync_mgr.add_pending_block(block).await;
@@ -12576,18 +12599,12 @@ async fn run_validator() {
                                 "⚡ Warp sync: gap is {} blocks — probing state snapshot metadata; block replay paused",
                                 gap
                             );
-                            // Send CheckpointMetaRequest to all known peers
-                            let peer_infos = peer_mgr_for_sync.get_peer_infos();
-                            for (peer_addr, _) in peer_infos.iter().take(3) {
-                                let meta_request =
-                                    P2PMessage::new(MessageType::CheckpointMetaRequest, local_addr);
-                                if let Err(e) = peer_mgr_for_sync
-                                    .send_to_peer(peer_addr, meta_request)
-                                    .await
-                                {
-                                    tracing::warn!("checkpoint meta request to peer failed: {e}");
-                                }
-                            }
+                            request_checkpoint_metadata_from_peers(
+                                &peer_mgr_for_sync,
+                                local_addr,
+                                "gap warp sync",
+                            )
+                            .await;
                             // The CheckpointMetaResponse handler will trigger
                             // StateSnapshotRequest downloads. After all chunks
                             // are received the state root is verified and the
@@ -18458,6 +18475,50 @@ async fn request_block_range_from_peers(
     }
 }
 
+async fn request_checkpoint_metadata_from_peers(
+    peer_mgr: &Arc<lichen_p2p::PeerManager>,
+    local_addr: SocketAddr,
+    reason: &str,
+) {
+    let mut peer_infos = peer_mgr.get_peer_infos();
+    peer_infos.sort_by(|a, b| {
+        b.1.cmp(&a.1)
+            .then_with(|| a.0.to_string().cmp(&b.0.to_string()))
+    });
+    let peers: Vec<SocketAddr> = peer_infos
+        .into_iter()
+        .take(SYNC_REQUEST_FANOUT.max(1))
+        .map(|(addr, _)| addr)
+        .collect();
+
+    if peers.is_empty() {
+        let request = P2PMessage::new(MessageType::CheckpointMetaRequest, local_addr);
+        peer_mgr.broadcast(request).await;
+        info!(
+            "📡 Sent checkpoint metadata request for {} to broadcast",
+            reason
+        );
+        return;
+    }
+
+    for peer_addr in peers {
+        let request = P2PMessage::new(MessageType::CheckpointMetaRequest, local_addr);
+        if let Err(err) = peer_mgr.send_to_peer(&peer_addr, request).await {
+            warn!(
+                "⚠️  Failed checkpoint metadata request for {} to {}: {}",
+                reason, peer_addr, err
+            );
+            peer_mgr.record_violation(&peer_addr);
+        } else {
+            peer_mgr.record_success(&peer_addr);
+            info!(
+                "📡 Sent checkpoint metadata request for {} to {}",
+                reason, peer_addr
+            );
+        }
+    }
+}
+
 async fn ensure_peer_for_response(
     peer_mgr: &Arc<lichen_p2p::PeerManager>,
     requester: SocketAddr,
@@ -21080,6 +21141,31 @@ mod tests {
 
         assert!(!actions.request_checkpoint_metadata);
         assert!(actions.request_block_ranges);
+    }
+
+    #[test]
+    fn far_parent_gap_uses_checkpoint_probe_after_bootstrap_prefix() {
+        assert!(
+            parent_gap_should_probe_checkpoint(
+                FRESH_JOIN_BOOTSTRAP_REPLAY_SLOTS,
+                FRESH_JOIN_BOOTSTRAP_REPLAY_SLOTS + sync::WARP_SYNC_THRESHOLD + 1,
+            ),
+            "large parent gaps after the bootstrap prefix should not force doomed block replay"
+        );
+        assert!(
+            !parent_gap_should_probe_checkpoint(
+                FRESH_JOIN_BOOTSTRAP_REPLAY_SLOTS,
+                FRESH_JOIN_BOOTSTRAP_REPLAY_SLOTS + sync::WARP_SYNC_THRESHOLD,
+            ),
+            "the existing warp threshold remains strict"
+        );
+        assert!(
+            !parent_gap_should_probe_checkpoint(
+                FRESH_JOIN_BOOTSTRAP_REPLAY_SLOTS - 1,
+                FRESH_JOIN_BOOTSTRAP_REPLAY_SLOTS + sync::WARP_SYNC_THRESHOLD + 100,
+            ),
+            "fresh joiners still replay the bootstrap prefix before checkpoint snapshots"
+        );
     }
 
     #[test]
