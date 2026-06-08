@@ -102,10 +102,6 @@ const EXIT_CODE_RESTART: i32 = 75;
 /// pending blocks or is actively syncing.
 const DEFAULT_WATCHDOG_TIMEOUT_SECS: u64 = 120;
 const GENESIS_SYNC_INCOMPLETE_MARKER: &str = "genesis_sync_incomplete";
-#[cfg(test)]
-const STAKE_POOL_PRODUCTION_COUNTER_REPAIR_METADATA_KEY: &str =
-    "stake_pool_production_counter_repair_v1";
-const STAKE_POOL_PRODUCTION_COUNTER_REPAIR_PROGRESS_INTERVAL: u64 = 100_000;
 const ACTIVATE_RESTRICTION_SCHEMA_FLAG: &str = "--activate-restriction-schema";
 const SHOW_RESTRICTION_SCHEMA_FLAG: &str = "--show-restriction-schema";
 const REBUILD_SPARSE_STATE_COMMITMENT_FLAG: &str = "--rebuild-sparse-state-commitment";
@@ -116,9 +112,6 @@ const REPAIR_TESTNET_DEX_CONTRACTS_FLAG: &str = "--repair-testnet-dex-contracts"
 const DEX_REPAIR_CONFIRMATION: &str = "repair-dex-contracts:testnet:v0.5.77";
 const SHOW_CONTRACT_STORAGE_DIGEST_FLAG: &str = "--show-contract-storage-digest";
 const SHOW_STAKE_POOL_DIGEST_FLAG: &str = "--show-stake-pool-digest";
-const REPAIR_STAKE_POOL_PRODUCTION_COUNTERS_FLAG: &str = "--repair-stake-pool-production-counters";
-const STAKE_POOL_PRODUCTION_COUNTER_REPAIR_CONFIRMATION: &str =
-    "repair-stake-pool-production-counters:canonical-blocks";
 const VERIFY_WARP_SNAPSHOT_ROUNDTRIP_FLAG: &str = "--verify-warp-snapshot-roundtrip";
 const REPAIR_ANALYTICS_24H_WINDOW_FLAG: &str = "--repair-analytics-24h-window";
 const ANALYTICS_24H_REPAIR_CONFIRMATION: &str = "repair-analytics-24h:v1";
@@ -1334,6 +1327,7 @@ fn note_validator_activity_best_effort(
     }
 }
 
+#[cfg(test)]
 fn load_local_account_stake(state: &StateStore, validator: &Pubkey) -> Option<u64> {
     state
         .get_account(validator)
@@ -1342,18 +1336,13 @@ fn load_local_account_stake(state: &StateStore, validator: &Pubkey) -> Option<u6
         .map(|account| account.staked)
 }
 
+#[cfg(test)]
 fn resolve_snapshot_stake_from_local_account(
     state: &StateStore,
     validator: &Pubkey,
     min_validator_stake: u64,
 ) -> Option<u64> {
     load_local_account_stake(state, validator).filter(|stake| *stake >= min_validator_stake)
-}
-
-fn load_local_stake_pool_amount(stake_pool: &StakePool, validator: &Pubkey) -> Option<u64> {
-    stake_pool
-        .get_stake(validator)
-        .map(|stake| stake.total_stake())
 }
 
 fn hash_stake_pool(pool: &StakePool) -> Hash {
@@ -5093,90 +5082,6 @@ fn record_post_block_state_commitment_anchor(state: &StateStore, block: &Block, 
     }
 }
 
-fn repair_stake_pool_production_counters_from_blocks(
-    state: &StateStore,
-    context: &str,
-) -> Result<bool, String> {
-    let tip = state.get_last_slot().unwrap_or(0);
-    if tip == 0 {
-        return Ok(false);
-    }
-
-    let mut pool = state.get_stake_pool().unwrap_or_else(|_| StakePool::new());
-    let before_hash = pool.canonical_hash();
-
-    info!(
-        "🔧 {}: scanning canonical blocks to verify StakePool production counters through tip {}",
-        context, tip
-    );
-
-    let mut produced: HashMap<Pubkey, (u64, u64)> = HashMap::new();
-    let mut scanned_blocks = 0u64;
-    let mut counted_blocks = 0u64;
-
-    let canonical_blocks = state.for_each_canonical_block_in_range(1, tip, |slot, block| {
-        scanned_blocks = scanned_blocks.saturating_add(1);
-        if scanned_blocks.is_multiple_of(STAKE_POOL_PRODUCTION_COUNTER_REPAIR_PROGRESS_INTERVAL) {
-            info!(
-                "🔧 {}: scanned {} canonical blocks for StakePool production repair (latest slot {})",
-                context, scanned_blocks, slot
-            );
-        }
-        if block.header.validator == [0u8; 32] {
-            return Ok(());
-        }
-        let producer = Pubkey(block.header.validator);
-        if pool.get_stake(&producer).is_none() {
-            return Ok(());
-        }
-        let entry = produced.entry(producer).or_insert((0, 0));
-        entry.0 = entry.0.saturating_add(1);
-        entry.1 = entry.1.max(slot);
-        counted_blocks = counted_blocks.saturating_add(1);
-        Ok(())
-    })?;
-
-    info!(
-        "🔧 {}: scanned {} canonical blocks and counted {} staked producer blocks through tip {}",
-        context, canonical_blocks, counted_blocks, tip
-    );
-
-    for entry in pool.stake_entries() {
-        let (blocks_produced, last_produced_slot) =
-            produced.get(&entry.validator).copied().unwrap_or((0, 0));
-        let needs_update = entry.blocks_produced != blocks_produced
-            || entry.last_reward_slot != last_produced_slot;
-        if !needs_update {
-            continue;
-        }
-        let Some(stake_info) = pool.get_stake_mut(&entry.validator) else {
-            continue;
-        };
-        stake_info.blocks_produced = blocks_produced;
-        stake_info.last_reward_slot = last_produced_slot;
-    }
-
-    let after_hash = pool.canonical_hash();
-    if after_hash == before_hash {
-        info!(
-            "🔧 {}: StakePool production counters already matched canonical blocks through tip {}",
-            context, tip
-        );
-        return Ok(false);
-    }
-
-    state.put_stake_pool(&pool)?;
-    warn!(
-        "🔧 {}: repaired StakePool production counters from {} canonical blocks through tip {} ({} -> {})",
-        context,
-        canonical_blocks,
-        tip,
-        before_hash.to_hex(),
-        after_hash.to_hex(),
-    );
-    Ok(true)
-}
-
 fn clean_mossstake_wall_clock_state(state: &StateStore, context: &str) -> Result<bool, String> {
     let mut pool = state.get_mossstake_pool()?;
     let before_hash = if state.is_mossstake_slot_only() {
@@ -6006,8 +5911,9 @@ fn verify_checkpoint_anchor(
     stake_pool: &StakePool,
 ) -> Result<(), String> {
     // The signed committed header authenticates the finalized slot. The
-    // checkpoint state_root itself is corroborated independently across peers
-    // and then verified against the downloaded checkpoint contents.
+    // checkpoint state_root is corroborated across checkpoint anchors, then
+    // verified against the downloaded checkpoint contents on a staging DB
+    // before any live state is replaced.
     let _checkpoint_state_root = anchor.state_root;
     let header = anchor
         .checkpoint_header
@@ -6122,6 +6028,40 @@ fn checkpoint_anchor_support(
         .values()
         .filter(|anchor| anchor.slot == slot && anchor.state_root == state_root)
         .count()
+}
+
+fn same_slot_checkpoint_root_mismatch(
+    local_slot: u64,
+    checkpoint_slot: u64,
+    local_root: Hash,
+    checkpoint_root: Hash,
+) -> bool {
+    checkpoint_slot > 0 && local_slot == checkpoint_slot && local_root != checkpoint_root
+}
+
+fn verified_checkpoint_snapshot_needed(
+    local_slot: u64,
+    checkpoint_slot: u64,
+    local_root: Hash,
+    checkpoint_root: Hash,
+) -> bool {
+    checkpoint_slot > local_slot + 100
+        || same_slot_checkpoint_root_mismatch(
+            local_slot,
+            checkpoint_slot,
+            local_root,
+            checkpoint_root,
+        )
+}
+
+fn should_commit_verified_snapshot(
+    local_slot: u64,
+    snapshot_slot: u64,
+    local_root: Hash,
+    snapshot_root: Hash,
+) -> bool {
+    local_slot < snapshot_slot
+        || same_slot_checkpoint_root_mismatch(local_slot, snapshot_slot, local_root, snapshot_root)
 }
 
 #[derive(Clone)]
@@ -7851,55 +7791,6 @@ fn maybe_run_stake_pool_digest_admin(args: &[String]) -> Option<i32> {
     Some(0)
 }
 
-fn maybe_run_stake_pool_production_counter_repair_admin(args: &[String]) -> Option<i32> {
-    if !has_flag(args, REPAIR_STAKE_POOL_PRODUCTION_COUNTERS_FLAG) {
-        return None;
-    }
-
-    let confirm = get_flag_value(args, &["--confirm"]);
-    if confirm != Some(STAKE_POOL_PRODUCTION_COUNTER_REPAIR_CONFIRMATION) {
-        eprintln!(
-            "Refusing write without --confirm {STAKE_POOL_PRODUCTION_COUNTER_REPAIR_CONFIRMATION}"
-        );
-        return Some(1);
-    }
-
-    let data_dir = restriction_schema_data_dir(args);
-    let cache_size_mb = get_flag_value(args, &["--cache-size-mb"]).and_then(|s| s.parse().ok());
-    let state = match StateStore::open_with_cache_mb(&data_dir, cache_size_mb) {
-        Ok(state) => state,
-        Err(err) => {
-            eprintln!("Failed to open state DB at {}: {}", data_dir.display(), err);
-            return Some(1);
-        }
-    };
-
-    println!("data_dir={}", data_dir.display());
-    match state.get_last_slot() {
-        Ok(slot) => println!("last_slot={slot}"),
-        Err(err) => println!("last_slot_error={err}"),
-    }
-    match state.get_stake_pool() {
-        Ok(pool) => println!("stake_pool_hash_before={}", pool.canonical_hash().to_hex()),
-        Err(err) => println!("stake_pool_hash_before_error={err}"),
-    }
-
-    match repair_stake_pool_production_counters_from_blocks(&state, "admin repair") {
-        Ok(changed) => {
-            match state.get_stake_pool() {
-                Ok(pool) => println!("stake_pool_hash_after={}", pool.canonical_hash().to_hex()),
-                Err(err) => println!("stake_pool_hash_after_error={err}"),
-            }
-            println!("stake_pool_repaired={changed}");
-            Some(0)
-        }
-        Err(err) => {
-            eprintln!("Failed to repair stake pool production counters: {err}");
-            Some(1)
-        }
-    }
-}
-
 fn export_roundtrip_snapshot_entries(
     state: &StateStore,
     category: &str,
@@ -8760,9 +8651,6 @@ fn main() {
         std::process::exit(exit_code);
     }
     if let Some(exit_code) = maybe_run_stake_pool_digest_admin(&args) {
-        std::process::exit(exit_code);
-    }
-    if let Some(exit_code) = maybe_run_stake_pool_production_counter_repair_admin(&args) {
         std::process::exit(exit_code);
     }
     if let Some(exit_code) = maybe_run_warp_snapshot_roundtrip_admin(&args) {
@@ -10655,41 +10543,6 @@ async fn run_validator() {
                         local_addr_for_genesis_retry,
                     );
                     peer_mgr_for_genesis_retry.broadcast(request).await;
-                }
-            });
-        }
-    }
-
-    if is_joining_network {
-        if let Some(ref pm) = p2p_peer_manager {
-            let peer_mgr_for_snapshot_retry = pm.clone();
-            let local_addr_for_snapshot_retry = p2p_config.listen_addr;
-            let snapshot_sync_for_retry = snapshot_sync.clone();
-            tokio::spawn(async move {
-                let mut interval = time::interval(Duration::from_secs(5));
-                loop {
-                    interval.tick().await;
-                    if snapshot_sync_for_retry.lock().await.is_ready() {
-                        break;
-                    }
-
-                    let validator_request = P2PMessage::new(
-                        MessageType::SnapshotRequest {
-                            kind: SnapshotKind::ValidatorSet,
-                        },
-                        local_addr_for_snapshot_retry,
-                    );
-                    peer_mgr_for_snapshot_retry
-                        .broadcast(validator_request)
-                        .await;
-
-                    let pool_request = P2PMessage::new(
-                        MessageType::SnapshotRequest {
-                            kind: SnapshotKind::StakePool,
-                        },
-                        local_addr_for_snapshot_retry,
-                    );
-                    peer_mgr_for_snapshot_retry.broadcast(pool_request).await;
                 }
             });
         }
@@ -13900,8 +13753,15 @@ async fn run_validator() {
                 drop(pool);
                 drop(vs);
 
-                if report.validator_set_hash != local_vs_hash {
-                    warn!("⚠️  Validator set mismatch with {}", report.requester);
+                let validator_set_mismatch = report.validator_set_hash != local_vs_hash;
+                let stake_pool_mismatch = report.stake_pool_hash != local_pool_hash;
+                if validator_set_mismatch || stake_pool_mismatch {
+                    warn!(
+                        "⚠️  Consensus singleton mismatch with {} (validator_set={}, stake_pool={}); requesting authenticated checkpoint metadata",
+                        report.requester,
+                        validator_set_mismatch,
+                        stake_pool_mismatch,
+                    );
                     let key = (report.requester, 0u8);
                     let should_request = last_request
                         .get(&key)
@@ -13909,41 +13769,14 @@ async fn run_validator() {
                         .unwrap_or(true);
                     if should_request {
                         let request = P2PMessage::new(
-                            MessageType::SnapshotRequest {
-                                kind: SnapshotKind::ValidatorSet,
-                            },
+                            MessageType::CheckpointMetaRequest,
                             local_addr_for_consistency,
                         );
                         if let Err(e) = peer_mgr_for_consistency
                             .send_to_peer(&report.requester, request)
                             .await
                         {
-                            warn!("⚠️  Failed to request validator set snapshot: {}", e);
-                            peer_mgr_for_consistency.record_violation(&report.requester);
-                        } else {
-                            last_request.insert(key, std::time::Instant::now());
-                        }
-                    }
-                }
-                if report.stake_pool_hash != local_pool_hash {
-                    warn!("⚠️  Stake pool mismatch with {}", report.requester);
-                    let key = (report.requester, 1u8);
-                    let should_request = last_request
-                        .get(&key)
-                        .map(|instant| instant.elapsed().as_secs() >= 30)
-                        .unwrap_or(true);
-                    if should_request {
-                        let request = P2PMessage::new(
-                            MessageType::SnapshotRequest {
-                                kind: SnapshotKind::StakePool,
-                            },
-                            local_addr_for_consistency,
-                        );
-                        if let Err(e) = peer_mgr_for_consistency
-                            .send_to_peer(&report.requester, request)
-                            .await
-                        {
-                            warn!("⚠️  Failed to request stake pool snapshot: {}", e);
+                            warn!("⚠️  Failed to request checkpoint metadata: {}", e);
                             peer_mgr_for_consistency.record_violation(&report.requester);
                         } else {
                             last_request.insert(key, std::time::Instant::now());
@@ -14340,29 +14173,24 @@ async fn run_validator() {
                     continue;
                 }
 
-                // Handle regular ValidatorSet / StakePool snapshot requests
+                // Legacy singleton snapshots are intentionally not served.
+                // Validator/stake-pool state moves through block replay or
+                // the full checkpoint snapshot categories verified against
+                // the checkpoint root on a staging DB.
                 let response = match request.kind {
                     SnapshotKind::ValidatorSet => {
-                        let vs = validator_set_for_snapshot.read().await;
-                        P2PMessage::new(
-                            MessageType::SnapshotResponse {
-                                kind: SnapshotKind::ValidatorSet,
-                                validator_set: Some(vs.clone()),
-                                stake_pool: None,
-                            },
-                            local_addr_for_snapshot,
-                        )
+                        warn!(
+                            "⚠️  Ignoring legacy validator_set singleton snapshot request from {}",
+                            request.requester
+                        );
+                        continue;
                     }
                     SnapshotKind::StakePool => {
-                        let pool = stake_pool_for_snapshot.read().await;
-                        P2PMessage::new(
-                            MessageType::SnapshotResponse {
-                                kind: SnapshotKind::StakePool,
-                                validator_set: None,
-                                stake_pool: Some(pool.clone()),
-                            },
-                            local_addr_for_snapshot,
-                        )
+                        warn!(
+                            "⚠️  Ignoring legacy stake_pool singleton snapshot request from {}",
+                            request.requester
+                        );
+                        continue;
                     }
                     SnapshotKind::StateCheckpoint => {
                         // Generic StateCheckpoint request — respond with meta
@@ -14542,7 +14370,32 @@ async fn run_validator() {
                             if support == 1 { "" } else { "s" }
                         );
                         let local_slot = state_for_snapshot_apply.get_last_slot().unwrap_or(0);
-                        if slot > local_slot + 100 {
+                        let checkpoint_root = Hash(state_root);
+                        let local_root = if slot == local_slot && slot > 0 {
+                            state_for_snapshot_apply.compute_state_root_cold_start()
+                        } else {
+                            Hash::default()
+                        };
+                        let same_slot_root_mismatch = same_slot_checkpoint_root_mismatch(
+                            local_slot,
+                            slot,
+                            local_root,
+                            checkpoint_root,
+                        );
+                        if same_slot_root_mismatch {
+                            warn!(
+                                "⚠️  Local checkpoint root mismatch at slot {}: local={} checkpoint={}; requesting full verified snapshot repair",
+                                slot,
+                                local_root.to_hex(),
+                                checkpoint_root.to_hex(),
+                            );
+                        }
+                        if verified_checkpoint_snapshot_needed(
+                            local_slot,
+                            slot,
+                            local_root,
+                            checkpoint_root,
+                        ) {
                             if support < MIN_WARP_CHECKPOINT_ANCHOR_PEERS {
                                 info!(
                                     "⏳ Awaiting corroborated checkpoint anchor before warp snapshot download (have {}, need {})",
@@ -15021,15 +14874,48 @@ async fn run_validator() {
                             block_apply_lock_for_snapshot_apply.lock().await;
                         let local_slot_before_commit =
                             state_for_snapshot_apply.get_last_slot().unwrap_or(0);
-                        if local_slot_before_commit >= snapshot_slot {
-                            info!(
-                                "Skipping stale snapshot at slot {} because local replay is already at {}",
-                                snapshot_slot, local_slot_before_commit
-                            );
+                        let snapshot_root = Hash(state_root);
+                        let local_root_before_commit =
+                            if local_slot_before_commit == snapshot_slot && snapshot_slot > 0 {
+                                state_for_snapshot_apply.compute_state_root_cold_start()
+                            } else {
+                                Hash::default()
+                            };
+                        let same_slot_root_repair = same_slot_checkpoint_root_mismatch(
+                            local_slot_before_commit,
+                            snapshot_slot,
+                            local_root_before_commit,
+                            snapshot_root,
+                        );
+                        if !should_commit_verified_snapshot(
+                            local_slot_before_commit,
+                            snapshot_slot,
+                            local_root_before_commit,
+                            snapshot_root,
+                        ) {
+                            if local_slot_before_commit == snapshot_slot {
+                                info!(
+                                    "Skipping matching checkpoint snapshot at slot {} because local root already matches",
+                                    snapshot_slot
+                                );
+                            } else {
+                                info!(
+                                    "Skipping stale snapshot at slot {} because local replay is already at {}",
+                                    snapshot_slot, local_slot_before_commit
+                                );
+                            }
                             staged_snapshot_entries.clear();
                             state_snap_progress.clear();
                             active_snapshot_anchor = None;
                             continue;
+                        }
+                        if same_slot_root_repair {
+                            warn!(
+                                "🔄 Applying verified same-slot checkpoint snapshot at slot {} to repair local root {} -> {}",
+                                snapshot_slot,
+                                local_root_before_commit.to_hex(),
+                                snapshot_root.to_hex(),
+                            );
                         }
 
                         // ── Commit verified entries to live DB ──────────────
@@ -15258,275 +15144,16 @@ async fn run_validator() {
 
                 match response.kind {
                     SnapshotKind::ValidatorSet => {
-                        if let Some(remote_set) = response.validator_set {
-                            if remote_set.validators().is_empty() {
-                                warn!(
-                                    "⚠️  Ignoring empty validator set snapshot from {}",
-                                    response.requester
-                                );
-                                continue;
-                            }
-
-                            let remote_hash = hash_validator_set(&remote_set);
-
-                            let mut vs = validator_set_for_snapshot_apply.write().await;
-                            let local_hash = hash_validator_set(&vs);
-
-                            if remote_hash != local_hash {
-                                // T2.9 fix: MERGE remote validators into local set
-                                // instead of full replacement. This prevents a single
-                                // malicious peer from removing legitimate validators.
-                                // AUDIT-FIX 2.11: Only UPDATE existing validators from
-                                // snapshot (never ADD new ones from a single peer).
-                                // New validators must join via the announcement protocol
-                                // which verifies signatures and on-chain stake.
-                                let mut merged_count = 0u32;
-                                for remote_val in remote_set.validators() {
-                                    if let Some(local_val) =
-                                        vs.get_validator_mut(&remote_val.pubkey)
-                                    {
-                                        // Keep local blocks_proposed authoritative from locally
-                                        // validated canonical blocks. Importing max counters from
-                                        // remote snapshots can permanently inflate one validator.
-                                        if remote_val.last_active_slot > local_val.last_active_slot
-                                        {
-                                            local_val.last_active_slot =
-                                                remote_val.last_active_slot;
-                                            let local_pool_stake = {
-                                                let pool =
-                                                    stake_pool_for_snapshot_apply.read().await;
-                                                load_local_stake_pool_amount(
-                                                    &pool,
-                                                    &remote_val.pubkey,
-                                                )
-                                            }
-                                            .unwrap_or(0);
-                                            local_val.stake = local_pool_stake;
-                                        }
-                                        merged_count += 1;
-                                    } else {
-                                        // Unknown validators from peer snapshots are only
-                                        // eligible if the local node already has a canonical
-                                        // stake-pool entry for them. A plain staked account is
-                                        // not enough to confer validator eligibility.
-                                        let local_pool_stake = {
-                                            let pool = stake_pool_for_snapshot_apply.read().await;
-                                            load_local_stake_pool_amount(&pool, &remote_val.pubkey)
-                                        };
-
-                                        if let Some(local_pool_stake) = local_pool_stake
-                                            .filter(|stake| *stake >= min_validator_stake)
-                                        {
-                                            // PHANTOM GUARD: Also check slot plausibility
-                                            let our_tip = state_for_snapshot_apply
-                                                .get_last_slot()
-                                                .unwrap_or(0);
-                                            let their_slot = remote_val.last_active_slot;
-                                            let drift = their_slot.abs_diff(our_tip);
-                                            if our_tip > 10 && drift > 500 {
-                                                warn!(
-                                                    "⚠️  Snapshot: rejecting validator {} from {} — slot drift {} too large (ours={}, theirs={})",
-                                                    remote_val.pubkey.to_base58(),
-                                                    response.requester,
-                                                    drift, our_tip, their_slot
-                                                );
-                                                continue;
-                                            }
-                                            // Do not trust remote pending_activation;
-                                            // newly imported validators must be activated
-                                            // locally at the next height boundary from the
-                                            // locally frozen stake pool.
-                                            let new_val = ValidatorInfo {
-                                                pubkey: remote_val.pubkey,
-                                                reputation: 100,
-                                                blocks_proposed: remote_val.blocks_proposed,
-                                                votes_cast: remote_val.votes_cast,
-                                                correct_votes: remote_val.correct_votes,
-                                                stake: local_pool_stake,
-                                                joined_slot: remote_val.joined_slot,
-                                                last_active_slot: remote_val.last_active_slot,
-                                                last_observed_at_ms: remote_val.last_observed_at_ms,
-                                                last_observed_block_at_ms: remote_val
-                                                    .last_observed_block_at_ms,
-                                                last_observed_block_slot: remote_val
-                                                    .last_observed_block_slot,
-                                                commission_rate: 500,
-                                                transactions_processed: 0,
-                                                pending_activation: our_tip > 0,
-                                            };
-                                            vs.add_validator(new_val);
-                                            merged_count += 1;
-                                            info!(
-                                                "✅ Snapshot: added locally verified validator {} from peer {} (stake-pool entry confirmed)",
-                                                remote_val.pubkey.to_base58(),
-                                                response.requester
-                                            );
-                                        } else {
-                                            // No local stake-pool entry — reject (prevents
-                                            // phantom validator admission from peer snapshots).
-                                            warn!(
-                                                "⚠️  Snapshot: rejecting unverified validator {} from peer {} (no local stake-pool entry)",
-                                                hex::encode(remote_val.pubkey.0),
-                                                response.requester
-                                            );
-                                        }
-                                    }
-                                }
-                                let merged_set = vs.clone();
-                                // Save while still holding the lock to prevent
-                                // apply_block_effects from saving a newer version
-                                // that we'd then overwrite with this stale clone.
-                                if let Err(e) =
-                                    state_for_snapshot_apply.save_validator_set(&merged_set)
-                                {
-                                    warn!("⚠️  Failed to persist merged validator set: {}", e);
-                                } else {
-                                    info!(
-                                        "✅ Merged validator set snapshot from {} ({} entries merged)",
-                                        response.requester,
-                                        merged_count
-                                    );
-                                    // Only mark ready if the merged set is non-empty.
-                                    // Before genesis processing, on-chain stake is zero
-                                    // so the merge rejects all validators — the retry
-                                    // task must keep retrying until genesis state exists.
-                                    if !vs.validators().is_empty() {
-                                        snapshot_sync_for_apply.lock().await.validator_set = true;
-                                    } else {
-                                        warn!("⚠️  Validator set merge produced empty set — snapshot not ready (genesis may not be applied yet)");
-                                    }
-                                }
-                                drop(vs);
-                            } else {
-                                // Hashes match — local set is already correct (from block replay).
-                                // Only mark ready if the local set is non-empty.
-                                if !vs.validators().is_empty() {
-                                    snapshot_sync_for_apply.lock().await.validator_set = true;
-                                }
-                                drop(vs);
-                            }
-                        }
+                        warn!(
+                            "⚠️  Ignoring legacy single-kind validator set snapshot from {}; validator_set is imported only through block replay or verified checkpoint snapshots",
+                            response.requester
+                        );
                     }
                     SnapshotKind::StakePool => {
-                        if let Some(remote_pool) = response.stake_pool {
-                            if remote_pool.stake_entries().is_empty() {
-                                warn!(
-                                    "⚠️  Ignoring empty stake pool snapshot from {}",
-                                    response.requester
-                                );
-                                continue;
-                            }
-
-                            // MERGE remote entries into local pool (full-fidelity)
-                            let mut pool = stake_pool_for_snapshot_apply.write().await;
-                            let local_hash = hash_stake_pool(&pool);
-                            let mut merged_count = 0u32;
-                            for entry in remote_pool.stake_entries() {
-                                let entry_validator = entry.validator;
-                                let entry_amount = entry.amount;
-                                let existing = pool.get_stake(&entry_validator);
-                                let should_upsert = match existing {
-                                    None => true,
-                                    Some(local_entry) => {
-                                        entry_amount > local_entry.amount
-                                            || entry.total_debt_repaid
-                                                > local_entry.total_debt_repaid
-                                            || (local_entry.bootstrap_index == u64::MAX
-                                                && entry.bootstrap_index != u64::MAX)
-                                    }
-                                };
-                                if should_upsert {
-                                    // Always verify on-chain stake from locally replayed
-                                    // account state. A fresh joiner may receive stake-pool
-                                    // and validator-set snapshots in either order; requiring
-                                    // the validator set first creates a circular gate that
-                                    // prevents checkpoint warp sync. The local account stake
-                                    // check keeps the trust anchor in replayed chain state
-                                    // instead of the peer snapshot.
-                                    let resolved_stake = {
-                                        let Some(local_account_stake) =
-                                            resolve_snapshot_stake_from_local_account(
-                                                &state_for_snapshot_apply,
-                                                &entry_validator,
-                                                min_validator_stake,
-                                            )
-                                        else {
-                                            debug!(
-                                                "Snapshot: skipping stake entry for {} from {} (no on-chain stake)",
-                                                entry.validator.to_base58(),
-                                                response.requester
-                                            );
-                                            continue;
-                                        };
-                                        local_account_stake
-                                    };
-
-                                    let mut sanitized_entry = entry.clone();
-                                    sanitized_entry.amount = resolved_stake;
-                                    if let Some(local_entry) = pool.get_stake(&entry_validator) {
-                                        if local_entry.amount != resolved_stake {
-                                            pool.upsert_stake(entry_validator, resolved_stake, 0);
-                                        }
-                                    }
-                                    pool.upsert_stake_full(sanitized_entry);
-                                    merged_count += 1;
-                                    // NOTE: No bootstrap account creation here.
-                                    // Validator accounts are created through consensus
-                                    // via the RegisterValidator instruction (opcode 26).
-                                    // Stake pool entries synced here reflect on-chain state
-                                    // that was already processed through block consensus.
-                                }
-                            }
-                            let merged_hash = hash_stake_pool(&pool);
-                            if merged_hash != local_hash {
-                                let merged_pool = pool.clone();
-                                drop(pool);
-                                if let Err(e) =
-                                    state_for_snapshot_apply.put_stake_pool(&merged_pool)
-                                {
-                                    warn!("⚠️  Failed to persist merged stake pool: {}", e);
-                                } else {
-                                    info!(
-                                        "✅ Merged {} stake entries from {} ({} -> {})",
-                                        merged_count,
-                                        response.requester,
-                                        local_hash.to_hex(),
-                                        merged_hash.to_hex()
-                                    );
-                                    // Only mark ready if the merged pool is non-empty.
-                                    if !merged_pool.stake_entries().is_empty() {
-                                        snapshot_sync_for_apply.lock().await.stake_pool = true;
-                                        activate_pending_validators_for_height(
-                                            &state_for_snapshot_apply,
-                                            &validator_set_for_snapshot_apply,
-                                            &merged_pool,
-                                            state_for_snapshot_apply.get_last_slot().unwrap_or(0),
-                                            min_validator_stake,
-                                        )
-                                        .await;
-                                    } else {
-                                        warn!("⚠️  Stake pool merge produced empty pool — snapshot not ready");
-                                    }
-                                }
-                            } else {
-                                // Hashes match — local pool is already correct (from block replay).
-                                // Only mark ready if the local pool is non-empty.
-                                let pool_non_empty = !pool.stake_entries().is_empty();
-                                let snapshot_pool = pool.clone();
-                                drop(pool);
-                                if pool_non_empty {
-                                    snapshot_sync_for_apply.lock().await.stake_pool = true;
-                                    activate_pending_validators_for_height(
-                                        &state_for_snapshot_apply,
-                                        &validator_set_for_snapshot_apply,
-                                        &snapshot_pool,
-                                        state_for_snapshot_apply.get_last_slot().unwrap_or(0),
-                                        min_validator_stake,
-                                    )
-                                    .await;
-                                }
-                            }
-                        }
+                        warn!(
+                            "⚠️  Ignoring legacy single-kind stake pool snapshot from {}; stake_pool is imported only through block replay or verified checkpoint snapshots",
+                            response.requester
+                        );
                     }
                     SnapshotKind::StateCheckpoint => {
                         // Handled above via checkpoint_meta / state_snapshot_data fields
@@ -21389,6 +21016,54 @@ mod tests {
     }
 
     #[test]
+    fn same_slot_checkpoint_root_mismatch_requires_verified_snapshot() {
+        let local_root = Hash([1u8; 32]);
+        let checkpoint_root = Hash([2u8; 32]);
+
+        assert!(same_slot_checkpoint_root_mismatch(
+            2_875_000,
+            2_875_000,
+            local_root,
+            checkpoint_root,
+        ));
+        assert!(verified_checkpoint_snapshot_needed(
+            2_875_000,
+            2_875_000,
+            local_root,
+            checkpoint_root,
+        ));
+        assert!(should_commit_verified_snapshot(
+            2_875_000,
+            2_875_000,
+            local_root,
+            checkpoint_root,
+        ));
+    }
+
+    #[test]
+    fn matching_or_stale_checkpoint_snapshot_is_not_committed() {
+        let root = Hash([9u8; 32]);
+        let newer_root = Hash([10u8; 32]);
+
+        assert!(!verified_checkpoint_snapshot_needed(100, 100, root, root));
+        assert!(!should_commit_verified_snapshot(100, 100, root, root));
+        assert!(!should_commit_verified_snapshot(101, 100, root, newer_root));
+    }
+
+    #[test]
+    fn ahead_checkpoint_snapshot_keeps_existing_warp_threshold() {
+        let root = Hash([3u8; 32]);
+
+        assert!(!verified_checkpoint_snapshot_needed(
+            1_000, 1_100, root, root,
+        ));
+        assert!(verified_checkpoint_snapshot_needed(
+            1_000, 1_101, root, root,
+        ));
+        assert!(should_commit_verified_snapshot(1_000, 1_101, root, root,));
+    }
+
+    #[test]
     fn warp_sync_pauses_block_range_replay() {
         let actions = sync_catch_up_actions(sync::SyncMode::Warp);
 
@@ -22179,72 +21854,6 @@ mod tests {
         let persisted = state.get_stake_pool().expect("read stake pool after no-op");
         let entry = persisted.get_stake(&producer).expect("producer stake");
         assert_eq!(entry.blocks_produced, 1);
-    }
-
-    #[test]
-    fn startup_repair_rebuilds_stake_pool_production_counters_from_blocks() {
-        let temp_dir = tempfile::tempdir().expect("create temp dir");
-        let state = StateStore::open(temp_dir.path()).expect("open state");
-        let producer_a = Keypair::generate().pubkey();
-        let producer_b = Keypair::generate().pubkey();
-        let non_staked = Keypair::generate().pubkey();
-
-        let mut pool = StakePool::new();
-        pool.stake(producer_a, MIN_VALIDATOR_STAKE, 0)
-            .expect("stake producer a");
-        pool.stake(producer_b, MIN_VALIDATOR_STAKE, 0)
-            .expect("stake producer b");
-        pool.get_stake_mut(&producer_a)
-            .expect("producer a stake")
-            .blocks_produced = 99;
-        pool.get_stake_mut(&producer_a)
-            .expect("producer a stake")
-            .last_reward_slot = 99;
-        pool.get_stake_mut(&producer_b)
-            .expect("producer b stake")
-            .blocks_produced = 0;
-        pool.get_stake_mut(&producer_b)
-            .expect("producer b stake")
-            .last_reward_slot = 0;
-        state.put_stake_pool(&pool).expect("put stale stake pool");
-
-        for (slot, producer) in [
-            (1, producer_a),
-            (2, producer_b),
-            (3, producer_a),
-            (4, non_staked),
-        ] {
-            let block = Block::new(slot, Hash::default(), Hash::default(), producer.0, vec![]);
-            state
-                .put_block_atomic(&block, Some(slot), Some(slot))
-                .expect("put canonical block");
-        }
-
-        assert!(
-            repair_stake_pool_production_counters_from_blocks(&state, "test")
-                .expect("repair counters"),
-            "stale counters should be repaired"
-        );
-        assert_eq!(
-            state
-                .get_metadata(STAKE_POOL_PRODUCTION_COUNTER_REPAIR_METADATA_KEY)
-                .expect("read repair marker"),
-            None,
-            "repair must not write marker metadata into consensus state"
-        );
-
-        let repaired = state.get_stake_pool().expect("read repaired stake pool");
-        let stake_a = repaired.get_stake(&producer_a).expect("producer a stake");
-        assert_eq!(stake_a.blocks_produced, 2);
-        assert_eq!(stake_a.last_reward_slot, 3);
-        let stake_b = repaired.get_stake(&producer_b).expect("producer b stake");
-        assert_eq!(stake_b.blocks_produced, 1);
-        assert_eq!(stake_b.last_reward_slot, 2);
-
-        assert!(
-            !repair_stake_pool_production_counters_from_blocks(&state, "test")
-                .expect("second repair is no-op")
-        );
     }
 
     #[test]

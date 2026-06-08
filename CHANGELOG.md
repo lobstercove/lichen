@@ -5,6 +5,13 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.120] - 2026-06-08
+
+### Fixed
+- Repairs same-slot root divergence through the normal verified checkpoint snapshot path: singleton mismatches now request authenticated checkpoint metadata, stage the full checkpoint snapshot, verify the staged state root, and only then replace local state.
+- Stops serving or applying legacy one-kind validator-set and stake-pool snapshots, so those consensus singletons are imported only through block replay or full checkpoint snapshots.
+- Removes the local-history stake-pool production-counter repair command and deployment instructions.
+
 ## [0.5.119] - 2026-06-08
 
 ### Fixed
