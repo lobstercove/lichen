@@ -451,6 +451,18 @@ impl TxProcessor {
         }
     }
 
+    pub(super) fn b_queue_pending_validator_change(
+        &self,
+        change: &crate::consensus::PendingValidatorChange,
+    ) -> Result<(), String> {
+        let mut guard = self.batch.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(batch) = guard.as_mut() {
+            batch.queue_pending_validator_change(change)
+        } else {
+            self.state.queue_pending_validator_change(change)
+        }
+    }
+
     pub(super) fn b_next_governance_proposal_id(&self) -> Result<u64, String> {
         let mut guard = self.batch.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(batch) = guard.as_mut() {

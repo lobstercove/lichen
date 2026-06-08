@@ -225,6 +225,8 @@ pub const CONFLICT_KEY_GOVERNED_PROPOSALS: Pubkey = Pubkey([0xFC; 32]);
 pub const CONFLICT_KEY_GOVERNANCE_PROPOSALS: Pubkey = Pubkey([0xFB; 32]);
 /// Virtual key: any TX that reads/writes native oracle attestation/consensus state (opcode 30).
 pub const CONFLICT_KEY_ORACLE: Pubkey = Pubkey([0xFA; 32]);
+/// Virtual key: any TX that reads/writes shielded pool state (opcodes 23, 24, 25).
+pub const CONFLICT_KEY_SHIELDED_POOL: Pubkey = Pubkey([0xF9; 32]);
 
 pub const GOVERNANCE_ACTION_TREASURY_TRANSFER: u8 = 0;
 pub const GOVERNANCE_ACTION_PARAM_CHANGE: u8 = 1;

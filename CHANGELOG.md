@@ -5,6 +5,20 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.128] - 2026-06-09
+
+### Fixed
+- Makes checkpoint snapshot serving fail closed on RocksDB iterator/export errors instead of returning empty chunks.
+- Makes verified checkpoint live commits require every canonical snapshot category and valid singleton payloads before any live state import, with fatal handling on commit failure.
+- Validates and rate-limits `StateSnapshotRequest` messages at P2P admission with bounded chunk sizes and the canonical snapshot category allowlist.
+- Applies pending validator-change queue writes through the transaction batch and schedules shielded pool operations in one parallel conflict group.
+- Makes achievement storage updates deterministic by failing the transaction if the canonical post-execution hook cannot persist its batched state.
+- Carries simulated contract storage changes across multi-instruction simulation calls, including cross-contract storage deltas.
+
+### Verified
+- Local clean 3-validator deployment passed with V2/V3 joining from empty chain state.
+- Two local restart/resume cycles passed with identical slots, block hashes, state roots, validator count, and shielded roots across all three validators.
+
 ## [0.5.127] - 2026-06-08
 
 ### Fixed

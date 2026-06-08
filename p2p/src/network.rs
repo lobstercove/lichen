@@ -23,9 +23,30 @@ const MAX_BLOCK_RANGE_RESPONSE_BLOCKS: usize = 500;
 const MAX_COMPACT_BLOCK_TX_IDS: usize = MAX_TX_PER_BLOCK;
 const MAX_GET_BLOCK_TXS_HASHES: usize = MAX_TX_PER_BLOCK;
 const MAX_BLOCK_TXS_TRANSACTIONS: usize = MAX_TX_PER_BLOCK;
+const MAX_STATE_SNAPSHOT_REQUEST_CHUNK_SIZE: u64 = 2000;
+const MAX_STATE_SNAPSHOT_REQUEST_CHUNK_INDEX: u64 = 10_000_000;
 const MAX_EXPENSIVE_REQUESTS_PER_WINDOW: u32 = 30;
 const SYNC_BLOCK_QUEUE_SEND_TIMEOUT: Duration = Duration::from_millis(500);
 const SNAPSHOT_REQUEST_QUEUE_SEND_TIMEOUT: Duration = Duration::from_secs(2);
+const ALLOWED_STATE_SNAPSHOT_CATEGORIES: &[&str] = &[
+    "accounts",
+    "contract_storage",
+    "programs",
+    "symbol_registry",
+    "symbol_by_program",
+    "restrictions",
+    "restriction_index_target",
+    "restriction_index_code_hash",
+    "shielded_commitments",
+    "shielded_note_payloads",
+    "shielded_nullifiers",
+    "shielded_pool",
+    "shielded_txs",
+    "stats",
+    "validator_set",
+    "stake_pool",
+    "mossstake_pool",
+];
 
 fn is_rejected_find_node_response_addr(addr: &SocketAddr) -> bool {
     let ip = addr.ip();
@@ -126,6 +147,29 @@ fn validate_block_txs_for_p2p_admission(transactions: &[Transaction]) -> Result<
     Ok(())
 }
 
+fn validate_state_snapshot_request_for_p2p_admission(
+    category: &str,
+    chunk_index: u64,
+    chunk_size: u64,
+) -> Result<(), String> {
+    if !ALLOWED_STATE_SNAPSHOT_CATEGORIES.contains(&category) {
+        return Err(format!("unsupported state snapshot category: {}", category));
+    }
+    if chunk_size == 0 || chunk_size > MAX_STATE_SNAPSHOT_REQUEST_CHUNK_SIZE {
+        return Err(format!(
+            "StateSnapshotRequest chunk_size {} outside 1..={}",
+            chunk_size, MAX_STATE_SNAPSHOT_REQUEST_CHUNK_SIZE
+        ));
+    }
+    if chunk_index > MAX_STATE_SNAPSHOT_REQUEST_CHUNK_INDEX {
+        return Err(format!(
+            "StateSnapshotRequest chunk_index {} exceeds max {}",
+            chunk_index, MAX_STATE_SNAPSHOT_REQUEST_CHUNK_INDEX
+        ));
+    }
+    Ok(())
+}
+
 pub fn validate_message_for_p2p_admission(msg_type: &MessageType) -> Result<(), String> {
     match msg_type {
         MessageType::Block(block) | MessageType::BlockResponse(block) => {
@@ -156,6 +200,11 @@ pub fn validate_message_for_p2p_admission(msg_type: &MessageType) -> Result<(), 
         MessageType::BlockTxs { transactions, .. } => {
             validate_block_txs_for_p2p_admission(transactions)
         }
+        MessageType::StateSnapshotRequest {
+            category,
+            chunk_index,
+            chunk_size,
+        } => validate_state_snapshot_request_for_p2p_admission(category, *chunk_index, *chunk_size),
         _ => Ok(()),
     }
 }
@@ -164,6 +213,7 @@ fn expensive_request_label(msg_type: &MessageType) -> Option<&'static str> {
     match msg_type {
         MessageType::StatusRequest => Some("status request"),
         MessageType::SnapshotRequest { .. } => Some("snapshot request"),
+        MessageType::StateSnapshotRequest { .. } => Some("state snapshot request"),
         MessageType::CheckpointMetaRequest => Some("checkpoint meta request"),
         MessageType::FindNode { .. } => Some("FindNode request"),
         _ => None,
@@ -1629,11 +1679,50 @@ mod tests {
             expensive_request_label(&MessageType::StateSnapshotRequest {
                 category: "accounts".to_string(),
                 chunk_index: 0,
-                chunk_size: 16 * 1024 * 1024,
+                chunk_size: 2000,
             }),
-            None
+            Some("state snapshot request")
         );
         assert_eq!(expensive_request_label(&MessageType::Ping), None);
+    }
+
+    #[test]
+    fn test_state_snapshot_request_admission_validation() {
+        assert!(
+            validate_message_for_p2p_admission(&MessageType::StateSnapshotRequest {
+                category: "accounts".to_string(),
+                chunk_index: 0,
+                chunk_size: 2000,
+            })
+            .is_ok()
+        );
+
+        assert!(
+            validate_message_for_p2p_admission(&MessageType::StateSnapshotRequest {
+                category: "unknown".to_string(),
+                chunk_index: 0,
+                chunk_size: 2000,
+            })
+            .is_err()
+        );
+
+        assert!(
+            validate_message_for_p2p_admission(&MessageType::StateSnapshotRequest {
+                category: "accounts".to_string(),
+                chunk_index: 0,
+                chunk_size: 0,
+            })
+            .is_err()
+        );
+
+        assert!(
+            validate_message_for_p2p_admission(&MessageType::StateSnapshotRequest {
+                category: "accounts".to_string(),
+                chunk_index: 0,
+                chunk_size: 2001,
+            })
+            .is_err()
+        );
     }
 
     #[test]

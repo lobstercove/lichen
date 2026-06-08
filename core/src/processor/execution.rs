@@ -395,7 +395,20 @@ impl TxProcessor {
         }
 
         if let Err(e) = self.detect_and_award_achievements(tx) {
-            tracing::warn!("Achievement detection failed (non-fatal): {e}");
+            self.rollback_batch();
+            let premium = Self::compute_premium_fee(tx, &fee_config);
+            if !self.is_speculative() && premium > 0 {
+                if let Err(refund_err) = self.refund_premium(&fee_payer, premium) {
+                    tracing::error!("Failed to refund deploy premium: {}", refund_err);
+                }
+            }
+            let actual_fee = total_fee.saturating_sub(premium);
+            return self.make_result(
+                false,
+                actual_fee,
+                Some(format!("Achievement state update error: {}", e)),
+                total_cu,
+            );
         }
 
         if let Err(e) = self.b_put_transaction(tx) {
@@ -528,6 +541,9 @@ impl TxProcessor {
                                 }
                                 21 | 22 | 32 | 33 => {
                                     accounts.insert(CONFLICT_KEY_GOVERNED_PROPOSALS);
+                                }
+                                23..=25 => {
+                                    accounts.insert(CONFLICT_KEY_SHIELDED_POOL);
                                 }
                                 30 => {
                                     accounts.insert(CONFLICT_KEY_ORACLE);
@@ -845,6 +861,8 @@ impl TxProcessor {
         let mut total_compute = 0u64;
         let mut last_return_data: Option<Vec<u8>> = None;
         let mut total_state_changes: usize = 0;
+        let mut simulated_contract_storage: HashMap<Pubkey, HashMap<Vec<u8>, Option<Vec<u8>>>> =
+            HashMap::new();
 
         for (idx, instruction) in tx.message.instructions.iter().enumerate() {
             if instruction.program_id == CONTRACT_PROGRAM_ID {
@@ -902,12 +920,27 @@ impl TxProcessor {
                                                 };
                                             }
 
-                                            let live_storage = self
+                                            let mut live_storage = self
                                                 .state
                                                 .load_contract_storage_map(contract_addr)
                                                 .unwrap_or_default()
                                                 .into_iter()
-                                                .collect();
+                                                .collect::<HashMap<_, _>>();
+                                            if let Some(overrides) =
+                                                simulated_contract_storage.get(contract_addr)
+                                            {
+                                                for (key, value_opt) in overrides {
+                                                    match value_opt {
+                                                        Some(value) => {
+                                                            live_storage
+                                                                .insert(key.clone(), value.clone());
+                                                        }
+                                                        None => {
+                                                            live_storage.remove(key);
+                                                        }
+                                                    }
+                                                }
+                                            }
                                             let remaining =
                                                 compute_budget.saturating_sub(total_compute);
                                             let context = build_top_level_call_context(
@@ -968,6 +1001,35 @@ impl TxProcessor {
                                                             return_code: last_return_code,
                                                             state_changes: total_state_changes,
                                                         };
+                                                    }
+                                                    if !result.storage_changes.is_empty() {
+                                                        let storage = simulated_contract_storage
+                                                            .entry(*contract_addr)
+                                                            .or_default();
+                                                        for (key, value_opt) in
+                                                            &result.storage_changes
+                                                        {
+                                                            storage.insert(
+                                                                key.clone(),
+                                                                value_opt.clone(),
+                                                            );
+                                                        }
+                                                    }
+                                                    for (target_addr, changes) in
+                                                        &result.cross_call_changes
+                                                    {
+                                                        if changes.is_empty() {
+                                                            continue;
+                                                        }
+                                                        let storage = simulated_contract_storage
+                                                            .entry(*target_addr)
+                                                            .or_default();
+                                                        for (key, value_opt) in changes {
+                                                            storage.insert(
+                                                                key.clone(),
+                                                                value_opt.clone(),
+                                                            );
+                                                        }
                                                     }
                                                     logs.push(format!(
                                                         "[ix{}] Contract call '{}' OK, compute: {}, changes: {}",

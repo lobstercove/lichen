@@ -1207,6 +1207,26 @@ impl StateBatch {
         Ok(changes)
     }
 
+    pub fn queue_pending_validator_change(
+        &mut self,
+        change: &crate::consensus::PendingValidatorChange,
+    ) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_PENDING_VALIDATOR_CHANGES)
+            .ok_or_else(|| "Pending validator changes CF not found".to_string())?;
+
+        let mut key = Vec::with_capacity(24);
+        key.extend_from_slice(&change.effective_epoch.to_be_bytes());
+        key.extend_from_slice(&change.queued_at_slot.to_be_bytes());
+        key.extend_from_slice(&change.pubkey.0[..8]);
+
+        let value = serde_json::to_vec(change)
+            .map_err(|e| format!("Failed to serialize PendingValidatorChange: {}", e))?;
+        self.batch.put_cf(&cf, &key, value);
+        Ok(())
+    }
+
     pub fn next_contract_deploy_nonce(&mut self, deployer: &Pubkey) -> Result<u64, String> {
         let cf = self
             .db

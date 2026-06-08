@@ -433,11 +433,13 @@ impl StateStore {
                     let mut count = 0u64;
                     let mut read_opts = rocksdb::ReadOptions::default();
                     read_opts.set_total_order_seek(true);
-                    for _ in self
-                        .db
-                        .iterator_cf_opt(&cf, read_opts, rocksdb::IteratorMode::Start)
-                        .flatten()
+                    for item in
+                        self.db
+                            .iterator_cf_opt(&cf, read_opts, rocksdb::IteratorMode::Start)
                     {
+                        item.map_err(|err| {
+                            format!("Failed counting {} entries: {}", display_name, err)
+                        })?;
                         count = count.saturating_add(1);
                     }
                     count
@@ -463,7 +465,9 @@ impl StateStore {
         let mut entries = Vec::with_capacity(limit.min(10_000) as usize);
         let mut has_more = false;
 
-        for (key, value) in iter.flatten() {
+        for item in iter {
+            let (key, value) =
+                item.map_err(|err| format!("Failed iterating {}: {}", display_name, err))?;
             if let Some(after) = after_key {
                 if key.as_ref() == after {
                     continue;

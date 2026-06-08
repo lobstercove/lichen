@@ -14410,19 +14410,27 @@ async fn run_validator() {
                                 // Rebuild cursor position for out-of-order requests.
                                 let mut replay_cursor: Option<Vec<u8>> = None;
                                 let mut replay_index = 0u64;
+                                let mut replay_export_failed = false;
                                 while replay_index < chunk_index {
-                                    let replay_page = store
+                                    let replay_page = match store
                                         .export_snapshot_category_cursor_untracked(
                                             category,
                                             replay_cursor.as_deref(),
                                             chunk_sz,
-                                        )
-                                        .unwrap_or_else(|_| lichen_core::state::KvPage {
-                                            entries: Vec::new(),
-                                            total: 0,
-                                            next_cursor: None,
-                                            has_more: false,
-                                        });
+                                        ) {
+                                        Ok(page) => page,
+                                        Err(e) => {
+                                            warn!(
+                                                "⚠️  Refusing to serve {} snapshot replay chunk {} to {} after export failure: {}",
+                                                category,
+                                                replay_index,
+                                                request.requester,
+                                                e
+                                            );
+                                            replay_export_failed = true;
+                                            break;
+                                        }
+                                    };
 
                                     replay_cursor = replay_page.next_cursor;
                                     replay_index = replay_index.saturating_add(1);
@@ -14430,22 +14438,30 @@ async fn run_validator() {
                                         break;
                                     }
                                 }
+                                if replay_export_failed {
+                                    continue;
+                                }
                                 entry.0 = replay_index;
                                 entry.1 = replay_cursor;
                             }
 
-                            let page = store
-                                .export_snapshot_category_cursor_untracked(
-                                    category,
-                                    entry.1.as_deref(),
-                                    chunk_sz,
-                                )
-                                .unwrap_or_else(|_| lichen_core::state::KvPage {
-                                    entries: Vec::new(),
-                                    total: 0,
-                                    next_cursor: None,
-                                    has_more: false,
-                                });
+                            let page = match store.export_snapshot_category_cursor_untracked(
+                                category,
+                                entry.1.as_deref(),
+                                chunk_sz,
+                            ) {
+                                Ok(page) => page,
+                                Err(e) => {
+                                    warn!(
+                                        "⚠️  Refusing to serve {} snapshot chunk {} to {} after export failure: {}",
+                                        category,
+                                        chunk_index,
+                                        request.requester,
+                                        e
+                                    );
+                                    continue;
+                                }
+                            };
 
                             entry.0 = chunk_index.saturating_add(1);
                             entry.1 = page.next_cursor.clone();
@@ -15251,96 +15267,132 @@ async fn run_validator() {
                         }
 
                         // ── Commit verified entries to live DB ──────────────
+                        let mut live_snapshot_entries: HashMap<&'static str, SnapshotEntries> =
+                            HashMap::new();
                         for category_name in WARP_SNAPSHOT_CATEGORIES {
                             let Some(entries) = staged_snapshot_entries.remove(*category_name)
                             else {
-                                warn!(
-                                    "⚠️  Missing {} snapshot category during live commit",
-                                    category_name
+                                error!(
+                                    "FATAL: verified snapshot missing {} category during live commit at slot {}",
+                                    category_name, snapshot_slot
                                 );
-                                continue;
+                                std::process::exit(1);
                             };
+                            live_snapshot_entries.insert(*category_name, entries);
+                        }
+                        if !staged_snapshot_entries.is_empty() {
+                            error!(
+                                "FATAL: verified snapshot contains unsupported categories during live commit at slot {}: {:?}",
+                                snapshot_slot,
+                                staged_snapshot_entries.keys().collect::<Vec<_>>()
+                            );
+                            std::process::exit(1);
+                        }
+
+                        let validator_set_snapshot: ValidatorSet = {
+                            let entries = live_snapshot_entries
+                                .get("validator_set")
+                                .expect("validator_set snapshot category checked");
+                            let Some((_, data)) = entries.first() else {
+                                error!(
+                                    "FATAL: verified snapshot has empty validator_set category at slot {}",
+                                    snapshot_slot
+                                );
+                                std::process::exit(1);
+                            };
+                            match deserialize_snapshot_value(data, "validator_set snapshot") {
+                                Ok(set) => set,
+                                Err(e) => {
+                                    error!(
+                                        "FATAL: failed to deserialize verified validator_set snapshot at slot {}: {}",
+                                        snapshot_slot, e
+                                    );
+                                    std::process::exit(1);
+                                }
+                            }
+                        };
+                        let stake_pool_snapshot: StakePool = {
+                            let entries = live_snapshot_entries
+                                .get("stake_pool")
+                                .expect("stake_pool snapshot category checked");
+                            let Some((_, data)) = entries.first() else {
+                                error!(
+                                    "FATAL: verified snapshot has empty stake_pool category at slot {}",
+                                    snapshot_slot
+                                );
+                                std::process::exit(1);
+                            };
+                            match deserialize_snapshot_value(data, "stake_pool snapshot") {
+                                Ok(pool) => pool,
+                                Err(e) => {
+                                    error!(
+                                        "FATAL: failed to deserialize verified stake_pool snapshot at slot {}: {}",
+                                        snapshot_slot, e
+                                    );
+                                    std::process::exit(1);
+                                }
+                            }
+                        };
+                        let mossstake_pool_snapshot: lichen_core::MossStakePool = {
+                            let entries = live_snapshot_entries
+                                .get("mossstake_pool")
+                                .expect("mossstake_pool snapshot category checked");
+                            let Some((_, data)) = entries.first() else {
+                                error!(
+                                    "FATAL: verified snapshot has empty mossstake_pool category at slot {}",
+                                    snapshot_slot
+                                );
+                                std::process::exit(1);
+                            };
+                            match deserialize_snapshot_value(data, "mossstake_pool snapshot") {
+                                Ok(pool) => pool,
+                                Err(e) => {
+                                    error!(
+                                        "FATAL: failed to deserialize verified mossstake_pool snapshot at slot {}: {}",
+                                        snapshot_slot, e
+                                    );
+                                    std::process::exit(1);
+                                }
+                            }
+                        };
+
+                        for category_name in WARP_SNAPSHOT_CATEGORIES {
+                            let entries = live_snapshot_entries
+                                .remove(*category_name)
+                                .expect("snapshot category prevalidated before live commit");
                             let res = match *category_name {
                                 "validator_set" => {
-                                    let Some((_, data)) = entries.first() else {
-                                        warn!("⚠️  Missing validator_set snapshot payload");
-                                        continue;
-                                    };
-                                    match deserialize_snapshot_value::<ValidatorSet>(
-                                        data,
-                                        "validator_set snapshot",
-                                    ) {
-                                        Ok(set) => {
-                                            let count = set.validators().len();
-                                            let res = state_for_snapshot_apply
-                                                .save_validator_set(&set)
-                                                .map(|_| count);
-                                            if res.is_ok() {
-                                                let mut vs =
-                                                    validator_set_for_snapshot_apply.write().await;
-                                                *vs = set.clone();
-                                                drop(vs);
-                                                snapshot_sync_for_apply
-                                                    .lock()
-                                                    .await
-                                                    .validator_set = !set.validators().is_empty();
-                                            }
-                                            res
-                                        }
-                                        Err(e) => Err(format!(
-                                            "Failed to deserialize validator_set snapshot: {}",
-                                            e
-                                        )),
+                                    let count = validator_set_snapshot.validators().len();
+                                    let res = state_for_snapshot_apply
+                                        .save_validator_set(&validator_set_snapshot)
+                                        .map(|_| count);
+                                    if res.is_ok() {
+                                        let mut vs = validator_set_for_snapshot_apply.write().await;
+                                        *vs = validator_set_snapshot.clone();
+                                        drop(vs);
+                                        snapshot_sync_for_apply.lock().await.validator_set =
+                                            !validator_set_snapshot.validators().is_empty();
                                     }
+                                    res
                                 }
                                 "stake_pool" => {
-                                    let Some((_, data)) = entries.first() else {
-                                        warn!("⚠️  Missing stake_pool snapshot payload");
-                                        continue;
-                                    };
-                                    match deserialize_snapshot_value::<StakePool>(
-                                        data,
-                                        "stake_pool snapshot",
-                                    ) {
-                                        Ok(pool) => {
-                                            let count = pool.stake_entries().len();
-                                            let res = state_for_snapshot_apply
-                                                .put_stake_pool(&pool)
-                                                .map(|_| count);
-                                            if res.is_ok() {
-                                                let mut live_pool =
-                                                    stake_pool_for_snapshot_apply.write().await;
-                                                *live_pool = pool.clone();
-                                                drop(live_pool);
-                                                snapshot_sync_for_apply.lock().await.stake_pool =
-                                                    !pool.stake_entries().is_empty();
-                                            }
-                                            res
-                                        }
-                                        Err(e) => Err(format!(
-                                            "Failed to deserialize stake_pool snapshot: {}",
-                                            e
-                                        )),
+                                    let count = stake_pool_snapshot.stake_entries().len();
+                                    let res = state_for_snapshot_apply
+                                        .put_stake_pool(&stake_pool_snapshot)
+                                        .map(|_| count);
+                                    if res.is_ok() {
+                                        let mut live_pool =
+                                            stake_pool_for_snapshot_apply.write().await;
+                                        *live_pool = stake_pool_snapshot.clone();
+                                        drop(live_pool);
+                                        snapshot_sync_for_apply.lock().await.stake_pool =
+                                            !stake_pool_snapshot.stake_entries().is_empty();
                                     }
+                                    res
                                 }
-                                "mossstake_pool" => {
-                                    let Some((_, data)) = entries.first() else {
-                                        warn!("⚠️  Missing mossstake_pool snapshot payload");
-                                        continue;
-                                    };
-                                    match deserialize_snapshot_value::<lichen_core::MossStakePool>(
-                                        data,
-                                        "mossstake_pool snapshot",
-                                    ) {
-                                        Ok(pool) => state_for_snapshot_apply
-                                            .put_mossstake_pool(&pool)
-                                            .map(|_| 1),
-                                        Err(e) => Err(format!(
-                                            "Failed to deserialize mossstake_pool snapshot: {}",
-                                            e
-                                        )),
-                                    }
-                                }
+                                "mossstake_pool" => state_for_snapshot_apply
+                                    .put_mossstake_pool(&mossstake_pool_snapshot)
+                                    .map(|_| 1),
                                 category => state_for_snapshot_apply
                                     .import_snapshot_category(category, &entries),
                             };
@@ -15350,12 +15402,21 @@ async fn run_validator() {
                                     count, category_name
                                 ),
                                 Err(e) => {
-                                    warn!(
-                                        "⚠️  Failed to commit {} entries to live DB: {}",
-                                        category_name, e
-                                    )
+                                    error!(
+                                        "FATAL: failed to commit verified {} entries to live DB at slot {}: {}",
+                                        category_name, snapshot_slot, e
+                                    );
+                                    std::process::exit(1);
                                 }
                             }
+                        }
+                        if !live_snapshot_entries.is_empty() {
+                            error!(
+                                "FATAL: verified snapshot live commit left uncommitted categories at slot {}: {:?}",
+                                snapshot_slot,
+                                live_snapshot_entries.keys().collect::<Vec<_>>()
+                            );
+                            std::process::exit(1);
                         }
                         staged_snapshot_entries.clear();
 

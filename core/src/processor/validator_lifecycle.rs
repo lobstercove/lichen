@@ -508,8 +508,7 @@ impl TxProcessor {
             queued_at_slot: current_slot,
             effective_epoch: current_epoch + 1,
         };
-        self.state
-            .queue_pending_validator_change(&change)
+        self.b_queue_pending_validator_change(&change)
             .map_err(|e| format!("DeregisterValidator: failed to queue pending change: {}", e))?;
 
         Ok(())
