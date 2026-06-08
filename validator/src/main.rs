@@ -106,8 +106,10 @@ const ACTIVATE_RESTRICTION_SCHEMA_FLAG: &str = "--activate-restriction-schema";
 const SHOW_RESTRICTION_SCHEMA_FLAG: &str = "--show-restriction-schema";
 const REBUILD_SPARSE_STATE_COMMITMENT_FLAG: &str = "--rebuild-sparse-state-commitment";
 const ACTIVATE_SPARSE_STATE_COMMITMENT_FLAG: &str = "--activate-sparse-state-commitment";
+const ACTIVATE_SHIELDED_STATE_COMMITMENT_FLAG: &str = "--activate-shielded-state-commitment";
 const SHOW_STATE_COMMITMENT_SCHEMA_FLAG: &str = "--show-state-commitment-schema";
 const SPARSE_STATE_COMMITMENT_CONFIRMATION: &str = "sparse-state-commitment:v1";
+const SHIELDED_STATE_COMMITMENT_CONFIRMATION: &str = "shielded-state-commitment:v2";
 const REPAIR_TESTNET_DEX_CONTRACTS_FLAG: &str = "--repair-testnet-dex-contracts";
 const DEX_REPAIR_CONFIRMATION: &str = "repair-dex-contracts:testnet:v0.5.77";
 const SHOW_CONTRACT_STORAGE_DIGEST_FLAG: &str = "--show-contract-storage-digest";
@@ -1738,10 +1740,11 @@ fn validate_state_root_with_schema(
     let stake_pool_hash = state.compute_stake_pool_hash();
     let mossstake_pool_hash = state.compute_mossstake_pool_hash();
     let restrictions_root = state.compute_restrictions_root();
+    let shielded_root = state.compute_shielded_state_root();
     let reconciled_root = state.compute_state_root_cold_start();
 
     Err(format!(
-        "slot {} {} state-root mismatch: local={} reconciled={} expected={} components accts={} contracts={} stake={} moss={} restrictions={}",
+        "slot {} {} state-root mismatch: local={} reconciled={} expected={} components accts={} contracts={} stake={} moss={} restrictions={} shielded={}",
         slot,
         context,
         initial_root.to_hex(),
@@ -1752,6 +1755,7 @@ fn validate_state_root_with_schema(
         hex::encode(&stake_pool_hash.0[..8]),
         hex::encode(&mossstake_pool_hash.0[..8]),
         hex::encode(&restrictions_root.0[..8]),
+        hex::encode(&shielded_root.0[..8]),
     ))
 }
 
@@ -3381,6 +3385,11 @@ const WARP_SNAPSHOT_CATEGORIES: &[&str] = &[
     "restrictions",
     "restriction_index_target",
     "restriction_index_code_hash",
+    "shielded_commitments",
+    "shielded_note_payloads",
+    "shielded_nullifiers",
+    "shielded_pool",
+    "shielded_txs",
     "stats",
     "validator_set",
     "stake_pool",
@@ -7174,6 +7183,7 @@ fn print_sparse_state_commitment_report(
     );
     println!("accounts_root={}", report.accounts_root.to_hex());
     println!("contract_root={}", report.contract_root.to_hex());
+    println!("shielded_root={}", report.shielded_root.to_hex());
     println!("accounts_leaf_count={}", report.accounts_leaf_count);
     println!("contract_leaf_count={}", report.contract_leaf_count);
     println!("accounts_node_count={}", report.accounts_node_count);
@@ -7183,16 +7193,25 @@ fn print_sparse_state_commitment_report(
 fn maybe_run_sparse_state_commitment_admin(args: &[String]) -> Option<i32> {
     let rebuild = has_flag(args, REBUILD_SPARSE_STATE_COMMITMENT_FLAG);
     let activate = has_flag(args, ACTIVATE_SPARSE_STATE_COMMITMENT_FLAG);
+    let activate_shielded = has_flag(args, ACTIVATE_SHIELDED_STATE_COMMITMENT_FLAG);
     let show = has_flag(args, SHOW_STATE_COMMITMENT_SCHEMA_FLAG);
-    if !rebuild && !activate && !show {
+    if !rebuild && !activate && !activate_shielded && !show {
         return None;
     }
-    if show && (rebuild || activate) {
+    if show && (rebuild || activate || activate_shielded) {
         eprintln!(
-            "{} cannot be combined with {} or {}",
+            "{} cannot be combined with {}, {}, or {}",
             SHOW_STATE_COMMITMENT_SCHEMA_FLAG,
             REBUILD_SPARSE_STATE_COMMITMENT_FLAG,
-            ACTIVATE_SPARSE_STATE_COMMITMENT_FLAG
+            ACTIVATE_SPARSE_STATE_COMMITMENT_FLAG,
+            ACTIVATE_SHIELDED_STATE_COMMITMENT_FLAG
+        );
+        return Some(2);
+    }
+    if activate && activate_shielded {
+        eprintln!(
+            "{} and {} are mutually exclusive",
+            ACTIVATE_SPARSE_STATE_COMMITMENT_FLAG, ACTIVATE_SHIELDED_STATE_COMMITMENT_FLAG
         );
         return Some(2);
     }
@@ -7201,6 +7220,15 @@ fn maybe_run_sparse_state_commitment_admin(args: &[String]) -> Option<i32> {
         if confirm != Some(SPARSE_STATE_COMMITMENT_CONFIRMATION) {
             eprintln!(
                 "Refusing activation without --confirm {SPARSE_STATE_COMMITMENT_CONFIRMATION}"
+            );
+            return Some(1);
+        }
+    }
+    if activate_shielded {
+        let confirm = get_flag_value(args, &["--confirm"]);
+        if confirm != Some(SHIELDED_STATE_COMMITMENT_CONFIRMATION) {
+            eprintln!(
+                "Refusing activation without --confirm {SHIELDED_STATE_COMMITMENT_CONFIRMATION}"
             );
             return Some(1);
         }
@@ -7218,6 +7246,8 @@ fn maybe_run_sparse_state_commitment_admin(args: &[String]) -> Option<i32> {
 
     let result = if show {
         state.verify_sparse_state_commitment()
+    } else if activate_shielded {
+        state.activate_shielded_state_commitment()
     } else {
         state.rebuild_sparse_state_commitment(activate)
     };
@@ -7906,6 +7936,11 @@ fn print_roundtrip_root_components(label: &str, state: &StateStore) {
         "{}_restrictions_root={}",
         label,
         state.compute_restrictions_root().to_hex()
+    );
+    println!(
+        "{}_shielded_root={}",
+        label,
+        state.compute_shielded_state_root().to_hex()
     );
 }
 
@@ -22252,6 +22287,22 @@ mod tests {
             0
         );
         assert_eq!(target.compute_state_root_cold_start(), expected_root);
+    }
+
+    #[test]
+    fn warp_snapshot_categories_include_shielded_state() {
+        for category in [
+            "shielded_commitments",
+            "shielded_note_payloads",
+            "shielded_nullifiers",
+            "shielded_pool",
+            "shielded_txs",
+        ] {
+            assert!(
+                WARP_SNAPSHOT_CATEGORIES.contains(&category),
+                "warp snapshots must include {category}"
+            );
+        }
     }
 
     #[test]

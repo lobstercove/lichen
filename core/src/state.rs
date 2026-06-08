@@ -3292,6 +3292,120 @@ mod tests {
         assert_eq!(reread.total_shielded, 300);
     }
 
+    #[cfg(feature = "zk")]
+    #[test]
+    fn test_shielded_snapshot_categories_roundtrip() {
+        let source_dir = tempdir().unwrap();
+        let dest_dir = tempdir().unwrap();
+        let source = StateStore::open(source_dir.path()).unwrap();
+        let dest = StateStore::open(dest_dir.path()).unwrap();
+
+        let commitment = [0x44u8; 32];
+        let nullifier = [0x55u8; 32];
+        let note_payload = b"{\"note\":\"encrypted\"}".to_vec();
+        source.insert_shielded_commitment(3, &commitment).unwrap();
+        source
+            .insert_shielded_note_payload(3, &note_payload)
+            .unwrap();
+        source.mark_nullifier_spent(&nullifier).unwrap();
+
+        let mut pool = crate::zk::ShieldedPoolState::new();
+        pool.commitment_count = 4;
+        pool.total_shielded = 123_000_000;
+        pool.nullifier_count = 1;
+        pool.shield_count = 2;
+        pool.unshield_count = 1;
+        pool.merkle_root = [0x66u8; 32];
+        source.put_shielded_pool_state(&pool).unwrap();
+
+        let shielded_tx_key = [0x77u8; 48];
+        let source_tx_cf = source.db.cf_handle(CF_SHIELDED_TXS).unwrap();
+        source
+            .db
+            .put_cf(&source_tx_cf, shielded_tx_key, [])
+            .unwrap();
+
+        for category in [
+            "shielded_commitments",
+            "shielded_note_payloads",
+            "shielded_nullifiers",
+            "shielded_pool",
+            "shielded_txs",
+        ] {
+            let page = source
+                .export_snapshot_category_cursor_untracked(category, None, 1000)
+                .unwrap();
+            assert_eq!(page.entries.len(), 1, "{category} should export one entry");
+            dest.import_snapshot_category(category, &page.entries)
+                .unwrap();
+        }
+
+        assert_eq!(dest.get_shielded_commitment(3).unwrap(), Some(commitment));
+        assert_eq!(
+            dest.get_shielded_note_payload(3).unwrap(),
+            Some(note_payload)
+        );
+        assert!(dest.is_nullifier_spent(&nullifier).unwrap());
+        let imported_pool = dest.get_shielded_pool_state().unwrap();
+        assert_eq!(imported_pool.commitment_count, pool.commitment_count);
+        assert_eq!(imported_pool.total_shielded, pool.total_shielded);
+        assert_eq!(imported_pool.nullifier_count, pool.nullifier_count);
+        assert_eq!(imported_pool.shield_count, pool.shield_count);
+        assert_eq!(imported_pool.unshield_count, pool.unshield_count);
+        assert_eq!(imported_pool.merkle_root, pool.merkle_root);
+        let dest_tx_cf = dest.db.cf_handle(CF_SHIELDED_TXS).unwrap();
+        assert!(dest
+            .db
+            .get_cf(&dest_tx_cf, shielded_tx_key)
+            .unwrap()
+            .is_some());
+    }
+
+    #[cfg(feature = "zk")]
+    #[test]
+    fn test_shielded_state_commitment_changes_and_batch_matches_commit() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+        state.activate_shielded_state_commitment().unwrap();
+        assert!(state.uses_shielded_state_commitment());
+
+        let before = state.compute_state_root_cached();
+        let commitment = [0x88u8; 32];
+        let nullifier = [0x99u8; 32];
+        let mut pool = crate::zk::ShieldedPoolState::new();
+        pool.commitment_count = 1;
+        pool.total_shielded = 42_000_000;
+        pool.merkle_root = [0xAAu8; 32];
+        state.put_shielded_pool_state(&pool).unwrap();
+        state.insert_shielded_commitment(0, &commitment).unwrap();
+        state.insert_shielded_note_payload(0, b"note-0").unwrap();
+        state.mark_nullifier_spent(&nullifier).unwrap();
+
+        let after_direct = state.compute_state_root_cached();
+        assert_ne!(
+            before, after_direct,
+            "shielded mutations must change sparse_shielded_v2 state root"
+        );
+
+        let mut batch = state.begin_batch();
+        let mut pool = batch.get_shielded_pool_state().unwrap();
+        pool.commitment_count = 2;
+        pool.total_shielded = pool.total_shielded.saturating_add(7_000_000);
+        pool.merkle_root = [0xBBu8; 32];
+        batch.put_shielded_pool_state(&pool).unwrap();
+        batch.insert_shielded_commitment(1, &[0xCCu8; 32]).unwrap();
+        batch.insert_shielded_note_payload(1, b"note-1").unwrap();
+        batch.mark_nullifier_spent(&[0xDDu8; 32]).unwrap();
+
+        let proposal_root = state.compute_state_root_for_batch(&batch);
+        state.commit_batch(batch).unwrap();
+        assert_eq!(
+            state.compute_state_root(),
+            proposal_root,
+            "batched shielded proposal root must match committed root"
+        );
+    }
+
     // ── P2-3: Cold storage tests ──
 
     fn make_test_block(slot: u64) -> Block {

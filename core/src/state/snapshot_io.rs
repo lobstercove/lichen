@@ -32,6 +32,11 @@ impl StateStore {
                 CF_RESTRICTION_INDEX_CODE_HASH,
                 "Restriction code-hash index",
             )),
+            "shielded_commitments" => Some((CF_SHIELDED_COMMITMENTS, "Shielded commitments")),
+            "shielded_note_payloads" => Some((CF_SHIELDED_NOTE_PAYLOADS, "Shielded note payloads")),
+            "shielded_nullifiers" => Some((CF_SHIELDED_NULLIFIERS, "Shielded nullifiers")),
+            "shielded_pool" => Some((CF_SHIELDED_POOL, "Shielded pool")),
+            "shielded_txs" => Some((CF_SHIELDED_TXS, "Shielded transaction index")),
             "stats" => Some((CF_STATS, "Stats")),
             _ => None,
         }

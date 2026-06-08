@@ -9,6 +9,8 @@ const STATE_ROOT_PREFIX_WITH_RESTRICTIONS: u8 = 0x03;
 const STATE_ROOT_PREFIX_LEGACY: u8 = 0x02;
 const STATE_ROOT_PREFIX_SPARSE_WITH_RESTRICTIONS: u8 = 0x13;
 const STATE_ROOT_PREFIX_SPARSE_LEGACY: u8 = 0x12;
+const STATE_ROOT_PREFIX_SPARSE_SHIELDED_WITH_RESTRICTIONS: u8 = 0x23;
+const STATE_ROOT_PREFIX_SPARSE_SHIELDED_LEGACY: u8 = 0x22;
 const STATE_ROOT_SCHEMA_KEY: &[u8] = b"state_root_schema";
 const STATE_COMMITMENT_SCHEMA_KEY: &[u8] = b"state_commitment_schema";
 const CACHED_STATE_COMMITMENT_SCHEMA_KEY: &[u8] = b"cached_state_commitment_schema";
@@ -24,8 +26,10 @@ const SPARSE_STATE_READY_KEY: &[u8] = b"sparse_state_commitment_ready";
 const SPARSE_DIRTY_MARKERS_ATOMIC_KEY: &[u8] = b"sparse_dirty_markers_atomic_v1";
 const STATE_COMMITMENT_SCHEMA_ORDERED_V0: u8 = 0;
 const STATE_COMMITMENT_SCHEMA_SPARSE_V1: u8 = 1;
+const STATE_COMMITMENT_SCHEMA_SPARSE_SHIELDED_V2: u8 = 2;
 const SPARSE_NODE_DOMAIN_LEAF: u8 = 0xA0;
 const SPARSE_NODE_DOMAIN_BRANCH: u8 = 0xA1;
+const SHIELDED_STATE_ROOT_PREFIX: u8 = 0x51;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SparseStateCommitmentReport {
@@ -37,6 +41,7 @@ pub struct SparseStateCommitmentReport {
     pub latest_block_state_root: Option<Hash>,
     pub accounts_root: Hash,
     pub contract_root: Hash,
+    pub shielded_root: Hash,
     pub accounts_leaf_count: u64,
     pub contract_leaf_count: u64,
     pub accounts_node_count: u64,
@@ -74,6 +79,12 @@ struct SparseLeafChange {
 
 type SparseNodeOverlay = BTreeMap<[u8; 32], Vec<u8>>;
 type SparseRootOverlay = (Hash, SparseNodeOverlay);
+
+#[derive(Debug, Clone, Copy, Default)]
+struct OptionalStateRootComponents {
+    restrictions_root: Option<Hash>,
+    shielded_root: Option<Hash>,
+}
 
 /// Merkle inclusion proof for an account in the state tree.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -290,6 +301,12 @@ pub(super) fn generate_proof(tree: &[Vec<Hash>], leaf_index: usize) -> Option<Me
 impl StateStore {
     fn state_root_prefix_for_commitment(schema: u8, include_restrictions: bool) -> u8 {
         match (schema, include_restrictions) {
+            (STATE_COMMITMENT_SCHEMA_SPARSE_SHIELDED_V2, true) => {
+                STATE_ROOT_PREFIX_SPARSE_SHIELDED_WITH_RESTRICTIONS
+            }
+            (STATE_COMMITMENT_SCHEMA_SPARSE_SHIELDED_V2, false) => {
+                STATE_ROOT_PREFIX_SPARSE_SHIELDED_LEGACY
+            }
             (STATE_COMMITMENT_SCHEMA_SPARSE_V1, true) => STATE_ROOT_PREFIX_SPARSE_WITH_RESTRICTIONS,
             (STATE_COMMITMENT_SCHEMA_SPARSE_V1, false) => STATE_ROOT_PREFIX_SPARSE_LEGACY,
             (_, true) => STATE_ROOT_PREFIX_WITH_RESTRICTIONS,
@@ -317,13 +334,21 @@ impl StateStore {
         } else {
             None
         };
+        let shielded_root = if self.uses_shielded_state_commitment() {
+            Some(self.compute_shielded_state_root())
+        } else {
+            None
+        };
         self.compose_state_root_with_restrictions_root(
             accounts_root,
             contract_root,
             stake_pool_hash,
             mossstake_pool_hash,
             include_restrictions,
-            restrictions_root,
+            OptionalStateRootComponents {
+                restrictions_root,
+                shielded_root,
+            },
         )
     }
 
@@ -334,19 +359,42 @@ impl StateStore {
         stake_pool_hash: Hash,
         mossstake_pool_hash: Hash,
         include_restrictions: bool,
-        restrictions_root: Option<Hash>,
+        optional: OptionalStateRootComponents,
     ) -> Hash {
-        let mut composite =
-            Vec::with_capacity(1 + 32 + 32 + 32 + 32 + restrictions_root.map_or(0, |_| 32));
+        let mut composite = Vec::with_capacity(
+            1 + 32
+                + 32
+                + 32
+                + 32
+                + optional.restrictions_root.map_or(0, |_| 32)
+                + optional.shielded_root.map_or(0, |_| 32),
+        );
         composite.push(self.active_state_root_prefix(include_restrictions));
         composite.extend_from_slice(&accounts_root.0);
         composite.extend_from_slice(&contract_root.0);
         composite.extend_from_slice(&stake_pool_hash.0);
         composite.extend_from_slice(&mossstake_pool_hash.0);
-        if let Some(restrictions_root) = restrictions_root {
+        if let Some(restrictions_root) = optional.restrictions_root {
             composite.extend_from_slice(&restrictions_root.0);
         }
+        if let Some(shielded_root) = optional.shielded_root {
+            composite.extend_from_slice(&shielded_root.0);
+        }
         Hash::hash(&composite)
+    }
+
+    pub(crate) fn clear_composite_state_root_cache(&self) {
+        if let Some(cf_stats) = self.db.cf_handle(CF_STATS) {
+            for key in [
+                CACHED_STATE_ROOT_KEY,
+                CACHED_STATE_ROOT_SCHEMA_KEY,
+                CACHED_STATE_COMMITMENT_SCHEMA_KEY,
+            ] {
+                if let Err(e) = self.db.delete_cf(&cf_stats, key) {
+                    tracing::warn!("Failed to clear cached state root: {e}");
+                }
+            }
+        }
     }
 
     fn cache_state_root(&self, root: &Hash, include_restrictions: bool) {
@@ -458,6 +506,9 @@ impl StateStore {
         match self.db.get_cf(&cf_stats, STATE_COMMITMENT_SCHEMA_KEY) {
             Ok(Some(data)) if data.len() == 1 => match data[0] {
                 STATE_COMMITMENT_SCHEMA_SPARSE_V1 => STATE_COMMITMENT_SCHEMA_SPARSE_V1,
+                STATE_COMMITMENT_SCHEMA_SPARSE_SHIELDED_V2 => {
+                    STATE_COMMITMENT_SCHEMA_SPARSE_SHIELDED_V2
+                }
                 _ => STATE_COMMITMENT_SCHEMA_ORDERED_V0,
             },
             _ => STATE_COMMITMENT_SCHEMA_ORDERED_V0,
@@ -465,12 +516,22 @@ impl StateStore {
     }
 
     pub fn uses_sparse_state_commitment(&self) -> bool {
-        self.get_state_commitment_schema() == STATE_COMMITMENT_SCHEMA_SPARSE_V1
+        matches!(
+            self.get_state_commitment_schema(),
+            STATE_COMMITMENT_SCHEMA_SPARSE_V1 | STATE_COMMITMENT_SCHEMA_SPARSE_SHIELDED_V2
+        )
+    }
+
+    pub fn uses_shielded_state_commitment(&self) -> bool {
+        self.get_state_commitment_schema() == STATE_COMMITMENT_SCHEMA_SPARSE_SHIELDED_V2
     }
 
     pub fn set_state_commitment_schema(&self, schema: u8) -> Result<(), String> {
         let normalized = match schema {
             STATE_COMMITMENT_SCHEMA_SPARSE_V1 => STATE_COMMITMENT_SCHEMA_SPARSE_V1,
+            STATE_COMMITMENT_SCHEMA_SPARSE_SHIELDED_V2 => {
+                STATE_COMMITMENT_SCHEMA_SPARSE_SHIELDED_V2
+            }
             _ => STATE_COMMITMENT_SCHEMA_ORDERED_V0,
         };
         let cf_stats = self
@@ -478,7 +539,7 @@ impl StateStore {
             .cf_handle(CF_STATS)
             .ok_or_else(|| "State stats CF is unavailable".to_string())?;
 
-        if normalized == STATE_COMMITMENT_SCHEMA_SPARSE_V1
+        if normalized != STATE_COMMITMENT_SCHEMA_ORDERED_V0
             && !self.is_sparse_state_commitment_ready()
         {
             return Err("Sparse state commitment must be rebuilt before activation".to_string());
@@ -503,6 +564,7 @@ impl StateStore {
 
     pub fn state_commitment_schema_label(schema: u8) -> &'static str {
         match schema {
+            STATE_COMMITMENT_SCHEMA_SPARSE_SHIELDED_V2 => "sparse_shielded_v2",
             STATE_COMMITMENT_SCHEMA_SPARSE_V1 => "sparse_v1",
             _ => "ordered_v0",
         }
@@ -1151,6 +1213,7 @@ impl StateStore {
             .flatten()
             .map(|block| block.header.state_root);
         let include_restrictions = self.get_state_root_schema().unwrap_or(false);
+        let shielded_root = self.compute_shielded_state_root();
         let current_state_root = self.compose_state_root(
             accounts_root,
             contract_root,
@@ -1168,12 +1231,25 @@ impl StateStore {
             latest_block_state_root,
             accounts_root,
             contract_root,
+            shielded_root,
             accounts_leaf_count,
             contract_leaf_count,
             accounts_node_count,
             contract_node_count,
             activated: self.uses_sparse_state_commitment(),
         })
+    }
+
+    pub fn activate_shielded_state_commitment(
+        &self,
+    ) -> Result<SparseStateCommitmentReport, String> {
+        let before_schema = self.get_state_commitment_schema();
+        self.rebuild_sparse_state_commitment(false)?;
+        self.set_state_commitment_schema(STATE_COMMITMENT_SCHEMA_SPARSE_SHIELDED_V2)?;
+        let mut report = self.verify_sparse_state_commitment()?;
+        report.before_schema = before_schema;
+        report.activated = true;
+        Ok(report)
     }
 
     pub fn verify_sparse_state_commitment(&self) -> Result<SparseStateCommitmentReport, String> {
@@ -1204,6 +1280,7 @@ impl StateStore {
             .flatten()
             .map(|block| block.header.state_root);
         let include_restrictions = self.get_state_root_schema().unwrap_or(false);
+        let shielded_root = self.compute_shielded_state_root();
         let current_state_root = self.compose_state_root(
             accounts_root,
             contract_root,
@@ -1220,6 +1297,7 @@ impl StateStore {
             latest_block_state_root,
             accounts_root,
             contract_root,
+            shielded_root,
             accounts_leaf_count: account_entries.len() as u64,
             contract_leaf_count: contract_entries.len() as u64,
             accounts_node_count: account_nodes.len() as u64,
@@ -1662,9 +1740,20 @@ impl StateStore {
         } else {
             None
         };
+        let shielded_root = if self.uses_shielded_state_commitment() {
+            Some(self.compute_shielded_state_root_for_batch(batch))
+        } else {
+            None
+        };
 
-        let mut composite =
-            Vec::with_capacity(1 + 32 + 32 + 32 + 32 + restrictions_root.map_or(0, |_| 32));
+        let mut composite = Vec::with_capacity(
+            1 + 32
+                + 32
+                + 32
+                + 32
+                + restrictions_root.map_or(0, |_| 32)
+                + shielded_root.map_or(0, |_| 32),
+        );
         composite.push(self.active_state_root_prefix(include_restrictions));
         composite.extend_from_slice(&accounts_root.0);
         composite.extend_from_slice(&contract_root.0);
@@ -1672,6 +1761,9 @@ impl StateStore {
         composite.extend_from_slice(&mossstake_pool_hash.0);
         if let Some(restrictions_root) = restrictions_root {
             composite.extend_from_slice(&restrictions_root.0);
+        }
+        if let Some(shielded_root) = shielded_root {
+            composite.extend_from_slice(&shielded_root.0);
         }
         Hash::hash(&composite)
     }
@@ -1868,6 +1960,128 @@ impl StateStore {
         }
         let ordered: Vec<Hash> = leaves.into_values().collect();
         Self::merkle_root_from_leaves(&ordered)
+    }
+
+    fn compute_cf_kv_root(&self, cf_name: &str) -> Hash {
+        let Some(cf) = self.db.cf_handle(cf_name) else {
+            return Hash::default();
+        };
+        let mut leaves = Vec::<Hash>::new();
+        let mut read_opts = rocksdb::ReadOptions::default();
+        read_opts.set_total_order_seek(true);
+        for item in self
+            .db
+            .iterator_cf_opt(&cf, read_opts, rocksdb::IteratorMode::Start)
+            .flatten()
+        {
+            let (key, value) = item;
+            leaves.push(Hash::hash_two_parts(&key, &value));
+        }
+        Self::merkle_root_from_leaves(&leaves)
+    }
+
+    fn collect_cf_kv_leaf_map(&self, cf_name: &str) -> BTreeMap<Vec<u8>, Hash> {
+        let Some(cf) = self.db.cf_handle(cf_name) else {
+            return BTreeMap::new();
+        };
+        let mut leaves = BTreeMap::<Vec<u8>, Hash>::new();
+        let mut read_opts = rocksdb::ReadOptions::default();
+        read_opts.set_total_order_seek(true);
+        for item in self
+            .db
+            .iterator_cf_opt(&cf, read_opts, rocksdb::IteratorMode::Start)
+            .flatten()
+        {
+            let (key, value) = item;
+            let key = key.to_vec();
+            leaves.insert(key.clone(), Hash::hash_two_parts(&key, &value));
+        }
+        leaves
+    }
+
+    fn root_from_leaf_map(leaves: BTreeMap<Vec<u8>, Hash>) -> Hash {
+        let ordered: Vec<Hash> = leaves.into_values().collect();
+        Self::merkle_root_from_leaves(&ordered)
+    }
+
+    fn compose_shielded_state_root(
+        pool_root: Hash,
+        commitments_root: Hash,
+        note_payloads_root: Hash,
+        nullifiers_root: Hash,
+    ) -> Hash {
+        let mut composite = Vec::with_capacity(1 + 32 * 4);
+        composite.push(SHIELDED_STATE_ROOT_PREFIX);
+        composite.extend_from_slice(&pool_root.0);
+        composite.extend_from_slice(&commitments_root.0);
+        composite.extend_from_slice(&note_payloads_root.0);
+        composite.extend_from_slice(&nullifiers_root.0);
+        Hash::hash(&composite)
+    }
+
+    pub fn compute_shielded_state_root(&self) -> Hash {
+        Self::compose_shielded_state_root(
+            self.compute_cf_kv_root(CF_SHIELDED_POOL),
+            self.compute_cf_kv_root(CF_SHIELDED_COMMITMENTS),
+            self.compute_cf_kv_root(CF_SHIELDED_NOTE_PAYLOADS),
+            self.compute_cf_kv_root(CF_SHIELDED_NULLIFIERS),
+        )
+    }
+
+    fn compute_shielded_state_root_for_batch(&self, batch: &StateBatch) -> Hash {
+        let pool_root = if let Some(pool) = &batch.shielded_pool_overlay {
+            let mut leaves = self.collect_cf_kv_leaf_map(CF_SHIELDED_POOL);
+            match serde_json::to_vec(pool) {
+                Ok(value) => {
+                    let key = b"state".to_vec();
+                    leaves.insert(key.clone(), Hash::hash_two_parts(&key, &value));
+                }
+                Err(err) => tracing::warn!("Failed to overlay shielded pool root: {}", err),
+            }
+            Self::root_from_leaf_map(leaves)
+        } else {
+            self.compute_cf_kv_root(CF_SHIELDED_POOL)
+        };
+
+        let commitments_root = if batch.shielded_commitment_overlay.is_empty() {
+            self.compute_cf_kv_root(CF_SHIELDED_COMMITMENTS)
+        } else {
+            let mut leaves = self.collect_cf_kv_leaf_map(CF_SHIELDED_COMMITMENTS);
+            for (index, commitment) in &batch.shielded_commitment_overlay {
+                let key = index.to_be_bytes().to_vec();
+                leaves.insert(key.clone(), Hash::hash_two_parts(&key, commitment));
+            }
+            Self::root_from_leaf_map(leaves)
+        };
+
+        let note_payloads_root = if batch.shielded_note_payload_overlay.is_empty() {
+            self.compute_cf_kv_root(CF_SHIELDED_NOTE_PAYLOADS)
+        } else {
+            let mut leaves = self.collect_cf_kv_leaf_map(CF_SHIELDED_NOTE_PAYLOADS);
+            for (index, payload) in &batch.shielded_note_payload_overlay {
+                let key = index.to_be_bytes().to_vec();
+                leaves.insert(key.clone(), Hash::hash_two_parts(&key, payload));
+            }
+            Self::root_from_leaf_map(leaves)
+        };
+
+        let nullifiers_root = if batch.spent_nullifier_overlay.is_empty() {
+            self.compute_cf_kv_root(CF_SHIELDED_NULLIFIERS)
+        } else {
+            let mut leaves = self.collect_cf_kv_leaf_map(CF_SHIELDED_NULLIFIERS);
+            for nullifier in &batch.spent_nullifier_overlay {
+                let key = nullifier.to_vec();
+                leaves.insert(key.clone(), Hash::hash_two_parts(&key, &[0x01]));
+            }
+            Self::root_from_leaf_map(leaves)
+        };
+
+        Self::compose_shielded_state_root(
+            pool_root,
+            commitments_root,
+            note_payloads_root,
+            nullifiers_root,
+        )
     }
 
     pub fn compute_stake_pool_hash(&self) -> Hash {

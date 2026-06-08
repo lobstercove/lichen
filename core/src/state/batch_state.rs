@@ -104,7 +104,13 @@ impl StateStore {
             None
         };
 
-        if batch.stake_pool_overlay.is_some() || batch.mossstake_pool_overlay.is_some() {
+        if batch.stake_pool_overlay.is_some()
+            || batch.mossstake_pool_overlay.is_some()
+            || batch.shielded_pool_overlay.is_some()
+            || !batch.shielded_commitment_overlay.is_empty()
+            || !batch.shielded_note_payload_overlay.is_empty()
+            || !batch.spent_nullifier_overlay.is_empty()
+        {
             self.clear_composite_state_root_cache_in_batch(&mut wb);
         }
 

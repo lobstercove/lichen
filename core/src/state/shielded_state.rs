@@ -14,7 +14,9 @@ impl StateStore {
 
         self.db
             .put_cf(&cf, index.to_be_bytes(), commitment)
-            .map_err(|e| format!("Failed to insert shielded commitment: {}", e))
+            .map_err(|e| format!("Failed to insert shielded commitment: {}", e))?;
+        self.clear_composite_state_root_cache();
+        Ok(())
     }
 
     /// Retrieve a commitment leaf by its insertion index.
@@ -51,7 +53,9 @@ impl StateStore {
 
         self.db
             .put_cf(&cf, index.to_be_bytes(), payload)
-            .map_err(|e| format!("Failed to insert shielded note payload: {}", e))
+            .map_err(|e| format!("Failed to insert shielded note payload: {}", e))?;
+        self.clear_composite_state_root_cache();
+        Ok(())
     }
 
     /// Retrieve the encrypted note payload associated with a commitment index.
@@ -89,7 +93,9 @@ impl StateStore {
 
         self.db
             .put_cf(&cf, nullifier, [0x01])
-            .map_err(|e| format!("Failed to mark nullifier spent: {}", e))
+            .map_err(|e| format!("Failed to mark nullifier spent: {}", e))?;
+        self.clear_composite_state_root_cache();
+        Ok(())
     }
 
     /// Load the singleton `ShieldedPoolState` from CF_SHIELDED_POOL.
@@ -124,7 +130,9 @@ impl StateStore {
 
         self.db
             .put_cf(&cf, b"state", &data)
-            .map_err(|e| format!("Failed to store ShieldedPoolState: {}", e))
+            .map_err(|e| format!("Failed to store ShieldedPoolState: {}", e))?;
+        self.clear_composite_state_root_cache();
+        Ok(())
     }
 
     /// Collect all commitment leaves [0..count) from CF_SHIELDED_COMMITMENTS.

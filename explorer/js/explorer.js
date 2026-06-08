@@ -17,6 +17,20 @@ function getNetworkConfig(name) {
 let RPC_URL = getNetworkConfig(currentNetwork).rpc;
 let WS_URL = getNetworkConfig(currentNetwork).ws;
 const SYSTEM_PROGRAM_ID = '11111111111111111111111111111111';
+let dashboardLatestSlot = 0;
+let dashboardLatestBlocksTopSlot = 0;
+
+function updateDashboardLatestSlot(slot) {
+    const numericSlot = Number(slot);
+    if (!Number.isFinite(numericSlot) || numericSlot < 0) return;
+    if (numericSlot < dashboardLatestSlot) return;
+    dashboardLatestSlot = numericSlot;
+
+    const latestBlockEl = document.getElementById('latestBlock');
+    if (latestBlockEl) {
+        latestBlockEl.textContent = formatSlot(numericSlot);
+    }
+}
 
 // RPC Client (from actual Lichen RPC implementation)
 class LichenRPC {
@@ -543,10 +557,7 @@ async function updateDashboardStats() {
         // Get latest block/slot
         const slot = await rpc.getSlot();
         if (slot !== null) {
-            const latestBlockEl = document.getElementById('latestBlock');
-            if (latestBlockEl) {
-                latestBlockEl.textContent = formatSlot(slot);
-            }
+            updateDashboardLatestSlot(slot);
 
             // Chain is online if we got a response
             if (chainStatusTopEl) {
@@ -747,6 +758,13 @@ async function updateLatestBlocks() {
         if (blocks.length === 0) {
             blocksTable.innerHTML = '<tr><td colspan="5" style="text-align:center; color: var(--text-muted);">No blocks found</td></tr>';
             return;
+        }
+
+        const topSlot = Number(blocks[0]?.slot);
+        if (Number.isFinite(topSlot)) {
+            if (topSlot < dashboardLatestBlocksTopSlot) return;
+            dashboardLatestBlocksTopSlot = topSlot;
+            updateDashboardLatestSlot(topSlot);
         }
 
         // Render blocks

@@ -37,3 +37,9 @@ faucet.lichen.network {
         file_server
     }
 }
+
+custody-testnet.lichen.network, testnet-custody.lichen.network {
+    tls internal
+    import common_headers
+    reverse_proxy 127.0.0.1:9105
+}
