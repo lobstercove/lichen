@@ -80,6 +80,46 @@ function explorerJsonSafeNumber(units, label = 'Amount') {
     return Number(value);
 }
 
+function numericRewardValue(value) {
+    const numeric = Number(value || 0);
+    return Number.isFinite(numeric) ? numeric : 0;
+}
+
+function buildBootstrapRecoveryDisplay(rewards) {
+    const debt = numericRewardValue(rewards?.bootstrap_debt);
+    const totalDebtRepaid = numericRewardValue(rewards?.total_debt_repaid);
+    const legacyEarnedAmount = numericRewardValue(rewards?.earned_amount);
+    const earned = totalDebtRepaid > 0 ? totalDebtRepaid : legacyEarnedAmount;
+    const hasGraduationSlot = rewards?.graduation_slot !== null && rewards?.graduation_slot !== undefined;
+    const hasRecoverySchedule = debt > 0 || earned > 0 || hasGraduationSlot;
+
+    if (!hasRecoverySchedule) {
+        return {
+            debt,
+            earned,
+            hasRecoverySchedule,
+            label: '0.0%',
+            barWidth: 0,
+        };
+    }
+
+    const rawProgress = rewards?.vesting_progress;
+    const computedProgress = (debt + earned) > 0 ? earned / (debt + earned) : 0;
+    const progress = rawProgress === null || rawProgress === undefined
+        ? computedProgress
+        : numericRewardValue(rawProgress);
+    const percent = Math.min(100, Math.max(0, progress * 100));
+    const label = percent > 0 && percent < 0.1 ? '< 0.1%' : `${percent.toFixed(1)}%`;
+
+    return {
+        debt,
+        earned,
+        hasRecoverySchedule,
+        label,
+        barWidth: percent > 0 ? Math.max(3, percent) : 0,
+    };
+}
+
 function parseExplorerIntegerRange(value, label, min, max) {
     const raw = String(value || '').trim();
     if (!/^\d+$/.test(raw)) throw new Error(`${label} must be a whole number`);
@@ -1829,9 +1869,9 @@ async function loadValidatorRewards(address) {
         const projectedEpoch = rewards.projected_epoch_reward || 0;
         const claimed = rewards.claimed_rewards || 0;
         const rate = rewards.reward_rate || '0';
-        const debt = rewards.bootstrap_debt || 0;
-        const earned = rewards.total_debt_repaid || rewards.earned_amount || 0;
-        const vesting = rewards.vesting_progress || 0;
+        const recovery = buildBootstrapRecoveryDisplay(rewards);
+        const debt = recovery.debt;
+        const earned = recovery.earned;
         const blocksProduced = rewards.blocks_produced || 0;
         const rewardRateNumeric = parseFloat(rate) || 0;
 
@@ -1842,7 +1882,7 @@ async function loadValidatorRewards(address) {
             Number(claimed) > 0 ||
             Number(debt) > 0 ||
             Number(earned) > 0 ||
-            Number(vesting) > 0 ||
+            Number(recovery.barWidth) > 0 ||
             Number(blocksProduced) > 0 ||
             rewardRateNumeric > 0;
 
@@ -1877,12 +1917,8 @@ async function loadValidatorRewards(address) {
         document.getElementById('rewardsDebt').textContent = formatLicn(debt);
         document.getElementById('rewardsDebtRepaid').textContent = formatLicn(earned);
 
-        const vestingPct = Math.min(100, Math.max(0, (typeof vesting === 'number' ? vesting * 100 : parseFloat(vesting) * 100) || 0));
-        const vestingLabel = vestingPct > 0 && vestingPct < 0.1 ? '< 0.1%' : vestingPct.toFixed(1) + '%';
-        document.getElementById('rewardsVestingText').textContent = vestingLabel;
-        // Give the progress bar a visible minimum width (3%) if there's any progress at all
-        const barWidth = vestingPct > 0 ? Math.max(3, vestingPct) : 0;
-        document.getElementById('vestingProgressBar').style.width = barWidth + '%';
+        document.getElementById('rewardsVestingText').textContent = recovery.label;
+        document.getElementById('vestingProgressBar').style.width = recovery.barWidth + '%';
         return true;
     } catch (e) {
         console.warn('Failed to load staking rewards:', e);

@@ -1148,6 +1148,16 @@ function validateFrontendInputGuards() {
     );
 
     assert(
+        explorerAddressJs.includes('function buildBootstrapRecoveryDisplay(rewards)') &&
+            explorerAddressJs.includes('hasRecoverySchedule = debt > 0 || earned > 0 || hasGraduationSlot') &&
+            explorerAddressJs.includes("label: '0.0%'") &&
+            explorerAddressJs.includes("document.getElementById('rewardsDebt').textContent = formatLicn(debt)") &&
+            !explorerAddressJs.includes("'No bootstrap grant'") &&
+            explorerAddressJs.includes("document.getElementById('rewardsVestingText').textContent = recovery.label"),
+        'explorer validator bootstrap recovery keeps numeric debt rows and does not render zero recovery as 100% graduated'
+    );
+
+    assert(
         explorerBlocksHtml.includes('data-explorer-integer="true"') &&
             explorerBlocksJs.includes('function applyBlockIntegerInputGuards(') &&
             explorerBlocksJs.includes("['e', 'E', '+', '-', '.'].includes(event.key)") &&
