@@ -5,6 +5,12 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.132] - 2026-06-09
+
+### Fixed
+- Routes BFT-committed blocks through the same deterministic post-store hook wrapper as network-applied blocks, so local proposers and followers complete stake-pool, oracle, activation, analytics, MossStake, and post-state anchor effects through one canonical path.
+- Adds a regression guard that BFT commit stores the block before shared post-block hooks, applies that wrapper exactly once, and no longer calls lower-level post-block helpers directly.
+
 ## [0.5.131] - 2026-06-09
 
 ### Fixed

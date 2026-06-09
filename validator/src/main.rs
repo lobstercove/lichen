@@ -19399,39 +19399,19 @@ async fn execute_consensus_actions(
                 error!("Failed to store block at height {}: {e}", height);
             }
 
-            // Now apply effects AFTER the block is stored. This ordering
-            // ensures the block receiver's duplicate guard fires if it
-            // tries to process the same block concurrently. Duplicate or
-            // stale commits return above before reaching any canonical side
-            // effects.
-            apply_block_effects(
+            // Now apply deterministic post-block effects AFTER the block is
+            // stored. Use the same wrapper as the block receiver so locally
+            // committed/proposed blocks cannot drift from network-applied
+            // blocks.
+            apply_post_block_effects_after_store(
                 state,
                 validator_set,
                 stake_pool,
                 &block,
-                false,
                 min_validator_stake,
+                slot_duration_ms,
             )
             .await;
-            apply_oracle_from_block(state, &block);
-
-            // BFT-ACTIVATION: Activate pending validators after applying
-            // block effects so the in-memory validator set stays in sync
-            // with the on-chain stake pool during live BFT.  Without this,
-            // BFT nodes never activate pending validators (only the sync
-            // path did), causing leader election disagreements when a
-            // rejoining node has a different active validator set.
-            {
-                let pool = stake_pool.read().await.clone();
-                activate_pending_validators_for_height(
-                    state,
-                    validator_set,
-                    &pool,
-                    height,
-                    min_validator_stake,
-                )
-                .await;
-            }
 
             // EVM tx inclusion tracking
             for tx in &block.transactions {
@@ -19489,21 +19469,7 @@ async fn execute_consensus_actions(
                         emit_dex_events(&state_c, &bc_c, prev, current_trade_count, slot_c);
                     });
                 }
-                run_analytics_bridge_from_state(state, height, block.header.timestamp);
-                run_sltp_triggers_from_state(state);
             }
-
-            // Rolling 24h window reset
-            reset_24h_stats_if_expired(state, block.header.timestamp);
-            if let Err(e) = maybe_activate_legacy_testnet_mossstake_slot_only(
-                state,
-                height,
-                "BFT commit boundary",
-            ) {
-                error!("Failed BFT MossStake slot-only activation: {}", e);
-                std::process::exit(1);
-            }
-            record_post_block_state_commitment_anchor(state, &block, "BFT commit");
 
             // Finality tracking
             {
@@ -20418,6 +20384,78 @@ mod tests {
             section.matches("reset_24h_stats_if_expired(").count(),
             0,
             "24h stats reset belongs inside the post-store hook wrapper"
+        );
+    }
+
+    #[test]
+    fn bft_commit_path_applies_shared_post_hooks_once_after_store() {
+        let source = include_str!("main.rs");
+        let start = source
+            .find("// Store block, tip, and commitment metadata atomically.")
+            .expect("BFT block store marker");
+        let relative_end = source[start..]
+            .find("// Finality tracking")
+            .expect("BFT finality marker");
+        let section = &source[start..start + relative_end];
+
+        let store_pos = section
+            .find(".put_block_atomic(&block, Some(confirmed_slot), Some(finalized_slot))")
+            .expect("BFT canonical block store");
+        let hook_pos = section
+            .find("apply_post_block_effects_after_store(")
+            .expect("BFT shared post-store effects call");
+        let evm_pos = section
+            .find("// EVM tx inclusion tracking")
+            .expect("BFT EVM inclusion marker");
+
+        assert!(
+            store_pos < hook_pos,
+            "BFT commit must store the block before deterministic post-block hooks"
+        );
+        assert!(
+            hook_pos < evm_pos,
+            "BFT commit must complete post-block hooks before downstream inclusion/events"
+        );
+        assert_eq!(
+            section
+                .matches("apply_post_block_effects_after_store(")
+                .count(),
+            1,
+            "BFT commit must apply shared post-store hooks exactly once"
+        );
+        assert_eq!(
+            section.matches("apply_block_effects(").count(),
+            0,
+            "BFT commit must not bypass the post-store hook wrapper"
+        );
+        assert_eq!(
+            section.matches("run_analytics_bridge_from_state(").count(),
+            0,
+            "analytics bridge belongs inside the post-store hook wrapper"
+        );
+        assert_eq!(
+            section.matches("run_sltp_triggers_from_state(").count(),
+            0,
+            "SL/TP triggers belong inside the post-store hook wrapper"
+        );
+        assert_eq!(
+            section.matches("reset_24h_stats_if_expired(").count(),
+            0,
+            "24h stats reset belongs inside the post-store hook wrapper"
+        );
+        assert_eq!(
+            section
+                .matches("maybe_activate_legacy_testnet_mossstake_slot_only(")
+                .count(),
+            0,
+            "MossStake slot-only activation belongs inside the post-store hook wrapper"
+        );
+        assert_eq!(
+            section
+                .matches("record_post_block_state_commitment_anchor(")
+                .count(),
+            0,
+            "post-state anchors belong inside the post-store hook wrapper"
         );
     }
 
