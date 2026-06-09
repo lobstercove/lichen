@@ -375,6 +375,13 @@ pub(super) enum ValidatorCommands {
         #[arg(long)]
         fingerprint_hex: Option<String>,
     },
+
+    /// Convert an exact 100,000 LICN self-funded validator stake into bootstrap recovery
+    ReclassifyBootstrap {
+        /// Keypair file for the validator account
+        #[arg(short, long)]
+        keypair: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]

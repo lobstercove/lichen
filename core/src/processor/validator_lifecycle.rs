@@ -300,6 +300,45 @@ impl TxProcessor {
         Ok(())
     }
 
+    /// System program: ReclassifyValidatorBootstrap (opcode 38).
+    ///
+    /// Accounts: [validator signer]
+    ///
+    /// Converts an existing exact 100,000 LICN self-funded validator stake into
+    /// bootstrap-recovery accounting. No funds are minted or moved; the
+    /// validator voluntarily starts repaying the existing validator stake through
+    /// the normal bootstrap debt schedule.
+    pub(super) fn system_reclassify_validator_bootstrap(
+        &self,
+        ix: &Instruction,
+    ) -> Result<(), String> {
+        if ix.accounts.is_empty() {
+            return Err("ReclassifyValidatorBootstrap requires [validator] account".to_string());
+        }
+        if ix.data.len() != 1 {
+            return Err("ReclassifyValidatorBootstrap: invalid instruction data".to_string());
+        }
+
+        let validator_pubkey = ix.accounts[0];
+        let account = self.b_get_account(&validator_pubkey)?.ok_or_else(|| {
+            "ReclassifyValidatorBootstrap: validator account not found".to_string()
+        })?;
+        if account.staked != crate::consensus::BOOTSTRAP_GRANT_AMOUNT {
+            return Err(format!(
+                "ReclassifyValidatorBootstrap: validator staked balance must be exactly {} spores",
+                crate::consensus::BOOTSTRAP_GRANT_AMOUNT
+            ));
+        }
+
+        let current_slot = self.b_get_last_slot().unwrap_or(0);
+        let mut pool = self.b_get_stake_pool()?;
+        pool.reclassify_self_funded_as_bootstrap(&validator_pubkey, current_slot)
+            .map_err(|e| format!("ReclassifyValidatorBootstrap: stake pool error: {}", e))?;
+        self.b_put_stake_pool(&pool)?;
+
+        Ok(())
+    }
+
     /// System program: SlashValidator (opcode 27)
     ///
     /// Consensus-based equivocation slashing — the Ethereum/Cosmos pattern.

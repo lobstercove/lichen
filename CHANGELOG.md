@@ -5,6 +5,13 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.130] - 2026-06-09
+
+### Fixed
+- Adds a signed `ReclassifyValidatorBootstrap` system instruction for exact 100,000 LICN self-funded validator entries that must enter normal bootstrap-recovery accounting, without moving funds or editing RocksDB out of band.
+- Adds `lichen validator reclassify-bootstrap` so operators can submit the correction with the validator key through the same signed transaction path as validator registration.
+- Covers the correction path with consensus tests for successful reclassification, already-bootstrapped rejection, and non-exact-stake rejection.
+
 ## [0.5.129] - 2026-06-09
 
 ### Fixed

@@ -1915,6 +1915,58 @@ impl StakePool {
         Ok((bootstrap_index, true))
     }
 
+    /// Reclassify an already-staked, self-funded validator as bootstrap-recovery
+    /// backed. This is for the case where the validator already has the exact
+    /// bootstrap stake on-chain but its StakeInfo was created through the
+    /// self-funded registration mode, so no debt schedule exists.
+    pub fn reclassify_self_funded_as_bootstrap(
+        &mut self,
+        validator: &Pubkey,
+        current_slot: u64,
+    ) -> Result<u64, String> {
+        let stake_info = self
+            .stakes
+            .get_mut(validator)
+            .ok_or_else(|| "Validator stake entry not found".to_string())?;
+
+        if stake_info.bootstrap_index != u64::MAX
+            || stake_info.bootstrap_debt > 0
+            || stake_info.earned_amount > 0
+            || stake_info.total_debt_repaid > 0
+            || stake_info.graduation_slot.is_some()
+        {
+            return Err("Validator is already in bootstrap recovery or graduated".to_string());
+        }
+
+        if stake_info.amount != BOOTSTRAP_GRANT_AMOUNT {
+            return Err(format!(
+                "Validator stake must be exactly {} spores to enter bootstrap recovery",
+                BOOTSTRAP_GRANT_AMOUNT
+            ));
+        }
+
+        if self.bootstrap_grants_issued >= MAX_BOOTSTRAP_VALIDATORS {
+            return Err(format!(
+                "Bootstrap phase complete ({} grants issued, max {})",
+                self.bootstrap_grants_issued, MAX_BOOTSTRAP_VALIDATORS
+            ));
+        }
+
+        let bootstrap_index = self.bootstrap_grants_issued;
+        self.bootstrap_grants_issued += 1;
+        stake_info.bootstrap_index = bootstrap_index;
+        stake_info.bootstrap_debt = BOOTSTRAP_GRANT_AMOUNT;
+        stake_info.status = BootstrapStatus::Bootstrapping;
+        if stake_info.start_slot == 0 {
+            stake_info.start_slot = current_slot;
+        }
+        stake_info.graduation_slot = None;
+        stake_info.penalty_boost_until = 0;
+        stake_info.is_active = stake_info.meets_minimum();
+
+        Ok(bootstrap_index)
+    }
+
     /// Get mutable reference to stake info (for direct field updates in validator)
     pub fn get_stake_mut(&mut self, validator: &Pubkey) -> Option<&mut StakeInfo> {
         self.stakes.get_mut(validator)

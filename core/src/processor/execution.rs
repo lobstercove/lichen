@@ -533,7 +533,7 @@ impl TxProcessor {
                     if ix.program_id == SYSTEM_PROGRAM_ID {
                         if let Some(&opcode) = ix.data.first() {
                             match opcode {
-                                9 | 10 | 11 | 26 | 27 | 31 => {
+                                9 | 10 | 11 | 26 | 27 | 31 | 38 => {
                                     accounts.insert(CONFLICT_KEY_STAKE_POOL);
                                 }
                                 13..=16 => {

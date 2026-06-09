@@ -215,7 +215,7 @@ pub const NONCE_ACCOUNT_MARKER: u8 = 0xDA;
 // scheduling group, preventing lost-update races in parallel execution.
 // Values are chosen to never collide with real versioned Lichen addresses.
 
-/// Virtual key: any TX that reads/writes the stake pool (opcodes 9, 10, 11, 26, 27, 31).
+/// Virtual key: any TX that reads/writes the stake pool (opcodes 9, 10, 11, 26, 27, 31, 38).
 pub const CONFLICT_KEY_STAKE_POOL: Pubkey = Pubkey([0xFE; 32]);
 /// Virtual key: any TX that reads/writes the MossStake pool (opcodes 13, 14, 15, 16).
 pub const CONFLICT_KEY_MOSSSTAKE_POOL: Pubkey = Pubkey([0xFD; 32]);
@@ -319,6 +319,7 @@ pub fn compute_units_for_system_ix(instruction_type: u8) -> u64 {
         31 => CU_DEREGISTER_VALIDATOR,
         32 | 33 => CU_GOVERNED_PROPOSAL,
         34..=37 => CU_GOVERNANCE_ACTION,
+        38 => CU_REGISTER_VALIDATOR,
         _ => 100,
     }
 }
@@ -633,7 +634,7 @@ impl TxProcessor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::consensus::MIN_VALIDATOR_STAKE;
+    use crate::consensus::{BootstrapStatus, MIN_VALIDATOR_STAKE};
     use crate::restrictions::{
         ProtocolModuleId, RestrictionLiftReason, RestrictionMode, RestrictionReason,
         RestrictionRecord, RestrictionStatus, RestrictionTarget, GUARDIAN_RESTRICTION_MAX_SLOTS,
@@ -3471,6 +3472,19 @@ mod tests {
         make_signed_tx(kp, ix, recent_blockhash)
     }
 
+    fn make_reclassify_validator_bootstrap_tx(
+        kp: &Keypair,
+        validator: Pubkey,
+        recent_blockhash: Hash,
+    ) -> Transaction {
+        let ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![validator],
+            data: vec![38u8],
+        };
+        make_signed_tx(kp, ix, recent_blockhash)
+    }
+
     fn make_deregister_validator_tx(
         kp: &Keypair,
         validator: Pubkey,
@@ -3860,6 +3874,93 @@ mod tests {
         assert_eq!(stake.bootstrap_debt, 0);
         assert_eq!(pool.bootstrap_grants_issued(), 0);
         assert_eq!(pool.fingerprint_owner(&fingerprint), Some(&validator));
+    }
+
+    #[test]
+    fn test_reclassify_validator_bootstrap_success_for_exact_self_funded_stake() {
+        let (processor, state, _alice_kp, _alice, _treasury, genesis_hash) = setup();
+        let block_producer = Pubkey([42u8; 32]);
+        let validator_kp = Keypair::generate();
+        let validator = validator_kp.pubkey();
+        let amount = crate::consensus::BOOTSTRAP_GRANT_AMOUNT;
+        let mut account = Account::new(100_001, validator);
+        account.stake(amount).unwrap();
+        state.put_account(&validator, &account).unwrap();
+
+        let mut pool = state.get_stake_pool().unwrap_or_default();
+        pool.stake_with_index(validator, amount, 2_903_890, u64::MAX)
+            .unwrap();
+        state.put_stake_pool(&pool).unwrap();
+
+        let tx = make_reclassify_validator_bootstrap_tx(&validator_kp, validator, genesis_hash);
+        let result = processor.process_transaction(&tx, &block_producer);
+        assert!(
+            result.success,
+            "ReclassifyValidatorBootstrap failed: {:?}",
+            result.error
+        );
+
+        let pool = state.get_stake_pool().unwrap();
+        assert_eq!(pool.bootstrap_grants_issued(), 1);
+        let stake = pool.get_stake(&validator).unwrap();
+        assert_eq!(stake.amount, amount);
+        assert_eq!(stake.bootstrap_index, 0);
+        assert_eq!(stake.bootstrap_debt, amount);
+        assert_eq!(stake.earned_amount, 0);
+        assert_eq!(stake.total_debt_repaid, 0);
+        assert_eq!(stake.status, BootstrapStatus::Bootstrapping);
+        assert_eq!(stake.graduation_slot, None);
+    }
+
+    #[test]
+    fn test_reclassify_validator_bootstrap_rejects_existing_bootstrap_schedule() {
+        let (processor, state, _alice_kp, _alice, _treasury, genesis_hash) = setup();
+        let block_producer = Pubkey([42u8; 32]);
+        let validator_kp = Keypair::generate();
+        let validator = validator_kp.pubkey();
+        let amount = crate::consensus::BOOTSTRAP_GRANT_AMOUNT;
+        let mut account = Account::new(100_001, validator);
+        account.stake(amount).unwrap();
+        state.put_account(&validator, &account).unwrap();
+
+        let mut pool = state.get_stake_pool().unwrap_or_default();
+        pool.stake_with_index(validator, amount, 128, 0).unwrap();
+        state.put_stake_pool(&pool).unwrap();
+
+        let tx = make_reclassify_validator_bootstrap_tx(&validator_kp, validator, genesis_hash);
+        let result = processor.process_transaction(&tx, &block_producer);
+        assert!(!result.success);
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("already in bootstrap recovery or graduated"));
+    }
+
+    #[test]
+    fn test_reclassify_validator_bootstrap_rejects_non_exact_stake() {
+        let (processor, state, _alice_kp, _alice, _treasury, genesis_hash) = setup();
+        let block_producer = Pubkey([42u8; 32]);
+        let validator_kp = Keypair::generate();
+        let validator = validator_kp.pubkey();
+        let amount = crate::consensus::MIN_VALIDATOR_STAKE;
+        let mut account = Account::new(100_000, validator);
+        account.stake(amount).unwrap();
+        state.put_account(&validator, &account).unwrap();
+
+        let mut pool = state.get_stake_pool().unwrap_or_default();
+        pool.stake_with_index(validator, amount, 128, u64::MAX)
+            .unwrap();
+        state.put_stake_pool(&pool).unwrap();
+
+        let tx = make_reclassify_validator_bootstrap_tx(&validator_kp, validator, genesis_hash);
+        let result = processor.process_transaction(&tx, &block_producer);
+        assert!(!result.success);
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("must be exactly"));
     }
 
     #[test]

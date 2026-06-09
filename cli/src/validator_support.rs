@@ -139,6 +139,31 @@ pub(super) async fn handle_validator_register(
     Ok(())
 }
 
+pub(super) async fn handle_validator_reclassify_bootstrap(
+    client: &RpcClient,
+    keypair_mgr: &KeypairManager,
+    keypair: Option<PathBuf>,
+) -> Result<()> {
+    let kp = load_staker_keypair(keypair_mgr, keypair)?;
+
+    println!("Reclassifying validator bootstrap recovery");
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!("Validator: {}", kp.pubkey().to_base58());
+    println!();
+
+    match client.reclassify_validator_bootstrap(&kp).await {
+        Ok(signature) => {
+            println!("ReclassifyValidatorBootstrap transaction sent");
+            println!("Signature: {}", signature);
+        }
+        Err(error) => {
+            println!("ReclassifyValidatorBootstrap failed: {}", error);
+        }
+    }
+
+    Ok(())
+}
+
 fn parse_machine_fingerprint_hex(value: &str) -> Result<[u8; 32]> {
     let trimmed = value.trim().strip_prefix("0x").unwrap_or(value.trim());
     let bytes = hex::decode(trimmed)?;

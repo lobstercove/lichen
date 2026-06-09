@@ -75,6 +75,7 @@ impl TxProcessor {
             35 => self.system_approve_governance_action(ix),
             36 => self.system_execute_governance_action(ix),
             37 => self.system_cancel_governance_action(ix),
+            38 => self.system_reclassify_validator_bootstrap(ix),
             _ => Err(format!("Unknown system instruction: {}", instruction_type)),
         }
     }

@@ -98,6 +98,18 @@ impl RpcClient {
         submit_signed_instruction(self, keypair, instruction).await
     }
 
+    /// Reclassify an exact 100,000 LICN self-funded validator stake into
+    /// bootstrap-recovery accounting (native instruction type 38).
+    pub async fn reclassify_validator_bootstrap(&self, keypair: &Keypair) -> Result<String> {
+        let instruction = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![keypair.pubkey()],
+            data: build_reclassify_validator_bootstrap_data(),
+        };
+
+        submit_signed_instruction(self, keypair, instruction).await
+    }
+
     /// Unstake LICN tokens
     pub async fn unstake(&self, keypair: &Keypair, amount: u64) -> Result<String> {
         let instruction = Instruction {
@@ -126,6 +138,10 @@ pub(crate) fn build_register_validator_self_funded_data(
     data
 }
 
+pub(crate) fn build_reclassify_validator_bootstrap_data() -> Vec<u8> {
+    vec![38u8]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -141,5 +157,10 @@ mod tests {
         assert_eq!(&data[1..33], &fingerprint);
         assert_eq!(data[33], 1);
         assert_eq!(&data[34..42], &amount.to_le_bytes());
+    }
+
+    #[test]
+    fn reclassify_validator_bootstrap_data_matches_wire_format() {
+        assert_eq!(build_reclassify_validator_bootstrap_data(), vec![38u8]);
     }
 }

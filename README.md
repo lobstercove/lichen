@@ -7,7 +7,7 @@ Ultra-low fees · Sub-second BFT block commitment · Agent-native identity · Mu
 [![License: Apache--2.0%20%2B%20MIT](https://img.shields.io/badge/License-Apache--2.0%20%2B%20MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.88+-00C9DB.svg)](https://www.rust-lang.org)
 
-**Current release:** signed `v0.5.129` with first-class BTC/wBTC support, slot-only MossStake state, full hot column-family checkpoint snapshots, live-safe cached-root checkpoint metadata, shielded warp-snapshot state, deterministic legacy testnet bootstrap-grant replay, stale-checkpoint repair protection after replay, initial sync descendant catch-up, four-validator public testnet validation, and the v0.5.93 stable validator base without replaying historical state.
+**Current release:** signed `v0.5.130` with first-class BTC/wBTC support, slot-only MossStake state, full hot column-family checkpoint snapshots, live-safe cached-root checkpoint metadata, shielded warp-snapshot state, deterministic legacy testnet bootstrap-grant replay, signed validator bootstrap-recovery reclassification, stale-checkpoint repair protection after replay, initial sync descendant catch-up, four-validator public testnet validation, and the v0.5.93 stable validator base without replaying historical state.
 
 **Website:** https://lichen.network  
 **Documentation:** https://developers.lichen.network  
