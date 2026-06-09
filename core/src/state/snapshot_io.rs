@@ -62,6 +62,7 @@ impl StateStore {
             "shielded_nullifiers" => Some((CF_SHIELDED_NULLIFIERS, "Shielded nullifiers")),
             "shielded_pool" => Some((CF_SHIELDED_POOL, "Shielded pool")),
             "shielded_txs" => Some((CF_SHIELDED_TXS, "Shielded transaction index")),
+            "transactions" => Some((CF_TRANSACTIONS, "Transactions")),
             "stats" => Some((CF_STATS, "Stats")),
             _ => None,
         }

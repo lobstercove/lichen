@@ -3428,6 +3428,15 @@ const SHIELDED_STATE_BUNDLE_CATEGORIES: &[&str] = &[
     "shielded_pool",
     "shielded_txs",
 ];
+const SHIELDED_TRANSACTION_RECORDS_CATEGORY: &str = "transactions";
+const SHIELDED_STATE_BUNDLE_ALLOWED_CATEGORIES: &[&str] = &[
+    "shielded_commitments",
+    "shielded_note_payloads",
+    "shielded_nullifiers",
+    "shielded_pool",
+    "shielded_txs",
+    SHIELDED_TRANSACTION_RECORDS_CATEGORY,
+];
 
 fn block_vote_weight(
     slot: u64,
@@ -8235,15 +8244,63 @@ fn shielded_state_bundle_counts(bundle: &ShieldedStateBundle) -> Vec<(String, us
         .collect()
 }
 
+fn export_shielded_transaction_records(
+    state: &StateStore,
+    shielded_txs: &[SnapshotEntry],
+) -> Result<SnapshotEntries, String> {
+    let mut seen = HashSet::<[u8; 32]>::new();
+    let mut entries = Vec::new();
+
+    for (key, _) in shielded_txs {
+        if key.len() < 48 {
+            continue;
+        }
+        let mut hash_bytes = [0u8; 32];
+        hash_bytes.copy_from_slice(&key[16..48]);
+        if !seen.insert(hash_bytes) {
+            continue;
+        }
+
+        let hash = Hash(hash_bytes);
+        let tx = state.get_transaction(&hash)?.ok_or_else(|| {
+            format!(
+                "missing transaction record for shielded tx {}",
+                hash.to_hex()
+            )
+        })?;
+        let mut value = Vec::with_capacity(512);
+        value.push(0xBC);
+        value.extend_from_slice(&serialize_legacy_bincode(
+            &tx,
+            "shielded transaction record",
+        )?);
+        entries.push((hash.0.to_vec(), value));
+    }
+
+    Ok(entries)
+}
+
 fn export_shielded_state_bundle(
     state: &StateStore,
     chunk_size: u64,
 ) -> Result<ShieldedStateBundle, String> {
-    let mut bundle = Vec::with_capacity(SHIELDED_STATE_BUNDLE_CATEGORIES.len());
+    let mut bundle = Vec::with_capacity(SHIELDED_STATE_BUNDLE_CATEGORIES.len() + 1);
+    let mut shielded_txs_entries: Option<SnapshotEntries> = None;
     for category in SHIELDED_STATE_BUNDLE_CATEGORIES {
         let entries = export_roundtrip_snapshot_entries(state, category, chunk_size)
             .map_err(|err| format!("{} export failed: {}", category, err))?;
+        if *category == "shielded_txs" {
+            shielded_txs_entries = Some(entries.clone());
+        }
         bundle.push(((*category).to_string(), entries));
+    }
+    if let Some(entries) = shielded_txs_entries.as_deref() {
+        let transaction_entries = export_shielded_transaction_records(state, entries)
+            .map_err(|err| format!("shielded transaction record export failed: {}", err))?;
+        bundle.push((
+            SHIELDED_TRANSACTION_RECORDS_CATEGORY.to_string(),
+            transaction_entries,
+        ));
     }
     Ok(bundle)
 }
@@ -8253,7 +8310,7 @@ fn validate_shielded_state_bundle(
 ) -> Result<HashMap<String, SnapshotEntries>, String> {
     let mut categories = HashMap::new();
     for (category, entries) in bundle {
-        if !SHIELDED_STATE_BUNDLE_CATEGORIES.contains(&category.as_str()) {
+        if !SHIELDED_STATE_BUNDLE_ALLOWED_CATEGORIES.contains(&category.as_str()) {
             return Err(format!(
                 "shielded state bundle contains unsupported category: {}",
                 category
@@ -8396,6 +8453,25 @@ fn maybe_run_shielded_state_bundle_admin(args: &[String]) -> Option<i32> {
                     Ok(imported) => println!("category={} imported={}", category, imported),
                     Err(err) => {
                         eprintln!("Failed to import {}: {}", category, err);
+                        return Some(1);
+                    }
+                }
+            }
+            if let Some(entries) = categories.remove(SHIELDED_TRANSACTION_RECORDS_CATEGORY) {
+                match import_ordered_snapshot_category(
+                    &state,
+                    SHIELDED_TRANSACTION_RECORDS_CATEGORY,
+                    &entries,
+                ) {
+                    Ok(imported) => println!(
+                        "category={} imported={}",
+                        SHIELDED_TRANSACTION_RECORDS_CATEGORY, imported
+                    ),
+                    Err(err) => {
+                        eprintln!(
+                            "Failed to import {}: {}",
+                            SHIELDED_TRANSACTION_RECORDS_CATEGORY, err
+                        );
                         return Some(1);
                     }
                 }
@@ -19686,6 +19762,71 @@ mod tests {
             commit_round: 0,
             commit_signatures: vec![],
         }
+    }
+
+    #[test]
+    fn shielded_state_bundle_includes_referenced_transaction_records() {
+        let source_dir = tempfile::tempdir().expect("source temp dir");
+        let source = StateStore::open(source_dir.path()).expect("open source state");
+
+        let payer = Pubkey([0x42; 32]);
+        let mut shield_data = vec![23u8];
+        shield_data.extend_from_slice(&42_000_000u64.to_le_bytes());
+        let shield_tx = Transaction::new(Message::new(
+            vec![Instruction {
+                program_id: CORE_SYSTEM_PROGRAM_ID,
+                accounts: vec![payer],
+                data: shield_data,
+            }],
+            Hash::hash(b"shielded-bundle-history"),
+        ));
+        let shield_hash = shield_tx.signature();
+        let block = Block::new_with_timestamp(
+            77,
+            Hash::default(),
+            Hash::default(),
+            [0u8; 32],
+            vec![shield_tx],
+            1_700_000_077,
+        );
+        source
+            .put_block_atomic(&block, Some(77), Some(77))
+            .expect("store source block");
+
+        let bundle = export_shielded_state_bundle(&source, 100).expect("export bundle");
+        let tx_entries = bundle
+            .iter()
+            .find(|(category, _)| category == SHIELDED_TRANSACTION_RECORDS_CATEGORY)
+            .map(|(_, entries)| entries)
+            .expect("transaction records category");
+        assert_eq!(tx_entries.len(), 1);
+        assert_eq!(tx_entries[0].0, shield_hash.0.to_vec());
+
+        let dest_dir = tempfile::tempdir().expect("dest temp dir");
+        let dest = StateStore::open(dest_dir.path()).expect("open dest state");
+        let mut categories = validate_shielded_state_bundle(bundle).expect("validate bundle");
+        dest.clear_shielded_state_categories()
+            .expect("clear destination shielded state");
+        for category in SHIELDED_STATE_BUNDLE_CATEGORIES {
+            let entries = categories
+                .remove(*category)
+                .expect("required shielded category");
+            import_ordered_snapshot_category(&dest, category, &entries).expect("import category");
+        }
+        let tx_entries = categories
+            .remove(SHIELDED_TRANSACTION_RECORDS_CATEGORY)
+            .expect("transaction records category");
+        import_ordered_snapshot_category(&dest, SHIELDED_TRANSACTION_RECORDS_CATEGORY, &tx_entries)
+            .expect("import transaction records");
+
+        let recent = dest
+            .get_recent_shielded_txs(10, None)
+            .expect("recent shielded index");
+        assert_eq!(recent, vec![(shield_hash, 77)]);
+        assert!(dest
+            .get_transaction(&shield_hash)
+            .expect("read transaction")
+            .is_some());
     }
 
     #[test]

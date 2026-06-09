@@ -5,6 +5,12 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.133] - 2026-06-09
+
+### Fixed
+- Extends guarded shielded-state bundle export/import to include the transaction records referenced by the shielded transaction index, so repaired or checkpoint-joined validators can serve shielded pool metrics and shielded transaction history consistently even when they do not retain the original historical block archive locally.
+- Adds a regression test that imports a shielded bundle into a destination without block history and verifies both `get_recent_shielded_txs` and `get_transaction` resolve the shielded transaction.
+
 ## [0.5.132] - 2026-06-09
 
 ### Fixed
