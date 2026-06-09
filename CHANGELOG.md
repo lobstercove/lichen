@@ -5,6 +5,13 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.131] - 2026-06-09
+
+### Fixed
+- Audits recent stored canonical blocks at validator startup and completes any missing deterministic post-block effects before the node participates, so a restarted validator cannot keep a stale stake-pool producer counter while its block is already stored.
+- Covers the stale-parent-block recovery case with a validator regression test where tip-only recovery is insufficient and recent-window recovery repairs the stake-pool singleton exactly once.
+- Documents that normal testnet validator onboarding is bootstrap-recovery registration; explicit self-funded registration remains a hidden advanced command and must not be used for standard testnet joins.
+
 ## [0.5.130] - 2026-06-09
 
 ### Fixed

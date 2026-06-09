@@ -105,6 +105,7 @@ const EXIT_CODE_RESTART: i32 = 75;
 /// pending blocks or is actively syncing.
 const DEFAULT_WATCHDOG_TIMEOUT_SECS: u64 = 120;
 const GENESIS_SYNC_INCOMPLETE_MARKER: &str = "genesis_sync_incomplete";
+const RECENT_POST_BLOCK_EFFECTS_RECOVERY_WINDOW: u64 = 4096;
 const ACTIVATE_RESTRICTION_SCHEMA_FLAG: &str = "--activate-restriction-schema";
 const SHOW_RESTRICTION_SCHEMA_FLAG: &str = "--show-restriction-schema";
 const REBUILD_SPARSE_STATE_COMMITMENT_FLAG: &str = "--rebuild-sparse-state-commitment";
@@ -5412,6 +5413,71 @@ async fn recover_tip_post_block_effects_if_needed(
     Ok(())
 }
 
+async fn recover_recent_stored_block_post_effects_if_needed(
+    state: &StateStore,
+    validator_set: &Arc<RwLock<ValidatorSet>>,
+    stake_pool: &Arc<RwLock<StakePool>>,
+    min_validator_stake: u64,
+    window: u64,
+    context: &str,
+) -> Result<u64, String> {
+    let tip = state.get_last_slot().unwrap_or(0);
+    if tip <= 1 || window == 0 {
+        return Ok(0);
+    }
+
+    let last_historical_slot = tip.saturating_sub(1);
+    let first_slot = last_historical_slot
+        .saturating_sub(window.saturating_sub(1))
+        .max(1);
+    let mut repaired = 0u64;
+
+    for slot in first_slot..=last_historical_slot {
+        let Some(block) = state.get_block_by_slot(slot)? else {
+            continue;
+        };
+        if tip_post_block_effects_complete(state, &block)? {
+            continue;
+        }
+
+        warn!(
+            "🔧 {}: completing deterministic historical post-block effects for stored slot {}",
+            context, slot
+        );
+        apply_block_effects(
+            state,
+            validator_set,
+            stake_pool,
+            &block,
+            false,
+            min_validator_stake,
+        )
+        .await;
+
+        if !tip_post_block_effects_complete(state, &block)? {
+            return Err(format!(
+                "post-block effects for stored slot {} are still incomplete after recovery",
+                slot
+            ));
+        }
+
+        repaired = repaired.saturating_add(1);
+    }
+
+    if repaired > 0 {
+        if let Ok(fresh_pool) = state.get_stake_pool() {
+            let mut live_pool = stake_pool.write().await;
+            *live_pool = fresh_pool;
+        }
+        info!(
+            "✅ {} completed deterministic post-block effects for {} stored historical block(s) in slots {}..{}",
+            context, repaired, first_slot, last_historical_slot
+        );
+    }
+
+    Ok(repaired)
+}
+
 async fn recover_stored_block_post_effects_if_needed(
     state: &StateStore,
     validator_set: &Arc<RwLock<ValidatorSet>>,
@@ -10539,6 +10605,19 @@ async fn run_validator() {
     .await
     {
         error!("Failed startup post-block recovery: {}", e);
+        std::process::exit(1);
+    }
+    if let Err(e) = recover_recent_stored_block_post_effects_if_needed(
+        &state,
+        &validator_set,
+        &stake_pool,
+        min_validator_stake,
+        RECENT_POST_BLOCK_EFFECTS_RECOVERY_WINDOW,
+        "Startup recent-window recovery",
+    )
+    .await
+    {
+        error!("Failed startup recent post-block recovery: {}", e);
         std::process::exit(1);
     }
     if let Err(e) = repair_active_sparse_state_commitment_before_tip_anchor(&state) {
@@ -22399,6 +22478,114 @@ mod tests {
         let persisted = state.get_stake_pool().expect("read stake pool after no-op");
         let entry = persisted.get_stake(&producer).expect("producer stake");
         assert_eq!(entry.blocks_produced, 1);
+    }
+
+    #[test]
+    fn startup_recent_recovery_completes_parent_stake_pool_effects() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let parent_producer = Keypair::generate().pubkey();
+        let tip_producer = Keypair::generate().pubkey();
+        let parent_block = Block::new(
+            7,
+            Hash::default(),
+            Hash::default(),
+            parent_producer.0,
+            vec![],
+        );
+        let tip_block = Block::new(
+            8,
+            parent_block.hash(),
+            Hash::default(),
+            tip_producer.0,
+            vec![],
+        );
+
+        let mut validator_set = ValidatorSet::new();
+        validator_set.add_validator(test_validator_info(parent_producer));
+        validator_set.add_validator(test_validator_info(tip_producer));
+
+        let mut pool = StakePool::new();
+        pool.stake(parent_producer, MIN_VALIDATOR_STAKE, 0)
+            .expect("stake parent producer");
+        pool.stake(tip_producer, MIN_VALIDATOR_STAKE, 0)
+            .expect("stake tip producer");
+        {
+            let tip_entry = pool
+                .get_stake_mut(&tip_producer)
+                .expect("tip producer stake");
+            tip_entry.last_reward_slot = 8;
+            tip_entry.blocks_produced = 1;
+        }
+        state.put_stake_pool(&pool).expect("put stake pool");
+        state
+            .put_block_atomic(&parent_block, None, None)
+            .expect("store parent block");
+        state
+            .put_block_atomic(&tip_block, None, None)
+            .expect("store tip block");
+        state
+            .set_reward_distribution_hash(7, &parent_block.hash())
+            .expect("mark parent reward distribution");
+        state
+            .set_reward_distribution_hash(8, &tip_block.hash())
+            .expect("mark tip reward distribution");
+
+        assert!(
+            tip_post_block_effects_complete(&state, &tip_block).expect("tip complete"),
+            "tip is complete, so tip-only recovery must not inspect the parent"
+        );
+        assert!(
+            !tip_post_block_effects_complete(&state, &parent_block).expect("parent incomplete"),
+            "parent stake-pool producer effects are intentionally stale"
+        );
+
+        let stake_pool = Arc::new(RwLock::new(pool));
+        let validator_set = Arc::new(RwLock::new(validator_set));
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+
+        runtime
+            .block_on(recover_tip_post_block_effects_if_needed(
+                &state,
+                &validator_set,
+                &stake_pool,
+                MIN_VALIDATOR_STAKE,
+                400,
+            ))
+            .expect("tip-only recovery is clean");
+        assert!(
+            !tip_post_block_effects_complete(&state, &parent_block)
+                .expect("parent still incomplete"),
+            "old tip-only recovery should not mask the regression"
+        );
+
+        let repaired = runtime
+            .block_on(recover_recent_stored_block_post_effects_if_needed(
+                &state,
+                &validator_set,
+                &stake_pool,
+                MIN_VALIDATOR_STAKE,
+                16,
+                "test recent-window recovery",
+            ))
+            .expect("recent recovery");
+        assert_eq!(repaired, 1);
+        assert!(
+            tip_post_block_effects_complete(&state, &parent_block).expect("parent complete"),
+            "recent recovery must complete the stale parent block"
+        );
+
+        let persisted = state.get_stake_pool().expect("read stake pool");
+        let parent_entry = persisted
+            .get_stake(&parent_producer)
+            .expect("parent producer stake");
+        assert_eq!(parent_entry.last_reward_slot, 7);
+        assert_eq!(parent_entry.blocks_produced, 1);
+        let tip_entry = persisted
+            .get_stake(&tip_producer)
+            .expect("tip producer stake");
+        assert_eq!(tip_entry.last_reward_slot, 8);
+        assert_eq!(tip_entry.blocks_produced, 1);
     }
 
     #[test]
