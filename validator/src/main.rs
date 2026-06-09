@@ -618,6 +618,34 @@ fn stream_snapshot_category_between_stores(
     Ok(imported)
 }
 
+fn validate_snapshot_archive_completeness(
+    state: &StateStore,
+    snapshot_slot: u64,
+) -> Result<(), String> {
+    let metrics = state.get_metrics();
+    let minimum_blocks = snapshot_slot.saturating_sub(1);
+    if metrics.total_blocks < minimum_blocks {
+        return Err(format!(
+            "snapshot archive is incomplete: total_blocks={} but checkpoint slot={} requires at least {} archived blocks",
+            metrics.total_blocks, snapshot_slot, minimum_blocks
+        ));
+    }
+
+    for probe_slot in [0, 1, snapshot_slot / 2, snapshot_slot] {
+        if probe_slot > snapshot_slot {
+            continue;
+        }
+        if state.get_block_by_slot(probe_slot)?.is_none() {
+            return Err(format!(
+                "snapshot archive is missing required probe block at slot {}",
+                probe_slot
+            ));
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 fn import_ordered_snapshot_categories<'a>(
     state: &StateStore,
@@ -15518,6 +15546,14 @@ async fn run_validator() {
                             }
                             staging_state.invalidate_merkle_cache();
 
+                            if let Err(e) = validate_snapshot_archive_completeness(
+                                &staging_state,
+                                snapshot_slot,
+                            ) {
+                                warn!("⚠️  Staging archive completeness failed: {}", e);
+                                break 'staging false;
+                            }
+
                             if staging_state.uses_sparse_state_commitment() {
                                 match staging_state.rebuild_sparse_state_commitment(false) {
                                     Ok(report) => {
@@ -23266,6 +23302,48 @@ mod tests {
                 .expect("read target metadata b")
                 .as_deref(),
             Some(&b"beta"[..])
+        );
+    }
+
+    #[test]
+    fn snapshot_archive_completeness_accepts_archived_checkpoint_blocks() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let genesis = Block::genesis(Hash::hash(b"archive-genesis"), 1, vec![]);
+        let block = Block::new(
+            1,
+            genesis.hash(),
+            Hash::hash(b"archive-state-1"),
+            [2u8; 32],
+            vec![],
+        );
+
+        state
+            .put_block_atomic(&genesis, Some(0), Some(0))
+            .expect("put genesis block");
+        state
+            .put_block_atomic(&block, Some(1), Some(1))
+            .expect("put checkpoint block");
+
+        validate_snapshot_archive_completeness(&state, 1).expect("archive complete");
+    }
+
+    #[test]
+    fn snapshot_archive_completeness_rejects_partial_history() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let genesis = Block::genesis(Hash::hash(b"partial-archive-genesis"), 1, vec![]);
+
+        state
+            .put_block_atomic(&genesis, Some(0), Some(0))
+            .expect("put genesis block");
+
+        let err = validate_snapshot_archive_completeness(&state, 100)
+            .expect_err("partial archive should be rejected");
+        assert!(
+            err.contains("snapshot archive is incomplete")
+                || err.contains("missing required probe block"),
+            "unexpected archive error: {err}"
         );
     }
 
