@@ -527,6 +527,97 @@ fn import_ordered_snapshot_category(
     }
 }
 
+fn next_snapshot_category_request(
+    progress: &HashMap<String, (u64, u64)>,
+) -> Option<(&'static str, u64)> {
+    WARP_SNAPSHOT_CATEGORIES
+        .iter()
+        .find_map(|category| match progress.get(*category) {
+            Some((received, total)) if received >= total => None,
+            Some((received, _)) => Some((*category, *received)),
+            None => Some((*category, 0)),
+        })
+}
+
+fn open_fresh_snapshot_staging(
+    data_dir: &str,
+    snapshot_slot: u64,
+) -> Result<(String, StateStore), String> {
+    let staging_dir = format!("{}/staging-snapshot-{}", data_dir, snapshot_slot);
+    if let Err(err) = fs::remove_dir_all(&staging_dir) {
+        if err.kind() != std::io::ErrorKind::NotFound {
+            return Err(format!(
+                "failed to clear old staging snapshot DB {}: {}",
+                staging_dir, err
+            ));
+        }
+    }
+    StateStore::open(&staging_dir)
+        .map(|state| (staging_dir, state))
+        .map_err(|err| format!("failed to open staging snapshot DB: {}", err))
+}
+
+fn cleanup_snapshot_staging(staging: &mut Option<(u64, String, StateStore)>) {
+    if let Some((_, staging_dir, staging_state)) = staging.take() {
+        drop(staging_state);
+        if let Err(err) = fs::remove_dir_all(&staging_dir) {
+            if err.kind() != std::io::ErrorKind::NotFound {
+                warn!(
+                    "⚠️  Failed to clean up snapshot staging DB {}: {}",
+                    staging_dir, err
+                );
+            }
+        }
+    }
+}
+
+fn export_special_snapshot_value<T>(
+    state: &StateStore,
+    category: &str,
+    context: &str,
+) -> Result<T, String>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let entries = export_roundtrip_snapshot_entries(state, category, 1)?;
+    let Some((_, data)) = entries.first() else {
+        return Err(format!("{} snapshot category is empty", category));
+    };
+    deserialize_snapshot_value(data, context)
+}
+
+fn stream_snapshot_category_between_stores(
+    source: &StateStore,
+    target: &StateStore,
+    category: &str,
+    chunk_size: u64,
+) -> Result<u64, String> {
+    let mut imported = 0u64;
+    let mut cursor: Option<Vec<u8>> = None;
+    loop {
+        let page = source.export_snapshot_category_cursor_untracked(
+            category,
+            cursor.as_deref(),
+            chunk_size,
+        )?;
+        if !page.entries.is_empty() {
+            imported = imported
+                .saturating_add(target.import_snapshot_category(category, &page.entries)? as u64);
+        }
+        if !page.has_more {
+            break;
+        }
+        let Some(next_cursor) = page.next_cursor else {
+            return Err(format!(
+                "{} snapshot export had more entries but no cursor",
+                category
+            ));
+        };
+        cursor = Some(next_cursor);
+    }
+    Ok(imported)
+}
+
 #[cfg(test)]
 fn import_ordered_snapshot_categories<'a>(
     state: &StateStore,
@@ -14866,14 +14957,11 @@ async fn run_validator() {
             > = std::collections::HashMap::new();
             let mut active_snapshot_anchor: Option<VerifiedCheckpointAnchor> = None;
             let mut snapshot_last_progress_at = std::time::Instant::now();
-            // Staged snapshot buffer: accumulate entries in memory instead of
-            // writing directly to the live DB.  Only commit after the state root
-            // has been verified on a staging StateStore.
-            #[allow(clippy::type_complexity)]
-            let mut staged_snapshot_entries: std::collections::HashMap<
-                String,
-                Vec<(Vec<u8>, Vec<u8>)>,
-            > = std::collections::HashMap::new();
+            // Staged snapshot DB: chunks are written here as they arrive,
+            // then the full staging state is root-verified before touching
+            // live state. This keeps archive-sized snapshots bounded by
+            // RocksDB IO instead of buffering millions of entries in memory.
+            let mut active_snapshot_staging: Option<(u64, String, StateStore)> = None;
 
             while let Some(response) = snapshot_response_rx.recv().await {
                 // Handle CheckpointMetaResponse
@@ -15027,22 +15115,19 @@ async fn run_validator() {
                                     && snapshot_last_progress_at.elapsed().as_secs()
                                         >= SNAPSHOT_PROGRESS_RETRY_SECS
                                 {
-                                    info!(
-                                        "🔁 Retrying incomplete state snapshot from {} at slot {}",
-                                        response.requester, slot
-                                    );
-                                    for category_name in WARP_SNAPSHOT_CATEGORIES {
-                                        let chunk_index =
-                                            match state_snap_progress.get(*category_name) {
-                                                Some((received, total)) if received >= total => {
-                                                    continue;
-                                                }
-                                                Some((received, _)) => *received,
-                                                None => 0,
-                                            };
+                                    if let Some((category_name, chunk_index)) =
+                                        next_snapshot_category_request(&state_snap_progress)
+                                    {
+                                        info!(
+                                            "🔁 Retrying incomplete {} snapshot chunk {} from {} at slot {}",
+                                            category_name,
+                                            chunk_index + 1,
+                                            response.requester,
+                                            slot
+                                        );
                                         let snap_request = P2PMessage::new(
                                             MessageType::StateSnapshotRequest {
-                                                category: (*category_name).to_string(),
+                                                category: category_name.to_string(),
                                                 chunk_index,
                                                 chunk_size: snapshot_request_chunk_size(
                                                     category_name,
@@ -15067,10 +15152,21 @@ async fn run_validator() {
                                 continue;
                             }
 
+                            let (staging_dir, staging_state) = match open_fresh_snapshot_staging(
+                                &data_dir_for_snapshot_apply,
+                                slot,
+                            ) {
+                                Ok(staging) => staging,
+                                Err(err) => {
+                                    warn!("⚠️  Failed to prepare snapshot staging DB: {}", err);
+                                    continue;
+                                }
+                            };
+                            cleanup_snapshot_staging(&mut active_snapshot_staging);
+                            active_snapshot_staging = Some((slot, staging_dir, staging_state));
                             active_snapshot_anchor = Some(anchor);
                             snapshot_last_progress_at = std::time::Instant::now();
                             state_snap_progress.clear();
-                            staged_snapshot_entries.clear();
                             // Peer is significantly ahead — request state snapshot
                             info!(
                                 "🔄 Requesting state snapshot from {} after {}-peer checkpoint corroboration (local slot {}, peer slot {})",
@@ -15080,14 +15176,17 @@ async fn run_validator() {
                                 slot
                             );
 
-                            // P3-1: Send StateSnapshotRequest for each checkpoint-aligned
-                            // state component so warp verification uses one
-                            // coherent checkpoint snapshot.
-                            for category in WARP_SNAPSHOT_CATEGORIES {
+                            // Request categories in canonical order. Chunks are
+                            // streamed to staging immediately, so preserving
+                            // order also preserves category dependencies such
+                            // as stats before MossStake.
+                            if let Some((category, chunk_index)) =
+                                next_snapshot_category_request(&state_snap_progress)
+                            {
                                 let snap_request = P2PMessage::new(
                                     MessageType::StateSnapshotRequest {
                                         category: category.to_string(),
-                                        chunk_index: 0,
+                                        chunk_index,
                                         chunk_size: snapshot_request_chunk_size(category),
                                     },
                                     local_addr_for_snap_apply,
@@ -15201,6 +15300,43 @@ async fn run_validator() {
                         snapshot_slot
                     );
 
+                    if !WARP_SNAPSHOT_CATEGORIES.contains(&category.as_str()) {
+                        warn!("⚠️  Rejecting unsupported snapshot category {}", category);
+                        peer_mgr_for_snapshot_apply.record_violation(&response.requester);
+                        continue;
+                    }
+                    let Some((expected_category, _)) =
+                        next_snapshot_category_request(&state_snap_progress)
+                    else {
+                        info!(
+                            "↩️  Ignoring extra {} snapshot chunk from {} after snapshot completion",
+                            category, response.requester
+                        );
+                        continue;
+                    };
+                    if category != expected_category {
+                        warn!(
+                            "⚠️  Rejecting out-of-order {} snapshot chunk from {}; expected {}",
+                            category, response.requester, expected_category
+                        );
+                        continue;
+                    }
+                    let Some((staging_slot, _, staging_state)) = active_snapshot_staging.as_ref()
+                    else {
+                        warn!(
+                            "⚠️  Rejecting {} snapshot chunk without an active staging DB",
+                            category
+                        );
+                        continue;
+                    };
+                    if *staging_slot != snapshot_slot {
+                        warn!(
+                            "⚠️  Rejecting {} snapshot chunk for slot {}; staging is pinned to slot {}",
+                            category, snapshot_slot, staging_slot
+                        );
+                        continue;
+                    }
+
                     let current_progress = state_snap_progress
                         .get(category)
                         .copied()
@@ -15244,7 +15380,7 @@ async fn run_validator() {
                         continue;
                     }
 
-                    // Deserialize and stage entries (NOT written to live DB yet)
+                    // Deserialize and stream entries into staging (NOT live DB).
                     let entries = match deserialize_legacy_bincode_strict::<Vec<(Vec<u8>, Vec<u8>)>>(
                         entries_bytes,
                         SNAPSHOT_ENTRIES_CODEC_LIMIT_BYTES,
@@ -15260,18 +15396,21 @@ async fn run_validator() {
                         }
                     };
                     let count = entries.len();
-                    staged_snapshot_entries
-                        .entry(category.clone())
-                        .or_default()
-                        .extend(entries);
+                    match import_ordered_snapshot_category(staging_state, category, &entries) {
+                        Ok(imported) => info!(
+                            "📦 Streamed {} {} entries into staging (chunk {}/{}, imported {})",
+                            count,
+                            category,
+                            chunk_index + 1,
+                            total_chunks,
+                            imported
+                        ),
+                        Err(e) => {
+                            warn!("⚠️  Staging import of {} chunk failed: {}", category, e);
+                            continue;
+                        }
+                    }
                     snapshot_last_progress_at = std::time::Instant::now();
-                    info!(
-                        "📦 Staged {} {} entries (chunk {}/{})",
-                        count,
-                        category,
-                        chunk_index + 1,
-                        total_chunks
-                    );
 
                     // Track progress
                     let progress = state_snap_progress
@@ -15299,6 +15438,26 @@ async fn run_validator() {
                                 category, e
                             );
                         }
+                    } else if let Some((next_category, next_chunk)) =
+                        next_snapshot_category_request(&state_snap_progress)
+                    {
+                        let next_request = P2PMessage::new(
+                            MessageType::StateSnapshotRequest {
+                                category: next_category.to_string(),
+                                chunk_index: next_chunk,
+                                chunk_size: snapshot_request_chunk_size(next_category),
+                            },
+                            local_addr_for_snap_apply,
+                        );
+                        if let Err(e) = peer_mgr_for_snapshot_apply
+                            .send_to_peer(&response.requester, next_request)
+                            .await
+                        {
+                            warn!(
+                                "⚠️  Failed to request next {} snapshot chunk: {}",
+                                next_category, e
+                            );
+                        }
                     }
 
                     let all_categories_done =
@@ -15313,57 +15472,34 @@ async fn run_validator() {
                         info!("✅ All snapshot categories received — verifying on staging DB");
 
                         // ── Staged Verification ─────────────────────────────
-                        // Open a throw-away StateStore, import the buffered
-                        // entries there, verify the checkpoint-aligned state
-                        // root, and only then commit to the live DB.
-                        let staging_dir = format!(
-                            "{}/staging-snapshot-{}",
-                            data_dir_for_snapshot_apply, snapshot_slot
-                        );
-                        if let Err(e) = std::fs::remove_dir_all(&staging_dir) {
-                            if e.kind() != std::io::ErrorKind::NotFound {
-                                warn!(
-                                    "⚠️  Failed to clear old staging snapshot DB {}: {}",
-                                    staging_dir, e
-                                );
-                                staged_snapshot_entries.clear();
-                                state_snap_progress.clear();
-                                continue;
-                            }
-                        }
-                        let staging_ok = 'staging: {
-                            let staging_state =
-                                match lichen_core::state::StateStore::open(&staging_dir) {
-                                    Ok(s) => s,
-                                    Err(e) => {
-                                        warn!("⚠️  Failed to open staging DB: {}", e);
-                                        break 'staging false;
-                                    }
-                                };
-
-                            // Import buffered entries into staging in canonical
-                            // snapshot order. Stats must be present before
-                            // MossStake is stored so legacy wall-clock fields
-                            // are normalized exactly like genesis bundle import.
-                            for category_name in WARP_SNAPSHOT_CATEGORIES {
-                                let Some(entries) = staged_snapshot_entries.get(*category_name)
-                                else {
-                                    warn!(
-                                        "⚠️  Missing {} snapshot category during staging import",
-                                        category_name
-                                    );
-                                    break 'staging false;
-                                };
-                                if let Err(e) = import_ordered_snapshot_category(
-                                    &staging_state,
-                                    category_name,
-                                    entries,
-                                ) {
-                                    warn!("⚠️  Staging import of {} failed: {}", category_name, e);
-                                    break 'staging false;
+                        // Chunks have already been streamed into this staging
+                        // StateStore. Verify the checkpoint-aligned state root
+                        // there before touching the live DB.
+                        let (staging_slot, staging_dir, staging_state) =
+                            match active_snapshot_staging.as_ref() {
+                                Some((slot, dir, state)) => (*slot, dir.clone(), state.clone()),
+                                None => {
+                                    warn!("⚠️  Snapshot completed without an active staging DB");
+                                    state_snap_progress.clear();
+                                    continue;
                                 }
-                            }
+                            };
+                        if staging_slot != snapshot_slot {
+                            warn!(
+                                "⚠️  Snapshot completed for slot {} but staging is pinned to slot {}",
+                                snapshot_slot, staging_slot
+                            );
+                            drop(staging_state);
+                            cleanup_snapshot_staging(&mut active_snapshot_staging);
+                            state_snap_progress.clear();
+                            continue;
+                        }
+                        info!(
+                            "✅ All snapshot categories streamed to staging DB {}",
+                            staging_dir
+                        );
 
+                        let staging_ok = 'staging: {
                             if let Err(e) = staging_state.reconcile_account_count() {
                                 warn!("⚠️  Staging account reconciliation failed: {}", e);
                                 break 'staging false;
@@ -15434,20 +15570,17 @@ async fn run_validator() {
                             }
                         };
 
-                        // Clean up staging DB
-                        if let Err(e) = std::fs::remove_dir_all(&staging_dir) {
-                            tracing::warn!("failed to clean up staging dir: {e}");
-                        }
-
                         if !staging_ok {
-                            staged_snapshot_entries.clear();
+                            drop(staging_state);
+                            cleanup_snapshot_staging(&mut active_snapshot_staging);
                             state_snap_progress.clear();
                             continue;
                         }
 
                         let Some(snapshot_anchor) = active_snapshot_anchor.clone() else {
                             warn!("⚠️  Snapshot verified without an active checkpoint anchor");
-                            staged_snapshot_entries.clear();
+                            drop(staging_state);
+                            cleanup_snapshot_staging(&mut active_snapshot_staging);
                             state_snap_progress.clear();
                             continue;
                         };
@@ -15461,7 +15594,8 @@ async fn run_validator() {
                                 snapshot_slot,
                                 hex::encode(&state_root[..8]),
                             );
-                            staged_snapshot_entries.clear();
+                            drop(staging_state);
+                            cleanup_snapshot_staging(&mut active_snapshot_staging);
                             state_snap_progress.clear();
                             active_snapshot_anchor = None;
                             continue;
@@ -15501,7 +15635,8 @@ async fn run_validator() {
                                     snapshot_slot, local_slot_before_commit
                                 );
                             }
-                            staged_snapshot_entries.clear();
+                            drop(staging_state);
+                            cleanup_snapshot_staging(&mut active_snapshot_staging);
                             state_snap_progress.clear();
                             active_snapshot_anchor = None;
                             continue;
@@ -15516,94 +15651,50 @@ async fn run_validator() {
                         }
 
                         // ── Commit verified entries to live DB ──────────────
-                        let mut live_snapshot_entries: HashMap<&'static str, SnapshotEntries> =
-                            HashMap::new();
-                        for category_name in WARP_SNAPSHOT_CATEGORIES {
-                            let Some(entries) = staged_snapshot_entries.remove(*category_name)
-                            else {
-                                error!(
-                                    "FATAL: verified snapshot missing {} category during live commit at slot {}",
-                                    category_name, snapshot_slot
-                                );
-                                std::process::exit(1);
-                            };
-                            live_snapshot_entries.insert(*category_name, entries);
-                        }
-                        if !staged_snapshot_entries.is_empty() {
-                            error!(
-                                "FATAL: verified snapshot contains unsupported categories during live commit at slot {}: {:?}",
-                                snapshot_slot,
-                                staged_snapshot_entries.keys().collect::<Vec<_>>()
-                            );
-                            std::process::exit(1);
-                        }
-
-                        let validator_set_snapshot: ValidatorSet = {
-                            let entries = live_snapshot_entries
-                                .get("validator_set")
-                                .expect("validator_set snapshot category checked");
-                            let Some((_, data)) = entries.first() else {
-                                error!(
-                                    "FATAL: verified snapshot has empty validator_set category at slot {}",
-                                    snapshot_slot
-                                );
-                                std::process::exit(1);
-                            };
-                            match deserialize_snapshot_value(data, "validator_set snapshot") {
+                        let validator_set_snapshot: ValidatorSet =
+                            match export_special_snapshot_value(
+                                &staging_state,
+                                "validator_set",
+                                "validator_set snapshot",
+                            ) {
                                 Ok(set) => set,
                                 Err(e) => {
                                     error!(
-                                        "FATAL: failed to deserialize verified validator_set snapshot at slot {}: {}",
+                                        "FATAL: failed to read verified validator_set snapshot at slot {}: {}",
                                         snapshot_slot, e
                                     );
                                     std::process::exit(1);
                                 }
-                            }
-                        };
-                        let stake_pool_snapshot: StakePool = {
-                            let entries = live_snapshot_entries
-                                .get("stake_pool")
-                                .expect("stake_pool snapshot category checked");
-                            let Some((_, data)) = entries.first() else {
+                            };
+                        let stake_pool_snapshot: StakePool = match export_special_snapshot_value(
+                            &staging_state,
+                            "stake_pool",
+                            "stake_pool snapshot",
+                        ) {
+                            Ok(pool) => pool,
+                            Err(e) => {
                                 error!(
-                                    "FATAL: verified snapshot has empty stake_pool category at slot {}",
-                                    snapshot_slot
+                                    "FATAL: failed to read verified stake_pool snapshot at slot {}: {}",
+                                    snapshot_slot, e
                                 );
                                 std::process::exit(1);
-                            };
-                            match deserialize_snapshot_value(data, "stake_pool snapshot") {
+                            }
+                        };
+                        let mossstake_pool_snapshot: lichen_core::MossStakePool =
+                            match export_special_snapshot_value(
+                                &staging_state,
+                                "mossstake_pool",
+                                "mossstake_pool snapshot",
+                            ) {
                                 Ok(pool) => pool,
                                 Err(e) => {
                                     error!(
-                                        "FATAL: failed to deserialize verified stake_pool snapshot at slot {}: {}",
+                                        "FATAL: failed to read verified mossstake_pool snapshot at slot {}: {}",
                                         snapshot_slot, e
                                     );
                                     std::process::exit(1);
                                 }
-                            }
-                        };
-                        let mossstake_pool_snapshot: lichen_core::MossStakePool = {
-                            let entries = live_snapshot_entries
-                                .get("mossstake_pool")
-                                .expect("mossstake_pool snapshot category checked");
-                            let Some((_, data)) = entries.first() else {
-                                error!(
-                                    "FATAL: verified snapshot has empty mossstake_pool category at slot {}",
-                                    snapshot_slot
-                                );
-                                std::process::exit(1);
                             };
-                            match deserialize_snapshot_value(data, "mossstake_pool snapshot") {
-                                Ok(pool) => pool,
-                                Err(e) => {
-                                    error!(
-                                        "FATAL: failed to deserialize verified mossstake_pool snapshot at slot {}: {}",
-                                        snapshot_slot, e
-                                    );
-                                    std::process::exit(1);
-                                }
-                            }
-                        };
 
                         for category_name in STATE_SNAPSHOT_CATEGORIES {
                             match state_for_snapshot_apply.clear_snapshot_category(category_name) {
@@ -15626,12 +15717,9 @@ async fn run_validator() {
                         }
 
                         for category_name in WARP_SNAPSHOT_CATEGORIES {
-                            let entries = live_snapshot_entries
-                                .remove(*category_name)
-                                .expect("snapshot category prevalidated before live commit");
-                            let res = match *category_name {
+                            let res: Result<u64, String> = match *category_name {
                                 "validator_set" => {
-                                    let count = validator_set_snapshot.validators().len();
+                                    let count = validator_set_snapshot.validators().len() as u64;
                                     let res = state_for_snapshot_apply
                                         .save_validator_set(&validator_set_snapshot)
                                         .map(|_| count);
@@ -15645,7 +15733,7 @@ async fn run_validator() {
                                     res
                                 }
                                 "stake_pool" => {
-                                    let count = stake_pool_snapshot.stake_entries().len();
+                                    let count = stake_pool_snapshot.stake_entries().len() as u64;
                                     let res = state_for_snapshot_apply
                                         .put_stake_pool(&stake_pool_snapshot)
                                         .map(|_| count);
@@ -15662,8 +15750,12 @@ async fn run_validator() {
                                 "mossstake_pool" => state_for_snapshot_apply
                                     .put_mossstake_pool(&mossstake_pool_snapshot)
                                     .map(|_| 1),
-                                category => state_for_snapshot_apply
-                                    .import_snapshot_category(category, &entries),
+                                category => stream_snapshot_category_between_stores(
+                                    &staging_state,
+                                    &state_for_snapshot_apply,
+                                    category,
+                                    snapshot_request_chunk_size(category),
+                                ),
                             };
                             match res {
                                 Ok(count) => info!(
@@ -15679,15 +15771,6 @@ async fn run_validator() {
                                 }
                             }
                         }
-                        if !live_snapshot_entries.is_empty() {
-                            error!(
-                                "FATAL: verified snapshot live commit left uncommitted categories at slot {}: {:?}",
-                                snapshot_slot,
-                                live_snapshot_entries.keys().collect::<Vec<_>>()
-                            );
-                            std::process::exit(1);
-                        }
-                        staged_snapshot_entries.clear();
 
                         for (label, result) in [
                             (
@@ -15796,6 +15879,8 @@ async fn run_validator() {
                             ),
                             Err(e) => warn!("⚠️  Failed to create local checkpoint: {}", e),
                         }
+                        drop(staging_state);
+                        cleanup_snapshot_staging(&mut active_snapshot_staging);
                         active_snapshot_anchor = None;
                         state_snap_progress.clear();
                         verified_checkpoint_anchors.clear();
@@ -23116,6 +23201,71 @@ mod tests {
         assert_eq!(
             actual, expected,
             "warp sync must request every core snapshot category and every special state category"
+        );
+    }
+
+    #[test]
+    fn warp_snapshot_category_requests_advance_in_canonical_order() {
+        let mut progress = HashMap::new();
+        assert_eq!(
+            next_snapshot_category_request(&progress),
+            Some(("accounts", 0))
+        );
+
+        progress.insert("accounts".to_string(), (1, 3));
+        assert_eq!(
+            next_snapshot_category_request(&progress),
+            Some(("accounts", 1))
+        );
+
+        progress.insert("accounts".to_string(), (3, 3));
+        assert_eq!(
+            next_snapshot_category_request(&progress),
+            Some(("blocks", 0))
+        );
+
+        progress.insert("blocks".to_string(), (2, 5));
+        assert_eq!(
+            next_snapshot_category_request(&progress),
+            Some(("blocks", 2))
+        );
+
+        for category in WARP_SNAPSHOT_CATEGORIES {
+            progress.insert((*category).to_string(), (1, 1));
+        }
+        assert_eq!(next_snapshot_category_request(&progress), None);
+    }
+
+    #[test]
+    fn stream_snapshot_category_between_stores_copies_without_snapshot_buffer() {
+        let source_dir = tempfile::tempdir().expect("create source dir");
+        let source = StateStore::open(source_dir.path()).expect("open source state");
+        let target_dir = tempfile::tempdir().expect("create target dir");
+        let target = StateStore::open(target_dir.path()).expect("open target state");
+
+        source
+            .put_metadata("stream-test-a", b"alpha")
+            .expect("put source metadata a");
+        source
+            .put_metadata("stream-test-b", b"beta")
+            .expect("put source metadata b");
+
+        let imported = stream_snapshot_category_between_stores(&source, &target, "stats", 1)
+            .expect("stream stats category");
+        assert_eq!(imported, 2);
+        assert_eq!(
+            target
+                .get_metadata("stream-test-a")
+                .expect("read target metadata a")
+                .as_deref(),
+            Some(&b"alpha"[..])
+        );
+        assert_eq!(
+            target
+                .get_metadata("stream-test-b")
+                .expect("read target metadata b")
+                .as_deref(),
+            Some(&b"beta"[..])
         );
     }
 
