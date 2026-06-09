@@ -5,6 +5,12 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.134] - 2026-06-09
+
+### Fixed
+- Transfers hot historical/archive/index RocksDB column families through checkpoint warp snapshots instead of excluding them, so checkpoint-joined validators serve the same public RPC history and indexes as validators that replayed from genesis.
+- Updates snapshot coverage tests so only rebuildable sparse Merkle cache families are excluded; every other hot column family must be transferred or handled by a typed special snapshot category.
+
 ## [0.5.133] - 2026-06-09
 
 ### Fixed

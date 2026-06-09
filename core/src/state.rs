@@ -139,29 +139,48 @@ const CF_RESTRICTION_INDEX_CODE_HASH: &str = "restriction_index_code_hash"; // c
 
 /// StateStore-owned categories transferred by checkpoint snapshot sync.
 ///
-/// Each entry maps to one RocksDB column family in `snapshot_io`. Validator,
-/// stake-pool, and MossStake pool snapshots are special validator-level
-/// categories because they deserialize through their domain APIs.
+/// Each entry maps to one RocksDB column family in `snapshot_io`. This includes
+/// both state-rooted data and public history/index families so a checkpoint-
+/// joined RPC origin serves the same historical views as long-running nodes.
+/// Validator, stake-pool, and MossStake pool snapshots are special validator-
+/// level categories because they deserialize through their domain APIs.
 pub const STATE_SNAPSHOT_CATEGORIES: &[&str] = &[
     "accounts",
+    "blocks",
+    "transactions",
+    "account_txs",
+    "slots",
     "contract_storage",
     "programs",
+    "program_calls",
+    "market_activity",
     "symbol_registry",
     "symbol_by_program",
     "evm_map",
     "evm_accounts",
     "evm_storage",
+    "evm_txs",
+    "evm_receipts",
+    "evm_logs_by_slot",
     "nft_by_owner",
     "nft_by_collection",
+    "nft_activity",
     "token_balances",
+    "token_transfers",
     "holder_tokens",
     "solana_token_accounts",
     "solana_holder_token_accounts",
+    "events",
+    "events_by_slot",
     "dex_orders_by_pair",
     "dex_trades_by_pair",
     "dex_trades_by_taker",
     "dex_trades_by_pair_taker",
     "dex_orderbook_levels",
+    "tx_by_slot",
+    "tx_to_slot",
+    "tx_meta",
+    "account_snapshots",
     "pending_validator_changes",
     "restrictions",
     "restriction_index_target",

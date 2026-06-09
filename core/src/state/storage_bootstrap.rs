@@ -554,27 +554,8 @@ mod tests {
     use std::collections::BTreeSet;
 
     const SNAPSHOT_EXCLUDED_HOT_CFS: &[&str] = &[
-        // Historical/archive data. A snapshot-imported validator resumes from
-        // the checkpoint anchor and obtains subsequent history through replay.
-        CF_BLOCKS,
-        CF_TRANSACTIONS,
-        CF_ACCOUNT_TXS,
-        CF_EVM_TXS,
-        CF_EVM_RECEIPTS,
-        CF_NFT_ACTIVITY,
-        CF_PROGRAM_CALLS,
-        CF_MARKET_ACTIVITY,
-        CF_EVENTS,
-        CF_TOKEN_TRANSFERS,
-        CF_TX_BY_SLOT,
-        CF_TX_TO_SLOT,
-        CF_EVENTS_BY_SLOT,
-        CF_EVM_LOGS_BY_SLOT,
-        CF_ACCOUNT_SNAPSHOTS,
-        CF_TX_META,
-        // Local chain cursors are advanced by checkpoint-anchor import.
-        CF_SLOTS,
-        // Sparse Merkle caches are rebuilt from rooted accounts/storage.
+        // Sparse Merkle caches are rebuilt from rooted accounts/storage and do
+        // not need to be transferred byte-for-byte with checkpoint snapshots.
         CF_MERKLE_LEAVES,
         CF_CONTRACT_MERKLE_LEAVES,
         CF_ACCOUNT_MERKLE_NODES,

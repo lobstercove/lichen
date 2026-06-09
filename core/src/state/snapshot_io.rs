@@ -20,16 +20,27 @@ impl StateStore {
     pub(crate) fn snapshot_category_cf(category: &str) -> Option<(&'static str, &'static str)> {
         match category {
             "accounts" => Some((CF_ACCOUNTS, "Accounts")),
+            "blocks" => Some((CF_BLOCKS, "Blocks")),
+            "transactions" => Some((CF_TRANSACTIONS, "Transactions")),
+            "account_txs" => Some((CF_ACCOUNT_TXS, "Account transaction index")),
+            "slots" => Some((CF_SLOTS, "Slots")),
             "contract_storage" => Some((CF_CONTRACT_STORAGE, "Contract storage")),
             "programs" => Some((CF_PROGRAMS, "Programs")),
+            "program_calls" => Some((CF_PROGRAM_CALLS, "Program call index")),
+            "market_activity" => Some((CF_MARKET_ACTIVITY, "Market activity index")),
             "symbol_registry" => Some((CF_SYMBOL_REGISTRY, "Symbol registry")),
             "symbol_by_program" => Some((CF_SYMBOL_BY_PROGRAM, "Symbol reverse registry")),
             "evm_map" => Some((CF_EVM_MAP, "EVM address map")),
             "evm_accounts" => Some((CF_EVM_ACCOUNTS, "EVM accounts")),
             "evm_storage" => Some((CF_EVM_STORAGE, "EVM storage")),
+            "evm_txs" => Some((CF_EVM_TXS, "EVM transaction metadata")),
+            "evm_receipts" => Some((CF_EVM_RECEIPTS, "EVM receipts")),
+            "evm_logs_by_slot" => Some((CF_EVM_LOGS_BY_SLOT, "EVM logs by slot")),
             "nft_by_owner" => Some((CF_NFT_BY_OWNER, "NFT owner index")),
             "nft_by_collection" => Some((CF_NFT_BY_COLLECTION, "NFT collection index")),
+            "nft_activity" => Some((CF_NFT_ACTIVITY, "NFT activity index")),
             "token_balances" => Some((CF_TOKEN_BALANCES, "Token balances")),
+            "token_transfers" => Some((CF_TOKEN_TRANSFERS, "Token transfer index")),
             "holder_tokens" => Some((CF_HOLDER_TOKENS, "Holder token index")),
             "solana_token_accounts" => {
                 Some((CF_SOLANA_TOKEN_ACCOUNTS, "Solana token-account bindings"))
@@ -38,6 +49,8 @@ impl StateStore {
                 CF_SOLANA_HOLDER_TOKEN_ACCOUNTS,
                 "Solana holder token-account index",
             )),
+            "events" => Some((CF_EVENTS, "Contract events")),
+            "events_by_slot" => Some((CF_EVENTS_BY_SLOT, "Contract events by slot")),
             "dex_orders_by_pair" => Some((CF_DEX_ORDERS_BY_PAIR, "DEX orders-by-pair index")),
             "dex_trades_by_pair" => Some((CF_DEX_TRADES_BY_PAIR, "DEX trades-by-pair index")),
             "dex_trades_by_taker" => Some((CF_DEX_TRADES_BY_TAKER, "DEX trades-by-taker index")),
@@ -46,6 +59,10 @@ impl StateStore {
                 "DEX trades-by-pair-taker index",
             )),
             "dex_orderbook_levels" => Some((CF_DEX_ORDERBOOK_LEVELS, "DEX orderbook levels")),
+            "tx_by_slot" => Some((CF_TX_BY_SLOT, "Transaction by slot index")),
+            "tx_to_slot" => Some((CF_TX_TO_SLOT, "Transaction slot index")),
+            "tx_meta" => Some((CF_TX_META, "Transaction metadata")),
+            "account_snapshots" => Some((CF_ACCOUNT_SNAPSHOTS, "Account snapshots")),
             "pending_validator_changes" => {
                 Some((CF_PENDING_VALIDATOR_CHANGES, "Pending validator changes"))
             }
@@ -62,7 +79,6 @@ impl StateStore {
             "shielded_nullifiers" => Some((CF_SHIELDED_NULLIFIERS, "Shielded nullifiers")),
             "shielded_pool" => Some((CF_SHIELDED_POOL, "Shielded pool")),
             "shielded_txs" => Some((CF_SHIELDED_TXS, "Shielded transaction index")),
-            "transactions" => Some((CF_TRANSACTIONS, "Transactions")),
             "stats" => Some((CF_STATS, "Stats")),
             _ => None,
         }
