@@ -39,10 +39,10 @@ pub const BOOTSTRAP_GRANT_AMOUNT: u64 = 100_000 * 1_000_000_000; // 100k LICN in
 
 /// Consensus metadata key that permits treasury-funded validator bootstrap grants.
 ///
-/// Production/public chains leave this disabled and register validators through
-/// self-funded stake or a future governed voucher path. Local development
-/// clusters may enable it explicitly so restart/reset tests can still bootstrap
-/// joining validators without copying state.
+/// Testnet enables this policy for the first MAX_BOOTSTRAP_VALIDATORS
+/// validators so all joiners use the same bootstrap-recovery schedule.
+/// Mainnet genesis can define its own validator set without relying on local
+/// wall-clock or operator-local state.
 pub const VALIDATOR_BOOTSTRAP_GRANTS_ENABLED_METADATA_KEY: &str =
     "validator_bootstrap_grants_enabled";
 pub const VALIDATOR_BOOTSTRAP_GRANTS_ENABLED_VALUE: &[u8] = b"1";

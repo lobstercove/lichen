@@ -8,7 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.5.130] - 2026-06-09
 
 ### Fixed
-- Adds a signed `ReclassifyValidatorBootstrap` system instruction for exact 100,000 LICN self-funded validator entries that must enter normal bootstrap-recovery accounting, without moving funds or editing RocksDB out of band.
+- Keeps lichen-testnet-1 validator onboarding on bootstrap-recovery grants after the repair slot; the stake-pool grant counter, not a historical slot cutoff, is the live cap.
+- Changes the normal `lichen validator register` command back to bootstrap-grant registration so new validators follow the same schedule as the original testnet validators.
+- Adds a signed `ReclassifyValidatorBootstrap` system instruction for exact 100,000 LICN explicit-funded validator entries that must enter normal bootstrap-recovery accounting, without moving funds or editing RocksDB out of band.
 - Adds `lichen validator reclassify-bootstrap` so operators can submit the correction with the validator key through the same signed transaction path as validator registration.
 - Covers the correction path with consensus tests for successful reclassification, already-bootstrapped rejection, and non-exact-stake rejection.
 
@@ -81,7 +83,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.5.117] - 2026-06-08
 
 ### Added
-- Adds `lichen validator fingerprint` and `lichen validator register` for post-bootstrap validator admission through the existing self-funded `RegisterValidator` consensus instruction.
+- Adds `lichen validator fingerprint` and `lichen validator register` for post-bootstrap validator admission through the chain's `RegisterValidator` consensus instruction.
 
 ## [0.5.116] - 2026-06-08
 

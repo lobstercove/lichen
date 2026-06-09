@@ -405,7 +405,7 @@ For a repo checkout on Linux, the foreground command above is the public manual 
 That's it. The validator will:
 - Generate or reuse the encrypted validator wallet identity under the chosen `--db-path`
 - Import verified genesis state from block 0 and sync/replay the chain from seed nodes
-- Register only after it has self-funded stake or a governed/local-dev bootstrap voucher
+- Register only after it has synced, using the chain's validator bootstrap-recovery policy
 - Begin producing and voting once the registration is finalized on-chain
 
 ### 3. Verify

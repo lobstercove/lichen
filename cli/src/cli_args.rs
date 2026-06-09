@@ -362,8 +362,20 @@ pub(super) enum ValidatorCommands {
     /// Print the local machine fingerprint used for validator registration
     Fingerprint,
 
-    /// Submit a self-funded RegisterValidator transaction
+    /// Submit a bootstrap-grant RegisterValidator transaction
     Register {
+        /// Keypair file for the validator account
+        #[arg(short, long)]
+        keypair: Option<PathBuf>,
+
+        /// 32-byte machine fingerprint as hex; defaults to local host fingerprint
+        #[arg(long)]
+        fingerprint_hex: Option<String>,
+    },
+
+    /// Submit an explicit self-funded RegisterValidator transaction
+    #[command(hide = true)]
+    RegisterSelfFunded {
         /// Amount in spores to self-fund as validator stake
         amount: u64,
 

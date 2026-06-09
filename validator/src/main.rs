@@ -9531,6 +9531,7 @@ async fn run_validator() {
         error!("Failed to persist chain-id signing metadata: {}", err);
         return;
     }
+    let testnet_bootstrap_grants_enabled = genesis_config.chain_id == "lichen-testnet-1";
     let local_dev_bootstrap_grants_enabled = dev_mode
         && env_flag_enabled("LICHEN_LOCAL_DEV")
         && !genesis_config
@@ -9538,6 +9539,7 @@ async fn run_validator() {
             .to_ascii_lowercase()
             .contains("mainnet");
     let bootstrap_grants_enabled = genesis_config.consensus.validator_bootstrap_grants_enabled
+        || testnet_bootstrap_grants_enabled
         || local_dev_bootstrap_grants_enabled;
     let bootstrap_grants_value = if bootstrap_grants_enabled {
         VALIDATOR_BOOTSTRAP_GRANTS_ENABLED_VALUE
@@ -9555,9 +9557,9 @@ async fn run_validator() {
         return;
     }
     if bootstrap_grants_enabled {
-        info!("🔧 Validator bootstrap grants enabled for this local/dev chain policy");
+        info!("🔧 Validator bootstrap grants enabled for this chain policy");
     } else {
-        info!("🔒 Validator bootstrap grants disabled; registration is self-funded/governed");
+        info!("🔒 Validator bootstrap grants disabled by chain policy; validator admission requires an explicit alternate registration path");
     }
 
     // P2P NETWORK SETUP - do this early to check if joining existing network

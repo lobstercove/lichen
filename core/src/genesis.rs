@@ -465,10 +465,10 @@ pub struct ConsensusParams {
 
     /// Permit treasury-funded RegisterValidator bootstrap grants.
     ///
-    /// This must stay false for public/mainnet genesis configs. Local
-    /// development clusters can enable it explicitly for deterministic
-    /// multi-validator bootstrap tests; public validators should use
-    /// self-funded registration or a governed voucher path.
+    /// Testnet/dev chains can enable this for deterministic validator
+    /// onboarding through bootstrap-recovery grants. Mainnet should define the
+    /// launch validator set and any later validator-grant policy explicitly in
+    /// genesis/governance before public launch.
     #[serde(default)]
     pub validator_bootstrap_grants_enabled: bool,
 

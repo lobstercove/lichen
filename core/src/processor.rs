@@ -3601,7 +3601,7 @@ mod tests {
     }
 
     #[test]
-    fn test_register_validator_legacy_testnet_replay_enables_bootstrap_grants_before_cutoff() {
+    fn test_register_validator_testnet_enables_bootstrap_grants_from_chain_policy() {
         let (processor, state, _alice_kp, _alice, treasury, genesis_hash) = setup();
         let chain_id = "lichen-testnet-1";
         state
@@ -3636,13 +3636,13 @@ mod tests {
     }
 
     #[test]
-    fn test_register_validator_legacy_testnet_bootstrap_grants_close_at_cutoff() {
+    fn test_register_validator_testnet_bootstrap_grants_remain_enabled_after_repair_slot() {
         let (processor, state, _alice_kp, _alice, treasury, genesis_hash) = setup();
         let chain_id = "lichen-testnet-1";
         state
             .put_metadata(CHAIN_ID_METADATA_KEY, chain_id.as_bytes())
             .unwrap();
-        let cutoff_block = crate::Block::new_with_timestamp(
+        let repair_boundary_block = crate::Block::new_with_timestamp(
             2_710_766,
             genesis_hash,
             Hash::default(),
@@ -3650,12 +3650,11 @@ mod tests {
             Vec::new(),
             0,
         );
-        let cutoff_hash = cutoff_block.hash();
-        state.put_block(&cutoff_block).unwrap();
+        let repair_boundary_hash = repair_boundary_block.hash();
+        state.put_block(&repair_boundary_block).unwrap();
         state.set_last_slot(2_710_766).unwrap();
         let block_producer = Pubkey([42u8; 32]);
         fund_treasury_for_validator_bootstrap(&state, treasury);
-        let before_treasury = state.get_account(&treasury).unwrap().unwrap();
         let validator_kp = Keypair::generate();
         let validator = validator_kp.pubkey();
         let fingerprint = [0x73; 32];
@@ -3664,23 +3663,22 @@ mod tests {
             &validator_kp,
             validator,
             fingerprint,
-            cutoff_hash,
+            repair_boundary_hash,
             chain_id,
         );
         let result = processor.process_transaction(&tx, &block_producer);
-        assert!(!result.success);
-        assert!(result
-            .error
-            .as_deref()
-            .unwrap_or("")
-            .contains("bootstrap grants are disabled"));
-        assert_validator_registration_not_granted(
-            &state,
-            treasury,
-            &before_treasury,
-            validator,
-            fingerprint,
+        assert!(
+            result.success,
+            "testnet bootstrap grant should remain enabled after repair slot: {:?}",
+            result.error
         );
+
+        let pool = state.get_stake_pool().unwrap();
+        let stake = pool.get_stake(&validator).unwrap();
+        assert_eq!(stake.amount, crate::consensus::BOOTSTRAP_GRANT_AMOUNT);
+        assert_eq!(stake.bootstrap_index, 0);
+        assert_eq!(pool.bootstrap_grants_issued(), 1);
+        assert_eq!(pool.fingerprint_owner(&fingerprint), Some(&validator));
     }
 
     #[test]

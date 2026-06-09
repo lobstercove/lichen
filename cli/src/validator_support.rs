@@ -102,6 +102,41 @@ pub(super) fn handle_validator_fingerprint() -> Result<()> {
 pub(super) async fn handle_validator_register(
     client: &RpcClient,
     keypair_mgr: &KeypairManager,
+    keypair: Option<PathBuf>,
+    fingerprint_hex: Option<String>,
+) -> Result<()> {
+    let kp = load_staker_keypair(keypair_mgr, keypair)?;
+    let fingerprint = match fingerprint_hex {
+        Some(value) => parse_machine_fingerprint_hex(&value)?,
+        None => collect_local_machine_fingerprint()?,
+    };
+
+    println!("Registering validator");
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!("Validator: {}", kp.pubkey().to_base58());
+    println!("Mode: bootstrap grant");
+    println!("Fingerprint: {}", hex::encode(fingerprint));
+    println!();
+
+    match client
+        .register_validator_bootstrap_grant(&kp, fingerprint)
+        .await
+    {
+        Ok(signature) => {
+            println!("RegisterValidator transaction sent");
+            println!("Signature: {}", signature);
+        }
+        Err(error) => {
+            println!("RegisterValidator failed: {}", error);
+        }
+    }
+
+    Ok(())
+}
+
+pub(super) async fn handle_validator_register_self_funded(
+    client: &RpcClient,
+    keypair_mgr: &KeypairManager,
     amount: u64,
     keypair: Option<PathBuf>,
     fingerprint_hex: Option<String>,
@@ -116,7 +151,7 @@ pub(super) async fn handle_validator_register(
         bail!("validator registration amount must be nonzero");
     }
 
-    println!("Registering validator");
+    println!("Registering self-funded validator");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     println!("Validator: {}", kp.pubkey().to_base58());
     println!("Amount: {} LICN", amount as f64 / 1_000_000_000.0);

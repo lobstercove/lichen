@@ -650,9 +650,8 @@ export LICHEN_KEYPAIR_PASSWORD='set-a-long-random-secret-before-first-start'
                         <td>Integer</td>
                         <td><code>75000000000000</code></td>
                         <td>Minimum stake in spores (1 LICN = 1,000,000,000 spores). Mainnet uses 75,000 LICN
-                            (75K); testnet genesis uses 75 LICN to keep validator onboarding accessible. Public
-                            validator registration is self-funded or governed; treasury bootstrap grants are reserved
-                            for explicit local/dev or governed-voucher policy.</td>
+                            (75K); validator bootstrap admission is chain-policy gated, capped, and fingerprinted.
+                            Testnet validators use the bootstrap-recovery schedule until the configured cap is reached.</td>
                     </tr>
                     <tr>
                         <td><code>slot_duration_ms</code></td>
@@ -1019,8 +1018,8 @@ export LICHEN_KEYPAIR_PASSWORD='set-a-long-random-secret-before-first-start'
 <i class="fa-solid fa-shrimp"></i> Staking 75 LICN for validator Mo1tVa1idAtoR...xYz789
 
   Transaction: 5bN2...kQrT
-  Bootstrap:   governed/local-dev voucher only
-    Debt:        voucher-backed grants repay from settled epoch rewards: 50% standard, 75% at ≥95% uptime
+  Bootstrap:   chain-policy validator grant
+    Debt:        grant-backed validators repay from settled epoch rewards: 50% standard, 75% at ≥95% uptime
   Uptime:      98.5% (≥ 95% → 75/25 debt/liquid split)
   Status:      Finalized (slot 1,204,817)
 
@@ -1029,11 +1028,10 @@ export LICHEN_KEYPAIR_PASSWORD='set-a-long-random-secret-before-first-start'
 
             <h3>Minimum Stake</h3>
             <ul>
-                <li><strong>Self-funded registration:</strong> Must provide your own 75,000 LICN minimum —
-                    immediately fully vested, no debt</li>
                 <li><strong>Bootstrap grants:</strong> 100,000 LICN
-                    (<code>100,000,000,000,000</code> spores) only when chain policy enables an explicit local/dev
-                    grant or governed voucher; public raw registration does not receive a treasury grant</li>
+                    (<code>100,000,000,000,000</code> spores) when chain policy enables validator bootstrap admission</li>
+                <li><strong>Explicit funded registration:</strong> Advanced/manual path that provides its own
+                    validator stake and does not enter bootstrap recovery</li>
                 <li><strong>Vesting (standard):</strong> 50% of settled epoch rewards go to debt repayment, 50% liquid
                     — this is the default split for all bootstrap validators</li>
                 <li><strong>Performance bonus (≥95% uptime):</strong> 75% of settled epoch rewards go to debt
@@ -1107,8 +1105,8 @@ uptime_bps      = min(10000, blocks_produced × 10000 / expected_blocks)</code><
                 <li>Zero fingerprints are rejected for new on-chain validator registration</li>
                 <li>Prevents one machine from claiming repeated grant-backed registrations</li>
             </ul>
-            <p><strong>Rule:</strong> Grant-backed registration requires a unique nonzero fingerprint. Self-funded
-                validators still provide a nonzero fingerprint for registry consistency.</p>
+            <p><strong>Rule:</strong> Grant-backed registration requires a unique nonzero fingerprint. Explicit funded
+                validators also provide a nonzero fingerprint for registry consistency.</p>
 
             <h3>Liquid Staking Mechanism</h3>
             <p>Lichen uses a delegated proof-of-stake liquid staking model inspired by moss ecosystems:</p>
@@ -1137,7 +1135,7 @@ uptime_bps      = min(10000, blocks_produced × 10000 / expected_blocks)</code><
                 <pre><code>$ lichen stake status --rpc-url https://testnet-rpc.lichen.network
 
   Identity:    Mo1tVa1idAtoR...xYz789
-  Stake:       75,000.000000000 LICN (self-funded minimum)
+  Stake:       75,000.000000000 LICN
   Delegated:   450.000000000 LICN
   Total:       100,450.000000000 LICN
   Active:      Yes (rank #7 of 21)

@@ -82,7 +82,22 @@ impl RpcClient {
         submit_signed_instruction(self, keypair, instruction).await
     }
 
-    /// Register a validator through the self-funded RegisterValidator path.
+    /// Register a validator through the bootstrap-grant RegisterValidator path.
+    pub async fn register_validator_bootstrap_grant(
+        &self,
+        keypair: &Keypair,
+        fingerprint: [u8; 32],
+    ) -> Result<String> {
+        let instruction = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![keypair.pubkey()],
+            data: build_register_validator_bootstrap_grant_data(fingerprint),
+        };
+
+        submit_signed_instruction(self, keypair, instruction).await
+    }
+
+    /// Register a validator through the explicit self-funded RegisterValidator path.
     pub async fn register_validator_self_funded(
         &self,
         keypair: &Keypair,
@@ -138,6 +153,13 @@ pub(crate) fn build_register_validator_self_funded_data(
     data
 }
 
+pub(crate) fn build_register_validator_bootstrap_grant_data(fingerprint: [u8; 32]) -> Vec<u8> {
+    let mut data = Vec::with_capacity(33);
+    data.push(26u8);
+    data.extend_from_slice(&fingerprint);
+    data
+}
+
 pub(crate) fn build_reclassify_validator_bootstrap_data() -> Vec<u8> {
     vec![38u8]
 }
@@ -157,6 +179,16 @@ mod tests {
         assert_eq!(&data[1..33], &fingerprint);
         assert_eq!(data[33], 1);
         assert_eq!(&data[34..42], &amount.to_le_bytes());
+    }
+
+    #[test]
+    fn register_validator_bootstrap_grant_data_matches_wire_format() {
+        let fingerprint = [0x24u8; 32];
+        let data = build_register_validator_bootstrap_grant_data(fingerprint);
+
+        assert_eq!(data.len(), 33);
+        assert_eq!(data[0], 26);
+        assert_eq!(&data[1..33], &fingerprint);
     }
 
     #[test]

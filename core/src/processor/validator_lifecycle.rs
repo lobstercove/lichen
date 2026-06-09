@@ -9,13 +9,13 @@ const REGISTER_VALIDATOR_SELF_FUNDED_LEN: usize = 42;
 const REGISTER_VALIDATOR_MODE_OFFSET: usize = 33;
 const REGISTER_VALIDATOR_MODE_GRANT: u8 = 0;
 const REGISTER_VALIDATOR_MODE_SELF_FUNDED: u8 = 1;
-// The original lichen-testnet-1 history contains bootstrap-grant
-// RegisterValidator transactions even though the local genesis config written
-// by later deployments has this metadata disabled. The flag was never part of
-// the state root, so historical replay must derive this policy from immutable
-// chain identity plus slot. It closes at the first post-repair boundary.
-const LEGACY_TESTNET_BOOTSTRAP_GRANTS_CHAIN_ID: &str = "lichen-testnet-1";
-const LEGACY_TESTNET_BOOTSTRAP_GRANTS_DISABLE_PARENT_SLOT: u64 = 2_710_766;
+// The original lichen-testnet-1 policy is bootstrap-grant admission for the
+// first MAX_BOOTSTRAP_VALIDATORS validators. Later local genesis configs may
+// have persisted the metadata flag as disabled, and that flag is not a reliable
+// consensus policy source for historical or live testnet replay. Derive the
+// testnet grant policy from immutable chain identity; the stake pool's grant
+// counter is the actual cap.
+const TESTNET_BOOTSTRAP_GRANTS_CHAIN_ID: &str = "lichen-testnet-1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ValidatorRegistrationMode {
@@ -67,9 +67,9 @@ impl TxProcessor {
     /// - self-funded: [26 | machine_fingerprint(32) | 1 | amount_u64_le]
     ///   Accounts: [new_validator_pubkey]
     ///
-    /// Treasury bootstrap grants are disabled unless chain metadata explicitly
-    /// enables them. Public registration should use self-funded stake or a
-    /// governed voucher path.
+    /// Treasury bootstrap grants are enabled when chain policy permits them.
+    /// On lichen-testnet-1, the first MAX_BOOTSTRAP_VALIDATORS validators use
+    /// the same bootstrap-recovery schedule as the genesis validators.
     pub(super) fn system_register_validator(&self, ix: &Instruction) -> Result<(), String> {
         if ix.accounts.is_empty() {
             return Err("RegisterValidator requires [validator] account".to_string());
@@ -107,10 +107,10 @@ impl TxProcessor {
             return Ok(true);
         }
 
-        self.legacy_testnet_bootstrap_grants_enabled()
+        self.testnet_bootstrap_grants_enabled()
     }
 
-    fn legacy_testnet_bootstrap_grants_enabled(&self) -> Result<bool, String> {
+    fn testnet_bootstrap_grants_enabled(&self) -> Result<bool, String> {
         let Some(chain_id_bytes) = self
             .state
             .get_metadata(crate::signing::CHAIN_ID_METADATA_KEY)?
@@ -120,12 +120,11 @@ impl TxProcessor {
         let Ok(chain_id) = std::str::from_utf8(&chain_id_bytes) else {
             return Ok(false);
         };
-        if chain_id != LEGACY_TESTNET_BOOTSTRAP_GRANTS_CHAIN_ID {
+        if chain_id != TESTNET_BOOTSTRAP_GRANTS_CHAIN_ID {
             return Ok(false);
         }
 
-        let current_slot = self.b_get_last_slot().unwrap_or(0);
-        Ok(current_slot < LEGACY_TESTNET_BOOTSTRAP_GRANTS_DISABLE_PARENT_SLOT)
+        Ok(true)
     }
 
     fn system_register_validator_bootstrap_grant(
@@ -135,7 +134,7 @@ impl TxProcessor {
     ) -> Result<(), String> {
         if !self.validator_bootstrap_grants_enabled()? {
             return Err(
-                "RegisterValidator: treasury bootstrap grants are disabled on this chain; use self-funded registration or a governed voucher"
+                "RegisterValidator: treasury bootstrap grants are disabled on this chain"
                     .to_string(),
             );
         }
@@ -169,7 +168,7 @@ impl TxProcessor {
             }
             if existing.staked > 0 {
                 return Err(
-                    "RegisterValidator: existing validator account has partial stake; use self-funded registration or repair the stake-pool state"
+                    "RegisterValidator: existing validator account has partial stake; complete stake-pool registration through an explicit funded path or repair the stake-pool state"
                         .to_string(),
                 );
             }
