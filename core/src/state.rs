@@ -137,6 +137,46 @@ const CF_RESTRICTIONS: &str = "restrictions"; // restriction_id(8,BE) -> Restric
 const CF_RESTRICTION_INDEX_TARGET: &str = "restriction_index_target"; // target_key + restriction_id
 const CF_RESTRICTION_INDEX_CODE_HASH: &str = "restriction_index_code_hash"; // code_hash + restriction_id
 
+/// StateStore-owned categories transferred by checkpoint snapshot sync.
+///
+/// Each entry maps to one RocksDB column family in `snapshot_io`. Validator,
+/// stake-pool, and MossStake pool snapshots are special validator-level
+/// categories because they deserialize through their domain APIs.
+pub const STATE_SNAPSHOT_CATEGORIES: &[&str] = &[
+    "accounts",
+    "contract_storage",
+    "programs",
+    "symbol_registry",
+    "symbol_by_program",
+    "evm_map",
+    "evm_accounts",
+    "evm_storage",
+    "nft_by_owner",
+    "nft_by_collection",
+    "token_balances",
+    "holder_tokens",
+    "solana_token_accounts",
+    "solana_holder_token_accounts",
+    "dex_orders_by_pair",
+    "dex_trades_by_pair",
+    "dex_trades_by_taker",
+    "dex_trades_by_pair_taker",
+    "dex_orderbook_levels",
+    "pending_validator_changes",
+    "restrictions",
+    "restriction_index_target",
+    "restriction_index_code_hash",
+    "shielded_commitments",
+    "shielded_note_payloads",
+    "shielded_nullifiers",
+    "shielded_pool",
+    "shielded_txs",
+    "stats",
+];
+
+pub const STATE_SNAPSHOT_SPECIAL_CATEGORIES: &[&str] =
+    &["validator_set", "stake_pool", "mossstake_pool"];
+
 const SOLANA_TOKEN_PROGRAM_ID_B58: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 const SOLANA_ASSOCIATED_TOKEN_PROGRAM_ID_B58: &str = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
 
@@ -579,11 +619,13 @@ mod tests {
         let pk = Pubkey([0x7A; 32]);
         let acct = Account::new(3, pk);
         state.put_account(&pk, &acct).unwrap();
+        let expected_root = state.compute_state_root_cached();
 
         let meta = state
             .create_checkpoint(checkpoint_dir.to_str().unwrap(), 7)
             .unwrap();
         assert_eq!(meta.slot, 7);
+        assert_eq!(Hash(meta.state_root), expected_root);
         assert_eq!(meta.total_accounts, 1);
 
         let checkpoints = StateStore::list_checkpoints(state_dir.to_str().unwrap());
@@ -625,6 +667,45 @@ mod tests {
         let loaded = dest.get_account(&pk).unwrap().unwrap();
         assert_eq!(loaded.spores, acct.spores);
         assert_eq!(loaded.owner, acct.owner);
+    }
+
+    #[test]
+    fn test_snapshot_category_surface_maps_to_column_families() {
+        for category in STATE_SNAPSHOT_CATEGORIES {
+            assert!(
+                StateStore::snapshot_category_cf(category).is_some(),
+                "{category} must map to a RocksDB column family"
+            );
+        }
+    }
+
+    #[test]
+    fn test_snapshot_clear_category_replaces_stale_entries() {
+        let source_dir = tempdir().unwrap();
+        let dest_dir = tempdir().unwrap();
+        let source = StateStore::open(source_dir.path()).unwrap();
+        let dest = StateStore::open(dest_dir.path()).unwrap();
+
+        let source_pk = Pubkey([0xA1; 32]);
+        let stale_pk = Pubkey([0xB2; 32]);
+        source
+            .put_account(&source_pk, &Account::new(77, source_pk))
+            .unwrap();
+        dest.put_account(&stale_pk, &Account::new(88, stale_pk))
+            .unwrap();
+
+        let page = source
+            .export_snapshot_category_cursor_untracked("accounts", None, 1000)
+            .unwrap();
+        assert_eq!(dest.clear_snapshot_category("accounts").unwrap(), 1);
+        assert_eq!(
+            dest.import_snapshot_category("accounts", &page.entries)
+                .unwrap(),
+            1
+        );
+
+        assert!(dest.get_account(&stale_pk).unwrap().is_none());
+        assert!(dest.get_account(&source_pk).unwrap().is_some());
     }
 
     #[test]

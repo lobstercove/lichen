@@ -5,6 +5,13 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.129] - 2026-06-09
+
+### Fixed
+- Keeps RocksDB checkpoint creation on the cheap native-checkpoint path by writing checkpoint metadata from the already committed cached/sparse state root instead of forcing a cold Merkle rebuild on the live validator.
+- Centralizes the full state-snapshot column-family surface so P2P admission, snapshot export/import, and local coverage tests agree on every transferred hot column family.
+- Clears stale live snapshot categories before verified checkpoint import so fresh or repaired validators cannot retain old data in a column family omitted from the incoming snapshot.
+
 ## [0.5.128] - 2026-06-09
 
 ### Fixed

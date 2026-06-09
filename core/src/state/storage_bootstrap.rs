@@ -3,6 +3,8 @@ use std::sync::{Arc, Mutex};
 
 use rocksdb::{BlockBasedOptions, Cache, ColumnFamilyDescriptor, Options, SliceTransform, DB};
 
+#[cfg(test)]
+use super::STATE_SNAPSHOT_CATEGORIES;
 use super::{
     MetricsStore, StateStore, CF_ACCOUNTS, CF_ACCOUNT_MERKLE_NODES, CF_ACCOUNT_SNAPSHOTS,
     CF_ACCOUNT_TXS, CF_BLOCKS, CF_CONTRACT_MERKLE_LEAVES, CF_CONTRACT_MERKLE_NODES,
@@ -544,4 +546,74 @@ pub(super) fn open_cold_db<P: AsRef<Path>>(cold_path: P) -> Result<DB, String> {
 
     DB::open_cf_descriptors(&db_opts, cold_path.as_ref(), build_cold_cf_descriptors())
         .map_err(|e| format!("Failed to open cold DB: {}", e))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    const SNAPSHOT_EXCLUDED_HOT_CFS: &[&str] = &[
+        // Historical/archive data. A snapshot-imported validator resumes from
+        // the checkpoint anchor and obtains subsequent history through replay.
+        CF_BLOCKS,
+        CF_TRANSACTIONS,
+        CF_ACCOUNT_TXS,
+        CF_EVM_TXS,
+        CF_EVM_RECEIPTS,
+        CF_NFT_ACTIVITY,
+        CF_PROGRAM_CALLS,
+        CF_MARKET_ACTIVITY,
+        CF_EVENTS,
+        CF_TOKEN_TRANSFERS,
+        CF_TX_BY_SLOT,
+        CF_TX_TO_SLOT,
+        CF_EVENTS_BY_SLOT,
+        CF_EVM_LOGS_BY_SLOT,
+        CF_ACCOUNT_SNAPSHOTS,
+        CF_TX_META,
+        // Local chain cursors are advanced by checkpoint-anchor import.
+        CF_SLOTS,
+        // Sparse Merkle caches are rebuilt from rooted accounts/storage.
+        CF_MERKLE_LEAVES,
+        CF_CONTRACT_MERKLE_LEAVES,
+        CF_ACCOUNT_MERKLE_NODES,
+        CF_CONTRACT_MERKLE_NODES,
+    ];
+
+    #[test]
+    fn hot_column_families_have_snapshot_coverage_decision() {
+        let shared_cache = Cache::new_lru_cache(8 * 1024 * 1024);
+        let actual: BTreeSet<String> = build_hot_cf_descriptors(&shared_cache)
+            .iter()
+            .map(|descriptor| descriptor.name().to_string())
+            .collect();
+
+        let mut decided = BTreeSet::new();
+        for category in STATE_SNAPSHOT_CATEGORIES {
+            let (cf_name, _) = StateStore::snapshot_category_cf(category)
+                .unwrap_or_else(|| panic!("{category} must map to a column family"));
+            assert!(
+                decided.insert(cf_name.to_string()),
+                "{cf_name} has duplicate snapshot coverage"
+            );
+        }
+        for cf_name in [CF_VALIDATORS, CF_STAKE_POOL, CF_MOSSSTAKE] {
+            assert!(
+                decided.insert(cf_name.to_string()),
+                "{cf_name} has duplicate special snapshot coverage"
+            );
+        }
+        for cf_name in SNAPSHOT_EXCLUDED_HOT_CFS {
+            assert!(
+                decided.insert((*cf_name).to_string()),
+                "{cf_name} has duplicate snapshot exclusion"
+            );
+        }
+
+        assert_eq!(
+            actual, decided,
+            "every hot RocksDB column family must be snapshot-transferred, special-imported, or explicitly excluded"
+        );
+    }
 }

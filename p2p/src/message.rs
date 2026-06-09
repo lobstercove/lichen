@@ -129,8 +129,7 @@ fn default_protocol_version() -> u32 {
 pub enum SnapshotKind {
     ValidatorSet,
     StakePool,
-    /// Full state checkpoint — accounts, contract storage, programs,
-    /// restrictions, validator set, and both stake-pool singletons.
+    /// Full state checkpoint snapshot used by warp sync.
     StateCheckpoint,
 }
 

@@ -39,6 +39,8 @@ use lichen_core::multisig::{
     upgrade_veto_guardian_config_for_roles,
 };
 use lichen_core::nft::decode_token_state;
+#[cfg(test)]
+use lichen_core::STATE_SNAPSHOT_SPECIAL_CATEGORIES;
 use lichen_core::{
     compute_bft_timestamp, compute_stake_weighted_median, compute_validators_hash, evm_tx_hash,
     Account, Block, ContractAbi, ContractAccount, ContractInstruction, FeeConfig, FinalityTracker,
@@ -51,8 +53,9 @@ use lichen_core::{
     CONTRACT_UPGRADE_FEE, EVM_PROGRAM_ID, GENESIS_DISTRIBUTION, GENESIS_STATE_BUNDLE_VERSION,
     GENESIS_STATE_CHUNK_OPCODE, GENESIS_SUPPLY_SPORES, MAX_TX_AGE_BLOCKS, NFT_COLLECTION_FEE,
     NFT_MINT_FEE, ORACLE_ASSET_MAX_LEN, ORACLE_ASSET_MIN_LEN, ORACLE_STALENESS_SLOTS,
-    SLASHING_EVIDENCE_CODEC_LIMIT_BYTES, SYSTEM_PROGRAM_ID as CORE_SYSTEM_PROGRAM_ID,
-    VALIDATOR_BOOTSTRAP_GRANTS_ENABLED_METADATA_KEY, VALIDATOR_BOOTSTRAP_GRANTS_ENABLED_VALUE,
+    SLASHING_EVIDENCE_CODEC_LIMIT_BYTES, STATE_SNAPSHOT_CATEGORIES,
+    SYSTEM_PROGRAM_ID as CORE_SYSTEM_PROGRAM_ID, VALIDATOR_BOOTSTRAP_GRANTS_ENABLED_METADATA_KEY,
+    VALIDATOR_BOOTSTRAP_GRANTS_ENABLED_VALUE,
 };
 use lichen_genesis::{
     genesis_assign_achievements, genesis_auto_deploy, genesis_bootstrap_bridge_committee,
@@ -3388,6 +3391,21 @@ const WARP_SNAPSHOT_CATEGORIES: &[&str] = &[
     "programs",
     "symbol_registry",
     "symbol_by_program",
+    "evm_map",
+    "evm_accounts",
+    "evm_storage",
+    "nft_by_owner",
+    "nft_by_collection",
+    "token_balances",
+    "holder_tokens",
+    "solana_token_accounts",
+    "solana_holder_token_accounts",
+    "dex_orders_by_pair",
+    "dex_trades_by_pair",
+    "dex_trades_by_taker",
+    "dex_trades_by_pair_taker",
+    "dex_orderbook_levels",
+    "pending_validator_changes",
     "restrictions",
     "restriction_index_target",
     "restriction_index_code_hash",
@@ -15356,6 +15374,26 @@ async fn run_validator() {
                             }
                         };
 
+                        for category_name in STATE_SNAPSHOT_CATEGORIES {
+                            match state_for_snapshot_apply.clear_snapshot_category(category_name) {
+                                Ok(deleted) => {
+                                    if deleted > 0 {
+                                        info!(
+                                            "🧹 Cleared {} stale live {} entries before verified snapshot import",
+                                            deleted, category_name
+                                        );
+                                    }
+                                }
+                                Err(e) => {
+                                    error!(
+                                        "FATAL: failed to clear live {} before verified snapshot import at slot {}: {}",
+                                        category_name, snapshot_slot, e
+                                    );
+                                    std::process::exit(1);
+                                }
+                            }
+                        }
+
                         for category_name in WARP_SNAPSHOT_CATEGORIES {
                             let entries = live_snapshot_entries
                                 .remove(*category_name)
@@ -22621,6 +22659,22 @@ mod tests {
                 "warp snapshots must include {category}"
             );
         }
+    }
+
+    #[test]
+    fn warp_snapshot_categories_match_core_snapshot_surface() {
+        let expected: std::collections::BTreeSet<&str> = STATE_SNAPSHOT_CATEGORIES
+            .iter()
+            .chain(STATE_SNAPSHOT_SPECIAL_CATEGORIES.iter())
+            .copied()
+            .collect();
+        let actual: std::collections::BTreeSet<&str> =
+            WARP_SNAPSHOT_CATEGORIES.iter().copied().collect();
+
+        assert_eq!(
+            actual, expected,
+            "warp sync must request every core snapshot category and every special state category"
+        );
     }
 
     #[test]

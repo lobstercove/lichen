@@ -17,13 +17,38 @@ pub struct CheckpointMeta {
 }
 
 impl StateStore {
-    fn snapshot_category_cf(category: &str) -> Option<(&'static str, &'static str)> {
+    pub(crate) fn snapshot_category_cf(category: &str) -> Option<(&'static str, &'static str)> {
         match category {
             "accounts" => Some((CF_ACCOUNTS, "Accounts")),
             "contract_storage" => Some((CF_CONTRACT_STORAGE, "Contract storage")),
             "programs" => Some((CF_PROGRAMS, "Programs")),
             "symbol_registry" => Some((CF_SYMBOL_REGISTRY, "Symbol registry")),
             "symbol_by_program" => Some((CF_SYMBOL_BY_PROGRAM, "Symbol reverse registry")),
+            "evm_map" => Some((CF_EVM_MAP, "EVM address map")),
+            "evm_accounts" => Some((CF_EVM_ACCOUNTS, "EVM accounts")),
+            "evm_storage" => Some((CF_EVM_STORAGE, "EVM storage")),
+            "nft_by_owner" => Some((CF_NFT_BY_OWNER, "NFT owner index")),
+            "nft_by_collection" => Some((CF_NFT_BY_COLLECTION, "NFT collection index")),
+            "token_balances" => Some((CF_TOKEN_BALANCES, "Token balances")),
+            "holder_tokens" => Some((CF_HOLDER_TOKENS, "Holder token index")),
+            "solana_token_accounts" => {
+                Some((CF_SOLANA_TOKEN_ACCOUNTS, "Solana token-account bindings"))
+            }
+            "solana_holder_token_accounts" => Some((
+                CF_SOLANA_HOLDER_TOKEN_ACCOUNTS,
+                "Solana holder token-account index",
+            )),
+            "dex_orders_by_pair" => Some((CF_DEX_ORDERS_BY_PAIR, "DEX orders-by-pair index")),
+            "dex_trades_by_pair" => Some((CF_DEX_TRADES_BY_PAIR, "DEX trades-by-pair index")),
+            "dex_trades_by_taker" => Some((CF_DEX_TRADES_BY_TAKER, "DEX trades-by-taker index")),
+            "dex_trades_by_pair_taker" => Some((
+                CF_DEX_TRADES_BY_PAIR_TAKER,
+                "DEX trades-by-pair-taker index",
+            )),
+            "dex_orderbook_levels" => Some((CF_DEX_ORDERBOOK_LEVELS, "DEX orderbook levels")),
+            "pending_validator_changes" => {
+                Some((CF_PENDING_VALIDATOR_CHANGES, "Pending validator changes"))
+            }
             "restrictions" => Some((CF_RESTRICTIONS, "Restrictions")),
             "restriction_index_target" => {
                 Some((CF_RESTRICTION_INDEX_TARGET, "Restriction target index"))
@@ -42,6 +67,10 @@ impl StateStore {
         }
     }
 
+    pub fn snapshot_category_names() -> &'static [&'static str] {
+        STATE_SNAPSHOT_CATEGORIES
+    }
+
     /// Get a reference to the underlying DB Arc for direct access when needed.
     pub fn db_ref(&self) -> &Arc<DB> {
         &self.db
@@ -53,7 +82,7 @@ impl StateStore {
     ///
     /// This is used by short-lived staging databases on hot paths. Persistent
     /// sync checkpoints should use `create_checkpoint`, which writes metadata
-    /// and computes the checkpoint state root.
+    /// and records the already-committed checkpoint state root.
     pub fn create_raw_checkpoint(&self, checkpoint_dir: &str) -> Result<(), String> {
         use rocksdb::checkpoint::Checkpoint;
 
@@ -96,16 +125,7 @@ impl StateStore {
         self.create_raw_checkpoint(checkpoint_dir)?;
         let checkpoint_store = Self::open_checkpoint(checkpoint_dir)
             .map_err(|e| format!("Failed to open created checkpoint: {}", e))?;
-        let cached_root = checkpoint_store.compute_state_root_cached();
-        let state_root = checkpoint_store.compute_state_root_cold_start();
-        if cached_root != state_root {
-            tracing::warn!(
-                "Checkpoint root cache mismatch at slot {}: cached={} cold={}",
-                slot,
-                cached_root.to_hex(),
-                state_root.to_hex()
-            );
-        }
+        let state_root = checkpoint_store.compute_state_root_cached();
         let total_accounts = checkpoint_store.metrics.get_total_accounts();
         let meta = CheckpointMeta {
             slot,
@@ -580,5 +600,43 @@ impl StateStore {
             .map_err(|e| format!("Failed to import {}: {}", category, e))?;
 
         Ok(entries.len())
+    }
+
+    /// Remove all entries from a whitelisted snapshot category before applying
+    /// a verified full-category snapshot.
+    pub fn clear_snapshot_category(&self, category: &str) -> Result<u64, String> {
+        const DELETE_BATCH_SIZE: usize = 10_000;
+
+        let (cf_name, display_name) = Self::snapshot_category_cf(category)
+            .ok_or_else(|| format!("Unsupported snapshot category: {}", category))?;
+        let cf = self
+            .db
+            .cf_handle(cf_name)
+            .ok_or_else(|| format!("{} CF not found", display_name))?;
+
+        let mut read_opts = rocksdb::ReadOptions::default();
+        read_opts.set_total_order_seek(true);
+        let iter = self
+            .db
+            .iterator_cf_opt(&cf, read_opts, rocksdb::IteratorMode::Start);
+        let mut keys = Vec::new();
+        for item in iter {
+            let (key, _) = item.map_err(|e| format!("{} iterator error: {}", display_name, e))?;
+            keys.push(key.to_vec());
+        }
+
+        let mut deleted = 0u64;
+        for chunk in keys.chunks(DELETE_BATCH_SIZE) {
+            let mut batch = WriteBatch::default();
+            for key in chunk {
+                batch.delete_cf(&cf, key);
+            }
+            self.db
+                .write(batch)
+                .map_err(|e| format!("Failed to clear {}: {}", category, e))?;
+            deleted = deleted.saturating_add(chunk.len() as u64);
+        }
+
+        Ok(deleted)
     }
 }

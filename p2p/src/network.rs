@@ -9,7 +9,7 @@ use crate::peer_store::PeerStore;
 use lichen_core::{
     codec::serialized_size_legacy_bincode, Block, BlockHeader, CommitSignature, PqSignature,
     Precommit, Prevote, Proposal, Pubkey, StakePool, Transaction, ValidatorSet, Vote,
-    MAX_BLOCK_SIZE, MAX_TX_PER_BLOCK,
+    MAX_BLOCK_SIZE, MAX_TX_PER_BLOCK, STATE_SNAPSHOT_CATEGORIES, STATE_SNAPSHOT_SPECIAL_CATEGORIES,
 };
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -28,25 +28,10 @@ const MAX_STATE_SNAPSHOT_REQUEST_CHUNK_INDEX: u64 = 10_000_000;
 const MAX_EXPENSIVE_REQUESTS_PER_WINDOW: u32 = 30;
 const SYNC_BLOCK_QUEUE_SEND_TIMEOUT: Duration = Duration::from_millis(500);
 const SNAPSHOT_REQUEST_QUEUE_SEND_TIMEOUT: Duration = Duration::from_secs(2);
-const ALLOWED_STATE_SNAPSHOT_CATEGORIES: &[&str] = &[
-    "accounts",
-    "contract_storage",
-    "programs",
-    "symbol_registry",
-    "symbol_by_program",
-    "restrictions",
-    "restriction_index_target",
-    "restriction_index_code_hash",
-    "shielded_commitments",
-    "shielded_note_payloads",
-    "shielded_nullifiers",
-    "shielded_pool",
-    "shielded_txs",
-    "stats",
-    "validator_set",
-    "stake_pool",
-    "mossstake_pool",
-];
+fn is_allowed_state_snapshot_category(category: &str) -> bool {
+    STATE_SNAPSHOT_CATEGORIES.contains(&category)
+        || STATE_SNAPSHOT_SPECIAL_CATEGORIES.contains(&category)
+}
 
 fn is_rejected_find_node_response_addr(addr: &SocketAddr) -> bool {
     let ip = addr.ip();
@@ -152,7 +137,7 @@ fn validate_state_snapshot_request_for_p2p_admission(
     chunk_index: u64,
     chunk_size: u64,
 ) -> Result<(), String> {
-    if !ALLOWED_STATE_SNAPSHOT_CATEGORIES.contains(&category) {
+    if !is_allowed_state_snapshot_category(category) {
         return Err(format!("unsupported state snapshot category: {}", category));
     }
     if chunk_size == 0 || chunk_size > MAX_STATE_SNAPSHOT_REQUEST_CHUNK_SIZE {
@@ -1867,6 +1852,19 @@ mod tests {
 
         assert!(validate_transaction_for_p2p_admission(&tx).is_err());
         assert!(validate_message_for_p2p_admission(&MessageType::Transaction(tx)).is_err());
+    }
+
+    #[test]
+    fn test_state_snapshot_request_admission_uses_core_category_surface() {
+        for category in STATE_SNAPSHOT_CATEGORIES
+            .iter()
+            .chain(STATE_SNAPSHOT_SPECIAL_CATEGORIES.iter())
+        {
+            validate_state_snapshot_request_for_p2p_admission(category, 0, 1)
+                .unwrap_or_else(|err| panic!("{category} should be accepted: {err}"));
+        }
+
+        assert!(validate_state_snapshot_request_for_p2p_admission("forgotten_cf", 0, 1).is_err());
     }
 
     #[test]

@@ -135,6 +135,8 @@ pub use state::SparseStateCommitmentReport;
 pub use state::StateBatch;
 pub use state::StateStore;
 pub use state::SymbolRegistryEntry;
+pub use state::STATE_SNAPSHOT_CATEGORIES;
+pub use state::STATE_SNAPSHOT_SPECIAL_CATEGORIES;
 pub use transaction::{
     Instruction, Message, Transaction, TransactionType, DEFAULT_COMPUTE_BUDGET, MAX_COMPUTE_BUDGET,
     TX_WIRE_MAGIC, TX_WIRE_VERSION,
