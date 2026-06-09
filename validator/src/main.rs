@@ -14984,6 +14984,9 @@ async fn run_validator() {
                 VerifiedCheckpointAnchor,
             > = std::collections::HashMap::new();
             let mut active_snapshot_anchor: Option<VerifiedCheckpointAnchor> = None;
+            let mut active_snapshot_source_peer: Option<SocketAddr> = None;
+            let mut active_snapshot_source_validator: Option<Pubkey> = None;
+            let mut rejected_snapshot_sources: HashSet<(Pubkey, u64, [u8; 32])> = HashSet::new();
             let mut snapshot_last_progress_at = std::time::Instant::now();
             // Staged snapshot DB: chunks are written here as they arrive,
             // then the full staging state is root-verified before touching
@@ -15118,6 +15121,17 @@ async fn run_validator() {
                                 continue;
                             }
 
+                            let snapshot_source_key = (anchor_validator, slot, state_root);
+                            if rejected_snapshot_sources.contains(&snapshot_source_key) {
+                                info!(
+                                    "⏳ Skipping previously rejected checkpoint snapshot source {} for slot {} root {}",
+                                    anchor_validator.to_base58(),
+                                    slot,
+                                    hex::encode(&state_root[..8])
+                                );
+                                continue;
+                            }
+
                             if let Some(active_anchor) = active_snapshot_anchor.as_ref() {
                                 if active_anchor.slot != slot
                                     || active_anchor.state_root != state_root
@@ -15132,6 +15146,14 @@ async fn run_validator() {
                             }
 
                             if active_snapshot_anchor.is_some() {
+                                if active_snapshot_source_peer != Some(response.requester) {
+                                    info!(
+                                        "⏳ Ignoring checkpoint retry from {} while snapshot sync is pinned to {:?}",
+                                        response.requester,
+                                        active_snapshot_source_peer,
+                                    );
+                                    continue;
+                                }
                                 let incomplete =
                                     WARP_SNAPSHOT_CATEGORIES.iter().any(|category_name| {
                                         state_snap_progress
@@ -15193,6 +15215,8 @@ async fn run_validator() {
                             cleanup_snapshot_staging(&mut active_snapshot_staging);
                             active_snapshot_staging = Some((slot, staging_dir, staging_state));
                             active_snapshot_anchor = Some(anchor);
+                            active_snapshot_source_peer = Some(response.requester);
+                            active_snapshot_source_validator = Some(anchor_validator);
                             snapshot_last_progress_at = std::time::Instant::now();
                             state_snap_progress.clear();
                             // Peer is significantly ahead — request state snapshot
@@ -15318,6 +15342,13 @@ async fn run_validator() {
                             );
                             continue;
                         }
+                    }
+                    if active_snapshot_source_peer != Some(response.requester) {
+                        warn!(
+                            "⚠️  Rejecting {} snapshot chunk from {}; active snapshot is pinned to {:?}",
+                            category, response.requester, active_snapshot_source_peer
+                        );
+                        continue;
                     }
                     info!(
                         "📥 Received {} snapshot chunk {}/{} from {} (slot {})",
@@ -15607,9 +15638,25 @@ async fn run_validator() {
                         };
 
                         if !staging_ok {
+                            if let Some(source_validator) = active_snapshot_source_validator {
+                                rejected_snapshot_sources.insert((
+                                    source_validator,
+                                    snapshot_slot,
+                                    state_root,
+                                ));
+                                warn!(
+                                    "⚠️  Rejecting checkpoint snapshot source {} for slot {} root {} after staging validation failure",
+                                    source_validator.to_base58(),
+                                    snapshot_slot,
+                                    hex::encode(&state_root[..8])
+                                );
+                            }
                             drop(staging_state);
                             cleanup_snapshot_staging(&mut active_snapshot_staging);
                             state_snap_progress.clear();
+                            active_snapshot_anchor = None;
+                            active_snapshot_source_peer = None;
+                            active_snapshot_source_validator = None;
                             continue;
                         }
 
@@ -15618,6 +15665,8 @@ async fn run_validator() {
                             drop(staging_state);
                             cleanup_snapshot_staging(&mut active_snapshot_staging);
                             state_snap_progress.clear();
+                            active_snapshot_source_peer = None;
+                            active_snapshot_source_validator = None;
                             continue;
                         };
                         if snapshot_anchor.slot != snapshot_slot
@@ -15634,6 +15683,8 @@ async fn run_validator() {
                             cleanup_snapshot_staging(&mut active_snapshot_staging);
                             state_snap_progress.clear();
                             active_snapshot_anchor = None;
+                            active_snapshot_source_peer = None;
+                            active_snapshot_source_validator = None;
                             continue;
                         }
 
@@ -15675,6 +15726,8 @@ async fn run_validator() {
                             cleanup_snapshot_staging(&mut active_snapshot_staging);
                             state_snap_progress.clear();
                             active_snapshot_anchor = None;
+                            active_snapshot_source_peer = None;
+                            active_snapshot_source_validator = None;
                             continue;
                         }
                         if same_slot_root_repair {
@@ -15918,6 +15971,8 @@ async fn run_validator() {
                         drop(staging_state);
                         cleanup_snapshot_staging(&mut active_snapshot_staging);
                         active_snapshot_anchor = None;
+                        active_snapshot_source_peer = None;
+                        active_snapshot_source_validator = None;
                         state_snap_progress.clear();
                         verified_checkpoint_anchors.clear();
                     }
