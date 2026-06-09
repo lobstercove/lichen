@@ -15228,7 +15228,7 @@ async fn run_validator() {
                             MessageType::StateSnapshotRequest {
                                 category: category.clone(),
                                 chunk_index: current_progress.0,
-                                chunk_size: snapshot_request_chunk_size(&category),
+                                chunk_size: snapshot_request_chunk_size(category),
                             },
                             local_addr_for_snap_apply,
                         );
@@ -15286,7 +15286,7 @@ async fn run_validator() {
                             MessageType::StateSnapshotRequest {
                                 category: category.clone(),
                                 chunk_index: chunk_index + 1,
-                                chunk_size: snapshot_request_chunk_size(&category),
+                                chunk_size: snapshot_request_chunk_size(category),
                             },
                             local_addr_for_snap_apply,
                         );
