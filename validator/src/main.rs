@@ -3438,6 +3438,17 @@ const WARP_SNAPSHOT_CATEGORIES: &[&str] = &[
     "mossstake_pool",
 ];
 
+fn snapshot_request_chunk_size(category: &str) -> u64 {
+    match category {
+        // Archive records are much larger than state/index rows. Keep each
+        // snapshot response comfortably below the 16 MiB codec limit.
+        "blocks" => 50,
+        "transactions" => 200,
+        "account_snapshots" => 200,
+        _ => 1000,
+    }
+}
+
 const SHIELDED_STATE_BUNDLE_CATEGORIES: &[&str] = &[
     "shielded_commitments",
     "shielded_note_payloads",
@@ -14519,30 +14530,57 @@ async fn run_validator() {
                             let singleton_chunk = match category.as_str() {
                                 "validator_set" if chunk_index == 0 => {
                                     let set = store.load_validator_set().unwrap_or_default();
-                                    Some(vec![(
-                                        b"validator_set".to_vec(),
-                                        serialize_legacy_bincode(&set, "validator_set snapshot")
-                                            .unwrap_or_default(),
-                                    )])
+                                    let data = match serialize_legacy_bincode(
+                                        &set,
+                                        "validator_set snapshot",
+                                    ) {
+                                        Ok(data) => data,
+                                        Err(e) => {
+                                            warn!(
+                                                    "⚠️  Refusing to serve validator_set snapshot to {} after serialization failure: {}",
+                                                    request.requester, e
+                                                );
+                                            continue;
+                                        }
+                                    };
+                                    Some(vec![(b"validator_set".to_vec(), data)])
                                 }
                                 "stake_pool" if chunk_index == 0 => {
                                     let pool =
                                         store.get_stake_pool().unwrap_or_else(|_| StakePool::new());
-                                    Some(vec![(
-                                        b"stake_pool".to_vec(),
-                                        serialize_legacy_bincode(&pool, "stake_pool snapshot")
-                                            .unwrap_or_default(),
-                                    )])
+                                    let data = match serialize_legacy_bincode(
+                                        &pool,
+                                        "stake_pool snapshot",
+                                    ) {
+                                        Ok(data) => data,
+                                        Err(e) => {
+                                            warn!(
+                                                    "⚠️  Refusing to serve stake_pool snapshot to {} after serialization failure: {}",
+                                                    request.requester, e
+                                                );
+                                            continue;
+                                        }
+                                    };
+                                    Some(vec![(b"stake_pool".to_vec(), data)])
                                 }
                                 "mossstake_pool" if chunk_index == 0 => {
                                     let pool = store
                                         .get_mossstake_pool()
                                         .unwrap_or_else(|_| lichen_core::MossStakePool::new());
-                                    Some(vec![(
-                                        b"mossstake_pool".to_vec(),
-                                        serialize_legacy_bincode(&pool, "mossstake_pool snapshot")
-                                            .unwrap_or_default(),
-                                    )])
+                                    let data = match serialize_legacy_bincode(
+                                        &pool,
+                                        "mossstake_pool snapshot",
+                                    ) {
+                                        Ok(data) => data,
+                                        Err(e) => {
+                                            warn!(
+                                                "⚠️  Refusing to serve mossstake_pool snapshot to {} after serialization failure: {}",
+                                                request.requester, e
+                                            );
+                                            continue;
+                                        }
+                                    };
+                                    Some(vec![(b"mossstake_pool".to_vec(), data)])
                                 }
                                 "validator_set" | "stake_pool" | "mossstake_pool" => {
                                     Some(Vec::new())
@@ -14551,12 +14589,20 @@ async fn run_validator() {
                             };
 
                             if let Some(chunk) = singleton_chunk {
-                                let entries_bytes = serialize_legacy_bincode_limited(
+                                let entries_bytes = match serialize_legacy_bincode_limited(
                                     &chunk,
                                     SNAPSHOT_ENTRIES_CODEC_LIMIT_BYTES,
                                     "state snapshot entries",
-                                )
-                                .unwrap_or_default();
+                                ) {
+                                    Ok(bytes) => bytes,
+                                    Err(e) => {
+                                        warn!(
+                                            "⚠️  Refusing to serve {} snapshot singleton chunk to {} after encoding failure: {}",
+                                            category, request.requester, e
+                                        );
+                                        continue;
+                                    }
+                                };
                                 let msg = P2PMessage::new(
                                     MessageType::StateSnapshotResponse {
                                         category: category.clone(),
@@ -14668,12 +14714,23 @@ async fn run_validator() {
 
                             let chunk = page.entries;
 
-                            let entries_bytes = serialize_legacy_bincode_limited(
+                            let entries_bytes = match serialize_legacy_bincode_limited(
                                 &chunk,
                                 SNAPSHOT_ENTRIES_CODEC_LIMIT_BYTES,
                                 "state snapshot entries",
-                            )
-                            .unwrap_or_default();
+                            ) {
+                                Ok(bytes) => bytes,
+                                Err(e) => {
+                                    warn!(
+                                        "⚠️  Refusing to serve {} snapshot chunk {} to {} after encoding failure: {}",
+                                        category,
+                                        chunk_index,
+                                        request.requester,
+                                        e
+                                    );
+                                    continue;
+                                }
+                            };
                             let msg = P2PMessage::new(
                                 MessageType::StateSnapshotResponse {
                                     category: category.clone(),
@@ -14974,7 +15031,6 @@ async fn run_validator() {
                                         "🔁 Retrying incomplete state snapshot from {} at slot {}",
                                         response.requester, slot
                                     );
-                                    let chunk_size = 1000u64;
                                     for category_name in WARP_SNAPSHOT_CATEGORIES {
                                         let chunk_index =
                                             match state_snap_progress.get(*category_name) {
@@ -14988,7 +15044,9 @@ async fn run_validator() {
                                             MessageType::StateSnapshotRequest {
                                                 category: (*category_name).to_string(),
                                                 chunk_index,
-                                                chunk_size,
+                                                chunk_size: snapshot_request_chunk_size(
+                                                    category_name,
+                                                ),
                                             },
                                             local_addr_for_snap_apply,
                                         );
@@ -15025,13 +15083,12 @@ async fn run_validator() {
                             // P3-1: Send StateSnapshotRequest for each checkpoint-aligned
                             // state component so warp verification uses one
                             // coherent checkpoint snapshot.
-                            let chunk_size = 1000u64;
                             for category in WARP_SNAPSHOT_CATEGORIES {
                                 let snap_request = P2PMessage::new(
                                     MessageType::StateSnapshotRequest {
                                         category: category.to_string(),
                                         chunk_index: 0,
-                                        chunk_size,
+                                        chunk_size: snapshot_request_chunk_size(category),
                                     },
                                     local_addr_for_snap_apply,
                                 );
@@ -15171,7 +15228,7 @@ async fn run_validator() {
                             MessageType::StateSnapshotRequest {
                                 category: category.clone(),
                                 chunk_index: current_progress.0,
-                                chunk_size: 1000,
+                                chunk_size: snapshot_request_chunk_size(&category),
                             },
                             local_addr_for_snap_apply,
                         );
@@ -15229,7 +15286,7 @@ async fn run_validator() {
                             MessageType::StateSnapshotRequest {
                                 category: category.clone(),
                                 chunk_index: chunk_index + 1,
-                                chunk_size: 1000,
+                                chunk_size: snapshot_request_chunk_size(&category),
                             },
                             local_addr_for_snap_apply,
                         );
