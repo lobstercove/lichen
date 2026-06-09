@@ -12700,16 +12700,26 @@ async fn run_validator() {
                         let current_mode = sync_mgr.get_sync_mode().await;
                         let actions = sync_catch_up_actions(current_mode);
                         if actions.request_checkpoint_metadata {
-                            info!(
-                                "⚡ Warp sync: gap is {} blocks — probing state snapshot metadata; block replay paused",
-                                gap
-                            );
-                            request_checkpoint_metadata_from_peers(
-                                &peer_mgr_for_sync,
-                                local_addr,
-                                "post-genesis warp sync",
-                            )
-                            .await;
+                            let should_request = snapshot_sync_for_blocks
+                                .lock()
+                                .await
+                                .should_request_checkpoint_metadata();
+                            if should_request {
+                                info!(
+                                    "⚡ Warp sync: gap is {} blocks — probing state snapshot metadata; block replay paused",
+                                    gap
+                                );
+                                request_checkpoint_metadata_from_peers(
+                                    &peer_mgr_for_sync,
+                                    local_addr,
+                                    "post-genesis warp sync",
+                                )
+                                .await;
+                            } else {
+                                debug!(
+                                    "Post-genesis checkpoint probe skipped; checkpoint metadata or snapshot download already in progress"
+                                );
+                            }
                         }
                         if !actions.request_block_ranges {
                             sync_mgr.complete_sync().await;
@@ -13283,21 +13293,31 @@ async fn run_validator() {
                         let current_mode = sync_mgr.get_sync_mode().await;
                         let actions = sync_catch_up_actions(current_mode);
                         if actions.request_checkpoint_metadata {
-                            info!(
-                                "⚡ Warp sync: gap is {} blocks — probing state snapshot metadata; block replay paused",
-                                gap
-                            );
-                            request_checkpoint_metadata_from_peers(
-                                &peer_mgr_for_sync,
-                                local_addr,
-                                "gap warp sync",
-                            )
-                            .await;
-                            // The CheckpointMetaResponse handler will trigger
-                            // StateSnapshotRequest downloads. After all chunks
-                            // are received the state root is verified and the
-                            // node fast-forwards, then switches to Full mode
-                            // for the remaining tip blocks.
+                            let should_request = snapshot_sync_for_blocks
+                                .lock()
+                                .await
+                                .should_request_checkpoint_metadata();
+                            if should_request {
+                                info!(
+                                    "⚡ Warp sync: gap is {} blocks — probing state snapshot metadata; block replay paused",
+                                    gap
+                                );
+                                request_checkpoint_metadata_from_peers(
+                                    &peer_mgr_for_sync,
+                                    local_addr,
+                                    "gap warp sync",
+                                )
+                                .await;
+                                // The CheckpointMetaResponse handler will trigger
+                                // StateSnapshotRequest downloads. After all chunks
+                                // are received the state root is verified and the
+                                // node fast-forwards, then switches to Full mode
+                                // for the remaining tip blocks.
+                            } else {
+                                debug!(
+                                    "Gap checkpoint probe skipped; checkpoint metadata or snapshot download already in progress"
+                                );
+                            }
                         }
                         if !actions.request_block_ranges {
                             sync_mgr.complete_sync().await;
