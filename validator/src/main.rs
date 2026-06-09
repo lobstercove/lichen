@@ -3484,9 +3484,12 @@ fn emit_signature_status_events(
 struct SnapshotSync {
     validator_set: bool,
     stake_pool: bool,
+    warp_snapshot_active: bool,
+    last_checkpoint_metadata_request_at: Option<std::time::Instant>,
 }
 
 const MIN_WARP_CHECKPOINT_ANCHOR_PEERS: usize = 2;
+const CHECKPOINT_METADATA_RETRY_SECS: u64 = 15;
 
 impl SnapshotSync {
     fn new(is_joining_network: bool) -> Self {
@@ -3496,12 +3499,40 @@ impl SnapshotSync {
             Self {
                 validator_set: true,
                 stake_pool: true,
+                ..Self::default()
             }
         }
     }
 
     fn is_ready(&self) -> bool {
         self.validator_set && self.stake_pool
+    }
+
+    fn should_request_checkpoint_metadata(&mut self) -> bool {
+        if self.warp_snapshot_active {
+            return false;
+        }
+
+        let now = std::time::Instant::now();
+        if self
+            .last_checkpoint_metadata_request_at
+            .map(|last| last.elapsed().as_secs() < CHECKPOINT_METADATA_RETRY_SECS)
+            .unwrap_or(false)
+        {
+            return false;
+        }
+
+        self.last_checkpoint_metadata_request_at = Some(now);
+        true
+    }
+
+    fn mark_warp_snapshot_active(&mut self) {
+        self.warp_snapshot_active = true;
+    }
+
+    fn mark_warp_snapshot_idle(&mut self) {
+        self.warp_snapshot_active = false;
+        self.last_checkpoint_metadata_request_at = None;
     }
 }
 
@@ -11246,6 +11277,7 @@ async fn run_validator() {
         let data_dir_for_blocks = data_dir.clone();
         let finality_for_blocks = finality_tracker.clone();
         let vote_authority_for_rx = vote_authority.clone();
+        let snapshot_sync_for_blocks = snapshot_sync.clone();
         // PHASE-3: Clones needed for consensus-based slashing (opcode 27)
         let mempool_for_slash_blocks = mempool.clone();
         let slash_keypair_seed_for_blocks = validator_keypair.to_seed();
@@ -11315,16 +11347,26 @@ async fn run_validator() {
                             let current_mode = sync_mgr.get_sync_mode().await;
                             let actions = sync_catch_up_actions(current_mode);
                             if actions.request_checkpoint_metadata {
-                                info!(
-                                    "⚡ Warp sync: gap is {} blocks — probing state snapshot metadata; block replay paused",
-                                    gap
-                                );
-                                request_checkpoint_metadata_from_peers(
-                                    &peer_mgr_for_sync,
-                                    local_addr,
-                                    "periodic warp sync",
-                                )
-                                .await;
+                                let should_request = snapshot_sync_for_blocks
+                                    .lock()
+                                    .await
+                                    .should_request_checkpoint_metadata();
+                                if should_request {
+                                    info!(
+                                        "⚡ Warp sync: gap is {} blocks — probing state snapshot metadata; block replay paused",
+                                        gap
+                                    );
+                                    request_checkpoint_metadata_from_peers(
+                                        &peer_mgr_for_sync,
+                                        local_addr,
+                                        "periodic warp sync",
+                                    )
+                                    .await;
+                                } else {
+                                    debug!(
+                                        "Warp sync metadata probe skipped; checkpoint metadata or snapshot download already in progress"
+                                    );
+                                }
                             }
                             if !actions.request_block_ranges {
                                 sync_mgr.complete_sync().await;
@@ -13140,12 +13182,22 @@ async fn run_validator() {
                                 );
                                 sync_mgr.set_sync_mode(sync::SyncMode::Warp).await;
                                 sync_mgr.complete_sync().await;
-                                request_checkpoint_metadata_from_peers(
-                                    &peer_mgr_for_sync,
-                                    local_addr,
-                                    "parent-gap checkpoint repair",
-                                )
-                                .await;
+                                let should_request = snapshot_sync_for_blocks
+                                    .lock()
+                                    .await
+                                    .should_request_checkpoint_metadata();
+                                if should_request {
+                                    request_checkpoint_metadata_from_peers(
+                                        &peer_mgr_for_sync,
+                                        local_addr,
+                                        "parent-gap checkpoint repair",
+                                    )
+                                    .await;
+                                } else {
+                                    debug!(
+                                        "Parent-gap checkpoint probe skipped; checkpoint metadata or snapshot download already in progress"
+                                    );
+                                }
                             } else {
                                 let gap_start = current_slot + 1;
                                 let gap_end = block_slot.saturating_sub(1);
@@ -14993,8 +15045,55 @@ async fn run_validator() {
             // live state. This keeps archive-sized snapshots bounded by
             // RocksDB IO instead of buffering millions of entries in memory.
             let mut active_snapshot_staging: Option<(u64, String, StateStore)> = None;
+            let mut snapshot_retry_interval = time::interval(Duration::from_secs(1));
+            snapshot_retry_interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
 
-            while let Some(response) = snapshot_response_rx.recv().await {
+            loop {
+                let maybe_response = tokio::select! {
+                    response = snapshot_response_rx.recv() => response,
+                    _ = snapshot_retry_interval.tick() => {
+                        if active_snapshot_anchor.is_some()
+                            && snapshot_last_progress_at.elapsed().as_secs()
+                                >= SNAPSHOT_PROGRESS_RETRY_SECS
+                        {
+                            if let (Some(source_peer), Some((category_name, chunk_index))) = (
+                                active_snapshot_source_peer,
+                                next_snapshot_category_request(&state_snap_progress),
+                            ) {
+                                info!(
+                                    "🔁 Retrying stalled {} snapshot chunk {} from {}",
+                                    category_name,
+                                    chunk_index + 1,
+                                    source_peer
+                                );
+                                let retry_request = P2PMessage::new(
+                                    MessageType::StateSnapshotRequest {
+                                        category: category_name.to_string(),
+                                        chunk_index,
+                                        chunk_size: snapshot_request_chunk_size(category_name),
+                                    },
+                                    local_addr_for_snap_apply,
+                                );
+                                if let Err(e) = peer_mgr_for_snapshot_apply
+                                    .send_to_peer(&source_peer, retry_request)
+                                    .await
+                                {
+                                    warn!(
+                                        "⚠️  Failed to retry stalled {} snapshot chunk {}: {}",
+                                        category_name,
+                                        chunk_index + 1,
+                                        e
+                                    );
+                                }
+                                snapshot_last_progress_at = std::time::Instant::now();
+                            }
+                        }
+                        continue;
+                    }
+                };
+                let Some(response) = maybe_response else {
+                    break;
+                };
                 // Handle CheckpointMetaResponse
                 if let Some((
                     slot,
@@ -15217,6 +15316,10 @@ async fn run_validator() {
                             active_snapshot_anchor = Some(anchor);
                             active_snapshot_source_peer = Some(response.requester);
                             active_snapshot_source_validator = Some(anchor_validator);
+                            snapshot_sync_for_apply
+                                .lock()
+                                .await
+                                .mark_warp_snapshot_active();
                             snapshot_last_progress_at = std::time::Instant::now();
                             state_snap_progress.clear();
                             // Peer is significantly ahead — request state snapshot
@@ -15540,6 +15643,10 @@ async fn run_validator() {
                                 None => {
                                     warn!("⚠️  Snapshot completed without an active staging DB");
                                     state_snap_progress.clear();
+                                    snapshot_sync_for_apply
+                                        .lock()
+                                        .await
+                                        .mark_warp_snapshot_idle();
                                     continue;
                                 }
                             };
@@ -15551,6 +15658,10 @@ async fn run_validator() {
                             drop(staging_state);
                             cleanup_snapshot_staging(&mut active_snapshot_staging);
                             state_snap_progress.clear();
+                            snapshot_sync_for_apply
+                                .lock()
+                                .await
+                                .mark_warp_snapshot_idle();
                             continue;
                         }
                         info!(
@@ -15657,6 +15768,10 @@ async fn run_validator() {
                             active_snapshot_anchor = None;
                             active_snapshot_source_peer = None;
                             active_snapshot_source_validator = None;
+                            snapshot_sync_for_apply
+                                .lock()
+                                .await
+                                .mark_warp_snapshot_idle();
                             continue;
                         }
 
@@ -15667,6 +15782,10 @@ async fn run_validator() {
                             state_snap_progress.clear();
                             active_snapshot_source_peer = None;
                             active_snapshot_source_validator = None;
+                            snapshot_sync_for_apply
+                                .lock()
+                                .await
+                                .mark_warp_snapshot_idle();
                             continue;
                         };
                         if snapshot_anchor.slot != snapshot_slot
@@ -15685,6 +15804,10 @@ async fn run_validator() {
                             active_snapshot_anchor = None;
                             active_snapshot_source_peer = None;
                             active_snapshot_source_validator = None;
+                            snapshot_sync_for_apply
+                                .lock()
+                                .await
+                                .mark_warp_snapshot_idle();
                             continue;
                         }
 
@@ -15728,6 +15851,10 @@ async fn run_validator() {
                             active_snapshot_anchor = None;
                             active_snapshot_source_peer = None;
                             active_snapshot_source_validator = None;
+                            snapshot_sync_for_apply
+                                .lock()
+                                .await
+                                .mark_warp_snapshot_idle();
                             continue;
                         }
                         if same_slot_root_repair {
@@ -15975,6 +16102,10 @@ async fn run_validator() {
                         active_snapshot_source_validator = None;
                         state_snap_progress.clear();
                         verified_checkpoint_anchors.clear();
+                        snapshot_sync_for_apply
+                            .lock()
+                            .await
+                            .mark_warp_snapshot_idle();
                     }
 
                     continue;
@@ -23325,6 +23456,48 @@ mod tests {
             progress.insert((*category).to_string(), (1, 1));
         }
         assert_eq!(next_snapshot_category_request(&progress), None);
+    }
+
+    #[test]
+    fn checkpoint_metadata_requests_are_throttled_during_warp_snapshot() {
+        let mut sync = SnapshotSync::new(true);
+
+        assert!(sync.should_request_checkpoint_metadata());
+        assert!(!sync.should_request_checkpoint_metadata());
+
+        sync.last_checkpoint_metadata_request_at = Some(
+            std::time::Instant::now()
+                - std::time::Duration::from_secs(CHECKPOINT_METADATA_RETRY_SECS),
+        );
+        assert!(sync.should_request_checkpoint_metadata());
+
+        sync.mark_warp_snapshot_active();
+        sync.last_checkpoint_metadata_request_at = Some(
+            std::time::Instant::now()
+                - std::time::Duration::from_secs(CHECKPOINT_METADATA_RETRY_SECS * 2),
+        );
+        assert!(!sync.should_request_checkpoint_metadata());
+
+        sync.mark_warp_snapshot_idle();
+        assert!(sync.should_request_checkpoint_metadata());
+    }
+
+    #[test]
+    fn moving_snapshot_totals_keep_requesting_current_category() {
+        let mut progress = HashMap::new();
+        progress.insert("accounts".to_string(), (1, 1));
+        progress.insert("blocks".to_string(), (22, 23));
+
+        assert_eq!(
+            next_snapshot_category_request(&progress),
+            Some(("blocks", 22))
+        );
+
+        progress.insert("blocks".to_string(), (23, 24));
+        assert_eq!(
+            next_snapshot_category_request(&progress),
+            Some(("blocks", 23))
+        );
     }
 
     #[test]
