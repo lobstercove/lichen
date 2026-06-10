@@ -825,19 +825,25 @@ struct SyncCatchUpActions {
     request_block_ranges: bool,
 }
 
-fn sync_catch_up_actions(mode: sync::SyncMode) -> SyncCatchUpActions {
-    SyncCatchUpActions {
-        request_checkpoint_metadata: mode == sync::SyncMode::Warp,
-        request_block_ranges: mode != sync::SyncMode::Warp,
+fn sync_catch_up_actions(mode: sync::SyncMode, warp_snapshot_active: bool) -> SyncCatchUpActions {
+    match mode {
+        sync::SyncMode::Warp => SyncCatchUpActions {
+            request_checkpoint_metadata: !warp_snapshot_active,
+            request_block_ranges: !warp_snapshot_active,
+        },
+        _ => SyncCatchUpActions {
+            request_checkpoint_metadata: false,
+            request_block_ranges: true,
+        },
     }
 }
 
 fn parent_gap_should_probe_checkpoint(current_slot: u64, block_slot: u64) -> bool {
     block_slot > current_slot.saturating_add(1)
-        && sync_catch_up_actions(select_catch_up_mode(
-            current_slot,
-            block_slot.saturating_sub(current_slot),
-        ))
+        && sync_catch_up_actions(
+            select_catch_up_mode(current_slot, block_slot.saturating_sub(current_slot)),
+            false,
+        )
         .request_checkpoint_metadata
 }
 
@@ -3741,6 +3747,10 @@ impl SnapshotSync {
 
     fn mark_warp_snapshot_active(&mut self) {
         self.warp_snapshot_active = true;
+    }
+
+    fn is_warp_snapshot_active(&self) -> bool {
+        self.warp_snapshot_active
     }
 
     fn mark_warp_snapshot_idle(&mut self) {
@@ -11761,7 +11771,11 @@ async fn run_validator() {
                             info!("🔄 Periodic sync check: behind by {} blocks ({} to {})", gap, start, end);
                             sync_mgr.start_sync(start, end).await;
                             let current_mode = sync_mgr.get_sync_mode().await;
-                            let actions = sync_catch_up_actions(current_mode);
+                            let warp_snapshot_active = snapshot_sync_for_blocks
+                                .lock()
+                                .await
+                                .is_warp_snapshot_active();
+                            let actions = sync_catch_up_actions(current_mode, warp_snapshot_active);
                             if actions.request_checkpoint_metadata {
                                 let should_request = snapshot_sync_for_blocks
                                     .lock()
@@ -11769,7 +11783,7 @@ async fn run_validator() {
                                     .should_request_checkpoint_metadata();
                                 if should_request {
                                     info!(
-                                        "⚡ Warp sync: gap is {} blocks — probing state snapshot metadata; block replay paused",
+                                        "⚡ Warp sync: gap is {} blocks — probing state snapshot metadata; block replay continues until a verified snapshot is active",
                                         gap
                                     );
                                     request_checkpoint_metadata_from_peers(
@@ -13114,7 +13128,11 @@ async fn run_validator() {
                         info!("🔄 Post-genesis sync: blocks {} to {}", start, end);
                         sync_mgr.start_sync(start, end).await;
                         let current_mode = sync_mgr.get_sync_mode().await;
-                        let actions = sync_catch_up_actions(current_mode);
+                        let warp_snapshot_active = snapshot_sync_for_blocks
+                            .lock()
+                            .await
+                            .is_warp_snapshot_active();
+                        let actions = sync_catch_up_actions(current_mode, warp_snapshot_active);
                         if actions.request_checkpoint_metadata {
                             let should_request = snapshot_sync_for_blocks
                                 .lock()
@@ -13122,7 +13140,7 @@ async fn run_validator() {
                                 .should_request_checkpoint_metadata();
                             if should_request {
                                 info!(
-                                    "⚡ Warp sync: gap is {} blocks — probing state snapshot metadata; block replay paused",
+                                    "⚡ Warp sync: gap is {} blocks — probing state snapshot metadata; block replay continues until a verified snapshot is active",
                                     gap
                                 );
                                 request_checkpoint_metadata_from_peers(
@@ -13707,7 +13725,11 @@ async fn run_validator() {
                         sync_mgr.start_sync(start, end).await;
 
                         let current_mode = sync_mgr.get_sync_mode().await;
-                        let actions = sync_catch_up_actions(current_mode);
+                        let warp_snapshot_active = snapshot_sync_for_blocks
+                            .lock()
+                            .await
+                            .is_warp_snapshot_active();
+                        let actions = sync_catch_up_actions(current_mode, warp_snapshot_active);
                         if actions.request_checkpoint_metadata {
                             let should_request = snapshot_sync_for_blocks
                                 .lock()
@@ -13715,7 +13737,7 @@ async fn run_validator() {
                                 .should_request_checkpoint_metadata();
                             if should_request {
                                 info!(
-                                    "⚡ Warp sync: gap is {} blocks — probing state snapshot metadata; block replay paused",
+                                    "⚡ Warp sync: gap is {} blocks — probing state snapshot metadata; block replay continues until a verified snapshot is active",
                                     gap
                                 );
                                 request_checkpoint_metadata_from_peers(
@@ -23016,19 +23038,30 @@ mod tests {
     }
 
     #[test]
-    fn warp_sync_pauses_block_range_replay() {
-        let actions = sync_catch_up_actions(sync::SyncMode::Warp);
+    fn warp_sync_probes_and_replays_until_snapshot_is_active() {
+        let actions = sync_catch_up_actions(sync::SyncMode::Warp, false);
 
         assert!(actions.request_checkpoint_metadata);
         assert!(
+            actions.request_block_ranges,
+            "warp metadata probes must not strand validator-to-validator replay before a snapshot is active"
+        );
+    }
+
+    #[test]
+    fn active_warp_snapshot_pauses_block_range_replay() {
+        let actions = sync_catch_up_actions(sync::SyncMode::Warp, true);
+
+        assert!(!actions.request_checkpoint_metadata);
+        assert!(
             !actions.request_block_ranges,
-            "warp snapshots should not compete with block range replay"
+            "active warp snapshots should not compete with block range replay"
         );
     }
 
     #[test]
     fn full_sync_requests_block_range_replay_without_checkpoint_probe() {
-        let actions = sync_catch_up_actions(sync::SyncMode::Full);
+        let actions = sync_catch_up_actions(sync::SyncMode::Full, false);
 
         assert!(!actions.request_checkpoint_metadata);
         assert!(actions.request_block_ranges);
