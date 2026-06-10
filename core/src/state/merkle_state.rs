@@ -1686,6 +1686,66 @@ impl StateStore {
         root
     }
 
+    pub fn compute_state_root_cached_read_only(&self) -> Option<Hash> {
+        let cf = self.db.cf_handle(CF_STATS)?;
+        let include_restrictions = self.get_state_root_schema().unwrap_or(false);
+        if include_restrictions {
+            return None;
+        }
+        if !self.can_use_cached_subroot(b"dirty_account_count", b"dirty_acct:")
+            || !self.can_use_cached_subroot(b"dirty_contract_count", b"dirty_cstor:")
+            || self.cached_state_root_schema() != Some(include_restrictions)
+            || self.cached_state_commitment_schema() != Some(self.get_state_commitment_schema())
+        {
+            return None;
+        }
+
+        match self.db.get_cf(&cf, CACHED_STATE_ROOT_KEY) {
+            Ok(Some(data)) if data.len() == 32 => {
+                let mut bytes = [0u8; 32];
+                bytes.copy_from_slice(&data);
+                Some(Hash(bytes))
+            }
+            _ => None,
+        }
+    }
+
+    pub fn compute_state_root_read_only(&self) -> Hash {
+        let include_restrictions = self.get_state_root_schema().unwrap_or(false);
+        self.compute_state_root_for_schema_read_only(include_restrictions)
+    }
+
+    pub fn compute_state_root_with_restrictions_read_only(&self) -> Hash {
+        self.compute_state_root_for_schema_read_only(true)
+    }
+
+    pub fn compute_state_root_without_restrictions_read_only(&self) -> Hash {
+        self.compute_state_root_for_schema_read_only(false)
+    }
+
+    pub fn detect_state_root_schema_for_root_read_only(
+        &self,
+        expected_root: &Hash,
+    ) -> Option<bool> {
+        if self.compute_state_root_without_restrictions_read_only().0 == expected_root.0 {
+            Some(false)
+        } else if self.compute_state_root_with_restrictions_read_only().0 == expected_root.0 {
+            Some(true)
+        } else {
+            None
+        }
+    }
+
+    fn compute_state_root_for_schema_read_only(&self, include_restrictions: bool) -> Hash {
+        self.compose_state_root(
+            self.compute_accounts_root_read_only(),
+            self.compute_contract_storage_root_read_only(),
+            self.compute_stake_pool_hash(),
+            self.compute_mossstake_pool_hash(),
+            include_restrictions,
+        )
+    }
+
     /// Compute the post-transaction state root for an uncommitted batch.
     ///
     /// This is used by proposers to evaluate candidate blocks without cloning
@@ -2233,6 +2293,20 @@ impl StateStore {
         Ok(root)
     }
 
+    fn compute_sparse_accounts_root_read_only(&self) -> Result<Hash, String> {
+        if self.is_sparse_state_commitment_ready()
+            && self.can_use_cached_subroot(b"dirty_account_count", b"dirty_acct:")
+        {
+            if let Some(root) = self.read_cached_hash(SPARSE_ACCOUNTS_ROOT_KEY) {
+                return Ok(root);
+            }
+        }
+
+        let entries = self.collect_sparse_account_entries()?;
+        let (root, _) = self.sparse_compute_root_from_entries(CF_ACCOUNT_MERKLE_NODES, &entries)?;
+        Ok(root)
+    }
+
     fn compute_sparse_contract_storage_root(&self) -> Result<Hash, String> {
         if !self.is_sparse_state_commitment_ready() {
             let _ = self.rebuild_sparse_state_commitment(false)?;
@@ -2317,6 +2391,21 @@ impl StateStore {
         self.db
             .write(batch)
             .map_err(|e| format!("Failed to write sparse contract root update: {e}"))?;
+        Ok(root)
+    }
+
+    fn compute_sparse_contract_storage_root_read_only(&self) -> Result<Hash, String> {
+        if self.is_sparse_state_commitment_ready()
+            && self.can_use_cached_subroot(b"dirty_contract_count", b"dirty_cstor:")
+        {
+            if let Some(root) = self.read_cached_hash(SPARSE_CONTRACT_ROOT_KEY) {
+                return Ok(root);
+            }
+        }
+
+        let entries = self.collect_sparse_contract_entries()?;
+        let (root, _) =
+            self.sparse_compute_root_from_entries(CF_CONTRACT_MERKLE_NODES, &entries)?;
         Ok(root)
     }
 
@@ -2491,6 +2580,26 @@ impl StateStore {
         root
     }
 
+    fn compute_accounts_root_read_only(&self) -> Hash {
+        if self.uses_sparse_state_commitment() {
+            return match self.compute_sparse_accounts_root_read_only() {
+                Ok(root) => root,
+                Err(err) => {
+                    tracing::error!("Read-only sparse account root computation failed: {err}");
+                    self.compute_accounts_root_full_scan_read_only()
+                }
+            };
+        }
+
+        if self.can_use_cached_subroot(b"dirty_account_count", b"dirty_acct:") {
+            if let Some(root) = self.read_cached_hash(CACHED_ACCOUNTS_ROOT_KEY) {
+                return root;
+            }
+        }
+
+        self.compute_accounts_root_full_scan_read_only()
+    }
+
     pub fn compute_contract_storage_root(&self) -> Hash {
         if self.uses_sparse_state_commitment() {
             return match self.compute_sparse_contract_storage_root() {
@@ -2598,6 +2707,26 @@ impl StateStore {
         let root = Self::merkle_root_from_leaves(&leaves);
         self.cache_subroot(CACHED_CONTRACT_ROOT_KEY, &root);
         root
+    }
+
+    fn compute_contract_storage_root_read_only(&self) -> Hash {
+        if self.uses_sparse_state_commitment() {
+            return match self.compute_sparse_contract_storage_root_read_only() {
+                Ok(root) => root,
+                Err(err) => {
+                    tracing::error!("Read-only sparse contract root computation failed: {err}");
+                    self.compute_contract_storage_root_full_scan()
+                }
+            };
+        }
+
+        if self.can_use_cached_subroot(b"dirty_contract_count", b"dirty_cstor:") {
+            if let Some(root) = self.read_cached_hash(CACHED_CONTRACT_ROOT_KEY) {
+                return root;
+            }
+        }
+
+        self.compute_contract_storage_root_full_scan()
     }
 
     fn compute_contract_storage_root_cold_start(&self) -> Hash {
@@ -2817,6 +2946,24 @@ impl StateStore {
         }
 
         root
+    }
+
+    fn compute_accounts_root_full_scan_read_only(&self) -> Hash {
+        let cf = match self.db.cf_handle(CF_ACCOUNTS) {
+            Some(handle) => handle,
+            None => return Hash::default(),
+        };
+
+        let mut leaves: Vec<Hash> = Vec::new();
+        let iter = self.db.iterator_cf(&cf, rocksdb::IteratorMode::Start);
+        for (key, value) in iter.flatten() {
+            if Self::deserialize_account_check_dormant(&value) {
+                continue;
+            }
+            leaves.push(Hash::hash_two_parts(&key, &value));
+        }
+
+        Self::merkle_root_from_leaves(&leaves)
     }
 
     pub(crate) fn deserialize_account_check_dormant(raw: &[u8]) -> bool {

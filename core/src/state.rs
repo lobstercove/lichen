@@ -464,6 +464,32 @@ mod tests {
     };
     use tempfile::tempdir;
 
+    fn directory_fingerprint(root: &std::path::Path) -> Vec<(String, u64)> {
+        fn collect(root: &std::path::Path, dir: &std::path::Path, files: &mut Vec<(String, u64)>) {
+            for entry in std::fs::read_dir(dir).expect("read directory") {
+                let entry = entry.expect("read directory entry");
+                let path = entry.path();
+                let metadata = entry.metadata().expect("read metadata");
+                if metadata.is_dir() {
+                    collect(root, &path, files);
+                } else {
+                    files.push((
+                        path.strip_prefix(root)
+                            .expect("strip fingerprint root")
+                            .to_string_lossy()
+                            .to_string(),
+                        metadata.len(),
+                    ));
+                }
+            }
+        }
+
+        let mut files = Vec::new();
+        collect(root, root, &mut files);
+        files.sort();
+        files
+    }
+
     fn restriction_test_record(
         id: u64,
         target: RestrictionTarget,
@@ -654,16 +680,79 @@ mod tests {
         let latest = StateStore::latest_checkpoint(state_dir.to_str().unwrap()).unwrap();
         assert_eq!(latest.0.slot, 7);
 
+        let before_read = directory_fingerprint(&checkpoint_dir);
         let checkpoint_state = StateStore::open_checkpoint(&latest.1).unwrap();
         let loaded = checkpoint_state.get_account(&pk).unwrap().unwrap();
         assert_eq!(loaded.spores, acct.spores);
         assert_eq!(loaded.owner, acct.owner);
+        assert_eq!(
+            checkpoint_state.compute_state_root_read_only(),
+            expected_root
+        );
+        assert_eq!(
+            directory_fingerprint(&checkpoint_dir),
+            before_read,
+            "read-only checkpoint open and root verification must not rewrite files"
+        );
+        assert!(checkpoint_state
+            .put_account(&Pubkey([0x7B; 32]), &Account::new(5, Pubkey([0x7B; 32])))
+            .is_err());
+        assert_eq!(
+            directory_fingerprint(&checkpoint_dir),
+            before_read,
+            "writes through checkpoint handles must be rejected without side effects"
+        );
+        drop(checkpoint_state);
 
         assert_eq!(
             StateStore::prune_checkpoints(state_dir.to_str().unwrap(), 0).unwrap(),
             1
         );
         assert!(StateStore::list_checkpoints(state_dir.to_str().unwrap()).is_empty());
+    }
+
+    #[test]
+    fn test_sparse_checkpoint_read_only_root_does_not_rebuild_checkpoint() {
+        let temp = tempdir().unwrap();
+        let state_dir = temp.path().join("state");
+        let checkpoint_dir = state_dir.join("checkpoints").join("slot-11");
+        let state = StateStore::open(&state_dir).unwrap();
+
+        for index in 0..32u8 {
+            let pk = Pubkey([index; 32]);
+            state
+                .put_account(&pk, &Account::new(index as u64 + 1, pk))
+                .unwrap();
+            state
+                .put_contract_storage(&pk, b"checkpoint-sparse", &[index])
+                .unwrap();
+        }
+        state.rebuild_sparse_state_commitment(true).unwrap();
+        assert!(state.uses_sparse_state_commitment());
+        let expected_root = state.compute_state_root_cached();
+
+        let meta = state
+            .create_checkpoint(checkpoint_dir.to_str().unwrap(), 11)
+            .unwrap();
+        assert_eq!(Hash(meta.state_root), expected_root);
+
+        let before_read = directory_fingerprint(&checkpoint_dir);
+        let checkpoint_state =
+            StateStore::open_checkpoint(checkpoint_dir.to_str().unwrap()).unwrap();
+        assert!(checkpoint_state.uses_sparse_state_commitment());
+        assert_eq!(
+            checkpoint_state.compute_state_root_cached_read_only(),
+            Some(expected_root)
+        );
+        assert_eq!(
+            checkpoint_state.compute_state_root_read_only(),
+            expected_root
+        );
+        assert_eq!(
+            directory_fingerprint(&checkpoint_dir),
+            before_read,
+            "sparse checkpoint read-only verification must not rebuild or compact checkpoint files"
+        );
     }
 
     #[test]

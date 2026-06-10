@@ -34,6 +34,37 @@ impl StateStore {
         cache_mb: Option<usize>,
     ) -> Result<Self, String> {
         let db_arc = Arc::new(open_hot_db(path, cache_mb)?);
+        Self::from_hot_db_arc(db_arc)
+    }
+
+    /// Open an existing hot state database with RocksDB's read-only API.
+    ///
+    /// This is used for checkpoint snapshots. It must not create column
+    /// families, take a writable lock, replay WALs into new files, or allow
+    /// root-verification helpers to persist cache repairs into checkpoint dirs.
+    pub fn open_read_only_with_cache_mb<P: AsRef<Path>>(
+        path: P,
+        cache_mb: Option<usize>,
+    ) -> Result<Self, String> {
+        let db_arc = Arc::new(open_hot_db_read_only(path, cache_mb)?);
+        Self::from_hot_db_arc(db_arc)
+    }
+
+    /// Open a live primary database as a RocksDB secondary for read-only diagnostics.
+    ///
+    /// The secondary uses the same column-family descriptors as the normal hot DB
+    /// but does not take the primary lock, so admin read commands can inspect a
+    /// running validator without stopping systemd or copying RocksDB state.
+    pub fn open_secondary_with_cache_mb<P: AsRef<Path>>(
+        primary_path: P,
+        secondary_path: P,
+        cache_mb: Option<usize>,
+    ) -> Result<Self, String> {
+        let db_arc = Arc::new(open_hot_db_secondary(
+            primary_path,
+            secondary_path,
+            cache_mb,
+        )?);
         let metrics = Arc::new(MetricsStore::new());
 
         metrics.load(&db_arc)?;
@@ -55,21 +86,7 @@ impl StateStore {
         })
     }
 
-    /// Open a live primary database as a RocksDB secondary for read-only diagnostics.
-    ///
-    /// The secondary uses the same column-family descriptors as the normal hot DB
-    /// but does not take the primary lock, so admin read commands can inspect a
-    /// running validator without stopping systemd or copying RocksDB state.
-    pub fn open_secondary_with_cache_mb<P: AsRef<Path>>(
-        primary_path: P,
-        secondary_path: P,
-        cache_mb: Option<usize>,
-    ) -> Result<Self, String> {
-        let db_arc = Arc::new(open_hot_db_secondary(
-            primary_path,
-            secondary_path,
-            cache_mb,
-        )?);
+    fn from_hot_db_arc(db_arc: Arc<DB>) -> Result<Self, String> {
         let metrics = Arc::new(MetricsStore::new());
 
         metrics.load(&db_arc)?;
@@ -508,6 +525,29 @@ pub(super) fn open_hot_db<P: AsRef<Path>>(path: P, cache_mb: Option<usize>) -> R
 
     DB::open_cf_descriptors(&db_opts, path, build_hot_cf_descriptors(&shared_cache))
         .map_err(|e| format!("Failed to open database: {}", e))
+}
+
+pub(super) fn open_hot_db_read_only<P: AsRef<Path>>(
+    path: P,
+    cache_mb: Option<usize>,
+) -> Result<DB, String> {
+    let mut db_opts = Options::default();
+    db_opts.create_if_missing(false);
+    db_opts.create_missing_column_families(false);
+    apply_global_tuning(&mut db_opts, hot_db_tuning_profile());
+    db_opts.increase_parallelism(num_cpus());
+
+    let cache_size_mb = detect_cache_size_mb(cache_mb);
+    tracing::info!("🗄️  RocksDB read-only shared cache: {} MB", cache_size_mb);
+    let shared_cache = Cache::new_lru_cache(cache_size_mb * 1024 * 1024);
+
+    DB::open_cf_descriptors_read_only(
+        &db_opts,
+        path,
+        build_hot_cf_descriptors(&shared_cache),
+        false,
+    )
+    .map_err(|e| format!("Failed to open database read-only: {}", e))
 }
 
 pub(super) fn open_hot_db_secondary<P: AsRef<Path>>(

@@ -1902,6 +1902,48 @@ fn validate_state_root_with_schema(
     ))
 }
 
+fn validate_checkpoint_state_root_read_only(
+    state: &StateStore,
+    slot: u64,
+    expected_root: Hash,
+) -> Result<(), String> {
+    if expected_root == Hash::default() {
+        if slot == 0 {
+            return Ok(());
+        }
+        return Err(format!(
+            "slot {} checkpoint metadata missing state-root commitment",
+            slot
+        ));
+    }
+
+    if state
+        .compute_state_root_cached_read_only()
+        .is_some_and(|root| root == expected_root)
+    {
+        return Ok(());
+    }
+
+    let actual_root = state.compute_state_root_read_only();
+    if actual_root == expected_root {
+        return Ok(());
+    }
+
+    if state
+        .detect_state_root_schema_for_root_read_only(&expected_root)
+        .is_some()
+    {
+        return Ok(());
+    }
+
+    Err(format!(
+        "slot {} checkpoint metadata state-root mismatch: read_only={} expected={}",
+        slot,
+        actual_root.to_hex(),
+        expected_root.to_hex(),
+    ))
+}
+
 fn parse_genesis_pubkeys(values: &[String], label: &str) -> Vec<Pubkey> {
     let mut pubkeys = Vec::new();
     for value in values {
@@ -6073,12 +6115,10 @@ fn latest_verified_checkpoint(
                 continue;
             }
         };
-        if let Err(err) = validate_state_root_with_schema(
+        if let Err(err) = validate_checkpoint_state_root_read_only(
             &checkpoint_store,
             meta.slot,
             Hash(meta.state_root),
-            "checkpoint metadata",
-            true,
         ) {
             warn!("⚠️  Rejecting checkpoint at slot {}: {}", meta.slot, err);
             continue;
@@ -20200,6 +20240,32 @@ mod tests {
 
     // ── Helper builders ─────────────────────────────────────────────
 
+    fn directory_fingerprint(root: &std::path::Path) -> Vec<(String, u64)> {
+        fn collect(root: &std::path::Path, dir: &std::path::Path, files: &mut Vec<(String, u64)>) {
+            for entry in std::fs::read_dir(dir).expect("read directory") {
+                let entry = entry.expect("read directory entry");
+                let path = entry.path();
+                let metadata = entry.metadata().expect("read metadata");
+                if metadata.is_dir() {
+                    collect(root, &path, files);
+                } else {
+                    files.push((
+                        path.strip_prefix(root)
+                            .expect("strip fingerprint root")
+                            .to_string_lossy()
+                            .to_string(),
+                        metadata.len(),
+                    ));
+                }
+            }
+        }
+
+        let mut files = Vec::new();
+        collect(root, root, &mut files);
+        files.sort();
+        files
+    }
+
     fn make_test_signature(seed_byte: u8, message: &[u8]) -> lichen_core::PqSignature {
         let mut seed = [0u8; 32];
         seed[0] = seed_byte;
@@ -21635,6 +21701,7 @@ mod tests {
             .set_last_finalized_slot(1)
             .expect("set finalized slot");
 
+        let checkpoint_fingerprint = directory_fingerprint(&checkpoint_path);
         let (meta, _, _) = latest_verified_checkpoint(
             temp_dir.path().to_str().expect("data dir"),
             &state,
@@ -21646,6 +21713,11 @@ mod tests {
 
         assert_eq!(meta.slot, 1);
         assert_eq!(meta.state_root, block.header.state_root.0);
+        assert_eq!(
+            directory_fingerprint(&checkpoint_path),
+            checkpoint_fingerprint,
+            "checkpoint verification must not rewrite checkpoint files"
+        );
     }
 
     #[test]

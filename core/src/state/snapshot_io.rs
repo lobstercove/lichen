@@ -142,7 +142,9 @@ impl StateStore {
         self.create_raw_checkpoint(checkpoint_dir)?;
         let checkpoint_store = Self::open_checkpoint(checkpoint_dir)
             .map_err(|e| format!("Failed to open created checkpoint: {}", e))?;
-        let state_root = checkpoint_store.compute_state_root_cached();
+        let state_root = checkpoint_store
+            .compute_state_root_cached_read_only()
+            .unwrap_or_else(|| checkpoint_store.compute_state_root_read_only());
         let total_accounts = checkpoint_store.metrics.get_total_accounts();
         let meta = CheckpointMeta {
             slot,
@@ -165,7 +167,7 @@ impl StateStore {
 
     /// Open a checkpoint as a read-only StateStore for serving snapshot data.
     pub fn open_checkpoint(checkpoint_dir: &str) -> Result<Self, String> {
-        Self::open(checkpoint_dir)
+        Self::open_read_only_with_cache_mb(checkpoint_dir, None)
     }
 
     /// List available checkpoints in the data directory.
