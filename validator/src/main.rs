@@ -6129,6 +6129,15 @@ fn latest_verified_checkpoint_cached(
     }
 }
 
+async fn checkpoint_auth_snapshot(
+    validator_set: &Arc<RwLock<ValidatorSet>>,
+    stake_pool: &Arc<RwLock<StakePool>>,
+) -> (ValidatorSet, StakePool) {
+    let validator_snapshot = validator_set.read().await.clone();
+    let stake_snapshot = stake_pool.read().await.clone();
+    (validator_snapshot, stake_snapshot)
+}
+
 #[cfg(test)]
 fn verify_committed_block_authenticity(
     block: &Block,
@@ -14626,8 +14635,11 @@ async fn run_validator() {
                         commit_round,
                         commit_signatures,
                     ) = {
-                        let vs = validator_set_for_snapshot.read().await;
-                        let pool = stake_pool_for_snapshot.read().await;
+                        let (vs, pool) = checkpoint_auth_snapshot(
+                            &validator_set_for_snapshot,
+                            &stake_pool_for_snapshot,
+                        )
+                        .await;
                         match latest_verified_checkpoint_cached(
                             &mut verified_checkpoint_cache,
                             &data_dir_for_snapshot,
@@ -14686,8 +14698,11 @@ async fn run_validator() {
                     let session = match snapshot_export_sessions.get(&session_key).cloned() {
                         Some(session) => session,
                         None => {
-                            let vs = validator_set_for_snapshot.read().await;
-                            let pool = stake_pool_for_snapshot.read().await;
+                            let (vs, pool) = checkpoint_auth_snapshot(
+                                &validator_set_for_snapshot,
+                                &stake_pool_for_snapshot,
+                            )
+                            .await;
                             match latest_verified_checkpoint_cached(
                                 &mut verified_checkpoint_cache,
                                 &data_dir_for_snapshot,
@@ -14989,8 +15004,11 @@ async fn run_validator() {
                             commit_round,
                             commit_signatures,
                         ) = {
-                            let vs = validator_set_for_snapshot.read().await;
-                            let pool = stake_pool_for_snapshot.read().await;
+                            let (vs, pool) = checkpoint_auth_snapshot(
+                                &validator_set_for_snapshot,
+                                &stake_pool_for_snapshot,
+                            )
+                            .await;
                             match latest_verified_checkpoint_cached(
                                 &mut verified_checkpoint_cache,
                                 &data_dir_for_snapshot,
@@ -23500,6 +23518,65 @@ mod tests {
 
         sync.mark_warp_snapshot_idle();
         assert!(sync.should_request_checkpoint_metadata());
+    }
+
+    #[test]
+    fn checkpoint_auth_snapshot_drops_live_locks_before_checkpoint_verification() {
+        let validator_set = Arc::new(RwLock::new(ValidatorSet::new()));
+        let stake_pool = Arc::new(RwLock::new(StakePool::new()));
+        let runtime = tokio::runtime::Runtime::new().expect("create tokio runtime");
+
+        let (_validator_snapshot, _stake_snapshot) =
+            runtime.block_on(checkpoint_auth_snapshot(&validator_set, &stake_pool));
+
+        assert!(
+            validator_set.try_write().is_ok(),
+            "checkpoint auth snapshot must not retain the live validator-set lock"
+        );
+        assert!(
+            stake_pool.try_write().is_ok(),
+            "checkpoint auth snapshot must not retain the live stake-pool lock"
+        );
+    }
+
+    #[test]
+    fn snapshot_checkpoint_lookup_uses_auth_snapshots_not_live_lock_guards() {
+        let source = include_str!("main.rs");
+        let start = source
+            .find("Snapshot request handler started")
+            .expect("snapshot request handler marker");
+        let end = source[start..]
+            .find("// Handle CheckpointMetaResponse")
+            .map(|offset| start + offset)
+            .expect("checkpoint metadata response marker");
+        let section = &source[start..end];
+
+        assert_eq!(
+            section
+                .matches("latest_verified_checkpoint_cached(")
+                .count(),
+            3,
+            "snapshot serving should have exactly three verified checkpoint lookup sites"
+        );
+        assert_eq!(
+            section.matches("checkpoint_auth_snapshot(").count(),
+            3,
+            "every snapshot checkpoint lookup must use owned auth snapshots"
+        );
+        assert_eq!(
+            section
+                .matches("validator_set_for_snapshot.read().await")
+                .count(),
+            0,
+            "snapshot checkpoint lookup must not hold live validator-set read guards"
+        );
+        assert_eq!(
+            section
+                .matches("stake_pool_for_snapshot.read().await")
+                .count(),
+            0,
+            "snapshot checkpoint lookup must not hold live stake-pool read guards"
+        );
     }
 
     #[test]
