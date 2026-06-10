@@ -13,8 +13,9 @@ pub mod peer_store;
 
 pub use gossip::GossipManager;
 pub use message::{
-    short_tx_id, validator_announcement_signing_message, CompactBlock, MessageType, P2PMessage,
-    PeerInfoMsg, ShortTxId, SnapshotCategoryDigest, SnapshotKind, P2P_PROTOCOL_VERSION,
+    short_tx_id, validator_announcement_signing_message, CheckpointMetaAnchor, CompactBlock,
+    MessageType, P2PMessage, PeerInfoMsg, ShortTxId, SnapshotCategoryDigest, SnapshotKind,
+    P2P_PROTOCOL_VERSION,
 };
 pub use network::{
     BlockRangeRequestMsg, CompactBlockMsg, ConsensusActivityMsg, ConsistencyReportMsg,

@@ -20,6 +20,27 @@ pub struct SnapshotCategoryDigest {
     pub sha256: [u8; 32],
 }
 
+/// One verified checkpoint anchor advertised by a validator.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CheckpointMetaAnchor {
+    /// Slot of the checkpoint.
+    pub slot: u64,
+    /// State root at that slot.
+    pub state_root: [u8; 32],
+    /// Total accounts in the checkpoint.
+    pub total_accounts: u64,
+    /// Signed block header anchoring this checkpoint.
+    pub checkpoint_header: Option<BlockHeader>,
+    /// Consensus round that produced the checkpoint anchor commit.
+    pub commit_round: u32,
+    /// Commit certificate for the checkpoint anchor block.
+    #[serde(default)]
+    pub commit_signatures: Vec<CommitSignature>,
+    /// Deterministic per-category digests for the checkpoint snapshot.
+    #[serde(default)]
+    pub snapshot_manifest: Vec<SnapshotCategoryDigest>,
+}
+
 /// Build the signed payload for validator announcements.
 ///
 /// Legacy announcements signed only the fixed-width fields.
@@ -288,6 +309,11 @@ pub enum MessageType {
         /// Deterministic per-category digests for the checkpoint snapshot.
         #[serde(default)]
         snapshot_manifest: Vec<SnapshotCategoryDigest>,
+        /// Recent verified checkpoint anchors, newest first. This lets a
+        /// joining node form quorum on the newest checkpoint common to peers
+        /// even when their latest checkpoint caches refresh at different times.
+        #[serde(default)]
+        recent_checkpoints: Vec<CheckpointMetaAnchor>,
     },
 
     /// Slashing evidence broadcast

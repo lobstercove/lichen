@@ -2,15 +2,15 @@
 
 use crate::gossip::GossipManager;
 use crate::message::{
-    validator_announcement_signing_message, MessageType, P2PMessage, SnapshotCategoryDigest,
+    validator_announcement_signing_message, CheckpointMetaAnchor, MessageType, P2PMessage,
     SnapshotKind,
 };
 use crate::peer::{PeerManager, NON_CONSENSUS_FANOUT};
 use crate::peer_store::PeerStore;
 use lichen_core::{
-    codec::serialized_size_legacy_bincode, Block, BlockHeader, CommitSignature, PqSignature,
-    Precommit, Prevote, Proposal, Pubkey, StakePool, Transaction, ValidatorSet, Vote,
-    MAX_BLOCK_SIZE, MAX_TX_PER_BLOCK, STATE_SNAPSHOT_CATEGORIES, STATE_SNAPSHOT_SPECIAL_CATEGORIES,
+    codec::serialized_size_legacy_bincode, Block, PqSignature, Precommit, Prevote, Proposal,
+    Pubkey, StakePool, Transaction, ValidatorSet, Vote, MAX_BLOCK_SIZE, MAX_TX_PER_BLOCK,
+    STATE_SNAPSHOT_CATEGORIES, STATE_SNAPSHOT_SPECIAL_CATEGORIES,
 };
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -419,18 +419,8 @@ pub struct SnapshotResponseMsg {
     /// For StateSnapshotResponse: (category, chunk_index, total_chunks, snapshot_slot, state_root, entries)
     #[allow(clippy::type_complexity)]
     pub state_snapshot_data: Option<(String, u64, u64, u64, [u8; 32], Vec<u8>)>,
-    /// For CheckpointMetaResponse:
-    /// (slot, state_root, total_accounts, checkpoint_header, commit_round, commit_signatures)
-    #[allow(clippy::type_complexity)]
-    pub checkpoint_meta: Option<(
-        u64,
-        [u8; 32],
-        u64,
-        Option<BlockHeader>,
-        u32,
-        Vec<CommitSignature>,
-        Vec<SnapshotCategoryDigest>,
-    )>,
+    /// For CheckpointMetaResponse: recent verified checkpoint anchors, newest first.
+    pub checkpoint_meta: Option<Vec<CheckpointMetaAnchor>>,
 }
 
 /// P3-3: Compact block received from a peer
@@ -1262,14 +1252,12 @@ impl P2PNetwork {
                 commit_round,
                 commit_signatures,
                 snapshot_manifest,
+                recent_checkpoints,
             } => {
-                let response = SnapshotResponseMsg {
-                    requester: peer_addr,
-                    kind: SnapshotKind::StateCheckpoint,
-                    validator_set: None,
-                    stake_pool: None,
-                    state_snapshot_data: None,
-                    checkpoint_meta: Some((
+                let mut checkpoint_anchors =
+                    Vec::with_capacity(recent_checkpoints.len().saturating_add(1));
+                if slot > 0 {
+                    checkpoint_anchors.push(CheckpointMetaAnchor {
                         slot,
                         state_root,
                         total_accounts,
@@ -1277,7 +1265,16 @@ impl P2PNetwork {
                         commit_round,
                         commit_signatures,
                         snapshot_manifest,
-                    )),
+                    });
+                }
+                checkpoint_anchors.extend(recent_checkpoints);
+                let response = SnapshotResponseMsg {
+                    requester: peer_addr,
+                    kind: SnapshotKind::StateCheckpoint,
+                    validator_set: None,
+                    stake_pool: None,
+                    state_snapshot_data: None,
+                    checkpoint_meta: Some(checkpoint_anchors),
                 };
                 if let Err(e) = self.snapshot_response_tx.try_send(response) {
                     warn!(
