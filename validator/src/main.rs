@@ -24585,10 +24585,10 @@ mod tests {
 
         assert_eq!(
             section
-                .matches("latest_verified_checkpoint_cached(")
+                .matches("verified_checkpoint_meta_anchors_cached(")
                 .count(),
             2,
-            "snapshot serving should use latest checkpoint lookup only for metadata responses"
+            "snapshot serving should use the shared checkpoint metadata cache only for metadata responses"
         );
         assert_eq!(
             section.matches("latest_verified_checkpoint(").count(),
