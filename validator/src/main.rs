@@ -931,6 +931,20 @@ struct VerifiedCheckpointCacheEntry {
     verified_at: Instant,
 }
 
+impl VerifiedCheckpointCacheEntry {
+    fn is_fresh(&self) -> bool {
+        self.verified_at.elapsed().as_secs() < SNAPSHOT_VERIFIED_CHECKPOINT_CACHE_TTL_SECS
+    }
+
+    fn checkpoint(&self) -> (lichen_core::CheckpointMeta, String, Block) {
+        (
+            self.meta.clone(),
+            self.checkpoint_path.clone(),
+            self.block.clone(),
+        )
+    }
+}
+
 const SNAPSHOT_VERIFIED_CHECKPOINT_CACHE_TTL_SECS: u64 = 300;
 const SNAPSHOT_RESPONSE_RECONNECT_COOLDOWN_SECS: u64 = 30;
 
@@ -6088,45 +6102,79 @@ fn latest_verified_checkpoint(
     None
 }
 
-fn latest_verified_checkpoint_cached(
+async fn latest_verified_checkpoint_cached(
     cache: &mut Option<VerifiedCheckpointCacheEntry>,
+    refresh: &mut Option<tokio::task::JoinHandle<Option<VerifiedCheckpointCacheEntry>>>,
     data_dir: &str,
     state: &StateStore,
     validator_set: &ValidatorSet,
     stake_pool: &StakePool,
     chain_id: &str,
 ) -> Option<(lichen_core::CheckpointMeta, String, Block)> {
-    if let Some(cached) = cache.as_ref() {
-        if cached.verified_at.elapsed().as_secs() < SNAPSHOT_VERIFIED_CHECKPOINT_CACHE_TTL_SECS {
-            return Some((
-                cached.meta.clone(),
-                cached.checkpoint_path.clone(),
-                cached.block.clone(),
-            ));
+    if refresh.as_ref().is_some_and(|handle| handle.is_finished()) {
+        if let Some(handle) = refresh.take() {
+            match handle.await {
+                Ok(Some(entry)) => {
+                    info!(
+                        "✅ Refreshed verified checkpoint cache at slot {}",
+                        entry.meta.slot
+                    );
+                    *cache = Some(entry);
+                }
+                Ok(None) => {
+                    debug!("Verified checkpoint cache refresh found no eligible checkpoint");
+                    *cache = None;
+                }
+                Err(err) => {
+                    warn!("⚠️  Verified checkpoint cache refresh failed: {}", err);
+                }
+            }
         }
     }
 
-    let started = Instant::now();
-    let verified = latest_verified_checkpoint(data_dir, state, validator_set, stake_pool, chain_id);
-    if started.elapsed().as_secs() >= 2 {
-        warn!(
-            "⚠️  Verified checkpoint lookup took {}s",
-            started.elapsed().as_secs()
-        );
+    if let Some(cached) = cache.as_ref() {
+        if cached.is_fresh() {
+            return Some(cached.checkpoint());
+        }
+        if refresh.is_some() {
+            return Some(cached.checkpoint());
+        }
     }
 
-    if let Some((meta, checkpoint_path, block)) = verified {
-        *cache = Some(VerifiedCheckpointCacheEntry {
-            meta: meta.clone(),
-            checkpoint_path: checkpoint_path.clone(),
-            block: block.clone(),
-            verified_at: Instant::now(),
-        });
-        Some((meta, checkpoint_path, block))
-    } else {
-        *cache = None;
-        None
+    if refresh.is_none() {
+        let data_dir = data_dir.to_string();
+        let state = state.clone();
+        let validator_set = validator_set.clone();
+        let stake_pool = stake_pool.clone();
+        let chain_id = chain_id.to_string();
+        debug!("Refreshing verified checkpoint cache in background");
+        *refresh = Some(tokio::task::spawn_blocking(move || {
+            let started = Instant::now();
+            let verified = latest_verified_checkpoint(
+                &data_dir,
+                &state,
+                &validator_set,
+                &stake_pool,
+                &chain_id,
+            );
+            if started.elapsed().as_secs() >= 2 {
+                warn!(
+                    "⚠️  Verified checkpoint cache refresh took {}s",
+                    started.elapsed().as_secs()
+                );
+            }
+            verified.map(
+                |(meta, checkpoint_path, block)| VerifiedCheckpointCacheEntry {
+                    meta,
+                    checkpoint_path,
+                    block,
+                    verified_at: Instant::now(),
+                },
+            )
+        }));
     }
+
+    cache.as_ref().map(VerifiedCheckpointCacheEntry::checkpoint)
 }
 
 async fn checkpoint_auth_snapshot(
@@ -14549,6 +14597,9 @@ async fn run_validator() {
                 std::time::Instant,
             > = std::collections::HashMap::new();
             let mut verified_checkpoint_cache: Option<VerifiedCheckpointCacheEntry> = None;
+            let mut verified_checkpoint_refresh: Option<
+                tokio::task::JoinHandle<Option<VerifiedCheckpointCacheEntry>>,
+            > = None;
             let mut response_reconnect_failures: HashMap<std::net::SocketAddr, Instant> =
                 HashMap::new();
             while let Some(request) = snapshot_request_rx.recv().await {
@@ -14642,12 +14693,15 @@ async fn run_validator() {
                         .await;
                         match latest_verified_checkpoint_cached(
                             &mut verified_checkpoint_cache,
+                            &mut verified_checkpoint_refresh,
                             &data_dir_for_snapshot,
                             &state_for_snapshot_serve,
                             &vs,
                             &pool,
                             &chain_id_for_snapshot_serve,
-                        ) {
+                        )
+                        .await
+                        {
                             Some((meta, _, block)) => (
                                 meta.slot,
                                 meta.state_root,
@@ -14705,12 +14759,15 @@ async fn run_validator() {
                             .await;
                             match latest_verified_checkpoint_cached(
                                 &mut verified_checkpoint_cache,
+                                &mut verified_checkpoint_refresh,
                                 &data_dir_for_snapshot,
                                 &state_for_snapshot_serve,
                                 &vs,
                                 &pool,
                                 &chain_id_for_snapshot_serve,
-                            ) {
+                            )
+                            .await
+                            {
                                 Some((meta, checkpoint_path, _block)) => {
                                     let session = SnapshotExportSessionState {
                                         checkpoint_path,
@@ -15011,12 +15068,15 @@ async fn run_validator() {
                             .await;
                             match latest_verified_checkpoint_cached(
                                 &mut verified_checkpoint_cache,
+                                &mut verified_checkpoint_refresh,
                                 &data_dir_for_snapshot,
                                 &state_for_snapshot_serve,
                                 &vs,
                                 &pool,
                                 &chain_id_for_snapshot_serve,
-                            ) {
+                            )
+                            .await
+                            {
                                 Some((meta, _, block)) => (
                                     meta.slot,
                                     meta.state_root,
@@ -21771,6 +21831,123 @@ mod tests {
     }
 
     #[test]
+    fn verified_checkpoint_cache_refreshes_off_request_path() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+
+        let validator_kp = Keypair::generate();
+        let validator_pk = validator_kp.pubkey();
+
+        let mut validator_set = ValidatorSet::new();
+        validator_set.add_validator(ValidatorInfo {
+            pubkey: validator_pk,
+            reputation: 100,
+            blocks_proposed: 0,
+            votes_cast: 0,
+            correct_votes: 0,
+            stake: 100_000_000_000_000,
+            joined_slot: 0,
+            last_active_slot: 0,
+            last_observed_at_ms: 0,
+            last_observed_block_at_ms: 0,
+            last_observed_block_slot: 0,
+            commission_rate: 500,
+            transactions_processed: 0,
+            pending_activation: false,
+        });
+
+        let mut stake_pool = StakePool::new();
+        stake_pool
+            .stake(validator_pk, 100_000_000_000_000, 0)
+            .expect("stake validator");
+
+        let committed_state_root = state.compute_state_root();
+        let mut block = Block::new_with_timestamp(
+            1,
+            Hash::default(),
+            committed_state_root,
+            validator_pk.0,
+            Vec::new(),
+            1_000,
+        );
+        block.sign(&validator_kp);
+        block.commit_round = 0;
+
+        let block_hash = block.hash();
+        let signable = Precommit::signable_bytes(1, 0, &Some(block_hash), 1_000);
+        block.commit_signatures = vec![lichen_core::CommitSignature {
+            validator: validator_pk.0,
+            signature: validator_kp.sign(&signable),
+            timestamp: 1_000,
+        }];
+
+        state.put_block(&block).expect("put block");
+        state
+            .set_last_finalized_slot(1)
+            .expect("set finalized slot");
+
+        let checkpoint_path = temp_dir.path().join("checkpoints/slot-1");
+        std::fs::create_dir_all(
+            checkpoint_path
+                .parent()
+                .expect("checkpoint parent directory exists"),
+        )
+        .expect("create checkpoints dir");
+        state
+            .create_checkpoint(checkpoint_path.to_str().expect("checkpoint path"), 1)
+            .expect("create checkpoint");
+
+        let runtime = tokio::runtime::Runtime::new().expect("create tokio runtime");
+        let mut cache = None;
+        let mut refresh = None;
+
+        let first = runtime.block_on(latest_verified_checkpoint_cached(
+            &mut cache,
+            &mut refresh,
+            temp_dir.path().to_str().expect("data dir"),
+            &state,
+            &validator_set,
+            &stake_pool,
+            "",
+        ));
+        assert!(
+            first.is_none(),
+            "first request should schedule verification instead of doing it inline"
+        );
+        assert!(
+            refresh.is_some(),
+            "first request should leave a background refresh task in flight"
+        );
+
+        let refreshed = runtime
+            .block_on(async {
+                for _ in 0..50 {
+                    if let Some(value) = latest_verified_checkpoint_cached(
+                        &mut cache,
+                        &mut refresh,
+                        temp_dir.path().to_str().expect("data dir"),
+                        &state,
+                        &validator_set,
+                        &stake_pool,
+                        "",
+                    )
+                    .await
+                    {
+                        return Some(value);
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                None
+            })
+            .expect("background checkpoint verification should populate cache");
+
+        assert_eq!(refreshed.0.slot, 1);
+        assert!(cache
+            .as_ref()
+            .is_some_and(VerifiedCheckpointCacheEntry::is_fresh));
+    }
+
+    #[test]
     fn verify_checkpoint_anchor_requires_signed_committed_header() {
         let validator_kp = Keypair::generate();
         let validator_pk = validator_kp.pubkey();
@@ -23557,6 +23734,15 @@ mod tests {
                 .count(),
             3,
             "snapshot serving should have exactly three verified checkpoint lookup sites"
+        );
+        assert_eq!(
+            section.matches("latest_verified_checkpoint(").count(),
+            0,
+            "snapshot serving must not run full checkpoint verification inline"
+        );
+        assert!(
+            section.contains("verified_checkpoint_refresh"),
+            "snapshot serving must share a background checkpoint refresh handle"
         );
         assert_eq!(
             section.matches("checkpoint_auth_snapshot(").count(),
