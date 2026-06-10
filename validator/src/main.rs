@@ -65,8 +65,8 @@ use lichen_genesis::{
 };
 use lichen_p2p::{
     validator_announcement_signing_message, ConsistencyReportMsg, MessageType, NodeRole, P2PConfig,
-    P2PMessage, P2PNetwork, SnapshotKind, SnapshotRequestMsg, SnapshotResponseMsg,
-    StatusRequestMsg, StatusResponseMsg,
+    P2PMessage, P2PNetwork, SnapshotCategoryDigest, SnapshotKind, SnapshotRequestMsg,
+    SnapshotResponseMsg, StatusRequestMsg, StatusResponseMsg,
 };
 use lichen_rpc::start_rpc_server;
 use semver::Version;
@@ -618,6 +618,154 @@ fn stream_snapshot_category_between_stores(
     Ok(imported)
 }
 
+fn update_snapshot_digest_bytes(hasher: &mut Sha256, bytes: &[u8]) {
+    hasher.update((bytes.len() as u64).to_le_bytes());
+    hasher.update(bytes);
+}
+
+fn update_snapshot_digest_entry(hasher: &mut Sha256, key: &[u8], value: &[u8]) {
+    update_snapshot_digest_bytes(hasher, key);
+    update_snapshot_digest_bytes(hasher, value);
+}
+
+fn compute_snapshot_category_digest(
+    state: &StateStore,
+    category: &str,
+    chunk_size: u64,
+) -> Result<SnapshotCategoryDigest, String> {
+    let mut hasher = Sha256::new();
+    hasher.update(b"lichen-checkpoint-snapshot-category-v1");
+    update_snapshot_digest_bytes(&mut hasher, category.as_bytes());
+
+    let mut entry_count = 0u64;
+    match category {
+        "validator_set" | "stake_pool" | "mossstake_pool" => {
+            for (key, value) in export_roundtrip_snapshot_entries(state, category, 1)? {
+                update_snapshot_digest_entry(&mut hasher, &key, &value);
+                entry_count = entry_count.saturating_add(1);
+            }
+        }
+        _ => {
+            let mut cursor: Option<Vec<u8>> = None;
+            loop {
+                let page = state.export_snapshot_category_cursor_untracked(
+                    category,
+                    cursor.as_deref(),
+                    chunk_size,
+                )?;
+                for (key, value) in page.entries {
+                    update_snapshot_digest_entry(&mut hasher, &key, &value);
+                    entry_count = entry_count.saturating_add(1);
+                }
+                if !page.has_more {
+                    break;
+                }
+                let Some(next_cursor) = page.next_cursor else {
+                    return Err(format!(
+                        "{} snapshot export had more entries but no cursor",
+                        category
+                    ));
+                };
+                cursor = Some(next_cursor);
+            }
+        }
+    }
+
+    hasher.update(entry_count.to_le_bytes());
+    let digest = hasher.finalize();
+    let mut sha256 = [0u8; 32];
+    sha256.copy_from_slice(&digest[..32]);
+    Ok(SnapshotCategoryDigest {
+        category: category.to_string(),
+        entry_count,
+        sha256,
+    })
+}
+
+fn compute_snapshot_manifest(
+    state: &StateStore,
+    chunk_size: u64,
+) -> Result<Vec<SnapshotCategoryDigest>, String> {
+    WARP_SNAPSHOT_CATEGORIES
+        .iter()
+        .map(|category| compute_snapshot_category_digest(state, category, chunk_size))
+        .collect()
+}
+
+fn snapshot_manifest_root(manifest: &[SnapshotCategoryDigest]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"lichen-checkpoint-snapshot-manifest-v1");
+    for digest in manifest {
+        update_snapshot_digest_bytes(&mut hasher, digest.category.as_bytes());
+        hasher.update(digest.entry_count.to_le_bytes());
+        hasher.update(digest.sha256);
+    }
+    let digest = hasher.finalize();
+    let mut root = [0u8; 32];
+    root.copy_from_slice(&digest[..32]);
+    root
+}
+
+fn validate_snapshot_manifest_shape(manifest: &[SnapshotCategoryDigest]) -> Result<(), String> {
+    if manifest.len() != WARP_SNAPSHOT_CATEGORIES.len() {
+        return Err(format!(
+            "snapshot manifest has {} categories, expected {}",
+            manifest.len(),
+            WARP_SNAPSHOT_CATEGORIES.len()
+        ));
+    }
+    for (expected, actual) in WARP_SNAPSHOT_CATEGORIES.iter().zip(manifest.iter()) {
+        if actual.category != *expected {
+            return Err(format!(
+                "snapshot manifest category order mismatch: expected {}, got {}",
+                expected, actual.category
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_snapshot_manifest_matches(
+    expected: &[SnapshotCategoryDigest],
+    actual: &[SnapshotCategoryDigest],
+) -> Result<(), String> {
+    validate_snapshot_manifest_shape(expected)?;
+    validate_snapshot_manifest_shape(actual)?;
+    for (expected_digest, actual_digest) in expected.iter().zip(actual.iter()) {
+        if expected_digest != actual_digest {
+            return Err(format!(
+                "snapshot manifest mismatch for {}: expected count={} sha={}, got count={} sha={}",
+                expected_digest.category,
+                expected_digest.entry_count,
+                hex::encode(expected_digest.sha256),
+                actual_digest.entry_count,
+                hex::encode(actual_digest.sha256)
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn anchored_state_snapshot_request(
+    category: impl Into<String>,
+    chunk_index: u64,
+    chunk_size: u64,
+    anchor: &VerifiedCheckpointAnchor,
+    local_addr: SocketAddr,
+) -> P2PMessage {
+    P2PMessage::new(
+        MessageType::StateSnapshotRequest {
+            category: category.into(),
+            checkpoint_slot: anchor.slot,
+            checkpoint_state_root: anchor.state_root,
+            snapshot_manifest_root: anchor.snapshot_manifest_root,
+            chunk_index,
+            chunk_size,
+        },
+        local_addr,
+    )
+}
+
 fn validate_snapshot_archive_completeness(
     state: &StateStore,
     snapshot_slot: u64,
@@ -913,9 +1061,9 @@ impl TokenBucket {
     }
 }
 
-type SnapshotExportCursorKey = (std::net::SocketAddr, String, u64);
+type SnapshotExportCursorKey = (std::net::SocketAddr, u64, [u8; 32], [u8; 32], String, u64);
 type SnapshotExportCursorState = (u64, Option<Vec<u8>>);
-type SnapshotExportSessionKey = (std::net::SocketAddr, u64);
+type SnapshotExportSessionKey = (std::net::SocketAddr, u64, [u8; 32], [u8; 32], u64);
 
 #[derive(Clone)]
 struct SnapshotExportSessionState {
@@ -928,6 +1076,7 @@ struct VerifiedCheckpointCacheEntry {
     meta: lichen_core::CheckpointMeta,
     checkpoint_path: String,
     block: Block,
+    snapshot_manifest: Vec<SnapshotCategoryDigest>,
     verified_at: Instant,
 }
 
@@ -936,11 +1085,19 @@ impl VerifiedCheckpointCacheEntry {
         self.verified_at.elapsed().as_secs() < SNAPSHOT_VERIFIED_CHECKPOINT_CACHE_TTL_SECS
     }
 
-    fn checkpoint(&self) -> (lichen_core::CheckpointMeta, String, Block) {
+    fn checkpoint(
+        &self,
+    ) -> (
+        lichen_core::CheckpointMeta,
+        String,
+        Block,
+        Vec<SnapshotCategoryDigest>,
+    ) {
         (
             self.meta.clone(),
             self.checkpoint_path.clone(),
             self.block.clone(),
+            self.snapshot_manifest.clone(),
         )
     }
 }
@@ -6085,7 +6242,12 @@ fn latest_verified_checkpoint(
     validator_set: &ValidatorSet,
     stake_pool: &StakePool,
     chain_id: &str,
-) -> Option<(lichen_core::CheckpointMeta, String, Block)> {
+) -> Option<(
+    lichen_core::CheckpointMeta,
+    String,
+    Block,
+    Vec<SnapshotCategoryDigest>,
+)> {
     let finalized_slot = state.get_last_finalized_slot().ok()?;
     let checkpoints = StateStore::list_checkpoints(data_dir);
 
@@ -6135,7 +6297,140 @@ fn latest_verified_checkpoint(
             );
             continue;
         }
+        let snapshot_manifest =
+            match compute_snapshot_manifest(&checkpoint_store, MAX_SNAPSHOT_CHUNK_SIZE) {
+                Ok(manifest) => manifest,
+                Err(err) => {
+                    warn!(
+                    "⚠️  Rejecting checkpoint at slot {}: failed to compute snapshot manifest: {}",
+                    meta.slot, err
+                );
+                    continue;
+                }
+            };
+        if let Err(err) = validate_snapshot_manifest_shape(&snapshot_manifest) {
+            warn!("⚠️  Rejecting checkpoint at slot {}: {}", meta.slot, err);
+            continue;
+        }
 
+        return Some((meta, path, block, snapshot_manifest));
+    }
+
+    None
+}
+
+#[derive(Clone, Copy)]
+struct CheckpointSnapshotRequestAnchor {
+    slot: u64,
+    state_root: [u8; 32],
+    snapshot_manifest_root: [u8; 32],
+}
+
+fn verified_checkpoint_for_anchor(
+    data_dir: &str,
+    state: &StateStore,
+    validator_set: &ValidatorSet,
+    stake_pool: &StakePool,
+    chain_id: &str,
+    anchor: CheckpointSnapshotRequestAnchor,
+) -> Option<(lichen_core::CheckpointMeta, String, Block)> {
+    let requested_slot = anchor.slot;
+    let requested_state_root = anchor.state_root;
+    let requested_snapshot_manifest_root = anchor.snapshot_manifest_root;
+
+    if requested_slot == 0
+        || requested_state_root == [0u8; 32]
+        || requested_snapshot_manifest_root == [0u8; 32]
+    {
+        return None;
+    }
+
+    let finalized_slot = state.get_last_finalized_slot().ok()?;
+    if requested_slot > finalized_slot {
+        return None;
+    }
+
+    let checkpoints = StateStore::list_checkpoints(data_dir);
+    for (slot, path) in checkpoints {
+        if slot != requested_slot {
+            continue;
+        }
+        let meta_path = std::path::Path::new(&path).join("checkpoint_meta.json");
+        let Ok(data) = std::fs::read_to_string(&meta_path) else {
+            continue;
+        };
+        let Ok(meta) = serde_json::from_str::<lichen_core::CheckpointMeta>(&data) else {
+            continue;
+        };
+        if meta.slot != requested_slot || meta.state_root != requested_state_root {
+            continue;
+        }
+        let Some(block) = state.get_block_by_slot(meta.slot).ok().flatten() else {
+            continue;
+        };
+        let checkpoint_store = match StateStore::open_checkpoint(&path) {
+            Ok(store) => store,
+            Err(err) => {
+                warn!(
+                    "⚠️  Rejecting requested checkpoint at slot {}: failed to open checkpoint store: {}",
+                    meta.slot, err
+                );
+                continue;
+            }
+        };
+        if let Err(err) = validate_checkpoint_state_root_read_only(
+            &checkpoint_store,
+            meta.slot,
+            Hash(meta.state_root),
+        ) {
+            warn!(
+                "⚠️  Rejecting requested checkpoint at slot {}: {}",
+                meta.slot, err
+            );
+            continue;
+        }
+        if let Err(err) = verify_committed_block_authenticity_with_chain_id(
+            &block,
+            validator_set,
+            stake_pool,
+            chain_id,
+        ) {
+            warn!(
+                "⚠️  Rejecting requested checkpoint at slot {}: commit verification failed: {}",
+                meta.slot, err
+            );
+            continue;
+        }
+        let snapshot_manifest = match compute_snapshot_manifest(
+            &checkpoint_store,
+            MAX_SNAPSHOT_CHUNK_SIZE,
+        ) {
+            Ok(manifest) => manifest,
+            Err(err) => {
+                warn!(
+                        "⚠️  Rejecting requested checkpoint at slot {}: failed to compute snapshot manifest: {}",
+                        meta.slot, err
+                    );
+                continue;
+            }
+        };
+        if let Err(err) = validate_snapshot_manifest_shape(&snapshot_manifest) {
+            warn!(
+                "⚠️  Rejecting requested checkpoint at slot {}: {}",
+                meta.slot, err
+            );
+            continue;
+        }
+        let actual_manifest_root = snapshot_manifest_root(&snapshot_manifest);
+        if actual_manifest_root != requested_snapshot_manifest_root {
+            warn!(
+                "⚠️  Rejecting requested checkpoint at slot {}: manifest root mismatch requested={} actual={}",
+                meta.slot,
+                hex::encode(&requested_snapshot_manifest_root[..8]),
+                hex::encode(&actual_manifest_root[..8]),
+            );
+            continue;
+        }
         return Some((meta, path, block));
     }
 
@@ -6150,7 +6445,12 @@ async fn latest_verified_checkpoint_cached(
     validator_set: &ValidatorSet,
     stake_pool: &StakePool,
     chain_id: &str,
-) -> Option<(lichen_core::CheckpointMeta, String, Block)> {
+) -> Option<(
+    lichen_core::CheckpointMeta,
+    String,
+    Block,
+    Vec<SnapshotCategoryDigest>,
+)> {
     if refresh.as_ref().is_some_and(|handle| handle.is_finished()) {
         if let Some(handle) = refresh.take() {
             match handle.await {
@@ -6203,14 +6503,15 @@ async fn latest_verified_checkpoint_cached(
                     started.elapsed().as_secs()
                 );
             }
-            verified.map(
-                |(meta, checkpoint_path, block)| VerifiedCheckpointCacheEntry {
+            verified.map(|(meta, checkpoint_path, block, snapshot_manifest)| {
+                VerifiedCheckpointCacheEntry {
                     meta,
                     checkpoint_path,
                     block,
+                    snapshot_manifest,
                     verified_at: Instant::now(),
-                },
-            )
+                }
+            })
         }));
     }
 
@@ -6430,6 +6731,22 @@ fn checkpoint_anchor_support(
         .count()
 }
 
+fn checkpoint_anchor_manifest_support(
+    anchors: &HashMap<Pubkey, VerifiedCheckpointAnchor>,
+    slot: u64,
+    state_root: [u8; 32],
+    snapshot_manifest_root: [u8; 32],
+) -> usize {
+    anchors
+        .values()
+        .filter(|anchor| {
+            anchor.slot == slot
+                && anchor.state_root == state_root
+                && anchor.snapshot_manifest_root == snapshot_manifest_root
+        })
+        .count()
+}
+
 fn same_slot_checkpoint_root_mismatch(
     local_slot: u64,
     checkpoint_slot: u64,
@@ -6490,6 +6807,8 @@ fn should_commit_verified_snapshot(
 struct VerifiedCheckpointAnchor {
     slot: u64,
     state_root: [u8; 32],
+    snapshot_manifest: Vec<SnapshotCategoryDigest>,
+    snapshot_manifest_root: [u8; 32],
     block: Block,
 }
 
@@ -14725,6 +15044,7 @@ async fn run_validator() {
                         checkpoint_header,
                         commit_round,
                         commit_signatures,
+                        snapshot_manifest,
                     ) = {
                         let (vs, pool) = checkpoint_auth_snapshot(
                             &validator_set_for_snapshot,
@@ -14742,15 +15062,16 @@ async fn run_validator() {
                         )
                         .await
                         {
-                            Some((meta, _, block)) => (
+                            Some((meta, _, block, snapshot_manifest)) => (
                                 meta.slot,
                                 meta.state_root,
                                 meta.total_accounts,
                                 Some(block.header.clone()),
                                 block.commit_round,
                                 block.commit_signatures.clone(),
+                                snapshot_manifest,
                             ),
-                            None => (0, [0u8; 32], 0, None, 0, Vec::new()),
+                            None => (0, [0u8; 32], 0, None, 0, Vec::new(), Vec::new()),
                         }
                     };
                     let msg = P2PMessage::new(
@@ -14761,6 +15082,7 @@ async fn run_validator() {
                             checkpoint_header,
                             commit_round,
                             commit_signatures,
+                            snapshot_manifest,
                         },
                         local_addr_for_snapshot,
                     );
@@ -14774,19 +15096,51 @@ async fn run_validator() {
                 }
 
                 // Handle StateSnapshotRequest (chunked state transfer)
-                if let Some((ref category, chunk_index, chunk_size)) = request.state_snapshot_params
-                {
-                    let chunk_sz = chunk_size.clamp(1, MAX_SNAPSHOT_CHUNK_SIZE);
-                    let session_key = (request.requester, chunk_sz);
+                if let Some(ref state_request) = request.state_snapshot_params {
+                    let category = &state_request.category;
+                    let requested_slot = state_request.checkpoint_slot;
+                    let requested_state_root = state_request.checkpoint_state_root;
+                    let requested_snapshot_manifest_root = state_request.snapshot_manifest_root;
+                    if requested_slot == 0
+                        || requested_state_root == [0u8; 32]
+                        || requested_snapshot_manifest_root == [0u8; 32]
+                    {
+                        warn!(
+                            "⚠️  Refusing unanchored state snapshot request for {} from {}",
+                            category, request.requester
+                        );
+                        continue;
+                    }
+                    let chunk_index = state_request.chunk_index;
+                    let chunk_sz = state_request.chunk_size.clamp(1, MAX_SNAPSHOT_CHUNK_SIZE);
+                    let session_key = (
+                        request.requester,
+                        requested_slot,
+                        requested_state_root,
+                        requested_snapshot_manifest_root,
+                        chunk_sz,
+                    );
                     if chunk_index == 0 && category == "accounts" {
                         snapshot_export_sessions.remove(&session_key);
                         session_last_access.remove(&session_key);
-                        snapshot_export_cursors.retain(|(peer, _, size), _| {
-                            *peer != request.requester || *size != chunk_sz
-                        });
-                        cursor_last_access.retain(|(peer, _, size), _| {
-                            *peer != request.requester || *size != chunk_sz
-                        });
+                        snapshot_export_cursors.retain(
+                            |(peer, slot, root, manifest_root, _, size), _| {
+                                *peer != request.requester
+                                    || *slot != requested_slot
+                                    || *root != requested_state_root
+                                    || *manifest_root != requested_snapshot_manifest_root
+                                    || *size != chunk_sz
+                            },
+                        );
+                        cursor_last_access.retain(
+                            |(peer, slot, root, manifest_root, _, size), _| {
+                                *peer != request.requester
+                                    || *slot != requested_slot
+                                    || *root != requested_state_root
+                                    || *manifest_root != requested_snapshot_manifest_root
+                                    || *size != chunk_sz
+                            },
+                        );
                     }
 
                     let session = match snapshot_export_sessions.get(&session_key).cloned() {
@@ -14797,17 +15151,18 @@ async fn run_validator() {
                                 &stake_pool_for_snapshot,
                             )
                             .await;
-                            match latest_verified_checkpoint_cached(
-                                &mut verified_checkpoint_cache,
-                                &mut verified_checkpoint_refresh,
+                            match verified_checkpoint_for_anchor(
                                 &data_dir_for_snapshot,
                                 &state_for_snapshot_serve,
                                 &vs,
                                 &pool,
                                 &chain_id_for_snapshot_serve,
-                            )
-                            .await
-                            {
+                                CheckpointSnapshotRequestAnchor {
+                                    slot: requested_slot,
+                                    state_root: requested_state_root,
+                                    snapshot_manifest_root: requested_snapshot_manifest_root,
+                                },
+                            ) {
                                 Some((meta, checkpoint_path, _block)) => {
                                     let session = SnapshotExportSessionState {
                                         checkpoint_path,
@@ -14818,7 +15173,11 @@ async fn run_validator() {
                                 }
                                 None => {
                                     warn!(
-                                        "⚠️  No verified checkpoint available for state snapshot"
+                                        "⚠️  No exact verified checkpoint slot {} root {} manifest {} available for state snapshot request from {}",
+                                        requested_slot,
+                                        hex::encode(&requested_state_root[..8]),
+                                        hex::encode(&requested_snapshot_manifest_root[..8]),
+                                        request.requester
                                     );
                                     continue;
                                 }
@@ -14936,7 +15295,14 @@ async fn run_validator() {
 
                             // RPC-M06 FIX: Use cursor-paginated export so serving
                             // chunk N no longer rescans O(N*chunk_size) from start.
-                            let cache_key = (request.requester, category.clone(), chunk_sz);
+                            let cache_key = (
+                                request.requester,
+                                requested_slot,
+                                requested_state_root,
+                                requested_snapshot_manifest_root,
+                                category.clone(),
+                                chunk_sz,
+                            );
                             if chunk_index == 0 {
                                 snapshot_export_cursors.remove(&cache_key);
                             }
@@ -15100,6 +15466,7 @@ async fn run_validator() {
                             checkpoint_header,
                             commit_round,
                             commit_signatures,
+                            snapshot_manifest,
                         ) = {
                             let (vs, pool) = checkpoint_auth_snapshot(
                                 &validator_set_for_snapshot,
@@ -15117,15 +15484,16 @@ async fn run_validator() {
                             )
                             .await
                             {
-                                Some((meta, _, block)) => (
+                                Some((meta, _, block, snapshot_manifest)) => (
                                     meta.slot,
                                     meta.state_root,
                                     meta.total_accounts,
                                     Some(block.header.clone()),
                                     block.commit_round,
                                     block.commit_signatures.clone(),
+                                    snapshot_manifest,
                                 ),
-                                None => (0, [0u8; 32], 0, None, 0, Vec::new()),
+                                None => (0, [0u8; 32], 0, None, 0, Vec::new(), Vec::new()),
                             }
                         };
                         P2PMessage::new(
@@ -15136,6 +15504,7 @@ async fn run_validator() {
                                 checkpoint_header,
                                 commit_round,
                                 commit_signatures,
+                                snapshot_manifest,
                             },
                             local_addr_for_snapshot,
                         )
@@ -15194,8 +15563,9 @@ async fn run_validator() {
                             && snapshot_last_progress_at.elapsed().as_secs()
                                 >= SNAPSHOT_PROGRESS_RETRY_SECS
                         {
-                            if let (Some(source_peer), Some((category_name, chunk_index))) = (
+                            if let (Some(source_peer), Some(anchor), Some((category_name, chunk_index))) = (
                                 active_snapshot_source_peer,
+                                active_snapshot_anchor.as_ref(),
                                 next_snapshot_category_request(&state_snap_progress),
                             ) {
                                 info!(
@@ -15204,12 +15574,11 @@ async fn run_validator() {
                                     chunk_index + 1,
                                     source_peer
                                 );
-                                let retry_request = P2PMessage::new(
-                                    MessageType::StateSnapshotRequest {
-                                        category: category_name.to_string(),
-                                        chunk_index,
-                                        chunk_size: snapshot_request_chunk_size(category_name),
-                                    },
+                                let retry_request = anchored_state_snapshot_request(
+                                    category_name,
+                                    chunk_index,
+                                    snapshot_request_chunk_size(category_name),
+                                    anchor,
                                     local_addr_for_snap_apply,
                                 );
                                 if let Err(e) = peer_mgr_for_snapshot_apply
@@ -15240,9 +15609,18 @@ async fn run_validator() {
                     checkpoint_header,
                     commit_round,
                     commit_signatures,
+                    snapshot_manifest,
                 )) = response.checkpoint_meta
                 {
                     if slot > 0 && total_accounts > 0 {
+                        if let Err(err) = validate_snapshot_manifest_shape(&snapshot_manifest) {
+                            warn!(
+                                "⚠️  Rejecting checkpoint metadata from {}: {}",
+                                response.requester, err
+                            );
+                            peer_mgr_for_snapshot_apply.record_violation(&response.requester);
+                            continue;
+                        }
                         let Some(anchor_validator) =
                             peer_mgr_for_snapshot_apply.peer_validator_pubkey(&response.requester)
                         else {
@@ -15297,6 +15675,8 @@ async fn run_validator() {
                         let anchor = VerifiedCheckpointAnchor {
                             slot,
                             state_root,
+                            snapshot_manifest_root: snapshot_manifest_root(&snapshot_manifest),
+                            snapshot_manifest,
                             block: Block {
                                 header,
                                 transactions: Vec::new(),
@@ -15312,14 +15692,22 @@ async fn run_validator() {
                             slot,
                             state_root,
                         );
+                        let manifest_support = checkpoint_anchor_manifest_support(
+                            &verified_checkpoint_anchors,
+                            slot,
+                            state_root,
+                            anchor.snapshot_manifest_root,
+                        );
                         info!(
-                            "📋 Validator {} via peer {} has checkpoint at slot {} ({} accounts, {} corroboration{})",
+                            "📋 Validator {} via peer {} has checkpoint at slot {} ({} accounts, {} root corroboration{}, {} manifest corroboration{})",
                             anchor_validator.to_base58(),
                             response.requester,
                             slot,
                             total_accounts,
                             support,
-                            if support == 1 { "" } else { "s" }
+                            if support == 1 { "" } else { "s" },
+                            manifest_support,
+                            if manifest_support == 1 { "" } else { "s" }
                         );
                         let local_slot = state_for_snapshot_apply.get_last_slot().unwrap_or(0);
                         let checkpoint_root = Hash(state_root);
@@ -15353,6 +15741,14 @@ async fn run_validator() {
                                 info!(
                                     "⏳ Awaiting corroborated checkpoint anchor before warp snapshot download (have {}, need {})",
                                     support,
+                                    MIN_WARP_CHECKPOINT_ANCHOR_PEERS,
+                                );
+                                continue;
+                            }
+                            if manifest_support < MIN_WARP_CHECKPOINT_ANCHOR_PEERS {
+                                info!(
+                                    "⏳ Awaiting corroborated checkpoint manifest before warp snapshot download (have {}, need {})",
+                                    manifest_support,
                                     MIN_WARP_CHECKPOINT_ANCHOR_PEERS,
                                 );
                                 continue;
@@ -15412,14 +15808,15 @@ async fn run_validator() {
                                             response.requester,
                                             slot
                                         );
-                                        let snap_request = P2PMessage::new(
-                                            MessageType::StateSnapshotRequest {
-                                                category: category_name.to_string(),
-                                                chunk_index,
-                                                chunk_size: snapshot_request_chunk_size(
-                                                    category_name,
-                                                ),
-                                            },
+                                        let Some(active_anchor) = active_snapshot_anchor.as_ref()
+                                        else {
+                                            continue;
+                                        };
+                                        let snap_request = anchored_state_snapshot_request(
+                                            category_name,
+                                            chunk_index,
+                                            snapshot_request_chunk_size(category_name),
+                                            active_anchor,
                                             local_addr_for_snap_apply,
                                         );
                                         if let Err(e) = peer_mgr_for_snapshot_apply
@@ -15476,12 +15873,14 @@ async fn run_validator() {
                             if let Some((category, chunk_index)) =
                                 next_snapshot_category_request(&state_snap_progress)
                             {
-                                let snap_request = P2PMessage::new(
-                                    MessageType::StateSnapshotRequest {
-                                        category: category.to_string(),
-                                        chunk_index,
-                                        chunk_size: snapshot_request_chunk_size(category),
-                                    },
+                                let Some(active_anchor) = active_snapshot_anchor.as_ref() else {
+                                    continue;
+                                };
+                                let snap_request = anchored_state_snapshot_request(
+                                    category,
+                                    chunk_index,
+                                    snapshot_request_chunk_size(category),
+                                    active_anchor,
                                     local_addr_for_snap_apply,
                                 );
                                 if let Err(e) = peer_mgr_for_snapshot_apply
@@ -15660,12 +16059,14 @@ async fn run_validator() {
                             response.requester,
                             current_progress.0 + 1
                         );
-                        let retry_request = P2PMessage::new(
-                            MessageType::StateSnapshotRequest {
-                                category: category.clone(),
-                                chunk_index: current_progress.0,
-                                chunk_size: snapshot_request_chunk_size(category),
-                            },
+                        let Some(active_anchor) = active_snapshot_anchor.as_ref() else {
+                            continue;
+                        };
+                        let retry_request = anchored_state_snapshot_request(
+                            category.clone(),
+                            current_progress.0,
+                            snapshot_request_chunk_size(category),
+                            active_anchor,
                             local_addr_for_snap_apply,
                         );
                         if let Err(e) = peer_mgr_for_snapshot_apply
@@ -15721,12 +16122,14 @@ async fn run_validator() {
 
                     // P3-1: Request the next chunk if there are more
                     if chunk_index + 1 < total_chunks {
-                        let next_request = P2PMessage::new(
-                            MessageType::StateSnapshotRequest {
-                                category: category.clone(),
-                                chunk_index: chunk_index + 1,
-                                chunk_size: snapshot_request_chunk_size(category),
-                            },
+                        let Some(active_anchor) = active_snapshot_anchor.as_ref() else {
+                            continue;
+                        };
+                        let next_request = anchored_state_snapshot_request(
+                            category.clone(),
+                            chunk_index + 1,
+                            snapshot_request_chunk_size(category),
+                            active_anchor,
                             local_addr_for_snap_apply,
                         );
                         if let Err(e) = peer_mgr_for_snapshot_apply
@@ -15741,12 +16144,14 @@ async fn run_validator() {
                     } else if let Some((next_category, next_chunk)) =
                         next_snapshot_category_request(&state_snap_progress)
                     {
-                        let next_request = P2PMessage::new(
-                            MessageType::StateSnapshotRequest {
-                                category: next_category.to_string(),
-                                chunk_index: next_chunk,
-                                chunk_size: snapshot_request_chunk_size(next_category),
-                            },
+                        let Some(active_anchor) = active_snapshot_anchor.as_ref() else {
+                            continue;
+                        };
+                        let next_request = anchored_state_snapshot_request(
+                            next_category,
+                            next_chunk,
+                            snapshot_request_chunk_size(next_category),
+                            active_anchor,
                             local_addr_for_snap_apply,
                         );
                         if let Err(e) = peer_mgr_for_snapshot_apply
@@ -15825,6 +16230,36 @@ async fn run_validator() {
                                 break 'staging false;
                             }
                             staging_state.invalidate_merkle_cache();
+
+                            let Some(expected_manifest) = active_snapshot_anchor
+                                .as_ref()
+                                .map(|anchor| anchor.snapshot_manifest.clone())
+                            else {
+                                warn!("⚠️  Snapshot staging has no active manifest anchor");
+                                break 'staging false;
+                            };
+                            let staging_manifest = match compute_snapshot_manifest(
+                                &staging_state,
+                                MAX_SNAPSHOT_CHUNK_SIZE,
+                            ) {
+                                Ok(manifest) => manifest,
+                                Err(e) => {
+                                    warn!("⚠️  Failed to compute staging snapshot manifest: {}", e);
+                                    break 'staging false;
+                                }
+                            };
+                            if let Err(e) = validate_snapshot_manifest_matches(
+                                &expected_manifest,
+                                &staging_manifest,
+                            ) {
+                                warn!("⚠️  Staging snapshot manifest verification failed: {}", e);
+                                break 'staging false;
+                            }
+                            info!(
+                                "✅ Snapshot manifest verified on staging: {} categories root={}",
+                                staging_manifest.len(),
+                                hex::encode(snapshot_manifest_root(&staging_manifest))
+                            );
 
                             if let Err(e) = validate_snapshot_archive_completeness(
                                 &staging_state,
@@ -21702,7 +22137,7 @@ mod tests {
             .expect("set finalized slot");
 
         let checkpoint_fingerprint = directory_fingerprint(&checkpoint_path);
-        let (meta, _, _) = latest_verified_checkpoint(
+        let (meta, _, _, manifest) = latest_verified_checkpoint(
             temp_dir.path().to_str().expect("data dir"),
             &state,
             &validator_set,
@@ -21713,6 +22148,41 @@ mod tests {
 
         assert_eq!(meta.slot, 1);
         assert_eq!(meta.state_root, block.header.state_root.0);
+        validate_snapshot_manifest_shape(&manifest).expect("manifest shape");
+        let manifest_root = snapshot_manifest_root(&manifest);
+        let (anchored_meta, _, _) = verified_checkpoint_for_anchor(
+            temp_dir.path().to_str().expect("data dir"),
+            &state,
+            &validator_set,
+            &stake_pool,
+            "",
+            CheckpointSnapshotRequestAnchor {
+                slot: meta.slot,
+                state_root: meta.state_root,
+                snapshot_manifest_root: manifest_root,
+            },
+        )
+        .expect("exact slot/root/manifest checkpoint anchor should be served");
+        assert_eq!(anchored_meta.slot, meta.slot);
+
+        let mut wrong_manifest_root = manifest_root;
+        wrong_manifest_root[0] ^= 0x80;
+        assert!(
+            verified_checkpoint_for_anchor(
+                temp_dir.path().to_str().expect("data dir"),
+                &state,
+                &validator_set,
+                &stake_pool,
+                "",
+                CheckpointSnapshotRequestAnchor {
+                    slot: meta.slot,
+                    state_root: meta.state_root,
+                    snapshot_manifest_root: wrong_manifest_root,
+                },
+            )
+            .is_none(),
+            "same slot/root with a different archive manifest must not be served"
+        );
         assert_eq!(
             directory_fingerprint(&checkpoint_path),
             checkpoint_fingerprint,
@@ -21792,7 +22262,7 @@ mod tests {
 
         assert_ne!(meta.state_root, block.header.state_root.0);
 
-        let (verified_meta, _, verified_block) = latest_verified_checkpoint(
+        let (verified_meta, _, verified_block, manifest) = latest_verified_checkpoint(
             temp_dir.path().to_str().expect("data dir"),
             &state,
             &validator_set,
@@ -21804,6 +22274,7 @@ mod tests {
         assert_eq!(verified_meta.slot, 1);
         assert_eq!(verified_meta.state_root, meta.state_root);
         assert_eq!(verified_block.header.state_root, block.header.state_root);
+        validate_snapshot_manifest_shape(&manifest).expect("manifest shape");
     }
 
     #[test]
@@ -21890,7 +22361,7 @@ mod tests {
         )
         .expect("write checkpoint meta");
 
-        let (meta, _, _) = latest_verified_checkpoint(
+        let (meta, _, _, manifest) = latest_verified_checkpoint(
             temp_dir.path().to_str().expect("data dir"),
             &state,
             &validator_set,
@@ -21900,6 +22371,7 @@ mod tests {
         .expect("should fall back to older valid checkpoint");
 
         assert_eq!(meta.slot, 1);
+        validate_snapshot_manifest_shape(&manifest).expect("manifest shape");
     }
 
     #[test]
@@ -22014,6 +22486,7 @@ mod tests {
             .expect("background checkpoint verification should populate cache");
 
         assert_eq!(refreshed.0.slot, 1);
+        validate_snapshot_manifest_shape(&refreshed.3).expect("manifest shape");
         assert!(cache
             .as_ref()
             .is_some_and(VerifiedCheckpointCacheEntry::is_fresh));
@@ -22392,27 +22865,60 @@ mod tests {
     fn checkpoint_anchor_support_counts_matching_validators() {
         let root_a = [1u8; 32];
         let root_b = [2u8; 32];
-        let anchor = |slot: u64, state_root: [u8; 32]| VerifiedCheckpointAnchor {
-            slot,
-            state_root,
-            block: Block::new_with_timestamp(
+        let manifest_a = vec![SnapshotCategoryDigest {
+            category: "accounts".to_string(),
+            entry_count: 1,
+            sha256: [3u8; 32],
+        }];
+        let manifest_b = vec![SnapshotCategoryDigest {
+            category: "accounts".to_string(),
+            entry_count: 1,
+            sha256: [4u8; 32],
+        }];
+        let anchor = |slot: u64, state_root: [u8; 32], manifest: Vec<SnapshotCategoryDigest>| {
+            let snapshot_manifest_root = snapshot_manifest_root(&manifest);
+            VerifiedCheckpointAnchor {
                 slot,
-                Hash::default(),
-                Hash(state_root),
-                [7u8; 32],
-                Vec::new(),
-                slot,
-            ),
+                state_root,
+                snapshot_manifest: manifest,
+                snapshot_manifest_root,
+                block: Block::new_with_timestamp(
+                    slot,
+                    Hash::default(),
+                    Hash(state_root),
+                    [7u8; 32],
+                    Vec::new(),
+                    slot,
+                ),
+            }
         };
         let anchors = HashMap::from([
-            (Pubkey([1u8; 32]), anchor(42, root_a)),
-            (Pubkey([2u8; 32]), anchor(42, root_a)),
-            (Pubkey([3u8; 32]), anchor(42, root_b)),
+            (Pubkey([1u8; 32]), anchor(42, root_a, manifest_a.clone())),
+            (Pubkey([2u8; 32]), anchor(42, root_a, manifest_a.clone())),
+            (Pubkey([3u8; 32]), anchor(42, root_b, manifest_b.clone())),
         ]);
 
         assert_eq!(checkpoint_anchor_support(&anchors, 42, root_a), 2);
         assert_eq!(checkpoint_anchor_support(&anchors, 42, root_b), 1);
         assert_eq!(checkpoint_anchor_support(&anchors, 43, root_a), 0);
+        assert_eq!(
+            checkpoint_anchor_manifest_support(
+                &anchors,
+                42,
+                root_a,
+                snapshot_manifest_root(&manifest_a)
+            ),
+            2
+        );
+        assert_eq!(
+            checkpoint_anchor_manifest_support(
+                &anchors,
+                42,
+                root_a,
+                snapshot_manifest_root(&manifest_b)
+            ),
+            0
+        );
     }
 
     #[test]
@@ -23713,6 +24219,58 @@ mod tests {
         );
     }
 
+    fn test_snapshot_manifest(seed: u8) -> Vec<SnapshotCategoryDigest> {
+        WARP_SNAPSHOT_CATEGORIES
+            .iter()
+            .enumerate()
+            .map(|(index, category)| {
+                let mut sha256 = [seed; 32];
+                sha256[0] = sha256[0].wrapping_add(index as u8);
+                SnapshotCategoryDigest {
+                    category: (*category).to_string(),
+                    entry_count: index as u64,
+                    sha256,
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn snapshot_manifest_shape_requires_full_canonical_category_list() {
+        let manifest = test_snapshot_manifest(11);
+        validate_snapshot_manifest_shape(&manifest).expect("canonical manifest shape");
+
+        let mut missing_category = manifest.clone();
+        missing_category.pop();
+        assert!(validate_snapshot_manifest_shape(&missing_category)
+            .expect_err("missing category must be rejected")
+            .contains("expected"));
+
+        let mut wrong_order = manifest;
+        wrong_order.swap(0, 1);
+        assert!(validate_snapshot_manifest_shape(&wrong_order)
+            .expect_err("wrong category order must be rejected")
+            .contains("category order mismatch"));
+    }
+
+    #[test]
+    fn snapshot_manifest_match_rejects_archive_drift() {
+        let expected = test_snapshot_manifest(23);
+        validate_snapshot_manifest_matches(&expected, &expected).expect("identical manifests");
+
+        let mut wrong_count = expected.clone();
+        wrong_count[0].entry_count += 1;
+        assert!(validate_snapshot_manifest_matches(&expected, &wrong_count)
+            .expect_err("changed entry count must be rejected")
+            .contains("snapshot manifest mismatch"));
+
+        let mut wrong_hash = expected.clone();
+        wrong_hash[1].sha256[0] ^= 1;
+        assert!(validate_snapshot_manifest_matches(&expected, &wrong_hash)
+            .expect_err("changed category hash must be rejected")
+            .contains("snapshot manifest mismatch"));
+    }
+
     #[test]
     fn warp_snapshot_category_requests_advance_in_canonical_order() {
         let mut progress = HashMap::new();
@@ -23804,8 +24362,8 @@ mod tests {
             section
                 .matches("latest_verified_checkpoint_cached(")
                 .count(),
-            3,
-            "snapshot serving should have exactly three verified checkpoint lookup sites"
+            2,
+            "snapshot serving should use latest checkpoint lookup only for metadata responses"
         );
         assert_eq!(
             section.matches("latest_verified_checkpoint(").count(),

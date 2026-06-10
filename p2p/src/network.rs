@@ -2,7 +2,8 @@
 
 use crate::gossip::GossipManager;
 use crate::message::{
-    validator_announcement_signing_message, MessageType, P2PMessage, SnapshotKind,
+    validator_announcement_signing_message, MessageType, P2PMessage, SnapshotCategoryDigest,
+    SnapshotKind,
 };
 use crate::peer::{PeerManager, NON_CONSENSUS_FANOUT};
 use crate::peer_store::PeerStore;
@@ -134,11 +135,23 @@ fn validate_block_txs_for_p2p_admission(transactions: &[Transaction]) -> Result<
 
 fn validate_state_snapshot_request_for_p2p_admission(
     category: &str,
+    checkpoint_slot: u64,
+    checkpoint_state_root: &[u8; 32],
+    snapshot_manifest_root: &[u8; 32],
     chunk_index: u64,
     chunk_size: u64,
 ) -> Result<(), String> {
     if !is_allowed_state_snapshot_category(category) {
         return Err(format!("unsupported state snapshot category: {}", category));
+    }
+    if checkpoint_slot == 0 {
+        return Err("StateSnapshotRequest missing checkpoint slot anchor".to_string());
+    }
+    if checkpoint_state_root == &[0u8; 32] {
+        return Err("StateSnapshotRequest missing checkpoint state-root anchor".to_string());
+    }
+    if snapshot_manifest_root == &[0u8; 32] {
+        return Err("StateSnapshotRequest missing snapshot manifest-root anchor".to_string());
     }
     if chunk_size == 0 || chunk_size > MAX_STATE_SNAPSHOT_REQUEST_CHUNK_SIZE {
         return Err(format!(
@@ -187,9 +200,19 @@ pub fn validate_message_for_p2p_admission(msg_type: &MessageType) -> Result<(), 
         }
         MessageType::StateSnapshotRequest {
             category,
+            checkpoint_slot,
+            checkpoint_state_root,
+            snapshot_manifest_root,
             chunk_index,
             chunk_size,
-        } => validate_state_snapshot_request_for_p2p_admission(category, *chunk_index, *chunk_size),
+        } => validate_state_snapshot_request_for_p2p_admission(
+            category,
+            *checkpoint_slot,
+            checkpoint_state_root,
+            snapshot_manifest_root,
+            *chunk_index,
+            *chunk_size,
+        ),
         _ => Ok(()),
     }
 }
@@ -364,13 +387,24 @@ pub struct ConsistencyReportMsg {
     pub stake_pool_hash: lichen_core::Hash,
 }
 
+/// Exact checkpoint snapshot chunk request from peer.
+#[derive(Debug, Clone)]
+pub struct StateSnapshotRequestParams {
+    pub category: String,
+    pub checkpoint_slot: u64,
+    pub checkpoint_state_root: [u8; 32],
+    pub snapshot_manifest_root: [u8; 32],
+    pub chunk_index: u64,
+    pub chunk_size: u64,
+}
+
 /// Snapshot request from peer
 #[derive(Debug, Clone)]
 pub struct SnapshotRequestMsg {
     pub requester: SocketAddr,
     pub kind: SnapshotKind,
-    /// For StateSnapshotRequest: category, chunk_index, chunk_size
-    pub state_snapshot_params: Option<(String, u64, u64)>,
+    /// For StateSnapshotRequest.
+    pub state_snapshot_params: Option<StateSnapshotRequestParams>,
     /// True if this is a CheckpointMetaRequest
     pub is_meta_request: bool,
 }
@@ -395,6 +429,7 @@ pub struct SnapshotResponseMsg {
         Option<BlockHeader>,
         u32,
         Vec<CommitSignature>,
+        Vec<SnapshotCategoryDigest>,
     )>,
 }
 
@@ -1154,13 +1189,23 @@ impl P2PNetwork {
 
             MessageType::StateSnapshotRequest {
                 category,
+                checkpoint_slot,
+                checkpoint_state_root,
+                snapshot_manifest_root,
                 chunk_index,
                 chunk_size,
             } => {
                 let request = SnapshotRequestMsg {
                     requester: peer_addr,
                     kind: SnapshotKind::StateCheckpoint,
-                    state_snapshot_params: Some((category, chunk_index, chunk_size)),
+                    state_snapshot_params: Some(StateSnapshotRequestParams {
+                        category,
+                        checkpoint_slot,
+                        checkpoint_state_root,
+                        snapshot_manifest_root,
+                        chunk_index,
+                        chunk_size,
+                    }),
                     is_meta_request: false,
                 };
                 self.enqueue_snapshot_request(peer_addr, "state snapshot request", request)
@@ -1216,6 +1261,7 @@ impl P2PNetwork {
                 checkpoint_header,
                 commit_round,
                 commit_signatures,
+                snapshot_manifest,
             } => {
                 let response = SnapshotResponseMsg {
                     requester: peer_addr,
@@ -1230,6 +1276,7 @@ impl P2PNetwork {
                         checkpoint_header,
                         commit_round,
                         commit_signatures,
+                        snapshot_manifest,
                     )),
                 };
                 if let Err(e) = self.snapshot_response_tx.try_send(response) {
@@ -1663,6 +1710,9 @@ mod tests {
         assert_eq!(
             expensive_request_label(&MessageType::StateSnapshotRequest {
                 category: "accounts".to_string(),
+                checkpoint_slot: 1000,
+                checkpoint_state_root: [7u8; 32],
+                snapshot_manifest_root: [8u8; 32],
                 chunk_index: 0,
                 chunk_size: 2000,
             }),
@@ -1676,6 +1726,9 @@ mod tests {
         assert!(
             validate_message_for_p2p_admission(&MessageType::StateSnapshotRequest {
                 category: "accounts".to_string(),
+                checkpoint_slot: 1000,
+                checkpoint_state_root: [7u8; 32],
+                snapshot_manifest_root: [8u8; 32],
                 chunk_index: 0,
                 chunk_size: 2000,
             })
@@ -1685,6 +1738,9 @@ mod tests {
         assert!(
             validate_message_for_p2p_admission(&MessageType::StateSnapshotRequest {
                 category: "unknown".to_string(),
+                checkpoint_slot: 1000,
+                checkpoint_state_root: [7u8; 32],
+                snapshot_manifest_root: [8u8; 32],
                 chunk_index: 0,
                 chunk_size: 2000,
             })
@@ -1694,6 +1750,9 @@ mod tests {
         assert!(
             validate_message_for_p2p_admission(&MessageType::StateSnapshotRequest {
                 category: "accounts".to_string(),
+                checkpoint_slot: 1000,
+                checkpoint_state_root: [7u8; 32],
+                snapshot_manifest_root: [8u8; 32],
                 chunk_index: 0,
                 chunk_size: 0,
             })
@@ -1703,8 +1762,47 @@ mod tests {
         assert!(
             validate_message_for_p2p_admission(&MessageType::StateSnapshotRequest {
                 category: "accounts".to_string(),
+                checkpoint_slot: 1000,
+                checkpoint_state_root: [7u8; 32],
+                snapshot_manifest_root: [8u8; 32],
                 chunk_index: 0,
                 chunk_size: 2001,
+            })
+            .is_err()
+        );
+
+        assert!(
+            validate_message_for_p2p_admission(&MessageType::StateSnapshotRequest {
+                category: "accounts".to_string(),
+                checkpoint_slot: 0,
+                checkpoint_state_root: [7u8; 32],
+                snapshot_manifest_root: [8u8; 32],
+                chunk_index: 0,
+                chunk_size: 2000,
+            })
+            .is_err()
+        );
+
+        assert!(
+            validate_message_for_p2p_admission(&MessageType::StateSnapshotRequest {
+                category: "accounts".to_string(),
+                checkpoint_slot: 1000,
+                checkpoint_state_root: [0u8; 32],
+                snapshot_manifest_root: [8u8; 32],
+                chunk_index: 0,
+                chunk_size: 2000,
+            })
+            .is_err()
+        );
+
+        assert!(
+            validate_message_for_p2p_admission(&MessageType::StateSnapshotRequest {
+                category: "accounts".to_string(),
+                checkpoint_slot: 1000,
+                checkpoint_state_root: [7u8; 32],
+                snapshot_manifest_root: [0u8; 32],
+                chunk_index: 0,
+                chunk_size: 2000,
             })
             .is_err()
         );
@@ -1860,11 +1958,21 @@ mod tests {
             .iter()
             .chain(STATE_SNAPSHOT_SPECIAL_CATEGORIES.iter())
         {
-            validate_state_snapshot_request_for_p2p_admission(category, 0, 1)
-                .unwrap_or_else(|err| panic!("{category} should be accepted: {err}"));
+            validate_state_snapshot_request_for_p2p_admission(
+                category, 1000, &[7u8; 32], &[8u8; 32], 0, 1,
+            )
+            .unwrap_or_else(|err| panic!("{category} should be accepted: {err}"));
         }
 
-        assert!(validate_state_snapshot_request_for_p2p_admission("forgotten_cf", 0, 1).is_err());
+        assert!(validate_state_snapshot_request_for_p2p_admission(
+            "forgotten_cf",
+            1000,
+            &[7u8; 32],
+            &[8u8; 32],
+            0,
+            1
+        )
+        .is_err());
     }
 
     #[test]

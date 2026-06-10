@@ -12,6 +12,14 @@ use std::net::SocketAddr;
 /// AUDIT-FIX MED-04: Extended from 8 to 12 bytes (96-bit birthday bound ~2^48).
 pub type ShortTxId = [u8; 12];
 
+/// Deterministic digest for one checkpoint snapshot category.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SnapshotCategoryDigest {
+    pub category: String,
+    pub entry_count: u64,
+    pub sha256: [u8; 32],
+}
+
 /// Build the signed payload for validator announcements.
 ///
 /// Legacy announcements signed only the fixed-width fields.
@@ -227,6 +235,15 @@ pub enum MessageType {
         /// Which data category: "accounts", "contract_storage", "programs",
         /// "restrictions", "validator_set", "stake_pool", or "mossstake_pool"
         category: String,
+        /// Exact verified checkpoint slot requested by the receiver.
+        #[serde(default)]
+        checkpoint_slot: u64,
+        /// Exact verified checkpoint state root requested by the receiver.
+        #[serde(default)]
+        checkpoint_state_root: [u8; 32],
+        /// Exact checkpoint snapshot manifest root requested by the receiver.
+        #[serde(default)]
+        snapshot_manifest_root: [u8; 32],
         /// Chunk index (0-based) for paginated transfer
         chunk_index: u64,
         /// Number of entries per chunk
@@ -268,6 +285,9 @@ pub enum MessageType {
         /// Commit certificate for the checkpoint anchor block.
         #[serde(default)]
         commit_signatures: Vec<CommitSignature>,
+        /// Deterministic per-category digests for the checkpoint snapshot.
+        #[serde(default)]
+        snapshot_manifest: Vec<SnapshotCategoryDigest>,
     },
 
     /// Slashing evidence broadcast
