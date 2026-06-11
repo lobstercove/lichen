@@ -6793,14 +6793,6 @@ fn verify_checkpoint_anchor(
             anchor.slot, header.slot
         ));
     }
-    if header.state_root.0 != anchor.state_root {
-        return Err(format!(
-            "checkpoint state root mismatch: header={} metadata={}",
-            header.state_root.to_hex(),
-            Hash(anchor.state_root).to_hex()
-        ));
-    }
-
     let block = Block {
         header: header.clone(),
         transactions: Vec::new(),
@@ -23569,7 +23561,7 @@ mod tests {
     }
 
     #[test]
-    fn verify_checkpoint_anchor_rejects_checkpoint_root_distinct_from_header_root() {
+    fn verify_checkpoint_anchor_accepts_post_effects_checkpoint_root() {
         let validator_kp = Keypair::generate();
         let validator_pk = validator_kp.pubkey();
 
@@ -23615,7 +23607,7 @@ mod tests {
             timestamp: 1_000,
         }];
 
-        let err = verify_checkpoint_anchor(
+        verify_checkpoint_anchor(
             CheckpointAnchor {
                 slot: 1,
                 state_root: [0xAB; 32],
@@ -23627,8 +23619,7 @@ mod tests {
             &validator_set,
             &stake_pool,
         )
-        .expect_err("checkpoint metadata root must match signed header root");
-        assert!(err.contains("checkpoint state root mismatch"));
+        .expect("checkpoint root can differ from the pre-effects block header root");
     }
 
     #[test]
