@@ -457,13 +457,14 @@ mod tests {
         RocksDbCompressionProfile,
     };
     use super::*;
-    use crate::block::Block;
+    use crate::block::{Block, CommitSignature};
     use crate::restrictions::{
         ContractRestrictionAccess, ProtocolModuleId, RestrictionLiftReason, RestrictionMode,
         RestrictionReason, RestrictionRecord, RestrictionStatus, RestrictionTarget,
         RestrictionTransferDirection, NATIVE_LICN_ASSET_ID,
     };
     use crate::transaction::Message;
+    use crate::{PqPublicKey, PqSignature};
     use tempfile::tempdir;
 
     fn directory_fingerprint(root: &std::path::Path) -> Vec<(String, u64)> {
@@ -816,6 +817,120 @@ mod tests {
 
         assert!(dest.get_account(&stale_pk).unwrap().is_none());
         assert!(dest.get_account(&source_pk).unwrap().is_some());
+    }
+
+    struct SnapshotDigestFixture {
+        count: u64,
+        digest: [u8; 32],
+        entries: KvEntries,
+    }
+
+    fn snapshot_category_digest(state: &StateStore, category: &str) -> SnapshotDigestFixture {
+        let mut hasher = Sha256::new();
+        hasher.update(b"lichen-checkpoint-snapshot-category-v1");
+        hasher.update((category.len() as u64).to_le_bytes());
+        hasher.update(category.as_bytes());
+
+        let mut cursor: Option<Vec<u8>> = None;
+        let mut count = 0u64;
+        let mut all_entries = Vec::new();
+        loop {
+            let page = state
+                .export_snapshot_category_cursor_untracked(category, cursor.as_deref(), 1)
+                .expect("export snapshot category");
+            for (key, value) in page.entries {
+                hasher.update((key.len() as u64).to_le_bytes());
+                hasher.update(&key);
+                hasher.update((value.len() as u64).to_le_bytes());
+                hasher.update(&value);
+                count = count.saturating_add(1);
+                all_entries.push((key, value));
+            }
+            if !page.has_more {
+                break;
+            }
+            cursor = page.next_cursor;
+        }
+        hasher.update(count.to_le_bytes());
+        let digest = hasher.finalize();
+        let mut out = [0u8; 32];
+        out.copy_from_slice(&digest[..32]);
+        SnapshotDigestFixture {
+            count,
+            digest: out,
+            entries: all_entries,
+        }
+    }
+
+    #[test]
+    fn block_snapshot_export_canonicalizes_legacy_archive_encoding() {
+        let canonical_dir = tempdir().unwrap();
+        let legacy_dir = tempdir().unwrap();
+        let canonical = StateStore::open(canonical_dir.path()).unwrap();
+        let legacy = StateStore::open(legacy_dir.path()).unwrap();
+
+        let commit = |validator_byte: u8, timestamp: u64, sig_byte: u8| CommitSignature {
+            validator: [validator_byte; 32],
+            signature: PqSignature {
+                scheme_version: 1,
+                public_key: PqPublicKey {
+                    scheme_version: 1,
+                    bytes: vec![validator_byte; 4],
+                },
+                sig: vec![sig_byte; 8],
+            },
+            timestamp,
+        };
+        let commit_a = commit(1, 10, 11);
+        let commit_b = commit(2, 20, 22);
+
+        let mut block = Block::new(
+            7,
+            Hash::hash(b"prev"),
+            Hash::hash(b"state"),
+            [9u8; 32],
+            Vec::new(),
+        );
+        block.commit_signatures = vec![commit_b.clone(), commit_a.clone()];
+        let mut legacy_block = block.clone();
+        legacy_block.commit_signatures = vec![commit_a, commit_b];
+
+        canonical
+            .put_block_atomic(&block, Some(7), Some(7))
+            .expect("put canonical block");
+        legacy
+            .put_block_atomic(&legacy_block, Some(7), Some(7))
+            .expect("put legacy block");
+
+        let block_cf = legacy.db.cf_handle(CF_BLOCKS).expect("blocks cf");
+        let legacy_json = serde_json::to_vec(&legacy_block).expect("serialize legacy json block");
+        legacy
+            .db
+            .put_cf(&block_cf, block.hash().0, &legacy_json)
+            .expect("overwrite block as legacy json");
+
+        let canonical_digest = snapshot_category_digest(&canonical, "blocks");
+        let legacy_digest = snapshot_category_digest(&legacy, "blocks");
+        assert_eq!(canonical_digest.count, 1);
+        assert_eq!(canonical_digest.count, legacy_digest.count);
+        assert_eq!(canonical_digest.digest, legacy_digest.digest);
+        assert_eq!(canonical_digest.entries, legacy_digest.entries);
+        assert_eq!(canonical_digest.entries[0].1.first(), Some(&0xBC));
+
+        let imported_dir = tempdir().unwrap();
+        let imported = StateStore::open(imported_dir.path()).unwrap();
+        imported
+            .import_snapshot_category("blocks", &[(block.hash().0.to_vec(), legacy_json.clone())])
+            .expect("import canonicalized legacy block");
+        let imported_digest = snapshot_category_digest(&imported, "blocks");
+        assert_eq!(canonical_digest.digest, imported_digest.digest);
+
+        let mut wrong_key = block.hash().0;
+        wrong_key[0] ^= 0x01;
+        let err = imported
+            .import_snapshot_category("blocks", &[(wrong_key.to_vec(), legacy_json)])
+            .expect_err("block snapshot import must reject key/hash drift");
+        assert!(err.contains("Block snapshot key/hash mismatch"));
     }
 
     #[test]

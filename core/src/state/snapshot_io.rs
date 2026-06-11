@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
 
+use crate::block::Block;
+use crate::codec::{append_legacy_bincode, deserialize_legacy_bincode};
+
 use super::*;
 
 /// Metadata stored alongside each checkpoint (serialized as JSON in the
@@ -14,6 +17,63 @@ pub struct CheckpointMeta {
     pub created_at: u64,
     /// Total accounts at checkpoint time.
     pub total_accounts: u64,
+}
+
+fn decode_snapshot_block_value(value: &[u8]) -> Result<Block, String> {
+    if value.first() == Some(&0xBC) {
+        deserialize_legacy_bincode(&value[1..], "block")
+            .map_err(|err| format!("Failed to deserialize block snapshot value: {}", err))
+    } else {
+        serde_json::from_slice(value).map_err(|err| {
+            format!(
+                "Failed to deserialize legacy JSON block snapshot value: {}",
+                err
+            )
+        })
+    }
+}
+
+fn canonical_block_snapshot_value(key: &[u8], value: &[u8]) -> Result<Vec<u8>, String> {
+    let mut block = decode_snapshot_block_value(value)?;
+    let block_hash = block.hash();
+    if key != block_hash.0 {
+        return Err(format!(
+            "Block snapshot key/hash mismatch: key={} block_hash={}",
+            hex::encode(key),
+            block_hash.to_hex()
+        ));
+    }
+    // Commit certificates are semantically a set; collection order can differ
+    // across validators that finalized the same block.
+    block.commit_signatures.sort_by(|a, b| {
+        a.validator
+            .cmp(&b.validator)
+            .then(a.timestamp.cmp(&b.timestamp))
+            .then(a.signature.scheme_version.cmp(&b.signature.scheme_version))
+            .then(
+                a.signature
+                    .public_key
+                    .scheme_version
+                    .cmp(&b.signature.public_key.scheme_version),
+            )
+            .then(
+                a.signature
+                    .public_key
+                    .bytes
+                    .cmp(&b.signature.public_key.bytes),
+            )
+            .then(a.signature.sig.cmp(&b.signature.sig))
+    });
+
+    let mut canonical = Vec::with_capacity(value.len().max(1));
+    canonical.push(0xBC);
+    append_legacy_bincode(&mut canonical, &block, "block").map_err(|err| {
+        format!(
+            "Failed to serialize canonical block snapshot value: {}",
+            err
+        )
+    })?;
+    Ok(canonical)
 }
 
 impl StateStore {
@@ -345,6 +405,9 @@ impl StateStore {
         after_key: Option<&[u8]>,
         limit: u64,
     ) -> Result<KvPage, String> {
+        if category == "blocks" {
+            return self.export_blocks_cursor_canonical(after_key, limit);
+        }
         if category == "tx_by_slot" {
             return self.export_tx_by_slot_from_blocks_cursor(after_key, limit);
         }
@@ -352,6 +415,72 @@ impl StateStore {
         let (cf_name, display_name) = Self::snapshot_category_cf(category)
             .ok_or_else(|| format!("Unsupported snapshot category: {}", category))?;
         self.export_cf_page_cursor_uncounted(cf_name, display_name, after_key, limit)
+    }
+
+    fn export_blocks_cursor_canonical(
+        &self,
+        after_key: Option<&[u8]>,
+        limit: u64,
+    ) -> Result<KvPage, String> {
+        if limit == 0 {
+            return Ok(KvPage {
+                entries: Vec::new(),
+                total: 0,
+                next_cursor: None,
+                has_more: false,
+            });
+        }
+
+        let cf = self
+            .db
+            .cf_handle(CF_BLOCKS)
+            .ok_or_else(|| "Blocks CF not found".to_string())?;
+
+        let mut read_opts = rocksdb::ReadOptions::default();
+        read_opts.set_total_order_seek(true);
+        let iter = if let Some(after) = after_key {
+            self.db.iterator_cf_opt(
+                &cf,
+                read_opts,
+                rocksdb::IteratorMode::From(after, rocksdb::Direction::Forward),
+            )
+        } else {
+            self.db
+                .iterator_cf_opt(&cf, read_opts, rocksdb::IteratorMode::Start)
+        };
+
+        let mut entries = Vec::with_capacity(limit.min(10_000) as usize);
+        let mut has_more = false;
+
+        for item in iter {
+            let (key, value) = item.map_err(|err| format!("Failed iterating Blocks: {}", err))?;
+            if let Some(after) = after_key {
+                if key.as_ref() == after {
+                    continue;
+                }
+            }
+
+            let canonical = canonical_block_snapshot_value(&key, &value)?;
+            entries.push((key.to_vec(), canonical));
+            if entries.len() > limit as usize {
+                has_more = true;
+                entries.pop();
+                break;
+            }
+        }
+
+        let next_cursor = if has_more {
+            entries.last().map(|(key, _)| key.clone())
+        } else {
+            None
+        };
+
+        Ok(KvPage {
+            entries,
+            total: 0,
+            next_cursor,
+            has_more,
+        })
     }
 
     fn export_tx_by_slot_from_blocks_cursor(
@@ -777,6 +906,7 @@ impl StateStore {
     ) -> Result<usize, String> {
         match category {
             "accounts" => return self.import_accounts(entries),
+            "blocks" => return self.import_blocks_canonical(entries),
             "contract_storage" => return self.import_contract_storage(entries),
             "programs" => return self.import_programs(entries),
             _ => {}
@@ -796,6 +926,24 @@ impl StateStore {
         self.db
             .write(batch)
             .map_err(|e| format!("Failed to import {}: {}", category, e))?;
+
+        Ok(entries.len())
+    }
+
+    fn import_blocks_canonical(&self, entries: &[(Vec<u8>, Vec<u8>)]) -> Result<usize, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_BLOCKS)
+            .ok_or_else(|| "Blocks CF not found".to_string())?;
+
+        let mut batch = WriteBatch::default();
+        for (key, value) in entries {
+            let canonical = canonical_block_snapshot_value(key, value)?;
+            batch.put_cf(&cf, key, canonical);
+        }
+        self.db
+            .write(batch)
+            .map_err(|err| format!("Failed to import blocks: {}", err))?;
 
         Ok(entries.len())
     }
