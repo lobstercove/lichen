@@ -86,6 +86,24 @@ struct OptionalStateRootComponents {
     shielded_root: Option<Hash>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StateRootComponentReport {
+    pub root: Hash,
+    pub root_with_mossstake_slot_only: Hash,
+    pub root_with_mossstake_legacy: Hash,
+    pub accounts_root: Hash,
+    pub contract_root: Hash,
+    pub stake_pool_hash: Hash,
+    pub mossstake_pool_hash: Hash,
+    pub mossstake_pool_slot_only_hash: Hash,
+    pub mossstake_pool_legacy_hash: Hash,
+    pub restrictions_root: Option<Hash>,
+    pub shielded_root: Option<Hash>,
+    pub include_restrictions: bool,
+    pub commitment_schema: u8,
+    pub prefix: u8,
+}
+
 /// Merkle inclusion proof for an account in the state tree.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MerkleProof {
@@ -1686,6 +1704,76 @@ impl StateStore {
         root
     }
 
+    pub fn state_root_component_report(&self) -> StateRootComponentReport {
+        let accounts_root = self.compute_accounts_root();
+        let contract_root = self.compute_contract_storage_root();
+        let stake_pool_hash = self.compute_stake_pool_hash();
+        let mossstake_pool_hash = self.compute_mossstake_pool_hash();
+        let (mossstake_pool_slot_only_hash, mossstake_pool_legacy_hash) =
+            self.compute_mossstake_pool_hash_variants();
+        let include_restrictions = self.get_state_root_schema().unwrap_or(false);
+        let restrictions_root = if include_restrictions {
+            Some(self.compute_restrictions_root())
+        } else {
+            None
+        };
+        let shielded_root = if self.uses_shielded_state_commitment() {
+            Some(self.compute_shielded_state_root())
+        } else {
+            None
+        };
+        let root = self.compose_state_root_with_restrictions_root(
+            accounts_root,
+            contract_root,
+            stake_pool_hash,
+            mossstake_pool_hash,
+            include_restrictions,
+            OptionalStateRootComponents {
+                restrictions_root,
+                shielded_root,
+            },
+        );
+        let root_with_mossstake_slot_only = self.compose_state_root_with_restrictions_root(
+            accounts_root,
+            contract_root,
+            stake_pool_hash,
+            mossstake_pool_slot_only_hash,
+            include_restrictions,
+            OptionalStateRootComponents {
+                restrictions_root,
+                shielded_root,
+            },
+        );
+        let root_with_mossstake_legacy = self.compose_state_root_with_restrictions_root(
+            accounts_root,
+            contract_root,
+            stake_pool_hash,
+            mossstake_pool_legacy_hash,
+            include_restrictions,
+            OptionalStateRootComponents {
+                restrictions_root,
+                shielded_root,
+            },
+        );
+
+        StateRootComponentReport {
+            root,
+            root_with_mossstake_slot_only,
+            root_with_mossstake_legacy,
+            accounts_root,
+            contract_root,
+            stake_pool_hash,
+            mossstake_pool_hash,
+            mossstake_pool_slot_only_hash,
+            mossstake_pool_legacy_hash,
+            restrictions_root,
+            shielded_root,
+            include_restrictions,
+            commitment_schema: self.get_state_commitment_schema(),
+            prefix: self.active_state_root_prefix(include_restrictions),
+        }
+    }
+
     pub fn compute_state_root_cached_read_only(&self) -> Option<Hash> {
         let cf = self.db.cf_handle(CF_STATS)?;
         let include_restrictions = self.get_state_root_schema().unwrap_or(false);
@@ -1784,7 +1872,7 @@ impl StateStore {
             .mossstake_pool_overlay
             .as_ref()
             .map(|pool| {
-                if self.is_mossstake_slot_only() {
+                if self.mossstake_replay_mode() == crate::mossstake::MossStakeReplayMode::SlotOnly {
                     pool.canonical_hash()
                 } else {
                     pool.legacy_canonical_hash()
@@ -1826,6 +1914,115 @@ impl StateStore {
             composite.extend_from_slice(&shielded_root.0);
         }
         Hash::hash(&composite)
+    }
+
+    pub fn state_root_component_report_for_batch(
+        &self,
+        batch: &StateBatch,
+    ) -> StateRootComponentReport {
+        let accounts_root = if self.uses_sparse_state_commitment() {
+            match self.compute_sparse_accounts_root_for_batch(batch) {
+                Ok(root) => root,
+                Err(err) => {
+                    tracing::error!("Sparse proposal account root failed: {err}");
+                    self.compute_accounts_root_for_batch(batch)
+                }
+            }
+        } else {
+            self.compute_accounts_root_for_batch(batch)
+        };
+        let contract_root = if self.uses_sparse_state_commitment() {
+            match self.compute_sparse_contract_storage_root_for_batch(batch) {
+                Ok(root) => root,
+                Err(err) => {
+                    tracing::error!("Sparse proposal contract root failed: {err}");
+                    self.compute_contract_storage_root_for_batch(batch)
+                }
+            }
+        } else {
+            self.compute_contract_storage_root_for_batch(batch)
+        };
+        let stake_pool_hash = batch
+            .stake_pool_overlay
+            .as_ref()
+            .map(|pool| pool.canonical_hash())
+            .unwrap_or_else(|| self.compute_stake_pool_hash());
+        let mossstake_pool_hash = batch
+            .mossstake_pool_overlay
+            .as_ref()
+            .map(|pool| {
+                if self.mossstake_replay_mode() == crate::mossstake::MossStakeReplayMode::SlotOnly {
+                    pool.canonical_hash()
+                } else {
+                    pool.legacy_canonical_hash()
+                }
+            })
+            .unwrap_or_else(|| self.compute_mossstake_pool_hash());
+        let (mossstake_pool_slot_only_hash, mossstake_pool_legacy_hash) =
+            self.compute_mossstake_pool_hash_variants_for_batch(batch);
+        let include_restrictions = self.get_state_root_schema().unwrap_or(false);
+        let restrictions_root = if include_restrictions && !batch.restriction_overlay.is_empty() {
+            Some(self.compute_restrictions_root_for_batch(batch))
+        } else if include_restrictions {
+            Some(self.compute_restrictions_root())
+        } else {
+            None
+        };
+        let shielded_root = if self.uses_shielded_state_commitment() {
+            Some(self.compute_shielded_state_root_for_batch(batch))
+        } else {
+            None
+        };
+        let root = self.compose_state_root_with_restrictions_root(
+            accounts_root,
+            contract_root,
+            stake_pool_hash,
+            mossstake_pool_hash,
+            include_restrictions,
+            OptionalStateRootComponents {
+                restrictions_root,
+                shielded_root,
+            },
+        );
+        let root_with_mossstake_slot_only = self.compose_state_root_with_restrictions_root(
+            accounts_root,
+            contract_root,
+            stake_pool_hash,
+            mossstake_pool_slot_only_hash,
+            include_restrictions,
+            OptionalStateRootComponents {
+                restrictions_root,
+                shielded_root,
+            },
+        );
+        let root_with_mossstake_legacy = self.compose_state_root_with_restrictions_root(
+            accounts_root,
+            contract_root,
+            stake_pool_hash,
+            mossstake_pool_legacy_hash,
+            include_restrictions,
+            OptionalStateRootComponents {
+                restrictions_root,
+                shielded_root,
+            },
+        );
+
+        StateRootComponentReport {
+            root,
+            root_with_mossstake_slot_only,
+            root_with_mossstake_legacy,
+            accounts_root,
+            contract_root,
+            stake_pool_hash,
+            mossstake_pool_hash,
+            mossstake_pool_slot_only_hash,
+            mossstake_pool_legacy_hash,
+            restrictions_root,
+            shielded_root,
+            include_restrictions,
+            commitment_schema: self.get_state_commitment_schema(),
+            prefix: self.active_state_root_prefix(include_restrictions),
+        }
     }
 
     fn serialized_account_value(account: &Account) -> Result<Vec<u8>, String> {
@@ -2154,13 +2351,32 @@ impl StateStore {
     pub fn compute_mossstake_pool_hash(&self) -> Hash {
         match self.get_mossstake_pool() {
             Ok(pool) => {
-                if self.is_mossstake_slot_only() {
+                if self.mossstake_replay_mode() == crate::mossstake::MossStakeReplayMode::SlotOnly {
                     pool.canonical_hash()
                 } else {
                     pool.legacy_canonical_hash()
                 }
             }
             Err(_) => Hash::default(),
+        }
+    }
+
+    pub fn compute_mossstake_pool_hash_variants(&self) -> (Hash, Hash) {
+        match self.get_mossstake_pool() {
+            Ok(pool) => (pool.canonical_hash(), pool.legacy_canonical_hash()),
+            Err(_) => (Hash::default(), Hash::default()),
+        }
+    }
+
+    fn compute_mossstake_pool_hash_variants_for_batch(&self, batch: &StateBatch) -> (Hash, Hash) {
+        match batch
+            .mossstake_pool_overlay
+            .as_ref()
+            .cloned()
+            .or_else(|| self.get_mossstake_pool().ok())
+        {
+            Some(pool) => (pool.canonical_hash(), pool.legacy_canonical_hash()),
+            None => (Hash::default(), Hash::default()),
         }
     }
 

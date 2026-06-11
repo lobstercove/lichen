@@ -11,6 +11,43 @@ impl StateStore {
         )
     }
 
+    pub fn mossstake_replay_mode_for_parent_slot(
+        &self,
+        parent_slot: u64,
+    ) -> crate::mossstake::MossStakeReplayMode {
+        if self.is_mossstake_slot_only() {
+            return crate::mossstake::MossStakeReplayMode::SlotOnly;
+        }
+
+        let legacy_testnet = self
+            .get_metadata(crate::signing::CHAIN_ID_METADATA_KEY)
+            .ok()
+            .flatten()
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+            .map(|chain_id| chain_id.to_ascii_lowercase().contains("testnet"))
+            .unwrap_or(false);
+        if !legacy_testnet {
+            return crate::mossstake::MossStakeReplayMode::SlotOnly;
+        }
+
+        if (crate::mossstake::LEGACY_TESTNET_MOSSSTAKE_WALL_CLOCK_START_PARENT_SLOT
+            ..crate::mossstake::LEGACY_TESTNET_MOSSSTAKE_SLOT_ONLY_ACTIVATION_PARENT_SLOT)
+            .contains(&parent_slot)
+        {
+            crate::mossstake::MossStakeReplayMode::LegacyWallClock
+        } else {
+            crate::mossstake::MossStakeReplayMode::SlotOnly
+        }
+    }
+
+    pub fn mossstake_replay_mode(&self) -> crate::mossstake::MossStakeReplayMode {
+        self.mossstake_replay_mode_for_parent_slot(self.get_last_slot().unwrap_or(0))
+    }
+
+    pub fn should_clear_mossstake_wall_clock_times(&self) -> bool {
+        self.mossstake_replay_mode() == crate::mossstake::MossStakeReplayMode::SlotOnly
+    }
+
     /// Update spendable balance for a native account.
     pub fn set_spendable_balance(&self, pubkey: &Pubkey, spores: u64) -> Result<(), String> {
         let mut account = self
@@ -47,7 +84,7 @@ impl StateStore {
             .ok_or_else(|| "MossStake CF not found".to_string())?;
 
         let mut normalized_pool = pool.clone();
-        if self.is_mossstake_slot_only() {
+        if self.should_clear_mossstake_wall_clock_times() {
             normalized_pool.clear_wall_clock_times();
         }
         let data = serde_json::to_vec(&normalized_pool)

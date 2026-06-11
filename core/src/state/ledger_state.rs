@@ -322,6 +322,77 @@ impl StateStore {
         )
     }
 
+    /// Store only the canonical block header for historical replay diagnostics.
+    ///
+    /// This preserves `get_block_by_slot(...).hash()` and timestamp lookups
+    /// without duplicating the full block transaction/index archive into a
+    /// scratch replay DB. Transaction effects are committed separately through
+    /// the normal transaction replay batch.
+    pub fn put_replay_block_header_atomic(
+        &self,
+        block: &Block,
+        confirmed_slot: Option<u64>,
+        finalized_slot: Option<u64>,
+    ) -> Result<(), String> {
+        let _block_write_guard = self
+            .block_write_lock
+            .lock()
+            .map_err(|_| "Block write lock poisoned".to_string())?;
+
+        let cf = self
+            .db
+            .cf_handle(CF_BLOCKS)
+            .ok_or_else(|| "Blocks CF not found".to_string())?;
+        let slot_cf = self
+            .db
+            .cf_handle(CF_SLOTS)
+            .ok_or_else(|| "Slots CF not found".to_string())?;
+
+        let block_hash = block.hash();
+        let mut header_only = block.clone();
+        header_only.transactions.clear();
+        header_only.tx_fees_paid.clear();
+
+        let mut value = Vec::with_capacity(512);
+        value.push(0xBC);
+        append_legacy_bincode(&mut value, &header_only, "block header")
+            .map_err(|e| format!("Failed to serialize replay block header: {}", e))?;
+
+        let mut batch = WriteBatch::default();
+        let current_last_slot = self.get_last_slot().unwrap_or(0);
+        let current_confirmed_slot = self.get_last_confirmed_slot().unwrap_or(0);
+        let current_finalized_slot = self.get_last_finalized_slot().unwrap_or(0);
+
+        batch.put_cf(&cf, block_hash.0, &value);
+        batch.put_cf(&slot_cf, block.header.slot.to_be_bytes(), block_hash.0);
+        batch.put_cf(
+            &slot_cf,
+            b"last_slot",
+            block.header.slot.max(current_last_slot).to_be_bytes(),
+        );
+        if let Some(slot) = confirmed_slot {
+            batch.put_cf(
+                &slot_cf,
+                b"confirmed_slot",
+                slot.max(current_confirmed_slot).to_be_bytes(),
+            );
+        }
+        if let Some(slot) = finalized_slot {
+            batch.put_cf(
+                &slot_cf,
+                b"finalized_slot",
+                slot.max(current_finalized_slot).to_be_bytes(),
+            );
+        }
+
+        self.db
+            .write(batch)
+            .map_err(|e| format!("Failed to write replay block header: {}", e))?;
+        self.push_blockhash_cache(block_hash, block.header.slot);
+
+        Ok(())
+    }
+
     pub fn get_block(&self, hash: &Hash) -> Result<Option<Block>, String> {
         let cf = self
             .db

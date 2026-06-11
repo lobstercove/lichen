@@ -133,6 +133,7 @@ pub use state::SparseMerkleProof;
 pub use state::SparseProofStep;
 pub use state::SparseStateCommitmentReport;
 pub use state::StateBatch;
+pub use state::StateRootComponentReport;
 pub use state::StateStore;
 pub use state::SymbolRegistryEntry;
 pub use state::STATE_SNAPSHOT_CATEGORIES;

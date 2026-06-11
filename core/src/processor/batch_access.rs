@@ -119,7 +119,11 @@ impl TxProcessor {
     ) -> Result<(), String> {
         let mut guard = self.batch.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(batch) = guard.as_mut() {
-            batch.put_mossstake_pool(pool)
+            if let Some(replay_mode) = self.mossstake_replay_mode_override {
+                batch.put_mossstake_pool_with_replay_mode(pool, replay_mode)
+            } else {
+                batch.put_mossstake_pool(pool)
+            }
         } else {
             self.state.put_mossstake_pool(pool)
         }
@@ -585,6 +589,24 @@ impl TxProcessor {
         } else {
             self.state.get_last_slot()
         }
+    }
+
+    pub(super) fn b_get_last_block_timestamp(&self) -> Result<(u64, u64), String> {
+        let last_slot = self.b_get_last_slot().unwrap_or(0);
+        let timestamp = self
+            .state
+            .get_block_by_slot(last_slot)?
+            .map(|block| block.header.timestamp)
+            .unwrap_or_else(|| crate::mossstake::MossStakePool::legacy_slot_timestamp(last_slot));
+        Ok((last_slot, timestamp))
+    }
+
+    pub(super) fn block_timestamp_for_slot(&self, slot: u64) -> Option<u64> {
+        self.state
+            .get_block_by_slot(slot)
+            .ok()
+            .flatten()
+            .map(|block| block.header.timestamp)
     }
 
     pub(super) fn b_get_governed_transfer_day_volume(

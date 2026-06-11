@@ -40,6 +40,7 @@ mod validator_state;
 pub use dex_index::{DexIndexBackfillReport, DexOrderbookLevel};
 pub use merkle_state::{
     AccountProof, MerkleProof, SparseMerkleProof, SparseProofStep, SparseStateCommitmentReport,
+    StateRootComponentReport,
 };
 pub use metrics_state::{Metrics, MetricsStore};
 pub use shielded_state::ShieldedStateRebuildReport;
@@ -839,6 +840,12 @@ mod tests {
         let alice = Pubkey([7u8; 32]);
         let mut pool = MossStakePool::new();
 
+        state
+            .put_metadata(crate::signing::CHAIN_ID_METADATA_KEY, b"lichen-testnet-1")
+            .unwrap();
+        state
+            .set_last_slot(crate::mossstake::LEGACY_TESTNET_MOSSSTAKE_WALL_CLOCK_START_PARENT_SLOT)
+            .unwrap();
         pool.stake_with_tier(alice, 1_000, 42, crate::mossstake::LockTier::Lock30)
             .unwrap();
         pool.request_unstake(
@@ -911,6 +918,70 @@ mod tests {
             0
         );
         assert_eq!(state.compute_mossstake_pool_hash(), slot_only_hash);
+    }
+
+    #[test]
+    fn legacy_testnet_mossstake_replay_mode_matches_deployed_history() {
+        let temp_dir = tempdir().unwrap();
+        let state = StateStore::open(temp_dir.path()).unwrap();
+
+        assert_eq!(
+            state.mossstake_replay_mode_for_parent_slot(2_384_143),
+            crate::mossstake::MossStakeReplayMode::SlotOnly,
+            "non-testnet or missing chain metadata must stay slot-only"
+        );
+
+        state
+            .put_metadata(crate::signing::CHAIN_ID_METADATA_KEY, b"lichen-testnet-1")
+            .unwrap();
+
+        for parent_slot in [
+            5_126,     // slot 5,127 pre-v0.5.93 MossStake deposit
+            149_681,   // slot 149,682 pre-v0.5.93 MossStake deposit
+            246_926,   // slot 246,927 pre-v0.5.93 MossStake deposit
+            554_426,   // slot 554,427 pre-v0.5.93 MossStake deposit
+            1_459_827, // slot 1,459,828 pre-v0.5.93 MossStake unstake
+            2_384_142, // immediately before retained v0.5.93 startup
+        ] {
+            assert_eq!(
+                state.mossstake_replay_mode_for_parent_slot(parent_slot),
+                crate::mossstake::MossStakeReplayMode::SlotOnly,
+                "parent slot {parent_slot} must replay slot-only"
+            );
+        }
+
+        for parent_slot in [
+            2_384_143, // v0.5.93 resumed here and started height 2,384,144
+            2_665_769, // slot 2,665,770 only MossStake tx in v0.5.93 interval
+            2_710_765, // last legacy parent before v0.5.98 cleanup
+        ] {
+            assert_eq!(
+                state.mossstake_replay_mode_for_parent_slot(parent_slot),
+                crate::mossstake::MossStakeReplayMode::LegacyWallClock,
+                "parent slot {parent_slot} must replay v0.5.93 wall-clock MossStake"
+            );
+        }
+
+        for parent_slot in [
+            2_710_766, // v0.5.98 cleanup resumed here and activated slot-only
+            2_857_243, // slot 2,857,244 post-cleanup MossStake deposit
+            3_058_381, // slot 3,058,382 post-cleanup MossStake unstake
+        ] {
+            assert_eq!(
+                state.mossstake_replay_mode_for_parent_slot(parent_slot),
+                crate::mossstake::MossStakeReplayMode::SlotOnly,
+                "parent slot {parent_slot} must replay slot-only after cleanup"
+            );
+        }
+
+        state
+            .put_metadata(crate::mossstake::MOSSSTAKE_SLOT_ONLY_METADATA_KEY, b"1")
+            .unwrap();
+        assert_eq!(
+            state.mossstake_replay_mode_for_parent_slot(2_665_769),
+            crate::mossstake::MossStakeReplayMode::SlotOnly,
+            "persisted cleanup marker overrides historical wall-clock range"
+        );
     }
 
     #[test]

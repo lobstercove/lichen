@@ -12,6 +12,22 @@ use std::collections::{BTreeMap, HashMap};
 /// 1000 bp = 10% of the settled epoch mint funds the liquid staking pool.
 pub const MOSSSTAKE_BLOCK_SHARE_BPS: u64 = 1_000;
 pub const MOSSSTAKE_SLOT_ONLY_METADATA_KEY: &str = "mossstake_slot_only_v1";
+pub const LEGACY_TESTNET_MOSSSTAKE_WALL_CLOCK_START_PARENT_SLOT: u64 = 2_384_143;
+pub const LEGACY_TESTNET_MOSSSTAKE_SLOT_ONLY_ACTIVATION_PARENT_SLOT: u64 = 2_710_766;
+const SECONDS_PER_DAY: u64 = 86_400;
+pub const MOSSSTAKE_UNSTAKE_COOLDOWN_SECONDS: u64 = 7 * SECONDS_PER_DAY;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MossStakeReplayMode {
+    SlotOnly,
+    LegacyWallClock,
+}
+
+impl MossStakeReplayMode {
+    pub fn uses_wall_clock(self) -> bool {
+        matches!(self, Self::LegacyWallClock)
+    }
+}
 
 /// Serde helper: serialize/deserialize HashMap<Pubkey, V> with base58 string keys.
 /// JSON requires map keys to be strings; Pubkey normally serializes as [u8;32].
@@ -211,6 +227,17 @@ impl LockTier {
         }
     }
 
+    /// Legacy v0.5.93 wall-clock duration. Only historical replay of the
+    /// deployed v0.5.93 testnet interval uses this value.
+    pub fn lock_duration_seconds(&self) -> u64 {
+        match self {
+            Self::Flexible => 0,
+            Self::Lock30 => 30 * SECONDS_PER_DAY,
+            Self::Lock180 => 180 * SECONDS_PER_DAY,
+            Self::Lock365 => 365 * SECONDS_PER_DAY,
+        }
+    }
+
     pub fn display_name(&self) -> &'static str {
         match self {
             Self::Flexible => "Flexible",
@@ -371,6 +398,63 @@ impl MossStakePool {
         changed
     }
 
+    pub fn legacy_slot_timestamp(slot: u64) -> u64 {
+        slot.saturating_mul(400) / 1_000
+    }
+
+    pub fn backfill_wall_clock_times<F>(&mut self, mut timestamp_for_slot: F) -> bool
+    where
+        F: FnMut(u64) -> Option<u64>,
+    {
+        let mut changed = false;
+
+        for position in self.positions.values_mut() {
+            if position.deposited_at_unix_seconds == 0 {
+                if let Some(ts) = timestamp_for_slot(position.deposited_at) {
+                    position.deposited_at_unix_seconds = ts;
+                    changed = true;
+                }
+            }
+            if position.lock_until_unix_seconds == 0 && position.lock_until > 0 {
+                let deposit_ts = if position.deposited_at_unix_seconds > 0 {
+                    Some(position.deposited_at_unix_seconds)
+                } else {
+                    timestamp_for_slot(position.deposited_at)
+                };
+                if let Some(ts) = deposit_ts {
+                    position.lock_until_unix_seconds =
+                        ts.saturating_add(position.lock_tier.lock_duration_seconds());
+                    changed = true;
+                }
+            }
+        }
+
+        for requests in self.unstake_requests.values_mut() {
+            for request in requests {
+                if request.requested_at_unix_seconds == 0 {
+                    if let Some(ts) = timestamp_for_slot(request.requested_at) {
+                        request.requested_at_unix_seconds = ts;
+                        changed = true;
+                    }
+                }
+                if request.claimable_at_unix_seconds == 0 {
+                    let request_ts = if request.requested_at_unix_seconds > 0 {
+                        Some(request.requested_at_unix_seconds)
+                    } else {
+                        timestamp_for_slot(request.requested_at)
+                    };
+                    if let Some(ts) = request_ts {
+                        request.claimable_at_unix_seconds =
+                            ts.saturating_add(MOSSSTAKE_UNSTAKE_COOLDOWN_SECONDS);
+                        changed = true;
+                    }
+                }
+            }
+        }
+
+        changed
+    }
+
     fn assert_transferable_position(
         position: &StakingPosition,
         current_slot: u64,
@@ -379,6 +463,32 @@ impl MossStakePool {
             return Err(format!(
                 "{} positions are not transferable. Unstake after the lock expires to receive LICN, or use the Flexible tier for liquid stLICN.",
                 position.lock_tier.display_name()
+            ));
+        }
+        if position.lock_until > current_slot {
+            return Err(format!(
+                "Position locked until slot {}; locked MossStake positions are not transferable",
+                position.lock_until
+            ));
+        }
+        Ok(())
+    }
+
+    fn assert_transferable_position_at_time(
+        position: &StakingPosition,
+        current_slot: u64,
+        current_unix_seconds: u64,
+    ) -> Result<(), String> {
+        if position.lock_tier != LockTier::Flexible {
+            return Err(format!(
+                "{} positions are not transferable. Unstake after the lock expires to receive LICN, or use the Flexible tier for liquid stLICN.",
+                position.lock_tier.display_name()
+            ));
+        }
+        if position.lock_until_unix_seconds > current_unix_seconds {
+            return Err(format!(
+                "Position locked until timestamp {}; locked MossStake positions are not transferable",
+                position.lock_until_unix_seconds
             ));
         }
         if position.lock_until > current_slot {
@@ -476,6 +586,70 @@ impl MossStakePool {
         Ok(st_licn_to_mint)
     }
 
+    pub fn stake_with_tier_at_time(
+        &mut self,
+        user: Pubkey,
+        licn_amount: u64,
+        current_slot: u64,
+        current_unix_seconds: u64,
+        tier: LockTier,
+    ) -> Result<u64, String> {
+        if licn_amount == 0 {
+            return Err("Cannot stake 0 LICN".to_string());
+        }
+
+        let st_licn_to_mint = self.st_licn_token.licn_to_st_licn(licn_amount);
+
+        self.st_licn_token.total_supply += st_licn_to_mint;
+        self.st_licn_token.total_licn_staked += licn_amount;
+        self.st_licn_token.exchange_rate_fp = self.st_licn_token.calculate_exchange_rate_fp();
+
+        let lock_until = if tier.lock_duration_slots() > 0 {
+            current_slot + tier.lock_duration_slots()
+        } else {
+            0
+        };
+        let lock_until_unix_seconds = if tier.lock_duration_seconds() > 0 {
+            current_unix_seconds.saturating_add(tier.lock_duration_seconds())
+        } else {
+            0
+        };
+
+        if let Some(position) = self.positions.get_mut(&user) {
+            if tier != position.lock_tier {
+                return Err(format!(
+                    "Cannot change lock tier on existing position (current: {:?}, requested: {:?}). Withdraw first.",
+                    position.lock_tier, tier
+                ));
+            }
+            position.st_licn_amount += st_licn_to_mint;
+            position.licn_deposited += licn_amount;
+            if lock_until > position.lock_until {
+                position.lock_until = lock_until;
+            }
+            if lock_until_unix_seconds > position.lock_until_unix_seconds {
+                position.lock_until_unix_seconds = lock_until_unix_seconds;
+            }
+        } else {
+            self.positions.insert(
+                user,
+                StakingPosition {
+                    owner: user,
+                    st_licn_amount: st_licn_to_mint,
+                    licn_deposited: licn_amount,
+                    deposited_at: current_slot,
+                    deposited_at_unix_seconds: current_unix_seconds,
+                    rewards_earned: 0,
+                    lock_tier: tier,
+                    lock_until,
+                    lock_until_unix_seconds,
+                },
+            );
+        }
+
+        Ok(st_licn_to_mint)
+    }
+
     /// Request unstake (7-day cooldown)
     pub fn request_unstake(
         &mut self,
@@ -557,6 +731,90 @@ impl MossStakePool {
         Ok(request)
     }
 
+    pub fn request_unstake_at_time(
+        &mut self,
+        user: Pubkey,
+        st_licn_amount: u64,
+        current_slot: u64,
+        current_unix_seconds: u64,
+    ) -> Result<UnstakeRequest, String> {
+        let position = self
+            .positions
+            .get_mut(&user)
+            .ok_or_else(|| "No staking position found".to_string())?;
+
+        if position.lock_until_unix_seconds > 0
+            && current_unix_seconds < position.lock_until_unix_seconds
+        {
+            let remaining_seconds = position.lock_until_unix_seconds - current_unix_seconds;
+            let remaining_days = remaining_seconds / SECONDS_PER_DAY;
+            return Err(format!(
+                "Position locked for {} more days ({} tier). Unlock at timestamp {}",
+                remaining_days,
+                position.lock_tier.display_name(),
+                position.lock_until_unix_seconds
+            ));
+        } else if position.lock_until > 0 && current_slot < position.lock_until {
+            let remaining_slots = position.lock_until - current_slot;
+            let remaining_days = Self::legacy_slot_timestamp(remaining_slots) / SECONDS_PER_DAY;
+            return Err(format!(
+                "Position locked for {} more days ({} tier). Unlock at slot {}",
+                remaining_days,
+                position.lock_tier.display_name(),
+                position.lock_until
+            ));
+        }
+
+        if position.st_licn_amount < st_licn_amount {
+            return Err(format!(
+                "Insufficient stLICN: have {}, need {}",
+                position.st_licn_amount, st_licn_amount
+            ));
+        }
+
+        let (principal_out, rewards_out, licn_to_receive) =
+            Self::split_position_value_for_unstake(position, st_licn_amount)?;
+
+        position.st_licn_amount -= st_licn_amount;
+        position.licn_deposited = position.licn_deposited.saturating_sub(principal_out);
+        position.rewards_earned = position.rewards_earned.saturating_sub(rewards_out);
+
+        self.st_licn_token.total_supply -= st_licn_amount;
+        self.st_licn_token.total_licn_staked = self
+            .st_licn_token
+            .total_licn_staked
+            .saturating_sub(licn_to_receive);
+        self.st_licn_token.exchange_rate_fp = self.st_licn_token.calculate_exchange_rate_fp();
+
+        let cooldown_slots = UNSTAKE_COOLDOWN_SLOTS;
+        let request = UnstakeRequest {
+            owner: user,
+            st_licn_amount,
+            licn_to_receive,
+            requested_at: current_slot,
+            claimable_at: current_slot + cooldown_slots,
+            requested_at_unix_seconds: current_unix_seconds,
+            claimable_at_unix_seconds: current_unix_seconds
+                .saturating_add(MOSSSTAKE_UNSTAKE_COOLDOWN_SECONDS),
+        };
+
+        self.unstake_requests
+            .entry(user)
+            .or_default()
+            .push(request.clone());
+
+        if let Some(position) = self.positions.get(&user) {
+            if position.st_licn_amount == 0
+                && position.licn_deposited == 0
+                && position.rewards_earned == 0
+            {
+                self.positions.remove(&user);
+            }
+        }
+
+        Ok(request)
+    }
+
     /// Claim unstaked LICN (after cooldown)
     pub fn claim_unstake(&mut self, user: Pubkey, current_slot: u64) -> Result<u64, String> {
         let requests = self
@@ -592,6 +850,49 @@ impl MossStakePool {
 
         // Update pool (LICN now released — total_licn_staked already decremented at request time)
         // M10 fix: removed redundant decrement that was here before
+        self.st_licn_token.exchange_rate_fp = self.st_licn_token.calculate_exchange_rate_fp();
+
+        Ok(total_claimable)
+    }
+
+    pub fn claim_unstake_at_time(
+        &mut self,
+        user: Pubkey,
+        current_slot: u64,
+        current_unix_seconds: u64,
+    ) -> Result<u64, String> {
+        let requests = self
+            .unstake_requests
+            .get_mut(&user)
+            .ok_or_else(|| "No unstake requests found".to_string())?;
+
+        let mut total_claimable = 0u64;
+        let mut remaining_requests = Vec::new();
+
+        for request in requests.drain(..) {
+            let claimable = if request.claimable_at_unix_seconds > 0 {
+                request.claimable_at_unix_seconds <= current_unix_seconds
+            } else {
+                request.claimable_at <= current_slot
+            };
+            if claimable {
+                total_claimable += request.licn_to_receive;
+            } else {
+                remaining_requests.push(request);
+            }
+        }
+
+        if total_claimable == 0 {
+            requests.extend(remaining_requests);
+            return Err("No claimable unstake requests".to_string());
+        }
+
+        if remaining_requests.is_empty() {
+            self.unstake_requests.remove(&user);
+        } else {
+            self.unstake_requests.insert(user, remaining_requests);
+        }
+
         self.st_licn_token.exchange_rate_fp = self.st_licn_token.calculate_exchange_rate_fp();
 
         Ok(total_claimable)
@@ -658,6 +959,83 @@ impl MossStakePool {
                     licn_deposited: deposited_transfer,
                     deposited_at: current_slot,
                     deposited_at_unix_seconds: 0,
+                    rewards_earned: rewards_transfer,
+                    lock_tier: LockTier::Flexible,
+                    lock_until: 0,
+                    lock_until_unix_seconds: 0,
+                },
+            );
+        }
+
+        Ok(())
+    }
+
+    pub fn transfer_at_time(
+        &mut self,
+        from: Pubkey,
+        to: Pubkey,
+        st_licn_amount: u64,
+        current_slot: u64,
+        current_unix_seconds: u64,
+    ) -> Result<(), String> {
+        if st_licn_amount == 0 {
+            return Err("Cannot transfer 0 stLICN".to_string());
+        }
+        if from == to {
+            return Err("Cannot transfer stLICN to self".to_string());
+        }
+
+        let sender_view = self
+            .positions
+            .get(&from)
+            .ok_or_else(|| "Sender has no staking position".to_string())?;
+        Self::assert_transferable_position_at_time(
+            sender_view,
+            current_slot,
+            current_unix_seconds,
+        )?;
+        if sender_view.st_licn_amount < st_licn_amount {
+            return Err(format!(
+                "Insufficient stLICN: have {}, need {}",
+                sender_view.st_licn_amount, st_licn_amount
+            ));
+        }
+        if let Some(receiver) = self.positions.get(&to) {
+            Self::assert_transferable_position_at_time(
+                receiver,
+                current_slot,
+                current_unix_seconds,
+            )?;
+        }
+
+        let (deposited_transfer, rewards_transfer, _) =
+            Self::split_position_value_for_unstake(sender_view, st_licn_amount)?;
+
+        let sender = self
+            .positions
+            .get_mut(&from)
+            .ok_or_else(|| "Sender has no staking position".to_string())?;
+        sender.st_licn_amount -= st_licn_amount;
+        sender.licn_deposited = sender.licn_deposited.saturating_sub(deposited_transfer);
+        sender.rewards_earned = sender.rewards_earned.saturating_sub(rewards_transfer);
+
+        if sender.st_licn_amount == 0 && sender.licn_deposited == 0 && sender.rewards_earned == 0 {
+            self.positions.remove(&from);
+        }
+
+        if let Some(receiver) = self.positions.get_mut(&to) {
+            receiver.st_licn_amount += st_licn_amount;
+            receiver.licn_deposited += deposited_transfer;
+            receiver.rewards_earned += rewards_transfer;
+        } else {
+            self.positions.insert(
+                to,
+                StakingPosition {
+                    owner: to,
+                    st_licn_amount,
+                    licn_deposited: deposited_transfer,
+                    deposited_at: current_slot,
+                    deposited_at_unix_seconds: current_unix_seconds,
                     rewards_earned: rewards_transfer,
                     lock_tier: LockTier::Flexible,
                     lock_until: 0,

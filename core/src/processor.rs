@@ -514,6 +514,7 @@ pub struct TxProcessor {
     state: StateStore,
     batch: Mutex<Option<StateBatch>>,
     mode: TxProcessorMode,
+    mossstake_replay_mode_override: Option<crate::mossstake::MossStakeReplayMode>,
     #[allow(clippy::type_complexity)]
     contract_meta: Mutex<(Option<i64>, Vec<String>, u64, Vec<u8>)>,
     tx_compute_budget: Mutex<u64>,
@@ -527,6 +528,7 @@ impl TxProcessor {
             state,
             batch: Mutex::new(None),
             mode: TxProcessorMode::Canonical,
+            mossstake_replay_mode_override: None,
             contract_meta: Mutex::new((None, Vec::new(), 0, Vec::new())),
             tx_compute_budget: Mutex::new(0),
             #[cfg(feature = "zk")]
@@ -539,6 +541,23 @@ impl TxProcessor {
             state,
             batch: Mutex::new(None),
             mode: TxProcessorMode::Speculative,
+            mossstake_replay_mode_override: None,
+            contract_meta: Mutex::new((None, Vec::new(), 0, Vec::new())),
+            tx_compute_budget: Mutex::new(0),
+            #[cfg(feature = "zk")]
+            zk_verifier: Mutex::new(crate::zk::Verifier::new()),
+        }
+    }
+
+    pub fn new_speculative_with_mossstake_replay_mode(
+        state: StateStore,
+        replay_mode: crate::mossstake::MossStakeReplayMode,
+    ) -> Self {
+        TxProcessor {
+            state,
+            batch: Mutex::new(None),
+            mode: TxProcessorMode::Speculative,
+            mossstake_replay_mode_override: Some(replay_mode),
             contract_meta: Mutex::new((None, Vec::new(), 0, Vec::new())),
             tx_compute_budget: Mutex::new(0),
             #[cfg(feature = "zk")]
@@ -548,6 +567,15 @@ impl TxProcessor {
 
     fn is_speculative(&self) -> bool {
         self.mode == TxProcessorMode::Speculative
+    }
+
+    fn mossstake_replay_mode(&self) -> crate::mossstake::MossStakeReplayMode {
+        self.mossstake_replay_mode_override
+            .unwrap_or_else(|| self.state.mossstake_replay_mode())
+    }
+
+    fn uses_legacy_wall_clock_mossstake(&self) -> bool {
+        self.mossstake_replay_mode().uses_wall_clock()
     }
 
     fn transaction_signing_chain_id(&self) -> Result<Option<String>, String> {

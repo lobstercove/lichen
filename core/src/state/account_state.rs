@@ -502,7 +502,7 @@ impl StateStore {
         self.stage_account_dirty_marker(&mut batch, acct_key)?;
 
         let mut normalized_pool = pool.clone();
-        if self.is_mossstake_slot_only() {
+        if self.should_clear_mossstake_wall_clock_times() {
             normalized_pool.clear_wall_clock_times();
         }
         let pool_bytes = serde_json::to_vec(&normalized_pool)
@@ -539,7 +539,7 @@ impl StateStore {
         let mut batch = WriteBatch::default();
 
         let mut normalized_pool = pool.clone();
-        if self.is_mossstake_slot_only() {
+        if self.should_clear_mossstake_wall_clock_times() {
             normalized_pool.clear_wall_clock_times();
         }
         let pool_bytes = serde_json::to_vec(&normalized_pool)

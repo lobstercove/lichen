@@ -314,7 +314,6 @@ impl TxProcessor {
         let tier_byte = ix.data.get(9).copied().unwrap_or(0);
         let tier = crate::mossstake::LockTier::from_u8(tier_byte)
             .ok_or_else(|| format!("Invalid lock tier: {}", tier_byte))?;
-        let current_slot = self.b_get_last_slot().unwrap_or(0);
 
         self.ensure_protocol_module_not_paused(ProtocolModuleId::MossStake, "MossStakeDeposit")?;
 
@@ -332,7 +331,20 @@ impl TxProcessor {
         account.deduct_spendable(amount)?;
 
         let mut pool = self.b_get_mossstake_pool()?;
-        let _st_licn = pool.stake_with_tier(depositor, amount, current_slot, tier)?;
+        if self.uses_legacy_wall_clock_mossstake() {
+            let (current_slot, current_unix_seconds) = self.b_get_last_block_timestamp()?;
+            pool.backfill_wall_clock_times(|slot| self.block_timestamp_for_slot(slot));
+            let _st_licn = pool.stake_with_tier_at_time(
+                depositor,
+                amount,
+                current_slot,
+                current_unix_seconds,
+                tier,
+            )?;
+        } else {
+            let current_slot = self.b_get_last_slot().unwrap_or(0);
+            let _st_licn = pool.stake_with_tier(depositor, amount, current_slot, tier)?;
+        }
         self.b_put_mossstake_pool(&pool)?;
         self.b_put_account(&depositor, &account)?;
 
@@ -356,7 +368,6 @@ impl TxProcessor {
             .map_err(|_| "Invalid amount encoding".to_string())?;
         let st_licn_amount = u64::from_le_bytes(amount_bytes);
 
-        let current_slot = self.b_get_last_slot().unwrap_or(0);
         self.ensure_protocol_module_not_paused(ProtocolModuleId::MossStake, "MossStakeUnstake")?;
         self.ensure_account_direction_not_restricted(
             &user,
@@ -368,7 +379,19 @@ impl TxProcessor {
         )?;
 
         let mut pool = self.b_get_mossstake_pool()?;
-        let _request = pool.request_unstake(user, st_licn_amount, current_slot)?;
+        if self.uses_legacy_wall_clock_mossstake() {
+            let (current_slot, current_unix_seconds) = self.b_get_last_block_timestamp()?;
+            pool.backfill_wall_clock_times(|slot| self.block_timestamp_for_slot(slot));
+            let _request = pool.request_unstake_at_time(
+                user,
+                st_licn_amount,
+                current_slot,
+                current_unix_seconds,
+            )?;
+        } else {
+            let current_slot = self.b_get_last_slot().unwrap_or(0);
+            let _request = pool.request_unstake(user, st_licn_amount, current_slot)?;
+        }
         self.b_put_mossstake_pool(&pool)?;
 
         Ok(())
@@ -383,14 +406,20 @@ impl TxProcessor {
         }
 
         let user = ix.accounts[0];
-        let current_slot = self.b_get_last_slot().unwrap_or(0);
         self.ensure_protocol_module_not_paused(ProtocolModuleId::MossStake, "MossStakeClaim")?;
 
         let mut account = self
             .b_get_account(&user)?
             .ok_or_else(|| "User account not found".to_string())?;
         let mut pool = self.b_get_mossstake_pool()?;
-        let licn_claimed = pool.claim_unstake(user, current_slot)?;
+        let licn_claimed = if self.uses_legacy_wall_clock_mossstake() {
+            let (current_slot, current_unix_seconds) = self.b_get_last_block_timestamp()?;
+            pool.backfill_wall_clock_times(|slot| self.block_timestamp_for_slot(slot));
+            pool.claim_unstake_at_time(user, current_slot, current_unix_seconds)?
+        } else {
+            let current_slot = self.b_get_last_slot().unwrap_or(0);
+            pool.claim_unstake(user, current_slot)?
+        };
 
         if licn_claimed == 0 {
             return Err("No claimable LICN (cooldown not complete)".to_string());
@@ -451,9 +480,15 @@ impl TxProcessor {
             self.b_put_account(&to, &crate::Account::new(0, SYSTEM_PROGRAM_ID))?;
         }
 
-        let current_slot = self.b_get_last_slot().unwrap_or(0);
         let mut pool = self.b_get_mossstake_pool()?;
-        pool.transfer(from, to, st_licn_amount, current_slot)?;
+        if self.uses_legacy_wall_clock_mossstake() {
+            let (current_slot, current_unix_seconds) = self.b_get_last_block_timestamp()?;
+            pool.backfill_wall_clock_times(|slot| self.block_timestamp_for_slot(slot));
+            pool.transfer_at_time(from, to, st_licn_amount, current_slot, current_unix_seconds)?;
+        } else {
+            let current_slot = self.b_get_last_slot().unwrap_or(0);
+            pool.transfer(from, to, st_licn_amount, current_slot)?;
+        }
         self.b_put_mossstake_pool(&pool)?;
 
         Ok(())

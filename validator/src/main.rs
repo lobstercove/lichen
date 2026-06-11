@@ -31,7 +31,7 @@ use lichen_core::keypair_file::{
     load_keypair_with_password_policy, plaintext_keypair_compat_allowed,
     require_runtime_keypair_password,
 };
-use lichen_core::mossstake::MOSSSTAKE_SLOT_ONLY_METADATA_KEY;
+use lichen_core::mossstake::{MossStakeReplayMode, MOSSSTAKE_SLOT_ONLY_METADATA_KEY};
 use lichen_core::multisig::{
     bridge_committee_admin_config_for_roles, governed_wallet_config_for_role,
     incident_guardian_config_for_roles, oracle_committee_admin_config_for_roles,
@@ -47,15 +47,15 @@ use lichen_core::{
     ForkChoice, GenesisConfig, GenesisPrices, GenesisStateBundle, GenesisStateChunk, GenesisWallet,
     Hash, Keypair, MarketActivity, MarketActivityKind, Mempool, NftActivity, NftActivityKind,
     PqSignature, Precommit, Prevote, ProgramCallActivity, Proposal, Pubkey, RoundStep,
-    SlashingEvidence, SlashingOffense, SparseStateCommitmentReport, StakePool, StateStore,
-    Transaction, TxProcessor, ValidatorInfo, ValidatorSet, Vote, VoteAggregator, VoteAuthority,
-    BASE_FEE, BOOTSTRAP_GRANT_AMOUNT, CHAIN_ID_METADATA_KEY, CONTRACT_DEPLOY_FEE,
-    CONTRACT_UPGRADE_FEE, EVM_PROGRAM_ID, GENESIS_DISTRIBUTION, GENESIS_STATE_BUNDLE_VERSION,
-    GENESIS_STATE_CHUNK_OPCODE, GENESIS_SUPPLY_SPORES, MAX_TX_AGE_BLOCKS, NFT_COLLECTION_FEE,
-    NFT_MINT_FEE, ORACLE_ASSET_MAX_LEN, ORACLE_ASSET_MIN_LEN, ORACLE_STALENESS_SLOTS,
-    SLASHING_EVIDENCE_CODEC_LIMIT_BYTES, STATE_SNAPSHOT_CATEGORIES,
-    SYSTEM_PROGRAM_ID as CORE_SYSTEM_PROGRAM_ID, VALIDATOR_BOOTSTRAP_GRANTS_ENABLED_METADATA_KEY,
-    VALIDATOR_BOOTSTRAP_GRANTS_ENABLED_VALUE,
+    SlashingEvidence, SlashingOffense, SparseStateCommitmentReport, StakePool,
+    StateRootComponentReport, StateStore, Transaction, TxProcessor, ValidatorInfo, ValidatorSet,
+    Vote, VoteAggregator, VoteAuthority, BASE_FEE, BOOTSTRAP_GRANT_AMOUNT, CHAIN_ID_METADATA_KEY,
+    CONTRACT_DEPLOY_FEE, CONTRACT_UPGRADE_FEE, EVM_PROGRAM_ID, GENESIS_DISTRIBUTION,
+    GENESIS_STATE_BUNDLE_VERSION, GENESIS_STATE_CHUNK_OPCODE, GENESIS_SUPPLY_SPORES,
+    MAX_TX_AGE_BLOCKS, MIN_VALIDATOR_STAKE, NFT_COLLECTION_FEE, NFT_MINT_FEE, ORACLE_ASSET_MAX_LEN,
+    ORACLE_ASSET_MIN_LEN, ORACLE_STALENESS_SLOTS, SLASHING_EVIDENCE_CODEC_LIMIT_BYTES,
+    STATE_SNAPSHOT_CATEGORIES, SYSTEM_PROGRAM_ID as CORE_SYSTEM_PROGRAM_ID,
+    VALIDATOR_BOOTSTRAP_GRANTS_ENABLED_METADATA_KEY, VALIDATOR_BOOTSTRAP_GRANTS_ENABLED_VALUE,
 };
 use lichen_genesis::{
     genesis_assign_achievements, genesis_auto_deploy, genesis_bootstrap_bridge_committee,
@@ -118,6 +118,10 @@ const REPAIR_TESTNET_DEX_CONTRACTS_FLAG: &str = "--repair-testnet-dex-contracts"
 const DEX_REPAIR_CONFIRMATION: &str = "repair-dex-contracts:testnet:v0.5.77";
 const SHOW_CONTRACT_STORAGE_DIGEST_FLAG: &str = "--show-contract-storage-digest";
 const SHOW_STAKE_POOL_DIGEST_FLAG: &str = "--show-stake-pool-digest";
+const DIAGNOSE_BLOCK_REPLAY_FLAG: &str = "--diagnose-block-replay";
+const DIAGNOSE_CHAIN_REPLAY_FLAG: &str = "--diagnose-chain-replay";
+const DUMP_BLOCK_JSON_FLAG: &str = "--dump-block-json";
+const SCAN_MOSSSTAKE_BLOCKS_FLAG: &str = "--scan-mossstake-blocks";
 const VERIFY_WARP_SNAPSHOT_ROUNDTRIP_FLAG: &str = "--verify-warp-snapshot-roundtrip";
 const REBUILD_SHIELDED_STATE_FROM_BLOCKS_FLAG: &str = "--rebuild-shielded-state-from-blocks";
 const EXPORT_SHIELDED_STATE_BUNDLE_FLAG: &str = "--export-shielded-state-bundle";
@@ -8550,6 +8554,779 @@ fn maybe_run_contract_storage_digest_admin(args: &[String]) -> Option<i32> {
     Some(0)
 }
 
+fn open_admin_state_for_diagnostics(
+    data_dir: &Path,
+    secondary_dir: Option<&Path>,
+    cache_size_mb: Option<usize>,
+) -> Result<StateStore, String> {
+    let state = match secondary_dir {
+        Some(path) => StateStore::open_secondary_with_cache_mb(data_dir, path, cache_size_mb),
+        None => StateStore::open_with_cache_mb(data_dir, cache_size_mb),
+    }
+    .map_err(|err| format!("Failed to open state DB at {}: {}", data_dir.display(), err))?;
+
+    if secondary_dir.is_some() {
+        state.try_catch_up_with_primary()?;
+    }
+
+    Ok(state)
+}
+
+fn hash_option_text(hash: Option<Hash>) -> String {
+    hash.map(|value| value.to_hex())
+        .unwrap_or_else(|| "none".to_string())
+}
+
+fn print_state_root_component_report(label: &str, report: &StateRootComponentReport) {
+    println!(
+        "state_root_components label={} root={} root_moss_slot_only={} root_moss_legacy={} prefix=0x{:02x} commitment_schema={} include_restrictions={} accounts={} contracts={} stake={} moss_active={} moss_slot_only={} moss_legacy={} restrictions={} shielded={}",
+        label,
+        report.root.to_hex(),
+        report.root_with_mossstake_slot_only.to_hex(),
+        report.root_with_mossstake_legacy.to_hex(),
+        report.prefix,
+        report.commitment_schema,
+        report.include_restrictions,
+        report.accounts_root.to_hex(),
+        report.contract_root.to_hex(),
+        report.stake_pool_hash.to_hex(),
+        report.mossstake_pool_hash.to_hex(),
+        report.mossstake_pool_slot_only_hash.to_hex(),
+        report.mossstake_pool_legacy_hash.to_hex(),
+        hash_option_text(report.restrictions_root),
+        hash_option_text(report.shielded_root),
+    );
+}
+
+fn print_diagnostic_block_summary(slot: u64, block: &Block) {
+    println!(
+        "block slot={} hash={} parent={} state_root={} tx_root={} validator={} timestamp={} txs={} fees={} oracle_prices={} commit_round={} commits={}",
+        slot,
+        block.hash().to_hex(),
+        block.header.parent_hash.to_hex(),
+        block.header.state_root.to_hex(),
+        block.header.tx_root.to_hex(),
+        Pubkey(block.header.validator).to_base58(),
+        block.header.timestamp,
+        block.transactions.len(),
+        block.tx_fees_paid.len(),
+        block.oracle_prices.len(),
+        block.commit_round,
+        block.commit_signatures.len(),
+    );
+
+    for (tx_index, tx) in block.transactions.iter().enumerate() {
+        println!(
+            "tx index={} hash={} message_hash={} type={:?} signatures={} instructions={} recent_blockhash={} compute_budget={} compute_unit_price={}",
+            tx_index,
+            tx.hash().to_hex(),
+            tx.message_hash().to_hex(),
+            tx.tx_type,
+            tx.signatures.len(),
+            tx.message.instructions.len(),
+            tx.message.recent_blockhash.to_hex(),
+            tx.message.effective_compute_budget(),
+            tx.message.effective_compute_unit_price(),
+        );
+        for (ix_index, ix) in tx.message.instructions.iter().enumerate() {
+            let opcode = ix
+                .data
+                .first()
+                .map(|byte| format!("0x{byte:02x}"))
+                .unwrap_or_else(|| "none".to_string());
+            let preview_len = ix.data.len().min(32);
+            println!(
+                "instruction tx={} index={} program={} accounts={} data_len={} opcode={} data_prefix=0x{}",
+                tx_index,
+                ix_index,
+                ix.program_id.to_base58(),
+                ix.accounts.len(),
+                ix.data.len(),
+                opcode,
+                hex::encode(&ix.data[..preview_len]),
+            );
+            for (account_index, account) in ix.accounts.iter().enumerate() {
+                println!(
+                    "instruction_account tx={} index={} account_index={} pubkey={}",
+                    tx_index,
+                    ix_index,
+                    account_index,
+                    account.to_base58(),
+                );
+            }
+        }
+    }
+}
+
+fn mossstake_opcode_name(opcode: u8) -> &'static str {
+    match opcode {
+        13 => "deposit",
+        14 => "unstake",
+        15 => "claim",
+        16 => "transfer",
+        _ => "unknown",
+    }
+}
+
+fn maybe_run_mossstake_block_scan_admin(args: &[String]) -> Option<i32> {
+    if !has_flag(args, SCAN_MOSSSTAKE_BLOCKS_FLAG) {
+        return None;
+    }
+
+    let from_slot = get_flag_value(args, &["--from-slot"])
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0);
+    let to_slot =
+        match get_flag_value(args, &["--to-slot"]).and_then(|value| value.parse::<u64>().ok()) {
+            Some(slot) => slot,
+            None => {
+                eprintln!("{} requires --to-slot <slot>", SCAN_MOSSSTAKE_BLOCKS_FLAG);
+                return Some(2);
+            }
+        };
+    if to_slot < from_slot {
+        eprintln!("--to-slot must be >= --from-slot");
+        return Some(2);
+    }
+
+    let data_dir = get_flag_value(
+        args,
+        &["--block-db-path", "--db-path", "--db", "--data-dir"],
+    )
+    .map(PathBuf::from)
+    .unwrap_or_else(|| restriction_schema_data_dir(args));
+    let secondary_dir =
+        get_flag_value(args, &["--block-secondary-dir", "--secondary-dir"]).map(PathBuf::from);
+    let cache_size_mb = get_flag_value(args, &["--cache-size-mb"]).and_then(|s| s.parse().ok());
+    let progress_every = get_flag_value(args, &["--progress-every"])
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(100_000)
+        .max(1);
+
+    let state = match open_admin_state_for_diagnostics(
+        &data_dir,
+        secondary_dir.as_deref(),
+        cache_size_mb,
+    ) {
+        Ok(state) => state,
+        Err(err) => {
+            eprintln!("{err}");
+            return Some(1);
+        }
+    };
+
+    println!(
+        "mossstake_scan_start data_dir={} secondary_dir={} from_slot={} to_slot={} progress_every={}",
+        data_dir.display(),
+        secondary_dir
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        from_slot,
+        to_slot,
+        progress_every,
+    );
+
+    let mut mossstake_blocks = 0u64;
+    let mut mossstake_instructions = 0u64;
+    let mut last_progress_slot = from_slot;
+    let result = state.for_each_canonical_block_in_range(from_slot, to_slot, |slot, block| {
+        if slot == from_slot || slot.saturating_sub(last_progress_slot) >= progress_every {
+            println!(
+                "mossstake_scan_progress slot={} txs_in_block={} hits={}",
+                slot,
+                block.transactions.len(),
+                mossstake_blocks,
+            );
+            last_progress_slot = slot;
+        }
+
+        let mut hits = Vec::new();
+        for (tx_index, tx) in block.transactions.iter().enumerate() {
+            for (ix_index, ix) in tx.message.instructions.iter().enumerate() {
+                if ix.program_id != CORE_SYSTEM_PROGRAM_ID {
+                    continue;
+                }
+                let Some(opcode) = ix.data.first().copied() else {
+                    continue;
+                };
+                if !(13..=16).contains(&opcode) {
+                    continue;
+                }
+                mossstake_instructions = mossstake_instructions.saturating_add(1);
+                hits.push(format!(
+                    "tx{}:ix{}:{}:{}:accounts{}:data{}",
+                    tx_index,
+                    ix_index,
+                    opcode,
+                    mossstake_opcode_name(opcode),
+                    ix.accounts.len(),
+                    ix.data.len()
+                ));
+            }
+        }
+
+        if !hits.is_empty() {
+            mossstake_blocks = mossstake_blocks.saturating_add(1);
+            println!(
+                "mossstake_block slot={} timestamp={} hash={} parent={} state_root={} txs={} hits={}",
+                slot,
+                block.header.timestamp,
+                block.hash().to_hex(),
+                block.header.parent_hash.to_hex(),
+                block.header.state_root.to_hex(),
+                block.transactions.len(),
+                hits.join(","),
+            );
+        }
+
+        Ok(())
+    });
+
+    match result {
+        Ok(visited) => {
+            println!(
+                "mossstake_scan_complete visited_blocks={} mossstake_blocks={} mossstake_instructions={}",
+                visited, mossstake_blocks, mossstake_instructions,
+            );
+            Some(0)
+        }
+        Err(err) => {
+            eprintln!("{err}");
+            Some(1)
+        }
+    }
+}
+
+fn print_forced_mossstake_replay_diagnostic(
+    state: &StateStore,
+    block: &Block,
+    replay_mode: MossStakeReplayMode,
+    label: &str,
+) {
+    let producer = Pubkey(block.header.validator);
+    let speculative_processor =
+        TxProcessor::new_speculative_with_mossstake_replay_mode(state.clone(), replay_mode);
+    let speculative =
+        speculative_processor.process_transactions_speculative(&block.transactions, &producer);
+    let after = state.state_root_component_report_for_batch(&speculative.batch);
+    let candidate_root = match replay_mode {
+        MossStakeReplayMode::SlotOnly => after.root_with_mossstake_slot_only,
+        MossStakeReplayMode::LegacyWallClock => after.root_with_mossstake_legacy,
+    };
+    println!(
+        "forced_mossstake_replay label={} mode={:?} candidate_root={} expected_root={} match={} root_slot_only={} root_legacy={} tx_successes={} tx_failures={}",
+        label,
+        replay_mode,
+        candidate_root.to_hex(),
+        block.header.state_root.to_hex(),
+        candidate_root == block.header.state_root,
+        after.root_with_mossstake_slot_only.to_hex(),
+        after.root_with_mossstake_legacy.to_hex(),
+        speculative.results.iter().filter(|result| result.success).count(),
+        speculative.results.iter().filter(|result| !result.success).count(),
+    );
+    for (index, result) in speculative.results.iter().enumerate() {
+        if !result.success {
+            println!(
+                "forced_mossstake_replay_tx_error label={} mode={:?} index={} error={}",
+                label,
+                replay_mode,
+                index,
+                result.error.as_deref().unwrap_or("unknown"),
+            );
+        }
+    }
+}
+
+fn maybe_run_block_replay_diagnostic_admin(args: &[String]) -> Option<i32> {
+    let dump_block_json = get_flag_value(args, &[DUMP_BLOCK_JSON_FLAG]).map(PathBuf::from);
+    let diagnose_replay = has_flag(args, DIAGNOSE_BLOCK_REPLAY_FLAG);
+    if !diagnose_replay && dump_block_json.is_none() {
+        return None;
+    }
+
+    let slot = match get_flag_value(args, &["--slot"]).and_then(|value| value.parse::<u64>().ok()) {
+        Some(slot) => slot,
+        None => {
+            eprintln!(
+                "{} and {} require --slot <slot>",
+                DIAGNOSE_BLOCK_REPLAY_FLAG, DUMP_BLOCK_JSON_FLAG
+            );
+            return Some(2);
+        }
+    };
+
+    let data_dir = restriction_schema_data_dir(args);
+    let secondary_dir = get_flag_value(args, &["--secondary-dir"]).map(PathBuf::from);
+    let block_data_dir = get_flag_value(args, &["--block-db-path"])
+        .map(PathBuf::from)
+        .unwrap_or_else(|| data_dir.clone());
+    let block_secondary_dir = get_flag_value(args, &["--block-secondary-dir"]).map(PathBuf::from);
+    let cache_size_mb = get_flag_value(args, &["--cache-size-mb"]).and_then(|s| s.parse().ok());
+    let block_json = get_flag_value(args, &["--block-json"]).map(PathBuf::from);
+
+    if dump_block_json.is_some() && block_json.is_some() {
+        eprintln!(
+            "{} and --block-json are mutually exclusive",
+            DUMP_BLOCK_JSON_FLAG
+        );
+        return Some(2);
+    }
+
+    if let Some(path) = dump_block_json {
+        let block_source = match open_admin_state_for_diagnostics(
+            &block_data_dir,
+            block_secondary_dir.as_deref().or(secondary_dir.as_deref()),
+            cache_size_mb,
+        ) {
+            Ok(state) => state,
+            Err(err) => {
+                eprintln!("{err}");
+                return Some(1);
+            }
+        };
+        let block = match block_source.get_block_by_slot(slot) {
+            Ok(Some(block)) => block,
+            Ok(None) => {
+                eprintln!("block slot {slot} missing from source DB");
+                return Some(1);
+            }
+            Err(err) => {
+                eprintln!("Failed to read block slot {slot}: {err}");
+                return Some(1);
+            }
+        };
+
+        let json = match serde_json::to_string_pretty(&block) {
+            Ok(json) => json,
+            Err(err) => {
+                eprintln!("Failed to encode block slot {slot} as JSON: {err}");
+                return Some(1);
+            }
+        };
+        if path.as_os_str() == "-" {
+            println!("{json}");
+        } else if let Err(err) = fs::write(&path, json) {
+            eprintln!("Failed to write block JSON to {}: {}", path.display(), err);
+            return Some(1);
+        } else {
+            println!("wrote_block_json={}", path.display());
+        }
+        return Some(0);
+    }
+
+    let state = match open_admin_state_for_diagnostics(
+        &data_dir,
+        secondary_dir.as_deref(),
+        cache_size_mb,
+    ) {
+        Ok(state) => state,
+        Err(err) => {
+            eprintln!("{err}");
+            return Some(1);
+        }
+    };
+
+    let block = if let Some(path) = block_json {
+        match fs::read(&path)
+            .map_err(|err| format!("Failed to read block JSON from {}: {}", path.display(), err))
+            .and_then(|bytes| {
+                serde_json::from_slice::<Block>(&bytes).map_err(|err| {
+                    format!(
+                        "Failed to decode block JSON from {}: {}",
+                        path.display(),
+                        err
+                    )
+                })
+            }) {
+            Ok(block) => block,
+            Err(err) => {
+                eprintln!("{err}");
+                return Some(1);
+            }
+        }
+    } else {
+        let block_state = if block_data_dir == data_dir && block_secondary_dir == secondary_dir {
+            None
+        } else {
+            match open_admin_state_for_diagnostics(
+                &block_data_dir,
+                block_secondary_dir.as_deref(),
+                cache_size_mb,
+            ) {
+                Ok(state) => Some(state),
+                Err(err) => {
+                    eprintln!("{err}");
+                    return Some(1);
+                }
+            }
+        };
+        let block_source = block_state.as_ref().unwrap_or(&state);
+        match block_source.get_block_by_slot(slot) {
+            Ok(Some(block)) => block,
+            Ok(None) => {
+                eprintln!("block slot {slot} missing from source DB");
+                return Some(1);
+            }
+            Err(err) => {
+                eprintln!("Failed to read block slot {slot}: {err}");
+                return Some(1);
+            }
+        }
+    };
+
+    println!("replay_state_db={}", data_dir.display());
+    if let Some(path) = &secondary_dir {
+        println!("replay_state_secondary={}", path.display());
+    }
+    if let Some(path) = get_flag_value(args, &["--block-json"]) {
+        println!("block_source_json={path}");
+    } else {
+        println!("block_source_db={}", block_data_dir.display());
+        if let Some(path) = &block_secondary_dir {
+            println!("block_source_secondary={}", path.display());
+        }
+    }
+    match state.get_last_slot() {
+        Ok(last_slot) => println!("replay_state_last_slot={last_slot}"),
+        Err(err) => println!("replay_state_last_slot_error={err}"),
+    }
+
+    print_diagnostic_block_summary(slot, &block);
+    print_state_root_component_report("before", &state.state_root_component_report());
+
+    if block.transactions.is_empty() {
+        println!("speculative_replay skipped_empty_block=true");
+        println!(
+            "speculative_root_match={}",
+            state.compute_state_root() == block.header.state_root
+        );
+        return Some(0);
+    }
+
+    let producer = Pubkey(block.header.validator);
+    let speculative_processor = TxProcessor::new_speculative(state.clone());
+    let speculative =
+        speculative_processor.process_transactions_speculative(&block.transactions, &producer);
+    for (index, result) in speculative.results.iter().enumerate() {
+        println!(
+            "tx_result index={} success={} fee_paid={} compute_units={} return_code={} error={}",
+            index,
+            result.success,
+            result.fee_paid,
+            result.compute_units_used,
+            result
+                .return_code
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "none".to_string()),
+            result.error.as_deref().unwrap_or("none"),
+        );
+    }
+    let after = state.state_root_component_report_for_batch(&speculative.batch);
+    print_state_root_component_report("after_speculative", &after);
+    println!(
+        "expected_block_state_root={}",
+        block.header.state_root.to_hex()
+    );
+    println!(
+        "speculative_root_match={}",
+        after.root == block.header.state_root
+    );
+    print_forced_mossstake_replay_diagnostic(
+        &state,
+        &block,
+        MossStakeReplayMode::SlotOnly,
+        "after_forced_slot_only",
+    );
+    print_forced_mossstake_replay_diagnostic(
+        &state,
+        &block,
+        MossStakeReplayMode::LegacyWallClock,
+        "after_forced_wall_clock",
+    );
+
+    Some(0)
+}
+
+fn path_has_entries(path: &Path) -> Result<bool, String> {
+    match fs::read_dir(path) {
+        Ok(mut entries) => Ok(entries.next().is_some()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(format!("Failed to inspect {}: {}", path.display(), err)),
+    }
+}
+
+async fn run_chain_replay_diagnostic(
+    source: StateStore,
+    target: StateStore,
+    to_slot: u64,
+    progress_every: u64,
+    min_validator_stake: u64,
+    slot_duration_ms: u64,
+    fast_discovery: bool,
+) -> Result<(), String> {
+    let target_tip = target.get_last_slot().unwrap_or(0);
+    if target_tip == 0 && target.get_block_by_slot(0)?.is_none() {
+        let genesis = source
+            .get_block_by_slot(0)?
+            .ok_or_else(|| "source DB is missing genesis block".to_string())?;
+        if let Some(bundle) = extract_genesis_state_bundle(&genesis)? {
+            apply_genesis_state_bundle(&target, &bundle)?;
+        }
+        if let Some(config) = extract_genesis_config(&genesis) {
+            target.put_metadata(CHAIN_ID_METADATA_KEY, config.chain_id.as_bytes())?;
+            let bootstrap_grants_enabled = config.consensus.validator_bootstrap_grants_enabled
+                || config.chain_id == "lichen-testnet-1";
+            target.put_metadata(
+                VALIDATOR_BOOTSTRAP_GRANTS_ENABLED_METADATA_KEY,
+                if bootstrap_grants_enabled {
+                    VALIDATOR_BOOTSTRAP_GRANTS_ENABLED_VALUE
+                } else {
+                    b"0"
+                },
+            )?;
+            println!(
+                "diagnostic_chain_replay genesis_policy chain_id={} bootstrap_grants_enabled={}",
+                config.chain_id, bootstrap_grants_enabled
+            );
+        }
+        target.put_block_atomic(&genesis, Some(0), Some(0))?;
+        target.set_last_slot(0)?;
+        println!(
+            "diagnostic_chain_replay initialized_genesis hash={} state_root={}",
+            genesis.hash().to_hex(),
+            genesis.header.state_root.to_hex()
+        );
+    }
+
+    let validator_set = Arc::new(RwLock::new(
+        target
+            .load_validator_set()
+            .unwrap_or_else(|_| ValidatorSet::new()),
+    ));
+    let stake_pool = Arc::new(RwLock::new(
+        target.get_stake_pool().unwrap_or_else(|_| StakePool::new()),
+    ));
+
+    let start_slot = target.get_last_slot().unwrap_or(0).saturating_add(1);
+    if start_slot > to_slot {
+        println!(
+            "diagnostic_chain_replay already_at_or_past_target start_slot={} to_slot={}",
+            start_slot, to_slot
+        );
+        return Ok(());
+    }
+
+    println!(
+        "diagnostic_chain_replay start_slot={} to_slot={} progress_every={} min_validator_stake={} slot_duration_ms={} fast_discovery={}",
+        start_slot, to_slot, progress_every, min_validator_stake, slot_duration_ms, fast_discovery
+    );
+
+    for slot in start_slot..=to_slot {
+        let block = source
+            .get_block_by_slot(slot)?
+            .ok_or_else(|| format!("source DB is missing block at slot {slot}"))?;
+
+        activate_pending_validators_before_replay_height(
+            &target,
+            &validator_set,
+            &stake_pool,
+            slot,
+            min_validator_stake,
+        )
+        .await;
+
+        if !(fast_discovery && block.transactions.is_empty()) {
+            if let Err(err) = validate_then_replay_block_transactions(
+                &target,
+                &block,
+                "diagnostic chain replay",
+                true,
+            ) {
+                println!(
+                    "diagnostic_chain_replay_mismatch slot={} error={}",
+                    slot, err
+                );
+                print_diagnostic_block_summary(slot, &block);
+                print_state_root_component_report(
+                    "before_mismatch",
+                    &target.state_root_component_report(),
+                );
+                if !block.transactions.is_empty() {
+                    print_forced_mossstake_replay_diagnostic(
+                        &target,
+                        &block,
+                        MossStakeReplayMode::SlotOnly,
+                        "mismatch_forced_slot_only",
+                    );
+                    print_forced_mossstake_replay_diagnostic(
+                        &target,
+                        &block,
+                        MossStakeReplayMode::LegacyWallClock,
+                        "mismatch_forced_wall_clock",
+                    );
+                }
+                return Err(err);
+            }
+        }
+
+        if fast_discovery {
+            target.put_replay_block_header_atomic(&block, None, None)?;
+        } else {
+            target.put_block_atomic(&block, None, None)?;
+        }
+        apply_post_block_effects_after_store(
+            &target,
+            &validator_set,
+            &stake_pool,
+            &block,
+            min_validator_stake,
+            slot_duration_ms,
+        )
+        .await;
+
+        if progress_every > 0
+            && (slot == start_slot || slot % progress_every == 0 || slot == to_slot)
+        {
+            let root = if fast_discovery {
+                "skipped_fast_discovery".to_string()
+            } else {
+                target.compute_state_root().to_hex()
+            };
+            println!(
+                "diagnostic_chain_replay_progress slot={} block_hash={} post_root={}",
+                slot,
+                block.hash().to_hex(),
+                root
+            );
+        }
+    }
+
+    let root = if fast_discovery {
+        "skipped_fast_discovery".to_string()
+    } else {
+        target.compute_state_root().to_hex()
+    };
+    println!(
+        "diagnostic_chain_replay_complete slot={} root={}",
+        target.get_last_slot().unwrap_or(0),
+        root
+    );
+    Ok(())
+}
+
+fn maybe_run_chain_replay_diagnostic_admin(args: &[String]) -> Option<i32> {
+    if !has_flag(args, DIAGNOSE_CHAIN_REPLAY_FLAG) {
+        return None;
+    }
+
+    let target_dir = restriction_schema_data_dir(args);
+    let source_dir = match get_flag_value(args, &["--block-db-path"]) {
+        Some(path) => PathBuf::from(path),
+        None => {
+            eprintln!(
+                "{} requires --block-db-path <source-db>",
+                DIAGNOSE_CHAIN_REPLAY_FLAG
+            );
+            return Some(2);
+        }
+    };
+    if target_dir == source_dir {
+        eprintln!(
+            "Refusing to replay into the source DB: {}",
+            target_dir.display()
+        );
+        return Some(2);
+    }
+
+    let to_slot = match get_flag_value(args, &["--to-slot"]).and_then(|value| value.parse().ok()) {
+        Some(slot) => slot,
+        None => {
+            eprintln!("{} requires --to-slot <slot>", DIAGNOSE_CHAIN_REPLAY_FLAG);
+            return Some(2);
+        }
+    };
+    let progress_every = get_flag_value(args, &["--progress-every"])
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(10_000);
+    let min_validator_stake = get_flag_value(args, &["--min-validator-stake"])
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(MIN_VALIDATOR_STAKE);
+    let slot_duration_ms = get_flag_value(args, &["--slot-duration-ms"])
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(400);
+    let fast_discovery = has_flag(args, "--fast-discovery");
+    let cache_size_mb = get_flag_value(args, &["--cache-size-mb"]).and_then(|s| s.parse().ok());
+    let source_secondary_dir = get_flag_value(args, &["--block-secondary-dir"]).map(PathBuf::from);
+    let resume = has_flag(args, "--resume");
+
+    match path_has_entries(&target_dir) {
+        Ok(true) if !resume => {
+            eprintln!(
+                "Refusing to use non-empty target {}; pass --resume or remove it",
+                target_dir.display()
+            );
+            return Some(2);
+        }
+        Ok(_) => {}
+        Err(err) => {
+            eprintln!("{err}");
+            return Some(1);
+        }
+    }
+
+    let source = match open_admin_state_for_diagnostics(
+        &source_dir,
+        source_secondary_dir.as_deref(),
+        cache_size_mb,
+    ) {
+        Ok(state) => state,
+        Err(err) => {
+            eprintln!("{err}");
+            return Some(1);
+        }
+    };
+    let target = match StateStore::open_with_cache_mb(&target_dir, cache_size_mb) {
+        Ok(state) => state,
+        Err(err) => {
+            eprintln!(
+                "Failed to open target state DB at {}: {}",
+                target_dir.display(),
+                err
+            );
+            return Some(1);
+        }
+    };
+
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(err) => {
+            eprintln!("Failed to create diagnostic runtime: {}", err);
+            return Some(1);
+        }
+    };
+
+    match runtime.block_on(run_chain_replay_diagnostic(
+        source,
+        target,
+        to_slot,
+        progress_every,
+        min_validator_stake,
+        slot_duration_ms,
+        fast_discovery,
+    )) {
+        Ok(()) => Some(0),
+        Err(err) => {
+            eprintln!("{err}");
+            Some(1)
+        }
+    }
+}
+
 fn maybe_run_stake_pool_digest_admin(args: &[String]) -> Option<i32> {
     if !has_flag(args, SHOW_STAKE_POOL_DIGEST_FLAG) {
         return None;
@@ -9851,6 +10628,15 @@ fn main() {
         std::process::exit(exit_code);
     }
     if let Some(exit_code) = maybe_run_contract_storage_digest_admin(&args) {
+        std::process::exit(exit_code);
+    }
+    if let Some(exit_code) = maybe_run_mossstake_block_scan_admin(&args) {
+        std::process::exit(exit_code);
+    }
+    if let Some(exit_code) = maybe_run_block_replay_diagnostic_admin(&args) {
+        std::process::exit(exit_code);
+    }
+    if let Some(exit_code) = maybe_run_chain_replay_diagnostic_admin(&args) {
         std::process::exit(exit_code);
     }
     if let Some(exit_code) = maybe_run_stake_pool_digest_admin(&args) {
@@ -24173,6 +24959,14 @@ mod tests {
         let alice = Keypair::generate().pubkey();
         let mut pool = MossStakePool::new();
 
+        state
+            .put_metadata(CHAIN_ID_METADATA_KEY, b"lichen-testnet-1")
+            .expect("put chain id");
+        state
+            .set_last_slot(
+                lichen_core::mossstake::LEGACY_TESTNET_MOSSSTAKE_WALL_CLOCK_START_PARENT_SLOT,
+            )
+            .expect("set wall-clock-range slot");
         pool.stake_with_tier(alice, 1_000, 42, LockTier::Lock30)
             .expect("stake MossStake position");
         pool.request_unstake(alice, 100, 42 + LockTier::Lock30.lock_duration_slots())
@@ -24237,6 +25031,11 @@ mod tests {
         state
             .put_metadata(CHAIN_ID_METADATA_KEY, b"lichen-testnet-1")
             .expect("put chain id");
+        state
+            .set_last_slot(
+                lichen_core::mossstake::LEGACY_TESTNET_MOSSSTAKE_WALL_CLOCK_START_PARENT_SLOT,
+            )
+            .expect("set wall-clock-range slot");
         pool.stake_with_tier(alice, 1_000, 42, LockTier::Lock30)
             .expect("stake position");
         pool.positions

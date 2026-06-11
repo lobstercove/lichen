@@ -568,28 +568,62 @@ impl StateBatch {
         }
     }
 
+    fn mossstake_metadata_value(&self, key: &str) -> Option<Vec<u8>> {
+        self.db
+            .cf_handle(CF_STATS)
+            .and_then(|cf| self.db.get_cf(&cf, key.as_bytes()).ok().flatten())
+    }
+
+    fn mossstake_replay_mode_for_parent_slot(
+        &self,
+        parent_slot: u64,
+    ) -> crate::mossstake::MossStakeReplayMode {
+        if matches!(
+            self.mossstake_metadata_value(crate::mossstake::MOSSSTAKE_SLOT_ONLY_METADATA_KEY)
+                .as_deref(),
+            Some(b"1")
+        ) {
+            return crate::mossstake::MossStakeReplayMode::SlotOnly;
+        }
+
+        let legacy_testnet = self
+            .mossstake_metadata_value(crate::signing::CHAIN_ID_METADATA_KEY)
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+            .map(|chain_id| chain_id.to_ascii_lowercase().contains("testnet"))
+            .unwrap_or(false);
+        if !legacy_testnet {
+            return crate::mossstake::MossStakeReplayMode::SlotOnly;
+        }
+
+        if (crate::mossstake::LEGACY_TESTNET_MOSSSTAKE_WALL_CLOCK_START_PARENT_SLOT
+            ..crate::mossstake::LEGACY_TESTNET_MOSSSTAKE_SLOT_ONLY_ACTIVATION_PARENT_SLOT)
+            .contains(&parent_slot)
+        {
+            crate::mossstake::MossStakeReplayMode::LegacyWallClock
+        } else {
+            crate::mossstake::MossStakeReplayMode::SlotOnly
+        }
+    }
+
     pub fn put_mossstake_pool(&mut self, pool: &MossStakePool) -> Result<(), String> {
+        let parent_slot = self.get_last_slot().unwrap_or(0);
+        self.put_mossstake_pool_with_replay_mode(
+            pool,
+            self.mossstake_replay_mode_for_parent_slot(parent_slot),
+        )
+    }
+
+    pub fn put_mossstake_pool_with_replay_mode(
+        &mut self,
+        pool: &MossStakePool,
+        replay_mode: crate::mossstake::MossStakeReplayMode,
+    ) -> Result<(), String> {
         let cf = self
             .db
             .cf_handle(CF_MOSSSTAKE)
             .ok_or_else(|| "MossStake CF not found".to_string())?;
-        let slot_only = matches!(
-            self.db
-                .cf_handle(CF_STATS)
-                .and_then(|cf| {
-                    self.db
-                        .get_cf(
-                            &cf,
-                            crate::mossstake::MOSSSTAKE_SLOT_ONLY_METADATA_KEY.as_bytes(),
-                        )
-                        .ok()
-                        .flatten()
-                })
-                .as_deref(),
-            Some(b"1")
-        );
         let mut normalized_pool = pool.clone();
-        if slot_only {
+        if replay_mode == crate::mossstake::MossStakeReplayMode::SlotOnly {
             normalized_pool.clear_wall_clock_times();
         }
         let data = serde_json::to_vec(&normalized_pool)
