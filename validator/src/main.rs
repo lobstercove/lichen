@@ -105,6 +105,7 @@ const EXIT_CODE_RESTART: i32 = 75;
 /// pending blocks or is actively syncing.
 const DEFAULT_WATCHDOG_TIMEOUT_SECS: u64 = 120;
 const GENESIS_SYNC_INCOMPLETE_MARKER: &str = "genesis_sync_incomplete";
+const TX_BY_SLOT_CANONICAL_INDEX_MARKER: &str = "tx_by_slot_canonical_index_v1";
 const RECENT_POST_BLOCK_EFFECTS_RECOVERY_WINDOW: u64 = 4096;
 const ACTIVATE_RESTRICTION_SCHEMA_FLAG: &str = "--activate-restriction-schema";
 const SHOW_RESTRICTION_SCHEMA_FLAG: &str = "--show-restriction-schema";
@@ -495,6 +496,37 @@ where
     deserialize_legacy_bincode_strict(data, data.len() as u64, context)
 }
 
+fn canonical_validator_set_snapshot(set: &ValidatorSet) -> ValidatorSet {
+    let mut canonical = ValidatorSet::new();
+    canonical.set_frozen_epoch(set.frozen_epoch());
+
+    for mut validator in set.sorted_validators() {
+        validator.stake = 0;
+        validator.reputation = 100;
+        validator.blocks_proposed = 0;
+        validator.votes_cast = 0;
+        validator.correct_votes = 0;
+        validator.last_active_slot = validator.joined_slot;
+        validator.last_observed_at_ms = 0;
+        validator.last_observed_block_at_ms = 0;
+        validator.last_observed_block_slot = 0;
+        validator.transactions_processed = 0;
+        canonical.add_validator(validator);
+    }
+
+    canonical
+}
+
+fn deserialize_validator_set_snapshot(data: &[u8]) -> Result<ValidatorSet, String> {
+    let set: ValidatorSet = deserialize_snapshot_value(data, "validator_set snapshot")?;
+    Ok(canonical_validator_set_snapshot(&set))
+}
+
+fn deserialize_stake_pool_snapshot(data: &[u8]) -> Result<StakePool, String> {
+    StakePool::from_canonical_snapshot_bytes(data)
+        .or_else(|_| deserialize_snapshot_value(data, "legacy stake_pool snapshot"))
+}
+
 fn import_ordered_snapshot_category(
     state: &StateStore,
     category: &str,
@@ -505,7 +537,7 @@ fn import_ordered_snapshot_category(
             let Some((_, data)) = entries.first() else {
                 return Err("validator_set snapshot category is empty".to_string());
             };
-            let set: ValidatorSet = deserialize_snapshot_value(data, "validator_set snapshot")?;
+            let set = deserialize_validator_set_snapshot(data)?;
             state
                 .save_validator_set(&set)
                 .map(|_| set.validators().len())
@@ -514,7 +546,7 @@ fn import_ordered_snapshot_category(
             let Some((_, data)) = entries.first() else {
                 return Err("stake_pool snapshot category is empty".to_string());
             };
-            let pool: StakePool = deserialize_snapshot_value(data, "stake_pool snapshot")?;
+            let pool = deserialize_stake_pool_snapshot(data)?;
             state
                 .put_stake_pool(&pool)
                 .map(|_| pool.stake_entries().len())
@@ -573,21 +605,6 @@ fn cleanup_snapshot_staging(staging: &mut Option<(u64, String, StateStore)>) {
             }
         }
     }
-}
-
-fn export_special_snapshot_value<T>(
-    state: &StateStore,
-    category: &str,
-    context: &str,
-) -> Result<T, String>
-where
-    T: serde::de::DeserializeOwned,
-{
-    let entries = export_roundtrip_snapshot_entries(state, category, 1)?;
-    let Some((_, data)) = entries.first() else {
-        return Err(format!("{} snapshot category is empty", category));
-    };
-    deserialize_snapshot_value(data, context)
 }
 
 fn stream_snapshot_category_between_stores(
@@ -2805,6 +2822,56 @@ fn sync_dex_indexes_for_startup(state: &StateStore, context: &str) {
         }
         Err(err) => {
             error!("Failed to sync DEX indexes ({}): {}", context, err);
+            std::process::exit(1);
+        }
+    }
+}
+
+fn sync_tx_by_slot_index_for_startup(state: &StateStore, context: &str) {
+    let last_slot = state.get_last_slot().unwrap_or(0);
+    if last_slot == 0 {
+        return;
+    }
+
+    let already_canonical = matches!(
+        state
+            .get_metadata(TX_BY_SLOT_CANONICAL_INDEX_MARKER)
+            .ok()
+            .flatten()
+            .as_deref(),
+        Some(b"1")
+    );
+    if already_canonical {
+        info!(
+            "✓ tx_by_slot archive index already canonical ({}): marker={}",
+            context, TX_BY_SLOT_CANONICAL_INDEX_MARKER
+        );
+        return;
+    }
+
+    info!(
+        "🧾 Rebuilding tx_by_slot archive index from canonical blocks ({})",
+        context
+    );
+    match state.rebuild_tx_by_slot_index_from_blocks() {
+        Ok(indexed) => {
+            if let Err(err) = state.put_metadata(TX_BY_SLOT_CANONICAL_INDEX_MARKER, b"1") {
+                error!(
+                    "Failed to mark tx_by_slot archive index canonical ({}): {}",
+                    context, err
+                );
+                std::process::exit(1);
+            }
+            info!(
+                "✓ Rebuilt tx_by_slot archive index from canonical blocks ({}): {} entries",
+                context, indexed
+            );
+        }
+        Err(err) => {
+            error!(
+                "Failed to rebuild tx_by_slot archive index from canonical blocks ({}): {}",
+                context, err
+            );
             std::process::exit(1);
         }
     }
@@ -6893,9 +6960,11 @@ fn checkpoint_anchor_support(
     state_root: [u8; 32],
 ) -> usize {
     anchors
-        .values()
-        .filter(|anchor| anchor.slot == slot && anchor.state_root == state_root)
-        .count()
+        .keys()
+        .filter(|key| key.slot == slot && key.state_root == state_root)
+        .map(|key| key.source)
+        .collect::<HashSet<_>>()
+        .len()
 }
 
 fn checkpoint_anchor_manifest_support(
@@ -6905,13 +6974,15 @@ fn checkpoint_anchor_manifest_support(
     snapshot_manifest_root: [u8; 32],
 ) -> usize {
     anchors
-        .values()
-        .filter(|anchor| {
-            anchor.slot == slot
-                && anchor.state_root == state_root
-                && anchor.snapshot_manifest_root == snapshot_manifest_root
+        .keys()
+        .filter(|key| {
+            key.slot == slot
+                && key.state_root == state_root
+                && key.snapshot_manifest_root == snapshot_manifest_root
         })
-        .count()
+        .map(|key| key.source)
+        .collect::<HashSet<_>>()
+        .len()
 }
 
 fn same_slot_checkpoint_root_mismatch(
@@ -9501,6 +9572,7 @@ fn export_roundtrip_snapshot_entries(
     match category {
         "validator_set" => {
             let set = state.load_validator_set()?;
+            let set = canonical_validator_set_snapshot(&set);
             return Ok(vec![(
                 b"validator_set".to_vec(),
                 serialize_legacy_bincode(&set, "validator_set snapshot")?,
@@ -9510,7 +9582,7 @@ fn export_roundtrip_snapshot_entries(
             let pool = state.get_stake_pool()?;
             return Ok(vec![(
                 b"stake_pool".to_vec(),
-                serialize_legacy_bincode(&pool, "stake_pool snapshot")?,
+                pool.canonical_snapshot_bytes()?,
             )]);
         }
         "mossstake_pool" => {
@@ -11180,6 +11252,7 @@ async fn run_validator() {
     }
 
     configure_archive_mode(&state, &args, cold_store_path.is_some());
+    sync_tx_by_slot_index_for_startup(&state, "startup");
     sync_dex_indexes_for_startup(&state, "startup");
 
     // Create transaction processor
@@ -16060,59 +16133,23 @@ async fn run_validator() {
                         Ok(store) => {
                             let meta = session.meta.clone();
                             let singleton_chunk = match category.as_str() {
-                                "validator_set" if chunk_index == 0 => {
-                                    let set = store.load_validator_set().unwrap_or_default();
-                                    let data = match serialize_legacy_bincode(
-                                        &set,
-                                        "validator_set snapshot",
+                                "validator_set" | "stake_pool" | "mossstake_pool"
+                                    if chunk_index == 0 =>
+                                {
+                                    match export_roundtrip_snapshot_entries(
+                                        &store,
+                                        category.as_str(),
+                                        chunk_sz,
                                     ) {
-                                        Ok(data) => data,
+                                        Ok(entries) => Some(entries),
                                         Err(e) => {
                                             warn!(
-                                                    "⚠️  Refusing to serve validator_set snapshot to {} after serialization failure: {}",
-                                                    request.requester, e
-                                                );
-                                            continue;
-                                        }
-                                    };
-                                    Some(vec![(b"validator_set".to_vec(), data)])
-                                }
-                                "stake_pool" if chunk_index == 0 => {
-                                    let pool =
-                                        store.get_stake_pool().unwrap_or_else(|_| StakePool::new());
-                                    let data = match serialize_legacy_bincode(
-                                        &pool,
-                                        "stake_pool snapshot",
-                                    ) {
-                                        Ok(data) => data,
-                                        Err(e) => {
-                                            warn!(
-                                                    "⚠️  Refusing to serve stake_pool snapshot to {} after serialization failure: {}",
-                                                    request.requester, e
-                                                );
-                                            continue;
-                                        }
-                                    };
-                                    Some(vec![(b"stake_pool".to_vec(), data)])
-                                }
-                                "mossstake_pool" if chunk_index == 0 => {
-                                    let pool = store
-                                        .get_mossstake_pool()
-                                        .unwrap_or_else(|_| lichen_core::MossStakePool::new());
-                                    let data = match serialize_legacy_bincode(
-                                        &pool,
-                                        "mossstake_pool snapshot",
-                                    ) {
-                                        Ok(data) => data,
-                                        Err(e) => {
-                                            warn!(
-                                                "⚠️  Refusing to serve mossstake_pool snapshot to {} after serialization failure: {}",
-                                                request.requester, e
+                                                "⚠️  Refusing to serve {} snapshot to {} after export failure: {}",
+                                                category, request.requester, e
                                             );
                                             continue;
                                         }
-                                    };
-                                    Some(vec![(b"mossstake_pool".to_vec(), data)])
+                                    }
                                 }
                                 "validator_set" | "stake_pool" | "mossstake_pool" => {
                                     Some(Vec::new())
@@ -17347,26 +17384,17 @@ async fn run_validator() {
                         }
 
                         // ── Commit verified entries to live DB ──────────────
-                        let validator_set_snapshot: ValidatorSet =
-                            match export_special_snapshot_value(
-                                &staging_state,
-                                "validator_set",
-                                "validator_set snapshot",
-                            ) {
-                                Ok(set) => set,
-                                Err(e) => {
-                                    error!(
-                                        "FATAL: failed to read verified validator_set snapshot at slot {}: {}",
-                                        snapshot_slot, e
-                                    );
-                                    std::process::exit(1);
-                                }
-                            };
-                        let stake_pool_snapshot: StakePool = match export_special_snapshot_value(
-                            &staging_state,
-                            "stake_pool",
-                            "stake_pool snapshot",
-                        ) {
+                        let validator_set_snapshot = match staging_state.load_validator_set() {
+                            Ok(set) => canonical_validator_set_snapshot(&set),
+                            Err(e) => {
+                                error!(
+                                    "FATAL: failed to read verified validator_set snapshot at slot {}: {}",
+                                    snapshot_slot, e
+                                );
+                                std::process::exit(1);
+                            }
+                        };
+                        let stake_pool_snapshot = match staging_state.get_stake_pool() {
                             Ok(pool) => pool,
                             Err(e) => {
                                 error!(
@@ -17376,21 +17404,16 @@ async fn run_validator() {
                                 std::process::exit(1);
                             }
                         };
-                        let mossstake_pool_snapshot: lichen_core::MossStakePool =
-                            match export_special_snapshot_value(
-                                &staging_state,
-                                "mossstake_pool",
-                                "mossstake_pool snapshot",
-                            ) {
-                                Ok(pool) => pool,
-                                Err(e) => {
-                                    error!(
-                                        "FATAL: failed to read verified mossstake_pool snapshot at slot {}: {}",
-                                        snapshot_slot, e
-                                    );
-                                    std::process::exit(1);
-                                }
-                            };
+                        let mossstake_pool_snapshot = match staging_state.get_mossstake_pool() {
+                            Ok(pool) => pool,
+                            Err(e) => {
+                                error!(
+                                    "FATAL: failed to read verified mossstake_pool snapshot at slot {}: {}",
+                                    snapshot_slot, e
+                                );
+                                std::process::exit(1);
+                            }
+                        };
 
                         for category_name in STATE_SNAPSHOT_CATEGORIES {
                             match state_for_snapshot_apply.clear_snapshot_category(category_name) {
@@ -23886,6 +23909,7 @@ mod tests {
         };
         let anchor_a1 = anchor(42, root_a, manifest_a.clone());
         let anchor_a2 = anchor(42, root_a, manifest_a.clone());
+        let anchor_a1_other_manifest = anchor(42, root_a, manifest_b.clone());
         let anchor_b = anchor(42, root_b, manifest_b.clone());
         let anchors = HashMap::from([
             (
@@ -23901,6 +23925,13 @@ mod tests {
                     &anchor_a2,
                 ),
                 anchor_a2,
+            ),
+            (
+                VerifiedCheckpointAnchorKey::new(
+                    VerifiedCheckpointSource::Validator(Pubkey([1u8; 32])),
+                    &anchor_a1_other_manifest,
+                ),
+                anchor_a1_other_manifest,
             ),
             (
                 VerifiedCheckpointAnchorKey::new(
@@ -23930,7 +23961,7 @@ mod tests {
                 root_a,
                 snapshot_manifest_root(&manifest_b)
             ),
-            0
+            1
         );
     }
 

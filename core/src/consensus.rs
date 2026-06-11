@@ -1,7 +1,7 @@
 // Lichen Consensus Module
 // Byzantine Fault Tolerant consensus with Proof of Contribution
 
-use crate::codec::serialize_legacy_bincode;
+use crate::codec::{deserialize_legacy_bincode_strict, serialize_legacy_bincode};
 use crate::genesis::ConsensusParams;
 use crate::mossstake::MOSSSTAKE_BLOCK_SHARE_BPS;
 use crate::signing::{
@@ -946,6 +946,18 @@ pub struct StakePool {
     bootstrap_grants_issued: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StakePoolSnapshotV1 {
+    version: u8,
+    total_staked: u64,
+    total_slashed: u64,
+    bootstrap_grants_issued: u64,
+    stakes: Vec<StakeInfo>,
+    unstake_requests: Vec<((Pubkey, Pubkey), UnstakeRequest)>,
+    delegations: Vec<(Pubkey, Vec<(Pubkey, u64)>)>,
+    fingerprint_registry: Vec<([u8; 32], Pubkey)>,
+}
+
 impl Default for StakePool {
     fn default() -> Self {
         Self::new()
@@ -1167,6 +1179,83 @@ impl StakePool {
         let mut entries: Vec<StakeInfo> = self.stakes.values().cloned().collect();
         entries.sort_by_key(|info| info.validator.0);
         entries
+    }
+
+    pub fn canonical_snapshot_bytes(&self) -> Result<Vec<u8>, String> {
+        let mut unstake_requests: Vec<_> = self
+            .unstake_requests
+            .iter()
+            .map(|(key, request)| (*key, request.clone()))
+            .collect();
+        unstake_requests.sort_by_key(|((validator, staker), _)| (validator.0, staker.0));
+
+        let mut delegations: Vec<_> = self
+            .delegations
+            .iter()
+            .map(|(validator, delegator_map)| {
+                let mut entries: Vec<_> = delegator_map
+                    .iter()
+                    .map(|(delegator, amount)| (*delegator, *amount))
+                    .collect();
+                entries.sort_by_key(|(delegator, _)| delegator.0);
+                (*validator, entries)
+            })
+            .collect();
+        delegations.sort_by_key(|(validator, _)| validator.0);
+
+        let mut fingerprint_registry: Vec<_> = self
+            .fingerprint_registry
+            .iter()
+            .map(|(fingerprint, validator)| (*fingerprint, *validator))
+            .collect();
+        fingerprint_registry.sort_by_key(|(fingerprint, _)| *fingerprint);
+
+        let snapshot = StakePoolSnapshotV1 {
+            version: 1,
+            total_staked: self.total_staked,
+            total_slashed: self.total_slashed,
+            bootstrap_grants_issued: self.bootstrap_grants_issued,
+            stakes: self.stake_entries(),
+            unstake_requests,
+            delegations,
+            fingerprint_registry,
+        };
+
+        serialize_legacy_bincode(&snapshot, "stake pool canonical snapshot")
+    }
+
+    pub fn from_canonical_snapshot_bytes(data: &[u8]) -> Result<Self, String> {
+        let snapshot: StakePoolSnapshotV1 =
+            deserialize_legacy_bincode_strict(data, data.len() as u64, "stake pool snapshot v1")?;
+        if snapshot.version != 1 {
+            return Err(format!(
+                "unsupported stake pool snapshot version {}",
+                snapshot.version
+            ));
+        }
+
+        let stakes = snapshot
+            .stakes
+            .into_iter()
+            .map(|entry| (entry.validator, entry))
+            .collect();
+        let unstake_requests = snapshot.unstake_requests.into_iter().collect();
+        let delegations = snapshot
+            .delegations
+            .into_iter()
+            .map(|(validator, entries)| (validator, entries.into_iter().collect()))
+            .collect();
+        let fingerprint_registry = snapshot.fingerprint_registry.into_iter().collect();
+
+        Ok(Self {
+            stakes,
+            total_staked: snapshot.total_staked,
+            total_slashed: snapshot.total_slashed,
+            unstake_requests,
+            delegations,
+            fingerprint_registry,
+            bootstrap_grants_issued: snapshot.bootstrap_grants_issued,
+        })
     }
 
     /// Get total stake in the network (already excludes pending unstakes)
@@ -3842,6 +3931,28 @@ mod tests {
         let leader1 = set.select_leader(0);
         let leader2 = set.select_leader(0);
         assert_eq!(leader1, leader2);
+    }
+
+    #[test]
+    fn stake_pool_canonical_snapshot_bytes_ignore_hashmap_order() {
+        let pk1 = Pubkey::new([1u8; 32]);
+        let pk2 = Pubkey::new([2u8; 32]);
+
+        let mut first = StakePool::new();
+        first.stake(pk1, 100_000_000_000_000, 0).unwrap();
+        first.stake(pk2, 150_000_000_000_000, 1).unwrap();
+
+        let mut second = StakePool::new();
+        second.stake(pk2, 150_000_000_000_000, 1).unwrap();
+        second.stake(pk1, 100_000_000_000_000, 0).unwrap();
+
+        let first_bytes = first.canonical_snapshot_bytes().unwrap();
+        let second_bytes = second.canonical_snapshot_bytes().unwrap();
+        assert_eq!(first_bytes, second_bytes);
+
+        let restored = StakePool::from_canonical_snapshot_bytes(&first_bytes).unwrap();
+        assert_eq!(restored.canonical_hash(), first.canonical_hash());
+        assert_eq!(restored.total_stake(), first.total_stake());
     }
 
     #[test]

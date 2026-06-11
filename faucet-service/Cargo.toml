@@ -1,6 +1,6 @@
 [package]
 name = "lichen-faucet"
-version = "0.5.148"
+version = "0.5.149"
 edition = "2021"
 license = "MIT"
 

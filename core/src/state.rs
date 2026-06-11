@@ -463,6 +463,7 @@ mod tests {
         RestrictionReason, RestrictionRecord, RestrictionStatus, RestrictionTarget,
         RestrictionTransferDirection, NATIVE_LICN_ASSET_ID,
     };
+    use crate::transaction::Message;
     use tempfile::tempdir;
 
     fn directory_fingerprint(root: &std::path::Path) -> Vec<(String, u64)> {
@@ -2283,6 +2284,57 @@ mod tests {
         assert_eq!(state.get_tx_slot(&tx_hash_a).unwrap(), Some(9));
         assert_eq!(state.get_tx_slot(&tx_hash_b).unwrap(), Some(9));
         assert_eq!(state.get_tx_slot(&Hash([0x73; 32])).unwrap(), None);
+    }
+
+    #[test]
+    fn tx_by_slot_snapshot_export_is_derived_from_blocks() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+
+        let tx_a = Transaction::new(Message::new(Vec::new(), Hash::hash(b"a")));
+        let tx_b = Transaction::new(Message::new(Vec::new(), Hash::hash(b"b")));
+        let block = Block::new(
+            7,
+            Hash::default(),
+            Hash::hash(b"state"),
+            [9u8; 32],
+            vec![tx_a.clone(), tx_b.clone()],
+        );
+        state.put_block(&block).unwrap();
+
+        let stale_hash = Hash([0x44; 32]);
+        state.index_tx_by_slot(7, &stale_hash).unwrap();
+
+        let first = state
+            .export_snapshot_category_cursor_untracked("tx_by_slot", None, 1)
+            .unwrap();
+        assert_eq!(first.entries.len(), 1);
+        assert!(first.has_more);
+        assert_eq!(first.entries[0].0, {
+            let mut key = Vec::new();
+            key.extend_from_slice(&7u64.to_be_bytes());
+            key.extend_from_slice(&0u64.to_be_bytes());
+            key
+        });
+        assert_eq!(first.entries[0].1, tx_a.signature().0.to_vec());
+
+        let second = state
+            .export_snapshot_category_cursor_untracked(
+                "tx_by_slot",
+                first.next_cursor.as_deref(),
+                10,
+            )
+            .unwrap();
+        assert_eq!(second.entries.len(), 1);
+        assert!(!second.has_more);
+        assert_eq!(second.entries[0].1, tx_b.signature().0.to_vec());
+
+        let rebuilt = state.rebuild_tx_by_slot_index_from_blocks().unwrap();
+        assert_eq!(rebuilt, 2);
+        assert_eq!(
+            state.get_txs_by_slot(7, 10).unwrap(),
+            vec![tx_a.signature(), tx_b.signature()]
+        );
     }
 
     #[test]
