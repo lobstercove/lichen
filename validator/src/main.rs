@@ -1153,17 +1153,49 @@ impl VerifiedCheckpointCacheEntry {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum VerifiedCheckpointSource {
+    Validator(Pubkey),
+    Node([u8; 32]),
+}
+
+impl VerifiedCheckpointSource {
+    fn validator_pubkey(self) -> Option<Pubkey> {
+        match self {
+            Self::Validator(pubkey) => Some(pubkey),
+            Self::Node(_) => None,
+        }
+    }
+
+    fn label(self) -> String {
+        match self {
+            Self::Validator(pubkey) => format!("validator {}", pubkey.to_base58()),
+            Self::Node(node_id) => format!("node {}", Pubkey(node_id).to_base58()),
+        }
+    }
+}
+
+fn checkpoint_source_identity(
+    validator_pubkey: Option<Pubkey>,
+    node_id: Option<[u8; 32]>,
+) -> Option<VerifiedCheckpointSource> {
+    if let Some(pubkey) = validator_pubkey {
+        return Some(VerifiedCheckpointSource::Validator(pubkey));
+    }
+    node_id.map(VerifiedCheckpointSource::Node)
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 struct VerifiedCheckpointAnchorKey {
-    validator: Pubkey,
+    source: VerifiedCheckpointSource,
     slot: u64,
     state_root: [u8; 32],
     snapshot_manifest_root: [u8; 32],
 }
 
 impl VerifiedCheckpointAnchorKey {
-    fn new(validator: Pubkey, anchor: &VerifiedCheckpointAnchor) -> Self {
+    fn new(source: VerifiedCheckpointSource, anchor: &VerifiedCheckpointAnchor) -> Self {
         Self {
-            validator,
+            source,
             slot: anchor.slot,
             state_root: anchor.state_root,
             snapshot_manifest_root: anchor.snapshot_manifest_root,
@@ -6759,6 +6791,13 @@ fn verify_checkpoint_anchor(
         return Err(format!(
             "checkpoint header slot mismatch: expected {}, got {}",
             anchor.slot, header.slot
+        ));
+    }
+    if header.state_root.0 != anchor.state_root {
+        return Err(format!(
+            "checkpoint state root mismatch: header={} metadata={}",
+            header.state_root.to_hex(),
+            Hash(anchor.state_root).to_hex()
         ));
     }
 
@@ -16376,8 +16415,9 @@ async fn run_validator() {
             > = std::collections::HashMap::new();
             let mut active_snapshot_anchor: Option<VerifiedCheckpointAnchor> = None;
             let mut active_snapshot_source_peer: Option<SocketAddr> = None;
-            let mut active_snapshot_source_validator: Option<Pubkey> = None;
-            let mut rejected_snapshot_sources: HashSet<(Pubkey, u64, [u8; 32])> = HashSet::new();
+            let mut active_snapshot_source: Option<VerifiedCheckpointSource> = None;
+            let mut rejected_snapshot_sources: HashSet<(VerifiedCheckpointSource, u64, [u8; 32])> =
+                HashSet::new();
             let mut snapshot_last_progress_at = std::time::Instant::now();
             // Staged snapshot DB: chunks are written here as they arrive,
             // then the full staging state is root-verified before touching
@@ -16456,25 +16496,36 @@ async fn run_validator() {
                                 peer_mgr_for_snapshot_apply.record_violation(&response.requester);
                                 continue;
                             }
-                            let Some(anchor_validator) = peer_mgr_for_snapshot_apply
-                                .peer_validator_pubkey(&response.requester)
-                            else {
+                            let Some(anchor_source) = checkpoint_source_identity(
+                                peer_mgr_for_snapshot_apply
+                                    .peer_validator_pubkey(&response.requester),
+                                peer_mgr_for_snapshot_apply.peer_node_id(&response.requester),
+                            ) else {
                                 warn!(
-                                "⚠️  Ignoring checkpoint metadata from {} without a verified validator identity",
+                                "⚠️  Ignoring checkpoint metadata from {} without a verified source identity",
                                 response.requester
                             );
                                 continue;
                             };
                             let anchor_verified = {
                                 let vs = validator_set_for_snapshot_apply.read().await;
-                                if vs
-                                    .get_validator(&anchor_validator)
-                                    .is_none_or(|validator| validator.pending_activation)
-                                {
-                                    Err(format!(
-                                        "peer validator {} is not in the active validator set",
-                                        anchor_validator.to_base58()
-                                    ))
+                                let validator_source_error = anchor_source
+                                    .validator_pubkey()
+                                    .and_then(|anchor_validator| {
+                                        if vs
+                                            .get_validator(&anchor_validator)
+                                            .is_none_or(|validator| validator.pending_activation)
+                                        {
+                                            Some(format!(
+                                                "peer validator {} is not in the active validator set",
+                                                anchor_validator.to_base58()
+                                            ))
+                                        } else {
+                                            None
+                                        }
+                                    });
+                                if let Some(err) = validator_source_error {
+                                    Err(err)
                                 } else {
                                     let pool = stake_pool_for_snapshot_apply.read().await;
                                     verify_checkpoint_anchor(
@@ -16522,7 +16573,7 @@ async fn run_validator() {
                                 },
                             };
                             let anchor_key =
-                                VerifiedCheckpointAnchorKey::new(anchor_validator, &anchor);
+                                VerifiedCheckpointAnchorKey::new(anchor_source, &anchor);
                             verified_checkpoint_anchors.insert(anchor_key, anchor.clone());
                             let support = checkpoint_anchor_support(
                                 &verified_checkpoint_anchors,
@@ -16536,8 +16587,8 @@ async fn run_validator() {
                                 anchor.snapshot_manifest_root,
                             );
                             info!(
-                            "📋 Validator {} via peer {} has checkpoint at slot {} ({} accounts, {} root corroboration{}, {} manifest corroboration{})",
-                            anchor_validator.to_base58(),
+                            "📋 Source {} via peer {} has checkpoint at slot {} ({} accounts, {} root corroboration{}, {} manifest corroboration{})",
+                            anchor_source.label(),
                             response.requester,
                             slot,
                             total_accounts,
@@ -16591,11 +16642,11 @@ async fn run_validator() {
                                     continue;
                                 }
 
-                                let snapshot_source_key = (anchor_validator, slot, state_root);
+                                let snapshot_source_key = (anchor_source, slot, state_root);
                                 if rejected_snapshot_sources.contains(&snapshot_source_key) {
                                     info!(
                                     "⏳ Skipping previously rejected checkpoint snapshot source {} for slot {} root {}",
-                                    anchor_validator.to_base58(),
+                                    anchor_source.label(),
                                     slot,
                                     hex::encode(&state_root[..8])
                                 );
@@ -16688,7 +16739,7 @@ async fn run_validator() {
                                 active_snapshot_staging = Some((slot, staging_dir, staging_state));
                                 active_snapshot_anchor = Some(anchor);
                                 active_snapshot_source_peer = Some(response.requester);
-                                active_snapshot_source_validator = Some(anchor_validator);
+                                active_snapshot_source = Some(anchor_source);
                                 snapshot_sync_for_apply
                                     .lock()
                                     .await
@@ -16736,11 +16787,12 @@ async fn run_validator() {
                         }
                     }
                     if !saw_checkpoint {
-                        if let Some(anchor_validator) =
-                            peer_mgr_for_snapshot_apply.peer_validator_pubkey(&response.requester)
-                        {
+                        if let Some(anchor_source) = checkpoint_source_identity(
+                            peer_mgr_for_snapshot_apply.peer_validator_pubkey(&response.requester),
+                            peer_mgr_for_snapshot_apply.peer_node_id(&response.requester),
+                        ) {
                             verified_checkpoint_anchors
-                                .retain(|key, _| key.validator != anchor_validator);
+                                .retain(|key, _| key.source != anchor_source);
                         }
                         warn!("📋 Peer {} has no checkpoint available", response.requester);
                         // Warp sync is impossible without a checkpoint.  Complete the
@@ -16777,11 +16829,12 @@ async fn run_validator() {
                     ref entries_bytes,
                 )) = response.state_snapshot_data
                 {
-                    let Some(anchor_validator) =
-                        peer_mgr_for_snapshot_apply.peer_validator_pubkey(&response.requester)
-                    else {
+                    let Some(chunk_source) = checkpoint_source_identity(
+                        peer_mgr_for_snapshot_apply.peer_validator_pubkey(&response.requester),
+                        peer_mgr_for_snapshot_apply.peer_node_id(&response.requester),
+                    ) else {
                         warn!(
-                            "⚠️  Rejecting {} snapshot chunk from {} without a verified validator identity",
+                            "⚠️  Rejecting {} snapshot chunk from {} without a verified source identity",
                             category, response.requester
                         );
                         continue;
@@ -16794,7 +16847,7 @@ async fn run_validator() {
                         continue;
                     };
                     let chunk_anchor_key = VerifiedCheckpointAnchorKey {
-                        validator: anchor_validator,
+                        source: chunk_source,
                         slot: snapshot_slot,
                         state_root,
                         snapshot_manifest_root: active_anchor.snapshot_manifest_root,
@@ -16802,7 +16855,7 @@ async fn run_validator() {
                     if !verified_checkpoint_anchors.contains_key(&chunk_anchor_key) {
                         if let Some(anchor) = verified_checkpoint_anchors
                             .iter()
-                            .find(|(key, _)| key.validator == anchor_validator)
+                            .find(|(key, _)| key.source == chunk_source)
                             .map(|(_, anchor)| anchor)
                         {
                             warn!(
@@ -16842,6 +16895,13 @@ async fn run_validator() {
                         warn!(
                             "⚠️  Rejecting {} snapshot chunk from {}; active snapshot is pinned to {:?}",
                             category, response.requester, active_snapshot_source_peer
+                        );
+                        continue;
+                    }
+                    if active_snapshot_source != Some(chunk_source) {
+                        warn!(
+                            "⚠️  Rejecting {} snapshot chunk from {}; active snapshot source is pinned to {:?}",
+                            category, response.requester, active_snapshot_source
                         );
                         continue;
                     }
@@ -17177,15 +17237,15 @@ async fn run_validator() {
                         };
 
                         if !staging_ok {
-                            if let Some(source_validator) = active_snapshot_source_validator {
+                            if let Some(source) = active_snapshot_source {
                                 rejected_snapshot_sources.insert((
-                                    source_validator,
+                                    source,
                                     snapshot_slot,
                                     state_root,
                                 ));
                                 warn!(
                                     "⚠️  Rejecting checkpoint snapshot source {} for slot {} root {} after staging validation failure",
-                                    source_validator.to_base58(),
+                                    source.label(),
                                     snapshot_slot,
                                     hex::encode(&state_root[..8])
                                 );
@@ -17195,7 +17255,7 @@ async fn run_validator() {
                             state_snap_progress.clear();
                             active_snapshot_anchor = None;
                             active_snapshot_source_peer = None;
-                            active_snapshot_source_validator = None;
+                            active_snapshot_source = None;
                             snapshot_sync_for_apply
                                 .lock()
                                 .await
@@ -17209,7 +17269,7 @@ async fn run_validator() {
                             cleanup_snapshot_staging(&mut active_snapshot_staging);
                             state_snap_progress.clear();
                             active_snapshot_source_peer = None;
-                            active_snapshot_source_validator = None;
+                            active_snapshot_source = None;
                             snapshot_sync_for_apply
                                 .lock()
                                 .await
@@ -17231,7 +17291,7 @@ async fn run_validator() {
                             state_snap_progress.clear();
                             active_snapshot_anchor = None;
                             active_snapshot_source_peer = None;
-                            active_snapshot_source_validator = None;
+                            active_snapshot_source = None;
                             snapshot_sync_for_apply
                                 .lock()
                                 .await
@@ -17278,7 +17338,7 @@ async fn run_validator() {
                             state_snap_progress.clear();
                             active_snapshot_anchor = None;
                             active_snapshot_source_peer = None;
-                            active_snapshot_source_validator = None;
+                            active_snapshot_source = None;
                             snapshot_sync_for_apply
                                 .lock()
                                 .await
@@ -17527,7 +17587,7 @@ async fn run_validator() {
                         cleanup_snapshot_staging(&mut active_snapshot_staging);
                         active_snapshot_anchor = None;
                         active_snapshot_source_peer = None;
-                        active_snapshot_source_validator = None;
+                        active_snapshot_source = None;
                         state_snap_progress.clear();
                         verified_checkpoint_anchors.clear();
                         snapshot_sync_for_apply
@@ -23509,7 +23569,7 @@ mod tests {
     }
 
     #[test]
-    fn verify_checkpoint_anchor_accepts_checkpoint_root_distinct_from_header_root() {
+    fn verify_checkpoint_anchor_rejects_checkpoint_root_distinct_from_header_root() {
         let validator_kp = Keypair::generate();
         let validator_pk = validator_kp.pubkey();
 
@@ -23555,7 +23615,7 @@ mod tests {
             timestamp: 1_000,
         }];
 
-        assert!(verify_checkpoint_anchor(
+        let err = verify_checkpoint_anchor(
             CheckpointAnchor {
                 slot: 1,
                 state_root: [0xAB; 32],
@@ -23567,7 +23627,8 @@ mod tests {
             &validator_set,
             &stake_pool,
         )
-        .is_ok());
+        .expect_err("checkpoint metadata root must match signed header root");
+        assert!(err.contains("checkpoint state root mismatch"));
     }
 
     #[test]
@@ -23837,15 +23898,24 @@ mod tests {
         let anchor_b = anchor(42, root_b, manifest_b.clone());
         let anchors = HashMap::from([
             (
-                VerifiedCheckpointAnchorKey::new(Pubkey([1u8; 32]), &anchor_a1),
+                VerifiedCheckpointAnchorKey::new(
+                    VerifiedCheckpointSource::Validator(Pubkey([1u8; 32])),
+                    &anchor_a1,
+                ),
                 anchor_a1,
             ),
             (
-                VerifiedCheckpointAnchorKey::new(Pubkey([2u8; 32]), &anchor_a2),
+                VerifiedCheckpointAnchorKey::new(
+                    VerifiedCheckpointSource::Validator(Pubkey([2u8; 32])),
+                    &anchor_a2,
+                ),
                 anchor_a2,
             ),
             (
-                VerifiedCheckpointAnchorKey::new(Pubkey([3u8; 32]), &anchor_b),
+                VerifiedCheckpointAnchorKey::new(
+                    VerifiedCheckpointSource::Validator(Pubkey([3u8; 32])),
+                    &anchor_b,
+                ),
                 anchor_b,
             ),
         ]);
@@ -23874,6 +23944,65 @@ mod tests {
     }
 
     #[test]
+    fn checkpoint_anchor_support_counts_authenticated_node_sources() {
+        let root = [9u8; 32];
+        let manifest = vec![SnapshotCategoryDigest {
+            category: "accounts".to_string(),
+            entry_count: 1,
+            sha256: [3u8; 32],
+        }];
+        let manifest_root = snapshot_manifest_root(&manifest);
+        let make_anchor = || VerifiedCheckpointAnchor {
+            slot: 3213000,
+            state_root: root,
+            snapshot_manifest: manifest.clone(),
+            snapshot_manifest_root: manifest_root,
+            block: Block::new_with_timestamp(
+                3213000,
+                Hash::default(),
+                Hash(root),
+                [7u8; 32],
+                Vec::new(),
+                3213000,
+            ),
+        };
+
+        let validator_anchor = make_anchor();
+        let node_anchor = make_anchor();
+        let anchors = HashMap::from([
+            (
+                VerifiedCheckpointAnchorKey::new(
+                    VerifiedCheckpointSource::Validator(Pubkey([1u8; 32])),
+                    &validator_anchor,
+                ),
+                validator_anchor,
+            ),
+            (
+                VerifiedCheckpointAnchorKey::new(
+                    VerifiedCheckpointSource::Node([2u8; 32]),
+                    &node_anchor,
+                ),
+                node_anchor,
+            ),
+        ]);
+
+        assert_eq!(checkpoint_anchor_support(&anchors, 3213000, root), 2);
+        assert_eq!(
+            checkpoint_anchor_manifest_support(&anchors, 3213000, root, manifest_root),
+            2
+        );
+        assert_eq!(
+            checkpoint_source_identity(Some(Pubkey([3u8; 32])), Some([4u8; 32])),
+            Some(VerifiedCheckpointSource::Validator(Pubkey([3u8; 32])))
+        );
+        assert_eq!(
+            checkpoint_source_identity(None, Some([4u8; 32])),
+            Some(VerifiedCheckpointSource::Node([4u8; 32]))
+        );
+        assert_eq!(checkpoint_source_identity(None, None), None);
+    }
+
+    #[test]
     fn checkpoint_anchor_support_finds_common_older_checkpoint() {
         let manifest = vec![SnapshotCategoryDigest {
             category: "accounts".to_string(),
@@ -23899,8 +24028,8 @@ mod tests {
             ),
         };
 
-        let v1 = Pubkey([1u8; 32]);
-        let v2 = Pubkey([2u8; 32]);
+        let v1 = VerifiedCheckpointSource::Validator(Pubkey([1u8; 32]));
+        let v2 = VerifiedCheckpointSource::Validator(Pubkey([2u8; 32]));
         let a_latest = make_anchor(101, root_newer_a);
         let a_common = make_anchor(100, root_common);
         let b_latest = make_anchor(102, root_newer_b);
