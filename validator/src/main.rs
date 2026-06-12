@@ -1466,6 +1466,58 @@ fn needs_pre_consensus_tip_catch_up(current_slot: u64, network_slot: u64) -> boo
     network_slot > current_slot.saturating_add(1)
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct PreConsensusBftDrainCounts {
+    proposals: usize,
+    prevotes: usize,
+    precommits: usize,
+}
+
+impl PreConsensusBftDrainCounts {
+    fn total(self) -> usize {
+        self.proposals + self.prevotes + self.precommits
+    }
+}
+
+fn drain_pending_receiver_messages<T>(rx: &mut mpsc::Receiver<T>) -> usize {
+    let mut drained = 0usize;
+    while rx.try_recv().is_ok() {
+        drained += 1;
+    }
+    drained
+}
+
+fn drain_pre_consensus_bft_queues(
+    proposal_rx: &mut mpsc::Receiver<Proposal>,
+    prevote_rx: &mut mpsc::Receiver<Prevote>,
+    precommit_rx: &mut mpsc::Receiver<Precommit>,
+) -> PreConsensusBftDrainCounts {
+    PreConsensusBftDrainCounts {
+        proposals: drain_pending_receiver_messages(proposal_rx),
+        prevotes: drain_pending_receiver_messages(prevote_rx),
+        precommits: drain_pending_receiver_messages(precommit_rx),
+    }
+}
+
+fn drain_and_log_pre_consensus_bft_queues(
+    proposal_rx: &mut mpsc::Receiver<Proposal>,
+    prevote_rx: &mut mpsc::Receiver<Prevote>,
+    precommit_rx: &mut mpsc::Receiver<Precommit>,
+    reason: &str,
+) {
+    let counts = drain_pre_consensus_bft_queues(proposal_rx, prevote_rx, precommit_rx);
+    if counts.total() > 0 {
+        debug!(
+            "🔄 Drained {} pre-consensus BFT message(s) during {} (proposals={}, prevotes={}, precommits={})",
+            counts.total(),
+            reason,
+            counts.proposals,
+            counts.prevotes,
+            counts.precommits
+        );
+    }
+}
+
 fn should_reconsider_duplicate_block(
     block_slot: u64,
     current_slot: u64,
@@ -19138,6 +19190,12 @@ async fn run_validator() {
                     "⏳ Waiting for genesis sync from network (tip: {})",
                     state.get_last_slot().unwrap_or(0)
                 );
+                drain_and_log_pre_consensus_bft_queues(
+                    &mut proposal_rx,
+                    &mut prevote_rx,
+                    &mut precommit_rx,
+                    "genesis sync wait",
+                );
                 time::sleep(Duration::from_millis(500)).await;
                 continue;
             }
@@ -19182,6 +19240,12 @@ async fn run_validator() {
             };
             if !snapshot_ready {
                 info!("⏳ Waiting for validator/stake snapshots");
+                drain_and_log_pre_consensus_bft_queues(
+                    &mut proposal_rx,
+                    &mut prevote_rx,
+                    &mut precommit_rx,
+                    "validator/stake snapshot wait",
+                );
                 time::sleep(Duration::from_millis(500)).await;
                 continue;
             }
@@ -19205,6 +19269,12 @@ async fn run_validator() {
                 info!(
                     "⏳ Waiting for validator discovery (found {} validators)",
                     validator_count
+                );
+                drain_and_log_pre_consensus_bft_queues(
+                    &mut proposal_rx,
+                    &mut prevote_rx,
+                    &mut precommit_rx,
+                    "validator discovery wait",
                 );
                 time::sleep(Duration::from_millis(500)).await;
                 continue;
@@ -19247,6 +19317,12 @@ async fn run_validator() {
                     "⏳ Syncing to exact network tip before consensus (current: {}, network: {}, {} validators)",
                     current_slot, network_slot, validator_count
                 );
+                drain_and_log_pre_consensus_bft_queues(
+                    &mut proposal_rx,
+                    &mut prevote_rx,
+                    &mut precommit_rx,
+                    "pre-consensus tip catch-up",
+                );
                 time::sleep(Duration::from_millis(200)).await;
                 continue;
             }
@@ -19287,6 +19363,12 @@ async fn run_validator() {
                         state.get_last_slot().unwrap_or(0)
                     );
                 }
+                drain_and_log_pre_consensus_bft_queues(
+                    &mut proposal_rx,
+                    &mut prevote_rx,
+                    &mut precommit_rx,
+                    "validator registration wait",
+                );
                 tokio::time::sleep(Duration::from_secs(2)).await;
             }
 
@@ -19307,6 +19389,12 @@ async fn run_validator() {
                     info!(
                         "⏳ Registration confirmed; syncing to exact network tip before voting (current: {}, network: {})",
                         current_slot, network_slot
+                    );
+                    drain_and_log_pre_consensus_bft_queues(
+                        &mut proposal_rx,
+                        &mut prevote_rx,
+                        &mut precommit_rx,
+                        "post-registration tip catch-up",
                     );
                     time::sleep(Duration::from_millis(200)).await;
                     continue;
@@ -26649,6 +26737,81 @@ mod tests {
         assert!(needs_pre_consensus_tip_catch_up(306_992, 306_994));
         assert!(!needs_pre_consensus_tip_catch_up(306_994, 306_994));
         assert!(!needs_pre_consensus_tip_catch_up(306_995, 306_994));
+    }
+
+    #[test]
+    fn pending_receiver_drain_is_nonblocking_and_complete() {
+        let (tx, mut rx) = mpsc::channel(4);
+        tx.try_send(1u8).expect("first send");
+        tx.try_send(2u8).expect("second send");
+
+        assert_eq!(drain_pending_receiver_messages(&mut rx), 2);
+        assert_eq!(drain_pending_receiver_messages(&mut rx), 0);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn pre_consensus_wait_paths_drain_bft_queues_without_dropping_peer_observation_wait() {
+        let source = include_str!("main.rs");
+        let start = source
+            .find("// ── Pre-loop: Pre-consensus sync gate ──")
+            .expect("pre-consensus sync marker");
+        let end = source[start..]
+            .find("// ── Initialize BFT consensus engine ──")
+            .expect("BFT init marker");
+        let section = &source[start..start + end];
+
+        for (marker, sleep_marker) in [
+            (
+                "Waiting for genesis sync from network",
+                "time::sleep(Duration::from_millis(500)).await;",
+            ),
+            (
+                "Waiting for validator/stake snapshots",
+                "time::sleep(Duration::from_millis(500)).await;",
+            ),
+            (
+                "Waiting for validator discovery",
+                "time::sleep(Duration::from_millis(500)).await;",
+            ),
+            (
+                "Syncing to exact network tip before consensus",
+                "time::sleep(Duration::from_millis(200)).await;",
+            ),
+            (
+                "Still waiting for registration",
+                "tokio::time::sleep(Duration::from_secs(2)).await;",
+            ),
+            (
+                "Registration confirmed; syncing to exact network tip before voting",
+                "time::sleep(Duration::from_millis(200)).await;",
+            ),
+        ] {
+            let marker_start = section.find(marker).expect(marker);
+            let sleep_start = section[marker_start..]
+                .find(sleep_marker)
+                .map(|idx| marker_start + idx)
+                .expect(sleep_marker);
+            let wait_window = &section[marker_start..sleep_start];
+            assert!(
+                wait_window.contains("drain_and_log_pre_consensus_bft_queues("),
+                "{} must drain unusable BFT messages before sleeping",
+                marker
+            );
+        }
+
+        let peer_wait_start = section
+            .find("Waiting for peer tip observation before consensus")
+            .expect("peer tip observation wait");
+        let peer_wait_sleep = section[peer_wait_start..]
+            .find("time::sleep(Duration::from_millis(500)).await;")
+            .map(|idx| peer_wait_start + idx)
+            .expect("peer tip observation sleep");
+        let peer_wait_window = &section[peer_wait_start..peer_wait_sleep];
+        assert!(
+            !peer_wait_window.contains("drain_and_log_pre_consensus_bft_queues("),
+            "peer tip observation wait must preserve queued current/future BFT messages for startup replay"
+        );
     }
 
     #[test]
