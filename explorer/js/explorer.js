@@ -616,7 +616,7 @@ async function updateDashboardStats() {
         const burned = await rpc.getTotalBurned();
         if (burned && burned.licn !== undefined) {
             const totalBurnedEl = document.getElementById('totalBurned');
-            if (totalBurnedEl) totalBurnedEl.textContent = burned.licn.toFixed(4) + ' LICN';
+            if (totalBurnedEl) totalBurnedEl.textContent = formatLicnAmount(burned.licn);
         }
 
         // Get supply info (total supply, total minted, inflation rate)
@@ -627,7 +627,7 @@ async function updateDashboardStats() {
                 const totalSupplyEl = document.getElementById('totalSupply');
                 if (totalSupplyEl) {
                     const supplyLicn = settledSupplySpores / SPORES_PER_LICN;
-                    totalSupplyEl.textContent = formatNumber(Math.floor(supplyLicn)) + ' LICN';
+                    totalSupplyEl.textContent = formatLicnAmount(supplyLicn);
                 }
             }
             const supplyChangeEl = document.getElementById('supplyChange');
@@ -638,7 +638,7 @@ async function updateDashboardStats() {
                 const totalMintedEl = document.getElementById('totalMinted');
                 if (totalMintedEl) {
                     const mintedLicn = rewardInfo.totalMinted / SPORES_PER_LICN;
-                    totalMintedEl.textContent = mintedLicn.toFixed(4) + ' LICN';
+                    totalMintedEl.textContent = formatLicnAmount(mintedLicn);
                 }
             }
 
@@ -667,7 +667,7 @@ async function updateDashboardStats() {
                 }, 0);
                 // Convert spores to LICN (1 LICN = 1B spores)
                 const totalStakeLICN = totalStake / SPORES_PER_LICN;
-                totalStakeEl.textContent = formatNumber(Math.floor(totalStakeLICN)) + ' LICN';
+                totalStakeEl.textContent = formatLicnAmount(totalStakeLICN);
             }
         }
 
@@ -688,7 +688,7 @@ async function updateDashboardStats() {
             totalSupply: '—', totalMinted: '—',
             supplyChange: '',
             validatorCount: '0', totalStake: '—',
-            shieldedBalance: '0 LICN', shieldedBalanceSpores: '0 spores', commitmentCount: '0',
+            shieldedBalance: formatLicnAmount(0), shieldedBalanceSpores: '0 spores', commitmentCount: '0',
             nullifierCount: '0', shieldedTxCount: '0',
             shieldedTxBreakdown: 'Shield: 0 | Unshield: 0 | Transfer: 0', merkleRoot: '0x0',
             burnPctLabel: '—', slotTimeLabel: '—', slotTargetLabel: '—'
@@ -727,10 +727,7 @@ async function updateShieldedOverview() {
 
         if (shieldedBalanceEl) {
             const balance = Number(balanceLicn) || 0;
-            shieldedBalanceEl.textContent = balance.toLocaleString(undefined, {
-                minimumFractionDigits: 2,
-                maximumFractionDigits: 4,
-            }) + ' LICN';
+            shieldedBalanceEl.textContent = formatLicnAmount(balance);
         }
         if (shieldedBalanceSporesEl) shieldedBalanceSporesEl.textContent = formatNumber(totalShielded) + ' spores';
         if (commitmentCountEl) commitmentCountEl.textContent = formatNumber(commitmentCount);

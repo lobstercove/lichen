@@ -32,6 +32,8 @@ const ZK_COMPUTE_FEE = {
     transfer: 200_000,
 };
 
+const LICHEN_NUMBER_LOCALE = 'en-US';
+
 // LichenID reputation constants (matches RPC lichenid_trust_tier in rpc/src/lib.rs)
 const MAX_REPUTATION = 100_000;       // on-chain cap from contracts/lichenid MAX_REPUTATION
 const MAX_REP_PROGRESS_BAR = 10_000;  // Legendary tier threshold — progress bar caps here
@@ -202,7 +204,7 @@ function escapeJsAttr(str) {
 
 function formatNumber(num) {
     if (num === null || num === undefined || Number.isNaN(num)) return '0';
-    return Number(num).toLocaleString();
+    return Number(num).toLocaleString(LICHEN_NUMBER_LOCALE);
 }
 
 function normalizeHashValue(value) {
@@ -248,7 +250,7 @@ function normalizeTxType(type) {
 
 function formatLicn(spores) {
     const licn = spores / SPORES_PER_LICN;
-    return licn.toLocaleString(undefined, {
+    return licn.toLocaleString(LICHEN_NUMBER_LOCALE, {
         minimumFractionDigits: 2,
         maximumFractionDigits: 9,
     }) + ' LICN';
@@ -260,10 +262,18 @@ function formatLicn(spores) {
  */
 function formatLicnExact(licn) {
     if (licn === null || licn === undefined || Number.isNaN(Number(licn))) return '0';
-    return Number(licn).toLocaleString(undefined, {
+    return Number(licn).toLocaleString(LICHEN_NUMBER_LOCALE, {
         minimumFractionDigits: 2,
         maximumFractionDigits: 9,
     });
+}
+
+function formatLicnAmount(licn) {
+    if (licn === null || licn === undefined || Number.isNaN(Number(licn))) return '0 LICN';
+    return Number(licn).toLocaleString(LICHEN_NUMBER_LOCALE, {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 4,
+    }) + ' LICN';
 }
 
 function formatTime(timestamp) {
@@ -1075,10 +1085,11 @@ if (typeof module !== 'undefined' && module.exports) {
         SPORES_PER_LICN, MS_PER_SLOT, SLOTS_PER_EPOCH, SLOTS_PER_YEAR,
         SLOTS_PER_DAY, BASE_FEE_SPORES, BASE_FEE_LICN, FEE_SPLIT,
         ZK_COMPUTE_FEE, MAX_REPUTATION, MAX_REP_PROGRESS_BAR,
+        LICHEN_NUMBER_LOCALE,
         TRUST_TIER_THRESHOLDS, ACHIEVEMENT_DEFS,
         getTrustTier, getTrustTierNumber,
         escapeHtml, escapeJsAttr, formatNumber, formatHash, formatAddress, normalizeTxType,
-        formatLicnExact,
+        formatLicnExact, formatLicnAmount,
         formatLicn, formatTime, timeAgo,
         formatBytes, formatSlot, formatTimeFull, formatTimeShort, formatSpores,
         updatePagination,

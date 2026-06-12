@@ -108,6 +108,9 @@ async function loadContracts() {
             var registryMetadata = (reg && reg.metadata && typeof reg.metadata === 'object') ? reg.metadata : {};
             var signedMetadata = (signed && signed.metadata && typeof signed.metadata === 'object') ? signed.metadata : {};
             var programMetadata = (prog && prog.metadata && typeof prog.metadata === 'object') ? prog.metadata : {};
+            var tokenMetadata = (prog && prog.token_metadata && typeof prog.token_metadata === 'object')
+                ? prog.token_metadata
+                : ((prog && prog.tokenMetadata && typeof prog.tokenMetadata === 'object') ? prog.tokenMetadata : {});
 
             var template = (reg && reg.template)
                 || (signed && signed.template)
@@ -122,6 +125,8 @@ async function loadContracts() {
                 || prog.name
                 || registryMetadata.name
                 || signedMetadata.name
+                || tokenMetadata.token_name
+                || tokenMetadata.name
                 || programMetadata.name
                 || '';
             var symbol = (reg && reg.symbol)
@@ -129,6 +134,8 @@ async function loadContracts() {
                 || prog.symbol
                 || registryMetadata.symbol
                 || signedMetadata.symbol
+                || tokenMetadata.token_symbol
+                || tokenMetadata.symbol
                 || programMetadata.symbol
                 || '';
             var displayName = name || symbol || formatHash(pid);
