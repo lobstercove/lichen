@@ -356,6 +356,24 @@ mod tests {
     }
 
     #[test]
+    fn test_mempool_rejects_empty_instruction_accounts_before_sender_lookup() {
+        let mut mempool = Mempool::new(100, 300);
+        let tx = Transaction::new(Message::new(
+            vec![Instruction {
+                program_id: Pubkey([1u8; 32]),
+                accounts: Vec::new(),
+                data: vec![1],
+            }],
+            Hash::default(),
+        ));
+
+        let result = mempool.add_transaction(tx, 1000, 0);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("has no accounts"));
+        assert_eq!(mempool.size(), 0);
+    }
+
+    #[test]
     fn test_mempool_priority() {
         let mut mempool = Mempool::new(100, 300);
 

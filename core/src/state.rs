@@ -3836,6 +3836,29 @@ mod tests {
 
     #[cfg(feature = "zk")]
     #[test]
+    fn test_sparse_rebuild_activation_preserves_shielded_schema() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+
+        state.activate_shielded_state_commitment().unwrap();
+        assert!(state.uses_shielded_state_commitment());
+
+        let expected_root = state.compute_state_root_cold_start();
+        let report = state.rebuild_sparse_state_commitment(true).unwrap();
+
+        assert_eq!(
+            StateStore::state_commitment_schema_label(report.after_schema),
+            "sparse_shielded_v2"
+        );
+        assert!(state.uses_shielded_state_commitment());
+        assert_eq!(
+            report.current_state_root, expected_root,
+            "explicit sparse activation must not downgrade shielded state commitments"
+        );
+    }
+
+    #[cfg(feature = "zk")]
+    #[test]
     fn test_rebuild_shielded_state_from_canonical_blocks() {
         use crate::transaction::{Instruction, Message, Transaction};
 

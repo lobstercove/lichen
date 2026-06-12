@@ -1222,7 +1222,13 @@ impl StateStore {
             .put_cf(&cf_stats, SPARSE_DIRTY_MARKERS_ATOMIC_KEY, b"1")
             .map_err(|e| format!("Failed to mark sparse dirty markers atomic: {e}"))?;
         if activate {
-            self.set_state_commitment_schema(STATE_COMMITMENT_SCHEMA_SPARSE_V1)?;
+            let target_schema = match before_schema {
+                STATE_COMMITMENT_SCHEMA_SPARSE_SHIELDED_V2 => {
+                    STATE_COMMITMENT_SCHEMA_SPARSE_SHIELDED_V2
+                }
+                _ => STATE_COMMITMENT_SCHEMA_SPARSE_V1,
+            };
+            self.set_state_commitment_schema(target_schema)?;
         }
         let last_slot = self.get_last_slot().unwrap_or(0);
         let latest_block_state_root = self

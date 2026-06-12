@@ -221,7 +221,6 @@ fn expensive_request_label(msg_type: &MessageType) -> Option<&'static str> {
     match msg_type {
         MessageType::StatusRequest => Some("status request"),
         MessageType::SnapshotRequest { .. } => Some("snapshot request"),
-        MessageType::StateSnapshotRequest { .. } => Some("state snapshot request"),
         MessageType::CheckpointMetaRequest => Some("checkpoint meta request"),
         MessageType::FindNode { .. } => Some("FindNode request"),
         _ => None,
@@ -1695,7 +1694,7 @@ mod tests {
     }
 
     #[test]
-    fn test_expensive_request_classification_includes_checkpoint_meta() {
+    fn test_expensive_request_classification_excludes_state_snapshot_chunks() {
         assert_eq!(
             expensive_request_label(&MessageType::CheckpointMetaRequest),
             Some("checkpoint meta request")
@@ -1713,7 +1712,7 @@ mod tests {
                 chunk_index: 0,
                 chunk_size: 2000,
             }),
-            Some("state snapshot request")
+            None
         );
         assert_eq!(expensive_request_label(&MessageType::Ping), None);
     }

@@ -5,6 +5,18 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.151] - 2026-06-12
+
+### Fixed
+- Exempts anchored state snapshot chunk requests from the generic expensive-request throttle while keeping P2P admission validation and the validator snapshot serve token bucket, so clean joiners can download full checkpoint snapshots without being penalized as abusive peers.
+- Publishes a shared snapshot entries payload limit below the outer P2P message limit and aligns encrypted transport reads with the secure frame limit, preventing valid nested snapshot payloads from being accepted by the snapshot codec and rejected by the P2P envelope or transport receiver.
+- Verifies commit certificates and BFT timestamp medians with `StakeInfo::total_stake()` so replay, checkpoint, sync, and live consensus use the same delegated stake weight.
+- Rejects instructions with no accounts during transaction structure validation, ensuring mempool sender indexing cannot panic after accepting a structurally malformed transaction.
+- Updates mainnet deployment runbooks and sync test names/comments to reflect the four-validator `v0.5.151` target with `v0.5.150` retained as rollback and the current always-full-validate sync behavior.
+
+### Verified
+- Local unit coverage passed for full core, full P2P, full validator, RPC library, and genesis suites before local validator rehearsal.
+
 ## [0.5.135] - 2026-06-09
 
 ### Fixed

@@ -378,6 +378,9 @@ impl Transaction {
                     data_limit
                 ));
             }
+            if ix.accounts.is_empty() {
+                return Err(format!("Instruction {} has no accounts", i));
+            }
             if ix.accounts.len() > MAX_ACCOUNTS_PER_IX {
                 return Err(format!(
                     "Instruction {} has too many accounts: {} (max {})",
@@ -513,6 +516,20 @@ mod tests {
         let msg = Message::new(vec![ix], Hash::default());
         let tx = Transaction::new(msg);
         assert!(tx.validate_structure().is_err());
+    }
+
+    #[test]
+    fn test_validate_structure_rejects_instruction_without_accounts() {
+        let ix = Instruction {
+            program_id: Pubkey([1u8; 32]),
+            accounts: Vec::new(),
+            data: vec![0],
+        };
+        let tx = Transaction::new(Message::new(vec![ix], Hash::default()));
+
+        let result = tx.validate_structure();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("has no accounts"));
     }
 
     #[test]

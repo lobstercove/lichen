@@ -396,7 +396,14 @@ pub struct PeerInfoMsg {
 /// Minimum payload size to trigger LZ4 compression (1 KB).
 /// Messages smaller than this are sent uncompressed to avoid overhead.
 const COMPRESSION_THRESHOLD: usize = 1024;
-const P2P_MESSAGE_CODEC_LIMIT_BYTES: u64 = 16 * 1024 * 1024;
+pub const P2P_MESSAGE_CODEC_LIMIT_BYTES: u64 = 16 * 1024 * 1024;
+/// Maximum serialized snapshot entries payload carried inside StateSnapshotResponse.
+///
+/// State snapshot entries are themselves a bincode payload nested inside a full
+/// P2PMessage. Keep explicit envelope headroom so a payload accepted by the
+/// snapshot codec cannot be rejected later by the outer P2P message limit.
+pub const STATE_SNAPSHOT_ENTRIES_CODEC_LIMIT_BYTES: u64 =
+    P2P_MESSAGE_CODEC_LIMIT_BYTES - (256 * 1024);
 
 fn decode_p2p_message_payload(payload: &[u8]) -> Result<P2PMessage, String> {
     let msg: P2PMessage =
@@ -697,6 +704,45 @@ mod tests {
         let result = P2PMessage::deserialize(&data);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("exceeds 16 MB"));
+    }
+
+    #[test]
+    fn test_state_snapshot_entries_limit_fits_outer_message_envelope() {
+        let addr = "127.0.0.1:8000".parse().unwrap();
+        let msg = P2PMessage::new(
+            MessageType::StateSnapshotResponse {
+                category: "accounts".to_string(),
+                chunk_index: 0,
+                total_chunks: 1,
+                snapshot_slot: 100,
+                state_root: [7u8; 32],
+                entries: vec![0u8; STATE_SNAPSHOT_ENTRIES_CODEC_LIMIT_BYTES as usize],
+            },
+            addr,
+        );
+
+        serialize_legacy_bincode_limited(&msg, P2P_MESSAGE_CODEC_LIMIT_BYTES, "P2P message")
+            .expect("max snapshot entries payload must fit inside the outer P2P envelope");
+    }
+
+    #[test]
+    fn test_full_message_limit_is_not_valid_snapshot_entries_limit() {
+        let addr = "127.0.0.1:8000".parse().unwrap();
+        let msg = P2PMessage::new(
+            MessageType::StateSnapshotResponse {
+                category: "accounts".to_string(),
+                chunk_index: 0,
+                total_chunks: 1,
+                snapshot_slot: 100,
+                state_root: [7u8; 32],
+                entries: vec![0u8; P2P_MESSAGE_CODEC_LIMIT_BYTES as usize],
+            },
+            addr,
+        );
+
+        let result =
+            serialize_legacy_bincode_limited(&msg, P2P_MESSAGE_CODEC_LIMIT_BYTES, "P2P message");
+        assert!(result.is_err());
     }
 
     // ----------------------------------------------------------------

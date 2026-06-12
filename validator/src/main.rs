@@ -67,6 +67,7 @@ use lichen_p2p::{
     validator_announcement_signing_message, CheckpointMetaAnchor, ConsistencyReportMsg,
     MessageType, NodeRole, P2PConfig, P2PMessage, P2PNetwork, SnapshotCategoryDigest, SnapshotKind,
     SnapshotRequestMsg, SnapshotResponseMsg, StatusRequestMsg, StatusResponseMsg,
+    STATE_SNAPSHOT_ENTRIES_CODEC_LIMIT_BYTES,
 };
 use lichen_rpc::start_rpc_server;
 use semver::Version;
@@ -481,7 +482,6 @@ const BLOCK_RANGE_SERVE_REFILL_BLOCKS_PER_SEC: u64 = 1000;
 const SNAPSHOT_SERVE_BURST_UNITS: u64 = 32;
 const SNAPSHOT_SERVE_REFILL_UNITS_PER_SEC: u64 = 8;
 const MAX_SNAPSHOT_CHUNK_SIZE: u64 = 2000;
-const SNAPSHOT_ENTRIES_CODEC_LIMIT_BYTES: u64 = 16 * 1024 * 1024;
 const SNAPSHOT_PROGRESS_RETRY_SECS: u64 = 15;
 const FRESH_JOIN_BOOTSTRAP_REPLAY_SLOTS: u64 = sync::P2P_BLOCK_RANGE_LIMIT;
 
@@ -9620,40 +9620,41 @@ fn export_roundtrip_snapshot_entries(
 }
 
 fn print_roundtrip_root_components(label: &str, state: &StateStore) {
+    let report = state.state_root_component_report();
+    println!("{}_root={}", label, report.root.to_hex());
     println!(
-        "{}_root={}",
+        "{}_state_commitment_schema={}",
         label,
-        state.compute_state_root_cold_start().to_hex()
+        StateStore::state_commitment_schema_label(report.commitment_schema)
     );
-    println!(
-        "{}_accounts_root={}",
-        label,
-        state.compute_accounts_root().to_hex()
-    );
-    println!(
-        "{}_contracts_root={}",
-        label,
-        state.compute_contract_storage_root().to_hex()
-    );
+    println!("{}_state_root_prefix=0x{:02x}", label, report.prefix);
+    println!("{}_accounts_root={}", label, report.accounts_root.to_hex());
+    println!("{}_contracts_root={}", label, report.contract_root.to_hex());
     println!(
         "{}_stake_pool_hash={}",
         label,
-        state.compute_stake_pool_hash().to_hex()
+        report.stake_pool_hash.to_hex()
     );
     println!(
         "{}_mossstake_pool_hash={}",
         label,
-        state.compute_mossstake_pool_hash().to_hex()
+        report.mossstake_pool_hash.to_hex()
     );
     println!(
         "{}_restrictions_root={}",
         label,
-        state.compute_restrictions_root().to_hex()
+        report
+            .restrictions_root
+            .map(|root| root.to_hex())
+            .unwrap_or_else(|| "disabled".to_string())
     );
     println!(
         "{}_shielded_root={}",
         label,
-        state.compute_shielded_state_root().to_hex()
+        report
+            .shielded_root
+            .map(|root| root.to_hex())
+            .unwrap_or_else(|| "disabled".to_string())
     );
 }
 
@@ -9977,7 +9978,7 @@ fn maybe_run_shielded_state_bundle_admin(args: &[String]) -> Option<i32> {
             let counts = shielded_state_bundle_counts(&bundle);
             let bytes = match serialize_legacy_bincode_limited(
                 &bundle,
-                SNAPSHOT_ENTRIES_CODEC_LIMIT_BYTES,
+                STATE_SNAPSHOT_ENTRIES_CODEC_LIMIT_BYTES,
                 "shielded state bundle",
             ) {
                 Ok(bytes) => bytes,
@@ -10015,7 +10016,7 @@ fn maybe_run_shielded_state_bundle_admin(args: &[String]) -> Option<i32> {
             };
             let bundle = match deserialize_legacy_bincode_strict::<ShieldedStateBundle>(
                 &bytes,
-                SNAPSHOT_ENTRIES_CODEC_LIMIT_BYTES,
+                STATE_SNAPSHOT_ENTRIES_CODEC_LIMIT_BYTES,
                 "shielded state bundle",
             ) {
                 Ok(bundle) => bundle,
@@ -14415,8 +14416,8 @@ async fn run_validator() {
                             }
                         }
 
-                        // Valid next block in chain - replay transactions then store
-                        // P1-1: Skip TX replay in header-only sync for far-away blocks.
+                        // Valid next block in chain - replay transactions then store.
+                        // Sync now validates every accepted block regardless of distance from tip.
                         let did_full_validate = sync_mgr.should_full_validate(block_slot).await;
                         if did_full_validate {
                             if let Err(err) = validate_then_replay_block_transactions(
@@ -16160,7 +16161,7 @@ async fn run_validator() {
                             if let Some(chunk) = singleton_chunk {
                                 let entries_bytes = match serialize_legacy_bincode_limited(
                                     &chunk,
-                                    SNAPSHOT_ENTRIES_CODEC_LIMIT_BYTES,
+                                    STATE_SNAPSHOT_ENTRIES_CODEC_LIMIT_BYTES,
                                     "state snapshot entries",
                                 ) {
                                     Ok(bytes) => bytes,
@@ -16292,7 +16293,7 @@ async fn run_validator() {
 
                             let entries_bytes = match serialize_legacy_bincode_limited(
                                 &chunk,
-                                SNAPSHOT_ENTRIES_CODEC_LIMIT_BYTES,
+                                STATE_SNAPSHOT_ENTRIES_CODEC_LIMIT_BYTES,
                                 "state snapshot entries",
                             ) {
                                 Ok(bytes) => bytes,
@@ -17028,7 +17029,7 @@ async fn run_validator() {
                     // Deserialize and stream entries into staging (NOT live DB).
                     let entries = match deserialize_legacy_bincode_strict::<Vec<(Vec<u8>, Vec<u8>)>>(
                         entries_bytes,
-                        SNAPSHOT_ENTRIES_CODEC_LIMIT_BYTES,
+                        STATE_SNAPSHOT_ENTRIES_CODEC_LIMIT_BYTES,
                         "state snapshot entries",
                     ) {
                         Ok(entries) => entries,
@@ -22938,6 +22939,77 @@ mod tests {
             expected_overlay_root,
             "snapshot receiver must rebuild sparse nodes before replay/proposal overlays"
         );
+    }
+
+    #[test]
+    fn snapshot_import_rebuild_preserves_shielded_commitment_schema() {
+        let source_dir = tempfile::tempdir().expect("source temp dir");
+        let target_dir = tempfile::tempdir().expect("target temp dir");
+        let source = StateStore::open(source_dir.path()).expect("open source");
+        let target = StateStore::open(target_dir.path()).expect("open target");
+
+        let owner = Pubkey([7u8; 32]);
+        let program = Pubkey([8u8; 32]);
+        source
+            .put_account(&owner, &Account::new(42, owner))
+            .expect("put account");
+        source
+            .put_contract_storage(&program, b"key", b"value")
+            .expect("put contract storage");
+
+        let mut pool = lichen_core::zk::ShieldedPoolState::new();
+        pool.commitment_count = 1;
+        pool.nullifier_count = 1;
+        pool.total_shielded = 42_000_000;
+        pool.merkle_root = [0xAAu8; 32];
+        source
+            .put_shielded_pool_state(&pool)
+            .expect("put shielded pool");
+        source
+            .insert_shielded_commitment(0, &[0xBBu8; 32])
+            .expect("insert shielded commitment");
+        source
+            .insert_shielded_note_payload(0, b"note")
+            .expect("insert shielded note");
+        source
+            .mark_nullifier_spent(&[0xCCu8; 32])
+            .expect("mark nullifier spent");
+        source
+            .activate_shielded_state_commitment()
+            .expect("activate shielded commitment schema");
+        assert!(source.uses_shielded_state_commitment());
+        let expected_root = source.compute_state_root_cold_start();
+
+        for category in STATE_SNAPSHOT_CATEGORIES {
+            target
+                .import_snapshot_category(category, &export_test_category(&source, category))
+                .unwrap_or_else(|err| panic!("import {category} snapshot category: {err}"));
+        }
+        target
+            .reconcile_account_count()
+            .expect("reconcile accounts");
+        target
+            .reconcile_active_account_count()
+            .expect("reconcile active accounts");
+        target
+            .reconcile_program_count()
+            .expect("reconcile programs");
+        target.invalidate_merkle_cache();
+
+        assert!(
+            target.uses_shielded_state_commitment(),
+            "stats snapshot category must preserve the sparse_shielded_v2 schema marker"
+        );
+        let report = target
+            .rebuild_sparse_state_commitment(false)
+            .expect("rebuild target sparse shielded commitment");
+        assert_eq!(
+            StateStore::state_commitment_schema_label(report.after_schema),
+            "sparse_shielded_v2"
+        );
+        assert!(target.uses_shielded_state_commitment());
+        assert_eq!(report.current_state_root, expected_root);
+        assert_eq!(target.compute_state_root_cold_start(), expected_root);
     }
 
     #[test]

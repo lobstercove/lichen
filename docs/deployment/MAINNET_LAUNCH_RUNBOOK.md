@@ -4,10 +4,10 @@ This is the operator runbook for launching Lichen mainnet and then enabling
 mainnet custody. It is intentionally step-by-step and gate-based. Do not skip a
 gate because mainnet genesis and custody routes handle real value.
 
-Written for the 2026-05-31 launch package. At the time of writing, the verified
-release candidate is `v0.5.74`. If a newer release is used, replace every
-example tag with the newer signed release tag after CI and release verification
-pass.
+Written for the current mainnet package. At the time of writing, the release
+target is `v0.5.151` and the signed rollback point is `v0.5.150`. If a newer
+release is used, replace every example tag with the newer signed release tag
+after CI and release verification pass.
 
 ## Operating Rules
 
@@ -190,7 +190,7 @@ credentials, or keypair passwords.
 Use the signed release that passed CI. For the current package:
 
 ```bash
-export LICHEN_RELEASE_TAG=v0.5.74
+export LICHEN_RELEASE_TAG=v0.5.151
 export LICHEN_MAINNET_VPS_HOSTS="15.204.229.189 37.59.97.61 15.235.142.253 148.113.43.247"
 ```
 

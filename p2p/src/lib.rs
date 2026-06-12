@@ -15,7 +15,7 @@ pub use gossip::GossipManager;
 pub use message::{
     short_tx_id, validator_announcement_signing_message, CheckpointMetaAnchor, CompactBlock,
     MessageType, P2PMessage, PeerInfoMsg, ShortTxId, SnapshotCategoryDigest, SnapshotKind,
-    P2P_PROTOCOL_VERSION,
+    P2P_PROTOCOL_VERSION, STATE_SNAPSHOT_ENTRIES_CODEC_LIMIT_BYTES,
 };
 pub use network::{
     BlockRangeRequestMsg, CompactBlockMsg, ConsensusActivityMsg, ConsistencyReportMsg,

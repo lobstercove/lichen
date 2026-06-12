@@ -331,7 +331,10 @@ impl Block {
                 continue;
             }
             let pubkey = vi.pubkey;
-            let stake = stake_pool.get_stake(&pubkey).map(|s| s.amount).unwrap_or(0);
+            let stake = stake_pool
+                .get_stake(&pubkey)
+                .map(|s| s.total_stake())
+                .unwrap_or(0);
             total_stake += stake as u128;
         }
 
@@ -373,7 +376,10 @@ impl Block {
                 continue;
             }
 
-            let stake = stake_pool.get_stake(&pubkey).map(|s| s.amount).unwrap_or(0);
+            let stake = stake_pool
+                .get_stake(&pubkey)
+                .map(|s| s.total_stake())
+                .unwrap_or(0);
             committed_stake += stake as u128;
         }
 
@@ -424,7 +430,10 @@ pub fn compute_bft_timestamp(
         })
         .map(|cs| {
             let pubkey = crate::Pubkey(cs.validator);
-            let stake = stake_pool.get_stake(&pubkey).map(|s| s.amount).unwrap_or(0);
+            let stake = stake_pool
+                .get_stake(&pubkey)
+                .map(|s| s.total_stake())
+                .unwrap_or(0);
             (cs.timestamp, stake)
         })
         .filter(|(_, stake)| *stake > 0)
@@ -1240,6 +1249,73 @@ mod tests {
     }
 
     #[test]
+    fn test_verify_commit_uses_delegated_total_stake() {
+        use crate::consensus::{StakePool, ValidatorInfo, ValidatorSet, MIN_VALIDATOR_STAKE};
+
+        let kp1 = crate::Keypair::generate();
+        let kp2 = crate::Keypair::generate();
+        let kp3 = crate::Keypair::generate();
+
+        let mut vs = ValidatorSet::new();
+        for kp in [&kp1, &kp2, &kp3] {
+            let mut vi = ValidatorInfo::new(kp.pubkey(), 0);
+            vi.stake = MIN_VALIDATOR_STAKE;
+            vs.add_validator(vi);
+        }
+
+        let mut sp = StakePool::new();
+        sp.stake(kp1.pubkey(), MIN_VALIDATOR_STAKE, 0).unwrap();
+        sp.stake(kp2.pubkey(), MIN_VALIDATOR_STAKE, 0).unwrap();
+        sp.stake(kp3.pubkey(), MIN_VALIDATOR_STAKE * 2, 0).unwrap();
+        sp.delegate(
+            crate::Pubkey([101u8; 32]),
+            &kp1.pubkey(),
+            MIN_VALIDATOR_STAKE,
+        )
+        .unwrap();
+        sp.delegate(
+            crate::Pubkey([102u8; 32]),
+            &kp2.pubkey(),
+            MIN_VALIDATOR_STAKE,
+        )
+        .unwrap();
+
+        let mut block = Block::new_with_timestamp(
+            5,
+            Hash::default(),
+            Hash::hash(b"state"),
+            kp1.pubkey().0,
+            Vec::new(),
+            2000,
+        );
+        block.sign(&kp1);
+
+        let block_hash = block.hash();
+        let round = 0u32;
+        block.commit_round = round;
+        let ts = 2000u64;
+        let signable = crate::consensus::Precommit::signable_bytes(5, round, &Some(block_hash), ts);
+
+        block.commit_signatures = vec![
+            CommitSignature {
+                validator: kp1.pubkey().0,
+                signature: kp1.sign(&signable),
+                timestamp: ts,
+            },
+            CommitSignature {
+                validator: kp2.pubkey().0,
+                signature: kp2.sign(&signable),
+                timestamp: ts,
+            },
+        ];
+
+        assert!(
+            block.verify_commit(&vs, &sp).is_ok(),
+            "commit verification must use the same delegated total stake as live consensus"
+        );
+    }
+
+    #[test]
     fn test_verify_commit_insufficient_stake_fails() {
         use crate::consensus::{StakePool, ValidatorInfo, ValidatorSet};
 
@@ -1564,6 +1640,62 @@ mod tests {
         // Cumulative at 1000: 600K/1000K = 60% > 50% → median = 1000
         let result = compute_bft_timestamp(&sigs, &vs, &sp, None);
         assert_eq!(result, Some(1000));
+    }
+
+    #[test]
+    fn test_bft_timestamp_uses_delegated_total_stake() {
+        use crate::consensus::{StakePool, ValidatorInfo, ValidatorSet, MIN_VALIDATOR_STAKE};
+
+        let mut vs = ValidatorSet::new();
+        let mut sp = StakePool::new();
+        let validators = [
+            crate::Pubkey([1u8; 32]),
+            crate::Pubkey([2u8; 32]),
+            crate::Pubkey([3u8; 32]),
+        ];
+
+        for pk in validators {
+            let mut vi = ValidatorInfo::new(pk, 0);
+            vi.stake = MIN_VALIDATOR_STAKE;
+            vs.add_validator(vi);
+        }
+
+        sp.stake(validators[0], MIN_VALIDATOR_STAKE, 0).unwrap();
+        sp.stake(validators[1], MIN_VALIDATOR_STAKE, 0).unwrap();
+        sp.stake(validators[2], MIN_VALIDATOR_STAKE * 2, 0).unwrap();
+        sp.delegate(
+            crate::Pubkey([111u8; 32]),
+            &validators[0],
+            MIN_VALIDATOR_STAKE,
+        )
+        .unwrap();
+        sp.delegate(
+            crate::Pubkey([112u8; 32]),
+            &validators[1],
+            MIN_VALIDATOR_STAKE,
+        )
+        .unwrap();
+
+        let sigs = vec![
+            CommitSignature {
+                validator: validators[0].0,
+                signature: test_signature(0),
+                timestamp: 1000,
+            },
+            CommitSignature {
+                validator: validators[1].0,
+                signature: test_signature(0),
+                timestamp: 1002,
+            },
+            CommitSignature {
+                validator: validators[2].0,
+                signature: test_signature(0),
+                timestamp: 1004,
+            },
+        ];
+
+        let result = compute_bft_timestamp(&sigs, &vs, &sp, None);
+        assert_eq!(result, Some(1002));
     }
 
     #[test]

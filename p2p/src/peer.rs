@@ -1447,8 +1447,9 @@ async fn handle_connection(
         stream_count += 1;
 
         let encrypted_bytes = stream
-            .read_to_end(16 * 1024 * 1024) // AUDIT-FIX H3: Align with P2PMessage serialize limit (16MB).
-            // Previous 2MB limit silently rejected valid state snapshot chunks.
+            // Read the encrypted transport frame, not the decrypted P2P message.
+            // The frame includes nonce, AEAD tag, ciphertext, and bincode Vec framing.
+            .read_to_end(TRANSPORT_FRAME_LIMIT_BYTES)
             .await
             .map_err(|e| {
                 format!(
@@ -2592,6 +2593,17 @@ mod tests {
         let ciphertext = session.encrypt(plaintext).unwrap();
         let decrypted = session.decrypt(&ciphertext).unwrap();
         assert_eq!(decrypted, plaintext);
+    }
+
+    #[test]
+    fn test_secure_session_frame_limit_covers_max_p2p_payload() {
+        let session = SecureSession { key: [7u8; 32] };
+        let plaintext = vec![42u8; crate::message::P2P_MESSAGE_CODEC_LIMIT_BYTES as usize];
+        let ciphertext = session.encrypt(&plaintext).unwrap();
+
+        assert!(ciphertext.len() > crate::message::P2P_MESSAGE_CODEC_LIMIT_BYTES as usize);
+        assert!(ciphertext.len() <= TRANSPORT_FRAME_LIMIT_BYTES);
+        assert_eq!(session.decrypt(&ciphertext).unwrap(), plaintext);
     }
 
     #[test]

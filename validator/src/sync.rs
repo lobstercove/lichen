@@ -1450,7 +1450,7 @@ mod tests {
 
     /// P3-1: Warp mode also always validates (simplified implementation)
     #[tokio::test]
-    async fn test_warp_mode_skips_full_validate() {
+    async fn test_warp_mode_always_full_validates() {
         let sm = SyncManager::new();
         sm.set_sync_mode(SyncMode::Warp).await;
         sm.note_seen(20000).await;
