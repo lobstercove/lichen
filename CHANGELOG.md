@@ -5,6 +5,15 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.152] - 2026-06-12
+
+### Fixed
+- Drains stale pre-consensus BFT proposal/vote queues while fresh or resumed validators wait for genesis sync, validator discovery, registration, and exact-tip catch-up, preventing bounded P2P BFT queues from filling with obsolete messages before the node joins consensus.
+- Keeps fresh-join initial sync on the existing batched block-range requester instead of issuing overlapping parent-gap broadcasts for every pending block, while preserving immediate parent-gap repair for live validators.
+
+### Verified
+- Passed the full validator unit suite and a clean local 3-validator seed-plus-empty-joiners run with zero BFT channel-full warnings, zero block-range request channel-full warnings, 301/301 recent blocks committed in BFT round 0, and 400 ms observed block intervals across all validators.
+
 ## [0.5.151] - 2026-06-12
 
 ### Fixed
