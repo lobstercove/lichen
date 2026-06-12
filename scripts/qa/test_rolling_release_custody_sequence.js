@@ -39,16 +39,28 @@ assert(script.includes('require_archive_bin_sha "$archive" "$root" lichen-faucet
   'faucet release binary must be required before install');
 assert(script.includes('validate_release_archive "$archive" "$(archive_root "$archive")"'),
   'release archive contents must be validated before deploy');
+assert(script.includes('REMOTE_RELEASE_DOWNLOAD="${LICHEN_REMOTE_RELEASE_DOWNLOAD:-auto}"'),
+  'remote release download mode must default to auto');
+assert(script.includes('Release ${RELEASE_TAG} is draft; using local SCP transfer for verified artifacts.'),
+  'draft releases must use local SCP transfer instead of public tag URLs');
+assert(script.includes('-o ServerAliveInterval=10'),
+  'SSH operations must use keepalives during rolling deploys');
+assert(script.includes('stage_release_bin()'),
+  'release binaries must be staged before live install');
+assert(script.includes('check_staged_bin_hash lichen-custody "$EXPECTED_CUSTODY_SHA"'),
+  'custody staged binary hash must be verified before live install');
+assert(script.includes('check_staged_bin_hash lichen-faucet "$EXPECTED_FAUCET_SHA"'),
+  'faucet staged binary hash must be verified before live install');
 assert(script.includes('sudo mv -f "/usr/local/bin/$bin.new" "/usr/local/bin/$bin"'),
-  'release binaries must be installed atomically with temp+rename');
+  'release binaries must be committed atomically with temp+rename');
 assert(script.includes('install_optional_service_bin lichen-custody "$EXPECTED_CUSTODY_SHA"'),
   'custody binary must be installed when expected in the archive');
 assert(script.includes('install_optional_service_bin lichen-faucet "$EXPECTED_FAUCET_SHA"'),
   'faucet binary must be installed when expected in the archive');
-assert(script.includes('check_installed_bin_hash lichen-custody "$EXPECTED_CUSTODY_SHA"'),
-  'custody binary hash must be verified immediately after install');
-assert(script.includes('check_installed_bin_hash lichen-faucet "$EXPECTED_FAUCET_SHA"'),
-  'faucet binary hash must be verified immediately after install');
+assert(script.includes('install_staged_bin lichen-custody "$EXPECTED_CUSTODY_SHA"'),
+  'custody live install must be gated by the expected release hash');
+assert(script.includes('install_staged_bin lichen-faucet "$EXPECTED_FAUCET_SHA"'),
+  'faucet live install must be gated by the expected release hash');
 assert(!script.includes('for bin in lichen-custody lichen-faucet; do\n  if [ -x "$root/$bin" ]; then'),
   'optional service install must not depend on temp extract executable checks');
 assert(script.includes('systemctl list-unit-files --no-legend lichen-custody.service'), 'custody refresh must be conditional on service presence');

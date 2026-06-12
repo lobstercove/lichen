@@ -41,7 +41,7 @@ MAX_BLOCK_AGE_SECS="${LICHEN_MAX_BLOCK_AGE_SECS:-15}"
 DEX_SMOKE_TIMEOUT_SECS="${LICHEN_DEX_SMOKE_TIMEOUT_SECS:-90}"
 ARTIFACT_DIR="${LICHEN_RELEASE_ARTIFACT_DIR:-/tmp/lichen-rolling-${NETWORK}-${RELEASE_TAG:-unset}}"
 RELEASE_SIGNING_ADDRESS="${LICHEN_RELEASE_SIGNING_ADDRESS:-8HitBNnh8qbhfne5NCv2yHrQFoD6xbmHcWaUSgCGtsk}"
-REMOTE_RELEASE_DOWNLOAD="${LICHEN_REMOTE_RELEASE_DOWNLOAD:-1}"
+REMOTE_RELEASE_DOWNLOAD="${LICHEN_REMOTE_RELEASE_DOWNLOAD:-auto}"
 
 expected_validator_pubkey_for_host() {
   case "${NETWORK}:$1" in
@@ -81,6 +81,8 @@ ssh_run() {
   ssh -p "$SSH_PORT" \
     -o BatchMode=yes \
     -o ConnectTimeout=10 \
+    -o ServerAliveInterval=10 \
+    -o ServerAliveCountMax=6 \
     -o StrictHostKeyChecking=no \
     "$SSH_USER@$host" "$@"
 }
@@ -92,6 +94,8 @@ scp_to() {
   scp -O -P "$SSH_PORT" \
     -o BatchMode=yes \
     -o ConnectTimeout=10 \
+    -o ServerAliveInterval=10 \
+    -o ServerAliveCountMax=6 \
     -o StrictHostKeyChecking=no \
     "$src" "$SSH_USER@$host:$dst"
 }
@@ -155,7 +159,26 @@ release_asset_url() {
   printf 'https://github.com/%s/releases/download/%s/%s' "$RELEASE_REPO" "$RELEASE_TAG" "$archive"
 }
 
+resolve_remote_release_download_mode() {
+  case "$REMOTE_RELEASE_DOWNLOAD" in
+    0|1) return 0 ;;
+    auto)
+      if [ "$(gh release view "$RELEASE_TAG" --repo "$RELEASE_REPO" --json isDraft --jq '.isDraft')" = "true" ]; then
+        REMOTE_RELEASE_DOWNLOAD=0
+        echo "Release ${RELEASE_TAG} is draft; using local SCP transfer for verified artifacts."
+      else
+        REMOTE_RELEASE_DOWNLOAD=1
+      fi
+      ;;
+    *)
+      echo "LICHEN_REMOTE_RELEASE_DOWNLOAD must be 0, 1, or auto." >&2
+      exit 2
+      ;;
+  esac
+}
+
 download_release_artifacts() {
+  resolve_remote_release_download_mode
   mkdir -p "$ARTIFACT_DIR"
   gh release download "$RELEASE_TAG" --repo "$RELEASE_REPO" \
     -p SHA256SUMS \
@@ -298,15 +321,14 @@ if [ -z "$root" ]; then
   exit 1
 fi
 
-install_release_bin() {
+stage_release_bin() {
   local bin="$1"
   test -x "$root/$bin"
   sudo install -m 755 "$root/$bin" "/usr/local/bin/$bin.new"
-  sudo mv -f "/usr/local/bin/$bin.new" "/usr/local/bin/$bin"
 }
 
 for bin in lichen-validator lichen-genesis lichen zk-prove; do
-  install_release_bin "$bin"
+  stage_release_bin "$bin"
 done
 
 install_optional_service_bin() {
@@ -319,7 +341,7 @@ install_optional_service_bin() {
     echo "Release archive is missing expected service binary: $bin"
     exit 1
   fi
-  install_release_bin "$bin"
+  stage_release_bin "$bin"
 }
 
 install_optional_service_bin lichen-custody "$EXPECTED_CUSTODY_SHA"
@@ -331,32 +353,49 @@ if [ -f "$root/seeds.json" ]; then
   sudo install -m 644 -o lichen -g lichen "$root/seeds.json" "/var/lib/lichen/state-${NETWORK}/seeds.json"
 fi
 
-installed_sha="$(sha256sum /usr/local/bin/lichen-validator | awk '{print $1}')"
-if [ "$installed_sha" != "$EXPECTED_VALIDATOR_SHA" ]; then
-  echo "Installed validator hash mismatch: got ${installed_sha}, expected ${EXPECTED_VALIDATOR_SHA}"
+staged_sha="$(sha256sum /usr/local/bin/lichen-validator.new | awk '{print $1}')"
+if [ "$staged_sha" != "$EXPECTED_VALIDATOR_SHA" ]; then
+  echo "Staged validator hash mismatch: got ${staged_sha}, expected ${EXPECTED_VALIDATOR_SHA}"
   exit 1
 fi
 
-check_installed_bin_hash() {
+check_staged_bin_hash() {
   local bin="$1"
   local expected_sha="$2"
-  local installed_bin_sha
+  local staged_bin_sha
   if [ -z "$expected_sha" ]; then
     return 0
   fi
-  installed_bin_sha="$(sha256sum "/usr/local/bin/$bin" | awk '{print $1}')"
-  if [ "$installed_bin_sha" != "$expected_sha" ]; then
-    echo "Installed ${bin} hash mismatch: got ${installed_bin_sha}, expected ${expected_sha}"
+  staged_bin_sha="$(sha256sum "/usr/local/bin/$bin.new" | awk '{print $1}')"
+  if [ "$staged_bin_sha" != "$expected_sha" ]; then
+    echo "Staged ${bin} hash mismatch: got ${staged_bin_sha}, expected ${expected_sha}"
     exit 1
   fi
 }
 
 for bin in lichen-validator lichen-genesis lichen zk-prove; do
   expected_bin_sha="$(sha256sum "$root/$bin" | awk '{print $1}')"
-  check_installed_bin_hash "$bin" "$expected_bin_sha"
+  check_staged_bin_hash "$bin" "$expected_bin_sha"
 done
-check_installed_bin_hash lichen-custody "$EXPECTED_CUSTODY_SHA"
-check_installed_bin_hash lichen-faucet "$EXPECTED_FAUCET_SHA"
+check_staged_bin_hash lichen-custody "$EXPECTED_CUSTODY_SHA"
+check_staged_bin_hash lichen-faucet "$EXPECTED_FAUCET_SHA"
+
+install_staged_bin() {
+  local bin="$1"
+  local expected_sha="${2:-required}"
+  if [ -z "$expected_sha" ]; then
+    return 0
+  fi
+  if [ -f "/usr/local/bin/$bin.new" ]; then
+    sudo mv -f "/usr/local/bin/$bin.new" "/usr/local/bin/$bin"
+  fi
+}
+
+for bin in lichen-validator lichen-genesis lichen zk-prove; do
+  install_staged_bin "$bin"
+done
+install_staged_bin lichen-custody "$EXPECTED_CUSTODY_SHA"
+install_staged_bin lichen-faucet "$EXPECTED_FAUCET_SHA"
 
 sudo systemctl stop "$SERVICE" || true
 for _ in $(seq 1 20); do
