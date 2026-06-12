@@ -471,6 +471,17 @@ function validateMonitoringIncidentControls() {
         js.includes('NEOGASRWD') && oracleBridgeBody.includes("rpc('getNeoGasRewardsStats'"),
         'monitoring tracks Neo GAS rewards vault registry and health stats'
     );
+    assert(
+        html.includes('id="ecoWbtcSupply"') &&
+            html.includes('id="btcRouteStatus"') &&
+            html.includes('id="btcReserveMatch"') &&
+            js.includes("'WBTC'") &&
+            oracleBridgeBody.includes("rpc('getWbtcStats'") &&
+            oracleBridgeBody.includes("rpc('getBridgeRouteRestrictionStatus', ['bitcoin', 'btc'])") &&
+            oracleBridgeBody.includes('btcRoute.route_ready !== false') &&
+            oracleBridgeBody.includes(": 'CHECK'"),
+        'monitoring tracks WBTC contract inventory plus Bitcoin route and reserve health'
+    );
 }
 
 function validateMonitoringRiskConsole() {

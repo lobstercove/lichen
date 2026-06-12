@@ -15,7 +15,7 @@ const NETWORKS = {
 // and validator rendering all use live cluster data, never a hardcoded list.
 
 const SYMBOLS = [
-    'LUSD', 'WETH', 'WSOL', 'WBNB', 'WNEO', 'WGAS', 'DEX', 'DEXAMM', 'DEXGOV', 'DEXMARGIN',
+    'LUSD', 'WETH', 'WSOL', 'WBNB', 'WNEO', 'WGAS', 'WBTC', 'DEX', 'DEXAMM', 'DEXGOV', 'DEXMARGIN',
     'DEXREWARDS', 'DEXROUTER', 'BRIDGE', 'DAO', 'SPOREVAULT', 'NEOGASRWD', 'SPOREPAY',
     'SPOREPUMP', 'ORACLE', 'LEND', 'MARKET', 'AUCTION', 'BOUNTY', 'ANALYTICS',
     'COMPUTE', 'LICHENSWAP', 'PUNKS', 'MOSS', 'SHIELDED', 'PREDICT', 'YID'
@@ -3276,6 +3276,9 @@ const ALL_CONTRACTS = [
     { symbol: 'WETH', name: 'Wrapped ETH', cat: 'token', icon: 'fab fa-ethereum', color: '#627eea' },
     { symbol: 'WSOL', name: 'Wrapped SOL', cat: 'token', icon: 'fas fa-sun', color: '#9945ff' },
     { symbol: 'WBNB', name: 'Wrapped BNB', cat: 'token', icon: 'fas fa-cubes', color: '#fbbf24' },
+    { symbol: 'WNEO', name: 'Wrapped NEO', cat: 'token', icon: 'fas fa-gem', color: '#58BF00' },
+    { symbol: 'WGAS', name: 'Wrapped GAS', cat: 'token', icon: 'fas fa-gas-pump', color: '#00d4aa' },
+    { symbol: 'WBTC', name: 'Wrapped BTC', cat: 'token', icon: 'fab fa-bitcoin', color: '#f7931a' },
     { symbol: 'DEX', name: 'DEX Core', cat: 'dex', icon: 'fas fa-exchange-alt', color: '#4ea8de' },
     { symbol: 'DEXAMM', name: 'DEX AMM', cat: 'dex', icon: 'fas fa-water', color: '#06d6a0' },
     { symbol: 'DEXROUTER', name: 'DEX Router', cat: 'dex', icon: 'fas fa-route', color: '#ffd166' },
@@ -3622,10 +3625,10 @@ let ecosystemMonitorLoaded = false;
 async function updateEcosystemMonitor() {
     const badge = document.getElementById('ecosystemBadge');
     const el = id => document.getElementById(id);
-    const totalFeeds = 20;
+    const totalFeeds = 21;
 
     // Fetch all platform contract stats in parallel
-    const [lusd, weth, wsol, wbnb, wneo, wgas, lend, sporepay, vault, pump, bridge, dao, oracle,
+    const [lusd, weth, wsol, wbnb, wneo, wgas, wbtc, lend, sporepay, vault, pump, bridge, dao, oracle,
         mossStorage, market, auction, punks, bounty, compute, shieldedState] = await Promise.all([
             rpc('getLusdStats').catch(() => null),
             rpc('getWethStats').catch(() => null),
@@ -3633,6 +3636,7 @@ async function updateEcosystemMonitor() {
             rpc('getWbnbStats').catch(() => null),
             rpc('getWneoStats').catch(() => null),
             rpc('getWgasStats').catch(() => null),
+            rpc('getWbtcStats').catch(() => null),
             rpc('getThallLendStats').catch(() => null),
             rpc('getSporePayStats').catch(() => null),
             rpc('getSporeVaultStats').catch(() => null),
@@ -3677,6 +3681,10 @@ async function updateEcosystemMonitor() {
     if (wgas) {
         activeFeeds++;
         if (el('ecoWgasSupply')) el('ecoWgasSupply').textContent = formatLicn(wgas.total_supply || wgas.supply || 0);
+    }
+    if (wbtc) {
+        activeFeeds++;
+        if (el('ecoWbtcSupply')) el('ecoWbtcSupply').textContent = formatLicn(wbtc.total_supply || wbtc.supply || 0);
     }
 
     // Platform services
@@ -4337,13 +4345,15 @@ async function updateOracleBridgeHealthBoard() {
     const badge = document.getElementById('oracleBridgeBadge');
     const grid = document.getElementById('oracleBridgeDetailGrid');
 
-    const [bridge, oracle, neoGasRoute, neoRoute, wgas, wneo, neoGasRewards] = await Promise.all([
+    const [bridge, oracle, neoGasRoute, neoRoute, btcRoute, wgas, wneo, wbtc, neoGasRewards] = await Promise.all([
         rpc('getLichenBridgeStats').catch(() => null),
         rpc('getLichenOracleStats').catch(() => null),
         rpc('getBridgeRouteRestrictionStatus', ['neox', 'gas']).catch(() => null),
         rpc('getBridgeRouteRestrictionStatus', ['neox', 'neo']).catch(() => null),
+        rpc('getBridgeRouteRestrictionStatus', ['bitcoin', 'btc']).catch(() => null),
         rpc('getWgasStats').catch(() => null),
         rpc('getWneoStats').catch(() => null),
+        rpc('getWbtcStats').catch(() => null),
         rpc('getNeoGasRewardsStats').catch(() => null),
     ]);
 
@@ -4361,6 +4371,8 @@ async function updateOracleBridgeHealthBoard() {
     const wgasReserveDeficit = Math.max(0, Number(wgas?.supply || 0) - Number(wgas?.reserve_attested || 0));
     const wneoReserveDeficit = Math.max(0, Number(wneo?.supply || 0) - Number(wneo?.reserve_attested || 0));
     const neoReserveDeficit = wgasReserveDeficit + wneoReserveDeficit;
+    const btcPaused = Boolean(btcRoute?.route_paused || btcRoute?.paused);
+    const btcReserveDeficit = Math.max(0, Number(wbtc?.supply || 0) - Number(wbtc?.reserve_attested || 0));
     const rewardsOutstanding = Number(neoGasRewards?.outstanding_rewards || 0);
     const rewardsPrincipal = Number(neoGasRewards?.total_principal || 0);
     const rewardsPaused = Boolean(neoGasRewards?.paused);
@@ -4369,6 +4381,10 @@ async function updateOracleBridgeHealthBoard() {
     setText('neoRoutePauseCount', neoRoutesAvailable ? `${neoPauseCount}/2` : '--');
     setText('neoReserveMatch', (wgas || wneo)
         ? (neoReserveDeficit > 0 ? `DEFICIT ${formatLicnPrecise(neoReserveDeficit)}` : 'MATCHED')
+        : '--');
+    setText('btcRouteStatus', !btcRoute ? '--' : btcPaused ? 'PAUSED' : btcRoute.route_ready === false ? 'CONFIG' : 'ACTIVE');
+    setText('btcReserveMatch', wbtc
+        ? (btcReserveDeficit > 0 ? `DEFICIT ${formatLicnPrecise(btcReserveDeficit)}` : 'MATCHED')
         : '--');
 
     const oraclePaused = Boolean(oracle?.paused);
@@ -4380,9 +4396,12 @@ async function updateOracleBridgeHealthBoard() {
     const rewardsNote = neoGasRewards
         ? ` Neo GAS rewards are ${rewardsPaused ? 'paused' : rewardsConfigured ? 'configured' : 'not configured'} with ${formatLicnPrecise(rewardsOutstanding)} wGAS outstanding.`
         : '';
+    const btcRouteNote = btcRoute
+        ? ` Bitcoin route is ${btcPaused ? 'paused' : btcRoute.route_ready === false ? 'awaiting configuration' : 'live'}${btcRoute.missing_config?.length ? ` (${btcRoute.missing_config.join(', ')})` : ''}.`
+        : '';
     setText(
         'oracleBridgeNote',
-        `Oracle is ${oraclePaused ? 'paused' : 'live'} and bridge is ${bridgePaused ? 'paused' : 'live'}. Bridge request timeout is ${formatNum(requestTimeout)} seconds.${neoRouteNote}${rewardsNote}`
+        `Oracle is ${oraclePaused ? 'paused' : 'live'} and bridge is ${bridgePaused ? 'paused' : 'live'}. Bridge request timeout is ${formatNum(requestTimeout)} seconds.${neoRouteNote}${btcRouteNote}${rewardsNote}`
     );
 
     if (grid) {
@@ -4464,6 +4483,35 @@ async function updateOracleBridgeHealthBoard() {
             ));
         }
 
+        if (btcRoute || wbtc) {
+            const btcRouteReady = btcRoute?.route_ready !== false;
+            const btcColor = btcPaused
+                ? 'var(--warning)'
+                : btcRouteReady
+                    ? 'var(--success)'
+                    : 'var(--text-muted)';
+            cards.push(renderOperatorTierCard(
+                'Bitcoin Route Status',
+                !btcRoute ? 'unknown' : btcPaused ? 'paused' : btcRouteReady ? 'active' : 'configuration pending',
+                btcRoute?.missing_config?.length
+                    ? `missing ${btcRoute.missing_config.join(', ')}`
+                    : `custody ${btcRoute?.custody_configured === false ? 'not configured' : 'configured'} · deposits ${btcRoute?.deposit_ready === false ? 'pending' : 'ready'}`,
+                'coins',
+                btcColor,
+                btcPaused ? 50 : btcRouteReady ? 100 : 25
+            ));
+
+            const btcReserveColor = btcReserveDeficit > 0 ? 'var(--danger)' : 'var(--success)';
+            cards.push(renderOperatorTierCard(
+                'BTC Reserve Coverage',
+                btcReserveDeficit > 0 ? `${formatLicnPrecise(btcReserveDeficit)} deficit` : 'matched',
+                `wBTC reserve ${formatLicnPrecise(wbtc?.reserve_attested || 0)} · supply ${formatLicnPrecise(wbtc?.supply || 0)}`,
+                'shield-alt',
+                btcReserveColor,
+                btcReserveDeficit > 0 ? 25 : 100
+            ));
+        }
+
         if (neoGasRewards) {
             const rewardsColor = rewardsPaused
                 ? 'var(--warning)'
@@ -4490,12 +4538,16 @@ async function updateOracleBridgeHealthBoard() {
     if (badge) {
         const allAvailable = Boolean(bridge) && Boolean(oracle);
         const rewardsHealthy = !neoGasRewards || (!rewardsPaused && (rewardsConfigured || rewardsPrincipal === 0));
-        const healthy = allAvailable && !bridgePaused && !oraclePaused && neoPauseCount === 0 && neoReserveDeficit === 0 && rewardsHealthy;
+        const btcHealthy = !btcRoute || (!btcPaused && btcRoute.route_ready !== false && btcReserveDeficit === 0);
+        const healthy = allAvailable && !bridgePaused && !oraclePaused && neoPauseCount === 0 && neoReserveDeficit === 0 && rewardsHealthy && btcHealthy;
+        const paused = bridgePaused || oraclePaused || neoPauseCount > 0 || btcPaused || rewardsPaused;
         badge.textContent = !allAvailable
             ? 'PARTIAL'
             : healthy
                 ? 'ACTIVE'
-                : 'PAUSED';
+                : paused
+                    ? 'PAUSED'
+                    : 'CHECK';
         badge.className = `panel-badge ${!allAvailable ? 'warning' : healthy ? 'success' : 'warning'}`;
     }
 }
