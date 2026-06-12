@@ -868,6 +868,14 @@ fn parent_gap_should_probe_checkpoint(current_slot: u64, block_slot: u64) -> boo
         .request_checkpoint_metadata
 }
 
+fn should_request_parent_gap_immediately(
+    sync_phase: sync::SyncPhase,
+    current_slot: u64,
+    block_slot: u64,
+) -> bool {
+    sync_phase == sync::SyncPhase::LiveSync && block_slot > current_slot.saturating_add(1)
+}
+
 fn select_catch_up_mode(current_slot: u64, gap: u64) -> sync::SyncMode {
     // Fresh joiners must replay the bootstrap prefix before warp snapshots.
     // Those blocks create the local validator/stake registry used to verify
@@ -14690,7 +14698,12 @@ async fn run_validator() {
                         // F-07 audit fix: Immediately request the missing parent
                         // block(s) instead of waiting for the next 5-second sync probe.
                         // This closes gaps faster during normal operation.
-                        if block_slot > current_slot + 1 {
+                        let sync_phase = sync_mgr.get_sync_phase().await;
+                        if should_request_parent_gap_immediately(
+                            sync_phase,
+                            current_slot,
+                            block_slot,
+                        ) {
                             if parent_gap_should_probe_checkpoint(current_slot, block_slot) {
                                 info!(
                                     "⚡ Parent gap {} -> {} exceeds replay threshold; probing checkpoint metadata instead of requesting block ranges",
@@ -14723,6 +14736,12 @@ async fn run_validator() {
                                 );
                                 missing_gap = Some((gap_start, gap_end));
                             }
+                        } else if block_slot > current_slot + 1 {
+                            debug!(
+                                "Initial sync defers parent gap {}..{} to the batched sync requester",
+                                current_slot.saturating_add(1),
+                                block_slot.saturating_sub(1)
+                            );
                         }
 
                         sync_mgr.add_pending_block(block).await;
@@ -24378,6 +24397,22 @@ mod tests {
                 FRESH_JOIN_BOOTSTRAP_REPLAY_SLOTS + sync::WARP_SYNC_THRESHOLD + 100,
             ),
             "fresh joiners still replay the bootstrap prefix before checkpoint snapshots"
+        );
+    }
+
+    #[test]
+    fn immediate_parent_gap_requests_are_live_sync_only() {
+        assert!(
+            !should_request_parent_gap_immediately(sync::SyncPhase::InitialSync, 0, 348),
+            "fresh joiners must use the batched InitialSync requester instead of per-block parent-gap broadcasts"
+        );
+        assert!(
+            should_request_parent_gap_immediately(sync::SyncPhase::LiveSync, 100, 103),
+            "live nodes still need immediate parent-gap repair"
+        );
+        assert!(
+            !should_request_parent_gap_immediately(sync::SyncPhase::LiveSync, 100, 101),
+            "the next expected block is not a parent gap"
         );
     }
 
