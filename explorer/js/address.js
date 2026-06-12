@@ -1872,6 +1872,10 @@ async function loadValidatorRewards(address) {
         const recovery = buildBootstrapRecoveryDisplay(rewards);
         const debt = recovery.debt;
         const earned = recovery.earned;
+        const recoverySection = document.getElementById('bootstrapRecoverySection');
+        if (recoverySection) {
+            recoverySection.style.display = recovery.hasRecoverySchedule ? 'block' : 'none';
+        }
         const blocksProduced = rewards.blocks_produced || 0;
         const rewardRateNumeric = parseFloat(rate) || 0;
 

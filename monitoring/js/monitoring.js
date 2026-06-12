@@ -4368,11 +4368,17 @@ async function updateOracleBridgeHealthBoard() {
     const neoPaused = Boolean(neoRoute?.route_paused || neoRoute?.paused);
     const neoPauseCount = [neoGasPaused, neoPaused].filter(Boolean).length;
     const neoRoutesAvailable = Boolean(neoGasRoute) || Boolean(neoRoute);
-    const wgasReserveDeficit = Math.max(0, Number(wgas?.supply || 0) - Number(wgas?.reserve_attested || 0));
-    const wneoReserveDeficit = Math.max(0, Number(wneo?.supply || 0) - Number(wneo?.reserve_attested || 0));
+    const wgasSupply = Number(wgas?.total_supply ?? wgas?.supply ?? 0);
+    const wneoSupply = Number(wneo?.total_supply ?? wneo?.supply ?? 0);
+    const wbtcSupply = Number(wbtc?.total_supply ?? wbtc?.supply ?? 0);
+    const wgasReserve = Number(wgas?.reserve_attested ?? 0);
+    const wneoReserve = Number(wneo?.reserve_attested ?? 0);
+    const wbtcReserve = Number(wbtc?.reserve_attested ?? 0);
+    const wgasReserveDeficit = Math.max(0, wgasSupply - wgasReserve);
+    const wneoReserveDeficit = Math.max(0, wneoSupply - wneoReserve);
     const neoReserveDeficit = wgasReserveDeficit + wneoReserveDeficit;
     const btcPaused = Boolean(btcRoute?.route_paused || btcRoute?.paused);
-    const btcReserveDeficit = Math.max(0, Number(wbtc?.supply || 0) - Number(wbtc?.reserve_attested || 0));
+    const btcReserveDeficit = Math.max(0, wbtcSupply - wbtcReserve);
     const rewardsOutstanding = Number(neoGasRewards?.outstanding_rewards || 0);
     const rewardsPrincipal = Number(neoGasRewards?.total_principal || 0);
     const rewardsPaused = Boolean(neoGasRewards?.paused);
@@ -4382,7 +4388,11 @@ async function updateOracleBridgeHealthBoard() {
     setText('neoReserveMatch', (wgas || wneo)
         ? (neoReserveDeficit > 0 ? `DEFICIT ${formatLicnPrecise(neoReserveDeficit)}` : 'MATCHED')
         : '--');
+    setText('wgasReserveAttested', wgas ? `${formatLicnPrecise(wgasReserve)} wGAS` : '--');
+    setText('wneoReserveAttested', wneo ? `${formatLicnPrecise(wneoReserve)} wNEO` : '--');
     setText('btcRouteStatus', !btcRoute ? '--' : btcPaused ? 'PAUSED' : btcRoute.route_ready === false ? 'CONFIG' : 'ACTIVE');
+    setText('bridgeWbtcSupply', wbtc ? `${formatLicnPrecise(wbtcSupply)} wBTC` : '--');
+    setText('wbtcReserveAttested', wbtc ? `${formatLicnPrecise(wbtcReserve)} wBTC` : '--');
     setText('btcReserveMatch', wbtc
         ? (btcReserveDeficit > 0 ? `DEFICIT ${formatLicnPrecise(btcReserveDeficit)}` : 'MATCHED')
         : '--');
@@ -4476,7 +4486,7 @@ async function updateOracleBridgeHealthBoard() {
             cards.push(renderOperatorTierCard(
                 'Neo Reserve Coverage',
                 neoReserveDeficit > 0 ? `${formatLicnPrecise(neoReserveDeficit)} deficit` : 'matched',
-                `wGAS reserve ${formatLicnPrecise(wgas?.reserve_attested || 0)} · wNEO reserve ${formatLicnPrecise(wneo?.reserve_attested || 0)}`,
+                `wGAS reserve ${formatLicnPrecise(wgasReserve)} · wNEO reserve ${formatLicnPrecise(wneoReserve)}`,
                 'shield-alt',
                 reserveColor,
                 neoReserveDeficit > 0 ? 25 : 100
@@ -4505,7 +4515,7 @@ async function updateOracleBridgeHealthBoard() {
             cards.push(renderOperatorTierCard(
                 'BTC Reserve Coverage',
                 btcReserveDeficit > 0 ? `${formatLicnPrecise(btcReserveDeficit)} deficit` : 'matched',
-                `wBTC reserve ${formatLicnPrecise(wbtc?.reserve_attested || 0)} · supply ${formatLicnPrecise(wbtc?.supply || 0)}`,
+                `wBTC reserve ${formatLicnPrecise(wbtcReserve)} · supply ${formatLicnPrecise(wbtcSupply)}`,
                 'shield-alt',
                 btcReserveColor,
                 btcReserveDeficit > 0 ? 25 : 100

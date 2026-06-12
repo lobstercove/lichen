@@ -474,10 +474,15 @@ function validateMonitoringIncidentControls() {
     assert(
         html.includes('id="ecoWbtcSupply"') &&
             html.includes('id="btcRouteStatus"') &&
+            html.includes('id="bridgeWbtcSupply"') &&
+            html.includes('id="wbtcReserveAttested"') &&
+            html.includes('id="wgasReserveAttested"') &&
+            html.includes('id="wneoReserveAttested"') &&
             html.includes('id="btcReserveMatch"') &&
             js.includes("'WBTC'") &&
             oracleBridgeBody.includes("rpc('getWbtcStats'") &&
             oracleBridgeBody.includes("rpc('getBridgeRouteRestrictionStatus', ['bitcoin', 'btc'])") &&
+            oracleBridgeBody.includes('wbtcSupply = Number(wbtc?.total_supply ?? wbtc?.supply ?? 0)') &&
             oracleBridgeBody.includes('btcRoute.route_ready !== false') &&
             oracleBridgeBody.includes(": 'CHECK'"),
         'monitoring tracks WBTC contract inventory plus Bitcoin route and reserve health'
@@ -924,6 +929,7 @@ function validateFrontendInputGuards() {
     const programsJs = fs.readFileSync(path.join(repoRoot, 'programs', 'js', 'playground-complete.js'), 'utf8');
     const programsHtml = fs.readFileSync(path.join(repoRoot, 'programs', 'playground.html'), 'utf8');
     const explorerAddressJs = fs.readFileSync(path.join(repoRoot, 'explorer', 'js', 'address.js'), 'utf8');
+    const explorerAddressHtml = fs.readFileSync(path.join(repoRoot, 'explorer', 'address.html'), 'utf8');
     const explorerBlocksJs = fs.readFileSync(path.join(repoRoot, 'explorer', 'js', 'blocks.js'), 'utf8');
     const explorerBlocksHtml = fs.readFileSync(path.join(repoRoot, 'explorer', 'blocks.html'), 'utf8');
     const explorerJs = fs.readFileSync(path.join(repoRoot, 'explorer', 'js', 'explorer.js'), 'utf8');
@@ -1162,6 +1168,9 @@ function validateFrontendInputGuards() {
         explorerAddressJs.includes('function buildBootstrapRecoveryDisplay(rewards)') &&
             explorerAddressJs.includes('hasRecoverySchedule = debt > 0 || earned > 0 || hasGraduationSlot') &&
             explorerAddressJs.includes("label: '0.0%'") &&
+            explorerAddressHtml.includes('id="bootstrapRecoverySection"') &&
+            explorerAddressJs.includes("document.getElementById('bootstrapRecoverySection')") &&
+            explorerAddressJs.includes("recoverySection.style.display = recovery.hasRecoverySchedule ? 'block' : 'none'") &&
             explorerAddressJs.includes("document.getElementById('rewardsDebt').textContent = formatLicn(debt)") &&
             !explorerAddressJs.includes("'No bootstrap grant'") &&
             explorerAddressJs.includes("document.getElementById('rewardsVestingText').textContent = recovery.label"),
