@@ -434,24 +434,24 @@ assert(
   'BTC rollout plan must record the epoch-6 governed execution signatures and compute budget',
 );
 assert(
-  productionDeployment.includes('Current signed-release target for this runbook is `v0.5.152`') &&
+  productionDeployment.includes('Current signed-release target for this runbook is `v0.5.153`') &&
     productionDeployment.includes('keep `v0.5.150` as the signed rollback point') &&
     productionDeployment.includes('32 manifest symbols') &&
     productionDeployment.includes('mandatory 13 DEX CLOB pairs, AMM pools, and router routes') &&
     productionDeployment.includes('wBTC/lUSD') &&
     productionDeployment.includes('wBTC/LICN') &&
-    productionDeployment.includes('export LICHEN_RELEASE_TAG=v0.5.152') &&
+    productionDeployment.includes('export LICHEN_RELEASE_TAG=v0.5.153') &&
     productionDeployment.includes('RocksDB read-only descriptors') &&
     productionDeployment.includes('cannot cold-rebuild or compact checkpoint Merkle state') &&
     productionDeployment.includes('authenticated PQ node checkpoint sources') &&
     productionDeployment.includes('signed checkpoint header verifies') &&
-    productionDeployment.includes('exact advertised slot, state root, and snapshot manifest root') &&
+    productionDeployment.includes('source-pinned snapshot manifest root after the checkpoint state root has active-validator quorum') &&
     productionDeployment.includes('deterministic archive manifest differs from the verified checkpoint metadata') &&
     !productionDeployment.includes('signed release `v0.5.44`') &&
     !productionDeployment.includes('31 manifest symbols') &&
     !productionDeployment.includes('--repair-stake-pool-production-counters') &&
     !productionDeployment.includes('such as `v0.5.50`'),
-  'production clean-slate checklist must match current v0.5.152/32-symbol/13-market expectations',
+  'production clean-slate checklist must match current v0.5.153/32-symbol/13-market expectations',
 );
 for (const expected of [
   '7LFPJ8gqmAtjbhfRg1P4VXmTQJV4AeZxzws3UsA6SVq',

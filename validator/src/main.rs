@@ -7045,6 +7045,10 @@ fn checkpoint_anchor_manifest_support(
         .len()
 }
 
+fn checkpoint_snapshot_download_ready(root_support: usize, manifest_support: usize) -> bool {
+    root_support >= MIN_WARP_CHECKPOINT_ANCHOR_PEERS && manifest_support > 0
+}
+
 fn same_slot_checkpoint_root_mismatch(
     local_slot: u64,
     checkpoint_slot: u64,
@@ -16734,13 +16738,21 @@ async fn run_validator() {
                                 );
                                     continue;
                                 }
+                                if !checkpoint_snapshot_download_ready(support, manifest_support) {
+                                    info!(
+                                    "⏳ Awaiting checkpoint snapshot manifest before warp snapshot download (have {}, need 1)",
+                                    manifest_support,
+                                );
+                                    continue;
+                                }
                                 if manifest_support < MIN_WARP_CHECKPOINT_ANCHOR_PEERS {
                                     info!(
-                                    "⏳ Awaiting corroborated checkpoint manifest before warp snapshot download (have {}, need {})",
+                                    "🔒 Using source-pinned checkpoint manifest from {} after {}-peer state-root corroboration (manifest corroboration {}/{})",
+                                    response.requester,
+                                    support,
                                     manifest_support,
                                     MIN_WARP_CHECKPOINT_ANCHOR_PEERS,
                                 );
-                                    continue;
                                 }
 
                                 let snapshot_source_key = (anchor_source, slot, state_root);
@@ -24141,6 +24153,26 @@ mod tests {
                 snapshot_manifest_root(&manifest_b)
             ),
             1
+        );
+        assert!(
+            checkpoint_snapshot_download_ready(
+                checkpoint_anchor_support(&anchors, 42, root_a),
+                checkpoint_anchor_manifest_support(
+                    &anchors,
+                    42,
+                    root_a,
+                    snapshot_manifest_root(&manifest_b),
+                ),
+            ),
+            "a source-pinned manifest is usable once the checkpoint state root has validator quorum",
+        );
+        assert!(
+            !checkpoint_snapshot_download_ready(1, 1),
+            "a single source must not be enough for the checkpoint state root",
+        );
+        assert!(
+            !checkpoint_snapshot_download_ready(MIN_WARP_CHECKPOINT_ANCHOR_PEERS, 0),
+            "a snapshot still needs a concrete source manifest to verify streamed chunks",
         );
     }
 
