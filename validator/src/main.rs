@@ -650,6 +650,61 @@ fn update_snapshot_digest_entry(hasher: &mut Sha256, key: &[u8], value: &[u8]) {
     update_snapshot_digest_bytes(hasher, value);
 }
 
+#[derive(Clone)]
+struct SnapshotCategoryDigestAccumulator {
+    category: String,
+    hasher: Sha256,
+    entry_count: u64,
+}
+
+impl SnapshotCategoryDigestAccumulator {
+    fn new(category: &str) -> Self {
+        let mut hasher = Sha256::new();
+        hasher.update(b"lichen-checkpoint-snapshot-category-v1");
+        update_snapshot_digest_bytes(&mut hasher, category.as_bytes());
+        Self {
+            category: category.to_string(),
+            hasher,
+            entry_count: 0,
+        }
+    }
+
+    fn update_entries(&mut self, entries: &[SnapshotEntry]) {
+        for (key, value) in entries {
+            update_snapshot_digest_entry(&mut self.hasher, key, value);
+            self.entry_count = self.entry_count.saturating_add(1);
+        }
+    }
+
+    fn finalize(&self) -> SnapshotCategoryDigest {
+        let mut hasher = self.hasher.clone();
+        hasher.update(self.entry_count.to_le_bytes());
+        let digest = hasher.finalize();
+        let mut sha256 = [0u8; 32];
+        sha256.copy_from_slice(&digest[..32]);
+        SnapshotCategoryDigest {
+            category: self.category.clone(),
+            entry_count: self.entry_count,
+            sha256,
+        }
+    }
+}
+
+fn received_snapshot_manifest_from_accumulators(
+    digests: &HashMap<String, SnapshotCategoryDigestAccumulator>,
+    categories: &[&str],
+) -> Result<Vec<SnapshotCategoryDigest>, String> {
+    categories
+        .iter()
+        .map(|category| {
+            digests
+                .get(*category)
+                .map(SnapshotCategoryDigestAccumulator::finalize)
+                .ok_or_else(|| format!("missing received snapshot digest for {}", category))
+        })
+        .collect()
+}
+
 fn compute_snapshot_category_digest(
     state: &StateStore,
     category: &str,
@@ -16710,6 +16765,8 @@ async fn run_validator() {
             // Track state snapshot download progress per category
             let mut state_snap_progress: std::collections::HashMap<String, (u64, u64)> =
                 std::collections::HashMap::new(); // category -> (received_chunks, total_chunks)
+            let mut state_snap_digests: HashMap<String, SnapshotCategoryDigestAccumulator> =
+                HashMap::new();
             let mut verified_checkpoint_anchors: std::collections::HashMap<
                 VerifiedCheckpointAnchorKey,
                 VerifiedCheckpointAnchor,
@@ -17162,6 +17219,7 @@ async fn run_validator() {
                                     .mark_warp_snapshot_active();
                                 snapshot_last_progress_at = std::time::Instant::now();
                                 state_snap_progress.clear();
+                                state_snap_digests.clear();
                                 // Peer is significantly ahead — request state snapshot
                                 info!(
                                 "🔄 Requesting {}-category checkpoint snapshot from {} after {}-peer checkpoint corroboration (local slot {}, peer slot {})",
@@ -17465,6 +17523,10 @@ async fn run_validator() {
                             continue;
                         }
                     }
+                    state_snap_digests
+                        .entry(category.clone())
+                        .or_insert_with(|| SnapshotCategoryDigestAccumulator::new(category))
+                        .update_entries(&entries);
                     snapshot_last_progress_at = std::time::Instant::now();
 
                     // Track progress
@@ -17541,6 +17603,7 @@ async fn run_validator() {
                                 None => {
                                     warn!("⚠️  Snapshot completed without an active staging DB");
                                     state_snap_progress.clear();
+                                    state_snap_digests.clear();
                                     snapshot_sync_for_apply
                                         .lock()
                                         .await
@@ -17556,6 +17619,7 @@ async fn run_validator() {
                             drop(staging_state);
                             cleanup_snapshot_staging(&mut active_snapshot_staging);
                             state_snap_progress.clear();
+                            state_snap_digests.clear();
                             snapshot_sync_for_apply
                                 .lock()
                                 .await
@@ -17593,28 +17657,31 @@ async fn run_validator() {
                                 warn!("⚠️  Snapshot staging has no active manifest anchor");
                                 break 'staging false;
                             };
-                            let staging_manifest = match compute_snapshot_manifest_for_categories(
-                                &staging_state,
-                                MAX_SNAPSHOT_CHUNK_SIZE,
-                                active_snapshot_categories,
-                            ) {
-                                Ok(manifest) => manifest,
-                                Err(e) => {
-                                    warn!("⚠️  Failed to compute staging snapshot manifest: {}", e);
-                                    break 'staging false;
-                                }
-                            };
+                            let received_manifest =
+                                match received_snapshot_manifest_from_accumulators(
+                                    &state_snap_digests,
+                                    active_snapshot_categories,
+                                ) {
+                                    Ok(manifest) => manifest,
+                                    Err(e) => {
+                                        warn!(
+                                            "⚠️  Failed to compute received snapshot manifest: {}",
+                                            e
+                                        );
+                                        break 'staging false;
+                                    }
+                                };
                             if let Err(e) = validate_snapshot_manifest_matches(
                                 &expected_manifest,
-                                &staging_manifest,
+                                &received_manifest,
                             ) {
-                                warn!("⚠️  Staging snapshot manifest verification failed: {}", e);
+                                warn!("⚠️  Received snapshot manifest verification failed: {}", e);
                                 break 'staging false;
                             }
                             info!(
-                                "✅ Snapshot manifest verified on staging: {} categories root={}",
-                                staging_manifest.len(),
-                                hex::encode(snapshot_manifest_root(&staging_manifest))
+                                "✅ Snapshot manifest verified from received chunks: {} categories root={}",
+                                received_manifest.len(),
+                                hex::encode(snapshot_manifest_root(&received_manifest))
                             );
 
                             if active_snapshot_categories == WARP_SNAPSHOT_CATEGORIES {
@@ -17701,6 +17768,7 @@ async fn run_validator() {
                             drop(staging_state);
                             cleanup_snapshot_staging(&mut active_snapshot_staging);
                             state_snap_progress.clear();
+                            state_snap_digests.clear();
                             active_snapshot_anchor = None;
                             active_snapshot_source_peer = None;
                             active_snapshot_source = None;
@@ -17716,6 +17784,7 @@ async fn run_validator() {
                             drop(staging_state);
                             cleanup_snapshot_staging(&mut active_snapshot_staging);
                             state_snap_progress.clear();
+                            state_snap_digests.clear();
                             active_snapshot_source_peer = None;
                             active_snapshot_source = None;
                             snapshot_sync_for_apply
@@ -17737,6 +17806,7 @@ async fn run_validator() {
                             drop(staging_state);
                             cleanup_snapshot_staging(&mut active_snapshot_staging);
                             state_snap_progress.clear();
+                            state_snap_digests.clear();
                             active_snapshot_anchor = None;
                             active_snapshot_source_peer = None;
                             active_snapshot_source = None;
@@ -17784,6 +17854,7 @@ async fn run_validator() {
                             drop(staging_state);
                             cleanup_snapshot_staging(&mut active_snapshot_staging);
                             state_snap_progress.clear();
+                            state_snap_digests.clear();
                             active_snapshot_anchor = None;
                             active_snapshot_source_peer = None;
                             active_snapshot_source = None;
@@ -18035,6 +18106,7 @@ async fn run_validator() {
                         active_snapshot_source_peer = None;
                         active_snapshot_source = None;
                         state_snap_progress.clear();
+                        state_snap_digests.clear();
                         verified_checkpoint_anchors.clear();
                         snapshot_sync_for_apply
                             .lock()
@@ -26491,6 +26563,97 @@ mod tests {
             compute_state_repair_snapshot_manifest(&target, 1000).expect("target manifest");
         validate_snapshot_manifest_matches(&expected_manifest, &actual_manifest)
             .expect("repair manifest should ignore volatile cache entries");
+    }
+
+    #[test]
+    fn state_repair_manifest_uses_received_mossstake_bytes_before_slot_only_normalization() {
+        let source_dir = tempfile::tempdir().expect("create source dir");
+        let source = StateStore::open(source_dir.path()).expect("open source state");
+        let target_dir = tempfile::tempdir().expect("create target dir");
+        let target = StateStore::open(target_dir.path()).expect("open target state");
+
+        let alice = Keypair::generate().pubkey();
+        let mut legacy_pool = MossStakePool::new();
+        source
+            .put_metadata(CHAIN_ID_METADATA_KEY, b"lichen-testnet-1")
+            .expect("put source chain id");
+        source
+            .set_last_slot(
+                lichen_core::mossstake::LEGACY_TESTNET_MOSSSTAKE_WALL_CLOCK_START_PARENT_SLOT,
+            )
+            .expect("set source wall-clock-range slot");
+        legacy_pool
+            .stake_with_tier_at_time(alice, 1_000, 42, 1_700_000_000, LockTier::Lock30)
+            .expect("stake legacy MossStake position");
+        source
+            .put_mossstake_pool(&legacy_pool)
+            .expect("put source legacy MossStake pool");
+        source
+            .put_metadata(MOSSSTAKE_SLOT_ONLY_METADATA_KEY, b"1")
+            .expect("put source slot-only marker after legacy pool");
+
+        let expected_manifest =
+            compute_state_repair_snapshot_manifest(&source, 1000).expect("source manifest");
+        let mut received_digests: HashMap<String, SnapshotCategoryDigestAccumulator> =
+            HashMap::new();
+
+        for category in STATE_REPAIR_SNAPSHOT_CATEGORIES {
+            let entries = export_roundtrip_snapshot_entries(&source, category, 1000)
+                .unwrap_or_else(|err| panic!("export {category}: {err}"));
+            import_ordered_snapshot_category(&target, category, &entries)
+                .unwrap_or_else(|err| panic!("import {category}: {err}"));
+            received_digests
+                .entry((*category).to_string())
+                .or_insert_with(|| SnapshotCategoryDigestAccumulator::new(category))
+                .update_entries(&entries);
+        }
+
+        target
+            .reconcile_account_count()
+            .expect("reconcile accounts");
+        target
+            .reconcile_active_account_count()
+            .expect("reconcile active accounts");
+        target
+            .reconcile_program_count()
+            .expect("reconcile programs");
+        target
+            .reconcile_validator_count()
+            .expect("reconcile validators");
+        target.invalidate_merkle_cache();
+
+        let imported_pool = target
+            .get_mossstake_pool()
+            .expect("read target MossStake pool");
+        let imported_position = imported_pool
+            .positions
+            .get(&alice)
+            .expect("target MossStake position");
+        assert_eq!(imported_position.deposited_at_unix_seconds, 0);
+        assert_eq!(imported_position.lock_until_unix_seconds, 0);
+
+        let received_manifest = received_snapshot_manifest_from_accumulators(
+            &received_digests,
+            STATE_REPAIR_SNAPSHOT_CATEGORIES,
+        )
+        .expect("received manifest");
+        validate_snapshot_manifest_matches(&expected_manifest, &received_manifest)
+            .expect("received snapshot bytes must match the advertised manifest");
+
+        let post_import_manifest =
+            compute_state_repair_snapshot_manifest(&target, 1000).expect("target manifest");
+        let expected_mossstake = expected_manifest
+            .iter()
+            .find(|digest| digest.category == "mossstake_pool")
+            .expect("expected MossStake digest");
+        let post_import_mossstake = post_import_manifest
+            .iter()
+            .find(|digest| digest.category == "mossstake_pool")
+            .expect("post-import MossStake digest");
+        assert_ne!(
+            expected_mossstake, post_import_mossstake,
+            "post-import re-export must show the old MossStake normalization mismatch"
+        );
     }
 
     #[test]
