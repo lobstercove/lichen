@@ -85,19 +85,30 @@ function numericRewardValue(value) {
     return Number.isFinite(numeric) ? numeric : 0;
 }
 
-function buildBootstrapRecoveryDisplay(rewards) {
+const EXPLORER_NO_BOOTSTRAP_INDEX = '18446744073709551615';
+const EXPLORER_NO_BOOTSTRAP_INDEX_ROUNDED = 18_446_744_073_709_000_000;
+
+function isSelfFundedBootstrapIndex(value) {
+    if (value === null || value === undefined) return false;
+    if (typeof value === 'string') return value === EXPLORER_NO_BOOTSTRAP_INDEX;
+    const numeric = Number(value);
+    return Number.isFinite(numeric) && numeric >= EXPLORER_NO_BOOTSTRAP_INDEX_ROUNDED;
+}
+
+function buildBootstrapRecoveryDisplay(rewards, stakingStatus = null) {
     const debt = numericRewardValue(rewards?.bootstrap_debt);
     const totalDebtRepaid = numericRewardValue(rewards?.total_debt_repaid);
     const legacyEarnedAmount = numericRewardValue(rewards?.earned_amount);
     const earned = totalDebtRepaid > 0 ? totalDebtRepaid : legacyEarnedAmount;
     const hasGraduationSlot = rewards?.graduation_slot !== null && rewards?.graduation_slot !== undefined;
     const hasRecoverySchedule = debt > 0 || earned > 0 || hasGraduationSlot;
+    const isSelfFunded = isSelfFundedBootstrapIndex(stakingStatus?.bootstrap_index);
 
-    if (!hasRecoverySchedule) {
+    if (isSelfFunded || !hasRecoverySchedule) {
         return {
             debt,
             earned,
-            hasRecoverySchedule,
+            hasRecoverySchedule: false,
             label: '0.0%',
             barWidth: 0,
         };
@@ -1853,7 +1864,10 @@ async function applyValidatorType(data) {
 // ===== Validator Rewards =====
 async function loadValidatorRewards(address) {
     try {
-        const rewards = await rpcCall('getStakingRewards', [address]);
+        const [rewards, stakingStatus] = await Promise.all([
+            rpcCall('getStakingRewards', [address]),
+            rpcCall('getStakingStatus', [address]).catch(() => null),
+        ]);
         if (!rewards) {
             const emptyCard = document.getElementById('validatorRewardsCard');
             if (emptyCard) emptyCard.style.display = 'none';
@@ -1869,7 +1883,7 @@ async function loadValidatorRewards(address) {
         const projectedEpoch = rewards.projected_epoch_reward || 0;
         const claimed = rewards.claimed_rewards || 0;
         const rate = rewards.reward_rate || '0';
-        const recovery = buildBootstrapRecoveryDisplay(rewards);
+        const recovery = buildBootstrapRecoveryDisplay(rewards, stakingStatus);
         const debt = recovery.debt;
         const earned = recovery.earned;
         const recoverySection = document.getElementById('bootstrapRecoverySection');

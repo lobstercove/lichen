@@ -407,6 +407,7 @@ function validateMonitoringIncidentControls() {
     const html = fs.readFileSync(path.join(monitoringRoot, 'index.html'), 'utf8');
     const js = fs.readFileSync(path.join(monitoringRoot, 'js', 'monitoring.js'), 'utf8');
     const css = fs.readFileSync(path.join(monitoringRoot, 'css', 'monitoring.css'), 'utf8');
+    const sharedUtils = fs.readFileSync(path.join(monitoringRoot, 'shared', 'utils.js'), 'utf8');
 
     const fakeControlHtmlTokens = [
         'killswitch',
@@ -486,6 +487,14 @@ function validateMonitoringIncidentControls() {
             oracleBridgeBody.includes('btcRoute.route_ready !== false') &&
             oracleBridgeBody.includes(": 'CHECK'"),
         'monitoring tracks WBTC contract inventory plus Bitcoin route and reserve health'
+    );
+    assert(
+        sharedUtils.includes('function getSignedMetadataManifestOrNull(') &&
+            sharedUtils.includes('function mergeSignedAndLiveRegistryEntries(') &&
+            sharedUtils.includes('function getSignedRegistryEntryOrFallback(') &&
+            sharedUtils.includes('var liveEntries = await getLiveRegistryEntries(method, fallbackRpcCall)') &&
+            sharedUtils.includes('return fallbackRpcCall(method, params || [])'),
+        'monitoring signed metadata registry falls back to live registry for newly shipped contracts'
     );
 }
 
@@ -1165,16 +1174,22 @@ function validateFrontendInputGuards() {
     );
 
     assert(
-        explorerAddressJs.includes('function buildBootstrapRecoveryDisplay(rewards)') &&
+        explorerAddressJs.includes('const EXPLORER_NO_BOOTSTRAP_INDEX') &&
+            explorerAddressJs.includes('function isSelfFundedBootstrapIndex(value)') &&
+            explorerAddressJs.includes('numeric >= EXPLORER_NO_BOOTSTRAP_INDEX_ROUNDED') &&
+            explorerAddressJs.includes('function buildBootstrapRecoveryDisplay(rewards, stakingStatus = null)') &&
             explorerAddressJs.includes('hasRecoverySchedule = debt > 0 || earned > 0 || hasGraduationSlot') &&
+            explorerAddressJs.includes('const isSelfFunded = isSelfFundedBootstrapIndex(stakingStatus?.bootstrap_index)') &&
+            explorerAddressJs.includes('if (isSelfFunded || !hasRecoverySchedule)') &&
             explorerAddressJs.includes("label: '0.0%'") &&
             explorerAddressHtml.includes('id="bootstrapRecoverySection"') &&
             explorerAddressJs.includes("document.getElementById('bootstrapRecoverySection')") &&
             explorerAddressJs.includes("recoverySection.style.display = recovery.hasRecoverySchedule ? 'block' : 'none'") &&
+            explorerAddressJs.includes("rpcCall('getStakingStatus', [address]).catch(() => null)") &&
             explorerAddressJs.includes("document.getElementById('rewardsDebt').textContent = formatLicn(debt)") &&
             !explorerAddressJs.includes("'No bootstrap grant'") &&
             explorerAddressJs.includes("document.getElementById('rewardsVestingText').textContent = recovery.label"),
-        'explorer validator bootstrap recovery keeps numeric debt rows and does not render zero recovery as 100% graduated'
+        'explorer validator bootstrap recovery keeps numeric debt rows, hides true self-funded validators, and does not render zero recovery as 100% graduated'
     );
 
     assert(
