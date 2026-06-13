@@ -16636,7 +16636,7 @@ async fn run_validator() {
                 };
                 // Handle CheckpointMetaResponse
                 if let Some(mut checkpoint_metas) = response.checkpoint_meta {
-                    checkpoint_metas.sort_by(|left, right| right.slot.cmp(&left.slot));
+                    checkpoint_metas.sort_by_key(|meta| std::cmp::Reverse(meta.slot));
                     let mut saw_checkpoint = false;
                     for checkpoint_meta in checkpoint_metas {
                         let CheckpointMetaAnchor {
