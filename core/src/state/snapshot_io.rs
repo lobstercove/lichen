@@ -1010,6 +1010,10 @@ impl StateStore {
             .write(batch)
             .map_err(|e| format!("Failed to import {}: {}", category, e))?;
 
+        if category == "stats" {
+            self.reload_metrics_from_stats()?;
+        }
+
         Ok(entries.len())
     }
 

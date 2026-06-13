@@ -155,6 +155,15 @@ impl StateStore {
         self.metrics.save(&self.db)
     }
 
+    /// Reload in-memory metrics counters from CF_STATS after raw stats imports.
+    ///
+    /// Snapshot import writes CF_STATS directly; reconciliation later saves the
+    /// in-memory counters back to RocksDB, so the cache must reflect imported
+    /// stats before reconciliation mutates any derived counts.
+    pub fn reload_metrics_from_stats(&self) -> Result<(), String> {
+        self.metrics.load(&self.db)
+    }
+
     /// Backward-compatible alias for save_metrics_counters.
     #[deprecated(note = "Use save_metrics_counters() instead")]
     pub fn flush_metrics(&self) -> Result<(), String> {

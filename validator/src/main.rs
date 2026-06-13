@@ -26434,6 +26434,10 @@ mod tests {
         source
             .put_mossstake_pool(&lichen_core::MossStakePool::new())
             .expect("put mossstake pool");
+        let genesis = Block::genesis(Hash::hash(b"snapshot-stats-metrics-genesis"), 1, vec![]);
+        source
+            .put_block_atomic(&genesis, Some(0), Some(0))
+            .expect("persist block metrics");
         source.save_metrics_counters().expect("save metrics");
         source.compute_state_root_cold_start();
         source
