@@ -17917,6 +17917,13 @@ async fn run_validator() {
                             }
                         }
 
+                        drop(staging_state);
+                        cleanup_snapshot_staging(&mut active_snapshot_staging);
+                        info!(
+	                            "🧹 Released verified snapshot staging DB {} before live root activation",
+	                            staging_dir
+	                        );
+
                         for (label, result) in [
                             (
                                 "account",
@@ -18024,8 +18031,6 @@ async fn run_validator() {
                             ),
                             Err(e) => warn!("⚠️  Failed to create local checkpoint: {}", e),
                         }
-                        drop(staging_state);
-                        cleanup_snapshot_staging(&mut active_snapshot_staging);
                         active_snapshot_anchor = None;
                         active_snapshot_source_peer = None;
                         active_snapshot_source = None;

@@ -30,6 +30,7 @@ const STATE_COMMITMENT_SCHEMA_SPARSE_SHIELDED_V2: u8 = 2;
 const SPARSE_NODE_DOMAIN_LEAF: u8 = 0xA0;
 const SPARSE_NODE_DOMAIN_BRANCH: u8 = 0xA1;
 const SHIELDED_STATE_ROOT_PREFIX: u8 = 0x51;
+const SPARSE_REBUILD_WRITE_BATCH_LIMIT: usize = 10_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SparseStateCommitmentReport {
@@ -143,6 +144,89 @@ impl MerkleProof {
             return false;
         }
         self.verify(expected_root)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sparse_test_entry(label: &[u8]) -> SparseLeafEntry {
+        let path = Hash::hash(label).0;
+        SparseLeafEntry {
+            leaf_key: label.to_vec(),
+            path,
+            leaf_hash: Hash::hash_two_parts(label, b"sparse-test-value"),
+        }
+    }
+
+    #[test]
+    fn direct_sparse_rebuild_root_matches_incremental_overlay() {
+        let temp_dir = tempfile::tempdir().expect("create sparse temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let mut entries = Vec::new();
+
+        for i in 0..512u64 {
+            entries.push(sparse_test_entry(&i.to_be_bytes()));
+        }
+        for label in [
+            b"shared-prefix-a".as_slice(),
+            b"shared-prefix-b".as_slice(),
+            b"left-edge".as_slice(),
+            b"right-edge".as_slice(),
+        ] {
+            entries.push(sparse_test_entry(label));
+        }
+
+        let (direct_root, _) = state
+            .sparse_compute_root_from_entries(CF_CONTRACT_MERKLE_NODES, &entries)
+            .expect("direct sparse root");
+
+        let mut ordered = entries.clone();
+        ordered.sort_by(|left, right| {
+            left.path
+                .cmp(&right.path)
+                .then_with(|| left.leaf_key.cmp(&right.leaf_key))
+        });
+        let mut overlay = SparseNodeOverlay::new();
+        let mut incremental_root = Hash::default();
+        for entry in ordered {
+            incremental_root = state
+                .sparse_update_node(
+                    CF_CONTRACT_MERKLE_NODES,
+                    &mut overlay,
+                    incremental_root,
+                    entry.path,
+                    Some(entry.leaf_hash),
+                )
+                .expect("incremental sparse root");
+        }
+
+        assert_eq!(direct_root, incremental_root);
+    }
+
+    #[test]
+    fn direct_sparse_rebuild_rejects_path_collisions() {
+        let temp_dir = tempfile::tempdir().expect("create sparse temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let path = Hash::hash(b"same-path").0;
+        let entries = vec![
+            SparseLeafEntry {
+                leaf_key: b"a".to_vec(),
+                path,
+                leaf_hash: Hash::hash(b"a"),
+            },
+            SparseLeafEntry {
+                leaf_key: b"b".to_vec(),
+                path,
+                leaf_hash: Hash::hash(b"b"),
+            },
+        ];
+
+        let err = state
+            .sparse_compute_root_from_entries(CF_CONTRACT_MERKLE_NODES, &entries)
+            .expect_err("duplicate sparse path must fail");
+        assert!(err.contains("path collision"));
     }
 }
 
@@ -727,10 +811,21 @@ impl StateStore {
         overlay: &mut BTreeMap<[u8; 32], Vec<u8>>,
         node: SparseNode,
     ) -> Hash {
-        let encoded = Self::sparse_encode_node(&node);
-        let hash = Hash::hash(&encoded);
+        let (hash, encoded) = Self::sparse_encode_hashed_node(&node);
         overlay.insert(hash.0, encoded);
         hash
+    }
+
+    fn sparse_put_rebuild_node(overlay: &mut SparseNodeOverlay, node: SparseNode) -> Hash {
+        let (hash, encoded) = Self::sparse_encode_hashed_node(&node);
+        overlay.insert(hash.0, encoded);
+        hash
+    }
+
+    fn sparse_encode_hashed_node(node: &SparseNode) -> (Hash, Vec<u8>) {
+        let encoded = Self::sparse_encode_node(node);
+        let hash = Hash::hash(&encoded);
+        (hash, encoded)
     }
 
     fn sparse_read_node(
@@ -945,24 +1040,65 @@ impl StateStore {
                 .then_with(|| left.leaf_key.cmp(&right.leaf_key))
         });
 
-        let mut overlay = BTreeMap::<[u8; 32], Vec<u8>>::new();
-        let mut root = Hash::default();
         let mut last_path: Option<[u8; 32]> = None;
-        for entry in ordered {
+        for entry in &ordered {
             if Some(entry.path) == last_path {
                 return Err("Sparse state commitment path collision".to_string());
             }
-            root = self.sparse_update_node(
-                cf_name,
-                &mut overlay,
-                root,
-                entry.path,
-                Some(entry.leaf_hash),
-            )?;
             last_path = Some(entry.path);
         }
 
+        let mut overlay = SparseNodeOverlay::new();
+        let root = Self::sparse_build_root_from_ordered_entries(&ordered, &mut overlay)?;
+        let _ = cf_name;
         Ok((root, overlay))
+    }
+
+    fn sparse_build_root_from_ordered_entries(
+        entries: &[SparseLeafEntry],
+        overlay: &mut SparseNodeOverlay,
+    ) -> Result<Hash, String> {
+        match entries.len() {
+            0 => return Ok(Hash::default()),
+            1 => {
+                let entry = &entries[0];
+                return Ok(Self::sparse_put_rebuild_node(
+                    overlay,
+                    SparseNode::Leaf {
+                        path: entry.path,
+                        leaf_hash: entry.leaf_hash,
+                    },
+                ));
+            }
+            _ => {}
+        }
+
+        let first_path = entries[0].path;
+        let last_path = entries[entries.len() - 1].path;
+        let prefix_bits = Self::sparse_common_prefix_bits(&first_path, &last_path);
+        if prefix_bits >= 256 {
+            return Err("Sparse state commitment path collision".to_string());
+        }
+
+        let split = entries
+            .iter()
+            .position(|entry| Self::sparse_bit(&entry.path, prefix_bits))
+            .ok_or_else(|| "Sparse state commitment split missing right branch".to_string())?;
+        if split == 0 {
+            return Err("Sparse state commitment split missing left branch".to_string());
+        }
+
+        let left = Self::sparse_build_root_from_ordered_entries(&entries[..split], overlay)?;
+        let right = Self::sparse_build_root_from_ordered_entries(&entries[split..], overlay)?;
+        Ok(Self::sparse_put_rebuild_node(
+            overlay,
+            SparseNode::Branch {
+                prefix_bits,
+                prefix: Self::sparse_normalize_prefix(&first_path, prefix_bits),
+                left,
+                right,
+            },
+        ))
     }
 
     fn sparse_root_with_changes(
@@ -996,11 +1132,42 @@ impl StateStore {
         Ok((root, overlay))
     }
 
-    fn clear_sparse_node_cf(&self, cf_name: &str, batch: &mut WriteBatch) -> Result<(), String> {
+    fn flush_sparse_rebuild_batch(
+        &self,
+        batch: &mut WriteBatch,
+        pending_ops: &mut usize,
+        context: &str,
+    ) -> Result<(), String> {
+        if *pending_ops == 0 {
+            return Ok(());
+        }
+        let batch_to_write = std::mem::take(batch);
+        self.db
+            .write(batch_to_write)
+            .map_err(|e| format!("Failed to write sparse rebuild batch for {context}: {e}"))?;
+        *pending_ops = 0;
+        Ok(())
+    }
+
+    fn maybe_flush_sparse_rebuild_batch(
+        &self,
+        batch: &mut WriteBatch,
+        pending_ops: &mut usize,
+        context: &str,
+    ) -> Result<(), String> {
+        if *pending_ops >= SPARSE_REBUILD_WRITE_BATCH_LIMIT {
+            self.flush_sparse_rebuild_batch(batch, pending_ops, context)?;
+        }
+        Ok(())
+    }
+
+    fn clear_sparse_node_cf(&self, cf_name: &str) -> Result<(), String> {
         let cf = self
             .db
             .cf_handle(cf_name)
             .ok_or_else(|| format!("Sparse node CF '{cf_name}' not found"))?;
+        let mut batch = WriteBatch::default();
+        let mut pending_ops = 0usize;
         for item in self
             .db
             .iterator_cf(&cf, rocksdb::IteratorMode::Start)
@@ -1008,7 +1175,14 @@ impl StateStore {
         {
             let (key, _) = item;
             batch.delete_cf(&cf, &*key);
+            pending_ops += 1;
+            self.maybe_flush_sparse_rebuild_batch(
+                &mut batch,
+                &mut pending_ops,
+                "clear sparse nodes",
+            )?;
         }
+        self.flush_sparse_rebuild_batch(&mut batch, &mut pending_ops, "clear sparse nodes")?;
         Ok(())
     }
 
@@ -1028,11 +1202,37 @@ impl StateStore {
         Ok(overlay.len() as u64)
     }
 
-    fn clear_leaf_cf(&self, cf_name: &str, batch: &mut WriteBatch) -> Result<(), String> {
+    fn write_sparse_overlay_nodes_batched(
+        &self,
+        cf_name: &str,
+        overlay: &BTreeMap<[u8; 32], Vec<u8>>,
+    ) -> Result<u64, String> {
+        let cf = self
+            .db
+            .cf_handle(cf_name)
+            .ok_or_else(|| format!("Sparse node CF '{cf_name}' not found"))?;
+        let mut batch = WriteBatch::default();
+        let mut pending_ops = 0usize;
+        for (hash, data) in overlay {
+            batch.put_cf(&cf, hash, data);
+            pending_ops += 1;
+            self.maybe_flush_sparse_rebuild_batch(
+                &mut batch,
+                &mut pending_ops,
+                "write sparse nodes",
+            )?;
+        }
+        self.flush_sparse_rebuild_batch(&mut batch, &mut pending_ops, "write sparse nodes")?;
+        Ok(overlay.len() as u64)
+    }
+
+    fn clear_leaf_cf(&self, cf_name: &str) -> Result<(), String> {
         let cf = self
             .db
             .cf_handle(cf_name)
             .ok_or_else(|| format!("Merkle leaf CF '{cf_name}' not found"))?;
+        let mut batch = WriteBatch::default();
+        let mut pending_ops = 0usize;
         for item in self
             .db
             .iterator_cf(&cf, rocksdb::IteratorMode::Start)
@@ -1040,23 +1240,38 @@ impl StateStore {
         {
             let (key, _) = item;
             batch.delete_cf(&cf, &*key);
+            pending_ops += 1;
+            self.maybe_flush_sparse_rebuild_batch(
+                &mut batch,
+                &mut pending_ops,
+                "clear sparse leaves",
+            )?;
         }
+        self.flush_sparse_rebuild_batch(&mut batch, &mut pending_ops, "clear sparse leaves")?;
         Ok(())
     }
 
-    fn write_sparse_leaf_entries(
+    fn write_sparse_leaf_entries_batched(
         &self,
         cf_name: &str,
         entries: &[SparseLeafEntry],
-        batch: &mut WriteBatch,
     ) -> Result<(), String> {
         let cf = self
             .db
             .cf_handle(cf_name)
             .ok_or_else(|| format!("Merkle leaf CF '{cf_name}' not found"))?;
+        let mut batch = WriteBatch::default();
+        let mut pending_ops = 0usize;
         for entry in entries {
             batch.put_cf(&cf, &entry.leaf_key, entry.leaf_hash.0);
+            pending_ops += 1;
+            self.maybe_flush_sparse_rebuild_batch(
+                &mut batch,
+                &mut pending_ops,
+                "write sparse leaves",
+            )?;
         }
+        self.flush_sparse_rebuild_batch(&mut batch, &mut pending_ops, "write sparse leaves")?;
         Ok(())
     }
 
@@ -1117,23 +1332,36 @@ impl StateStore {
         let dirty_keys = self.dirty_account_keys();
         let (root, overlay) =
             self.sparse_compute_root_from_entries(CF_ACCOUNT_MERKLE_NODES, &entries)?;
-        let mut batch = WriteBatch::default();
-        self.clear_sparse_node_cf(CF_ACCOUNT_MERKLE_NODES, &mut batch)?;
-        self.clear_leaf_cf(CF_MERKLE_LEAVES, &mut batch)?;
-        self.write_sparse_leaf_entries(CF_MERKLE_LEAVES, &entries, &mut batch)?;
+        self.clear_sparse_node_cf(CF_ACCOUNT_MERKLE_NODES)?;
+        self.clear_leaf_cf(CF_MERKLE_LEAVES)?;
+        self.write_sparse_leaf_entries_batched(CF_MERKLE_LEAVES, &entries)?;
         let node_count =
-            self.write_sparse_overlay_nodes(CF_ACCOUNT_MERKLE_NODES, &overlay, &mut batch)?;
+            self.write_sparse_overlay_nodes_batched(CF_ACCOUNT_MERKLE_NODES, &overlay)?;
         let cf_stats = self
             .db
             .cf_handle(CF_STATS)
             .ok_or_else(|| "Stats CF not found".to_string())?;
         let leaf_count = entries.len() as u64;
+        let mut marker_batch = WriteBatch::default();
+        let mut marker_ops = 0usize;
         for pk in dirty_keys {
             let mut dirty_key = [0u8; 43];
             dirty_key[..11].copy_from_slice(b"dirty_acct:");
             dirty_key[11..43].copy_from_slice(&pk);
-            batch.delete_cf(&cf_stats, dirty_key);
+            marker_batch.delete_cf(&cf_stats, dirty_key);
+            marker_ops += 1;
+            self.maybe_flush_sparse_rebuild_batch(
+                &mut marker_batch,
+                &mut marker_ops,
+                "clear sparse account dirty markers",
+            )?;
         }
+        self.flush_sparse_rebuild_batch(
+            &mut marker_batch,
+            &mut marker_ops,
+            "clear sparse account dirty markers",
+        )?;
+        let mut batch = WriteBatch::default();
         batch.put_cf(&cf_stats, SPARSE_ACCOUNTS_ROOT_KEY, root.0);
         batch.put_cf(
             &cf_stats,
@@ -1157,23 +1385,36 @@ impl StateStore {
         let dirty_keys = self.dirty_contract_storage_keys();
         let (root, overlay) =
             self.sparse_compute_root_from_entries(CF_CONTRACT_MERKLE_NODES, &entries)?;
-        let mut batch = WriteBatch::default();
-        self.clear_sparse_node_cf(CF_CONTRACT_MERKLE_NODES, &mut batch)?;
-        self.clear_leaf_cf(CF_CONTRACT_MERKLE_LEAVES, &mut batch)?;
-        self.write_sparse_leaf_entries(CF_CONTRACT_MERKLE_LEAVES, &entries, &mut batch)?;
+        self.clear_sparse_node_cf(CF_CONTRACT_MERKLE_NODES)?;
+        self.clear_leaf_cf(CF_CONTRACT_MERKLE_LEAVES)?;
+        self.write_sparse_leaf_entries_batched(CF_CONTRACT_MERKLE_LEAVES, &entries)?;
         let node_count =
-            self.write_sparse_overlay_nodes(CF_CONTRACT_MERKLE_NODES, &overlay, &mut batch)?;
+            self.write_sparse_overlay_nodes_batched(CF_CONTRACT_MERKLE_NODES, &overlay)?;
         let cf_stats = self
             .db
             .cf_handle(CF_STATS)
             .ok_or_else(|| "Stats CF not found".to_string())?;
         let leaf_count = entries.len() as u64;
+        let mut marker_batch = WriteBatch::default();
+        let mut marker_ops = 0usize;
         for full_key in dirty_keys {
             let mut marker_key = Vec::with_capacity(b"dirty_cstor:".len() + full_key.len());
             marker_key.extend_from_slice(b"dirty_cstor:");
             marker_key.extend_from_slice(&full_key);
-            batch.delete_cf(&cf_stats, marker_key);
+            marker_batch.delete_cf(&cf_stats, marker_key);
+            marker_ops += 1;
+            self.maybe_flush_sparse_rebuild_batch(
+                &mut marker_batch,
+                &mut marker_ops,
+                "clear sparse contract dirty markers",
+            )?;
         }
+        self.flush_sparse_rebuild_batch(
+            &mut marker_batch,
+            &mut marker_ops,
+            "clear sparse contract dirty markers",
+        )?;
+        let mut batch = WriteBatch::default();
         batch.put_cf(&cf_stats, SPARSE_CONTRACT_ROOT_KEY, root.0);
         batch.put_cf(
             &cf_stats,
