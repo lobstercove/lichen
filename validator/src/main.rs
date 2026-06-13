@@ -26364,6 +26364,127 @@ mod tests {
     }
 
     #[test]
+    fn stats_snapshot_export_omits_volatile_merkle_cache_keys() {
+        let source_dir = tempfile::tempdir().expect("create source dir");
+        let source = StateStore::open(source_dir.path()).expect("open source state");
+        let target_dir = tempfile::tempdir().expect("create target dir");
+        let target = StateStore::open(target_dir.path()).expect("open target state");
+
+        for key in [
+            "cached_state_root",
+            "cached_state_root_schema",
+            "cached_state_commitment_schema",
+            "cached_accounts_root",
+            "cached_contract_root",
+            "merkle_leaf_count",
+            "contract_merkle_leaf_count",
+        ] {
+            source
+                .put_metadata(key, b"volatile-cache")
+                .expect("put volatile stats key");
+        }
+        source
+            .put_metadata("snapshot-durable-marker", b"keep")
+            .expect("put durable stats key");
+
+        let imported = stream_snapshot_category_between_stores(&source, &target, "stats", 1)
+            .expect("stream filtered stats category");
+        assert_eq!(imported, 1);
+        assert_eq!(
+            target
+                .get_metadata("snapshot-durable-marker")
+                .expect("read durable marker")
+                .as_deref(),
+            Some(&b"keep"[..])
+        );
+        assert_eq!(
+            target
+                .get_metadata("cached_state_root")
+                .expect("read volatile marker"),
+            None,
+            "derived Merkle cache keys must not be part of stats snapshots"
+        );
+    }
+
+    #[test]
+    fn state_repair_manifest_survives_volatile_stats_cache_invalidation() {
+        let source_dir = tempfile::tempdir().expect("create source dir");
+        let source = StateStore::open(source_dir.path()).expect("open source state");
+        let target_dir = tempfile::tempdir().expect("create target dir");
+        let target = StateStore::open(target_dir.path()).expect("open target state");
+
+        let validator = Keypair::generate().pubkey();
+        let owner = Keypair::generate().pubkey();
+        let program = Keypair::generate().pubkey();
+        source
+            .put_account(&owner, &Account::new(42, owner))
+            .expect("put account");
+        source
+            .put_contract_storage(&program, b"key", b"value")
+            .expect("put contract storage");
+        let mut validators = ValidatorSet::new();
+        validators.add_validator(test_validator_info(validator));
+        source
+            .save_validator_set(&validators)
+            .expect("save validator set");
+        let mut pool = StakePool::new();
+        pool.stake(validator, MIN_VALIDATOR_STAKE, 0)
+            .expect("stake validator");
+        source.put_stake_pool(&pool).expect("put stake pool");
+        source
+            .put_mossstake_pool(&lichen_core::MossStakePool::new())
+            .expect("put mossstake pool");
+        source.save_metrics_counters().expect("save metrics");
+        source.compute_state_root_cold_start();
+        source
+            .put_metadata("snapshot-durable-marker", b"keep")
+            .expect("put durable stats key");
+
+        assert!(
+            source
+                .get_metadata("cached_state_root")
+                .expect("read source cached root")
+                .is_some(),
+            "test setup must include source-side volatile Merkle cache keys"
+        );
+
+        let expected_manifest =
+            compute_state_repair_snapshot_manifest(&source, 1000).expect("source manifest");
+        for category in STATE_REPAIR_SNAPSHOT_CATEGORIES {
+            let entries = export_roundtrip_snapshot_entries(&source, category, 1000)
+                .unwrap_or_else(|err| panic!("export {category}: {err}"));
+            import_ordered_snapshot_category(&target, category, &entries)
+                .unwrap_or_else(|err| panic!("import {category}: {err}"));
+        }
+
+        target
+            .reconcile_account_count()
+            .expect("reconcile accounts");
+        target
+            .reconcile_active_account_count()
+            .expect("reconcile active accounts");
+        target
+            .reconcile_program_count()
+            .expect("reconcile programs");
+        target
+            .reconcile_validator_count()
+            .expect("reconcile validators");
+        target.invalidate_merkle_cache();
+
+        assert_eq!(
+            target
+                .get_metadata("cached_state_root")
+                .expect("read target cached root"),
+            None,
+            "stake and mossstake imports clear derived composite root caches"
+        );
+        let actual_manifest =
+            compute_state_repair_snapshot_manifest(&target, 1000).expect("target manifest");
+        validate_snapshot_manifest_matches(&expected_manifest, &actual_manifest)
+            .expect("repair manifest should ignore volatile cache entries");
+    }
+
+    #[test]
     fn snapshot_archive_completeness_accepts_archived_checkpoint_blocks() {
         let temp_dir = tempfile::tempdir().expect("create temp dir");
         let state = StateStore::open(temp_dir.path()).expect("open state");

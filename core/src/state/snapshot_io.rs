@@ -411,10 +411,93 @@ impl StateStore {
         if category == "tx_by_slot" {
             return self.export_tx_by_slot_from_blocks_cursor(after_key, limit);
         }
+        if category == "stats" {
+            return self.export_stats_cursor_for_snapshot(after_key, limit);
+        }
 
         let (cf_name, display_name) = Self::snapshot_category_cf(category)
             .ok_or_else(|| format!("Unsupported snapshot category: {}", category))?;
         self.export_cf_page_cursor_uncounted(cf_name, display_name, after_key, limit)
+    }
+
+    fn export_stats_cursor_for_snapshot(
+        &self,
+        after_key: Option<&[u8]>,
+        limit: u64,
+    ) -> Result<KvPage, String> {
+        const VOLATILE_MERKLE_STATS_KEYS: &[&[u8]] = &[
+            b"cached_state_root",
+            b"cached_state_root_schema",
+            b"cached_state_commitment_schema",
+            b"cached_accounts_root",
+            b"cached_contract_root",
+            b"merkle_leaf_count",
+            b"contract_merkle_leaf_count",
+        ];
+
+        if limit == 0 {
+            return Ok(KvPage {
+                entries: Vec::new(),
+                total: 0,
+                next_cursor: None,
+                has_more: false,
+            });
+        }
+
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+
+        let mut read_opts = rocksdb::ReadOptions::default();
+        read_opts.set_total_order_seek(true);
+        let iter = if let Some(after) = after_key {
+            self.db.iterator_cf_opt(
+                &cf,
+                read_opts,
+                rocksdb::IteratorMode::From(after, rocksdb::Direction::Forward),
+            )
+        } else {
+            self.db
+                .iterator_cf_opt(&cf, read_opts, rocksdb::IteratorMode::Start)
+        };
+
+        let mut entries = Vec::with_capacity(limit.min(10_000) as usize);
+        let mut has_more = false;
+        for item in iter {
+            let (key, value) = item.map_err(|err| format!("Failed iterating Stats: {}", err))?;
+            if let Some(after) = after_key {
+                if key.as_ref() == after {
+                    continue;
+                }
+            }
+            if VOLATILE_MERKLE_STATS_KEYS
+                .iter()
+                .any(|volatile| key.as_ref() == *volatile)
+            {
+                continue;
+            }
+
+            entries.push((key.to_vec(), value.to_vec()));
+            if entries.len() > limit as usize {
+                has_more = true;
+                entries.pop();
+                break;
+            }
+        }
+
+        let next_cursor = if has_more {
+            entries.last().map(|(key, _)| key.clone())
+        } else {
+            None
+        };
+
+        Ok(KvPage {
+            entries,
+            total: 0,
+            next_cursor,
+            has_more,
+        })
     }
 
     fn export_blocks_cursor_canonical(
