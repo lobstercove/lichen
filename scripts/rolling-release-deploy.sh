@@ -100,6 +100,20 @@ scp_to() {
     "$src" "$SSH_USER@$host:$dst"
 }
 
+ssh_run_script() {
+  local host="$1"
+  local env_prefix="$2"
+  local script
+  local remote_script
+  script="$(mktemp "${TMPDIR:-/tmp}/lichen-remote.XXXXXX.sh")"
+  remote_script="/tmp/$(basename "$script")"
+  cat > "$script"
+  chmod 700 "$script"
+  scp_to "$script" "$host" "$remote_script"
+  rm -f "$script"
+  ssh_run "$host" "chmod 700 '$remote_script' && set +e; ${env_prefix} bash '$remote_script'; status=\$?; rm -f '$remote_script'; exit \$status"
+}
+
 archive_for_arch() {
   case "$1" in
     x86_64|amd64) echo "lichen-validator-linux-x86_64.tar.gz" ;;
@@ -308,7 +322,7 @@ REMOTE
   else
     scp_to "$ARTIFACT_DIR/$archive" "$host" "/tmp/$archive"
   fi
-  ssh_run "$host" "NETWORK='$NETWORK' SERVICE='$SERVICE' ARCHIVE='/tmp/$archive' EXPECTED_VALIDATOR_SHA='$expected_validator_sha' EXPECTED_CUSTODY_SHA='$expected_custody_sha' EXPECTED_FAUCET_SHA='$expected_faucet_sha' bash -s" <<'REMOTE'
+  ssh_run_script "$host" "NETWORK='$NETWORK' SERVICE='$SERVICE' ARCHIVE='/tmp/$archive' EXPECTED_VALIDATOR_SHA='$expected_validator_sha' EXPECTED_CUSTODY_SHA='$expected_custody_sha' EXPECTED_FAUCET_SHA='$expected_faucet_sha'" <<'REMOTE'
 set -euo pipefail
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp" "$ARCHIVE"' EXIT

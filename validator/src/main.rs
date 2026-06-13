@@ -40,7 +40,7 @@ use lichen_core::multisig::{
 };
 use lichen_core::nft::decode_token_state;
 #[cfg(test)]
-use lichen_core::STATE_SNAPSHOT_SPECIAL_CATEGORIES;
+use lichen_core::STATE_SNAPSHOT_CATEGORIES;
 use lichen_core::{
     compute_bft_timestamp, compute_stake_weighted_median, compute_validators_hash, evm_tx_hash,
     Account, Block, ContractAbi, ContractAccount, ContractInstruction, FeeConfig, FinalityTracker,
@@ -54,7 +54,7 @@ use lichen_core::{
     GENESIS_STATE_BUNDLE_VERSION, GENESIS_STATE_CHUNK_OPCODE, GENESIS_SUPPLY_SPORES,
     MAX_TX_AGE_BLOCKS, MIN_VALIDATOR_STAKE, NFT_COLLECTION_FEE, NFT_MINT_FEE, ORACLE_ASSET_MAX_LEN,
     ORACLE_ASSET_MIN_LEN, ORACLE_STALENESS_SLOTS, SLASHING_EVIDENCE_CODEC_LIMIT_BYTES,
-    STATE_SNAPSHOT_CATEGORIES, SYSTEM_PROGRAM_ID as CORE_SYSTEM_PROGRAM_ID,
+    STATE_SNAPSHOT_SPECIAL_CATEGORIES, SYSTEM_PROGRAM_ID as CORE_SYSTEM_PROGRAM_ID,
     VALIDATOR_BOOTSTRAP_GRANTS_ENABLED_METADATA_KEY, VALIDATOR_BOOTSTRAP_GRANTS_ENABLED_VALUE,
 };
 use lichen_genesis::{
@@ -565,8 +565,9 @@ fn import_ordered_snapshot_category(
 
 fn next_snapshot_category_request(
     progress: &HashMap<String, (u64, u64)>,
+    categories: &'static [&'static str],
 ) -> Option<(&'static str, u64)> {
-    WARP_SNAPSHOT_CATEGORIES
+    categories
         .iter()
         .find_map(|category| match progress.get(*category) {
             Some((received, total)) if received >= total => None,
@@ -703,14 +704,22 @@ fn compute_snapshot_category_digest(
     })
 }
 
-fn compute_snapshot_manifest(
+fn compute_snapshot_manifest_for_categories(
     state: &StateStore,
     chunk_size: u64,
+    categories: &[&str],
 ) -> Result<Vec<SnapshotCategoryDigest>, String> {
-    WARP_SNAPSHOT_CATEGORIES
+    categories
         .iter()
         .map(|category| compute_snapshot_category_digest(state, category, chunk_size))
         .collect()
+}
+
+fn compute_state_repair_snapshot_manifest(
+    state: &StateStore,
+    chunk_size: u64,
+) -> Result<Vec<SnapshotCategoryDigest>, String> {
+    compute_snapshot_manifest_for_categories(state, chunk_size, STATE_REPAIR_SNAPSHOT_CATEGORIES)
 }
 
 fn snapshot_manifest_root(manifest: &[SnapshotCategoryDigest]) -> [u8; 32] {
@@ -735,18 +744,22 @@ fn advertised_snapshot_manifest_root(manifest: &[SnapshotCategoryDigest]) -> [u8
     }
 }
 
-fn validate_snapshot_manifest_shape(manifest: &[SnapshotCategoryDigest]) -> Result<(), String> {
-    if manifest.len() != WARP_SNAPSHOT_CATEGORIES.len() {
+fn validate_snapshot_manifest_shape_for(
+    manifest: &[SnapshotCategoryDigest],
+    categories: &[&str],
+    label: &str,
+) -> Result<(), String> {
+    if manifest.len() != categories.len() {
         return Err(format!(
-            "snapshot manifest has {} categories, expected {}",
+            "{label} snapshot manifest has {} categories, expected {}",
             manifest.len(),
-            WARP_SNAPSHOT_CATEGORIES.len()
+            categories.len()
         ));
     }
-    for (expected, actual) in WARP_SNAPSHOT_CATEGORIES.iter().zip(manifest.iter()) {
+    for (expected, actual) in categories.iter().zip(manifest.iter()) {
         if actual.category != *expected {
             return Err(format!(
-                "snapshot manifest category order mismatch: expected {}, got {}",
+                "{label} snapshot manifest category order mismatch: expected {}, got {}",
                 expected, actual.category
             ));
         }
@@ -754,12 +767,35 @@ fn validate_snapshot_manifest_shape(manifest: &[SnapshotCategoryDigest]) -> Resu
     Ok(())
 }
 
+#[cfg(test)]
+fn validate_snapshot_manifest_shape(manifest: &[SnapshotCategoryDigest]) -> Result<(), String> {
+    validate_snapshot_manifest_shape_for(manifest, WARP_SNAPSHOT_CATEGORIES, "full")
+}
+
+fn advertised_snapshot_manifest_categories(
+    manifest: &[SnapshotCategoryDigest],
+) -> Result<&'static [&'static str], String> {
+    if validate_snapshot_manifest_shape_for(manifest, STATE_REPAIR_SNAPSHOT_CATEGORIES, "repair")
+        .is_ok()
+    {
+        return Ok(STATE_REPAIR_SNAPSHOT_CATEGORIES);
+    }
+    validate_snapshot_manifest_shape_for(manifest, WARP_SNAPSHOT_CATEGORIES, "full")?;
+    Ok(WARP_SNAPSHOT_CATEGORIES)
+}
+
+fn validate_advertised_snapshot_manifest_shape(
+    manifest: &[SnapshotCategoryDigest],
+) -> Result<(), String> {
+    advertised_snapshot_manifest_categories(manifest).map(|_| ())
+}
+
 fn validate_snapshot_manifest_matches(
     expected: &[SnapshotCategoryDigest],
     actual: &[SnapshotCategoryDigest],
 ) -> Result<(), String> {
-    validate_snapshot_manifest_shape(expected)?;
-    validate_snapshot_manifest_shape(actual)?;
+    let categories = advertised_snapshot_manifest_categories(expected)?;
+    validate_snapshot_manifest_shape_for(actual, categories, "actual")?;
     for (expected_digest, actual_digest) in expected.iter().zip(actual.iter()) {
         if expected_digest != actual_digest {
             return Err(format!(
@@ -1112,6 +1148,7 @@ type SnapshotExportSessionKey = (std::net::SocketAddr, u64, [u8; 32], [u8; 32], 
 struct SnapshotExportSessionState {
     checkpoint_path: String,
     meta: lichen_core::CheckpointMeta,
+    categories: &'static [&'static str],
 }
 
 #[derive(Clone)]
@@ -4052,6 +4089,37 @@ const WARP_SNAPSHOT_CATEGORIES: &[&str] = &[
     "mossstake_pool",
 ];
 
+const STATE_REPAIR_SNAPSHOT_CATEGORIES: &[&str] = &[
+    "accounts",
+    "contract_storage",
+    "programs",
+    "symbol_registry",
+    "symbol_by_program",
+    "evm_map",
+    "evm_accounts",
+    "evm_storage",
+    "nft_by_owner",
+    "nft_by_collection",
+    "token_balances",
+    "holder_tokens",
+    "solana_token_accounts",
+    "solana_holder_token_accounts",
+    "dex_orders_by_pair",
+    "dex_orderbook_levels",
+    "pending_validator_changes",
+    "restrictions",
+    "restriction_index_target",
+    "restriction_index_code_hash",
+    "shielded_commitments",
+    "shielded_note_payloads",
+    "shielded_nullifiers",
+    "shielded_pool",
+    "stats",
+    "validator_set",
+    "stake_pool",
+    "mossstake_pool",
+];
+
 fn snapshot_request_chunk_size(category: &str) -> u64 {
     match category {
         // Archive records are much larger than state/index rows. Keep each
@@ -6572,11 +6640,12 @@ fn recent_verified_checkpoints(
             continue;
         }
         let snapshot_manifest = if verified.len() < manifest_limit {
-            match compute_snapshot_manifest(&checkpoint_store, MAX_SNAPSHOT_CHUNK_SIZE) {
+            match compute_state_repair_snapshot_manifest(&checkpoint_store, MAX_SNAPSHOT_CHUNK_SIZE)
+            {
                 Ok(manifest) => manifest,
                 Err(err) => {
                     warn!(
-                    "⚠️  Rejecting checkpoint at slot {}: failed to compute snapshot manifest: {}",
+                    "⚠️  Rejecting checkpoint at slot {}: failed to compute state-repair snapshot manifest: {}",
                     meta.slot, err
                 );
                     continue;
@@ -6586,7 +6655,7 @@ fn recent_verified_checkpoints(
             Vec::new()
         };
         if !snapshot_manifest.is_empty() {
-            if let Err(err) = validate_snapshot_manifest_shape(&snapshot_manifest) {
+            if let Err(err) = validate_advertised_snapshot_manifest_shape(&snapshot_manifest) {
                 warn!("⚠️  Rejecting checkpoint at slot {}: {}", meta.slot, err);
                 continue;
             }
@@ -6621,7 +6690,12 @@ fn verified_checkpoint_for_anchor(
     stake_pool: &StakePool,
     chain_id: &str,
     anchor: CheckpointSnapshotRequestAnchor,
-) -> Option<(lichen_core::CheckpointMeta, String, Block)> {
+) -> Option<(
+    lichen_core::CheckpointMeta,
+    String,
+    Block,
+    &'static [&'static str],
+)> {
     let requested_slot = anchor.slot;
     let requested_state_root = anchor.state_root;
     let requested_snapshot_manifest_root = anchor.snapshot_manifest_root;
@@ -6689,23 +6763,45 @@ fn verified_checkpoint_for_anchor(
             );
             continue;
         }
-        let snapshot_manifest = match compute_snapshot_manifest(
+        let manifest_started = Instant::now();
+        let snapshot_manifest = match compute_state_repair_snapshot_manifest(
             &checkpoint_store,
             MAX_SNAPSHOT_CHUNK_SIZE,
         ) {
             Ok(manifest) => manifest,
             Err(err) => {
                 warn!(
-                        "⚠️  Rejecting requested checkpoint at slot {}: failed to compute snapshot manifest: {}",
+                        "⚠️  Rejecting requested checkpoint at slot {}: failed to compute state-repair snapshot manifest: {}",
                         meta.slot, err
                     );
                 continue;
             }
         };
-        if let Err(err) = validate_snapshot_manifest_shape(&snapshot_manifest) {
+        if manifest_started.elapsed().as_secs() >= 2 {
             warn!(
-                "⚠️  Rejecting requested checkpoint at slot {}: {}",
-                meta.slot, err
+                "⚠️  State-repair snapshot manifest authorization for checkpoint slot {} took {}s",
+                meta.slot,
+                manifest_started.elapsed().as_secs()
+            );
+        }
+        let snapshot_categories = match advertised_snapshot_manifest_categories(&snapshot_manifest)
+        {
+            Ok(categories) => categories,
+            Err(err) => {
+                warn!(
+                    "⚠️  Rejecting requested checkpoint at slot {}: {}",
+                    meta.slot, err
+                );
+                continue;
+            }
+        };
+        if !snapshot_categories
+            .iter()
+            .all(|category| WARP_SNAPSHOT_CATEGORIES.contains(category))
+        {
+            warn!(
+                "⚠️  Rejecting requested checkpoint at slot {}: advertised snapshot profile contains unsupported categories",
+                meta.slot
             );
             continue;
         }
@@ -6719,7 +6815,7 @@ fn verified_checkpoint_for_anchor(
             );
             continue;
         }
-        return Some((meta, path, block));
+        return Some((meta, path, block, snapshot_categories));
     }
 
     None
@@ -16272,10 +16368,11 @@ async fn run_validator() {
                                     snapshot_manifest_root: requested_snapshot_manifest_root,
                                 },
                             ) {
-                                Some((meta, checkpoint_path, _block)) => {
+                                Some((meta, checkpoint_path, _block, categories)) => {
                                     let session = SnapshotExportSessionState {
                                         checkpoint_path,
                                         meta,
+                                        categories,
                                     };
                                     snapshot_export_sessions.insert(session_key, session.clone());
                                     session
@@ -16294,6 +16391,15 @@ async fn run_validator() {
                         }
                     };
                     session_last_access.insert(session_key, std::time::Instant::now());
+
+                    if !session.categories.contains(&category.as_str()) {
+                        warn!(
+                            "⚠️  Refusing {} snapshot request from {}: category is not part of the anchored checkpoint manifest",
+                            category, request.requester
+                        );
+                        peer_mgr_for_snapshot.record_violation(&request.requester);
+                        continue;
+                    }
 
                     match StateStore::open_checkpoint(&session.checkpoint_path) {
                         Ok(store) => {
@@ -16634,36 +16740,50 @@ async fn run_validator() {
                             && snapshot_last_progress_at.elapsed().as_secs()
                                 >= SNAPSHOT_PROGRESS_RETRY_SECS
                         {
-                            if let (Some(source_peer), Some(anchor), Some((category_name, chunk_index))) = (
-                                active_snapshot_source_peer,
-                                active_snapshot_anchor.as_ref(),
-                                next_snapshot_category_request(&state_snap_progress),
-                            ) {
-                                info!(
-                                    "🔁 Retrying stalled {} snapshot chunk {} from {}",
-                                    category_name,
-                                    chunk_index + 1,
-                                    source_peer
-                                );
-                                let retry_request = anchored_state_snapshot_request(
-                                    category_name,
-                                    chunk_index,
-                                    snapshot_request_chunk_size(category_name),
-                                    anchor,
-                                    local_addr_for_snap_apply,
-                                );
-                                if let Err(e) = peer_mgr_for_snapshot_apply
-                                    .send_to_peer(&source_peer, retry_request)
-                                    .await
+                            if let (Some(source_peer), Some(anchor)) =
+                                (active_snapshot_source_peer, active_snapshot_anchor.as_ref())
+                            {
+                                let categories = match advertised_snapshot_manifest_categories(
+                                    &anchor.snapshot_manifest,
+                                ) {
+                                    Ok(categories) => categories,
+                                    Err(err) => {
+                                        warn!(
+                                            "⚠️  Active snapshot manifest shape became invalid during retry: {}",
+                                            err
+                                        );
+                                        continue;
+                                    }
+                                };
+                                if let Some((category_name, chunk_index)) =
+                                    next_snapshot_category_request(&state_snap_progress, categories)
                                 {
-                                    warn!(
-                                        "⚠️  Failed to retry stalled {} snapshot chunk {}: {}",
+                                    info!(
+                                        "🔁 Retrying stalled {} snapshot chunk {} from {}",
                                         category_name,
                                         chunk_index + 1,
-                                        e
+                                        source_peer
                                     );
+                                    let retry_request = anchored_state_snapshot_request(
+                                        category_name,
+                                        chunk_index,
+                                        snapshot_request_chunk_size(category_name),
+                                        anchor,
+                                        local_addr_for_snap_apply,
+                                    );
+                                    if let Err(e) = peer_mgr_for_snapshot_apply
+                                        .send_to_peer(&source_peer, retry_request)
+                                        .await
+                                    {
+                                        warn!(
+                                            "⚠️  Failed to retry stalled {} snapshot chunk {}: {}",
+                                            category_name,
+                                            chunk_index + 1,
+                                            e
+                                        );
+                                    }
+                                    snapshot_last_progress_at = std::time::Instant::now();
                                 }
-                                snapshot_last_progress_at = std::time::Instant::now();
                             }
                         }
                         continue;
@@ -16690,7 +16810,7 @@ async fn run_validator() {
                             saw_checkpoint = true;
                             if !snapshot_manifest.is_empty() {
                                 if let Err(err) =
-                                    validate_snapshot_manifest_shape(&snapshot_manifest)
+                                    validate_advertised_snapshot_manifest_shape(&snapshot_manifest)
                                 {
                                     warn!(
                                         "⚠️  Rejecting checkpoint metadata from {}: {}",
@@ -16926,8 +17046,21 @@ async fn run_validator() {
                                     );
                                         continue;
                                     }
+                                    let active_categories =
+                                        match advertised_snapshot_manifest_categories(
+                                            &best_anchor.snapshot_manifest,
+                                        ) {
+                                            Ok(categories) => categories,
+                                            Err(err) => {
+                                                warn!(
+                                                    "⚠️  Active checkpoint manifest shape is invalid: {}",
+                                                    err
+                                                );
+                                                continue;
+                                            }
+                                        };
                                     let incomplete =
-                                        WARP_SNAPSHOT_CATEGORIES.iter().any(|category_name| {
+                                        active_categories.iter().any(|category_name| {
                                             state_snap_progress
                                                 .get(*category_name)
                                                 .map(|(received, total)| received < total)
@@ -16938,7 +17071,10 @@ async fn run_validator() {
                                             >= SNAPSHOT_PROGRESS_RETRY_SECS
                                     {
                                         if let Some((category_name, chunk_index)) =
-                                            next_snapshot_category_request(&state_snap_progress)
+                                            next_snapshot_category_request(
+                                                &state_snap_progress,
+                                                active_categories,
+                                            )
                                         {
                                             info!(
                                             "🔁 Retrying incomplete {} snapshot chunk {} from {} at slot {}",
@@ -16976,6 +17112,22 @@ async fn run_validator() {
                                     continue;
                                 }
 
+                                let snapshot_categories =
+                                    match advertised_snapshot_manifest_categories(
+                                        &best_anchor.snapshot_manifest,
+                                    ) {
+                                        Ok(categories) => categories,
+                                        Err(err) => {
+                                            warn!(
+                                                "⚠️  Rejecting checkpoint slot {} from {}: {}",
+                                                best_anchor.slot,
+                                                best_anchor_key.source.label(),
+                                                err
+                                            );
+                                            continue;
+                                        }
+                                    };
+
                                 let (staging_dir, staging_state) = match open_fresh_snapshot_staging(
                                     &data_dir_for_snapshot_apply,
                                     best_anchor.slot,
@@ -17012,7 +17164,8 @@ async fn run_validator() {
                                 state_snap_progress.clear();
                                 // Peer is significantly ahead — request state snapshot
                                 info!(
-                                "🔄 Requesting state snapshot from {} after {}-peer checkpoint corroboration (local slot {}, peer slot {})",
+                                "🔄 Requesting {}-category checkpoint snapshot from {} after {}-peer checkpoint corroboration (local slot {}, peer slot {})",
+                                snapshot_categories.len(),
                                 best_source_peer,
                                 best_support,
                                 local_slot,
@@ -17024,7 +17177,10 @@ async fn run_validator() {
                                 // order also preserves category dependencies such
                                 // as stats before MossStake.
                                 if let Some((category, chunk_index)) =
-                                    next_snapshot_category_request(&state_snap_progress)
+                                    next_snapshot_category_request(
+                                        &state_snap_progress,
+                                        snapshot_categories,
+                                    )
                                 {
                                     let Some(active_anchor) = active_snapshot_anchor.as_ref()
                                     else {
@@ -17180,14 +17336,31 @@ async fn run_validator() {
                         snapshot_slot
                     );
 
-                    if !WARP_SNAPSHOT_CATEGORIES.contains(&category.as_str()) {
-                        warn!("⚠️  Rejecting unsupported snapshot category {}", category);
+                    let active_snapshot_categories = match advertised_snapshot_manifest_categories(
+                        &active_anchor.snapshot_manifest,
+                    ) {
+                        Ok(categories) => categories,
+                        Err(err) => {
+                            warn!(
+                                    "⚠️  Rejecting {} snapshot chunk from {}: active manifest shape is invalid: {}",
+                                    category, response.requester, err
+                                );
+                            continue;
+                        }
+                    };
+
+                    if !active_snapshot_categories.contains(&category.as_str()) {
+                        warn!(
+                            "⚠️  Rejecting unsupported snapshot category {} for active manifest",
+                            category
+                        );
                         peer_mgr_for_snapshot_apply.record_violation(&response.requester);
                         continue;
                     }
-                    let Some((expected_category, _)) =
-                        next_snapshot_category_request(&state_snap_progress)
-                    else {
+                    let Some((expected_category, _)) = next_snapshot_category_request(
+                        &state_snap_progress,
+                        active_snapshot_categories,
+                    ) else {
                         info!(
                             "↩️  Ignoring extra {} snapshot chunk from {} after snapshot completion",
                             category, response.requester
@@ -17322,9 +17495,10 @@ async fn run_validator() {
                                 category, e
                             );
                         }
-                    } else if let Some((next_category, next_chunk)) =
-                        next_snapshot_category_request(&state_snap_progress)
-                    {
+                    } else if let Some((next_category, next_chunk)) = next_snapshot_category_request(
+                        &state_snap_progress,
+                        active_snapshot_categories,
+                    ) {
                         let Some(active_anchor) = active_snapshot_anchor.as_ref() else {
                             continue;
                         };
@@ -17347,7 +17521,7 @@ async fn run_validator() {
                     }
 
                     let all_categories_done =
-                        WARP_SNAPSHOT_CATEGORIES.iter().all(|category_name| {
+                        active_snapshot_categories.iter().all(|category_name| {
                             state_snap_progress
                                 .get(*category_name)
                                 .map(|(r, t)| r >= t)
@@ -17419,9 +17593,10 @@ async fn run_validator() {
                                 warn!("⚠️  Snapshot staging has no active manifest anchor");
                                 break 'staging false;
                             };
-                            let staging_manifest = match compute_snapshot_manifest(
+                            let staging_manifest = match compute_snapshot_manifest_for_categories(
                                 &staging_state,
                                 MAX_SNAPSHOT_CHUNK_SIZE,
+                                active_snapshot_categories,
                             ) {
                                 Ok(manifest) => manifest,
                                 Err(e) => {
@@ -17442,12 +17617,19 @@ async fn run_validator() {
                                 hex::encode(snapshot_manifest_root(&staging_manifest))
                             );
 
-                            if let Err(e) = validate_snapshot_archive_completeness(
-                                &staging_state,
-                                snapshot_slot,
-                            ) {
-                                warn!("⚠️  Staging archive completeness failed: {}", e);
-                                break 'staging false;
+                            if active_snapshot_categories == WARP_SNAPSHOT_CATEGORIES {
+                                if let Err(e) = validate_snapshot_archive_completeness(
+                                    &staging_state,
+                                    snapshot_slot,
+                                ) {
+                                    warn!("⚠️  Staging archive completeness failed: {}", e);
+                                    break 'staging false;
+                                }
+                            } else {
+                                info!(
+                                    "📚 Skipping full archive completeness check for {}-category state-repair snapshot",
+                                    active_snapshot_categories.len()
+                                );
                             }
 
                             if staging_state.uses_sparse_state_commitment() {
@@ -17652,7 +17834,14 @@ async fn run_validator() {
                             }
                         };
 
-                        for category_name in STATE_SNAPSHOT_CATEGORIES {
+                        for category_name in
+                            active_snapshot_categories
+                                .iter()
+                                .copied()
+                                .filter(|category| {
+                                    !STATE_SNAPSHOT_SPECIAL_CATEGORIES.contains(category)
+                                })
+                        {
                             match state_for_snapshot_apply.clear_snapshot_category(category_name) {
                                 Ok(deleted) => {
                                     if deleted > 0 {
@@ -17672,7 +17861,7 @@ async fn run_validator() {
                             }
                         }
 
-                        for category_name in WARP_SNAPSHOT_CATEGORIES {
+                        for category_name in active_snapshot_categories {
                             let res: Result<u64, String> = match *category_name {
                                 "validator_set" => {
                                     let count = validator_set_snapshot.validators().len() as u64;
@@ -23422,9 +23611,9 @@ mod tests {
 
         assert_eq!(meta.slot, 1);
         assert_eq!(meta.state_root, block.header.state_root.0);
-        validate_snapshot_manifest_shape(&manifest).expect("manifest shape");
+        validate_advertised_snapshot_manifest_shape(&manifest).expect("manifest shape");
         let manifest_root = snapshot_manifest_root(&manifest);
-        let (anchored_meta, _, _) = verified_checkpoint_for_anchor(
+        let (anchored_meta, _, _, anchored_categories) = verified_checkpoint_for_anchor(
             temp_dir.path().to_str().expect("data dir"),
             &state,
             &validator_set,
@@ -23438,6 +23627,7 @@ mod tests {
         )
         .expect("exact slot/root/manifest checkpoint anchor should be served");
         assert_eq!(anchored_meta.slot, meta.slot);
+        assert_eq!(anchored_categories, STATE_REPAIR_SNAPSHOT_CATEGORIES);
 
         let mut wrong_manifest_root = manifest_root;
         wrong_manifest_root[0] ^= 0x80;
@@ -23548,7 +23738,7 @@ mod tests {
         assert_eq!(verified_meta.slot, 1);
         assert_eq!(verified_meta.state_root, meta.state_root);
         assert_eq!(verified_block.header.state_root, block.header.state_root);
-        validate_snapshot_manifest_shape(&manifest).expect("manifest shape");
+        validate_advertised_snapshot_manifest_shape(&manifest).expect("manifest shape");
     }
 
     #[test]
@@ -23645,7 +23835,7 @@ mod tests {
         .expect("should fall back to older valid checkpoint");
 
         assert_eq!(meta.slot, 1);
-        validate_snapshot_manifest_shape(&manifest).expect("manifest shape");
+        validate_advertised_snapshot_manifest_shape(&manifest).expect("manifest shape");
     }
 
     #[test]
@@ -23878,7 +24068,7 @@ mod tests {
             .expect("background checkpoint manifest refresh should populate cache");
 
         assert_eq!(refreshed.0.slot, 1);
-        validate_snapshot_manifest_shape(&refreshed.3).expect("manifest shape");
+        validate_advertised_snapshot_manifest_shape(&refreshed.3).expect("manifest shape");
         assert!(cache
             .as_ref()
             .is_some_and(VerifiedCheckpointCacheEntry::is_fresh));
@@ -25924,7 +26114,11 @@ mod tests {
     }
 
     fn test_snapshot_manifest(seed: u8) -> Vec<SnapshotCategoryDigest> {
-        WARP_SNAPSHOT_CATEGORIES
+        test_snapshot_manifest_for(seed, WARP_SNAPSHOT_CATEGORIES)
+    }
+
+    fn test_snapshot_manifest_for(seed: u8, categories: &[&str]) -> Vec<SnapshotCategoryDigest> {
+        categories
             .iter()
             .enumerate()
             .map(|(index, category)| {
@@ -25958,6 +26152,22 @@ mod tests {
     }
 
     #[test]
+    fn advertised_snapshot_manifest_shape_accepts_repair_profile() {
+        let repair_manifest = test_snapshot_manifest_for(19, STATE_REPAIR_SNAPSHOT_CATEGORIES);
+        validate_advertised_snapshot_manifest_shape(&repair_manifest)
+            .expect("state-repair manifest shape");
+        assert_eq!(
+            advertised_snapshot_manifest_categories(&repair_manifest)
+                .expect("repair manifest categories"),
+            STATE_REPAIR_SNAPSHOT_CATEGORIES
+        );
+        assert!(
+            validate_snapshot_manifest_shape(&repair_manifest).is_err(),
+            "state-repair manifests must not masquerade as full archive manifests"
+        );
+    }
+
+    #[test]
     fn snapshot_manifest_match_rejects_archive_drift() {
         let expected = test_snapshot_manifest(23);
         validate_snapshot_manifest_matches(&expected, &expected).expect("identical manifests");
@@ -25979,32 +26189,35 @@ mod tests {
     fn warp_snapshot_category_requests_advance_in_canonical_order() {
         let mut progress = HashMap::new();
         assert_eq!(
-            next_snapshot_category_request(&progress),
+            next_snapshot_category_request(&progress, WARP_SNAPSHOT_CATEGORIES),
             Some(("accounts", 0))
         );
 
         progress.insert("accounts".to_string(), (1, 3));
         assert_eq!(
-            next_snapshot_category_request(&progress),
+            next_snapshot_category_request(&progress, WARP_SNAPSHOT_CATEGORIES),
             Some(("accounts", 1))
         );
 
         progress.insert("accounts".to_string(), (3, 3));
         assert_eq!(
-            next_snapshot_category_request(&progress),
+            next_snapshot_category_request(&progress, WARP_SNAPSHOT_CATEGORIES),
             Some(("blocks", 0))
         );
 
         progress.insert("blocks".to_string(), (2, 5));
         assert_eq!(
-            next_snapshot_category_request(&progress),
+            next_snapshot_category_request(&progress, WARP_SNAPSHOT_CATEGORIES),
             Some(("blocks", 2))
         );
 
         for category in WARP_SNAPSHOT_CATEGORIES {
             progress.insert((*category).to_string(), (1, 1));
         }
-        assert_eq!(next_snapshot_category_request(&progress), None);
+        assert_eq!(
+            next_snapshot_category_request(&progress, WARP_SNAPSHOT_CATEGORIES),
+            None
+        );
     }
 
     #[test]
@@ -26106,13 +26319,13 @@ mod tests {
         progress.insert("blocks".to_string(), (22, 23));
 
         assert_eq!(
-            next_snapshot_category_request(&progress),
+            next_snapshot_category_request(&progress, WARP_SNAPSHOT_CATEGORIES),
             Some(("blocks", 22))
         );
 
         progress.insert("blocks".to_string(), (23, 24));
         assert_eq!(
-            next_snapshot_category_request(&progress),
+            next_snapshot_category_request(&progress, WARP_SNAPSHOT_CATEGORIES),
             Some(("blocks", 23))
         );
     }
