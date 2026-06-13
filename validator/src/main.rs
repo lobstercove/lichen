@@ -7049,6 +7049,58 @@ fn checkpoint_snapshot_download_ready(root_support: usize, manifest_support: usi
     root_support >= MIN_WARP_CHECKPOINT_ANCHOR_PEERS && manifest_support > 0
 }
 
+fn checkpoint_source_sort_key(source: VerifiedCheckpointSource) -> (u8, [u8; 32]) {
+    match source {
+        VerifiedCheckpointSource::Validator(pubkey) => (1, pubkey.0),
+        VerifiedCheckpointSource::Node(node_id) => (0, node_id),
+    }
+}
+
+fn best_ready_checkpoint_anchor(
+    anchors: &HashMap<VerifiedCheckpointAnchorKey, VerifiedCheckpointAnchor>,
+    rejected_snapshot_sources: &HashSet<(VerifiedCheckpointSource, u64, [u8; 32])>,
+) -> Option<(
+    VerifiedCheckpointAnchorKey,
+    VerifiedCheckpointAnchor,
+    usize,
+    usize,
+)> {
+    anchors
+        .iter()
+        .filter_map(|(key, anchor)| {
+            if rejected_snapshot_sources.contains(&(key.source, key.slot, key.state_root)) {
+                return None;
+            }
+            let support = checkpoint_anchor_support(anchors, key.slot, key.state_root);
+            let manifest_support = checkpoint_anchor_manifest_support(
+                anchors,
+                key.slot,
+                key.state_root,
+                key.snapshot_manifest_root,
+            );
+            if !checkpoint_snapshot_download_ready(support, manifest_support) {
+                return None;
+            }
+            Some((*key, anchor.clone(), support, manifest_support))
+        })
+        .max_by(|left, right| {
+            let left_source = checkpoint_source_sort_key(left.0.source);
+            let right_source = checkpoint_source_sort_key(right.0.source);
+            left.1
+                .slot
+                .cmp(&right.1.slot)
+                .then(left.2.cmp(&right.2))
+                .then(left.3.cmp(&right.3))
+                .then(
+                    left.0
+                        .snapshot_manifest_root
+                        .cmp(&right.0.snapshot_manifest_root),
+                )
+                .then(left.0.state_root.cmp(&right.0.state_root))
+                .then(left_source.cmp(&right_source))
+        })
+}
+
 fn same_slot_checkpoint_root_mismatch(
     local_slot: u64,
     checkpoint_slot: u64,
@@ -16518,6 +16570,10 @@ async fn run_validator() {
                 VerifiedCheckpointAnchorKey,
                 VerifiedCheckpointAnchor,
             > = std::collections::HashMap::new();
+            let mut verified_checkpoint_anchor_peers: std::collections::HashMap<
+                VerifiedCheckpointAnchorKey,
+                SocketAddr,
+            > = std::collections::HashMap::new();
             let mut active_snapshot_anchor: Option<VerifiedCheckpointAnchor> = None;
             let mut active_snapshot_source_peer: Option<SocketAddr> = None;
             let mut active_snapshot_source: Option<VerifiedCheckpointSource> = None;
@@ -16579,7 +16635,8 @@ async fn run_validator() {
                     break;
                 };
                 // Handle CheckpointMetaResponse
-                if let Some(checkpoint_metas) = response.checkpoint_meta {
+                if let Some(mut checkpoint_metas) = response.checkpoint_meta {
+                    checkpoint_metas.sort_by(|left, right| right.slot.cmp(&left.slot));
                     let mut saw_checkpoint = false;
                     for checkpoint_meta in checkpoint_metas {
                         let CheckpointMetaAnchor {
@@ -16680,6 +16737,7 @@ async fn run_validator() {
                             let anchor_key =
                                 VerifiedCheckpointAnchorKey::new(anchor_source, &anchor);
                             verified_checkpoint_anchors.insert(anchor_key, anchor.clone());
+                            verified_checkpoint_anchor_peers.insert(anchor_key, response.requester);
                             let support = checkpoint_anchor_support(
                                 &verified_checkpoint_anchors,
                                 slot,
@@ -16730,45 +16788,70 @@ async fn run_validator() {
                                 local_root,
                                 checkpoint_root,
                             ) {
-                                if support < MIN_WARP_CHECKPOINT_ANCHOR_PEERS {
+                                let Some((
+                                    best_anchor_key,
+                                    best_anchor,
+                                    best_support,
+                                    best_manifest_support,
+                                )) = best_ready_checkpoint_anchor(
+                                    &verified_checkpoint_anchors,
+                                    &rejected_snapshot_sources,
+                                )
+                                else {
+                                    if support < MIN_WARP_CHECKPOINT_ANCHOR_PEERS {
+                                        info!(
+                                        "⏳ Awaiting corroborated checkpoint anchor before warp snapshot download (have {}, need {})",
+                                        support,
+                                        MIN_WARP_CHECKPOINT_ANCHOR_PEERS,
+                                    );
+                                    } else {
+                                        info!(
+                                        "⏳ Awaiting checkpoint snapshot manifest before warp snapshot download (have {}, need 1)",
+                                        manifest_support,
+                                    );
+                                    }
+                                    continue;
+                                };
+
+                                if best_anchor_key != anchor_key {
                                     info!(
-                                    "⏳ Awaiting corroborated checkpoint anchor before warp snapshot download (have {}, need {})",
-                                    support,
-                                    MIN_WARP_CHECKPOINT_ANCHOR_PEERS,
+                                    "⏳ Deferring checkpoint slot {} from {}; best ready checkpoint is slot {} from {}",
+                                    slot,
+                                    response.requester,
+                                    best_anchor.slot,
+                                    best_anchor_key.source.label(),
                                 );
                                     continue;
                                 }
-                                if !checkpoint_snapshot_download_ready(support, manifest_support) {
-                                    info!(
-                                    "⏳ Awaiting checkpoint snapshot manifest before warp snapshot download (have {}, need 1)",
-                                    manifest_support,
-                                );
-                                    continue;
-                                }
-                                if manifest_support < MIN_WARP_CHECKPOINT_ANCHOR_PEERS {
+
+                                if best_manifest_support < MIN_WARP_CHECKPOINT_ANCHOR_PEERS {
                                     info!(
                                     "🔒 Using source-pinned checkpoint manifest from {} after {}-peer state-root corroboration (manifest corroboration {}/{})",
                                     response.requester,
-                                    support,
-                                    manifest_support,
+                                    best_support,
+                                    best_manifest_support,
                                     MIN_WARP_CHECKPOINT_ANCHOR_PEERS,
                                 );
                                 }
 
-                                let snapshot_source_key = (anchor_source, slot, state_root);
+                                let snapshot_source_key = (
+                                    best_anchor_key.source,
+                                    best_anchor.slot,
+                                    best_anchor.state_root,
+                                );
                                 if rejected_snapshot_sources.contains(&snapshot_source_key) {
                                     info!(
                                     "⏳ Skipping previously rejected checkpoint snapshot source {} for slot {} root {}",
-                                    anchor_source.label(),
-                                    slot,
-                                    hex::encode(&state_root[..8])
+                                    best_anchor_key.source.label(),
+                                    best_anchor.slot,
+                                    hex::encode(&best_anchor.state_root[..8])
                                 );
                                     continue;
                                 }
 
                                 if let Some(active_anchor) = active_snapshot_anchor.as_ref() {
-                                    if active_anchor.slot != slot
-                                        || active_anchor.state_root != state_root
+                                    if active_anchor.slot != best_anchor.slot
+                                        || active_anchor.state_root != best_anchor.state_root
                                     {
                                         info!(
                                         "⏳ Ignoring alternate checkpoint anchor from {} while snapshot sync is already pinned to slot {}",
@@ -16780,7 +16863,17 @@ async fn run_validator() {
                                 }
 
                                 if active_snapshot_anchor.is_some() {
-                                    if active_snapshot_source_peer != Some(response.requester) {
+                                    let Some(best_source_peer) = verified_checkpoint_anchor_peers
+                                        .get(&best_anchor_key)
+                                        .copied()
+                                    else {
+                                        warn!(
+                                            "⚠️  Missing peer mapping for selected checkpoint slot {}; waiting for fresh metadata",
+                                            best_anchor.slot
+                                        );
+                                        continue;
+                                    };
+                                    if active_snapshot_source_peer != Some(best_source_peer) {
                                         info!(
                                         "⏳ Ignoring checkpoint retry from {} while snapshot sync is pinned to {:?}",
                                         response.requester,
@@ -16806,8 +16899,8 @@ async fn run_validator() {
                                             "🔁 Retrying incomplete {} snapshot chunk {} from {} at slot {}",
                                             category_name,
                                             chunk_index + 1,
-                                            response.requester,
-                                            slot
+                                            best_source_peer,
+                                            best_anchor.slot
                                         );
                                             let Some(active_anchor) =
                                                 active_snapshot_anchor.as_ref()
@@ -16822,7 +16915,7 @@ async fn run_validator() {
                                                 local_addr_for_snap_apply,
                                             );
                                             if let Err(e) = peer_mgr_for_snapshot_apply
-                                                .send_to_peer(&response.requester, snap_request)
+                                                .send_to_peer(&best_source_peer, snap_request)
                                                 .await
                                             {
                                                 warn!(
@@ -16840,7 +16933,7 @@ async fn run_validator() {
 
                                 let (staging_dir, staging_state) = match open_fresh_snapshot_staging(
                                     &data_dir_for_snapshot_apply,
-                                    slot,
+                                    best_anchor.slot,
                                 ) {
                                     Ok(staging) => staging,
                                     Err(err) => {
@@ -16849,10 +16942,23 @@ async fn run_validator() {
                                     }
                                 };
                                 cleanup_snapshot_staging(&mut active_snapshot_staging);
-                                active_snapshot_staging = Some((slot, staging_dir, staging_state));
-                                active_snapshot_anchor = Some(anchor);
-                                active_snapshot_source_peer = Some(response.requester);
-                                active_snapshot_source = Some(anchor_source);
+                                let selected_slot = best_anchor.slot;
+                                let Some(best_source_peer) = verified_checkpoint_anchor_peers
+                                    .get(&best_anchor_key)
+                                    .copied()
+                                else {
+                                    warn!(
+                                        "⚠️  Missing peer mapping for selected checkpoint slot {}; waiting for fresh metadata",
+                                        best_anchor.slot
+                                    );
+                                    cleanup_snapshot_staging(&mut active_snapshot_staging);
+                                    continue;
+                                };
+                                active_snapshot_staging =
+                                    Some((selected_slot, staging_dir, staging_state));
+                                active_snapshot_anchor = Some(best_anchor);
+                                active_snapshot_source_peer = Some(best_source_peer);
+                                active_snapshot_source = Some(best_anchor_key.source);
                                 snapshot_sync_for_apply
                                     .lock()
                                     .await
@@ -16862,10 +16968,10 @@ async fn run_validator() {
                                 // Peer is significantly ahead — request state snapshot
                                 info!(
                                 "🔄 Requesting state snapshot from {} after {}-peer checkpoint corroboration (local slot {}, peer slot {})",
-                                response.requester,
-                                support,
+                                best_source_peer,
+                                best_support,
                                 local_slot,
-                                slot
+                                selected_slot
                             );
 
                                 // Request categories in canonical order. Chunks are
@@ -16887,7 +16993,7 @@ async fn run_validator() {
                                         local_addr_for_snap_apply,
                                     );
                                     if let Err(e) = peer_mgr_for_snapshot_apply
-                                        .send_to_peer(&response.requester, snap_request)
+                                        .send_to_peer(&best_source_peer, snap_request)
                                         .await
                                     {
                                         warn!(
@@ -16905,6 +17011,8 @@ async fn run_validator() {
                             peer_mgr_for_snapshot_apply.peer_node_id(&response.requester),
                         ) {
                             verified_checkpoint_anchors
+                                .retain(|key, _| key.source != anchor_source);
+                            verified_checkpoint_anchor_peers
                                 .retain(|key, _| key.source != anchor_source);
                         }
                         warn!("📋 Peer {} has no checkpoint available", response.requester);
@@ -24281,6 +24389,53 @@ mod tests {
             checkpoint_anchor_manifest_support(&anchors, 100, root_common, manifest_root),
             2
         );
+    }
+
+    #[test]
+    fn best_ready_checkpoint_anchor_prefers_latest_ready_slot() {
+        let manifest = vec![SnapshotCategoryDigest {
+            category: "accounts".to_string(),
+            entry_count: 1,
+            sha256: [3u8; 32],
+        }];
+        let manifest_root = snapshot_manifest_root(&manifest);
+        let root_old = [8u8; 32];
+        let root_latest = [9u8; 32];
+        let make_anchor = |slot: u64, state_root: [u8; 32]| VerifiedCheckpointAnchor {
+            slot,
+            state_root,
+            snapshot_manifest: manifest.clone(),
+            snapshot_manifest_root: manifest_root,
+            block: Block::new_with_timestamp(
+                slot,
+                Hash::default(),
+                Hash(state_root),
+                [7u8; 32],
+                Vec::new(),
+                slot,
+            ),
+        };
+
+        let v1 = VerifiedCheckpointSource::Validator(Pubkey([1u8; 32]));
+        let v2 = VerifiedCheckpointSource::Validator(Pubkey([2u8; 32]));
+        let old_a = make_anchor(100, root_old);
+        let old_b = make_anchor(100, root_old);
+        let latest_a = make_anchor(101, root_latest);
+        let latest_b = make_anchor(101, root_latest);
+        let anchors = HashMap::from([
+            (VerifiedCheckpointAnchorKey::new(v1, &old_a), old_a),
+            (VerifiedCheckpointAnchorKey::new(v2, &old_b), old_b),
+            (VerifiedCheckpointAnchorKey::new(v1, &latest_a), latest_a),
+            (VerifiedCheckpointAnchorKey::new(v2, &latest_b), latest_b),
+        ]);
+
+        let (_, best, support, manifest_support) =
+            best_ready_checkpoint_anchor(&anchors, &HashSet::new())
+                .expect("latest ready checkpoint should be selected");
+        assert_eq!(best.slot, 101);
+        assert_eq!(best.state_root, root_latest);
+        assert_eq!(support, 2);
+        assert_eq!(manifest_support, 2);
     }
 
     #[test]
