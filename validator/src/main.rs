@@ -727,6 +727,14 @@ fn snapshot_manifest_root(manifest: &[SnapshotCategoryDigest]) -> [u8; 32] {
     root
 }
 
+fn advertised_snapshot_manifest_root(manifest: &[SnapshotCategoryDigest]) -> [u8; 32] {
+    if manifest.is_empty() {
+        [0u8; 32]
+    } else {
+        snapshot_manifest_root(manifest)
+    }
+}
+
 fn validate_snapshot_manifest_shape(manifest: &[SnapshotCategoryDigest]) -> Result<(), String> {
     if manifest.len() != WARP_SNAPSHOT_CATEGORIES.len() {
         return Err(format!(
@@ -1121,6 +1129,10 @@ struct VerifiedCheckpointCacheEntry {
 }
 
 impl VerifiedCheckpointData {
+    fn has_snapshot_manifest(&self) -> bool {
+        !self.snapshot_manifest.is_empty()
+    }
+
     fn checkpoint(
         &self,
     ) -> (
@@ -1153,6 +1165,12 @@ impl VerifiedCheckpointData {
 impl VerifiedCheckpointCacheEntry {
     fn is_fresh(&self) -> bool {
         self.verified_at.elapsed().as_secs() < SNAPSHOT_VERIFIED_CHECKPOINT_CACHE_TTL_SECS
+    }
+
+    fn has_snapshot_manifest(&self) -> bool {
+        self.checkpoints
+            .iter()
+            .any(VerifiedCheckpointData::has_snapshot_manifest)
     }
 
     fn checkpoint(
@@ -6482,7 +6500,7 @@ fn latest_verified_checkpoint(
     Block,
     Vec<SnapshotCategoryDigest>,
 )> {
-    recent_verified_checkpoints(data_dir, state, validator_set, stake_pool, chain_id, 1)
+    recent_verified_checkpoints(data_dir, state, validator_set, stake_pool, chain_id, 1, 1)
         .into_iter()
         .next()
         .map(|checkpoint| checkpoint.checkpoint())
@@ -6495,6 +6513,7 @@ fn recent_verified_checkpoints(
     stake_pool: &StakePool,
     chain_id: &str,
     limit: usize,
+    manifest_limit: usize,
 ) -> Vec<VerifiedCheckpointData> {
     if limit == 0 {
         return Vec::new();
@@ -6552,7 +6571,7 @@ fn recent_verified_checkpoints(
             );
             continue;
         }
-        let snapshot_manifest =
+        let snapshot_manifest = if verified.len() < manifest_limit {
             match compute_snapshot_manifest(&checkpoint_store, MAX_SNAPSHOT_CHUNK_SIZE) {
                 Ok(manifest) => manifest,
                 Err(err) => {
@@ -6562,10 +6581,15 @@ fn recent_verified_checkpoints(
                 );
                     continue;
                 }
-            };
-        if let Err(err) = validate_snapshot_manifest_shape(&snapshot_manifest) {
-            warn!("⚠️  Rejecting checkpoint at slot {}: {}", meta.slot, err);
-            continue;
+            }
+        } else {
+            Vec::new()
+        };
+        if !snapshot_manifest.is_empty() {
+            if let Err(err) = validate_snapshot_manifest_shape(&snapshot_manifest) {
+                warn!("⚠️  Rejecting checkpoint at slot {}: {}", meta.slot, err);
+                continue;
+            }
         }
 
         verified.push(VerifiedCheckpointData {
@@ -6742,7 +6766,7 @@ async fn latest_verified_checkpoint_cached(
     }
 
     if let Some(cached) = cache.as_ref() {
-        if cached.is_fresh() {
+        if cached.is_fresh() && cached.has_snapshot_manifest() {
             return Some(cached.checkpoint());
         }
         if refresh.is_some() {
@@ -6756,6 +6780,14 @@ async fn latest_verified_checkpoint_cached(
         let validator_set = validator_set.clone();
         let stake_pool = stake_pool.clone();
         let chain_id = chain_id.to_string();
+        let manifest_limit = if cache
+            .as_ref()
+            .is_some_and(|entry| !entry.has_snapshot_manifest())
+        {
+            1
+        } else {
+            0
+        };
         debug!("Refreshing verified checkpoint cache in background");
         *refresh = Some(tokio::task::spawn_blocking(move || {
             let started = Instant::now();
@@ -6766,6 +6798,7 @@ async fn latest_verified_checkpoint_cached(
                 &stake_pool,
                 &chain_id,
                 RECENT_VERIFIED_CHECKPOINT_ADVERTISEMENT_LIMIT,
+                manifest_limit,
             );
             if started.elapsed().as_secs() >= 2 {
                 warn!(
@@ -7034,13 +7067,15 @@ fn checkpoint_anchor_manifest_support(
     snapshot_manifest_root: [u8; 32],
 ) -> usize {
     anchors
-        .keys()
-        .filter(|key| {
-            key.slot == slot
+        .iter()
+        .filter(|(key, anchor)| {
+            !anchor.snapshot_manifest.is_empty()
+                && snapshot_manifest_root != [0u8; 32]
+                && key.slot == slot
                 && key.state_root == state_root
                 && key.snapshot_manifest_root == snapshot_manifest_root
         })
-        .map(|key| key.source)
+        .map(|(key, _)| key.source)
         .collect::<HashSet<_>>()
         .len()
 }
@@ -7068,6 +7103,9 @@ fn best_ready_checkpoint_anchor(
     anchors
         .iter()
         .filter_map(|(key, anchor)| {
+            if anchor.snapshot_manifest.is_empty() {
+                return None;
+            }
             if rejected_snapshot_sources.contains(&(key.source, key.slot, key.state_root)) {
                 return None;
             }
@@ -16650,13 +16688,18 @@ async fn run_validator() {
                         } = checkpoint_meta;
                         if slot > 0 && total_accounts > 0 {
                             saw_checkpoint = true;
-                            if let Err(err) = validate_snapshot_manifest_shape(&snapshot_manifest) {
-                                warn!(
-                                    "⚠️  Rejecting checkpoint metadata from {}: {}",
-                                    response.requester, err
-                                );
-                                peer_mgr_for_snapshot_apply.record_violation(&response.requester);
-                                continue;
+                            if !snapshot_manifest.is_empty() {
+                                if let Err(err) =
+                                    validate_snapshot_manifest_shape(&snapshot_manifest)
+                                {
+                                    warn!(
+                                        "⚠️  Rejecting checkpoint metadata from {}: {}",
+                                        response.requester, err
+                                    );
+                                    peer_mgr_for_snapshot_apply
+                                        .record_violation(&response.requester);
+                                    continue;
+                                }
                             }
                             let Some(anchor_source) = checkpoint_source_identity(
                                 peer_mgr_for_snapshot_apply
@@ -16723,7 +16766,9 @@ async fn run_validator() {
                             let anchor = VerifiedCheckpointAnchor {
                                 slot,
                                 state_root,
-                                snapshot_manifest_root: snapshot_manifest_root(&snapshot_manifest),
+                                snapshot_manifest_root: advertised_snapshot_manifest_root(
+                                    &snapshot_manifest,
+                                ),
                                 snapshot_manifest,
                                 block: Block {
                                     header,
@@ -23679,6 +23724,7 @@ mod tests {
             &stake_pool,
             "",
             3,
+            3,
         );
 
         let slots: Vec<u64> = checkpoints
@@ -23777,7 +23823,7 @@ mod tests {
             "first request should leave a background refresh task in flight"
         );
 
-        let refreshed = runtime
+        let root_only = runtime
             .block_on(async {
                 for _ in 0..50 {
                     if let Some(value) = latest_verified_checkpoint_cached(
@@ -23797,7 +23843,39 @@ mod tests {
                 }
                 None
             })
-            .expect("background checkpoint verification should populate cache");
+            .expect("background checkpoint verification should populate root-only cache");
+
+        assert_eq!(root_only.0.slot, 1);
+        assert!(
+            root_only.3.is_empty(),
+            "first cache refresh should advertise the checkpoint root before manifest scanning"
+        );
+        assert!(cache
+            .as_ref()
+            .is_some_and(VerifiedCheckpointCacheEntry::is_fresh));
+
+        let refreshed = runtime
+            .block_on(async {
+                for _ in 0..50 {
+                    if let Some(value) = latest_verified_checkpoint_cached(
+                        &mut cache,
+                        &mut refresh,
+                        temp_dir.path().to_str().expect("data dir"),
+                        &state,
+                        &validator_set,
+                        &stake_pool,
+                        "",
+                    )
+                    .await
+                    .filter(|value| !value.3.is_empty())
+                    {
+                        return Some(value);
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                None
+            })
+            .expect("background checkpoint manifest refresh should populate cache");
 
         assert_eq!(refreshed.0.slot, 1);
         validate_snapshot_manifest_shape(&refreshed.3).expect("manifest shape");
@@ -24282,6 +24360,75 @@ mod tests {
             !checkpoint_snapshot_download_ready(MIN_WARP_CHECKPOINT_ANCHOR_PEERS, 0),
             "a snapshot still needs a concrete source manifest to verify streamed chunks",
         );
+    }
+
+    #[test]
+    fn root_only_checkpoint_anchor_counts_for_quorum_but_not_manifest_source() {
+        let root = [9u8; 32];
+        let manifest = vec![SnapshotCategoryDigest {
+            category: "accounts".to_string(),
+            entry_count: 1,
+            sha256: [3u8; 32],
+        }];
+        let manifest_root = snapshot_manifest_root(&manifest);
+        let make_anchor = |snapshot_manifest: Vec<SnapshotCategoryDigest>| {
+            let snapshot_manifest_root = advertised_snapshot_manifest_root(&snapshot_manifest);
+            VerifiedCheckpointAnchor {
+                slot: 3544000,
+                state_root: root,
+                snapshot_manifest,
+                snapshot_manifest_root,
+                block: Block::new_with_timestamp(
+                    3544000,
+                    Hash::default(),
+                    Hash(root),
+                    [7u8; 32],
+                    Vec::new(),
+                    3544000,
+                ),
+            }
+        };
+
+        let root_only_anchor = make_anchor(Vec::new());
+        let manifest_anchor = make_anchor(manifest);
+        let anchors = HashMap::from([
+            (
+                VerifiedCheckpointAnchorKey::new(
+                    VerifiedCheckpointSource::Validator(Pubkey([1u8; 32])),
+                    &root_only_anchor,
+                ),
+                root_only_anchor,
+            ),
+            (
+                VerifiedCheckpointAnchorKey::new(
+                    VerifiedCheckpointSource::Validator(Pubkey([2u8; 32])),
+                    &manifest_anchor,
+                ),
+                manifest_anchor,
+            ),
+        ]);
+
+        assert_eq!(checkpoint_anchor_support(&anchors, 3544000, root), 2);
+        assert_eq!(
+            checkpoint_anchor_manifest_support(&anchors, 3544000, root, [0u8; 32]),
+            0,
+            "root-only anchors must not count as manifest support",
+        );
+        assert_eq!(
+            checkpoint_anchor_manifest_support(&anchors, 3544000, root, manifest_root),
+            1,
+        );
+
+        let (best_key, best, support, manifest_support) =
+            best_ready_checkpoint_anchor(&anchors, &HashSet::new())
+                .expect("root quorum plus one source-pinned manifest is ready");
+        assert_eq!(
+            best_key.source,
+            VerifiedCheckpointSource::Validator(Pubkey([2u8; 32]))
+        );
+        assert_eq!(best.slot, 3544000);
+        assert_eq!(support, 2);
+        assert_eq!(manifest_support, 1);
     }
 
     #[test]
