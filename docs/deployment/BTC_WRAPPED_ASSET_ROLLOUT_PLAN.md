@@ -201,11 +201,12 @@ After code and WASM are updated:
 5. Start three local validators from fresh genesis.
 6. Verify all validators advance slots and agree on the tip.
 7. Verify `WBTC` exists in `getAllSymbolRegistry`.
-8. Verify `getWbtcStats` returns the WBTC contract state.
-9. Verify DEX pair count includes `wBTC/lUSD` and `wBTC/LICN`.
-10. Verify oracle APIs include `wBTC` after local WBTC registration.
-11. Verify wallet and extension tests see BTC in the bridge route list.
-12. If a local Bitcoin RPC/regtest is available, run a BTC deposit, sweep, credit, burn, withdrawal, and confirmation smoke test.
+8. Verify WBTC contract storage contains initialized admin/minter/attester and supply keys.
+9. Verify `getWbtcStats` returns the WBTC contract state.
+10. Verify DEX pair count includes `wBTC/lUSD` and `wBTC/LICN`.
+11. Verify oracle APIs include `wBTC` after local WBTC registration.
+12. Verify wallet and extension tests see BTC in the bridge route list.
+13. If a local Bitcoin RPC/regtest is available, run a BTC deposit, sweep, credit, burn, withdrawal, and confirmation smoke test.
 
 The local BTC custody smoke is repeatable with Bitcoin Core installed:
 
@@ -233,12 +234,14 @@ Do not change the live four VPSes until the local validation gate passes. The VP
 2. Deploy validator/RPC/custody binaries consistently to all four VPSes.
 3. Deploy `wbtc_token` once on the live chain.
 4. Register `WBTC`.
-5. Refresh signed metadata and deploy frontends.
-6. Sync custody wrapped-token pins on all custody hosts.
-7. Apply BTC route profile on all custody hosts.
-8. Verify `--require-wrapped` and BTC route checks.
-9. Restart custody.
-10. Run a dust-sized BTC deposit/withdrawal smoke test.
+5. Initialize WBTC with the operational token admin.
+6. Verify WBTC contract storage is non-empty and contains initialized control keys.
+7. Refresh signed metadata and deploy frontends.
+8. Sync custody wrapped-token pins on all custody hosts.
+9. Apply BTC route profile on all custody hosts.
+10. Verify `--require-wrapped` and BTC route checks.
+11. Restart custody.
+12. Run a dust-sized BTC deposit/withdrawal smoke test.
 
 Release rollout safety checks are mandatory before any live restart:
 
@@ -267,6 +270,19 @@ LICHEN_RPC_URL=https://testnet-rpc.lichen.network \
 # Confirm the live registry entry before touching custody/frontends.
 LICHEN_RPC_URL=https://testnet-rpc.lichen.network \
   ./target/release/lichen symbol lookup WBTC --output json
+
+# Initialize WBTC exactly once with the operational token admin/deployer key.
+# This creates wbtc_admin, wbtc_attester, wbtc_minter, wbtc_supply,
+# wbtc_minted, wbtc_burned, wbtc_epoch_start, and wbtc_epoch_mint storage.
+LICHEN_RPC_URL=https://testnet-rpc.lichen.network \
+  ./target/release/lichen token initialize WBTC \
+  --keypair /path/to/governed-deployer.json
+
+# Confirm WBTC is initialized before wiring custody or public UI surfaces.
+curl -fsS https://testnet-rpc.lichen.network \
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"getProgramStorage","params":["<live WBTC program>",{"limit":50}]}' \
+  | jq -e '.result.entries | map(.key_decoded // .key) | any(. == "wbtc_admin")'
 
 # Refresh operator manifests from the live symbol registry.
 LICHEN_RPC_URL=https://testnet-rpc.lichen.network \

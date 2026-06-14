@@ -9,16 +9,21 @@ import json, subprocess, sys, os, tempfile
 script_dir = os.path.dirname(os.path.abspath(__file__))
 root_dir = os.path.dirname(script_dir)
 rpc_url = os.environ.get('LICHEN_RPC_URL') or os.environ.get('CUSTODY_LICHEN_RPC_URL') or 'http://localhost:8899'
+registry_file = os.environ.get('LICHEN_SYMBOL_REGISTRY_FILE')
 
-raw = subprocess.check_output([
-    'curl', '-sS', rpc_url,
-    '-X', 'POST', '-H', 'Content-Type: application/json',
-    '-d', json.dumps({
-        'jsonrpc': '2.0', 'id': 1,
-        'method': 'getAllSymbolRegistry', 'params': [100]
-    })
-])
-d = json.loads(raw)
+if registry_file:
+    with open(registry_file, 'r') as f:
+        d = json.load(f)
+else:
+    raw = subprocess.check_output([
+        'curl', '-sS', rpc_url,
+        '-X', 'POST', '-H', 'Content-Type: application/json',
+        '-d', json.dumps({
+            'jsonrpc': '2.0', 'id': 1,
+            'method': 'getAllSymbolRegistry', 'params': [100]
+        })
+    ])
+    d = json.loads(raw)
 result = d.get('result')
 if not isinstance(result, dict) or 'entries' not in result:
     print(f"ERROR: unexpected RPC response for getAllSymbolRegistry: {d}")
@@ -33,7 +38,7 @@ for e in raw_entries:
         entries[e['symbol']] = e['program']
 
 required_symbols = [
-    'LICN', 'LUSD', 'WSOL', 'WETH', 'WBNB', 'WNEO', 'WGAS', 'WBTC',
+    'LUSD', 'WSOL', 'WETH', 'WBNB', 'WNEO', 'WGAS', 'WBTC',
     'DEX', 'DEXAMM', 'DEXROUTER', 'DEXMARGIN', 'DEXREWARDS', 'DEXGOV', 'ANALYTICS',
 ]
 missing = [sym for sym in required_symbols if not entries.get(sym)]
@@ -51,7 +56,7 @@ if not isinstance(existing_manifest, dict):
 
 manifest = {
     **existing_manifest,
-    'deployer': entries.get('LICN', ''),  # deployer is implied by LICN owner
+    'deployer': existing_manifest.get('deployer', ''),
     'deployed_at': existing_manifest.get('deployed_at', '2026-02-19T00:00:00Z'),
     'note': 'Updated from live genesis symbol registry; additive refresh only, no chain-state mutation',
     'contracts': {
@@ -75,7 +80,7 @@ manifest = {
     },
     'token_contracts': {
         **existing_manifest.get('token_contracts', {}),
-        'LICN': entries.get('LICN', ''),
+        'LICN': existing_manifest.get('token_contracts', {}).get('LICN', entries.get('LICN', '')),
         'lUSD': entries.get('LUSD', ''),
         'wSOL': entries.get('WSOL', ''),
         'wETH': entries.get('WETH', ''),
@@ -114,7 +119,8 @@ with os.fdopen(fd, 'w') as f:
     f.write('\n')
 os.replace(tmp_path, out_path)
 
-print(f'OK — wrote {out_path} from {rpc_url}')
+source_label = registry_file or rpc_url
+print(f'OK — wrote {out_path} from {source_label}')
 for k, v in manifest['dex_contracts'].items():
     print(f'  {k:20s} → {v}')
 for k, v in manifest['product_contracts'].items():

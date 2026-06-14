@@ -6,8 +6,30 @@ use crate::client::RpcClient;
 use crate::contract_args_support::encode_dual_address_amount_args;
 use crate::contract_poll_support::wait_for_confirmation;
 use crate::keypair_manager::KeypairManager;
+use crate::token_contract_setup_support::initialize_token_contract;
 use crate::token_context_support::{resolve_token_context, token_decimals_from_context};
 use crate::token_units_support::scale_whole_token_amount;
+
+pub(super) async fn handle_token_initialize(
+    client: &RpcClient,
+    keypair_mgr: &KeypairManager,
+    token: String,
+    keypair: Option<PathBuf>,
+) -> Result<()> {
+    let path = keypair.unwrap_or_else(|| keypair_mgr.default_keypair_path());
+    let admin = keypair_mgr.load_keypair(&path)?;
+    let context = resolve_token_context(client, &token).await?;
+
+    println!(
+        "🧩 Initializing token contract {} with admin {}",
+        context.contract_addr_b58,
+        admin.pubkey().to_base58()
+    );
+
+    initialize_token_contract(client, &admin, &context.contract_addr).await;
+
+    Ok(())
+}
 
 pub(super) async fn handle_token_mint(
     client: &RpcClient,

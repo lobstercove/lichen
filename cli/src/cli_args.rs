@@ -656,6 +656,16 @@ pub(super) enum TokenCommands {
         token: String,
     },
 
+    /// Initialize admin/minter state for an already deployed token contract
+    Initialize {
+        /// Token address / symbol
+        token: String,
+
+        /// Keypair file for the token admin/deployer (default: ~/.lichen/keypairs/id.json)
+        #[arg(short, long)]
+        keypair: Option<PathBuf>,
+    },
+
     /// Mint tokens (token owner only)
     Mint {
         /// Token address

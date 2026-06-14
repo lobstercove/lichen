@@ -573,7 +573,7 @@ Passing this checker does not deploy or activate public agent-compute flows. It 
 
 ## Contract deployment and post-genesis bootstrap
 
-Genesis auto-deploys the canonical contract catalog. LICN is native and is not part of that deployed contract set. Fresh local-testnet and mainnet genesis also creates the mandatory 13 launch DEX CLOB pairs, AMM pools, and router routes, including `wNEO`, `wGAS`, and `wBTC` markets. Rolling updates and live-chain additions are additive only; they must not delete state, rewrite historical roots, or make those fresh-genesis markets optional.
+Genesis auto-deploys the canonical contract catalog. LICN is native and is not part of that deployed contract set. Fresh local-testnet and mainnet genesis also creates the mandatory 13 launch DEX CLOB pairs, AMM pools, and router routes, including `wNEO`, `wGAS`, and `wBTC` markets. Rolling updates and live-chain additions are additive only; they must not delete state, rewrite historical roots, or make those fresh-genesis markets optional. Any post-genesis wrapped-token addition must be deployed, registered, initialized with the operational token admin, and verified through `getProgramStorage` before custody, DEX, wallet, or explorer surfaces are enabled for that asset.
 
 After a supported local or VPS genesis node is healthy, the canonical post-genesis bootstrap step is `scripts/first-boot-deploy.sh`.
 

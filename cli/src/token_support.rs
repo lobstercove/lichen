@@ -5,7 +5,7 @@ use crate::client::RpcClient;
 use crate::keypair_manager::KeypairManager;
 use crate::token_create_support::{handle_token_create, TokenCreateRequest};
 use crate::token_read_support::{handle_token_balance, handle_token_info, handle_token_list};
-use crate::token_write_support::{handle_token_mint, handle_token_send};
+use crate::token_write_support::{handle_token_initialize, handle_token_mint, handle_token_send};
 
 pub(super) async fn handle_token_command(
     client: &RpcClient,
@@ -48,6 +48,9 @@ pub(super) async fn handle_token_command(
             .await?
         }
         TokenCommands::Info { token } => handle_token_info(client, token).await?,
+        TokenCommands::Initialize { token, keypair } => {
+            handle_token_initialize(client, keypair_mgr, token, keypair).await?
+        }
         TokenCommands::Mint {
             token,
             amount,
