@@ -5,7 +5,7 @@ mainnet custody. It is intentionally step-by-step and gate-based. Do not skip a
 gate because mainnet genesis and custody routes handle real value.
 
 Written for the current mainnet package. At the time of writing, the release
-target is `v0.5.155` and the signed rollback point is `v0.5.150`. If a newer
+target is `v0.5.163` and the signed rollback point is `v0.5.161`. If a newer
 release is used, replace every example tag with the newer signed release tag
 after CI and release verification pass.
 

@@ -5,6 +5,15 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.163] - 2026-06-15
+
+### Fixed
+- Honors `RUST_LOG` for the validator supervisor and child validator process instead of hardcoding INFO-level tracing, so production `RUST_LOG=warn` suppresses high-volume BFT/P2P INFO logs and prevents avoidable syslog/journal growth.
+- Updates current release and deployment runbook rollback references to use `v0.5.161` as the signed rollback point.
+
+### Verified
+- Passed `cargo test --workspace`, `cargo clippy --workspace -- -D warnings`, deployment-doc QA, and the focused validator logging-filter regression test.
+
 ## [0.5.152] - 2026-06-12
 
 ### Fixed

@@ -88,6 +88,7 @@ use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio::time;
 use tokio_tungstenite::tungstenite;
 use tracing::{debug, error, info, warn};
+use tracing_subscriber::EnvFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
@@ -98,6 +99,16 @@ const SYSTEM_ACCOUNT_OWNER: Pubkey = Pubkey([0x01; 32]);
 /// Exit code used by the internal health watchdog to signal the supervisor
 /// that the validator should be restarted (deadlock/stall detected).
 const EXIT_CODE_RESTART: i32 = 75;
+
+fn validator_log_filter_from_env_value(value: Option<&str>) -> EnvFilter {
+    value
+        .and_then(|value| EnvFilter::builder().parse(value).ok())
+        .unwrap_or_else(|| EnvFilter::new("info"))
+}
+
+fn validator_log_filter() -> EnvFilter {
+    validator_log_filter_from_env_value(env::var("RUST_LOG").ok().as_deref())
+}
 
 /// Default number of seconds with no block activity before the watchdog
 /// triggers a restart.  Override with `--watchdog-timeout <secs>`.
@@ -11533,7 +11544,7 @@ fn main() {
     // Initialize minimal logging for supervisor messages (stdout only)
     tracing_subscriber::registry()
         .with(tracing_subscriber::fmt::layer().with_ansi(true))
-        .with(tracing_subscriber::filter::LevelFilter::INFO)
+        .with(validator_log_filter())
         .init();
 
     info!(
@@ -11743,7 +11754,7 @@ async fn run_validator() {
                 .with_ansi(false)
                 .with_writer(non_blocking_writer),
         )
-        .with(tracing_subscriber::filter::LevelFilter::INFO)
+        .with(validator_log_filter())
         .try_init()
         .is_err()
     {
@@ -22657,6 +22668,23 @@ mod tests {
             commit_round: 0,
             commit_signatures: vec![],
         }
+    }
+
+    #[test]
+    fn validator_log_filter_honors_rust_log_value() {
+        assert_eq!(
+            validator_log_filter_from_env_value(Some("warn")).to_string(),
+            "warn"
+        );
+        assert_eq!(
+            validator_log_filter_from_env_value(None).to_string(),
+            "info"
+        );
+        assert_eq!(
+            validator_log_filter_from_env_value(Some("lichen_validator=definitely_not_a_level"))
+                .to_string(),
+            "info"
+        );
     }
 
     #[test]
