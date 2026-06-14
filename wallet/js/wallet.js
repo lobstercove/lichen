@@ -2977,7 +2977,7 @@ async function loadAssets(options = {}) {
     const licnBadges = renderAssetRestrictionBadges(restrictionStatus?.assets?.LICN);
     html += `
         <div class="asset-item${licnBadges ? ' asset-restricted' : ''}" data-asset-symbol="LICN" style="cursor: default;">
-            <div class="asset-icon asset-icon-lichen"><img src="${escapeHtml(LICN_LOGO_URL)}" alt="LICN" style="width:20px;height:20px;border-radius:50%;object-fit:cover;"></div>
+            <div class="asset-icon asset-icon-lichen"><img src="${escapeHtml(LICN_LOGO_URL)}" alt="LICN" style="width:32px;height:32px;border-radius:50%;object-fit:cover;"></div>
             <div class="asset-info">
                 <div class="asset-name">Lichen</div>
                 <div class="asset-symbol">LICN</div>
@@ -3002,7 +3002,7 @@ async function loadAssets(options = {}) {
             const safeName = escapeHtml(token.name || tokenSymbol);
             const safeLogoUrl = safeHttpImageUrl(token.logoUrl);
             const tokenIcon = safeLogoUrl
-                ? `<img src="${escapeHtml(safeLogoUrl)}" alt="${safeSymbol}" style="width:20px;height:20px;border-radius:50%;object-fit:cover;">`
+                ? `<img src="${escapeHtml(safeLogoUrl)}" alt="${safeSymbol}" style="width:32px;height:32px;border-radius:50%;object-fit:cover;">`
                 : `<i class="${escapeHtml(token.icon || 'fas fa-coins')}"></i>`;
             const badges = renderAssetRestrictionBadges(restrictionStatus?.assets?.[symbol]);
             const tokenNotice = token.notice ? `<div class="asset-note">${escapeHtml(token.notice)}</div>` : '';

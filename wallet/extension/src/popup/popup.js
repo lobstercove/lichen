@@ -33,6 +33,8 @@ import {
   parsePositiveDecimalBaseUnits
 } from '../core/amount-service.js';
 
+const LICN_LOGO_URL = 'https://lichen.network/assets/img/coins/128x128/licn.png';
+
 let state = null;
 let pendingGeneratedMnemonic = '';
 let fullCarouselTimer = null;
@@ -1089,7 +1091,9 @@ async function loadAssets() {
 
     assetsList.innerHTML = `
       <div class="popup-activity-item">
-        <div class="popup-asset-icon" style="color:#00C9DB;"><i class="fas fa-fire"></i></div>
+        <div class="popup-asset-icon" style="background:rgba(0, 201, 219,0.12);color:#00C9DB;">
+          <img src="${escapeHtml(LICN_LOGO_URL)}" alt="LICN" style="width:32px;height:32px;border-radius:50%;object-fit:cover;">
+        </div>
         <div class="popup-asset-info">
           <strong>LICN</strong>
           <span>Native token</span>

@@ -72,6 +72,26 @@ document.addEventListener('DOMContentLoaded', () => {
     const API_BASE = `${RPC_BASE}/api/v1`;
     const PRICE_SCALE = 1_000_000_000;
     const MARGIN_COLLATERAL_SYMBOL = 'lUSD';
+    const LICN_LOGO_URL = 'https://lichen.network/assets/img/coins/128x128/licn.png';
+    const DEFAULT_ASSET_LOGOS = Object.freeze({
+        LICN: LICN_LOGO_URL,
+        wSOL: 'https://s2.coinmarketcap.com/static/img/coins/64x64/5426.png',
+        WSOL: 'https://s2.coinmarketcap.com/static/img/coins/64x64/5426.png',
+        SOL: 'https://s2.coinmarketcap.com/static/img/coins/64x64/5426.png',
+        wETH: 'https://s2.coinmarketcap.com/static/img/coins/64x64/1027.png',
+        WETH: 'https://s2.coinmarketcap.com/static/img/coins/64x64/1027.png',
+        ETH: 'https://s2.coinmarketcap.com/static/img/coins/64x64/1027.png',
+        wBNB: 'https://s2.coinmarketcap.com/static/img/coins/64x64/1839.png',
+        WBNB: 'https://s2.coinmarketcap.com/static/img/coins/64x64/1839.png',
+        BNB: 'https://s2.coinmarketcap.com/static/img/coins/64x64/1839.png',
+        wNEO: 'https://s2.coinmarketcap.com/static/img/coins/64x64/1376.png',
+        WNEO: 'https://s2.coinmarketcap.com/static/img/coins/64x64/1376.png',
+        NEO: 'https://s2.coinmarketcap.com/static/img/coins/64x64/1376.png',
+        wBTC: 'https://s2.coinmarketcap.com/static/img/coins/64x64/1.png',
+        WBTC: 'https://s2.coinmarketcap.com/static/img/coins/64x64/1.png',
+        BTC: 'https://s2.coinmarketcap.com/static/img/coins/64x64/1.png',
+    });
+    const assetLogoMetadata = Object.create(null);
     const CONTRACT_TX_COMPUTE_BUDGET = 1_400_000;
     const UNSAFE_ENDPOINT_MODE_ACTIVE = rpcEndpointConfig.unsafeModeActive || wsEndpointConfig.unsafeModeActive;
     const CUSTOM_ENDPOINTS_IGNORED = rpcEndpointConfig.ignored || wsEndpointConfig.ignored;
@@ -611,6 +631,63 @@ document.addEventListener('DOMContentLoaded', () => {
         const canonical = canonicalTokenSymbol(symbol);
         if (canonical === 'LICN') return null;
         return contracts.tokens?.[canonical] || null;
+    }
+
+    function safeHttpImageUrl(value) {
+        const url = String(value || '').trim();
+        return /^https?:\/\//i.test(url) ? url : '';
+    }
+
+    function assetSymbolLookupKeys(symbol) {
+        const raw = String(symbol || '').trim();
+        if (!raw) return [];
+        const canonical = canonicalTokenSymbol(raw);
+        const upper = raw.toUpperCase();
+        const canonicalUpper = String(canonical || '').toUpperCase();
+        const keys = [raw, upper, canonical, canonicalUpper];
+        if (typeof WRAPPED_DISPLAY_SYMBOLS !== 'undefined' && WRAPPED_DISPLAY_SYMBOLS[canonicalUpper]) {
+            keys.push(WRAPPED_DISPLAY_SYMBOLS[canonicalUpper]);
+        }
+        if (canonicalUpper.startsWith('W') && canonicalUpper.length > 1) {
+            keys.push(canonicalUpper.slice(1));
+        }
+        return Array.from(new Set(keys.filter(Boolean)));
+    }
+
+    function rememberAssetRegistryEntry(entry) {
+        const symbol = String(entry?.symbol || '').trim();
+        if (!symbol || !entry?.metadata || typeof entry.metadata !== 'object') return;
+        const logoUrl = safeHttpImageUrl(entry.metadata.logo_url || entry.metadata.logoUrl);
+        if (!logoUrl) return;
+        assetSymbolLookupKeys(symbol).forEach((key) => { assetLogoMetadata[key] = logoUrl; });
+    }
+
+    function assetLogoUrl(symbol) {
+        for (const key of assetSymbolLookupKeys(symbol)) {
+            const registryLogo = safeHttpImageUrl(assetLogoMetadata[key]);
+            if (registryLogo) return registryLogo;
+        }
+        for (const key of assetSymbolLookupKeys(symbol)) {
+            const fallbackLogo = safeHttpImageUrl(DEFAULT_ASSET_LOGOS[key]);
+            if (fallbackLogo) return fallbackLogo;
+        }
+        return '';
+    }
+
+    function assetIconFallbackClass(symbol) {
+        return String(canonicalTokenSymbol(symbol) || symbol || 'asset')
+            .toLowerCase()
+            .replace(/[^a-z0-9_-]/g, '');
+    }
+
+    function renderAssetIcon(symbol) {
+        const label = String(symbol || 'Asset').trim() || 'Asset';
+        const logoUrl = assetLogoUrl(label);
+        if (logoUrl) {
+            return `<div class="token-icon token-logo"><img src="${escapeHtml(logoUrl)}" alt="${escapeHtml(label)}"></div>`;
+        }
+        const fallbackLetter = label.charAt(0) || '?';
+        return `<div class="token-icon ${escapeHtml(assetIconFallbackClass(label))}-icon">${escapeHtml(fallbackLetter)}</div>`;
     }
 
     function buildApproveArgs(owner, spender, amount) {
@@ -1520,7 +1597,13 @@ document.addEventListener('DOMContentLoaded', () => {
             const result = await trustedMetadataRpcCall('getAllSymbolRegistry', [100]);
             if (result?.entries?.length) {
                 const map = {};
-                for (const e of result.entries) map[e.symbol] = e.program;
+                for (const e of result.entries) {
+                    const symbol = String(e?.symbol || '').trim();
+                    if (!symbol) continue;
+                    map[symbol] = e.program;
+                    map[symbol.toUpperCase()] = e.program;
+                    rememberAssetRegistryEntry(e);
+                }
                 contracts.dex_core = map['DEX'] || null;
                 contracts.dex_amm = map['DEXAMM'] || null;
                 contracts.dex_router = map['DEXROUTER'] || null;
@@ -4724,7 +4807,10 @@ document.addEventListener('DOMContentLoaded', () => {
     function renderBalances() {
         const c = document.querySelector('.balance-list'); if (!c) return;
         if (!state.connected) { c.innerHTML = ''; renderPortfolioSummary(); return; }
-        c.innerHTML = Object.entries(balances).map(([t, b]) => `<div class="balance-row"><div class="balance-token"><div class="token-icon ${escapeHtml(t.toLowerCase())}-icon">${escapeHtml(t[0])}</div><span>${escapeHtml(t)}</span></div><div class="balance-amounts"><span class="balance-available">${formatAmount(b.available)}</span><span class="balance-usd">≈ $${formatAmount(b.usd)}</span></div></div>`).join('');
+        c.innerHTML = Object.entries(balances).map(([t, b]) => {
+            const tokenIcon = renderAssetIcon(t);
+            return `<div class="balance-row"><div class="balance-token">${tokenIcon}<span>${escapeHtml(t)}</span></div><div class="balance-amounts"><span class="balance-available">${formatAmount(b.available)}</span><span class="balance-usd">≈ $${formatAmount(b.usd)}</span></div></div>`;
+        }).join('');
         renderPortfolioSummary();
         refreshPredictWalletBalance();
     }

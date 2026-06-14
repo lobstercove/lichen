@@ -575,8 +575,8 @@ body.full-page #dashboardScreen {
 }
 
 .popup-asset-icon {
-  width: 28px;
-  height: 28px;
+  width: 32px;
+  height: 32px;
   border-radius: 50%;
   display: flex;
   align-items: center;
@@ -584,6 +584,13 @@ body.full-page #dashboardScreen {
   font-size: 0.9rem;
   flex-shrink: 0;
   background: rgba(0, 201, 219, 0.12);
+}
+
+.popup-asset-icon img {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  object-fit: cover;
 }
 
 .popup-asset-info {

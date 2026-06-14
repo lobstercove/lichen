@@ -342,6 +342,15 @@ assert(
     'DEX frontend pulls native/token collateral before signed trade, margin, pool, prediction, and launch actions'
 );
 assert(
+    dexJs.includes("const LICN_LOGO_URL = 'https://lichen.network/assets/img/coins/128x128/licn.png';")
+        && dexJs.includes('rememberAssetRegistryEntry(e);')
+        && dexJs.includes('entry.metadata.logo_url || entry.metadata.logoUrl')
+        && dexJs.includes('const tokenIcon = renderAssetIcon(t);')
+        && dexCss.includes('.token-icon img')
+        && dexCss.includes('width: 32px;'),
+    'DEX balance assets use signed registry logo metadata with 32px canonical icon rendering'
+);
+assert(
     ciWorkflow.includes('node scripts/qa/test_dex_ui_readiness.js')
         && ciWorkflow.includes('node scripts/qa/audit_frontend_rpc_parity.js'),
     'CI runs DEX frontend wiring and RPC parity audits'

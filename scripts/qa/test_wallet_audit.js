@@ -1309,6 +1309,10 @@ test('wallet restriction UI escapes server-provided status and token metadata', 
         'asset badge labels should be escaped before rendering');
     assert(walletSrc.includes('safeHttpImageUrl(token.logoUrl)'),
         'token logo metadata should reject non-http(s) URLs before rendering');
+    assert(walletSrc.includes("const LICN_LOGO_URL = 'https://lichen.network/assets/img/coins/128x128/licn.png';"),
+        'wallet LICN asset row should use the canonical website coin logo');
+    assert(walletSrc.includes('style="width:32px;height:32px;border-radius:50%;object-fit:cover;"'),
+        'wallet asset logo images should render at 32x32');
     assert(walletSrc.includes('safeCssColor(token.color)'),
         'token color metadata should be sanitized before style rendering');
 });

@@ -56,6 +56,7 @@ import {
 } from '../core/amount-service.js';
 
 const NFT_MARKETPLACE_URL = 'https://marketplace.lichen.network';
+const LICN_LOGO_URL = 'https://lichen.network/assets/img/coins/128x128/licn.png';
 const SHIELDED_NOTE_PAYLOAD_MAGIC_EXT = new TextEncoder().encode('LNP1');
 const NOTE_ENCRYPTION_V1_PREFIX_EXT = 'a1:';
 
@@ -3328,7 +3329,9 @@ async function loadAssets() {
 
     list.innerHTML = `
       <div class="asset-item">
-        <div class="asset-icon" style="background:rgba(0, 201, 219,0.12);color:var(--primary);">🦞</div>
+        <div class="asset-icon asset-icon-lichen" style="background:rgba(0, 201, 219,0.12);color:var(--primary);">
+          <img src="${escapeHtmlExt(LICN_LOGO_URL)}" alt="LICN" style="width:32px;height:32px;border-radius:50%;object-fit:cover;">
+        </div>
         <div class="asset-info">
           <div class="asset-name">LICN</div>
           <div class="asset-symbol">Lichen Native Token</div>

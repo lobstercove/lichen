@@ -779,6 +779,17 @@ test('CC-4g extension MossStake activity rows match explorer units and lifecycle
   }
 });
 
+test('CC-4h extension asset rows use the canonical 32px LICN logo', () => {
+  for (const [name, src] of [['full page', fullSrc], ['popup', popupSrc]]) {
+    assert.ok(src.includes("const LICN_LOGO_URL = 'https://lichen.network/assets/img/coins/128x128/licn.png';"),
+      `${name} should use the canonical website LICN logo`);
+    assert.ok(src.includes('style="width:32px;height:32px;border-radius:50%;object-fit:cover;"'),
+      `${name} should render the LICN asset logo at 32x32`);
+  }
+  assert.ok(popupCssSrc.includes('.popup-asset-icon') && popupCssSrc.includes('width: 32px;') && popupCssSrc.includes('height: 32px;'),
+    'popup asset icon container should be 32x32');
+});
+
 test('CC-5 no other inline onclick handlers in extension JS files', () => {
   const jsFiles = [
     'pages/nfts.js', 'pages/identity.js', 'pages/settings.js',
