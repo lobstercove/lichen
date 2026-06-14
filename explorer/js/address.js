@@ -85,6 +85,11 @@ function numericRewardValue(value) {
     return Number.isFinite(numeric) ? numeric : 0;
 }
 
+function sporesToLicnNumber(value) {
+    const numeric = Number(value || 0);
+    return Number.isFinite(numeric) ? numeric / 1_000_000_000 : 0;
+}
+
 const EXPLORER_NO_BOOTSTRAP_INDEX = '18446744073709551615';
 const EXPLORER_NO_BOOTSTRAP_INDEX_ROUNDED = 18_446_744_073_709_000_000;
 
@@ -2006,19 +2011,31 @@ async function loadTreasuryStats(address) {
 
 // ===== Fetch Account from RPC =====
 async function fetchAccountFromRPC(address) {
-    // Parallel fetch: balance + account + tx count + token accounts + liquid staking receipt balance
-    const [balanceData, accountData, txCountData, tokenData, stakingPosition] = await Promise.all([
+    // Parallel fetch: native account state, token accounts, and MossStake state.
+    const [balanceData, accountData, txCountData, tokenData, stakingPosition, unstakingQueue] = await Promise.all([
         rpcCall('getBalance', [address]).catch(() => null),
         rpcCall('getAccount', [address]).catch(() => null),
         rpcCall('getAccountTxCount', [address]).catch(() => null),
         rpcCall('getTokenAccounts', [address]).catch(() => null),
         rpcCall('getStakingPosition', [address]).catch(() => null),
+        rpcCall('getUnstakingQueue', [address]).catch(() => null),
     ]);
 
     if (!balanceData) return null;
 
     const txCount = txCountData?.count || 0;
     const tokens = tokenData?.accounts || [];
+    const pendingRequests = Array.isArray(unstakingQueue?.pending_requests)
+        ? unstakingQueue.pending_requests
+        : [];
+    const pendingUnstakeLicn = pendingRequests.reduce(
+        (sum, request) => sum + sporesToLicnNumber(request?.licn_to_receive),
+        0,
+    );
+    const pendingUnstakeStLicn = pendingRequests.reduce(
+        (sum, request) => sum + sporesToLicnNumber(request?.st_licn_amount),
+        0,
+    );
 
     return {
         address: accountData?.pubkey || address,
@@ -2029,7 +2046,13 @@ async function fetchAccountFromRPC(address) {
         spendable: parseFloat(balanceData.spendable_licn),
         staked: parseFloat(balanceData.staked_licn),
         locked: parseFloat(balanceData.locked_licn),
-        stLicn: Number(stakingPosition?.st_licn_amount || 0) / 1_000_000_000,
+        mossDeposited: sporesToLicnNumber(stakingPosition?.licn_deposited ?? balanceData.moss_staked),
+        mossValue: sporesToLicnNumber(stakingPosition?.current_value_licn ?? balanceData.moss_value),
+        mossRewards: sporesToLicnNumber(stakingPosition?.rewards_earned),
+        stLicn: sporesToLicnNumber(stakingPosition?.st_licn_amount),
+        pendingUnstakeLicn,
+        pendingUnstakeStLicn,
+        claimableUnstakeLicn: sporesToLicnNumber(unstakingQueue?.total_claimable),
         owner: accountData?.owner || (typeof SYSTEM_PROGRAM_ID !== 'undefined' ? SYSTEM_PROGRAM_ID : '11111111111111111111111111111111'),
         executable: accountData?.executable || false,
         data_len: accountData?.data_len || 0,
@@ -2045,7 +2068,8 @@ function createEmptyAccountData(address) {
         address, base58: address,
         evm: lichenToEvmAddress(address) || 'Unavailable',
         spores: 0, licn: 0, spendable: 0, staked: 0, locked: 0,
-        stLicn: 0,
+        mossDeposited: 0, mossValue: 0, mossRewards: 0, stLicn: 0,
+        pendingUnstakeLicn: 0, pendingUnstakeStLicn: 0, claimableUnstakeLicn: 0,
         data: [], owner: typeof SYSTEM_PROGRAM_ID !== 'undefined' ? SYSTEM_PROGRAM_ID : '11111111111111111111111111111111',
         executable: false, rentEpoch: 0, txCount: 0, tokens: [], type: 'User', active: false
     };
@@ -2080,33 +2104,40 @@ function displayAddressData(data) {
     }
     document.getElementById('balanceLicn').textContent = `${formatLicnExact(data.licn)} LICN`;
     document.getElementById('balanceSpores').textContent = `${formatNumber(data.spores)} spores`;
+    const totalValueEl = document.getElementById('totalAccountValueLicn');
+    if (totalValueEl) {
+        const totalValue = Number(data.licn || 0)
+            + Number(data.mossValue || 0)
+            + Number(data.pendingUnstakeLicn || 0);
+        totalValueEl.textContent = `${formatLicnExact(totalValue)} LICN`;
+    }
 
     document.getElementById('spendableLicn').textContent = `${formatLicnExact(data.spendable)} LICN`;
     document.getElementById('stakedLicn').textContent = `${formatLicnExact(data.staked)} LICN`;
     document.getElementById('lockedLicn').textContent = `${formatLicnExact(data.locked)} LICN`;
 
-    // Liquid staking receipt balance display.
-    let stakingStLicnEl = document.getElementById('stakingStLicn');
-    if (!stakingStLicnEl) {
-        // Inject liquid staking row after native validator staking row.
-        const stakedEl = document.getElementById('stakedLicn');
-        if (stakedEl) {
-            const parentRow = stakedEl.closest('.detail-row') || stakedEl.parentElement;
-            if (parentRow && parentRow.parentElement) {
-                const mossRow = document.createElement('div');
-                mossRow.className = parentRow.className;
-                mossRow.innerHTML = `
-                    <div class="detail-label">Staking (stLICN)</div>
-                    <div class="detail-value" id="stakingStLicn">0 stLICN</div>
-                `;
-                parentRow.parentElement.insertBefore(mossRow, parentRow.nextSibling);
-                stakingStLicnEl = document.getElementById('stakingStLicn');
-            }
-        }
-    }
+    const mossValueEl = document.getElementById('mossStakeValueLicn');
+    if (mossValueEl) mossValueEl.textContent = `${formatLicnExact(data.mossValue || 0)} LICN`;
+    const mossDepositedEl = document.getElementById('mossStakeDepositedLicn');
+    if (mossDepositedEl) mossDepositedEl.textContent = `${formatLicnExact(data.mossDeposited || 0)} LICN`;
+    const mossRewardsEl = document.getElementById('mossStakeRewardsLicn');
+    if (mossRewardsEl) mossRewardsEl.textContent = `${formatLicnExact(data.mossRewards || 0)} LICN`;
+    const stakingStLicnEl = document.getElementById('stakingStLicn');
     if (stakingStLicnEl) {
         const stLicn = data.stLicn || 0;
         stakingStLicnEl.textContent = stLicn > 0 ? `${formatLicnExact(stLicn)} stLICN` : '0 stLICN';
+    }
+    const pendingUnstakeEl = document.getElementById('mossStakePendingUnstakeLicn');
+    if (pendingUnstakeEl) {
+        const pendingLicn = data.pendingUnstakeLicn || 0;
+        const pendingStLicn = data.pendingUnstakeStLicn || 0;
+        const claimableLicn = data.claimableUnstakeLicn || 0;
+        if (pendingLicn > 0) {
+            const suffix = claimableLicn > 0 ? `, ${formatLicnExact(claimableLicn)} LICN claimable` : ' cooling down';
+            pendingUnstakeEl.textContent = `${formatLicnExact(pendingLicn)} LICN (${formatLicnExact(pendingStLicn)} stLICN)${suffix}`;
+        } else {
+            pendingUnstakeEl.textContent = '0 LICN';
+        }
     }
 
     const ownerEl = document.getElementById('ownerProgram');
@@ -2288,6 +2319,8 @@ function prevTxPage() {
 // ===== Display Transactions =====
 function displayTransactions(transactions) {
     const tbody = document.getElementById('transactionsTable');
+    const mossStakePoolTypes = new Set(['MossStakeDeposit', 'MossStakeUnstake', 'MossStakeClaim']);
+    const stLicnAmountTypes = new Set(['MossStakeUnstake', 'MossStakeTransfer']);
 
     if (transactions.length === 0) {
         tbody.innerHTML = `
@@ -2313,7 +2346,7 @@ function displayTransactions(transactions) {
         const txType = tx.type || tx.kind || 'Unknown';
         // Display-friendly type names
         const txTypeDisplayMap = {
-            'MossStakeDeposit': 'MossStake',
+            'MossStakeDeposit': 'MossStake Deposit',
             'MossStakeUnstake': 'MossStake Unstake',
             'MossStakeClaim': 'MossStake Claim',
             'MossStakeTransfer': 'stLICN Transfer',
@@ -2343,23 +2376,27 @@ function displayTransactions(transactions) {
         } else if (txType === 'Shield') {
             effectiveOutgoing = true;
         }
+        if (mossStakePoolTypes.has(txType)) {
+            effectiveOutgoing = txType !== 'MossStakeClaim';
+        }
         const otherAddress = txType === 'ShieldedTransfer'
             ? null
-            : (effectiveOutgoing ? txTo : txFrom);
+            : (mossStakePoolTypes.has(txType) ? null : (effectiveOutgoing ? txTo : txFrom));
         const direction = txType === 'ShieldedTransfer'
             ? 'PRIVATE'
-            : (effectiveOutgoing ? 'OUT' : 'IN');
+            : (mossStakePoolTypes.has(txType) ? 'MOSS' : (effectiveOutgoing ? 'OUT' : 'IN'));
         const directionClass = txType === 'ShieldedTransfer'
             ? ''
             : (effectiveOutgoing ? 'negative' : 'positive');
         const signedPrefix = txType === 'ShieldedTransfer'
             ? ''
             : (effectiveOutgoing ? '-' : '+');
+        const amountUnit = stLicnAmountTypes.has(txType) ? 'stLICN' : 'LICN';
         const amountDisplay = txType === 'ShieldedTransfer'
             ? 'Hidden'
             : tx.token_symbol
                 ? `${signedPrefix}${formatNumber(tx.token_amount || 0)} ${tx.token_symbol}`
-                : `${signedPrefix}${formatLicnExact(txAmount)} LICN`;
+                : `${signedPrefix}${formatLicnExact(txAmount)} ${amountUnit}`;
         const success = tx.success !== undefined
             ? !!tx.success
             : String(tx.status || '').toLowerCase() !== 'failed';
@@ -2369,7 +2406,7 @@ function displayTransactions(transactions) {
             : '-';
         const counterpartyCell = otherAddress
             ? `<a href="address.html?address=${otherAddress}" class="table-link">${formatAddress(otherAddress)}</a>`
-            : '-';
+            : (mossStakePoolTypes.has(txType) ? '<span class="table-link">MossStake Pool</span>' : '-');
 
         row.innerHTML = `
             <td><a href="transaction.html?hash=${txHash}" class="table-link" title="${txHash}">${formatHash(txHash)}</a></td>

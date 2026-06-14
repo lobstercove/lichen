@@ -132,12 +132,16 @@
                                     </div>
                                 </div>
                                 <div class="detail-row">
-                                    <div class="detail-label">Balance (LICN)</div>
+                                    <div class="detail-label">Native Balance (LICN)</div>
                                     <div class="detail-value" id="balanceLicn">-</div>
                                 </div>
                                 <div class="detail-row">
-                                    <div class="detail-label">Balance (Spores)</div>
+                                    <div class="detail-label">Native Balance (Spores)</div>
                                     <div class="detail-value" id="balanceSpores">-</div>
+                                </div>
+                                <div class="detail-row">
+                                    <div class="detail-label">Estimated Total Value (LICN)</div>
+                                    <div class="detail-value" id="totalAccountValueLicn">-</div>
                                 </div>
 
                                 <!-- Balance Breakdown -->
@@ -156,6 +160,27 @@
                                             class="fas fa-file-contract"></i>
                                         Locked</div>
                                     <div class="detail-value" id="lockedLicn" style="color: #00B8CC;">-</div>
+                                </div>
+                                <div class="detail-row">
+                                    <div class="detail-label" style="color: #00B8CC;"><i class="fas fa-seedling"></i>
+                                        MossStake Redeemable Value</div>
+                                    <div class="detail-value" id="mossStakeValueLicn" style="color: #00B8CC;">-</div>
+                                </div>
+                                <div class="detail-row">
+                                    <div class="detail-label">MossStake Deposited</div>
+                                    <div class="detail-value" id="mossStakeDepositedLicn">-</div>
+                                </div>
+                                <div class="detail-row">
+                                    <div class="detail-label">MossStake Rewards</div>
+                                    <div class="detail-value" id="mossStakeRewardsLicn">-</div>
+                                </div>
+                                <div class="detail-row">
+                                    <div class="detail-label">stLICN Balance</div>
+                                    <div class="detail-value" id="stakingStLicn">-</div>
+                                </div>
+                                <div class="detail-row">
+                                    <div class="detail-label">Pending MossStake Unstake</div>
+                                    <div class="detail-value" id="mossStakePendingUnstakeLicn">-</div>
                                 </div>
                                 <div class="detail-row">
                                     <div class="detail-label">Owner Program</div>
@@ -424,7 +449,7 @@
     <script src="shared-config.js?v=20260322"></script>
     <script src="js/utils.js?v=20260322"></script>
     <script src="js/explorer.js?v=20260608"></script>
-    <script src="js/address.js?v=20260612a"></script>
+    <script src="js/address.js?v=20260614a"></script>
 </body>
 
 </html>

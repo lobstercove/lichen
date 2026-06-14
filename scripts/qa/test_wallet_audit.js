@@ -63,6 +63,7 @@ const extensionPopupSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'wall
 const lichenidAbi = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'contracts', 'lichenid', 'abi.json'), 'utf8'));
 const walletHtml = fs.readFileSync(path.join(__dirname, '..', '..', 'wallet', 'index.html'), 'utf8');
 const explorerAddressSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'explorer', 'js', 'address.js'), 'utf8');
+const explorerAddressHtml = fs.readFileSync(path.join(__dirname, '..', '..', 'explorer', 'address.html'), 'utf8');
 
 // crypto.js no longer depends on the legacy JS signer, but keep the binding slot for the eval wrapper.
 const nacl = null;
@@ -1116,7 +1117,7 @@ test('wallet.js pins bridge control-plane methods to trusted RPC', () => {
         'bridge route status must be checked before asking the wallet to sign bridge auth');
 });
 
-test('wallet.js compact balance shows stLICN amount instead of redeemable liquid staking value', () => {
+test('wallet.js compact balance shows stLICN amount while explorer separates MossStake value and pending unstake', () => {
     assert(walletSrc.includes('Staking: <strong>${fmtToken(snapshot.stLicn, 4)} stLICN</strong>'),
         'balance card should show the actual stLICN position amount with units');
     assert(walletSrc.includes("rpc.call('getStakingPosition', [wallet.address])"),
@@ -1125,10 +1126,16 @@ test('wallet.js compact balance shows stLICN amount instead of redeemable liquid
         'balance card must not label redeemable LICN value as liquid staking value');
     assert(explorerAddressSrc.includes("rpcCall('getStakingPosition', [address])"),
         'explorer address page should fetch staking position for stLICN account summary');
-    assert(explorerAddressSrc.includes('Staking (stLICN)'),
+    assert(explorerAddressSrc.includes("rpcCall('getUnstakingQueue', [address])"),
+        'explorer address page should fetch pending MossStake unstake requests');
+    assert(explorerAddressHtml.includes('Estimated Total Value (LICN)'),
+        'explorer account summary should show estimated total value across native and MossStake balances');
+    assert(explorerAddressHtml.includes('MossStake Redeemable Value'),
+        'explorer account summary should show MossStake redeemable LICN separately');
+    assert(explorerAddressHtml.includes('Pending MossStake Unstake'),
+        'explorer account summary should show pending MossStake unstake separately');
+    assert(explorerAddressHtml.includes('stLICN Balance'),
         'explorer account summary should label staking as stLICN shares');
-    assert(!explorerAddressSrc.includes('MossStake Redeemable Value'),
-        'explorer account summary must not show redeemable LICN as the account staking balance');
 });
 
 test('wallet.js exposes Neo X bridge controls with route status and reserve context', () => {

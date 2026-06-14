@@ -1220,10 +1220,16 @@ function validateFrontendInputGuards() {
 
     assert(
         explorerAddressJs.includes("rpcCall('getStakingPosition', [address])") &&
-            explorerAddressJs.includes('Staking (stLICN)') &&
+            explorerAddressJs.includes("rpcCall('getUnstakingQueue', [address])") &&
+            explorerAddressHtml.includes('Estimated Total Value (LICN)') &&
+            explorerAddressHtml.includes('MossStake Redeemable Value') &&
+            explorerAddressHtml.includes('Pending MossStake Unstake') &&
+            explorerAddressHtml.includes('stLICN Balance') &&
             explorerAddressJs.includes('`${formatLicnExact(stLicn)} stLICN`') &&
-            !explorerAddressJs.includes('MossStake Redeemable Value'),
-        'explorer account summary shows stLICN receipt balance instead of redeemable LICN value'
+            explorerAddressJs.includes('totalAccountValueLicn') &&
+            explorerAddressJs.includes('pendingUnstakeLicn') &&
+            explorerAddressJs.includes('mossValue'),
+        'explorer account summary shows native balance, total account value, MossStake redeemable value, stLICN receipt balance, and pending unstake separately'
     );
 }
 
