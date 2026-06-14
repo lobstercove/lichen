@@ -1569,7 +1569,10 @@ fn main() {
     // AUTO-DEPLOY CONTRACTS (before genesis block so state_root is complete)
     // ════════════════════════════════════════════════════════════════════
     let gp = &genesis_config.genesis_prices;
-    genesis_auto_deploy(&state, &genesis_pubkey, "GENESIS:");
+    if let Err(err) = genesis_auto_deploy(&state, &genesis_pubkey, "GENESIS:") {
+        error!("Failed to auto-deploy genesis contracts: {}", err);
+        std::process::exit(1);
+    };
     if let Err(err) = genesis_harden_contract_controls(&state, &genesis_pubkey, "GENESIS:") {
         error!("Failed to install genesis governance/timelocks: {}", err);
         std::process::exit(1);

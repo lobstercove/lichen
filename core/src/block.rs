@@ -294,7 +294,12 @@ impl Block {
         validator_set: &crate::consensus::ValidatorSet,
         stake_pool: &crate::consensus::StakePool,
     ) -> Result<(), String> {
-        self.verify_commit_with_chain_id("", validator_set, stake_pool)
+        self.verify_commit_with_chain_id_and_min_stake(
+            "",
+            validator_set,
+            stake_pool,
+            crate::consensus::MIN_VALIDATOR_STAKE,
+        )
     }
 
     /// Verify the block's commit certificate with chain-id domain separation,
@@ -304,6 +309,21 @@ impl Block {
         chain_id: &str,
         validator_set: &crate::consensus::ValidatorSet,
         stake_pool: &crate::consensus::StakePool,
+    ) -> Result<(), String> {
+        self.verify_commit_with_chain_id_and_min_stake(
+            chain_id,
+            validator_set,
+            stake_pool,
+            crate::consensus::MIN_VALIDATOR_STAKE,
+        )
+    }
+
+    pub fn verify_commit_with_chain_id_and_min_stake(
+        &self,
+        chain_id: &str,
+        validator_set: &crate::consensus::ValidatorSet,
+        stake_pool: &crate::consensus::StakePool,
+        min_validator_stake: u64,
     ) -> Result<(), String> {
         // Genesis block has no commit
         if self.header.slot == 0 {
@@ -319,24 +339,13 @@ impl Block {
         // must be computed per-signature (not once for the whole block).
 
         let mut committed_stake: u128 = 0;
-        let mut total_stake: u128 = 0;
         let mut seen = std::collections::HashSet::new();
 
-        for vi in validator_set.validators() {
-            // Only count active (non-pending) validators toward the 2/3
-            // supermajority denominator.  Pending validators have been
-            // discovered on-chain but are not yet participating in BFT
-            // consensus, so their stake must not inflate total_stake.
-            if vi.pending_activation {
-                continue;
-            }
-            let pubkey = vi.pubkey;
-            let stake = stake_pool
-                .get_stake(&pubkey)
-                .map(|s| s.total_stake())
-                .unwrap_or(0);
-            total_stake += stake as u128;
-        }
+        let total_stake = crate::consensus::total_eligible_validator_stake(
+            validator_set,
+            stake_pool,
+            min_validator_stake,
+        );
 
         if total_stake == 0 {
             return Err("No staked validators in set".to_string());
@@ -350,11 +359,14 @@ impl Block {
                 continue;
             }
 
-            // Skip validators not in the set or still pending activation
-            match validator_set.get_validator(&pubkey) {
-                Some(vi) if !vi.pending_activation => {}
-                _ => continue,
-            }
+            let Some(stake) = crate::consensus::eligible_validator_stake(
+                &pubkey,
+                validator_set,
+                stake_pool,
+                min_validator_stake,
+            ) else {
+                continue;
+            };
 
             // Verify signature — each precommit includes its own timestamp
             let signable = crate::consensus::Precommit::signable_bytes(
@@ -376,10 +388,6 @@ impl Block {
                 continue;
             }
 
-            let stake = stake_pool
-                .get_stake(&pubkey)
-                .map(|s| s.total_stake())
-                .unwrap_or(0);
             committed_stake += stake as u128;
         }
 
@@ -1246,6 +1254,45 @@ mod tests {
         ];
 
         assert!(block.verify_commit(&vs, &sp).is_ok());
+    }
+
+    #[test]
+    fn test_verify_commit_rejects_below_min_only_certificate() {
+        use crate::consensus::{
+            StakeInfo, StakePool, ValidatorInfo, ValidatorSet, MIN_VALIDATOR_STAKE,
+        };
+
+        let kp = crate::Keypair::generate();
+        let mut vs = ValidatorSet::new();
+        vs.add_validator(ValidatorInfo::new(kp.pubkey(), 0));
+
+        let mut sp = StakePool::new();
+        sp.upsert_stake_full(StakeInfo::new(kp.pubkey(), MIN_VALIDATOR_STAKE - 1, 0));
+
+        let mut block = Block::new_with_timestamp(
+            5,
+            Hash::default(),
+            Hash::hash(b"state"),
+            kp.pubkey().0,
+            Vec::new(),
+            2000,
+        );
+        block.sign(&kp);
+        block.commit_round = 0;
+
+        let block_hash = block.hash();
+        let ts = 2000u64;
+        let signable = crate::consensus::Precommit::signable_bytes(5, 0, &Some(block_hash), ts);
+        block.commit_signatures = vec![CommitSignature {
+            validator: kp.pubkey().0,
+            signature: kp.sign(&signable),
+            timestamp: ts,
+        }];
+
+        let result =
+            block.verify_commit_with_chain_id_and_min_stake("", &vs, &sp, MIN_VALIDATOR_STAKE);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("No staked validators"));
     }
 
     #[test]

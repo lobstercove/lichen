@@ -120,6 +120,35 @@ impl ConsensusWal {
         [hash[0], hash[1], hash[2], hash[3]]
     }
 
+    fn encode_entry_frame(entry: &WalEntry, context: &str) -> Result<Vec<u8>, String> {
+        let encoded = serialize_legacy_bincode_limited(entry, WAL_ENTRY_CODEC_LIMIT_BYTES, context)
+            .map_err(|e| format!("WAL: Failed to serialize entry: {e}"))?;
+        let mut frame = Vec::with_capacity(4 + encoded.len() + 4);
+        frame.extend_from_slice(&(encoded.len() as u32).to_le_bytes());
+        frame.extend_from_slice(&encoded);
+        frame.extend_from_slice(&Self::checksum(&encoded));
+        Ok(frame)
+    }
+
+    #[cfg(unix)]
+    fn sync_parent_dir(path: &Path) -> Result<(), String> {
+        let parent = path.parent().unwrap_or_else(|| Path::new("."));
+        fs::File::open(parent)
+            .and_then(|f| f.sync_all())
+            .map_err(|e| {
+                format!(
+                    "WAL: Failed to fsync parent dir {}: {}",
+                    parent.display(),
+                    e
+                )
+            })
+    }
+
+    #[cfg(not(unix))]
+    fn sync_parent_dir(_path: &Path) -> Result<(), String> {
+        Ok(())
+    }
+
     /// Decode a sequence of length-prefixed bincode entries with checksum verification.
     /// Format per entry: [len:4 LE][payload:len][checksum:4]
     /// AUDIT-FIX MED-02: Entries without a valid checksum are rejected.
@@ -174,13 +203,7 @@ impl ConsensusWal {
 
     /// Append an entry to the WAL and flush to disk.
     fn append_result(&mut self, entry: WalEntry) -> Result<(), String> {
-        // Serialize entry
-        let encoded = serialize_legacy_bincode_limited(
-            &entry,
-            WAL_ENTRY_CODEC_LIMIT_BYTES,
-            "consensus WAL entry",
-        )
-        .map_err(|e| format!("WAL: Failed to serialize entry: {e}"))?;
+        let frame = Self::encode_entry_frame(&entry, "consensus WAL entry")?;
 
         // Append length-prefixed entry to file
         let mut file = match fs::OpenOptions::new()
@@ -198,14 +221,7 @@ impl ConsensusWal {
             }
         };
 
-        let len_bytes = (encoded.len() as u32).to_le_bytes();
-        let checksum = Self::checksum(&encoded);
-        if let Err(e) = file
-            .write_all(&len_bytes)
-            .and_then(|_| file.write_all(&encoded))
-            .and_then(|_| file.write_all(&checksum))
-            .and_then(|_| file.sync_all())
-        {
+        if let Err(e) = file.write_all(&frame).and_then(|_| file.sync_all()) {
             return Err(format!("WAL: Failed to write entry: {e}"));
         }
 
@@ -222,8 +238,15 @@ impl ConsensusWal {
     }
 
     /// Record that consensus started for a new height.
+    pub fn log_height_start_result(&mut self, height: u64) -> Result<(), String> {
+        self.append_result(WalEntry::HeightStarted { height })
+    }
+
+    /// Record that consensus started for a new height.
     pub fn log_height_start(&mut self, height: u64) {
-        self.append(WalEntry::HeightStarted { height });
+        if let Err(e) = self.log_height_start_result(height) {
+            error!("{}", e);
+        }
     }
 
     /// Record that the validator locked on a value.
@@ -364,38 +387,65 @@ impl ConsensusWal {
 
     /// Checkpoint: the commit for `height` was applied. Truncate the WAL
     /// since all prior state is now durably stored in the block DB.
-    pub fn checkpoint(&mut self, height: u64) {
-        self.entries.clear();
-        // Write a single checkpoint entry (effectively truncates the file)
-        match fs::File::create(&self.path) {
-            Ok(mut f) => {
-                let entry = WalEntry::Checkpoint { height };
-                if let Ok(encoded) = serialize_legacy_bincode_limited(
-                    &entry,
-                    WAL_ENTRY_CODEC_LIMIT_BYTES,
-                    "consensus WAL checkpoint",
-                ) {
-                    let len_bytes = (encoded.len() as u32).to_le_bytes();
-                    let checksum = Self::checksum(&encoded);
-                    if let Err(e) = f
-                        .write_all(&len_bytes)
-                        .and_then(|_| f.write_all(&encoded))
-                        .and_then(|_| f.write_all(&checksum))
-                        .and_then(|_| f.sync_all())
-                    {
-                        error!(
-                            "WAL: Failed to write checkpoint data at height {}: {}",
-                            height, e
-                        );
-                    }
-                }
-                self.entries.push(entry);
-            }
-            Err(e) => {
-                error!("WAL: Failed to create checkpoint: {}", e);
-            }
+    pub fn checkpoint_result(&mut self, height: u64) -> Result<(), String> {
+        let entry = WalEntry::Checkpoint { height };
+        let frame = Self::encode_entry_frame(&entry, "consensus WAL checkpoint")?;
+        let tmp_path =
+            self.path
+                .with_extension(format!("wal.tmp.{}.{}", std::process::id(), height));
+        if tmp_path.exists() {
+            fs::remove_file(&tmp_path).map_err(|e| {
+                format!(
+                    "WAL: Failed to remove stale checkpoint temp {}: {}",
+                    tmp_path.display(),
+                    e
+                )
+            })?;
         }
+
+        let write_result = (|| -> Result<(), String> {
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&tmp_path)
+                .map_err(|e| {
+                    format!(
+                        "WAL: Failed to create checkpoint temp {}: {}",
+                        tmp_path.display(),
+                        e
+                    )
+                })?;
+            file.write_all(&frame)
+                .and_then(|_| file.sync_all())
+                .map_err(|e| format!("WAL: Failed to write checkpoint temp: {e}"))?;
+            drop(file);
+            fs::rename(&tmp_path, &self.path).map_err(|e| {
+                format!(
+                    "WAL: Failed to atomically replace {} with {}: {}",
+                    self.path.display(),
+                    tmp_path.display(),
+                    e
+                )
+            })?;
+            Self::sync_parent_dir(&self.path)?;
+            Ok(())
+        })();
+
+        if let Err(err) = write_result {
+            let _ = fs::remove_file(&tmp_path);
+            return Err(err);
+        }
+
+        self.entries.clear();
+        self.entries.push(entry);
         debug!("📋 WAL: Checkpoint at height {}", height);
+        Ok(())
+    }
+
+    pub fn checkpoint(&mut self, height: u64) {
+        if let Err(e) = self.checkpoint_result(height) {
+            error!("{}", e);
+        }
     }
 
     /// Replay the WAL to recover locked state after a crash.
@@ -568,7 +618,7 @@ mod tests {
         assert_eq!(recovered.signed_votes[0].block_hash, Some(hash));
 
         let mut wal = ConsensusWal::open(dir.to_str().unwrap());
-        wal.checkpoint(7);
+        wal.checkpoint_result(7).unwrap();
         let recovered = ConsensusWal::open(dir.to_str().unwrap()).recover();
         assert!(recovered.signed_votes.is_empty());
 
@@ -607,7 +657,7 @@ mod tests {
             .unwrap_err();
         assert!(err.contains("proposal protection"));
 
-        wal.checkpoint(21);
+        wal.checkpoint_result(21).unwrap();
         let recovered = ConsensusWal::open(dir.to_str().unwrap()).recover();
         assert!(recovered.proposal_blocks.is_empty());
 
@@ -667,10 +717,91 @@ mod tests {
         assert_eq!(recovered.signed_votes.len(), 1);
 
         let mut wal = ConsensusWal::open(dir.to_str().unwrap());
-        wal.checkpoint(12);
+        wal.checkpoint_result(12).unwrap();
         let recovered = ConsensusWal::open(dir.to_str().unwrap()).recover();
         assert_eq!(recovered.locked_state, None);
         assert!(recovered.signed_votes.is_empty());
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn checkpoint_success_writes_single_durable_checkpoint() {
+        let dir = temp_data_dir("checkpoint-durable-single-entry");
+        let kp = keypair(9);
+        let hash = Hash::hash(b"durable-checkpoint");
+        let prevote = Prevote {
+            height: 33,
+            round: 0,
+            block_hash: Some(hash),
+            validator: kp.pubkey(),
+            signature: kp.sign(&Prevote::signable_bytes(33, 0, &Some(hash))),
+        };
+
+        let mut wal = ConsensusWal::open(dir.to_str().unwrap());
+        wal.log_height_start_result(33).unwrap();
+        wal.log_signed_prevote(&prevote).unwrap();
+        assert!(wal.entries.len() > 1);
+
+        wal.checkpoint_result(33).unwrap();
+        assert_eq!(wal.entries.len(), 1);
+        assert!(matches!(
+            wal.entries[0],
+            WalEntry::Checkpoint { height: 33 }
+        ));
+
+        let recovered = ConsensusWal::open(dir.to_str().unwrap()).recover();
+        assert_eq!(recovered.last_checkpoint, Some(33));
+        assert!(recovered.signed_votes.is_empty());
+        assert!(recovered.proposal_blocks.is_empty());
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn checkpoint_failure_preserves_existing_wal_and_memory() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = temp_data_dir("checkpoint-failure-preserves-old-wal");
+        let kp = keypair(10);
+        let hash = Hash::hash(b"preserve-on-failure");
+        let prevote = Prevote {
+            height: 44,
+            round: 1,
+            block_hash: Some(hash),
+            validator: kp.pubkey(),
+            signature: kp.sign(&Prevote::signable_bytes(44, 1, &Some(hash))),
+        };
+
+        let mut wal = ConsensusWal::open(dir.to_str().unwrap());
+        wal.log_height_start_result(44).unwrap();
+        wal.log_signed_prevote(&prevote).unwrap();
+        let old_bytes = fs::read(dir.join("consensus.wal")).unwrap();
+        let old_entries = wal.entries.clone();
+
+        let old_permissions = fs::metadata(&dir).unwrap().permissions();
+        let mut readonly = old_permissions.clone();
+        readonly.set_mode(0o500);
+        fs::set_permissions(&dir, readonly).unwrap();
+
+        let result = wal.checkpoint_result(44);
+
+        fs::set_permissions(&dir, old_permissions).unwrap();
+
+        if result.is_ok() {
+            let _ = fs::remove_dir_all(dir);
+            return;
+        }
+        assert_eq!(fs::read(dir.join("consensus.wal")).unwrap(), old_bytes);
+        assert_eq!(wal.entries.len(), old_entries.len());
+        assert!(matches!(
+            old_entries[0],
+            WalEntry::HeightStarted { height: 44 }
+        ));
+
+        let recovered = ConsensusWal::open(dir.to_str().unwrap()).recover();
+        assert_eq!(recovered.signed_votes.len(), 1);
 
         let _ = fs::remove_dir_all(dir);
     }

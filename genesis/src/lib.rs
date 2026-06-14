@@ -6,7 +6,7 @@
 //!   - `lichen-validator` (replays genesis contract deployment on sync)
 
 use lichen_core::{
-    Account, ContractAccount, ContractContext, ContractRuntime, GenesisPrices, Hash,
+    Account, ContractAbi, ContractAccount, ContractContext, ContractRuntime, GenesisPrices, Hash,
     ProgramCallActivity, Pubkey, StateStore, SymbolRegistryEntry,
 };
 
@@ -50,6 +50,27 @@ fn contract_wasm_path(contracts_dir: &Path, dir_name: &str) -> PathBuf {
     contracts_dir
         .join(dir_name)
         .join(format!("{}.wasm", dir_name))
+}
+
+fn contract_abi_path(contracts_dir: &Path, dir_name: &str) -> PathBuf {
+    contracts_dir.join(dir_name).join("abi.json")
+}
+
+fn load_contract_abi(
+    contracts_dir: &Path,
+    dir_name: &str,
+    symbol: &str,
+) -> Result<Option<ContractAbi>, String> {
+    let abi_path = contract_abi_path(contracts_dir, dir_name);
+    if !abi_path.exists() {
+        return Ok(None);
+    }
+
+    let bytes = fs::read(&abi_path)
+        .map_err(|e| format!("FAIL {symbol}: cannot read ABI {}: {e}", abi_path.display()))?;
+    let abi = serde_json::from_slice(&bytes)
+        .map_err(|e| format!("FAIL {symbol}: invalid ABI {}: {e}", abi_path.display()))?;
+    Ok(Some(abi))
 }
 
 fn price_8dec_to_f64(price: u64) -> f64 {
@@ -128,40 +149,48 @@ pub const GENESIS_CONTRACT_CATALOG: &[(&str, &str, &str, &str)] = &[
     ("prediction_market", "PREDICT", "Prediction Markets", "defi"),
 ];
 
-pub fn genesis_auto_deploy(state: &StateStore, deployer_pubkey: &Pubkey, label: &str) {
+pub fn genesis_auto_deploy(
+    state: &StateStore,
+    deployer_pubkey: &Pubkey,
+    label: &str,
+) -> Result<(), String> {
     info!("──────────────────────────────────────────────────────");
     info!("  {} Auto-deploying genesis contracts", label);
     info!("──────────────────────────────────────────────────────");
 
     let Some(contracts_dir) = resolve_contracts_dir() else {
-        warn!("contracts/ directory not found — skipping auto-deploy");
-        return;
+        return Err(
+            "contracts directory not found; refusing partial genesis auto-deploy".to_string(),
+        );
     };
     info!("  Using contracts directory: {}", contracts_dir.display());
 
     let mut deployed: usize = 0;
-    let mut failed: usize = 0;
+
+    let missing_wasms: Vec<String> = GENESIS_CONTRACT_CATALOG
+        .iter()
+        .filter_map(|(dir_name, symbol, _, _)| {
+            let wasm_path = contract_wasm_path(&contracts_dir, dir_name);
+            (!wasm_path.exists()).then(|| format!("{symbol} ({})", wasm_path.display()))
+        })
+        .collect();
+    if !missing_wasms.is_empty() {
+        return Err(format!(
+            "missing genesis contract WASM artifacts: {}",
+            missing_wasms.join(", ")
+        ));
+    }
 
     for &(dir_name, symbol, display_name, template) in GENESIS_CONTRACT_CATALOG {
         let wasm_path = contract_wasm_path(&contracts_dir, dir_name);
-        if !wasm_path.exists() {
-            warn!(
-                "  SKIP {}: WASM not found at {}",
-                symbol,
-                wasm_path.display()
-            );
-            failed += 1;
-            continue;
-        }
 
-        let wasm_bytes = match fs::read(&wasm_path) {
-            Ok(bytes) => bytes,
-            Err(e) => {
-                error!("  FAIL {}: Cannot read WASM: {}", symbol, e);
-                failed += 1;
-                continue;
-            }
-        };
+        let wasm_bytes = fs::read(&wasm_path).map_err(|e| {
+            format!(
+                "FAIL {symbol}: cannot read WASM {}: {e}",
+                wasm_path.display()
+            )
+        })?;
+        let abi = load_contract_abi(&contracts_dir, dir_name, symbol)?;
 
         // Derive deterministic program address: SHA-256(deployer + name + wasm)
         // Including the name ensures identical WASMs (e.g. wrapped token stubs)
@@ -186,31 +215,26 @@ pub fn genesis_auto_deploy(state: &StateStore, deployer_pubkey: &Pubkey, label: 
         }
 
         // Create ContractAccount
-        let contract = ContractAccount::new(wasm_bytes, *deployer_pubkey);
+        let mut contract = ContractAccount::new(wasm_bytes, *deployer_pubkey);
+        if let Some(abi) = abi {
+            contract.abi = Some(abi);
+        }
 
         // Create executable Account with contract data
         let mut account = Account::new(0, program_pubkey);
-        match serde_json::to_vec(&contract) {
-            Ok(data) => account.data = data,
-            Err(e) => {
-                error!("  FAIL {}: Serialize error: {}", symbol, e);
-                failed += 1;
-                continue;
-            }
-        }
+        account.data = serde_json::to_vec(&contract)
+            .map_err(|e| format!("FAIL {symbol}: serialize error: {e}"))?;
         account.executable = true;
 
         // Store the account
-        if let Err(e) = state.put_account(&program_pubkey, &account) {
-            error!("  FAIL {}: put_account error: {}", symbol, e);
-            failed += 1;
-            continue;
-        }
+        state
+            .put_account(&program_pubkey, &account)
+            .map_err(|e| format!("FAIL {symbol}: put_account error: {e}"))?;
 
         // Index in CF_PROGRAMS (makes it visible to getAllContracts)
-        if let Err(e) = state.index_program(&program_pubkey) {
-            warn!("  WARN {}: index_program error: {}", symbol, e);
-        }
+        state
+            .index_program(&program_pubkey)
+            .map_err(|e| format!("FAIL {symbol}: index_program error: {e}"))?;
 
         // Register in symbol registry with rich token metadata
         let mut meta = serde_json::json!({
@@ -304,9 +328,9 @@ pub fn genesis_auto_deploy(state: &StateStore, deployer_pubkey: &Pubkey, label: 
                 _ => None,
             },
         };
-        if let Err(e) = state.register_symbol(symbol, entry) {
-            warn!("  WARN {}: register_symbol error: {}", symbol, e);
-        }
+        state
+            .register_symbol(symbol, entry)
+            .map_err(|e| format!("FAIL {symbol}: register_symbol error: {e}"))?;
 
         info!(
             "  OK   {} ({}) -> {}",
@@ -318,11 +342,9 @@ pub fn genesis_auto_deploy(state: &StateStore, deployer_pubkey: &Pubkey, label: 
     }
 
     info!("──────────────────────────────────────────────────────");
-    info!(
-        "  Genesis deploy complete: {} deployed, {} failed",
-        deployed, failed
-    );
+    info!("  Genesis deploy complete: {} deployed", deployed);
     info!("──────────────────────────────────────────────────────");
+    Ok(())
 }
 
 // ========================================================================
@@ -3709,7 +3731,33 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    static CONTRACTS_DIR_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     const TEST_WASM_MODULE: &[u8] = b"\0asm\x01\0\0\0";
+
+    fn with_contracts_dir<T>(contracts_dir: &Path, f: impl FnOnce() -> T) -> T {
+        let _guard = CONTRACTS_DIR_ENV_LOCK.lock().unwrap();
+        let previous = std::env::var_os("LICHEN_CONTRACTS_DIR");
+        std::env::set_var("LICHEN_CONTRACTS_DIR", contracts_dir);
+        let result = f();
+        match previous {
+            Some(value) => std::env::set_var("LICHEN_CONTRACTS_DIR", value),
+            None => std::env::remove_var("LICHEN_CONTRACTS_DIR"),
+        }
+        result
+    }
+
+    fn write_complete_contract_catalog(contracts_dir: &Path) {
+        for (dir_name, _, _, _) in GENESIS_CONTRACT_CATALOG {
+            let dir = contracts_dir.join(dir_name);
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(
+                contract_wasm_path(contracts_dir, dir_name),
+                TEST_WASM_MODULE,
+            )
+            .unwrap();
+        }
+    }
 
     fn store_test_contract(state: &StateStore, pubkey: Pubkey) {
         let contract = ContractAccount::new(TEST_WASM_MODULE.to_vec(), Pubkey([7u8; 32]));
@@ -3859,6 +3907,60 @@ mod tests {
     }
 
     #[test]
+    fn test_genesis_auto_deploy_fails_closed_when_catalog_wasm_missing() {
+        let contracts_dir = tempdir().unwrap();
+        let state_dir = tempdir().unwrap();
+        let state = StateStore::open(state_dir.path()).unwrap();
+        let deployer = Pubkey([1u8; 32]);
+
+        with_contracts_dir(contracts_dir.path(), || {
+            let error = genesis_auto_deploy(&state, &deployer, "TEST:").unwrap_err();
+            assert!(error.contains("missing genesis contract WASM artifacts"));
+            assert!(error.contains("LUSD"));
+            assert!(state.get_symbol_registry("LUSD").unwrap().is_none());
+        });
+    }
+
+    #[test]
+    fn test_genesis_auto_deploy_embeds_repo_abi_json_when_present() {
+        let contracts_dir = tempdir().unwrap();
+        let state_dir = tempdir().unwrap();
+        let state = StateStore::open(state_dir.path()).unwrap();
+        let deployer = Pubkey([2u8; 32]);
+        write_complete_contract_catalog(contracts_dir.path());
+
+        fs::write(
+            contracts_dir.path().join("wbtc_token").join("abi.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "version": "1.0",
+                "name": "wbtc_token",
+                "template": "wrapped",
+                "functions": [
+                    {
+                        "name": "get_transfer_count",
+                        "readonly": true,
+                        "params": []
+                    }
+                ]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        with_contracts_dir(contracts_dir.path(), || {
+            genesis_auto_deploy(&state, &deployer, "TEST:").unwrap();
+            let wbtc = state.get_symbol_registry("WBTC").unwrap().unwrap();
+            let account = state.get_account(&wbtc.program).unwrap().unwrap();
+            let contract: ContractAccount = serde_json::from_slice(&account.data).unwrap();
+            let abi = contract.abi.expect("wbtc abi should be embedded");
+            assert_eq!(abi.name, "wbtc_token");
+            assert_eq!(abi.template.as_deref(), Some("wrapped"));
+            assert_eq!(abi.functions[0].name, "get_transfer_count");
+            assert!(abi.functions[0].readonly);
+        });
+    }
+
+    #[test]
     fn test_prediction_dependency_setters_use_explicit_success_code() {
         assert_eq!(prediction_dependency_setter_success_return_codes(), &[1]);
         assert!(!prediction_dependency_setter_success_return_codes().contains(&0));
@@ -3880,7 +3982,7 @@ mod tests {
             )])
             .unwrap();
 
-        genesis_auto_deploy(&state, &deployer, "TEST:");
+        genesis_auto_deploy(&state, &deployer, "TEST:").unwrap();
         assert_eq!(
             genesis_harden_contract_controls(&state, &deployer, "TEST:").unwrap(),
             community_treasury

@@ -2960,6 +2960,39 @@ pub fn governance_voting_power(tokens_held: u64, reputation: u64) -> u64 {
     (base as u128 * capped as u128 / 1000) as u64
 }
 
+/// Return a validator's eligible BFT voting stake under the active minimum.
+pub fn eligible_validator_stake(
+    validator: &Pubkey,
+    validator_set: &ValidatorSet,
+    stake_pool: &StakePool,
+    min_validator_stake: u64,
+) -> Option<u64> {
+    let info = validator_set.get_validator(validator)?;
+    if info.pending_activation {
+        return None;
+    }
+    let stake = stake_pool.get_stake(validator)?.total_stake();
+    if stake < min_validator_stake {
+        return None;
+    }
+    Some(stake)
+}
+
+pub fn total_eligible_validator_stake(
+    validator_set: &ValidatorSet,
+    stake_pool: &StakePool,
+    min_validator_stake: u64,
+) -> u128 {
+    validator_set
+        .validators()
+        .iter()
+        .filter_map(|v| {
+            eligible_validator_stake(&v.pubkey, validator_set, stake_pool, min_validator_stake)
+        })
+        .map(u128::from)
+        .sum()
+}
+
 /// Vote aggregator for BFT consensus
 #[derive(Debug, Clone)]
 pub struct VoteAggregator {
@@ -3022,6 +3055,26 @@ impl VoteAggregator {
         self.add_vote(vote)
     }
 
+    pub fn add_vote_validated_with_min_stake(
+        &mut self,
+        vote: Vote,
+        validator_set: &ValidatorSet,
+        stake_pool: &StakePool,
+        min_validator_stake: u64,
+    ) -> bool {
+        if eligible_validator_stake(
+            &vote.validator,
+            validator_set,
+            stake_pool,
+            min_validator_stake,
+        )
+        .is_none()
+        {
+            return false;
+        }
+        self.add_vote(vote)
+    }
+
     /// Get votes for specific block
     pub fn get_votes(&self, slot: u64, block_hash: &Hash) -> Option<&Vec<Vote>> {
         self.votes.get(&(slot, *block_hash))
@@ -3036,35 +3089,50 @@ impl VoteAggregator {
         validator_set: &ValidatorSet,
         stake_pool: &StakePool,
     ) -> bool {
+        self.has_supermajority_with_min_stake(
+            slot,
+            block_hash,
+            validator_set,
+            stake_pool,
+            MIN_VALIDATOR_STAKE,
+        )
+    }
+
+    pub fn has_supermajority_with_min_stake(
+        &self,
+        slot: u64,
+        block_hash: &Hash,
+        validator_set: &ValidatorSet,
+        stake_pool: &StakePool,
+        min_validator_stake: u64,
+    ) -> bool {
         let votes = match self.get_votes(slot, block_hash) {
             Some(v) => v,
             None => return false,
         };
 
-        let total_stake = stake_pool.total_stake();
+        let total_stake =
+            total_eligible_validator_stake(validator_set, stake_pool, min_validator_stake);
         if total_stake == 0 {
-            // Fallback to reputation-based if no stake
-            let vote_weight: u64 = votes
-                .iter()
-                .filter_map(|vote| validator_set.get_validator(&vote.validator))
-                .map(|v| v.voting_weight())
-                .sum();
-
-            let total_weight = validator_set.total_voting_weight();
-            // AUDIT-FIX 1.2d: u128 cast to prevent overflow on multiplication
-            return (vote_weight as u128) * 3 >= (total_weight as u128) * 2;
+            return false;
         }
 
         // Calculate stake-weighted voting power
-        let vote_stake: u64 = votes
+        let vote_stake: u128 = votes
             .iter()
-            .filter_map(|vote| stake_pool.get_stake(&vote.validator))
-            .map(|stake_info| stake_info.total_stake())
+            .filter_map(|vote| {
+                eligible_validator_stake(
+                    &vote.validator,
+                    validator_set,
+                    stake_pool,
+                    min_validator_stake,
+                )
+            })
+            .map(u128::from)
             .sum();
 
         // Need 66% (2/3) of stake for supermajority
-        // AUDIT-FIX 1.2d: u128 cast to prevent overflow on multiplication
-        (vote_stake as u128) * 3 >= (total_stake as u128) * 2
+        vote_stake * 3 >= total_stake * 2
     }
 
     /// Get vote count for block
@@ -3969,6 +4037,84 @@ mod tests {
         agg.add_vote(vote.clone());
 
         assert_eq!(agg.vote_count(1, &Hash::new([0u8; 32])), 0); // Failed verification
+    }
+
+    fn signed_test_vote(kp: &crate::Keypair, slot: u64, block_hash: Hash) -> Vote {
+        let mut message = Vec::new();
+        message.extend_from_slice(&slot.to_le_bytes());
+        message.extend_from_slice(&block_hash.0);
+        Vote::new(slot, block_hash, kp.pubkey(), kp.sign(&message))
+    }
+
+    #[test]
+    fn vote_aggregator_rejects_below_min_voting_power() {
+        let kp1 = crate::Keypair::generate();
+        let kp2 = crate::Keypair::generate();
+        let kp3 = crate::Keypair::generate();
+        let mut set = ValidatorSet::new();
+        for kp in [&kp1, &kp2, &kp3] {
+            set.add_validator(ValidatorInfo::new(kp.pubkey(), 0));
+        }
+
+        let mut pool = StakePool::new();
+        pool.upsert_stake_full(StakeInfo::new(kp1.pubkey(), MIN_VALIDATOR_STAKE, 0));
+        pool.upsert_stake_full(StakeInfo::new(kp2.pubkey(), MIN_VALIDATOR_STAKE, 0));
+        pool.upsert_stake_full(StakeInfo::new(kp3.pubkey(), MIN_VALIDATOR_STAKE - 1, 0));
+
+        let hash = Hash::hash(b"vote-aggregator-below-min");
+        let mut agg = VoteAggregator::new();
+        assert!(agg.add_vote_validated_with_min_stake(
+            signed_test_vote(&kp1, 7, hash),
+            &set,
+            &pool,
+            MIN_VALIDATOR_STAKE,
+        ));
+        assert!(!agg.add_vote_validated_with_min_stake(
+            signed_test_vote(&kp3, 7, hash),
+            &set,
+            &pool,
+            MIN_VALIDATOR_STAKE,
+        ));
+        assert!(!agg.has_supermajority_with_min_stake(7, &hash, &set, &pool, MIN_VALIDATOR_STAKE,));
+
+        assert!(agg.add_vote_validated_with_min_stake(
+            signed_test_vote(&kp2, 7, hash),
+            &set,
+            &pool,
+            MIN_VALIDATOR_STAKE,
+        ));
+        assert!(agg.has_supermajority_with_min_stake(7, &hash, &set, &pool, MIN_VALIDATOR_STAKE,));
+    }
+
+    #[test]
+    fn vote_aggregator_rejects_pending_voting_power() {
+        let kp1 = crate::Keypair::generate();
+        let kp2 = crate::Keypair::generate();
+        let mut set = ValidatorSet::new();
+        set.add_validator(ValidatorInfo::new(kp1.pubkey(), 0));
+        let mut pending = ValidatorInfo::new(kp2.pubkey(), 0);
+        pending.pending_activation = true;
+        set.add_validator(pending);
+
+        let mut pool = StakePool::new();
+        pool.upsert_stake_full(StakeInfo::new(kp1.pubkey(), MIN_VALIDATOR_STAKE, 0));
+        pool.upsert_stake_full(StakeInfo::new(kp2.pubkey(), MIN_VALIDATOR_STAKE, 0));
+
+        let hash = Hash::hash(b"vote-aggregator-pending");
+        let mut agg = VoteAggregator::new();
+        assert!(agg.add_vote_validated_with_min_stake(
+            signed_test_vote(&kp1, 8, hash),
+            &set,
+            &pool,
+            MIN_VALIDATOR_STAKE,
+        ));
+        assert!(!agg.add_vote_validated_with_min_stake(
+            signed_test_vote(&kp2, 8, hash),
+            &set,
+            &pool,
+            MIN_VALIDATOR_STAKE,
+        ));
+        assert!(agg.has_supermajority_with_min_stake(8, &hash, &set, &pool, MIN_VALIDATOR_STAKE,));
     }
 
     #[test]

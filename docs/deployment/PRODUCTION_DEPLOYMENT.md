@@ -829,16 +829,27 @@ This is the cleanest way to refresh the deploy manifest, helper key alignment, a
 
 The helper key alignment step now copies the encrypted `genesis-primary-*.json` file with mode `600`. That repo-local helper represents the current wrapped-token operational minter key used by local bootstrap flows, not the long-lived governed admin authority.
 
-If the configured `LICHEN_SIGNED_METADATA_KEYPAIR_FILE` lives under `/etc/lichen/secrets/`, the checkout owner may not be able to read it directly. In that case, copy it to a temporary user-readable path and pass it explicitly:
+Do not copy the release signing key to the VPS. Generate the signed metadata manifest from the deployer machine through an SSH tunnel to the seed RPC, then upload only the signed JSON artifact:
 
 ```bash
-sudo cp /etc/lichen/secrets/release-signing-keypair-testnet.json ~/release-signing-keypair-testnet.json
-sudo chown "$USER":"$USER" ~/release-signing-keypair-testnet.json
-chmod 600 ~/release-signing-keypair-testnet.json
+# On the deployer machine:
+export LICHEN_RELEASE_SIGNING_KEYPAIR=${LICHEN_RELEASE_SIGNING_KEYPAIR:-keypairs/release-signing-key.json}
+ssh -p 2222 -N -L 127.0.0.1:19899:127.0.0.1:8899 ubuntu@15.204.229.189 &
+TUNNEL_PID=$!
+node scripts/generate-signed-metadata-manifest.js \
+  --rpc http://127.0.0.1:19899 \
+  --network testnet \
+  --keypair "$LICHEN_RELEASE_SIGNING_KEYPAIR" \
+  --out /tmp/signed-metadata-manifest-testnet.json
+kill "$TUNNEL_PID"
+rsync -az -e 'ssh -p 2222' \
+  /tmp/signed-metadata-manifest-testnet.json \
+  ubuntu@15.204.229.189:~/lichen/signed-metadata-manifest-testnet.json
+
+# On the seed VPS:
 cd ~/lichen
-SIGNED_METADATA_KEYPAIR=$HOME/release-signing-keypair-testnet.json \
+SIGNED_METADATA_MANIFEST=$HOME/lichen/signed-metadata-manifest-testnet.json \
   DEPLOY_NETWORK=testnet ./scripts/first-boot-deploy.sh --rpc http://127.0.0.1:8899 --skip-build
-rm -f ~/release-signing-keypair-testnet.json
 ```
 
 If the script generated the signed metadata file under `~/lichen/`, install it into the RPC-configured path before continuing. **Do not skip this step — the DEX and all frontends depend on it:**
@@ -1020,7 +1031,7 @@ while time.time() < deadline:
         oracle = get_json("/api/v1/oracle/prices")
         feeds = {feed.get("asset"): feed for feed in oracle.get("data", {}).get("feeds", [])}
         bad = []
-        for asset in ("wSOL", "wETH", "wBNB"):
+        for asset in ("wSOL", "wETH", "wBNB", "wNEO", "wGAS", "wBTC"):
             feed = feeds.get(asset) or {}
             if int(feed.get("slot") or 0) <= 0 or feed.get("stale") is True:
                 bad.append(f"{asset}:slot={feed.get('slot')} stale={feed.get('stale')}")
@@ -1031,6 +1042,7 @@ while time.time() < deadline:
                 "DEX oracle/candle smoke: "
                 f"wSOL slot={feeds['wSOL'].get('slot')} "
                 f"wSOL price={feeds['wSOL'].get('price')} "
+                f"wBTC slot={feeds['wBTC'].get('slot')} "
                 f"latest 1m close={candle_rows[-1].get('close')}"
             )
             break
@@ -1460,32 +1472,31 @@ Bridge and oracle committees are also genesis state. A clean 4-validator deploym
 
 ### The canonical signing key
 
-The repo ships `keypairs/release-signing-key.json` — this is the **only** signing keypair whose public key (`8HitBNnh8qbhfne5NCv2yHrQFoD6xbmHcWaUSgCGtsk`) is hardcoded in every frontend portal's `shared/utils.js` as `LICHEN_SIGNED_METADATA_SIGNERS`.
+The deployer machine must have access to the release signing keypair, normally through `LICHEN_RELEASE_SIGNING_KEYPAIR` or a local `keypairs/release-signing-key.json`. Its public key (`8HitBNnh8qbhfne5NCv2yHrQFoD6xbmHcWaUSgCGtsk`) is hardcoded in every frontend portal's `shared/utils.js` as `LICHEN_SIGNED_METADATA_SIGNERS`.
 
 ### The fatal mistake: generating keys on VPS
 
 **NEVER run `scripts/generate-release-keys.sh` on a VPS.** That script creates a brand-new keypair with a different public key. If you use the VPS-generated key to sign metadata, every frontend portal will reject the manifest because the signer doesn't match the hardcoded expected signer.
 
-### Correct signing key deployment
+### Correct signing key use
 
-Copy the repo key to each VPS:
+Never deploy the private release signing key to validator or custody VPSes. Use it on the deployer machine only to sign release checksum manifests and signed metadata manifests, then upload the resulting public artifact.
 
 ```bash
-# From your local repo checkout:
-scp -P 2222 keypairs/release-signing-key.json ubuntu@<VPS_IP>:~/release-signing-key.json
-
-# On the VPS:
-sudo install -m 640 -o root -g lichen \
-  ~/release-signing-key.json \
-  /etc/lichen/secrets/release-signing-keypair-testnet.json
-rm ~/release-signing-key.json
+export LICHEN_RELEASE_SIGNING_KEYPAIR=/secure/local-signing/release-signing-keypair.json
+node scripts/generate-signed-metadata-manifest.js \
+  --rpc http://127.0.0.1:<ssh-tunnel-port> \
+  --network <testnet|mainnet> \
+  --keypair "$LICHEN_RELEASE_SIGNING_KEYPAIR" \
+  --out /tmp/signed-metadata-manifest-<net>.json
 ```
 
-If the US VPS has SFTP disabled:
+Upload only the signed metadata JSON:
 
 ```bash
-cat keypairs/release-signing-key.json | ssh -p 2222 ubuntu@15.204.229.189 'cat > ~/release-signing-key.json'
-ssh -p 2222 ubuntu@15.204.229.189 'sudo install -m 640 -o root -g lichen ~/release-signing-key.json /etc/lichen/secrets/release-signing-keypair-testnet.json && rm ~/release-signing-key.json'
+rsync -az -e 'ssh -p 2222' \
+  /tmp/signed-metadata-manifest-<net>.json \
+  ubuntu@<seed-vps>:~/lichen/signed-metadata-manifest-<net>.json
 ```
 
 ### Verification
@@ -1515,7 +1526,6 @@ When EU and SEA also run custody/faucet service roles, these service files must 
 |------|--------|---------|
 | `custody-master-seed-testnet.txt` | Genesis VPS `/etc/lichen/secrets/` | Custody HD wallet root |
 | `custody-deposit-seed-testnet.txt` | Genesis VPS `/etc/lichen/secrets/` | Custody deposit address derivation |
-| `release-signing-keypair-testnet.json` | Repo `keypairs/release-signing-key.json` | Signed metadata manifest signing |
 | `signed-metadata-manifest-testnet.json` | Genesis VPS `/etc/lichen/` | Pre-generated signed manifest |
 | `custody-treasury-testnet.json` | Genesis VPS `/etc/lichen/` | Custody wrapped-token operational key |
 | `faucet-keypair-testnet.json` | Genesis VPS `/var/lib/lichen/` | Testnet faucet funding key |
@@ -1543,7 +1553,7 @@ Do not distribute `genesis-wallet.json` or `genesis-keys/` to validator joiners.
 
 This is the full step-by-step procedure for stopping everything, flushing all state, and redeploying from scratch so VPSes match the live validator set exactly.
 
-Current signed-release target for this runbook is `v0.5.161`; keep `v0.5.150` as the signed rollback point. The GitHub Release archive must be installed on all four VPSes, the seed creates genesis, and `seed-02`, `seed-03`, plus `seed-04` start from empty chain state and join from peers without a state copy. A passing verifier must report all four validators healthy with bridge `4/2`, oracle feeds including BTC, empty faucet history, 32 manifest symbols, and the mandatory 13 DEX CLOB pairs, AMM pools, and router routes including `wBTC/lUSD` and `wBTC/LICN`. Use `scripts/rolling-release-deploy.sh` for non-destructive code-only updates; do not flush state for that path.
+Current signed-release target for this runbook is `v0.5.162`; keep `v0.5.150` as the signed rollback point. The GitHub Release archive must be installed on all four VPSes, the seed creates genesis, and `seed-02`, `seed-03`, plus `seed-04` start from empty chain state and join from peers without a state copy. A passing verifier must report all four validators healthy with bridge `4/2`, oracle feeds including BTC, empty faucet history, 32 manifest symbols, and the mandatory 13 DEX CLOB pairs, AMM pools, and router routes including `wBTC/lUSD` and `wBTC/LICN`. Use `scripts/rolling-release-deploy.sh` for non-destructive code-only updates; do not flush state for that path.
 
 State divergence must be corrected by normal replay or by the full verified checkpoint snapshot path. Do not run local-history stake-pool counter rewrites; validator and stake-pool singletons are never imported outside a staged checkpoint whose final root matches the announced checkpoint root.
 
@@ -1561,7 +1571,7 @@ The transaction is only valid for an existing exact 100,000 LICN explicit-funded
 ```bash
 export LICHEN_OWNER_APPROVED_RESET='owner-approved:testnet:15.204.229.189,37.59.97.61,15.235.142.253,148.113.43.247'
 export LICHEN_CLEAN_SLATE_REDEPLOY_CONFIRM='clean-slate:testnet:15.204.229.189,37.59.97.61,15.235.142.253,148.113.43.247'
-export LICHEN_RELEASE_TAG=v0.5.161
+export LICHEN_RELEASE_TAG=v0.5.162
 bash scripts/clean-slate-redeploy.sh testnet
 ```
 
@@ -1607,7 +1617,7 @@ Use this to map symptoms to action quickly:
 Prerequisites:
 - SSH access to all 4 VPSes (port 2222, user `ubuntu`, key-based auth)
 - `deploy/setup.sh` already run on all VPSes (systemd units, users, dirs exist)
-- `keypairs/release-signing-key.json` present in repo
+- release signing key available only on the deployer machine
 - Code committed and pushed to main
 
 ### Manual phase-by-phase procedure (for debugging)
@@ -1619,7 +1629,7 @@ If the automated script fails or you need to debug, follow these phases manually
 - Latest code committed and pushed
 - All CI checks green
 - SSH access to all 4 VPSes (port 2222, user `ubuntu`)
-- `keypairs/release-signing-key.json` present in repo
+- release signing key available only on the deployer machine
 - `LICHEN_KEYPAIR_PASSWORD` known (or will be auto-generated by setup.sh)
 
 ### Phase 1: Stop everything (all 4 VPSes)
@@ -1723,24 +1733,9 @@ done
 
 This auto-detects the US VPS and configures Binance US oracle endpoints.
 
-### Phase 6: Copy signing key to all VPSes
+### Phase 6: Keep release signing key local
 
-```bash
-for VPS in 37.59.97.61 15.235.142.253 148.113.43.247; do
-  scp -P 2222 keypairs/release-signing-key.json ubuntu@$VPS:~/release-signing-key.json
-  ssh -p 2222 ubuntu@$VPS '
-    sudo install -m 640 -o root -g lichen ~/release-signing-key.json /etc/lichen/secrets/release-signing-keypair-testnet.json
-    rm ~/release-signing-key.json
-  '
-done
-
-# US VPS (SFTP may be disabled):
-cat keypairs/release-signing-key.json | ssh -p 2222 ubuntu@15.204.229.189 'cat > ~/release-signing-key.json'
-ssh -p 2222 ubuntu@15.204.229.189 '
-  sudo install -m 640 -o root -g lichen ~/release-signing-key.json /etc/lichen/secrets/release-signing-keypair-testnet.json
-  rm ~/release-signing-key.json
-'
-```
+Do not copy `keypairs/release-signing-key.json` or any `*signing*` private key to VPSes. The clean-slate script excludes those paths from repo sync and service-secret bundles. After genesis is live, generate the signed metadata manifest on the deployer machine through an SSH tunnel and upload only `signed-metadata-manifest-<net>.json` to the seed checkout.
 
 ### Phase 7: Genesis on US VPS (primary validator)
 
@@ -1815,16 +1810,10 @@ ssh -p 2222 ubuntu@15.204.229.189 '
   # Run vps-post-genesis to copy keypairs to system paths
   sudo bash scripts/vps-post-genesis.sh testnet
 
-  # Make the release signing key readable for first-boot-deploy
-  sudo cp /etc/lichen/secrets/release-signing-keypair-testnet.json ~/release-signing-keypair-testnet.json
-  sudo chown $(whoami):$(whoami) ~/release-signing-keypair-testnet.json
-  chmod 600 ~/release-signing-keypair-testnet.json
-
-  # Run first-boot-deploy
-  SIGNED_METADATA_KEYPAIR=$HOME/release-signing-keypair-testnet.json \
+  # Run first-boot-deploy with the deployer-generated signed metadata artifact.
+  # The private release signer stays on the deployer machine.
+  SIGNED_METADATA_MANIFEST=$HOME/lichen/signed-metadata-manifest-testnet.json \
     DEPLOY_NETWORK=testnet ./scripts/first-boot-deploy.sh --rpc http://127.0.0.1:8899 --skip-build
-
-  rm -f ~/release-signing-keypair-testnet.json
 
   # Install the signed metadata manifest
   sudo install -m 640 -o root -g lichen \
@@ -2163,7 +2152,7 @@ command find /var/lib/lichen/contracts -maxdepth 2 -name '*.wasm' | sort | xargs
 
 Also, the wiped validator's new pubkey registers as a separate entry in the validator set. With N+1 validators and only N-1 online (original minus the ghost), BFT quorum (2/3+) may be unreachable.
 
-**Current release behavior**: `v0.5.161` keeps exact legacy testnet MossStake replay boundaries, so pre-v0.5.93 history replays slot-only, the retained v0.5.93 through v0.5.97 interval replays wall-clock MossStake state, and v0.5.98+ cleanup resumes slot-only state. It keeps endpoint pinning strict for configured seed and reserved peers, keeps durable cached peers in `known-peers.json` instead of promoting them into configured seed identity pins, treats non-reserved inbound and outbound learned validators as fresh transport locators after the native PQ handshake verifies their node identity, persists consensus proposal values in the WAL before any non-nil vote can reference them, ignores stale same-slot checkpoint repair comparisons after later blocks already exist locally, keeps speculative BFT proposal/vote heights out of durable block sync targets, starts normal initial block catch-up from the first missing descendant, drains pending descendants when an overlapping range replays the already-canonical current tip, restores the v0.5.93 pending-block overlap path when replay must recover a divergent local boundary, keeps bounded block-range replay active while warp checkpoint snapshots are probed or downloading, advertises recent verified checkpoint anchors so peers can form quorum on a common older snapshot instead of splitting on each node's latest checkpoint, accepts authenticated PQ node checkpoint sources for clean far-behind joiners after the signed checkpoint header verifies, includes canonical block-archive checkpoint snapshots with sorted commit certificates, shielded pool state and historical archive column families in warp snapshots, advertises state-repair checkpoint manifests for fresh or resumed consensus repair so a source does not have to scan full archival column families before serving the first chunk, streams checkpoint snapshots through a staging RocksDB before touching live state, rejects checkpoint snapshot sources whose staged archive is incomplete or whose deterministic archive manifest differs from the verified checkpoint metadata, pins each checkpoint repair to one verified source peer until that source succeeds or is rejected, anchors every checkpoint snapshot chunk request to the exact advertised slot, state root, and source-pinned snapshot manifest root after the checkpoint state root has active-validator quorum, bounds checkpoint-metadata probes while waiting for corroborated checkpoint anchors, refreshes verified checkpoint metadata in a background cache so checkpoint Merkle recomputation cannot block the live snapshot request path, retries stalled snapshot chunks independently of fresh metadata responses once a source is pinned, opens checkpoint stores through RocksDB read-only descriptors, and verifies checkpoint metadata through non-mutating cached/sparse-root reads so snapshot serving cannot cold-rebuild or compact checkpoint Merkle state, exposes a guarded shielded-state bundle import/export for replacing only shielded column families from an archive origin when existing testnet nodes lack the historical shielded blocks needed for local replay, completes missing deterministic post-block effects for recent stored canonical blocks during startup so stake-pool singleton counters cannot remain stale after restart, uses the same shared post-store hook wrapper for BFT-committed and network-applied blocks, keeps normal `lichen-testnet-1` validator registration on bootstrap recovery until the on-chain grant cap is reached, supports a signed validator-key `ReclassifyValidatorBootstrap` transaction for exact 100,000 LICN explicit-funded validator stake entries that must enter bootstrap-recovery accounting, exempts verified state snapshot chunks from the generic expensive-request throttle, sizes nested snapshot payloads below the outer P2P message envelope, verifies commit certificates and BFT timestamps with delegated total stake to match live consensus, drains stale pre-consensus BFT queues during bootstrap/catch-up waits, and keeps fresh-join initial sync on the batched block-range requester instead of broadcasting overlapping parent-gap repairs. This lets an external agent reinstall from a clean state and reuse the same public P2P address without manual TOFU cleanup on seed nodes, while resumed validators keep signed-vote protection without freezing on an unrecoverable legacy lock value.
+**Current release behavior**: `v0.5.162` keeps exact legacy testnet MossStake replay boundaries, so pre-v0.5.93 history replays slot-only, the retained v0.5.93 through v0.5.97 interval replays wall-clock MossStake state, and v0.5.98+ cleanup resumes slot-only state. It keeps endpoint pinning strict for configured seed and reserved peers, keeps durable cached peers in `known-peers.json` instead of promoting them into configured seed identity pins, treats non-reserved inbound and outbound learned validators as fresh transport locators after the native PQ handshake verifies their node identity, persists consensus proposal values in the WAL before any non-nil vote can reference them, ignores stale same-slot checkpoint repair comparisons after later blocks already exist locally, keeps speculative BFT proposal/vote heights out of durable block sync targets, starts normal initial block catch-up from the first missing descendant, drains pending descendants when an overlapping range replays the already-canonical current tip, restores the v0.5.93 pending-block overlap path when replay must recover a divergent local boundary, keeps bounded block-range replay active while warp checkpoint snapshots are probed or downloading, advertises recent verified checkpoint anchors so peers can form quorum on a common older snapshot instead of splitting on each node's latest checkpoint, accepts authenticated PQ node checkpoint sources for clean far-behind joiners after the signed checkpoint header verifies, includes canonical block-archive checkpoint snapshots with sorted commit certificates, shielded pool state and historical archive column families in warp snapshots, advertises state-repair checkpoint manifests for fresh or resumed consensus repair so a source does not have to scan full archival column families before serving the first chunk, streams checkpoint snapshots through a staging RocksDB before touching live state, rejects checkpoint snapshot sources whose staged archive is incomplete or whose deterministic archive manifest differs from the verified checkpoint metadata, pins each checkpoint repair to one verified source peer until that source succeeds or is rejected, anchors every checkpoint snapshot chunk request to the exact advertised slot, state root, and source-pinned snapshot manifest root after the checkpoint state root has active-validator quorum, bounds checkpoint-metadata probes while waiting for corroborated checkpoint anchors, refreshes verified checkpoint metadata in a background cache so checkpoint Merkle recomputation cannot block the live snapshot request path, retries stalled snapshot chunks independently of fresh metadata responses once a source is pinned, opens checkpoint stores through RocksDB read-only descriptors, and verifies checkpoint metadata through non-mutating cached/sparse-root reads so snapshot serving cannot cold-rebuild or compact checkpoint Merkle state, exposes a guarded shielded-state bundle import/export for replacing only shielded column families from an archive origin when existing testnet nodes lack the historical shielded blocks needed for local replay, completes missing deterministic post-block effects for recent stored canonical blocks during startup so stake-pool singleton counters cannot remain stale after restart, uses the same shared post-store hook wrapper for BFT-committed and network-applied blocks, keeps normal `lichen-testnet-1` validator registration on bootstrap recovery until the on-chain grant cap is reached, supports a signed validator-key `ReclassifyValidatorBootstrap` transaction for exact 100,000 LICN explicit-funded validator stake entries that must enter bootstrap-recovery accounting, exempts verified state snapshot chunks from the generic expensive-request throttle, sizes nested snapshot payloads below the outer P2P message envelope, verifies commit certificates and BFT timestamps with delegated total stake to match live consensus, drains stale pre-consensus BFT queues during bootstrap/catch-up waits, and keeps fresh-join initial sync on the batched block-range requester instead of broadcasting overlapping parent-gap repairs. This lets an external agent reinstall from a clean state and reuse the same public P2P address without manual TOFU cleanup on seed nodes, while resumed validators keep signed-vote protection without freezing on an unrecoverable legacy lock value.
 
 **Fix for local dev**: Remove the wiped validator's entry from all other validators' TOFU stores, then restart all validators from scratch:
 

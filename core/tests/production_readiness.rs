@@ -408,13 +408,16 @@ fn test_vote_aggregation_supermajority() {
     let v1 = Keypair::new();
     let v2 = Keypair::new();
     let v3 = Keypair::new();
-    let stake = 10_000_000_000u64;
+    let stake = MIN_VALIDATOR_STAKE;
     vs.add_validator(make_validator_info(&v1, stake));
     vs.add_validator(make_validator_info(&v2, stake));
     vs.add_validator(make_validator_info(&v3, stake));
+    let mut sp = StakePool::new();
+    sp.stake(v1.pubkey(), stake, 0).unwrap();
+    sp.stake(v2.pubkey(), stake, 0).unwrap();
+    sp.stake(v3.pubkey(), stake, 0).unwrap();
     let mut agg = VoteAggregator::new();
     let block_hash = Hash::new([1u8; 32]);
-    let sp = StakePool::new();
     agg.add_vote(make_vote(&v1, 1, block_hash));
     assert!(!agg.has_supermajority(1, &block_hash, &vs, &sp));
     agg.add_vote(make_vote(&v2, 1, block_hash));
@@ -427,14 +430,17 @@ fn test_vote_aggregation_different_blocks_no_supermajority() {
     let v1 = Keypair::new();
     let v2 = Keypair::new();
     let v3 = Keypair::new();
-    let stake = 10_000_000_000u64;
+    let stake = MIN_VALIDATOR_STAKE;
     vs.add_validator(make_validator_info(&v1, stake));
     vs.add_validator(make_validator_info(&v2, stake));
     vs.add_validator(make_validator_info(&v3, stake));
+    let mut sp = StakePool::new();
+    sp.stake(v1.pubkey(), stake, 0).unwrap();
+    sp.stake(v2.pubkey(), stake, 0).unwrap();
+    sp.stake(v3.pubkey(), stake, 0).unwrap();
     let mut agg = VoteAggregator::new();
     let hash_a = Hash::new([1u8; 32]);
     let hash_b = Hash::new([2u8; 32]);
-    let sp = StakePool::new();
     agg.add_vote(make_vote(&v1, 1, hash_a));
     agg.add_vote(make_vote(&v2, 1, hash_b));
     assert!(!agg.has_supermajority(1, &hash_a, &vs, &sp)); // Split vote
@@ -445,11 +451,13 @@ fn test_vote_aggregation_different_blocks_no_supermajority() {
 fn test_vote_from_non_validator_ignored() {
     let mut vs = ValidatorSet::new();
     let v1 = Keypair::new();
-    vs.add_validator(make_validator_info(&v1, 10_000_000_000));
+    let stake = MIN_VALIDATOR_STAKE;
+    vs.add_validator(make_validator_info(&v1, stake));
+    let mut sp = StakePool::new();
+    sp.stake(v1.pubkey(), stake, 0).unwrap();
     let mut agg = VoteAggregator::new();
     let imposter = Keypair::new();
     let block_hash = Hash::new([1u8; 32]);
-    let sp = StakePool::new();
     agg.add_vote(make_vote(&imposter, 1, block_hash));
     assert!(!agg.has_supermajority(1, &block_hash, &vs, &sp));
 }
@@ -1095,15 +1103,16 @@ fn test_last_slot_overwrites() {
 #[test]
 fn test_large_validator_set_supermajority() {
     let mut vs = ValidatorSet::new();
+    let mut sp = StakePool::new();
     let mut validators = Vec::new();
     for _ in 0..100 {
         let v = Keypair::new();
-        vs.add_validator(make_validator_info(&v, 1000));
+        vs.add_validator(make_validator_info(&v, MIN_VALIDATOR_STAKE));
+        sp.stake(v.pubkey(), MIN_VALIDATOR_STAKE, 0).unwrap();
         validators.push(v);
     }
     let mut agg = VoteAggregator::new();
     let block_hash = Hash::new([1u8; 32]);
-    let sp = StakePool::new();
     for v in validators.iter().take(66) {
         agg.add_vote(make_vote(v, 1, block_hash));
     }

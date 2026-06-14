@@ -74,6 +74,29 @@ pub(crate) async fn autodiscover_contract_addresses(
         addr_by_symbol.len()
     );
 
+    apply_discovered_contract_addresses(config, &addr_by_symbol);
+
+    let discovered = [
+        ("LUSD", &config.musd_contract_addr),
+        ("WSOL", &config.wsol_contract_addr),
+        ("WETH", &config.weth_contract_addr),
+        ("WBNB", &config.wbnb_contract_addr),
+        ("WGAS", &config.wgas_contract_addr),
+        ("WNEO", &config.wneo_contract_addr),
+        ("WBTC", &config.wbtc_contract_addr),
+    ];
+    for (name, addr) in &discovered {
+        match addr {
+            Some(a) => info!("  ✅ {} contract: {}", name, a),
+            None => tracing::warn!("  ❌ {} contract: NOT CONFIGURED", name),
+        }
+    }
+}
+
+fn apply_discovered_contract_addresses(
+    config: &mut CustodyConfig,
+    addr_by_symbol: &std::collections::HashMap<String, String>,
+) {
     let symbol_map: &[(&str, &str)] = &[
         ("LUSD", "musd"),
         ("WSOL", "wsol"),
@@ -81,6 +104,7 @@ pub(crate) async fn autodiscover_contract_addresses(
         ("WBNB", "wbnb"),
         ("WGAS", "wgas"),
         ("WNEO", "wneo"),
+        ("WBTC", "wbtc"),
     ];
 
     for (symbol, field_name) in symbol_map {
@@ -110,23 +134,68 @@ pub(crate) async fn autodiscover_contract_addresses(
                     info!("auto-discovered {} contract: {}", symbol, addr);
                     config.wneo_contract_addr = Some(addr.clone());
                 }
+                "wbtc" if config.wbtc_contract_addr.is_none() => {
+                    info!("auto-discovered {} contract: {}", symbol, addr);
+                    config.wbtc_contract_addr = Some(addr.clone());
+                }
                 _ => {}
             }
         }
     }
+}
 
-    let discovered = [
-        ("LUSD", &config.musd_contract_addr),
-        ("WSOL", &config.wsol_contract_addr),
-        ("WETH", &config.weth_contract_addr),
-        ("WBNB", &config.wbnb_contract_addr),
-        ("WGAS", &config.wgas_contract_addr),
-        ("WNEO", &config.wneo_contract_addr),
-    ];
-    for (name, addr) in &discovered {
-        match addr {
-            Some(a) => info!("  ✅ {} contract: {}", name, a),
-            None => tracing::warn!("  ❌ {} contract: NOT CONFIGURED", name),
-        }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn discovery_applies_wbtc_and_preserves_explicit_pins() {
+        let mut config = crate::test_support::test_config();
+        config.wbtc_contract_addr = Some("PINNED_WBTC".to_string());
+
+        let addr_by_symbol = std::collections::HashMap::from([
+            ("LUSD".to_string(), "DISCOVERED_LUSD".to_string()),
+            ("WSOL".to_string(), "DISCOVERED_WSOL".to_string()),
+            ("WETH".to_string(), "DISCOVERED_WETH".to_string()),
+            ("WBNB".to_string(), "DISCOVERED_WBNB".to_string()),
+            ("WGAS".to_string(), "DISCOVERED_WGAS".to_string()),
+            ("WNEO".to_string(), "DISCOVERED_WNEO".to_string()),
+            ("WBTC".to_string(), "DISCOVERED_WBTC".to_string()),
+        ]);
+
+        apply_discovered_contract_addresses(&mut config, &addr_by_symbol);
+
+        assert_eq!(
+            config.musd_contract_addr.as_deref(),
+            Some("DISCOVERED_LUSD")
+        );
+        assert_eq!(
+            config.wsol_contract_addr.as_deref(),
+            Some("DISCOVERED_WSOL")
+        );
+        assert_eq!(
+            config.weth_contract_addr.as_deref(),
+            Some("DISCOVERED_WETH")
+        );
+        assert_eq!(
+            config.wbnb_contract_addr.as_deref(),
+            Some("DISCOVERED_WBNB")
+        );
+        assert_eq!(
+            config.wgas_contract_addr.as_deref(),
+            Some("DISCOVERED_WGAS")
+        );
+        assert_eq!(
+            config.wneo_contract_addr.as_deref(),
+            Some("DISCOVERED_WNEO")
+        );
+        assert_eq!(config.wbtc_contract_addr.as_deref(), Some("PINNED_WBTC"));
+
+        config.wbtc_contract_addr = None;
+        apply_discovered_contract_addresses(&mut config, &addr_by_symbol);
+        assert_eq!(
+            config.wbtc_contract_addr.as_deref(),
+            Some("DISCOVERED_WBTC")
+        );
     }
 }

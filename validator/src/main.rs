@@ -77,7 +77,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
 use std::fs;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -608,6 +608,238 @@ fn cleanup_snapshot_staging(staging: &mut Option<(u64, String, StateStore)>) {
     }
 }
 
+const SNAPSHOT_LIVE_ROLLBACK_MARKER_VERSION: u8 = 1;
+const SNAPSHOT_LIVE_ROLLBACK_MARKER_SUFFIX: &str = "snapshot-live-rollback.json";
+const SNAPSHOT_LIVE_ROLLBACK_CHECKPOINT_SUFFIX: &str = "snapshot-live-rollback";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SnapshotLiveRollbackMarker {
+    version: u8,
+    rollback_slot: u64,
+    rollback_state_root: String,
+    rollback_checkpoint_dir: String,
+    target_snapshot_slot: u64,
+    target_snapshot_state_root: String,
+    created_at: u64,
+}
+
+#[derive(Default)]
+struct SnapshotCategoryCommitReport {
+    imported: Vec<(String, u64)>,
+    validator_set: Option<ValidatorSet>,
+    stake_pool: Option<StakePool>,
+    mossstake_pool: Option<lichen_core::MossStakePool>,
+}
+
+fn snapshot_live_rollback_marker_path(data_dir: &str) -> PathBuf {
+    state_staging_root(data_dir, SNAPSHOT_LIVE_ROLLBACK_MARKER_SUFFIX)
+}
+
+fn snapshot_live_rollback_checkpoint_dir(data_dir: &str) -> PathBuf {
+    state_staging_root(data_dir, SNAPSHOT_LIVE_ROLLBACK_CHECKPOINT_SUFFIX)
+}
+
+fn snapshot_hash_hex(hash: Hash) -> String {
+    hash.to_hex()
+}
+
+fn parse_snapshot_hash_hex(value: &str, field: &str) -> Result<Hash, String> {
+    let bytes = hex::decode(value).map_err(|err| format!("invalid {field}: {err}"))?;
+    if bytes.len() != 32 {
+        return Err(format!(
+            "invalid {field}: expected 32 bytes, got {}",
+            bytes.len()
+        ));
+    }
+    let mut root = [0u8; 32];
+    root.copy_from_slice(&bytes);
+    Ok(Hash(root))
+}
+
+fn current_unix_timestamp_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+fn fsync_parent_dir(path: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        let parent = path
+            .parent()
+            .ok_or_else(|| format!("{} has no parent directory", path.display()))?;
+        let dir = fs::File::open(parent)
+            .map_err(|err| format!("failed to open {} for fsync: {}", parent.display(), err))?;
+        dir.sync_all()
+            .map_err(|err| format!("failed to fsync {}: {}", parent.display(), err))?;
+    }
+    Ok(())
+}
+
+fn write_durable_snapshot_live_rollback_marker(
+    path: &Path,
+    marker: &SnapshotLiveRollbackMarker,
+) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("{} has no parent directory", path.display()))?;
+    fs::create_dir_all(parent)
+        .map_err(|err| format!("failed to create {}: {}", parent.display(), err))?;
+    let tmp_path = path.with_file_name(format!(
+        "{}.tmp",
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("snapshot-live-rollback.json")
+    ));
+    let json = serde_json::to_vec_pretty(marker)
+        .map_err(|err| format!("failed to serialize snapshot rollback marker: {}", err))?;
+    {
+        let mut file = fs::File::create(&tmp_path).map_err(|err| {
+            format!(
+                "failed to create snapshot rollback marker {}: {}",
+                tmp_path.display(),
+                err
+            )
+        })?;
+        file.write_all(&json).map_err(|err| {
+            format!(
+                "failed to write snapshot rollback marker {}: {}",
+                tmp_path.display(),
+                err
+            )
+        })?;
+        file.sync_all().map_err(|err| {
+            format!(
+                "failed to fsync snapshot rollback marker {}: {}",
+                tmp_path.display(),
+                err
+            )
+        })?;
+    }
+    fs::rename(&tmp_path, path).map_err(|err| {
+        format!(
+            "failed to publish snapshot rollback marker {}: {}",
+            path.display(),
+            err
+        )
+    })?;
+    fsync_parent_dir(path)
+}
+
+fn read_snapshot_live_rollback_marker(
+    marker_path: &Path,
+) -> Result<SnapshotLiveRollbackMarker, String> {
+    let data = fs::read_to_string(marker_path).map_err(|err| {
+        format!(
+            "failed to read snapshot rollback marker {}: {}",
+            marker_path.display(),
+            err
+        )
+    })?;
+    let marker: SnapshotLiveRollbackMarker = serde_json::from_str(&data).map_err(|err| {
+        format!(
+            "failed to parse snapshot rollback marker {}: {}",
+            marker_path.display(),
+            err
+        )
+    })?;
+    if marker.version != SNAPSHOT_LIVE_ROLLBACK_MARKER_VERSION {
+        return Err(format!(
+            "unsupported snapshot rollback marker version {}",
+            marker.version
+        ));
+    }
+    parse_snapshot_hash_hex(&marker.rollback_state_root, "rollback_state_root")?;
+    parse_snapshot_hash_hex(
+        &marker.target_snapshot_state_root,
+        "target_snapshot_state_root",
+    )?;
+    Ok(marker)
+}
+
+fn cleanup_snapshot_live_rollback(data_dir: &str) {
+    let marker_path = snapshot_live_rollback_marker_path(data_dir);
+    if let Err(err) = fs::remove_file(&marker_path) {
+        if err.kind() != std::io::ErrorKind::NotFound {
+            warn!(
+                "⚠️  Failed to remove snapshot rollback marker {}: {}",
+                marker_path.display(),
+                err
+            );
+        }
+    } else if let Err(err) = fsync_parent_dir(&marker_path) {
+        warn!(
+            "⚠️  Failed to fsync snapshot rollback marker removal {}: {}",
+            marker_path.display(),
+            err
+        );
+    }
+
+    let rollback_dir = snapshot_live_rollback_checkpoint_dir(data_dir);
+    if let Err(err) = fs::remove_dir_all(&rollback_dir) {
+        if err.kind() != std::io::ErrorKind::NotFound {
+            warn!(
+                "⚠️  Failed to remove snapshot rollback checkpoint {}: {}",
+                rollback_dir.display(),
+                err
+            );
+        }
+    }
+}
+
+fn prepare_snapshot_live_rollback(
+    state: &StateStore,
+    data_dir: &str,
+    target_snapshot_slot: u64,
+    target_snapshot_state_root: Hash,
+) -> Result<SnapshotLiveRollbackMarker, String> {
+    let marker_path = snapshot_live_rollback_marker_path(data_dir);
+    if marker_path.exists() {
+        return Err(format!(
+            "pending snapshot rollback marker exists at {}; restart to recover before applying another snapshot",
+            marker_path.display()
+        ));
+    }
+
+    let rollback_dir = snapshot_live_rollback_checkpoint_dir(data_dir);
+    if let Err(err) = fs::remove_dir_all(&rollback_dir) {
+        if err.kind() != std::io::ErrorKind::NotFound {
+            return Err(format!(
+                "failed to clear stale snapshot rollback checkpoint {}: {}",
+                rollback_dir.display(),
+                err
+            ));
+        }
+    }
+    let rollback_dir_str = rollback_dir.to_string_lossy().to_string();
+    state.create_raw_checkpoint(&rollback_dir_str)?;
+    let rollback_state = StateStore::open_checkpoint(&rollback_dir_str)?;
+    let rollback_slot = rollback_state.get_last_slot().unwrap_or(0);
+    let rollback_root = rollback_state
+        .compute_state_root_cached_read_only()
+        .unwrap_or_else(|| rollback_state.compute_state_root_read_only());
+    drop(rollback_state);
+
+    let marker = SnapshotLiveRollbackMarker {
+        version: SNAPSHOT_LIVE_ROLLBACK_MARKER_VERSION,
+        rollback_slot,
+        rollback_state_root: snapshot_hash_hex(rollback_root),
+        rollback_checkpoint_dir: rollback_dir_str,
+        target_snapshot_slot,
+        target_snapshot_state_root: snapshot_hash_hex(target_snapshot_state_root),
+        created_at: current_unix_timestamp_secs(),
+    };
+    write_durable_snapshot_live_rollback_marker(&marker_path, &marker)?;
+    info!(
+        "🛟 Prepared live snapshot rollback checkpoint: slot={} root={} dir={}",
+        rollback_slot,
+        rollback_root.to_hex(),
+        marker.rollback_checkpoint_dir
+    );
+    Ok(marker)
+}
+
 fn stream_snapshot_category_between_stores(
     source: &StateStore,
     target: &StateStore,
@@ -638,6 +870,166 @@ fn stream_snapshot_category_between_stores(
         cursor = Some(next_cursor);
     }
     Ok(imported)
+}
+
+fn commit_snapshot_categories_from_store(
+    source: &StateStore,
+    target: &StateStore,
+    categories: &[&str],
+) -> Result<SnapshotCategoryCommitReport, String> {
+    let validator_set_snapshot = if categories.contains(&"validator_set") {
+        Some(canonical_validator_set_snapshot(
+            &source.load_validator_set()?,
+        ))
+    } else {
+        None
+    };
+    let stake_pool_snapshot = if categories.contains(&"stake_pool") {
+        Some(source.get_stake_pool()?)
+    } else {
+        None
+    };
+    let mossstake_pool_snapshot = if categories.contains(&"mossstake_pool") {
+        Some(source.get_mossstake_pool()?)
+    } else {
+        None
+    };
+
+    for category_name in categories
+        .iter()
+        .copied()
+        .filter(|category| !STATE_SNAPSHOT_SPECIAL_CATEGORIES.contains(category))
+    {
+        target.clear_snapshot_category(category_name)?;
+    }
+
+    let mut report = SnapshotCategoryCommitReport {
+        validator_set: validator_set_snapshot.clone(),
+        stake_pool: stake_pool_snapshot.clone(),
+        mossstake_pool: mossstake_pool_snapshot.clone(),
+        imported: Vec::new(),
+    };
+
+    for category_name in categories.iter().copied() {
+        let count = match category_name {
+            "validator_set" => {
+                let snapshot = validator_set_snapshot
+                    .as_ref()
+                    .ok_or_else(|| "missing validator_set snapshot".to_string())?;
+                let count = snapshot.validators().len() as u64;
+                target.save_validator_set(snapshot)?;
+                count
+            }
+            "stake_pool" => {
+                let snapshot = stake_pool_snapshot
+                    .as_ref()
+                    .ok_or_else(|| "missing stake_pool snapshot".to_string())?;
+                let count = snapshot.stake_entries().len() as u64;
+                target.put_stake_pool(snapshot)?;
+                count
+            }
+            "mossstake_pool" => {
+                let snapshot = mossstake_pool_snapshot
+                    .as_ref()
+                    .ok_or_else(|| "missing mossstake_pool snapshot".to_string())?;
+                target.put_mossstake_pool(snapshot)?;
+                1
+            }
+            category => stream_snapshot_category_between_stores(
+                source,
+                target,
+                category,
+                snapshot_request_chunk_size(category),
+            )?,
+        };
+        report.imported.push((category_name.to_string(), count));
+    }
+
+    Ok(report)
+}
+
+fn restore_snapshot_live_rollback(
+    data_dir: &str,
+    state: &StateStore,
+    marker: &SnapshotLiveRollbackMarker,
+) -> Result<(), String> {
+    let rollback_root =
+        parse_snapshot_hash_hex(&marker.rollback_state_root, "rollback_state_root")?;
+    let checkpoint_state = StateStore::open_checkpoint(&marker.rollback_checkpoint_dir)?;
+    validate_checkpoint_state_root_read_only(
+        &checkpoint_state,
+        marker.rollback_slot,
+        rollback_root,
+    )?;
+    let report =
+        commit_snapshot_categories_from_store(&checkpoint_state, state, WARP_SNAPSHOT_CATEGORIES)?;
+    for (category, count) in report.imported {
+        info!(
+            "🛟 Restored {} {} entries from pre-snapshot rollback checkpoint",
+            count, category
+        );
+    }
+
+    state.reconcile_account_count()?;
+    state.reconcile_active_account_count()?;
+    state.reconcile_program_count()?;
+    state.reconcile_validator_count()?;
+    state.invalidate_merkle_cache();
+    if state.uses_sparse_state_commitment() {
+        state.rebuild_sparse_state_commitment(false)?;
+    }
+    validate_state_root_with_schema(
+        state,
+        marker.rollback_slot,
+        rollback_root,
+        "snapshot rollback recovery",
+        true,
+    )?;
+    state.save_metrics_counters()?;
+    cleanup_snapshot_live_rollback(data_dir);
+    Ok(())
+}
+
+fn recover_incomplete_snapshot_live_apply(
+    data_dir: &str,
+    cache_size_mb: Option<usize>,
+) -> Result<(), String> {
+    let marker_path = snapshot_live_rollback_marker_path(data_dir);
+    if !marker_path.exists() {
+        return Ok(());
+    }
+
+    let marker = read_snapshot_live_rollback_marker(&marker_path)?;
+    warn!(
+        "🛟 Found incomplete live snapshot apply marker: target_slot={} rollback_slot={} marker={}",
+        marker.target_snapshot_slot,
+        marker.rollback_slot,
+        marker_path.display()
+    );
+    let state = StateStore::open_with_cache_mb(data_dir, cache_size_mb)?;
+    let target_root = parse_snapshot_hash_hex(
+        &marker.target_snapshot_state_root,
+        "target_snapshot_state_root",
+    )?;
+    if state.get_last_slot().unwrap_or(0) == marker.target_snapshot_slot
+        && validate_state_root_with_schema(
+            &state,
+            marker.target_snapshot_slot,
+            target_root,
+            "completed snapshot live apply",
+            true,
+        )
+        .is_ok()
+    {
+        info!(
+            "🛟 Snapshot live apply already completed at slot {}; cleaning rollback marker",
+            marker.target_snapshot_slot
+        );
+        cleanup_snapshot_live_rollback(data_dir);
+        return Ok(());
+    }
+
+    restore_snapshot_live_rollback(data_dir, &state, &marker)
 }
 
 fn update_snapshot_digest_bytes(hasher: &mut Sha256, bytes: &[u8]) {
@@ -891,22 +1283,25 @@ fn validate_snapshot_archive_completeness(
     snapshot_slot: u64,
 ) -> Result<(), String> {
     let metrics = state.get_metrics();
-    let minimum_blocks = snapshot_slot.saturating_sub(1);
-    if metrics.total_blocks < minimum_blocks {
+    let required_blocks = snapshot_slot.saturating_add(1);
+    if metrics.total_blocks < required_blocks {
         return Err(format!(
-            "snapshot archive is incomplete: total_blocks={} but checkpoint slot={} requires at least {} archived blocks",
-            metrics.total_blocks, snapshot_slot, minimum_blocks
+            "snapshot archive is incomplete: total_blocks={} but checkpoint slot={} requires {} contiguous archived blocks",
+            metrics.total_blocks, snapshot_slot, required_blocks
         ));
     }
 
-    for probe_slot in [0, 1, snapshot_slot / 2, snapshot_slot] {
-        if probe_slot > snapshot_slot {
-            continue;
-        }
-        if state.get_block_by_slot(probe_slot)?.is_none() {
+    for slot in 0..=snapshot_slot {
+        let Some(block) = state.get_block_by_slot(slot)? else {
             return Err(format!(
-                "snapshot archive is missing required probe block at slot {}",
-                probe_slot
+                "snapshot archive is missing required contiguous block at slot {}",
+                slot
+            ));
+        };
+        if block.header.slot != slot {
+            return Err(format!(
+                "snapshot archive slot index mismatch: requested slot {}, got block slot {}",
+                slot, block.header.slot
             ));
         }
     }
@@ -6617,24 +7012,39 @@ fn latest_verified_checkpoint(
     validator_set: &ValidatorSet,
     stake_pool: &StakePool,
     chain_id: &str,
+    min_validator_stake: u64,
 ) -> Option<(
     lichen_core::CheckpointMeta,
     String,
     Block,
     Vec<SnapshotCategoryDigest>,
 )> {
-    recent_verified_checkpoints(data_dir, state, validator_set, stake_pool, chain_id, 1, 1)
+    let ctx = CheckpointVerificationContext {
+        data_dir,
+        state,
+        validator_set,
+        stake_pool,
+        chain_id,
+        min_validator_stake,
+    };
+    recent_verified_checkpoints(ctx, 1, 1)
         .into_iter()
         .next()
         .map(|checkpoint| checkpoint.checkpoint())
 }
 
+#[derive(Clone, Copy)]
+struct CheckpointVerificationContext<'a> {
+    data_dir: &'a str,
+    state: &'a StateStore,
+    validator_set: &'a ValidatorSet,
+    stake_pool: &'a StakePool,
+    chain_id: &'a str,
+    min_validator_stake: u64,
+}
+
 fn recent_verified_checkpoints(
-    data_dir: &str,
-    state: &StateStore,
-    validator_set: &ValidatorSet,
-    stake_pool: &StakePool,
-    chain_id: &str,
+    ctx: CheckpointVerificationContext<'_>,
     limit: usize,
     manifest_limit: usize,
 ) -> Vec<VerifiedCheckpointData> {
@@ -6642,10 +7052,10 @@ fn recent_verified_checkpoints(
         return Vec::new();
     }
 
-    let Ok(finalized_slot) = state.get_last_finalized_slot() else {
+    let Ok(finalized_slot) = ctx.state.get_last_finalized_slot() else {
         return Vec::new();
     };
-    let checkpoints = StateStore::list_checkpoints(data_dir);
+    let checkpoints = StateStore::list_checkpoints(ctx.data_dir);
     let mut verified = Vec::new();
 
     for (_, path) in checkpoints.into_iter().rev() {
@@ -6661,7 +7071,7 @@ fn recent_verified_checkpoints(
             continue;
         }
 
-        let Some(block) = state.get_block_by_slot(meta.slot).ok().flatten() else {
+        let Some(block) = ctx.state.get_block_by_slot(meta.slot).ok().flatten() else {
             continue;
         };
         let checkpoint_store = match StateStore::open_checkpoint(&path) {
@@ -6684,9 +7094,10 @@ fn recent_verified_checkpoints(
         }
         if let Err(err) = verify_committed_block_authenticity_with_chain_id(
             &block,
-            validator_set,
-            stake_pool,
-            chain_id,
+            ctx.validator_set,
+            ctx.stake_pool,
+            ctx.chain_id,
+            ctx.min_validator_stake,
         ) {
             warn!(
                 "⚠️  Rejecting checkpoint at slot {}: commit verification failed: {}",
@@ -6744,6 +7155,7 @@ fn verified_checkpoint_for_anchor(
     validator_set: &ValidatorSet,
     stake_pool: &StakePool,
     chain_id: &str,
+    min_validator_stake: u64,
     anchor: CheckpointSnapshotRequestAnchor,
 ) -> Option<(
     lichen_core::CheckpointMeta,
@@ -6811,6 +7223,7 @@ fn verified_checkpoint_for_anchor(
             validator_set,
             stake_pool,
             chain_id,
+            min_validator_stake,
         ) {
             warn!(
                 "⚠️  Rejecting requested checkpoint at slot {}: commit verification failed: {}",
@@ -6879,11 +7292,7 @@ fn verified_checkpoint_for_anchor(
 async fn latest_verified_checkpoint_cached(
     cache: &mut Option<VerifiedCheckpointCacheEntry>,
     refresh: &mut Option<tokio::task::JoinHandle<Option<VerifiedCheckpointCacheEntry>>>,
-    data_dir: &str,
-    state: &StateStore,
-    validator_set: &ValidatorSet,
-    stake_pool: &StakePool,
-    chain_id: &str,
+    ctx: CheckpointVerificationContext<'_>,
 ) -> Option<(
     lichen_core::CheckpointMeta,
     String,
@@ -6926,11 +7335,12 @@ async fn latest_verified_checkpoint_cached(
     }
 
     if refresh.is_none() {
-        let data_dir = data_dir.to_string();
-        let state = state.clone();
-        let validator_set = validator_set.clone();
-        let stake_pool = stake_pool.clone();
-        let chain_id = chain_id.to_string();
+        let data_dir = ctx.data_dir.to_string();
+        let state = ctx.state.clone();
+        let validator_set = ctx.validator_set.clone();
+        let stake_pool = ctx.stake_pool.clone();
+        let chain_id = ctx.chain_id.to_string();
+        let min_validator_stake = ctx.min_validator_stake;
         let manifest_limit = if cache
             .as_ref()
             .is_some_and(|entry| !entry.has_snapshot_manifest())
@@ -6942,12 +7352,16 @@ async fn latest_verified_checkpoint_cached(
         debug!("Refreshing verified checkpoint cache in background");
         *refresh = Some(tokio::task::spawn_blocking(move || {
             let started = Instant::now();
+            let ctx = CheckpointVerificationContext {
+                data_dir: &data_dir,
+                state: &state,
+                validator_set: &validator_set,
+                stake_pool: &stake_pool,
+                chain_id: &chain_id,
+                min_validator_stake,
+            };
             let verified = recent_verified_checkpoints(
-                &data_dir,
-                &state,
-                &validator_set,
-                &stake_pool,
-                &chain_id,
+                ctx,
                 RECENT_VERIFIED_CHECKPOINT_ADVERTISEMENT_LIMIT,
                 manifest_limit,
             );
@@ -6974,22 +7388,9 @@ async fn latest_verified_checkpoint_cached(
 async fn verified_checkpoint_meta_anchors_cached(
     cache: &mut Option<VerifiedCheckpointCacheEntry>,
     refresh: &mut Option<tokio::task::JoinHandle<Option<VerifiedCheckpointCacheEntry>>>,
-    data_dir: &str,
-    state: &StateStore,
-    validator_set: &ValidatorSet,
-    stake_pool: &StakePool,
-    chain_id: &str,
+    ctx: CheckpointVerificationContext<'_>,
 ) -> Vec<CheckpointMetaAnchor> {
-    let _ = latest_verified_checkpoint_cached(
-        cache,
-        refresh,
-        data_dir,
-        state,
-        validator_set,
-        stake_pool,
-        chain_id,
-    )
-    .await;
+    let _ = latest_verified_checkpoint_cached(cache, refresh, ctx).await;
 
     cache
         .as_ref()
@@ -7012,7 +7413,13 @@ fn verify_committed_block_authenticity(
     validator_set: &ValidatorSet,
     stake_pool: &StakePool,
 ) -> Result<(), String> {
-    verify_committed_block_authenticity_with_chain_id(block, validator_set, stake_pool, "")
+    verify_committed_block_authenticity_with_chain_id(
+        block,
+        validator_set,
+        stake_pool,
+        "",
+        MIN_VALIDATOR_STAKE,
+    )
 }
 
 fn verify_committed_block_authenticity_with_chain_id(
@@ -7020,6 +7427,7 @@ fn verify_committed_block_authenticity_with_chain_id(
     validator_set: &ValidatorSet,
     stake_pool: &StakePool,
     chain_id: &str,
+    min_validator_stake: u64,
 ) -> Result<(), String> {
     if block.header.slot == 0 {
         return Ok(());
@@ -7032,7 +7440,12 @@ fn verify_committed_block_authenticity_with_chain_id(
         ));
     }
 
-    block.verify_commit_with_chain_id(chain_id, validator_set, stake_pool)
+    block.verify_commit_with_chain_id_and_min_stake(
+        chain_id,
+        validator_set,
+        stake_pool,
+        min_validator_stake,
+    )
 }
 
 #[cfg(test)]
@@ -7073,7 +7486,13 @@ fn verify_synced_block_consensus_authenticity_with_chain_id(
         }
     }
 
-    verify_committed_block_authenticity_with_chain_id(block, validator_set, stake_pool, chain_id)
+    verify_committed_block_authenticity_with_chain_id(
+        block,
+        validator_set,
+        stake_pool,
+        chain_id,
+        MIN_VALIDATOR_STAKE,
+    )
 }
 
 struct CheckpointAnchor<'a> {
@@ -7089,6 +7508,7 @@ fn verify_checkpoint_anchor(
     anchor: CheckpointAnchor<'_>,
     validator_set: &ValidatorSet,
     stake_pool: &StakePool,
+    min_validator_stake: u64,
 ) -> Result<(), String> {
     // The signed committed header authenticates the finalized slot. The
     // checkpoint state_root is corroborated across checkpoint anchors, then
@@ -7120,6 +7540,7 @@ fn verify_checkpoint_anchor(
         validator_set,
         stake_pool,
         anchor.chain_id,
+        min_validator_stake,
     )
 }
 
@@ -11466,6 +11887,11 @@ async fn run_validator() {
     let cache_size_mb: Option<usize> =
         get_flag_value(&args, &["--cache-size-mb"]).and_then(|s| s.parse().ok());
 
+    if let Err(e) = recover_incomplete_snapshot_live_apply(&data_dir, cache_size_mb) {
+        error!("FATAL: snapshot live-apply recovery failed: {}", e);
+        return;
+    }
+
     // Open state database
     let mut state = match StateStore::open_with_cache_mb(&data_dir, cache_size_mb) {
         Ok(s) => s,
@@ -14196,7 +14622,15 @@ async fn run_validator() {
                                     effective_genesis_config.genesis_prices.clone();
 
                                 // 8. Auto-deploy contracts (using frozen genesis prices)
-                                genesis_auto_deploy(&state_for_blocks, &gpk, "📡 [sync]");
+                                if let Err(err) =
+                                    genesis_auto_deploy(&state_for_blocks, &gpk, "📡 [sync]")
+                                {
+                                    error!(
+                                        "FATAL: genesis auto-deploy during sync failed: {}",
+                                        err
+                                    );
+                                    std::process::exit(1);
+                                }
                                 if let Err(err) = genesis_harden_contract_controls(
                                     &state_for_blocks,
                                     &gpk,
@@ -14804,16 +15238,22 @@ async fn run_validator() {
                                 {
                                     let mut agg = vote_agg_for_blocks.write().await;
                                     let vs = validator_set_for_blocks.read().await;
-                                    if agg.add_vote_validated(vote.clone(), &vs) {
+                                    let pool = stake_pool_for_blocks.read().await;
+                                    if agg.add_vote_validated_with_min_stake(
+                                        vote.clone(),
+                                        &vs,
+                                        &pool,
+                                        min_validator_stake,
+                                    ) {
                                         info!("🗳️  Cast vote for block {}", block_slot);
 
                                         // Check if block reached finality (2/3 supermajority - STAKE-WEIGHTED)
-                                        let pool = stake_pool_for_blocks.read().await;
-                                        if agg.has_supermajority(
+                                        if agg.has_supermajority_with_min_stake(
                                             block_slot,
                                             &block_hash,
                                             &vs,
                                             &pool,
+                                            min_validator_stake,
                                         ) {
                                             info!("🔒 Block {} FINALIZED with stake-weighted supermajority!", block_slot);
                                             // Update finality tracker + persist to StateStore
@@ -15202,7 +15642,12 @@ async fn run_validator() {
                                     .chain_id
                                     .clone();
                                 if existing
-                                    .verify_commit_with_chain_id(&chain_id, &vs, &pool)
+                                    .verify_commit_with_chain_id_and_min_stake(
+                                        &chain_id,
+                                        &vs,
+                                        &pool,
+                                        min_validator_stake,
+                                    )
                                     .is_ok()
                                 {
                                     debug!(
@@ -15639,7 +16084,13 @@ async fn run_validator() {
 
                 let mut agg = vote_agg_for_handler.write().await;
                 let mut vs = validator_set_for_votes.write().await;
-                if agg.add_vote_validated(vote.clone(), &vs) {
+                let pool = stake_pool_for_votes.read().await;
+                if agg.add_vote_validated_with_min_stake(
+                    vote.clone(),
+                    &vs,
+                    &pool,
+                    min_validator_stake,
+                ) {
                     // STABILITY-FIX: A validated vote proves the validator is online
                     // and actively processing blocks. Update last_active_slot so the
                     // downtime detector doesn't falsely flag voting validators that
@@ -15647,10 +16098,15 @@ async fn run_validator() {
                     let _ = note_validator_activity(&mut vs, &vote.validator, vote.slot, true);
 
                     // Vote added successfully, check if block reached finality
-                    let pool = stake_pool_for_votes.read().await;
                     let vote_count = agg.vote_count(vote.slot, &vote.block_hash);
 
-                    if agg.has_supermajority(vote.slot, &vote.block_hash, &vs, &pool) {
+                    if agg.has_supermajority_with_min_stake(
+                        vote.slot,
+                        &vote.block_hash,
+                        &vs,
+                        &pool,
+                        min_validator_stake,
+                    ) {
                         info!(
                             "🔒 Block {} FINALIZED! (stake-weighted votes: {}/{})",
                             vote.slot,
@@ -16315,11 +16771,14 @@ async fn run_validator() {
                         verified_checkpoint_meta_anchors_cached(
                             &mut verified_checkpoint_cache,
                             &mut verified_checkpoint_refresh,
-                            &data_dir_for_snapshot,
-                            &state_for_snapshot_serve,
-                            &vs,
-                            &pool,
-                            &chain_id_for_snapshot_serve,
+                            CheckpointVerificationContext {
+                                data_dir: &data_dir_for_snapshot,
+                                state: &state_for_snapshot_serve,
+                                validator_set: &vs,
+                                stake_pool: &pool,
+                                chain_id: &chain_id_for_snapshot_serve,
+                                min_validator_stake,
+                            },
                         )
                         .await
                     };
@@ -16417,6 +16876,7 @@ async fn run_validator() {
                                 &vs,
                                 &pool,
                                 &chain_id_for_snapshot_serve,
+                                min_validator_stake,
                                 CheckpointSnapshotRequestAnchor {
                                     slot: requested_slot,
                                     state_root: requested_state_root,
@@ -16702,11 +17162,14 @@ async fn run_validator() {
                             verified_checkpoint_meta_anchors_cached(
                                 &mut verified_checkpoint_cache,
                                 &mut verified_checkpoint_refresh,
-                                &data_dir_for_snapshot,
-                                &state_for_snapshot_serve,
-                                &vs,
-                                &pool,
-                                &chain_id_for_snapshot_serve,
+                                CheckpointVerificationContext {
+                                    data_dir: &data_dir_for_snapshot,
+                                    state: &state_for_snapshot_serve,
+                                    validator_set: &vs,
+                                    stake_pool: &pool,
+                                    chain_id: &chain_id_for_snapshot_serve,
+                                    min_validator_stake,
+                                },
                             )
                             .await
                         };
@@ -16921,6 +17384,7 @@ async fn run_validator() {
                                         },
                                         &vs,
                                         &pool,
+                                        min_validator_stake,
                                     )
                                 }
                             };
@@ -17874,119 +18338,60 @@ async fn run_validator() {
                         }
 
                         // ── Commit verified entries to live DB ──────────────
-                        let validator_set_snapshot = match staging_state.load_validator_set() {
-                            Ok(set) => canonical_validator_set_snapshot(&set),
+                        // Live snapshot import is intentionally guarded by a
+                        // RocksDB checkpoint + durable marker. If the process or
+                        // host crashes after any live category is cleared, startup
+                        // restores the pre-import checkpoint before resuming.
+                        let _rollback_marker = match prepare_snapshot_live_rollback(
+                            &state_for_snapshot_apply,
+                            &data_dir_for_snapshot_apply,
+                            snapshot_slot,
+                            snapshot_root,
+                        ) {
+                            Ok(marker) => marker,
                             Err(e) => {
                                 error!(
-                                    "FATAL: failed to read verified validator_set snapshot at slot {}: {}",
+                                    "FATAL: failed to prepare live snapshot rollback at slot {}: {}",
                                     snapshot_slot, e
                                 );
                                 std::process::exit(1);
                             }
                         };
-                        let stake_pool_snapshot = match staging_state.get_stake_pool() {
-                            Ok(pool) => pool,
+                        let commit_report = match commit_snapshot_categories_from_store(
+                            &staging_state,
+                            &state_for_snapshot_apply,
+                            active_snapshot_categories,
+                        ) {
+                            Ok(report) => report,
                             Err(e) => {
                                 error!(
-                                    "FATAL: failed to read verified stake_pool snapshot at slot {}: {}",
+                                    "FATAL: failed to commit verified snapshot entries to live DB at slot {}: {}",
                                     snapshot_slot, e
                                 );
                                 std::process::exit(1);
                             }
                         };
-                        let mossstake_pool_snapshot = match staging_state.get_mossstake_pool() {
-                            Ok(pool) => pool,
-                            Err(e) => {
-                                error!(
-                                    "FATAL: failed to read verified mossstake_pool snapshot at slot {}: {}",
-                                    snapshot_slot, e
-                                );
-                                std::process::exit(1);
-                            }
-                        };
-
-                        for category_name in
-                            active_snapshot_categories
-                                .iter()
-                                .copied()
-                                .filter(|category| {
-                                    !STATE_SNAPSHOT_SPECIAL_CATEGORIES.contains(category)
-                                })
-                        {
-                            match state_for_snapshot_apply.clear_snapshot_category(category_name) {
-                                Ok(deleted) => {
-                                    if deleted > 0 {
-                                        info!(
-                                            "🧹 Cleared {} stale live {} entries before verified snapshot import",
-                                            deleted, category_name
-                                        );
-                                    }
-                                }
-                                Err(e) => {
-                                    error!(
-                                        "FATAL: failed to clear live {} before verified snapshot import at slot {}: {}",
-                                        category_name, snapshot_slot, e
-                                    );
-                                    std::process::exit(1);
-                                }
-                            }
+                        for (category_name, count) in &commit_report.imported {
+                            info!(
+                                "✅ Committed {} verified {} entries to live DB",
+                                count, category_name
+                            );
                         }
-
-                        for category_name in active_snapshot_categories {
-                            let res: Result<u64, String> = match *category_name {
-                                "validator_set" => {
-                                    let count = validator_set_snapshot.validators().len() as u64;
-                                    let res = state_for_snapshot_apply
-                                        .save_validator_set(&validator_set_snapshot)
-                                        .map(|_| count);
-                                    if res.is_ok() {
-                                        let mut vs = validator_set_for_snapshot_apply.write().await;
-                                        *vs = validator_set_snapshot.clone();
-                                        drop(vs);
-                                        snapshot_sync_for_apply.lock().await.validator_set =
-                                            !validator_set_snapshot.validators().is_empty();
-                                    }
-                                    res
-                                }
-                                "stake_pool" => {
-                                    let count = stake_pool_snapshot.stake_entries().len() as u64;
-                                    let res = state_for_snapshot_apply
-                                        .put_stake_pool(&stake_pool_snapshot)
-                                        .map(|_| count);
-                                    if res.is_ok() {
-                                        let mut live_pool =
-                                            stake_pool_for_snapshot_apply.write().await;
-                                        *live_pool = stake_pool_snapshot.clone();
-                                        drop(live_pool);
-                                        snapshot_sync_for_apply.lock().await.stake_pool =
-                                            !stake_pool_snapshot.stake_entries().is_empty();
-                                    }
-                                    res
-                                }
-                                "mossstake_pool" => state_for_snapshot_apply
-                                    .put_mossstake_pool(&mossstake_pool_snapshot)
-                                    .map(|_| 1),
-                                category => stream_snapshot_category_between_stores(
-                                    &staging_state,
-                                    &state_for_snapshot_apply,
-                                    category,
-                                    snapshot_request_chunk_size(category),
-                                ),
-                            };
-                            match res {
-                                Ok(count) => info!(
-                                    "✅ Committed {} verified {} entries to live DB",
-                                    count, category_name
-                                ),
-                                Err(e) => {
-                                    error!(
-                                        "FATAL: failed to commit verified {} entries to live DB at slot {}: {}",
-                                        category_name, snapshot_slot, e
-                                    );
-                                    std::process::exit(1);
-                                }
-                            }
+                        if let Some(validator_set_snapshot) = commit_report.validator_set.clone() {
+                            let mut vs = validator_set_for_snapshot_apply.write().await;
+                            *vs = validator_set_snapshot.clone();
+                            drop(vs);
+                            snapshot_sync_for_apply.lock().await.validator_set =
+                                !validator_set_snapshot.validators().is_empty();
                         }
+                        if let Some(stake_pool_snapshot) = commit_report.stake_pool.clone() {
+                            let mut live_pool = stake_pool_for_snapshot_apply.write().await;
+                            *live_pool = stake_pool_snapshot.clone();
+                            drop(live_pool);
+                            snapshot_sync_for_apply.lock().await.stake_pool =
+                                !stake_pool_snapshot.stake_entries().is_empty();
+                        }
+                        let _ = commit_report.mossstake_pool.as_ref();
 
                         drop(staging_state);
                         cleanup_snapshot_staging(&mut active_snapshot_staging);
@@ -18102,6 +18507,7 @@ async fn run_validator() {
                             ),
                             Err(e) => warn!("⚠️  Failed to create local checkpoint: {}", e),
                         }
+                        cleanup_snapshot_live_rollback(&data_dir_for_snapshot_apply);
                         active_snapshot_anchor = None;
                         active_snapshot_source_peer = None;
                         active_snapshot_source = None;
@@ -20007,7 +20413,13 @@ async fn run_validator() {
     bft.start_height(start_height);
     // Signal block receiver: BFT owns this height and above.
     bft_committing_slot.store(start_height, Ordering::Release);
-    consensus_wal.log_height_start(start_height);
+    if let Err(e) = consensus_wal.log_height_start_result(start_height) {
+        error!(
+            "FATAL: failed to durably record BFT startup height {}: {}",
+            start_height, e
+        );
+        std::process::exit(1);
+    }
     // Restore lock from WAL recovery (G-2 fix: lock persistence across crashes)
     let missing_recovered_lock_value =
         wal_recovery
@@ -20364,13 +20776,25 @@ async fn run_validator() {
             // Chain advanced past our current height — start new height
             let new_height = tip_slot + 1;
             // WAL: checkpoint the completed height + log new height
-            consensus_wal.checkpoint(tip_slot);
+            if let Err(e) = consensus_wal.checkpoint_result(tip_slot) {
+                error!(
+                    "FATAL: failed to durably checkpoint BFT height {}: {}",
+                    tip_slot, e
+                );
+                std::process::exit(1);
+            }
             last_wal_lock = None;
 
             bft.start_height(new_height);
             // Signal block receiver: BFT owns this height and above.
             bft_committing_slot.store(new_height, Ordering::Release);
-            consensus_wal.log_height_start(new_height);
+            if let Err(e) = consensus_wal.log_height_start_result(new_height) {
+                error!(
+                    "FATAL: failed to durably record BFT height {}: {}",
+                    new_height, e
+                );
+                std::process::exit(1);
+            }
             parent_hash = get_parent_hash(&state);
 
             // Re-snapshot for the new height.
@@ -20976,7 +21400,16 @@ async fn run_validator() {
         // After each event, persist any new lock to the WAL so it survives crashes.
         if let Some((round, hash)) = bft.locked_state() {
             if last_wal_lock.as_ref() != Some(&(round, hash)) {
-                consensus_wal.log_lock(bft.height, round, hash);
+                if let Err(e) = consensus_wal.log_lock_result(bft.height, round, hash) {
+                    error!(
+                        "FATAL: failed to durably record BFT lock h={} r={} hash={}: {}",
+                        bft.height,
+                        round,
+                        hex::encode(&hash.0[..4]),
+                        e
+                    );
+                    std::process::exit(1);
+                }
                 last_wal_lock = Some((round, hash));
             }
         }
@@ -21127,11 +21560,24 @@ async fn run_validator() {
                 let new_height = state.get_last_slot().unwrap_or(0) + 1;
                 if new_height > bft.height {
                     // WAL: checkpoint + log new height (G-1/G-2 fix)
-                    consensus_wal.checkpoint(new_height - 1);
+                    if let Err(e) = consensus_wal.checkpoint_result(new_height - 1) {
+                        error!(
+                            "FATAL: failed to durably checkpoint BFT height {}: {}",
+                            new_height - 1,
+                            e
+                        );
+                        std::process::exit(1);
+                    }
                     last_wal_lock = None;
 
                     bft.start_height(new_height);
-                    consensus_wal.log_height_start(new_height);
+                    if let Err(e) = consensus_wal.log_height_start_result(new_height) {
+                        error!(
+                            "FATAL: failed to durably record BFT height {}: {}",
+                            new_height, e
+                        );
+                        std::process::exit(1);
+                    }
                     parent_hash = get_parent_hash(&state);
 
                     // Re-snapshot for the new height.
@@ -23667,6 +24113,7 @@ mod tests {
                 &validator_set,
                 &stake_pool,
                 "",
+                MIN_VALIDATOR_STAKE,
             )
             .is_none(),
             "checkpoint should not be exposed before slot is finalized"
@@ -23683,6 +24130,7 @@ mod tests {
             &validator_set,
             &stake_pool,
             "",
+            MIN_VALIDATOR_STAKE,
         )
         .expect("checkpoint should be exposed once finalized and verified");
 
@@ -23696,6 +24144,7 @@ mod tests {
             &validator_set,
             &stake_pool,
             "",
+            MIN_VALIDATOR_STAKE,
             CheckpointSnapshotRequestAnchor {
                 slot: meta.slot,
                 state_root: meta.state_root,
@@ -23715,6 +24164,7 @@ mod tests {
                 &validator_set,
                 &stake_pool,
                 "",
+                MIN_VALIDATOR_STAKE,
                 CheckpointSnapshotRequestAnchor {
                     slot: meta.slot,
                     state_root: meta.state_root,
@@ -23809,6 +24259,7 @@ mod tests {
             &validator_set,
             &stake_pool,
             "",
+            MIN_VALIDATOR_STAKE,
         )
         .expect("post-effects checkpoint should still verify");
 
@@ -23908,6 +24359,7 @@ mod tests {
             &validator_set,
             &stake_pool,
             "",
+            MIN_VALIDATOR_STAKE,
         )
         .expect("should fall back to older valid checkpoint");
 
@@ -23985,11 +24437,14 @@ mod tests {
             .expect("set finalized slot");
 
         let checkpoints = recent_verified_checkpoints(
-            temp_dir.path().to_str().expect("data dir"),
-            &state,
-            &validator_set,
-            &stake_pool,
-            "",
+            CheckpointVerificationContext {
+                data_dir: temp_dir.path().to_str().expect("data dir"),
+                state: &state,
+                validator_set: &validator_set,
+                stake_pool: &stake_pool,
+                chain_id: "",
+                min_validator_stake: MIN_VALIDATOR_STAKE,
+            },
             3,
             3,
         );
@@ -24075,11 +24530,14 @@ mod tests {
         let first = runtime.block_on(latest_verified_checkpoint_cached(
             &mut cache,
             &mut refresh,
-            temp_dir.path().to_str().expect("data dir"),
-            &state,
-            &validator_set,
-            &stake_pool,
-            "",
+            CheckpointVerificationContext {
+                data_dir: temp_dir.path().to_str().expect("data dir"),
+                state: &state,
+                validator_set: &validator_set,
+                stake_pool: &stake_pool,
+                chain_id: "",
+                min_validator_stake: MIN_VALIDATOR_STAKE,
+            },
         ));
         assert!(
             first.is_none(),
@@ -24096,11 +24554,14 @@ mod tests {
                     if let Some(value) = latest_verified_checkpoint_cached(
                         &mut cache,
                         &mut refresh,
-                        temp_dir.path().to_str().expect("data dir"),
-                        &state,
-                        &validator_set,
-                        &stake_pool,
-                        "",
+                        CheckpointVerificationContext {
+                            data_dir: temp_dir.path().to_str().expect("data dir"),
+                            state: &state,
+                            validator_set: &validator_set,
+                            stake_pool: &stake_pool,
+                            chain_id: "",
+                            min_validator_stake: MIN_VALIDATOR_STAKE,
+                        },
                     )
                     .await
                     {
@@ -24127,11 +24588,14 @@ mod tests {
                     if let Some(value) = latest_verified_checkpoint_cached(
                         &mut cache,
                         &mut refresh,
-                        temp_dir.path().to_str().expect("data dir"),
-                        &state,
-                        &validator_set,
-                        &stake_pool,
-                        "",
+                        CheckpointVerificationContext {
+                            data_dir: temp_dir.path().to_str().expect("data dir"),
+                            state: &state,
+                            validator_set: &validator_set,
+                            stake_pool: &stake_pool,
+                            chain_id: "",
+                            min_validator_stake: MIN_VALIDATOR_STAKE,
+                        },
                     )
                     .await
                     .filter(|value| !value.3.is_empty())
@@ -24209,6 +24673,7 @@ mod tests {
             },
             &validator_set,
             &stake_pool,
+            MIN_VALIDATOR_STAKE,
         )
         .is_ok());
 
@@ -24223,6 +24688,7 @@ mod tests {
             },
             &validator_set,
             &stake_pool,
+            MIN_VALIDATOR_STAKE,
         )
         .is_err());
     }
@@ -24285,6 +24751,7 @@ mod tests {
             },
             &validator_set,
             &stake_pool,
+            MIN_VALIDATOR_STAKE,
         )
         .expect("checkpoint root can differ from the pre-effects block header root");
     }
@@ -26693,9 +27160,90 @@ mod tests {
             .expect_err("partial archive should be rejected");
         assert!(
             err.contains("snapshot archive is incomplete")
-                || err.contains("missing required probe block"),
+                || err.contains("missing required contiguous block"),
             "unexpected archive error: {err}"
         );
+    }
+
+    #[test]
+    fn snapshot_archive_completeness_rejects_sparse_history_with_inflated_metrics() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let genesis = Block::genesis(Hash::hash(b"sparse-archive-genesis"), 1, vec![]);
+        let block_1 = Block::new(
+            1,
+            genesis.hash(),
+            Hash::hash(b"sparse-archive-state-1"),
+            [2u8; 32],
+            vec![],
+        );
+        let block_50 = Block::new(
+            50,
+            block_1.hash(),
+            Hash::hash(b"sparse-archive-state-50"),
+            [3u8; 32],
+            vec![],
+        );
+        let block_100 = Block::new(
+            100,
+            block_50.hash(),
+            Hash::hash(b"sparse-archive-state-100"),
+            [4u8; 32],
+            vec![],
+        );
+
+        for block in [&genesis, &block_1, &block_50, &block_100] {
+            state
+                .put_block_atomic(block, Some(block.header.slot), Some(block.header.slot))
+                .expect("put sparse block");
+        }
+        state
+            .put_metadata("total_blocks", &101u64.to_le_bytes())
+            .expect("inflate total_blocks metric");
+        state
+            .reload_metrics_from_stats()
+            .expect("reload inflated metrics");
+
+        let err = validate_snapshot_archive_completeness(&state, 100)
+            .expect_err("sparse archive should be rejected despite inflated metrics");
+        assert!(
+            err.contains("missing required contiguous block at slot 2"),
+            "unexpected archive error: {err}"
+        );
+    }
+
+    #[test]
+    fn snapshot_live_rollback_recovers_partial_live_import() {
+        let live_dir = tempfile::tempdir().expect("create live dir");
+        let live_path = live_dir.path().to_string_lossy().to_string();
+        let old_account = Keypair::generate().pubkey();
+        let stale_account = Keypair::generate().pubkey();
+        let live = StateStore::open(live_dir.path()).expect("open live state");
+        live.put_account(&old_account, &Account::new(77, old_account))
+            .expect("put old account");
+        let rollback_root = live.compute_state_root_cold_start();
+
+        prepare_snapshot_live_rollback(&live, &live_path, 999, Hash([9u8; 32]))
+            .expect("prepare rollback marker");
+        live.clear_snapshot_category("accounts")
+            .expect("simulate live clear");
+        live.put_account(&stale_account, &Account::new(88, stale_account))
+            .expect("simulate partial import");
+        drop(live);
+
+        recover_incomplete_snapshot_live_apply(&live_path, None).expect("recover rollback");
+        let restored = StateStore::open(live_dir.path()).expect("reopen restored state");
+        assert!(restored
+            .get_account(&old_account)
+            .expect("read restored old account")
+            .is_some());
+        assert!(restored
+            .get_account(&stale_account)
+            .expect("read stale partial account")
+            .is_none());
+        assert_eq!(restored.compute_state_root_cold_start(), rollback_root);
+        assert!(!snapshot_live_rollback_marker_path(&live_path).exists());
+        assert!(!snapshot_live_rollback_checkpoint_dir(&live_path).exists());
     }
 
     #[test]

@@ -565,8 +565,8 @@ impl ConsensusEngine {
             warn!("🚨 BFT: Invalid prevote signature");
             return ConsensusAction::None;
         }
-        // Verify voter is in the validator set
-        if validator_set.get_validator(&prevote.validator).is_none() {
+        // Verify voter is eligible for this height's BFT voting power.
+        if !self.is_eligible_validator(&prevote.validator, validator_set, stake_pool) {
             return ConsensusAction::None;
         }
         // Deduplicate and detect equivocation (G-9 evidence reactor fix)
@@ -715,7 +715,7 @@ impl ConsensusEngine {
             warn!("🚨 BFT: Invalid precommit signature");
             return ConsensusAction::None;
         }
-        if validator_set.get_validator(&precommit.validator).is_none() {
+        if !self.is_eligible_validator(&precommit.validator, validator_set, stake_pool) {
             return ConsensusAction::None;
         }
         // Deduplicate and detect equivocation (G-9 evidence reactor fix)
@@ -793,7 +793,8 @@ impl ConsensusEngine {
                 self.last_committed_block_timestamp = Some(block.header.timestamp);
                 let mut committed = block;
                 committed.commit_round = round;
-                committed.commit_signatures = self.collect_commit_signatures(round, &bh);
+                committed.commit_signatures =
+                    self.collect_commit_signatures(round, &bh, validator_set, stake_pool);
                 return ConsensusAction::CommitBlock {
                     height: self.height,
                     round,
@@ -1162,7 +1163,8 @@ impl ConsensusEngine {
                 self.transition_to(RoundStep::Commit);
                 let mut committed = block;
                 committed.commit_round = round;
-                committed.commit_signatures = self.collect_commit_signatures(round, &bh);
+                committed.commit_signatures =
+                    self.collect_commit_signatures(round, &bh, validator_set, stake_pool);
                 return ConsensusAction::Multiple(vec![
                     broadcast,
                     ConsensusAction::CommitBlock {
@@ -1199,40 +1201,8 @@ impl ConsensusEngine {
         validator_set: &ValidatorSet,
         stake_pool: &StakePool,
     ) -> bool {
-        // Only count votes from active (non-pending) validators.
-        // Pending validators are in warmup and must not affect quorum.
-        let vote_stake: u128 = voters
-            .iter()
-            .filter(|pk| {
-                validator_set
-                    .get_validator(pk)
-                    .map(|v| !v.pending_activation)
-                    .unwrap_or(false)
-            })
-            .filter_map(|pk| stake_pool.get_stake(pk))
-            .map(|s| s.total_stake() as u128)
-            .sum();
-
-        let total_eligible_stake: u128 = validator_set
-            .sorted_validators()
-            .iter()
-            .filter(|v| {
-                if v.pending_activation {
-                    return false;
-                }
-                let s = stake_pool
-                    .get_stake(&v.pubkey)
-                    .map(|s| s.total_stake())
-                    .unwrap_or(0);
-                s >= self.min_validator_stake
-            })
-            .map(|v| {
-                stake_pool
-                    .get_stake(&v.pubkey)
-                    .map(|s| s.total_stake())
-                    .unwrap_or(0) as u128
-            })
-            .sum();
+        let vote_stake = self.voter_stake(voters.iter(), validator_set, stake_pool);
+        let total_eligible_stake = self.total_eligible_stake(validator_set, stake_pool);
 
         if total_eligible_stake == 0 {
             return false;
@@ -1242,12 +1212,67 @@ impl ConsensusEngine {
         vote_stake * 3 >= total_eligible_stake * 2
     }
 
+    fn eligible_stake(
+        &self,
+        validator: &Pubkey,
+        validator_set: &ValidatorSet,
+        stake_pool: &StakePool,
+    ) -> Option<u64> {
+        let info = validator_set.get_validator(validator)?;
+        if info.pending_activation {
+            return None;
+        }
+        let stake = stake_pool.get_stake(validator)?.total_stake();
+        if stake < self.min_validator_stake {
+            return None;
+        }
+        Some(stake)
+    }
+
+    fn is_eligible_validator(
+        &self,
+        validator: &Pubkey,
+        validator_set: &ValidatorSet,
+        stake_pool: &StakePool,
+    ) -> bool {
+        self.eligible_stake(validator, validator_set, stake_pool)
+            .is_some()
+    }
+
+    fn voter_stake<'a>(
+        &self,
+        voters: impl IntoIterator<Item = &'a Pubkey>,
+        validator_set: &ValidatorSet,
+        stake_pool: &StakePool,
+    ) -> u128 {
+        voters
+            .into_iter()
+            .filter_map(|pk| self.eligible_stake(pk, validator_set, stake_pool))
+            .map(u128::from)
+            .sum()
+    }
+
+    fn total_eligible_stake(&self, validator_set: &ValidatorSet, stake_pool: &StakePool) -> u128 {
+        validator_set
+            .sorted_validators()
+            .iter()
+            .filter_map(|v| self.eligible_stake(&v.pubkey, validator_set, stake_pool))
+            .map(u128::from)
+            .sum()
+    }
+
     /// Collect commit signatures for the given round and block hash.
     ///
     /// Gathers all retained precommit signatures from validators that voted
     /// for `block_hash` in `round`, returning them as `CommitSignature` entries
     /// suitable for inclusion in the committed block.
-    fn collect_commit_signatures(&self, round: u32, block_hash: &Hash) -> Vec<CommitSignature> {
+    fn collect_commit_signatures(
+        &self,
+        round: u32,
+        block_hash: &Hash,
+        validator_set: &ValidatorSet,
+        stake_pool: &StakePool,
+    ) -> Vec<CommitSignature> {
         let voters = match self.precommits.get(&(round, Some(*block_hash))) {
             Some(v) => v,
             None => return Vec::new(),
@@ -1255,6 +1280,7 @@ impl ConsensusEngine {
 
         voters
             .iter()
+            .filter(|pk| self.is_eligible_validator(pk, validator_set, stake_pool))
             .filter_map(|pk| {
                 self.precommit_sigs
                     .get(&(round, *pk))
@@ -1289,26 +1315,7 @@ impl ConsensusEngine {
         validator_set: &ValidatorSet,
         stake_pool: &StakePool,
     ) -> bool {
-        let total_eligible_stake: u128 = validator_set
-            .sorted_validators()
-            .iter()
-            .filter(|v| {
-                if v.pending_activation {
-                    return false;
-                }
-                let s = stake_pool
-                    .get_stake(&v.pubkey)
-                    .map(|s| s.total_stake())
-                    .unwrap_or(0);
-                s >= self.min_validator_stake
-            })
-            .map(|v| {
-                stake_pool
-                    .get_stake(&v.pubkey)
-                    .map(|s| s.total_stake())
-                    .unwrap_or(0) as u128
-            })
-            .sum();
+        let total_eligible_stake = self.total_eligible_stake(validator_set, stake_pool);
 
         if total_eligible_stake == 0 {
             return false;
@@ -1318,14 +1325,8 @@ impl ConsensusEngine {
             .seen_prevotes
             .keys()
             .filter(|(r, _)| *r == round)
-            .filter(|(_, pk)| {
-                validator_set
-                    .get_validator(pk)
-                    .map(|v| !v.pending_activation)
-                    .unwrap_or(false)
-            })
-            .filter_map(|(_, pk)| stake_pool.get_stake(pk))
-            .map(|s| s.total_stake() as u128)
+            .filter_map(|(_, pk)| self.eligible_stake(pk, validator_set, stake_pool))
+            .map(u128::from)
             .sum();
 
         total_voted_stake * 3 >= total_eligible_stake * 2
@@ -1338,26 +1339,7 @@ impl ConsensusEngine {
         validator_set: &ValidatorSet,
         stake_pool: &StakePool,
     ) -> bool {
-        let total_eligible_stake: u128 = validator_set
-            .sorted_validators()
-            .iter()
-            .filter(|v| {
-                if v.pending_activation {
-                    return false;
-                }
-                let s = stake_pool
-                    .get_stake(&v.pubkey)
-                    .map(|s| s.total_stake())
-                    .unwrap_or(0);
-                s >= self.min_validator_stake
-            })
-            .map(|v| {
-                stake_pool
-                    .get_stake(&v.pubkey)
-                    .map(|s| s.total_stake())
-                    .unwrap_or(0) as u128
-            })
-            .sum();
+        let total_eligible_stake = self.total_eligible_stake(validator_set, stake_pool);
 
         if total_eligible_stake == 0 {
             return false;
@@ -1367,14 +1349,8 @@ impl ConsensusEngine {
             .seen_precommits
             .keys()
             .filter(|(r, _)| *r == round)
-            .filter(|(_, pk)| {
-                validator_set
-                    .get_validator(pk)
-                    .map(|v| !v.pending_activation)
-                    .unwrap_or(false)
-            })
-            .filter_map(|(_, pk)| stake_pool.get_stake(pk))
-            .map(|s| s.total_stake() as u128)
+            .filter_map(|(_, pk)| self.eligible_stake(pk, validator_set, stake_pool))
+            .map(u128::from)
             .sum();
 
         total_voted_stake * 3 >= total_eligible_stake * 2
@@ -1403,26 +1379,7 @@ impl ConsensusEngine {
         validator_set: &ValidatorSet,
         stake_pool: &StakePool,
     ) -> ConsensusAction {
-        let total_eligible_stake: u128 = validator_set
-            .sorted_validators()
-            .iter()
-            .filter(|v| {
-                if v.pending_activation {
-                    return false;
-                }
-                let s = stake_pool
-                    .get_stake(&v.pubkey)
-                    .map(|s| s.total_stake())
-                    .unwrap_or(0);
-                s >= self.min_validator_stake
-            })
-            .map(|v| {
-                stake_pool
-                    .get_stake(&v.pubkey)
-                    .map(|s| s.total_stake())
-                    .unwrap_or(0) as u128
-            })
-            .sum();
+        let total_eligible_stake = self.total_eligible_stake(validator_set, stake_pool);
 
         if total_eligible_stake == 0 {
             return ConsensusAction::None;
@@ -1455,14 +1412,8 @@ impl ConsensusEngine {
 
         let future_stake: u128 = future_voters
             .iter()
-            .filter(|pk| {
-                validator_set
-                    .get_validator(pk)
-                    .map(|v| !v.pending_activation)
-                    .unwrap_or(false)
-            })
-            .filter_map(|pk| stake_pool.get_stake(pk))
-            .map(|s| s.total_stake() as u128)
+            .filter_map(|pk| self.eligible_stake(pk, validator_set, stake_pool))
+            .map(u128::from)
             .sum();
 
         // f+1 threshold: future_stake * 3 > total_eligible_stake (i.e., >1/3)
@@ -2172,6 +2123,113 @@ mod tests {
             action,
             ConsensusAction::ScheduleTimeout(RoundStep::Propose, _)
         ));
+    }
+
+    #[test]
+    fn test_below_min_voter_does_not_satisfy_supermajority() {
+        let (validators, vs, sp) = make_custom_test_env(&[100, 100, 49]);
+        let (kp, pk) = make_validator(1);
+        let engine = ConsensusEngine::new_with_min_stake(kp, pk, 50);
+
+        let voters = vec![validators[0].1, validators[2].1];
+        assert!(!engine.has_supermajority_voters(&voters, &vs, &sp));
+
+        let eligible_voters = vec![validators[0].1, validators[1].1];
+        assert!(engine.has_supermajority_voters(&eligible_voters, &vs, &sp));
+    }
+
+    #[test]
+    fn test_below_min_votes_are_not_admitted_or_counted_for_any_supermajority() {
+        let (validators, vs, sp) = make_custom_test_env(&[100, 100, 49]);
+        let (kp, pk) = make_validator(1);
+        let mut engine = ConsensusEngine::new_with_min_stake(kp, pk, 50);
+        engine.start_height(10);
+
+        let below_min_kp = &validators[2].0;
+        let below_min_pk = validators[2].1;
+        let vote_hash = Some(Hash::hash(b"below-min-vote"));
+        let prevote = Prevote {
+            height: 10,
+            round: 0,
+            block_hash: vote_hash,
+            validator: below_min_pk,
+            signature: below_min_kp.sign(&Prevote::signable_bytes(10, 0, &vote_hash)),
+        };
+        assert!(matches!(
+            engine.on_prevote(prevote, &vs, &sp),
+            ConsensusAction::None
+        ));
+        assert!(!engine.seen_prevotes.contains_key(&(0, below_min_pk)));
+
+        let precommit = Precommit {
+            height: 10,
+            round: 0,
+            block_hash: vote_hash,
+            validator: below_min_pk,
+            signature: below_min_kp.sign(&Precommit::signable_bytes(10, 0, &vote_hash, 123)),
+            timestamp: 123,
+        };
+        assert!(matches!(
+            engine.on_precommit(precommit, &vs, &sp),
+            ConsensusAction::None
+        ));
+        assert!(!engine.seen_precommits.contains_key(&(0, below_min_pk)));
+
+        engine.seen_prevotes.insert((0, validators[0].1), vote_hash);
+        engine.seen_prevotes.insert((0, below_min_pk), vote_hash);
+        assert!(!engine.has_any_supermajority_prevotes(0, &vs, &sp));
+
+        engine
+            .seen_precommits
+            .insert((0, validators[0].1), vote_hash);
+        engine.seen_precommits.insert((0, below_min_pk), vote_hash);
+        assert!(!engine.has_any_supermajority_precommits(0, &vs, &sp));
+    }
+
+    #[test]
+    fn test_below_min_future_vote_does_not_trigger_round_skip() {
+        let (validators, vs, sp) = make_custom_test_env(&[100, 100, 100, 100, 49]);
+        let (kp, pk) = make_validator(1);
+        let mut engine = ConsensusEngine::new_with_min_stake(kp, pk, 50);
+        engine.start_height(1);
+
+        engine.seen_prevotes.insert((2, validators[0].1), None);
+        engine.seen_prevotes.insert((2, validators[4].1), None);
+
+        let action = engine.check_round_skip(2, &vs, &sp);
+        assert_eq!(engine.round, 0);
+        assert!(matches!(action, ConsensusAction::None));
+    }
+
+    #[test]
+    fn test_commit_signatures_filter_below_min_and_pending_validators() {
+        let (validators, mut vs, sp) = make_custom_test_env(&[100, 100, 49]);
+        let (kp, pk) = make_validator(1);
+        let mut engine = ConsensusEngine::new_with_min_stake(kp, pk, 50);
+        engine.start_height(1);
+
+        vs.get_validator_mut(&validators[1].1)
+            .expect("pending validator")
+            .pending_activation = true;
+
+        let block_hash = Hash::hash(b"commit-signature-filter");
+        let voters = vec![validators[0].1, validators[1].1, validators[2].1];
+        engine
+            .precommits
+            .insert((0, Some(block_hash)), voters.clone());
+        for (idx, (_, pubkey)) in validators.iter().take(3).enumerate() {
+            engine.precommit_sigs.insert(
+                (0, *pubkey),
+                (
+                    make_validator((idx + 10) as u8).0.sign(b"fixture"),
+                    100 + idx as u64,
+                ),
+            );
+        }
+
+        let signatures = engine.collect_commit_signatures(0, &block_hash, &vs, &sp);
+        assert_eq!(signatures.len(), 1);
+        assert_eq!(signatures[0].validator, validators[0].1 .0);
     }
 
     #[test]
