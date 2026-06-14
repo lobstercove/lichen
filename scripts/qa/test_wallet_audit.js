@@ -1138,6 +1138,21 @@ test('wallet.js compact balance shows stLICN amount while explorer separates Mos
         'explorer account summary should label staking as stLICN shares');
 });
 
+test('wallet.js MossStake activity rows match explorer units and lifecycle labels', () => {
+    assert(walletSrc.includes("'MossStakeUnstake': 'Unstake Requested'"),
+        'wallet activity should label MossStake unstake as a cooldown request, not completed unstaking');
+    assert(walletSrc.includes("'MossStakeClaim': 'Claimed Unstake'"),
+        'wallet activity should reserve completed wording for claim transactions');
+    assert(walletSrc.includes("'MossStakeTransfer': 'stLICN Transfer'"),
+        'wallet activity should label MossStake transfers as stLICN transfers');
+    assert(walletSrc.includes("tx.type === 'MossStakeDeposit' || tx.type === 'MossStakeUnstake' || tx.type === 'Stake'"),
+        'wallet activity should show MossStake unstake requests as outgoing stLICN burns');
+    assert(walletSrc.includes("const amountUnit = tx.type === 'MossStakeUnstake' || tx.type === 'MossStakeTransfer'"),
+        'wallet activity should render MossStake unstake and transfer amounts in stLICN');
+    assert(walletSrc.includes("'MossStake Pool'"),
+        'wallet activity should identify MossStake pool transactions explicitly');
+});
+
 test('wallet.js exposes Neo X bridge controls with route status and reserve context', () => {
     assert(walletHtml.includes('data-wallet-arg="NEOX"'),
         'wallet receive modal should expose the Neo X deposit route');

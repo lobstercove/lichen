@@ -768,6 +768,17 @@ test('CC-4f extension compact balance shows stLICN amount instead of redeemable 
   assert.ok(!popupSrc.includes('Liquid Staking Value: <strong>${balanceSnapshot.mossStakedLicn.toLocaleString'), 'popup balance card should not show redeemable LICN as liquid staking value');
 });
 
+test('CC-4g extension MossStake activity rows match explorer units and lifecycle labels', () => {
+  for (const [name, src] of [['full page', fullSrc], ['popup', popupSrc]]) {
+    assert.ok(src.includes("'MossStakeUnstake': 'Unstake Requested'"), `${name} should label MossStake unstake as a cooldown request`);
+    assert.ok(src.includes("'MossStakeClaim': 'Claimed Unstake'"), `${name} should reserve completed wording for claim transactions`);
+    assert.ok(src.includes("'MossStakeTransfer': 'stLICN Transfer'"), `${name} should label MossStake transfers as stLICN transfers`);
+    assert.ok(src.includes("tx.type === 'MossStakeDeposit' || tx.type === 'MossStakeUnstake' || tx.type === 'Stake'"), `${name} should show MossStake unstake requests as outgoing stLICN burns`);
+    assert.ok(src.includes("const amountUnit = tx.type === 'MossStakeUnstake' || tx.type === 'MossStakeTransfer'"), `${name} should render MossStake unstake and transfer amounts in stLICN`);
+    assert.ok(src.includes("'MossStake Pool'"), `${name} should identify MossStake pool transactions explicitly`);
+  }
+});
+
 test('CC-5 no other inline onclick handlers in extension JS files', () => {
   const jsFiles = [
     'pages/nfts.js', 'pages/identity.js', 'pages/settings.js',

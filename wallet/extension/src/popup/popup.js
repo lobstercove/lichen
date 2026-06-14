@@ -1175,9 +1175,9 @@ async function loadActivity(reset = true) {
         'Unstake': 'Unstaked',
         'ClaimUnstake': 'Claimed Unstake',
         'MossStakeDeposit': 'Staked (Liquid Staking)',
-        'MossStakeUnstake': 'Unstaked (Liquid Staking)',
-        'MossStakeClaim': 'Claimed (Liquid Staking)',
-        'MossStakeTransfer': 'Transfer (stLICN)',
+        'MossStakeUnstake': 'Unstake Requested',
+        'MossStakeClaim': 'Claimed Unstake',
+        'MossStakeTransfer': 'stLICN Transfer',
         'RegisterEvmAddress': 'EVM Registration',
         'Contract': 'Contract Call',
         'ContractCall': 'Contract Call',
@@ -1217,7 +1217,8 @@ async function loadActivity(reset = true) {
         || tx.type === 'MossStakeDeposit' || tx.type === 'MossStakeUnstake'
         || tx.type === 'MossStakeClaim' || tx.type === 'MossStakeTransfer') {
         icon = 'fa-coins'; color = '#a78bfa';
-        if (tx.type === 'MossStakeDeposit' || tx.type === 'Stake') sign = '-';
+        if (tx.type === 'MossStakeDeposit' || tx.type === 'MossStakeUnstake' || tx.type === 'Stake') sign = '-';
+        else if (tx.type === 'MossStakeClaim') sign = '+';
       } else if (tx.type === 'RegisterEvmAddress') {
         icon = 'fa-link'; color = '#94a3b8';
       } else if (tx.type === 'Contract' || tx.type === 'ContractCall' || tx.type === 'DeployContract' || tx.type === 'SetContractABI') {
@@ -1228,8 +1229,13 @@ async function loadActivity(reset = true) {
         icon = 'fa-parachute-box'; color = '#60a5fa';
       }
 
+      const isMossStakePoolTx = tx.type === 'MossStakeDeposit'
+        || tx.type === 'MossStakeUnstake'
+        || tx.type === 'MossStakeClaim';
       const address = (tx.type === 'Shield' || tx.type === 'Unshield' || tx.type === 'ShieldedTransfer')
         ? 'Shielded Pool'
+        : isMossStakePoolTx
+          ? 'MossStake Pool'
         : (isSent ? (tx.to || '') : (tx.from || ''));
       const displayAddr = address && address.length > 20 ? address.slice(0, 8) + '...' + address.slice(-4) : (address || '');
 
@@ -1240,7 +1246,10 @@ async function loadActivity(reset = true) {
         || ((tx.type === 'Contract' || tx.type === 'ContractCall') && isZeroAmount);
       const feeSpores = tx.fee_spores || tx.fee || 0;
       const feeAmt = (feeSpores / 1_000_000_000).toLocaleString(undefined, { maximumFractionDigits: 4 });
-      const amountStr = isFeeOnly ? `${feeAmt} LICN` : `${sign}${amt} LICN`;
+      const amountUnit = tx.type === 'MossStakeUnstake' || tx.type === 'MossStakeTransfer'
+        ? 'stLICN'
+        : 'LICN';
+      const amountStr = isFeeOnly ? `${feeAmt} LICN` : `${sign}${amt} ${amountUnit}`;
       const feeTag = isFeeOnly ? '<span style="display:inline-block;margin-left:0.3rem;padding:0.05rem 0.35rem;border-radius:4px;font-size:0.6rem;background:rgba(245,158,11,0.15);color:#f59e0b;font-weight:600;vertical-align:middle;">FEE</span>' : '';
 
       const safeType = escapeHtml(type);

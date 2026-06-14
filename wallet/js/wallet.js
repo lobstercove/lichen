@@ -3235,9 +3235,9 @@ async function loadActivity(reset = true, options = {}) {
                     'Unstake': 'Unstaked',
                     'ClaimUnstake': 'Claimed Unstake',
                     'MossStakeDeposit': 'Staked (Liquid Staking)',
-                    'MossStakeUnstake': 'Unstaked (Liquid Staking)',
-                    'MossStakeClaim': 'Claimed (Liquid Staking)',
-                    'MossStakeTransfer': 'Transfer (stLICN)',
+                    'MossStakeUnstake': 'Unstake Requested',
+                    'MossStakeClaim': 'Claimed Unstake',
+                    'MossStakeTransfer': 'stLICN Transfer',
                     'RegisterEvmAddress': 'EVM Registration',
                     'Contract': 'Contract Call',
                     'ContractCall': 'Contract Call',
@@ -3289,9 +3289,11 @@ async function loadActivity(reset = true, options = {}) {
                     || tx.type === 'MossStakeDeposit' || tx.type === 'MossStakeUnstake'
                     || tx.type === 'MossStakeClaim' || tx.type === 'MossStakeTransfer') {
                     icon = 'fa-coins'; color = '#a78bfa';
-                    // For staking deposits, show the staked amount as negative (outflow)
-                    if (tx.type === 'MossStakeDeposit' || tx.type === 'Stake') {
+                    // MossStake deposits spend LICN, unstake requests burn stLICN, claims release LICN.
+                    if (tx.type === 'MossStakeDeposit' || tx.type === 'MossStakeUnstake' || tx.type === 'Stake') {
                         sign = '-';
+                    } else if (tx.type === 'MossStakeClaim') {
+                        sign = '+';
                     }
                 } else if (tx.type === 'RegisterEvmAddress') {
                     icon = 'fa-link'; color = '#94a3b8';
@@ -3306,8 +3308,13 @@ async function loadActivity(reset = true, options = {}) {
                 } else if (tx.type === 'CreateAccount') {
                     icon = 'fa-user-plus'; color = '#94a3b8';
                 }
+                const isMossStakePoolTx = tx.type === 'MossStakeDeposit'
+                    || tx.type === 'MossStakeUnstake'
+                    || tx.type === 'MossStakeClaim';
                 address = (tx.type === 'Shield' || tx.type === 'Unshield' || tx.type === 'ShieldedTransfer')
                     ? 'Shielded Pool'
+                    : isMossStakePoolTx
+                        ? 'MossStake Pool'
                     : (isSent ? (tx.to || '') : (tx.from || ''));
                 const amountVal = tx.amount_spores ? tx.amount_spores : (tx.amount || 0);
                 amount = fmtToken(amountVal / SPORES_PER_LICN);
@@ -3329,7 +3336,10 @@ async function loadActivity(reset = true, options = {}) {
             const isPaidContract = (tx.type === 'Contract' || tx.type === 'ContractCall') && amount !== '0' && parseFloat(amount) > 0;
             const feeSpores = tx.fee_spores || tx.fee || 0;
             const feeAmt = fmtToken(feeSpores / SPORES_PER_LICN);
-            const amountStr = isFeeOnly ? `${feeAmt} LICN` : `${sign}${amount} LICN`;
+            const amountUnit = tx.type === 'MossStakeUnstake' || tx.type === 'MossStakeTransfer'
+                ? 'stLICN'
+                : 'LICN';
+            const amountStr = isFeeOnly ? `${feeAmt} LICN` : `${sign}${amount} ${amountUnit}`;
             const feeTag = isFeeOnly ? '<span style="display:inline-block;margin-left:0.35rem;padding:0.05rem 0.4rem;border-radius:4px;font-size:0.65rem;background:rgba(245,158,11,0.15);color:#f59e0b;font-weight:600;vertical-align:middle;">FEE</span>' : '';
             const paidTag = isPaidContract ? '<span style="display:inline-block;margin-left:0.35rem;padding:0.05rem 0.4rem;border-radius:4px;font-size:0.65rem;background:rgba(139,92,246,0.15);color:#a78bfa;font-weight:600;vertical-align:middle;">PAID</span>' : '';
 
