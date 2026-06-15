@@ -88,9 +88,9 @@ use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio::time;
 use tokio_tungstenite::tungstenite;
 use tracing::{debug, error, info, warn};
-use tracing_subscriber::EnvFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::EnvFilter;
 
 use crate::consensus::{ConsensusAction, ConsensusEngine, ConsensusTimeoutConfig};
 
