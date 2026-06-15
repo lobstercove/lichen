@@ -35,9 +35,11 @@ RELEASE_TAG="${LICHEN_RELEASE_TAG:-}"
 RELEASE_REPO="${LICHEN_RELEASE_REPO:-lobstercove/lichen}"
 SSH_USER="${LICHEN_SSH_USER:-ubuntu}"
 SSH_PORT="${LICHEN_SSH_PORT:-2222}"
+SSH_CONNECT_TIMEOUT="${LICHEN_SSH_CONNECT_TIMEOUT:-20}"
 HOSTS="${LICHEN_VPS_HOSTS:-$DEFAULT_HOSTS}"
 DISK_CRITICAL_PCT="${LICHEN_DISK_CRITICAL_PCT:-85}"
 MAX_BLOCK_AGE_SECS="${LICHEN_MAX_BLOCK_AGE_SECS:-15}"
+ALLOW_UNHEALTHY_PREFLIGHT="${LICHEN_ALLOW_UNHEALTHY_PREFLIGHT:-0}"
 DEX_SMOKE_TIMEOUT_SECS="${LICHEN_DEX_SMOKE_TIMEOUT_SECS:-90}"
 ARTIFACT_DIR="${LICHEN_RELEASE_ARTIFACT_DIR:-/tmp/lichen-rolling-${NETWORK}-${RELEASE_TAG:-unset}}"
 RELEASE_SIGNING_ADDRESS="${LICHEN_RELEASE_SIGNING_ADDRESS:-8HitBNnh8qbhfne5NCv2yHrQFoD6xbmHcWaUSgCGtsk}"
@@ -45,10 +47,10 @@ REMOTE_RELEASE_DOWNLOAD="${LICHEN_REMOTE_RELEASE_DOWNLOAD:-auto}"
 
 expected_validator_pubkey_for_host() {
   case "${NETWORK}:$1" in
-    testnet:15.204.229.189) echo "7LFPJ8gqmAtjbhfRg1P4VXmTQJV4AeZxzws3UsA6SVq" ;;
-    testnet:37.59.97.61) echo "6RMeoigHdJWB47pEZEMSj5gvT7nbJPYSfPqjcur9vMJ" ;;
-    testnet:15.235.142.253) echo "6TghL7ioQz5R8pfrX1Qcfy8rNMzRP5F2pndmmRQ2sPm" ;;
-    testnet:148.113.43.247) echo "6XhsGituXoWSd1wLtutZgdJve6gLrdSi7YhEx1ZDFHW" ;;
+    testnet:15.204.229.189|testnet:vps-cdb47b12) echo "7LFPJ8gqmAtjbhfRg1P4VXmTQJV4AeZxzws3UsA6SVq" ;;
+    testnet:37.59.97.61|testnet:eu-vps|testnet:vps-210edd4a) echo "6RMeoigHdJWB47pEZEMSj5gvT7nbJPYSfPqjcur9vMJ" ;;
+    testnet:15.235.142.253|testnet:vps-df7100d5) echo "6TghL7ioQz5R8pfrX1Qcfy8rNMzRP5F2pndmmRQ2sPm" ;;
+    testnet:148.113.43.247|testnet:seed-04) echo "6XhsGituXoWSd1wLtutZgdJve6gLrdSi7YhEx1ZDFHW" ;;
     *) echo "" ;;
   esac
 }
@@ -80,7 +82,8 @@ ssh_run() {
   shift
   ssh -p "$SSH_PORT" \
     -o BatchMode=yes \
-    -o ConnectTimeout=10 \
+    -o ConnectTimeout="$SSH_CONNECT_TIMEOUT" \
+    -o ConnectionAttempts=3 \
     -o ServerAliveInterval=10 \
     -o ServerAliveCountMax=6 \
     -o StrictHostKeyChecking=no \
@@ -93,7 +96,8 @@ scp_to() {
   local dst="$3"
   scp -O -P "$SSH_PORT" \
     -o BatchMode=yes \
-    -o ConnectTimeout=10 \
+    -o ConnectTimeout="$SSH_CONNECT_TIMEOUT" \
+    -o ConnectionAttempts=3 \
     -o ServerAliveInterval=10 \
     -o ServerAliveCountMax=6 \
     -o StrictHostKeyChecking=no \
@@ -103,15 +107,7 @@ scp_to() {
 ssh_run_script() {
   local host="$1"
   local env_prefix="$2"
-  local script
-  local remote_script
-  script="$(mktemp "${TMPDIR:-/tmp}/lichen-remote.XXXXXX.sh")"
-  remote_script="/tmp/$(basename "$script")"
-  cat > "$script"
-  chmod 700 "$script"
-  scp_to "$script" "$host" "$remote_script"
-  rm -f "$script"
-  ssh_run "$host" "chmod 700 '$remote_script' && set +e; ${env_prefix} bash '$remote_script'; status=\$?; rm -f '$remote_script'; exit \$status"
+  ssh_run "$host" "set +e; ${env_prefix} bash -s; status=\$?; exit \$status"
 }
 
 archive_for_arch() {
@@ -250,7 +246,7 @@ preflight_host() {
   local expected_pubkey
   expected_pubkey="$(expected_validator_pubkey_for_host "$host")"
   echo "Preflight ${host}"
-  ssh_run "$host" "NETWORK='$NETWORK' RPC_PORT='$RPC_PORT' DISK_CRITICAL_PCT='$DISK_CRITICAL_PCT' EXPECTED_PUBKEY='$expected_pubkey' bash -s" <<'REMOTE'
+  ssh_run "$host" "NETWORK='$NETWORK' RPC_PORT='$RPC_PORT' DISK_CRITICAL_PCT='$DISK_CRITICAL_PCT' MAX_BLOCK_AGE_SECS='$MAX_BLOCK_AGE_SECS' ALLOW_UNHEALTHY_PREFLIGHT='$ALLOW_UNHEALTHY_PREFLIGHT' EXPECTED_PUBKEY='$expected_pubkey' bash -s" <<'REMOTE'
 set -euo pipefail
 pct="$(df -P / | awk 'NR==2 { gsub(/%/, "", $5); print $5 }')"
 if [ "$pct" -ge "$DISK_CRITICAL_PCT" ]; then
@@ -287,9 +283,34 @@ PY
     exit 1
   fi
 fi
-curl -fsS "http://127.0.0.1:${RPC_PORT}/" \
+health_payload="$(curl -fsS "http://127.0.0.1:${RPC_PORT}/" \
   -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"getHealth","params":[]}' >/dev/null
+  -d '{"jsonrpc":"2.0","id":1,"method":"getHealth","params":[]}')"
+HEALTH_PAYLOAD="$health_payload" python3 - <<'PY'
+import json
+import os
+import sys
+
+payload = json.loads(os.environ["HEALTH_PAYLOAD"])
+result = payload.get("result") or {}
+disk = result.get("disk") or {}
+status = result.get("status")
+slot = result.get("slot")
+try:
+    age = int(result.get("block_age_secs") or 0)
+except (TypeError, ValueError):
+    age = 10**9
+max_age = int(os.environ.get("MAX_BLOCK_AGE_SECS", "15"))
+disk_critical = bool(disk.get("critical"))
+ok = status == "ok" and age <= max_age and not disk_critical
+print(f"preflight health: status={status} slot={slot} age={age}s max_age={max_age}s disk_critical={disk_critical}")
+if ok:
+    sys.exit(0)
+if os.environ.get("ALLOW_UNHEALTHY_PREFLIGHT") == "1":
+    print("WARNING: preflight health is not healthy; continuing because LICHEN_ALLOW_UNHEALTHY_PREFLIGHT=1.", file=sys.stderr)
+    sys.exit(0)
+sys.exit(1)
+PY
 REMOTE
 }
 

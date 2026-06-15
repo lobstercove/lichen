@@ -43,8 +43,26 @@ assert(script.includes('REMOTE_RELEASE_DOWNLOAD="${LICHEN_REMOTE_RELEASE_DOWNLOA
   'remote release download mode must default to auto');
 assert(script.includes('Release ${RELEASE_TAG} is draft; using local SCP transfer for verified artifacts.'),
   'draft releases must use local SCP transfer instead of public tag URLs');
+assert(script.includes('SSH_CONNECT_TIMEOUT="${LICHEN_SSH_CONNECT_TIMEOUT:-20}"'),
+  'SSH connect timeout must be configurable for flaky recovery links');
+assert(script.includes('-o ConnectionAttempts=3'),
+  'SSH operations must retry connection establishment during rolling deploys');
 assert(script.includes('-o ServerAliveInterval=10'),
   'SSH operations must use keepalives during rolling deploys');
+assert(script.includes('bash -s; status=\\$?; exit \\$status'),
+  'remote scripts must stream over the SSH session instead of relying on temporary SCP helpers');
+assert(script.includes('testnet:37.59.97.61|testnet:eu-vps|testnet:vps-210edd4a'),
+  'testnet EU validator aliases must map to the pinned validator identity');
+assert(script.includes('testnet:148.113.43.247|testnet:seed-04'),
+  'testnet seed validator alias must map to the pinned validator identity');
+assert(script.includes('ALLOW_UNHEALTHY_PREFLIGHT="${LICHEN_ALLOW_UNHEALTHY_PREFLIGHT:-0}"'),
+  'unhealthy preflight bypass must be an explicit operator override');
+assert(script.includes('preflight health: status='),
+  'preflight must print parsed local validator health');
+assert(script.includes('status == "ok" and age <= max_age and not disk_critical'),
+  'preflight must reject stale or disk-critical validators by default');
+assert(script.includes('LICHEN_ALLOW_UNHEALTHY_PREFLIGHT=1'),
+  'preflight recovery override must be visible in operator output');
 assert(script.includes('stage_release_bin()'),
   'release binaries must be staged before live install');
 assert(script.includes('check_staged_bin_hash lichen-custody "$EXPECTED_CUSTODY_SHA"'),
