@@ -18,6 +18,7 @@ LICHEN_SIGNED_METADATA_MANIFEST_FILE=/etc/lichen/signed-metadata-manifest-testne
 LICHEN_SERVICE_FLEET_CONFIG_FILE=/etc/lichen/service-fleet-testnet.json
 LICHEN_SERVICE_FLEET_UPSTREAM_RPC_URL=
 LICHEN_SERVICE_FLEET_STATUS_FILE=/var/lib/lichen/service-fleet-status-testnet.json
+LICHEN_CHECKPOINT_KEEP_COUNT=2
 LICHEN_EXTRA_ARGS=--auto-update=off
 
 # Required when this validator exposes public bridge intake through RPC.

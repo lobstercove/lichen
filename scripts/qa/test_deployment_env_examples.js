@@ -212,6 +212,7 @@ const validatorExpected = {
     LICHEN_SERVICE_FLEET_CONFIG_FILE: '/etc/lichen/service-fleet-testnet.json',
     LICHEN_SERVICE_FLEET_STATUS_FILE:
       '/var/lib/lichen/service-fleet-status-testnet.json',
+    LICHEN_CHECKPOINT_KEEP_COUNT: '2',
     LICHEN_EXTRA_ARGS: '--auto-update=off',
     CUSTODY_URL: 'http://127.0.0.1:9105',
   },
@@ -228,6 +229,7 @@ const validatorExpected = {
     LICHEN_SERVICE_FLEET_CONFIG_FILE: '/etc/lichen/service-fleet-mainnet.json',
     LICHEN_SERVICE_FLEET_STATUS_FILE:
       '/var/lib/lichen/service-fleet-status-mainnet.json',
+    LICHEN_CHECKPOINT_KEEP_COUNT: '2',
     LICHEN_EXTRA_ARGS: '--auto-update=off',
     CUSTODY_URL: 'http://127.0.0.1:9106',
   },

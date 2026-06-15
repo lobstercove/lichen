@@ -6980,9 +6980,23 @@ async fn freeze_consensus_snapshot_for_height(
     (validator_set.read().await.consensus_set(), height_pool)
 }
 
+const DEFAULT_CHECKPOINT_KEEP_COUNT: usize = 2;
+const MAX_CHECKPOINT_KEEP_COUNT: usize = 16;
+
+fn parse_checkpoint_keep_count(raw: Option<&str>) -> usize {
+    raw.and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .map(|value| value.min(MAX_CHECKPOINT_KEEP_COUNT))
+        .unwrap_or(DEFAULT_CHECKPOINT_KEEP_COUNT)
+}
+
+fn checkpoint_keep_count_from_env() -> usize {
+    parse_checkpoint_keep_count(env::var("LICHEN_CHECKPOINT_KEEP_COUNT").ok().as_deref())
+}
+
 /// Periodic checkpoint creation — called after every block to check if
 /// the current slot should trigger a RocksDB checkpoint.
-/// Checkpoints are created every CHECKPOINT_INTERVAL (10K) slots and
+/// Checkpoints are created every CHECKPOINT_INTERVAL (1,000) slots and
 /// provide O(1) state snapshots for new validator catch-up.
 async fn maybe_create_checkpoint(
     state: &StateStore,
@@ -7005,9 +7019,16 @@ async fn maybe_create_checkpoint(
             );
             // Record the checkpoint in SyncManager for fast bootstrapping
             sync_manager.set_checkpoint(slot).await;
-            // Prune old checkpoints — keep only the 3 most recent
-            if let Err(e) = StateStore::prune_checkpoints(data_dir, 3) {
-                warn!("⚠️  Failed to prune old checkpoints: {}", e);
+            let keep_count = checkpoint_keep_count_from_env();
+            match StateStore::prune_checkpoints(data_dir, keep_count) {
+                Ok(removed) if removed > 0 => {
+                    info!(
+                        "🧹 Pruned {} old checkpoint(s); keeping {} recent checkpoint(s)",
+                        removed, keep_count
+                    );
+                }
+                Ok(_) => {}
+                Err(e) => warn!("⚠️  Failed to prune old checkpoints: {}", e),
             }
         }
         Err(e) => {
@@ -28372,6 +28393,28 @@ mod tests {
 
         assert!(configure_archive_mode(&state, &args, true));
         assert!(state.is_archive_mode());
+    }
+
+    #[test]
+    fn checkpoint_keep_count_defaults_and_bounds_operator_input() {
+        assert_eq!(
+            parse_checkpoint_keep_count(None),
+            DEFAULT_CHECKPOINT_KEEP_COUNT
+        );
+        assert_eq!(
+            parse_checkpoint_keep_count(Some("")),
+            DEFAULT_CHECKPOINT_KEEP_COUNT
+        );
+        assert_eq!(
+            parse_checkpoint_keep_count(Some("0")),
+            DEFAULT_CHECKPOINT_KEEP_COUNT
+        );
+        assert_eq!(parse_checkpoint_keep_count(Some("1")), 1);
+        assert_eq!(parse_checkpoint_keep_count(Some("3")), 3);
+        assert_eq!(
+            parse_checkpoint_keep_count(Some("999")),
+            MAX_CHECKPOINT_KEEP_COUNT
+        );
     }
 
     // ── constants sanity ────────────────────────────────────────────

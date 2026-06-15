@@ -241,13 +241,17 @@ Required preflight on every VPS, including rolling updates:
 ```bash
 df -h /
 sudo du -sh /var/lib/lichen /var/log/journal /var/log/sudo-io 2>/dev/null || true
+sudo find /var/lib/lichen/state-<net>/checkpoints -mindepth 1 -maxdepth 1 \
+  -type d -name 'slot-*' -printf '%f\n' | sort -V
 sudo find /var/lib/lichen -maxdepth 1 -type d \
   \( -name 'state-testnet-*' -o -name 'state-mainnet-*' -o -name '*backup*' \) -print
 curl -s http://127.0.0.1:<rpc-port> -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"getHealth","params":[]}'
 ```
 
-If the `find` command returns non-live state backups, remove them only after confirming they are not the active `state-<net>` path and any required archive has been moved off-host. If `/var/log/sudo-io` or `/var/log/journal` is large, run `sudo journalctl --vacuum-size=512M` and `sudo systemd-tmpfiles --clean /etc/tmpfiles.d/sudo-io-retention.conf` after `deploy/setup.sh` has installed the retention files.
+Validators create RocksDB checkpoints every 1,000 slots for state snapshot sync and fork-repair. `LICHEN_CHECKPOINT_KEEP_COUNT` defaults to `2`; raise it only on hosts with enough disk headroom. Checkpoints are hard-linked to live RocksDB files, so `du` can attribute live DB bytes to `checkpoints/`; disk cleanup must remove only old `slot-*` checkpoint directories and never active state files.
+
+If the backup `find` command returns non-live state backups, remove them only after confirming they are not the active `state-<net>` path and any required archive has been moved off-host. If `/var/log/sudo-io` or `/var/log/journal` is large, run `sudo journalctl --vacuum-size=512M` and `sudo systemd-tmpfiles --clean /etc/tmpfiles.d/sudo-io-retention.conf` after `deploy/setup.sh` has installed the retention files.
 
 ## Keypair password policy
 
