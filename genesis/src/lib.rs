@@ -3735,6 +3735,11 @@ mod tests {
 
     const TEST_WASM_MODULE: &[u8] = b"\0asm\x01\0\0\0";
 
+    fn with_contracts_dir_env_lock<T>(f: impl FnOnce() -> T) -> T {
+        let _guard = CONTRACTS_DIR_ENV_LOCK.lock().unwrap();
+        f()
+    }
+
     fn with_contracts_dir<T>(contracts_dir: &Path, f: impl FnOnce() -> T) -> T {
         let _guard = CONTRACTS_DIR_ENV_LOCK.lock().unwrap();
         let previous = std::env::var_os("LICHEN_CONTRACTS_DIR");
@@ -3968,59 +3973,61 @@ mod tests {
 
     #[test]
     fn test_genesis_initialization_persists_prediction_market_dependencies() {
-        let dir = tempdir().unwrap();
-        let state = StateStore::open(dir.path()).unwrap();
-        let deployer = Pubkey([1u8; 32]);
-        let community_treasury = Pubkey([2u8; 32]);
+        with_contracts_dir_env_lock(|| {
+            let dir = tempdir().unwrap();
+            let state = StateStore::open(dir.path()).unwrap();
+            let deployer = Pubkey([1u8; 32]);
+            let community_treasury = Pubkey([2u8; 32]);
 
-        state
-            .set_genesis_accounts(&[(
-                "community_treasury".to_string(),
-                community_treasury,
-                125_000_000,
-                25,
-            )])
-            .unwrap();
+            state
+                .set_genesis_accounts(&[(
+                    "community_treasury".to_string(),
+                    community_treasury,
+                    125_000_000,
+                    25,
+                )])
+                .unwrap();
 
-        genesis_auto_deploy(&state, &deployer, "TEST:").unwrap();
-        assert_eq!(
-            genesis_harden_contract_controls(&state, &deployer, "TEST:").unwrap(),
-            community_treasury
-        );
-        genesis_initialize_contracts(&state, &deployer, "TEST:", 1_700_000_000).unwrap();
+            genesis_auto_deploy(&state, &deployer, "TEST:").unwrap();
+            assert_eq!(
+                genesis_harden_contract_controls(&state, &deployer, "TEST:").unwrap(),
+                community_treasury
+            );
+            genesis_initialize_contracts(&state, &deployer, "TEST:", 1_700_000_000).unwrap();
 
-        let predict = state
-            .get_symbol_registry("PREDICT")
-            .unwrap()
-            .unwrap()
-            .program;
-        let yid = state.get_symbol_registry("YID").unwrap().unwrap().program;
-        let oracle = state
-            .get_symbol_registry("ORACLE")
-            .unwrap()
-            .unwrap()
-            .program;
-        let lusd = state.get_symbol_registry("LUSD").unwrap().unwrap().program;
-        let dex_gov = state
-            .get_symbol_registry("DEXGOV")
-            .unwrap()
-            .unwrap()
-            .program;
-        let dex_core = state.get_symbol_registry("DEX").unwrap().unwrap().program;
-        let dex_rewards = state
-            .get_symbol_registry("DEXREWARDS")
-            .unwrap()
-            .unwrap()
-            .program;
+            let predict = state
+                .get_symbol_registry("PREDICT")
+                .unwrap()
+                .unwrap()
+                .program;
+            let yid = state.get_symbol_registry("YID").unwrap().unwrap().program;
+            let oracle = state
+                .get_symbol_registry("ORACLE")
+                .unwrap()
+                .unwrap()
+                .program;
+            let lusd = state.get_symbol_registry("LUSD").unwrap().unwrap().program;
+            let dex_gov = state
+                .get_symbol_registry("DEXGOV")
+                .unwrap()
+                .unwrap()
+                .program;
+            let dex_core = state.get_symbol_registry("DEX").unwrap().unwrap().program;
+            let dex_rewards = state
+                .get_symbol_registry("DEXREWARDS")
+                .unwrap()
+                .unwrap()
+                .program;
 
-        assert_contract_storage_pubkey(&state, &predict, b"pm_lichenid_addr", &yid);
-        assert_contract_storage_pubkey(&state, &predict, b"pm_oracle_addr", &oracle);
-        assert_contract_storage_pubkey(&state, &predict, b"pm_lusd_addr", &lusd);
-        assert_contract_storage_pubkey(&state, &predict, b"pm_dex_gov_addr", &dex_gov);
-        assert_contract_storage_pubkey(&state, &predict, b"pm_self_addr", &predict);
-        assert_contract_storage_pubkey(&state, &dex_gov, b"gov_lichenid_addr", &yid);
-        assert_contract_storage_pubkey(&state, &dex_gov, b"gov_core_addr", &dex_core);
-        assert_contract_storage_pubkey(&state, &dex_core, b"dex_governance_addr", &dex_gov);
-        assert_contract_storage_pubkey(&state, &dex_rewards, b"rew_pool_addr", &dex_rewards);
+            assert_contract_storage_pubkey(&state, &predict, b"pm_lichenid_addr", &yid);
+            assert_contract_storage_pubkey(&state, &predict, b"pm_oracle_addr", &oracle);
+            assert_contract_storage_pubkey(&state, &predict, b"pm_lusd_addr", &lusd);
+            assert_contract_storage_pubkey(&state, &predict, b"pm_dex_gov_addr", &dex_gov);
+            assert_contract_storage_pubkey(&state, &predict, b"pm_self_addr", &predict);
+            assert_contract_storage_pubkey(&state, &dex_gov, b"gov_lichenid_addr", &yid);
+            assert_contract_storage_pubkey(&state, &dex_gov, b"gov_core_addr", &dex_core);
+            assert_contract_storage_pubkey(&state, &dex_core, b"dex_governance_addr", &dex_gov);
+            assert_contract_storage_pubkey(&state, &dex_rewards, b"rew_pool_addr", &dex_rewards);
+        });
     }
 }
