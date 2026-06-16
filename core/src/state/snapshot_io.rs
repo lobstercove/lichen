@@ -321,7 +321,7 @@ impl StateStore {
         }
 
         if let Some(max_bytes) = max_total_bytes.filter(|value| *value > 0) {
-            while !remaining.is_empty() && checkpoint_paths_total_size(&remaining)? > max_bytes {
+            while remaining.len() > 1 && checkpoint_paths_total_size(&remaining)? > max_bytes {
                 let (_, path) = remaining.remove(0);
                 if std::fs::remove_dir_all(path).is_ok() {
                     removed += 1;

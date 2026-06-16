@@ -763,9 +763,17 @@ mod tests {
                 Some(500),
             )
             .unwrap(),
-            2
+            1
         );
-        assert!(StateStore::list_checkpoints(state_dir.to_str().unwrap()).is_empty());
+        let checkpoints = StateStore::list_checkpoints(state_dir.to_str().unwrap());
+        assert_eq!(
+            checkpoints
+                .iter()
+                .map(|(slot, _)| *slot)
+                .collect::<Vec<_>>(),
+            vec![3],
+            "the newest checkpoint must remain available even when it exceeds the size cap"
+        );
     }
 
     #[test]

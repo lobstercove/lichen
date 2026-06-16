@@ -5,6 +5,16 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.168] - 2026-06-17
+
+### Fixed
+- Preserves the newest RocksDB checkpoint during size-cap pruning so far-behind
+  or resuming validators always have at least one checkpoint snapshot source,
+  even when a single logical checkpoint exceeds `LICHEN_CHECKPOINT_MAX_BYTES`.
+
+### Verified
+- Passed focused core checkpoint pruning regressions.
+
 ## [0.5.167] - 2026-06-16
 
 ### Fixed
