@@ -5,13 +5,15 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.5.165] - 2026-06-16
+## [0.5.166] - 2026-06-16
 
 ### Fixed
 - Bounds RocksDB checkpoint retention by total logical size in addition to count, preventing hard-linked checkpoint directories from pinning hundreds of gigabytes of obsolete SST files on long-running validators. `LICHEN_CHECKPOINT_MAX_BYTES` defaults to 8 GiB and can be raised or disabled explicitly by operators.
 - Reduces catch-up block-range fanout to one primary peer per chunk with fallback on send failure, avoiding duplicate range floods when a stale validator is replaying a large parent gap.
 - Extends the P2P sync block queue send timeout so valid range responses are less likely to be dropped while the validator replay path is under catch-up pressure.
-- Updates the deployment runbook target to `v0.5.165` with `v0.5.164` as the signed rollback point.
+- Updates the root and JavaScript SDK npm lockfiles to `ws` 8.21.0 so release CI passes the production dependency audits.
+- Updates the Python SDK runtime lockfile to `cryptography` 48.0.1 so release CI passes the Python dependency audit.
+- Updates the deployment runbook target to `v0.5.166` with `v0.5.164` as the signed rollback point.
 
 ### Verified
 - Passed focused checkpoint-pruning and validator sync request tests plus `cargo clippy -p lobstercove-lichen-core -p lichen-p2p -p lichen-validator --all-targets -- -D warnings`.
