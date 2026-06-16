@@ -27,7 +27,7 @@ const MAX_BLOCK_TXS_TRANSACTIONS: usize = MAX_TX_PER_BLOCK;
 const MAX_STATE_SNAPSHOT_REQUEST_CHUNK_SIZE: u64 = 2000;
 const MAX_STATE_SNAPSHOT_REQUEST_CHUNK_INDEX: u64 = 10_000_000;
 const MAX_EXPENSIVE_REQUESTS_PER_WINDOW: u32 = 30;
-const SYNC_BLOCK_QUEUE_SEND_TIMEOUT: Duration = Duration::from_millis(500);
+const SYNC_BLOCK_QUEUE_SEND_TIMEOUT: Duration = Duration::from_secs(10);
 const SNAPSHOT_REQUEST_QUEUE_SEND_TIMEOUT: Duration = Duration::from_secs(2);
 fn is_allowed_state_snapshot_category(category: &str) -> bool {
     STATE_SNAPSHOT_CATEGORIES.contains(&category)

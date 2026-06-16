@@ -500,6 +500,15 @@ type SnapshotEntry = (Vec<u8>, Vec<u8>);
 type SnapshotEntries = Vec<SnapshotEntry>;
 type ShieldedStateBundle = Vec<(String, SnapshotEntries)>;
 
+fn sync_range_peer_order(peers: &[SocketAddr], chunk_index: usize) -> Vec<SocketAddr> {
+    if peers.is_empty() {
+        return Vec::new();
+    }
+    (0..peers.len())
+        .map(|offset| peers[(chunk_index + offset) % peers.len()])
+        .collect()
+}
+
 fn deserialize_snapshot_value<T>(data: &[u8], context: &str) -> Result<T, String>
 where
     T: serde::de::DeserializeOwned,
@@ -6982,6 +6991,8 @@ async fn freeze_consensus_snapshot_for_height(
 
 const DEFAULT_CHECKPOINT_KEEP_COUNT: usize = 2;
 const MAX_CHECKPOINT_KEEP_COUNT: usize = 16;
+const DEFAULT_CHECKPOINT_MAX_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+const MAX_CHECKPOINT_MAX_BYTES: u64 = 128 * 1024 * 1024 * 1024;
 
 fn parse_checkpoint_keep_count(raw: Option<&str>) -> usize {
     raw.and_then(|value| value.trim().parse::<usize>().ok())
@@ -6992,6 +7003,18 @@ fn parse_checkpoint_keep_count(raw: Option<&str>) -> usize {
 
 fn checkpoint_keep_count_from_env() -> usize {
     parse_checkpoint_keep_count(env::var("LICHEN_CHECKPOINT_KEEP_COUNT").ok().as_deref())
+}
+
+fn parse_checkpoint_max_bytes(raw: Option<&str>) -> Option<u64> {
+    match raw.and_then(|value| value.trim().parse::<u64>().ok()) {
+        Some(0) => None,
+        Some(value) => Some(value.min(MAX_CHECKPOINT_MAX_BYTES)),
+        None => Some(DEFAULT_CHECKPOINT_MAX_BYTES),
+    }
+}
+
+fn checkpoint_max_bytes_from_env() -> Option<u64> {
+    parse_checkpoint_max_bytes(env::var("LICHEN_CHECKPOINT_MAX_BYTES").ok().as_deref())
 }
 
 /// Periodic checkpoint creation — called after every block to check if
@@ -7020,11 +7043,16 @@ async fn maybe_create_checkpoint(
             // Record the checkpoint in SyncManager for fast bootstrapping
             sync_manager.set_checkpoint(slot).await;
             let keep_count = checkpoint_keep_count_from_env();
-            match StateStore::prune_checkpoints(data_dir, keep_count) {
+            let max_bytes = checkpoint_max_bytes_from_env();
+            match StateStore::prune_checkpoints_with_size_limit(data_dir, keep_count, max_bytes) {
                 Ok(removed) if removed > 0 => {
                     info!(
-                        "🧹 Pruned {} old checkpoint(s); keeping {} recent checkpoint(s)",
-                        removed, keep_count
+                        "🧹 Pruned {} old checkpoint(s); keeping up to {} recent checkpoint(s), max_size={}",
+                        removed,
+                        keep_count,
+                        max_bytes
+                            .map(|bytes| bytes.to_string())
+                            .unwrap_or_else(|| "disabled".to_string())
                     );
                 }
                 Ok(_) => {}
@@ -21891,6 +21919,7 @@ async fn request_block_range_from_peers(
         .collect();
 
     let mut chunk_start = start_slot;
+    let mut chunk_index = 0usize;
     while chunk_start <= end_slot {
         let chunk_end = std::cmp::min(chunk_start + sync::P2P_BLOCK_RANGE_LIMIT - 1, end_slot);
 
@@ -21912,7 +21941,8 @@ async fn request_block_range_from_peers(
                 "broadcast",
             );
         } else {
-            for peer_addr in &all_peers {
+            let mut sent = false;
+            for peer_addr in sync_range_peer_order(&all_peers, chunk_index) {
                 let request_msg = P2PMessage::new(
                     MessageType::BlockRangeRequest {
                         start_slot: chunk_start,
@@ -21920,14 +21950,14 @@ async fn request_block_range_from_peers(
                     },
                     local_addr,
                 );
-                if let Err(e) = pm.send_to_peer(peer_addr, request_msg).await {
+                if let Err(e) = pm.send_to_peer(&peer_addr, request_msg).await {
                     warn!(
                         "⚠️  Failed {} sync request {}-{} to {}: {}",
                         reason, chunk_start, chunk_end, peer_addr, e
                     );
-                    pm.record_violation(peer_addr);
+                    pm.record_violation(&peer_addr);
                 } else {
-                    pm.record_success(peer_addr);
+                    pm.record_success(&peer_addr);
                     info!(
                         "📡 Sent {} sync request: {} to {} (chunk {}, peer {})",
                         reason,
@@ -21936,11 +21966,20 @@ async fn request_block_range_from_peers(
                         chunk_end - chunk_start + 1,
                         peer_addr,
                     );
+                    sent = true;
+                    break;
                 }
+            }
+            if !sent {
+                warn!(
+                    "⚠️  Failed to send {} sync request {}-{} to any selected peer",
+                    reason, chunk_start, chunk_end
+                );
             }
         }
 
         chunk_start = chunk_end + 1;
+        chunk_index += 1;
     }
 }
 
@@ -28415,6 +28454,46 @@ mod tests {
             parse_checkpoint_keep_count(Some("999")),
             MAX_CHECKPOINT_KEEP_COUNT
         );
+    }
+
+    #[test]
+    fn checkpoint_max_bytes_defaults_bounds_and_allows_disable() {
+        assert_eq!(
+            parse_checkpoint_max_bytes(None),
+            Some(DEFAULT_CHECKPOINT_MAX_BYTES)
+        );
+        assert_eq!(
+            parse_checkpoint_max_bytes(Some("")),
+            Some(DEFAULT_CHECKPOINT_MAX_BYTES)
+        );
+        assert_eq!(parse_checkpoint_max_bytes(Some("0")), None);
+        assert_eq!(parse_checkpoint_max_bytes(Some("1024")), Some(1024));
+        assert_eq!(
+            parse_checkpoint_max_bytes(Some("999999999999999")),
+            Some(MAX_CHECKPOINT_MAX_BYTES)
+        );
+    }
+
+    #[test]
+    fn sync_range_peer_order_rotates_primary_and_preserves_fallbacks() {
+        let peers: Vec<SocketAddr> = ["127.0.0.1:7001", "127.0.0.1:7002", "127.0.0.1:7003"]
+            .into_iter()
+            .map(|addr| addr.parse().unwrap())
+            .collect();
+
+        assert_eq!(
+            sync_range_peer_order(&peers, 0),
+            vec![peers[0], peers[1], peers[2]]
+        );
+        assert_eq!(
+            sync_range_peer_order(&peers, 1),
+            vec![peers[1], peers[2], peers[0]]
+        );
+        assert_eq!(
+            sync_range_peer_order(&peers, 2),
+            vec![peers[2], peers[0], peers[1]]
+        );
+        assert!(sync_range_peer_order(&[], 0).is_empty());
     }
 
     // ── constants sanity ────────────────────────────────────────────

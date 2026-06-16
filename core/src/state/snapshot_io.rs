@@ -76,6 +76,35 @@ fn canonical_block_snapshot_value(key: &[u8], value: &[u8]) -> Result<Vec<u8>, S
     Ok(canonical)
 }
 
+fn directory_logical_size(path: &std::path::Path) -> Result<u64, String> {
+    let mut total = 0u64;
+    let mut stack = vec![path.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        let metadata = std::fs::symlink_metadata(&current)
+            .map_err(|err| format!("failed to stat {}: {}", current.display(), err))?;
+        if metadata.is_file() {
+            total = total.saturating_add(metadata.len());
+        } else if metadata.is_dir() {
+            for entry in std::fs::read_dir(&current)
+                .map_err(|err| format!("failed to read {}: {}", current.display(), err))?
+            {
+                let entry = entry.map_err(|err| {
+                    format!("failed to read entry in {}: {}", current.display(), err)
+                })?;
+                stack.push(entry.path());
+            }
+        }
+    }
+    Ok(total)
+}
+
+fn checkpoint_paths_total_size(checkpoints: &[(u64, String)]) -> Result<u64, String> {
+    checkpoints.iter().try_fold(0u64, |total, (_, path)| {
+        let size = directory_logical_size(std::path::Path::new(path))?;
+        Ok(total.saturating_add(size))
+    })
+}
+
 impl StateStore {
     pub(crate) fn snapshot_category_cf(category: &str) -> Option<(&'static str, &'static str)> {
         match category {
@@ -267,17 +296,39 @@ impl StateStore {
 
     /// Prune old checkpoints, keeping only the most recent `keep_count`.
     pub fn prune_checkpoints(data_dir: &str, keep_count: usize) -> Result<usize, String> {
+        Self::prune_checkpoints_with_size_limit(data_dir, keep_count, None)
+    }
+
+    /// Prune old checkpoints by count and, optionally, by total logical size.
+    ///
+    /// RocksDB checkpoints are hardlink snapshots. A checkpoint can initially be
+    /// cheap, then pin a large set of obsolete SSTs after compaction. Count-only
+    /// retention is therefore not enough for long-running validators.
+    pub fn prune_checkpoints_with_size_limit(
+        data_dir: &str,
+        keep_count: usize,
+        max_total_bytes: Option<u64>,
+    ) -> Result<usize, String> {
         let checkpoints = Self::list_checkpoints(data_dir);
-        if checkpoints.len() <= keep_count {
-            return Ok(0);
-        }
-        let to_remove = checkpoints.len() - keep_count;
+        let mut remaining = checkpoints;
         let mut removed = 0;
-        for (_, path) in checkpoints.iter().take(to_remove) {
+
+        while remaining.len() > keep_count {
+            let (_, path) = remaining.remove(0);
             if std::fs::remove_dir_all(path).is_ok() {
                 removed += 1;
             }
         }
+
+        if let Some(max_bytes) = max_total_bytes.filter(|value| *value > 0) {
+            while !remaining.is_empty() && checkpoint_paths_total_size(&remaining)? > max_bytes {
+                let (_, path) = remaining.remove(0);
+                if std::fs::remove_dir_all(path).is_ok() {
+                    removed += 1;
+                }
+            }
+        }
+
         Ok(removed)
     }
 

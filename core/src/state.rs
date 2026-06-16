@@ -715,6 +715,60 @@ mod tests {
     }
 
     #[test]
+    fn checkpoint_prune_enforces_total_size_cap() {
+        let temp = tempdir().unwrap();
+        let state_dir = temp.path().join("state");
+        let checkpoint_root = state_dir.join("checkpoints");
+        std::fs::create_dir_all(&checkpoint_root).unwrap();
+
+        for (slot, bytes) in [(1u64, 1000usize), (2, 1000), (3, 1000)] {
+            let checkpoint_dir = checkpoint_root.join(format!("slot-{slot}"));
+            std::fs::create_dir_all(&checkpoint_dir).unwrap();
+            let meta = CheckpointMeta {
+                slot,
+                state_root: [slot as u8; 32],
+                created_at: slot,
+                total_accounts: 0,
+            };
+            std::fs::write(
+                checkpoint_dir.join("checkpoint_meta.json"),
+                serde_json::to_vec(&meta).unwrap(),
+            )
+            .unwrap();
+            std::fs::write(checkpoint_dir.join("payload.bin"), vec![slot as u8; bytes]).unwrap();
+        }
+
+        assert_eq!(
+            StateStore::prune_checkpoints_with_size_limit(
+                state_dir.to_str().unwrap(),
+                3,
+                Some(2500),
+            )
+            .unwrap(),
+            1
+        );
+        let checkpoints = StateStore::list_checkpoints(state_dir.to_str().unwrap());
+        assert_eq!(
+            checkpoints
+                .iter()
+                .map(|(slot, _)| *slot)
+                .collect::<Vec<_>>(),
+            vec![2, 3]
+        );
+
+        assert_eq!(
+            StateStore::prune_checkpoints_with_size_limit(
+                state_dir.to_str().unwrap(),
+                3,
+                Some(500),
+            )
+            .unwrap(),
+            2
+        );
+        assert!(StateStore::list_checkpoints(state_dir.to_str().unwrap()).is_empty());
+    }
+
+    #[test]
     fn test_sparse_checkpoint_read_only_root_does_not_rebuild_checkpoint() {
         let temp = tempdir().unwrap();
         let state_dir = temp.path().join("state");
