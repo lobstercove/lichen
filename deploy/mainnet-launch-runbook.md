@@ -4,7 +4,7 @@ This is the operator runbook for launching Lichen mainnet and then enabling
 mainnet custody. It is intentionally step-by-step and gate-based. Do not skip a
 gate because mainnet genesis and custody routes handle real value.
 
-Written for the current mainnet package. Current signed-release target for this runbook is `v0.5.166`; keep `v0.5.164` as the signed rollback point. If a newer
+Written for the current mainnet package. Current signed-release target for this runbook is `v0.5.167`; keep `v0.5.164` as the signed rollback point. If a newer
 release is used, replace every example tag with the newer signed release tag
 after CI and release verification pass.
 
@@ -147,6 +147,8 @@ Clean-slate invariants for the current package:
 - Metadata must expose 32 manifest symbols before any public frontend deploy.
 - Genesis must include the mandatory 13 DEX CLOB pairs, AMM pools, and router routes, including `wBTC/lUSD` and `wBTC/LICN`.
 - Checkpoint serving uses RocksDB read-only descriptors and cannot cold-rebuild or compact checkpoint Merkle state from the serving path.
+- Keep checkpoint disk retention bounded with `LICHEN_CHECKPOINT_MAX_BYTES`; use the release default unless an operator deliberately documents a larger cap.
+- A resuming validator requests catch-up block ranges from one primary peer per chunk with fallback, avoiding duplicate range floods while preserving replay from peers.
 - Warp and repair snapshots require authenticated PQ node checkpoint sources,
   a signed checkpoint header verifies, and a source-pinned snapshot manifest root after the checkpoint state root has active-validator quorum.
 - Abort a snapshot source when the deterministic archive manifest differs from the verified checkpoint metadata.
@@ -198,7 +200,7 @@ credentials, or keypair passwords.
 Use the signed release that passed CI. For the current package:
 
 ```bash
-export LICHEN_RELEASE_TAG=v0.5.166
+export LICHEN_RELEASE_TAG=v0.5.167
 export LICHEN_MAINNET_VPS_HOSTS="15.204.229.189 37.59.97.61 15.235.142.253 148.113.43.247"
 ```
 

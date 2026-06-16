@@ -5,6 +5,16 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.167] - 2026-06-16
+
+### Fixed
+- Bounds stalled checkpoint snapshot retries so a resuming validator abandons an unservable source/slot/root after repeated no-progress retries, clears staging state, and requests fresh checkpoint metadata instead of looping indefinitely on a stale advertised checkpoint.
+- Invalidates an exact stale checkpoint advertisement on the provider when a state snapshot request can no longer be authorized from local checkpoint storage, preventing upgraded validators from re-advertising pruned checkpoint snapshots.
+- Updates the deployment runbook target to `v0.5.167` with `v0.5.164` as the signed rollback point.
+
+### Verified
+- Passed focused stalled snapshot retry/cache invalidation tests plus the validator checkpoint and snapshot test filters.
+
 ## [0.5.166] - 2026-06-16
 
 ### Fixed

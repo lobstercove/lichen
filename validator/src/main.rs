@@ -494,6 +494,7 @@ const SNAPSHOT_SERVE_BURST_UNITS: u64 = 32;
 const SNAPSHOT_SERVE_REFILL_UNITS_PER_SEC: u64 = 8;
 const MAX_SNAPSHOT_CHUNK_SIZE: u64 = 2000;
 const SNAPSHOT_PROGRESS_RETRY_SECS: u64 = 15;
+const SNAPSHOT_PROGRESS_MAX_STALLED_RETRIES: u32 = 3;
 const FRESH_JOIN_BOOTSTRAP_REPLAY_SLOTS: u64 = sync::P2P_BLOCK_RANGE_LIMIT;
 
 type SnapshotEntry = (Vec<u8>, Vec<u8>);
@@ -1699,6 +1700,26 @@ impl VerifiedCheckpointCacheEntry {
             .iter()
             .map(VerifiedCheckpointData::meta_anchor)
             .collect()
+    }
+
+    fn remove_checkpoint_anchor(
+        &mut self,
+        slot: u64,
+        state_root: [u8; 32],
+        snapshot_manifest_root: [u8; 32],
+    ) -> bool {
+        let before = self.checkpoints.len();
+        self.checkpoints.retain(|checkpoint| {
+            checkpoint.meta.slot != slot
+                || checkpoint.meta.state_root != state_root
+                || advertised_snapshot_manifest_root(&checkpoint.snapshot_manifest)
+                    != snapshot_manifest_root
+        });
+        before != self.checkpoints.len()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.checkpoints.is_empty()
     }
 }
 
@@ -4504,6 +4525,23 @@ impl SnapshotSync {
     fn mark_warp_snapshot_idle(&mut self) {
         self.warp_snapshot_active = false;
         self.last_checkpoint_metadata_request_at = None;
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SnapshotStallDecision {
+    Retry { attempt: u32 },
+    Abandon,
+}
+
+fn checkpoint_snapshot_stall_decision(stalled_retries: &mut u32) -> SnapshotStallDecision {
+    if *stalled_retries >= SNAPSHOT_PROGRESS_MAX_STALLED_RETRIES {
+        SnapshotStallDecision::Abandon
+    } else {
+        *stalled_retries = stalled_retries.saturating_add(1);
+        SnapshotStallDecision::Retry {
+            attempt: *stalled_retries,
+        }
     }
 }
 
@@ -16960,6 +16998,25 @@ async fn run_validator() {
                                         hex::encode(&requested_snapshot_manifest_root[..8]),
                                         request.requester
                                     );
+                                    let mut cleared_cache = false;
+                                    if let Some(cache) = verified_checkpoint_cache.as_mut() {
+                                        if cache.remove_checkpoint_anchor(
+                                            requested_slot,
+                                            requested_state_root,
+                                            requested_snapshot_manifest_root,
+                                        ) {
+                                            warn!(
+                                                "⚠️  Invalidated stale checkpoint advertisement slot {} root {} manifest {} after failed snapshot authorization",
+                                                requested_slot,
+                                                hex::encode(&requested_state_root[..8]),
+                                                hex::encode(&requested_snapshot_manifest_root[..8]),
+                                            );
+                                            cleared_cache = cache.is_empty();
+                                        }
+                                    }
+                                    if cleared_cache {
+                                        verified_checkpoint_cache = None;
+                                    }
                                     continue;
                                 }
                             }
@@ -17304,6 +17361,7 @@ async fn run_validator() {
             let mut rejected_snapshot_sources: HashSet<(VerifiedCheckpointSource, u64, [u8; 32])> =
                 HashSet::new();
             let mut snapshot_last_progress_at = std::time::Instant::now();
+            let mut stalled_snapshot_retries = 0u32;
             // Staged snapshot DB: chunks are written here as they arrive,
             // then the full staging state is root-verified before touching
             // live state. This keeps archive-sized snapshots bounded by
@@ -17323,6 +17381,62 @@ async fn run_validator() {
                             if let (Some(source_peer), Some(anchor)) =
                                 (active_snapshot_source_peer, active_snapshot_anchor.as_ref())
                             {
+                                let anchor_slot = anchor.slot;
+                                let anchor_state_root = anchor.state_root;
+                                match checkpoint_snapshot_stall_decision(
+                                    &mut stalled_snapshot_retries,
+                                ) {
+                                    SnapshotStallDecision::Retry { attempt } => {
+                                        debug!(
+                                            "Checkpoint snapshot stall retry {}/{} for slot {} from {}",
+                                            attempt,
+                                            SNAPSHOT_PROGRESS_MAX_STALLED_RETRIES,
+                                            anchor_slot,
+                                            source_peer
+                                        );
+                                    }
+                                    SnapshotStallDecision::Abandon => {
+                                        if let Some(source) = active_snapshot_source {
+                                            rejected_snapshot_sources.insert((
+                                                source,
+                                                anchor_slot,
+                                                anchor_state_root,
+                                            ));
+                                            warn!(
+                                                "⚠️  Abandoning stalled checkpoint snapshot source {} for slot {} root {} after {} retry attempts; requesting fresh checkpoint metadata",
+                                                source.label(),
+                                                anchor_slot,
+                                                hex::encode(&anchor_state_root[..8]),
+                                                SNAPSHOT_PROGRESS_MAX_STALLED_RETRIES
+                                            );
+                                        } else {
+                                            warn!(
+                                                "⚠️  Abandoning stalled checkpoint snapshot at slot {} root {} after {} retry attempts; requesting fresh checkpoint metadata",
+                                                anchor_slot,
+                                                hex::encode(&anchor_state_root[..8]),
+                                                SNAPSHOT_PROGRESS_MAX_STALLED_RETRIES
+                                            );
+                                        }
+                                        cleanup_snapshot_staging(&mut active_snapshot_staging);
+                                        state_snap_progress.clear();
+                                        state_snap_digests.clear();
+                                        active_snapshot_anchor = None;
+                                        active_snapshot_source_peer = None;
+                                        active_snapshot_source = None;
+                                        stalled_snapshot_retries = 0;
+                                        snapshot_sync_for_apply
+                                            .lock()
+                                            .await
+                                            .mark_warp_snapshot_idle();
+                                        request_checkpoint_metadata_from_peers(
+                                            &peer_mgr_for_snapshot_apply,
+                                            local_addr_for_snap_apply,
+                                            "stalled checkpoint snapshot retry",
+                                        )
+                                        .await;
+                                        continue;
+                                    }
+                                }
                                 let categories = match advertised_snapshot_manifest_categories(
                                     &anchor.snapshot_manifest,
                                 ) {
@@ -17737,6 +17851,7 @@ async fn run_validator() {
                                 active_snapshot_anchor = Some(best_anchor);
                                 active_snapshot_source_peer = Some(best_source_peer);
                                 active_snapshot_source = Some(best_anchor_key.source);
+                                stalled_snapshot_retries = 0;
                                 snapshot_sync_for_apply
                                     .lock()
                                     .await
@@ -18052,6 +18167,7 @@ async fn run_validator() {
                         .or_insert_with(|| SnapshotCategoryDigestAccumulator::new(category))
                         .update_entries(&entries);
                     snapshot_last_progress_at = std::time::Instant::now();
+                    stalled_snapshot_retries = 0;
 
                     // Track progress
                     let progress = state_snap_progress
@@ -26874,6 +26990,100 @@ mod tests {
 
         sync.mark_warp_snapshot_idle();
         assert!(sync.should_request_checkpoint_metadata());
+    }
+
+    #[test]
+    fn stalled_checkpoint_snapshot_retries_are_bounded() {
+        let mut retries = 0;
+
+        for expected_attempt in 1..=SNAPSHOT_PROGRESS_MAX_STALLED_RETRIES {
+            assert_eq!(
+                checkpoint_snapshot_stall_decision(&mut retries),
+                SnapshotStallDecision::Retry {
+                    attempt: expected_attempt
+                }
+            );
+        }
+
+        assert_eq!(
+            checkpoint_snapshot_stall_decision(&mut retries),
+            SnapshotStallDecision::Abandon
+        );
+        assert_eq!(retries, SNAPSHOT_PROGRESS_MAX_STALLED_RETRIES);
+
+        retries = 0;
+        assert_eq!(
+            checkpoint_snapshot_stall_decision(&mut retries),
+            SnapshotStallDecision::Retry { attempt: 1 }
+        );
+    }
+
+    #[test]
+    fn verified_checkpoint_cache_invalidates_exact_unservable_anchor() {
+        let manifest_a = vec![SnapshotCategoryDigest {
+            category: "accounts".to_string(),
+            entry_count: 1,
+            sha256: [3u8; 32],
+        }];
+        let manifest_b = vec![SnapshotCategoryDigest {
+            category: "accounts".to_string(),
+            entry_count: 2,
+            sha256: [4u8; 32],
+        }];
+        let root_a = [9u8; 32];
+        let root_b = [10u8; 32];
+        let make_checkpoint =
+            |slot: u64, state_root: [u8; 32], manifest: Vec<SnapshotCategoryDigest>| {
+                VerifiedCheckpointData {
+                    meta: lichen_core::CheckpointMeta {
+                        slot,
+                        state_root,
+                        created_at: slot,
+                        total_accounts: 1,
+                    },
+                    checkpoint_path: format!("/tmp/slot-{slot}"),
+                    block: Block::new_with_timestamp(
+                        slot,
+                        Hash::default(),
+                        Hash(state_root),
+                        [7u8; 32],
+                        Vec::new(),
+                        slot,
+                    ),
+                    snapshot_manifest: manifest,
+                }
+            };
+        let mut cache = VerifiedCheckpointCacheEntry {
+            checkpoints: vec![
+                make_checkpoint(100, root_a, manifest_a.clone()),
+                make_checkpoint(101, root_b, manifest_b.clone()),
+            ],
+            verified_at: Instant::now(),
+        };
+
+        let mut wrong_manifest_root = advertised_snapshot_manifest_root(&manifest_a);
+        wrong_manifest_root[0] ^= 1;
+        assert!(
+            !cache.remove_checkpoint_anchor(100, root_a, wrong_manifest_root),
+            "different manifest roots must not evict cached checkpoint anchors"
+        );
+        assert_eq!(cache.checkpoints.len(), 2);
+
+        assert!(cache.remove_checkpoint_anchor(
+            100,
+            root_a,
+            advertised_snapshot_manifest_root(&manifest_a),
+        ));
+        assert_eq!(cache.checkpoints.len(), 1);
+        assert_eq!(cache.checkpoints[0].meta.slot, 101);
+        assert!(!cache.is_empty());
+
+        assert!(cache.remove_checkpoint_anchor(
+            101,
+            root_b,
+            advertised_snapshot_manifest_root(&manifest_b),
+        ));
+        assert!(cache.is_empty());
     }
 
     #[test]
