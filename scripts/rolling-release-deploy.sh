@@ -248,13 +248,14 @@ preflight_host() {
   echo "Preflight ${host}"
   ssh_run "$host" "NETWORK='$NETWORK' RPC_PORT='$RPC_PORT' DISK_CRITICAL_PCT='$DISK_CRITICAL_PCT' MAX_BLOCK_AGE_SECS='$MAX_BLOCK_AGE_SECS' ALLOW_UNHEALTHY_PREFLIGHT='$ALLOW_UNHEALTHY_PREFLIGHT' EXPECTED_PUBKEY='$expected_pubkey' bash -s" <<'REMOTE'
 set -euo pipefail
+sudo() { command sudo -n "$@" </dev/null; }
 pct="$(df -P / | awk 'NR==2 { gsub(/%/, "", $5); print $5 }')"
 if [ "$pct" -ge "$DISK_CRITICAL_PCT" ]; then
   echo "Root filesystem is ${pct}% full; refusing deploy."
   exit 1
 fi
 
-backups="$(sudo find /var/lib/lichen -maxdepth 1 -type d \
+backups="$(sudo -n find /var/lib/lichen -maxdepth 1 -type d \
   \( -name "state-${NETWORK}-*" -o -name "*backup*" \) -print 2>/dev/null || true)"
 if [ -n "$backups" ]; then
   echo "Non-live state backup directories must be moved off-host before deploy:"
@@ -262,20 +263,14 @@ if [ -n "$backups" ]; then
   exit 1
 fi
 
-sudo du -sh /var/lib/lichen /var/log/journal /var/log/sudo-io 2>/dev/null || true
+sudo -n du -sh /var/lib/lichen /var/log/journal /var/log/sudo-io 2>/dev/null || true
 STATE="/var/lib/lichen/state-${NETWORK}"
 if [ -n "$EXPECTED_PUBKEY" ]; then
-  if ! sudo test -f "$STATE/validator-keypair.json"; then
+  if ! sudo -n test -f "$STATE/validator-keypair.json"; then
     echo "Expected validator identity $EXPECTED_PUBKEY but $STATE/validator-keypair.json is missing; refusing deploy."
     exit 1
   fi
-  active_pubkey="$(sudo python3 - "$STATE/validator-keypair.json" <<'PY'
-import json
-import sys
-with open(sys.argv[1], encoding="utf-8") as fh:
-    print(json.load(fh)["publicKeyBase58"])
-PY
-)"
+  active_pubkey="$(sudo -n cat "$STATE/validator-keypair.json" | python3 -c 'import json, sys; print(json.load(sys.stdin)["publicKeyBase58"])')"
   if [ "$active_pubkey" != "$EXPECTED_PUBKEY" ]; then
     echo "Validator identity mismatch; refusing to restart ${NETWORK} validator."
     echo "  expected: $EXPECTED_PUBKEY"
@@ -345,6 +340,7 @@ REMOTE
   fi
   ssh_run_script "$host" "NETWORK='$NETWORK' SERVICE='$SERVICE' ARCHIVE='/tmp/$archive' EXPECTED_VALIDATOR_SHA='$expected_validator_sha' EXPECTED_CUSTODY_SHA='$expected_custody_sha' EXPECTED_FAUCET_SHA='$expected_faucet_sha'" <<'REMOTE'
 set -euo pipefail
+sudo() { command sudo -n "$@" </dev/null; }
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp" "$ARCHIVE"' EXIT
 before_pid="$(systemctl show "$SERVICE" -p MainPID --value || true)"
@@ -359,7 +355,7 @@ fi
 stage_release_bin() {
   local bin="$1"
   test -x "$root/$bin"
-  sudo install -m 755 "$root/$bin" "/usr/local/bin/$bin.new"
+  sudo -n install -m 755 "$root/$bin" "/usr/local/bin/$bin.new"
 }
 
 for bin in lichen-validator lichen-genesis lichen zk-prove; do
@@ -383,9 +379,9 @@ install_optional_service_bin lichen-custody "$EXPECTED_CUSTODY_SHA"
 install_optional_service_bin lichen-faucet "$EXPECTED_FAUCET_SHA"
 
 if [ -f "$root/seeds.json" ]; then
-  sudo install -m 644 "$root/seeds.json" /etc/lichen/seeds.json
-  sudo install -d -m 750 -o lichen -g lichen "/var/lib/lichen/state-${NETWORK}"
-  sudo install -m 644 -o lichen -g lichen "$root/seeds.json" "/var/lib/lichen/state-${NETWORK}/seeds.json"
+  sudo -n install -m 644 "$root/seeds.json" /etc/lichen/seeds.json
+  sudo -n install -d -m 750 -o lichen -g lichen "/var/lib/lichen/state-${NETWORK}"
+  sudo -n install -m 644 -o lichen -g lichen "$root/seeds.json" "/var/lib/lichen/state-${NETWORK}/seeds.json"
 fi
 
 staged_sha="$(sha256sum /usr/local/bin/lichen-validator.new | awk '{print $1}')"
@@ -422,7 +418,7 @@ install_staged_bin() {
     return 0
   fi
   if [ -f "/usr/local/bin/$bin.new" ]; then
-    sudo mv -f "/usr/local/bin/$bin.new" "/usr/local/bin/$bin"
+    sudo -n mv -f "/usr/local/bin/$bin.new" "/usr/local/bin/$bin"
   fi
 }
 
@@ -432,7 +428,7 @@ done
 install_staged_bin lichen-custody "$EXPECTED_CUSTODY_SHA"
 install_staged_bin lichen-faucet "$EXPECTED_FAUCET_SHA"
 
-sudo systemctl stop "$SERVICE" || true
+sudo -n systemctl stop "$SERVICE" || true
 for _ in $(seq 1 20); do
   if ! systemctl is-active --quiet "$SERVICE"; then
     break
@@ -441,11 +437,11 @@ for _ in $(seq 1 20); do
 done
 if systemctl is-active --quiet "$SERVICE"; then
   echo "Service still active after stop; killing service control group before restart."
-  sudo systemctl kill --kill-who=control-group -s SIGKILL "$SERVICE" || true
+  sudo -n systemctl kill --kill-who=control-group -s SIGKILL "$SERVICE" || true
   sleep 2
 fi
-sudo systemctl reset-failed "$SERVICE" || true
-sudo systemctl start "$SERVICE"
+sudo -n systemctl reset-failed "$SERVICE" || true
+sudo -n systemctl start "$SERVICE"
 
 for _ in $(seq 1 60); do
   after_pid="$(systemctl show "$SERVICE" -p MainPID --value || true)"
@@ -471,12 +467,12 @@ fi
 
 service_pids="$after_pid $(pgrep -P "$after_pid" || true)"
 for pid in $service_pids; do
-  exe_target="$(sudo readlink "/proc/${pid}/exe" 2>/dev/null || true)"
+  exe_target="$(sudo -n readlink "/proc/${pid}/exe" 2>/dev/null || true)"
   if [[ "$exe_target" == *" (deleted)" ]]; then
     echo "Running validator process ${pid} still uses deleted executable: ${exe_target}"
     exit 1
   fi
-  exe_sha="$(sudo sha256sum "/proc/${pid}/exe" 2>/dev/null | awk '{print $1}')"
+  exe_sha="$(sudo -n sha256sum "/proc/${pid}/exe" 2>/dev/null | awk '{print $1}')"
   if [ "$exe_sha" != "$EXPECTED_VALIDATOR_SHA" ]; then
     echo "Running validator process ${pid} hash mismatch: exe=${exe_target} got=${exe_sha:-unreadable} expected=${EXPECTED_VALIDATOR_SHA}"
     exit 1
@@ -498,6 +494,7 @@ verify_host_release() {
   echo "Verify installed release ${host}"
   ssh_run "$host" "SERVICE='$SERVICE' EXPECTED_VALIDATOR_SHA='$expected_validator_sha' EXPECTED_CUSTODY_SHA='$expected_custody_sha' EXPECTED_FAUCET_SHA='$expected_faucet_sha' bash -s" <<'REMOTE'
 set -euo pipefail
+sudo() { command sudo -n "$@" </dev/null; }
 
 unit_exists() {
   local unit="$1"
@@ -539,7 +536,7 @@ check_pid_hash() {
   local expected="$2"
   local label="$3"
   local target actual
-  target="$(sudo readlink "/proc/${pid}/exe" 2>/dev/null || true)"
+  target="$(sudo -n readlink "/proc/${pid}/exe" 2>/dev/null || true)"
   if [ -z "$target" ]; then
     echo "${label} process ${pid} executable is unreadable."
     exit 1
@@ -548,7 +545,7 @@ check_pid_hash() {
     echo "${label} process ${pid} still uses deleted executable: ${target}"
     exit 1
   fi
-  actual="$(sudo sha256sum "/proc/${pid}/exe" 2>/dev/null | awk '{print $1}')"
+  actual="$(sudo -n sha256sum "/proc/${pid}/exe" 2>/dev/null | awk '{print $1}')"
   if [ "$actual" != "$expected" ]; then
     echo "${label} process ${pid} hash mismatch: exe=${target} got=${actual:-unreadable} expected=${expected}"
     exit 1
@@ -636,6 +633,7 @@ restart_custody_if_local() {
   echo "Refresh custody after validator health ${host}"
   ssh_run "$host" "RPC_PORT='$RPC_PORT' MAX_BLOCK_AGE_SECS='$MAX_BLOCK_AGE_SECS' bash -s" <<'REMOTE'
 set -euo pipefail
+sudo() { command sudo -n "$@" </dev/null; }
 if ! systemctl list-unit-files --no-legend lichen-custody.service 2>/dev/null | awk '{print $1}' | grep -Fxq lichen-custody.service; then
   exit 0
 fi
@@ -661,7 +659,7 @@ sys.exit(0 if result.get("status") == "ok" and age <= max_age else 1)
   sleep 2
 done
 
-sudo systemctl stop lichen-custody.service || true
+sudo -n systemctl stop lichen-custody.service || true
 for _ in $(seq 1 20); do
   if ! systemctl is-active --quiet lichen-custody.service; then
     break
@@ -669,11 +667,11 @@ for _ in $(seq 1 20); do
   sleep 1
 done
 if systemctl is-active --quiet lichen-custody.service; then
-  sudo systemctl kill --kill-who=control-group -s SIGKILL lichen-custody.service || true
+  sudo -n systemctl kill --kill-who=control-group -s SIGKILL lichen-custody.service || true
   sleep 2
 fi
-sudo systemctl reset-failed lichen-custody.service || true
-sudo systemctl start lichen-custody.service
+sudo -n systemctl reset-failed lichen-custody.service || true
+sudo -n systemctl start lichen-custody.service
 for _ in $(seq 1 30); do
   if curl -fsS "http://127.0.0.1:9105/health" >/dev/null; then
     exit 0
@@ -694,6 +692,7 @@ restart_faucet_if_local() {
   echo "Refresh faucet after validator health ${host}"
   ssh_run "$host" "bash -s" <<'REMOTE'
 set -euo pipefail
+sudo() { command sudo -n "$@" </dev/null; }
 if ! systemctl list-unit-files --no-legend lichen-faucet.service 2>/dev/null | awk '{print $1}' | grep -Fxq lichen-faucet.service; then
   exit 0
 fi
@@ -702,7 +701,7 @@ if ! systemctl is-enabled --quiet lichen-faucet.service 2>/dev/null && \
   exit 0
 fi
 
-sudo systemctl stop lichen-faucet.service || true
+sudo -n systemctl stop lichen-faucet.service || true
 for _ in $(seq 1 20); do
   if ! systemctl is-active --quiet lichen-faucet.service; then
     break
@@ -710,11 +709,11 @@ for _ in $(seq 1 20); do
   sleep 1
 done
 if systemctl is-active --quiet lichen-faucet.service; then
-  sudo systemctl kill --kill-who=control-group -s SIGKILL lichen-faucet.service || true
+  sudo -n systemctl kill --kill-who=control-group -s SIGKILL lichen-faucet.service || true
   sleep 2
 fi
-sudo systemctl reset-failed lichen-faucet.service || true
-sudo systemctl start lichen-faucet.service
+sudo -n systemctl reset-failed lichen-faucet.service || true
+sudo -n systemctl start lichen-faucet.service
 for _ in $(seq 1 30); do
   if curl -fsS "http://127.0.0.1:9100/health" >/dev/null; then
     exit 0
