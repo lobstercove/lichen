@@ -1361,10 +1361,20 @@ struct SyncCatchUpActions {
     request_block_ranges: bool,
 }
 
-fn sync_catch_up_actions(mode: sync::SyncMode, warp_snapshot_active: bool) -> SyncCatchUpActions {
+fn sync_catch_up_actions(
+    mode: sync::SyncMode,
+    warp_snapshot_active: bool,
+    checkpoint_repair_pending: bool,
+) -> SyncCatchUpActions {
     if warp_snapshot_active {
         return SyncCatchUpActions {
             request_checkpoint_metadata: false,
+            request_block_ranges: false,
+        };
+    }
+    if checkpoint_repair_pending {
+        return SyncCatchUpActions {
+            request_checkpoint_metadata: true,
             request_block_ranges: false,
         };
     }
@@ -1385,6 +1395,7 @@ fn parent_gap_should_probe_checkpoint(current_slot: u64, block_slot: u64) -> boo
     block_slot > current_slot.saturating_add(1)
         && sync_catch_up_actions(
             select_catch_up_mode(current_slot, block_slot.saturating_sub(current_slot)),
+            false,
             false,
         )
         .request_checkpoint_metadata
@@ -4479,6 +4490,7 @@ struct SnapshotSync {
     validator_set: bool,
     stake_pool: bool,
     warp_snapshot_active: bool,
+    checkpoint_repair_pending: bool,
     last_checkpoint_metadata_request_at: Option<std::time::Instant>,
 }
 
@@ -4523,14 +4535,26 @@ impl SnapshotSync {
 
     fn mark_warp_snapshot_active(&mut self) {
         self.warp_snapshot_active = true;
+        self.checkpoint_repair_pending = true;
     }
 
-    fn is_warp_snapshot_active(&self) -> bool {
-        self.warp_snapshot_active
+    fn mark_checkpoint_repair_pending(&mut self) {
+        self.checkpoint_repair_pending = true;
+    }
+
+    fn is_checkpoint_repair_pending(&self) -> bool {
+        self.warp_snapshot_active || self.checkpoint_repair_pending
+    }
+
+    fn mark_warp_snapshot_retry_pending(&mut self) {
+        self.warp_snapshot_active = false;
+        self.checkpoint_repair_pending = true;
+        self.last_checkpoint_metadata_request_at = None;
     }
 
     fn mark_warp_snapshot_idle(&mut self) {
         self.warp_snapshot_active = false;
+        self.checkpoint_repair_pending = false;
         self.last_checkpoint_metadata_request_at = None;
     }
 }
@@ -13725,11 +13749,18 @@ async fn run_validator() {
                             info!("🔄 Periodic sync check: behind by {} blocks ({} to {})", gap, start, end);
                             sync_mgr.start_sync(start, end).await;
                             let current_mode = sync_mgr.get_sync_mode().await;
-                            let warp_snapshot_active = snapshot_sync_for_blocks
-                                .lock()
-                                .await
-                                .is_warp_snapshot_active();
-                            let actions = sync_catch_up_actions(current_mode, warp_snapshot_active);
+                            let (warp_snapshot_active, checkpoint_repair_pending) = {
+                                let snapshot_sync = snapshot_sync_for_blocks.lock().await;
+                                (
+                                    snapshot_sync.warp_snapshot_active,
+                                    snapshot_sync.is_checkpoint_repair_pending(),
+                                )
+                            };
+                            let actions = sync_catch_up_actions(
+                                current_mode,
+                                warp_snapshot_active,
+                                checkpoint_repair_pending,
+                            );
                             if actions.request_checkpoint_metadata {
                                 let should_request = snapshot_sync_for_blocks
                                     .lock()
@@ -15090,11 +15121,18 @@ async fn run_validator() {
                         info!("🔄 Post-genesis sync: blocks {} to {}", start, end);
                         sync_mgr.start_sync(start, end).await;
                         let current_mode = sync_mgr.get_sync_mode().await;
-                        let warp_snapshot_active = snapshot_sync_for_blocks
-                            .lock()
-                            .await
-                            .is_warp_snapshot_active();
-                        let actions = sync_catch_up_actions(current_mode, warp_snapshot_active);
+                        let (warp_snapshot_active, checkpoint_repair_pending) = {
+                            let snapshot_sync = snapshot_sync_for_blocks.lock().await;
+                            (
+                                snapshot_sync.warp_snapshot_active,
+                                snapshot_sync.is_checkpoint_repair_pending(),
+                            )
+                        };
+                        let actions = sync_catch_up_actions(
+                            current_mode,
+                            warp_snapshot_active,
+                            checkpoint_repair_pending,
+                        );
                         if actions.request_checkpoint_metadata {
                             let should_request = snapshot_sync_for_blocks
                                 .lock()
@@ -15279,6 +15317,10 @@ async fn run_validator() {
                                     sync_mgr.set_sync_mode(sync::SyncMode::Warp).await;
                                     sync_mgr.complete_sync().await;
                                     sync_mgr.record_sync_failure().await;
+                                    snapshot_sync_for_blocks
+                                        .lock()
+                                        .await
+                                        .mark_checkpoint_repair_pending();
                                     request_checkpoint_metadata_from_peers(
                                         &peer_mgr_for_sync,
                                         local_addr,
@@ -15606,11 +15648,18 @@ async fn run_validator() {
                         sync_mgr.start_sync(start, end).await;
 
                         let current_mode = sync_mgr.get_sync_mode().await;
-                        let warp_snapshot_active = snapshot_sync_for_blocks
-                            .lock()
-                            .await
-                            .is_warp_snapshot_active();
-                        let actions = sync_catch_up_actions(current_mode, warp_snapshot_active);
+                        let (warp_snapshot_active, checkpoint_repair_pending) = {
+                            let snapshot_sync = snapshot_sync_for_blocks.lock().await;
+                            (
+                                snapshot_sync.warp_snapshot_active,
+                                snapshot_sync.is_checkpoint_repair_pending(),
+                            )
+                        };
+                        let actions = sync_catch_up_actions(
+                            current_mode,
+                            warp_snapshot_active,
+                            checkpoint_repair_pending,
+                        );
                         if actions.request_checkpoint_metadata {
                             let should_request = snapshot_sync_for_blocks
                                 .lock()
@@ -17434,7 +17483,7 @@ async fn run_validator() {
                                         snapshot_sync_for_apply
                                             .lock()
                                             .await
-                                            .mark_warp_snapshot_idle();
+                                            .mark_warp_snapshot_retry_pending();
                                         request_checkpoint_metadata_from_peers(
                                             &peer_mgr_for_snapshot_apply,
                                             local_addr_for_snap_apply,
@@ -17680,27 +17729,6 @@ async fn run_validator() {
                                     continue;
                                 };
 
-                                if best_anchor_key != anchor_key {
-                                    info!(
-                                    "⏳ Deferring checkpoint slot {} from {}; best ready checkpoint is slot {} from {}",
-                                    slot,
-                                    response.requester,
-                                    best_anchor.slot,
-                                    best_anchor_key.source.label(),
-                                );
-                                    continue;
-                                }
-
-                                if best_manifest_support < MIN_WARP_CHECKPOINT_ANCHOR_PEERS {
-                                    info!(
-                                    "🔒 Using source-pinned checkpoint manifest from {} after {}-peer state-root corroboration (manifest corroboration {}/{})",
-                                    response.requester,
-                                    best_support,
-                                    best_manifest_support,
-                                    MIN_WARP_CHECKPOINT_ANCHOR_PEERS,
-                                );
-                                }
-
                                 let snapshot_source_key = (
                                     best_anchor_key.source,
                                     best_anchor.slot,
@@ -17712,8 +17740,40 @@ async fn run_validator() {
                                     best_anchor_key.source.label(),
                                     best_anchor.slot,
                                     hex::encode(&best_anchor.state_root[..8])
-                                );
+                                    );
                                     continue;
+                                }
+
+                                let Some(best_source_peer) = verified_checkpoint_anchor_peers
+                                    .get(&best_anchor_key)
+                                    .copied()
+                                else {
+                                    warn!(
+                                        "⚠️  Missing peer mapping for selected checkpoint slot {}; waiting for fresh metadata",
+                                        best_anchor.slot
+                                    );
+                                    continue;
+                                };
+
+                                if best_anchor_key != anchor_key {
+                                    info!(
+                                        "🔁 Switching checkpoint repair from {} slot {} to best ready source {} at {} slot {}",
+                                        response.requester,
+                                        slot,
+                                        best_anchor_key.source.label(),
+                                        best_source_peer,
+                                        best_anchor.slot,
+                                    );
+                                }
+
+                                if best_manifest_support < MIN_WARP_CHECKPOINT_ANCHOR_PEERS {
+                                    info!(
+                                        "🔒 Using source-pinned checkpoint manifest from {} after {}-peer state-root corroboration (manifest corroboration {}/{})",
+                                        best_source_peer,
+                                        best_support,
+                                        best_manifest_support,
+                                        MIN_WARP_CHECKPOINT_ANCHOR_PEERS,
+                                    );
                                 }
 
                                 if let Some(active_anchor) = active_snapshot_anchor.as_ref() {
@@ -17730,16 +17790,6 @@ async fn run_validator() {
                                 }
 
                                 if active_snapshot_anchor.is_some() {
-                                    let Some(best_source_peer) = verified_checkpoint_anchor_peers
-                                        .get(&best_anchor_key)
-                                        .copied()
-                                    else {
-                                        warn!(
-                                            "⚠️  Missing peer mapping for selected checkpoint slot {}; waiting for fresh metadata",
-                                            best_anchor.slot
-                                        );
-                                        continue;
-                                    };
                                     if active_snapshot_source_peer != Some(best_source_peer) {
                                         info!(
                                         "⏳ Ignoring checkpoint retry from {} while snapshot sync is pinned to {:?}",
@@ -17842,17 +17892,6 @@ async fn run_validator() {
                                 };
                                 cleanup_snapshot_staging(&mut active_snapshot_staging);
                                 let selected_slot = best_anchor.slot;
-                                let Some(best_source_peer) = verified_checkpoint_anchor_peers
-                                    .get(&best_anchor_key)
-                                    .copied()
-                                else {
-                                    warn!(
-                                        "⚠️  Missing peer mapping for selected checkpoint slot {}; waiting for fresh metadata",
-                                        best_anchor.slot
-                                    );
-                                    cleanup_snapshot_staging(&mut active_snapshot_staging);
-                                    continue;
-                                };
                                 active_snapshot_staging =
                                     Some((selected_slot, staging_dir, staging_state));
                                 active_snapshot_anchor = Some(best_anchor);
@@ -25531,6 +25570,55 @@ mod tests {
     }
 
     #[test]
+    fn best_ready_checkpoint_anchor_excludes_rejected_snapshot_source() {
+        let manifest = vec![SnapshotCategoryDigest {
+            category: "accounts".to_string(),
+            entry_count: 1,
+            sha256: [3u8; 32],
+        }];
+        let manifest_root = snapshot_manifest_root(&manifest);
+        let root = [9u8; 32];
+        let make_anchor = || VerifiedCheckpointAnchor {
+            slot: 4247000,
+            state_root: root,
+            snapshot_manifest: manifest.clone(),
+            snapshot_manifest_root: manifest_root,
+            block: Block::new_with_timestamp(
+                4247000,
+                Hash::default(),
+                Hash(root),
+                [7u8; 32],
+                Vec::new(),
+                4247000,
+            ),
+        };
+
+        let good_source = VerifiedCheckpointSource::Validator(Pubkey([1u8; 32]));
+        let stalled_source = VerifiedCheckpointSource::Validator(Pubkey([2u8; 32]));
+        let good_anchor = make_anchor();
+        let stalled_anchor = make_anchor();
+        let anchors = HashMap::from([
+            (
+                VerifiedCheckpointAnchorKey::new(good_source, &good_anchor),
+                good_anchor,
+            ),
+            (
+                VerifiedCheckpointAnchorKey::new(stalled_source, &stalled_anchor),
+                stalled_anchor,
+            ),
+        ]);
+        let rejected = HashSet::from([(stalled_source, 4247000, root)]);
+
+        let (best_key, best, support, manifest_support) =
+            best_ready_checkpoint_anchor(&anchors, &rejected)
+                .expect("non-rejected corroborated source should remain selectable");
+        assert_eq!(best_key.source, good_source);
+        assert_eq!(best.slot, 4247000);
+        assert_eq!(support, 2);
+        assert_eq!(manifest_support, 2);
+    }
+
+    #[test]
     fn same_slot_checkpoint_root_mismatch_requires_verified_snapshot() {
         let local_root = Hash([1u8; 32]);
         let checkpoint_root = Hash([2u8; 32]);
@@ -25626,7 +25714,7 @@ mod tests {
 
     #[test]
     fn warp_sync_probes_and_replays_until_snapshot_is_active() {
-        let actions = sync_catch_up_actions(sync::SyncMode::Warp, false);
+        let actions = sync_catch_up_actions(sync::SyncMode::Warp, false, false);
 
         assert!(actions.request_checkpoint_metadata);
         assert!(
@@ -25637,7 +25725,7 @@ mod tests {
 
     #[test]
     fn active_warp_snapshot_pauses_block_range_replay() {
-        let actions = sync_catch_up_actions(sync::SyncMode::Warp, true);
+        let actions = sync_catch_up_actions(sync::SyncMode::Warp, true, false);
 
         assert!(!actions.request_checkpoint_metadata);
         assert!(
@@ -25648,7 +25736,7 @@ mod tests {
 
     #[test]
     fn active_checkpoint_snapshot_pauses_full_sync_replay_too() {
-        let actions = sync_catch_up_actions(sync::SyncMode::Full, true);
+        let actions = sync_catch_up_actions(sync::SyncMode::Full, true, false);
 
         assert!(!actions.request_checkpoint_metadata);
         assert!(
@@ -25658,8 +25746,26 @@ mod tests {
     }
 
     #[test]
+    fn pending_checkpoint_repair_pauses_replay_before_next_snapshot_source() {
+        let mut sync = SnapshotSync::new(false);
+        sync.mark_checkpoint_repair_pending();
+
+        assert!(sync.is_checkpoint_repair_pending());
+        let actions = sync_catch_up_actions(
+            sync::SyncMode::Full,
+            sync.warp_snapshot_active,
+            sync.is_checkpoint_repair_pending(),
+        );
+        assert!(actions.request_checkpoint_metadata);
+        assert!(
+            !actions.request_block_ranges,
+            "state-root repair must retry checkpoint metadata without resuming doomed block replay"
+        );
+    }
+
+    #[test]
     fn full_sync_requests_block_range_replay_without_checkpoint_probe() {
-        let actions = sync_catch_up_actions(sync::SyncMode::Full, false);
+        let actions = sync_catch_up_actions(sync::SyncMode::Full, false, false);
 
         assert!(!actions.request_checkpoint_metadata);
         assert!(actions.request_block_ranges);
