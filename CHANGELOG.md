@@ -5,6 +5,17 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.169] - 2026-06-17
+
+### Fixed
+- Pauses block-range catch-up while a verified checkpoint snapshot transfer is
+  active, preventing resumed validators from starving their own snapshot repair
+  by flooding source peers with range replay requests.
+
+### Verified
+- Passed focused validator sync-action and snapshot retry regressions.
+- Passed `cargo clippy -p lichen-validator --all-targets -- -D warnings`.
+
 ## [0.5.168] - 2026-06-17
 
 ### Fixed

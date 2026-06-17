@@ -1362,9 +1362,16 @@ struct SyncCatchUpActions {
 }
 
 fn sync_catch_up_actions(mode: sync::SyncMode, warp_snapshot_active: bool) -> SyncCatchUpActions {
+    if warp_snapshot_active {
+        return SyncCatchUpActions {
+            request_checkpoint_metadata: false,
+            request_block_ranges: false,
+        };
+    }
+
     match mode {
         sync::SyncMode::Warp => SyncCatchUpActions {
-            request_checkpoint_metadata: !warp_snapshot_active,
+            request_checkpoint_metadata: true,
             request_block_ranges: true,
         },
         _ => SyncCatchUpActions {
@@ -13730,7 +13737,7 @@ async fn run_validator() {
                                     .should_request_checkpoint_metadata();
                                 if should_request {
                                     info!(
-                                        "⚡ Warp sync: gap is {} blocks — probing state snapshot metadata; bounded block replay continues while the snapshot downloads",
+                                        "⚡ Warp sync: gap is {} blocks — probing state snapshot metadata; block replay will pause while a verified snapshot downloads",
                                         gap
                                     );
                                     request_checkpoint_metadata_from_peers(
@@ -15095,7 +15102,7 @@ async fn run_validator() {
                                 .should_request_checkpoint_metadata();
                             if should_request {
                                 info!(
-                                    "⚡ Warp sync: gap is {} blocks — probing state snapshot metadata; bounded block replay continues while the snapshot downloads",
+                                    "⚡ Warp sync: gap is {} blocks — probing state snapshot metadata; block replay will pause while a verified snapshot downloads",
                                     gap
                                 );
                                 request_checkpoint_metadata_from_peers(
@@ -15611,7 +15618,7 @@ async fn run_validator() {
                                 .should_request_checkpoint_metadata();
                             if should_request {
                                 info!(
-                                    "⚡ Warp sync: gap is {} blocks — probing state snapshot metadata; bounded block replay continues while the snapshot downloads",
+                                    "⚡ Warp sync: gap is {} blocks — probing state snapshot metadata; block replay will pause while a verified snapshot downloads",
                                     gap
                                 );
                                 request_checkpoint_metadata_from_peers(
@@ -25629,13 +25636,24 @@ mod tests {
     }
 
     #[test]
-    fn active_warp_snapshot_keeps_block_range_replay_as_fallback() {
+    fn active_warp_snapshot_pauses_block_range_replay() {
         let actions = sync_catch_up_actions(sync::SyncMode::Warp, true);
 
         assert!(!actions.request_checkpoint_metadata);
         assert!(
-            actions.request_block_ranges,
-            "active warp snapshots must not strand deterministic block replay when chunk delivery stalls"
+            !actions.request_block_ranges,
+            "active checkpoint snapshots must not compete with block-range replay for peer serving capacity"
+        );
+    }
+
+    #[test]
+    fn active_checkpoint_snapshot_pauses_full_sync_replay_too() {
+        let actions = sync_catch_up_actions(sync::SyncMode::Full, true);
+
+        assert!(!actions.request_checkpoint_metadata);
+        assert!(
+            !actions.request_block_ranges,
+            "state-repair checkpoint downloads below the warp threshold must not be starved by block ranges"
         );
     }
 
