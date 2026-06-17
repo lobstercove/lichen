@@ -63,8 +63,23 @@ pub(super) fn print_contract_list(contracts: &[ContractSummary]) {
         println!("No contracts deployed");
     } else {
         for (index, contract) in contracts.iter().enumerate() {
-            println!("#{} {}", index + 1, contract.address);
-            println!("   Deployer: {}", contract.deployer);
+            println!("#{} {}", index + 1, contract.program_id);
+            if let Some(symbol) = contract.symbol.as_deref() {
+                println!("   Symbol: {}", symbol);
+            }
+            if let Some(name) = contract.name.as_deref() {
+                println!("   Name: {}", name);
+            }
+            if let Some(owner) = contract.owner.as_deref() {
+                println!("   Owner: {}", owner);
+            }
+            if let Some(template) = contract.template.as_deref() {
+                println!("   Template: {}", template);
+            }
+            println!("   Code size: {} bytes", contract.code_size);
+            if !contract.lifecycle_status.is_empty() {
+                println!("   Lifecycle: {}", contract.lifecycle_status);
+            }
             println!();
         }
         println!("Total: {} contracts", contracts.len());

@@ -3048,6 +3048,12 @@ Total: 2 active proposals</code></pre>
                             class="code-copy-btn">Copy</button></div>
                     <pre><code>lichen host-functions</code></pre>
                 </div>
+                <p>The command prints the complete current runtime import list, including storage, environment,
+                    return-data, compliance, crypto, event, and cross-contract helpers. Notable signatures include
+                    <code>emit_event(data_ptr, data_len) -&gt; u32</code> and
+                    <code>cross_contract_call(addr_ptr, fn_ptr, fn_len, args_ptr, args_len, value, result_ptr, result_len) -&gt; u32</code>.
+                    Cross-contract calls return <code>0</code> on failure and a positive byte count on success.
+                </p>
             </div>
 
             <!-- ================================================================ -->

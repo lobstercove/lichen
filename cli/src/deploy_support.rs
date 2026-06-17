@@ -14,7 +14,6 @@ pub(super) struct DeployRequest {
     pub(super) name: Option<String>,
     pub(super) template: Option<ContractTemplate>,
     pub(super) decimals: Option<u8>,
-    pub(super) supply: Option<u64>,
     pub(super) metadata: Option<String>,
 }
 

@@ -395,54 +395,94 @@ contribution_score = (
                 </thead>
                 <tbody>
                     <tr>
-                        <td><code>storage_get</code></td>
-                        <td><code>(key_ptr, key_len) → (val_ptr, val_len)</code></td>
-                        <td>Read a value from contract storage</td>
+                        <td><code>storage_read</code></td>
+                        <td><code>(key_ptr, key_len, val_ptr, val_len) → u32</code></td>
+                        <td>Read storage directly into a caller-provided buffer</td>
                     </tr>
                     <tr>
-                        <td><code>storage_set</code></td>
-                        <td><code>(key_ptr, key_len, val_ptr, val_len)</code></td>
+                        <td><code>storage_read_result</code></td>
+                        <td><code>(buf_ptr, buf_len) → u32</code></td>
+                        <td>Copy the previous storage read result into a buffer</td>
+                    </tr>
+                    <tr>
+                        <td><code>storage_write</code></td>
+                        <td><code>(key_ptr, key_len, val_ptr, val_len) → u32</code></td>
                         <td>Write a value to contract storage</td>
                     </tr>
                     <tr>
                         <td><code>storage_delete</code></td>
-                        <td><code>(key_ptr, key_len)</code></td>
+                        <td><code>(key_ptr, key_len) → u32</code></td>
                         <td>Remove a key from contract storage</td>
                     </tr>
                     <tr>
-                        <td><code>get_caller</code></td>
-                        <td><code>() → (addr_ptr)</code></td>
-                        <td>Get the address of the transaction sender</td>
+                        <td><code>log</code></td>
+                        <td><code>(msg_ptr, msg_len)</code></td>
+                        <td>Append a bounded execution log message</td>
                     </tr>
                     <tr>
-                        <td><code>get_block_slot</code></td>
+                        <td><code>get_caller</code></td>
+                        <td><code>(out_ptr) → u32</code></td>
+                        <td>Write the 32-byte caller address</td>
+                    </tr>
+                    <tr>
+                        <td><code>get_contract_address</code></td>
+                        <td><code>(out_ptr) → u32</code></td>
+                        <td>Write this contract's own 32-byte address</td>
+                    </tr>
+                    <tr>
+                        <td><code>get_value</code></td>
+                        <td><code>() → u64</code></td>
+                        <td>LICN value attached to this call, in spores</td>
+                    </tr>
+                    <tr>
+                        <td><code>get_slot</code></td>
                         <td><code>() → u64</code></td>
                         <td>Current block slot number</td>
                     </tr>
                     <tr>
-                        <td><code>get_block_timestamp</code></td>
+                        <td><code>get_timestamp</code></td>
                         <td><code>() → u64</code></td>
-                        <td>Current block Unix timestamp</td>
+                        <td>Deterministic slot-derived timestamp value</td>
+                    </tr>
+                    <tr>
+                        <td><code>get_block_entropy</code></td>
+                        <td><code>(slot, out_ptr) → u32</code></td>
+                        <td>Write committed block entropy for a finalized slot</td>
                     </tr>
                     <tr>
                         <td><code>emit_event</code></td>
-                        <td><code>(topic_ptr, topic_len, data_ptr, data_len)</code></td>
-                        <td>Emit an indexed event/log</td>
+                        <td><code>(data_ptr, data_len) → u32</code></td>
+                        <td>Emit a structured event payload</td>
                     </tr>
                     <tr>
-                        <td><code>transfer</code></td>
-                        <td><code>(to_ptr, amount: u64) → i32</code></td>
-                        <td>Transfer LICN from contract to address</td>
+                        <td><code>get_args_len</code></td>
+                        <td><code>() → u32</code></td>
+                        <td>Return the current call argument length</td>
                     </tr>
                     <tr>
-                        <td><code>cross_call</code></td>
-                        <td><code>(program_ptr, method_ptr, args_ptr, args_len) → (ret_ptr, ret_len)</code></td>
-                        <td>Call another deployed contract</td>
+                        <td><code>get_args</code></td>
+                        <td><code>(buf_ptr, buf_len) → u32</code></td>
+                        <td>Copy current call arguments into a buffer</td>
                     </tr>
                     <tr>
-                        <td><code>get_balance</code></td>
-                        <td><code>(addr_ptr) → u64</code></td>
-                        <td>Read the balance of any account</td>
+                        <td><code>set_return_data</code></td>
+                        <td><code>(data_ptr, data_len) → u32</code></td>
+                        <td>Set return data for the current call</td>
+                    </tr>
+                    <tr>
+                        <td><code>cross_contract_call</code></td>
+                        <td><code>(program_ptr, method_ptr, method_len, args_ptr, args_len, value, result_ptr, result_len) → u32</code></td>
+                        <td>Call another deployed contract; returns bytes written or <code>0</code> on failure</td>
+                    </tr>
+                    <tr>
+                        <td><code>can_send</code>, <code>can_receive</code>, <code>can_transfer</code></td>
+                        <td><code>(asset/account ptrs, amount/balance values) → u32</code></td>
+                        <td>Host-backed token restriction checks for compliant token contracts</td>
+                    </tr>
+                    <tr>
+                        <td><code>host_poseidon_hash</code></td>
+                        <td><code>(left_ptr, right_ptr, out_ptr) → u32</code></td>
+                        <td>Compute a Poseidon hash of two field elements</td>
                     </tr>
                 </tbody>
             </table>
@@ -455,11 +495,10 @@ contribution_score = (
             <ul>
                 <li><strong>Arithmetic/logic ops:</strong> 1 gas per instruction</li>
                 <li><strong>Memory load/store:</strong> 3 gas per instruction</li>
-                <li><strong>storage_get:</strong> 200 gas + 1 gas per byte read</li>
-                <li><strong>storage_set:</strong> 5,000 gas + 5 gas per byte written (new key) or 200 gas (update)</li>
+                <li><strong>storage_read:</strong> 200 gas + 1 gas per byte read</li>
+                <li><strong>storage_write:</strong> 5,000 gas + 5 gas per byte written (new key) or 200 gas (update)</li>
                 <li><strong>emit_event:</strong> 375 gas + 8 gas per byte of event data</li>
-                <li><strong>cross_call:</strong> 2,500 gas base + callee gas</li>
-                <li><strong>transfer:</strong> 5,000 gas</li>
+                <li><strong>cross_contract_call:</strong> 2,500 gas base + callee gas</li>
             </ul>
 
             <p>The per-transaction gas limit is 200,000 by default. The per-block gas limit is 50,000,000.</p>

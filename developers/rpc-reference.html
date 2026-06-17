@@ -844,7 +844,7 @@
                     <ul>
                         <li><code>return_code</code> — Raw WASM return value. For contracts with ABI
                             <code>result_semantics</code>, validators use this field to decide commit versus revert.
-                            For legacy undeclared functions it remains contract-specific. Omitted when null.</li>
+                            Omitted when null.</li>
                         <li><code>return_data</code> — Base64-encoded bytes set via <code>set_return_data()</code>.
                             Omitted when empty.</li>
                         <li><code>contract_logs</code> — Array of log strings emitted via <code>log()</code>. Omitted
@@ -1489,14 +1489,16 @@
             <!-- getAllContracts -->
             <div class="method-card" id="getAllContracts">
                 <h3 class="method-name">getAllContracts</h3>
-                <p class="method-desc">Returns a list of all deployed contracts on the chain.</p>
+                <p class="method-desc">Returns deployed contracts with pagination metadata.</p>
                 <div class="method-section">
                     <h4 class="method-section-title">Parameters</h4>
-                    <p>None</p>
+                    <p>Optional: <code>{ limit, cursor }</code> or <code>{ limit, after }</code>.</p>
                 </div>
                 <div class="method-section">
                     <h4 class="method-section-title">Returns</h4>
-                    <p>Array — List of contract info objects.</p>
+                    <p>Object — <code>{ contracts, count, has_more, next_cursor }</code>. Each contract entry includes
+                        <code>program_id</code>, registry metadata, owner, code size, ABI summary, and lifecycle fields.
+                    </p>
                 </div>
             </div>
 
@@ -1603,11 +1605,11 @@
                 <p class="method-desc">Returns a list of all deployed programs.</p>
                 <div class="method-section">
                     <h4 class="method-section-title">Parameters</h4>
-                    <p>None (optional limit param).</p>
+                    <p>Optional object — <code>{ limit, cursor }</code> or <code>{ limit, after }</code>.</p>
                 </div>
                 <div class="method-section">
                     <h4 class="method-section-title">Returns</h4>
-                    <p>Array — List of program summaries.</p>
+                    <p>Object — <code>{ programs, count, has_more, next_cursor }</code>.</p>
                 </div>
             </div>
 

@@ -82,10 +82,16 @@
 
     // ===== Data Source Methods =====
 
+    function unwrapContractsResult(result) {
+        if (Array.isArray(result)) return result;
+        if (result && Array.isArray(result.contracts)) return result.contracts;
+        return [];
+    }
+
     async function getFeaturedCollections(limit) {
         try {
-            var contracts = await marketTrustedRpcCall('getAllContracts', []);
-            if (!Array.isArray(contracts) || contracts.length === 0) return [];
+            var contracts = unwrapContractsResult(await marketTrustedRpcCall('getAllContracts', []));
+            if (contracts.length === 0) return [];
             var maxItems = Math.max(1, Number(limit) || 6);
             return contracts.slice(0, maxItems).map(function (c) {
                 var label = c.name || c.symbol || c.id || c.program_id || 'Collection';
@@ -236,8 +242,7 @@
     async function getUserCollections(address) {
         if (!address) return [];
         try {
-            var contracts = await marketTrustedRpcCall('getAllContracts', []);
-            if (!Array.isArray(contracts)) return [];
+            var contracts = unwrapContractsResult(await marketTrustedRpcCall('getAllContracts', []));
             return contracts.filter(function (c) {
                 var owner = c.owner || c.deployer || c.creator || '';
                 return owner === address;
@@ -320,7 +325,7 @@
     async function getAllCollections() {
         try {
             var result = await marketTrustedRpcCall('getAllContracts', []);
-            return Array.isArray(result) ? result : [];
+            return unwrapContractsResult(result);
         } catch (err) {
             console.warn("marketplace-data:", err.message || err);
             return [];

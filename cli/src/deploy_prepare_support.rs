@@ -24,7 +24,6 @@ pub(super) struct PreparedContractDeploy {
     pub(super) name: Option<String>,
     pub(super) template: Option<ContractTemplate>,
     pub(super) decimals: Option<u8>,
-    pub(super) supply: Option<u64>,
     pub(super) metadata: Option<serde_json::Value>,
 }
 
@@ -40,7 +39,6 @@ pub(super) async fn prepare_deploy(
         name,
         template,
         decimals,
-        supply,
         metadata,
     } = request;
 
@@ -61,7 +59,6 @@ pub(super) async fn prepare_deploy(
         name.as_deref(),
         template.as_ref(),
         decimals,
-        supply,
         metadata.as_ref(),
     )?;
 
@@ -75,7 +72,6 @@ pub(super) async fn prepare_deploy(
         name,
         template,
         decimals,
-        supply,
         metadata,
     })
 }
@@ -94,23 +90,11 @@ fn build_init_data(
     name: Option<&str>,
     template: Option<&ContractTemplate>,
     decimals: Option<u8>,
-    supply: Option<u64>,
     metadata: Option<&serde_json::Value>,
 ) -> Result<Vec<u8>> {
-    if symbol.is_none()
-        && name.is_none()
-        && template.is_none()
-        && decimals.is_none()
-        && supply.is_none()
-        && metadata.is_none()
+    if symbol.is_none() && name.is_none() && template.is_none() && decimals.is_none() && metadata.is_none()
     {
         return Ok(vec![]);
-    }
-
-    if supply.is_some() {
-        anyhow::bail!(
-            "`lichen deploy --supply` was removed because it only wrote metadata and never minted real on-chain supply. Use `lichen token create --initial-supply` for the standard MT-20 flow, or use a contract-specific initialize/mint path."
-        );
     }
 
     let mut registry = serde_json::Map::new();

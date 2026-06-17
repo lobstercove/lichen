@@ -24,7 +24,7 @@ pub(super) fn handle_version(rpc_url: &str, json_output: bool) -> Result<()> {
             "nft_mint_premium": "0.5 LICN",
             "fee_split": "40% burn, 30% block producer, 10% voters, 10% treasury, 10% community"
         },
-        "wasm_host_functions": 16,
+        "wasm_host_functions": 20,
         "rpc_endpoints": {
             "mainnet": "https://rpc.lichen.network",
             "mainnet_ws": "wss://rpc.lichen.network/ws",
@@ -59,7 +59,7 @@ pub(super) fn handle_version(rpc_url: &str, json_output: bool) -> Result<()> {
         println!("System program:   [0x00; 32]");
         println!("Contract program: [0xFF; 32]");
         println!();
-        println!("28 instruction types | 16 WASM host functions");
+        println!("28 instruction types | 20 WASM host functions");
         println!("Use --output json for machine-readable output.");
     }
 

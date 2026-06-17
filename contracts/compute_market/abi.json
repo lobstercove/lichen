@@ -6,339 +6,825 @@
       "name": "register_provider",
       "opcode": 0,
       "params": [
-        { "name": "provider_ptr", "type": "Pubkey" },
-        { "name": "compute_units_available", "type": "u64" },
-        { "name": "price_per_unit", "type": "u64" }
-      ]
+        {
+          "name": "provider_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "compute_units_available",
+          "type": "u64"
+        },
+        {
+          "name": "price_per_unit",
+          "type": "u64"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "submit_job",
       "opcode": 1,
       "params": [
-        { "name": "requester_ptr", "type": "Pubkey" },
-        { "name": "compute_units_needed", "type": "u64" },
-        { "name": "max_price", "type": "u64" },
-        { "name": "code_hash_ptr", "type": "Pubkey" }
-      ]
+        {
+          "name": "requester_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "compute_units_needed",
+          "type": "u64"
+        },
+        {
+          "name": "max_price",
+          "type": "u64"
+        },
+        {
+          "name": "code_hash_ptr",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "claim_job",
       "opcode": 2,
       "params": [
-        { "name": "provider_ptr", "type": "Pubkey" },
-        { "name": "job_id", "type": "u64" }
-      ]
+        {
+          "name": "provider_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "job_id",
+          "type": "u64"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "complete_job",
       "opcode": 3,
       "params": [
-        { "name": "provider_ptr", "type": "Pubkey" },
-        { "name": "job_id", "type": "u64" },
-        { "name": "result_hash_ptr", "type": "Pubkey" }
-      ]
+        {
+          "name": "provider_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "job_id",
+          "type": "u64"
+        },
+        {
+          "name": "result_hash_ptr",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "dispute_job",
       "opcode": 4,
       "params": [
-        { "name": "requester_ptr", "type": "Pubkey" },
-        { "name": "job_id", "type": "u64" }
-      ]
+        {
+          "name": "requester_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "job_id",
+          "type": "u64"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "get_job",
       "opcode": 5,
       "params": [
-        { "name": "job_id", "type": "u64" }
-      ]
+        {
+          "name": "job_id",
+          "type": "u64"
+        }
+      ],
+      "result_semantics": {
+        "kind": "runtime_success_only"
+      }
     },
     {
       "name": "initialize",
       "opcode": 6,
       "params": [
-        { "name": "admin_ptr", "type": "Pubkey" }
-      ]
+        {
+          "name": "admin_ptr",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "set_claim_timeout",
       "opcode": 7,
       "params": [
-        { "name": "caller_ptr", "type": "Pubkey" },
-        { "name": "timeout", "type": "u64" }
-      ]
+        {
+          "name": "caller_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "timeout",
+          "type": "u64"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "set_complete_timeout",
       "opcode": 8,
       "params": [
-        { "name": "caller_ptr", "type": "Pubkey" },
-        { "name": "timeout", "type": "u64" }
-      ]
+        {
+          "name": "caller_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "timeout",
+          "type": "u64"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "set_challenge_period",
       "opcode": 9,
       "params": [
-        { "name": "caller_ptr", "type": "Pubkey" },
-        { "name": "period", "type": "u64" }
-      ]
+        {
+          "name": "caller_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "period",
+          "type": "u64"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "add_arbitrator",
       "opcode": 10,
       "params": [
-        { "name": "caller_ptr", "type": "Pubkey" },
-        { "name": "arbitrator_ptr", "type": "Pubkey" }
-      ]
+        {
+          "name": "caller_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "arbitrator_ptr",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "remove_arbitrator",
       "opcode": 11,
       "params": [
-        { "name": "caller_ptr", "type": "Pubkey" },
-        { "name": "arbitrator_ptr", "type": "Pubkey" }
-      ]
+        {
+          "name": "caller_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "arbitrator_ptr",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "cancel_job",
       "opcode": 12,
       "params": [
-        { "name": "requester_ptr", "type": "Pubkey" },
-        { "name": "job_id", "type": "u64" }
-      ]
+        {
+          "name": "requester_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "job_id",
+          "type": "u64"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "release_payment",
       "opcode": 13,
       "params": [
-        { "name": "job_id", "type": "u64" }
-      ]
+        {
+          "name": "job_id",
+          "type": "u64"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "resolve_dispute",
       "opcode": 14,
       "params": [
-        { "name": "arbitrator_ptr", "type": "Pubkey" },
-        { "name": "job_id", "type": "u64" },
-        { "name": "requester_pct", "type": "u64" }
-      ]
+        {
+          "name": "arbitrator_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "job_id",
+          "type": "u64"
+        },
+        {
+          "name": "requester_pct",
+          "type": "u64"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "deactivate_provider",
       "opcode": 15,
       "params": [
-        { "name": "provider_ptr", "type": "Pubkey" }
-      ]
+        {
+          "name": "provider_ptr",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "reactivate_provider",
       "opcode": 16,
       "params": [
-        { "name": "provider_ptr", "type": "Pubkey" }
-      ]
+        {
+          "name": "provider_ptr",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "update_provider",
       "opcode": 17,
       "params": [
-        { "name": "provider_ptr", "type": "Pubkey" },
-        { "name": "compute_units", "type": "u64" },
-        { "name": "price_per_unit", "type": "u64" }
-      ]
+        {
+          "name": "provider_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "compute_units",
+          "type": "u64"
+        },
+        {
+          "name": "price_per_unit",
+          "type": "u64"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "get_escrow",
       "opcode": 18,
       "params": [
-        { "name": "job_id", "type": "u64" }
-      ]
+        {
+          "name": "job_id",
+          "type": "u64"
+        }
+      ],
+      "result_semantics": {
+        "kind": "runtime_success_only"
+      }
     },
     {
       "name": "set_identity_admin",
       "opcode": 19,
       "params": [
-        { "name": "admin_ptr", "type": "Pubkey" }
-      ]
+        {
+          "name": "admin_ptr",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "set_lichenid_address",
       "opcode": 20,
       "params": [
-        { "name": "caller_ptr", "type": "Pubkey" },
-        { "name": "lichenid_addr_ptr", "type": "Pubkey" }
-      ]
+        {
+          "name": "caller_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "lichenid_addr_ptr",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "set_identity_gate",
       "opcode": 21,
       "params": [
-        { "name": "caller_ptr", "type": "Pubkey" },
-        { "name": "min_reputation", "type": "u64" }
-      ]
+        {
+          "name": "caller_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "min_reputation",
+          "type": "u64"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "create_job",
       "opcode": 22,
       "params": [
-        { "name": "requester_ptr", "type": "Pubkey" },
-        { "name": "compute_units_needed", "type": "u64" },
-        { "name": "max_price", "type": "u64" },
-        { "name": "code_hash_ptr", "type": "Pubkey" }
-      ]
+        {
+          "name": "requester_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "compute_units_needed",
+          "type": "u64"
+        },
+        {
+          "name": "max_price",
+          "type": "u64"
+        },
+        {
+          "name": "code_hash_ptr",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "accept_job",
       "opcode": 23,
       "params": [
-        { "name": "provider_ptr", "type": "Pubkey" },
-        { "name": "job_id", "type": "u64" }
-      ]
+        {
+          "name": "provider_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "job_id",
+          "type": "u64"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "submit_result",
       "opcode": 24,
       "params": [
-        { "name": "provider_ptr", "type": "Pubkey" },
-        { "name": "job_id", "type": "u64" },
-        { "name": "result_hash_ptr", "type": "Pubkey" }
-      ]
+        {
+          "name": "provider_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "job_id",
+          "type": "u64"
+        },
+        {
+          "name": "result_hash_ptr",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "confirm_result",
       "opcode": 25,
       "params": [
-        { "name": "job_id", "type": "u64" }
-      ]
+        {
+          "name": "job_id",
+          "type": "u64"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "get_job_info",
       "opcode": 26,
       "params": [
-        { "name": "job_id", "type": "u64" }
-      ]
+        {
+          "name": "job_id",
+          "type": "u64"
+        }
+      ],
+      "result_semantics": {
+        "kind": "runtime_success_only"
+      }
     },
     {
       "name": "get_job_count",
       "opcode": 27,
-      "params": []
+      "params": [],
+      "result_semantics": {
+        "kind": "return_value"
+      }
     },
     {
       "name": "get_provider_info",
       "opcode": 28,
       "params": [
-        { "name": "provider_ptr", "type": "Pubkey" }
-      ]
+        {
+          "name": "provider_ptr",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "runtime_success_only"
+      }
     },
     {
       "name": "set_platform_fee",
       "opcode": 29,
       "params": [
-        { "name": "caller_ptr", "type": "Pubkey" },
-        { "name": "fee_bps", "type": "u64" }
-      ]
+        {
+          "name": "caller_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "fee_bps",
+          "type": "u64"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "cm_pause",
       "opcode": 30,
       "params": [
-        { "name": "caller_ptr", "type": "Pubkey" }
-      ]
+        {
+          "name": "caller_ptr",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "cm_unpause",
       "opcode": 31,
       "params": [
-        { "name": "caller_ptr", "type": "Pubkey" }
-      ]
+        {
+          "name": "caller_ptr",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "get_platform_stats",
       "opcode": 32,
-      "params": []
+      "params": [],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "claim_unpaid_payout",
       "opcode": 33,
       "params": [
-        { "name": "caller_ptr", "type": "Pubkey" },
-        { "name": "token_ptr", "type": "Pubkey" }
-      ]
+        {
+          "name": "caller_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "token_ptr",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "get_unpaid_payout",
       "opcode": 34,
       "params": [
-        { "name": "token_ptr", "type": "Pubkey" },
-        { "name": "recipient_ptr", "type": "Pubkey" }
-      ]
+        {
+          "name": "token_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "recipient_ptr",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "set_agent_compute_controls",
       "opcode": 35,
       "params": [
-        { "name": "caller_ptr", "type": "Pubkey" },
-        { "name": "enabled", "type": "u64" },
-        { "name": "route_paused", "type": "u64" },
-        { "name": "max_daily_cap", "type": "u64" },
-        { "name": "max_per_task_cap", "type": "u64" }
-      ]
+        {
+          "name": "caller_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "enabled",
+          "type": "u64"
+        },
+        {
+          "name": "route_paused",
+          "type": "u64"
+        },
+        {
+          "name": "max_daily_cap",
+          "type": "u64"
+        },
+        {
+          "name": "max_per_task_cap",
+          "type": "u64"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "set_agent_spending_policy",
       "opcode": 36,
       "params": [
-        { "name": "agent_ptr", "type": "Pubkey" },
-        { "name": "daily_cap", "type": "u64" },
-        { "name": "per_task_cap", "type": "u64" },
-        { "name": "policy_hash_ptr", "type": "Pubkey" },
-        { "name": "policy_version", "type": "u64" }
-      ]
+        {
+          "name": "agent_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "daily_cap",
+          "type": "u64"
+        },
+        {
+          "name": "per_task_cap",
+          "type": "u64"
+        },
+        {
+          "name": "policy_hash_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "policy_version",
+          "type": "u64"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "disable_agent_spending_policy",
       "opcode": 37,
       "params": [
-        { "name": "agent_ptr", "type": "Pubkey" }
-      ]
+        {
+          "name": "agent_ptr",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "submit_agent_job",
       "opcode": 38,
       "params": [
-        { "name": "agent_ptr", "type": "Pubkey" },
-        { "name": "compute_units_needed", "type": "u64" },
-        { "name": "max_price", "type": "u64" },
-        { "name": "code_hash_ptr", "type": "Pubkey" },
-        { "name": "action_hash_ptr", "type": "Pubkey" }
-      ]
+        {
+          "name": "agent_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "compute_units_needed",
+          "type": "u64"
+        },
+        {
+          "name": "max_price",
+          "type": "u64"
+        },
+        {
+          "name": "code_hash_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "action_hash_ptr",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "get_agent_compute_controls",
       "opcode": 39,
-      "params": []
+      "params": [],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "get_agent_spending_policy",
       "opcode": 40,
       "params": [
-        { "name": "agent_ptr", "type": "Pubkey" }
-      ]
+        {
+          "name": "agent_ptr",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "runtime_success_only"
+      }
     },
     {
       "name": "get_agent_spend_window",
       "opcode": 41,
       "params": [
-        { "name": "agent_ptr", "type": "Pubkey" },
-        { "name": "window", "type": "u64" }
-      ]
+        {
+          "name": "agent_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "window",
+          "type": "u64"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "get_agent_job_action",
       "opcode": 42,
       "params": [
-        { "name": "job_id", "type": "u64" }
-      ]
+        {
+          "name": "job_id",
+          "type": "u64"
+        }
+      ],
+      "result_semantics": {
+        "kind": "runtime_success_only"
+      }
     }
   ]
 }

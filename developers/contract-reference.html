@@ -392,8 +392,8 @@
                 non-trapping call commits or reverts. For example, <code>{"kind":"return_code","success_codes":[0]}</code>
                 means any returned code other than <code>0</code> is an ABI failure and the transaction's contract
                 state changes are reverted. <code>{"kind":"return_value"}</code> means the return value is data, not a
-                status code. Legacy functions without <code>result_semantics</code> keep the compatibility behavior
-                below until their ABI is migrated.
+                status code. Production ABIs should declare <code>result_semantics</code> for every callable function
+                that can be reached directly or by cross-contract call.
             </p>
             <table class="const-table">
                 <tr>

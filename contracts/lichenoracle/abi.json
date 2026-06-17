@@ -10,7 +10,13 @@
           "name": "owner_ptr",
           "type": "Pubkey"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "add_price_feeder",
@@ -28,7 +34,13 @@
           "name": "asset_len",
           "type": "u64"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "set_authorized_attester",
@@ -42,7 +54,13 @@
           "name": "authorized",
           "type": "u64"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "submit_price",
@@ -68,7 +86,13 @@
           "name": "decimals",
           "type": "u64"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "get_price",
@@ -86,7 +110,10 @@
           "name": "result_ptr",
           "type": "Pubkey"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "runtime_success_only"
+      }
     },
     {
       "name": "get_price_value",
@@ -99,7 +126,13 @@
           "name": "asset_len",
           "type": "u64"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "commit_randomness",
@@ -117,7 +150,13 @@
           "name": "seed",
           "type": "u64"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          1
+        ]
+      }
     },
     {
       "name": "reveal_randomness",
@@ -135,7 +174,13 @@
           "name": "result_ptr",
           "type": "Pubkey"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          1
+        ]
+      }
     },
     {
       "name": "request_randomness",
@@ -149,7 +194,13 @@
           "name": "seed",
           "type": "u64"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "get_randomness",
@@ -167,7 +218,10 @@
           "name": "result_ptr",
           "type": "Pubkey"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "runtime_success_only"
+      }
     },
     {
       "name": "submit_attestation",
@@ -189,7 +243,13 @@
           "name": "data_len",
           "type": "u64"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          1
+        ]
+      }
     },
     {
       "name": "verify_attestation",
@@ -203,7 +263,10 @@
           "name": "min_signatures",
           "type": "u64"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "runtime_success_only"
+      }
     },
     {
       "name": "get_attestation_data",
@@ -217,7 +280,10 @@
           "name": "result_ptr",
           "type": "Pubkey"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "runtime_success_only"
+      }
     },
     {
       "name": "query_oracle",
@@ -243,7 +309,10 @@
           "name": "result_ptr",
           "type": "Pubkey"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "runtime_success_only"
+      }
     },
     {
       "name": "get_aggregated_price",
@@ -265,7 +334,10 @@
           "name": "result_ptr",
           "type": "Pubkey"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "runtime_success_only"
+      }
     },
     {
       "name": "get_oracle_stats",
@@ -275,7 +347,13 @@
           "name": "result_ptr",
           "type": "Pubkey"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          1
+        ]
+      }
     },
     {
       "name": "initialize",
@@ -285,7 +363,13 @@
           "name": "owner_ptr",
           "type": "Pubkey"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "register_feed",
@@ -303,17 +387,32 @@
           "name": "asset_len",
           "type": "u64"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "get_feed_count",
       "opcode": 17,
-      "params": []
+      "params": [],
+      "result_semantics": {
+        "kind": "return_value"
+      }
     },
     {
       "name": "get_feed_list",
       "opcode": 18,
-      "params": []
+      "params": [],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          1
+        ]
+      }
     },
     {
       "name": "add_reporter",
@@ -327,7 +426,13 @@
           "name": "reporter_ptr",
           "type": "Pubkey"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "remove_reporter",
@@ -341,7 +446,13 @@
           "name": "reporter_ptr",
           "type": "Pubkey"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "set_update_interval",
@@ -355,7 +466,13 @@
           "name": "interval",
           "type": "u64"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "mo_pause",
@@ -365,7 +482,13 @@
           "name": "caller_ptr",
           "type": "Pubkey"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "mo_unpause",
@@ -375,7 +498,13 @@
           "name": "caller_ptr",
           "type": "Pubkey"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     }
   ]
 }

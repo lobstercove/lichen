@@ -32,7 +32,6 @@ pub(super) async fn handle_write_command(
             name,
             template,
             decimals,
-            supply,
             metadata,
         } => {
             handle_deploy(
@@ -45,7 +44,6 @@ pub(super) async fn handle_write_command(
                     name,
                     template,
                     decimals,
-                    supply,
                     metadata,
                 },
             )

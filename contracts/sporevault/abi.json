@@ -6,136 +6,323 @@
       "name": "initialize",
       "opcode": 0,
       "params": [
-        { "name": "admin_ptr", "type": "Pubkey" }
-      ]
+        {
+          "name": "admin_ptr",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "add_strategy",
       "opcode": 1,
       "params": [
-        { "name": "caller_ptr", "type": "Pubkey" },
-        { "name": "strategy_type", "type": "u64" },
-        { "name": "allocation_percent", "type": "u64" }
-      ]
+        {
+          "name": "caller_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "strategy_type",
+          "type": "u64"
+        },
+        {
+          "name": "allocation_percent",
+          "type": "u64"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "deposit",
       "opcode": 2,
       "params": [
-        { "name": "depositor_ptr", "type": "Pubkey" },
-        { "name": "amount", "type": "u64" }
-      ]
+        {
+          "name": "depositor_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_value"
+      }
     },
     {
       "name": "withdraw",
       "opcode": 3,
       "params": [
-        { "name": "depositor_ptr", "type": "Pubkey" },
-        { "name": "shares_to_burn", "type": "u64" }
-      ]
+        {
+          "name": "depositor_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "shares_to_burn",
+          "type": "u64"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_value"
+      }
     },
     {
       "name": "harvest",
       "opcode": 4,
-      "params": []
+      "params": [],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "get_vault_stats",
       "opcode": 5,
-      "params": []
+      "params": [],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "get_user_position",
       "opcode": 6,
       "params": [
-        { "name": "user_ptr", "type": "Pubkey" }
-      ]
+        {
+          "name": "user_ptr",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "get_strategy_info",
       "opcode": 7,
       "params": [
-        { "name": "index", "type": "u64" }
-      ]
+        {
+          "name": "index",
+          "type": "u64"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0,
+          1
+        ]
+      }
     },
     {
       "name": "cv_pause",
       "opcode": 8,
       "params": [
-        { "name": "caller_ptr", "type": "Pubkey" }
-      ]
+        {
+          "name": "caller_ptr",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "cv_unpause",
       "opcode": 9,
       "params": [
-        { "name": "caller_ptr", "type": "Pubkey" }
-      ]
+        {
+          "name": "caller_ptr",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "set_deposit_fee",
       "opcode": 10,
       "params": [
-        { "name": "caller_ptr", "type": "Pubkey" },
-        { "name": "fee_bps", "type": "u64" }
-      ]
+        {
+          "name": "caller_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "fee_bps",
+          "type": "u64"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "set_withdrawal_fee",
       "opcode": 11,
       "params": [
-        { "name": "caller_ptr", "type": "Pubkey" },
-        { "name": "fee_bps", "type": "u64" }
-      ]
+        {
+          "name": "caller_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "fee_bps",
+          "type": "u64"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "set_deposit_cap",
       "opcode": 12,
       "params": [
-        { "name": "caller_ptr", "type": "Pubkey" },
-        { "name": "cap", "type": "u64" }
-      ]
+        {
+          "name": "caller_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "cap",
+          "type": "u64"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "set_risk_tier",
       "opcode": 13,
       "params": [
-        { "name": "caller_ptr", "type": "Pubkey" },
-        { "name": "tier", "type": "u64" }
-      ]
+        {
+          "name": "caller_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "tier",
+          "type": "u64"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "remove_strategy",
       "opcode": 14,
       "params": [
-        { "name": "caller_ptr", "type": "Pubkey" },
-        { "name": "index", "type": "u64" }
-      ]
+        {
+          "name": "caller_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "index",
+          "type": "u64"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "withdraw_protocol_fees",
       "opcode": 15,
       "params": [
-        { "name": "caller_ptr", "type": "Pubkey" }
-      ]
+        {
+          "name": "caller_ptr",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_value"
+      }
     },
     {
       "name": "update_strategy_allocation",
       "opcode": 16,
       "params": [
-        { "name": "caller_ptr", "type": "Pubkey" },
-        { "name": "index", "type": "u64" },
-        { "name": "new_alloc", "type": "u64" }
-      ]
+        {
+          "name": "caller_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "index",
+          "type": "u64"
+        },
+        {
+          "name": "new_alloc",
+          "type": "u64"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "set_protocol_addresses",
       "opcode": 17,
       "params": [
-        { "name": "caller_ptr", "type": "Pubkey" },
-        { "name": "thalllend_ptr", "type": "Pubkey" },
-        { "name": "lichenswap_ptr", "type": "Pubkey" }
-      ]
+        {
+          "name": "caller_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "thalllend_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "lichenswap_ptr",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     }
   ]
 }

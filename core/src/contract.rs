@@ -4202,6 +4202,54 @@ mod tests {
     }
 
     #[test]
+    fn test_repo_contract_abis_declare_result_semantics() {
+        let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let contracts_dir = manifest_dir
+            .parent()
+            .expect("core crate should live under workspace root")
+            .join("contracts");
+
+        let mut abi_count = 0usize;
+        for entry in std::fs::read_dir(&contracts_dir).expect("contracts directory should exist") {
+            let entry = entry.expect("contracts directory entry should be readable");
+            let abi_path = entry.path().join("abi.json");
+            if !abi_path.exists() {
+                continue;
+            }
+
+            let json = std::fs::read_to_string(&abi_path)
+                .unwrap_or_else(|error| panic!("failed to read {}: {}", abi_path.display(), error));
+            let abi: ContractAbi = serde_json::from_str(&json).unwrap_or_else(|error| {
+                panic!("failed to parse {}: {}", abi_path.display(), error)
+            });
+            abi_count += 1;
+
+            for function in &abi.functions {
+                let semantics = function.result_semantics.as_ref().unwrap_or_else(|| {
+                    panic!(
+                        "{}:{} missing result_semantics",
+                        abi_path.display(),
+                        function.name
+                    )
+                });
+                if semantics.kind == AbiResultKind::ReturnCode {
+                    assert!(
+                        !semantics.success_codes.is_empty(),
+                        "{}:{} return_code semantics must declare success_codes",
+                        abi_path.display(),
+                        function.name
+                    );
+                }
+            }
+        }
+
+        assert_eq!(
+            abi_count, 32,
+            "expected every bundled contract ABI to be checked"
+        );
+    }
+
+    #[test]
     fn test_build_opcode_dispatch_args_prefixes_selector() {
         let args = vec![1u8, 2, 3, 4];
         assert_eq!(build_opcode_dispatch_args(9, &args), vec![9u8, 1, 2, 3, 4]);

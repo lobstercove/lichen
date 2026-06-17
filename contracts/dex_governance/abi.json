@@ -2,26 +2,388 @@
   "contract": "dex_governance",
   "version": "1.0",
   "functions": [
-    {"name": "initialize", "opcode": 0, "params": [{"name": "admin", "type": "Pubkey"}]},
-    {"name": "propose_new_pair", "opcode": 1, "params": [{"name": "proposer", "type": "Pubkey"}, {"name": "base_token", "type": "Pubkey"}, {"name": "quote_token", "type": "Pubkey"}, {"name": "voting_period_slots", "type": "u64", "optional": true, "default": 432000}]},
-    {"name": "vote", "opcode": 2, "params": [{"name": "voter", "type": "Pubkey"}, {"name": "proposal_id", "type": "u64"}, {"name": "support", "type": "bool"}]},
-    {"name": "finalize_proposal", "opcode": 3, "params": [{"name": "proposal_id", "type": "u64"}]},
-    {"name": "execute_proposal", "opcode": 4, "params": [{"name": "proposal_id", "type": "u64"}]},
-    {"name": "set_preferred_quote", "opcode": 5, "params": [{"name": "caller", "type": "Pubkey"}, {"name": "quote_address", "type": "Pubkey"}]},
-    {"name": "get_preferred_quote", "opcode": 6, "params": []},
-    {"name": "get_proposal_count", "opcode": 7, "params": []},
-    {"name": "get_proposal_info", "opcode": 8, "params": [{"name": "proposal_id", "type": "u64"}]},
-    {"name": "propose_fee_change", "opcode": 9, "params": [{"name": "caller", "type": "Pubkey"}, {"name": "pair_id", "type": "u64"}, {"name": "maker_fee_bps", "type": "i16"}, {"name": "taker_fee_bps", "type": "u16"}, {"name": "voting_period_slots", "type": "u64", "optional": true, "default": 432000}]},
-    {"name": "emergency_delist", "opcode": 10, "params": [{"name": "caller", "type": "Pubkey"}, {"name": "pair_id", "type": "u64"}]},
-    {"name": "set_listing_requirements", "opcode": 11, "params": [{"name": "caller", "type": "Pubkey"}, {"name": "min_liquidity", "type": "u64"}, {"name": "min_holders", "type": "u64"}]},
-    {"name": "emergency_pause", "opcode": 12, "params": [{"name": "caller", "type": "Pubkey"}]},
-    {"name": "emergency_unpause", "opcode": 13, "params": [{"name": "caller", "type": "Pubkey"}]},
-    {"name": "set_lichenid_address", "opcode": 14, "params": [{"name": "caller", "type": "Pubkey"}, {"name": "address", "type": "Pubkey"}]},
-    {"name": "add_allowed_quote", "opcode": 15, "params": [{"name": "caller", "type": "Pubkey"}, {"name": "quote_address", "type": "Pubkey"}]},
-    {"name": "remove_allowed_quote", "opcode": 16, "params": [{"name": "caller", "type": "Pubkey"}, {"name": "quote_address", "type": "Pubkey"}]},
-    {"name": "get_allowed_quote_count", "opcode": 17, "params": []},
-    {"name": "get_governance_stats", "opcode": 18, "params": []},
-    {"name": "get_voter_count", "opcode": 19, "params": []},
-    {"name": "set_core_address", "opcode": 20, "params": [{"name": "caller", "type": "Pubkey"}, {"name": "core_address", "type": "Pubkey"}]}
+    {
+      "name": "initialize",
+      "opcode": 0,
+      "params": [
+        {
+          "name": "admin",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "propose_new_pair",
+      "opcode": 1,
+      "params": [
+        {
+          "name": "proposer",
+          "type": "Pubkey"
+        },
+        {
+          "name": "base_token",
+          "type": "Pubkey"
+        },
+        {
+          "name": "quote_token",
+          "type": "Pubkey"
+        },
+        {
+          "name": "voting_period_slots",
+          "type": "u64",
+          "optional": true,
+          "default": 432000
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "vote",
+      "opcode": 2,
+      "params": [
+        {
+          "name": "voter",
+          "type": "Pubkey"
+        },
+        {
+          "name": "proposal_id",
+          "type": "u64"
+        },
+        {
+          "name": "support",
+          "type": "bool"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "finalize_proposal",
+      "opcode": 3,
+      "params": [
+        {
+          "name": "proposal_id",
+          "type": "u64"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "execute_proposal",
+      "opcode": 4,
+      "params": [
+        {
+          "name": "proposal_id",
+          "type": "u64"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "set_preferred_quote",
+      "opcode": 5,
+      "params": [
+        {
+          "name": "caller",
+          "type": "Pubkey"
+        },
+        {
+          "name": "quote_address",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "get_preferred_quote",
+      "opcode": 6,
+      "params": [],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "get_proposal_count",
+      "opcode": 7,
+      "params": [],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "get_proposal_info",
+      "opcode": 8,
+      "params": [
+        {
+          "name": "proposal_id",
+          "type": "u64"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "propose_fee_change",
+      "opcode": 9,
+      "params": [
+        {
+          "name": "caller",
+          "type": "Pubkey"
+        },
+        {
+          "name": "pair_id",
+          "type": "u64"
+        },
+        {
+          "name": "maker_fee_bps",
+          "type": "i16"
+        },
+        {
+          "name": "taker_fee_bps",
+          "type": "u16"
+        },
+        {
+          "name": "voting_period_slots",
+          "type": "u64",
+          "optional": true,
+          "default": 432000
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "emergency_delist",
+      "opcode": 10,
+      "params": [
+        {
+          "name": "caller",
+          "type": "Pubkey"
+        },
+        {
+          "name": "pair_id",
+          "type": "u64"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "set_listing_requirements",
+      "opcode": 11,
+      "params": [
+        {
+          "name": "caller",
+          "type": "Pubkey"
+        },
+        {
+          "name": "min_liquidity",
+          "type": "u64"
+        },
+        {
+          "name": "min_holders",
+          "type": "u64"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "emergency_pause",
+      "opcode": 12,
+      "params": [
+        {
+          "name": "caller",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "emergency_unpause",
+      "opcode": 13,
+      "params": [
+        {
+          "name": "caller",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "set_lichenid_address",
+      "opcode": 14,
+      "params": [
+        {
+          "name": "caller",
+          "type": "Pubkey"
+        },
+        {
+          "name": "address",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "add_allowed_quote",
+      "opcode": 15,
+      "params": [
+        {
+          "name": "caller",
+          "type": "Pubkey"
+        },
+        {
+          "name": "quote_address",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "remove_allowed_quote",
+      "opcode": 16,
+      "params": [
+        {
+          "name": "caller",
+          "type": "Pubkey"
+        },
+        {
+          "name": "quote_address",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "get_allowed_quote_count",
+      "opcode": 17,
+      "params": [],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "get_governance_stats",
+      "opcode": 18,
+      "params": [],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "get_voter_count",
+      "opcode": 19,
+      "params": [],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "set_core_address",
+      "opcode": 20,
+      "params": [
+        {
+          "name": "caller",
+          "type": "Pubkey"
+        },
+        {
+          "name": "core_address",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    }
   ]
 }

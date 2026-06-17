@@ -22,7 +22,6 @@ pub(super) async fn finalize_deploy(
         name,
         template,
         decimals,
-        supply,
         metadata,
     } = prepared;
 
@@ -35,13 +34,6 @@ pub(super) async fn finalize_deploy(
     }
     if let Some(ref value) = template {
         println!("📂 Template: {}", value);
-    }
-    if let Some(value) = supply {
-        println!(
-            "💎 Total supply: {} (decimals: {})",
-            value,
-            decimals.unwrap_or(9)
-        );
     }
     println!("💰 Deploy fee: 25.001 LICN (25 LICN deploy + 0.001 LICN base fee)");
     println!();

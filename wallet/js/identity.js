@@ -380,11 +380,10 @@ async function getLichenIdProgramAddress() {
     }
     // Fallback: scan full contract list
     try {
-        const contracts = await trustedRpcCall('getAllContracts');
-        if (Array.isArray(contracts)) {
-            const c = contracts.find(c => c.name === 'lichenid' || c.symbol === 'YID');
-            if (c) { _lichenidAddress = c.program_id || c.address; return _lichenidAddress; }
-        }
+        const result = await trustedRpcCall('getAllContracts');
+        const contracts = Array.isArray(result) ? result : (Array.isArray(result?.contracts) ? result.contracts : []);
+        const c = contracts.find(c => c.name === 'lichenid' || c.symbol === 'YID');
+        if (c) { _lichenidAddress = c.program_id || c.address; return _lichenidAddress; }
     } catch (_) { }
     return null;
 }

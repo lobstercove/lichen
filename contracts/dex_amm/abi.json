@@ -10,7 +10,13 @@
           "name": "admin",
           "type": "Pubkey"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "create_pool",
@@ -36,7 +42,13 @@
           "name": "initial_sqrt_price",
           "type": "u64"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "set_pool_protocol_fee",
@@ -54,7 +66,13 @@
           "name": "fee_percent",
           "type": "u8"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "add_liquidity",
@@ -88,7 +106,13 @@
           "name": "deadline",
           "type": "u64"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "remove_liquidity",
@@ -110,7 +134,13 @@
           "name": "deadline",
           "type": "u64"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "collect_fees",
@@ -124,7 +154,13 @@
           "name": "position_id",
           "type": "u64"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "swap_exact_in",
@@ -154,7 +190,13 @@
           "name": "deadline",
           "type": "u64"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "swap_exact_out",
@@ -184,7 +226,13 @@
           "name": "deadline",
           "type": "u64"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "emergency_pause",
@@ -194,7 +242,13 @@
           "name": "caller",
           "type": "Pubkey"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "emergency_unpause",
@@ -204,7 +258,13 @@
           "name": "caller",
           "type": "Pubkey"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "get_pool_info",
@@ -214,7 +274,13 @@
           "name": "pool_id",
           "type": "u64"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "get_position",
@@ -224,17 +290,35 @@
           "name": "position_id",
           "type": "u64"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "get_pool_count",
       "opcode": 12,
-      "params": []
+      "params": [],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "get_position_count",
       "opcode": 13,
-      "params": []
+      "params": [],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "get_tvl",
@@ -244,7 +328,13 @@
           "name": "pool_id",
           "type": "u64"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "quote_swap",
@@ -262,27 +352,57 @@
           "name": "amount_in",
           "type": "u64"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "get_total_volume",
       "opcode": 16,
-      "params": []
+      "params": [],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "get_swap_count",
       "opcode": 17,
-      "params": []
+      "params": [],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "get_total_fees_collected",
       "opcode": 18,
-      "params": []
+      "params": [],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "get_amm_stats",
       "opcode": 19,
-      "params": []
+      "params": [],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "set_fee_treasury_address",
@@ -296,7 +416,13 @@
           "name": "treasury",
           "type": "Pubkey"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "collect_protocol_fees",
@@ -310,7 +436,13 @@
           "name": "pool_id",
           "type": "u64"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "set_rewards_address",
@@ -324,7 +456,13 @@
           "name": "rewards",
           "type": "Pubkey"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "sync_lp_rewards",
@@ -338,7 +476,13 @@
           "name": "position_id",
           "type": "u64"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     }
   ]
 }

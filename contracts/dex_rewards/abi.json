@@ -10,7 +10,13 @@
           "name": "admin",
           "type": "Pubkey"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "record_trade",
@@ -28,7 +34,13 @@
           "name": "volume",
           "type": "u64"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "claim_trading_rewards",
@@ -38,7 +50,13 @@
           "name": "trader",
           "type": "Pubkey"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "claim_lp_rewards",
@@ -52,7 +70,13 @@
           "name": "position_id",
           "type": "u64"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "register_referral",
@@ -66,7 +90,13 @@
           "name": "referrer",
           "type": "Pubkey"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "set_reward_rate",
@@ -84,7 +114,13 @@
           "name": "rate",
           "type": "u64"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "accrue_lp_rewards",
@@ -102,7 +138,13 @@
           "name": "pair_id",
           "type": "u64"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "get_pending_rewards",
@@ -112,7 +154,13 @@
           "name": "addr",
           "type": "Pubkey"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "get_trading_tier",
@@ -122,7 +170,13 @@
           "name": "addr",
           "type": "Pubkey"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "emergency_pause",
@@ -132,7 +186,13 @@
           "name": "caller",
           "type": "Pubkey"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "emergency_unpause",
@@ -142,7 +202,13 @@
           "name": "caller",
           "type": "Pubkey"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "set_referral_rate",
@@ -156,7 +222,13 @@
           "name": "rate_bps",
           "type": "u64"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "set_lichencoin_address",
@@ -170,7 +242,13 @@
           "name": "addr",
           "type": "Pubkey"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "set_rewards_pool",
@@ -184,32 +262,68 @@
           "name": "addr",
           "type": "Pubkey"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "get_referral_rate",
       "opcode": 14,
-      "params": []
+      "params": [],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "get_total_distributed",
       "opcode": 15,
-      "params": []
+      "params": [],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "get_trader_count",
       "opcode": 16,
-      "params": []
+      "params": [],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "get_total_volume",
       "opcode": 17,
-      "params": []
+      "params": [],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "get_reward_stats",
       "opcode": 18,
-      "params": []
+      "params": [],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "claim_referral_rewards",
@@ -219,7 +333,13 @@
           "name": "referrer",
           "type": "Pubkey"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "set_authorized_caller",
@@ -237,7 +357,13 @@
           "name": "enabled",
           "type": "u8"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "configure_lp_campaign",
@@ -259,7 +385,13 @@
           "name": "budget",
           "type": "u64"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "accrue_lp_rewards_for",
@@ -285,7 +417,13 @@
           "name": "from_slot",
           "type": "u64"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "get_lp_campaign_stats",
@@ -295,7 +433,13 @@
           "name": "pair_id",
           "type": "u64"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "get_lp_pending_rewards",
@@ -305,7 +449,13 @@
           "name": "position_id",
           "type": "u64"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     }
   ]
 }

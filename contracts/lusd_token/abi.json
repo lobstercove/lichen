@@ -10,7 +10,13 @@
           "name": "admin",
           "type": "Pubkey"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "mint",
@@ -28,7 +34,13 @@
           "name": "amount",
           "type": "u64"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "burn",
@@ -42,7 +54,13 @@
           "name": "amount",
           "type": "u64"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "transfer",
@@ -60,7 +78,13 @@
           "name": "amount",
           "type": "u64"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "approve",
@@ -78,7 +102,13 @@
           "name": "amount",
           "type": "u64"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "transfer_from",
@@ -100,7 +130,13 @@
           "name": "amount",
           "type": "u64"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "attest_reserves",
@@ -118,7 +154,13 @@
           "name": "proof_hash",
           "type": "Pubkey"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "balance_of",
@@ -128,7 +170,10 @@
           "name": "addr",
           "type": "Pubkey"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_value"
+      }
     },
     {
       "name": "allowance",
@@ -142,47 +187,74 @@
           "name": "spender",
           "type": "Pubkey"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_value"
+      }
     },
     {
       "name": "total_supply",
       "opcode": 9,
-      "params": []
+      "params": [],
+      "result_semantics": {
+        "kind": "return_value"
+      }
     },
     {
       "name": "total_minted",
       "opcode": 10,
-      "params": []
+      "params": [],
+      "result_semantics": {
+        "kind": "return_value"
+      }
     },
     {
       "name": "total_burned",
       "opcode": 11,
-      "params": []
+      "params": [],
+      "result_semantics": {
+        "kind": "return_value"
+      }
     },
     {
       "name": "get_reserve_ratio",
       "opcode": 12,
-      "params": []
+      "params": [],
+      "result_semantics": {
+        "kind": "return_value"
+      }
     },
     {
       "name": "get_last_attestation_slot",
       "opcode": 13,
-      "params": []
+      "params": [],
+      "result_semantics": {
+        "kind": "return_value"
+      }
     },
     {
       "name": "get_attestation_count",
       "opcode": 14,
-      "params": []
+      "params": [],
+      "result_semantics": {
+        "kind": "return_value"
+      }
     },
     {
       "name": "get_epoch_remaining",
       "opcode": 15,
-      "params": []
+      "params": [],
+      "result_semantics": {
+        "kind": "return_value"
+      }
     },
     {
       "name": "get_transfer_count",
       "opcode": 16,
-      "params": []
+      "params": [],
+      "result_semantics": {
+        "kind": "return_value"
+      }
     },
     {
       "name": "emergency_pause",
@@ -192,7 +264,13 @@
           "name": "caller",
           "type": "Pubkey"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "emergency_unpause",
@@ -202,7 +280,13 @@
           "name": "caller",
           "type": "Pubkey"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "transfer_admin",
@@ -216,7 +300,13 @@
           "name": "new_admin",
           "type": "Pubkey"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "accept_admin",
@@ -226,7 +316,13 @@
           "name": "caller",
           "type": "Pubkey"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "set_minter",
@@ -240,7 +336,13 @@
           "name": "new_minter",
           "type": "Pubkey"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "set_attester",
@@ -254,7 +356,13 @@
           "name": "new_attester",
           "type": "Pubkey"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "complete_bootstrap",
@@ -264,7 +372,13 @@
           "name": "caller",
           "type": "Pubkey"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     }
   ]
 }

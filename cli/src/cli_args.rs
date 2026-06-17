@@ -190,10 +190,6 @@ pub(super) enum Commands {
         #[arg(long)]
         decimals: Option<u8>,
 
-        /// Total token supply (e.g. 1000000000 for 1B tokens)
-        #[arg(long)]
-        supply: Option<u64>,
-
         /// Additional metadata as JSON (e.g. '{"website":"https://example.com"}')
         #[arg(long)]
         metadata: Option<String>,

@@ -10,7 +10,13 @@
           "name": "admin",
           "type": "Pubkey"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "create_pair",
@@ -40,7 +46,13 @@
           "name": "min_order",
           "type": "u64"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "place_order",
@@ -80,7 +92,13 @@
           "optional": true,
           "description": "Stop-limit trigger price (0 = not a stop order)"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "cancel_order",
@@ -94,7 +112,13 @@
           "name": "order_id",
           "type": "u64"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "set_preferred_quote",
@@ -108,17 +132,35 @@
           "name": "quote_address",
           "type": "Pubkey"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "get_pair_count",
       "opcode": 5,
-      "params": []
+      "params": [],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "get_preferred_quote",
       "opcode": 6,
-      "params": []
+      "params": [],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "update_pair_fees",
@@ -140,7 +182,13 @@
           "name": "taker_fee_bps",
           "type": "u16"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "emergency_pause",
@@ -150,7 +198,13 @@
           "name": "caller",
           "type": "Pubkey"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "emergency_unpause",
@@ -160,7 +214,13 @@
           "name": "caller",
           "type": "Pubkey"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "get_best_bid",
@@ -170,7 +230,13 @@
           "name": "pair_id",
           "type": "u64"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "get_best_ask",
@@ -180,7 +246,13 @@
           "name": "pair_id",
           "type": "u64"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "get_spread",
@@ -190,7 +262,13 @@
           "name": "pair_id",
           "type": "u64"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "get_pair_info",
@@ -200,17 +278,35 @@
           "name": "pair_id",
           "type": "u64"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "get_trade_count",
       "opcode": 14,
-      "params": []
+      "params": [],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "get_fee_treasury",
       "opcode": 15,
-      "params": []
+      "params": [],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "modify_order",
@@ -232,7 +328,13 @@
           "name": "new_quantity",
           "type": "u64"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "cancel_all_orders",
@@ -246,7 +348,13 @@
           "name": "pair_id",
           "type": "u64"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "pause_pair",
@@ -260,7 +368,13 @@
           "name": "pair_id",
           "type": "u64"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "unpause_pair",
@@ -274,7 +388,13 @@
           "name": "pair_id",
           "type": "u64"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "get_order",
@@ -284,7 +404,13 @@
           "name": "order_id",
           "type": "u64"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "add_allowed_quote",
@@ -298,7 +424,13 @@
           "name": "quote_address",
           "type": "Pubkey"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "remove_allowed_quote",
@@ -312,12 +444,24 @@
           "name": "quote_address",
           "type": "Pubkey"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "get_allowed_quote_count",
       "opcode": 23,
-      "params": []
+      "params": [],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "execute_unpause",
@@ -327,12 +471,24 @@
           "name": "caller",
           "type": "Pubkey"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "get_total_volume",
       "opcode": 25,
-      "params": []
+      "params": [],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "get_user_orders",
@@ -342,7 +498,13 @@
           "name": "user_address",
           "type": "Pubkey"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "get_open_order_count",
@@ -352,7 +514,13 @@
           "name": "user_address",
           "type": "Pubkey"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "set_analytics_address",
@@ -366,7 +534,13 @@
           "name": "analytics_address",
           "type": "Pubkey"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "check_triggers",
@@ -380,7 +554,13 @@
           "name": "last_price",
           "type": "u64"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "set_margin_address",
@@ -394,7 +574,13 @@
           "name": "margin_address",
           "type": "Pubkey"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "swap_exact_in",
@@ -424,7 +610,13 @@
           "name": "deadline",
           "type": "u64"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "set_fee_treasury_address",
@@ -438,7 +630,13 @@
           "name": "treasury",
           "type": "Pubkey"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "claim_rebate",
@@ -452,7 +650,13 @@
           "name": "pair_id",
           "type": "u64"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "set_rewards_address",
@@ -466,7 +670,13 @@
           "name": "rewards",
           "type": "Pubkey"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     },
     {
       "name": "set_governance_address",
@@ -480,7 +690,13 @@
           "name": "governance",
           "type": "Pubkey"
         }
-      ]
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     }
   ]
 }

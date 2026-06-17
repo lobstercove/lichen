@@ -8776,7 +8776,7 @@ fn create_pair(base: &[u8], quote: &[u8], min_order: u64) {
     data[104..112].copy_from_slice(&1u64.to_le_bytes());     // active
     storage_set(&[b"pair:", &id.to_le_bytes()].concat(), &data);
     store_u64(b"pair_count", count + 1);
-    emit_event(b"PairCreated", &format!("id={},min={}", id, min_order).into_bytes());
+    emit_event(&format!(r#"{{"type":"PairCreated","id":{},"min_order":{}}}"#, id, min_order));
     log_info(&format!("Pair {} created: base/quote with min_order={}", id, min_order));
 }
 
@@ -8816,7 +8816,7 @@ fn place_order(pair_id: u64, price: u64, qty: u64, side: u64, otype: u64) {
     storage_set(&[b"order:", &order_id.to_le_bytes()].concat(), &order);
     store_u64(b"order_count", order_id + 1);
 
-    emit_event(b"OrderPlaced", &format!("id={},pair={},side={},price={},qty={}", order_id, pair_id, side, price, qty).into_bytes());
+    emit_event(&format!(r#"{{"type":"OrderPlaced","id":{},"pair":{},"side":{},"price":{},"quantity":{}}}"#, order_id, pair_id, side, price, qty));
     reentrancy_exit();
 }
 
@@ -8897,7 +8897,7 @@ fn create_pool(token_a: &[u8], token_b: &[u8], fee_tier: u64, initial_price: u64
     pool[72..80].copy_from_slice(&sqrt_price.to_le_bytes());
     storage_set(&[b"pool:", &count.to_le_bytes()].concat(), &pool);
     store_u64(b"pool_count", count + 1);
-    emit_event(b"PoolCreated", &format!("pool={},fee={}bps", count, fee_tier).into_bytes());
+    emit_event(&format!(r#"{{"type":"PoolCreated","pool":{},"fee_bps":{}}}"#, count, fee_tier));
 }
 
 // ═══ Position: 80 bytes ═══
@@ -8914,7 +8914,7 @@ fn add_liquidity(pool_id: u64, tick_lower: i32, tick_upper: i32, amount: u64) {
     pos[48..56].copy_from_slice(&amount.to_le_bytes());
     storage_set(&[b"pos:", &pos_id.to_le_bytes()].concat(), &pos);
     store_u64(b"pos_count", pos_id + 1);
-    emit_event(b"LiquidityAdded", &format!("pos={},pool={},amount={}", pos_id, pool_id, amount).into_bytes());
+    emit_event(&format!(r#"{{"type":"LiquidityAdded","position":{},"pool":{},"amount":{}}}"#, pos_id, pool_id, amount));
     reentrancy_exit();
 }
 
@@ -9001,7 +9001,7 @@ fn register_route(token_in: &[u8], token_out: &[u8], route_type: u8) {
     route[64] = route_type;
     storage_set(&[b"route:", &count.to_le_bytes()].concat(), &route);
     store_u64(b"route_count", count + 1);
-    emit_event(b"RouteRegistered", &format!("route={},type={}", count, route_type).into_bytes());
+    emit_event(&format!(r#"{{"type":"RouteRegistered","route":{},"route_type":{}}}"#, count, route_type));
 }
 
 fn simulate_swap(route_id: u64, amount_in: u64) -> u64 {
@@ -9105,7 +9105,7 @@ fn propose_new_pair(pair_data: &[u8]) {
     prop[88..96].copy_from_slice(&(slot + VOTING_PERIOD + EXECUTION_TIMELOCK).to_le_bytes());
     storage_set(&[b"prop:", &count.to_le_bytes()].concat(), &prop);
     store_u64(b"proposal_count", count + 1);
-    emit_event(b"ProposalCreated", &format!("id={},type=new_pair", count).into_bytes());
+    emit_event(&format!(r#"{{"type":"ProposalCreated","id":{},"proposal_type":"new_pair"}}"#, count));
 }
 
 fn vote(proposal_id: u64, vote_yes: bool, weight: u64) {
@@ -9127,7 +9127,7 @@ fn vote(proposal_id: u64, vote_yes: bool, weight: u64) {
         p[64..72].copy_from_slice(&(no + weight).to_le_bytes());
     }
     storage_set(&[b"prop:", &proposal_id.to_le_bytes()].concat(), &p);
-    emit_event(b"VoteCast", &format!("prop={},yes={},weight={}", proposal_id, vote_yes, weight).into_bytes());
+    emit_event(&format!(r#"{{"type":"VoteCast","proposal":{},"yes":{},"weight":{}}}"#, proposal_id, vote_yes, weight));
 }
 
 fn store_u64(key: &[u8], val: u64) { storage_set(key, &val.to_le_bytes()); }
@@ -9229,7 +9229,7 @@ fn record_trade(trader: &[u8], pair_id: u64, volume: u64, fees_paid: u64) {
     let pending = load_u64(&rkey);
     store_u64(&rkey, pending + reward);
 
-    emit_event(b"TradeRecorded", &format!("vol={},tier={},reward={}", volume, tier, reward).into_bytes());
+    emit_event(&format!(r#"{{"type":"TradeRecorded","volume":{},"tier":{},"reward":{}}}"#, volume, tier, reward));
 }
 
 fn claim_rewards(trader: &[u8]) -> u64 {
@@ -9239,7 +9239,7 @@ fn claim_rewards(trader: &[u8]) -> u64 {
     store_u64(&key, 0);
     let total = load_u64(b"total_distributed");
     store_u64(b"total_distributed", total + pending);
-    emit_event(b"RewardsClaimed", &format!("trader={:?},amount={}", &trader[..4], pending).into_bytes());
+    emit_event(&format!(r#"{{"type":"RewardsClaimed","trader_prefix":"{:?}","amount":{}}}"#, &trader[..4], pending));
     pending
 }
 
@@ -9343,7 +9343,7 @@ fn open_position(pair_id: u64, side: u64, margin_type: u64, leverage: u64, size:
     pos[96..104].copy_from_slice(&mark.to_le_bytes());
     storage_set(&[b"pos:", &pos_id.to_le_bytes()].concat(), &pos);
     store_u64(b"pos_count", pos_id + 1);
-    emit_event(b"PositionOpened", &format!("id={},lev={}x,size={}", pos_id, leverage, size).into_bytes());
+    emit_event(&format!(r#"{{"type":"PositionOpened","id":{},"leverage":{},"size":{}}}"#, pos_id, leverage, size));
     reentrancy_exit();
 }
 
@@ -9362,7 +9362,7 @@ fn liquidate(pos_id: u64) {
     let ins = load_u64(b"insurance_fund");
     store_u64(b"insurance_fund", ins + to_insurance);
 
-    emit_event(b"Liquidated", &format!("pos={},penalty={}", pos_id, penalty).into_bytes());
+    emit_event(&format!(r#"{{"type":"Liquidated","position":{},"penalty":{}}}"#, pos_id, penalty));
     reentrancy_exit();
 }
 
@@ -9470,7 +9470,7 @@ fn record_trade(pair_id: u64, price: u64, volume: u64, timestamp: u64) {
     // Store last price
     storage_set(&[b"last:", &pair_id.to_le_bytes()].concat(), &price.to_le_bytes());
 
-    emit_event(b"TradeRecorded", &format!("pair={},price={},vol={}", pair_id, price, volume).into_bytes());
+    emit_event(&format!(r#"{{"type":"TradeRecorded","pair":{},"price":{},"volume":{}}}"#, pair_id, price, volume));
 }
 
 fn get_ohlcv(pair_id: u64, interval: u64, bucket: u64) -> Vec<u8> {
@@ -9536,7 +9536,7 @@ fn create_market(creator: &[u8], question: &[u8], end_time: u64) -> u64 {
     data[32..40].copy_from_slice(&end_time.to_le_bytes());
     data[40] = 0; // status: open
     storage_set(&key, &data);
-    emit_event(b"MarketCreated", &format!("id={}", id).into_bytes());
+    emit_event(&format!(r#"{{"type":"MarketCreated","id":{}}}"#, id));
     id
 }
 
@@ -9553,7 +9553,7 @@ fn buy_shares(market_id: u64, buyer: &[u8], outcome: u8, amount: u64) {
     let bal_key = [b"bal:", &market_id.to_le_bytes(), b":", buyer, &[outcome]].concat();
     let cur = load_u64(&bal_key);
     store_u64(&bal_key, cur + amount);
-    emit_event(b"SharesBought", &format!("market={},outcome={},amt={}", market_id, outcome, amount).into_bytes());
+    emit_event(&format!(r#"{{"type":"SharesBought","market":{},"outcome":{},"amount":{}}}"#, market_id, outcome, amount));
 }
 
 fn redeem_shares(market_id: u64, holder: &[u8]) {
@@ -9563,7 +9563,7 @@ fn redeem_shares(market_id: u64, holder: &[u8]) {
     let bal_key = [b"bal:", &market_id.to_le_bytes(), b":", holder, &[winner]].concat();
     let shares = load_u64(&bal_key);
     store_u64(&bal_key, 0);
-    emit_event(b"SharesRedeemed", &format!("market={},payout={}", market_id, shares).into_bytes());
+    emit_event(&format!(r#"{{"type":"SharesRedeemed","market":{},"payout":{}}}"#, market_id, shares));
 }
 
 fn load_u64(key: &[u8]) -> u64 {
@@ -9625,7 +9625,7 @@ fn initialize(admin: &[u8]) {
     storage_set(b"admin", admin);
     store_u64(b"total_supply", 0);
     store_u64(b"epoch_minted", 0);
-    emit_event(b"Initialized", b"lUSD stablecoin ready");
+    emit_event(r#"{"type":"Initialized","message":"lUSD stablecoin ready"}"#);
 }
 
 fn mint(to: &[u8], amount: u64) {
@@ -9638,7 +9638,7 @@ fn mint(to: &[u8], amount: u64) {
     let supply = load_u64(b"total_supply");
     store_u64(b"total_supply", supply + amount);
     store_u64(b"epoch_minted", minted + amount);
-    emit_event(b"Mint", &format!("to={:?},amt={}", &to[..4], amount).into_bytes());
+    emit_event(&format!(r#"{{"type":"Mint","to_prefix":"{:?}","amount":{}}}"#, &to[..4], amount));
 }
 
 fn burn(from: &[u8], amount: u64) {
@@ -9648,7 +9648,7 @@ fn burn(from: &[u8], amount: u64) {
     store_u64(&bal_key, cur - amount);
     let supply = load_u64(b"total_supply");
     store_u64(b"total_supply", supply - amount);
-    emit_event(b"Burn", &format!("amt={}", amount).into_bytes());
+    emit_event(&format!(r#"{{"type":"Burn","amount":{}}}"#, amount));
 }
 
 fn transfer(from: &[u8], to: &[u8], amount: u64) {
@@ -9727,7 +9727,7 @@ fn initialize(bridge_admin: &[u8]) {
     storage_set(b"admin", bridge_admin);
     store_u64(b"total_supply", 0);
     store_u64(b"epoch_minted", 0);
-    emit_event(b"Initialized", b"wETH bridge token ready");
+    emit_event(r#"{"type":"Initialized","message":"wETH bridge token ready"}"#);
 }
 
 fn mint(to: &[u8], amount: u64) {
@@ -9739,7 +9739,7 @@ fn mint(to: &[u8], amount: u64) {
     let supply = load_u64(b"total_supply");
     store_u64(b"total_supply", supply + amount);
     store_u64(b"epoch_minted", minted + amount);
-    emit_event(b"Mint", &format!("to={:?},amt={}", &to[..4], amount).into_bytes());
+    emit_event(&format!(r#"{{"type":"Mint","to_prefix":"{:?}","amount":{}}}"#, &to[..4], amount));
 }
 
 fn burn(from: &[u8], amount: u64) {
@@ -9749,7 +9749,7 @@ fn burn(from: &[u8], amount: u64) {
     store_u64(&bal_key, cur - amount);
     let supply = load_u64(b"total_supply");
     store_u64(b"total_supply", supply - amount);
-    emit_event(b"Burn", &format!("amt={}", amount).into_bytes());
+    emit_event(&format!(r#"{{"type":"Burn","amount":{}}}"#, amount));
 }
 
 fn transfer(from: &[u8], to: &[u8], amount: u64) {
@@ -9828,7 +9828,7 @@ fn initialize(bridge_admin: &[u8]) {
     storage_set(b"admin", bridge_admin);
     store_u64(b"total_supply", 0);
     store_u64(b"epoch_minted", 0);
-    emit_event(b"Initialized", b"wSOL bridge token ready");
+    emit_event(r#"{"type":"Initialized","message":"wSOL bridge token ready"}"#);
 }
 
 fn mint(to: &[u8], amount: u64) {
@@ -9840,7 +9840,7 @@ fn mint(to: &[u8], amount: u64) {
     let supply = load_u64(b"total_supply");
     store_u64(b"total_supply", supply + amount);
     store_u64(b"epoch_minted", minted + amount);
-    emit_event(b"Mint", &format!("to={:?},amt={}", &to[..4], amount).into_bytes());
+    emit_event(&format!(r#"{{"type":"Mint","to_prefix":"{:?}","amount":{}}}"#, &to[..4], amount));
 }
 
 fn burn(from: &[u8], amount: u64) {
@@ -9850,7 +9850,7 @@ fn burn(from: &[u8], amount: u64) {
     store_u64(&bal_key, cur - amount);
     let supply = load_u64(b"total_supply");
     store_u64(b"total_supply", supply - amount);
-    emit_event(b"Burn", &format!("amt={}", amount).into_bytes());
+    emit_event(&format!(r#"{{"type":"Burn","amount":{}}}"#, amount));
 }
 
 fn transfer(from: &[u8], to: &[u8], amount: u64) {
@@ -9929,7 +9929,7 @@ fn initialize(bridge_admin: &[u8]) {
     storage_set(b"admin", bridge_admin);
     store_u64(b"total_supply", 0);
     store_u64(b"epoch_minted", 0);
-    emit_event(b"Initialized", b"wBNB bridge token ready");
+    emit_event(r#"{"type":"Initialized","message":"wBNB bridge token ready"}"#);
 }
 
 fn mint(to: &[u8], amount: u64) {
@@ -9941,7 +9941,7 @@ fn mint(to: &[u8], amount: u64) {
     let supply = load_u64(b"total_supply");
     store_u64(b"total_supply", supply + amount);
     store_u64(b"epoch_minted", minted + amount);
-    emit_event(b"Mint", &format!("to={:?},amt={}", &to[..4], amount).into_bytes());
+    emit_event(&format!(r#"{{"type":"Mint","to_prefix":"{:?}","amount":{}}}"#, &to[..4], amount));
 }
 
 fn burn(from: &[u8], amount: u64) {
@@ -9951,7 +9951,7 @@ fn burn(from: &[u8], amount: u64) {
     store_u64(&bal_key, cur - amount);
     let supply = load_u64(b"total_supply");
     store_u64(b"total_supply", supply - amount);
-    emit_event(b"Burn", &format!("amt={}", amount).into_bytes());
+    emit_event(&format!(r#"{{"type":"Burn","amount":{}}}"#, amount));
 }
 
 fn transfer(from: &[u8], to: &[u8], amount: u64) {
@@ -10038,7 +10038,7 @@ pub extern "C" fn initialize(admin_ptr: *const u8) -> u32 {
     store_u64(b"sp_paused", 0);
     // Initialize empty Merkle root
     storage_set(b"sp_merkle_root", &[0u8; 32]);
-    emit_event(b"Initialized", b"Shielded Pool ready");
+    emit_event(r#"{"type":"Initialized","message":"Shielded Pool ready"}"#);
     1
 }
 
@@ -10057,7 +10057,7 @@ pub extern "C" fn shield(args_ptr: *const u8, args_len: u32) -> u32 {
     storage_set(key.as_bytes(), commitment);
     store_u64(b"sp_commitment_count", count + 1);
 
-    emit_event(b"Shield", &format!("idx={}", count).into_bytes());
+    emit_event(&format!(r#"{{"type":"Shield","index":{}}}"#, count));
     1
 }
 
@@ -10075,7 +10075,7 @@ pub extern "C" fn unshield(args_ptr: *const u8, args_len: u32) -> u32 {
 
     // Mark nullifier as spent
     storage_set(null_key.as_bytes(), &[1]);
-    emit_event(b"Unshield", b"withdrawal processed");
+    emit_event(r#"{"type":"Unshield","message":"withdrawal processed"}"#);
     1
 }
 
@@ -10099,21 +10099,21 @@ pub extern "C" fn transfer(args_ptr: *const u8, args_len: u32) -> u32 {
     storage_set(key.as_bytes(), new_commitment);
     store_u64(b"sp_commitment_count", count + 1);
 
-    emit_event(b"Transfer", b"private transfer completed");
+    emit_event(r#"{"type":"Transfer","message":"private transfer completed"}"#);
     1
 }
 
 #[no_mangle]
 pub extern "C" fn pause() -> u32 {
     store_u64(b"sp_paused", 1);
-    emit_event(b"Paused", b"pool paused");
+    emit_event(r#"{"type":"Paused","message":"pool paused"}"#);
     1
 }
 
 #[no_mangle]
 pub extern "C" fn unpause() -> u32 {
     store_u64(b"sp_paused", 0);
-    emit_event(b"Unpaused", b"pool resumed");
+    emit_event(r#"{"type":"Unpaused","message":"pool resumed"}"#);
     1
 }
 

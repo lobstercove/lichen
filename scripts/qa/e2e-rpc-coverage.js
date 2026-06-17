@@ -253,8 +253,9 @@ async function runTests() {
 
     await tryRpc('getSymbolRegistry', ['DEX'], 'getSymbolRegistry(DEX)');
     await tryRpc('getSymbolRegistry', ['LICN'], 'getSymbolRegistry(LICN)');
-    const allSymbols = await tryRpc('getAllSymbolRegistry', [], 'getAllSymbolRegistry');
-    if (allSymbols && Array.isArray(allSymbols)) {
+    const allSymbolsResult = await tryRpc('getAllSymbolRegistry', [], 'getAllSymbolRegistry');
+    const allSymbols = Array.isArray(allSymbolsResult?.entries) ? allSymbolsResult.entries : [];
+    if (allSymbols.length > 0) {
         assert(allSymbols.length >= 25, `getAllSymbolRegistry: ${allSymbols.length} symbols (expect ≥25)`);
     }
 

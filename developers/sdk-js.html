@@ -701,7 +701,9 @@ console.log(result.returnCode, result.returnData);</code></pre>
 
             <div class="method-card">
                 <h3 class="method-name">getAllContracts(): Promise&lt;any&gt;</h3>
-                <p class="method-desc">List all deployed contracts.</p>
+                <p class="method-desc">List deployed contracts. Resolves to
+                    <code>{ contracts, count, has_more, next_cursor }</code>.
+                </p>
             </div>
 
             <!-- Program Methods -->

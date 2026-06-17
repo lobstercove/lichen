@@ -274,11 +274,10 @@ async function getLichenIdProgramAddress(network) {
   }
 
   try {
-    const contracts = await trustedRpc.call('getAllContracts');
-    if (Array.isArray(contracts)) {
-      const contract = contracts.find((entry) => entry.name === 'lichenid' || entry.symbol === 'YID');
-      if (contract) return contract.program_id || contract.address;
-    }
+    const result = await trustedRpc.call('getAllContracts');
+    const contracts = Array.isArray(result) ? result : (Array.isArray(result?.contracts) ? result.contracts : []);
+    const contract = contracts.find((entry) => entry.name === 'lichenid' || entry.symbol === 'YID');
+    if (contract) return contract.program_id || contract.address;
   } catch {
     // trusted metadata lookup unavailable
   }
