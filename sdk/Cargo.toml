@@ -19,7 +19,7 @@ dlmalloc = { version = "0.2", features = ["global"] }  # Sound WASM allocator (r
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 p3-field = "0.5.2"
-p3-goldilocks = "0.5.2"
+p3-goldilocks = "0.5.3"
 p3-symmetric = "0.5.2"
 
 [dev-dependencies]

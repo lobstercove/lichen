@@ -61,7 +61,7 @@ p3-commit = { version = "0.5.2", optional = true }
 p3-dft = { version = "0.5.2", optional = true }
 p3-field = { version = "0.5.2", optional = true }
 p3-fri = { version = "0.5.2", optional = true }
-p3-goldilocks = { version = "0.5.2", optional = true }
+p3-goldilocks = { version = "0.5.3", optional = true }
 p3-matrix = { version = "0.5.2", optional = true }
 p3-merkle-tree = { version = "0.5.2", optional = true }
 p3-poseidon2 = { version = "0.5.2", optional = true }
