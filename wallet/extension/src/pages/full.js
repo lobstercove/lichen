@@ -4000,7 +4000,12 @@ async function populateSendTokenDropdown() {
   };
   select.replaceChildren(createOption('LICN'));
   try {
-    const accounts = await rpc().call('getTokenAccounts', [wallet.address]);
+    const accountsResult = await rpc().call('getTokenAccounts', [wallet.address]);
+    const accounts = Array.isArray(accountsResult)
+      ? accountsResult
+      : Array.isArray(accountsResult?.accounts)
+        ? accountsResult.accounts
+        : [];
     if (Array.isArray(accounts)) {
       for (const acct of accounts) {
         const sym = String(acct.symbol || acct.token_symbol || '').trim();

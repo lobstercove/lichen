@@ -4023,7 +4023,12 @@ async function showSend() {
 
         try {
             // Fetch all token accounts for this address from the chain
-            const tokenAccounts = await rpc.call('getTokenAccounts', [wallet.address]);
+            const tokenAccountsResult = await rpc.call('getTokenAccounts', [wallet.address]);
+            const tokenAccounts = Array.isArray(tokenAccountsResult)
+                ? tokenAccountsResult
+                : Array.isArray(tokenAccountsResult?.accounts)
+                    ? tokenAccountsResult.accounts
+                    : [];
             if (Array.isArray(tokenAccounts)) {
                 const seen = new Set();
                 for (const acct of tokenAccounts) {

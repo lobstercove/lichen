@@ -5,7 +5,7 @@ testnet fresh start, during live testnet repair, and before mainnet launch. It
 covers external-chain route values only. Never commit private keys, auth tokens,
 custody seeds, funded keypairs, or provider API secrets.
 
-For the full 3-validator mainnet launch sequence, use
+For the full 4-validator mainnet launch sequence, use
 `deploy/mainnet-launch-runbook.md`. That runbook starts the Lichen
 chain first, then starts custody only after post-genesis verification and
 route-specific dust tests pass.

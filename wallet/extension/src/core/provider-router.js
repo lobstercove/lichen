@@ -1490,7 +1490,7 @@ export async function handleProviderRequest(payload, context = {}) {
           accounts: activeAddress ? [activeAddress] : [],
           hasWallet,
           isLocked: Boolean(context.isLocked),
-          version: context.appVersion || '0.1.0'
+          version: context.appVersion || '0.1.4'
         }
       };
 
@@ -1556,7 +1556,7 @@ export async function handleProviderRequest(payload, context = {}) {
     }
 
     case 'lichen_clientVersion': {
-      return { ok: true, result: `LichenWallet/${context.appVersion || '0.1.0'}` };
+      return { ok: true, result: `LichenWallet/${context.appVersion || '0.1.4'}` };
     }
 
     case 'licn_netListening': {
@@ -1606,7 +1606,7 @@ export async function handleProviderRequest(payload, context = {}) {
     case 'licn_version':
       return {
         ok: true,
-        result: context.appVersion || '0.1.0'
+        result: context.appVersion || '0.1.4'
       };
 
     case 'licn_accounts':

@@ -4,9 +4,9 @@ set -euo pipefail
 # Non-destructive VPS release rollout.
 #
 # Usage:
-#   LICHEN_RELEASE_TAG=v0.5.172 bash scripts/rolling-release-deploy.sh testnet
-#   LICHEN_RELEASE_TAG=v0.5.172 bash scripts/rolling-release-deploy.sh mainnet
-#   LICHEN_RELEASE_TAG=v0.5.172 LICHEN_VERIFY_RELEASE_ONLY=1 bash scripts/rolling-release-deploy.sh testnet
+#   LICHEN_RELEASE_TAG=v0.5.173 bash scripts/rolling-release-deploy.sh testnet
+#   LICHEN_RELEASE_TAG=v0.5.173 bash scripts/rolling-release-deploy.sh mainnet
+#   LICHEN_RELEASE_TAG=v0.5.173 LICHEN_VERIFY_RELEASE_ONLY=1 bash scripts/rolling-release-deploy.sh testnet
 #
 # This script installs an exact GitHub Release archive on each validator and
 # restarts one validator at a time. It never deletes chain state.
@@ -777,7 +777,7 @@ while time.time() < deadline:
         oracle = get_json("/api/v1/oracle/prices")
         feeds = {feed.get("asset"): feed for feed in oracle.get("data", {}).get("feeds", [])}
         bad = []
-        for asset in ("wSOL", "wETH", "wBNB"):
+        for asset in ("wSOL", "wETH", "wBNB", "wNEO", "wGAS", "wBTC"):
             feed = feeds.get(asset) or {}
             if int(feed.get("slot") or 0) <= 0 or feed.get("stale") is True:
                 bad.append(f"{asset}:slot={feed.get('slot')} stale={feed.get('stale')}")
@@ -787,6 +787,7 @@ while time.time() < deadline:
             print(json.dumps({
                 "wsol_slot": feeds["wSOL"].get("slot"),
                 "wsol_price": feeds["wSOL"].get("price"),
+                "wbtc_slot": feeds["wBTC"].get("slot"),
                 "latest_wsol_1m_close": candle_rows[-1].get("close"),
             }, sort_keys=True))
             raise SystemExit(0)
