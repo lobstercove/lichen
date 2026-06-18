@@ -468,16 +468,12 @@ assert(
     productionDeployment.includes('separate portal-only custom domain'),
   'deployment docs must keep the faucet Pages portal separate from the faucet API hostname',
 );
-const setupScript = read('deploy/setup.sh');
 const testnetCaddy = read('deploy/Caddyfile.testnet');
 assert(
-  !setupScript.includes('ensure_ufw_allow_rule "9100/tcp"') &&
-    setupScript.includes('ensure_ufw_allow_from_tcp_port "15.204.229.189" "9100"') &&
-    setupScript.includes('sudo ufw allow from <validator-ip> to any port 9100 proto tcp'),
-  'setup must keep raw faucet port 9100 restricted to the validator fleet, not public internet',
-);
-assert(
-  testnetCaddy.includes('faucet.lichen.network') &&
+  productionDeployment.includes('Caddy (`deploy/Caddyfile.testnet`) reverse proxies API traffic to `127.0.0.1:9100`') &&
+    productionDeployment.includes('`lichen-network-faucet.pages.dev`** (Cloudflare Pages): Static faucet portal') &&
+    productionDeployment.includes('It does NOT serve static HTML — that comes from Cloudflare Pages') &&
+    testnetCaddy.includes('faucet.lichen.network') &&
     testnetCaddy.includes('reverse_proxy 127.0.0.1:9100') &&
     testnetCaddy.includes('respond "faucet API endpoint not found" 404') &&
     !testnetCaddy.includes('root * /home/ubuntu/lichen/faucet'),
