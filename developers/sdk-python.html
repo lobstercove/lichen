@@ -156,7 +156,7 @@ async def main():
 
     # Check balance
     balance = await conn.get_balance(kp.pubkey())
-    print(f"Balance: {balance['licn']:.9f} LICN ({balance['spores']} spores)")
+    print(f"Balance: {balance['licn']} LICN ({balance['spores']} spores)")
 
     # Build and send a transfer
     recipient = PublicKey("RecipientBase58Address...")
@@ -360,7 +360,7 @@ print(profile, delegate, pool_info, quote, swap_stats, stream, vault_stats, vaul
             </div>
 
             <div class="method-card">
-                <h3 class="method-name">await get_total_burned() -&gt; Dict[str, int]</h3>
+                <h3 class="method-name">await get_total_burned() -&gt; Dict[str, Any]</h3>
                 <p class="method-desc">Get total burned LICN — <code>{"spores": ..., "licn": ...}</code>.</p>
             </div>
 
@@ -368,14 +368,14 @@ print(profile, delegate, pool_info, quote, swap_stats, stream, vault_stats, vaul
             <h3 id="connection-account">Account Methods</h3>
 
             <div class="method-card">
-                <h3 class="method-name">await get_balance(pubkey: PublicKey) -&gt; Dict[str, int]</h3>
+                <h3 class="method-name">await get_balance(pubkey: PublicKey) -&gt; Dict[str, Any]</h3>
                 <p class="method-desc">Get account balance in spores and LICN.</p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">Python</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
                     <pre><code>balance = await conn.get_balance(PublicKey("7xKXtg2CW87d..."))
 print(balance["spores"])  # 5000000000
-print(balance["licn"])    # 5.0</code></pre>
+print(balance["licn"])    # "5.0000"</code></pre>
                 </div>
             </div>
 
@@ -390,9 +390,10 @@ print(balance["licn"])    # 5.0</code></pre>
             </div>
 
             <div class="method-card">
-                <h3 class="method-name">await get_transaction_history(pubkey: PublicKey, limit: int = 10) -&gt;
+                <h3 class="method-name">await get_transaction_history(pubkey: PublicKey, limit: int = 10, before_slot: Optional[int] = None) -&gt;
                     Dict[str, Any]</h3>
-                <p class="method-desc">Get paginated transaction history for an account.</p>
+                <p class="method-desc">Get paginated transaction history for an account. Returns
+                    <code>{ transactions, has_more, next_before_slot }</code>.</p>
             </div>
 
             <!-- Transaction Methods -->

@@ -186,7 +186,7 @@
                     <code>8900</code>.
                 </p>
                 <div class="callout callout-info">
-                    <p><strong>Implementation-verified surface for v0.5.98:</strong> the live server exposes native,
+                    <p><strong>Implementation-verified surface for v0.5.172:</strong> the live server exposes native,
                         Solana-compatible, and EVM-compatible JSON-RPC dispatch, plus REST route families across the
                         DEX, prediction market, launchpad, shielded APIs, and Neo X route/rewards reads.</p>
                 </div>
@@ -267,7 +267,7 @@
                 </div>
                 <div class="method-section">
                     <h4 class="method-section-title">Returns</h4>
-                    <p>Object — <code>{ slot, hash, parentHash, transactions, timestamp, validator, stateRoot }</code>
+                    <p>Object — <code>{ slot, hash, commit_round, parent_hash, state_root, tx_root, timestamp, validator, transaction_count }</code>
                     </p>
                 </div>
                 <div class="code-block">
@@ -279,8 +279,9 @@
 
 # Response
 {"jsonrpc":"2.0","id":1,"result":{
-  "slot":42,"hash":"a1b2c3...","parentHash":"d4e5f6...",
-  "transactions":5,"timestamp":1738800000,"validator":"7xK...","stateRoot":"abc..."
+  "slot":42,"hash":"a1b2c3...","parent_hash":"d4e5f6...",
+  "state_root":"abc...","tx_root":"def...","transaction_count":5,
+  "timestamp":1738800000,"validator":"7xK..."
 }}</code></pre>
                 </div>
             </div>
@@ -475,7 +476,10 @@
                 </div>
                 <div class="method-section">
                     <h4 class="method-section-title">Returns</h4>
-                    <p>Object — <code>{ spores: u64, licn: f64 }</code></p>
+                    <p>Object —
+                        <code>{ spores, licn, spendable, spendable_licn, staked, staked_licn, locked, locked_licn, moss_staked, moss_staked_licn, moss_value, moss_value_licn }</code>.
+                        LICN values are decimal strings; spore values are integers.
+                    </p>
                 </div>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
@@ -485,7 +489,7 @@
   -d '{"jsonrpc":"2.0","id":1,"method":"getBalance","params":["7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU"]}'
 
 # Response
-{"jsonrpc":"2.0","id":1,"result":{"spores":5000000000,"licn":5.0}}</code></pre>
+{"jsonrpc":"2.0","id":1,"result":{"spores":5000000000,"licn":"5.0000","spendable":5000000000,"spendable_licn":"5.0000","staked":0,"staked_licn":"0.0000","locked":0,"locked_licn":"0.0000","moss_staked":0,"moss_staked_licn":"0.0000","moss_value":0,"moss_value_licn":"0.0000"}}</code></pre>
                 </div>
             </div>
 
@@ -517,7 +521,10 @@
                 </div>
                 <div class="method-section">
                     <h4 class="method-section-title">Returns</h4>
-                    <p>Object — <code>{ spores, owner, executable, data }</code></p>
+                    <p>Object —
+                        <code>{ pubkey, evm_address, spores, licn, spendable, spendable_licn, staked, staked_licn, locked, locked_licn, owner, executable, data_len }</code>.
+                        LICN values are decimal strings; spore values are integers.
+                    </p>
                 </div>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
@@ -741,7 +748,7 @@
                 </div>
                 <div class="method-section">
                     <h4 class="method-section-title">Returns</h4>
-                    <p><code>u64</code> — Transaction count.</p>
+                    <p>Object — <code>{ address, count }</code>.</p>
                 </div>
             </div>
 
@@ -778,7 +785,7 @@
                 </div>
                 <div class="method-section">
                     <h4 class="method-section-title">Returns</h4>
-                    <p>Object — <code>{ slot, hash, parentHash, transactions, timestamp, validator, stateRoot }</code>
+                    <p>Object — <code>{ slot, hash, commit_round, parent_hash, state_root, tx_root, timestamp, validator, transaction_count, transactions, block_reward, commit_signatures, commit_validator_count }</code>
                     </p>
                 </div>
                 <div class="code-block">
@@ -790,7 +797,8 @@
 
 # Response
 {"jsonrpc":"2.0","id":1,"result":{
-  "slot":42,"hash":"a1b2...","parentHash":"d4e5...",
+  "slot":42,"hash":"a1b2...","parent_hash":"d4e5...",
+  "state_root":"abc...","tx_root":"def...","transaction_count":2,
   "transactions":[...],"timestamp":1738800000
 }}</code></pre>
                 </div>
@@ -962,17 +970,18 @@
                                 <td>Base58-encoded public key</td>
                             </tr>
                             <tr>
-                                <td>limit</td>
-                                <td><span class="param-type">u64</span></td>
+                                <td>options</td>
+                                <td><span class="param-type">object</span></td>
                                 <td>No</td>
-                                <td>Max number of results (default 10)</td>
+                                <td><code>{ limit?: number, before_slot?: number }</code>; newest first, default limit 50</td>
                             </tr>
                         </tbody>
                     </table>
                 </div>
                 <div class="method-section">
                     <h4 class="method-section-title">Returns</h4>
-                    <p>Array — List of transaction objects.</p>
+                    <p>Object — <code>{ transactions, has_more, next_before_slot }</code>. Each transaction includes
+                        <code>amount</code> in LICN and <code>amount_spores</code> in base units.</p>
                 </div>
             </div>
 
@@ -1000,10 +1009,10 @@
                                 <td>Base58-encoded public key</td>
                             </tr>
                             <tr>
-                                <td>limit</td>
-                                <td><span class="param-type">u64</span></td>
+                                <td>options</td>
+                                <td><span class="param-type">object</span></td>
                                 <td>No</td>
-                                <td>Max results (default 10)</td>
+                                <td><code>{ limit?: number, before_slot?: number }</code>; newest first, default limit 50</td>
                             </tr>
                         </tbody>
                     </table>
@@ -1129,7 +1138,7 @@
                 <div class="method-section">
                     <h4 class="method-section-title">Returns</h4>
                     <p>Object —
-                        <code>{ validators: [ { pubkey, stake, reputation, blocksProposed, votesCast, correctVotes, lastActiveSlot } ] }</code>
+                        <code>{ validators: [ { pubkey, stake, reputation, blocks_proposed, transactions_processed, votes_cast, correct_votes, last_active_slot, last_vote_slot, bootstrap_debt, vesting_status, earned_amount, graduation_slot } ], count }</code>
                     </p>
                 </div>
                 <div class="code-block">
@@ -1359,7 +1368,7 @@
                 </div>
                 <div class="method-section">
                     <h4 class="method-section-title">Returns</h4>
-                    <p>Object — <code>{ chainId, networkId, version, currentSlot, validatorCount, peerCount }</code></p>
+                    <p>Object — <code>{ chain_id, network_id, version, current_slot, validator_count, peer_count }</code></p>
                 </div>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
@@ -1380,7 +1389,7 @@
                 </div>
                 <div class="method-section">
                     <h4 class="method-section-title">Returns</h4>
-                    <p>Object — <code>{ peers: [ address strings ] }</code></p>
+                    <p>Object — <code>{ peers: [{ peer_id, address, connected }], count }</code></p>
                 </div>
             </div>
 
@@ -2459,7 +2468,8 @@
                     <li><code>getLatestBlockhash</code>, <code>getRecentBlockhash</code>, <code>getBalance</code>,
                         <code>getAccountInfo</code>, <code>getBlock</code>, <code>getBlockHeight</code>,
                         <code>getSignaturesForAddress</code>, <code>getSignatureStatuses</code>, <code>getSlot</code>,
-                        <code>getTransaction</code>, <code>sendTransaction</code>, <code>getHealth</code>,
+                        <code>getTransaction</code>, <code>getTokenAccountsByOwner</code>,
+                        <code>getTokenAccountBalance</code>, <code>sendTransaction</code>, <code>getHealth</code>,
                         <code>getVersion</code>
                     </li>
                 </ul>

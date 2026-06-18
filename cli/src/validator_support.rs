@@ -20,7 +20,13 @@ pub(super) async fn handle_validator_info(client: &RpcClient, address: &str) -> 
                 "📊 Status: {}",
                 if info.is_active { "Active" } else { "Inactive" }
             );
-            println!("📦 Blocks produced: {}", info.blocks_produced);
+            println!("📦 Blocks proposed: {}", info.blocks_proposed);
+            println!("📝 Transactions processed: {}", info.transactions_processed);
+            println!(
+                "🗳️  Votes: {}/{} correct",
+                info.correct_votes, info.votes_cast
+            );
+            println!("⏱️  Last active slot: {}", info.last_active_slot);
         }
         Err(error) => {
             println!("⚠️  Validator not found: {}", error);
@@ -37,20 +43,20 @@ pub(super) async fn handle_validator_performance(client: &RpcClient, address: &s
 
     match client.get_validator_performance(address).await {
         Ok(performance) => {
-            println!("📍 Validator: {}", address);
+            println!("📍 Validator: {}", performance.pubkey);
             println!();
-            println!("📊 Epoch Performance:");
-            println!("   Blocks produced: {}", performance.blocks_produced);
-            println!("   Blocks expected: {}", performance.blocks_expected);
-            let success_rate = if performance.blocks_expected > 0 {
-                (performance.blocks_produced as f64 / performance.blocks_expected as f64) * 100.0
-            } else {
-                0.0
-            };
-            println!("   Success rate: {:.2}%", success_rate);
-            println!("   Average block time: {}ms", performance.avg_block_time_ms);
+            println!("📊 Performance:");
+            println!("   Blocks proposed: {}", performance.blocks_proposed);
+            println!(
+                "   Transactions processed: {}",
+                performance.transactions_processed
+            );
+            println!("   Votes cast: {}", performance.votes_cast);
+            println!("   Correct votes: {}", performance.correct_votes);
+            println!("   Vote accuracy: {:.2}%", performance.vote_accuracy);
+            println!("   Reputation: {:.4}", performance.reputation);
             println!();
-            println!("⏰ Uptime: {:.2}%", performance.uptime_percent);
+            println!("⏰ Uptime: {:.2}%", performance.uptime);
         }
         Err(error) => {
             println!("⚠️  Could not fetch performance: {}", error);

@@ -276,10 +276,7 @@
         }
       ],
       "result_semantics": {
-        "kind": "return_code",
-        "success_codes": [
-          0
-        ]
+        "kind": "return_value"
       }
     },
     {
@@ -292,10 +289,7 @@
         }
       ],
       "result_semantics": {
-        "kind": "return_code",
-        "success_codes": [
-          0
-        ]
+        "kind": "return_value"
       }
     },
     {
@@ -303,10 +297,7 @@
       "opcode": 12,
       "params": [],
       "result_semantics": {
-        "kind": "return_code",
-        "success_codes": [
-          0
-        ]
+        "kind": "return_value"
       }
     },
     {
@@ -314,10 +305,7 @@
       "opcode": 13,
       "params": [],
       "result_semantics": {
-        "kind": "return_code",
-        "success_codes": [
-          0
-        ]
+        "kind": "return_value"
       }
     },
     {
@@ -330,10 +318,7 @@
         }
       ],
       "result_semantics": {
-        "kind": "return_code",
-        "success_codes": [
-          0
-        ]
+        "kind": "return_value"
       }
     },
     {
@@ -354,10 +339,7 @@
         }
       ],
       "result_semantics": {
-        "kind": "return_code",
-        "success_codes": [
-          0
-        ]
+        "kind": "return_value"
       }
     },
     {
@@ -365,10 +347,7 @@
       "opcode": 16,
       "params": [],
       "result_semantics": {
-        "kind": "return_code",
-        "success_codes": [
-          0
-        ]
+        "kind": "return_value"
       }
     },
     {
@@ -376,10 +355,7 @@
       "opcode": 17,
       "params": [],
       "result_semantics": {
-        "kind": "return_code",
-        "success_codes": [
-          0
-        ]
+        "kind": "return_value"
       }
     },
     {
@@ -387,10 +363,7 @@
       "opcode": 18,
       "params": [],
       "result_semantics": {
-        "kind": "return_code",
-        "success_codes": [
-          0
-        ]
+        "kind": "return_value"
       }
     },
     {
@@ -398,10 +371,7 @@
       "opcode": 19,
       "params": [],
       "result_semantics": {
-        "kind": "return_code",
-        "success_codes": [
-          0
-        ]
+        "kind": "return_value"
       }
     },
     {

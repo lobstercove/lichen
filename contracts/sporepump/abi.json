@@ -32,7 +32,11 @@
         }
       ],
       "result_semantics": {
-        "kind": "return_value"
+        "kind": "return_value",
+        "failure_codes": [
+          -1,
+          200
+        ]
       }
     },
     {
@@ -53,7 +57,11 @@
         }
       ],
       "result_semantics": {
-        "kind": "return_value"
+        "kind": "return_value",
+        "failure_codes": [
+          -1,
+          200
+        ]
       }
     },
     {
@@ -74,7 +82,11 @@
         }
       ],
       "result_semantics": {
-        "kind": "return_value"
+        "kind": "return_value",
+        "failure_codes": [
+          -1,
+          200
+        ]
       }
     },
     {
@@ -87,7 +99,10 @@
         }
       ],
       "result_semantics": {
-        "kind": "runtime_success_only"
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
       }
     },
     {

@@ -1381,7 +1381,7 @@ wasm-opt -Oz -o optimized.wasm \
                     <div class="code-header"><span>Terminal</span><button class="code-copy-btn">Copy</button></div>
                     <pre><code># Deploy with full symbol registration (recommended)
 lichen deploy target/wasm32-unknown-unknown/release/my_contract.wasm \
-    --symbol MYTK --name "My Token" --template mt20 --decimals 9 \
+    --symbol MYTK --name "My Token" --template token --decimals 9 \
     --metadata '{"website":"https://example.com","logo_url":"https://example.com/logo.png","description":"Community token"}'
 
 # Standard MT-20 launch with owner mint and token profile metadata
@@ -1392,13 +1392,13 @@ lichen token create "My Token" MYTK \
 
 # Deploy with just symbol + name (minimum for explorer visibility)
 lichen deploy target/wasm32-unknown-unknown/release/my_contract.wasm \
-    --symbol MYTK --name "My Token" --template mt20 --decimals 9
+    --symbol MYTK --name "My Token" --template token --decimals 9
 
 # Deploy without registration (can register later)
 lichen deploy target/wasm32-unknown-unknown/release/my_contract.wasm
 
 # Register an already-deployed contract retroactively
-lichen contract register &lt;address&gt; --symbol MYTK --name "My Token" --template mt20
+lichen contract register &lt;address&gt; --symbol MYTK --name "My Token" --template token
 
 # Output:
 # 🦐 Deploying contract: my_contract.wasm

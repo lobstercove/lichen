@@ -3,7 +3,8 @@
 pub use crate::client_types_support::{
     AccountInfo, BalanceInfo, BlockInfo, BurnedInfo, ChainStatus, ContractInfo, ContractLog,
     ContractSummary, Metrics, NetworkInfo, PeerInfo, RewardAdjustmentInfo, StakingRewards,
-    StakingStatus, TransactionInfo, ValidatorInfoDetailed, ValidatorPerformance, ValidatorsInfo,
+    StakingStatus, TransactionHistoryResponse, ValidatorInfoDetailed, ValidatorPerformance,
+    ValidatorsInfo,
 };
 
 #[derive(Clone)]

@@ -244,7 +244,6 @@ printf "%-30s %-10s %-10s %-10s\n" "getBlock" "✅" "✅" "✅"
 printf "%-30s %-10s %-10s %-10s\n" "getValidators" "✅" "✅" "✅"
 printf "%-30s %-10s %-10s %-10s\n" "getNetworkInfo" "✅" "✅" "✅"
 printf "%-30s %-10s %-10s %-10s\n" "sendTransaction" "✅" "✅" "✅"
-printf "%-30s %-10s %-10s %-10s\n" "getProgramAccounts" "✅" "✅" "✅"
 printf "%-30s %-10s %-10s %-10s\n" "simulateTransaction" "✅" "✅" "✅"
 
 echo ""

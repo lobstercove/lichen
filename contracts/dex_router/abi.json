@@ -164,10 +164,7 @@
         }
       ],
       "result_semantics": {
-        "kind": "return_code",
-        "success_codes": [
-          0
-        ]
+        "kind": "return_value"
       }
     },
     {
@@ -180,10 +177,7 @@
         }
       ],
       "result_semantics": {
-        "kind": "return_code",
-        "success_codes": [
-          0
-        ]
+        "kind": "return_value"
       }
     },
     {
@@ -255,10 +249,7 @@
       "opcode": 10,
       "params": [],
       "result_semantics": {
-        "kind": "return_code",
-        "success_codes": [
-          0
-        ]
+        "kind": "return_value"
       }
     },
     {
@@ -266,10 +257,7 @@
       "opcode": 11,
       "params": [],
       "result_semantics": {
-        "kind": "return_code",
-        "success_codes": [
-          0
-        ]
+        "kind": "return_value"
       }
     },
     {
@@ -277,10 +265,7 @@
       "opcode": 12,
       "params": [],
       "result_semantics": {
-        "kind": "return_code",
-        "success_codes": [
-          0
-        ]
+        "kind": "return_value"
       }
     },
     {
@@ -288,10 +273,7 @@
       "opcode": 13,
       "params": [],
       "result_semantics": {
-        "kind": "return_code",
-        "success_codes": [
-          0
-        ]
+        "kind": "return_value"
       }
     }
   ]

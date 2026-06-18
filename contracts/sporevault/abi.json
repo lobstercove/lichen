@@ -56,7 +56,10 @@
         }
       ],
       "result_semantics": {
-        "kind": "return_value"
+        "kind": "nonzero_return_value",
+        "failure_codes": [
+          200
+        ]
       }
     },
     {
@@ -73,7 +76,10 @@
         }
       ],
       "result_semantics": {
-        "kind": "return_value"
+        "kind": "nonzero_return_value",
+        "failure_codes": [
+          200
+        ]
       }
     },
     {
@@ -273,7 +279,10 @@
         }
       ],
       "result_semantics": {
-        "kind": "return_value"
+        "kind": "return_value",
+        "failure_codes": [
+          200
+        ]
       }
     },
     {

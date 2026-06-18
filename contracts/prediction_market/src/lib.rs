@@ -4370,25 +4370,25 @@ pub extern "C" fn call() -> u32 {
         23 => {
             // get_market
             if args.len() >= 9 {
-                get_market(bytes_to_u64(&args[1..9]));
+                _rc = get_market(bytes_to_u64(&args[1..9]));
             }
         }
         24 => {
             // get_outcome_pool
             if args.len() >= 10 {
-                get_outcome_pool(bytes_to_u64(&args[1..9]), args[9]);
+                _rc = get_outcome_pool(bytes_to_u64(&args[1..9]), args[9]);
             }
         }
         25 => {
             // get_price
             if args.len() >= 10 {
-                get_price(bytes_to_u64(&args[1..9]), args[9]);
+                _rc = get_price(bytes_to_u64(&args[1..9]), args[9]);
             }
         }
         26 => {
             // get_position
             if args.len() >= 42 {
-                get_position(bytes_to_u64(&args[1..9]), args[9..41].as_ptr(), args[41]);
+                _rc = get_position(bytes_to_u64(&args[1..9]), args[9..41].as_ptr(), args[41]);
             }
         }
         27 => {
@@ -4406,7 +4406,7 @@ pub extern "C" fn call() -> u32 {
         29 => {
             // quote_buy
             if args.len() >= 18 {
-                quote_buy(
+                _rc = quote_buy(
                     bytes_to_u64(&args[1..9]),
                     args[9],
                     bytes_to_u64(&args[10..18]),
@@ -4416,7 +4416,7 @@ pub extern "C" fn call() -> u32 {
         30 => {
             // quote_sell
             if args.len() >= 18 {
-                quote_sell(
+                _rc = quote_sell(
                     bytes_to_u64(&args[1..9]),
                     args[9],
                     bytes_to_u64(&args[10..18]),
@@ -4426,17 +4426,17 @@ pub extern "C" fn call() -> u32 {
         31 => {
             // get_pool_reserves
             if args.len() >= 9 {
-                get_pool_reserves(bytes_to_u64(&args[1..9]));
+                _rc = get_pool_reserves(bytes_to_u64(&args[1..9]));
             }
         }
         32 => {
             // get_platform_stats
-            get_platform_stats();
+            _rc = get_platform_stats();
         }
         33 => {
             // get_lp_balance
             if args.len() >= 41 {
-                get_lp_balance(bytes_to_u64(&args[1..9]), args[9..41].as_ptr());
+                _rc = get_lp_balance(bytes_to_u64(&args[1..9]), args[9..41].as_ptr());
             }
         }
         34 => {

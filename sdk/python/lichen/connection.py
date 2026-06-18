@@ -119,7 +119,7 @@ class Connection:
     # BASIC QUERIES
     # ============================================================================
     
-    async def get_balance(self, pubkey: PublicKey) -> Dict[str, int]:
+    async def get_balance(self, pubkey: PublicKey) -> Dict[str, Any]:
         """Get account balance"""
         return await self._rpc("getBalance", [str(pubkey)])
     
@@ -158,7 +158,7 @@ class Connection:
         result = await self._rpc("sendTransaction", [tx_base64])
         return result
     
-    async def get_total_burned(self) -> Dict[str, int]:
+    async def get_total_burned(self) -> Dict[str, Any]:
         """Get total burned LICN"""
         return await self._rpc("getTotalBurned")
     
@@ -369,9 +369,17 @@ class Connection:
         """Get enhanced account information"""
         return await self._rpc("getAccountInfo", [str(pubkey)])
     
-    async def get_transaction_history(self, pubkey: PublicKey, limit: int = 10) -> Dict[str, Any]:
+    async def get_transaction_history(
+        self,
+        pubkey: PublicKey,
+        limit: int = 10,
+        before_slot: Optional[int] = None,
+    ) -> Dict[str, Any]:
         """Get transaction history"""
-        return await self._rpc("getTransactionHistory", [str(pubkey), limit])
+        options: Dict[str, Any] = {"limit": limit}
+        if before_slot is not None:
+            options["before_slot"] = before_slot
+        return await self._rpc("getTransactionHistory", [str(pubkey), options])
 
     async def call_readonly_contract(
         self,

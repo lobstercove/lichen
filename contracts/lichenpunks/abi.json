@@ -85,7 +85,10 @@
         }
       ],
       "result_semantics": {
-        "kind": "runtime_success_only"
+        "kind": "return_code",
+        "success_codes": [
+          1
+        ]
       }
     },
     {
@@ -251,7 +254,10 @@
         }
       ],
       "result_semantics": {
-        "kind": "runtime_success_only"
+        "kind": "return_code",
+        "success_codes": [
+          1
+        ]
       }
     },
     {
@@ -272,7 +278,10 @@
         }
       ],
       "result_semantics": {
-        "kind": "runtime_success_only"
+        "kind": "return_code",
+        "success_codes": [
+          1
+        ]
       }
     },
     {
@@ -389,7 +398,10 @@
       "opcode": 20,
       "params": [],
       "result_semantics": {
-        "kind": "runtime_success_only"
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
       }
     }
   ]

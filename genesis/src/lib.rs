@@ -6,6 +6,7 @@
 //!   - `lichen-validator` (replays genesis contract deployment on sync)
 
 use lichen_core::{
+    contract::{evaluate_contract_outcome, ContractOutcomeFallback},
     Account, ContractAbi, ContractAccount, ContractContext, ContractRuntime, GenesisPrices, Hash,
     ProgramCallActivity, Pubkey, StateStore, SymbolRegistryEntry,
 };
@@ -643,10 +644,9 @@ fn genesis_exec_contract_accepting_return_codes(
     let mut runtime = ContractRuntime::new();
     match runtime.execute(&contract, function_name, args, ctx) {
         Ok(result) => {
-            // Check return code regardless of success flag — WASM functions
-            // that return non-zero error codes (e.g. "not admin", "zero address
-            // rejected") do NOT trap, so success may be true while the operation
-            // actually failed without modifying storage.
+            // Check return code regardless of success flag. Declared ABI
+            // semantics are authoritative; the explicit accepted-code list is
+            // only a fallback for old/silent ABI metadata.
             let rc = result.return_code.unwrap_or(0);
             let accepted_rc = accepted_return_codes.contains(&rc);
             if !result.success {
@@ -663,16 +663,35 @@ fn genesis_exec_contract_accepting_return_codes(
                     "  WARN {}: contract returned !success with rc=0: {:?}",
                     label, result.error
                 );
-            } else if !accepted_rc {
-                // success == true but unexpected return code: the WASM function
-                // may have returned an error without trapping. Storage changes
-                // are not persisted unless this call explicitly declares the
-                // code as a success code.
-                warn!(
-                    "  FAIL {}: success=true but return_code={} (unexpected for genesis call)",
-                    label, rc
+            } else {
+                let outcome = evaluate_contract_outcome(
+                    &contract,
+                    function_name,
+                    &result,
+                    ContractOutcomeFallback::RuntimeSuccessOnly,
                 );
-                return false;
+                if outcome.declared {
+                    if !outcome.success {
+                        warn!(
+                            "  FAIL {}: {}",
+                            label,
+                            outcome.error.unwrap_or_else(|| {
+                                format!("contract returned ABI failure code {}", rc)
+                            })
+                        );
+                        return false;
+                    }
+                } else if !accepted_rc {
+                    // success == true but unexpected return code: the WASM function
+                    // may have returned an error without trapping. Storage changes
+                    // are not persisted unless this call explicitly declares the
+                    // code as a success code.
+                    warn!(
+                        "  FAIL {}: success=true but return_code={} (unexpected for genesis call)",
+                        label, rc
+                    );
+                    return false;
+                }
             }
             // Apply storage changes
             for (key, val_opt) in &result.storage_changes {
@@ -1856,6 +1875,17 @@ pub fn genesis_initialize_contracts(
     // ── LichenSwap: wire LichenID address for identity verification ──
     // Named export: set_lichenid_address. Args: [admin 32B][lichenid_addr 32B]
     if let Some(swap_pk) = address_map.get("lichenswap") {
+        if exec_as_governance(
+            swap_pk,
+            "set_identity_admin",
+            &admin,
+            "lichenswap(identity_admin)",
+        ) {
+            info!("  SET lichenswap(identity_admin)");
+        } else {
+            warn!("  WARN: Failed to set lichenswap identity admin");
+        }
+
         let lichenid_addr = address_map.get("lichenid").map(|p| p.0).unwrap_or(admin);
         let mut args = Vec::with_capacity(64);
         args.extend_from_slice(&admin);

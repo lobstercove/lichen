@@ -110,6 +110,8 @@ pub enum AbiResultKind {
     ReturnCode,
     /// The first WASM I32/I64 return value is data, not an error/status code.
     ReturnValue,
+    /// The first WASM I32/I64 return value is data and zero means failure.
+    NonzeroReturnValue,
 }
 
 /// Declared success semantics for a function.
@@ -120,6 +122,9 @@ pub struct AbiResultSemantics {
     /// when omitted or empty.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub success_codes: Vec<i64>,
+    /// Return values that revert for value-returning functions.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failure_codes: Vec<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 }
@@ -974,6 +979,10 @@ fn code_is_declared_success(code: i64, success_codes: &[i64]) -> bool {
     }
 }
 
+fn code_is_declared_failure(code: i64, failure_codes: &[i64]) -> bool {
+    failure_codes.contains(&code)
+}
+
 fn abi_error_label(contract: &ContractAccount, code: i64) -> Option<String> {
     let code = u32::try_from(code).ok()?;
     contract
@@ -1038,10 +1047,66 @@ pub fn evaluate_contract_outcome(
         .and_then(|function| function.result_semantics.as_ref())
     {
         return match semantics.kind {
-            AbiResultKind::RuntimeSuccessOnly | AbiResultKind::ReturnValue => ContractOutcome {
+            AbiResultKind::RuntimeSuccessOnly => ContractOutcome {
                 success: true,
                 error: None,
                 declared: true,
+            },
+            AbiResultKind::ReturnValue => match result.return_code {
+                Some(code) if code_is_declared_failure(code, &semantics.failure_codes) => {
+                    let label = abi_error_label(contract, code)
+                        .map(|label| format!(" ({label})"))
+                        .unwrap_or_default();
+                    ContractOutcome {
+                        success: false,
+                        error: Some(format!(
+                            "Contract '{}' returned ABI failure value {}{}",
+                            function_name, code, label
+                        )),
+                        declared: true,
+                    }
+                }
+                _ => ContractOutcome {
+                    success: true,
+                    error: None,
+                    declared: true,
+                },
+            },
+            AbiResultKind::NonzeroReturnValue => match result.return_code {
+                Some(code) if code_is_declared_failure(code, &semantics.failure_codes) => {
+                    let label = abi_error_label(contract, code)
+                        .map(|label| format!(" ({label})"))
+                        .unwrap_or_default();
+                    ContractOutcome {
+                        success: false,
+                        error: Some(format!(
+                            "Contract '{}' returned ABI failure value {}{}",
+                            function_name, code, label
+                        )),
+                        declared: true,
+                    }
+                }
+                Some(code) if code != 0 => ContractOutcome {
+                    success: true,
+                    error: None,
+                    declared: true,
+                },
+                Some(_) => ContractOutcome {
+                    success: false,
+                    error: Some(format!(
+                        "Contract '{}' returned zero for nonzero-return-value result semantics",
+                        function_name
+                    )),
+                    declared: true,
+                },
+                None => ContractOutcome {
+                    success: false,
+                    error: Some(format!(
+                        "Contract '{}' declares nonzero-return-value result semantics but returned no value",
+                        function_name
+                    )),
+                    declared: true,
+                },
             },
             AbiResultKind::ReturnCode => match result.return_code {
                 Some(code) if code_is_declared_success(code, &semantics.success_codes) => {
@@ -4199,6 +4264,7 @@ mod tests {
         let result_semantics = abi.functions[0].result_semantics.as_ref().unwrap();
         assert_eq!(result_semantics.kind, AbiResultKind::ReturnCode);
         assert_eq!(result_semantics.success_codes, vec![0]);
+        assert!(result_semantics.failure_codes.is_empty());
     }
 
     #[test]
@@ -4239,6 +4305,29 @@ mod tests {
                         abi_path.display(),
                         function.name
                     );
+                    assert!(
+                        semantics.failure_codes.is_empty(),
+                        "{}:{} return_code semantics must not declare failure_codes",
+                        abi_path.display(),
+                        function.name
+                    );
+                } else {
+                    assert!(
+                        semantics.success_codes.is_empty(),
+                        "{}:{} value/runtime semantics must not declare success_codes",
+                        abi_path.display(),
+                        function.name
+                    );
+                    assert!(
+                        semantics.failure_codes.is_empty()
+                            || matches!(
+                                semantics.kind,
+                                AbiResultKind::ReturnValue | AbiResultKind::NonzeroReturnValue
+                            ),
+                        "{}:{} failure_codes are only valid for value-returning semantics",
+                        abi_path.display(),
+                        function.name
+                    );
                 }
             }
         }
@@ -4247,6 +4336,282 @@ mod tests {
             abi_count, 32,
             "expected every bundled contract ABI to be checked"
         );
+    }
+
+    #[test]
+    fn test_repo_contract_abis_declare_value_result_semantics_for_value_returns() {
+        let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let contracts_dir = manifest_dir
+            .parent()
+            .expect("core crate should live under workspace root")
+            .join("contracts");
+
+        let load_abi = |name: &str| -> ContractAbi {
+            let abi_path = contracts_dir.join(name).join("abi.json");
+            let json = std::fs::read_to_string(&abi_path)
+                .unwrap_or_else(|error| panic!("failed to read {}: {}", abi_path.display(), error));
+            serde_json::from_str(&json)
+                .unwrap_or_else(|error| panic!("failed to parse {}: {}", abi_path.display(), error))
+        };
+
+        let assert_kind = |abi: &ContractAbi, function_name: &str, expected: AbiResultKind| {
+            let function = abi
+                .functions
+                .iter()
+                .find(|function| function.name == function_name)
+                .unwrap_or_else(|| panic!("{} missing ABI function", function_name));
+            let semantics = function
+                .result_semantics
+                .as_ref()
+                .unwrap_or_else(|| panic!("{} missing result semantics", function_name));
+            assert_eq!(semantics.kind, expected, "{}", function_name);
+        };
+        let assert_failure_codes = |abi: &ContractAbi, function_name: &str, expected: &[i64]| {
+            let function = abi
+                .functions
+                .iter()
+                .find(|function| function.name == function_name)
+                .unwrap_or_else(|| panic!("{} missing ABI function", function_name));
+            let semantics = function
+                .result_semantics
+                .as_ref()
+                .unwrap_or_else(|| panic!("{} missing result semantics", function_name));
+            assert_eq!(semantics.failure_codes, expected, "{}", function_name);
+        };
+
+        let prediction = load_abi("prediction_market");
+        for name in [
+            "create_market",
+            "add_liquidity",
+            "buy_shares",
+            "sell_shares",
+            "withdraw_liquidity",
+        ] {
+            assert_kind(&prediction, name, AbiResultKind::NonzeroReturnValue);
+        }
+        assert_kind(
+            &prediction,
+            "redeem_complete_set",
+            AbiResultKind::NonzeroReturnValue,
+        );
+        assert!(
+            prediction
+                .functions
+                .iter()
+                .any(|function| function.name == "set_lusd_address"),
+            "prediction_market ABI should expose set_lusd_address"
+        );
+        assert!(
+            !prediction
+                .functions
+                .iter()
+                .any(|function| function.name == "set_musd_address"),
+            "prediction_market ABI should not expose stale set_musd_address"
+        );
+        for name in [
+            "get_market",
+            "get_outcome_pool",
+            "get_price",
+            "get_position",
+            "quote_buy",
+            "quote_sell",
+            "get_pool_reserves",
+            "get_platform_stats",
+            "get_lp_balance",
+        ] {
+            let function = prediction
+                .functions
+                .iter()
+                .find(|function| function.name == name)
+                .unwrap_or_else(|| panic!("{} missing ABI function", name));
+            let semantics = function
+                .result_semantics
+                .as_ref()
+                .unwrap_or_else(|| panic!("{} missing result semantics", name));
+            assert_eq!(semantics.kind, AbiResultKind::ReturnCode, "{}", name);
+            assert_eq!(semantics.success_codes, vec![1], "{}", name);
+        }
+
+        let sporepump = load_abi("sporepump");
+        for name in ["create_token", "buy", "sell"] {
+            assert_kind(&sporepump, name, AbiResultKind::ReturnValue);
+            assert_failure_codes(&sporepump, name, &[-1, 200]);
+        }
+
+        let lichenswap = load_abi("lichenswap");
+        for name in [
+            "add_liquidity",
+            "swap_a_for_b",
+            "swap_b_for_a",
+            "swap_a_for_b_with_deadline",
+            "swap_b_for_a_with_deadline",
+            "swap",
+            "flash_loan_borrow",
+        ] {
+            assert_kind(&lichenswap, name, AbiResultKind::NonzeroReturnValue);
+        }
+
+        let sporevault = load_abi("sporevault");
+        for name in ["deposit", "withdraw"] {
+            assert_kind(&sporevault, name, AbiResultKind::NonzeroReturnValue);
+            assert_failure_codes(&sporevault, name, &[200]);
+        }
+        assert_kind(
+            &sporevault,
+            "withdraw_protocol_fees",
+            AbiResultKind::ReturnValue,
+        );
+        assert_failure_codes(&sporevault, "withdraw_protocol_fees", &[200]);
+
+        let lichenmarket = load_abi("lichenmarket");
+        assert_kind(
+            &lichenmarket,
+            "get_nft_attributes",
+            AbiResultKind::NonzeroReturnValue,
+        );
+        assert_kind(&lichenmarket, "get_offer_count", AbiResultKind::ReturnValue);
+        for name in ["get_listing", "get_auction"] {
+            let function = lichenmarket
+                .functions
+                .iter()
+                .find(|function| function.name == name)
+                .unwrap_or_else(|| panic!("{} missing ABI function", name));
+            let semantics = function
+                .result_semantics
+                .as_ref()
+                .unwrap_or_else(|| panic!("{} missing result semantics", name));
+            assert_eq!(semantics.kind, AbiResultKind::ReturnCode, "{}", name);
+            assert_eq!(semantics.success_codes, vec![1], "{}", name);
+        }
+
+        let lichenpunks = load_abi("lichenpunks");
+        for name in ["owner_of", "get_owner_of", "get_punk_metadata"] {
+            let function = lichenpunks
+                .functions
+                .iter()
+                .find(|function| function.name == name)
+                .unwrap_or_else(|| panic!("{} missing ABI function", name));
+            let semantics = function
+                .result_semantics
+                .as_ref()
+                .unwrap_or_else(|| panic!("{} missing result semantics", name));
+            assert_eq!(semantics.kind, AbiResultKind::ReturnCode, "{}", name);
+            assert_eq!(semantics.success_codes, vec![1], "{}", name);
+        }
+        let collection_stats = lichenpunks
+            .functions
+            .iter()
+            .find(|function| function.name == "get_collection_stats")
+            .expect("get_collection_stats ABI function should exist")
+            .result_semantics
+            .as_ref()
+            .expect("get_collection_stats should declare result semantics");
+        assert_eq!(collection_stats.kind, AbiResultKind::ReturnCode);
+        assert_eq!(collection_stats.success_codes, vec![0]);
+
+        for (contract, names) in [
+            (
+                "dex_amm",
+                &[
+                    "get_pool_info",
+                    "get_position",
+                    "get_pool_count",
+                    "get_position_count",
+                    "get_tvl",
+                    "quote_swap",
+                    "get_total_volume",
+                    "get_swap_count",
+                    "get_total_fees_collected",
+                    "get_amm_stats",
+                ][..],
+            ),
+            (
+                "dex_core",
+                &[
+                    "get_pair_count",
+                    "get_preferred_quote",
+                    "get_best_bid",
+                    "get_best_ask",
+                    "get_spread",
+                    "get_pair_info",
+                    "get_trade_count",
+                    "get_fee_treasury",
+                    "get_order",
+                    "get_allowed_quote_count",
+                    "get_total_volume",
+                    "get_user_orders",
+                    "get_open_order_count",
+                ][..],
+            ),
+            (
+                "dex_router",
+                &[
+                    "get_best_route",
+                    "get_route_info",
+                    "get_route_count",
+                    "get_swap_count",
+                    "get_total_volume_routed",
+                    "get_router_stats",
+                ][..],
+            ),
+            (
+                "dex_analytics",
+                &[
+                    "get_ohlcv",
+                    "get_24h_stats",
+                    "get_trader_stats",
+                    "get_last_price",
+                    "get_record_count",
+                    "get_trader_count",
+                    "get_global_stats",
+                ][..],
+            ),
+            (
+                "dex_governance",
+                &[
+                    "get_preferred_quote",
+                    "get_proposal_count",
+                    "get_proposal_info",
+                    "get_allowed_quote_count",
+                    "get_governance_stats",
+                    "get_voter_count",
+                ][..],
+            ),
+            (
+                "dex_margin",
+                &[
+                    "get_position_info",
+                    "get_margin_ratio",
+                    "get_tier_info",
+                    "get_total_volume",
+                    "get_user_positions",
+                    "get_total_pnl",
+                    "get_liquidation_count",
+                    "get_margin_stats",
+                    "is_margin_enabled",
+                    "query_user_open_position",
+                ][..],
+            ),
+            (
+                "dex_rewards",
+                &[
+                    "get_pending_rewards",
+                    "get_trading_tier",
+                    "get_referral_rate",
+                    "get_total_distributed",
+                    "get_trader_count",
+                    "get_total_volume",
+                    "get_reward_stats",
+                    "get_lp_campaign_stats",
+                    "get_lp_pending_rewards",
+                ][..],
+            ),
+        ] {
+            let abi = load_abi(contract);
+            for name in names {
+                assert_kind(&abi, name, AbiResultKind::ReturnValue);
+            }
+        }
     }
 
     #[test]

@@ -117,7 +117,7 @@ fn build_deploy_symbol_registration_command(
     decimals: Option<u8>,
 ) -> String {
     let mut command = format!(
-        "lichen contract register --address {} --symbol {}",
+        "lichen contract register {} --symbol {}",
         contract_addr.to_base58(),
         symbol
     );

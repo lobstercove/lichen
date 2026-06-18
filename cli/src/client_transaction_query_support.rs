@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use serde_json::json;
 
-use crate::client::{RpcClient, TransactionInfo};
+use crate::client::{RpcClient, TransactionHistoryResponse};
 
 impl RpcClient {
     /// Get transaction history
@@ -9,11 +9,11 @@ impl RpcClient {
         &self,
         address: &str,
         limit: usize,
-    ) -> Result<Vec<TransactionInfo>> {
-        let params = json!([address, limit]);
+    ) -> Result<TransactionHistoryResponse> {
+        let params = json!([address, { "limit": limit }]);
         let result = self.call("getTransactionHistory", params).await?;
 
-        let history: Vec<TransactionInfo> =
+        let history: TransactionHistoryResponse =
             serde_json::from_value(result).context("Failed to parse transaction history")?;
 
         Ok(history)

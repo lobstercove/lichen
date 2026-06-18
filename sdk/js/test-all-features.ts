@@ -194,13 +194,6 @@ async function main() {
     () => connection.getTransactionHistory(systemProgram, 10)
   ));
   
-  // Test getProgramAccounts
-  results.push(await testMethodOptional(
-    'getProgramAccounts',
-    () => connection.getProgramAccounts(systemProgram),
-    [/Method not found/i, /not implemented/i]
-  ));
-  
   console.log('\n📊 CONTRACT ENDPOINTS');
   console.log('-'.repeat(60));
   
@@ -240,7 +233,7 @@ async function main() {
     'Network Info': ['getNetworkInfo', 'getValidators', 'getChainStatus', 'getMetrics', 'getPeers', 'health'],
     'Validator Info': ['getValidatorInfo', 'getValidatorPerformance'],
     'Staking': ['getStakingStatus', 'getStakingRewards', 'getTotalBurned'],
-    'Transactions': ['getTransactionHistory', 'getProgramAccounts'],
+    'Transactions': ['getTransactionHistory'],
     'Contracts': ['getAllContracts'],
   };
   

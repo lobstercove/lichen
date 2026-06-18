@@ -297,8 +297,8 @@ const connection = new Connection(
 const pubkey = new PublicKey('11111111111111111111111111111112');
 const balance = await connection.getBalance(pubkey);
 
-console.log(`Balance: ${balance.licn.toFixed(9)} LICN`);
-// → Balance: 42.500000000 LICN</code></pre>
+console.log(`Balance: ${balance.licn} LICN`);
+// → Balance: 42.5000 LICN</code></pre>
                 </div>
             </div>
 
@@ -320,7 +320,7 @@ async def main():
 
     pubkey = PublicKey("11111111111111111111111111111112")
     balance = await connection.get_balance(pubkey)
-    print(f"Balance: {balance['licn']:.9f} LICN")
+    print(f"Balance: {balance['licn']} LICN")
 
     await connection.close()
 

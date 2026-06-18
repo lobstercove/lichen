@@ -392,7 +392,12 @@
                 non-trapping call commits or reverts. For example, <code>{"kind":"return_code","success_codes":[0]}</code>
                 means any returned code other than <code>0</code> is an ABI failure and the transaction's contract
                 state changes are reverted. <code>{"kind":"return_value"}</code> means the return value is data, not a
-                status code. Production ABIs should declare <code>result_semantics</code> for every callable function
+                status code. <code>{"kind":"nonzero_return_value"}</code> means the return value is data and
+                <code>0</code> is an ABI failure that reverts state changes. Use it for id- or amount-returning
+                write functions where successful results are always nonzero. Value-returning functions with sentinel
+                errors must declare them with <code>failure_codes</code>, for example
+                <code>{"kind":"return_value","failure_codes":[-1,200]}</code>. Production ABIs should declare
+                <code>result_semantics</code> for every callable function
                 that can be reached directly or by cross-contract call.
             </p>
             <table class="const-table">

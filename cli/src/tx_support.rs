@@ -30,7 +30,10 @@ pub(super) async fn handle_transaction_lookup(
                 if let Some(to) = transaction.get("to").and_then(|value| value.as_str()) {
                     println!("To:     {}", to);
                 }
-                if let Some(amount) = transaction.get("amount").and_then(|value| value.as_u64()) {
+                if let Some(amount) = transaction
+                    .get("amount_spores")
+                    .and_then(|value| value.as_u64())
+                {
                     if amount > 0 {
                         println!("Amount: {} LICN", to_licn(amount));
                     }

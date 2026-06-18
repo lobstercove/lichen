@@ -222,6 +222,7 @@ fn ping_return_code_success_zero_abi() -> ContractAbi {
             result_semantics: Some(AbiResultSemantics {
                 kind: AbiResultKind::ReturnCode,
                 success_codes: vec![0],
+                failure_codes: Vec::new(),
                 description: None,
             }),
         }],

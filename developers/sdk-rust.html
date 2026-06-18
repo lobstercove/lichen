@@ -408,9 +408,10 @@ println!("{} spores  ({} LICN)", bal.spores(), bal.licn());</code></pre>
 
             <div class="method-card">
                 <h3 class="method-name">async get_transaction_history(&amp;self, pubkey: &amp;Pubkey, limit:
-                    Option&lt;u64&gt;) -&gt;
+                    Option&lt;u64&gt;, before_slot: Option&lt;u64&gt;) -&gt;
                     Result&lt;Value&gt;</h3>
-                <p class="method-desc">Get paginated transaction history for an account.</p>
+                <p class="method-desc">Get paginated transaction history for an account. Returns
+                    <code>{ transactions, has_more, next_before_slot }</code>.</p>
             </div>
 
             <!-- Transaction Methods -->

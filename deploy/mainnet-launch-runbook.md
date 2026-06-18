@@ -4,7 +4,7 @@ This is the operator runbook for launching Lichen mainnet and then enabling
 mainnet custody. It is intentionally step-by-step and gate-based. Do not skip a
 gate because mainnet genesis and custody routes handle real value.
 
-Written for the current mainnet package. Current signed-release target for this runbook is `v0.5.171`; keep `v0.5.161` as the signed rollback point. If a newer
+Written for the current mainnet package. Current signed-release target for this runbook is `v0.5.172`; keep `v0.5.161` as the signed rollback point. If a newer
 release is used, replace every example tag with the newer signed release tag
 after CI and release verification pass.
 
@@ -200,7 +200,7 @@ credentials, or keypair passwords.
 Use the signed release that passed CI. For the current package:
 
 ```bash
-export LICHEN_RELEASE_TAG=v0.5.168
+export LICHEN_RELEASE_TAG=v0.5.172
 export LICHEN_MAINNET_VPS_HOSTS="15.204.229.189 37.59.97.61 15.235.142.253 148.113.43.247"
 ```
 
@@ -769,6 +769,7 @@ export PRICE_FILE=/secure/launch/genesis-prices-mainnet.json
 export SEED_VALIDATOR_PUBKEY=REPLACE_WITH_US_VALIDATOR_PUBKEY
 export EU_VALIDATOR_PUBKEY=REPLACE_WITH_EU_VALIDATOR_PUBKEY
 export SEA_VALIDATOR_PUBKEY=REPLACE_WITH_SEA_VALIDATOR_PUBKEY
+export IN_VALIDATOR_PUBKEY=REPLACE_WITH_IN_VALIDATOR_PUBKEY
 export KP_PASS="$(sudo awk -F= '/^LICHEN_KEYPAIR_PASSWORD=/{print substr($0, index($0,$2))}' /etc/lichen/env-mainnet)"
 
 sudo -u lichen env \
@@ -785,9 +786,11 @@ sudo -u lichen env \
     --bridge-validator "$SEED_VALIDATOR_PUBKEY" \
     --bridge-validator "$EU_VALIDATOR_PUBKEY" \
     --bridge-validator "$SEA_VALIDATOR_PUBKEY" \
+    --bridge-validator "$IN_VALIDATOR_PUBKEY" \
     --oracle-operator "$SEED_VALIDATOR_PUBKEY" \
     --oracle-operator "$EU_VALIDATOR_PUBKEY" \
     --oracle-operator "$SEA_VALIDATOR_PUBKEY" \
+    --oracle-operator "$IN_VALIDATOR_PUBKEY" \
     --genesis-prices-file "$PRICE_FILE"
 ```
 
@@ -816,7 +819,7 @@ US seed must produce blocks before joiners start.
 
 ### 7.7 Start Joiners From Empty State
 
-On EU and SEA:
+On EU, SEA, and IN:
 
 ```bash
 sudo test -f /var/lib/lichen/state-mainnet/seeds.json || sudo install -m 644 -o lichen -g lichen /etc/lichen/seeds.json /var/lib/lichen/state-mainnet/seeds.json

@@ -5,6 +5,23 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.172] - 2026-06-18
+
+### Fixed
+- Adds ABI `failure_codes` for value-returning contracts with explicit sentinel
+  errors, and aligns bundled contract ABIs with source return behavior.
+- Fixes prediction-market dispatcher return-code propagation for query opcodes
+  and renames the bundled ABI entry to `set_lusd_address`.
+- Aligns CLI and SDK surfaces with current RPC response envelopes for contracts,
+  validators, transactions, staking, burned supply, and block/network status.
+- Updates deployment runbooks, release docs, host-function docs, and developer
+  portal examples to the current `v0.5.172` release candidate and `v0.5.161`
+  rollback reference.
+
+### Verified
+- Passed full workspace tests before the final ABI surface pass; final focused
+  ABI, CLI, SDK, deployment-doc, clippy, and release checks are rerun before tag.
+
 ## [0.5.169] - 2026-06-17
 
 ### Fixed

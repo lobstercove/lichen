@@ -316,7 +316,10 @@
         }
       ],
       "result_semantics": {
-        "kind": "runtime_success_only"
+        "kind": "return_code",
+        "success_codes": [
+          1
+        ]
       }
     },
     {
@@ -542,6 +545,25 @@
         "kind": "return_code",
         "success_codes": [
           0
+        ]
+      }
+    },
+    {
+      "name": "set_lichenid_address",
+      "params": [
+        {
+          "name": "caller_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "lichenid_addr_ptr",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          1
         ]
       }
     },

@@ -17,7 +17,7 @@ function sha256(data: Uint8Array): Uint8Array {
  */
 export interface Balance {
   spores: number;
-  licn: number;
+  licn: string;
   spendable?: number;
   spendable_licn?: string;
   staked?: number;
@@ -35,9 +35,18 @@ export interface Balance {
  */
 export interface Account {
   spores: number;
+  licn: string;
+  spendable?: number;
+  spendable_licn?: string;
+  staked?: number;
+  staked_licn?: string;
+  locked?: number;
+  locked_licn?: string;
   owner: string;
   executable: boolean;
-  data: string;
+  data_len: number;
+  pubkey?: string;
+  evm_address?: string;
 }
 
 /**
@@ -46,9 +55,17 @@ export interface Account {
 export interface Block {
   slot: number;
   hash: string;
-  parentHash: string;
-  transactions: number;
+  commit_round?: number;
+  parent_hash: string;
+  state_root: string;
+  tx_root?: string;
   timestamp: number;
+  validator: string;
+  transaction_count: number;
+  transactions?: any[];
+  block_reward?: number;
+  commit_signatures?: string[];
+  commit_validator_count?: number;
 }
 
 /**
@@ -58,36 +75,58 @@ export interface Validator {
   pubkey: string;
   stake: number;
   reputation: number;
-  blocksProposed: number;
-  votesCast: number;
-  correctVotes: number;
-  lastActiveSlot: number;
+  blocks_proposed: number;
+  transactions_processed?: number;
+  votes_cast: number;
+  correct_votes: number;
+  last_active_slot: number;
+  last_vote_slot?: number;
+  bootstrap_debt?: number;
+  vesting_status?: string;
+  earned_amount?: number;
+  graduation_slot?: number | null;
 }
 
 /**
  * Network information
  */
 export interface NetworkInfo {
-  chainId: string;
-  networkId: string;
+  chain_id: string;
+  network_id: string;
   version: string;
-  currentSlot: number;
-  validatorCount: number;
-  peerCount: number;
+  current_slot: number;
+  validator_count: number;
+  peer_count: number;
 }
 
 /**
  * Chain status
  */
 export interface ChainStatus {
-  currentSlot: number;
-  validatorCount: number;
-  totalStake: number;
+  slot?: number;
+  epoch?: number;
+  block_height?: number;
+  current_slot: number;
+  latest_block?: number;
+  validator_count: number;
+  validators?: number;
+  total_stake?: number;
+  total_staked: number;
   tps: number;
-  totalTransactions: number;
-  totalBlocks: number;
-  averageBlockTime: number;
-  isHealthy: boolean;
+  peak_tps?: number;
+  total_transactions: number;
+  total_blocks: number;
+  average_block_time?: number;
+  block_time_ms: number;
+  total_supply: number;
+  projected_supply?: number;
+  total_burned: number;
+  total_minted?: number;
+  peer_count: number;
+  chain_id: string;
+  network: string;
+  is_healthy?: boolean;
+  inflation_rate_bps?: number;
 }
 
 /**
@@ -95,9 +134,46 @@ export interface ChainStatus {
  */
 export interface Metrics {
   tps: number;
-  totalTransactions: number;
-  totalBlocks: number;
-  averageBlockTime: number;
+  peak_tps: number;
+  total_transactions: number;
+  daily_transactions: number;
+  total_blocks: number;
+  average_block_time: number;
+  avg_block_time_ms: number;
+  avg_txs_per_block: number;
+  total_accounts: number;
+  active_accounts: number;
+  total_supply: number;
+  projected_supply: number;
+  circulating_supply: number;
+  total_burned: number;
+  total_minted: number;
+  total_staked: number;
+  treasury_balance: number;
+  total_contracts: number;
+  validator_count: number;
+  slot_duration_ms: number;
+  fee_burn_percent: number;
+  current_epoch: number;
+  slots_into_epoch: number;
+  inflation_rate_bps: number;
+}
+
+/**
+ * Total burned LICN.
+ */
+export interface BurnedInfo {
+  spores: number;
+  licn: number;
+}
+
+/**
+ * Address transaction history.
+ */
+export interface TransactionHistoryResponse {
+  transactions: any[];
+  has_more: boolean;
+  next_before_slot?: number | null;
 }
 
 /**
@@ -308,7 +384,7 @@ export class Connection {
   /**
    * Get total burned LICN
    */
-  async getTotalBurned(): Promise<Balance> {
+  async getTotalBurned(): Promise<BurnedInfo> {
     return this.rpc('getTotalBurned');
   }
 
@@ -539,16 +615,16 @@ export class Connection {
   /**
    * Get transaction history
    */
-  async getTransactionHistory(pubkey: PublicKey, limit: number = 10): Promise<any> {
-    return this.rpc('getTransactionHistory', [pubkey.toBase58(), limit]);
-  }
-
-  /**
-   * Get program accounts
-   */
-  async getProgramAccounts(programId: PublicKey): Promise<any[]> {
-    const result = await this.rpc('getProgramAccounts', [programId.toBase58()]);
-    return result.accounts || [];
+  async getTransactionHistory(
+    pubkey: PublicKey,
+    limit: number = 10,
+    beforeSlot?: number,
+  ): Promise<TransactionHistoryResponse> {
+    const options: { limit: number; before_slot?: number } = { limit };
+    if (beforeSlot !== undefined) {
+      options.before_slot = beforeSlot;
+    }
+    return this.rpc('getTransactionHistory', [pubkey.toBase58(), options]);
   }
 
   /**

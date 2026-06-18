@@ -8888,6 +8888,12 @@ mod tests {
                 (func (export "write_then_code_7") (result i32)
                     (drop (call $storage_write (i32.const 0) (i32.const 7) (i32.const 16) (i32.const 7)))
                     (i32.const 7))
+                (func (export "write_then_code_0") (result i32)
+                    (drop (call $storage_write (i32.const 0) (i32.const 7) (i32.const 16) (i32.const 7)))
+                    (i32.const 0))
+                (func (export "write_then_code_200") (result i32)
+                    (drop (call $storage_write (i32.const 0) (i32.const 7) (i32.const 16) (i32.const 7)))
+                    (i32.const 200))
                 (func (export "return_value_7") (result i32)
                     (i32.const 7))
             )"#,
@@ -8899,6 +8905,15 @@ mod tests {
         name: &str,
         kind: crate::contract::AbiResultKind,
         success_codes: Vec<i64>,
+    ) -> crate::contract::AbiFunction {
+        abi_result_function_with_failure_codes(name, kind, success_codes, Vec::new())
+    }
+
+    fn abi_result_function_with_failure_codes(
+        name: &str,
+        kind: crate::contract::AbiResultKind,
+        success_codes: Vec<i64>,
+        failure_codes: Vec<i64>,
     ) -> crate::contract::AbiFunction {
         crate::contract::AbiFunction {
             name: name.to_string(),
@@ -8913,6 +8928,7 @@ mod tests {
             result_semantics: Some(crate::contract::AbiResultSemantics {
                 kind,
                 success_codes,
+                failure_codes,
                 description: None,
             }),
         }
@@ -8932,11 +8948,18 @@ mod tests {
             description: None,
             functions,
             events: Vec::new(),
-            errors: vec![crate::contract::AbiError {
-                code: 7,
-                name: "Rejected".to_string(),
-                message: Some("test failure".to_string()),
-            }],
+            errors: vec![
+                crate::contract::AbiError {
+                    code: 7,
+                    name: "Rejected".to_string(),
+                    message: Some("test failure".to_string()),
+                },
+                crate::contract::AbiError {
+                    code: 200,
+                    name: "CallerMismatch".to_string(),
+                    message: Some("caller mismatch".to_string()),
+                },
+            ],
         });
         let mut account = Account::new(0, address);
         account.executable = true;
@@ -9056,6 +9079,145 @@ mod tests {
 
         assert!(result.success, "{:?}", result.error);
         assert_eq!(result.return_code, Some(7));
+    }
+
+    #[test]
+    fn test_contract_abi_return_value_declared_failure_reverts_state_changes() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let contract_addr = Pubkey([0xAC; 32]);
+        install_abi_result_test_contract(
+            &state,
+            contract_addr,
+            alice,
+            vec![abi_result_function_with_failure_codes(
+                "write_then_code_200",
+                crate::contract::AbiResultKind::ReturnValue,
+                Vec::new(),
+                vec![200],
+            )],
+        );
+        let tx = make_contract_call_tx(
+            &alice_kp,
+            contract_addr,
+            "write_then_code_200",
+            genesis_hash,
+        );
+
+        let result = processor.process_transaction(&tx, &alice);
+
+        assert!(!result.success);
+        assert_eq!(result.return_code, Some(200));
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("ABI failure value 200"));
+        assert_eq!(
+            state
+                .get_contract_storage(&contract_addr, b"abi_key")
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn test_contract_abi_nonzero_return_value_success_commits_value() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let contract_addr = Pubkey([0xAA; 32]);
+        install_abi_result_test_contract(
+            &state,
+            contract_addr,
+            alice,
+            vec![abi_result_function(
+                "write_then_code_7",
+                crate::contract::AbiResultKind::NonzeroReturnValue,
+                Vec::new(),
+            )],
+        );
+        let tx = make_contract_call_tx(&alice_kp, contract_addr, "write_then_code_7", genesis_hash);
+
+        let result = processor.process_transaction(&tx, &alice);
+
+        assert!(result.success, "{:?}", result.error);
+        assert_eq!(result.return_code, Some(7));
+        assert_eq!(
+            state
+                .get_contract_storage(&contract_addr, b"abi_key")
+                .unwrap(),
+            Some(b"written".to_vec())
+        );
+    }
+
+    #[test]
+    fn test_contract_abi_nonzero_return_value_zero_reverts_state_changes() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let contract_addr = Pubkey([0xAB; 32]);
+        install_abi_result_test_contract(
+            &state,
+            contract_addr,
+            alice,
+            vec![abi_result_function(
+                "write_then_code_0",
+                crate::contract::AbiResultKind::NonzeroReturnValue,
+                Vec::new(),
+            )],
+        );
+        let tx = make_contract_call_tx(&alice_kp, contract_addr, "write_then_code_0", genesis_hash);
+
+        let result = processor.process_transaction(&tx, &alice);
+
+        assert!(!result.success);
+        assert_eq!(result.return_code, Some(0));
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("nonzero-return-value"));
+        assert_eq!(
+            state
+                .get_contract_storage(&contract_addr, b"abi_key")
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn test_contract_abi_nonzero_return_value_declared_failure_reverts_state_changes() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let contract_addr = Pubkey([0xAD; 32]);
+        install_abi_result_test_contract(
+            &state,
+            contract_addr,
+            alice,
+            vec![abi_result_function_with_failure_codes(
+                "write_then_code_200",
+                crate::contract::AbiResultKind::NonzeroReturnValue,
+                Vec::new(),
+                vec![200],
+            )],
+        );
+        let tx = make_contract_call_tx(
+            &alice_kp,
+            contract_addr,
+            "write_then_code_200",
+            genesis_hash,
+        );
+
+        let result = processor.process_transaction(&tx, &alice);
+
+        assert!(!result.success);
+        assert_eq!(result.return_code, Some(200));
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("ABI failure value 200"));
+        assert_eq!(
+            state
+                .get_contract_storage(&contract_addr, b"abi_key")
+                .unwrap(),
+            None
+        );
     }
 
     fn governance_test_contract_code() -> Vec<u8> {

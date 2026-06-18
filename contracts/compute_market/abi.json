@@ -128,7 +128,10 @@
         }
       ],
       "result_semantics": {
-        "kind": "runtime_success_only"
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
       }
     },
     {
@@ -373,7 +376,10 @@
         }
       ],
       "result_semantics": {
-        "kind": "runtime_success_only"
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
       }
     },
     {
@@ -530,7 +536,10 @@
         }
       ],
       "result_semantics": {
-        "kind": "runtime_success_only"
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
       }
     },
     {
@@ -551,7 +560,10 @@
         }
       ],
       "result_semantics": {
-        "kind": "runtime_success_only"
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
       }
     },
     {
@@ -790,7 +802,10 @@
         }
       ],
       "result_semantics": {
-        "kind": "runtime_success_only"
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
       }
     },
     {
@@ -823,7 +838,10 @@
         }
       ],
       "result_semantics": {
-        "kind": "runtime_success_only"
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
       }
     }
   ]

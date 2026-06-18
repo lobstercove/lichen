@@ -126,12 +126,12 @@ function main() {
 
     test('operator docs tie restriction alerts to read-only verification commands', () => {
         [
-            'lichen restriction get "$RESTRICTION_ID"',
-            'lichen restriction list-active',
-            'lichen restriction status account "$ACCOUNT"',
-            'lichen restriction status contract "$CONTRACT"',
-            'lichen restriction status code-hash "$CODE_HASH"',
-            'lichen restriction status bridge-route "$CHAIN" "$ASSET"',
+            'lichen --rpc-url "$RPC_URL" restriction get "$RESTRICTION_ID"',
+            'lichen --rpc-url "$RPC_URL" restriction list --active',
+            'lichen --rpc-url "$RPC_URL" restriction status account "$ACCOUNT"',
+            'lichen --rpc-url "$RPC_URL" restriction status contract "$CONTRACT"',
+            'lichen --rpc-url "$RPC_URL" restriction status code-hash "$CODE_HASH"',
+            'lichen --rpc-url "$RPC_URL" restriction status bridge-route "$CHAIN" "$ASSET"',
             'Do not treat an alert as evidence by itself.',
         ].forEach((needle) => assertIncludes(docs, needle, 'GOVERNANCE_WATCHTOWER.md'));
     });

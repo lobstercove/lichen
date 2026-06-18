@@ -1,7 +1,6 @@
 use anyhow::Result;
 
 use crate::client::RpcClient;
-use crate::output_support::to_licn;
 
 pub(super) async fn handle_block(client: &RpcClient, slot: u64) -> Result<()> {
     let block = client.get_block(slot).await?;
@@ -49,9 +48,8 @@ pub(super) async fn handle_total_burned(client: &RpcClient) -> Result<()> {
     let burned = client.get_total_burned().await?;
     println!("🔥 Total LICN Burned");
     println!(
-        "💰 {} LICN ({} spores)",
-        to_licn(burned.spores),
-        burned.spores
+        "💰 {:.9} LICN ({} spores)",
+        burned.licn, burned.spores
     );
     println!();
     println!("Deflationary mechanism: 50% of all transaction fees are burned forever! 🦞⚡");

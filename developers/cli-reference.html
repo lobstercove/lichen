@@ -220,7 +220,7 @@
 
             <div class="callout callout-info">
                 <div class="callout-title"><i class="fas fa-terminal"></i> Surface Coverage</div>
-                Implementation-verified for <code>v0.5.98</code>: the CLI covers wallet, identity, validator, staking,
+                Implementation-verified for <code>v0.5.172</code>: the CLI covers wallet, identity, validator, staking,
                 contract, token, governance, restriction, symbol, NFT, DeFi, and utility commands, plus the global
                 <code>--rpc-url</code> and <code>--output</code> flags documented below.
             </div>
@@ -283,7 +283,7 @@
                 <pre><code>$ lichen --rpc-url https://testnet-rpc.lichen.network balance
 $ lichen --output json status
 $ lichen --version
-lichen 0.5.98</code></pre>
+lichen 0.5.172</code></pre>
             </div>
 
             <!-- ================================================================ -->
@@ -1215,7 +1215,7 @@ lichen-validator --activate-sparse-state-commitment \
                         <button class="code-copy-btn">Copy</button>
                     </div>
                     <pre><code>$ lichen deploy target/wasm32-unknown-unknown/release/my_contract.wasm \
-    --symbol MYTK --name "My Token" --template mt20 --decimals 9 \
+    --symbol MYTK --name "My Token" --template token --decimals 9 \
     --metadata '{"description":"Community token","website":"https://mytoken.io","logo_url":"https://mytoken.io/logo.png","twitter":"https://x.com/mytoken","telegram":"https://t.me/mytoken","discord":"https://discord.gg/mytoken"}'
 
 <i class="fa-solid fa-shrimp"></i> Deploying contract...
@@ -1504,7 +1504,7 @@ Total: 2 contracts</code></pre>
                         <button class="code-copy-btn">Copy</button>
                     </div>
                     <pre><code>$ lichen contract register 5A19vK1LMPsFAk1Q7t6AHpBXAkyWiFxbat39GF9RxBWL \
-    --symbol VYRN --name "VYRN Token" --template mt20 --decimals 9
+    --symbol VYRN --name "VYRN Token" --template token --decimals 9
 
 <i class="fa-solid fa-check"></i> Symbol registered: VYRN → 5A19vK...9RxBWL</code></pre>
                 </div>
@@ -1521,7 +1521,7 @@ Total: 2 contracts</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>lichen contract generate-client --abi &lt;path-or-address&gt; --lang &lt;typescript|python&gt; --output &lt;path&gt; [--address &lt;contract-address&gt;]</code></pre>
+                    <pre><code>lichen contract generate-client (--abi &lt;path&gt; | --address &lt;contract-address&gt;) --lang &lt;typescript|python&gt; --output &lt;path&gt;</code></pre>
                 </div>
 
                 <table class="flags-table">
@@ -1536,13 +1536,12 @@ Total: 2 contracts</code></pre>
                     <tbody>
                         <tr>
                             <td><code>--abi</code></td>
-                            <td>path or Base58</td>
+                            <td>path</td>
                             <td>—</td>
-                            <td>Path to a local <code>abi.json</code> file, or a contract address (fetches ABI via RPC)
-                            </td>
+                            <td>Path to a local <code>abi.json</code> file</td>
                         </tr>
                         <tr>
-                            <td><code>--lang, -l</code></td>
+                            <td><code>--lang</code></td>
                             <td>string</td>
                             <td>—</td>
                             <td><code>typescript</code> or <code>python</code></td>
@@ -1557,7 +1556,7 @@ Total: 2 contracts</code></pre>
                             <td><code>--address</code></td>
                             <td>Base58</td>
                             <td>—</td>
-                            <td>Override contract address embedded in the generated code</td>
+                            <td>Fetch ABI for a deployed contract through RPC and embed this address in the generated code</td>
                         </tr>
                     </tbody>
                 </table>
@@ -1575,7 +1574,7 @@ Total: 2 contracts</code></pre>
 <i class="fa-solid fa-check"></i> Generated TypeScript client → ./lusd-token-client.ts
 
 $ lichen contract generate-client \
-    --abi 5A19vK1LMPsFAk1Q7t6AHpBXAkyWiFxbat39GF9RxBWL \
+    --address 5A19vK1LMPsFAk1Q7t6AHpBXAkyWiFxbat39GF9RxBWL \
     --lang python \
     --output ./my_token_client.py
 
@@ -3006,7 +3005,7 @@ Total: 2 active proposals</code></pre>
                     <div class="code-block-header"><span class="code-lang">Shell</span><button
                             class="code-copy-btn">Copy</button></div>
                     <pre><code>$ lichen version
-		lichen 0.5.98</code></pre>
+		lichen 0.5.172</code></pre>
                 </div>
             </div>
 

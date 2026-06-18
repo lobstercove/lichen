@@ -307,12 +307,12 @@ console.log({ profile, delegation, poolInfo, quote, swapStats, stream, vaultStat
             <div class="method-card">
                 <h3 class="method-name">getLatestBlock(): Promise&lt;Block&gt;</h3>
                 <p class="method-desc">Get the most recently produced block. Returns
-                    <code>{ slot, hash, parentHash, transactions, timestamp }</code>.
+                    <code>{ slot, hash, parent_hash, state_root, transaction_count, timestamp, validator }</code>.
                 </p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">TypeScript</span></div>
                     <pre><code>const block = await conn.getLatestBlock();
-console.log(`Slot ${block.slot}, ${block.transactions} txs`);</code></pre>
+console.log(`Slot ${block.slot}, ${block.transaction_count} txs`);</code></pre>
                 </div>
             </div>
 
@@ -337,14 +337,14 @@ console.log(`Slot ${block.slot}, ${block.transactions} txs`);</code></pre>
             <div class="method-card">
                 <h3 class="method-name">getMetrics(): Promise&lt;Metrics&gt;</h3>
                 <p class="method-desc">Get chain performance metrics:
-                    <code>{ tps, totalTransactions, totalBlocks, averageBlockTime }</code>.
+                    <code>{ tps, peak_tps, total_transactions, total_blocks, average_block_time, total_staked, validator_count }</code>.
                 </p>
             </div>
 
             <div class="method-card">
                 <h3 class="method-name">getChainStatus(): Promise&lt;ChainStatus&gt;</h3>
                 <p class="method-desc">Get comprehensive status:
-                    <code>{ currentSlot, validatorCount, totalStake, tps, totalTransactions, totalBlocks, averageBlockTime, isHealthy }</code>.
+                    <code>{ current_slot, validator_count, total_staked, tps, total_transactions, total_blocks, block_time_ms, chain_id, network }</code>.
                 </p>
             </div>
 
@@ -356,7 +356,7 @@ console.log(`Slot ${block.slot}, ${block.transactions} txs`);</code></pre>
             <div class="method-card">
                 <h3 class="method-name">getNetworkInfo(): Promise&lt;NetworkInfo&gt;</h3>
                 <p class="method-desc">Get network info:
-                    <code>{ chainId, networkId, version, currentSlot, validatorCount, peerCount }</code>.
+                    <code>{ chain_id, network_id, version, current_slot, validator_count, peer_count }</code>.
                 </p>
             </div>
 
@@ -366,7 +366,7 @@ console.log(`Slot ${block.slot}, ${block.transactions} txs`);</code></pre>
             </div>
 
             <div class="method-card">
-                <h3 class="method-name">getTotalBurned(): Promise&lt;Balance&gt;</h3>
+                <h3 class="method-name">getTotalBurned(): Promise&lt;BurnedInfo&gt;</h3>
                 <p class="method-desc">Get total burned LICN. Returns <code>{ spores, licn }</code>.</p>
             </div>
 
@@ -402,13 +402,13 @@ console.log(`Slot ${block.slot}, ${block.transactions} txs`);</code></pre>
                             class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
                     <pre><code>const balance = await conn.getBalance(new PublicKey('7xKXtg2CW87d...'));
 console.log(balance.spores); // 5000000000
-console.log(balance.licn);   // 5.0</code></pre>
+console.log(balance.licn);   // "5.0000"</code></pre>
                 </div>
             </div>
 
             <div class="method-card">
                 <h3 class="method-name">getAccount(pubkey: PublicKey): Promise&lt;Account&gt;</h3>
-                <p class="method-desc">Get raw account data: <code>{ spores, owner, executable, data }</code>.</p>
+                <p class="method-desc">Get account data: <code>{ spores, licn, owner, executable, data_len }</code>.</p>
             </div>
 
             <div class="method-card">
@@ -417,9 +417,10 @@ console.log(balance.licn);   // 5.0</code></pre>
             </div>
 
             <div class="method-card">
-                <h3 class="method-name">getTransactionHistory(pubkey: PublicKey, limit?: number): Promise&lt;any&gt;
+                <h3 class="method-name">getTransactionHistory(pubkey: PublicKey, limit?: number, beforeSlot?: number): Promise&lt;TransactionHistoryResponse&gt;
                 </h3>
-                <p class="method-desc">Get paginated transaction history for an account. Default limit is 10.</p>
+                <p class="method-desc">Get paginated transaction history for an account. Returns
+                    <code>{ transactions, has_more, next_before_slot }</code>. Default limit is 10.</p>
             </div>
 
             <!-- Transaction Methods -->
@@ -724,14 +725,6 @@ console.log(result.returnCode, result.returnData);</code></pre>
                     <pre><code>const entry = await conn.getSymbolRegistry('LICHENSWAP');
 console.log(entry.program);</code></pre>
                 </div>
-            </div>
-
-            <div class="method-card">
-                <h3 class="method-name">getProgramAccounts(programId: PublicKey): Promise&lt;any[]&gt;</h3>
-                <p class="method-desc">Compatibility wrapper for RPC deployments that expose
-                    <code>getProgramAccounts</code>. The stock <code>v0.5.90</code> validator RPC does not dispatch this
-                    method; use <code>getProgramStorage</code>, <code>getProgram</code>, or app-specific indexed reads on
-                    public Lichen nodes.</p>
             </div>
 
             <div class="method-card">

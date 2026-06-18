@@ -14,6 +14,23 @@ pub struct BlockInfo {
 #[derive(Deserialize)]
 pub struct BurnedInfo {
     pub spores: u64,
-    #[serde(rename = "lichen")]
-    pub _lichen: u64,
+    pub licn: f64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn parses_current_total_burned_shape() {
+        let burned: BurnedInfo = serde_json::from_value(json!({
+            "spores": 1_500_000_000_000u64,
+            "licn": 1500.0
+        }))
+        .expect("current getTotalBurned shape parses");
+
+        assert_eq!(burned.spores, 1_500_000_000_000);
+        assert_eq!(burned.licn, 1500.0);
+    }
 }
