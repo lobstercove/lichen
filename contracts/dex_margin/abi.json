@@ -319,6 +319,22 @@
       }
     },
     {
+      "name": "apply_funding",
+      "opcode": 15,
+      "params": [
+        {
+          "name": "pair_id",
+          "type": "u64"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
       "name": "get_total_volume",
       "opcode": 16,
       "params": [],

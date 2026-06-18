@@ -107,6 +107,26 @@ async function deriveReleaseSignerAddress() {
         runbook.includes(releaseSigner),
         'mainnet launch runbook records the release signer trust anchor'
     );
+    assert(
+        runbook.includes('node "$REPO_ROOT/scripts/verify-release-checksums.mjs" .') &&
+            runbook.includes('export LICHEN_RELEASE_TAG=v0.5.161'),
+        'mainnet launch runbook verifies detached release checksums and documents signed rollback'
+    );
+
+    const readme = readText('README.md');
+    assert(
+        readme.includes('SHA256SUMS.sig') &&
+            readme.includes('node scripts/verify-release-checksums.mjs .'),
+        'README manual install verifies detached release checksum signature'
+    );
+
+    const verifier = readText('scripts/verify-release-checksums.mjs');
+    assert(
+        verifier.includes('deploy') &&
+            verifier.includes('release-trust-anchor.json') &&
+            verifier.includes('verifySignature(signature, message, expectedSigner)'),
+        'manual release checksum verifier uses the repo release trust anchor'
+    );
 
     const rollingDeploy = readText('scripts/rolling-release-deploy.sh');
     assert(

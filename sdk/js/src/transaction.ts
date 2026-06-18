@@ -217,10 +217,16 @@ export class TransactionBuilder {
    * Create a deploy contract instruction.
    *
    * @param deployer - The deployer's public key (signer, pays deploy fee)
+   * @param contractAddress - New contract account address
    * @param code - WASM bytecode
    * @param initData - Optional initialization data (default: empty)
    */
-  static deployContract(deployer: PublicKey, code: Uint8Array, initData: Uint8Array = new Uint8Array(0)): Instruction {
+  static deployContract(
+    deployer: PublicKey,
+    contractAddress: PublicKey,
+    code: Uint8Array,
+    initData: Uint8Array = new Uint8Array(0),
+  ): Instruction {
     if (code.length < 4 || code[0] !== 0x00 || code[1] !== 0x61 || code[2] !== 0x73 || code[3] !== 0x6d) {
       throw new Error('Invalid WASM bytecode: missing magic header (\\0asm)');
     }
@@ -239,7 +245,7 @@ export class TransactionBuilder {
 
     return {
       programId: TransactionBuilder.CONTRACT_PROGRAM_ID,
-      accounts: [deployer],
+      accounts: [deployer, contractAddress],
       data,
     };
   }

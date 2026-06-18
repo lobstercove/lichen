@@ -33,8 +33,7 @@ faucet.lichen.network {
     }
 
     handle {
-        root * /home/ubuntu/lichen/faucet
-        file_server
+        respond "faucet API endpoint not found" 404
     }
 }
 

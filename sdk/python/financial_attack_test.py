@@ -995,7 +995,7 @@ def test_contract_code_replacement():
     # Try to replace code
     evil_code = base64.b64encode(b'\x00asm\x01\x00\x00\x00' + b'\x00' * 100).decode()
 
-    r1 = rpc("deployContract", [evil_code, "hijack_atk", "LICN"], timeout=5)
+    r1 = rpc("deployContract", [attacker, evil_code, json.dumps({"name": "LICN"}), "00"], timeout=5)
     r2 = rpc("upgradeContract", [program, evil_code], timeout=5)
     r3 = rpc("updateContract", [program, {"code": evil_code}], timeout=5)
 

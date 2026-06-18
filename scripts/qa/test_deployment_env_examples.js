@@ -190,6 +190,7 @@ const setupCustodyKeys = heredocKeys(
     'CUSTODY_DEPOSIT_TTL_SECS',
     'CUSTODY_LISTEN_PORT',
     'CUSTODY_SIGNER_AUTH_TOKEN',
+    'CUSTODY_SIGNER_ENDPOINTS',
     'LICHEN_KEYPAIR_PASSWORD',
     'LICHEN_INCIDENT_STATUS_FILE',
     'RUST_LOG',
@@ -221,7 +222,7 @@ const validatorExpected = {
     LICHEN_RPC_PORT: '9899',
     LICHEN_WS_PORT: '9900',
     LICHEN_P2P_PORT: '8001',
-    LICHEN_SIGNER_BIND: '127.0.0.1:9201',
+    LICHEN_SIGNER_BIND: '127.0.0.1:9202',
     LICHEN_CONTRACTS_DIR: '/var/lib/lichen/contracts',
     LICHEN_INCIDENT_STATUS_FILE: '/etc/lichen/incident-status-mainnet.json',
     LICHEN_SIGNED_METADATA_MANIFEST_FILE:
@@ -319,6 +320,7 @@ const custodyExpected = {
     CUSTODY_POLL_INTERVAL_SECS: '15',
     CUSTODY_DEPOSIT_TTL_SECS: '86400',
     CUSTODY_LISTEN_PORT: '9105',
+    CUSTODY_SIGNER_ENDPOINTS: 'http://127.0.0.1:9201',
     LICHEN_INCIDENT_STATUS_FILE: '/etc/lichen/incident-status-testnet.json',
     RUST_LOG: 'info',
     CUSTODY_TREASURY_KEYPAIR: '/etc/lichen/custody-treasury-testnet.json',
@@ -333,6 +335,7 @@ const custodyExpected = {
     CUSTODY_POLL_INTERVAL_SECS: '15',
     CUSTODY_DEPOSIT_TTL_SECS: '86400',
     CUSTODY_LISTEN_PORT: '9106',
+    CUSTODY_SIGNER_ENDPOINTS: 'http://127.0.0.1:9202',
     LICHEN_INCIDENT_STATUS_FILE: '/etc/lichen/incident-status-mainnet.json',
     RUST_LOG: 'info',
     CUSTODY_TREASURY_KEYPAIR: '/etc/lichen/custody-treasury-mainnet.json',
@@ -458,6 +461,27 @@ assert(
     !productionDeployment.includes('--repair-stake-pool-production-counters') &&
     !productionDeployment.includes('such as `v0.5.50`'),
   'production clean-slate checklist must match current v0.5.175/32-symbol/13-market expectations',
+);
+assert(
+  productionDeployment.includes('Do not add `faucet.lichen.network` as a Cloudflare Pages custom domain') &&
+    productionDeployment.includes('that hostname is the faucet API origin') &&
+    productionDeployment.includes('separate portal-only custom domain'),
+  'deployment docs must keep the faucet Pages portal separate from the faucet API hostname',
+);
+const setupScript = read('deploy/setup.sh');
+const testnetCaddy = read('deploy/Caddyfile.testnet');
+assert(
+  !setupScript.includes('ensure_ufw_allow_rule "9100/tcp"') &&
+    setupScript.includes('ensure_ufw_allow_from_tcp_port "15.204.229.189" "9100"') &&
+    setupScript.includes('sudo ufw allow from <validator-ip> to any port 9100 proto tcp'),
+  'setup must keep raw faucet port 9100 restricted to the validator fleet, not public internet',
+);
+assert(
+  testnetCaddy.includes('faucet.lichen.network') &&
+    testnetCaddy.includes('reverse_proxy 127.0.0.1:9100') &&
+    testnetCaddy.includes('respond "faucet API endpoint not found" 404') &&
+    !testnetCaddy.includes('root * /home/ubuntu/lichen/faucet'),
+  'faucet API hostname must not serve static portal HTML from the VPS',
 );
 for (const expected of [
   '7LFPJ8gqmAtjbhfRg1P4VXmTQJV4AeZxzws3UsA6SVq',

@@ -62,6 +62,7 @@ test('RG-704 proposal creation/lift/extend submission requires signed payloads',
     const submitTxBody = extractFunctionBody(monitoringJs, 'submitRiskSignedTransaction');
     assert(submitPreviewBody.includes('lastRiskSignedPreview?.signedTransactionBase64'));
     assert(submitTxBody.includes("rpc('sendTransaction', [signedBase64])"));
+    assert(submitTxBody.includes('simulation?.returnCode || simulation?.return_code'));
     assert(!/admin_token|LICHEN_ADMIN_TOKEN/.test(submitPreviewBody + submitTxBody));
 });
 

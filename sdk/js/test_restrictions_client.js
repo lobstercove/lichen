@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {
   BRIDGE_ASSETS,
   BRIDGE_CHAINS,
+  Connection,
   PublicKey,
   RestrictionGovernanceClient,
 } from './dist/index.js';
@@ -147,3 +148,39 @@ await assert.rejects(
   }),
   /restrictionId must be a u64-safe integer value/,
 );
+
+const originalFetch = globalThis.fetch;
+const rpcRequests = [];
+globalThis.fetch = async (_url, init) => {
+  const body = JSON.parse(init.body);
+  rpcRequests.push(body);
+  const page = rpcRequests.length === 1
+    ? {
+        contracts: [{ program_id: 'first', code_size: 1, is_executable: true, has_abi: false, abi_functions: 0, code_hash: '', version: 1, lifecycle_status: 'active', lifecycle_updated_slot: 0, lifecycle_effective_at_slot: 0 }],
+        count: 1,
+        has_more: true,
+        next_cursor: 'cursor-1',
+      }
+    : {
+        contracts: [{ program_id: 'second', code_size: 1, is_executable: true, has_abi: false, abi_functions: 0, code_hash: '', version: 1, lifecycle_status: 'active', lifecycle_updated_slot: 0, lifecycle_effective_at_slot: 0 }],
+        count: 1,
+        has_more: false,
+        next_cursor: null,
+      };
+  return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: page }), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  });
+};
+
+try {
+  const sdkConnection = new Connection('http://mock-rpc');
+  const contracts = await sdkConnection.getAllContractsAll(1);
+  assert.deepEqual(contracts.map((entry) => entry.program_id), ['first', 'second']);
+  assert.deepEqual(rpcRequests.map((request) => request.params), [
+    [{ limit: 1 }],
+    [{ limit: 1, cursor: 'cursor-1' }],
+  ]);
+} finally {
+  globalThis.fetch = originalFetch;
+}

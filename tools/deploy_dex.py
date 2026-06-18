@@ -222,8 +222,20 @@ async def discover_existing_contracts(conn: Connection) -> Dict[str, PublicKey]:
 
     # 2. getAllContracts fallback — picks up genesis contracts not in symbol registry
     try:
-        result = await conn._rpc("getAllContracts")
-        contracts_list = result if isinstance(result, list) else result.get("contracts", [])
+        contracts_list = []
+        cursor = None
+        while True:
+            options = {"limit": 1000}
+            if cursor:
+                options["cursor"] = cursor
+            result = await conn._rpc("getAllContracts", [options])
+            if isinstance(result, dict):
+                contracts_list.extend(result.get("contracts", []))
+                cursor = result.get("next_cursor") if result.get("has_more") else None
+            else:
+                cursor = None
+            if not cursor:
+                break
         for c in contracts_list:
             name = c.get("name", "")
             addr = c.get("address", c.get("program_id", ""))

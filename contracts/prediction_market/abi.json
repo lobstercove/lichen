@@ -58,6 +58,17 @@
         {
           "name": "question_len",
           "type": "u32"
+        },
+        {
+          "name": "question",
+          "type": "bytes",
+          "length_field": "question_len"
+        },
+        {
+          "name": "outcome_names_payload",
+          "type": "bytes",
+          "optional": true,
+          "description": "Optional payload: name_count u8 followed by name_len u8 + UTF-8 name bytes for each outcome."
         }
       ],
       "result_semantics": {
@@ -759,7 +770,9 @@
       "params": [
         {
           "name": "limit",
-          "type": "u64"
+          "type": "u64",
+          "optional": true,
+          "default": 20
         }
       ],
       "result_semantics": {

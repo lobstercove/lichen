@@ -3660,20 +3660,22 @@ pub extern "C" fn total_minted() -> u64 {
 
             if (confirmed) {
                 const txResult = await this.rpc.getTransaction(signature);
+                const returnData = txResult.return_data || txResult.returnData || txResult.return_value;
+                const logs = txResult.contract_logs || txResult.logs || [];
 
                 this.addTerminalLine('✅ Function executed successfully!', 'success');
 
-                if (txResult.return_value) {
-                    this.addTerminalLine(`   Return value: ${txResult.return_value}`, 'success');
+                if (returnData) {
+                    this.addTerminalLine(`   Return data: ${returnData}`, 'success');
 
                     // Display in result panel
                     document.getElementById('testResult').style.display = 'block';
                     document.getElementById('testResultData').textContent = JSON.stringify(txResult, null, 2);
                 }
 
-                if (txResult.logs && txResult.logs.length > 0) {
+                if (logs.length > 0) {
                     this.addTerminalLine('   Logs:', 'info');
-                    txResult.logs.forEach(log => this.addTerminalLine(`     ${log}`, 'info'));
+                    logs.forEach(log => this.addTerminalLine(`     ${log}`, 'info'));
                 }
             } else {
                 this.addTerminalLine('❌ Transaction not confirmed (timeout)', 'error');

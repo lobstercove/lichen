@@ -3,24 +3,43 @@ use serde_json::json;
 
 use crate::client::{ContractSummary, RpcClient};
 
-#[derive(serde::Deserialize)]
+#[derive(Debug, serde::Deserialize)]
 struct ContractListResponse {
     contracts: Vec<ContractSummary>,
+    #[serde(default)]
+    has_more: bool,
+    #[serde(default)]
+    next_cursor: Option<String>,
 }
 
-fn parse_contract_list_result(result: serde_json::Value) -> Result<Vec<ContractSummary>> {
+fn parse_contract_list_result(result: serde_json::Value) -> Result<ContractListResponse> {
     let response: ContractListResponse =
         serde_json::from_value(result).context("Failed to parse contracts list")?;
-    Ok(response.contracts)
+    Ok(response)
 }
 
 impl RpcClient {
     /// Get all deployed contracts
     pub async fn get_all_contracts(&self) -> Result<Vec<ContractSummary>> {
-        let params = json!([]);
-        let result = self.call("getAllContracts", params).await?;
+        let mut contracts = Vec::new();
+        let mut cursor: Option<String> = None;
 
-        parse_contract_list_result(result)
+        loop {
+            let params = match cursor.as_deref() {
+                Some(cursor) => json!([{ "limit": 1000, "cursor": cursor }]),
+                None => json!([{ "limit": 1000 }]),
+            };
+            let result = self.call("getAllContracts", params).await?;
+            let response = parse_contract_list_result(result)?;
+            contracts.extend(response.contracts);
+            if !response.has_more {
+                return Ok(contracts);
+            }
+            cursor = response.next_cursor;
+            if cursor.is_none() {
+                return Ok(contracts);
+            }
+        }
     }
 }
 
@@ -48,10 +67,12 @@ mod tests {
         }))
         .expect("current object shape should parse");
 
-        assert_eq!(contracts.len(), 1);
-        assert_eq!(contracts[0].program_id, "C111");
-        assert_eq!(contracts[0].symbol.as_deref(), Some("ABC"));
-        assert_eq!(contracts[0].owner.as_deref(), Some("Owner111"));
+        assert_eq!(contracts.contracts.len(), 1);
+        assert_eq!(contracts.contracts[0].program_id, "C111");
+        assert_eq!(contracts.contracts[0].symbol.as_deref(), Some("ABC"));
+        assert_eq!(contracts.contracts[0].owner.as_deref(), Some("Owner111"));
+        assert!(!contracts.has_more);
+        assert_eq!(contracts.next_cursor, None);
     }
 
     #[test]

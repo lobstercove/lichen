@@ -32,7 +32,7 @@
         },
         {
           "name": "asset_len",
-          "type": "u64"
+          "type": "u32"
         }
       ],
       "result_semantics": {
@@ -76,7 +76,7 @@
         },
         {
           "name": "asset_len",
-          "type": "u64"
+          "type": "u32"
         },
         {
           "name": "price",
@@ -84,7 +84,7 @@
         },
         {
           "name": "decimals",
-          "type": "u64"
+          "type": "u8"
         }
       ],
       "result_semantics": {
@@ -104,7 +104,7 @@
         },
         {
           "name": "asset_len",
-          "type": "u64"
+          "type": "u32"
         },
         {
           "name": "result_ptr",
@@ -127,7 +127,7 @@
         },
         {
           "name": "asset_len",
-          "type": "u64"
+          "type": "u32"
         }
       ],
       "result_semantics": {
@@ -247,7 +247,7 @@
         },
         {
           "name": "data_len",
-          "type": "u64"
+          "type": "u32"
         }
       ],
       "result_semantics": {
@@ -304,7 +304,7 @@
         },
         {
           "name": "query_type_len",
-          "type": "u64"
+          "type": "u32"
         },
         {
           "name": "param_ptr",
@@ -312,7 +312,7 @@
         },
         {
           "name": "param_len",
-          "type": "u64"
+          "type": "u32"
         },
         {
           "name": "result_ptr",
@@ -336,11 +336,11 @@
         },
         {
           "name": "asset_len",
-          "type": "u64"
+          "type": "u32"
         },
         {
           "name": "num_feeds",
-          "type": "u64"
+          "type": "u8"
         },
         {
           "name": "result_ptr",
@@ -400,7 +400,7 @@
         },
         {
           "name": "asset_len",
-          "type": "u64"
+          "type": "u32"
         }
       ],
       "result_semantics": {

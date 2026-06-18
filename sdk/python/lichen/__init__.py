@@ -8,7 +8,7 @@ __version__ = "1.0.0"
 
 from .publickey import PublicKey
 from .keypair import Keypair
-from .connection import Connection
+from .connection import Connection, DeployContractResult
 from .lichenswap import (
     AddLiquidityParams,
     CreatePoolParams,
@@ -115,6 +115,7 @@ __all__ = [
     "ML_DSA_65_SIGNATURE_BYTES",
     "Keypair",
     "Connection",
+    "DeployContractResult",
     "AddLiquidityParams",
     "AddSkillParams",
     "ApproveRecoveryParams",

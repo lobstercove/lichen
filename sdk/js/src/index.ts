@@ -43,6 +43,10 @@ export type {
   ChainStatus,
   Metrics,
   ProofStep,
+  ContractListOptions,
+  ContractListResponse,
+  ContractSummary,
+  DeployContractResult,
   ReadonlyContractResult,
   TransactionProof,
 } from './connection.js';

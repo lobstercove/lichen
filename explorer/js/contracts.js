@@ -69,6 +69,19 @@ function bindStaticControls() {
 
 // ── Fetch real on-chain data ───────────────────────────────────────
 
+async function fetchAllContractsCatalog() {
+    var contracts = [];
+    var cursor = null;
+    do {
+        var options = { limit: 1000 };
+        if (cursor) options.cursor = cursor;
+        var result = await trustedRpcCall('getAllContracts', [options]);
+        contracts = contracts.concat((result && Array.isArray(result.contracts)) ? result.contracts : []);
+        cursor = (result && result.has_more) ? result.next_cursor : null;
+    } while (cursor);
+    return contracts;
+}
+
 async function loadContracts() {
     var tbody = document.getElementById('contractsTableBody');
     tbody.innerHTML = '<tr class="loading-row"><td colspan="7"><div class="loading-spinner"></div> Loading contracts...</td></tr>';
@@ -76,12 +89,12 @@ async function loadContracts() {
     try {
         // Fetch all deployed programs + registry sources in parallel.
         var results = await Promise.all([
-            trustedRpcCall('getAllContracts', []).catch(function () { return null; }),
+            fetchAllContractsCatalog().catch(function () { return null; }),
             trustedRpcCall('getAllSymbolRegistry', []).catch(function () { return null; }),
             (typeof getSignedMetadataManifest === 'function' ? getSignedMetadataManifest().catch(function () { return null; }) : Promise.resolve(null)),
         ]);
 
-        var programs = (results[0] && results[0].contracts) ? results[0].contracts : [];
+        var programs = Array.isArray(results[0]) ? results[0] : [];
         var registry = (results[1] && results[1].entries) ? results[1].entries : [];
         var signedRegistry = (results[2] && Array.isArray(results[2].registryEntries)) ? results[2].registryEntries : [];
 

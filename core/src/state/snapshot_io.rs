@@ -1103,22 +1103,28 @@ impl StateStore {
         let iter = self
             .db
             .iterator_cf_opt(&cf, read_opts, rocksdb::IteratorMode::Start);
-        let mut keys = Vec::new();
+        let mut batch = WriteBatch::default();
+        let mut batch_count = 0usize;
+        let mut deleted = 0u64;
         for item in iter {
             let (key, _) = item.map_err(|e| format!("{} iterator error: {}", display_name, e))?;
-            keys.push(key.to_vec());
+            batch.delete_cf(&cf, key);
+            batch_count += 1;
+            if batch_count >= DELETE_BATCH_SIZE {
+                self.db
+                    .write(batch)
+                    .map_err(|e| format!("Failed to clear {}: {}", category, e))?;
+                deleted = deleted.saturating_add(batch_count as u64);
+                batch = WriteBatch::default();
+                batch_count = 0;
+            }
         }
 
-        let mut deleted = 0u64;
-        for chunk in keys.chunks(DELETE_BATCH_SIZE) {
-            let mut batch = WriteBatch::default();
-            for key in chunk {
-                batch.delete_cf(&cf, key);
-            }
+        if batch_count > 0 {
             self.db
                 .write(batch)
                 .map_err(|e| format!("Failed to clear {}: {}", category, e))?;
-            deleted = deleted.saturating_add(chunk.len() as u64);
+            deleted = deleted.saturating_add(batch_count as u64);
         }
 
         Ok(deleted)

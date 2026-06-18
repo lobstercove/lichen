@@ -166,7 +166,7 @@
         },
         {
           "name": "is_a_to_b",
-          "type": "u64"
+          "type": "u32"
         }
       ],
       "result_semantics": {
@@ -221,7 +221,7 @@
         },
         {
           "name": "token_is_a",
-          "type": "u64"
+          "type": "u32"
         }
       ],
       "result_semantics": {

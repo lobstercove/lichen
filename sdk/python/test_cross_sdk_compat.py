@@ -8,12 +8,14 @@ test_cross_sdk_message_golden_vector and test_cross_sdk_transaction_golden_vecto
 import sys
 import os
 import hashlib
+import asyncio
 
 # Add parent directory so we can import lichen package
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from lichen.publickey import PublicKey
 from lichen.bincode import encode_message, encode_transaction, EncodedInstruction
+from lichen.connection import Connection
 from lichen.pq import PqPublicKey, PqSignature
 from lichen.transaction import TransactionBuilder
 
@@ -110,9 +112,55 @@ def test_transaction_builder_sets_compute_fields():
     print("  ✓ TransactionBuilder preserves compute settings")
 
 
+def test_deploy_contract_instruction_includes_contract_account():
+    """Deploy instructions must include [deployer, contract_address]."""
+    deployer = PublicKey(bytes([0x03] * 32))
+    contract = PublicKey(bytes([0x04] * 32))
+    wasm = b"\x00asm\x01\x00\x00\x00"
+    instruction = TransactionBuilder.deploy_contract(deployer, contract, wasm)
+    assert instruction.accounts == [deployer, contract]
+    print("  ✓ Deploy instruction includes contract account")
+
+
+class MockPaginatedConnection(Connection):
+    def __init__(self):
+        super().__init__("http://mock-rpc")
+        self.calls = []
+
+    async def _rpc(self, method, params=None, headers=None):
+        self.calls.append((method, params or []))
+        if len(self.calls) == 1:
+            return {
+                "contracts": [{"program_id": "first"}],
+                "count": 1,
+                "has_more": True,
+                "next_cursor": "cursor-1",
+            }
+        return {
+            "contracts": [{"program_id": "second"}],
+            "count": 1,
+            "has_more": False,
+            "next_cursor": None,
+        }
+
+
+def test_get_all_contracts_all_paginates():
+    """get_all_contracts_all must follow next_cursor until exhausted."""
+    conn = MockPaginatedConnection()
+    contracts = asyncio.run(conn.get_all_contracts_all(limit=1))
+    assert [contract["program_id"] for contract in contracts] == ["first", "second"]
+    assert conn.calls == [
+        ("getAllContracts", [{"limit": 1}]),
+        ("getAllContracts", [{"limit": 1, "cursor": "cursor-1"}]),
+    ]
+    print("  ✓ get_all_contracts_all follows pagination")
+
+
 if __name__ == "__main__":
     test_message_golden_vector()
     test_transaction_golden_vector()
     test_message_optional_compute_fields()
     test_transaction_builder_sets_compute_fields()
+    test_deploy_contract_instruction_includes_contract_account()
+    test_get_all_contracts_all_paginates()
     print("K4-02: All Python cross-SDK compatibility tests passed")

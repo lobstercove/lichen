@@ -68,7 +68,7 @@
         },
         {
           "name": "submission_idx",
-          "type": "u64"
+          "type": "u8"
         }
       ],
       "result_semantics": {
@@ -221,7 +221,7 @@
         },
         {
           "name": "submission_idx",
-          "type": "u64"
+          "type": "u8"
         }
       ],
       "result_semantics": {

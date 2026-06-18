@@ -4462,8 +4462,51 @@ mod tests {
                 .unwrap_or_else(|| panic!("{} missing result semantics", function_name));
             assert_eq!(semantics.failure_codes, expected, "{}", function_name);
         };
+        let assert_params =
+            |abi: &ContractAbi, function_name: &str, expected: &[(&str, AbiType, bool)]| {
+                let function = abi
+                    .functions
+                    .iter()
+                    .find(|function| function.name == function_name)
+                    .unwrap_or_else(|| panic!("{} missing ABI function", function_name));
+                let params: Vec<_> = function
+                    .params
+                    .iter()
+                    .map(|param| {
+                        (
+                            param.name.as_str(),
+                            param.param_type.clone(),
+                            param.optional,
+                        )
+                    })
+                    .collect();
+                let expected: Vec<_> = expected
+                    .iter()
+                    .map(|(name, param_type, optional)| (*name, param_type.clone(), *optional))
+                    .collect();
+                assert_eq!(params, expected, "{}", function_name);
+            };
 
         let prediction = load_abi("prediction_market");
+        assert_params(
+            &prediction,
+            "create_market",
+            &[
+                ("creator", AbiType::Pubkey, false),
+                ("category", AbiType::U8, false),
+                ("close_slot", AbiType::U64, false),
+                ("outcome_count", AbiType::U8, false),
+                ("question_hash", AbiType::Pubkey, false),
+                ("question_len", AbiType::U32, false),
+                ("question", AbiType::Bytes, false),
+                ("outcome_names_payload", AbiType::Bytes, true),
+            ],
+        );
+        assert_params(
+            &prediction,
+            "get_leaderboard",
+            &[("limit", AbiType::U64, true)],
+        );
         for name in [
             "create_market",
             "add_liquidity",
@@ -4523,6 +4566,22 @@ mod tests {
         }
 
         let lichenswap = load_abi("lichenswap");
+        assert_params(
+            &lichenswap,
+            "get_quote",
+            &[
+                ("amount_in", AbiType::U64, false),
+                ("is_a_to_b", AbiType::U32, false),
+            ],
+        );
+        assert_params(
+            &lichenswap,
+            "flash_loan_borrow",
+            &[
+                ("amount", AbiType::U64, false),
+                ("token_is_a", AbiType::U32, false),
+            ],
+        );
         for name in [
             "add_liquidity",
             "swap_a_for_b",
@@ -4536,6 +4595,23 @@ mod tests {
         }
 
         let sporevault = load_abi("sporevault");
+        assert_params(
+            &sporevault,
+            "add_strategy",
+            &[
+                ("caller_ptr", AbiType::Pubkey, false),
+                ("strategy_type", AbiType::U8, false),
+                ("allocation_percent", AbiType::U64, false),
+            ],
+        );
+        assert_params(
+            &sporevault,
+            "set_risk_tier",
+            &[
+                ("caller_ptr", AbiType::Pubkey, false),
+                ("tier", AbiType::U8, false),
+            ],
+        );
         for name in ["deposit", "withdraw"] {
             assert_kind(&sporevault, name, AbiResultKind::NonzeroReturnValue);
             assert_failure_codes(&sporevault, name, &[200]);
@@ -4566,6 +4642,181 @@ mod tests {
             create_stream_semantics.success_codes,
             vec![0],
             "sporepay create_stream must declare zero as success"
+        );
+
+        let dex_router = load_abi("dex_router");
+        let set_addresses = dex_router
+            .functions
+            .iter()
+            .find(|function| function.name == "set_addresses")
+            .expect("dex_router ABI missing set_addresses");
+        let set_address_params: Vec<_> = set_addresses
+            .params
+            .iter()
+            .map(|param| param.name.as_str())
+            .collect();
+        assert_eq!(
+            set_address_params,
+            vec!["caller", "core_address", "amm_address"],
+            "dex_router set_addresses ABI must match runtime arguments"
+        );
+        assert_params(
+            &dex_router,
+            "register_route",
+            &[
+                ("caller", AbiType::Pubkey, false),
+                ("token_in", AbiType::Pubkey, false),
+                ("token_out", AbiType::Pubkey, false),
+                ("route_type", AbiType::U8, false),
+                ("pool_id", AbiType::U64, false),
+                ("secondary_id", AbiType::U64, false),
+                ("split_percent", AbiType::U8, true),
+            ],
+        );
+        let multi_hop = dex_router
+            .functions
+            .iter()
+            .find(|function| function.name == "multi_hop_swap")
+            .expect("dex_router ABI missing multi_hop_swap");
+        assert!(
+            multi_hop
+                .params
+                .iter()
+                .any(|param| param.name == "path" && param.param_type == AbiType::Bytes),
+            "dex_router multi_hop_swap ABI must expose the inline path bytes"
+        );
+
+        let dex_margin = load_abi("dex_margin");
+        let apply_funding = dex_margin
+            .functions
+            .iter()
+            .find(|function| function.name == "apply_funding")
+            .expect("dex_margin ABI missing apply_funding");
+        assert_eq!(apply_funding.opcode, Some(15));
+        assert_kind(&dex_margin, "apply_funding", AbiResultKind::ReturnCode);
+        assert_eq!(
+            apply_funding
+                .result_semantics
+                .as_ref()
+                .expect("apply_funding result semantics")
+                .success_codes,
+            vec![0],
+            "dex_margin apply_funding must declare zero as success"
+        );
+
+        let lichendao = load_abi("lichendao");
+        assert_params(
+            &lichendao,
+            "finalize_proposal",
+            &[
+                ("caller_ptr", AbiType::Pubkey, false),
+                ("proposal_id", AbiType::U64, false),
+            ],
+        );
+        assert_params(
+            &lichendao,
+            "create_proposal_typed",
+            &[
+                ("proposer_ptr", AbiType::Pubkey, false),
+                ("title_ptr", AbiType::Pubkey, false),
+                ("title_len", AbiType::U32, false),
+                ("description_ptr", AbiType::Pubkey, false),
+                ("description_len", AbiType::U32, false),
+                ("target_contract_ptr", AbiType::Pubkey, false),
+                ("action_ptr", AbiType::Pubkey, false),
+                ("action_len", AbiType::U32, false),
+                ("proposal_type", AbiType::U8, false),
+            ],
+        );
+        assert_params(
+            &lichendao,
+            "vote",
+            &[
+                ("voter_ptr", AbiType::Pubkey, false),
+                ("proposal_id", AbiType::U64, false),
+                ("support", AbiType::U8, false),
+                ("_voting_power", AbiType::U64, false),
+            ],
+        );
+        assert_params(
+            &lichendao,
+            "get_active_proposals",
+            &[
+                ("result_ptr", AbiType::Pubkey, false),
+                ("max_results", AbiType::U32, false),
+            ],
+        );
+
+        let thalllend = load_abi("thalllend");
+        assert_params(
+            &thalllend,
+            "set_oracle_feed",
+            &[
+                ("caller_ptr", AbiType::Pubkey, false),
+                ("oracle_addr_ptr", AbiType::Pubkey, false),
+                ("asset_ptr", AbiType::BytesWithLen, false),
+                ("asset_len", AbiType::U32, false),
+            ],
+        );
+
+        let lichenauction = load_abi("lichenauction");
+        assert_params(&lichenauction, "ma_pause", &[]);
+        assert_params(&lichenauction, "ma_unpause", &[]);
+
+        let bountyboard = load_abi("bountyboard");
+        assert_params(
+            &bountyboard,
+            "approve_work",
+            &[
+                ("caller_ptr", AbiType::Pubkey, false),
+                ("bounty_id", AbiType::U64, false),
+                ("submission_idx", AbiType::U8, false),
+            ],
+        );
+
+        let lichenpunks = load_abi("lichenpunks");
+        assert_params(
+            &lichenpunks,
+            "mint",
+            &[
+                ("caller_ptr", AbiType::Pubkey, false),
+                ("to_ptr", AbiType::Pubkey, false),
+                ("token_id", AbiType::U64, false),
+                ("metadata_ptr", AbiType::Pubkey, false),
+                ("metadata_len", AbiType::U32, false),
+            ],
+        );
+        assert_params(
+            &lichenpunks,
+            "set_base_uri",
+            &[
+                ("caller_ptr", AbiType::Pubkey, false),
+                ("uri_ptr", AbiType::Pubkey, false),
+                ("uri_len", AbiType::U32, false),
+            ],
+        );
+
+        let lichenoracle = load_abi("lichenoracle");
+        assert_params(
+            &lichenoracle,
+            "submit_price",
+            &[
+                ("feeder_ptr", AbiType::Pubkey, false),
+                ("asset_ptr", AbiType::Pubkey, false),
+                ("asset_len", AbiType::U32, false),
+                ("price", AbiType::U64, false),
+                ("decimals", AbiType::U8, false),
+            ],
+        );
+        assert_params(
+            &lichenoracle,
+            "get_aggregated_price",
+            &[
+                ("asset_ptr", AbiType::Pubkey, false),
+                ("asset_len", AbiType::U32, false),
+                ("num_feeds", AbiType::U8, false),
+                ("result_ptr", AbiType::Pubkey, false),
+            ],
         );
 
         let dex_analytics = load_abi("dex_analytics");

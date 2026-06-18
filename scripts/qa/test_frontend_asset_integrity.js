@@ -920,6 +920,11 @@ function validateProgramsWalletBridgeParity() {
     );
 
     assert(
+        sdk.includes('simulation.error || simulation.logs || simulation.returnCode || simulation.return_code'),
+        'Programs SDK preflight diagnostics must read simulateTransaction returnCode'
+    );
+
+    assert(
         sdk.includes('faucetBaseUrl()') &&
             sdk.includes('getFaucetConfig()') &&
             sdk.includes('`${faucetBase}/faucet/request`') &&

@@ -380,6 +380,15 @@ test('E-7A.3 signTransaction accepts builder transaction_base64 without submissi
   assert.ok(fnMatch[0].includes('decodeTransactionInputForSigning(incomingTx)'), 'sign flow does not use unified transaction decoder');
   assert.ok(fnMatch[0].includes("signedTransactionFormat: 'wallet_json_base64'"), 'signed transaction format marker missing');
   assert.ok(fnMatch[0].includes('sourceTransactionFormat: sourceFormat'), 'source transaction format marker missing');
+  assert.ok(fnMatch[0].includes('pqSignatureHex: signature.sig'), 'PQ signature hex field missing from signTransaction result');
+});
+
+test('E-7A.4 provider-router sendTransaction distinguishes tx id from PQ signature', () => {
+  const fnMatch = providerRouterSrc.match(/async function finalizeSendTransaction[\s\S]*?\n\}/m);
+  assert.ok(fnMatch, 'finalizeSendTransaction not found');
+  assert.ok(fnMatch[0].includes('transactionSignature: txHash'), 'sendTransaction result must expose transactionSignature');
+  assert.ok(fnMatch[0].includes('signature: txHash'), 'sendTransaction signature field must match the on-chain transaction id');
+  assert.ok(fnMatch[0].includes('pqSignatureHex: signature.sig'), 'sendTransaction result must expose PQ bytes under pqSignatureHex');
 });
 
 // ── E-8: Missing hex format validation for private key import ──
@@ -1139,8 +1148,18 @@ test('CC-26 extension parses wallet amounts into base-unit BigInt values', () =>
     'tx-service should not convert transfer amounts through floating point');
   assert.ok(stakingServiceSrc.includes('parsePositiveDecimalBaseUnits(amountLicn, 9, label)'),
     'staking service should validate stake amounts through base-unit parsing');
+  assert.ok(stakingServiceSrc.includes('position?.current_value_licn'),
+    'staking service should read current MossStake redeemable value');
+  assert.ok(stakingServiceSrc.includes('position?.licn_deposited'),
+    'staking service should read current MossStake deposited principal');
+  assert.ok(stakingServiceSrc.includes('position?.rewards_earned'),
+    'staking service should read current MossStake accrued rewards');
+  assert.ok(!stakingServiceSrc.includes('unclaimed_rewards'),
+    'staking service should not read obsolete MossStake unclaimed_rewards');
   assert.ok(homeSrc.includes('parsePositiveDecimalBaseUnits(value, 9, label)'),
     'home staking prompts should reuse base-unit amount parsing');
+  assert.ok(homeSrc.includes('Redeemable Value:'),
+    'home staking snapshot should label current_value_licn as redeemable value');
 });
 
 test('CC-27 extension send and shielded flows avoid floating-point amount payloads', () => {

@@ -367,6 +367,19 @@ function encodeLichenIdArgs(callerPubkey, functionName, params) {
 }
 
 // ── LichenID Program Address Resolution ──
+async function fetchAllIdentityContracts() {
+    const contracts = [];
+    let cursor = null;
+    do {
+        const params = [{ limit: 1000 }];
+        if (cursor) params[0].cursor = cursor;
+        const result = await trustedRpcCall('getAllContracts', params);
+        contracts.push(...(Array.isArray(result?.contracts) ? result.contracts : []));
+        cursor = result?.has_more ? result?.next_cursor : null;
+    } while (cursor);
+    return contracts;
+}
+
 async function getLichenIdProgramAddress() {
     if (_lichenidAddress) return _lichenidAddress;
     // Try each symbol individually (RPC expects a single string, not an array)
@@ -380,8 +393,7 @@ async function getLichenIdProgramAddress() {
     }
     // Fallback: scan full contract list
     try {
-        const result = await trustedRpcCall('getAllContracts');
-        const contracts = Array.isArray(result) ? result : (Array.isArray(result?.contracts) ? result.contracts : []);
+        const contracts = await fetchAllIdentityContracts();
         const c = contracts.find(c => c.name === 'lichenid' || c.symbol === 'YID');
         if (c) { _lichenidAddress = c.program_id || c.address; return _lichenidAddress; }
     } catch (_) { }

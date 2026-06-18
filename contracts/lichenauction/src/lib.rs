@@ -1508,6 +1508,10 @@ mod tests {
         assert_eq!(ma_pause(), 0);
 
         test_mock::set_timestamp(1000);
+        test_mock::set_cross_call_responses(alloc::vec![
+            1u32.to_le_bytes().to_vec(),
+            0u32.to_le_bytes().to_vec(),
+        ]);
         assert_eq!(finalize_auction(nft.as_ptr(), 1), 1);
 
         let data = lichen_sdk::storage_get(key.as_bytes()).unwrap();
@@ -1894,9 +1898,9 @@ mod tests {
         test_mock::set_caller(seller);
         test_mock::set_cross_call_responses(alloc::vec![
             seller.to_vec(),
+            0u32.to_le_bytes().to_vec(),
             1u32.to_le_bytes().to_vec(),
-            1u32.to_le_bytes().to_vec(),
-            1u32.to_le_bytes().to_vec(),
+            0u32.to_le_bytes().to_vec(),
         ]);
 
         assert_eq!(

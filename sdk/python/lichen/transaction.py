@@ -196,6 +196,7 @@ class TransactionBuilder:
     @staticmethod
     def deploy_contract(
         deployer: PublicKey,
+        contract_address: PublicKey,
         code: bytes,
         init_data: bytes = b"",
     ) -> Instruction:
@@ -204,6 +205,7 @@ class TransactionBuilder:
 
         Args:
             deployer: Deployer public key (signer, pays deploy fee)
+            contract_address: New contract account address
             code: WASM bytecode (must start with \\0asm magic, max 512 KB)
             init_data: Optional initialization data passed to contract init
         """
@@ -222,7 +224,7 @@ class TransactionBuilder:
 
         return Instruction(
             program_id=TransactionBuilder._CONTRACT_PROGRAM_ID,
-            accounts=[deployer],
+            accounts=[deployer, contract_address],
             data=payload,
         )
 

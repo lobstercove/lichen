@@ -80,8 +80,10 @@ assert(
 );
 assert(
   script.includes('Mainnet requires at least four unique bridge/oracle committee validators') &&
+    script.includes('import os') &&
+    script.includes('NETWORK=\'$NETWORK\'; $(declare -f verify_protocol_url); verify_protocol_url http://127.0.0.1:$RPC_PORT') &&
     script.includes('min_committee = 4 if os.environ.get("NETWORK") == "mainnet" else 2'),
-  'mainnet clean-slate must enforce the four-validator bridge/oracle committee guard'
+  'mainnet clean-slate must enforce the four-validator bridge/oracle committee guard locally and remotely'
 );
 
 console.log('clean-slate redeploy safety QA passed');

@@ -50,7 +50,7 @@ pub use bountyboard::{
     BountyBoardStats, CreateBountyParams, SubmitWorkParams, BOUNTY_STATUS_CANCELLED,
     BOUNTY_STATUS_COMPLETED, BOUNTY_STATUS_OPEN,
 };
-pub use client::{Client, ClientBuilder, ReadonlyContractResult};
+pub use client::{Client, ClientBuilder, DeployContractResult, ReadonlyContractResult};
 pub use error::{Error, Result};
 pub use keypair::{Address, Keypair, PqPublicKey, PqSignature, Pubkey};
 pub use lichenid::{

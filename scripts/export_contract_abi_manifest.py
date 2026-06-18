@@ -93,8 +93,18 @@ def build_manifest(rpc_url: str) -> Dict[str, Any]:
     except Exception:
         chain_status = None
 
-    contracts_result = rpc_call(rpc_url, "getAllContracts", [])
-    contracts = contracts_result.get("contracts", []) if isinstance(contracts_result, dict) else []
+    contracts: List[Dict[str, Any]] = []
+    cursor: Optional[str] = None
+    while True:
+        params = [{"limit": 1000, **({"cursor": cursor} if cursor else {})}]
+        contracts_result = rpc_call(rpc_url, "getAllContracts", params)
+        if isinstance(contracts_result, dict):
+            contracts.extend(contracts_result.get("contracts", []))
+            cursor = contracts_result.get("next_cursor") if contracts_result.get("has_more") else None
+        else:
+            cursor = None
+        if not cursor:
+            break
 
     entries: List[Dict[str, Any]] = []
     success_count = 0

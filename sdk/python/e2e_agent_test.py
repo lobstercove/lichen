@@ -565,7 +565,7 @@ async def main():
     # Contract count (should be 26 genesis + 1 agent = 27)
     try:
         all_contracts = await conn._rpc("getAllContracts")
-        contracts_list = all_contracts.get("contracts", []) if isinstance(all_contracts, dict) else all_contracts if isinstance(all_contracts, list) else []
+        contracts_list = all_contracts.get("contracts", []) if isinstance(all_contracts, dict) else []
         print_ok(f"Total contracts on-chain: {len(contracts_list)}")
         if len(contracts_list) >= 27:
             print_ok("Contract count correct (26 genesis + 1 agent)")

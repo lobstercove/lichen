@@ -37,7 +37,7 @@
         },
         {
           "name": "metadata_len",
-          "type": "u64"
+          "type": "u32"
         }
       ],
       "result_semantics": {
@@ -206,7 +206,7 @@
         },
         {
           "name": "metadata_len",
-          "type": "u64"
+          "type": "u32"
         }
       ],
       "result_semantics": {
@@ -311,7 +311,7 @@
         },
         {
           "name": "uri_len",
-          "type": "u64"
+          "type": "u32"
         }
       ],
       "result_semantics": {

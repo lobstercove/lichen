@@ -223,10 +223,6 @@ fn should_recover_partial_genesis_state(
         return false;
     }
 
-    if state.get_block_by_slot(0).unwrap_or(None).is_some() {
-        return false;
-    }
-
     // Hard evidence: non-zero tip without a block-0 means this is legacy or
     // partial state and cannot safely continue as a resumable validator state.
     if state.get_last_slot().unwrap_or(0) > 0 {
@@ -242,6 +238,10 @@ fn should_recover_partial_genesis_state(
         Some(b"1")
     ) {
         return true;
+    }
+
+    if state.get_block_by_slot(0).unwrap_or(None).is_some() {
+        return false;
     }
 
     // Strong heuristic evidence of previously initialized chain state.
@@ -2726,6 +2726,28 @@ fn validate_state_root_with_schema(
         ));
     }
 
+    let maybe_apply_detected_schema = |detected: bool| -> bool {
+        match state.get_state_root_schema() {
+            Some(current) if current != detected => {
+                warn!(
+                    "Rejecting state-root schema downgrade at slot {} ({}): active={:?}, detected={:?}",
+                    slot, context, current, detected
+                );
+                false
+            }
+            Some(_) => true,
+            None => {
+                if let Err(err) = state.set_state_root_schema(detected) {
+                    warn!(
+                        "Failed to persist state-root schema {:?} at slot {} ({}): {}",
+                        detected, slot, context, err
+                    );
+                }
+                true
+            }
+        }
+    };
+
     let initial_root = if use_cold_start {
         state.compute_state_root_cold_start()
     } else {
@@ -2733,47 +2755,50 @@ fn validate_state_root_with_schema(
     };
 
     if initial_root == block_root {
+        if state.get_state_root_schema().is_none() {
+            if let Some(include_restrictions) =
+                state.detect_state_root_schema_for_root_cold_start(&block_root)
+            {
+                maybe_apply_detected_schema(include_restrictions);
+            } else if let Some(include_restrictions) =
+                state.detect_state_root_schema_for_root(&block_root)
+            {
+                maybe_apply_detected_schema(include_restrictions);
+            }
+        }
         return Ok(());
     }
 
     if let Some(include_restrictions) =
         state.detect_state_root_schema_for_root_cold_start(&block_root)
     {
-        if let Err(err) = state.set_state_root_schema(include_restrictions) {
-            warn!(
-                "Failed to persist state-root schema {:?} at slot {} ({}): {}",
-                include_restrictions, slot, context, err
-            );
-        }
-        let repaired_root = state.compute_state_root_cold_start();
-        if repaired_root == block_root {
-            info!(
-                "🔄 State root schema repaired at slot {} ({}) from {:?} to {:?}",
-                slot,
-                context,
-                initial_root.to_hex(),
-                repaired_root.to_hex()
-            );
-            return Ok(());
+        if maybe_apply_detected_schema(include_restrictions) {
+            let repaired_root = state.compute_state_root_cold_start();
+            if repaired_root == block_root {
+                info!(
+                    "🔄 State root schema repaired at slot {} ({}) from {:?} to {:?}",
+                    slot,
+                    context,
+                    initial_root.to_hex(),
+                    repaired_root.to_hex()
+                );
+                return Ok(());
+            }
         }
     } else if let Some(include_restrictions) = state.detect_state_root_schema_for_root(&block_root)
     {
-        if let Err(err) = state.set_state_root_schema(include_restrictions) {
-            warn!(
-                "Failed to persist state-root schema {:?} at slot {} ({}): {}",
-                include_restrictions, slot, context, err
-            );
-        }
-        let repaired_root = state.compute_state_root_cold_start();
-        if repaired_root == block_root {
-            info!(
-                "🔄 State root schema repaired at slot {} ({}) from {:?} to {:?}",
-                slot,
-                context,
-                initial_root.to_hex(),
-                repaired_root.to_hex()
-            );
-            return Ok(());
+        if maybe_apply_detected_schema(include_restrictions) {
+            let repaired_root = state.compute_state_root_cold_start();
+            if repaired_root == block_root {
+                info!(
+                    "🔄 State root schema repaired at slot {} ({}) from {:?} to {:?}",
+                    slot,
+                    context,
+                    initial_root.to_hex(),
+                    repaired_root.to_hex()
+                );
+                return Ok(());
+            }
         }
     }
 
@@ -14951,19 +14976,15 @@ async fn run_validator() {
                                 warn!(
                                 "⚠️  Genesis block has no mint tx — cannot extract genesis pubkey"
                             );
-                                // Store genesis even without full reconstruction
-                                if let Err(e) = state_for_blocks.put_block(&block) {
-                                    error!("Failed to store genesis block: {}", e);
-                                }
-                                state_for_blocks.set_last_slot(0).ok();
                                 if let Err(err) = state_for_blocks
-                                    .put_metadata(GENESIS_SYNC_INCOMPLETE_MARKER, b"0")
+                                    .put_metadata(GENESIS_SYNC_INCOMPLETE_MARKER, b"1")
                                 {
-                                    warn!("⚠️  Failed to clear genesis sync marker: {}", err);
+                                    warn!("⚠️  Failed to persist genesis sync marker: {}", err);
                                 }
-                                info!(
-                                "✅ 📡 [sync] Applied genesis block (slot 0) from network (state incomplete)"
-                            );
+                                warn!(
+                                    "⚠️  Refusing to store incomplete genesis block; validator will rejoin from a verified genesis source"
+                                );
+                                continue;
                             }
                         }
 
@@ -29137,6 +29158,33 @@ mod tests {
     }
 
     #[test]
+    fn should_recover_partial_genesis_state_triggers_when_marker_survives_block_zero() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let block = Block::new_with_timestamp(
+            0,
+            Hash::default(),
+            Hash::default(),
+            [8u8; 32],
+            Vec::new(),
+            0,
+        );
+        state
+            .put_block(&block)
+            .expect("store incomplete genesis block");
+        state.set_last_slot(0).expect("set slot zero");
+        state
+            .put_metadata(GENESIS_SYNC_INCOMPLETE_MARKER, b"1")
+            .expect("store marker");
+
+        assert!(should_recover_partial_genesis_state(
+            &state,
+            Some("testnet"),
+            None
+        ));
+    }
+
+    #[test]
     fn startup_mode_resumes_existing_state_even_when_seeded() {
         assert_eq!(determine_startup_mode(42, false, true), StartupMode::Resume);
         assert_eq!(determine_startup_mode(0, true, true), StartupMode::Resume);
@@ -29165,7 +29213,26 @@ mod tests {
     }
 
     #[test]
-    fn validate_state_root_with_schema_repairs_legacy_root() {
+    fn validate_state_root_with_schema_repairs_unset_legacy_root() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let pubkey = Pubkey([4u8; 32]);
+        state
+            .put_account(&pubkey, &Account::new(100, pubkey))
+            .expect("seed account");
+
+        let legacy_root = state.compute_state_root_without_restrictions_cold_start();
+        assert_eq!(state.get_state_root_schema(), None);
+
+        validate_state_root_with_schema(&state, 7, legacy_root, "test legacy repair", true)
+            .expect("legacy root should repair schema");
+
+        assert_eq!(state.get_state_root_schema(), Some(false));
+        assert_eq!(state.compute_state_root_cached(), legacy_root);
+    }
+
+    #[test]
+    fn validate_state_root_with_schema_rejects_active_schema_downgrade() {
         let temp_dir = tempfile::tempdir().expect("create temp dir");
         let state = StateStore::open(temp_dir.path()).expect("open state");
         let pubkey = Pubkey([4u8; 32]);
@@ -29179,11 +29246,21 @@ mod tests {
             .expect("force prefixed schema");
         assert_ne!(state.compute_state_root_cold_start(), legacy_root);
 
-        validate_state_root_with_schema(&state, 7, legacy_root, "test legacy repair", true)
-            .expect("legacy root should repair schema");
+        let err = validate_state_root_with_schema(
+            &state,
+            7,
+            legacy_root,
+            "test downgrade rejection",
+            true,
+        )
+        .expect_err("active schema must not downgrade");
 
-        assert_eq!(state.get_state_root_schema(), Some(false));
-        assert_eq!(state.compute_state_root_cached(), legacy_root);
+        assert!(
+            err.contains("state-root mismatch"),
+            "unexpected validation error: {}",
+            err
+        );
+        assert_eq!(state.get_state_root_schema(), Some(true));
     }
 
     #[test]

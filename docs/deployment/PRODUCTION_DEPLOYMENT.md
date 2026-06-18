@@ -2280,7 +2280,7 @@ All frontend portals are deployed as static sites to Cloudflare Pages via Wrangl
 | DEX | `lichen-network-dex` | `dex/` | `dex.lichen.network` |
 | Wallet | `lichen-network-wallet` | `wallet/` | `wallet.lichen.network` |
 | Explorer | `lichen-network-explorer` | `explorer/` | `explorer.lichen.network` |
-| Faucet | `lichen-network-faucet` | `faucet/` | `faucet.lichen.network` |
+| Faucet | `lichen-network-faucet` | `faucet/` | Pages `.pages.dev` domain or a separate portal-only hostname. Do not attach `faucet.lichen.network`; that hostname is the faucet API origin. |
 | Marketplace | `lichen-network-marketplace` | `marketplace/` | `marketplace.lichen.network` |
 | Developers | `lichen-network-developers` | `developers/` | `developers.lichen.network` |
 | Programs | `lichen-network-programs` | `programs/` | `programs.lichen.network` |
@@ -2337,6 +2337,12 @@ Custom domains are managed in the Cloudflare Dashboard, not via Wrangler:
 2. Add the domain (e.g. `dex.lichen.network`)
 3. Cloudflare auto-creates a CNAME record if DNS is managed by Cloudflare
 
+Do not add `faucet.lichen.network` as a Cloudflare Pages custom domain. That
+hostname must stay routed to the Caddy origin serving the Rust faucet API on
+port 9100. If a human-facing faucet portal hostname is needed, use a separate
+name and keep `faucet/shared-config.js` pointing API calls at
+`https://faucet.lichen.network`.
+
 ### Faucet architecture
 
 The faucet has two separate components served on different domains:
@@ -2354,7 +2360,7 @@ The static portal calls the API at `https://faucet.lichen.network/faucet/request
 
 The faucet service only serves API endpoints (`/health`, `/faucet/config`, `/faucet/status`, `/faucet/airdrops`, `/faucet/request`). It does NOT serve static HTML — that comes from Cloudflare Pages.
 
-Do NOT confuse the `faucet` key in `shared-config.js` with a portal URL — it is the API endpoint. The faucet portal is accessed via the Pages `.pages.dev` domain or a custom domain added to the Pages project.
+Do NOT confuse the `faucet` key in `shared-config.js` with a portal URL — it is the API endpoint. The faucet portal is accessed via the Pages `.pages.dev` domain or a separate portal-only custom domain added to the Pages project.
 
 ---
 

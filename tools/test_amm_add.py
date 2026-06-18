@@ -63,8 +63,8 @@ async def main():
     try:
         tx = await conn._rpc('getTransaction', [sig])
         result = tx if isinstance(tx, dict) else {}
-        print(f"returnCode: {result.get('returnCode', '?')}")
-        logs = result.get('logs', [])
+        print(f"returnCode: {result.get('return_code', result.get('returnCode', '?'))}")
+        logs = result.get('contract_logs') or result.get('logs') or []
         for log in logs:
             print(f"  log: {log}")
     except Exception as e:

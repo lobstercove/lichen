@@ -578,14 +578,16 @@ println!("{} {:?} {:?}", route.paused, rewards, position);</code></pre>
 
             <div class="method-card">
                 <h3 class="method-name">async deploy_contract(&amp;self, deployer: &amp;Keypair, code: Vec&lt;u8&gt;,
-                    init_data: Vec&lt;u8&gt;) -&gt; Result&lt;String&gt;</h3>
+                    init_data: Vec&lt;u8&gt;) -&gt; Result&lt;DeployContractResult&gt;</h3>
                 <p class="method-desc">Deploy a WASM smart contract. Code must start with <code>\0asm</code> magic
-                    header and be under 512 KB.</p>
+                    header and be under 512 KB. Returns the transaction signature and deployed contract address.</p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">Rust</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
                     <pre><code>let wasm = std::fs::read("my_contract.wasm")?;
-let sig = client.deploy_contract(&kp, wasm, vec![]).await?;</code></pre>
+let deploy = client.deploy_contract(&kp, wasm, vec![]).await?;
+println!("Deploy tx: {}", deploy.signature);
+println!("Contract: {}", deploy.contract_address);</code></pre>
                 </div>
             </div>
 
@@ -640,7 +642,9 @@ println!("{:?}", result);</code></pre>
 
             <div class="method-card">
                 <h3 class="method-name">async get_all_contracts(&amp;self) -&gt; Result&lt;Value&gt;</h3>
-                <p class="method-desc">List all deployed contracts.</p>
+                <p class="method-desc">List deployed contracts. The returned JSON value is
+                    <code>{ contracts, count, has_more, next_cursor }</code>.
+                </p>
             </div>
 
             <!-- Program Methods -->

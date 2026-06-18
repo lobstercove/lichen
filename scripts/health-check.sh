@@ -2,7 +2,41 @@
 # Lichen Validator Health Check
 # Monitors validator status and alerts on issues
 
-RPC_URL="${LICHEN_RPC_URL:-http://localhost:8899}"
+NETWORK="${LICHEN_NETWORK:-testnet}"
+WATCH=false
+
+usage() {
+    echo "Usage: $0 [testnet|mainnet] [--watch]" >&2
+}
+
+for arg in "$@"; do
+    case "$arg" in
+        testnet|mainnet) NETWORK="$arg" ;;
+        --watch) WATCH=true ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            usage
+            echo "Unknown argument '$arg' (expected testnet, mainnet, or --watch)" >&2
+            exit 2
+            ;;
+    esac
+done
+
+if [ -n "${LICHEN_RPC_URL:-}" ]; then
+    RPC_URL="$LICHEN_RPC_URL"
+else
+    case "$NETWORK" in
+        mainnet) RPC_URL="http://localhost:9899" ;;
+        testnet) RPC_URL="http://localhost:8899" ;;
+        *)
+            echo "Unknown network '$NETWORK' (expected testnet or mainnet)" >&2
+            exit 2
+            ;;
+    esac
+fi
 ALERT_EMAIL="${LICHEN_ALERT_EMAIL:-}"
 SLACK_WEBHOOK="${LICHEN_SLACK_WEBHOOK:-}"
 CHECK_INTERVAL=30
@@ -140,7 +174,17 @@ check_metrics() {
 }
 
 check_disk_space() {
-    local data_dir="${LICHEN_DATA_DIR:-$HOME/.lichen/data}"
+    local data_dir="${LICHEN_DATA_DIR:-}"
+
+    if [ -z "$data_dir" ]; then
+        if [ -d "/var/lib/lichen/state-$NETWORK" ]; then
+            data_dir="/var/lib/lichen/state-$NETWORK"
+        elif [ -d "/var/lib/lichen" ]; then
+            data_dir="/var/lib/lichen"
+        else
+            data_dir="$HOME/.lichen/data"
+        fi
+    fi
     
     if [ ! -d "$data_dir" ]; then
         print_warning "Data directory not found: $data_dir"
@@ -183,25 +227,26 @@ main() {
     
     if [ "$all_healthy" = true ]; then
         print_success "All checks passed ✓"
-        exit 0
+        return 0
     else
         print_error "Some checks failed ✗"
         send_alert "Validator health check failed"
-        exit 1
+        return 1
     fi
 }
 
 # Run once or continuously
-if [ "$1" = "--watch" ]; then
+if [ "$WATCH" = true ]; then
     echo "Running continuous health monitoring (interval: ${CHECK_INTERVAL}s)"
     echo "Press Ctrl+C to stop"
     echo ""
     
     while true; do
-        main
+        main || true
         sleep "$CHECK_INTERVAL"
         echo ""
     done
 else
     main
+    exit $?
 fi

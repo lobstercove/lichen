@@ -2410,7 +2410,7 @@ fn dispatch_min_len(args: &[u8]) -> Option<usize> {
         2 => Some(66),
         3 | 6 | 8 | 21 | 22 | 26 | 30 | 35 => Some(41),
         9 => Some(73),
-        10 | 11 | 12 | 23 => Some(9),
+        10 | 11 | 12 | 15 | 23 => Some(9),
         16 | 18 | 19 | 20 => Some(1),
         24 | 28 => Some(57),
         29 | 33 | 34 => Some(65),
@@ -2590,6 +2590,14 @@ pub extern "C" fn call() -> u32 {
                 let r = emergency_unpause(args[1..33].as_ptr());
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
                 _rc = r as u32;
+                _rc = r as u32;
+            }
+        }
+        15 => {
+            // apply_funding(pair_id[8])
+            if args.len() >= 9 {
+                let r = apply_funding(bytes_to_u64(&args[1..9]));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
                 _rc = r as u32;
             }
         }

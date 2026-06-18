@@ -1024,6 +1024,7 @@
                 result: {
                     signature: signature.sig,
                     pqSignature: signature,
+                    pqSignatureHex: signature.sig,
                 },
             };
         } finally {
@@ -1057,6 +1058,7 @@
                 result: {
                     signature: signature.sig,
                     pqSignature: signature,
+                    pqSignatureHex: signature.sig,
                     signedTransaction,
                     signedTransactionBase64: encodeBase64Json(signedTransaction),
                 },
@@ -1075,8 +1077,10 @@
             ok: true,
             result: {
                 txHash,
-                signature: signResult.result.signature,
+                transactionSignature: txHash,
+                signature: txHash,
                 pqSignature: signResult.result.pqSignature,
+                pqSignatureHex: signResult.result.pqSignatureHex || signResult.result.signature,
                 signedTransaction: signResult.result.signedTransaction,
                 signedTransactionBase64: signResult.result.signedTransactionBase64,
             },

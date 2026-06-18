@@ -28,7 +28,8 @@ Backfill can be rolled out before activation. The validator keeps `sparse_v1` cu
 Run on each validator during a normal restart window:
 
 ```bash
-systemctl stop lichen-validator
+SERVICE=lichen-validator-testnet
+systemctl stop "$SERVICE"
 /path/to/lichen-validator --rebuild-sparse-state-commitment \
   --network testnet \
   --db-path /var/lib/lichen/state-testnet \
@@ -37,7 +38,7 @@ systemctl stop lichen-validator
   --network testnet \
   --db-path /var/lib/lichen/state-testnet \
   --cache-size-mb 4096
-systemctl start lichen-validator
+systemctl start "$SERVICE"
 ```
 
 ## Coordinated Activation
@@ -45,13 +46,14 @@ systemctl start lichen-validator
 Activation changes the state-root prefix and must be coordinated across the validator set. Do not activate one validator while others are still producing `ordered_v0` roots.
 
 ```bash
-systemctl stop lichen-validator
+SERVICE=lichen-validator-testnet
+systemctl stop "$SERVICE"
 /path/to/lichen-validator --activate-sparse-state-commitment \
   --confirm sparse-state-commitment:v1 \
   --network testnet \
   --db-path /var/lib/lichen/state-testnet \
   --cache-size-mb 4096
-systemctl start lichen-validator
+systemctl start "$SERVICE"
 ```
 
 No persistent service or timer is required for this command. If a temporary unit is used operationally, remove it after it exits.

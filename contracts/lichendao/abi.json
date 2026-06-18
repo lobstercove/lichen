@@ -40,7 +40,7 @@
         },
         {
           "name": "title_len",
-          "type": "u64"
+          "type": "u32"
         },
         {
           "name": "description_ptr",
@@ -48,7 +48,7 @@
         },
         {
           "name": "description_len",
-          "type": "u64"
+          "type": "u32"
         },
         {
           "name": "target_contract_ptr",
@@ -60,7 +60,7 @@
         },
         {
           "name": "action_len",
-          "type": "u64"
+          "type": "u32"
         }
       ],
       "result_semantics": {
@@ -81,7 +81,7 @@
         },
         {
           "name": "title_len",
-          "type": "u64"
+          "type": "u32"
         },
         {
           "name": "description_ptr",
@@ -89,7 +89,7 @@
         },
         {
           "name": "description_len",
-          "type": "u64"
+          "type": "u32"
         },
         {
           "name": "target_contract_ptr",
@@ -101,11 +101,11 @@
         },
         {
           "name": "action_len",
-          "type": "u64"
+          "type": "u32"
         },
         {
           "name": "proposal_type",
-          "type": "u64"
+          "type": "u8"
         }
       ],
       "result_semantics": {
@@ -126,7 +126,7 @@
         },
         {
           "name": "support",
-          "type": "u64"
+          "type": "u8"
         },
         {
           "name": "_voting_power",
@@ -154,7 +154,7 @@
         },
         {
           "name": "support",
-          "type": "u64"
+          "type": "u8"
         },
         {
           "name": "_token_balance",
@@ -190,7 +190,7 @@
         },
         {
           "name": "action_len",
-          "type": "u64"
+          "type": "u32"
         }
       ],
       "result_semantics": {
@@ -342,7 +342,7 @@
         },
         {
           "name": "max_results",
-          "type": "u64"
+          "type": "u32"
         }
       ],
       "result_semantics": {
@@ -390,7 +390,7 @@
         },
         {
           "name": "support",
-          "type": "u64"
+          "type": "u8"
         },
         {
           "name": "_voting_power",
@@ -409,19 +409,11 @@
       "opcode": 15,
       "params": [
         {
-          "name": "executor_ptr",
+          "name": "caller_ptr",
           "type": "Pubkey"
         },
         {
           "name": "proposal_id",
-          "type": "u64"
-        },
-        {
-          "name": "action_ptr",
-          "type": "Pubkey"
-        },
-        {
-          "name": "action_len",
           "type": "u64"
         }
       ],

@@ -274,8 +274,15 @@ async function getLichenIdProgramAddress(network) {
   }
 
   try {
-    const result = await trustedRpc.call('getAllContracts');
-    const contracts = Array.isArray(result) ? result : (Array.isArray(result?.contracts) ? result.contracts : []);
+    const contracts = [];
+    let cursor = null;
+    do {
+      const params = [{ limit: 1000 }];
+      if (cursor) params[0].cursor = cursor;
+      const result = await trustedRpc.call('getAllContracts', params);
+      contracts.push(...(Array.isArray(result?.contracts) ? result.contracts : []));
+      cursor = result?.has_more ? result?.next_cursor : null;
+    } while (cursor);
     const contract = contracts.find((entry) => entry.name === 'lichenid' || entry.symbol === 'YID');
     if (contract) return contract.program_id || contract.address;
   } catch {

@@ -763,7 +763,8 @@ def test_deploy_malicious_contract():
 
     all_rejected = True
     for name, code in tests:
-        r = rpc("deployContract", [code, "malicious_deployer", f"mal_{name}"], timeout=5)
+        init_data = json.dumps({"name": f"mal_{name}"})
+        r = rpc("deployContract", [addr, code, init_data, "00"], timeout=5)
         if "result" in r and "error" not in r:
             all_rejected = False
             break
@@ -957,7 +958,8 @@ def test_concurrent_deploys():
 
     results_list = []
     def deploy_one(i):
-        r = rpc("deployContract", [wasm_b64, "deploy_stress", f"stress_{i}"], timeout=5)
+        init_data = json.dumps({"name": f"stress_{i}"})
+        r = rpc("deployContract", [addr, wasm_b64, init_data, "00"], timeout=5)
         results_list.append(r)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as pool:

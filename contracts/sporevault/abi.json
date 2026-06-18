@@ -28,7 +28,7 @@
         },
         {
           "name": "strategy_type",
-          "type": "u64"
+          "type": "u8"
         },
         {
           "name": "allocation_percent",
@@ -239,7 +239,7 @@
         },
         {
           "name": "tier",
-          "type": "u64"
+          "type": "u8"
         }
       ],
       "result_semantics": {

@@ -2,6 +2,8 @@
 
 import asyncio
 import contextlib
+from dataclasses import dataclass
+import hashlib
 import json
 import base64
 import logging
@@ -26,6 +28,12 @@ TX_CONFIRM_CLEANUP_TIMEOUT_SECS = max(
     0.1,
     float(os.getenv("LICHEN_TX_CONFIRM_CLEANUP_TIMEOUT_SECS", "1.0")),
 )
+
+
+@dataclass(frozen=True)
+class DeployContractResult:
+    signature: str
+    contract_address: PublicKey
 
 
 class Connection:
@@ -282,7 +290,8 @@ class Connection:
         deployer: Keypair,
         code: bytes,
         init_data: bytes = b"",
-    ) -> str:
+        contract_address: Optional[PublicKey] = None,
+    ) -> DeployContractResult:
         """
         Deploy a WASM smart contract.
 
@@ -290,18 +299,30 @@ class Connection:
             deployer: Deployer keypair (signer, pays deploy fee)
             code: WASM bytecode (must start with \\0asm magic, max 512 KB)
             init_data: Optional initialization data passed to contract init
+            contract_address: Optional explicit contract account address
 
         Returns:
-            Transaction signature
+            Transaction signature and deployed contract address
         """
+        address = contract_address or self.derive_contract_address(deployer.pubkey(), code, await self.get_slot())
         blockhash = await self.get_recent_blockhash()
         chain_id = await self._get_signing_chain_id()
-        instruction = TransactionBuilder.deploy_contract(deployer.pubkey(), code, init_data)
+        instruction = TransactionBuilder.deploy_contract(deployer.pubkey(), address, code, init_data)
         transaction = (TransactionBuilder()
             .add(instruction)
             .set_recent_blockhash(blockhash)
             .build_and_sign_for_chain_id(deployer, chain_id))
-        return await self.send_transaction(transaction)
+        signature = await self.send_transaction(transaction)
+        return DeployContractResult(signature=signature, contract_address=address)
+
+    @staticmethod
+    def derive_contract_address(deployer: PublicKey, code: bytes, slot: int) -> PublicKey:
+        """Derive the SDK/CLI deploy address convention for a contract transaction."""
+        code_hash = hashlib.sha256(code).digest()
+        digest = hashlib.sha256(
+            deployer.to_bytes() + code_hash + int(slot).to_bytes(8, "little")
+        ).digest()
+        return PublicKey.from_bytes(digest)
 
     async def call_contract(
         self,
@@ -410,9 +431,30 @@ class Connection:
         """Get contract logs"""
         return await self._rpc("getContractLogs", [str(contract_id)])
     
-    async def get_all_contracts(self) -> Dict[str, Any]:
-        """Get all deployed contracts"""
-        return await self._rpc("getAllContracts")
+    async def get_all_contracts(
+        self,
+        limit: Optional[int] = None,
+        cursor: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Get one page of deployed contracts."""
+        options: Dict[str, Any] = {}
+        if limit is not None:
+            options["limit"] = limit
+        if cursor:
+            options["cursor"] = cursor
+        params = [options] if options else []
+        return await self._rpc("getAllContracts", params)
+
+    async def get_all_contracts_all(self, limit: int = 1000) -> List[Dict[str, Any]]:
+        """Fetch every getAllContracts page for catalog/discovery tasks."""
+        contracts: List[Dict[str, Any]] = []
+        cursor: Optional[str] = None
+        while True:
+            page = await self.get_all_contracts(limit=limit, cursor=cursor)
+            contracts.extend(page.get("contracts", []) if isinstance(page, dict) else [])
+            cursor = page.get("next_cursor") if isinstance(page, dict) and page.get("has_more") else None
+            if not cursor:
+                return contracts
 
     async def get_symbol_registry(self, symbol: str) -> Dict[str, Any]:
         """Get a symbol-registry entry."""

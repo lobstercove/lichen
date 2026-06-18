@@ -362,6 +362,10 @@
         {
           "name": "asset_ptr",
           "type": "bytes_with_len"
+        },
+        {
+          "name": "asset_len",
+          "type": "u32"
         }
       ],
       "result_semantics": {

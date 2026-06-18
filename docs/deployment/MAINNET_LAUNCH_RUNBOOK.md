@@ -217,16 +217,30 @@ Expected release assets:
 Verify release archives locally before copying or deploying:
 
 ```bash
+REPO_ROOT="$(git rev-parse --show-toplevel)"
 mkdir -p /tmp/lichen-release-mainnet
 gh release download "$LICHEN_RELEASE_TAG" \
   --dir /tmp/lichen-release-mainnet \
   --clobber
 cd /tmp/lichen-release-mainnet
+node "$REPO_ROOT/scripts/verify-release-checksums.mjs" .
 sha256sum -c SHA256SUMS
 ```
 
 The rolling deploy script verifies the detached PQ signature over `SHA256SUMS`
 before it installs anything on a VPS. Do not bypass that gate during rollout.
+
+For an emergency rollback to the current signed rollback point, set the tag
+explicitly and run the same signed-release path:
+
+```bash
+export LICHEN_RELEASE_TAG=v0.5.161
+LICHEN_VERIFY_RELEASE_ONLY=1 bash scripts/rolling-release-deploy.sh mainnet
+bash scripts/rolling-release-deploy.sh mainnet
+```
+
+Do not reset RocksDB state for a code rollback unless a separate incident
+decision explicitly approves a destructive recovery.
 
 The release must be signed by the configured release-signing key. For the
 current trust anchor, the signer address is:

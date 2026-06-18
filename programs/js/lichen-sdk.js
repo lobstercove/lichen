@@ -469,7 +469,7 @@ class LichenRPC {
     async sendTransaction(txBase64) {
         const simulation = await this.simulateTransaction(txBase64);
         if (!simulation || simulation.success !== true) {
-            const detail = simulation && (simulation.error || simulation.logs || simulation.return_code);
+            const detail = simulation && (simulation.error || simulation.logs || simulation.returnCode || simulation.return_code);
             throw new Error('Preflight failed' + (detail ? ': ' + String(detail) : ''));
         }
         return await this.submitTransaction(txBase64);

@@ -221,7 +221,7 @@ if val_list:
 print("\n--- 4. Contract & Program RPC ---")
 
 contracts_res, err = rpc("getAllContracts")
-all_contracts = contracts_res.get("contracts", []) if isinstance(contracts_res, dict) else (contracts_res if isinstance(contracts_res, list) else [])
+all_contracts = contracts_res.get("contracts", []) if isinstance(contracts_res, dict) else []
 test("getAllContracts", len(all_contracts) >= EXPECTED_GENESIS_CONTRACTS, f"count={len(all_contracts)}")
 
 prog_res, err = rpc("getPrograms", [{"limit": 100}])

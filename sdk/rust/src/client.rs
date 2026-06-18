@@ -26,12 +26,33 @@ pub struct ReadonlyContractResult {
     pub compute_used: Option<u64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeployContractResult {
+    pub signature: String,
+    pub contract_address: Pubkey,
+}
+
 /// Lichen RPC client
 #[derive(Debug, Clone)]
 pub struct Client {
     rpc_url: String,
     client: reqwest::Client,
     next_id: Arc<AtomicU64>,
+}
+
+fn contract_list_params(limit: Option<u64>, cursor: Option<&str>) -> Value {
+    let mut options = serde_json::Map::new();
+    if let Some(limit) = limit {
+        options.insert("limit".to_string(), json!(limit));
+    }
+    if let Some(cursor) = cursor {
+        options.insert("cursor".to_string(), json!(cursor));
+    }
+    if options.is_empty() {
+        json!([])
+    } else {
+        json!([Value::Object(options)])
+    }
 }
 
 impl Client {
@@ -349,7 +370,7 @@ impl Client {
         deployer: &Keypair,
         code: Vec<u8>,
         init_data: Vec<u8>,
-    ) -> Result<String> {
+    ) -> Result<DeployContractResult> {
         if code.len() < 4 || &code[..4] != b"\0asm" {
             return Err(Error::BuildError(
                 "Invalid WASM bytecode: missing magic header (\\0asm)".into(),
@@ -364,6 +385,7 @@ impl Client {
         let blockhash_str = self.get_recent_blockhash().await?;
         let blockhash = Hash::from_hex(&blockhash_str).map_err(|e| Error::ParseError(e))?;
         let chain_id = self.signing_chain_id().await?;
+        let contract_address = Self::derive_contract_address(&deployer.pubkey(), &code, self.get_slot().await?);
 
         let contract_ix = ContractInstruction::Deploy { code, init_data };
         let data = serde_json::to_vec(&contract_ix)
@@ -371,7 +393,7 @@ impl Client {
 
         let instruction = Instruction {
             program_id: CONTRACT_PROGRAM_ID,
-            accounts: vec![deployer.pubkey()],
+            accounts: vec![deployer.pubkey(), contract_address],
             data,
         };
 
@@ -380,7 +402,21 @@ impl Client {
             .recent_blockhash(blockhash)
             .build_and_sign_for_chain_id(deployer, &chain_id)?;
 
-        self.send_transaction(&tx).await
+        let signature = self.send_transaction(&tx).await?;
+        Ok(DeployContractResult {
+            signature,
+            contract_address,
+        })
+    }
+
+    /// Derive the SDK/CLI deploy address convention for a contract transaction.
+    pub fn derive_contract_address(deployer: &Pubkey, code: &[u8], slot: u64) -> Pubkey {
+        let code_hash = Hash::hash(code);
+        let mut preimage = Vec::with_capacity(72);
+        preimage.extend_from_slice(&deployer.0);
+        preimage.extend_from_slice(&code_hash.0);
+        preimage.extend_from_slice(&slot.to_le_bytes());
+        Pubkey(Hash::hash(&preimage).0)
     }
 
     /// Call a function on a deployed WASM smart contract.
@@ -671,6 +707,45 @@ impl Client {
         self.rpc_call("getAllContracts", json!([])).await
     }
 
+    /// Get one page of deployed contracts.
+    pub async fn get_all_contracts_page(
+        &self,
+        limit: Option<u64>,
+        cursor: Option<&str>,
+    ) -> Result<Value> {
+        self.rpc_call("getAllContracts", contract_list_params(limit, cursor))
+            .await
+    }
+
+    /// Fetch every getAllContracts page for catalog/discovery tasks.
+    pub async fn get_all_contracts_all(&self, limit: u64) -> Result<Vec<Value>> {
+        let mut contracts = Vec::new();
+        let mut cursor: Option<String> = None;
+
+        loop {
+            let page = self
+                .get_all_contracts_page(Some(limit), cursor.as_deref())
+                .await?;
+            if let Some(items) = page.get("contracts").and_then(|value| value.as_array()) {
+                contracts.extend(items.iter().cloned());
+            }
+            cursor = if page
+                .get("has_more")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false)
+            {
+                page.get("next_cursor")
+                    .and_then(|value| value.as_str())
+                    .map(|value| value.to_string())
+            } else {
+                None
+            };
+            if cursor.is_none() {
+                return Ok(contracts);
+            }
+        }
+    }
+
     /// Health check
     pub async fn health(&self) -> Result<bool> {
         let result = self.rpc_call("health", json!([])).await?;
@@ -827,5 +902,30 @@ mod tests {
         let client = Client::new("http://my-rpc:8899");
         let clone = client.clone();
         assert_eq!(clone.rpc_url, "http://my-rpc:8899");
+    }
+
+    #[test]
+    fn test_derive_contract_address_uses_deployer_code_hash_and_slot() {
+        let deployer = Pubkey([3u8; 32]);
+        let code = b"\0asm\x01\0\0\0";
+        let code_hash = Hash::hash(code);
+        let mut preimage = Vec::new();
+        preimage.extend_from_slice(&deployer.0);
+        preimage.extend_from_slice(&code_hash.0);
+        preimage.extend_from_slice(&42u64.to_le_bytes());
+
+        assert_eq!(
+            Client::derive_contract_address(&deployer, code, 42),
+            Pubkey(Hash::hash(&preimage).0)
+        );
+    }
+
+    #[test]
+    fn test_contract_list_params_include_limit_and_cursor() {
+        assert_eq!(contract_list_params(None, None), json!([]));
+        assert_eq!(
+            contract_list_params(Some(1000), Some("cursor-1")),
+            json!([{ "limit": 1000, "cursor": "cursor-1" }])
+        );
     }
 }

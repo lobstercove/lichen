@@ -302,12 +302,7 @@
     {
       "name": "ma_pause",
       "opcode": 12,
-      "params": [
-        {
-          "name": "caller_ptr",
-          "type": "Pubkey"
-        }
-      ],
+      "params": [],
       "result_semantics": {
         "kind": "return_code",
         "success_codes": [
@@ -318,12 +313,7 @@
     {
       "name": "ma_unpause",
       "opcode": 13,
-      "params": [
-        {
-          "name": "caller_ptr",
-          "type": "Pubkey"
-        }
-      ],
+      "params": [],
       "result_semantics": {
         "kind": "return_code",
         "success_codes": [

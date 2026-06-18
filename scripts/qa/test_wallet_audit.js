@@ -679,6 +679,8 @@ test('dapp-bridge requires password-gated approval for signing and uses canonica
     assert(walletBridgeSrc.includes('const values = await showPasswordModal({'), 'Bridge signing flow must use the wallet password modal');
     assert(walletBridgeSrc.includes('serializeMessageBincode(txObject.message || {})'), 'Bridge must sign canonical serialized transaction messages');
     assert(walletBridgeSrc.includes('rpc.sendTransaction(signResult.result.signedTransactionBase64)'), 'Bridge send flow must broadcast through the wallet RPC helper');
+    assert(walletBridgeSrc.includes('transactionSignature: txHash') && walletBridgeSrc.includes('signature: txHash'), 'Bridge send result must expose the on-chain tx id as the transaction signature');
+    assert(walletBridgeSrc.includes('pqSignatureHex'), 'Bridge signing results must expose PQ bytes under pqSignatureHex, not only signature');
 });
 
 test('dapp-bridge transaction approvals decode semantic signing intent', () => {

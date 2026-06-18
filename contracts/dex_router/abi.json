@@ -46,10 +46,6 @@
         {
           "name": "amm_address",
           "type": "Pubkey"
-        },
-        {
-          "name": "legacy_address",
-          "type": "Pubkey"
         }
       ],
       "result_semantics": {
@@ -89,7 +85,9 @@
         },
         {
           "name": "split_percent",
-          "type": "u8"
+          "type": "u8",
+          "optional": true,
+          "default": 0
         }
       ],
       "result_semantics": {
@@ -248,6 +246,11 @@
         {
           "name": "deadline",
           "type": "u64"
+        },
+        {
+          "name": "path",
+          "type": "bytes",
+          "description": "Inline u64 pool id path, path_count entries encoded little-endian after deadline."
         }
       ],
       "result_semantics": {

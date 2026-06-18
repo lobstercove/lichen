@@ -791,7 +791,7 @@ async fn test_native_get_account_tx_count() {
 #[tokio::test]
 async fn test_native_get_recent_transactions() {
     let app = fresh_app();
-    let resp = rpc_p(&app, "/", "getRecentTransactions", json!([10]))
+    let resp = rpc_p(&app, "/", "getRecentTransactions", json!([{ "limit": 10 }]))
         .await
         .unwrap();
     assert_valid_rpc(&resp);

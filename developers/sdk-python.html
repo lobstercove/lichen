@@ -544,17 +544,18 @@ print(route["paused"], rewards["configured"], position["claimable"])</code></pre
             <h3 id="connection-contract">Contract Methods</h3>
 
             <div class="method-card">
-                <h3 class="method-name">await deploy_contract(deployer: Keypair, code: bytes, init_data: bytes = b"")
-                    -&gt; str</h3>
+                <h3 class="method-name">await deploy_contract(deployer: Keypair, code: bytes, init_data: bytes = b"",
+                    contract_address: PublicKey | None = None) -&gt; DeployContractResult</h3>
                 <p class="method-desc">Deploy a WASM smart contract. Code must start with <code>\0asm</code> magic
-                    header and be under 512 KB.</p>
+                    header and be under 512 KB. Returns the transaction signature and deployed contract address.</p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">Python</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
                     <pre><code>with open("my_contract.wasm", "rb") as f:
     wasm = f.read()
-sig = await conn.deploy_contract(kp, wasm)
-print(f"Deploy tx: {sig}")</code></pre>
+deploy = await conn.deploy_contract(kp, wasm)
+print(f"Deploy tx: {deploy.signature}")
+print(f"Contract: {deploy.contract_address}")</code></pre>
                 </div>
             </div>
 
@@ -606,7 +607,9 @@ print(result["returnCode"], result["returnData"])</code></pre>
 
             <div class="method-card">
                 <h3 class="method-name">await get_all_contracts() -&gt; Dict[str, Any]</h3>
-                <p class="method-desc">List all deployed contracts.</p>
+                <p class="method-desc">List deployed contracts. Resolves to
+                    <code>{ contracts, count, has_more, next_cursor }</code>.
+                </p>
             </div>
 
             <!-- Program Methods -->
@@ -1010,7 +1013,7 @@ class Transaction:
                             <td>Create an unstake instruction (type 10)</td>
                         </tr>
                         <tr>
-                            <td>TransactionBuilder.deploy_contract(deployer, code, init_data)</td>
+                            <td>TransactionBuilder.deploy_contract(deployer, contract_address, code, init_data)</td>
                             <td>Create a contract deploy instruction (CONTRACT_PROGRAM_ID)</td>
                         </tr>
                         <tr>

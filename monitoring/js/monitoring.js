@@ -2525,7 +2525,7 @@ async function submitRiskSignedTransaction(signedBase64, label) {
     if (!signedBase64) throw new Error('Missing signed transaction payload.');
     const simulation = await rpc('simulateTransaction', [signedBase64]);
     if (!simulation || simulation.success !== true) {
-        const detail = simulation?.error || simulation?.logs || simulation?.return_code || 'transaction simulation rejected the payload';
+        const detail = simulation?.error || simulation?.logs || simulation?.returnCode || simulation?.return_code || 'transaction simulation rejected the payload';
         throw new Error(`${label || 'Transaction'} preflight failed: ${detail}`);
     }
     const result = await rpc('sendTransaction', [signedBase64]);

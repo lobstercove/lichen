@@ -141,8 +141,10 @@ async function loadSnapshots() {
     setHtml('stakingSnapshot', 'Staking service unavailable');
   } else {
     setHtml('stakingSnapshot', `
-      <div><strong>Staked:</strong> ${staking.staked.toFixed(4)} stLICN</div>
-      <div><strong>Rewards:</strong> ${staking.rewards.toFixed(4)} LICN</div>
+      <div><strong>Your stLICN:</strong> ${staking.staked.toFixed(4)} stLICN</div>
+      <div><strong>Redeemable Value:</strong> ${staking.redeemableValue.toFixed(4)} LICN</div>
+      <div><strong>Deposited:</strong> ${staking.deposited.toFixed(4)} LICN</div>
+      <div><strong>Accrued Rewards:</strong> ${staking.rewards.toFixed(4)} LICN</div>
       <div><strong>Validator:</strong> ${staking.validator || '—'}</div>
     `);
   }

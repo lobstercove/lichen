@@ -14239,8 +14239,8 @@ async fn handle_get_all_contracts(
 /// Params: [deployer_base58, code_base64, init_data_json_or_null, signature_hex]
 ///
 /// The deployer signs SHA-256(code_bytes) with their native PQ key.
-/// Deploy fee (2.5 LICN) is charged from the deployer's account.
-/// Contract address is derived as SHA-256(deployer_pubkey + code_bytes).
+/// Deploy fee (25 LICN) is charged from the deployer's account.
+/// Contract address is derived as SHA-256(deployer_pubkey + optional name/symbol + code_bytes).
 async fn handle_deploy_contract(
     state: &RpcState,
     params: Option<serde_json::Value>,
@@ -14365,7 +14365,7 @@ async fn handle_deploy_contract(
         });
     }
 
-    // Charge deploy fee (2.5 LICN)
+    // Charge deploy fee (25 LICN)
     let deploy_fee = lichen_core::CONTRACT_DEPLOY_FEE;
     let deployer_account = state
         .state

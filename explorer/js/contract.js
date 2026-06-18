@@ -56,6 +56,19 @@ const CATEGORY_ICON_CLASS = {
 let contractAddress = null;
 let currentTab = 'abi';
 
+async function fetchAllContractsCatalog() {
+    const contracts = [];
+    let cursor = null;
+    do {
+        const options = { limit: 1000 };
+        if (cursor) options.cursor = cursor;
+        const result = await trustedRpcCall('getAllContracts', [options]);
+        contracts.push(...(Array.isArray(result?.contracts) ? result.contracts : []));
+        cursor = result?.has_more ? result?.next_cursor : null;
+    } while (cursor);
+    return contracts;
+}
+
 // ── Copy address to clipboard ────────────────────────────────────
 
 function copyAddress() {
@@ -335,8 +348,7 @@ async function loadContract() {
     let contractCatalogEntry = null;
     if (!registry?.template || !registry?.name || !registry?.symbol) {
         try {
-            const catalog = await trustedRpcCall('getAllContracts', []);
-            const contracts = Array.isArray(catalog?.contracts) ? catalog.contracts : [];
+            const contracts = await fetchAllContractsCatalog();
             contractCatalogEntry = contracts.find((entry) => entry?.program_id === contractAddress) || null;
         } catch (e) { }
     }

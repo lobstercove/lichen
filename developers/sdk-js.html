@@ -618,18 +618,19 @@ console.log(route.paused, rewards.configured, position.claimable);</code></pre>
             <h3 id="connection-contract">Contract Methods</h3>
 
             <div class="method-card">
-                <h3 class="method-name">deployContract(deployer: Keypair, code: Uint8Array, initData?: Uint8Array):
-                    Promise&lt;string&gt;</h3>
+                <h3 class="method-name">deployContract(deployer: Keypair, code: Uint8Array, initData?: Uint8Array,
+                    contractAddress?: PublicKey): Promise&lt;DeployContractResult&gt;</h3>
                 <p class="method-desc">Deploy a WASM smart contract. Code must start with the <code>\0asm</code> magic
-                    header and be under 512 KB. Returns the transaction signature.</p>
+                    header and be under 512 KB. Returns the transaction signature and deployed contract address.</p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">TypeScript</span><button
                             class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
                     <pre><code>import { readFile } from 'fs/promises';
 
 const wasm = new Uint8Array(await readFile('my_contract.wasm'));
-const sig = await conn.deployContract(keypair, wasm);
-console.log('Deploy tx:', sig);</code></pre>
+const deploy = await conn.deployContract(keypair, wasm);
+console.log('Deploy tx:', deploy.signature);
+console.log('Contract:', deploy.contractAddressBase58);</code></pre>
                 </div>
             </div>
 
@@ -701,7 +702,7 @@ console.log(result.returnCode, result.returnData);</code></pre>
             </div>
 
             <div class="method-card">
-                <h3 class="method-name">getAllContracts(): Promise&lt;any&gt;</h3>
+                <h3 class="method-name">getAllContracts(): Promise&lt;ContractListResponse&gt;</h3>
                 <p class="method-desc">List deployed contracts. Resolves to
                     <code>{ contracts, count, has_more, next_cursor }</code>.
                 </p>
@@ -1085,7 +1086,7 @@ interface Transaction {
                             <td>Create an unstake instruction (type 10)</td>
                         </tr>
                         <tr>
-                            <td>TransactionBuilder.deployContract(deployer, code, initData?)</td>
+                            <td>TransactionBuilder.deployContract(deployer, contractAddress, code, initData?)</td>
                             <td>Create a contract deploy instruction (CONTRACT_PROGRAM_ID)</td>
                         </tr>
                         <tr>

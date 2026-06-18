@@ -1264,6 +1264,7 @@ async function finalizeSignMessage(request, context, approvalInput) {
       result: {
         signature: signature.sig,
         pqSignature: signature,
+        pqSignatureHex: signature.sig,
         address: activeWallet.address
       }
     };
@@ -1314,7 +1315,8 @@ async function finalizeSignTransaction(request, context, approvalInput) {
         signedTransactionFormat: 'wallet_json_base64',
         sourceTransactionFormat: sourceFormat,
         signature: signature.sig,
-        pqSignature: signature
+        pqSignature: signature,
+        pqSignatureHex: signature.sig
       }
     };
   } finally {
@@ -1372,8 +1374,10 @@ async function finalizeSendTransaction(request, context, approvalInput) {
       ok: true,
       result: {
         txHash,
-        signature: signature.sig,
+        transactionSignature: txHash,
+        signature: txHash,
         pqSignature: signature,
+        pqSignatureHex: signature.sig,
         signedTransaction: signedTx,
         signedTransactionBase64: txBase64,
         signedTransactionFormat: 'wallet_json_base64',

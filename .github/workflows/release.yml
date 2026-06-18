@@ -241,6 +241,11 @@ jobs:
 
             # Verify checksum
             curl -LO https://github.com/lobstercove/lichen/releases/download/${{ github.ref_name }}/SHA256SUMS
+            curl -LO https://github.com/lobstercove/lichen/releases/download/${{ github.ref_name }}/SHA256SUMS.sig
+            mkdir -p scripts deploy
+            curl -fsSLo scripts/verify-release-checksums.mjs https://raw.githubusercontent.com/lobstercove/lichen/${{ github.ref_name }}/scripts/verify-release-checksums.mjs
+            curl -fsSLo deploy/release-trust-anchor.json https://raw.githubusercontent.com/lobstercove/lichen/${{ github.ref_name }}/deploy/release-trust-anchor.json
+            node scripts/verify-release-checksums.mjs .
             sha256sum -c SHA256SUMS --ignore-missing
 
             # Verify GitHub artifact provenance (requires GitHub CLI)

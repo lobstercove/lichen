@@ -138,7 +138,7 @@
                 </div>
                 <div class="arch-box"><i class="fas fa-box arch-icon-defi"></i>
                     <div class="arch-label">Wrapped Assets</div>
-                    <div class="arch-desc">lUSD, wETH, wSOL, wBNB, wNEO, wGAS</div>
+                    <div class="arch-desc">lUSD, wETH, wSOL, wBNB, wNEO, wGAS, wBTC</div>
                 </div>
                 <div class="arch-box"><i class="fas fa-landmark arch-icon-gov"></i>
                     <div class="arch-label">Governance</div>
@@ -287,7 +287,7 @@
                         LichenPunks,
                         LichenMarket, LichenAuction, LichenOracle, LichenBridge, BountyBoard, Compute Market, Moss
                         Storage,
-                        lUSD, wETH, wSOL, wBNB, wNEO, wGAS</td>
+                        lUSD, wETH, wSOL, wBNB, wNEO, wGAS, wBTC</td>
                     <td>Each function is a <code>#[no_mangle] pub extern "C" fn</code> — callable by name with JSON args
                     </td>
                 </tr>
@@ -386,8 +386,9 @@
                 and argument layout correctly for each operation.</p>
 
             <div class="sub-heading">Return Code Conventions</div>
-            <p>The runtime records the WASM return value in <code>return_code</code> (visible in
-                <code>getTransaction</code> and <code>callContract</code> responses). New ABI metadata can declare
+            <p>The runtime records the WASM return value in transaction history as <code>return_code</code>.
+                <code>callContract</code> and simulation responses expose the same value as <code>returnCode</code>.
+                ABI metadata can declare
                 <code>result_semantics</code> per function so validators decide deterministically whether a
                 non-trapping call commits or reverts. For example, <code>{"kind":"return_code","success_codes":[0]}</code>
                 means any returned code other than <code>0</code> is an ABI failure and the transaction's contract
@@ -407,8 +408,8 @@
                 </tr>
                 <tr>
                     <td>0 = success, non-zero = error</td>
-                    <td>LichenID (0/20/100/200), lusd_token, weth_token, wsol_token, Moss Storage, LichenBridge, Compute
-                        Market, BountyBoard, SporePay</td>
+                    <td>LichenID (0/20/100/200), lusd_token, weth_token, wsol_token, wbnb_token, wneo_token,
+                        wgas_token, wbtc_token, Moss Storage, LichenBridge, Compute Market, BountyBoard, SporePay</td>
                 </tr>
                 <tr>
                     <td>1 = success, 0 = error</td>
@@ -510,8 +511,9 @@ lichen contract generate-client --address 3f7a...c9d1 --lang python --output ./s
                 <a href="#wbnb-token"><span class="toc-num">28</span> Wrapped BNB</a>
                 <a href="#wneo-token"><span class="toc-num">29</span> Wrapped NEO</a>
                 <a href="#wgas-token"><span class="toc-num">30</span> Wrapped GAS</a>
-                <a href="#neo-gas-rewards"><span class="toc-num">31</span> Neo GAS Rewards</a>
-                <a href="#shielded-pool"><span class="toc-num">32</span> Shielded Pool</a>
+                <a href="#wbtc-token"><span class="toc-num">31</span> Wrapped BTC</a>
+                <a href="#neo-gas-rewards"><span class="toc-num">32</span> Neo GAS Rewards</a>
+                <a href="#shielded-pool"><span class="toc-num">33</span> Shielded Pool</a>
                 <a href="#live-exports"><span class="toc-num">A1</span> Live Export Matrix (Authoritative)</a>
             </div>
         </div>
@@ -2062,7 +2064,7 @@ curl -X POST https://testnet-rpc.lichen.network \
                         <code>add_liquidity</code>, <code>withdraw_liquidity</code> write <strong>full u64</strong> to
                         <code>set_return_data()</code> to avoid u32 truncation.
                     </p>
-                    <div class="sub-heading">Opcodes (24)</div>
+                    <div class="sub-heading">Opcodes (39)</div>
                     <table class="const-table">
                         <tr>
                             <th>Opcode</th>
@@ -2071,18 +2073,18 @@ curl -X POST https://testnet-rpc.lichen.network \
                         </tr>
                         <tr>
                             <td>0</td>
-                            <td>create_market</td>
-                            <td>Create binary outcome market</td>
+                            <td>initialize</td>
+                            <td>Initialize admin and contract state</td>
                         </tr>
                         <tr>
                             <td>1</td>
-                            <td>buy_shares</td>
-                            <td>Buy outcome shares via AMM</td>
+                            <td>create_market</td>
+                            <td>Create binary or multi-outcome market; payload includes question bytes after question_len</td>
                         </tr>
                         <tr>
                             <td>2</td>
-                            <td>sell_shares</td>
-                            <td>Sell shares back to AMM</td>
+                            <td>add_initial_liquidity</td>
+                            <td>Bootstrap new market pool</td>
                         </tr>
                         <tr>
                             <td>3</td>
@@ -2091,23 +2093,23 @@ curl -X POST https://testnet-rpc.lichen.network \
                         </tr>
                         <tr>
                             <td>4</td>
-                            <td>add_initial_liquidity</td>
-                            <td>Bootstrap new market pool</td>
+                            <td>buy_shares</td>
+                            <td>Buy outcome shares via AMM</td>
                         </tr>
                         <tr>
                             <td>5</td>
+                            <td>sell_shares</td>
+                            <td>Sell shares back to AMM</td>
+                        </tr>
+                        <tr>
+                            <td>6</td>
                             <td>mint_complete_set</td>
                             <td>Mint all outcome tokens</td>
                         </tr>
                         <tr>
-                            <td>6</td>
+                            <td>7</td>
                             <td>redeem_complete_set</td>
                             <td>Redeem matched outcomes</td>
-                        </tr>
-                        <tr>
-                            <td>7</td>
-                            <td>get_market</td>
-                            <td>Query market state</td>
                         </tr>
                         <tr>
                             <td>8</td>
@@ -2149,11 +2151,33 @@ curl -X POST https://testnet-rpc.lichen.network \
                             <td>withdraw_liquidity</td>
                             <td>LP withdraw</td>
                         </tr>
+                        <tr><td>16</td><td>emergency_pause</td><td>Pause market operations</td></tr>
+                        <tr><td>17</td><td>emergency_unpause</td><td>Resume market operations</td></tr>
+                        <tr><td>18</td><td>set_lichenid_address</td><td>Configure LichenID contract</td></tr>
+                        <tr><td>19</td><td>set_oracle_address</td><td>Configure oracle contract</td></tr>
+                        <tr><td>20</td><td>set_lusd_address</td><td>Configure lUSD settlement token</td></tr>
+                        <tr><td>21</td><td>set_dex_gov_address</td><td>Configure DEX governance contract</td></tr>
                         <tr>
                             <td>22</td>
                             <td>close_market</td>
                             <td>Close expired market</td>
                         </tr>
+                        <tr><td>23</td><td>get_market</td><td>Query market state</td></tr>
+                        <tr><td>24</td><td>get_outcome_pool</td><td>Query outcome pool</td></tr>
+                        <tr><td>25</td><td>get_price</td><td>Query outcome price</td></tr>
+                        <tr><td>26</td><td>get_position</td><td>Query trader position</td></tr>
+                        <tr><td>27</td><td>get_market_count</td><td>Query total market count</td></tr>
+                        <tr><td>28</td><td>get_user_markets</td><td>Query markets created by a user</td></tr>
+                        <tr><td>29</td><td>quote_buy</td><td>Quote buy execution</td></tr>
+                        <tr><td>30</td><td>quote_sell</td><td>Quote sell execution</td></tr>
+                        <tr><td>31</td><td>get_pool_reserves</td><td>Query pool reserves</td></tr>
+                        <tr><td>32</td><td>get_platform_stats</td><td>Query platform statistics</td></tr>
+                        <tr><td>33</td><td>get_lp_balance</td><td>Query LP balance</td></tr>
+                        <tr><td>34</td><td>get_price_history</td><td>Query market price history</td></tr>
+                        <tr><td>35</td><td>get_trader_stats</td><td>Query trader statistics</td></tr>
+                        <tr><td>36</td><td>get_leaderboard</td><td>Query trader leaderboard; limit defaults to 20 when omitted</td></tr>
+                        <tr><td>37</td><td>get_market_analytics</td><td>Query market analytics</td></tr>
+                        <tr><td>38</td><td>set_self_address</td><td>Configure contract self-address for cross-contract calls</td></tr>
                     </table>
                     <div class="badge-row"><span class="badge badge-defi">DeFi</span><span
                             class="badge badge-infra">Prediction</span></div>
@@ -2475,7 +2499,59 @@ curl -X POST https://testnet-rpc.lichen.network \
             </div>
         </div>
 
-        <!-- 31 NEO GAS REWARDS -->
+        <!-- 44 WRAPPED BTC -->
+        <div class="contract-section" id="wbtc-token">
+            <div class="contract-card">
+                <div class="contract-header">
+                    <div class="contract-icon icon-defi"><i class="fab fa-bitcoin"></i></div>
+                    <div class="contract-header-text">
+                        <h3>Wrapped BTC</h3>
+                        <div class="subtitle">Wrapped BTC Bridge Token</div>
+                    </div>
+                    <div class="contract-meta"><span class="meta-chip">1,128 lines</span><span class="meta-chip">24
+                            fns</span><span class="meta-chip">23.5 KB</span></div>
+                </div>
+                <div class="contract-body">
+                    <p>Wrapped BTC bridge token with epoch rate-limited minting, reserve attestation, and circuit
+                        breaker protection. Used as the canonical BTC representation on Lichen for cross-chain DeFi.
+                    </p>
+                    <div class="sub-heading">Configuration</div>
+                    <table class="const-table">
+                        <tr>
+                            <th>Constant</th>
+                            <th>Value</th>
+                        </tr>
+                        <tr>
+                            <td>MINT_CAP_PER_EPOCH</td>
+                            <td>1,000 BTC/epoch</td>
+                        </tr>
+                        <tr>
+                            <td>CIRCUIT_BREAKER_THRESHOLD</td>
+                            <td>Configurable</td>
+                        </tr>
+                    </table>
+                    <div class="sub-heading">Functions (24)</div>
+                    <div class="fn-list"><span class="fn-chip">initialize</span><span class="fn-chip">mint</span><span
+                            class="fn-chip">burn</span><span class="fn-chip">transfer</span><span
+                            class="fn-chip">approve</span><span class="fn-chip">transfer_from</span><span
+                            class="fn-chip">attest_reserves</span><span class="fn-chip">balance_of</span><span
+                            class="fn-chip">allowance</span><span class="fn-chip">total_supply</span><span
+                            class="fn-chip">total_minted</span><span class="fn-chip">total_burned</span><span
+                            class="fn-chip">get_reserve_ratio</span><span
+                            class="fn-chip">get_last_attestation_slot</span><span
+                            class="fn-chip">get_attestation_count</span><span
+                            class="fn-chip">get_epoch_remaining</span><span
+                            class="fn-chip">get_transfer_count</span><span class="fn-chip">emergency_pause</span><span
+                            class="fn-chip">emergency_unpause</span><span class="fn-chip">transfer_admin</span><span
+                            class="fn-chip">accept_admin</span><span class="fn-chip">set_minter</span><span
+                            class="fn-chip">set_attester</span><span class="fn-chip">complete_bootstrap</span></div>
+                    <div class="badge-row"><span class="badge badge-defi">Bridge</span><span
+                            class="badge badge-defi">Token</span><span class="badge badge-defi">Bitcoin</span></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 45 NEO GAS REWARDS -->
         <div class="contract-section" id="neo-gas-rewards">
             <div class="contract-card">
                 <div class="contract-header">

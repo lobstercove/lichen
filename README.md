@@ -145,6 +145,11 @@ Linux x86_64:
 VERSION=$(curl -fsSL https://api.github.com/repos/lobstercove/lichen/releases/latest | jq -r .tag_name)
 curl -LO "https://github.com/lobstercove/lichen/releases/download/${VERSION}/lichen-validator-linux-x86_64.tar.gz"
 curl -LO "https://github.com/lobstercove/lichen/releases/download/${VERSION}/SHA256SUMS"
+curl -LO "https://github.com/lobstercove/lichen/releases/download/${VERSION}/SHA256SUMS.sig"
+mkdir -p scripts deploy
+curl -fsSLo scripts/verify-release-checksums.mjs "https://raw.githubusercontent.com/lobstercove/lichen/${VERSION}/scripts/verify-release-checksums.mjs"
+curl -fsSLo deploy/release-trust-anchor.json "https://raw.githubusercontent.com/lobstercove/lichen/${VERSION}/deploy/release-trust-anchor.json"
+node scripts/verify-release-checksums.mjs .
 grep 'lichen-validator-linux-x86_64.tar.gz' SHA256SUMS | sha256sum -c -
 gh attestation verify lichen-validator-linux-x86_64.tar.gz -R lobstercove/lichen
 tar xzf lichen-validator-linux-x86_64.tar.gz --strip-components=1
@@ -166,6 +171,11 @@ macOS Apple Silicon:
 VERSION=$(curl -fsSL https://api.github.com/repos/lobstercove/lichen/releases/latest | jq -r .tag_name)
 curl -LO "https://github.com/lobstercove/lichen/releases/download/${VERSION}/lichen-validator-darwin-aarch64.tar.gz"
 curl -LO "https://github.com/lobstercove/lichen/releases/download/${VERSION}/SHA256SUMS"
+curl -LO "https://github.com/lobstercove/lichen/releases/download/${VERSION}/SHA256SUMS.sig"
+mkdir -p scripts deploy
+curl -fsSLo scripts/verify-release-checksums.mjs "https://raw.githubusercontent.com/lobstercove/lichen/${VERSION}/scripts/verify-release-checksums.mjs"
+curl -fsSLo deploy/release-trust-anchor.json "https://raw.githubusercontent.com/lobstercove/lichen/${VERSION}/deploy/release-trust-anchor.json"
+node scripts/verify-release-checksums.mjs .
 grep 'lichen-validator-darwin-aarch64.tar.gz' SHA256SUMS | shasum -a 256 -c -
 gh attestation verify lichen-validator-darwin-aarch64.tar.gz -R lobstercove/lichen
 tar xzf lichen-validator-darwin-aarch64.tar.gz --strip-components=1

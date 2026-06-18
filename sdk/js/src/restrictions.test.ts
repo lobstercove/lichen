@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { PublicKey } from './publickey.js';
+import { TransactionBuilder } from './transaction.js';
 import {
   BRIDGE_ASSETS,
   BRIDGE_CHAINS,
@@ -150,6 +151,15 @@ async function main(): Promise<void> {
     }),
     /restrictionId must be a u64-safe integer value/,
   );
+
+  const deployer = key(9);
+  const contract = key(10);
+  const wasm = new Uint8Array([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]);
+  const deployIx = TransactionBuilder.deployContract(deployer, contract, wasm);
+  assert.deepEqual(deployIx.accounts.map((account) => account.toBase58()), [
+    deployer.toBase58(),
+    contract.toBase58(),
+  ]);
 }
 
 await main();

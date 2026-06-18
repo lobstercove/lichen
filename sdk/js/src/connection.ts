@@ -12,6 +12,23 @@ function sha256(data: Uint8Array): Uint8Array {
   return new Uint8Array(createHash('sha256').update(data).digest());
 }
 
+function concatBytes(parts: Uint8Array[]): Uint8Array {
+  const total = parts.reduce((sum, part) => sum + part.length, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.length;
+  }
+  return out;
+}
+
+function u64Le(value: number | bigint): Uint8Array {
+  const out = new Uint8Array(8);
+  new DataView(out.buffer).setBigUint64(0, BigInt(value), true);
+  return out;
+}
+
 /**
  * Balance information
  */
@@ -205,6 +222,51 @@ export interface ReadonlyContractResult {
   logs?: string[];
   error?: string | null;
   computeUsed?: number;
+}
+
+/**
+ * Contract list entry returned by getAllContracts.
+ */
+export interface ContractSummary {
+  program_id: string;
+  symbol?: string | null;
+  name?: string | null;
+  owner?: string | null;
+  registry_owner?: string | null;
+  template?: string | null;
+  metadata?: Record<string, any> | null;
+  code_size: number;
+  is_executable: boolean;
+  has_abi: boolean;
+  abi_functions: number;
+  code_hash: string;
+  version: number;
+  lifecycle_status: string;
+  lifecycle_updated_slot: number;
+  lifecycle_restriction_id?: number | null;
+  lifecycle_effective_at_slot: number;
+  previous_code_hash?: string;
+}
+
+/**
+ * Current getAllContracts RPC envelope.
+ */
+export interface ContractListResponse {
+  contracts: ContractSummary[];
+  count: number;
+  has_more: boolean;
+  next_cursor?: string | null;
+}
+
+export interface ContractListOptions {
+  limit?: number;
+  cursor?: string | null;
+}
+
+export interface DeployContractResult {
+  signature: string;
+  contractAddress: PublicKey;
+  contractAddressBase58: string;
 }
 
 /**
@@ -529,26 +591,43 @@ export class Connection {
   }
 
   /**
+   * Derive the SDK/CLI deploy address convention for a contract transaction.
+   */
+  static deriveContractAddress(deployer: PublicKey, code: Uint8Array, slot: number | bigint): PublicKey {
+    const codeHash = sha256(code);
+    const digest = sha256(concatBytes([deployer.toBytes(), codeHash, u64Le(slot)]));
+    return PublicKey.fromBytes(digest);
+  }
+
+  /**
    * Deploy a WASM smart contract.
    *
    * @param deployer - Deployer keypair (signer, pays deploy fee)
    * @param code - WASM bytecode (must start with \\0asm magic, max 512 KB)
    * @param initData - Optional initialization data passed to contract init
-   * @returns Transaction signature
+   * @param contractAddress - Optional explicit contract account address
+   * @returns Transaction signature and deployed contract address
    */
   async deployContract(
     deployer: Keypair,
     code: Uint8Array,
     initData: Uint8Array = new Uint8Array(0),
-  ): Promise<string> {
+    contractAddress?: PublicKey,
+  ): Promise<DeployContractResult> {
+    const address = contractAddress ?? Connection.deriveContractAddress(deployer.pubkey(), code, await this.getSlot());
     const blockhash = await this.getRecentBlockhash();
     const chainId = await this.getSigningChainId();
-    const instruction = TransactionBuilder.deployContract(deployer.pubkey(), code, initData);
+    const instruction = TransactionBuilder.deployContract(deployer.pubkey(), address, code, initData);
     const transaction = new TransactionBuilder()
       .add(instruction)
       .setRecentBlockhash(blockhash)
       .buildAndSignForChainId(deployer, chainId);
-    return this.sendTransaction(transaction);
+    const signature = await this.sendTransaction(transaction);
+    return {
+      signature,
+      contractAddress: address,
+      contractAddressBase58: address.toBase58(),
+    };
   }
 
   /**
@@ -687,8 +766,25 @@ export class Connection {
   /**
    * Get all deployed contracts
    */
-  async getAllContracts(): Promise<any> {
-    return this.rpc('getAllContracts');
+  async getAllContracts(options: ContractListOptions = {}): Promise<ContractListResponse> {
+    const params = Object.keys(options).length > 0 ? [options] : [];
+    return this.rpc('getAllContracts', params);
+  }
+
+  /**
+   * Fetch every getAllContracts page. Use this for discovery/catalog tasks.
+   */
+  async getAllContractsAll(limit = 1000): Promise<ContractSummary[]> {
+    const contracts: ContractSummary[] = [];
+    let cursor: string | null | undefined = null;
+
+    do {
+      const page = await this.getAllContracts({ limit, ...(cursor ? { cursor } : {}) });
+      contracts.push(...(page.contracts || []));
+      cursor = page.has_more ? page.next_cursor : null;
+    } while (cursor);
+
+    return contracts;
   }
 
   /**

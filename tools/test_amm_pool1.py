@@ -71,7 +71,7 @@ async def main():
             for key in ['type', 'slot', 'fee']:
                 if key in tx:
                     print(f"  {key}: {tx[key]}")
-            logs = tx.get('logs', [])
+            logs = tx.get('contract_logs') or tx.get('logs') or []
             if logs:
                 print(f"  Logs ({len(logs)}):")
                 for log in logs[:5]:
