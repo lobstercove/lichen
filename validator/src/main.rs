@@ -223,12 +223,6 @@ fn should_recover_partial_genesis_state(
         return false;
     }
 
-    // Hard evidence: non-zero tip without a block-0 means this is legacy or
-    // partial state and cannot safely continue as a resumable validator state.
-    if state.get_last_slot().unwrap_or(0) > 0 {
-        return true;
-    }
-
     if matches!(
         state
             .get_metadata(GENESIS_SYNC_INCOMPLETE_MARKER)
@@ -242,6 +236,12 @@ fn should_recover_partial_genesis_state(
 
     if state.get_block_by_slot(0).unwrap_or(None).is_some() {
         return false;
+    }
+
+    // Hard evidence: non-zero tip without a block-0 means this is legacy or
+    // partial state and cannot safely continue as a resumable validator state.
+    if state.get_last_slot().unwrap_or(0) > 0 {
+        return true;
     }
 
     // Strong heuristic evidence of previously initialized chain state.
@@ -29135,6 +29135,31 @@ mod tests {
             .expect("store marker");
 
         assert!(should_recover_partial_genesis_state(
+            &state,
+            Some("testnet"),
+            None
+        ));
+    }
+
+    #[test]
+    fn should_recover_partial_genesis_state_keeps_complete_public_state() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let block = Block::new_with_timestamp(
+            0,
+            Hash::default(),
+            Hash::default(),
+            [8u8; 32],
+            Vec::new(),
+            0,
+        );
+        state.put_block(&block).expect("store genesis block");
+        state.set_last_slot(42).expect("seed last slot");
+        state
+            .put_metadata(GENESIS_SYNC_INCOMPLETE_MARKER, b"0")
+            .expect("store complete marker");
+
+        assert!(!should_recover_partial_genesis_state(
             &state,
             Some("testnet"),
             None
