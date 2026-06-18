@@ -331,10 +331,9 @@ fn call_status_success(result: &[u8]) -> bool {
     if result.len() >= 4 {
         let mut status = [0u8; 4];
         status.copy_from_slice(&result[..4]);
-        let code = u32::from_le_bytes(status);
-        return code == 0 || code == 1;
+        return u32::from_le_bytes(status) == 0;
     }
-    matches!(result.first().copied(), Some(0) | Some(1))
+    false
 }
 
 fn transfer_in_wneo(from: &[u8; 32], amount: u64) -> bool {
@@ -1104,6 +1103,14 @@ mod tests {
         out[0] = id;
         out[31] = 0xA5;
         out
+    }
+
+    #[test]
+    fn test_wrapped_token_cross_call_status_uses_zero_success_code() {
+        assert!(call_status_success(&0u32.to_le_bytes()));
+        assert!(!call_status_success(&1u32.to_le_bytes()));
+        assert!(!call_status_success(&2u32.to_le_bytes()));
+        assert!(!call_status_success(&[1u8]));
     }
 
     fn setup_base() -> ([u8; 32], [u8; 32], [u8; 32]) {

@@ -1,7 +1,11 @@
 pub(super) fn print_owned_nfts(addr: &str, nfts: &serde_json::Value) {
     println!("🖼️  NFTs owned by {}", addr);
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    if let Some(arr) = nfts.as_array() {
+    if let Some(arr) = nfts
+        .get("nfts")
+        .and_then(|items| items.as_array())
+        .or_else(|| nfts.as_array())
+    {
         if arr.is_empty() {
             println!("No NFTs found");
         } else {

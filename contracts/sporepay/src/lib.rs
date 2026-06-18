@@ -1560,6 +1560,15 @@ mod tests {
         unpaid_payout_key(Address(*token), Address(*recipient))
     }
 
+    #[test]
+    fn test_abi_includes_escrow_configuration_exports() {
+        let abi = include_str!("../abi.json");
+        assert!(abi.contains(r#""name": "set_token_address""#));
+        assert!(abi.contains(r#""name": "token_addr_ptr""#));
+        assert!(abi.contains(r#""name": "set_self_address""#));
+        assert!(abi.contains(r#""name": "self_addr_ptr""#));
+    }
+
     // ====================================================================
     // CORE STREAM TESTS (with escrow)
     // ====================================================================

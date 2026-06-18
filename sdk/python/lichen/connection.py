@@ -530,9 +530,14 @@ class Connection:
         """Get NFTs by collection"""
         return await self._rpc("getNFTsByCollection", [str(collection_id)])
 
-    async def get_nft_activity(self, collection_id: PublicKey, token_id: int) -> Dict[str, Any]:
-        """Get NFT activity"""
-        return await self._rpc("getNFTActivity", [str(collection_id), token_id])
+    async def get_nft_activity(
+        self, collection_id: PublicKey, limit: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """Get recent NFT activity for a collection"""
+        options: Dict[str, Any] = {}
+        if limit is not None:
+            options["limit"] = limit
+        return await self._rpc("getNFTActivity", [str(collection_id), options])
     
     # ============================================================================
     # WEBSOCKET SUBSCRIPTIONS

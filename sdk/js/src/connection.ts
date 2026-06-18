@@ -868,8 +868,9 @@ export class Connection {
     return this.rpc('getNFTsByCollection', [collectionId.toBase58()]);
   }
 
-  async getNFTActivity(collectionId: PublicKey, tokenId: number): Promise<any> {
-    return this.rpc('getNFTActivity', [collectionId.toBase58(), tokenId]);
+  async getNFTActivity(collectionId: PublicKey, options: { limit?: number } | number = {}): Promise<any> {
+    const activityOptions = typeof options === 'number' ? { limit: options } : options;
+    return this.rpc('getNFTActivity', [collectionId.toBase58(), activityOptions]);
   }
 
   // ============================================================================

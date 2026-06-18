@@ -2482,7 +2482,12 @@ async function loadNftsPanel() {
   const endpoint = resolveRpcEndpoint(state?.network?.selected || 'local-testnet');
   const rpc = new LichenRPC(endpoint);
   try {
-    const nfts = await rpc.call('getNFTsByOwner', [wallet.address]);
+    const nftResult = await rpc.call('getNFTsByOwner', [wallet.address]);
+    const nfts = Array.isArray(nftResult)
+      ? nftResult
+      : Array.isArray(nftResult?.nfts)
+        ? nftResult.nfts
+        : [];
     const grid = document.getElementById('nftsGrid');
     const empty = document.getElementById('nftsEmpty');
     const countEl = document.getElementById('nftCount');
@@ -2499,7 +2504,7 @@ async function loadNftsPanel() {
         <div style="width:100%;aspect-ratio:1;background:linear-gradient(135deg,#6366f1,#a855f7);border-radius:6px;margin-bottom:0.35rem;display:flex;align-items:center;justify-content:center;">
           <i class="fas fa-gem" style="font-size:1.5rem;color:#fff;"></i>
         </div>
-        <div style="font-size:0.75rem;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(n.name || n.mint || 'NFT')}</div>
+        <div style="font-size:0.75rem;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(n.name || n.mint || n.token || 'NFT')}</div>
       </div>`).join('');
     }
   } catch {

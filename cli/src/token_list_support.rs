@@ -9,8 +9,11 @@ pub(super) async fn handle_token_list(client: &RpcClient) -> Result<()> {
 
     match client.get_all_symbol_registry().await {
         Ok(entries) => {
-            let token_entries = entries
-                .as_array()
+            let registry_entries = entries
+                .get("entries")
+                .and_then(|entries| entries.as_array())
+                .or_else(|| entries.as_array());
+            let token_entries = registry_entries
                 .map(|entries| {
                     entries
                         .iter()

@@ -3356,6 +3356,7 @@ fn classify_method(method: &str) -> MethodTier {
         | "getNFTsByCollection"
         | "getNFTActivity"
         | "getMarketListings"
+        | "getMarketActivity"
         | "getMarketSales"
         | "getMarketOffers"
         | "getMarketAuctions"
@@ -5728,6 +5729,7 @@ async fn handle_rpc(
         "getNFTsByCollection" => handle_get_nfts_by_collection(&state, req.params).await,
         "getNFTActivity" => handle_get_nft_activity(&state, req.params).await,
         "getMarketListings" => handle_get_market_listings(&state, req.params).await,
+        "getMarketActivity" => handle_get_market_activity(&state, req.params).await,
         "getMarketSales" => handle_get_market_sales(&state, req.params).await,
         "getMarketOffers" => handle_get_market_offers(&state, req.params).await,
         "getMarketAuctions" => handle_get_market_auctions(&state, req.params).await,
@@ -16738,6 +16740,98 @@ struct MarketFilterParams {
     sort_by: Option<String>,
     category: Option<u8>,
     rarity: Option<u8>,
+    token_id: Option<u64>,
+    token: Option<Pubkey>,
+    include_collection_offers: bool,
+}
+
+fn default_market_filter_params(limit: usize) -> MarketFilterParams {
+    MarketFilterParams {
+        collection: None,
+        limit,
+        price_min: None,
+        price_max: None,
+        seller: None,
+        sort_by: None,
+        category: None,
+        rarity: None,
+        token_id: None,
+        token: None,
+        include_collection_offers: false,
+    }
+}
+
+fn parse_market_params_object(
+    obj: &serde_json::Map<String, serde_json::Value>,
+    limit_default: usize,
+) -> Result<MarketFilterParams, RpcError> {
+    let collection = obj
+        .get("collection")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(Pubkey::from_base58)
+        .transpose()
+        .map_err(|e| RpcError {
+            code: -32602,
+            message: format!("Invalid collection pubkey: {}", e),
+        })?;
+
+    let limit = obj
+        .get("limit")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(limit_default as u64)
+        .min(500) as usize;
+
+    let price_min = obj.get("price_min").and_then(|v| v.as_u64());
+    let price_max = obj.get("price_max").and_then(|v| v.as_u64());
+    let seller = obj
+        .get("seller")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(Pubkey::from_base58)
+        .transpose()
+        .map_err(|e| RpcError {
+            code: -32602,
+            message: format!("Invalid seller pubkey: {}", e),
+        })?;
+    let sort_by = obj
+        .get("sort_by")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let category = obj
+        .get("category")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as u8);
+    let rarity = obj.get("rarity").and_then(|v| v.as_u64()).map(|v| v as u8);
+    let token_id = obj.get("token_id").and_then(|v| v.as_u64());
+    let token = obj
+        .get("token")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(Pubkey::from_base58)
+        .transpose()
+        .map_err(|e| RpcError {
+            code: -32602,
+            message: format!("Invalid token pubkey: {}", e),
+        })?;
+    let include_collection_offers = obj
+        .get("include_collection_offers")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    Ok(MarketFilterParams {
+        collection,
+        limit,
+        price_min,
+        price_max,
+        seller,
+        sort_by,
+        category,
+        rarity,
+        token_id,
+        token,
+        include_collection_offers,
+    })
 }
 
 fn parse_market_params_extended(
@@ -16746,72 +16840,15 @@ fn parse_market_params_extended(
     let limit_default = 50usize;
 
     let Some(params) = params else {
-        return Ok(MarketFilterParams {
-            collection: None,
-            limit: limit_default,
-            price_min: None,
-            price_max: None,
-            seller: None,
-            sort_by: None,
-            category: None,
-            rarity: None,
-        });
+        return Ok(default_market_filter_params(limit_default));
     };
 
-    // Object-form: { collection, limit, price_min, price_max, seller, sort_by, category, rarity }
+    // Object-form: { collection, limit, price_min, price_max, seller, sort_by, category, rarity, token_id, token }
     if let Some(obj) = params.as_object() {
-        let collection = obj
-            .get("collection")
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-            .map(Pubkey::from_base58)
-            .transpose()
-            .map_err(|e| RpcError {
-                code: -32602,
-                message: format!("Invalid collection pubkey: {}", e),
-            })?;
-
-        let limit = obj
-            .get("limit")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(limit_default as u64)
-            .min(500) as usize;
-
-        let price_min = obj.get("price_min").and_then(|v| v.as_u64());
-        let price_max = obj.get("price_max").and_then(|v| v.as_u64());
-        let seller = obj
-            .get("seller")
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-            .map(Pubkey::from_base58)
-            .transpose()
-            .map_err(|e| RpcError {
-                code: -32602,
-                message: format!("Invalid seller pubkey: {}", e),
-            })?;
-        let sort_by = obj
-            .get("sort_by")
-            .and_then(|v| v.as_str())
-            .map(String::from);
-        let category = obj
-            .get("category")
-            .and_then(|v| v.as_u64())
-            .map(|v| v as u8);
-        let rarity = obj.get("rarity").and_then(|v| v.as_u64()).map(|v| v as u8);
-
-        return Ok(MarketFilterParams {
-            collection,
-            limit,
-            price_min,
-            price_max,
-            seller,
-            sort_by,
-            category,
-            rarity,
-        });
+        return parse_market_params_object(obj, limit_default);
     }
 
-    // Array-form (legacy): [collection_pubkey?, options?]
+    // Array-form: [{...}] or [collection_pubkey?, options?].
     let arr = params.as_array().ok_or_else(|| RpcError {
         code: -32602,
         message:
@@ -16819,58 +16856,74 @@ fn parse_market_params_extended(
                 .to_string(),
     })?;
 
-    let (collection, limit) = match arr.first() {
-        Some(first) if first.is_object() => {
-            let limit = first
-                .get("limit")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(limit_default as u64)
-                .min(500) as usize;
-            (None, limit)
-        }
-        _ => {
-            let collection = arr
-                .first()
-                .and_then(|v| v.as_str())
-                .map(Pubkey::from_base58)
-                .transpose()
-                .map_err(|e| RpcError {
-                    code: -32602,
-                    message: format!("Invalid collection pubkey: {}", e),
-                })?;
-            let limit = arr
-                .get(1)
-                .and_then(|v| {
-                    if v.is_object() {
-                        v.get("limit").and_then(|val| val.as_u64())
-                    } else {
-                        v.as_u64()
-                    }
-                })
-                .unwrap_or(limit_default as u64)
-                .min(500) as usize;
-            (collection, limit)
-        }
+    if let Some(first) = arr.first().and_then(|value| value.as_object()) {
+        return parse_market_params_object(first, limit_default);
+    }
+
+    let mut filters = if let Some(second) = arr.get(1).and_then(|value| value.as_object()) {
+        parse_market_params_object(second, limit_default)?
+    } else {
+        default_market_filter_params(limit_default)
     };
 
-    Ok(MarketFilterParams {
-        collection,
-        limit,
-        price_min: None,
-        price_max: None,
-        seller: None,
-        sort_by: None,
-        category: None,
-        rarity: None,
-    })
+    if let Some(first) = arr.first() {
+        if let Some(collection_str) = first.as_str().filter(|s| !s.is_empty()) {
+            filters.collection =
+                Some(Pubkey::from_base58(collection_str).map_err(|e| RpcError {
+                    code: -32602,
+                    message: format!("Invalid collection pubkey: {}", e),
+                })?);
+        } else if let Some(limit) = first.as_u64() {
+            filters.limit = limit.min(500) as usize;
+        }
+    }
+
+    if let Some(limit) = arr.get(1).and_then(|value| value.as_u64()) {
+        filters.limit = limit.min(500) as usize;
+    }
+
+    if filters.collection.is_none() {
+        if let Some(collection_str) = arr
+            .get(1)
+            .and_then(|value| value.as_object())
+            .and_then(|obj| obj.get("collection"))
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        {
+            filters.collection =
+                Some(Pubkey::from_base58(collection_str).map_err(|e| RpcError {
+                    code: -32602,
+                    message: format!("Invalid collection pubkey: {}", e),
+                })?);
+        }
+    }
+
+    Ok(filters)
 }
 
-/// Legacy wrapper for backward compat (sales endpoint)
+/// Shared subset for endpoints that only need collection and limit.
 fn parse_market_params(
     params: Option<serde_json::Value>,
 ) -> Result<(Option<Pubkey>, usize), RpcError> {
     let ext = parse_market_params_extended(&params)?;
     Ok((ext.collection, ext.limit))
+}
+
+fn market_activity_matches_item(
+    activity: &lichen_core::MarketActivity,
+    filters: &MarketFilterParams,
+) -> bool {
+    if let Some(token_id) = filters.token_id {
+        if activity.token_id != Some(token_id) {
+            return false;
+        }
+    }
+    if let Some(token) = filters.token.as_ref() {
+        if activity.token.as_ref() != Some(token) {
+            return false;
+        }
+    }
+    true
 }
 
 fn market_activity_to_json(activity: &lichen_core::MarketActivity) -> serde_json::Value {
@@ -17004,6 +17057,45 @@ async fn handle_get_market_listings(
     }))
 }
 
+async fn handle_get_market_activity(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let filters = parse_market_params_extended(&params)?;
+    let has_item_filter = filters.token_id.is_some() || filters.token.is_some();
+    let fetch_limit = if has_item_filter {
+        (filters.limit.saturating_mul(10)).clamp(filters.limit, 2000)
+    } else {
+        filters.limit
+    };
+
+    let activity = state
+        .state
+        .get_market_activity(filters.collection.as_ref(), None, fetch_limit)
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Database error: {}", e),
+        })?;
+
+    let mut filtered: Vec<&lichen_core::MarketActivity> = activity
+        .iter()
+        .filter(|activity| market_activity_matches_item(activity, &filters))
+        .collect();
+
+    filtered.truncate(filters.limit);
+
+    let items: Vec<serde_json::Value> = filtered
+        .iter()
+        .map(|activity| market_activity_to_json(activity))
+        .collect();
+
+    Ok(serde_json::json!({
+        "collection": filters.collection.map(|c| c.to_base58()),
+        "count": items.len(),
+        "activity": items,
+    }))
+}
+
 async fn handle_get_market_sales(
     state: &RpcState,
     params: Option<serde_json::Value>,
@@ -17032,44 +17124,17 @@ async fn handle_get_market_offers(
     state: &RpcState,
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
-    let (collection, limit) = parse_market_params(params.clone())?;
-
-    let token_id_filter = params
-        .as_ref()
-        .and_then(|p| p.as_object())
-        .and_then(|obj| obj.get("token_id"))
-        .and_then(|v| v.as_u64());
-
-    let token_filter = params
-        .as_ref()
-        .and_then(|p| p.as_object())
-        .and_then(|obj| obj.get("token"))
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .map(Pubkey::from_base58)
-        .transpose()
-        .map_err(|e| RpcError {
-            code: -32602,
-            message: format!("Invalid token pubkey: {}", e),
-        })?;
-
-    let include_collection_offers = params
-        .as_ref()
-        .and_then(|p| p.as_object())
-        .and_then(|obj| obj.get("include_collection_offers"))
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-
-    let fetch_limit = if token_id_filter.is_some() || token_filter.is_some() {
-        (limit.saturating_mul(10)).clamp(limit, 2000)
+    let filters = parse_market_params_extended(&params)?;
+    let fetch_limit = if filters.token_id.is_some() || filters.token.is_some() {
+        (filters.limit.saturating_mul(10)).clamp(filters.limit, 2000)
     } else {
-        limit
+        filters.limit
     };
 
     let activity = state
         .state
         .get_market_activity(
-            collection.as_ref(),
+            filters.collection.as_ref(),
             Some(MarketActivityKind::Offer),
             fetch_limit,
         )
@@ -17079,11 +17144,11 @@ async fn handle_get_market_offers(
         })?;
 
     let mut all_activity = activity;
-    if include_collection_offers {
+    if filters.include_collection_offers {
         let collection_activity = state
             .state
             .get_market_activity(
-                collection.as_ref(),
+                filters.collection.as_ref(),
                 Some(MarketActivityKind::CollectionOffer),
                 fetch_limit,
             )
@@ -17097,29 +17162,19 @@ async fn handle_get_market_offers(
     let mut filtered: Vec<&lichen_core::MarketActivity> = all_activity
         .iter()
         .filter(|a| {
-            if !include_collection_offers && a.kind == MarketActivityKind::CollectionOffer {
+            if !filters.include_collection_offers && a.kind == MarketActivityKind::CollectionOffer {
                 return false;
             }
             if a.kind == MarketActivityKind::CollectionOffer {
                 return true;
             }
-            if let Some(token_id) = token_id_filter {
-                if a.token_id != Some(token_id) {
-                    return false;
-                }
-            }
-            if let Some(token) = token_filter.as_ref() {
-                if a.token.as_ref() != Some(token) {
-                    return false;
-                }
-            }
-            true
+            market_activity_matches_item(a, &filters)
         })
         .collect();
 
     filtered.sort_by_key(|b| std::cmp::Reverse(b.timestamp));
 
-    filtered.truncate(limit);
+    filtered.truncate(filters.limit);
 
     let items: Vec<serde_json::Value> = filtered
         .iter()
@@ -17127,7 +17182,7 @@ async fn handle_get_market_offers(
         .collect();
 
     Ok(serde_json::json!({
-        "collection": collection.map(|c| c.to_base58()),
+        "collection": filters.collection.map(|c| c.to_base58()),
         "count": items.len(),
         "offers": items,
     }))
@@ -17138,24 +17193,40 @@ async fn handle_get_market_auctions(
     state: &RpcState,
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
-    let (collection, limit) = parse_market_params(params)?;
+    let filters = parse_market_params_extended(&params)?;
+    let has_item_filter = filters.token_id.is_some() || filters.token.is_some();
+    let fetch_limit = if has_item_filter {
+        (filters.limit.saturating_mul(10)).clamp(filters.limit, 2000)
+    } else {
+        filters.limit
+    };
 
     let activity = state
         .state
         .get_market_activity(
-            collection.as_ref(),
+            filters.collection.as_ref(),
             Some(MarketActivityKind::AuctionCreated),
-            limit,
+            fetch_limit,
         )
         .map_err(|e| RpcError {
             code: -32000,
             message: format!("Database error: {}", e),
         })?;
 
-    let items: Vec<serde_json::Value> = activity.iter().map(market_activity_to_json).collect();
+    let mut filtered: Vec<&lichen_core::MarketActivity> = activity
+        .iter()
+        .filter(|activity| market_activity_matches_item(activity, &filters))
+        .collect();
+
+    filtered.truncate(filters.limit);
+
+    let items: Vec<serde_json::Value> = filtered
+        .iter()
+        .map(|activity| market_activity_to_json(activity))
+        .collect();
 
     Ok(serde_json::json!({
-        "collection": collection.map(|c| c.to_base58()),
+        "collection": filters.collection.map(|c| c.to_base58()),
         "count": items.len(),
         "auctions": items,
     }))
@@ -20881,11 +20952,11 @@ mod tests {
         handle_solana_get_token_account_balance, handle_solana_get_token_accounts_by_owner,
         handle_verify_neo_reserve_liability_proof, live_signed_metadata_source_rpc,
         method_allowed_when_rpc_unready, parse_bridge_access_auth, parse_get_block_slot_param,
-        parse_governance_event, parse_rpc_request, parse_rpc_tier_probe, parse_topic_hash,
-        pq_signature_json, prediction_address_aliases, privileged_rpc_mutation_test_output,
-        put_cached_program_list_response, put_cached_read_slot_response, rpc_read_slot_cache_key,
-        rpc_readiness, rpc_readiness_json, rpc_unready_error,
-        solana_method_allowed_when_rpc_unready, storage_key_with_pubkey_hex,
+        parse_governance_event, parse_market_params_extended, parse_rpc_request,
+        parse_rpc_tier_probe, parse_topic_hash, pq_signature_json, prediction_address_aliases,
+        privileged_rpc_mutation_test_output, put_cached_program_list_response,
+        put_cached_read_slot_response, rpc_read_slot_cache_key, rpc_readiness, rpc_readiness_json,
+        rpc_unready_error, solana_method_allowed_when_rpc_unready, storage_key_with_pubkey_hex,
         storage_key_with_u64_le, strip_admin_token_from_params,
         transaction_has_governed_system_preflight, validate_incoming_transaction_limits,
         validate_solana_encoding, validate_solana_transaction_details, verify_admin_auth,
@@ -22585,6 +22656,51 @@ mod tests {
     }
 
     #[test]
+    fn test_market_params_parse_current_and_legacy_shapes() {
+        let collection = Pubkey([7u8; 32]);
+        let seller = Pubkey([8u8; 32]);
+        let token = Pubkey([9u8; 32]);
+        let collection_b58 = collection.to_base58();
+        let seller_b58 = seller.to_base58();
+        let token_b58 = token.to_base58();
+
+        let object = parse_market_params_extended(&Some(serde_json::json!({
+            "collection": collection_b58,
+            "limit": 25,
+            "seller": seller_b58,
+            "token": token_b58,
+            "token_id": 42,
+            "include_collection_offers": true
+        })))
+        .expect("object params should parse");
+        assert_eq!(object.collection, Some(collection));
+        assert_eq!(object.limit, 25);
+        assert_eq!(object.seller, Some(seller));
+        assert_eq!(object.token, Some(token));
+        assert_eq!(object.token_id, Some(42));
+        assert!(object.include_collection_offers);
+
+        let wrapped_object =
+            parse_market_params_extended(&Some(serde_json::json!([{ "limit": 33 }]))).unwrap();
+        assert_eq!(wrapped_object.limit, 33);
+
+        let collection_options = parse_market_params_extended(&Some(serde_json::json!([
+            collection_b58,
+            { "limit": 44, "token_id": 77 }
+        ])))
+        .expect("collection plus options params should parse");
+        assert_eq!(collection_options.collection, Some(collection));
+        assert_eq!(collection_options.limit, 44);
+        assert_eq!(collection_options.token_id, Some(77));
+
+        let legacy_collection_limit =
+            parse_market_params_extended(&Some(serde_json::json!([collection.to_base58(), 55])))
+                .expect("legacy collection plus numeric limit params should parse");
+        assert_eq!(legacy_collection_limit.collection, Some(collection));
+        assert_eq!(legacy_collection_limit.limit, 55);
+    }
+
+    #[test]
     fn test_encode_readonly_return_data_b64_prefers_explicit_return_data() {
         let result = make_contract_result(vec![1, 2, 3, 4], Some(99));
 
@@ -22675,6 +22791,7 @@ mod tests {
             "getTransaction",
             "getTransactionProof",
             "getLatestBlock",
+            "getMarketActivity",
             "getMarketOffers",
             "getMarketAuctions",
             "getBridgeDeposit",

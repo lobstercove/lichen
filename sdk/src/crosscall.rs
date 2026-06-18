@@ -134,7 +134,7 @@ pub fn call_contract(call: CrossCall) -> CallResult<Vec<u8>> {
     }
 }
 
-fn decode_success_status(result: &[u8]) -> CallResult<bool> {
+fn decode_zero_success_return_code(result: &[u8]) -> CallResult<bool> {
     if result.is_empty() {
         return Err(ContractError::Custom("Missing success response"));
     }
@@ -142,11 +142,29 @@ fn decode_success_status(result: &[u8]) -> CallResult<bool> {
     if result.len() >= 4 {
         let mut status = [0u8; 4];
         status.copy_from_slice(&result[..4]);
-        let code = u32::from_le_bytes(status);
-        if code == 0 || code == 1 {
-            return Ok(true);
-        }
-        return Ok(false);
+        return Ok(u32::from_le_bytes(status) == 0);
+    }
+
+    Ok(false)
+}
+
+fn decode_one_success_status(result: &[u8]) -> CallResult<bool> {
+    if result.is_empty() {
+        return Err(ContractError::Custom("Missing success response"));
+    }
+
+    if result.len() >= 4 {
+        let mut status = [0u8; 4];
+        status.copy_from_slice(&result[..4]);
+        return Ok(u32::from_le_bytes(status) == 1);
+    }
+
+    Ok(result[0] == 1)
+}
+
+fn decode_native_success_status(result: &[u8]) -> CallResult<bool> {
+    if result.is_empty() {
+        return Err(ContractError::Custom("Missing success response"));
     }
 
     Ok(result[0] == 1)
@@ -167,7 +185,7 @@ pub fn call_token_transfer(
     let call = CrossCall::new(token, "transfer", args);
 
     match call_contract(call) {
-        Ok(result) => decode_success_status(&result),
+        Ok(result) => decode_zero_success_return_code(&result),
         Err(e) => Err(e),
     }
 }
@@ -187,7 +205,7 @@ pub fn call_nft_transfer(
     let call = CrossCall::new(nft, "transfer", args);
 
     match call_contract(call) {
-        Ok(result) => decode_success_status(&result),
+        Ok(result) => decode_one_success_status(&result),
         Err(e) => Err(e),
     }
 }
@@ -240,7 +258,7 @@ pub fn transfer_native(to: Address, amount: u64) -> CallResult<bool> {
     let call = CrossCall::new(SYSTEM_PROGRAM, "transfer", args);
 
     match call_contract(call) {
-        Ok(result) => decode_success_status(&result),
+        Ok(result) => decode_native_success_status(&result),
         Err(e) => Err(e),
     }
 }
@@ -340,12 +358,19 @@ mod tests {
     }
 
     #[test]
-    fn test_decode_success_status_accepts_zero_and_one_codes() {
-        assert!(decode_success_status(&0u32.to_le_bytes()).unwrap());
-        assert!(decode_success_status(&1u32.to_le_bytes()).unwrap());
-        assert!(!decode_success_status(&2u32.to_le_bytes()).unwrap());
-        assert!(decode_success_status(&[1u8]).unwrap());
-        assert!(!decode_success_status(&[0u8]).unwrap());
+    fn test_transfer_status_decoders_keep_token_native_and_nft_semantics_distinct() {
+        assert!(decode_zero_success_return_code(&0u32.to_le_bytes()).unwrap());
+        assert!(!decode_zero_success_return_code(&1u32.to_le_bytes()).unwrap());
+        assert!(!decode_zero_success_return_code(&2u32.to_le_bytes()).unwrap());
+        assert!(!decode_zero_success_return_code(&[1u8]).unwrap());
+
+        assert!(decode_one_success_status(&1u32.to_le_bytes()).unwrap());
+        assert!(!decode_one_success_status(&0u32.to_le_bytes()).unwrap());
+        assert!(decode_one_success_status(&[1u8]).unwrap());
+        assert!(!decode_one_success_status(&[0u8]).unwrap());
+
+        assert!(decode_native_success_status(&[1u8]).unwrap());
+        assert!(!decode_native_success_status(&[0u8]).unwrap());
     }
 
     #[test]
@@ -378,6 +403,22 @@ mod tests {
         .expect("cross-call should succeed");
 
         assert!(ok);
+    }
+
+    #[test]
+    fn test_call_token_transfer_rejects_nonzero_return_codes() {
+        test_mock::reset();
+        test_mock::set_cross_call_response(Some(1u32.to_le_bytes().to_vec()));
+
+        let ok = call_token_transfer(
+            Address([4u8; 32]),
+            Address([5u8; 32]),
+            Address([6u8; 32]),
+            77,
+        )
+        .expect("cross-call should return a decoded status");
+
+        assert!(!ok);
     }
 
     #[test]

@@ -646,10 +646,14 @@ impl Client {
             .await
     }
 
-    pub async fn get_nft_activity(&self, collection_id: &Pubkey, token_id: u64) -> Result<Value> {
+    pub async fn get_nft_activity(&self, collection_id: &Pubkey, limit: Option<u64>) -> Result<Value> {
+        let options = match limit {
+            Some(limit) => json!({ "limit": limit }),
+            None => json!({}),
+        };
         self.rpc_call(
             "getNFTActivity",
-            json!([collection_id.to_base58(), token_id]),
+            json!([collection_id.to_base58(), options]),
         )
         .await
     }

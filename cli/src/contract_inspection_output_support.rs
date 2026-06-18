@@ -37,7 +37,24 @@ pub(super) fn print_contract_logs(address: &str, limit: usize, logs: &[ContractL
         println!("No logs found");
     } else {
         for (index, log) in logs.iter().enumerate() {
-            println!("#{} [Slot {}] {}", index + 1, log.slot, log.message);
+            let display = log.message.clone().unwrap_or_else(|| {
+                let name = log.name.as_deref().unwrap_or("event");
+                match log.data.as_ref() {
+                    Some(data) if !data.is_null() => format!("{} {}", name, data),
+                    _ => name.to_string(),
+                }
+            });
+            if let Some(program) = log.program.as_deref() {
+                println!(
+                    "#{} [Slot {}] {} — {}",
+                    index + 1,
+                    log.slot,
+                    program,
+                    display
+                );
+            } else {
+                println!("#{} [Slot {}] {}", index + 1, log.slot, display);
+            }
         }
         println!();
         println!("Total: {} log entries", logs.len());

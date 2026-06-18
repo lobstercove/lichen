@@ -18,7 +18,7 @@ impl RpcClient {
 
     /// Get marketplace listings
     pub async fn get_market_listings(&self, limit: usize) -> Result<serde_json::Value> {
-        let params = json!([limit]);
+        let params = json!({ "limit": limit });
         self.call("getMarketListings", params).await
     }
 }

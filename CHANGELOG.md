@@ -5,22 +5,28 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.5.172] - 2026-06-18
+## [0.5.174] - 2026-06-18
 
 ### Fixed
 - Adds ABI `failure_codes` for value-returning contracts with explicit sentinel
   errors, and aligns bundled contract ABIs with source return behavior.
 - Fixes prediction-market dispatcher return-code propagation for query opcodes
   and renames the bundled ABI entry to `set_lusd_address`.
-- Aligns CLI and SDK surfaces with current RPC response envelopes for contracts,
+- Aligns CLI, wallet, extension, SDK, and developer surfaces with current RPC
+  response envelopes for contracts, token accounts, NFTs, marketplace activity,
   validators, transactions, staking, burned supply, and block/network status.
+- Tightens cross-contract token transfer success handling so wrapped-token
+  callers follow the ABI-declared `0` success code instead of accepting stale
+  success markers.
+- Adds missing SporePay escrow configuration ABI exports and keeps all bundled
+  contract functions covered by explicit result semantics.
 - Updates deployment runbooks, release docs, host-function docs, and developer
-  portal examples to the current `v0.5.172` release candidate and `v0.5.161`
+  portal examples to the current `v0.5.174` release candidate and `v0.5.161`
   rollback reference.
 
 ### Verified
-- Passed full workspace tests before the final ABI surface pass; final focused
-  ABI, CLI, SDK, deployment-doc, clippy, and release checks are rerun before tag.
+- Focused ABI, CLI, RPC, SDK, wallet/extension, deployment-doc, formatting,
+  clippy, and release checks are rerun before tag.
 
 ## [0.5.169] - 2026-06-17
 

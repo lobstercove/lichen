@@ -3,7 +3,11 @@ use crate::output_support::to_licn;
 pub(super) fn print_marketplace_listings(listings: &serde_json::Value) {
     println!("🏪 NFT Marketplace Listings");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    if let Some(arr) = listings.as_array() {
+    if let Some(arr) = listings
+        .get("listings")
+        .and_then(|items| items.as_array())
+        .or_else(|| listings.as_array())
+    {
         if arr.is_empty() {
             println!("No active listings");
         } else {

@@ -198,6 +198,10 @@ function main() {
     test('RPC portal lists Neo route, reserve, rewards, and DEX methods', () => {
         assertAllIncludes(docs.rpcPortal, [
             'getBridgeRouteRestrictionStatus',
+            'getTokenAccounts',
+            '{ accounts, count }',
+            'getMarketActivity',
+            '{ collection, count, activity }',
             'getWneoStats',
             'getWgasStats',
             'getNeoGasRewardsStats',
@@ -219,7 +223,7 @@ function main() {
             'last_attestation_slot',
             'dex_rewards.configure_lp_campaign',
         ], FILES.rpcPortal);
-        assertIncludes(docs.rpcPortal, 'v0.5.173', FILES.rpcPortal);
+        assertIncludes(docs.rpcPortal, 'v0.5.174', FILES.rpcPortal);
         assertIncludes(docs.rpcPortal, 'neo-x-route-rewards', FILES.rpcPortal);
     });
 
@@ -246,8 +250,8 @@ function main() {
 
     test('CLI docs expose route status, governed route payloads, and Neo symbol lookups', () => {
         assertAllIncludes(docs.cliPortal, [
-            'v0.5.173',
-            'lichen 0.5.173',
+            'v0.5.174',
+            'lichen 0.5.174',
             'lichen restriction status bridge-route neox gas',
             'lichen restriction status bridge-route neox neo',
             'lichen restriction build pause-bridge-route neox gas',
@@ -265,7 +269,7 @@ function main() {
             'zk-prove reserve-liability',
             'zk-prove verify-reserve-liability',
         ], FILES.cliPortal);
-        assertAllIncludes(docs.gettingStarted, ['lichen 0.5.173'], FILES.gettingStarted);
+        assertAllIncludes(docs.gettingStarted, ['lichen 0.5.174'], FILES.gettingStarted);
         assertNotIncludes(docs.cliPortal, 'lichen 0.5.44', FILES.cliPortal);
         assertNotIncludes(docs.gettingStarted, 'lichen 0.5.44', FILES.gettingStarted);
     });
@@ -335,9 +339,9 @@ function main() {
     });
 
     test('SDK portal docs expose Neo route constants and rewards helpers', () => {
-        assertAllIncludes(docs.jsSdkPortal, ['getNeoGasRewardsStats', 'BRIDGE_CHAINS.NEOX', 'verifyNeoReserveLiabilityProof'], FILES.jsSdkPortal);
-        assertAllIncludes(docs.pythonSdkPortal, ['get_neo_gas_rewards_stats', 'BRIDGE_CHAIN_NEOX', 'verify_neo_reserve_liability_proof'], FILES.pythonSdkPortal);
-        assertAllIncludes(docs.rustSdkPortal, ['get_neo_gas_rewards_stats', 'BridgeChain::NeoX', 'verify_neo_reserve_liability_proof'], FILES.rustSdkPortal);
+        assertAllIncludes(docs.jsSdkPortal, ['getNeoGasRewardsStats', 'BRIDGE_CHAINS.NEOX', 'verifyNeoReserveLiabilityProof', 'getNFTActivity(collectionId: PublicKey, options?: { limit?: number } | number)'], FILES.jsSdkPortal);
+        assertAllIncludes(docs.pythonSdkPortal, ['get_neo_gas_rewards_stats', 'BRIDGE_CHAIN_NEOX', 'verify_neo_reserve_liability_proof', 'get_nft_activity(collection_id: PublicKey, limit: Optional[int] = None)'], FILES.pythonSdkPortal);
+        assertAllIncludes(docs.rustSdkPortal, ['get_neo_gas_rewards_stats', 'BridgeChain::NeoX', 'verify_neo_reserve_liability_proof', 'get_nft_activity(&amp;self, collection_id: &amp;Pubkey, limit: Option&lt;u64&gt;)'], FILES.rustSdkPortal);
     });
 
     testWhenPresent(['wrappedAssets', 'custodyDeployment'], 'wrapped asset and custody docs cover wBNB, wGAS, wNEO, wBTC, route env, and 32-contract catalog', () => {

@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use serde_json::json;
 
-use crate::client::{ContractLog, RpcClient};
+use crate::client::{ContractLog, ContractLogsResponse, RpcClient};
 
 impl RpcClient {
     /// Get contract logs
@@ -9,8 +9,13 @@ impl RpcClient {
         let params = json!([address, limit]);
         let result = self.call("getContractLogs", params).await?;
 
-        let logs: Vec<ContractLog> =
-            serde_json::from_value(result).context("Failed to parse contract logs")?;
+        let logs = if result.is_array() {
+            serde_json::from_value(result).context("Failed to parse contract logs")?
+        } else {
+            let response: ContractLogsResponse =
+                serde_json::from_value(result).context("Failed to parse contract logs")?;
+            response.logs
+        };
 
         Ok(logs)
     }

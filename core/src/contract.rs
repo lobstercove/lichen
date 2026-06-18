@@ -3024,8 +3024,8 @@ fn host_cross_contract_call(
         result.return_data
     } else if let Some(rc) = result.return_code {
         // Encode the WASM return code as a 4-byte LE value.
-        // For token `transfer()` returning 1, this gives [1, 0, 0, 0].
-        // The SDK's `call_token_transfer` checks result[0] == 1, which matches.
+        // ABI-aware callers must interpret this value with the callee's declared
+        // result semantics. Wrapped-token transfers declare zero as success.
         (rc as u32).to_le_bytes().to_vec()
     } else {
         // No return data and no return code — just signal success.

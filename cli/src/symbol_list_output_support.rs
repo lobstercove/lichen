@@ -1,7 +1,11 @@
 pub(super) fn print_symbol_registry(entries: &serde_json::Value) {
     println!("🏷️  Symbol Registry");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    if let Some(arr) = entries.as_array() {
+    if let Some(arr) = entries
+        .get("entries")
+        .and_then(|entries| entries.as_array())
+        .or_else(|| entries.as_array())
+    {
         println!("{:<12} {:<30} {:<10} Address", "Symbol", "Name", "Template");
         println!("{}", "─".repeat(90));
         for entry in arr {

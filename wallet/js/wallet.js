@@ -4694,7 +4694,12 @@ async function refreshNFTs(options = {}) {
         // Try to fetch NFTs from RPC (getNFTsByOwner)
         let nfts = [];
         try {
-            nfts = await rpc.call('getNFTsByOwner', [wallet.address]);
+            const nftResult = await rpc.call('getNFTsByOwner', [wallet.address]);
+            nfts = Array.isArray(nftResult)
+                ? nftResult
+                : Array.isArray(nftResult?.nfts)
+                    ? nftResult.nfts
+                    : [];
         } catch (e) {
             // RPC method may not exist yet - that's OK
         }

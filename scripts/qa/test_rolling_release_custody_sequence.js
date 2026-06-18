@@ -69,7 +69,7 @@ assert(script.includes('check_staged_bin_hash lichen-custody "$EXPECTED_CUSTODY_
   'custody staged binary hash must be verified before live install');
 assert(script.includes('check_staged_bin_hash lichen-faucet "$EXPECTED_FAUCET_SHA"'),
   'faucet staged binary hash must be verified before live install');
-assert(script.includes('sudo mv -f "/usr/local/bin/$bin.new" "/usr/local/bin/$bin"'),
+assert(script.includes('sudo -n mv -f "/usr/local/bin/$bin.new" "/usr/local/bin/$bin"'),
   'release binaries must be committed atomically with temp+rename');
 assert(script.includes('install_optional_service_bin lichen-custody "$EXPECTED_CUSTODY_SHA"'),
   'custody binary must be installed when expected in the archive');
@@ -82,11 +82,11 @@ assert(script.includes('install_staged_bin lichen-faucet "$EXPECTED_FAUCET_SHA"'
 assert(!script.includes('for bin in lichen-custody lichen-faucet; do\n  if [ -x "$root/$bin" ]; then'),
   'optional service install must not depend on temp extract executable checks');
 assert(script.includes('systemctl list-unit-files --no-legend lichen-custody.service'), 'custody refresh must be conditional on service presence');
-assert(script.includes('sudo systemctl stop lichen-custody.service || true'), 'custody service must be stopped before start');
-assert(script.includes('sudo systemctl kill --kill-who=control-group -s SIGKILL lichen-custody.service || true'), 'custody service stale cgroup must be killed before start');
-assert(script.includes('sudo systemctl start lichen-custody.service'), 'custody service must be started after RPC is healthy');
+assert(script.includes('sudo -n systemctl stop lichen-custody.service || true'), 'custody service must be stopped before start');
+assert(script.includes('sudo -n systemctl kill --kill-who=control-group -s SIGKILL lichen-custody.service || true'), 'custody service stale cgroup must be killed before start');
+assert(script.includes('sudo -n systemctl start lichen-custody.service'), 'custody service must be started after RPC is healthy');
 assert(script.includes('http://127.0.0.1:9105/health'), 'custody health must be verified after restart');
-assert(script.includes('sudo systemctl start lichen-faucet.service'), 'faucet service must be started after RPC is healthy');
+assert(script.includes('sudo -n systemctl start lichen-faucet.service'), 'faucet service must be started after RPC is healthy');
 assert(script.includes('http://127.0.0.1:9100/health'), 'faucet health must be verified after restart');
 assert(script.includes('unit is enabled but inactive'), 'release verification must fail enabled inactive optional services');
 
