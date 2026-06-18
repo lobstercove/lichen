@@ -5,7 +5,7 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.5.174] - 2026-06-18
+## [0.5.175] - 2026-06-18
 
 ### Fixed
 - Adds ABI `failure_codes` for value-returning contracts with explicit sentinel
@@ -21,7 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Adds missing SporePay escrow configuration ABI exports and keeps all bundled
   contract functions covered by explicit result semantics.
 - Updates deployment runbooks, release docs, host-function docs, and developer
-  portal examples to the current `v0.5.174` release candidate and `v0.5.161`
+  portal examples to the current `v0.5.175` release candidate and `v0.5.161`
   rollback reference.
 
 ### Verified

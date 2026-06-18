@@ -19140,6 +19140,7 @@ async fn handle_request_airdrop(
         "success": true,
         "signature": tx_hash,
         "amount": amount_licn,
+        "amount_licn": amount_licn,
         "recipient": address_str,
         "message": format!("{} LICN airdrop transaction submitted", amount_licn),
     }))
@@ -19221,9 +19222,16 @@ async fn handle_get_prediction_markets(
         .state
         .get_program_storage_u64(PREDICT_SYMBOL, b"pm_market_count");
 
-    // Parse optional filter params
-    let (cat_filter, status_filter, limit, offset) = match &params {
-        Some(serde_json::Value::Object(obj)) => {
+    // Parse optional JSON-RPC params: [{ category?, status?, limit?, offset? }]
+    let options = params.as_ref().and_then(|value| {
+        value
+            .as_array()
+            .and_then(|arr| arr.first())
+            .unwrap_or(value)
+            .as_object()
+    });
+    let (cat_filter, status_filter, limit, offset) = match options {
+        Some(obj) => {
             let cat = obj
                 .get("category")
                 .and_then(|v| v.as_str())
@@ -19581,12 +19589,18 @@ async fn handle_get_prediction_leaderboard(
     state: &RpcState,
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
-    let limit = match &params {
-        Some(serde_json::Value::Object(obj)) => {
-            obj.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize
-        }
-        _ => 20,
-    };
+    // Parse optional JSON-RPC params: [{ limit? }]
+    let options = params.as_ref().and_then(|value| {
+        value
+            .as_array()
+            .and_then(|arr| arr.first())
+            .unwrap_or(value)
+            .as_object()
+    });
+    let limit = options
+        .and_then(|obj| obj.get("limit"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(20) as usize;
     let limit = limit.min(50);
 
     let total_traders = state

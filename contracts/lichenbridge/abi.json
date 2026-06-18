@@ -401,6 +401,26 @@
           0
         ]
       }
+    },
+    {
+      "name": "set_token_address",
+      "opcode": 20,
+      "params": [
+        {
+          "name": "caller_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "addr_ptr",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     }
   ]
 }

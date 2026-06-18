@@ -3430,7 +3430,7 @@ mod tests {
         let unpaid = test_mock::get_storage(&key).unwrap();
         assert_eq!(bytes_to_u64(&unpaid), 4000);
 
-        test_mock::set_cross_call_response(Some(1u32.to_le_bytes().to_vec()));
+        test_mock::set_cross_call_response(Some(0u32.to_le_bytes().to_vec()));
         assert_eq!(
             claim_unpaid_payout(provider_addr.as_ptr(), TEST_TOKEN_ADDR.as_ptr()),
             0

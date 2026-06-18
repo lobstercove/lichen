@@ -85,6 +85,8 @@ jobs:
         run: node scripts/qa/test_release_signer_trust_anchor.js
       - name: Verify deployment env examples
         run: node scripts/qa/test_deployment_env_examples.js
+      - name: Verify rolling release custody sequencing
+        run: node scripts/qa/test_rolling_release_custody_sequence.js
       - name: Verify DEX frontend wiring
         run: node scripts/qa/test_dex_ui_readiness.js
       - name: Verify frontend RPC parity

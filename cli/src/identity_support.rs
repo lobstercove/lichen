@@ -23,7 +23,7 @@ pub(super) async fn handle_identity_command(
             println!("🔐 EVM Address: {}", pubkey.to_evm());
             println!("💾 Saved to: {}", path.display());
             println!();
-            println!("💡 Get test tokens: lichen airdrop 100");
+            println!("💡 Get test tokens: lichen airdrop 10");
         }
 
         IdentityCommands::Show { keypair } => {

@@ -1,0 +1,158 @@
+{
+  "contract": "shielded_pool",
+  "version": "1.0",
+  "functions": [
+    {
+      "name": "initialize",
+      "opcode": 0,
+      "params": [
+        {
+          "name": "admin_ptr",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "pause",
+      "opcode": 1,
+      "params": [],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "unpause",
+      "opcode": 2,
+      "params": [],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "get_pool_stats",
+      "opcode": 3,
+      "params": [],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "get_merkle_root",
+      "opcode": 4,
+      "params": [],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "check_nullifier",
+      "opcode": 5,
+      "params": [
+        {
+          "name": "nullifier_ptr",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "get_commitments",
+      "opcode": 6,
+      "params": [
+        {
+          "name": "from_index",
+          "type": "u64"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "shield",
+      "opcode": 7,
+      "params": [
+        {
+          "name": "args_ptr",
+          "type": "bytes_with_len"
+        },
+        {
+          "name": "args_len",
+          "type": "u32"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "unshield",
+      "opcode": 8,
+      "params": [
+        {
+          "name": "args_ptr",
+          "type": "bytes_with_len"
+        },
+        {
+          "name": "args_len",
+          "type": "u32"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "transfer",
+      "opcode": 9,
+      "params": [
+        {
+          "name": "args_ptr",
+          "type": "bytes_with_len"
+        },
+        {
+          "name": "args_len",
+          "type": "u32"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    }
+  ]
+}

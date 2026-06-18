@@ -16,9 +16,9 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use lichen_sdk::{
-    bytes_to_u64, call_nft_owner, call_nft_transfer, call_token_transfer, get_caller,
-    is_native_token, log_info, receive_token_or_native, storage_get, storage_set,
-    transfer_token_or_native, u64_to_bytes, Address,
+    bytes_to_u64, call_nft_owner, call_nft_transfer, call_token_transfer,
+    call_token_transfer_from, get_caller, is_native_token, log_info, receive_token_or_native,
+    storage_get, storage_set, transfer_token_or_native, u64_to_bytes, Address,
 };
 
 const MM_SALE_COUNT_KEY: &[u8] = b"mm_sale_count";
@@ -1778,7 +1778,7 @@ pub extern "C" fn accept_collection_offer(
         let escrow_result = if is_native_token(&payment_token) {
             receive_token_or_native(payment_token, offerer, marketplace_addr, price)
         } else {
-            call_token_transfer(payment_token, offerer, marketplace_addr, price)
+            call_token_transfer_from(payment_token, marketplace_addr, offerer, marketplace_addr, price)
         };
         match escrow_result {
             Ok(true) => {}
@@ -2214,7 +2214,7 @@ mod tests {
 
         test_mock::set_caller(buyer);
         test_mock::set_cross_call_responses(vec![
-            1u32.to_le_bytes().to_vec(),
+            0u32.to_le_bytes().to_vec(),
             2u32.to_le_bytes().to_vec(),
             2u32.to_le_bytes().to_vec(),
         ]);
@@ -2245,7 +2245,7 @@ mod tests {
         assert_eq!(claim_unpaid_payout(seller.as_ptr(), pay.0.as_ptr()), 0);
         assert_eq!(stored_unpaid(&pay, &seller), 700_000);
 
-        test_mock::set_cross_call_response(Some(1u32.to_le_bytes().to_vec()));
+        test_mock::set_cross_call_response(Some(0u32.to_le_bytes().to_vec()));
         assert_eq!(claim_unpaid_payout(seller.as_ptr(), pay.0.as_ptr()), 1);
         assert_eq!(bytes_to_u64(&test_mock::get_return_data()), 700_000);
         assert_eq!(stored_unpaid(&pay, &seller), 0);
@@ -2426,9 +2426,9 @@ mod tests {
         test_mock::set_caller(seller);
         test_mock::set_cross_call_responses(vec![
             seller.to_vec(),
-            1u32.to_le_bytes().to_vec(),
+            0u32.to_le_bytes().to_vec(),
             2u32.to_le_bytes().to_vec(),
-            1u32.to_le_bytes().to_vec(),
+            0u32.to_le_bytes().to_vec(),
         ]);
         assert_eq!(
             accept_offer(seller.as_ptr(), nft.0.as_ptr(), 1, offerer.as_ptr()),
@@ -2471,7 +2471,7 @@ mod tests {
         test_mock::set_caller(seller);
         test_mock::set_cross_call_responses(vec![
             seller.to_vec(),
-            1u32.to_le_bytes().to_vec(),
+            0u32.to_le_bytes().to_vec(),
             2u32.to_le_bytes().to_vec(),
             2u32.to_le_bytes().to_vec(),
         ]);
@@ -2508,9 +2508,9 @@ mod tests {
         test_mock::set_caller(seller);
         test_mock::set_cross_call_responses(vec![
             seller.to_vec(),
+            0u32.to_le_bytes().to_vec(),
             1u32.to_le_bytes().to_vec(),
-            1u32.to_le_bytes().to_vec(),
-            1u32.to_le_bytes().to_vec(),
+            0u32.to_le_bytes().to_vec(),
         ]);
         let result = accept_offer(seller.as_ptr(), nft.0.as_ptr(), 1, offerer.as_ptr());
         assert_eq!(result, 1, "logs: {:?}", test_mock::get_logs());
@@ -2858,6 +2858,10 @@ mod tests {
         assert_eq!(mm_pause(owner.as_ptr()), 0);
 
         test_mock::set_slot(1_200);
+        test_mock::set_cross_call_responses(vec![
+            1u32.to_le_bytes().to_vec(),
+            0u32.to_le_bytes().to_vec(),
+        ]);
         assert_eq!(settle_auction(owner.as_ptr(), nft.0.as_ptr(), 1), 1);
 
         let auction = test_mock::get_storage(&create_auction_key(nft, 1)).unwrap();
@@ -2952,9 +2956,9 @@ mod tests {
         test_mock::set_slot(1_100);
         test_mock::set_caller(bidder);
         test_mock::set_cross_call_responses(vec![
-            1u32.to_le_bytes().to_vec(),
+            0u32.to_le_bytes().to_vec(),
             2u32.to_le_bytes().to_vec(),
-            1u32.to_le_bytes().to_vec(),
+            0u32.to_le_bytes().to_vec(),
         ]);
 
         assert_eq!(place_bid(bidder.as_ptr(), nft.0.as_ptr(), 1, 101), 0);
@@ -2992,7 +2996,7 @@ mod tests {
         test_mock::set_slot(1_100);
         test_mock::set_caller(bidder);
         test_mock::set_cross_call_responses(vec![
-            1u32.to_le_bytes().to_vec(),
+            0u32.to_le_bytes().to_vec(),
             2u32.to_le_bytes().to_vec(),
             2u32.to_le_bytes().to_vec(),
         ]);

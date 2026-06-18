@@ -232,11 +232,6 @@ async function getCurrentChainSlotExt(client = rpc()) {
     if (slot > 0) return slot;
   } catch (_) { /* fallback */ }
   try {
-    const economics = await client.call('getStakingEconomics', []);
-    const slot = normalizeChainSlotExt(economics);
-    if (slot > 0) return slot;
-  } catch (_) { /* fallback */ }
-  try {
     return normalizeChainSlotExt(await client.getLatestBlock());
   } catch (_) {
     return 0;

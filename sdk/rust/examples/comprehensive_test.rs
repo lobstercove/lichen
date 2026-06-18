@@ -79,7 +79,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Test getTransactionHistory
     print!("getTransactionHistory... ");
     match client
-        .get_transaction_history(&keypair.pubkey(), Some(10))
+        .get_transaction_history(&keypair.pubkey(), Some(10), None)
         .await
     {
         Ok(history) => println!("✅ History: {}", history),

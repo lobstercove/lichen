@@ -117,6 +117,16 @@ fn is_zero(addr: &[u8; 32]) -> bool {
     addr.iter().all(|&b| b == 0)
 }
 
+fn decode_zero_success_return_code(data: &[u8]) -> bool {
+    if data.len() >= 4 {
+        let mut status = [0u8; 4];
+        status.copy_from_slice(&data[..4]);
+        u32::from_le_bytes(status) == 0
+    } else {
+        matches!(data.first(), Some(0))
+    }
+}
+
 fn deadline_is_expired(deadline: u64) -> bool {
     deadline != 0 && get_slot() > deadline
 }
@@ -415,9 +425,7 @@ fn pull_tokens(token: &[u8; 32], from: &[u8; 32], amount: u64) -> bool {
     args.extend_from_slice(&u64_to_bytes(amount));
     let call = CrossCall::new(Address(*token), "transfer_from", args).with_value(0);
     match call_contract(call) {
-        // Return code 0 = success (wrapped tokens), 1 = success (lichencoin).
-        // Any value >= 2 is a definitive error code.
-        Ok(data) => data.first().map_or(false, |&rc| rc <= 1),
+        Ok(data) => decode_zero_success_return_code(&data),
         Err(_) => false,
     }
 }
@@ -2205,11 +2213,38 @@ pub fn quote_swap(pool_id: u64, is_token_a_in: bool, amount_in: u64) -> u64 {
 // WASM ENTRY POINT
 // ============================================================================
 
+fn reject_dispatch() -> u32 {
+    lichen_sdk::set_return_data(&[0xFF; 8]);
+    255
+}
+
+fn dispatch_min_len(args: &[u8]) -> Option<usize> {
+    let opcode = *args.first()?;
+    match opcode {
+        0 | 8 | 9 => Some(33),
+        1 => Some(106),
+        2 => Some(42),
+        3 => Some(73),
+        4 => Some(57),
+        5 | 21 | 23 => Some(41),
+        6 | 7 => Some(66),
+        10 | 11 | 14 => Some(9),
+        12 | 13 | 16 | 17 | 18 | 19 => Some(1),
+        15 => Some(18),
+        20 | 22 => Some(65),
+        _ => None,
+    }
+}
+
 #[cfg_attr(target_arch = "wasm32", no_mangle)]
 pub extern "C" fn call() -> u32 {
     let args = lichen_sdk::get_args();
     if args.is_empty() {
-        return 255;
+        return reject_dispatch();
+    }
+    match dispatch_min_len(&args) {
+        Some(min_len) if args.len() >= min_len => {}
+        _ => return reject_dispatch(),
     }
     let mut _rc = 0u32;
     match args[0] {
@@ -2241,7 +2276,7 @@ pub extern "C" fn call() -> u32 {
         // 2: set_pool_protocol_fee(caller, pool_id, fee_percent)
         2 => {
             // caller(32) + pool_id(8) + fee_percent(1) = 41
-            if args.len() > 40 {
+            if args.len() >= 42 {
                 let r = set_pool_protocol_fee(
                     args[1..33].as_ptr(),
                     bytes_to_u64(&args[33..41]),

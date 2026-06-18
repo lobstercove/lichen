@@ -64,10 +64,7 @@
         }
       ],
       "result_semantics": {
-        "kind": "return_code",
-        "success_codes": [
-          0
-        ]
+        "kind": "nonzero_return_value"
       }
     },
     {
@@ -112,10 +109,7 @@
         }
       ],
       "result_semantics": {
-        "kind": "return_code",
-        "success_codes": [
-          0
-        ]
+        "kind": "nonzero_return_value"
       }
     },
     {
@@ -590,6 +584,26 @@
         {
           "name": "caller_ptr",
           "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "claim_proposal_stake_refund",
+      "opcode": 25,
+      "params": [
+        {
+          "name": "proposer_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "proposal_id",
+          "type": "u64"
         }
       ],
       "result_semantics": {

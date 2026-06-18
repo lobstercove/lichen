@@ -299,7 +299,13 @@ fn decode_lusd_transfer_from_result(result: &[u8]) -> bool {
         return true;
     }
 
-    match result.first().copied().unwrap_or(255) {
+    let status = if result.len() >= 4 {
+        u32::from_le_bytes([result[0], result[1], result[2], result[3]])
+    } else {
+        result.first().copied().unwrap_or(255) as u32
+    };
+
+    match status {
         0 => true,
         1 => {
             log_info("lUSD transfer_from failed: token contract is paused");
@@ -4044,11 +4050,49 @@ pub fn get_fee_treasury() -> u64 {
 // ============================================================================
 
 #[cfg(target_arch = "wasm32")]
+fn reject_dispatch() -> u32 {
+    lichen_sdk::set_return_data(&[0xFF; 8]);
+    255
+}
+
+#[cfg(target_arch = "wasm32")]
+fn dispatch_min_len(args: &[u8]) -> Option<usize> {
+    let opcode = *args.first()?;
+    match opcode {
+        0 | 16 | 17 | 28 | 35 => Some(33),
+        1 => {
+            if args.len() < 79 {
+                return Some(79);
+            }
+            let question_len = u32::from_le_bytes([args[75], args[76], args[77], args[78]]);
+            Some(79usize.saturating_add(question_len as usize))
+        }
+        2 | 3 | 6 | 7 | 15 => Some(49),
+        4 | 5 => Some(50),
+        8 => Some(82),
+        9 => Some(81),
+        10 | 12 | 14 | 22 | 33 => Some(41),
+        11 | 13 => Some(42),
+        18 | 19 | 20 | 21 | 38 => Some(65),
+        23 | 31 | 34 | 37 => Some(9),
+        24 | 25 => Some(10),
+        26 => Some(42),
+        27 | 32 | 36 => Some(1),
+        29 | 30 => Some(18),
+        _ => None,
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub extern "C" fn call() -> u32 {
     let args = lichen_sdk::get_args();
     if args.is_empty() {
-        return 255;
+        return reject_dispatch();
+    }
+    match dispatch_min_len(&args) {
+        Some(min_len) if args.len() >= min_len => {}
+        _ => return reject_dispatch(),
     }
 
     let mut _rc = 0u32;

@@ -175,7 +175,13 @@ fn decode_collateral_transfer_from_result(result: &[u8]) -> bool {
         return true;
     }
 
-    match result.first().copied().unwrap_or(255) {
+    let status = if result.len() >= 4 {
+        u32::from_le_bytes([result[0], result[1], result[2], result[3]])
+    } else {
+        result.first().copied().unwrap_or(255) as u32
+    };
+
+    match status {
         0 => true,
         1 => {
             log_info("margin collateral transfer_from failed: token paused");
@@ -2389,13 +2395,41 @@ pub fn set_position_sl_tp(
     0
 }
 
+#[cfg(target_arch = "wasm32")]
+fn reject_dispatch() -> u32 {
+    lichen_sdk::set_return_data(&[0xFF; 8]);
+    255
+}
+
+#[cfg(target_arch = "wasm32")]
+fn dispatch_min_len(args: &[u8]) -> Option<usize> {
+    let opcode = *args.first()?;
+    match opcode {
+        0 | 13 | 14 | 17 => Some(33),
+        1 | 4 | 5 | 7 | 25 | 27 | 31 => Some(49),
+        2 => Some(66),
+        3 | 6 | 8 | 21 | 22 | 26 | 30 | 35 => Some(41),
+        9 => Some(73),
+        10 | 11 | 12 | 23 => Some(9),
+        16 | 18 | 19 | 20 => Some(1),
+        24 | 28 => Some(57),
+        29 | 33 | 34 => Some(65),
+        32 => Some(75),
+        _ => None,
+    }
+}
+
 // WASM entry
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub extern "C" fn call() -> u32 {
     let args = lichen_sdk::get_args();
     if args.is_empty() {
-        return 255;
+        return reject_dispatch();
+    }
+    match dispatch_min_len(&args) {
+        Some(min_len) if args.len() >= min_len => {}
+        _ => return reject_dispatch(),
     }
     let mut _rc = 0u32;
     match args[0] {

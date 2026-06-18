@@ -28,8 +28,8 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use lichen_sdk::{
-    bytes_to_u64, get_caller, get_contract_address, get_slot, get_value, log_info, storage_get,
-    storage_set, transfer_token_or_native, u64_to_bytes, Address,
+    bytes_to_u64, get_caller, get_contract_address, get_slot, log_info, receive_token_or_native,
+    storage_get, storage_set, transfer_token_or_native, u64_to_bytes, Address,
 };
 
 // ============================================================================
@@ -505,7 +505,15 @@ pub extern "C" fn store_data(
             return 6;
         }
     };
-    if get_value() < cost {
+    let payment_token = load_licn_token().unwrap_or(Address([0u8; 32]));
+    if !receive_token_or_native(
+        payment_token,
+        Address(owner_arr),
+        get_contract_address(),
+        cost,
+    )
+    .unwrap_or(false)
+    {
         log_info("Insufficient payment for storage");
         reentrancy_exit();
         return 5;
@@ -1062,8 +1070,16 @@ pub extern "C" fn stake_collateral(provider_ptr: *const u8, amount: u64) -> u32 
         return 2;
     }
 
-    // G27-02: Verify provider attached sufficient LICN
-    if get_value() < amount {
+    // G27-02: Verify provider paid sufficient LICN collateral
+    let payment_token = load_licn_token().unwrap_or(Address([0u8; 32]));
+    if !receive_token_or_native(
+        payment_token,
+        Address(provider_arr),
+        get_contract_address(),
+        amount,
+    )
+    .unwrap_or(false)
+    {
         log_info("Insufficient LICN attached for staking");
         reentrancy_exit();
         return 3;
@@ -1465,7 +1481,7 @@ mod tests {
         initialize(admin.as_ptr());
         let licn_token = [0xDD; 32];
         set_licn_token(admin.as_ptr(), licn_token.as_ptr());
-        test_mock::set_cross_call_response(Some(alloc::vec![1u8]));
+        test_mock::set_cross_call_response(Some(0u32.to_le_bytes().to_vec()));
     }
 
     /// G27-02: Configure admin + LICN token + mock cross-contract transfers
@@ -2362,7 +2378,6 @@ mod tests {
         test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
         let admin = [9u8; 32];
         configure_licn_transfers(admin);
-        test_mock::set_cross_call_response(Some(2u32.to_le_bytes().to_vec()));
 
         let owner = [1u8; 32];
         let data_hash = [0xA7; 32];
@@ -2373,13 +2388,23 @@ mod tests {
         storage_set(&stake_key(&provider_addr), &u64_to_bytes(1000));
         test_mock::set_caller(owner);
         test_mock::set_value(100_000);
-        store_data(owner.as_ptr(), data_hash.as_ptr(), 10, 1, 1000);
+        assert_eq!(
+            store_data(owner.as_ptr(), data_hash.as_ptr(), 10, 1, 1000),
+            0
+        );
         test_mock::set_caller(provider_addr);
-        confirm_storage(provider_addr.as_ptr(), data_hash.as_ptr());
+        assert_eq!(
+            confirm_storage(provider_addr.as_ptr(), data_hash.as_ptr()),
+            0
+        );
         test_mock::set_caller(challenger);
-        issue_challenge(data_hash.as_ptr(), provider_addr.as_ptr(), 42);
+        assert_eq!(
+            issue_challenge(data_hash.as_ptr(), provider_addr.as_ptr(), 42),
+            0
+        );
 
         test_mock::SLOT.with(|s| *s.borrow_mut() = 400);
+        test_mock::set_cross_call_response(Some(2u32.to_le_bytes().to_vec()));
         assert_eq!(
             slash_provider(data_hash.as_ptr(), provider_addr.as_ptr()),
             0

@@ -12,6 +12,12 @@ pub(super) async fn handle_airdrop(
     pubkey: Option<String>,
     keypair: Option<PathBuf>,
 ) -> Result<()> {
+    if !amount.is_finite() || amount.fract() != 0.0 || !(1.0..=10.0).contains(&amount) {
+        return Err(anyhow!(
+            "Airdrop amount must be a whole number between 1 and 10 LICN"
+        ));
+    }
+
     let recipient = if let Some(address) = pubkey {
         Pubkey::from_base58(&address).map_err(|error| anyhow!("Invalid address: {}", error))?
     } else {

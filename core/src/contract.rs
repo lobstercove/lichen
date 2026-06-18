@@ -983,6 +983,10 @@ fn code_is_declared_failure(code: i64, failure_codes: &[i64]) -> bool {
     failure_codes.contains(&code)
 }
 
+fn return_data_has_nonzero_value(return_data: &[u8]) -> bool {
+    return_data.iter().any(|&byte| byte != 0)
+}
+
 fn abi_error_label(contract: &ContractAccount, code: i64) -> Option<String> {
     let code = u32::try_from(code).ok()?;
     contract
@@ -1087,6 +1091,11 @@ pub fn evaluate_contract_outcome(
                     }
                 }
                 Some(code) if code != 0 => ContractOutcome {
+                    success: true,
+                    error: None,
+                    declared: true,
+                },
+                Some(_) if return_data_has_nonzero_value(&result.return_data) => ContractOutcome {
                     success: true,
                     error: None,
                     declared: true,
@@ -3417,6 +3426,52 @@ mod tests {
     };
     use tempfile::tempdir;
 
+    fn abi_test_contract(kind: AbiResultKind) -> ContractAccount {
+        let owner = Pubkey::new([1u8; 32]);
+        let mut contract = ContractAccount::new(vec![0x00, 0x61, 0x73, 0x6d], owner);
+        contract.abi = Some(ContractAbi {
+            version: "1.0".to_string(),
+            name: "abi_test".to_string(),
+            template: None,
+            description: None,
+            functions: vec![AbiFunction {
+                name: "value_fn".to_string(),
+                description: None,
+                params: Vec::new(),
+                returns: None,
+                opcode: None,
+                readonly: false,
+                result_semantics: Some(AbiResultSemantics {
+                    kind,
+                    success_codes: Vec::new(),
+                    failure_codes: Vec::new(),
+                    description: None,
+                }),
+            }],
+            events: Vec::new(),
+            errors: Vec::new(),
+        });
+        contract
+    }
+
+    fn abi_test_result(return_code: i64, return_data: Vec<u8>) -> ContractResult {
+        ContractResult {
+            return_data,
+            logs: Vec::new(),
+            events: Vec::new(),
+            storage_changes: HashMap::new(),
+            success: true,
+            error: None,
+            compute_used: 0,
+            return_code: Some(return_code),
+            cross_call_changes: HashMap::new(),
+            cross_call_events: Vec::new(),
+            cross_call_logs: Vec::new(),
+            ccc_value_deltas: HashMap::new(),
+            native_account_ops: Vec::new(),
+        }
+    }
+
     fn token_compliance_probe_wat() -> &'static str {
         r#"(module
             (import "env" "get_args" (func $get_args (param i32 i32) (result i32)))
@@ -4044,6 +4099,35 @@ mod tests {
     }
 
     #[test]
+    fn test_nonzero_return_value_accepts_nonzero_return_data_after_u32_truncation() {
+        let contract = abi_test_contract(AbiResultKind::NonzeroReturnValue);
+
+        let zero = abi_test_result(0, 0u64.to_le_bytes().to_vec());
+        let zero_outcome = evaluate_contract_outcome(
+            &contract,
+            "value_fn",
+            &zero,
+            ContractOutcomeFallback::RuntimeSuccessOnly,
+        );
+        assert!(
+            !zero_outcome.success,
+            "zero return code plus zero return_data must still fail"
+        );
+
+        let truncated_nonzero = abi_test_result(0, (u32::MAX as u64 + 1).to_le_bytes().to_vec());
+        let nonzero_outcome = evaluate_contract_outcome(
+            &contract,
+            "value_fn",
+            &truncated_nonzero,
+            ContractOutcomeFallback::RuntimeSuccessOnly,
+        );
+        assert!(
+            nonzero_outcome.success,
+            "nonzero return_data must preserve success when the raw u32 return truncates to zero"
+        );
+    }
+
+    #[test]
     fn test_deduct_compute() {
         let caller = Pubkey::new([1u8; 32]);
         let contract = Pubkey::new([2u8; 32]);
@@ -4333,7 +4417,7 @@ mod tests {
         }
 
         assert_eq!(
-            abi_count, 32,
+            abi_count, 33,
             "expected every bundled contract ABI to be checked"
         );
     }
@@ -4463,6 +4547,140 @@ mod tests {
         );
         assert_failure_codes(&sporevault, "withdraw_protocol_fees", &[200]);
 
+        let sporepay = load_abi("sporepay");
+        let create_stream = sporepay
+            .functions
+            .iter()
+            .find(|function| function.name == "create_stream")
+            .expect("sporepay ABI missing create_stream");
+        let create_stream_semantics = create_stream
+            .result_semantics
+            .as_ref()
+            .expect("sporepay create_stream missing result semantics");
+        assert_eq!(
+            create_stream_semantics.kind,
+            AbiResultKind::ReturnCode,
+            "sporepay create_stream must expose status-code semantics"
+        );
+        assert_eq!(
+            create_stream_semantics.success_codes,
+            vec![0],
+            "sporepay create_stream must declare zero as success"
+        );
+
+        let dex_analytics = load_abi("dex_analytics");
+        for name in ["set_authorized_caller", "record_pnl"] {
+            assert_kind(&dex_analytics, name, AbiResultKind::ReturnCode);
+            let function = dex_analytics
+                .functions
+                .iter()
+                .find(|function| function.name == name)
+                .unwrap_or_else(|| panic!("dex_analytics ABI missing {}", name));
+            assert_eq!(
+                function
+                    .result_semantics
+                    .as_ref()
+                    .expect("analytics result semantics")
+                    .success_codes,
+                vec![0],
+                "dex_analytics {} must declare zero as success",
+                name
+            );
+        }
+
+        for (contract, functions) in [
+            ("sporepump", &["set_licn_token"][..]),
+            ("sporevault", &["set_licn_token"][..]),
+            ("moss_storage", &["set_licn_token"][..]),
+            (
+                "compute_market",
+                &["set_token_address", "pause", "unpause"][..],
+            ),
+            (
+                "thalllend",
+                &[
+                    "set_lichencoin_address",
+                    "set_oracle_feed",
+                    "get_accrued_interest",
+                ][..],
+            ),
+            ("lichenbridge", &["set_token_address"][..]),
+            (
+                "lichenid",
+                &[
+                    "set_mid_token_address",
+                    "set_mid_self_address",
+                    "accept_admin",
+                ][..],
+            ),
+            ("lichendao", &["claim_proposal_stake_refund"][..]),
+        ] {
+            let abi = load_abi(contract);
+            for function_name in functions {
+                assert!(
+                    abi.functions
+                        .iter()
+                        .any(|function| function.name == *function_name),
+                    "{} ABI missing {}",
+                    contract,
+                    function_name
+                );
+            }
+        }
+
+        for contract in [
+            "dex_rewards",
+            "dex_analytics",
+            "dex_amm",
+            "dex_core",
+            "dex_margin",
+            "dex_router",
+            "dex_governance",
+            "prediction_market",
+            "neo_gas_rewards",
+        ] {
+            let abi = load_abi(contract);
+            assert_kind(&abi, "call", AbiResultKind::RuntimeSuccessOnly);
+            let function = abi
+                .functions
+                .iter()
+                .find(|function| function.name == "call")
+                .expect("dispatcher ABI missing call entry");
+            assert_eq!(
+                function
+                    .result_semantics
+                    .as_ref()
+                    .expect("call result semantics")
+                    .success_codes,
+                Vec::<i64>::new(),
+                "{} call must not pin dispatcher status codes",
+                contract
+            );
+        }
+
+        let shielded_pool = load_abi("shielded_pool");
+        for name in [
+            "initialize",
+            "pause",
+            "unpause",
+            "get_pool_stats",
+            "get_merkle_root",
+            "check_nullifier",
+            "get_commitments",
+            "shield",
+            "unshield",
+            "transfer",
+        ] {
+            assert!(
+                shielded_pool
+                    .functions
+                    .iter()
+                    .any(|function| function.name == name),
+                "shielded_pool ABI missing {}",
+                name
+            );
+        }
+
         let lichenmarket = load_abi("lichenmarket");
         assert_kind(
             &lichenmarket,
@@ -4483,6 +4701,9 @@ mod tests {
             assert_eq!(semantics.kind, AbiResultKind::ReturnCode, "{}", name);
             assert_eq!(semantics.success_codes, vec![1], "{}", name);
         }
+
+        let dex_core = load_abi("dex_core");
+        assert_kind(&dex_core, "check_triggers", AbiResultKind::ReturnValue);
 
         let lichenpunks = load_abi("lichenpunks");
         for name in ["owner_of", "get_owner_of", "get_punk_metadata"] {

@@ -1,5 +1,5 @@
 use axum::{
-    extract::{ConnectInfo, Json, Query, State},
+    extract::{ConnectInfo, Json, Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
@@ -96,6 +96,21 @@ async fn list_airdrops(
 ) -> Json<Vec<AirdropRecord>> {
     let airdrops = state.airdrops.read().await;
     Json(select_airdrop_records(&airdrops, &query))
+}
+
+async fn get_airdrop(State(state): State<FaucetState>, Path(signature): Path<String>) -> Response {
+    let airdrops = state.airdrops.read().await;
+    match find_airdrop_record(&airdrops, &signature) {
+        Some(record) => Json(record).into_response(),
+        None => error_response(StatusCode::NOT_FOUND, "Airdrop not found"),
+    }
+}
+
+fn find_airdrop_record(airdrops: &[AirdropRecord], signature: &str) -> Option<AirdropRecord> {
+    airdrops
+        .iter()
+        .find(|record| record.signature.as_deref() == Some(signature))
+        .cloned()
 }
 
 fn select_airdrop_records(airdrops: &[AirdropRecord], query: &AirdropQuery) -> Vec<AirdropRecord> {

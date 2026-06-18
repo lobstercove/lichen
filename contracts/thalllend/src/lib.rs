@@ -19,8 +19,9 @@ extern crate alloc;
 use alloc::vec::Vec;
 use lichen_sdk::crosscall::{call_contract, CrossCall};
 use lichen_sdk::{
-    bytes_to_u64, get_caller, get_contract_address, get_timestamp, get_value, log_info,
-    set_return_data, storage_get, storage_set, transfer_token_or_native, u64_to_bytes, Address,
+    bytes_to_u64, get_caller, get_contract_address, get_timestamp, log_info,
+    receive_token_or_native, set_return_data, storage_get, storage_set, transfer_token_or_native,
+    u64_to_bytes, Address,
 };
 
 // Oracle configuration key (stores lichenoracle contract address)
@@ -362,6 +363,15 @@ fn transfer_out(recipient: &[u8; 32], amount: u64) -> u32 {
     }
 }
 
+fn receive_licn_in(payer: &[u8; 32], amount: u64) -> bool {
+    let token = if licn_address_configured() {
+        Address(load_licn_addr())
+    } else {
+        Address([0u8; 32])
+    };
+    receive_token_or_native(token, Address(*payer), get_contract_address(), amount).unwrap_or(false)
+}
+
 fn get_deposit_cap() -> u64 {
     load_u64(DEPOSIT_CAP_KEY)
 }
@@ -503,10 +513,9 @@ pub extern "C" fn deposit(depositor_ptr: *const u8, amount: u64) -> u32 {
         return 200;
     }
 
-    // AUDIT-FIX G9-01: Verify incoming value covers deposit
-    let attached = get_value();
-    if attached < amount {
-        log_info("Insufficient value attached for deposit");
+    // AUDIT-FIX G9-01: Verify incoming custody covers deposit
+    if !receive_licn_in(&depositor, amount) {
+        log_info("Insufficient deposit payment");
         return 30;
     }
 
@@ -777,10 +786,9 @@ pub extern "C" fn repay(borrower_ptr: *const u8, amount: u64) -> u32 {
         return 200;
     }
 
-    // AUDIT-FIX G9-01: Verify incoming value covers repayment
-    let attached = get_value();
-    if attached < amount {
-        log_info("Insufficient value attached for repayment");
+    // AUDIT-FIX G9-01: Verify incoming custody covers repayment
+    if !receive_licn_in(&borrower, amount) {
+        log_info("Insufficient repayment payment");
         return 30;
     }
 
@@ -843,10 +851,9 @@ pub extern "C" fn liquidate(
         return 200;
     }
 
-    // AUDIT-FIX G9-01: Verify incoming value covers liquidation repayment
-    let attached = get_value();
-    if attached < repay_amount {
-        log_info("Insufficient value attached for liquidation");
+    // AUDIT-FIX G9-01: Verify incoming custody covers liquidation repayment
+    if !receive_licn_in(&_liquidator, repay_amount) {
+        log_info("Insufficient liquidation payment");
         return 30;
     }
 
@@ -1179,10 +1186,9 @@ pub extern "C" fn flash_repay(borrower_ptr: *const u8, repay_amount: u64) -> u32
         return 2;
     }
 
-    // AUDIT-FIX G9-01: Verify incoming value covers flash repayment
-    let attached = get_value();
-    if attached < required {
-        log_info("Insufficient value attached for flash repay");
+    // AUDIT-FIX G9-01: Verify incoming custody covers flash repayment
+    if !receive_licn_in(&_borrower, required) {
+        log_info("Insufficient flash repayment");
         return 30;
     }
 
@@ -1562,7 +1568,7 @@ mod tests {
         assert_eq!(deposit(user.as_ptr(), 0), 1);
     }
 
-    // AUDIT-FIX G9-01: Deposit with insufficient value attached
+    // AUDIT-FIX G9-01: Deposit rejects failed incoming token custody.
     #[test]
     fn test_deposit_insufficient_value() {
         setup();
@@ -1571,7 +1577,7 @@ mod tests {
         initialize(admin.as_ptr());
         let user = [2u8; 32];
         test_mock::set_caller(user);
-        test_mock::set_value(500_000); // less than deposit amount
+        test_mock::set_cross_call_response(Some(2u32.to_le_bytes().to_vec()));
         assert_eq!(deposit(user.as_ptr(), 1_000_000), 30);
     }
 
@@ -1999,7 +2005,7 @@ mod tests {
         assert_eq!(load_u64(b"ll_total_borrows"), 0);
     }
 
-    // AUDIT-FIX G9-01: Repay with insufficient value attached
+    // AUDIT-FIX G9-01: Repay rejects failed incoming token custody.
     #[test]
     fn test_repay_insufficient_value() {
         setup();
@@ -2011,7 +2017,7 @@ mod tests {
         test_mock::set_value(1_000_000);
         deposit(user.as_ptr(), 1_000_000);
         borrow(user.as_ptr(), 500_000);
-        test_mock::set_value(50_000); // less than repay amount
+        test_mock::set_cross_call_response(Some(2u32.to_le_bytes().to_vec()));
         assert_eq!(repay(user.as_ptr(), 200_000), 30);
     }
 
@@ -2072,7 +2078,10 @@ mod tests {
         let bix_before = load_u64(&bix_key);
         let liquidation_count_before = load_u64(LIQUIDATION_COUNT_KEY);
 
-        test_mock::set_cross_call_response(Some(2u32.to_le_bytes().to_vec()));
+        test_mock::set_cross_call_responses(std::vec![
+            0u32.to_le_bytes().to_vec(),
+            2u32.to_le_bytes().to_vec(),
+        ]);
         assert_eq!(
             liquidate(liquidator.as_ptr(), borrower.as_ptr(), 200_000),
             31
@@ -2169,7 +2178,7 @@ mod tests {
         store_u64(b"ll_total_borrows", 860_000);
         let liquidator = [3u8; 32];
         test_mock::set_caller(liquidator);
-        test_mock::set_value(50_000); // less than repay_amount
+        test_mock::set_cross_call_response(Some(2u32.to_le_bytes().to_vec()));
         assert_eq!(
             liquidate(liquidator.as_ptr(), borrower.as_ptr(), 200_000),
             30
@@ -2316,8 +2325,8 @@ mod tests {
         test_mock::set_caller(borrower);
         assert_eq!(flash_borrow(borrower.as_ptr(), 100_000), 0);
 
-        // Repay amount sufficient but value not attached
-        test_mock::set_value(50); // far less than required 100,090
+        // Repay amount sufficient but incoming token custody fails.
+        test_mock::set_cross_call_response(Some(2u32.to_le_bytes().to_vec()));
         assert_eq!(flash_repay(borrower.as_ptr(), 100_090), 30);
     }
 

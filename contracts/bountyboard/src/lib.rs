@@ -18,8 +18,9 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use lichen_sdk::{
-    bytes_to_u64, call_contract, get_caller, get_contract_address, get_slot, get_value, log_info,
-    storage_get, storage_set, transfer_token_or_native, u64_to_bytes, Address, CrossCall,
+    bytes_to_u64, call_contract, get_caller, get_contract_address, get_slot, log_info,
+    receive_token_or_native, storage_get, storage_set, transfer_token_or_native, u64_to_bytes,
+    Address, CrossCall,
 };
 
 // ============================================================================
@@ -29,6 +30,8 @@ use lichen_sdk::{
 const BOUNTY_OPEN: u8 = 0;
 const BOUNTY_COMPLETED: u8 = 1;
 const BOUNTY_CANCELLED: u8 = 2;
+
+const ERR_PAUSED: u32 = 13;
 
 const BB_COMPLETED_COUNT_KEY: &[u8] = b"bb_completed_count";
 const BB_REWARD_VOLUME_KEY: &[u8] = b"bb_reward_volume";
@@ -224,7 +227,7 @@ pub extern "C" fn create_bounty(
     // AUDIT-FIX P2: Enforce pause
     if is_bb_paused() {
         log_info("BountyBoard is paused");
-        return 0;
+        return ERR_PAUSED;
     }
     if !reentrancy_enter() {
         return 100;
@@ -258,13 +261,6 @@ pub extern "C" fn create_bounty(
         return 1;
     }
 
-    // AUDIT-FIX G22-01: Verify creator attached sufficient value for reward escrow
-    if get_value() < reward_amount {
-        log_info("Insufficient value attached for bounty reward");
-        reentrancy_exit();
-        return 11;
-    }
-
     // LichenID reputation gate
     if !check_identity_gate(&creator_arr) {
         log_info("Insufficient LichenID reputation for bounty creation");
@@ -288,6 +284,27 @@ pub extern "C" fn create_bounty(
             return 12;
         }
     };
+
+    let reward_token = match reward_token_or_native() {
+        Some(token) => token,
+        None => {
+            log_info("Invalid reward token configuration");
+            reentrancy_exit();
+            return 14;
+        }
+    };
+    if !receive_token_or_native(
+        reward_token,
+        Address(creator_arr),
+        get_contract_address(),
+        reward_amount,
+    )
+    .unwrap_or(false)
+    {
+        log_info("Insufficient reward escrow payment");
+        reentrancy_exit();
+        return 11;
+    }
     storage_set(b"bounty_count", &u64_to_bytes(next_bounty_id));
 
     let data = encode_bounty(
@@ -332,7 +349,7 @@ pub extern "C" fn submit_work(
     // AUDIT-FIX P2: Enforce pause
     if is_bb_paused() {
         log_info("BountyBoard is paused");
-        return 0;
+        return ERR_PAUSED;
     }
     if !reentrancy_enter() {
         return 100;
@@ -437,7 +454,7 @@ pub extern "C" fn approve_work(caller_ptr: *const u8, bounty_id: u64, submission
     // AUDIT-FIX P2: Enforce pause
     if is_bb_paused() {
         log_info("BountyBoard is paused");
-        return 0;
+        return ERR_PAUSED;
     }
     if !reentrancy_enter() {
         return 100;
@@ -1497,7 +1514,7 @@ mod tests {
         let title_hash = [0xAA; 32];
         test_mock::set_caller(creator);
         let result = create_bounty(creator.as_ptr(), title_hash.as_ptr(), 500_000, 1000);
-        assert_eq!(result, 0);
+        assert_eq!(result, ERR_PAUSED);
     }
 
     // AUDIT-FIX P2: Security regression test
@@ -1524,7 +1541,7 @@ mod tests {
         let proof_hash = [0xBB; 32];
         test_mock::set_caller(worker);
         let result = submit_work(0, worker.as_ptr(), proof_hash.as_ptr());
-        assert_eq!(result, 0);
+        assert_eq!(result, ERR_PAUSED);
     }
 
     #[test]

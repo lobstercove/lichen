@@ -872,6 +872,35 @@ pub fn get_route_info(route_id: u64) -> u64 {
 }
 
 // ============================================================================
+#[cfg(target_arch = "wasm32")]
+fn reject_dispatch() -> u32 {
+    lichen_sdk::set_return_data(&[0xFF; 8]);
+    255
+}
+
+#[cfg(target_arch = "wasm32")]
+fn dispatch_min_len(args: &[u8]) -> Option<usize> {
+    let opcode = *args.first()?;
+    match opcode {
+        0 | 7 | 8 => Some(33),
+        1 => Some(97),
+        2 => Some(114),
+        3 => Some(121),
+        4 => Some(42),
+        5 => Some(73),
+        6 => Some(9),
+        9 => {
+            if args.len() < 57 {
+                return Some(57);
+            }
+            let path_count = bytes_to_u64(&args[33..41]) as usize;
+            Some(65usize.saturating_add(path_count.saturating_mul(8)))
+        }
+        10 | 11 | 12 | 13 => Some(1),
+        _ => None,
+    }
+}
+
 // WASM ENTRY POINT
 // ============================================================================
 
@@ -880,7 +909,11 @@ pub fn get_route_info(route_id: u64) -> u64 {
 pub extern "C" fn call() -> u32 {
     let args = lichen_sdk::get_args();
     if args.is_empty() {
-        return 255;
+        return reject_dispatch();
+    }
+    match dispatch_min_len(&args) {
+        Some(min_len) if args.len() >= min_len => {}
+        _ => return reject_dispatch(),
     }
     let mut _rc = 0u32;
     match args[0] {

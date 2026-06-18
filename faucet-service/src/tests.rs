@@ -3,6 +3,7 @@ use super::models::AirdropQuery;
 use super::rate_limit::RateLimiter;
 use super::storage::{load_airdrops, save_airdrops};
 use super::{
+    find_airdrop_record,
     models::{AirdropRecord, DEFAULT_COOLDOWN_SECONDS, DEFAULT_DAILY_LIMIT_PER_IP},
     now_ms, select_airdrop_records,
 };
@@ -108,6 +109,31 @@ fn airdrop_history_filters_by_requested_wallet_address() {
     assert!(selected
         .iter()
         .all(|record| record.recipient == "target-wallet"));
+}
+
+#[test]
+fn airdrop_history_lookup_finds_record_by_signature() {
+    let records = vec![
+        AirdropRecord {
+            signature: Some("sig-1".to_string()),
+            recipient: "wallet-1".to_string(),
+            amount_licn: 5,
+            timestamp_ms: 100,
+            ip: None,
+        },
+        AirdropRecord {
+            signature: Some("sig-2".to_string()),
+            recipient: "wallet-2".to_string(),
+            amount_licn: 10,
+            timestamp_ms: 200,
+            ip: None,
+        },
+    ];
+
+    let selected = find_airdrop_record(&records, "sig-2").expect("record should exist");
+    assert_eq!(selected.recipient, "wallet-2");
+    assert_eq!(selected.amount_licn, 10);
+    assert!(find_airdrop_record(&records, "missing").is_none());
 }
 
 #[test]

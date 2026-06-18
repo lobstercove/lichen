@@ -14,8 +14,9 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use lichen_sdk::{
-    bytes_to_u64, get_caller, get_timestamp, log_info, storage_get, storage_set,
-    transfer_token_or_native, u64_to_bytes, Address,
+    bytes_to_u64, get_caller, get_contract_address, get_timestamp, log_info,
+    receive_token_or_native, storage_get, storage_set, transfer_token_or_native, u64_to_bytes,
+    Address,
 };
 
 // ============================================================================
@@ -2547,16 +2548,27 @@ fn get_mid_token_address() -> Option<Address> {
     })
 }
 
-fn get_mid_self_address() -> Option<Address> {
-    storage_get(MID_SELF_ADDR_KEY).and_then(|d| {
-        if d.len() == 32 {
-            let mut addr = [0u8; 32];
-            addr.copy_from_slice(&d);
-            Some(Address(addr))
-        } else {
-            None
-        }
-    })
+fn auction_payment_token(record: &[u8]) -> Address {
+    if record.len() >= 97 {
+        let mut addr = [0u8; 32];
+        addr.copy_from_slice(&record[65..97]);
+        return Address(addr);
+    }
+    get_mid_token_address().unwrap_or(Address([0u8; 32]))
+}
+
+fn mid_payment_token() -> Address {
+    get_mid_token_address().unwrap_or(Address([0u8; 32]))
+}
+
+fn receive_mid_payment(payer: [u8; 32], amount: u64) -> bool {
+    receive_token_or_native(
+        mid_payment_token(),
+        Address(payer),
+        get_contract_address(),
+        amount,
+    )
+    .unwrap_or(false)
 }
 
 fn has_mid_configured_address(key: &[u8]) -> bool {
@@ -2842,7 +2854,7 @@ pub extern "C" fn revoke_attestation(
 
 /// Register a .lichen domain name for the caller's identity.
 /// The caller must have a LichenID. Name must be valid (3-32 chars, alphanumeric + hyphens).
-/// Registration requires payment (checked via get_value()).
+/// Registration requires payment through the configured MID token, or native LICN when unset.
 ///
 /// Name record: [owner(32), registered_slot(8), expiry_slot(8)] = 48 bytes
 ///
@@ -2920,6 +2932,7 @@ pub extern "C" fn register_name(
 
     // Check if name is already taken and not expired
     let nk = name_key(&name);
+    let mut expired_old_reverse_key: Option<Vec<u8>> = None;
     if let Some(existing) = storage_get(&nk) {
         if existing.len() >= 48 {
             let expiry = bytes_to_u64(&existing[40..48]);
@@ -2931,8 +2944,7 @@ pub extern "C" fn register_name(
             }
             // Name expired — can be re-registered (clear old reverse mapping)
             let old_owner = &existing[0..32];
-            let old_rev = name_reverse_key(old_owner);
-            lichen_sdk::storage::remove(&old_rev);
+            expired_old_reverse_key = Some(name_reverse_key(old_owner));
         }
     }
 
@@ -2953,7 +2965,6 @@ pub extern "C" fn register_name(
         }
     }
 
-    // Check payment (via get_value() — the LICN tokens sent with this transaction)
     let required_cost = match name_registration_cost_for_years(name_len, duration_years) {
         Some(cost) => cost,
         None => {
@@ -2962,8 +2973,7 @@ pub extern "C" fn register_name(
             return 9;
         }
     };
-    let paid = lichen_sdk::get_value();
-    if paid < required_cost {
+    if !receive_mid_payment(caller, required_cost) {
         log_info("Insufficient payment for name registration");
         reentrancy_exit();
         return 7;
@@ -2993,6 +3003,9 @@ pub extern "C" fn register_name(
     record[32..40].copy_from_slice(&u64_to_bytes(current_slot));
     record[40..48].copy_from_slice(&u64_to_bytes(expiry_slot));
 
+    if let Some(old_rev) = expired_old_reverse_key {
+        lichen_sdk::storage::remove(&old_rev);
+    }
     storage_set(&nk, &record);
 
     // Set reverse mapping: address → name
@@ -3105,7 +3118,9 @@ pub extern "C" fn reverse_resolve(addr_ptr: *const u8) -> u32 {
 // ============================================================================
 
 /// Create an auction for a premium short name (3-4 chars).
-/// Auction record: [active(1), start_slot(8), end_slot(8), reserve_bid(8), highest_bid(8), highest_bidder(32)]
+/// Auction record:
+/// [active(1), start_slot(8), end_slot(8), reserve_bid(8), highest_bid(8),
+///  highest_bidder(32), payment_token(32)]
 #[no_mangle]
 pub extern "C" fn create_name_auction(
     caller_ptr: *const u8,
@@ -3203,13 +3218,15 @@ pub extern "C" fn create_name_auction(
         }
     }
 
-    let mut record = Vec::with_capacity(65);
+    let payment_token = get_mid_token_address().unwrap_or(Address([0u8; 32]));
+    let mut record = Vec::with_capacity(97);
     record.push(1); // active
     record.extend_from_slice(&u64_to_bytes(now_slot));
     record.extend_from_slice(&u64_to_bytes(end_slot));
     record.extend_from_slice(&u64_to_bytes(reserve_bid));
     record.extend_from_slice(&u64_to_bytes(0)); // highest_bid
     record.extend_from_slice(&[0u8; 32]); // highest_bidder
+    record.extend_from_slice(&payment_token.0); // payment token fixed for this auction
     storage_set(&ak, &record);
 
     log_info("Name auction created");
@@ -3291,8 +3308,15 @@ pub extern "C" fn bid_name_auction(
         return 5;
     }
 
-    let paid = lichen_sdk::get_value();
-    if paid < bid_amount {
+    let payment_token = auction_payment_token(&record);
+    if !receive_token_or_native(
+        payment_token,
+        Address(bidder),
+        get_contract_address(),
+        bid_amount,
+    )
+    .unwrap_or(false)
+    {
         log_info("Insufficient payment for bid");
         reentrancy_exit();
         return 6;
@@ -3305,24 +3329,12 @@ pub extern "C" fn bid_name_auction(
     prev_bidder.copy_from_slice(&record[33..65]);
 
     if prev_bid_amount > 0 && !prev_bidder.iter().all(|&b| b == 0) {
-        let token_addr = match get_mid_token_address() {
-            Some(a) => a,
-            None => {
-                log_info("bid_name_auction: token address not configured");
-                reentrancy_exit();
-                return 30;
-            }
-        };
-        let self_addr = match get_mid_self_address() {
-            Some(a) => a,
-            None => {
-                log_info("bid_name_auction: self address not configured");
-                reentrancy_exit();
-                return 31;
-            }
-        };
-        match transfer_token_or_native(token_addr, self_addr, Address(prev_bidder), prev_bid_amount)
-        {
+        match transfer_token_or_native(
+            payment_token,
+            get_contract_address(),
+            Address(prev_bidder),
+            prev_bid_amount,
+        ) {
             Ok(true) => {
                 log_info("Previous highest bidder refunded");
             }
@@ -3334,6 +3346,9 @@ pub extern "C" fn bid_name_auction(
         }
     }
 
+    if record.len() < 97 {
+        record.extend_from_slice(&payment_token.0);
+    }
     record[25..33].copy_from_slice(&u64_to_bytes(bid_amount));
     record[33..65].copy_from_slice(&bidder);
     storage_set(&ak, &record);
@@ -3671,7 +3686,6 @@ pub extern "C" fn renew_name(
         return 3;
     }
 
-    // Check payment
     let required_cost = match name_registration_cost_for_years(name_len, additional_years) {
         Some(cost) => cost,
         None => {
@@ -3680,8 +3694,7 @@ pub extern "C" fn renew_name(
             return 6;
         }
     };
-    let paid = lichen_sdk::get_value();
-    if paid < required_cost {
+    if !receive_mid_payment(caller, required_cost) {
         log_info("Insufficient payment for renewal");
         reentrancy_exit();
         return 4;
@@ -3958,8 +3971,7 @@ pub extern "C" fn renew_name_as(
             return 7;
         }
     };
-    let paid = lichen_sdk::get_value();
-    if paid < required_cost {
+    if !receive_mid_payment(delegate, required_cost) {
         log_info("Insufficient payment for renewal");
         reentrancy_exit();
         return 5;
@@ -7795,7 +7807,7 @@ mod tests {
     }
 
     #[test]
-    fn test_bid_auction_refund_requires_token_config() {
+    fn test_bid_auction_native_refund_without_token_config() {
         setup();
         let admin = [1u8; 32];
         test_mock::set_caller(admin);
@@ -7843,7 +7855,7 @@ mod tests {
             0
         );
 
-        // Second bid: triggers refund but token address not configured → error 30
+        // Second bid: native auction refunds the previous bidder with native LICN.
         test_mock::set_caller(bidder2);
         test_mock::set_value(700_000_000_000);
         assert_eq!(
@@ -7853,11 +7865,12 @@ mod tests {
                 name.len() as u32,
                 700_000_000_000
             ),
-            30
+            0
         );
         let record = storage_get(&name_auction_key(name)).unwrap();
-        assert_eq!(bytes_to_u64(&record[25..33]), 600_000_000_000);
-        assert_eq!(&record[33..65], &bidder1);
+        assert_eq!(bytes_to_u64(&record[25..33]), 700_000_000_000);
+        assert_eq!(&record[33..65], &bidder2);
+        assert_eq!(&record[65..97], &[0u8; 32]);
     }
 
     #[test]
@@ -7933,7 +7946,7 @@ mod tests {
     }
 
     #[test]
-    fn test_bid_auction_refund_requires_self_address() {
+    fn test_bid_auction_token_refund_without_self_address() {
         setup();
         let admin = [1u8; 32];
         test_mock::set_caller(admin);
@@ -7983,7 +7996,8 @@ mod tests {
             0
         );
 
-        // Second bid: token set but self-address not → error 31
+        // Second bid: token auction refunds through transfer from the contract
+        // address. No separate self-address config is required.
         test_mock::set_caller(bidder2);
         test_mock::set_value(700_000_000_000);
         assert_eq!(
@@ -7993,11 +8007,18 @@ mod tests {
                 name.len() as u32,
                 700_000_000_000
             ),
-            31
+            0
         );
         let record = storage_get(&name_auction_key(name)).unwrap();
-        assert_eq!(bytes_to_u64(&record[25..33]), 600_000_000_000);
-        assert_eq!(&record[33..65], &bidder1);
+        assert_eq!(bytes_to_u64(&record[25..33]), 700_000_000_000);
+        assert_eq!(&record[33..65], &bidder2);
+        assert_eq!(&record[65..97], &token_addr);
+        let (_, function, args, value) =
+            test_mock::get_last_cross_call().expect("refund should transfer token");
+        assert_eq!(function, "transfer");
+        assert_eq!(value, 0);
+        assert_eq!(&args[32..64], &bidder1);
+        assert_eq!(bytes_to_u64(&args[64..72]), 600_000_000_000);
     }
 
     #[test]
@@ -8047,7 +8068,10 @@ mod tests {
             0
         );
 
-        test_mock::set_cross_call_response(Some(2u32.to_le_bytes().to_vec()));
+        test_mock::set_cross_call_responses(alloc::vec![
+            0u32.to_le_bytes().to_vec(),
+            2u32.to_le_bytes().to_vec(),
+        ]);
         test_mock::set_caller(bidder2);
         test_mock::set_value(700_000_000_000);
         assert_eq!(

@@ -4,9 +4,9 @@ set -euo pipefail
 # Non-destructive VPS release rollout.
 #
 # Usage:
-#   LICHEN_RELEASE_TAG=v0.5.174 bash scripts/rolling-release-deploy.sh testnet
-#   LICHEN_RELEASE_TAG=v0.5.174 bash scripts/rolling-release-deploy.sh mainnet
-#   LICHEN_RELEASE_TAG=v0.5.174 LICHEN_VERIFY_RELEASE_ONLY=1 bash scripts/rolling-release-deploy.sh testnet
+#   LICHEN_RELEASE_TAG=v0.5.175 bash scripts/rolling-release-deploy.sh testnet
+#   LICHEN_RELEASE_TAG=v0.5.175 bash scripts/rolling-release-deploy.sh mainnet
+#   LICHEN_RELEASE_TAG=v0.5.175 LICHEN_VERIFY_RELEASE_ONLY=1 bash scripts/rolling-release-deploy.sh testnet
 #
 # This script installs an exact GitHub Release archive on each validator and
 # restarts one validator at a time. It never deletes chain state.
@@ -18,11 +18,15 @@ case "$NETWORK" in
   testnet)
     SERVICE="lichen-validator-testnet"
     RPC_PORT="8899"
+    CUSTODY_SERVICE="lichen-custody.service"
+    CUSTODY_HEALTH_URL="http://127.0.0.1:9105/health"
     DEFAULT_HOSTS="15.204.229.189 37.59.97.61 15.235.142.253 148.113.43.247"
     ;;
   mainnet)
     SERVICE="lichen-validator-mainnet"
     RPC_PORT="9899"
+    CUSTODY_SERVICE="lichen-custody-mainnet.service"
+    CUSTODY_HEALTH_URL="http://127.0.0.1:9106/health"
     DEFAULT_HOSTS="${LICHEN_MAINNET_VPS_HOSTS:-}"
     ;;
   *)
@@ -492,7 +496,7 @@ verify_host_release() {
   expected_faucet_sha="$(require_archive_bin_sha "$archive" "$root" lichen-faucet)"
 
   echo "Verify installed release ${host}"
-  ssh_run "$host" "SERVICE='$SERVICE' EXPECTED_VALIDATOR_SHA='$expected_validator_sha' EXPECTED_CUSTODY_SHA='$expected_custody_sha' EXPECTED_FAUCET_SHA='$expected_faucet_sha' bash -s" <<'REMOTE'
+  ssh_run "$host" "SERVICE='$SERVICE' CUSTODY_SERVICE='$CUSTODY_SERVICE' EXPECTED_VALIDATOR_SHA='$expected_validator_sha' EXPECTED_CUSTODY_SHA='$expected_custody_sha' EXPECTED_FAUCET_SHA='$expected_faucet_sha' bash -s" <<'REMOTE'
 set -euo pipefail
 sudo() { command sudo -n "$@" </dev/null; }
 
@@ -590,7 +594,7 @@ check_file_hash /usr/local/bin/lichen-custody "$EXPECTED_CUSTODY_SHA" lichen-cus
 check_file_hash /usr/local/bin/lichen-faucet "$EXPECTED_FAUCET_SHA" lichen-faucet
 
 check_service_tree_hash "$SERVICE" "$EXPECTED_VALIDATOR_SHA" "$SERVICE"
-check_service_tree_hash lichen-custody.service "$EXPECTED_CUSTODY_SHA" lichen-custody.service
+check_service_tree_hash "$CUSTODY_SERVICE" "$EXPECTED_CUSTODY_SHA" "$CUSTODY_SERVICE"
 check_service_tree_hash lichen-faucet.service "$EXPECTED_FAUCET_SHA" lichen-faucet.service
 REMOTE
 }
@@ -626,19 +630,16 @@ REMOTE
 
 restart_custody_if_local() {
   local host="$1"
-  if [ "$NETWORK" != "testnet" ]; then
-    return 0
-  fi
 
   echo "Refresh custody after validator health ${host}"
-  ssh_run "$host" "RPC_PORT='$RPC_PORT' MAX_BLOCK_AGE_SECS='$MAX_BLOCK_AGE_SECS' bash -s" <<'REMOTE'
+  ssh_run "$host" "RPC_PORT='$RPC_PORT' MAX_BLOCK_AGE_SECS='$MAX_BLOCK_AGE_SECS' CUSTODY_SERVICE='$CUSTODY_SERVICE' CUSTODY_HEALTH_URL='$CUSTODY_HEALTH_URL' bash -s" <<'REMOTE'
 set -euo pipefail
 sudo() { command sudo -n "$@" </dev/null; }
-if ! systemctl list-unit-files --no-legend lichen-custody.service 2>/dev/null | awk '{print $1}' | grep -Fxq lichen-custody.service; then
+if ! systemctl list-unit-files --no-legend "$CUSTODY_SERVICE" 2>/dev/null | awk '{print $1}' | grep -Fxq "$CUSTODY_SERVICE"; then
   exit 0
 fi
-if ! systemctl is-enabled --quiet lichen-custody.service 2>/dev/null && \
-   ! systemctl is-active --quiet lichen-custody.service 2>/dev/null; then
+if ! systemctl is-enabled --quiet "$CUSTODY_SERVICE" 2>/dev/null && \
+   ! systemctl is-active --quiet "$CUSTODY_SERVICE" 2>/dev/null; then
   exit 0
 fi
 
@@ -659,21 +660,21 @@ sys.exit(0 if result.get("status") == "ok" and age <= max_age else 1)
   sleep 2
 done
 
-sudo -n systemctl stop lichen-custody.service || true
+sudo -n systemctl stop "$CUSTODY_SERVICE" || true
 for _ in $(seq 1 20); do
-  if ! systemctl is-active --quiet lichen-custody.service; then
+  if ! systemctl is-active --quiet "$CUSTODY_SERVICE"; then
     break
   fi
   sleep 1
 done
-if systemctl is-active --quiet lichen-custody.service; then
-  sudo -n systemctl kill --kill-who=control-group -s SIGKILL lichen-custody.service || true
+if systemctl is-active --quiet "$CUSTODY_SERVICE"; then
+  sudo -n systemctl kill --kill-who=control-group -s SIGKILL "$CUSTODY_SERVICE" || true
   sleep 2
 fi
-sudo -n systemctl reset-failed lichen-custody.service || true
-sudo -n systemctl start lichen-custody.service
+sudo -n systemctl reset-failed "$CUSTODY_SERVICE" || true
+sudo -n systemctl start "$CUSTODY_SERVICE"
 for _ in $(seq 1 30); do
-  if curl -fsS "http://127.0.0.1:9105/health" >/dev/null; then
+  if curl -fsS "$CUSTODY_HEALTH_URL" >/dev/null; then
     exit 0
   fi
   sleep 1

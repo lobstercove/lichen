@@ -1229,7 +1229,8 @@ lichen_mempool_size 127</code></pre>
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getHealth"}'
 
-# Response: {"jsonrpc":"2.0","result":"ok","id":1}</code></pre>
+# Response
+{"jsonrpc":"2.0","id":1,"result":{"status":"ok","reason":"ok","slot":3382206,"block_age_secs":0}}</code></pre>
             </div>
 
             <h3>Log Levels</h3>
@@ -1840,10 +1841,10 @@ lichen stake status --rpc-url https://testnet-rpc.lichen.network</code></pre>
                 <pre><code># Test connectivity to seed nodes
 nc -zv seed-01.lichen.network 7001
 
-# Check current block height via RPC (testnet port 8899)
+# Check current slot via native RPC (testnet port 8899)
 curl -s https://testnet-rpc.lichen.network \
   -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"getBlockHeight"}' | jq .result</code></pre>
+  -d '{"jsonrpc":"2.0","id":1,"method":"getSlot"}' | jq .result</code></pre>
             </div>
 
             <h3>Disk Full</h3>
@@ -1879,7 +1880,7 @@ curl -s https://testnet-rpc.lichen.network \
 # Peer list
 curl -s https://testnet-rpc.lichen.network \
   -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"getClusterNodes"}' | jq
+  -d '{"jsonrpc":"2.0","id":1,"method":"getClusterInfo"}' | jq
 
 # Validator set
 curl -s https://testnet-rpc.lichen.network \

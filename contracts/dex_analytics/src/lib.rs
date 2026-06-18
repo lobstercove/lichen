@@ -851,13 +851,38 @@ pub fn set_authorized_caller(caller: *const u8, authorized: *const u8) -> u32 {
     0
 }
 
+#[cfg(target_arch = "wasm32")]
+fn reject_dispatch() -> u32 {
+    lichen_sdk::set_return_data(&[0xFF; 8]);
+    255
+}
+
+#[cfg(target_arch = "wasm32")]
+fn dispatch_min_len(args: &[u8]) -> Option<usize> {
+    let opcode = *args.first()?;
+    match opcode {
+        0 | 4 | 7 | 8 => Some(33),
+        1 => Some(57),
+        2 => Some(25),
+        3 | 5 => Some(9),
+        6 | 9 | 10 => Some(1),
+        11 => Some(65),
+        12 => Some(41),
+        _ => None,
+    }
+}
+
 // WASM entry
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub extern "C" fn call() -> u32 {
     let args = lichen_sdk::get_args();
     if args.is_empty() {
-        return 255;
+        return reject_dispatch();
+    }
+    match dispatch_min_len(&args) {
+        Some(min_len) if args.len() >= min_len => {}
+        _ => return reject_dispatch(),
     }
     let mut _rc = 0u32;
     match args[0] {

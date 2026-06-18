@@ -167,6 +167,13 @@ fn decode_native_success_status(result: &[u8]) -> CallResult<bool> {
         return Err(ContractError::Custom("Missing success response"));
     }
 
+    if result.len() >= 4 {
+        let mut status = [0u8; 4];
+        status.copy_from_slice(&result[..4]);
+        let code = u32::from_le_bytes(status);
+        return Ok(code == 0 || code == 1);
+    }
+
     Ok(result[0] == 1)
 }
 
@@ -183,6 +190,28 @@ pub fn call_token_transfer(
     args.extend_from_slice(&amount.to_le_bytes());
 
     let call = CrossCall::new(token, "transfer", args);
+
+    match call_contract(call) {
+        Ok(result) => decode_zero_success_return_code(&result),
+        Err(e) => Err(e),
+    }
+}
+
+/// Helper: Call token transfer_from for approved escrow/pull flows.
+pub fn call_token_transfer_from(
+    token: Address,
+    caller: Address,
+    from: Address,
+    to: Address,
+    amount: u64,
+) -> CallResult<bool> {
+    let mut args = Vec::new();
+    args.extend_from_slice(&caller.0);
+    args.extend_from_slice(&from.0);
+    args.extend_from_slice(&to.0);
+    args.extend_from_slice(&amount.to_le_bytes());
+
+    let call = CrossCall::new(token, "transfer_from", args);
 
     match call_contract(call) {
         Ok(result) => decode_zero_success_return_code(&result),
@@ -315,7 +344,8 @@ pub fn balance_of_token_or_native(token: Address, account: Address) -> CallResul
 /// Receive/escrow tokens from a user into the calling contract.
 /// For native LICN (zero address): verifies that sufficient value was sent with
 /// the transaction (value is already credited to the contract's account).
-/// For MT-20 tokens: cross-contract transfer (requires prior approval from sender).
+/// For MT-20 tokens: cross-contract `transfer_from` (requires prior approval
+/// from sender to the receiving contract).
 /// The `from` and `to` parameters are used only for MT-20 tokens.
 pub fn receive_token_or_native(
     token: Address,
@@ -333,7 +363,7 @@ pub fn receive_token_or_native(
             ))
         }
     } else {
-        call_token_transfer(token, from, to, amount)
+        call_token_transfer_from(token, to, from, to, amount)
     }
 }
 
@@ -369,6 +399,9 @@ mod tests {
         assert!(decode_one_success_status(&[1u8]).unwrap());
         assert!(!decode_one_success_status(&[0u8]).unwrap());
 
+        assert!(decode_native_success_status(&0u32.to_le_bytes()).unwrap());
+        assert!(decode_native_success_status(&1u32.to_le_bytes()).unwrap());
+        assert!(!decode_native_success_status(&2u32.to_le_bytes()).unwrap());
         assert!(decode_native_success_status(&[1u8]).unwrap());
         assert!(!decode_native_success_status(&[0u8]).unwrap());
     }
@@ -434,5 +467,46 @@ mod tests {
         .expect("default transfer mock should succeed");
 
         assert!(ok);
+    }
+
+    #[test]
+    fn test_receive_token_or_native_uses_transfer_from_for_tokens() {
+        test_mock::reset();
+        test_mock::set_cross_call_response(Some(0u32.to_le_bytes().to_vec()));
+
+        let token = Address([1u8; 32]);
+        let from = Address([2u8; 32]);
+        let to = Address([3u8; 32]);
+        let ok = receive_token_or_native(token, from, to, 99)
+            .expect("transfer_from escrow should decode success");
+
+        assert!(ok);
+        let call = test_mock::get_last_cross_call().expect("cross-call recorded");
+        assert_eq!(call.0, token.0);
+        assert_eq!(call.1, "transfer_from");
+        assert_eq!(&call.2[..32], &to.0);
+        assert_eq!(&call.2[32..64], &from.0);
+        assert_eq!(&call.2[64..96], &to.0);
+        assert_eq!(&call.2[96..104], &99u64.to_le_bytes());
+    }
+
+    #[test]
+    fn test_transfer_token_or_native_uses_transfer_for_token_payouts() {
+        test_mock::reset();
+        test_mock::set_cross_call_response(Some(0u32.to_le_bytes().to_vec()));
+
+        let token = Address([1u8; 32]);
+        let from = Address([2u8; 32]);
+        let to = Address([3u8; 32]);
+        let ok = transfer_token_or_native(token, from, to, 77)
+            .expect("token payout should decode success");
+
+        assert!(ok);
+        let call = test_mock::get_last_cross_call().expect("cross-call recorded");
+        assert_eq!(call.0, token.0);
+        assert_eq!(call.1, "transfer");
+        assert_eq!(&call.2[..32], &from.0);
+        assert_eq!(&call.2[32..64], &to.0);
+        assert_eq!(&call.2[64..72], &77u64.to_le_bytes());
     }
 }

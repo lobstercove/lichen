@@ -3,6 +3,19 @@
   "version": "1.0",
   "functions": [
     {
+      "name": "call",
+      "description": "Raw opcode dispatcher entrypoint.",
+      "params": [
+        {
+          "name": "args",
+          "type": "bytes"
+        }
+      ],
+      "result_semantics": {
+        "kind": "runtime_success_only"
+      }
+    },
+    {
       "name": "initialize",
       "opcode": 0,
       "params": [
@@ -160,6 +173,46 @@
       "params": [],
       "result_semantics": {
         "kind": "return_value"
+      }
+    },
+    {
+      "name": "set_authorized_caller",
+      "opcode": 11,
+      "params": [
+        {
+          "name": "caller",
+          "type": "Pubkey"
+        },
+        {
+          "name": "authorized",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "record_pnl",
+      "opcode": 12,
+      "params": [
+        {
+          "name": "trader",
+          "type": "Pubkey"
+        },
+        {
+          "name": "pnl_biased",
+          "type": "u64"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
       }
     }
   ]

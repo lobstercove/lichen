@@ -1765,9 +1765,8 @@ mod tests {
 
     fn setup() {
         test_mock::reset();
-        // AUDIT-FIX: Enable cross-call mock to return success (vec![1])
-        // so token transfers (escrow) succeed in tests
-        test_mock::set_cross_call_response(Some(std::vec![1]));
+        // Enable cross-call mock token transfers for proposal escrow/refunds.
+        test_mock::set_cross_call_response(Some(0u32.to_le_bytes().to_vec()));
     }
 
     #[test]
@@ -2155,7 +2154,7 @@ mod tests {
         let proposal = test_mock::get_storage(b"proposal_1").unwrap();
         assert_eq!(proposal[193], 0, "proposal must remain cancellable");
 
-        test_mock::set_cross_call_response(Some(1u32.to_le_bytes().to_vec()));
+        test_mock::set_cross_call_response(Some(0u32.to_le_bytes().to_vec()));
         assert_eq!(cancel_proposal(proposer.as_ptr(), 1), 1);
         let proposal = test_mock::get_storage(b"proposal_1").unwrap();
         assert_eq!(proposal[193], 1);
@@ -2229,7 +2228,7 @@ mod tests {
         proposal[192] = 1;
         storage_set(b"proposal_1", &proposal);
 
-        test_mock::set_cross_call_response(Some(1u32.to_le_bytes().to_vec()));
+        test_mock::set_cross_call_response(Some(0u32.to_le_bytes().to_vec()));
         let result = treasury_transfer(1, token.as_ptr(), recipient.as_ptr(), amount);
 
         assert_eq!(result, 1);

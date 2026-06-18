@@ -78,5 +78,10 @@ assert(
     script.includes('Refusing destructive mainnet clean-slate redeploy.'),
   'mainnet clean-slate must require a separate destructive-operation approval'
 );
+assert(
+  script.includes('Mainnet requires at least four unique bridge/oracle committee validators') &&
+    script.includes('min_committee = 4 if os.environ.get("NETWORK") == "mainnet" else 2'),
+  'mainnet clean-slate must enforce the four-validator bridge/oracle committee guard'
+);
 
 console.log('clean-slate redeploy safety QA passed');

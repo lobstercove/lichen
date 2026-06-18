@@ -154,6 +154,32 @@ fn is_zero(addr: &[u8; 32]) -> bool {
     addr.iter().all(|&b| b == 0)
 }
 
+fn decode_zero_success_return_code(data: &[u8]) -> bool {
+    if data.len() >= 4 {
+        let mut status = [0u8; 4];
+        status.copy_from_slice(&data[..4]);
+        u32::from_le_bytes(status) == 0
+    } else {
+        matches!(data.first(), Some(0))
+    }
+}
+
+fn decode_dispatcher_return_code(data: &[u8]) -> Option<u32> {
+    if data.len() >= 8 {
+        let rc = bytes_to_u64(data);
+        if rc <= u32::MAX as u64 {
+            return Some(rc as u32);
+        }
+        return None;
+    }
+    if data.len() >= 4 {
+        let mut status = [0u8; 4];
+        status.copy_from_slice(&data[..4]);
+        return Some(u32::from_le_bytes(status));
+    }
+    None
+}
+
 fn has_configured_address(key: &[u8]) -> bool {
     storage_get(key).map(|d| d.len() >= 32).unwrap_or(false)
 }
@@ -1114,7 +1140,11 @@ fn escrow_tokens(token_addr: &[u8; 32], trader: &[u8; 32], amount: u64) -> bool 
     let call = CrossCall::new(Address(*token_addr), "transfer_from", args).with_value(0);
     match call_contract(call) {
         Ok(ret) => match ret.first().copied().unwrap_or(255) {
-            0 | 1 => true,
+            0 if decode_zero_success_return_code(&ret) => true,
+            1 => {
+                log_info("Token transfer_from failed: token contract is paused");
+                false
+            }
             5 => {
                 log_info("Token transfer_from failed: insufficient token balance");
                 false
@@ -1170,7 +1200,7 @@ fn release_tokens(token_addr: &[u8; 32], to: &[u8; 32], amount: u64) -> bool {
     args.extend_from_slice(&u64_to_bytes(amount));
     let call = CrossCall::new(Address(*token_addr), "transfer", args).with_value(0);
     match call_contract(call) {
-        Ok(ret) => matches!(ret.first().copied().unwrap_or(255), 0 | 1),
+        Ok(ret) => decode_zero_success_return_code(&ret),
         Err(_) => false,
     }
 }
@@ -2417,9 +2447,13 @@ fn fill_at_price_level(
                 ana_args.extend_from_slice(&u64_to_bytes(notional));
                 ana_args.extend_from_slice(taker);
                 let call = CrossCall::new(Address(analytics_addr), "call", ana_args).with_value(0);
-                // Analytics recording is non-critical — log failures but don't block trade
-                if call_contract(call).is_err() {
-                    log_info("Analytics record_trade call failed — trade still valid");
+                // Analytics recording is non-critical: detect dispatcher errors
+                // but do not block the matched trade after settlement.
+                match call_contract(call) {
+                    Ok(result) if decode_dispatcher_return_code(&result) == Some(0) => {}
+                    Ok(_) | Err(_) => {
+                        log_info("Analytics record_trade call failed — trade still valid");
+                    }
                 }
             }
         }
@@ -2434,8 +2468,11 @@ fn fill_at_price_level(
                 reward_args.extend_from_slice(&u64_to_bytes(taker_fee));
                 reward_args.extend_from_slice(&u64_to_bytes(notional));
                 let call = CrossCall::new(Address(rewards_addr), "call", reward_args).with_value(0);
-                if call_contract(call).is_err() {
-                    log_info("DEX Rewards record_trade call failed — trade still valid");
+                match call_contract(call) {
+                    Ok(result) if decode_dispatcher_return_code(&result) == Some(0) => {}
+                    Ok(_) | Err(_) => {
+                        log_info("DEX Rewards record_trade call failed — trade still valid");
+                    }
                 }
             }
         }
@@ -3153,11 +3190,40 @@ pub fn check_triggers(pair_id: u64, last_price: u64) -> u64 {
 // ============================================================================
 
 #[cfg(target_arch = "wasm32")]
+fn reject_dispatch() -> u32 {
+    lichen_sdk::set_return_data(&[0xFF; 8]);
+    255
+}
+
+#[cfg(target_arch = "wasm32")]
+fn dispatch_min_len(args: &[u8]) -> Option<usize> {
+    let opcode = *args.first()?;
+    match opcode {
+        0 | 8 | 9 | 24 | 26 | 27 => Some(33),
+        1 => Some(121),
+        2 => Some(67),
+        3 | 17 | 18 | 19 | 33 => Some(41),
+        4 | 21 | 22 | 28 | 30 | 32 | 34 | 35 => Some(65),
+        5 | 6 | 14 | 15 | 23 | 25 => Some(1),
+        7 => Some(45),
+        10 | 11 | 12 | 13 | 20 => Some(9),
+        16 => Some(57),
+        29 => Some(17),
+        31 => Some(97),
+        _ => None,
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub extern "C" fn call() -> u32 {
     let args = lichen_sdk::get_args();
     if args.is_empty() {
-        return 255;
+        return reject_dispatch();
+    }
+    match dispatch_min_len(&args) {
+        Some(min_len) if args.len() >= min_len => {}
+        _ => return reject_dispatch(),
     }
 
     let mut _rc = 0u32;

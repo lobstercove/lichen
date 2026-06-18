@@ -190,7 +190,7 @@
                     <code>8900</code>.
                 </p>
                 <div class="callout callout-info">
-                    <p><strong>Implementation-verified surface for v0.5.174:</strong> the live server exposes native,
+                    <p><strong>Implementation-verified surface for v0.5.175:</strong> the live server exposes native,
                         Solana-compatible, and EVM-compatible JSON-RPC dispatch, plus REST route families across the
                         DEX, prediction market, launchpad, shielded APIs, and Neo X route/rewards reads.</p>
                 </div>
@@ -301,7 +301,8 @@
                 </div>
                 <div class="method-section">
                     <h4 class="method-section-title">Returns</h4>
-                    <p><code>string</code> — Hex-encoded recent blockhash, or object <code>{ blockhash }</code>.</p>
+                    <p>Object — <code>{ blockhash, slot }</code>, where <code>blockhash</code> is the
+                        hex-encoded hash of the latest block.</p>
                 </div>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
@@ -311,7 +312,7 @@
   -d '{"jsonrpc":"2.0","id":1,"method":"getRecentBlockhash","params":[]}'
 
 # Response
-{"jsonrpc":"2.0","id":1,"result":"a1b2c3d4e5f6..."}</code></pre>
+{"jsonrpc":"2.0","id":1,"result":{"blockhash":"a1b2c3d4e5f6...","slot":3382206}}</code></pre>
                 </div>
             </div>
 
@@ -325,7 +326,9 @@
                 </div>
                 <div class="method-section">
                     <h4 class="method-section-title">Returns</h4>
-                    <p>Object — <code>{ "status": "ok" }</code></p>
+                    <p>Object — <code>{ status, reason, slot, block_age_secs?, disk? }</code>. The
+                        <code>disk</code> object includes <code>available_bytes</code>, <code>total_bytes</code>,
+                        <code>used_percent</code>, and <code>critical</code> when disk readiness is available.</p>
                 </div>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
@@ -335,7 +338,7 @@
   -d '{"jsonrpc":"2.0","id":1,"method":"health","params":[]}'
 
 # Response
-{"jsonrpc":"2.0","id":1,"result":{"status":"ok"}}</code></pre>
+{"jsonrpc":"2.0","id":1,"result":{"status":"ok","reason":"ok","slot":3382206,"block_age_secs":0}}</code></pre>
                 </div>
             </div>
 
@@ -1542,7 +1545,7 @@
                 </div>
                 <div class="method-section">
                     <h4 class="method-section-title">Returns</h4>
-                    <p>Array — Log entries.</p>
+                    <p>Object — <code>{ logs, count }</code>.</p>
                 </div>
             </div>
 
@@ -1678,12 +1681,18 @@
                                 <td>Yes</td>
                                 <td>Base58-encoded program public key</td>
                             </tr>
+                            <tr>
+                                <td>options</td>
+                                <td><span class="param-type">object</span></td>
+                                <td>No</td>
+                                <td><code>{ limit?: number, before_slot?: number }</code>; newest first, default limit 50</td>
+                            </tr>
                         </tbody>
                     </table>
                 </div>
                 <div class="method-section">
                     <h4 class="method-section-title">Returns</h4>
-                    <p>Array — Call records.</p>
+                    <p>Object — <code>{ program, count, calls }</code>.</p>
                 </div>
             </div>
 
@@ -1708,12 +1717,18 @@
                                 <td>Yes</td>
                                 <td>Base58-encoded program public key</td>
                             </tr>
+                            <tr>
+                                <td>options</td>
+                                <td><span class="param-type">object</span></td>
+                                <td>No</td>
+                                <td><code>{ limit?: number, after_key?: string }</code>; cursor-paginated by the last returned <code>key_hex</code></td>
+                            </tr>
                         </tbody>
                     </table>
                 </div>
                 <div class="method-section">
                     <h4 class="method-section-title">Returns</h4>
-                    <p>Object — Storage summary.</p>
+                    <p>Object — <code>{ program, count, entries }</code>.</p>
                 </div>
             </div>
 
@@ -2142,7 +2157,10 @@
                 </div>
                 <div class="method-section">
                     <h4 class="method-section-title">Returns</h4>
-                    <p>Object — Fee configuration.</p>
+                    <p>Object — <code>{ base_fee_spores, contract_deploy_fee_spores,
+                        contract_upgrade_fee_spores, nft_mint_fee_spores, nft_collection_fee_spores,
+                        fee_burn_percent, fee_producer_percent, fee_voters_percent,
+                        fee_treasury_percent, fee_community_percent }</code>.</p>
                 </div>
             </div>
 
@@ -2384,9 +2402,9 @@
                     have individual method cards on this page.</p>
 
                 <div class="callout callout-info">
-                    <p><strong>Compatibility endpoints:</strong> <code>POST /solana-compat</code> and
-                        <code>POST /evm</code>
-                        are also supported in addition to <code>POST /</code>.
+                    <p><strong>RPC endpoints:</strong> use <code>POST /</code> for native Lichen JSON-RPC,
+                        <code>POST /solana-compat</code> for Solana-format compatibility methods, and
+                        <code>POST /evm</code> for EVM-compatible methods.
                     </p>
                 </div>
 
@@ -2405,6 +2423,8 @@
                 <ul>
                     <li><code>setFeeConfig</code></li>
                     <li><code>setRentParams</code></li>
+                    <li><code>getOraclePrices</code> — returns a top-level object
+                        <code>{ source, LICN, wSOL, wETH, wBNB, wNEO, wGAS, wBTC, lUSD }</code>.</li>
                     <li><code>getClusterInfo</code></li>
                 </ul>
 
@@ -2471,7 +2491,10 @@
                     <li><code>getNeoGasRewardsStats</code>, <code>getNeoGasRewardsPosition</code>,
                         <code>getNeoZkProofServiceStatus</code>,
                         <code>verifyNeoReserveLiabilityProof</code></li>
-                    <li><code>requestAirdrop</code> (testnet utility)</li>
+                    <li><code>requestAirdrop</code> — testnet utility; params
+                        <code>[address, amount_licn]</code>, where <code>amount_licn</code> is a whole
+                        integer from <code>1</code> to <code>10</code>. Returns
+                        <code>{ success, signature, amount, amount_licn, recipient, message }</code>.</li>
                 </ul>
 
                 <h3>Bridge</h3>

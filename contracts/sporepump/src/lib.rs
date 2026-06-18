@@ -16,8 +16,8 @@
 extern crate alloc;
 use alloc::vec::Vec;
 use lichen_sdk::{
-    bytes_to_u64, can_receive, can_send, get_caller, get_contract_address, get_timestamp,
-    get_value, log_info, set_return_data, storage_get, storage_set, transfer_token_or_native,
+    bytes_to_u64, can_receive, can_send, get_caller, get_contract_address, get_timestamp, log_info,
+    receive_token_or_native, set_return_data, storage_get, storage_set, transfer_token_or_native,
     u64_to_bytes, Address,
 };
 
@@ -272,6 +272,19 @@ fn transfer_licn_out(recipient: &[u8; 32], amount: u64) -> bool {
     }
 }
 
+fn load_licn_token_or_native() -> Address {
+    storage_get(LICN_TOKEN_KEY)
+        .and_then(|data| {
+            if data.len() != 32 {
+                return None;
+            }
+            let mut token = [0u8; 32];
+            token.copy_from_slice(&data);
+            Some(Address(token))
+        })
+        .unwrap_or(Address([0u8; 32]))
+}
+
 // ============================================================================
 // TOKEN LAUNCH LAYOUT (stored per token)
 // ============================================================================
@@ -331,8 +344,16 @@ pub extern "C" fn create_token(creator_ptr: *const u8, fee_paid: u64) -> u64 {
         return 200;
     }
 
-    // G24-01: Verify actual payment via get_value() instead of trusting parameter
-    if get_value() < CREATION_FEE {
+    // G24-01: Verify actual payment instead of trusting the parameter.
+    let payment_token = load_licn_token_or_native();
+    if !receive_token_or_native(
+        payment_token,
+        Address(creator),
+        get_contract_address(),
+        CREATION_FEE,
+    )
+    .unwrap_or(false)
+    {
         log_info("Insufficient creation fee (need 10 LICN)");
         return ERROR_RETURN;
     }
@@ -469,8 +490,16 @@ pub extern "C" fn buy(buyer_ptr: *const u8, token_id: u64, licn_amount: u64) -> 
         return 200;
     }
 
-    // G24-01: Verify actual payment via get_value() instead of trusting parameter
-    if get_value() < licn_amount {
+    // G24-01: Verify actual payment instead of trusting parameter
+    let payment_token = load_licn_token_or_native();
+    if !receive_token_or_native(
+        payment_token,
+        Address(buyer),
+        get_contract_address(),
+        licn_amount,
+    )
+    .unwrap_or(false)
+    {
         reentrancy_exit();
         log_info("Insufficient payment for buy");
         return ERROR_RETURN;
@@ -1367,7 +1396,7 @@ mod tests {
         // CON-05: Configure LICN token so transfer_licn_out succeeds
         let licn = [42u8; 32];
         set_licn_token(admin.as_ptr(), licn.as_ptr());
-        test_mock::set_cross_call_response(Some(vec![1u8]));
+        test_mock::set_cross_call_response(Some(0u32.to_le_bytes().to_vec()));
         let creator = [2u8; 32];
         test_mock::set_caller(creator);
         test_mock::set_value(CREATION_FEE);
@@ -1457,7 +1486,7 @@ mod tests {
         initialize(admin.as_ptr());
         let licn = [42u8; 32];
         assert_eq!(set_licn_token(admin.as_ptr(), licn.as_ptr()), 0);
-        test_mock::set_cross_call_response(Some(vec![1u8]));
+        test_mock::set_cross_call_response(Some(0u32.to_le_bytes().to_vec()));
 
         let creator = [2u8; 32];
         test_mock::set_caller(creator);
@@ -1477,6 +1506,7 @@ mod tests {
         let token_before = test_mock::get_storage(&token_key).unwrap();
         let balance_before = load_u64(&bal_key);
         let fees_before = load_u64(b"cp_fees_collected");
+        let last_call_before = test_mock::get_last_cross_call();
 
         test_mock::set_can_send(false);
         test_mock::set_timestamp(20_000);
@@ -1484,7 +1514,7 @@ mod tests {
         assert_eq!(test_mock::get_storage(&token_key).unwrap(), token_before);
         assert_eq!(load_u64(&bal_key), balance_before);
         assert_eq!(load_u64(b"cp_fees_collected"), fees_before);
-        assert!(test_mock::get_last_cross_call().is_none());
+        assert_eq!(test_mock::get_last_cross_call(), last_call_before);
     }
 
     #[test]
@@ -1625,7 +1655,7 @@ mod tests {
 
         let licn = [42u8; 32];
         assert_eq!(set_licn_token(admin.as_ptr(), licn.as_ptr()), 0);
-        test_mock::set_cross_call_response(Some(vec![1u8]));
+        test_mock::set_cross_call_response(Some(0u32.to_le_bytes().to_vec()));
 
         let creator = [2u8; 32];
         test_mock::set_caller(creator);
@@ -1697,7 +1727,7 @@ mod tests {
         initialize(admin.as_ptr());
         let licn = [42u8; 32];
         assert_eq!(set_licn_token(admin.as_ptr(), licn.as_ptr()), 0);
-        test_mock::set_cross_call_response(Some(vec![1u8]));
+        test_mock::set_cross_call_response(Some(0u32.to_le_bytes().to_vec()));
 
         let creator = [2u8; 32];
         test_mock::set_caller(creator);
@@ -1720,6 +1750,7 @@ mod tests {
         let token_before = test_mock::get_storage(&token_key).unwrap();
         let balance_before = load_u64(&bal_key);
         let fees_before = load_u64(b"cp_fees_collected");
+        let last_call_before = test_mock::get_last_cross_call();
 
         test_mock::set_timestamp(20_000);
         test_mock::set_caller(buyer);
@@ -1727,7 +1758,7 @@ mod tests {
         assert_eq!(test_mock::get_storage(&token_key).unwrap(), token_before);
         assert_eq!(load_u64(&bal_key), balance_before);
         assert_eq!(load_u64(b"cp_fees_collected"), fees_before);
-        assert!(test_mock::get_last_cross_call().is_none());
+        assert_eq!(test_mock::get_last_cross_call(), last_call_before);
     }
 
     #[test]
@@ -1803,7 +1834,7 @@ mod tests {
         // CON-05: Configure LICN token so transfer_licn_out succeeds
         let licn = [42u8; 32];
         set_licn_token(admin.as_ptr(), licn.as_ptr());
-        test_mock::set_cross_call_response(Some(vec![1u8]));
+        test_mock::set_cross_call_response(Some(0u32.to_le_bytes().to_vec()));
         let creator = [2u8; 32];
         test_mock::set_caller(creator);
         test_mock::set_value(CREATION_FEE);
@@ -1901,7 +1932,7 @@ mod tests {
         // CON-05: Configure LICN token so transfer_licn_out succeeds
         let licn = [42u8; 32];
         set_licn_token(admin.as_ptr(), licn.as_ptr());
-        test_mock::set_cross_call_response(Some(vec![1u8]));
+        test_mock::set_cross_call_response(Some(0u32.to_le_bytes().to_vec()));
         let creator = [2u8; 32];
         test_mock::set_caller(creator);
         test_mock::set_value(CREATION_FEE);
@@ -2214,7 +2245,7 @@ mod tests {
         initialize(admin.as_ptr());
         let licn = [42u8; 32];
         set_licn_token(admin.as_ptr(), licn.as_ptr());
-        test_mock::set_cross_call_response(Some(vec![1u8]));
+        test_mock::set_cross_call_response(Some(0u32.to_le_bytes().to_vec()));
         set_max_buy(admin.as_ptr(), u64::MAX);
 
         let creator = [2u8; 32];
@@ -2309,7 +2340,7 @@ mod tests {
         // CON-05: Configure LICN token so transfer_licn_out succeeds
         let licn = [42u8; 32];
         set_licn_token(admin.as_ptr(), licn.as_ptr());
-        test_mock::set_cross_call_response(Some(vec![1u8]));
+        test_mock::set_cross_call_response(Some(0u32.to_le_bytes().to_vec()));
         let creator = [2u8; 32];
         test_mock::set_caller(creator);
         test_mock::set_value(CREATION_FEE);
@@ -2377,7 +2408,7 @@ mod tests {
         // CON-05: Configure LICN token so transfer_licn_out succeeds
         let licn = [42u8; 32];
         set_licn_token(admin.as_ptr(), licn.as_ptr());
-        test_mock::set_cross_call_response(Some(vec![1u8]));
+        test_mock::set_cross_call_response(Some(0u32.to_le_bytes().to_vec()));
         let creator = [2u8; 32];
         test_mock::set_caller(creator);
         test_mock::set_value(CREATION_FEE);

@@ -53,7 +53,7 @@ pub(super) enum CodegenLang {
 )]
 #[command(after_help = "EXAMPLES:\n\
     lichen identity new                              Create a new keypair\n\
-    lichen airdrop 100                               Get 100 testnet LICN\n\
+    lichen airdrop 10                                Get 10 testnet LICN\n\
     lichen balance                                   Check your balance\n\
     lichen transfer <ADDRESS> 10.5                   Send 10.5 LICN\n\
     lichen deploy token.wasm --symbol TKN            Deploy a contract\n\
@@ -152,8 +152,8 @@ pub(super) enum Commands {
 
     /// Request test tokens from faucet
     Airdrop {
-        /// Amount in LICN to request (default: 100)
-        #[arg(default_value = "100.0")]
+        /// Whole LICN amount to request, 1-10 (default: 10)
+        #[arg(default_value = "10.0")]
         amount: f64,
 
         /// Account to receive tokens (defaults to your identity)

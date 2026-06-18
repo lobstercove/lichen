@@ -174,10 +174,18 @@ impl Client {
         &self,
         pubkey: &Pubkey,
         limit: Option<u64>,
+        before_slot: Option<u64>,
     ) -> Result<Value> {
-        let limit = limit.unwrap_or(10);
-        self.rpc_call("getTransactionHistory", json!([pubkey.to_base58(), limit]))
-            .await
+        let mut options = serde_json::Map::new();
+        options.insert("limit".to_string(), json!(limit.unwrap_or(10)));
+        if let Some(before_slot) = before_slot {
+            options.insert("before_slot".to_string(), json!(before_slot));
+        }
+        self.rpc_call(
+            "getTransactionHistory",
+            json!([pubkey.to_base58(), Value::Object(options)]),
+        )
+        .await
     }
 
     /// Execute a read-only contract call without submitting a transaction.

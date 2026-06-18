@@ -32,8 +32,9 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use lichen_sdk::{
-    bytes_to_u64, call_contract, get_caller, get_contract_address, get_slot, get_value, log_info,
-    storage_get, storage_set, transfer_token_or_native, u64_to_bytes, Address, CrossCall,
+    bytes_to_u64, call_contract, get_caller, get_contract_address, get_slot, log_info,
+    receive_token_or_native, storage_get, storage_set, transfer_token_or_native, u64_to_bytes,
+    Address, CrossCall,
 };
 
 // Reentrancy guard
@@ -593,11 +594,17 @@ pub extern "C" fn lock_tokens(
         return 1;
     }
 
-    // AUDIT-FIX G11-01: Verify incoming value covers lock amount
-    let attached = get_value();
-    if attached < amount {
+    // AUDIT-FIX G11-01: Verify incoming custody covers lock amount
+    let token = if has_configured_address(LICHENCOIN_ADDRESS_KEY) {
+        Address(load_licn_addr())
+    } else {
+        Address([0u8; 32])
+    };
+    if !receive_token_or_native(token, Address(sender_arr), get_contract_address(), amount)
+        .unwrap_or(false)
+    {
         reentrancy_exit();
-        log_info("Insufficient value attached for lock");
+        log_info("Insufficient bridge lock payment");
         return 30;
     }
 
@@ -3173,7 +3180,7 @@ mod tests {
         initialize(owner.as_ptr());
         let sender = [3u8; 32];
         test_mock::set_caller(sender);
-        test_mock::set_value(50);
+        test_mock::set_cross_call_response(Some(2u32.to_le_bytes().to_vec()));
         assert_eq!(
             lock_tokens(
                 sender.as_ptr(),

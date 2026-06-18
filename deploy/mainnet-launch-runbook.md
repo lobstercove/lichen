@@ -4,7 +4,7 @@ This is the operator runbook for launching Lichen mainnet and then enabling
 mainnet custody. It is intentionally step-by-step and gate-based. Do not skip a
 gate because mainnet genesis and custody routes handle real value.
 
-Written for the current mainnet package. Current signed-release target for this runbook is `v0.5.174`; keep `v0.5.161` as the signed rollback point. If a newer
+Written for the current mainnet package. Current signed-release target for this runbook is `v0.5.175`; keep `v0.5.161` as the signed rollback point. If a newer
 release is used, replace every example tag with the newer signed release tag
 after CI and release verification pass.
 
@@ -200,7 +200,7 @@ credentials, or keypair passwords.
 Use the signed release that passed CI. For the current package:
 
 ```bash
-export LICHEN_RELEASE_TAG=v0.5.174
+export LICHEN_RELEASE_TAG=v0.5.175
 export LICHEN_MAINNET_VPS_HOSTS="15.204.229.189 37.59.97.61 15.235.142.253 148.113.43.247"
 ```
 

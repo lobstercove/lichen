@@ -220,7 +220,7 @@
 
             <div class="callout callout-info">
                 <div class="callout-title"><i class="fas fa-terminal"></i> Surface Coverage</div>
-                Implementation-verified for <code>v0.5.174</code>: the CLI covers wallet, identity, validator, staking,
+                Implementation-verified for <code>v0.5.175</code>: the CLI covers wallet, identity, validator, staking,
                 contract, token, governance, restriction, symbol, NFT, DeFi, and utility commands, plus the global
                 <code>--rpc-url</code> and <code>--output</code> flags documented below.
             </div>
@@ -283,7 +283,7 @@
                 <pre><code>$ lichen --rpc-url https://testnet-rpc.lichen.network balance
 $ lichen --output json status
 $ lichen --version
-lichen 0.5.174</code></pre>
+lichen 0.5.175</code></pre>
             </div>
 
             <!-- ================================================================ -->
@@ -338,7 +338,7 @@ lichen 0.5.174</code></pre>
 <i class="fa-solid fa-location-dot"></i> Address:  Mo1tABcDeFgH1jK2LmNoPqRsTuVwXyZ3456789ab
 <i class="fa-solid fa-floppy-disk"></i> Keypair:  ~/.lichen/wallets/my-agent.json
 
-<i class="fa-solid fa-check"></i> Done! Fund with: lichen airdrop 100</code></pre>
+<i class="fa-solid fa-check"></i> Done! Fund with: lichen airdrop 10</code></pre>
                 </div>
             </div>
 
@@ -606,7 +606,7 @@ lichen 0.5.174</code></pre>
 <i class="fa-solid fa-lock"></i> EVM Address: 0x7a3b...9f2e
 <i class="fa-solid fa-floppy-disk"></i> Saved to:    ~/.lichen/keypairs/id.json
 
-<i class="fa-solid fa-lightbulb"></i> Get test tokens: lichen airdrop 100</code></pre>
+<i class="fa-solid fa-lightbulb"></i> Get test tokens: lichen airdrop 10</code></pre>
                 </div>
 
                 <div class="callout callout-tip">
@@ -1729,9 +1729,9 @@ $ lichen contract generate-client \
                     <tbody>
                         <tr>
                             <td><code>amount</code></td>
-                            <td>f64</td>
-                            <td><code>100.0</code></td>
-                            <td>Amount in LICN to request</td>
+                            <td>whole LICN</td>
+                            <td><code>10.0</code></td>
+                            <td>Whole LICN amount to request, from <code>1</code> to <code>10</code></td>
                         </tr>
                         <tr>
                             <td><code>--pubkey, -p</code></td>
@@ -1753,12 +1753,12 @@ $ lichen contract generate-client \
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>$ lichen airdrop 50
+                    <pre><code>$ lichen airdrop 10
 
-<i class="fa-solid fa-shrimp"></i> Requesting 50 LICN airdrop...
+<i class="fa-solid fa-shrimp"></i> Requesting 10 LICN airdrop...
 
   Transaction: 4xK9...mNpQ
-  New balance: 50.000000000 LICN
+  New balance: 10.000000000 LICN
 
 <i class="fa-solid fa-check"></i> Airdrop successful!</code></pre>
                 </div>
@@ -3005,7 +3005,7 @@ Total: 2 active proposals</code></pre>
                     <div class="code-block-header"><span class="code-lang">Shell</span><button
                             class="code-copy-btn">Copy</button></div>
                     <pre><code>$ lichen version
-		lichen 0.5.174</code></pre>
+		lichen 0.5.175</code></pre>
                 </div>
             </div>
 

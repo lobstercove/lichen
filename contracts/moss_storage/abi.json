@@ -306,6 +306,26 @@
           0
         ]
       }
+    },
+    {
+      "name": "set_licn_token",
+      "opcode": 16,
+      "params": [
+        {
+          "name": "caller_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "token_ptr",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     }
   ]
 }

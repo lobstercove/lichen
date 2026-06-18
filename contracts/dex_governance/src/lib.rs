@@ -1204,13 +1204,40 @@ pub fn get_proposal_info(proposal_id: u64) -> u64 {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+fn reject_dispatch() -> u32 {
+    lichen_sdk::set_return_data(&[0xFF; 8]);
+    255
+}
+
+#[cfg(target_arch = "wasm32")]
+fn dispatch_min_len(args: &[u8]) -> Option<usize> {
+    let opcode = *args.first()?;
+    match opcode {
+        0 | 12 | 13 => Some(33),
+        1 => Some(97),
+        2 => Some(42),
+        3 | 4 | 8 => Some(9),
+        5 | 14 | 15 | 16 | 20 => Some(65),
+        6 | 7 | 17 | 18 | 19 => Some(1),
+        9 => Some(45),
+        10 => Some(41),
+        11 => Some(49),
+        _ => None,
+    }
+}
+
 // WASM entry
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub extern "C" fn call() -> u32 {
     let args = lichen_sdk::get_args();
     if args.is_empty() {
-        return 255;
+        return reject_dispatch();
+    }
+    match dispatch_min_len(&args) {
+        Some(min_len) if args.len() >= min_len => {}
+        _ => return reject_dispatch(),
     }
     let mut _rc = 0u32;
     match args[0] {

@@ -16,8 +16,8 @@ use alloc::vec::Vec;
 
 use lichen_sdk::{
     bytes_to_u64, call_contract, get_caller, get_contract_address, get_timestamp, get_value,
-    log_info, storage_get, storage_set, transfer_token_or_native, u64_to_bytes, Address, CrossCall,
-    Pool,
+    is_native_token, log_info, receive_token_or_native, storage_get, storage_set,
+    transfer_token_or_native, u64_to_bytes, Address, CrossCall, Pool,
 };
 
 // ============================================================================
@@ -108,6 +108,36 @@ fn transfer_out(token_addr: &[u8; 32], to: &[u8; 32], amount: u64) -> u32 {
         Ok(true) => 0,
         Ok(false) | Err(_) => 31,
     }
+}
+
+fn token_is_native(token_addr: &[u8; 32]) -> bool {
+    is_native_token(&Address(*token_addr))
+}
+
+fn pull_non_native_input(token_addr: &[u8; 32], payer: &[u8; 32], amount: u64) -> bool {
+    receive_token_or_native(
+        Address(*token_addr),
+        Address(*payer),
+        get_contract_address(),
+        amount,
+    )
+    .unwrap_or(false)
+}
+
+fn required_native_input(
+    token_a: &[u8; 32],
+    amount_a: u64,
+    token_b: &[u8; 32],
+    amount_b: u64,
+) -> Option<u64> {
+    let mut required = 0u64;
+    if token_is_native(token_a) {
+        required = required.checked_add(amount_a)?;
+    }
+    if token_is_native(token_b) {
+        required = required.checked_add(amount_b)?;
+    }
+    Some(required)
 }
 
 /// Reconstruct pool state from persistent storage.
@@ -292,15 +322,37 @@ pub extern "C" fn add_liquidity(
             return 0;
         }
 
-        // G17-02: Verify attached value covers deposited tokens
-        let attached = get_value();
-        if attached < amount_a.saturating_add(amount_b) {
+        let mut pool = load_pool();
+        let native_required =
+            match required_native_input(&pool.token_a.0, amount_a, &pool.token_b.0, amount_b) {
+                Some(required) => required,
+                None => {
+                    log_info("Liquidity input value overflow");
+                    reentrancy_exit();
+                    return 0;
+                }
+            };
+        if get_value() < native_required {
             log_info("Insufficient value for liquidity deposit");
             reentrancy_exit();
             return 0;
         }
 
-        let mut pool = load_pool();
+        if !token_is_native(&pool.token_a.0)
+            && !pull_non_native_input(&pool.token_a.0, &provider_addr, amount_a)
+        {
+            log_info("Token A liquidity deposit failed");
+            reentrancy_exit();
+            return 0;
+        }
+        if !token_is_native(&pool.token_b.0)
+            && !pull_non_native_input(&pool.token_b.0, &provider_addr, amount_b)
+        {
+            log_info("Token B liquidity deposit failed");
+            reentrancy_exit();
+            return 0;
+        }
+
         match pool.add_liquidity(provider, amount_a, amount_b, min_liquidity) {
             Ok(liquidity) => {
                 log_info("Liquidity added successfully");
@@ -390,17 +442,6 @@ pub extern "C" fn swap_a_for_b(amount_a_in: u64, min_amount_b_out: u64) -> u64 {
         return 0;
     }
 
-    // G17-02: Verify attached value covers input tokens
-    let attached = get_value();
-    if attached < amount_a_in {
-        log_info("Insufficient value for swap input");
-        reentrancy_exit();
-        return 0;
-    }
-
-    // v2: TWAP oracle update before reserve change
-    twap_update();
-
     // AUDIT-FIX 3.20: Load pool once, use for both price impact check and swap
     let mut pool = load_pool();
 
@@ -410,6 +451,21 @@ pub extern "C" fn swap_a_for_b(amount_a_in: u64, min_amount_b_out: u64) -> u64 {
         reentrancy_exit();
         return 0;
     }
+
+    if token_is_native(&pool.token_a.0) {
+        if get_value() < amount_a_in {
+            log_info("Insufficient value for swap input");
+            reentrancy_exit();
+            return 0;
+        }
+    } else if !pull_non_native_input(&pool.token_a.0, &get_caller().0, amount_a_in) {
+        log_info("Token A swap input transfer failed");
+        reentrancy_exit();
+        return 0;
+    }
+
+    // v2: TWAP oracle update before reserve change
+    twap_update();
 
     match pool.swap_a_for_b(amount_a_in, min_amount_b_out) {
         Ok(amount_b_out) => {
@@ -484,17 +540,6 @@ pub extern "C" fn swap_b_for_a(amount_b_in: u64, min_amount_a_out: u64) -> u64 {
         return 0;
     }
 
-    // G17-02: Verify attached value covers input tokens
-    let attached = get_value();
-    if attached < amount_b_in {
-        log_info("Insufficient value for swap input");
-        reentrancy_exit();
-        return 0;
-    }
-
-    // v2: TWAP oracle update before reserve change
-    twap_update();
-
     // AUDIT-FIX 3.20: Load pool once, use for both price impact check and swap
     let mut pool = load_pool();
 
@@ -504,6 +549,21 @@ pub extern "C" fn swap_b_for_a(amount_b_in: u64, min_amount_a_out: u64) -> u64 {
         reentrancy_exit();
         return 0;
     }
+
+    if token_is_native(&pool.token_b.0) {
+        if get_value() < amount_b_in {
+            log_info("Insufficient value for swap input");
+            reentrancy_exit();
+            return 0;
+        }
+    } else if !pull_non_native_input(&pool.token_b.0, &get_caller().0, amount_b_in) {
+        log_info("Token B swap input transfer failed");
+        reentrancy_exit();
+        return 0;
+    }
+
+    // v2: TWAP oracle update before reserve change
+    twap_update();
 
     match pool.swap_b_for_a(amount_b_in, min_amount_a_out) {
         Ok(amount_a_out) => {
@@ -1488,6 +1548,64 @@ mod tests {
     }
 
     #[test]
+    fn test_non_native_liquidity_pulls_tokens_from_provider() {
+        setup();
+        let token_a = [1u8; 32];
+        let token_b = [2u8; 32];
+        initialize(token_a.as_ptr(), token_b.as_ptr());
+
+        let provider = [3u8; 32];
+        test_mock::set_caller(provider);
+        test_mock::set_value(0);
+        test_mock::set_cross_call_responses(std::vec![
+            0u32.to_le_bytes().to_vec(),
+            0u32.to_le_bytes().to_vec(),
+        ]);
+
+        let liquidity = add_liquidity(provider.as_ptr(), 1_000_000, 1_000_000, 0);
+        assert!(liquidity > 0);
+
+        let call =
+            test_mock::get_last_cross_call().expect("liquidity deposit should pull token B");
+        assert_eq!(call.0, token_b);
+        assert_eq!(call.1, "transfer_from");
+        assert_eq!(&call.2[..32], &[0xCC; 32]);
+        assert_eq!(&call.2[32..64], &provider);
+        assert_eq!(&call.2[64..96], &[0xCC; 32]);
+        assert_eq!(&call.2[96..104], &1_000_000u64.to_le_bytes());
+    }
+
+    #[test]
+    fn test_non_native_swap_pulls_input_token() {
+        setup();
+        let token_a = [1u8; 32];
+        let token_b = [0u8; 32];
+        initialize(token_a.as_ptr(), token_b.as_ptr());
+
+        let provider = [3u8; 32];
+        test_mock::set_caller(provider);
+        test_mock::set_value(1_000_000);
+        test_mock::set_cross_call_response(Some(0u32.to_le_bytes().to_vec()));
+        add_liquidity(provider.as_ptr(), 1_000_000, 1_000_000, 0);
+
+        let swapper = [4u8; 32];
+        test_mock::set_caller(swapper);
+        test_mock::set_value(0);
+        test_mock::set_cross_call_response(Some(2u32.to_le_bytes().to_vec()));
+
+        let amount_out = swap_a_for_b(1_000, 0);
+        assert_eq!(amount_out, 0);
+
+        let call =
+            test_mock::get_last_cross_call().expect("swap should pull token A before payout");
+        assert_eq!(call.0, token_a);
+        assert_eq!(call.1, "transfer_from");
+        assert_eq!(&call.2[32..64], &swapper);
+        assert_eq!(&call.2[64..96], &[0xCC; 32]);
+        assert_eq!(&call.2[96..104], &1_000u64.to_le_bytes());
+    }
+
+    #[test]
     fn test_swap_no_discount_without_config() {
         setup();
         let token_a = [1u8; 32];
@@ -1844,12 +1962,12 @@ mod tests {
 
         let provider = [3u8; 32];
         test_mock::set_caller(provider);
-        // Attach less value than amount_a + amount_b
-        test_mock::set_value(500_000);
+        test_mock::set_value(0);
+        test_mock::set_cross_call_response(Some(2u32.to_le_bytes().to_vec()));
         let liquidity = add_liquidity(provider.as_ptr(), 1_000_000, 1_000_000, 0);
         assert_eq!(
             liquidity, 0,
-            "Should reject insufficient value for liquidity"
+            "Should reject liquidity when non-native token custody fails"
         );
     }
 
@@ -1865,10 +1983,11 @@ mod tests {
         test_mock::set_value(2_000_000);
         add_liquidity(provider.as_ptr(), 1_000_000, 1_000_000, 0);
 
-        // Try to swap with insufficient value
-        test_mock::set_value(5_000);
+        // Try to swap when the input token custody transfer fails.
+        test_mock::set_value(0);
+        test_mock::set_cross_call_response(Some(2u32.to_le_bytes().to_vec()));
         let out = swap_a_for_b(10_000, 0);
-        assert_eq!(out, 0, "Swap should fail with insufficient value");
+        assert_eq!(out, 0, "Swap should fail when token A custody fails");
     }
 
     #[test]
@@ -1883,10 +2002,11 @@ mod tests {
         test_mock::set_value(2_000_000);
         add_liquidity(provider.as_ptr(), 1_000_000, 1_000_000, 0);
 
-        // Try to swap with insufficient value
-        test_mock::set_value(5_000);
+        // Try to swap when the input token custody transfer fails.
+        test_mock::set_value(0);
+        test_mock::set_cross_call_response(Some(2u32.to_le_bytes().to_vec()));
         let out = swap_b_for_a(10_000, 0);
-        assert_eq!(out, 0, "Swap should fail with insufficient value");
+        assert_eq!(out, 0, "Swap should fail when token B custody fails");
     }
 
     #[test]

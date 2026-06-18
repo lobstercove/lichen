@@ -10,9 +10,9 @@
 extern crate alloc;
 use alloc::vec::Vec;
 use lichen_sdk::{
-    bytes_to_u64, call_contract, get_caller, get_contract_address, get_timestamp, get_value,
-    log_info, set_return_data, storage_get, storage_set, transfer_token_or_native, u64_to_bytes,
-    Address, CrossCall,
+    bytes_to_u64, call_contract, get_caller, get_contract_address, get_timestamp, log_info,
+    receive_token_or_native, set_return_data, storage_get, storage_set, transfer_token_or_native,
+    u64_to_bytes, Address, CrossCall,
 };
 
 // ============================================================================
@@ -305,10 +305,6 @@ pub extern "C" fn deposit(depositor_ptr: *const u8, amount: u64) -> u64 {
     if amount == 0 {
         return 0;
     }
-    // G25-02: Verify caller attached sufficient LICN
-    if get_value() < amount {
-        return 0;
-    }
     if is_cv_paused() {
         log_info("Vault is paused");
         return 0;
@@ -322,6 +318,18 @@ pub extern "C" fn deposit(depositor_ptr: *const u8, amount: u64) -> u64 {
         Some(addr) => addr,
         None => return 0,
     };
+
+    let payment_token = load_licn_token().unwrap_or(Address([0u8; 32]));
+    if !receive_token_or_native(
+        payment_token,
+        Address(depositor),
+        get_contract_address(),
+        amount,
+    )
+    .unwrap_or(false)
+    {
+        return 0;
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -1169,7 +1177,7 @@ mod tests {
         test_mock::set_caller(admin);
         let licn_token = [0xCC; 32];
         set_licn_token(admin.as_ptr(), licn_token.as_ptr());
-        test_mock::set_cross_call_response(Some(alloc::vec![1u8]));
+        test_mock::set_cross_call_response(Some(0u32.to_le_bytes().to_vec()));
         test_mock::set_caller(prev_caller.0);
     }
 

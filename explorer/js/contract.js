@@ -405,9 +405,10 @@ async function loadContract() {
         if ((!supply || supply === 0) && !isNative) {
             try {
                 const viewResult = await rpc.call('callContract', [contractAddress, 'total_supply']);
-                // Try return_data first (base64-encoded u64 LE bytes)
-                if (viewResult?.return_data) {
-                    const decoded = atob(viewResult.return_data);
+                // Try returnData first (base64-encoded u64 LE bytes)
+                const returnData = viewResult?.returnData || viewResult?.return_data;
+                if (returnData) {
+                    const decoded = atob(returnData);
                     if (decoded.length >= 8) {
                         const bytes = new Uint8Array(decoded.length);
                         for (let i = 0; i < decoded.length; i++) bytes[i] = decoded.charCodeAt(i);
@@ -600,8 +601,10 @@ function renderAbi(abi) {
 // ── Storage rendering (paginated) ────────────────────────────────
 
 const STORAGE_PAGE_SIZE = 25;
-let storageOffset = 0;
 let storageTotal = 0;
+let storagePage = 0;
+let storagePageCursors = [null];
+let storageCurrentPageCount = 0;
 
 function renderStorage(program) {
     const tbody = document.getElementById('storageTable');
@@ -613,18 +616,33 @@ function renderStorage(program) {
         return;
     }
 
+    storageTotal = Number(program.storage_entries || 0);
+    storagePage = 0;
+    storagePageCursors = [null];
+    storageCurrentPageCount = 0;
     loadStoragePage(0);
 }
 
-async function loadStoragePage(offset) {
+async function loadStoragePage(page) {
     const tbody = document.getElementById('storageTable');
     tbody.innerHTML = '<tr><td colspan="3" class="empty-state"><i class="fas fa-spinner fa-spin"></i><div>Loading...</div></td></tr>';
 
     try {
-        const res = await rpc.call('getProgramStorage', [contractAddress, { limit: STORAGE_PAGE_SIZE, offset }]);
+        const options = { limit: STORAGE_PAGE_SIZE };
+        const afterKey = storagePageCursors[page] || null;
+        if (afterKey) options.after_key = afterKey;
+
+        const res = await rpc.call('getProgramStorage', [contractAddress, options]);
         const entries = res?.entries || [];
-        storageTotal = res?.total || entries.length;
-        storageOffset = offset;
+        storagePage = page;
+        storageCurrentPageCount = entries.length;
+
+        if (entries.length === STORAGE_PAGE_SIZE) {
+            const last = entries[entries.length - 1];
+            storagePageCursors[page + 1] = last?.key_hex || last?.key || null;
+        } else {
+            storagePageCursors.length = page + 1;
+        }
 
         if (entries.length === 0) {
             tbody.innerHTML = '<tr><td colspan="3" class="empty-state"><i class="fas fa-database"></i><div>Storage is empty</div></td></tr>';
@@ -670,24 +688,30 @@ function updateStoragePagination() {
         return;
     }
 
-    const totalPages = Math.ceil(storageTotal / STORAGE_PAGE_SIZE);
-    const currentPage = Math.floor(storageOffset / STORAGE_PAGE_SIZE) + 1;
+    const knownTotalPages = storageTotal > 0 ? Math.ceil(storageTotal / STORAGE_PAGE_SIZE) : null;
+    const currentPage = storagePage + 1;
+    const hasPrev = storagePage > 0;
+    const hasCursorNext = Boolean(storagePageCursors[storagePage + 1]);
+    const hasKnownNext = storageTotal > 0
+        ? (storagePage + 1) * STORAGE_PAGE_SIZE < storageTotal
+        : storageCurrentPageCount === STORAGE_PAGE_SIZE;
+    const hasNext = hasCursorNext && hasKnownNext;
 
     paginationEl.style.display = 'flex';
     paginationEl.innerHTML =
-        '<span class="pagination-info">Page ' + currentPage + ' of ' + totalPages + ' (' + storageTotal + ' entries)</span>' +
+        '<span class="pagination-info">Page ' + currentPage + (knownTotalPages ? ' of ' + knownTotalPages : '') + (storageTotal ? ' (' + storageTotal + ' entries)' : '') + '</span>' +
         '<div class="pagination-btns">' +
-        '<button class="btn btn-secondary btn-small" data-page-action="prev" data-offset="' + Math.max(0, storageOffset - STORAGE_PAGE_SIZE) + '"' + (storageOffset <= 0 ? ' disabled' : '') + '><i class="fas fa-arrow-left"></i> Prev</button>' +
-        '<button class="btn btn-secondary btn-small" data-page-action="next" data-offset="' + (storageOffset + STORAGE_PAGE_SIZE) + '"' + (storageOffset + STORAGE_PAGE_SIZE >= storageTotal ? ' disabled' : '') + '>Next <i class="fas fa-arrow-right"></i></button>' +
+        '<button class="btn btn-secondary btn-small" data-page-action="prev" data-page="' + Math.max(0, storagePage - 1) + '"' + (!hasPrev ? ' disabled' : '') + '><i class="fas fa-arrow-left"></i> Prev</button>' +
+        '<button class="btn btn-secondary btn-small" data-page-action="next" data-page="' + (storagePage + 1) + '"' + (!hasNext ? ' disabled' : '') + '>Next <i class="fas fa-arrow-right"></i></button>' +
         '</div>';
 
     if (!paginationEl.dataset.bound) {
         paginationEl.addEventListener('click', (event) => {
             const button = event.target.closest('button[data-page-action]');
             if (!button || button.disabled) return;
-            const offset = Number(button.dataset.offset);
-            if (Number.isFinite(offset)) {
-                loadStoragePage(offset);
+            const page = Number(button.dataset.page);
+            if (Number.isInteger(page) && page >= 0) {
+                loadStoragePage(page);
             }
         });
         paginationEl.dataset.bound = '1';

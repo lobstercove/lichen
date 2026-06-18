@@ -1291,6 +1291,62 @@
           0
         ]
       }
+    },
+    {
+      "name": "set_mid_token_address",
+      "opcode": 57,
+      "params": [
+        {
+          "name": "caller_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "token_addr_ptr",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "set_mid_self_address",
+      "opcode": 58,
+      "params": [
+        {
+          "name": "caller_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "self_addr_ptr",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "accept_admin",
+      "opcode": 59,
+      "params": [
+        {
+          "name": "caller_ptr",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     }
   ]
 }

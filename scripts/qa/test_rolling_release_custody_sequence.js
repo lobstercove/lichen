@@ -55,6 +55,14 @@ assert(script.includes('testnet:37.59.97.61|testnet:eu-vps|testnet:vps-210edd4a'
   'testnet EU validator aliases must map to the pinned validator identity');
 assert(script.includes('testnet:148.113.43.247|testnet:seed-04'),
   'testnet seed validator alias must map to the pinned validator identity');
+assert(script.includes('CUSTODY_SERVICE="lichen-custody.service"'),
+  'testnet rolling deploy must target the testnet custody systemd unit');
+assert(script.includes('CUSTODY_HEALTH_URL="http://127.0.0.1:9105/health"'),
+  'testnet rolling deploy must verify the testnet custody health port');
+assert(script.includes('CUSTODY_SERVICE="lichen-custody-mainnet.service"'),
+  'mainnet rolling deploy must target the mainnet custody systemd unit');
+assert(script.includes('CUSTODY_HEALTH_URL="http://127.0.0.1:9106/health"'),
+  'mainnet rolling deploy must verify the mainnet custody health port');
 assert(script.includes('ALLOW_UNHEALTHY_PREFLIGHT="${LICHEN_ALLOW_UNHEALTHY_PREFLIGHT:-0}"'),
   'unhealthy preflight bypass must be an explicit operator override');
 assert(script.includes('preflight health: status='),
@@ -81,11 +89,11 @@ assert(script.includes('install_staged_bin lichen-faucet "$EXPECTED_FAUCET_SHA"'
   'faucet live install must be gated by the expected release hash');
 assert(!script.includes('for bin in lichen-custody lichen-faucet; do\n  if [ -x "$root/$bin" ]; then'),
   'optional service install must not depend on temp extract executable checks');
-assert(script.includes('systemctl list-unit-files --no-legend lichen-custody.service'), 'custody refresh must be conditional on service presence');
-assert(script.includes('sudo -n systemctl stop lichen-custody.service || true'), 'custody service must be stopped before start');
-assert(script.includes('sudo -n systemctl kill --kill-who=control-group -s SIGKILL lichen-custody.service || true'), 'custody service stale cgroup must be killed before start');
-assert(script.includes('sudo -n systemctl start lichen-custody.service'), 'custody service must be started after RPC is healthy');
-assert(script.includes('http://127.0.0.1:9105/health'), 'custody health must be verified after restart');
+assert(script.includes('systemctl list-unit-files --no-legend "$CUSTODY_SERVICE"'), 'custody refresh must be conditional on network-aware service presence');
+assert(script.includes('sudo -n systemctl stop "$CUSTODY_SERVICE" || true'), 'custody service must be stopped before start');
+assert(script.includes('sudo -n systemctl kill --kill-who=control-group -s SIGKILL "$CUSTODY_SERVICE" || true'), 'custody service stale cgroup must be killed before start');
+assert(script.includes('sudo -n systemctl start "$CUSTODY_SERVICE"'), 'custody service must be started after RPC is healthy');
+assert(script.includes('curl -fsS "$CUSTODY_HEALTH_URL"'), 'custody health must be verified after restart through network-aware URL');
 assert(script.includes('sudo -n systemctl start lichen-faucet.service'), 'faucet service must be started after RPC is healthy');
 assert(script.includes('http://127.0.0.1:9100/health'), 'faucet health must be verified after restart');
 assert(script.includes('unit is enabled but inactive'), 'release verification must fail enabled inactive optional services');

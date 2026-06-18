@@ -843,6 +843,58 @@
           0
         ]
       }
+    },
+    {
+      "name": "set_token_address",
+      "opcode": 43,
+      "params": [
+        {
+          "name": "caller_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "token_ptr",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "pause",
+      "opcode": 44,
+      "params": [
+        {
+          "name": "caller_ptr",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "unpause",
+      "opcode": 45,
+      "params": [
+        {
+          "name": "caller_ptr",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     }
   ]
 }

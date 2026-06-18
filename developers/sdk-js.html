@@ -350,7 +350,7 @@ console.log(`Slot ${block.slot}, ${block.transaction_count} txs`);</code></pre>
 
             <div class="method-card">
                 <h3 class="method-name">health(): Promise&lt;{ status: string }&gt;</h3>
-                <p class="method-desc">Liveness probe. Returns <code>{ status: "ok" }</code>.</p>
+                <p class="method-desc">Liveness probe. Returns <code>{ status, reason, slot, block_age_secs?, disk? }</code>.</p>
             </div>
 
             <div class="method-card">

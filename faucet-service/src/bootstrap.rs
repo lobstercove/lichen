@@ -9,7 +9,7 @@ use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
 
 use super::{
-    get_config, get_status, health, list_airdrops, load_airdrops,
+    get_airdrop, get_config, get_status, health, list_airdrops, load_airdrops,
     models::{
         FaucetConfig, FaucetState, DEFAULT_COOLDOWN_SECONDS, DEFAULT_DAILY_LIMIT_PER_IP,
         DEFAULT_MAX_PER_REQUEST, DEFAULT_PORT,
@@ -62,6 +62,7 @@ pub(super) fn build_app(state: FaucetState) -> Router {
         .route("/faucet/config", get(get_config))
         .route("/faucet/status", get(get_status))
         .route("/faucet/airdrops", get(list_airdrops))
+        .route("/faucet/airdrop/{signature}", get(get_airdrop))
         .route("/faucet/request", post(request_airdrop))
         .with_state(state)
         .layer(build_cors())

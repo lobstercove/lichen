@@ -360,7 +360,7 @@ verify_protocol_bootstrap() {
         return 1
     fi
 
-    BRIDGE_RESPONSE="$bridge_response" ORACLE_RESPONSE="$oracle_response" "$PYTHON_BIN" <<'PY'
+    BRIDGE_RESPONSE="$bridge_response" ORACLE_RESPONSE="$oracle_response" DEPLOY_NETWORK="$DEPLOY_NETWORK" "$PYTHON_BIN" <<'PY'
 import json
 import os
 import sys
@@ -375,10 +375,11 @@ if not isinstance(bridge, dict) or not isinstance(oracle, dict):
 errors = []
 validator_count = int(bridge.get("validator_count") or 0)
 required_confirms = int(bridge.get("required_confirms") or 0)
-if validator_count < 2:
-    errors.append(f"bridge validator_count={validator_count} < 2")
-if required_confirms < 2:
-    errors.append(f"bridge required_confirms={required_confirms} < 2")
+min_committee = 4 if os.environ.get("DEPLOY_NETWORK") == "mainnet" else 2
+if validator_count < min_committee:
+    errors.append(f"bridge validator_count={validator_count} < {min_committee}")
+if required_confirms < min_committee:
+    errors.append(f"bridge required_confirms={required_confirms} < {min_committee}")
 if validator_count < required_confirms:
     errors.append(f"bridge validator_count={validator_count} < required_confirms={required_confirms}")
 if bridge.get("paused") is True:

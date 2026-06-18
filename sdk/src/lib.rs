@@ -22,7 +22,7 @@ pub mod token;
 // Re-export modules
 pub use crosscall::{
     balance_of_token_or_native, call_contract, call_nft_owner, call_nft_transfer,
-    call_token_balance, call_token_transfer, encode_layout_args, is_native_token,
+    call_token_balance, call_token_transfer, call_token_transfer_from, encode_layout_args, is_native_token,
     native_balance_of, receive_token_or_native, transfer_native, transfer_token_or_native,
     CrossCall, SYSTEM_PROGRAM,
 };

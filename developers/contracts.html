@@ -369,7 +369,7 @@ pub extern "C" fn set_value() -> u32 {
 
 /// Example: read a value.
 #[no_mangle]
-pub extern "C" fn get_value() -> u32 {
+pub extern "C" fn read_value() -> u32 {
     match storage::get(b"value") {
         Some(data) =&gt; {
             contract::set_return(&amp;data);

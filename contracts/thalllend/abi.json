@@ -326,6 +326,70 @@
           0
         ]
       }
+    },
+    {
+      "name": "set_lichencoin_address",
+      "opcode": 20,
+      "params": [
+        {
+          "name": "caller_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "addr_ptr",
+          "type": "Pubkey"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "set_oracle_feed",
+      "opcode": 21,
+      "params": [
+        {
+          "name": "caller_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "oracle_addr_ptr",
+          "type": "Pubkey"
+        },
+        {
+          "name": "asset_ptr",
+          "type": "bytes_with_len"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "get_accrued_interest",
+      "opcode": 22,
+      "params": [
+        {
+          "name": "principal",
+          "type": "u64"
+        },
+        {
+          "name": "elapsed_slots",
+          "type": "u64"
+        }
+      ],
+      "result_semantics": {
+        "kind": "return_code",
+        "success_codes": [
+          0
+        ]
+      }
     }
   ]
 }

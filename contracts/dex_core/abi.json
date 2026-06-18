@@ -3,6 +3,19 @@
   "version": "1.0",
   "functions": [
     {
+      "name": "call",
+      "description": "Raw opcode dispatcher entrypoint.",
+      "params": [
+        {
+          "name": "args",
+          "type": "bytes"
+        }
+      ],
+      "result_semantics": {
+        "kind": "runtime_success_only"
+      }
+    },
+    {
       "name": "initialize",
       "opcode": 0,
       "params": [
@@ -517,10 +530,7 @@
         }
       ],
       "result_semantics": {
-        "kind": "return_code",
-        "success_codes": [
-          0
-        ]
+        "kind": "return_value"
       }
     },
     {
