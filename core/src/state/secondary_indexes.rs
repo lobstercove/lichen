@@ -23,6 +23,39 @@ fn extract_token_recipient_from_ix(ix: &crate::transaction::Instruction) -> Opti
     }
 }
 
+pub(crate) fn account_tx_index_entries_for_block(block: &Block) -> Vec<(Pubkey, Vec<u8>)> {
+    let contract_program_id = crate::processor::CONTRACT_PROGRAM_ID;
+    let mut entries = Vec::new();
+
+    for (tx_index, tx) in block.transactions.iter().enumerate() {
+        let mut accounts = std::collections::BTreeSet::new();
+        for ix in &tx.message.instructions {
+            for account in &ix.accounts {
+                accounts.insert(*account);
+            }
+            if ix.program_id == contract_program_id {
+                if let Some(recipient) = extract_token_recipient_from_ix(ix) {
+                    accounts.insert(recipient);
+                }
+            }
+        }
+
+        let tx_hash = tx.signature();
+        let seq = tx_index as u32;
+
+        for account in accounts {
+            let mut key = Vec::with_capacity(32 + 8 + 4 + 32);
+            key.extend_from_slice(&account.0);
+            key.extend_from_slice(&block.header.slot.to_be_bytes());
+            key.extend_from_slice(&seq.to_be_bytes());
+            key.extend_from_slice(&tx_hash.0);
+            entries.push((account, key));
+        }
+    }
+
+    entries
+}
+
 impl StateStore {
     /// Update token balance for a holder. Key: token_program(32) + holder(32).
     pub fn update_token_balance(
@@ -465,50 +498,25 @@ impl StateStore {
             .ok_or_else(|| "Account txs CF not found".to_string())?;
 
         let cf_stats = self.db.cf_handle(CF_STATS);
-        let contract_program_id = crate::processor::CONTRACT_PROGRAM_ID;
-
         let mut counter_deltas: std::collections::HashMap<Pubkey, u64> =
             std::collections::HashMap::new();
 
-        for (tx_index, tx) in block.transactions.iter().enumerate() {
-            let mut accounts = std::collections::HashSet::new();
-            for ix in &tx.message.instructions {
-                for account in &ix.accounts {
-                    accounts.insert(*account);
-                }
-                if ix.program_id == contract_program_id {
-                    if let Some(recipient) = extract_token_recipient_from_ix(ix) {
-                        accounts.insert(recipient);
-                    }
-                }
-            }
+        for (account, key) in account_tx_index_entries_for_block(block) {
+            batch.put_cf(&cf, &key, []);
 
-            let tx_hash = tx.signature();
-            let seq = tx_index as u32;
-
-            for account in accounts {
-                let mut key = Vec::with_capacity(32 + 8 + 4 + 32);
-                key.extend_from_slice(&account.0);
-                key.extend_from_slice(&block.header.slot.to_be_bytes());
-                key.extend_from_slice(&seq.to_be_bytes());
-                key.extend_from_slice(&tx_hash.0);
-
-                batch.put_cf(&cf, &key, []);
-
-                if let Some(ref cf_s) = cf_stats {
-                    let delta = counter_deltas.entry(account).or_insert_with(|| {
-                        let mut counter_key = Vec::with_capacity(5 + 32);
-                        counter_key.extend_from_slice(b"atxc:");
-                        counter_key.extend_from_slice(&account.0);
-                        match self.db.get_cf(cf_s, &counter_key) {
-                            Ok(Some(data)) if data.len() == 8 => {
-                                u64::from_le_bytes(data.as_slice().try_into().unwrap())
-                            }
-                            _ => 0,
+            if let Some(ref cf_s) = cf_stats {
+                let delta = counter_deltas.entry(account).or_insert_with(|| {
+                    let mut counter_key = Vec::with_capacity(5 + 32);
+                    counter_key.extend_from_slice(b"atxc:");
+                    counter_key.extend_from_slice(&account.0);
+                    match self.db.get_cf(cf_s, &counter_key) {
+                        Ok(Some(data)) if data.len() == 8 => {
+                            u64::from_le_bytes(data.as_slice().try_into().unwrap())
                         }
-                    });
-                    *delta += 1;
-                }
+                        _ => 0,
+                    }
+                });
+                *delta += 1;
             }
         }
 

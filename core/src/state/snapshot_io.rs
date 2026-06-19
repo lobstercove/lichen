@@ -5,6 +5,14 @@ use crate::codec::{append_legacy_bincode, deserialize_legacy_bincode};
 
 use super::*;
 
+#[derive(Debug, Clone, Copy)]
+enum CanonicalTxSnapshotCategory {
+    Transactions,
+    TxBySlot,
+    TxToSlot,
+    TxMeta,
+}
+
 /// Metadata stored alongside each checkpoint (serialized as JSON in the
 /// checkpoint directory).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -74,6 +82,67 @@ fn canonical_block_snapshot_value(key: &[u8], value: &[u8]) -> Result<Vec<u8>, S
         )
     })?;
     Ok(canonical)
+}
+
+fn canonical_transaction_snapshot_value(
+    tx: &crate::transaction::Transaction,
+) -> Result<Vec<u8>, String> {
+    let mut canonical = Vec::new();
+    canonical.push(0xBC);
+    append_legacy_bincode(&mut canonical, tx, "transaction").map_err(|err| {
+        format!(
+            "Failed to serialize canonical transaction snapshot value: {}",
+            err
+        )
+    })?;
+    Ok(canonical)
+}
+
+fn parse_slot_snapshot_cursor(after_key: Option<&[u8]>, category: &str) -> Result<u64, String> {
+    match after_key {
+        None => Ok(0),
+        Some(cursor) if cursor.len() == 8 => {
+            let mut slot_bytes = [0u8; 8];
+            slot_bytes.copy_from_slice(cursor);
+            Ok(u64::from_be_bytes(slot_bytes).saturating_add(1))
+        }
+        Some(cursor) => Err(format!(
+            "Invalid {} snapshot cursor length: expected 8 bytes, got {}",
+            category,
+            cursor.len()
+        )),
+    }
+}
+
+fn encode_tx_snapshot_cursor(slot: u64, tx_index: u64) -> Vec<u8> {
+    let mut cursor = Vec::with_capacity(16);
+    cursor.extend_from_slice(&slot.to_be_bytes());
+    cursor.extend_from_slice(&tx_index.to_be_bytes());
+    cursor
+}
+
+fn parse_tx_snapshot_cursor(
+    after_key: Option<&[u8]>,
+    category: &str,
+) -> Result<(u64, Option<u64>), String> {
+    match after_key {
+        None => Ok((0, None)),
+        Some(cursor) if cursor.len() == 16 => {
+            let mut slot_bytes = [0u8; 8];
+            slot_bytes.copy_from_slice(&cursor[..8]);
+            let mut index_bytes = [0u8; 8];
+            index_bytes.copy_from_slice(&cursor[8..16]);
+            Ok((
+                u64::from_be_bytes(slot_bytes),
+                Some(u64::from_be_bytes(index_bytes)),
+            ))
+        }
+        Some(cursor) => Err(format!(
+            "Invalid {} snapshot cursor length: expected 16 bytes, got {}",
+            category,
+            cursor.len()
+        )),
+    }
 }
 
 fn directory_logical_size(path: &std::path::Path) -> Result<u64, String> {
@@ -459,8 +528,36 @@ impl StateStore {
         if category == "blocks" {
             return self.export_blocks_cursor_canonical(after_key, limit);
         }
+        if category == "transactions" {
+            return self.export_canonical_tx_snapshot_cursor(
+                CanonicalTxSnapshotCategory::Transactions,
+                after_key,
+                limit,
+            );
+        }
+        if category == "account_txs" {
+            return self.export_account_txs_from_canonical_blocks_cursor(after_key, limit);
+        }
         if category == "tx_by_slot" {
-            return self.export_tx_by_slot_from_blocks_cursor(after_key, limit);
+            return self.export_canonical_tx_snapshot_cursor(
+                CanonicalTxSnapshotCategory::TxBySlot,
+                after_key,
+                limit,
+            );
+        }
+        if category == "tx_to_slot" {
+            return self.export_canonical_tx_snapshot_cursor(
+                CanonicalTxSnapshotCategory::TxToSlot,
+                after_key,
+                limit,
+            );
+        }
+        if category == "tx_meta" {
+            return self.export_canonical_tx_snapshot_cursor(
+                CanonicalTxSnapshotCategory::TxMeta,
+                after_key,
+                limit,
+            );
         }
         if category == "stats" {
             return self.export_stats_cursor_for_snapshot(after_key, limit);
@@ -565,60 +662,71 @@ impl StateStore {
             });
         }
 
-        let cf = self
+        let slot_cf = self
+            .db
+            .cf_handle(CF_SLOTS)
+            .ok_or_else(|| "Slots CF not found".to_string())?;
+        let block_cf = self
             .db
             .cf_handle(CF_BLOCKS)
             .ok_or_else(|| "Blocks CF not found".to_string())?;
 
+        let start_slot = parse_slot_snapshot_cursor(after_key, "blocks")?;
+        let start_key = start_slot.to_be_bytes();
         let mut read_opts = rocksdb::ReadOptions::default();
         read_opts.set_total_order_seek(true);
-        let iter = if let Some(after) = after_key {
-            self.db.iterator_cf_opt(
-                &cf,
-                read_opts,
-                rocksdb::IteratorMode::From(after, rocksdb::Direction::Forward),
-            )
-        } else {
-            self.db
-                .iterator_cf_opt(&cf, read_opts, rocksdb::IteratorMode::Start)
-        };
+        let iter = self.db.iterator_cf_opt(
+            &slot_cf,
+            read_opts,
+            rocksdb::IteratorMode::From(&start_key, rocksdb::Direction::Forward),
+        );
 
         let mut entries = Vec::with_capacity(limit.min(10_000) as usize);
         let mut has_more = false;
+        let mut next_cursor = None;
 
         for item in iter {
-            let (key, value) = item.map_err(|err| format!("Failed iterating Blocks: {}", err))?;
-            if let Some(after) = after_key {
-                if key.as_ref() == after {
-                    continue;
-                }
+            let (slot_key, hash_value) =
+                item.map_err(|err| format!("Failed iterating Slots for block export: {}", err))?;
+            if slot_key.len() != 8 || hash_value.len() != 32 {
+                continue;
             }
 
-            let canonical = canonical_block_snapshot_value(&key, &value)?;
-            entries.push((key.to_vec(), canonical));
-            if entries.len() > limit as usize {
+            let mut slot_bytes = [0u8; 8];
+            slot_bytes.copy_from_slice(&slot_key);
+            let slot = u64::from_be_bytes(slot_bytes);
+            if slot < start_slot {
+                continue;
+            }
+
+            if entries.len() == limit as usize {
                 has_more = true;
-                entries.pop();
                 break;
             }
-        }
 
-        let next_cursor = if has_more {
-            entries.last().map(|(key, _)| key.clone())
-        } else {
-            None
-        };
+            let mut block_hash = [0u8; 32];
+            block_hash.copy_from_slice(&hash_value);
+            let value = self
+                .db
+                .get_cf(&block_cf, block_hash)
+                .map_err(|err| format!("Failed reading canonical block {}: {}", slot, err))?
+                .ok_or_else(|| format!("Canonical block {} missing from Blocks CF", slot))?;
+            let canonical = canonical_block_snapshot_value(&block_hash, &value)?;
+            entries.push((block_hash.to_vec(), canonical));
+            next_cursor = Some(slot.to_be_bytes().to_vec());
+        }
 
         Ok(KvPage {
             entries,
             total: 0,
-            next_cursor,
+            next_cursor: if has_more { next_cursor } else { None },
             has_more,
         })
     }
 
-    fn export_tx_by_slot_from_blocks_cursor(
+    fn export_canonical_tx_snapshot_cursor(
         &self,
+        category: CanonicalTxSnapshotCategory,
         after_key: Option<&[u8]>,
         limit: u64,
     ) -> Result<KvPage, String> {
@@ -631,29 +739,27 @@ impl StateStore {
             });
         }
 
+        let category_name = match category {
+            CanonicalTxSnapshotCategory::Transactions => "transactions",
+            CanonicalTxSnapshotCategory::TxBySlot => "tx_by_slot",
+            CanonicalTxSnapshotCategory::TxToSlot => "tx_to_slot",
+            CanonicalTxSnapshotCategory::TxMeta => "tx_meta",
+        };
         let slot_cf = self
             .db
             .cf_handle(CF_SLOTS)
             .ok_or_else(|| "Slots CF not found".to_string())?;
-
-        let (start_slot, after_index) = match after_key {
-            Some(key) if key.len() == 16 => {
-                let mut slot_bytes = [0u8; 8];
-                slot_bytes.copy_from_slice(&key[..8]);
-                let mut index_bytes = [0u8; 8];
-                index_bytes.copy_from_slice(&key[8..16]);
-                (
-                    u64::from_be_bytes(slot_bytes),
-                    Some(u64::from_be_bytes(index_bytes)),
-                )
-            }
-            Some(key) if key.len() >= 8 => {
-                let mut slot_bytes = [0u8; 8];
-                slot_bytes.copy_from_slice(&key[..8]);
-                (u64::from_be_bytes(slot_bytes), None)
-            }
-            _ => (0, None),
+        let tx_meta_cf = if matches!(category, CanonicalTxSnapshotCategory::TxMeta) {
+            Some(
+                self.db
+                    .cf_handle(CF_TX_META)
+                    .ok_or_else(|| "Transaction metadata CF not found".to_string())?,
+            )
+        } else {
+            None
         };
+
+        let (start_slot, after_index) = parse_tx_snapshot_cursor(after_key, category_name)?;
 
         let start_key = start_slot.to_be_bytes();
         let mut read_opts = rocksdb::ReadOptions::default();
@@ -667,10 +773,15 @@ impl StateStore {
         let mut entries = Vec::with_capacity(limit.min(10_000) as usize);
         let mut has_more = false;
         let limit = limit as usize;
+        let mut next_cursor = None;
 
         'slots: for item in iter {
-            let (slot_key, _) = item
-                .map_err(|err| format!("Failed iterating Slots for tx_by_slot export: {}", err))?;
+            let (slot_key, _) = item.map_err(|err| {
+                format!(
+                    "Failed iterating Slots for {} export: {}",
+                    category_name, err
+                )
+            })?;
             if slot_key.len() != 8 {
                 continue;
             }
@@ -700,29 +811,132 @@ impl StateStore {
                     continue;
                 }
 
-                let mut key = Vec::with_capacity(16);
-                key.extend_from_slice(&slot.to_be_bytes());
-                key.extend_from_slice(&tx_index.to_be_bytes());
-                entries.push((key, tx.signature().0.to_vec()));
+                let entry = match category {
+                    CanonicalTxSnapshotCategory::Transactions => Some((
+                        tx.signature().0.to_vec(),
+                        canonical_transaction_snapshot_value(tx)?,
+                    )),
+                    CanonicalTxSnapshotCategory::TxBySlot => {
+                        let mut key = Vec::with_capacity(16);
+                        key.extend_from_slice(&slot.to_be_bytes());
+                        key.extend_from_slice(&tx_index.to_be_bytes());
+                        Some((key, tx.signature().0.to_vec()))
+                    }
+                    CanonicalTxSnapshotCategory::TxToSlot => {
+                        Some((tx.signature().0.to_vec(), slot.to_be_bytes().to_vec()))
+                    }
+                    CanonicalTxSnapshotCategory::TxMeta => {
+                        let cf = tx_meta_cf
+                            .as_ref()
+                            .ok_or_else(|| "Transaction metadata CF not found".to_string())?;
+                        let meta = self
+                            .db
+                            .get_cf(cf, tx.signature().0)
+                            .map_err(|err| format!("Failed reading tx metadata: {}", err))?;
+                        meta.map(|value| (tx.signature().0.to_vec(), value.to_vec()))
+                    }
+                };
 
-                if entries.len() > limit {
-                    entries.pop();
+                let Some(entry) = entry else {
+                    continue;
+                };
+
+                if entries.len() == limit {
                     has_more = true;
                     break 'slots;
                 }
+
+                entries.push(entry);
+                next_cursor = Some(encode_tx_snapshot_cursor(slot, tx_index));
             }
         }
-
-        let next_cursor = if has_more {
-            entries.last().map(|(key, _)| key.clone())
-        } else {
-            None
-        };
 
         Ok(KvPage {
             entries,
             total: 0,
-            next_cursor,
+            next_cursor: if has_more { next_cursor } else { None },
+            has_more,
+        })
+    }
+
+    fn export_account_txs_from_canonical_blocks_cursor(
+        &self,
+        after_key: Option<&[u8]>,
+        limit: u64,
+    ) -> Result<KvPage, String> {
+        if limit == 0 {
+            return Ok(KvPage {
+                entries: Vec::new(),
+                total: 0,
+                next_cursor: None,
+                has_more: false,
+            });
+        }
+
+        let (start_slot, after_entry_index) = parse_tx_snapshot_cursor(after_key, "account_txs")?;
+        let slot_cf = self
+            .db
+            .cf_handle(CF_SLOTS)
+            .ok_or_else(|| "Slots CF not found".to_string())?;
+        let start_key = start_slot.to_be_bytes();
+        let mut read_opts = rocksdb::ReadOptions::default();
+        read_opts.set_total_order_seek(true);
+        let iter = self.db.iterator_cf_opt(
+            &slot_cf,
+            read_opts,
+            rocksdb::IteratorMode::From(&start_key, rocksdb::Direction::Forward),
+        );
+
+        let mut entries = Vec::with_capacity(limit.min(10_000) as usize);
+        let mut has_more = false;
+        let limit = limit as usize;
+        let mut next_cursor = None;
+
+        'slots: for item in iter {
+            let (slot_key, _) = item
+                .map_err(|err| format!("Failed iterating Slots for account_txs export: {}", err))?;
+            if slot_key.len() != 8 {
+                continue;
+            }
+
+            let mut slot_bytes = [0u8; 8];
+            slot_bytes.copy_from_slice(&slot_key);
+            let slot = u64::from_be_bytes(slot_bytes);
+            if slot < start_slot {
+                continue;
+            }
+
+            let first_entry_index = if Some(slot) == Some(start_slot) {
+                after_entry_index
+                    .map(|index| index.saturating_add(1))
+                    .unwrap_or(0)
+            } else {
+                0
+            };
+
+            let Some(block) = self.get_block_by_slot(slot)? else {
+                continue;
+            };
+            let account_entries =
+                super::secondary_indexes::account_tx_index_entries_for_block(&block);
+            for (entry_index, (_, key)) in account_entries.into_iter().enumerate() {
+                let entry_index = entry_index as u64;
+                if entry_index < first_entry_index {
+                    continue;
+                }
+                if entries.len() == limit {
+                    has_more = true;
+                    break 'slots;
+                }
+                entries.push((key, Vec::new()));
+                next_cursor = Some(encode_tx_snapshot_cursor(slot, entry_index));
+            }
+        }
+
+        Ok(KvPage {
+            entries,
+            total: 0,
+            next_cursor: if has_more { next_cursor } else { None },
             has_more,
         })
     }

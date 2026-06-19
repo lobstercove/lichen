@@ -984,6 +984,15 @@ mod tests {
         imported
             .import_snapshot_category("blocks", &[(block.hash().0.to_vec(), legacy_json.clone())])
             .expect("import canonicalized legacy block");
+        imported
+            .import_snapshot_category(
+                "slots",
+                &[(
+                    block.header.slot.to_be_bytes().to_vec(),
+                    block.hash().0.to_vec(),
+                )],
+            )
+            .expect("import slot index for canonical block export");
         let imported_digest = snapshot_category_digest(&imported, "blocks");
         assert_eq!(canonical_digest.digest, imported_digest.digest);
 
@@ -2512,6 +2521,106 @@ mod tests {
             state.get_txs_by_slot(7, 10).unwrap(),
             vec![tx_a.signature(), tx_b.signature()]
         );
+    }
+
+    #[test]
+    fn ledger_snapshot_exports_ignore_noncanonical_block_history() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+
+        let canonical_account = Pubkey([0x11; 32]);
+        let stale_account = Pubkey([0x22; 32]);
+        let canonical_tx = Transaction::new(Message::new(
+            vec![crate::transaction::Instruction {
+                program_id: Pubkey([0x31; 32]),
+                accounts: vec![canonical_account],
+                data: Vec::new(),
+            }],
+            Hash::hash(b"canonical-tx"),
+        ));
+        let stale_tx = Transaction::new(Message::new(
+            vec![crate::transaction::Instruction {
+                program_id: Pubkey([0x32; 32]),
+                accounts: vec![stale_account],
+                data: Vec::new(),
+            }],
+            Hash::hash(b"stale-tx"),
+        ));
+
+        let canonical_block = Block::new(
+            7,
+            Hash::default(),
+            Hash::hash(b"canonical-state"),
+            [0x41; 32],
+            vec![canonical_tx.clone()],
+        );
+        let stale_block = Block::new(
+            7,
+            Hash::default(),
+            Hash::hash(b"stale-state"),
+            [0x42; 32],
+            vec![stale_tx.clone()],
+        );
+
+        state.put_block(&canonical_block).unwrap();
+        state.put_tx_meta(&canonical_tx.signature(), 111).unwrap();
+        state.put_block(&stale_block).unwrap();
+        state.put_tx_meta(&stale_tx.signature(), 222).unwrap();
+
+        let slots_cf = state.db.cf_handle(CF_SLOTS).unwrap();
+        state
+            .db
+            .put_cf(
+                &slots_cf,
+                canonical_block.header.slot.to_be_bytes(),
+                canonical_block.hash().0,
+            )
+            .unwrap();
+
+        let blocks = state
+            .export_snapshot_category_cursor_untracked("blocks", None, 10)
+            .unwrap();
+        assert_eq!(blocks.entries.len(), 1);
+        assert_eq!(blocks.entries[0].0, canonical_block.hash().0.to_vec());
+
+        let transactions = state
+            .export_snapshot_category_cursor_untracked("transactions", None, 10)
+            .unwrap();
+        assert_eq!(transactions.entries.len(), 1);
+        assert_eq!(
+            transactions.entries[0].0,
+            canonical_tx.signature().0.to_vec()
+        );
+
+        let tx_by_slot = state
+            .export_snapshot_category_cursor_untracked("tx_by_slot", None, 10)
+            .unwrap();
+        assert_eq!(tx_by_slot.entries.len(), 1);
+        assert_eq!(tx_by_slot.entries[0].1, canonical_tx.signature().0.to_vec());
+
+        let tx_to_slot = state
+            .export_snapshot_category_cursor_untracked("tx_to_slot", None, 10)
+            .unwrap();
+        assert_eq!(tx_to_slot.entries.len(), 1);
+        assert_eq!(tx_to_slot.entries[0].0, canonical_tx.signature().0.to_vec());
+        assert_eq!(tx_to_slot.entries[0].1, 7u64.to_be_bytes().to_vec());
+
+        let tx_meta = state
+            .export_snapshot_category_cursor_untracked("tx_meta", None, 10)
+            .unwrap();
+        assert_eq!(tx_meta.entries.len(), 1);
+        assert_eq!(tx_meta.entries[0].0, canonical_tx.signature().0.to_vec());
+        assert_eq!(
+            state.get_tx_meta_cu(&canonical_tx.signature()).unwrap(),
+            Some(111)
+        );
+
+        let account_txs = state
+            .export_snapshot_category_cursor_untracked("account_txs", None, 10)
+            .unwrap();
+        assert_eq!(account_txs.entries.len(), 1);
+        assert!(account_txs.entries[0].0.starts_with(&canonical_account.0));
+        assert!(!account_txs.entries[0].0.starts_with(&stale_account.0));
     }
 
     #[test]

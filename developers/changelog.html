@@ -79,6 +79,28 @@
         <!-- Timeline -->
         <div class="changelog-timeline">
 
+            <!-- ============ v0.5.179 ============ -->
+            <div class="changelog-entry">
+                <div class="changelog-header">
+                    <span class="changelog-version">v0.5.179</span>
+                    <span class="changelog-date">June 19, 2026</span>
+                </div>
+                <h3 class="changelog-title">Canonical Ledger Snapshot Export</h3>
+
+                <div class="changelog-section" data-type="fixed">
+                    <h4><i class="fas fa-bug" style="color: var(--warning)"></i> Fixes</h4>
+                    <ul>
+                        <li><strong>Canonical checkpoint exports</strong> &mdash; block, transaction, slot, metadata,
+                            and account-transaction snapshot rows are now derived from canonical slot mappings instead
+                            of raw hot RocksDB history.</li>
+                        <li><strong>Fresh validator joins</strong> &mdash; stale noncanonical block and transaction
+                            records retained by a source node are no longer propagated through checkpoint snapshots.</li>
+                        <li><strong>Deterministic account indexes</strong> &mdash; account transaction index derivation
+                            now uses deterministic ordering so replayed snapshot indexes stay stable across validators.</li>
+                    </ul>
+                </div>
+            </div>
+
             <!-- ============ v0.5.178 ============ -->
             <div class="changelog-entry">
                 <div class="changelog-header">

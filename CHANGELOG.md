@@ -5,6 +5,24 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.179] - 2026-06-19
+
+### Fixed
+- Canonicalizes ledger snapshot export for block, transaction, slot, metadata,
+  and account-transaction indexes by deriving exported rows from canonical slot
+  mappings instead of raw hot column-family history.
+- Prevents stale noncanonical block and transaction records retained by a
+  source RocksDB from being propagated to fresh or resumed validators through
+  checkpoint snapshots.
+- Makes account transaction index derivation deterministic so canonical
+  snapshot replay is stable across validators.
+
+### Verified
+- Passed focused canonical ledger snapshot regression tests, full
+  `lobstercove-lichen-core` tests, validator snapshot and sync regressions,
+  clippy for core and validator targets, and a clean local 3-validator
+  post-checkpoint rejoin rehearsal before release gating.
+
 ## [0.5.178] - 2026-06-19
 
 ### Fixed
