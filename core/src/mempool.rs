@@ -251,6 +251,45 @@ impl Mempool {
         self.queue = valid.into_iter().collect();
     }
 
+    /// Remove all transactions matching a predicate.
+    ///
+    /// This is used for replace-by-key internal traffic such as oracle
+    /// attestations where only the latest pending value for a sender/asset
+    /// should remain in the local pool.
+    pub fn remove_transactions_matching<F>(&mut self, mut predicate: F) -> usize
+    where
+        F: FnMut(&Transaction) -> bool,
+    {
+        let remove_hashes: std::collections::HashSet<Hash> = self
+            .transactions
+            .iter()
+            .filter_map(|(hash, tx)| predicate(tx).then_some(*hash))
+            .collect();
+        if remove_hashes.is_empty() {
+            return 0;
+        }
+
+        for hash in &remove_hashes {
+            if let Some(tx) = self.transactions.remove(hash) {
+                let sender = tx.sender();
+                if let Some(count) = self.sender_counts.get_mut(&sender) {
+                    *count = count.saturating_sub(1);
+                    if *count == 0 {
+                        self.sender_counts.remove(&sender);
+                    }
+                }
+            }
+        }
+
+        let items: Vec<_> = self.queue.drain().collect();
+        self.queue = items
+            .into_iter()
+            .filter(|ptx| !remove_hashes.contains(&ptx.hash))
+            .collect();
+
+        remove_hashes.len()
+    }
+
     /// Prune transactions whose recent_blockhash is no longer in the valid set.
     /// Returns the number of evicted transactions.
     pub fn prune_stale_blockhashes(
@@ -474,6 +513,44 @@ mod tests {
             Hash::default(),
         ));
         assert!(mempool.add_transaction(tx, 1000, 0).is_ok());
+    }
+
+    #[test]
+    fn remove_transactions_matching_updates_sender_counts_and_heap() {
+        let mut mempool = Mempool::new(200, 300);
+        let sender = Pubkey([42; 32]);
+        let keep_sender = Pubkey([43; 32]);
+
+        let make_tx = |sender: Pubkey, data: u8| {
+            Transaction::new(Message::new(
+                vec![Instruction {
+                    program_id: Pubkey([55; 32]),
+                    accounts: vec![sender],
+                    data: vec![data],
+                }],
+                Hash::default(),
+            ))
+        };
+
+        for nonce in 0..MAX_PENDING_PER_SENDER {
+            mempool
+                .add_transaction(make_tx(sender, nonce as u8), 1000 + nonce as u64, 0)
+                .unwrap();
+        }
+        assert!(mempool
+            .add_transaction(make_tx(sender, 200), 1000, 0)
+            .is_err());
+        mempool
+            .add_transaction(make_tx(keep_sender, 1), 100_000, 0)
+            .unwrap();
+
+        let removed = mempool.remove_transactions_matching(|tx| tx.sender() == sender);
+        assert_eq!(removed, MAX_PENDING_PER_SENDER);
+        assert_eq!(mempool.size(), 1);
+        assert_eq!(mempool.get_top_transactions(1)[0].sender(), keep_sender);
+        assert!(mempool
+            .add_transaction(make_tx(sender, 201), 1000, 0)
+            .is_ok());
     }
 
     #[test]

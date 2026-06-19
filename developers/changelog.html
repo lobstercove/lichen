@@ -79,6 +79,32 @@
         <!-- Timeline -->
         <div class="changelog-timeline">
 
+            <!-- ============ v0.5.178 ============ -->
+            <div class="changelog-entry">
+                <div class="changelog-header">
+                    <span class="changelog-version">v0.5.178</span>
+                    <span class="changelog-date">June 19, 2026</span>
+                </div>
+                <h3 class="changelog-title">Validator Sync and Mesh Hardening</h3>
+
+                <div class="changelog-section" data-type="fixed">
+                    <h4><i class="fas fa-bug" style="color: var(--warning)"></i> Fixes</h4>
+                    <ul>
+                        <li><strong>BFT relay after reconnect</strong> &mdash; consensus-critical traffic now reaches
+                            healthy connected peers even when validator metadata is still catching up, while degraded
+                            peers remain filtered and consensus signatures still enforce eligibility.</li>
+                        <li><strong>Checkpoint quorum identity</strong> &mdash; checkpoint metadata no longer counts one
+                            physical peer twice when it is first seen as an authenticated node and later as a validator.</li>
+                        <li><strong>Verified snapshot activation</strong> &mdash; stale pending blocks through the
+                            imported checkpoint slot are pruned before sync is marked caught up.</li>
+                        <li><strong>Catch-up pending drain</strong> &mdash; pending sync can skip stale lower-slot
+                            candidates when a higher block still chains from the canonical tip hash.</li>
+                        <li><strong>Local rehearsal</strong> &mdash; the 3-validator runbook waits for the seed RPC to
+                            become healthy before joiners start, preventing accidental independent local genesis startup.</li>
+                    </ul>
+                </div>
+            </div>
+
             <!-- ============ v0.5.177 ============ -->
             <div class="changelog-entry">
                 <div class="changelog-header">

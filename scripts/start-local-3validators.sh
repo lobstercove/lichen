@@ -535,6 +535,12 @@ start_cluster() {
   V1PID="$STARTED_VALIDATOR_PID"
   sleep "$STAGGER_SECS"
 
+  if ! wait_rpc "$RPC1" "$RPC_WAIT_SECS" 1; then
+    echo "[local-3validators] ERROR: seed validator did not become healthy before starting joiners"
+    stop_cluster
+    exit 1
+  fi
+
   echo "[local-3validators] starting V2 via run-validator.sh ($NETWORK)"
   start_validator 2 127.0.0.1:9302 "$LOG2"
   V2PID="$STARTED_VALIDATOR_PID"

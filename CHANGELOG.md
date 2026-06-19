@@ -5,6 +5,27 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.178] - 2026-06-19
+
+### Fixed
+- Preserves BFT message delivery after validator reconnects by relaying
+  consensus-critical traffic to all healthy connected peers, while keeping the
+  existing degraded-peer score filter and consensus signature checks.
+- Prevents checkpoint metadata quorum double-counting when one physical peer is
+  first seen by authenticated node identity and later promoted to validator
+  identity.
+- Prunes stale pending blocks through an imported verified snapshot checkpoint
+  slot before marking sync caught up.
+- Allows pending catch-up to skip stale lower-slot candidates when a higher
+  block still chains from the canonical tip hash.
+- Makes local 3-validator rehearsal wait for the seed RPC to become healthy
+  before joiners start, avoiding accidental independent local genesis startup.
+- Documents explicit reserved-peer pinning for validator meshes.
+
+### Verified
+- Passed focused mempool, P2P, validator sync, checkpoint, and oracle
+  replacement regressions locally before release gating.
+
 ## [0.5.177] - 2026-06-19
 
 ### Fixed

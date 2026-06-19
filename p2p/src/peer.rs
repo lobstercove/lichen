@@ -252,6 +252,17 @@ pub struct PeerManager {
 /// full broadcast paths for minimum latency.
 pub const NON_CONSENSUS_FANOUT: usize = 8;
 
+/// Consensus-critical messages must not depend on peer metadata being perfectly
+/// fresh. Validator announcements can lag behind reconnects, so relay to every
+/// connected peer and let consensus signature checks reject irrelevant traffic.
+fn consensus_relay_targets(peers: &DashMap<SocketAddr, PeerInfo>) -> Vec<SocketAddr> {
+    peers
+        .iter()
+        .filter(|entry| entry.value().score > -5)
+        .map(|entry| *entry.key())
+        .collect()
+}
+
 /// Check whether two IPs share the same subnet.
 /// IPv4: /24 prefix (first 3 octets).  IPv6: /48 prefix (first 3 hextets).
 fn same_subnet(a: &IpAddr, b: &IpAddr) -> bool {
@@ -1044,19 +1055,14 @@ impl PeerManager {
         }
     }
 
-    /// P3-5: Broadcast message only to peers marked as validators.
-    /// Falls back to full broadcast if no validator peers are connected.
+    /// P3-5: Broadcast consensus-critical validator messages to all connected
+    /// peers. Validator marking is still tracked for metrics/reporting, but
+    /// liveness must not depend on a freshly rejoined peer having already
+    /// received and processed every ValidatorAnnounce.
     pub async fn broadcast_to_validators(&self, message: P2PMessage) {
-        let validator_addrs: Vec<SocketAddr> = self
-            .peers
-            .iter()
-            .filter(|entry| entry.value().is_validator)
-            .map(|entry| *entry.key())
-            .collect();
+        let relay_addrs = consensus_relay_targets(&self.peers);
 
-        if validator_addrs.is_empty() {
-            // No validator peers known — fall back to full broadcast
-            self.broadcast(message).await;
+        if relay_addrs.is_empty() {
             return;
         }
 
@@ -1068,8 +1074,8 @@ impl PeerManager {
             }
         };
 
-        let mut handles = Vec::with_capacity(validator_addrs.len());
-        for addr in validator_addrs {
+        let mut handles = Vec::with_capacity(relay_addrs.len());
+        for addr in relay_addrs {
             let peer = self.peers.get(&addr);
             let conn = peer.as_ref().and_then(|p| p.connection.clone());
             let session = peer.as_ref().and_then(|p| p.secure_session.clone());
@@ -2727,6 +2733,35 @@ mod tests {
         assert!(validator_addrs.contains(&addr1));
         assert!(validator_addrs.contains(&addr3));
         assert!(!validator_addrs.contains(&addr2));
+    }
+
+    #[test]
+    fn consensus_relay_targets_include_unmarked_connected_peers() {
+        let peers: DashMap<SocketAddr, PeerInfo> = DashMap::new();
+
+        let addr1: SocketAddr = "10.0.0.1:7001".parse().unwrap();
+        let addr2: SocketAddr = "10.0.0.2:7001".parse().unwrap();
+        let addr3: SocketAddr = "10.0.0.3:7001".parse().unwrap();
+        let degraded_addr: SocketAddr = "10.0.0.4:7001".parse().unwrap();
+
+        let mut p1 = PeerInfo::new(addr1);
+        p1.is_validator = true;
+        p1.validator_pubkey = Some(Pubkey([1u8; 32]));
+        let mut degraded = PeerInfo::new(degraded_addr);
+        degraded.score = -5;
+
+        peers.insert(addr1, p1);
+        peers.insert(addr2, PeerInfo::new(addr2));
+        peers.insert(addr3, PeerInfo::new(addr3));
+        peers.insert(degraded_addr, degraded);
+
+        let relay_addrs = consensus_relay_targets(&peers);
+
+        assert_eq!(relay_addrs.len(), 3);
+        assert!(relay_addrs.contains(&addr1));
+        assert!(relay_addrs.contains(&addr2));
+        assert!(relay_addrs.contains(&addr3));
+        assert!(!relay_addrs.contains(&degraded_addr));
     }
 
     #[test]

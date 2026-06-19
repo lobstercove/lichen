@@ -617,6 +617,16 @@ impl SyncManager {
         pending_total_count(&pending)
     }
 
+    /// Drop pending blocks at or below a finalized checkpoint/snapshot slot.
+    /// They cannot apply after the local tip has jumped to that slot and should
+    /// not keep initial-sync overlap or watchdog logic alive.
+    pub async fn prune_pending_through_slot(&self, slot: u64) -> usize {
+        let mut pending = self.pending_blocks.lock().await;
+        let before = pending_total_count(&pending);
+        pending.retain(|pending_slot, _| *pending_slot > slot);
+        before.saturating_sub(pending_total_count(&pending))
+    }
+
     /// Check if any pending block has `parent_hash` matching the given hash.
     /// Used by fork choice: if pending blocks chain from the incoming block,
     /// the incoming block leads to a provably longer chain (Nakamoto rule).
@@ -662,47 +672,49 @@ impl SyncManager {
             return applicable;
         }
 
-        // Walk pending slots in order. For each slot, choose the candidate whose
-        // parent_hash matches the running tip hash. Stop at the first slot where
-        // no candidate chains from the tip; later blocks stay pending behind the gap.
+        // Walk pending candidates by parent hash, not by strict slot adjacency.
+        // Lichen permits skipped slots when the next block still chains from the
+        // canonical tip hash, so a stale lower-slot candidate must not block a
+        // valid higher-slot descendant.
         let mut tip_slot = current_slot;
         let mut tip_hash = current_tip_hash;
         loop {
-            let next_slot = pending.keys().filter(|&&s| s > tip_slot).min().copied();
+            pending.retain(|slot, _| *slot > tip_slot);
 
-            match next_slot {
-                Some(slot) => {
-                    let matching_block = {
-                        let Some(candidates) = pending.get_mut(&slot) else {
-                            continue;
-                        };
-                        candidates
-                            .iter()
-                            .position(|b| b.header.parent_hash == tip_hash)
-                            .map(|idx| candidates.swap_remove(idx))
-                    };
+            let matching_slot = pending
+                .iter()
+                .filter(|(slot, _)| **slot > tip_slot)
+                .filter_map(|(slot, candidates)| {
+                    candidates
+                        .iter()
+                        .position(|b| b.header.parent_hash == tip_hash)
+                        .map(|idx| (*slot, idx))
+                })
+                .min_by_key(|(slot, _)| *slot);
 
-                    if let Some(block) = matching_block {
-                        if pending.remove(&slot).is_some_and(|stale| !stale.is_empty()) {
-                            debug!(
-                                "Pruned stale competing pending candidates for applied slot {}",
-                                slot
-                            );
-                        }
-                        tip_hash = block.hash();
-                        tip_slot = slot;
-                        applicable.push(block);
-                    } else {
-                        debug!(
-                            "Pending slot {} has no candidate chaining from tip {}",
-                            slot,
-                            &tip_hash.to_hex()[..8]
-                        );
-                        break;
-                    }
-                }
-                None => break,
+            let Some((slot, idx)) = matching_slot else {
+                debug!(
+                    "No pending candidate chains from tip {}",
+                    &tip_hash.to_hex()[..8]
+                );
+                break;
+            };
+
+            let block = {
+                let Some(candidates) = pending.get_mut(&slot) else {
+                    continue;
+                };
+                candidates.swap_remove(idx)
+            };
+            if pending.remove(&slot).is_some_and(|stale| !stale.is_empty()) {
+                debug!(
+                    "Pruned stale competing pending candidates for applied slot {}",
+                    slot
+                );
             }
+            tip_hash = block.hash();
+            tip_slot = slot;
+            applicable.push(block);
         }
 
         if !applicable.is_empty() {
@@ -1227,6 +1239,43 @@ mod tests {
         assert_eq!(applied.len(), 2);
         assert_eq!(applied[0].hash(), correct.hash());
         assert_eq!(applied[1].hash(), child.hash());
+        assert_eq!(sm.pending_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn test_pending_skips_stale_lower_slot_when_higher_slot_chains_from_tip() {
+        let sm = SyncManager::new();
+        let tip = test_block_with_parent(4_631_875, Hash::default(), 1);
+        let tip_hash = tip.hash();
+        let stale_lower = test_block_with_parent(4_631_876, Hash([8u8; 32]), 2);
+        let valid_skip_slot = test_block_with_parent(4_631_877, tip_hash, 3);
+
+        sm.add_pending_block(stale_lower).await;
+        sm.add_pending_block(valid_skip_slot.clone()).await;
+
+        let applied = sm.try_apply_pending(4_631_875, tip_hash).await;
+        assert_eq!(applied.len(), 1);
+        assert_eq!(applied[0].hash(), valid_skip_slot.hash());
+        assert_eq!(
+            sm.pending_count().await,
+            0,
+            "stale lower-slot candidates at or below the new tip are discarded after a valid descendant applies"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_prune_pending_through_slot_after_snapshot_import() {
+        let sm = SyncManager::new();
+        sm.add_pending_block(test_block_with_parent(99, Hash([8u8; 32]), 1))
+            .await;
+        sm.add_pending_block(test_block_with_parent(100, Hash([8u8; 32]), 2))
+            .await;
+        sm.add_pending_block(test_block_with_parent(101, Hash([8u8; 32]), 3))
+            .await;
+
+        assert_eq!(sm.prune_pending_through_slot(100).await, 2);
+        assert_eq!(sm.pending_count().await, 1);
+        assert_eq!(sm.prune_pending_through_slot(101).await, 1);
         assert_eq!(sm.pending_count().await, 0);
     }
 

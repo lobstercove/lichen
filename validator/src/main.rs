@@ -1709,6 +1709,12 @@ impl VerifiedCheckpointData {
         !self.snapshot_manifest.is_empty()
     }
 
+    fn is_still_available(&self) -> bool {
+        Path::new(&self.checkpoint_path)
+            .join("checkpoint_meta.json")
+            .is_file()
+    }
+
     fn checkpoint(
         &self,
     ) -> (
@@ -1747,6 +1753,13 @@ impl VerifiedCheckpointCacheEntry {
         self.checkpoints
             .iter()
             .any(VerifiedCheckpointData::has_snapshot_manifest)
+    }
+
+    fn prune_unavailable_checkpoints(&mut self) -> usize {
+        let before = self.checkpoints.len();
+        self.checkpoints
+            .retain(VerifiedCheckpointData::is_still_available);
+        before.saturating_sub(self.checkpoints.len())
     }
 
     fn checkpoint(
@@ -2143,9 +2156,9 @@ fn drain_and_log_pre_consensus_bft_queues(
 fn should_reconsider_duplicate_block(
     block_slot: u64,
     current_slot: u64,
-    has_pending_blocks: bool,
+    has_pending_child: bool,
 ) -> bool {
-    has_pending_blocks && block_slot == current_slot
+    has_pending_child && block_slot == current_slot
 }
 
 fn extract_rpc_tip_slot(body: &serde_json::Value) -> Option<u64> {
@@ -7537,6 +7550,19 @@ async fn latest_verified_checkpoint_cached(
         }
     }
 
+    if let Some(cached) = cache.as_mut() {
+        let removed = cached.prune_unavailable_checkpoints();
+        if removed > 0 {
+            warn!(
+                "⚠️  Pruned {} unavailable checkpoint advertisement(s) from verified cache before serving metadata",
+                removed
+            );
+        }
+        if cached.is_empty() {
+            *cache = None;
+        }
+    }
+
     if let Some(cached) = cache.as_ref() {
         if cached.is_fresh() && cached.has_snapshot_manifest() {
             return Some(cached.checkpoint());
@@ -7875,6 +7901,23 @@ fn checkpoint_source_sort_key(source: VerifiedCheckpointSource) -> (u8, [u8; 32]
     }
 }
 
+fn remove_checkpoint_anchors_for_source(
+    anchors: &mut HashMap<VerifiedCheckpointAnchorKey, VerifiedCheckpointAnchor>,
+    peers: &mut HashMap<VerifiedCheckpointAnchorKey, SocketAddr>,
+    source: VerifiedCheckpointSource,
+    peer_addr: SocketAddr,
+) -> usize {
+    let before = anchors.len();
+    let remove_keys: HashSet<VerifiedCheckpointAnchorKey> = anchors
+        .keys()
+        .filter(|key| key.source == source || peers.get(key).is_some_and(|addr| *addr == peer_addr))
+        .copied()
+        .collect();
+    anchors.retain(|key, _| !remove_keys.contains(key));
+    peers.retain(|key, _| !remove_keys.contains(key));
+    before.saturating_sub(anchors.len())
+}
+
 fn best_ready_checkpoint_anchor(
     anchors: &HashMap<VerifiedCheckpointAnchorKey, VerifiedCheckpointAnchor>,
     rejected_snapshot_sources: &HashSet<(VerifiedCheckpointSource, u64, [u8; 32])>,
@@ -8161,6 +8204,28 @@ fn build_oracle_attestation_tx(
     Ok(tx)
 }
 
+fn is_oracle_attestation_tx_for(tx: &Transaction, validator_pubkey: Pubkey, asset: &str) -> bool {
+    let Some(ix) = tx.message.instructions.first() else {
+        return false;
+    };
+    if ix.program_id != CORE_SYSTEM_PROGRAM_ID || ix.accounts.first() != Some(&validator_pubkey) {
+        return false;
+    }
+    let data = &ix.data;
+    if data.len() < 2 || data[0] != 30 {
+        return false;
+    }
+    let asset_len = data[1] as usize;
+    let expected_len = 2usize
+        .saturating_add(asset_len)
+        .saturating_add(8)
+        .saturating_add(1);
+    if data.len() != expected_len {
+        return false;
+    }
+    data.get(2..2 + asset_len) == Some(asset.as_bytes())
+}
+
 #[derive(Clone)]
 struct OracleFeedTxContext {
     mempool: Arc<Mutex<Mempool>>,
@@ -8196,6 +8261,15 @@ async fn submit_oracle_attestation_tx(
         let fee_config = FeeConfig::default_from_constants();
         let computed_fee = TxProcessor::compute_transaction_fee(&tx, &fee_config);
         let mut pool = tx_context.mempool.lock().await;
+        let replaced = pool.remove_transactions_matching(|pending| {
+            is_oracle_attestation_tx_for(pending, tx_context.validator_pubkey, asset)
+        });
+        if replaced > 0 {
+            debug!(
+                "Replaced {} stale oracle attestation tx(s) for {} before enqueueing latest price",
+                replaced, asset
+            );
+        }
         if let Err(e) = pool.add_transaction(tx.clone(), computed_fee, 0) {
             // "already in mempool" is expected when the same price+blockhash
             // produces the same deterministic tx hash between feeder ticks
@@ -14120,7 +14194,7 @@ async fn run_validator() {
                             // false at that time, but now with pending blocks queued
                             // the fork choice has better information.
                             let current = state_for_blocks.get_last_slot().unwrap_or(0);
-                            let has_pending = sync_mgr.pending_count().await > 0;
+                            let has_pending_child = sync_mgr.has_pending_child(&block_hash).await;
                             let current_finalized = finality_for_blocks.finalized_slot();
                             if is_sync_block && block_slot <= current_finalized {
                                 // Sync batches intentionally overlap the current tip in
@@ -14130,11 +14204,15 @@ async fn run_validator() {
                                 // finality guard and strand the rest of the sync batch.
                                 continue;
                             }
-                            if should_reconsider_duplicate_block(block_slot, current, has_pending) {
+                            if should_reconsider_duplicate_block(
+                                block_slot,
+                                current,
+                                has_pending_child,
+                            ) {
                                 // Let the current tip be re-evaluated when pending
                                 // descendants are waiting on an alternative parent.
                                 info!(
-                                    "🔄 Re-evaluating current tip block {} (pending descendants exist)",
+                                    "🔄 Re-evaluating current tip block {} (pending descendants chain from this tip)",
                                     block_slot
                                 );
                             } else {
@@ -16129,7 +16207,7 @@ async fn run_validator() {
                                 debug!("Fork choice kept existing block at slot {}", block_slot);
                             }
                         } else {
-                            if sync_mgr.pending_count().await > 0 {
+                            if sync_mgr.has_pending_child(&existing.hash()).await {
                                 let stored_tip_hash = existing.hash();
                                 info!(
                                     "🔄 Current tip block {} already canonical; draining pending descendants from stored tip",
@@ -17651,7 +17729,31 @@ async fn run_validator() {
                 // Handle CheckpointMetaResponse
                 if let Some(mut checkpoint_metas) = response.checkpoint_meta {
                     checkpoint_metas.sort_by_key(|meta| std::cmp::Reverse(meta.slot));
-                    let mut saw_checkpoint = false;
+                    let Some(response_anchor_source) = checkpoint_source_identity(
+                        peer_mgr_for_snapshot_apply.peer_validator_pubkey(&response.requester),
+                        peer_mgr_for_snapshot_apply.peer_node_id(&response.requester),
+                    ) else {
+                        warn!(
+                            "⚠️  Ignoring checkpoint metadata from {} without a verified source identity",
+                            response.requester
+                        );
+                        continue;
+                    };
+                    let pruned_old_anchors = remove_checkpoint_anchors_for_source(
+                        &mut verified_checkpoint_anchors,
+                        &mut verified_checkpoint_anchor_peers,
+                        response_anchor_source,
+                        response.requester,
+                    );
+                    if pruned_old_anchors > 0 {
+                        debug!(
+                            "Replaced {} previous checkpoint anchor(s) for {} before applying fresh metadata from {}",
+                            pruned_old_anchors,
+                            response_anchor_source.label(),
+                            response.requester,
+                        );
+                    }
+                    let mut inserted_valid_checkpoint = false;
                     for checkpoint_meta in checkpoint_metas {
                         let CheckpointMetaAnchor {
                             slot,
@@ -17663,7 +17765,6 @@ async fn run_validator() {
                             snapshot_manifest,
                         } = checkpoint_meta;
                         if slot > 0 && total_accounts > 0 {
-                            saw_checkpoint = true;
                             if !snapshot_manifest.is_empty() {
                                 if let Err(err) =
                                     validate_advertised_snapshot_manifest_shape(&snapshot_manifest)
@@ -17677,17 +17778,7 @@ async fn run_validator() {
                                     continue;
                                 }
                             }
-                            let Some(anchor_source) = checkpoint_source_identity(
-                                peer_mgr_for_snapshot_apply
-                                    .peer_validator_pubkey(&response.requester),
-                                peer_mgr_for_snapshot_apply.peer_node_id(&response.requester),
-                            ) else {
-                                warn!(
-                                "⚠️  Ignoring checkpoint metadata from {} without a verified source identity",
-                                response.requester
-                            );
-                                continue;
-                            };
+                            let anchor_source = response_anchor_source;
                             let anchor_verified = {
                                 let vs = validator_set_for_snapshot_apply.read().await;
                                 let validator_source_error = anchor_source
@@ -17760,6 +17851,7 @@ async fn run_validator() {
                                 VerifiedCheckpointAnchorKey::new(anchor_source, &anchor);
                             verified_checkpoint_anchors.insert(anchor_key, anchor.clone());
                             verified_checkpoint_anchor_peers.insert(anchor_key, response.requester);
+                            inserted_valid_checkpoint = true;
                             let support = checkpoint_anchor_support(
                                 &verified_checkpoint_anchors,
                                 slot,
@@ -18055,16 +18147,7 @@ async fn run_validator() {
                             }
                         }
                     }
-                    if !saw_checkpoint {
-                        if let Some(anchor_source) = checkpoint_source_identity(
-                            peer_mgr_for_snapshot_apply.peer_validator_pubkey(&response.requester),
-                            peer_mgr_for_snapshot_apply.peer_node_id(&response.requester),
-                        ) {
-                            verified_checkpoint_anchors
-                                .retain(|key, _| key.source != anchor_source);
-                            verified_checkpoint_anchor_peers
-                                .retain(|key, _| key.source != anchor_source);
-                        }
+                    if !inserted_valid_checkpoint {
                         warn!("📋 Peer {} has no checkpoint available", response.requester);
                         // Warp sync is impossible without a checkpoint.  Complete the
                         // current sync batch and switch to Full so the next
@@ -18841,6 +18924,25 @@ async fn run_validator() {
                             }
                             Err(e) => warn!("⚠️  Failed to create local checkpoint: {}", e),
                         }
+                        sync_mgr_for_snapshot.set_checkpoint(snapshot_slot).await;
+                        let pruned_pending = sync_mgr_for_snapshot
+                            .prune_pending_through_slot(snapshot_slot)
+                            .await;
+                        if pruned_pending > 0 {
+                            info!(
+                                "🧹 Pruned {} stale pending block(s) through imported snapshot slot {}",
+                                pruned_pending, snapshot_slot
+                            );
+                        }
+                        sync_mgr_for_snapshot.record_progress(snapshot_slot).await;
+                        sync_mgr_for_snapshot.complete_sync().await;
+                        if sync_mgr_for_snapshot.is_caught_up(snapshot_slot).await {
+                            sync_mgr_for_snapshot.transition_to_live().await;
+                        }
+                        info!(
+                            "✅ Snapshot checkpoint slot {} activated for sync catch-up bookkeeping",
+                            snapshot_slot
+                        );
                         cleanup_snapshot_live_rollback(&data_dir_for_snapshot_apply);
                         active_snapshot_anchor = None;
                         active_snapshot_source_peer = None;
@@ -25731,6 +25833,143 @@ mod tests {
     }
 
     #[test]
+    fn replacing_checkpoint_anchors_for_source_removes_stale_slots() {
+        let manifest = vec![SnapshotCategoryDigest {
+            category: "accounts".to_string(),
+            entry_count: 1,
+            sha256: [3u8; 32],
+        }];
+        let manifest_root = snapshot_manifest_root(&manifest);
+        let old_root = [8u8; 32];
+        let latest_root = [9u8; 32];
+        let make_anchor = |slot: u64, state_root: [u8; 32]| VerifiedCheckpointAnchor {
+            slot,
+            state_root,
+            snapshot_manifest: manifest.clone(),
+            snapshot_manifest_root: manifest_root,
+            block: Block::new_with_timestamp(
+                slot,
+                Hash::default(),
+                Hash(state_root),
+                [7u8; 32],
+                Vec::new(),
+                slot,
+            ),
+        };
+
+        let source = VerifiedCheckpointSource::Validator(Pubkey([1u8; 32]));
+        let corroborator = VerifiedCheckpointSource::Validator(Pubkey([2u8; 32]));
+        let source_peer: SocketAddr = "127.0.0.1:7001".parse().expect("peer addr");
+        let corroborator_peer: SocketAddr = "127.0.0.2:7001".parse().expect("peer addr");
+        let old_a = make_anchor(4_632_000, old_root);
+        let old_b = make_anchor(4_632_000, old_root);
+        let latest_a = make_anchor(4_638_000, latest_root);
+        let latest_b = make_anchor(4_638_000, latest_root);
+
+        let mut anchors = HashMap::from([
+            (VerifiedCheckpointAnchorKey::new(source, &old_a), old_a),
+            (
+                VerifiedCheckpointAnchorKey::new(corroborator, &old_b),
+                old_b,
+            ),
+            (
+                VerifiedCheckpointAnchorKey::new(corroborator, &latest_b),
+                latest_b,
+            ),
+        ]);
+        let mut peers = anchors
+            .keys()
+            .copied()
+            .map(|key| {
+                let peer = if key.source == source {
+                    source_peer
+                } else {
+                    corroborator_peer
+                };
+                (key, peer)
+            })
+            .collect::<HashMap<_, _>>();
+
+        assert_eq!(
+            remove_checkpoint_anchors_for_source(&mut anchors, &mut peers, source, source_peer),
+            1
+        );
+        anchors.insert(
+            VerifiedCheckpointAnchorKey::new(source, &latest_a),
+            latest_a,
+        );
+
+        let (_, best, support, _) =
+            best_ready_checkpoint_anchor(&anchors, &HashSet::new()).expect("latest is ready");
+        assert_eq!(best.slot, 4_638_000);
+        assert_eq!(best.state_root, latest_root);
+        assert_eq!(support, 2);
+        assert_eq!(checkpoint_anchor_support(&anchors, 4_632_000, old_root), 1);
+    }
+
+    #[test]
+    fn replacing_checkpoint_anchors_for_peer_removes_promoted_source_identity() {
+        let manifest = vec![SnapshotCategoryDigest {
+            category: "accounts".to_string(),
+            entry_count: 1,
+            sha256: [3u8; 32],
+        }];
+        let manifest_root = snapshot_manifest_root(&manifest);
+        let root = [9u8; 32];
+        let make_anchor = || VerifiedCheckpointAnchor {
+            slot: 4_638_000,
+            state_root: root,
+            snapshot_manifest: manifest.clone(),
+            snapshot_manifest_root: manifest_root,
+            block: Block::new_with_timestamp(
+                4_638_000,
+                Hash::default(),
+                Hash(root),
+                [7u8; 32],
+                Vec::new(),
+                4_638_000,
+            ),
+        };
+
+        let node_source = VerifiedCheckpointSource::Node([1u8; 32]);
+        let validator_source = VerifiedCheckpointSource::Validator(Pubkey([2u8; 32]));
+        let corroborator = VerifiedCheckpointSource::Validator(Pubkey([3u8; 32]));
+        let promoted_peer: SocketAddr = "127.0.0.1:7001".parse().expect("peer addr");
+        let corroborator_peer: SocketAddr = "127.0.0.2:7001".parse().expect("peer addr");
+        let node_anchor = make_anchor();
+        let corroborator_anchor = make_anchor();
+
+        let node_key = VerifiedCheckpointAnchorKey::new(node_source, &node_anchor);
+        let corroborator_key = VerifiedCheckpointAnchorKey::new(corroborator, &corroborator_anchor);
+        let mut anchors = HashMap::from([
+            (node_key, node_anchor),
+            (corroborator_key, corroborator_anchor),
+        ]);
+        let mut peers = HashMap::from([
+            (node_key, promoted_peer),
+            (corroborator_key, corroborator_peer),
+        ]);
+
+        assert_eq!(checkpoint_anchor_support(&anchors, 4_638_000, root), 2);
+        assert_eq!(
+            remove_checkpoint_anchors_for_source(
+                &mut anchors,
+                &mut peers,
+                validator_source,
+                promoted_peer,
+            ),
+            1
+        );
+        assert_eq!(
+            checkpoint_anchor_support(&anchors, 4_638_000, root),
+            1,
+            "node and validator identities from one socket must not count as two checkpoint supporters"
+        );
+        assert!(anchors.contains_key(&corroborator_key));
+        assert!(peers.contains_key(&corroborator_key));
+    }
+
+    #[test]
     fn same_slot_checkpoint_root_mismatch_requires_verified_snapshot() {
         let local_root = Hash([1u8; 32]);
         let checkpoint_root = Hash([2u8; 32]);
@@ -27323,6 +27562,68 @@ mod tests {
     }
 
     #[test]
+    fn verified_checkpoint_cache_prunes_unavailable_paths_before_advertising() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let manifest = vec![SnapshotCategoryDigest {
+            category: "accounts".to_string(),
+            entry_count: 1,
+            sha256: [3u8; 32],
+        }];
+        let root_a = [9u8; 32];
+        let root_b = [10u8; 32];
+        let make_checkpoint =
+            |slot: u64, state_root: [u8; 32], checkpoint_path: String| VerifiedCheckpointData {
+                meta: lichen_core::CheckpointMeta {
+                    slot,
+                    state_root,
+                    created_at: slot,
+                    total_accounts: 1,
+                },
+                checkpoint_path,
+                block: Block::new_with_timestamp(
+                    slot,
+                    Hash::default(),
+                    Hash(state_root),
+                    [7u8; 32],
+                    Vec::new(),
+                    slot,
+                ),
+                snapshot_manifest: manifest.clone(),
+            };
+
+        let available_path = temp.path().join("checkpoints/slot-101");
+        std::fs::create_dir_all(&available_path).expect("create checkpoint dir");
+        std::fs::write(
+            available_path.join("checkpoint_meta.json"),
+            serde_json::to_vec(&lichen_core::CheckpointMeta {
+                slot: 101,
+                state_root: root_b,
+                created_at: 101,
+                total_accounts: 1,
+            })
+            .expect("serialize checkpoint meta"),
+        )
+        .expect("write checkpoint meta");
+
+        let mut cache = VerifiedCheckpointCacheEntry {
+            checkpoints: vec![
+                make_checkpoint(
+                    100,
+                    root_a,
+                    temp.path().join("pruned/slot-100").display().to_string(),
+                ),
+                make_checkpoint(101, root_b, available_path.display().to_string()),
+            ],
+            verified_at: Instant::now(),
+        };
+
+        assert_eq!(cache.prune_unavailable_checkpoints(), 1);
+        assert_eq!(cache.checkpoints.len(), 1);
+        assert_eq!(cache.checkpoints[0].meta.slot, 101);
+        assert!(cache.has_snapshot_manifest());
+    }
+
+    #[test]
     fn checkpoint_auth_snapshot_drops_live_locks_before_checkpoint_verification() {
         let validator_set = Arc::new(RwLock::new(ValidatorSet::new()));
         let stake_pool = Arc::new(RwLock::new(StakePool::new()));
@@ -28837,6 +29138,41 @@ mod tests {
         assert!(!should_reconsider_duplicate_block(11, 12, true));
         assert!(!should_reconsider_duplicate_block(12, 12, false));
         assert!(!should_reconsider_duplicate_block(13, 12, true));
+    }
+
+    #[test]
+    fn oracle_attestation_matcher_requires_sender_asset_and_shape() {
+        let validator = Pubkey([42; 32]);
+        let mut data = vec![30, 4];
+        data.extend_from_slice(b"wBTC");
+        data.extend_from_slice(&123u64.to_le_bytes());
+        data.push(8);
+        let tx = Transaction::new(lichen_core::Message::new(
+            vec![lichen_core::Instruction {
+                program_id: CORE_SYSTEM_PROGRAM_ID,
+                accounts: vec![validator],
+                data,
+            }],
+            Hash::default(),
+        ));
+
+        assert!(is_oracle_attestation_tx_for(&tx, validator, "wBTC"));
+        assert!(!is_oracle_attestation_tx_for(&tx, validator, "wETH"));
+        assert!(!is_oracle_attestation_tx_for(&tx, Pubkey([7; 32]), "wBTC"));
+
+        let ordinary_system_tx = Transaction::new(lichen_core::Message::new(
+            vec![lichen_core::Instruction {
+                program_id: CORE_SYSTEM_PROGRAM_ID,
+                accounts: vec![validator],
+                data: vec![1, 4, b'w', b'B', b'T', b'C'],
+            }],
+            Hash::default(),
+        ));
+        assert!(!is_oracle_attestation_tx_for(
+            &ordinary_system_tx,
+            validator,
+            "wBTC"
+        ));
     }
 
     #[test]

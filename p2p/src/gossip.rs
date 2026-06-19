@@ -11,8 +11,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::time::interval;
 use tracing::{debug, info, warn};
 
-/// Minimum active peer count before aggressive reconnection to all known peers
-const MIN_PEER_COUNT: usize = 2;
+/// Minimum active peer count before aggressive reconnection to all known peers.
+/// A 4-validator network with only 2 connected peers has no spare relay path,
+/// so keep reconnect pressure on until at least 3 peers are connected.
+const MIN_PEER_COUNT: usize = 3;
 
 /// Maximum backoff interval (5 minutes)
 const MAX_BACKOFF_SECS: u64 = 300;
