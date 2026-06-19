@@ -79,6 +79,31 @@
         <!-- Timeline -->
         <div class="changelog-timeline">
 
+            <!-- ============ v0.5.177 ============ -->
+            <div class="changelog-entry">
+                <div class="changelog-header">
+                    <span class="changelog-version">v0.5.177</span>
+                    <span class="changelog-date">June 19, 2026</span>
+                </div>
+                <h3 class="changelog-title">Validator Restart and Snapshot Housekeeping</h3>
+
+                <div class="changelog-section" data-type="fixed">
+                    <h4><i class="fas fa-bug" style="color: var(--warning)"></i> Fixes</h4>
+                    <ul>
+                        <li><strong>Initial sync restart pace</strong> &mdash; resumed and fresh-join validators now
+                            request the next bounded catch-up range immediately after applying the previous target
+                            slot, while live-sync retries still keep their normal throttling.</li>
+                        <li><strong>Block-range serving</strong> &mdash; catch-up responses use the existing
+                            500-block protocol cap instead of splitting restart ranges into smaller messages.</li>
+                        <li><strong>Snapshot staging cleanup</strong> &mdash; startup removes stale
+                            <code>staging-snapshot-&lt;slot&gt;</code> directories, receiver shutdown cleans active
+                            staging state, and verified snapshot imports prune old checkpoints immediately.</li>
+                        <li><strong>Release scope</strong> &mdash; no consensus state schema, reward accounting,
+                            contract ABI, or genesis catalog behavior changes are introduced.</li>
+                    </ul>
+                </div>
+            </div>
+
             <!-- ============ v0.5.176 ============ -->
             <div class="changelog-entry">
                 <div class="changelog-header">

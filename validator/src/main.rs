@@ -478,6 +478,9 @@ fn oracle_pair_prices(
 /// Sync request fanout: send block-range requests to top-N peers by score
 /// instead of broadcasting to all peers.
 const SYNC_REQUEST_FANOUT: usize = 3;
+const INITIAL_SYNC_POLL_MS: u64 = sync::INITIAL_SYNC_COOLDOWN_MS;
+const INITIAL_SYNC_PROGRESS_CHECK_SECS: u64 = 1;
+const LIVE_SYNC_PROGRESS_CHECK_SECS: u64 = 5;
 
 /// Live BFT can tolerate a tiny gap through future-message buffering, but once
 /// the peer tip is several heights ahead this node must let sync catch up
@@ -488,6 +491,7 @@ const FUTURE_CONSENSUS_PROPOSAL_BUFFER_HEIGHTS: u64 = 10;
 /// QoS: per-peer block-range serving token bucket, measured in blocks.
 const BLOCK_RANGE_SERVE_BURST_BLOCKS: u64 = 5000;
 const BLOCK_RANGE_SERVE_REFILL_BLOCKS_PER_SEC: u64 = 1000;
+const BLOCK_RANGE_RESPONSE_BATCH_BLOCKS: usize = sync::P2P_BLOCK_RANGE_LIMIT as usize;
 
 /// QoS: per-peer snapshot serving token bucket, measured in request units.
 const SNAPSHOT_SERVE_BURST_UNITS: u64 = 32;
@@ -613,6 +617,52 @@ fn open_fresh_snapshot_staging(
     StateStore::open(&staging_dir)
         .map(|state| (staging_dir, state))
         .map_err(|err| format!("failed to open staging snapshot DB: {}", err))
+}
+
+fn snapshot_staging_slot_from_name(name: &str) -> Option<u64> {
+    let slot = name.strip_prefix("staging-snapshot-")?;
+    if slot.is_empty() || !slot.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    slot.parse::<u64>().ok()
+}
+
+fn cleanup_stale_snapshot_staging_dirs(data_dir: &str) -> Result<usize, String> {
+    let root = Path::new(data_dir);
+    if !root.exists() {
+        return Ok(0);
+    }
+
+    let entries = fs::read_dir(root)
+        .map_err(|err| format!("failed to list state directory {}: {}", data_dir, err))?;
+    let mut removed = 0usize;
+    for entry in entries {
+        let entry = entry.map_err(|err| {
+            format!(
+                "failed to inspect child in state directory {}: {}",
+                data_dir, err
+            )
+        })?;
+        if !entry
+            .file_type()
+            .map_err(|err| format!("failed to inspect {}: {}", entry.path().display(), err))?
+            .is_dir()
+        {
+            continue;
+        }
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if snapshot_staging_slot_from_name(&name).is_none() {
+            continue;
+        }
+        let path = entry.path();
+        fs::remove_dir_all(&path)
+            .map_err(|err| format!("failed to remove stale {}: {}", path.display(), err))?;
+        removed += 1;
+    }
+
+    Ok(removed)
 }
 
 fn cleanup_snapshot_staging(staging: &mut Option<(u64, String, StateStore)>) {
@@ -7111,6 +7161,29 @@ fn checkpoint_max_bytes_from_env() -> Option<u64> {
     parse_checkpoint_max_bytes(env::var("LICHEN_CHECKPOINT_MAX_BYTES").ok().as_deref())
 }
 
+fn prune_state_checkpoints(data_dir: &str, context: &str) {
+    let keep_count = checkpoint_keep_count_from_env();
+    let max_bytes = checkpoint_max_bytes_from_env();
+    match StateStore::prune_checkpoints_with_size_limit(data_dir, keep_count, max_bytes) {
+        Ok(removed) if removed > 0 => {
+            info!(
+                "🧹 Pruned {} old checkpoint(s) after {}; keeping up to {} recent checkpoint(s), max_size={}",
+                removed,
+                context,
+                keep_count,
+                max_bytes
+                    .map(|bytes| bytes.to_string())
+                    .unwrap_or_else(|| "disabled".to_string())
+            );
+        }
+        Ok(_) => {}
+        Err(e) => warn!(
+            "⚠️  Failed to prune old checkpoints after {}: {}",
+            context, e
+        ),
+    }
+}
+
 /// Periodic checkpoint creation — called after every block to check if
 /// the current slot should trigger a RocksDB checkpoint.
 /// Checkpoints are created every CHECKPOINT_INTERVAL (1,000) slots and
@@ -7136,22 +7209,7 @@ async fn maybe_create_checkpoint(
             );
             // Record the checkpoint in SyncManager for fast bootstrapping
             sync_manager.set_checkpoint(slot).await;
-            let keep_count = checkpoint_keep_count_from_env();
-            let max_bytes = checkpoint_max_bytes_from_env();
-            match StateStore::prune_checkpoints_with_size_limit(data_dir, keep_count, max_bytes) {
-                Ok(removed) if removed > 0 => {
-                    info!(
-                        "🧹 Pruned {} old checkpoint(s); keeping up to {} recent checkpoint(s), max_size={}",
-                        removed,
-                        keep_count,
-                        max_bytes
-                            .map(|bytes| bytes.to_string())
-                            .unwrap_or_else(|| "disabled".to_string())
-                    );
-                }
-                Ok(_) => {}
-                Err(e) => warn!("⚠️  Failed to prune old checkpoints: {}", e),
-            }
+            prune_state_checkpoints(data_dir, "periodic checkpoint");
         }
         Err(e) => {
             warn!("⚠️  Failed to create checkpoint at slot {}: {}", slot, e);
@@ -12045,6 +12103,18 @@ async fn run_validator() {
         error!("FATAL: snapshot live-apply recovery failed: {}", e);
         return;
     }
+    match cleanup_stale_snapshot_staging_dirs(&data_dir) {
+        Ok(removed) if removed > 0 => {
+            info!(
+                "🧹 Removed {} stale snapshot staging director{} from {}",
+                removed,
+                if removed == 1 { "y" } else { "ies" },
+                data_dir
+            );
+        }
+        Ok(_) => {}
+        Err(err) => warn!("⚠️  Failed stale snapshot staging cleanup: {}", err),
+    }
 
     // Open state database
     let mut state = match StateStore::open_with_cache_mb(&data_dir, cache_size_mb) {
@@ -13623,11 +13693,15 @@ async fn run_validator() {
             let mut fork_choice = ForkChoice::new();
             // Periodically prune old entries (keep last 1000 slots)
             let mut prune_below_slot: u64 = 0;
-            // Periodic sync check: every 5 seconds, check if we're behind peers
-            // and trigger sync even when no blocks are arriving. This prevents a
+            // Periodic sync check: poll quickly during InitialSync while
+            // should_sync() still throttles live retries with exponential
+            // backoff. This keeps a resumed validator from idling between
+            // completed 500-block ranges and still triggers sync when no blocks
+            // are arriving. This prevents a
             // stalled chain from permanently blocking catch-up (Tendermint-style
             // "blockchain reactor" pattern — periodic peer polling).
-            let mut sync_check_interval = time::interval(Duration::from_secs(5));
+            let mut sync_check_interval =
+                time::interval(Duration::from_millis(INITIAL_SYNC_POLL_MS));
             sync_check_interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
             macro_rules! apply_pending_from_tip {
                 ($tip_slot:expr, $tip_hash:expr, $context:literal) => {{
@@ -13741,7 +13815,8 @@ async fn run_validator() {
                     biased;
                     Some(b) = sync_block_rx.recv() => (b, true),
                     Some(b) = block_rx.recv() => (b, false),
-                    // Periodic sync check: fires every 5s to trigger catch-up
+                    // Periodic sync check: fires quickly during InitialSync and
+                    // is throttled by SyncManager during LiveSync, including
                     // when the chain is stalled and no blocks are arriving.
                     _ = sync_check_interval.tick() => {
                         let current_slot = state_for_blocks.get_last_slot().unwrap_or(0);
@@ -13771,7 +13846,10 @@ async fn run_validator() {
                             sync_mgr
                                 .set_sync_mode(select_catch_up_mode(current_slot, gap))
                                 .await;
-                            info!("🔄 Periodic sync check: behind by {} blocks ({} to {})", gap, start, end);
+                            info!(
+                                "🔄 Periodic sync check: behind by {} blocks ({} to {})",
+                                gap, start, end
+                            );
                             sync_mgr.start_sync(start, end).await;
                             let current_mode = sync_mgr.get_sync_mode().await;
                             let (warp_snapshot_active, checkpoint_repair_pending) = {
@@ -13834,7 +13912,10 @@ async fn run_validator() {
                             let sync_start = start;
                             let sync_end = end;
                             tokio::spawn(async move {
-                                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                                tokio::time::sleep(tokio::time::Duration::from_secs(
+                                    INITIAL_SYNC_PROGRESS_CHECK_SECS,
+                                ))
+                                .await;
                                 let current = state_for_sync_check.get_last_slot().unwrap_or(0);
                                 let outcome = sync_mgr_complete
                                     .finish_sync_batch_check(
@@ -15198,7 +15279,10 @@ async fn run_validator() {
                         let sync_start = start;
                         let sync_end = end;
                         tokio::spawn(async move {
-                            tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+                            tokio::time::sleep(tokio::time::Duration::from_secs(
+                                INITIAL_SYNC_PROGRESS_CHECK_SECS,
+                            ))
+                            .await;
                             let current = state_for_sync_check.get_last_slot().unwrap_or(0);
                             let outcome = sync_mgr_complete
                                 .finish_sync_batch_check(
@@ -15748,9 +15832,9 @@ async fn run_validator() {
                         tokio::spawn(async move {
                             let phase = sync_mgr_complete.get_sync_phase().await;
                             let delay = if phase == sync::SyncPhase::InitialSync {
-                                3
+                                INITIAL_SYNC_PROGRESS_CHECK_SECS
                             } else {
-                                5
+                                LIVE_SYNC_PROGRESS_CHECK_SECS
                             };
                             tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
                             let current = state_for_sync_check.get_last_slot().unwrap_or(0);
@@ -16677,10 +16761,10 @@ async fn run_validator() {
                 }
 
                 if !blocks.is_empty() {
-                    // P1-2: Adaptive batching — batch 50 blocks per message
-                    // for large sync requests (>100 blocks), 1 per message
-                    // for small/NAT-safe requests.
-                    let batch_size = if range_size > 100 { 50 } else { 1 };
+                    // Send responses at the protocol cap. Restart catch-up uses
+                    // 500-block requests, and splitting them into ten tiny
+                    // messages adds latency without changing validation safety.
+                    let batch_size = BLOCK_RANGE_RESPONSE_BATCH_BLOCKS.min(blocks.len()).max(1);
                     info!(
                         "📤 Sending {} blocks to {} (batch_size={})",
                         blocks.len(),
@@ -16688,7 +16772,7 @@ async fn run_validator() {
                         batch_size
                     );
 
-                    for chunk in blocks.chunks(batch_size as usize) {
+                    for chunk in blocks.chunks(batch_size) {
                         let response_msg = P2PMessage::new(
                             MessageType::BlockRangeResponse {
                                 blocks: chunk.to_vec(),
@@ -17561,6 +17645,7 @@ async fn run_validator() {
                     }
                 };
                 let Some(response) = maybe_response else {
+                    cleanup_snapshot_staging(&mut active_snapshot_staging);
                     break;
                 };
                 // Handle CheckpointMetaResponse
@@ -18744,10 +18829,16 @@ async fn run_validator() {
                         match state_for_snapshot_apply
                             .create_checkpoint(&checkpoint_path, snapshot_slot)
                         {
-                            Ok(meta) => info!(
-                                "✅ Created local checkpoint at slot {} ({} accounts)",
-                                meta.slot, meta.total_accounts
-                            ),
+                            Ok(meta) => {
+                                info!(
+                                    "✅ Created local checkpoint at slot {} ({} accounts)",
+                                    meta.slot, meta.total_accounts
+                                );
+                                prune_state_checkpoints(
+                                    &data_dir_for_snapshot_apply,
+                                    "verified snapshot import",
+                                );
+                            }
                             Err(e) => warn!("⚠️  Failed to create local checkpoint: {}", e),
                         }
                         cleanup_snapshot_live_rollback(&data_dir_for_snapshot_apply);
@@ -28827,6 +28918,50 @@ mod tests {
             parse_checkpoint_max_bytes(Some("999999999999999")),
             Some(MAX_CHECKPOINT_MAX_BYTES)
         );
+    }
+
+    #[test]
+    fn stale_snapshot_staging_cleanup_only_removes_slot_dirs() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let stale_one = root.join("staging-snapshot-1");
+        let stale_two = root.join("staging-snapshot-42");
+        let malformed = root.join("staging-snapshot-current");
+        let empty_suffix = root.join("staging-snapshot-");
+        let checkpoint = root.join("checkpoints").join("slot-1000");
+        let rollback = root.join("snapshot-live-rollback");
+        let proposal = root.join("proposal-staging");
+        let file_with_staging_name = root.join("staging-snapshot-99");
+
+        std::fs::create_dir_all(stale_one.join("db")).unwrap();
+        std::fs::create_dir_all(&stale_two).unwrap();
+        std::fs::create_dir_all(&malformed).unwrap();
+        std::fs::create_dir_all(&empty_suffix).unwrap();
+        std::fs::create_dir_all(&checkpoint).unwrap();
+        std::fs::create_dir_all(&rollback).unwrap();
+        std::fs::create_dir_all(&proposal).unwrap();
+        std::fs::write(&file_with_staging_name, b"not a directory").unwrap();
+
+        assert_eq!(
+            snapshot_staging_slot_from_name("staging-snapshot-42"),
+            Some(42)
+        );
+        assert_eq!(
+            snapshot_staging_slot_from_name("staging-snapshot-current"),
+            None
+        );
+        assert_eq!(snapshot_staging_slot_from_name("staging-snapshot-"), None);
+
+        let removed = cleanup_stale_snapshot_staging_dirs(root.to_str().unwrap()).unwrap();
+        assert_eq!(removed, 2);
+        assert!(!stale_one.exists());
+        assert!(!stale_two.exists());
+        assert!(malformed.exists());
+        assert!(empty_suffix.exists());
+        assert!(checkpoint.exists());
+        assert!(rollback.exists());
+        assert!(proposal.exists());
+        assert!(file_with_staging_name.exists());
     }
 
     #[test]

@@ -4,7 +4,7 @@ This is the operator runbook for launching Lichen mainnet and then enabling
 mainnet custody. It is intentionally step-by-step and gate-based. Do not skip a
 gate because mainnet genesis and custody routes handle real value.
 
-Written for the current mainnet package. Current signed-release target for this runbook is `v0.5.176`; keep `v0.5.161` as the signed rollback point. If a newer
+Written for the current mainnet package. Current signed-release target for this runbook is `v0.5.177`; keep `v0.5.161` as the signed rollback point. If a newer
 release is used, replace every example tag with the newer signed release tag
 after CI and release verification pass.
 
@@ -200,7 +200,7 @@ credentials, or keypair passwords.
 Use the signed release that passed CI. For the current package:
 
 ```bash
-export LICHEN_RELEASE_TAG=v0.5.176
+export LICHEN_RELEASE_TAG=v0.5.177
 export LICHEN_MAINNET_VPS_HOSTS="15.204.229.189 37.59.97.61 15.235.142.253 148.113.43.247"
 ```
 
@@ -237,8 +237,11 @@ node "$REPO_ROOT/scripts/verify-release-checksums.mjs" .
 sha256sum -c SHA256SUMS
 ```
 
-The rolling deploy script verifies the detached PQ signature over `SHA256SUMS`
-before it installs anything on a VPS. Do not bypass that gate during rollout.
+The script requires `LICHEN_RELEASE_TAG` and must install the signed release archive
+that passed CI; do not install unsigned or locally modified binaries.
+The rolling deploy script verifies the detached PQ
+signature over `SHA256SUMS` before it installs anything on a VPS. Do not bypass
+that gate during rollout.
 
 For an emergency rollback to the current signed rollback point, set the tag
 explicitly and run the same signed-release path:

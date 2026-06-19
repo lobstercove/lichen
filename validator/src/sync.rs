@@ -3,7 +3,7 @@
 use lichen_core::{Block, Hash};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
@@ -82,6 +82,11 @@ const SYNC_COOLDOWN_BASE_SECS: u64 = 2;
 
 /// Maximum cooldown after consecutive failures (exponential backoff cap).
 const SYNC_COOLDOWN_MAX_SECS: u64 = 30;
+
+/// Initial catch-up is correctness-gated by sequential block replay, so request
+/// throttling only needs to prevent peer spam, not introduce multi-second idle
+/// gaps between fully applied batches.
+pub const INITIAL_SYNC_COOLDOWN_MS: u64 = 500;
 
 /// Tracks chain synchronization state
 pub struct SyncManager {
@@ -308,7 +313,7 @@ impl SyncManager {
         let last_triggered = *self.last_sync_triggered_at.lock().await;
         let failures = *self.consecutive_failures.lock().await;
         let cooldown_ms = if phase == SyncPhase::InitialSync {
-            500u64 // Fast catch-up: 500ms between retries
+            INITIAL_SYNC_COOLDOWN_MS
         } else if failures == 0 {
             SYNC_COOLDOWN_BASE_SECS * 1000
         } else {
@@ -555,7 +560,7 @@ impl SyncManager {
     }
 
     /// Record that sync made progress at a given slot (for completion tracking).
-    pub async fn record_progress(&self, slot: u64) {
+    pub async fn record_progress(&self, slot: u64) -> bool {
         {
             let mut last = self.last_progress_slot.lock().await;
             if slot > *last {
@@ -574,8 +579,16 @@ impl SyncManager {
         if let Some((start, end)) = reached_batch {
             info!("✅ Sync batch reached requested target at slot {}", slot);
             self.record_sync_success().await;
-            self.complete_sync_if_current(start, end).await;
+            if self.complete_sync_if_current(start, end).await {
+                let mut last_triggered = self.last_sync_triggered_at.lock().await;
+                *last_triggered = Instant::now()
+                    .checked_sub(Duration::from_millis(INITIAL_SYNC_COOLDOWN_MS))
+                    .unwrap_or_else(Instant::now);
+                return true;
+            }
         }
+
+        false
     }
 
     /// Determine whether a given block slot should use full transaction
@@ -992,16 +1005,39 @@ mod tests {
         sm.start_sync(100, 150).await;
         assert!(*sm.is_syncing.lock().await);
 
-        sm.record_progress(149).await;
+        let completed = sm.record_progress(149).await;
+        assert!(
+            !completed,
+            "progress below the target must not report batch completion"
+        );
         assert!(
             *sm.is_syncing.lock().await,
             "batch should stay active until the requested target is reached"
         );
 
-        sm.record_progress(150).await;
+        let completed = sm.record_progress(150).await;
+        assert!(
+            completed,
+            "progress at the target should complete the batch"
+        );
         assert!(
             !*sm.is_syncing.lock().await,
             "batch should complete once progress reaches the requested end"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_record_progress_allows_immediate_next_initial_sync_batch() {
+        let sm = SyncManager::new();
+        sm.note_seen(1_000).await;
+        sm.start_sync(1, 500).await;
+
+        assert!(sm.record_progress(500).await);
+        let batch = sm.should_sync(500).await;
+        assert_eq!(
+            batch,
+            Some((501, 1_000)),
+            "reaching an initial-sync target should not wait for the retry cooldown"
         );
     }
 
@@ -1311,6 +1347,7 @@ mod tests {
         assert_eq!(SYNC_BATCH_SIZE, 2000);
         assert_eq!(P2P_BLOCK_RANGE_LIMIT, 500);
         assert_eq!(INITIAL_SYNC_FORWARD_WINDOW, P2P_BLOCK_RANGE_LIMIT);
+        assert_eq!(INITIAL_SYNC_COOLDOWN_MS, 500);
         // 2000 / 500 = 4 chunks per batch
         assert_eq!(SYNC_BATCH_SIZE / P2P_BLOCK_RANGE_LIMIT, 4);
     }

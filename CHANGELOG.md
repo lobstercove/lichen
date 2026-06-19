@@ -5,6 +5,30 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.177] - 2026-06-19
+
+### Fixed
+- Reduces resumed and fresh-join initial sync idle time between bounded
+  block-range batches by allowing the next catch-up request immediately after
+  the previous target slot is applied, while keeping live-sync retry throttling
+  intact.
+- Serves catch-up block-range responses at the existing 500-block protocol cap
+  instead of splitting large restart ranges into unnecessary smaller messages.
+- Cleans stale `staging-snapshot-<slot>` directories on validator startup,
+  tears down active snapshot staging on receiver shutdown, and prunes checkpoint
+  retention after verified snapshot imports as well as periodic checkpoints.
+- Keeps the change scoped to restart/sync and checkpoint housekeeping; no
+  consensus state schema, reward accounting, contract ABI, or genesis catalog
+  behavior changes are introduced.
+
+### Verified
+- Passed focused validator sync/checkpoint regressions, full
+  `cargo test --workspace`, `cargo clippy --workspace -- -D warnings`,
+  standalone contract tests, WASM contract builds, release-doc QA, and
+  CI-style RPC/CLI/deterministic local coverage.
+- Passed a clean local 3-validator reset/join rehearsal and a no-reset resume
+  rehearsal before release.
+
 ## [0.5.176] - 2026-06-18
 
 ### Fixed
