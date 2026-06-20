@@ -151,6 +151,30 @@ function main() {
         });
     });
 
+    testWhenPresent(['rpcMarkdown'], 'canonical Markdown RPC docs describe MossStake unstaking queue fields', () => {
+        assertAllIncludes(docs.rpcMarkdown, [
+            'Get pending MossStake unstaking requests for an account.',
+            'MossStake unstakes are slot-based.',
+            '"claimable": false',
+            '"remaining_slots": 0',
+            '"estimated_remaining_seconds": 0',
+            '"current_slot": 0',
+            '"cooldown_slots": 1512000',
+        ], FILES.rpcMarkdown);
+    });
+
+    test('RPC portal describes canonical MossStake unstaking queue fields', () => {
+        assertAllIncludes(docs.rpcPortal, [
+            'id="getUnstakingQueue"',
+            'current_slot &gt;= claimable_at',
+            '<code>claimable</code>',
+            '<code>remaining_slots</code>',
+            '<code>estimated_remaining_seconds</code>',
+            '<code>cooldown_slots</code>',
+            'Submit a MossStake claim transaction after maturity.',
+        ], FILES.rpcPortal);
+    });
+
     testWhenPresent(['developerGuide'], 'canonical Neo developer guide covers route, reserves, DEX, rewards, watchtower, and SDK examples', () => {
         assertAllIncludes(docs.developerGuide, [
             'getBridgeRouteRestrictionStatus',

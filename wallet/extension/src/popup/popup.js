@@ -92,15 +92,18 @@ function formatMossStakeRewardLabel(_apyPercent, multiplier) {
   return `${formatRewardMultiplierPopup(multiplier)} rewards`;
 }
 
-function isPopupQueueRequestClaimable(req) {
+function isPopupQueueRequestClaimable(req, currentSlot = 0) {
   if (typeof req?.claimable === 'boolean') return req.claimable;
   if (typeof req?.ready === 'boolean') return req.ready;
-  return false;
+  const claimableAt = Number(req?.claimable_at || 0);
+  return currentSlot > 0 && claimableAt > 0 && claimableAt <= currentSlot;
 }
 
-function popupQueueRequestRemainingSlots(req) {
+function popupQueueRequestRemainingSlots(req, currentSlot = 0) {
   const remaining = Number(req?.remaining_slots);
-  return Number.isFinite(remaining) && remaining >= 0 ? Math.floor(remaining) : 0;
+  if (Number.isFinite(remaining) && remaining >= 0) return Math.floor(remaining);
+  const claimableAt = Number(req?.claimable_at || 0);
+  return currentSlot > 0 && claimableAt > currentSlot ? Math.floor(claimableAt - currentSlot) : 0;
 }
 
 const POPUP_BASE58_ALLOWED_RE = /^[1-9A-HJ-NP-Za-km-z]$/;
@@ -237,6 +240,10 @@ function securePasswordPrompt(label = 'Wallet password (for signing):') {
       if (event.key === 'Escape') finish(null);
     });
   });
+}
+
+function openPopupFullPage(hash = '') {
+  chrome.tabs.create({ url: chrome.runtime.getURL('src/pages/full.html') + hash });
 }
 
 let createWizardState = {
@@ -1475,18 +1482,24 @@ async function loadExtensionStaking() {
 
     // Pending unstakes
     const unstakes = queue?.pending_requests || position?.pending_unstakes || [];
+    const currentSlot = Number(queue?.current_slot || 0);
     if (unstakes.length > 0) {
       pendingEl.style.display = 'block';
       pendingEl.innerHTML = `
         <div style="font-size:0.75rem;font-weight:600;margin-bottom:0.4rem;color:var(--text);"><i class="fas fa-clock"></i> Pending Unstakes</div>
         ${unstakes.map(u => {
         const amt = (Number(u.licn_to_receive || u.amount || 0) / 1e9).toLocaleString(undefined, { maximumFractionDigits: 4 });
-        const ready = isPopupQueueRequestClaimable(u)
-          ? '<span style="color:#4ade80">Ready to claim</span>'
-          : `<span style="color:#f59e0b">Cooldown${popupQueueRequestRemainingSlots(u) > 0 ? ` · ~${(popupQueueRequestRemainingSlots(u) / 216000).toFixed(1)} days` : ''}</span>`;
-        return `<div style="font-size:0.72rem;color:var(--text-muted);padding:0.25rem 0;border-bottom:1px solid var(--border);">${amt} LICN — ${ready}</div>`;
+        const claimable = isPopupQueueRequestClaimable(u, currentSlot);
+        const remainingSlots = popupQueueRequestRemainingSlots(u, currentSlot);
+        const ready = claimable
+          ? '<button type="button" class="popupClaimMossStakeBtn" style="border:none;border-radius:6px;background:#10b981;color:#fff;padding:0.2rem 0.5rem;font-size:0.68rem;font-weight:700;cursor:pointer;">Claim</button>'
+          : `<span style="color:#f59e0b">Cooldown${remainingSlots > 0 ? ` · ~${(remainingSlots / 216000).toFixed(1)} days` : ''}</span>`;
+        return `<div style="font-size:0.72rem;color:var(--text-muted);padding:0.3rem 0;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:0.5rem;"><span>${amt} LICN</span><span>${ready}</span></div>`;
       }).join('')}
       `;
+      pendingEl.querySelectorAll('.popupClaimMossStakeBtn').forEach(btn => {
+        btn.addEventListener('click', () => openPopupFullPage('#staking'));
+      });
     } else {
       pendingEl.style.display = 'none';
     }
@@ -2487,7 +2500,7 @@ async function loadShieldPanel() {
 
 function openExtShieldModal(type) {
   const hash = type === 'transfer' ? '#shield-transfer' : '#shield';
-  chrome.tabs.create({ url: chrome.runtime.getURL('src/pages/full.html') + hash });
+  openPopupFullPage(hash);
 }
 
 // ===== NFTs panel =====
@@ -2767,7 +2780,7 @@ function stopBalancePolling() {
 
 function wireEvents() {
   document.getElementById('openFullPage').addEventListener('click', () => {
-    chrome.tabs.create({ url: chrome.runtime.getURL('src/pages/full.html') });
+    openPopupFullPage();
   });
 
   document.querySelectorAll('[data-action="goCreate"]').forEach((button) => {
@@ -2866,10 +2879,10 @@ function wireEvents() {
   });
 
   document.getElementById('extStakeBtn')?.addEventListener('click', () => {
-    chrome.tabs.create({ url: chrome.runtime.getURL('src/pages/full.html') + '#staking' });
+    openPopupFullPage('#staking');
   });
   document.getElementById('extUnstakeBtn')?.addEventListener('click', () => {
-    chrome.tabs.create({ url: chrome.runtime.getURL('src/pages/full.html') + '#staking' });
+    openPopupFullPage('#staking');
   });
 
   document.getElementById('sendNow').addEventListener('click', handleSendNow);

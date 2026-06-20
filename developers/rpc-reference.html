@@ -1293,6 +1293,132 @@
                 </div>
             </div>
 
+            <!-- getStakingPosition -->
+            <div class="method-card" id="getStakingPosition">
+                <h3 class="method-name">getStakingPosition</h3>
+                <p class="method-desc">Returns the account's MossStake position, including stLICN shares, deposited LICN,
+                    redeemable LICN value, lock tier, multiplier, and accrued rewards.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <table class="param-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Type</th>
+                                <th>Required</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>pubkey</td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Yes</td>
+                                <td>Staker's base58-encoded public key</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Returns</h4>
+                    <p>Object including <code>st_licn_amount</code>, <code>licn_deposited</code>,
+                        <code>current_value_licn</code>, <code>rewards_earned</code>, <code>lock_tier_name</code>,
+                        <code>reward_multiplier</code>, and any position lock fields.</p>
+                </div>
+            </div>
+
+            <!-- getMossStakePoolInfo -->
+            <div class="method-card" id="getMossStakePoolInfo">
+                <h3 class="method-name">getMossStakePoolInfo</h3>
+                <p class="method-desc">Returns MossStake pool-level metrics and the canonical tier table.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <p>None.</p>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Returns</h4>
+                    <p>Object including <code>total_supply_st_licn</code>, <code>total_licn_staked</code>,
+                        <code>exchange_rate</code>, <code>total_validators</code>, <code>average_apy_percent</code>,
+                        <code>total_stakers</code>, <code>tiers</code>, and <code>cooldown_days</code>.</p>
+                </div>
+            </div>
+
+            <!-- getUnstakingQueue -->
+            <div class="method-card" id="getUnstakingQueue">
+                <h3 class="method-name">getUnstakingQueue</h3>
+                <p class="method-desc">Returns pending MossStake unstake requests and the canonical claimability state for
+                    the requested account.</p>
+                <div class="callout callout-info">
+                    <p>MossStake unstakes are slot-based. A request becomes claimable when
+                        <code>current_slot &gt;= claimable_at</code>; LICN is not moved back to spendable balance
+                        automatically. Submit a MossStake claim transaction after maturity.</p>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <table class="param-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Type</th>
+                                <th>Required</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>pubkey</td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Yes</td>
+                                <td>Staker's base58-encoded public key</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Returns</h4>
+                    <p>Object with <code>owner</code>, <code>pending_requests</code>, <code>total_claimable</code>,
+                        <code>current_slot</code>, and <code>cooldown_slots</code>. Each pending request includes
+                        <code>st_licn_amount</code>, <code>licn_to_receive</code>, <code>requested_at</code>,
+                        <code>claimable_at</code>, <code>claimable</code>, <code>remaining_slots</code>, and
+                        <code>estimated_remaining_seconds</code>.</p>
+                </div>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">JSON</span><button class="code-copy-btn"><i
+                                class="fas fa-copy"></i></button></div>
+                    <pre><code>{
+  "owner": "7xKX...",
+  "pending_requests": [{
+    "st_licn_amount": 11000000000,
+    "licn_to_receive": 18134176580087,
+    "requested_at": 3058382,
+    "claimable_at": 4570382,
+    "claimable": false,
+    "remaining_slots": 280000,
+    "estimated_remaining_seconds": 112000
+  }],
+  "total_claimable": 0,
+  "current_slot": 4290382,
+  "cooldown_slots": 1512000
+}</code></pre>
+                </div>
+            </div>
+
+            <!-- getRewardAdjustmentInfo -->
+            <div class="method-card" id="getRewardAdjustmentInfo">
+                <h3 class="method-name">getRewardAdjustmentInfo</h3>
+                <p class="method-desc">Returns current reward adjustment parameters for staking economics.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <p>None.</p>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Returns</h4>
+                    <p>Object including <code>current_multiplier</code>, <code>target_price</code>,
+                        <code>current_price</code>, <code>totalSupply</code>, <code>projectedSupply</code>,
+                        <code>totalMinted</code>, and <code>inflationRateBps</code>.</p>
+                </div>
+            </div>
+
             <!-- stake -->
             <div class="method-card" id="stake">
                 <h3 class="method-name">stake</h3>
@@ -2398,8 +2524,8 @@
             <!-- ═══════════════════════════════════════════════════════════ -->
             <section id="live-methods" class="rpc-live-methods">
                 <h2>Additional Implemented Methods</h2>
-                <p>These JSON-RPC methods are implemented in the live server dispatch (`rpc/src/lib.rs`) and may not yet
-                    have individual method cards on this page.</p>
+                <p>These JSON-RPC methods are implemented in the live server dispatch (`rpc/src/lib.rs`). Some entries
+                    below are compact cross-references to full method cards on this page.</p>
 
                 <div class="callout callout-info">
                     <p><strong>RPC endpoints:</strong> use <code>POST /</code> for native Lichen JSON-RPC,
