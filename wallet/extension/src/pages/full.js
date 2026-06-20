@@ -1599,7 +1599,7 @@ async function loadStakingTab() {
 
       <div style="background:var(--card-bg);padding:1rem;border-radius:10px;border:1px solid var(--border);margin-bottom:1rem;font-size:0.85rem;color:var(--text-muted);">
         <i class="fas fa-info-circle" style="color:#3b82f6;"></i>
-        <strong>Flexible:</strong> 7-day cooldown, 1x rewards.
+        <strong>Flexible:</strong> 7-day target cooldown, 1x rewards.
         <strong>Locked tiers</strong> earn boosted rewards and are position-bound for the chosen duration.
       </div>
 
@@ -1615,7 +1615,7 @@ async function loadStakingTab() {
       ${lockBanner}
 
       <div id="fullPendingUnstakes" style="margin-top:1.5rem;display:none;">
-        <h4 style="margin-bottom:1rem;">Pending Unstakes (7-day cooldown)</h4>
+        <h4 style="margin-bottom:1rem;">Pending Unstakes (slot-based cooldown)</h4>
         <div id="fullUnstakesList"></div>
       </div>
     `;
@@ -1672,7 +1672,7 @@ async function showStakeModal() {
       <input type="text" id="stakeAmountInput" placeholder="0.00" inputmode="decimal" data-wallet-numeric="true" data-min="0" style="width:100%;padding:0.75rem;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);margin-bottom:1rem;box-sizing:border-box;">
       <label style="font-size:0.85rem;font-weight:600;display:block;margin-bottom:0.25rem;">Lock Tier</label>
       <select id="stakeTierSelect" style="width:100%;padding:0.75rem;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);margin-bottom:1rem;box-sizing:border-box;">
-        <option value="0">Flexible — 7-day cooldown, 1x rewards</option>
+        <option value="0">Flexible — 7-day target cooldown, 1x rewards</option>
         <option value="1">30-Day Lock — 1.6x rewards</option>
         <option value="2">180-Day Lock — 2.4x rewards</option>
         <option value="3">365-Day Lock — 3.6x rewards</option>
@@ -1739,7 +1739,7 @@ async function showUnstakeModal() {
   overlay.innerHTML = `
     <div style="background:var(--bg);border:1px solid var(--border);border-radius:16px;padding:2rem;width:420px;max-width:90vw;">
       <h3 style="margin:0 0 1rem;"><i class="fas fa-unlock-alt" style="color:#f59e0b;"></i> Unstake from Liquid Staking</h3>
-      <p style="font-size:0.85rem;color:var(--text-muted);margin-bottom:1rem;">After requesting, there is a <strong>7-day cooldown</strong> before you can claim your LICN.</p>
+      <p style="font-size:0.85rem;color:var(--text-muted);margin-bottom:1rem;">After requesting, there is a <strong>slot-based cooldown</strong> before you can claim your LICN. The cooldown targets 7 days at normal block pace and requires a claim transaction after maturity.</p>
       <label style="font-size:0.85rem;font-weight:600;display:block;margin-bottom:0.25rem;">Amount (stLICN)</label>
       <input type="text" id="unstakeAmountInput" placeholder="0.00" inputmode="decimal" data-wallet-numeric="true" data-min="0" style="width:100%;padding:0.75rem;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);margin-bottom:1rem;box-sizing:border-box;">
       <label style="font-size:0.85rem;font-weight:600;display:block;margin-bottom:0.25rem;">Wallet Password</label>
@@ -1783,7 +1783,7 @@ async function showUnstakeModal() {
     try {
       statusEl.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Unstaking...';
       await unstakeStLicn({ wallet, password, amountLicn: amountText, network: state.network?.selected || DEFAULT_NETWORK });
-      statusEl.innerHTML = '<span style="color:#10b981;">✓ Unstake initiated! 7-day cooldown.</span>';
+      statusEl.innerHTML = '<span style="color:#10b981;">✓ Unstake initiated. Claim after the slot-based cooldown.</span>';
       setTimeout(() => { overlay.remove(); loadStakingTab(); }, 1500);
     } catch (err) {
       statusEl.innerHTML = `<span style="color:#ef4444;">${escapeHtmlExt(err.message)}</span>`;

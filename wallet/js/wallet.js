@@ -3466,8 +3466,8 @@ async function loadStaking(options = {}) {
                     <div class="staking-info-box">
                         <i class="fas fa-info-circle"></i>
                         <strong>How it works:</strong> Stake LICN to receive stLICN. Rewards accrue into the redeemable value — they are not a separate claimable balance.
-                        <strong>Flexible tier</strong> stays transferable and has a 7-day cooldown to unstake. <strong>Locked tiers</strong> earn boosted tier-weighted rewards and are position-bound for the chosen duration.
-                        After a lock expires, you can unstake with the standard 7-day cooldown.
+                        <strong>Flexible tier</strong> stays transferable and has a 7-day target cooldown to unstake. <strong>Locked tiers</strong> earn boosted tier-weighted rewards and are position-bound for the chosen duration.
+                        After a lock expires, you can unstake with the standard slot-based cooldown and claim LICN when it matures.
                     </div>
 
                     <div class="staking-actions">
@@ -3484,7 +3484,7 @@ async function loadStaking(options = {}) {
                     </div>
 
                     <div id="pendingUnstakes" class="staking-pending" style="display: none;">
-                        <h4>Pending Unstakes (7-day cooldown)</h4>
+                        <h4>Pending Unstakes (slot-based cooldown)</h4>
                         <div id="unstakesList"></div>
                     </div>
                 `;
@@ -3709,7 +3709,7 @@ async function loadMossStakePosition(address, options = {}) {
                         <div class="staking-tier-name">${t.name}</div>
                         <div class="staking-tier-apy">${apyDisplay}</div>
                         <div class="staking-tier-meta">
-                            ${t.lock_days > 0 ? t.lock_days + '-day lock' : '7-day cooldown'}
+                            ${t.lock_days > 0 ? t.lock_days + '-day lock' : '7-day target cooldown'}
                             &middot; ${t.multiplier}x rewards
                         </div>
                         ${isActive ? '<div class="staking-tier-badge"><i class="fas fa-check-circle"></i> Active</div>' : ''}
@@ -3758,7 +3758,7 @@ async function showMossStakeModal() {
         title: 'Stake to Liquid Staking',
         message: `Enter the amount of LICN to stake, choose a lock tier, and sign with your password.
             <div style="margin-top:0.75rem;font-size:0.8rem;color:var(--text-muted);">
-                <strong>Flexible:</strong> 7-day cooldown, 1x rewards<br>
+                <strong>Flexible:</strong> 7-day target cooldown, 1x rewards<br>
                 <strong>30-Day Lock:</strong> 1.6x rewards<br>
                 <strong>180-Day Lock:</strong> 2.4x rewards<br>
                 <strong>365-Day Lock:</strong> 3.6x rewards
@@ -3771,7 +3771,7 @@ async function showMossStakeModal() {
             {
                 id: 'lockTier', label: 'Lock Tier', type: 'select',
                 options: [
-                    { value: '0', label: 'Flexible — 7-day cooldown, 1x rewards' },
+                    { value: '0', label: 'Flexible — 7-day target cooldown, 1x rewards' },
                     { value: '1', label: '30-Day Lock — 1.6x rewards' },
                     { value: '2', label: '180-Day Lock — 2.4x rewards' },
                     { value: '3', label: '365-Day Lock — 3.6x rewards' },
@@ -3857,10 +3857,10 @@ async function showMossUnstakeModal() {
 
     const values = await showPasswordModal({
         title: 'Unstake from Liquid Staking',
-        message: `Enter the amount of stLICN to unstake. After requesting, there is a <strong>7-day cooldown</strong> before you can claim your LICN.
+        message: `Enter the amount of stLICN to unstake. After requesting, there is a <strong>slot-based cooldown</strong> before you can claim your LICN.
             <div style="margin-top:0.5rem;font-size:0.8rem;color:var(--text-muted);">
                 <i class="fas fa-exclamation-triangle" style="color:#f59e0b;"></i>
-                If your position has a lock tier, you must wait for the lock to expire before unstaking.
+                If your position has a lock tier, you must wait for the lock to expire before unstaking. The cooldown targets 7 days at normal block pace and requires a claim transaction after maturity.
             </div>`,
         icon: 'fas fa-unlock-alt',
         confirmText: 'Unstake',
@@ -3936,7 +3936,7 @@ async function showMossUnstakeModal() {
 
         showToast('Submitting liquid unstake transaction...');
         const txSig = await rpc.sendTransaction(txBase64);
-        showToast(`Unstake initiated! 7-day cooldown. Sig: ${String(txSig).slice(0, 16)}...`);
+        showToast(`Unstake initiated. Claim after the slot-based cooldown. Sig: ${String(txSig).slice(0, 16)}...`);
         await refreshBalance();
         // Refresh staking position after a brief delay for block inclusion
         const generation = _walletViewGeneration;
