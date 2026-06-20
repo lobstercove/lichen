@@ -2687,6 +2687,20 @@ mod tests {
                 .unwrap(),
             vec![(tx_a_hash, 5)]
         );
+        state.clear_snapshot_category("account_txs").unwrap();
+        assert_eq!(state.count_account_txs(&tracked).unwrap(), 2);
+        assert!(state
+            .get_account_tx_signatures_paginated(&tracked, 10, None)
+            .unwrap()
+            .is_empty());
+        assert_eq!(state.rebuild_account_txs_index_from_blocks().unwrap(), 4);
+        assert_eq!(state.count_account_txs(&tracked).unwrap(), 2);
+        assert_eq!(
+            state
+                .get_account_tx_signatures_paginated(&tracked, 10, None)
+                .unwrap(),
+            vec![(tx_b_hash, 7), (tx_a_hash, 5)]
+        );
         assert_eq!(
             state.get_recent_txs(10, None).unwrap(),
             vec![(tx_b_hash, 7), (tx_a_hash, 5)]

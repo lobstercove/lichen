@@ -643,13 +643,21 @@ impl StateStore {
         let mut seek_key = Vec::with_capacity(76);
         seek_key.extend_from_slice(&pubkey.0);
         if let Some(slot) = before_slot {
-            seek_key.extend_from_slice(&slot.to_be_bytes());
+            if slot == 0 {
+                return Ok(Vec::new());
+            }
+            seek_key.extend_from_slice(&slot.saturating_sub(1).to_be_bytes());
+            seek_key.extend_from_slice(&[0xFF; 36]);
         } else {
             seek_key.extend_from_slice(&u64::MAX.to_be_bytes());
+            seek_key.extend_from_slice(&[0xFF; 36]);
         }
 
-        let iter = self.db.iterator_cf(
+        let mut read_opts = rocksdb::ReadOptions::default();
+        read_opts.set_total_order_seek(true);
+        let iter = self.db.iterator_cf_opt(
             &cf,
+            read_opts,
             rocksdb::IteratorMode::From(&seek_key, Direction::Reverse),
         );
 

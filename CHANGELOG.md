@@ -5,6 +5,23 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.182] - 2026-06-20
+
+### Fixed
+- Rebuilds the `account_txs` activity index and its `atxc:` counters from
+  canonical blocks once per validator after upgrade, matching the existing
+  `tx_by_slot` canonical index repair path.
+- Fixes account activity pagination to seek from a full account-index key and
+  use a total-order RocksDB scan, avoiding empty wallet activity pages when
+  account transaction counters are nonzero.
+- Adds a regression test that reproduces the stale-count/missing-account-index
+  failure mode and verifies canonical rebuild restores paginated activity.
+
+### Verified
+- Passed focused core account-index regression coverage, RPC
+  `getTransactionsByAddress` coverage, validator compile checks, wallet audit,
+  and extension audit.
+
 ## [0.5.181] - 2026-06-20
 
 ### Fixed

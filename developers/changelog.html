@@ -79,6 +79,29 @@
         <!-- Timeline -->
         <div class="changelog-timeline">
 
+            <!-- ============ v0.5.182 ============ -->
+            <div class="changelog-entry">
+                <div class="changelog-header">
+                    <span class="changelog-version">v0.5.182</span>
+                    <span class="changelog-date">June 20, 2026</span>
+                </div>
+                <h3 class="changelog-title">Canonical Account Activity Index Repair</h3>
+
+                <div class="changelog-section" data-type="fixed">
+                    <h4><i class="fas fa-bug" style="color: var(--warning)"></i> Fixes</h4>
+                    <ul>
+                        <li><strong>Account activity repair</strong> &mdash; validators rebuild the
+                            <code>account_txs</code> activity index and its <code>atxc:</code> counters from canonical
+                            blocks once after upgrade, matching the canonical <code>tx_by_slot</code> rebuild path.</li>
+                        <li><strong>Wallet history</strong> &mdash; paginated account-activity reads now seek from a full
+                            account-index key with total-order RocksDB scans, preventing nonzero activity counters from
+                            producing empty wallet history pages.</li>
+                        <li><strong>Regression coverage</strong> &mdash; core tests now reproduce the stale-count /
+                            missing-index failure and verify canonical rebuild restores paginated account history.</li>
+                    </ul>
+                </div>
+            </div>
+
             <!-- ============ v0.5.181 ============ -->
             <div class="changelog-entry">
                 <div class="changelog-header">

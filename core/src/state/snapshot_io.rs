@@ -1006,6 +1006,142 @@ impl StateStore {
         Ok(indexed)
     }
 
+    fn clear_account_tx_counters(&self) -> Result<u64, String> {
+        const DELETE_BATCH_SIZE: usize = 10_000;
+        let stats_cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+
+        let prefix = b"atxc:";
+        let mut read_opts = rocksdb::ReadOptions::default();
+        read_opts.set_total_order_seek(true);
+        let iter = self.db.iterator_cf_opt(
+            &stats_cf,
+            read_opts,
+            rocksdb::IteratorMode::From(prefix, rocksdb::Direction::Forward),
+        );
+
+        let mut batch = WriteBatch::default();
+        let mut pending = 0usize;
+        let mut deleted = 0u64;
+        for item in iter {
+            let (key, _) =
+                item.map_err(|err| format!("Failed iterating account tx counters: {}", err))?;
+            if !key.starts_with(prefix) {
+                break;
+            }
+            batch.delete_cf(&stats_cf, key);
+            pending += 1;
+
+            if pending >= DELETE_BATCH_SIZE {
+                self.db
+                    .write(batch)
+                    .map_err(|err| format!("Failed clearing account tx counters: {}", err))?;
+                deleted = deleted.saturating_add(pending as u64);
+                batch = WriteBatch::default();
+                pending = 0;
+            }
+        }
+
+        if pending > 0 {
+            self.db
+                .write(batch)
+                .map_err(|err| format!("Failed clearing account tx counters: {}", err))?;
+            deleted = deleted.saturating_add(pending as u64);
+        }
+
+        Ok(deleted)
+    }
+
+    pub fn rebuild_account_txs_index_from_blocks(&self) -> Result<u64, String> {
+        const WRITE_BATCH_SIZE: usize = 10_000;
+
+        self.clear_snapshot_category("account_txs")?;
+        self.clear_account_tx_counters()?;
+
+        let account_txs_cf = self
+            .db
+            .cf_handle(CF_ACCOUNT_TXS)
+            .ok_or_else(|| "Account txs CF not found".to_string())?;
+        let stats_cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        let slot_cf = self
+            .db
+            .cf_handle(CF_SLOTS)
+            .ok_or_else(|| "Slots CF not found".to_string())?;
+
+        let mut read_opts = rocksdb::ReadOptions::default();
+        read_opts.set_total_order_seek(true);
+        let iter = self
+            .db
+            .iterator_cf_opt(&slot_cf, read_opts, rocksdb::IteratorMode::Start);
+
+        let mut batch = WriteBatch::default();
+        let mut pending = 0usize;
+        let mut indexed = 0u64;
+        let mut counters = std::collections::BTreeMap::<Pubkey, u64>::new();
+
+        for item in iter {
+            let (slot_key, _) = item.map_err(|err| {
+                format!("Failed iterating Slots for account_txs rebuild: {}", err)
+            })?;
+            if slot_key.len() != 8 {
+                continue;
+            }
+
+            let mut slot_bytes = [0u8; 8];
+            slot_bytes.copy_from_slice(&slot_key);
+            let slot = u64::from_be_bytes(slot_bytes);
+            let Some(block) = self.get_block_by_slot(slot)? else {
+                continue;
+            };
+
+            for (account, key) in
+                super::secondary_indexes::account_tx_index_entries_for_block(&block)
+            {
+                batch.put_cf(&account_txs_cf, &key, []);
+                *counters.entry(account).or_default() += 1;
+                pending += 1;
+                indexed = indexed.saturating_add(1);
+
+                if pending >= WRITE_BATCH_SIZE {
+                    self.db
+                        .write(batch)
+                        .map_err(|err| format!("Failed rebuilding account_txs index: {}", err))?;
+                    batch = WriteBatch::default();
+                    pending = 0;
+                }
+            }
+        }
+
+        for (account, count) in counters {
+            let mut counter_key = Vec::with_capacity(5 + 32);
+            counter_key.extend_from_slice(b"atxc:");
+            counter_key.extend_from_slice(&account.0);
+            batch.put_cf(&stats_cf, &counter_key, count.to_le_bytes());
+            pending += 1;
+
+            if pending >= WRITE_BATCH_SIZE {
+                self.db
+                    .write(batch)
+                    .map_err(|err| format!("Failed rebuilding account tx counters: {}", err))?;
+                batch = WriteBatch::default();
+                pending = 0;
+            }
+        }
+
+        if pending > 0 {
+            self.db
+                .write(batch)
+                .map_err(|err| format!("Failed finalizing account_txs index rebuild: {}", err))?;
+        }
+
+        Ok(indexed)
+    }
+
     /// Generic helper: read a page of (key, value) pairs from a column family.
     fn export_cf_page(
         &self,
