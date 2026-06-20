@@ -1505,13 +1505,20 @@ async function loadStakingTab() {
   const rpcClient = rpc();
 
   try {
-    const [poolInfo, position, queue] = await Promise.all([
+    const [poolInfo, position, queue, balance] = await Promise.all([
       rpcClient.call('getMossStakePoolInfo').catch(() => null),
       rpcClient.call('getStakingPosition', [wallet.address]).catch(() => null),
       rpcClient.call('getUnstakingQueue', [wallet.address]).catch(() => ({ pending_requests: [] })),
+      rpcClient.getBalance(wallet.address).catch(() => null),
     ]);
     const currentSlot = getQueueCurrentSlotExt(queue) || await getCurrentChainSlotExt(rpcClient);
     const hasCurrentSlot = currentSlot > 0;
+    const feeSpores = 1_000_000n;
+    const spendableSpores = balance
+      ? baseUnitBigIntExt(balance?.spendable ?? balance?.available ?? balance?.spores ?? balance?.balance ?? 0)
+      : null;
+    const canPayClaimFee = spendableSpores === null || spendableSpores >= feeSpores;
+    const claimFeeTitle = `Need ${formatLicnBaseUnitsExactExt(feeSpores)} LICN spendable for transaction fee`;
 
     const stLicn = Number(position?.st_licn_amount || 0) / 1e9;
     const value = Number(position?.current_value_licn || 0) / 1e9;
@@ -1632,7 +1639,9 @@ async function loadStakingTab() {
         return `<div style="padding:0.75rem;background:var(--card-bg);border-radius:8px;border:1px solid var(--border);margin-bottom:0.5rem;display:flex;justify-content:space-between;align-items:center;">
           <span style="font-weight:600;">${amt} LICN</span>
           ${claimable
-            ? '<button class="btn btn-small fullClaimBtn" style="padding:0.3rem 0.8rem;font-size:0.8rem;background:#10b981;border:none;border-radius:6px;color:#fff;cursor:pointer;font-weight:600;"><i class="fas fa-check-circle"></i> Claim</button>'
+            ? canPayClaimFee
+              ? '<button class="btn btn-small fullClaimBtn" style="padding:0.3rem 0.8rem;font-size:0.8rem;background:#10b981;border:none;border-radius:6px;color:#fff;cursor:pointer;font-weight:600;"><i class="fas fa-check-circle"></i> Claim</button>'
+              : `<button class="btn btn-small fullClaimBtn" disabled title="${claimFeeTitle}" style="padding:0.3rem 0.8rem;font-size:0.8rem;background:#64748b;border:none;border-radius:6px;color:#fff;cursor:not-allowed;font-weight:600;opacity:0.65;"><i class="fas fa-check-circle"></i> Claim</button>`
             : `<span style="color:var(--text-muted);font-size:0.8rem;"><i class="fas fa-clock"></i> ${remainingDays ? `~${remainingDays} days` : 'Waiting for chain slot'}</span>`
           }
         </div>`;
@@ -1812,9 +1821,10 @@ async function handleFullClaim() {
   } catch (e) { /* let RPC reject */ }
   try {
     const balResult = await rpc().call('getBalance', [wallet.address]);
-    const spendable = (balResult?.spendable || balResult?.balance || 0) / 1e9;
-    if (spendable < 0.001) {
-      alert('Insufficient LICN for transaction fee (need 0.001 LICN)');
+    const spendable = baseUnitBigIntExt(balResult?.spendable ?? balResult?.available ?? balResult?.spores ?? balResult?.balance ?? 0);
+    const feeSpores = 1_000_000n;
+    if (spendable < feeSpores) {
+      alert(`Insufficient LICN for transaction fee (need ${formatLicnBaseUnitsExactExt(feeSpores)} LICN)`);
       return;
     }
   } catch (e) { /* let RPC reject */ }

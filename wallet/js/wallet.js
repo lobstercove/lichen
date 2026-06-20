@@ -789,6 +789,11 @@ function isCurrentWalletView(walletOrId, generation = _walletViewGeneration) {
     return !!walletId && walletState.activeWalletId === walletId && generation === _walletViewGeneration;
 }
 
+function isActiveWalletView(walletOrId) {
+    const walletId = typeof walletOrId === 'string' ? walletOrId : walletOrId?.id;
+    return !!walletId && walletState.activeWalletId === walletId;
+}
+
 function clearWalletScopedDashboardUi() {
     window.totalWalletBalance = 0;
     window.walletBalance = 0;
@@ -3183,7 +3188,7 @@ async function loadActivity(reset = true, options = {}) {
             } catch (e) { /* faucet API unavailable — skip silently */ }
         }
 
-        if (!isCurrentWalletView(wallet, generation)) return;
+        if (!isActiveWalletView(wallet)) return;
 
         if (typeof rpcHasMore === 'boolean') {
             _activityHasMore = rpcHasMore;
@@ -3392,7 +3397,7 @@ async function loadActivity(reset = true, options = {}) {
         }
 
     } catch (error) {
-        if (!isCurrentWalletView(wallet, generation)) return;
+        if (!isActiveWalletView(wallet)) return;
         console.error('Failed to load activity:', error);
         if (_activityItems.length === 0) activityList.innerHTML = emptyHtml;
     }
@@ -3641,9 +3646,16 @@ async function loadMossStakePosition(address, options = {}) {
         const poolInfo = await rpc.call('getMossStakePoolInfo');
         const position = await rpc.call('getStakingPosition', [address]);
         const queue = await rpc.call('getUnstakingQueue', [address]);
+        const balance = await rpc.call('getBalance', [address]).catch(() => null);
         const currentSlot = getQueueCurrentSlot(queue) || await getCurrentChainSlot();
         if (!isCurrentWalletView(expectedWalletId, generation)) return;
         const hasCurrentSlot = currentSlot > 0;
+        const baseFeeSpores = getNetworkBaseFeeSpores();
+        const spendableSpores = balance
+            ? u64ValueToBigInt(balance?.spendable ?? balance?.available ?? balance?.balance ?? 0)
+            : null;
+        const canPayClaimFee = spendableSpores === null || spendableSpores >= baseFeeSpores;
+        const claimFeeTitle = `Need ${baseUnitsToDecimalString(baseFeeSpores, 9)} LICN spendable for transaction fee`;
 
         // Update basic stats
         document.getElementById('userStLicn').textContent = fmtToken(position.st_licn_amount / SPORES_PER_LICN);
@@ -3731,7 +3743,11 @@ async function loadMossStakePosition(address, options = {}) {
                         <span class="staking-unstake-amount">${fmtToken(req.licn_to_receive / SPORES_PER_LICN)} LICN</span>
                         <span class="staking-unstake-status">
                             ${isClaimable
-                        ? `<button class="btn btn-small btn-claim" data-wallet-action="claimMossStake">
+                        ? canPayClaimFee
+                            ? `<button class="btn btn-small btn-claim" data-wallet-action="claimMossStake">
+                                        <i class="fas fa-check-circle"></i> Claim
+                                   </button>`
+                            : `<button class="btn btn-small btn-claim btn-disabled" disabled title="${claimFeeTitle}">
                                         <i class="fas fa-check-circle"></i> Claim
                                    </button>`
                         : `<span class="staking-unstake-timer"><i class="fas fa-clock"></i> ${hasCurrentSlot ? `~${remainDays} days` : 'Waiting for chain slot'}</span>`
@@ -3971,9 +3987,10 @@ async function claimMossStake() {
     // Fee guard: need at least the base fee in spendable LICN
     try {
         const balResult = await rpc.call('getBalance', [wallet.address]);
-        const spendable = (balResult?.spendable || balResult?.balance || 0) / SPORES_PER_LICN;
-        if (spendable < BASE_FEE_LICN) {
-            showToast(`Insufficient LICN for fee: need ${fmtToken(BASE_FEE_LICN)} LICN`);
+        const spendable = u64ValueToBigInt(balResult?.spendable ?? balResult?.available ?? balResult?.balance ?? 0);
+        const baseFeeSpores = getNetworkBaseFeeSpores();
+        if (spendable < baseFeeSpores) {
+            showToast(`Insufficient LICN for fee: need ${baseUnitsToDecimalString(baseFeeSpores, 9)} LICN`);
             return;
         }
     } catch (e) { /* let RPC reject */ }

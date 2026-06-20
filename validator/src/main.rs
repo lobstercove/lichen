@@ -2091,10 +2091,18 @@ fn needs_bootstrap_slot_catch_up(current_slot: u64, bootstrap_slot: u64, toleran
 
 fn should_gate_bft_on_network_sync(
     is_joining_network: bool,
+    _current_tip: u64,
+    has_seed_peers: bool,
+) -> bool {
+    is_joining_network || has_seed_peers
+}
+
+fn should_use_join_checkpoint_bootstrap(
+    is_joining_network: bool,
     current_tip: u64,
     has_seed_peers: bool,
 ) -> bool {
-    is_joining_network || (current_tip > 0 && has_seed_peers)
+    is_joining_network || (current_tip == 0 && has_seed_peers)
 }
 
 fn needs_pre_consensus_tip_catch_up(current_slot: u64, network_slot: u64) -> bool {
@@ -13584,6 +13592,8 @@ async fn run_validator() {
     let current_tip = state.get_last_slot().unwrap_or(0);
     let wait_for_pre_consensus_sync =
         should_gate_bft_on_network_sync(is_joining_network, current_tip, has_any_seed_peers);
+    let use_join_checkpoint_bootstrap =
+        should_use_join_checkpoint_bootstrap(is_joining_network, current_tip, has_any_seed_peers);
     if current_tip > 0 {
         sync_manager.note_seen(current_tip).await;
     }
@@ -13624,7 +13634,7 @@ async fn run_validator() {
             }
         });
     }
-    let snapshot_sync = Arc::new(Mutex::new(SnapshotSync::new(is_joining_network)));
+    let snapshot_sync = Arc::new(Mutex::new(SnapshotSync::new(use_join_checkpoint_bootstrap)));
 
     // FIX-FORK-1: Shared set of slots where we received a valid block from the
     // network.  The block-receiver task inserts here; the production loop checks
@@ -29158,8 +29168,23 @@ mod tests {
     fn gate_bft_on_network_sync_for_joiners_and_resumed_peers() {
         assert!(should_gate_bft_on_network_sync(true, 0, false));
         assert!(should_gate_bft_on_network_sync(false, 122_274, true));
+        assert!(
+            should_gate_bft_on_network_sync(false, 0, true),
+            "a seeded slot-0 node with local genesis must not enter BFT before network sync"
+        );
         assert!(!should_gate_bft_on_network_sync(false, 122_274, false));
-        assert!(!should_gate_bft_on_network_sync(false, 0, true));
+        assert!(!should_gate_bft_on_network_sync(false, 0, false));
+    }
+
+    #[test]
+    fn seeded_slot_zero_resume_uses_join_checkpoint_bootstrap() {
+        assert!(should_use_join_checkpoint_bootstrap(true, 0, false));
+        assert!(
+            should_use_join_checkpoint_bootstrap(false, 0, true),
+            "a seeded slot-0 resume needs the fresh-join checkpoint auth path"
+        );
+        assert!(!should_use_join_checkpoint_bootstrap(false, 42, true));
+        assert!(!should_use_join_checkpoint_bootstrap(false, 0, false));
     }
 
     #[test]

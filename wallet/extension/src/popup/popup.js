@@ -1424,10 +1424,11 @@ async function loadExtensionStaking() {
   if (!statsEl) return;
 
   try {
-    const [position, poolInfo, queue] = await Promise.all([
+    const [position, poolInfo, queue, balance] = await Promise.all([
       rpc.call('getStakingPosition', [wallet.address]).catch(() => null),
       rpc.call('getMossStakePoolInfo', []).catch(() => null),
       rpc.call('getUnstakingQueue', [wallet.address]).catch(() => ({ pending_requests: [] })),
+      rpc.getBalance(wallet.address).catch(() => null),
     ]);
 
     const stLicn = Number(position?.st_licn_amount || 0) / 1e9;
@@ -1437,6 +1438,11 @@ async function loadExtensionStaking() {
     const multiplier = Number(position?.reward_multiplier || 1);
     const totalPool = Number(poolInfo?.total_licn_staked || 0) / 1e9;
     const fmt = v => v.toLocaleString(undefined, { maximumFractionDigits: 4 });
+    const feeSpores = 1_000_000n;
+    const spendableSpores = balance
+      ? baseUnitBigIntPopup(balance?.spendable ?? balance?.available ?? balance?.spores ?? balance?.balance ?? 0)
+      : null;
+    const canPayClaimFee = spendableSpores === null || spendableSpores >= feeSpores;
 
     const cards = [
       { label: 'Your stLICN', value: fmt(stLicn), color: 'var(--text)' },
@@ -1492,7 +1498,9 @@ async function loadExtensionStaking() {
         const claimable = isPopupQueueRequestClaimable(u, currentSlot);
         const remainingSlots = popupQueueRequestRemainingSlots(u, currentSlot);
         const ready = claimable
-          ? '<button type="button" class="popupClaimMossStakeBtn" style="border:none;border-radius:6px;background:#10b981;color:#fff;padding:0.2rem 0.5rem;font-size:0.68rem;font-weight:700;cursor:pointer;">Claim</button>'
+          ? canPayClaimFee
+            ? '<button type="button" class="popupClaimMossStakeBtn" style="border:none;border-radius:6px;background:#10b981;color:#fff;padding:0.2rem 0.5rem;font-size:0.68rem;font-weight:700;cursor:pointer;">Claim</button>'
+            : '<button type="button" disabled title="Need 0.001 LICN spendable for transaction fee" style="border:none;border-radius:6px;background:#64748b;color:#fff;padding:0.2rem 0.5rem;font-size:0.68rem;font-weight:700;cursor:not-allowed;opacity:0.65;">Claim</button>'
           : `<span style="color:#f59e0b">Cooldown${remainingSlots > 0 ? ` · ~${(remainingSlots / 216000).toFixed(1)} days` : ''}</span>`;
         return `<div style="font-size:0.72rem;color:var(--text-muted);padding:0.3rem 0;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:0.5rem;"><span>${amt} LICN</span><span>${ready}</span></div>`;
       }).join('')}
