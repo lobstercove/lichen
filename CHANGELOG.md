@@ -5,9 +5,11 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.5.180] - 2026-06-20
+## [0.5.181] - 2026-06-20
 
 ### Fixed
+- Aligns the mainnet launch runbook and release-signer QA with the current
+  `v0.5.179` signed rollback point so the release check suite stays green.
 - Adds canonical MossStake unstake queue status to RPC responses, including
   current slot, cooldown slots, claimable state, remaining slots, and estimated
   remaining seconds so wallet surfaces do not recompute claimability
