@@ -71,6 +71,8 @@ assert(script.includes('status == "ok" and age <= max_age and not disk_critical'
   'preflight must reject stale or disk-critical validators by default');
 assert(script.includes('LICHEN_ALLOW_UNHEALTHY_PREFLIGHT=1'),
   'preflight recovery override must be visible in operator output');
+assert(script.includes('local validator RPC is unavailable; continuing because LICHEN_ALLOW_UNHEALTHY_PREFLIGHT=1.'),
+  'preflight recovery override must allow a stopped local validator RPC for clean rejoin');
 assert(script.includes('stage_release_bin()'),
   'release binaries must be staged before live install');
 assert(script.includes('check_staged_bin_hash lichen-custody "$EXPECTED_CUSTODY_SHA"'),

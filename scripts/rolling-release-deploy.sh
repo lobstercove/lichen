@@ -284,7 +284,15 @@ if [ -n "$EXPECTED_PUBKEY" ]; then
 fi
 health_payload="$(curl -fsS "http://127.0.0.1:${RPC_PORT}/" \
   -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"getHealth","params":[]}')"
+  -d '{"jsonrpc":"2.0","id":1,"method":"getHealth","params":[]}' || true)"
+if [ -z "$health_payload" ]; then
+  if [ "$ALLOW_UNHEALTHY_PREFLIGHT" = "1" ]; then
+    echo "WARNING: local validator RPC is unavailable; continuing because LICHEN_ALLOW_UNHEALTHY_PREFLIGHT=1." >&2
+    exit 0
+  fi
+  echo "Local validator RPC is unavailable; refusing deploy without LICHEN_ALLOW_UNHEALTHY_PREFLIGHT=1." >&2
+  exit 1
+fi
 HEALTH_PAYLOAD="$health_payload" python3 - <<'PY'
 import json
 import os
