@@ -79,6 +79,28 @@
         <!-- Timeline -->
         <div class="changelog-timeline">
 
+            <!-- ============ v0.5.183 ============ -->
+            <div class="changelog-entry">
+                <div class="changelog-header">
+                    <span class="changelog-version">v0.5.183</span>
+                    <span class="changelog-date">June 20, 2026</span>
+                </div>
+                <h3 class="changelog-title">Cold Account Activity History</h3>
+
+                <div class="changelog-section" data-type="fixed">
+                    <h4><i class="fas fa-bug" style="color: var(--warning)"></i> Fixes</h4>
+                    <ul>
+                        <li><strong>Archived wallet activity</strong> &mdash; account history queries now merge hot and
+                            cold <code>account_txs</code> indexes so older wallet and extension activity remains visible
+                            after archive migration or validator restart.</li>
+                        <li><strong>Canonical counts</strong> &mdash; <code>getAccountTxCount</code> is cold-storage
+                            aware and duplicate-safe when a node has both live and archived account activity rows.</li>
+                        <li><strong>Consistent APIs</strong> &mdash; legacy and paginated account-activity readers now
+                            share the same merged path, preventing RPC callers from disagreeing on wallet history.</li>
+                    </ul>
+                </div>
+            </div>
+
             <!-- ============ v0.5.182 ============ -->
             <div class="changelog-entry">
                 <div class="changelog-header">

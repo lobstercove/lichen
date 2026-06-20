@@ -2,6 +2,14 @@ use crate::block::Block;
 
 use super::*;
 
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct AccountTxIndexRow {
+    key: Vec<u8>,
+    hash: Hash,
+    slot: u64,
+    seq: u32,
+}
+
 fn extract_token_recipient_from_ix(ix: &crate::transaction::Instruction) -> Option<Pubkey> {
     let json_str = std::str::from_utf8(&ix.data).ok()?;
     let value: serde_json::Value = serde_json::from_str(json_str).ok()?;
@@ -54,6 +62,28 @@ pub(crate) fn account_tx_index_entries_for_block(block: &Block) -> Vec<(Pubkey, 
     }
 
     entries
+}
+
+fn parse_account_tx_index_key(key: &[u8]) -> Result<Option<AccountTxIndexRow>, String> {
+    if key.len() < 32 + 8 + 4 + 32 {
+        return Ok(None);
+    }
+
+    let slot_bytes: [u8; 8] = key[32..40]
+        .try_into()
+        .map_err(|_| "Invalid slot bytes in account tx index".to_string())?;
+    let seq_bytes: [u8; 4] = key[40..44]
+        .try_into()
+        .map_err(|_| "Invalid sequence bytes in account tx index".to_string())?;
+    let mut hash_bytes = [0u8; 32];
+    hash_bytes.copy_from_slice(&key[44..76]);
+
+    Ok(Some(AccountTxIndexRow {
+        key: key.to_vec(),
+        hash: Hash(hash_bytes),
+        slot: u64::from_be_bytes(slot_bytes),
+        seq: u32::from_be_bytes(seq_bytes),
+    }))
 }
 
 impl StateStore {
@@ -537,107 +567,87 @@ impl StateStore {
         pubkey: &Pubkey,
         limit: usize,
     ) -> Result<Vec<(Hash, u64)>, String> {
-        let cf = self
-            .db
-            .cf_handle(CF_ACCOUNT_TXS)
-            .ok_or_else(|| "Account txs CF not found".to_string())?;
+        self.get_account_tx_signatures_paginated(pubkey, limit, None)
+    }
 
-        let mut prefix = Vec::with_capacity(32);
-        prefix.extend_from_slice(&pubkey.0);
+    fn count_account_tx_entries_in_db(
+        db: &DB,
+        cf_name: &str,
+        pubkey: &Pubkey,
+    ) -> Result<u64, String> {
+        let cf = db
+            .cf_handle(cf_name)
+            .ok_or_else(|| format!("{} CF not found", cf_name))?;
 
-        let mut end_key = prefix.clone();
-        end_key.extend_from_slice(&[0xFF; 44]);
-
-        let iter = self.db.iterator_cf(
+        let prefix = pubkey.0.to_vec();
+        let mut read_opts = rocksdb::ReadOptions::default();
+        read_opts.set_total_order_seek(true);
+        let iter = db.iterator_cf_opt(
             &cf,
-            rocksdb::IteratorMode::From(&end_key, Direction::Reverse),
+            read_opts,
+            rocksdb::IteratorMode::From(&prefix, Direction::Forward),
         );
 
-        let mut items = Vec::with_capacity(limit);
+        let mut count = 0u64;
         for item in iter {
             let (key, _) = item.map_err(|e| format!("Iterator error: {}", e))?;
             if !key.starts_with(&prefix) {
                 break;
             }
-            if key.len() < 32 + 8 + 4 + 32 {
-                continue;
+            if key.len() >= 32 + 8 + 4 + 32 {
+                count = count.saturating_add(1);
             }
+        }
 
-            let slot_bytes: [u8; 8] = key[32..40]
-                .try_into()
-                .map_err(|_| "Invalid slot bytes in account tx index".to_string())?;
-            let slot = u64::from_be_bytes(slot_bytes);
+        Ok(count)
+    }
 
-            let mut hash_bytes = [0u8; 32];
-            hash_bytes.copy_from_slice(&key[44..76]);
-            items.push((Hash(hash_bytes), slot));
+    fn collect_account_tx_keys_in_db(
+        db: &DB,
+        cf_name: &str,
+        pubkey: &Pubkey,
+        keys: &mut std::collections::BTreeSet<Vec<u8>>,
+    ) -> Result<(), String> {
+        let cf = db
+            .cf_handle(cf_name)
+            .ok_or_else(|| format!("{} CF not found", cf_name))?;
 
-            if items.len() >= limit {
+        let prefix = pubkey.0.to_vec();
+        let mut read_opts = rocksdb::ReadOptions::default();
+        read_opts.set_total_order_seek(true);
+        let iter = db.iterator_cf_opt(
+            &cf,
+            read_opts,
+            rocksdb::IteratorMode::From(&prefix, Direction::Forward),
+        );
+
+        for item in iter {
+            let (key, _) = item.map_err(|e| format!("Iterator error: {}", e))?;
+            if !key.starts_with(&prefix) {
                 break;
             }
-        }
-
-        Ok(items)
-    }
-
-    /// Get account transaction count via O(1) atomic counter.
-    /// Falls back to prefix scan if counter not yet populated.
-    pub fn count_account_txs(&self, pubkey: &Pubkey) -> Result<u64, String> {
-        let cf_stats = self
-            .db
-            .cf_handle(CF_STATS)
-            .ok_or_else(|| "Stats CF not found".to_string())?;
-
-        let mut counter_key = Vec::with_capacity(5 + 32);
-        counter_key.extend_from_slice(b"atxc:");
-        counter_key.extend_from_slice(&pubkey.0);
-
-        match self.db.get_cf(&cf_stats, &counter_key) {
-            Ok(Some(data)) if data.len() == 8 => {
-                Ok(u64::from_le_bytes(data.as_slice().try_into().unwrap()))
-            }
-            _ => {
-                let cf = self
-                    .db
-                    .cf_handle(CF_ACCOUNT_TXS)
-                    .ok_or_else(|| "Account txs CF not found".to_string())?;
-
-                let mut prefix = Vec::with_capacity(32);
-                prefix.extend_from_slice(&pubkey.0);
-
-                let mut count = 0u64;
-                let iter = self.db.iterator_cf(
-                    &cf,
-                    rocksdb::IteratorMode::From(&prefix, Direction::Forward),
-                );
-                for item in iter {
-                    let (key, _) = item.map_err(|e| format!("Iterator error: {}", e))?;
-                    if !key.starts_with(&prefix) {
-                        break;
-                    }
-                    count += 1;
-                }
-
-                if let Err(e) = self.db.put_cf(&cf_stats, &counter_key, count.to_le_bytes()) {
-                    tracing::warn!("Failed to cache account TX count: {e}");
-                }
-                Ok(count)
+            if key.len() >= 32 + 8 + 4 + 32 {
+                keys.insert(key.to_vec());
             }
         }
+
+        Ok(())
     }
 
-    /// Paginated account transactions using reverse iteration with cursor.
-    /// Returns newest-first. Pass `before_slot` to get the next page.
-    pub fn get_account_tx_signatures_paginated(
-        &self,
+    fn scan_account_tx_signatures_in_db(
+        db: &DB,
+        cf_name: &str,
         pubkey: &Pubkey,
         limit: usize,
         before_slot: Option<u64>,
-    ) -> Result<Vec<(Hash, u64)>, String> {
-        let cf = self
-            .db
-            .cf_handle(CF_ACCOUNT_TXS)
-            .ok_or_else(|| "Account txs CF not found".to_string())?;
+    ) -> Result<Vec<AccountTxIndexRow>, String> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let cf = db
+            .cf_handle(cf_name)
+            .ok_or_else(|| format!("{} CF not found", cf_name))?;
 
         let prefix = pubkey.0.to_vec();
         let mut seek_key = Vec::with_capacity(76);
@@ -655,35 +665,27 @@ impl StateStore {
 
         let mut read_opts = rocksdb::ReadOptions::default();
         read_opts.set_total_order_seek(true);
-        let iter = self.db.iterator_cf_opt(
+        let iter = db.iterator_cf_opt(
             &cf,
             read_opts,
             rocksdb::IteratorMode::From(&seek_key, Direction::Reverse),
         );
 
-        let mut results = Vec::new();
+        let mut results = Vec::with_capacity(limit);
         for item in iter {
             let (key, _) = item.map_err(|e| format!("Iterator error: {}", e))?;
             if !key.starts_with(&prefix) {
                 break;
             }
-            if key.len() < 32 + 8 + 4 + 32 {
+            let Some(row) = parse_account_tx_index_key(&key)? else {
                 continue;
-            }
-
-            let slot_bytes: [u8; 8] = key[32..40]
-                .try_into()
-                .map_err(|_| "Invalid slot bytes".to_string())?;
-            let slot = u64::from_be_bytes(slot_bytes);
+            };
             if let Some(bs) = before_slot {
-                if slot >= bs {
+                if row.slot >= bs {
                     continue;
                 }
             }
-
-            let mut hash_bytes = [0u8; 32];
-            hash_bytes.copy_from_slice(&key[44..76]);
-            results.push((Hash(hash_bytes), slot));
+            results.push(row);
 
             if results.len() >= limit {
                 break;
@@ -691,6 +693,82 @@ impl StateStore {
         }
 
         Ok(results)
+    }
+
+    /// Get account transaction count. When cold storage is attached, count both
+    /// hot and cold account indexes because old rows may have been migrated out
+    /// of hot RocksDB.
+    pub fn count_account_txs(&self, pubkey: &Pubkey) -> Result<u64, String> {
+        if let Some(ref cold) = self.cold_db {
+            let mut keys = std::collections::BTreeSet::new();
+            Self::collect_account_tx_keys_in_db(&self.db, CF_ACCOUNT_TXS, pubkey, &mut keys)?;
+            Self::collect_account_tx_keys_in_db(cold, COLD_CF_ACCOUNT_TXS, pubkey, &mut keys)?;
+            return Ok(keys.len() as u64);
+        }
+
+        let cf_stats = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+
+        let mut counter_key = Vec::with_capacity(5 + 32);
+        counter_key.extend_from_slice(b"atxc:");
+        counter_key.extend_from_slice(&pubkey.0);
+
+        match self.db.get_cf(&cf_stats, &counter_key) {
+            Ok(Some(data)) if data.len() == 8 => {
+                Ok(u64::from_le_bytes(data.as_slice().try_into().unwrap()))
+            }
+            _ => {
+                let count = Self::count_account_tx_entries_in_db(&self.db, CF_ACCOUNT_TXS, pubkey)?;
+
+                if let Err(e) = self.db.put_cf(&cf_stats, &counter_key, count.to_le_bytes()) {
+                    tracing::warn!("Failed to cache account TX count: {e}");
+                }
+                Ok(count)
+            }
+        }
+    }
+
+    /// Paginated account transactions using reverse iteration with cursor.
+    /// Returns newest-first. Pass `before_slot` to get the next page.
+    pub fn get_account_tx_signatures_paginated(
+        &self,
+        pubkey: &Pubkey,
+        limit: usize,
+        before_slot: Option<u64>,
+    ) -> Result<Vec<(Hash, u64)>, String> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let mut rows = Self::scan_account_tx_signatures_in_db(
+            &self.db,
+            CF_ACCOUNT_TXS,
+            pubkey,
+            limit,
+            before_slot,
+        )?;
+        if let Some(ref cold) = self.cold_db {
+            rows.extend(Self::scan_account_tx_signatures_in_db(
+                cold,
+                COLD_CF_ACCOUNT_TXS,
+                pubkey,
+                limit,
+                before_slot,
+            )?);
+        }
+
+        rows.sort_by(|a, b| {
+            b.slot
+                .cmp(&a.slot)
+                .then_with(|| b.seq.cmp(&a.seq))
+                .then_with(|| b.hash.0.cmp(&a.hash.0))
+        });
+        rows.dedup_by(|a, b| a.key == b.key);
+        rows.truncate(limit);
+
+        Ok(rows.into_iter().map(|row| (row.hash, row.slot)).collect())
     }
 
     /// Get recent transactions across all addresses using CF_TX_BY_SLOT reverse scan.

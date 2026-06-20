@@ -4486,6 +4486,92 @@ mod tests {
     }
 
     #[test]
+    fn test_cold_account_tx_index_is_merged_with_hot_queries() {
+        let hot_dir = tempdir().unwrap();
+        let cold_dir = tempdir().unwrap();
+        let mut state = StateStore::open(hot_dir.path()).unwrap();
+        state.open_cold_store(cold_dir.path()).unwrap();
+
+        let tracked = Pubkey([0x41; 32]);
+        let other_old = Pubkey([0x42; 32]);
+        let other_new = Pubkey([0x43; 32]);
+        let old_tx = crate::transaction::Transaction::new(crate::transaction::Message::new(
+            vec![crate::transaction::Instruction {
+                program_id: Pubkey([0x44; 32]),
+                accounts: vec![tracked, other_old],
+                data: vec![1],
+            }],
+            Hash::hash(b"cold-account-old"),
+        ));
+        let new_tx = crate::transaction::Transaction::new(crate::transaction::Message::new(
+            vec![crate::transaction::Instruction {
+                program_id: Pubkey([0x45; 32]),
+                accounts: vec![tracked, other_new],
+                data: vec![2],
+            }],
+            Hash::hash(b"cold-account-new"),
+        ));
+        let old_hash = old_tx.signature();
+        let new_hash = new_tx.signature();
+
+        let old_block = crate::Block::new_with_timestamp(
+            3,
+            Hash::default(),
+            Hash::default(),
+            [0u8; 32],
+            vec![old_tx],
+            111,
+        );
+        let new_block = crate::Block::new_with_timestamp(
+            7,
+            old_block.hash(),
+            Hash::default(),
+            [0u8; 32],
+            vec![new_tx],
+            222,
+        );
+
+        state.put_block(&old_block).unwrap();
+        state.put_block(&new_block).unwrap();
+        assert_eq!(state.count_account_txs(&tracked).unwrap(), 2);
+
+        let migrated = state.migrate_indexes_to_cold(5).unwrap();
+        assert_eq!(migrated, 2);
+
+        assert_eq!(state.count_account_txs(&tracked).unwrap(), 2);
+        assert_eq!(
+            state.get_account_tx_signatures(&tracked, 10).unwrap(),
+            vec![(new_hash, 7), (old_hash, 3)]
+        );
+        assert_eq!(
+            state
+                .get_account_tx_signatures_paginated(&tracked, 10, Some(7))
+                .unwrap(),
+            vec![(old_hash, 3)]
+        );
+
+        // Startup rebuilds and snapshot imports clear the hot account_txs CF.
+        // Cold rows must remain visible so wallet activity does not disappear.
+        state.clear_snapshot_category("account_txs").unwrap();
+        assert_eq!(state.count_account_txs(&tracked).unwrap(), 1);
+        assert_eq!(
+            state
+                .get_account_tx_signatures_paginated(&tracked, 10, None)
+                .unwrap(),
+            vec![(old_hash, 3)]
+        );
+
+        assert_eq!(state.rebuild_account_txs_index_from_blocks().unwrap(), 4);
+        assert_eq!(state.count_account_txs(&tracked).unwrap(), 2);
+        assert_eq!(
+            state
+                .get_account_tx_signatures_paginated(&tracked, 10, None)
+                .unwrap(),
+            vec![(new_hash, 7), (old_hash, 3)]
+        );
+    }
+
+    #[test]
     fn test_cold_clone_shares_cold_db() {
         let hot_dir = tempdir().unwrap();
         let cold_dir = tempdir().unwrap();

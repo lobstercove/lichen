@@ -5,6 +5,23 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.183] - 2026-06-20
+
+### Fixed
+- Makes account activity queries merge hot and cold `account_txs` indexes so
+  older wallet and extension history remains visible after archive migration,
+  validator restart, or canonical activity-index rebuild.
+- Makes `getAccountTxCount` cold-storage aware and duplicate-safe when a node
+  has both live and archived account activity rows.
+- Keeps the legacy `get_account_tx_signatures` and paginated activity APIs on
+  the same merged read path so RPC callers cannot disagree.
+- Adds regression coverage for account activity migrated to cold storage,
+  hot-index clearing, and rebuild recovery.
+
+### Verified
+- Passed focused core account-index regressions and RPC
+  `getTransactionsByAddress` coverage locally before release gating.
+
 ## [0.5.182] - 2026-06-20
 
 ### Fixed
