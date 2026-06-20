@@ -4,9 +4,9 @@ set -euo pipefail
 # Non-destructive VPS release rollout.
 #
 # Usage:
-#   LICHEN_RELEASE_TAG=v0.5.183 bash scripts/rolling-release-deploy.sh testnet
-#   LICHEN_RELEASE_TAG=v0.5.183 bash scripts/rolling-release-deploy.sh mainnet
-#   LICHEN_RELEASE_TAG=v0.5.183 LICHEN_VERIFY_RELEASE_ONLY=1 bash scripts/rolling-release-deploy.sh testnet
+#   LICHEN_RELEASE_TAG=v0.5.184 bash scripts/rolling-release-deploy.sh testnet
+#   LICHEN_RELEASE_TAG=v0.5.184 bash scripts/rolling-release-deploy.sh mainnet
+#   LICHEN_RELEASE_TAG=v0.5.184 LICHEN_VERIFY_RELEASE_ONLY=1 bash scripts/rolling-release-deploy.sh testnet
 #
 # This script installs an exact GitHub Release archive on each validator and
 # restarts one validator at a time. It never deletes chain state.
@@ -342,13 +342,66 @@ REMOTE
   else
     scp_to "$ARTIFACT_DIR/$archive" "$host" "/tmp/$archive"
   fi
-  ssh_run_script "$host" "NETWORK='$NETWORK' SERVICE='$SERVICE' ARCHIVE='/tmp/$archive' EXPECTED_VALIDATOR_SHA='$expected_validator_sha' EXPECTED_CUSTODY_SHA='$expected_custody_sha' EXPECTED_FAUCET_SHA='$expected_faucet_sha'" <<'REMOTE'
+  ssh_run_script "$host" "NETWORK='$NETWORK' SERVICE='$SERVICE' CUSTODY_SERVICE='$CUSTODY_SERVICE' ARCHIVE='/tmp/$archive' EXPECTED_VALIDATOR_SHA='$expected_validator_sha' EXPECTED_CUSTODY_SHA='$expected_custody_sha' EXPECTED_FAUCET_SHA='$expected_faucet_sha'" <<'REMOTE'
 set -euo pipefail
 sudo() { command sudo -n "$@" </dev/null; }
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp" "$ARCHIVE"' EXIT
 before_pid="$(systemctl show "$SERVICE" -p MainPID --value || true)"
 before_start="$(systemctl show "$SERVICE" -p ExecMainStartTimestampMonotonic --value || true)"
+
+unit_exists() {
+  local unit="$1"
+  systemctl list-unit-files --no-legend "$unit" 2>/dev/null |
+    awk '{print $1}' |
+    grep -Fxq "$unit"
+}
+
+optional_service_required() {
+  local unit="$1"
+  if ! unit_exists "$unit"; then
+    printf '0'
+    return
+  fi
+  if systemctl is-enabled --quiet "$unit" 2>/dev/null ||
+     systemctl is-active --quiet "$unit" 2>/dev/null; then
+    printf '1'
+  else
+    printf '0'
+  fi
+}
+
+restart_optional_service() {
+  local unit="$1"
+  local required="$2"
+  if [ "$required" != "1" ] || ! unit_exists "$unit"; then
+    return 0
+  fi
+  sudo -n systemctl stop "$unit" || true
+  for _ in $(seq 1 20); do
+    if ! systemctl is-active --quiet "$unit"; then
+      break
+    fi
+    sleep 1
+  done
+  if systemctl is-active --quiet "$unit"; then
+    sudo -n systemctl kill --kill-who=control-group -s SIGKILL "$unit" || true
+    sleep 2
+  fi
+  sudo -n systemctl reset-failed "$unit" || true
+  sudo -n systemctl start "$unit"
+  for _ in $(seq 1 30); do
+    if systemctl is-active --quiet "$unit"; then
+      return 0
+    fi
+    sleep 1
+  done
+  echo "Optional service ${unit} did not become active after validator restart."
+  exit 1
+}
+
+custody_service_required="$(optional_service_required "$CUSTODY_SERVICE")"
+faucet_service_required="$(optional_service_required lichen-faucet.service)"
 tar xzf "$ARCHIVE" -C "$tmp"
 root="$(find "$tmp" -mindepth 1 -maxdepth 1 -type d | head -1)"
 if [ -z "$root" ]; then
@@ -482,6 +535,9 @@ for pid in $service_pids; do
     exit 1
   fi
 done
+
+restart_optional_service "$CUSTODY_SERVICE" "$custody_service_required"
+restart_optional_service lichen-faucet.service "$faucet_service_required"
 REMOTE
 }
 

@@ -1460,13 +1460,15 @@ fn should_request_parent_gap_immediately(
     sync_phase == sync::SyncPhase::LiveSync && block_slot > current_slot.saturating_add(1)
 }
 
-fn select_catch_up_mode(current_slot: u64, gap: u64) -> sync::SyncMode {
-    // Fresh joiners must replay the bootstrap prefix before warp snapshots.
-    // Those blocks create the local validator/stake registry used to verify
-    // checkpoint peers and imported stake-pool entries.
-    if current_slot < FRESH_JOIN_BOOTSTRAP_REPLAY_SLOTS {
-        sync::SyncMode::Full
-    } else if gap > sync::WARP_SYNC_THRESHOLD {
+fn select_catch_up_mode(_current_slot: u64, gap: u64) -> sync::SyncMode {
+    // Fresh joiners used to replay the bootstrap prefix before probing warp
+    // snapshots so they could build the local validator/stake registry first.
+    // Public peers can prune early archive blocks while retaining authenticated
+    // checkpoint snapshots, so far-behind nodes must be allowed to probe
+    // checkpoint metadata immediately. The metadata handler still requires
+    // full stake verification when local validator state exists, and only uses
+    // reserved-seed weak subjectivity for clean/fresh state.
+    if gap > sync::WARP_SYNC_THRESHOLD {
         sync::SyncMode::Warp
     } else {
         sync::SyncMode::Full
@@ -7831,6 +7833,40 @@ fn verify_checkpoint_anchor(
         anchor.chain_id,
         min_validator_stake,
     )
+}
+
+fn verify_reserved_seed_checkpoint_anchor(anchor: CheckpointAnchor<'_>) -> Result<(), String> {
+    let header = anchor
+        .checkpoint_header
+        .ok_or_else(|| "missing checkpoint header".to_string())?;
+    if header.slot != anchor.slot {
+        return Err(format!(
+            "checkpoint header slot mismatch: expected {}, got {}",
+            anchor.slot, header.slot
+        ));
+    }
+    if anchor.commit_signatures.is_empty() {
+        return Err("checkpoint header has no commit certificate".to_string());
+    }
+    let block = Block {
+        header: header.clone(),
+        transactions: Vec::new(),
+        tx_fees_paid: Vec::new(),
+        oracle_prices: Vec::new(),
+        commit_round: anchor.commit_round,
+        commit_signatures: anchor.commit_signatures.to_vec(),
+    };
+    if !block.verify_signature_with_chain_id(anchor.chain_id) {
+        return Err("checkpoint header signature verification failed".to_string());
+    }
+    Ok(())
+}
+
+fn should_accept_reserved_seed_checkpoint_anchor(
+    local_slot: u64,
+    source_is_reserved_seed: bool,
+) -> bool {
+    local_slot < FRESH_JOIN_BOOTSTRAP_REPLAY_SLOTS && source_is_reserved_seed
 }
 
 #[cfg(test)]
@@ -17831,7 +17867,11 @@ async fn run_validator() {
                                 }
                             }
                             let anchor_source = response_anchor_source;
-                            let anchor_verified = {
+                            let local_slot_for_checkpoint =
+                                state_for_snapshot_apply.get_last_slot().unwrap_or(0);
+                            let source_is_reserved_seed =
+                                peer_mgr_for_snapshot_apply.is_reserved(&response.requester);
+                            let anchor_verified_full = {
                                 let vs = validator_set_for_snapshot_apply.read().await;
                                 let validator_source_error = anchor_source
                                     .validator_pubkey()
@@ -17866,6 +17906,37 @@ async fn run_validator() {
                                         min_validator_stake,
                                     )
                                 }
+                            };
+                            let anchor_verified = match anchor_verified_full {
+                                Ok(()) => Ok(()),
+                                Err(full_err)
+                                    if should_accept_reserved_seed_checkpoint_anchor(
+                                        local_slot_for_checkpoint,
+                                        source_is_reserved_seed,
+                                    ) =>
+                                {
+                                    match verify_reserved_seed_checkpoint_anchor(CheckpointAnchor {
+                                        slot,
+                                        state_root,
+                                        checkpoint_header: checkpoint_header.as_ref(),
+                                        commit_round,
+                                        commit_signatures: &commit_signatures,
+                                        chain_id: &chain_id_for_snapshot_apply,
+                                    }) {
+                                        Ok(()) => {
+                                            info!(
+                                                "🔒 Accepted checkpoint metadata from reserved seed {} for fresh join before local stake replay (full stake verification deferred: {})",
+                                                response.requester, full_err
+                                            );
+                                            Ok(())
+                                        }
+                                        Err(seed_err) => Err(format!(
+                                            "{}; reserved seed checkpoint verification failed: {}",
+                                            full_err, seed_err
+                                        )),
+                                    }
+                                }
+                                Err(err) => Err(err),
                             };
                             if let Err(err) = anchor_verified {
                                 warn!(
@@ -25210,6 +25281,56 @@ mod tests {
     }
 
     #[test]
+    fn reserved_seed_checkpoint_anchor_requires_signed_header_and_clean_state() {
+        let validator_kp = Keypair::generate();
+        let validator_pk = validator_kp.pubkey();
+        let mut block = Block::new_with_timestamp(
+            42,
+            Hash::default(),
+            Hash::hash(b"reserved-seed-checkpoint-root"),
+            validator_pk.0,
+            Vec::new(),
+            1_000,
+        );
+        block.sign(&validator_kp);
+        block.commit_round = 0;
+
+        let block_hash = block.hash();
+        let signable = Precommit::signable_bytes(42, 0, &Some(block_hash), 1_000);
+        let commit_signatures = vec![lichen_core::CommitSignature {
+            validator: validator_pk.0,
+            signature: validator_kp.sign(&signable),
+            timestamp: 1_000,
+        }];
+
+        verify_reserved_seed_checkpoint_anchor(CheckpointAnchor {
+            slot: 42,
+            state_root: [7u8; 32],
+            checkpoint_header: Some(&block.header),
+            commit_round: 0,
+            commit_signatures: &commit_signatures,
+            chain_id: "",
+        })
+        .expect("signed reserved-seed checkpoint header should be accepted before stake replay");
+
+        assert!(verify_reserved_seed_checkpoint_anchor(CheckpointAnchor {
+            slot: 42,
+            state_root: [7u8; 32],
+            checkpoint_header: None,
+            commit_round: 0,
+            commit_signatures: &commit_signatures,
+            chain_id: "",
+        })
+        .is_err());
+        assert!(should_accept_reserved_seed_checkpoint_anchor(0, true));
+        assert!(!should_accept_reserved_seed_checkpoint_anchor(
+            FRESH_JOIN_BOOTSTRAP_REPLAY_SLOTS,
+            true
+        ));
+        assert!(!should_accept_reserved_seed_checkpoint_anchor(0, false));
+    }
+
+    #[test]
     fn verify_checkpoint_anchor_accepts_post_effects_checkpoint_root() {
         let validator_kp = Keypair::generate();
         let validator_pk = validator_kp.pubkey();
@@ -26191,11 +26312,11 @@ mod tests {
             "the existing warp threshold remains strict"
         );
         assert!(
-            !parent_gap_should_probe_checkpoint(
+            parent_gap_should_probe_checkpoint(
                 FRESH_JOIN_BOOTSTRAP_REPLAY_SLOTS - 1,
                 FRESH_JOIN_BOOTSTRAP_REPLAY_SLOTS + sync::WARP_SYNC_THRESHOLD + 100,
             ),
-            "fresh joiners still replay the bootstrap prefix before checkpoint snapshots"
+            "far parent gaps should probe checkpoint metadata even before the old bootstrap replay prefix"
         );
     }
 
@@ -26216,24 +26337,24 @@ mod tests {
     }
 
     #[test]
-    fn fresh_join_bootstrap_prefix_forces_full_sync_before_warp() {
+    fn fresh_join_far_gap_uses_warp_before_bootstrap_prefix() {
         assert_eq!(
             select_catch_up_mode(0, sync::WARP_SYNC_THRESHOLD + 1),
-            sync::SyncMode::Full,
-            "fresh joiners must replay genesis-adjacent bootstrap blocks before warp"
+            sync::SyncMode::Warp,
+            "fresh joiners must be able to use checkpoint snapshots when early archive blocks are pruned"
         );
         assert_eq!(
             select_catch_up_mode(
                 FRESH_JOIN_BOOTSTRAP_REPLAY_SLOTS - 1,
                 sync::WARP_SYNC_THRESHOLD + 1
             ),
-            sync::SyncMode::Full,
-            "the final bootstrap-prefix block must still be requested as a block range"
+            sync::SyncMode::Warp,
+            "the old bootstrap replay prefix must not block far-behind checkpoint sync"
         );
     }
 
     #[test]
-    fn warp_sync_still_activates_after_bootstrap_prefix() {
+    fn full_sync_still_handles_small_gaps_after_bootstrap_prefix() {
         assert_eq!(
             select_catch_up_mode(
                 FRESH_JOIN_BOOTSTRAP_REPLAY_SLOTS,
