@@ -1,7 +1,9 @@
 const STORAGE_KEY = 'lichenWalletState';
+const DEFAULT_NETWORK = 'testnet';
+const CURRENT_SCHEMA_VERSION = 2;
 
 const DEFAULT_STATE = {
-  schemaVersion: 1,
+  schemaVersion: CURRENT_SCHEMA_VERSION,
   wallets: [],
   activeWalletId: null,
   isLocked: true,
@@ -10,19 +12,12 @@ const DEFAULT_STATE = {
     lockTimeout: 300000
   },
   network: {
-    selected: 'local-testnet'
+    selected: DEFAULT_NETWORK
   }
 };
 
-export async function loadState() {
-  const result = await chrome.storage.local.get(STORAGE_KEY);
-  const raw = result?.[STORAGE_KEY];
-
-  if (!raw || typeof raw !== 'object') {
-    return structuredClone(DEFAULT_STATE);
-  }
-
-  return {
+function migrateState(raw) {
+  const migrated = {
     ...structuredClone(DEFAULT_STATE),
     ...raw,
     settings: {
@@ -34,6 +29,27 @@ export async function loadState() {
       ...(raw.network || {})
     }
   };
+
+  const version = Number(raw.schemaVersion || 1);
+  const selected = raw.network?.selected;
+  const hasCustomLocalRpc = String(raw.settings?.localTestnetRPC || '').trim().length > 0;
+  if (version < 2 && selected === 'local-testnet' && !hasCustomLocalRpc) {
+    migrated.network.selected = DEFAULT_NETWORK;
+  }
+  migrated.schemaVersion = CURRENT_SCHEMA_VERSION;
+
+  return migrated;
+}
+
+export async function loadState() {
+  const result = await chrome.storage.local.get(STORAGE_KEY);
+  const raw = result?.[STORAGE_KEY];
+
+  if (!raw || typeof raw !== 'object') {
+    return structuredClone(DEFAULT_STATE);
+  }
+
+  return migrateState(raw);
 }
 
 export async function saveState(nextState) {
@@ -62,4 +78,4 @@ export async function patchState(partial) {
   return merged;
 }
 
-export { STORAGE_KEY, DEFAULT_STATE };
+export { STORAGE_KEY, DEFAULT_STATE, DEFAULT_NETWORK };

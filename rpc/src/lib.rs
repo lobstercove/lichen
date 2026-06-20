@@ -18435,11 +18435,15 @@ async fn handle_get_unstaking_queue(
     })?;
 
     let requests = pool.get_unstake_requests(&user);
+    let cooldown_slots = lichen_core::consensus::UNSTAKE_COOLDOWN_SLOTS;
     let mut total_claimable = 0u64;
     let pending_requests: Vec<serde_json::Value> = requests
         .iter()
         .map(|request| {
-            if request.claimable_at <= current_slot {
+            let claimable = request.claimable_at <= current_slot;
+            let remaining_slots = request.claimable_at.saturating_sub(current_slot);
+            let estimated_remaining_seconds = remaining_slots.saturating_mul(400) / 1000;
+            if claimable {
                 total_claimable += request.licn_to_receive;
             }
             serde_json::json!({
@@ -18447,6 +18451,9 @@ async fn handle_get_unstaking_queue(
                 "licn_to_receive": request.licn_to_receive,
                 "requested_at": request.requested_at,
                 "claimable_at": request.claimable_at,
+                "claimable": claimable,
+                "remaining_slots": remaining_slots,
+                "estimated_remaining_seconds": estimated_remaining_seconds,
             })
         })
         .collect();
@@ -18454,7 +18461,9 @@ async fn handle_get_unstaking_queue(
     Ok(serde_json::json!({
         "owner": user_pubkey,
         "pending_requests": pending_requests,
-        "total_claimable": total_claimable
+        "total_claimable": total_claimable,
+        "current_slot": current_slot,
+        "cooldown_slots": cooldown_slots
     }))
 }
 

@@ -1,7 +1,7 @@
 /* full.js — Full-page wallet view for the LichenWallet extension.
    Replicates the website wallet UI using the extension's core modules. */
 
-import { loadState, saveState } from '../core/state-store.js';
+import { DEFAULT_NETWORK, loadState, saveState } from '../core/state-store.js';
 import { getRpcEndpoint, LichenRPC } from '../core/rpc-service.js';
 import { scheduleAutoLock, clearAutoLockAlarm } from '../core/lock-service.js';
 import {
@@ -216,7 +216,7 @@ function applyExtensionInputGuards(root = document) {
 }
 
 function rpc() {
-  const network = state?.network?.selected || 'local-testnet';
+  const network = state?.network?.selected || DEFAULT_NETWORK;
   const endpoint = getRpcEndpoint(network, state?.settings || {});
   return new LichenRPC(endpoint);
 }
@@ -236,6 +236,22 @@ async function getCurrentChainSlotExt(client = rpc()) {
   } catch (_) {
     return 0;
   }
+}
+
+function getQueueCurrentSlotExt(queue, fallbackSlot = 0) {
+  return normalizeChainSlotExt(queue?.current_slot) || normalizeChainSlotExt(fallbackSlot);
+}
+
+function isQueueRequestClaimableExt(req, currentSlot) {
+  if (typeof req?.claimable === 'boolean') return req.claimable;
+  return currentSlot > 0 && Number(req?.claimable_at || 0) <= currentSlot;
+}
+
+function getQueueRequestRemainingSlotsExt(req, currentSlot) {
+  const remaining = Number(req?.remaining_slots);
+  if (Number.isFinite(remaining) && remaining >= 0) return Math.floor(remaining);
+  const claimableAt = Number(req?.claimable_at || 0);
+  return currentSlot > 0 && claimableAt > currentSlot ? Math.floor(claimableAt - currentSlot) : 0;
 }
 
 function sporesToLicn(value) {
@@ -510,7 +526,7 @@ async function getLiveLicnUsdPrice() {
     return normalizeLicnUsdQuote(_licnUsdPriceCache, now);
   }
 
-  const endpoint = getRpcEndpoint(state?.network?.selected || 'local-testnet', state?.settings || {});
+  const endpoint = getRpcEndpoint(state?.network?.selected || DEFAULT_NETWORK, state?.settings || {});
   const apiBase = rpcEndpointToApiBase(endpoint);
   if (!apiBase) return normalizeLicnUsdQuote(_licnUsdPriceCache, now);
 
@@ -571,7 +587,7 @@ function showToast(msg, type = '') {
 }
 
 function activeNetworkKey() {
-  return state?.network?.selected || 'local-testnet';
+  return state?.network?.selected || DEFAULT_NETWORK;
 }
 
 function setRestrictionElement(el, { kind = '', text = '' } = {}) {
@@ -1146,7 +1162,7 @@ async function handleLogout() {
   clearAllInputs();
   if (typeof clearAutoLockAlarm === 'function') await clearAutoLockAlarm();
   await chrome.storage.local.clear();
-  state = { wallets: [], activeWalletId: null, isLocked: false, settings: { currency: 'USD', lockTimeout: 300000 }, network: { selected: 'local-testnet' } };
+  state = { wallets: [], activeWalletId: null, isLocked: false, settings: { currency: 'USD', lockTimeout: 300000 }, network: { selected: DEFAULT_NETWORK } };
   showScreen('welcomeScreen');
   showToast('Logged out');
 }
@@ -1185,7 +1201,7 @@ async function showDashboard() {
 
   // Network selector in settings
   const ns = $('networkSelect');
-  if (ns) ns.value = state.network?.selected || 'local-testnet';
+  if (ns) ns.value = state.network?.selected || DEFAULT_NETWORK;
 
   // Dashboard tabs
   setupDashboardTabs();
@@ -1240,7 +1256,7 @@ async function loadNftsTab() {
   nftsGrid.innerHTML = '';
 
   try {
-    const network = state?.network?.selected || 'local-testnet';
+    const network = state?.network?.selected || DEFAULT_NETWORK;
     const items = await loadNftDetails(wallet.address, network, 50);
     nftCount.textContent = `${items.length} NFT${items.length === 1 ? '' : 's'}`;
 
@@ -1494,7 +1510,7 @@ async function loadStakingTab() {
       rpcClient.call('getStakingPosition', [wallet.address]).catch(() => null),
       rpcClient.call('getUnstakingQueue', [wallet.address]).catch(() => ({ pending_requests: [] })),
     ]);
-    const currentSlot = await getCurrentChainSlotExt(rpcClient);
+    const currentSlot = getQueueCurrentSlotExt(queue) || await getCurrentChainSlotExt(rpcClient);
     const hasCurrentSlot = currentSlot > 0;
 
     const stLicn = Number(position?.st_licn_amount || 0) / 1e9;
@@ -1610,8 +1626,9 @@ async function loadStakingTab() {
       $('fullPendingUnstakes').style.display = 'block';
       $('fullUnstakesList').innerHTML = pendingReqs.map(req => {
         const amt = (Number(req.licn_to_receive || req.amount || 0) / 1e9).toLocaleString(undefined, { maximumFractionDigits: 4 });
-        const claimable = hasCurrentSlot && req.claimable_at <= currentSlot;
-        const remainingDays = hasCurrentSlot ? ((req.claimable_at - currentSlot) / 216000).toFixed(1) : null;
+        const claimable = isQueueRequestClaimableExt(req, currentSlot);
+        const remainingSlots = hasCurrentSlot ? getQueueRequestRemainingSlotsExt(req, currentSlot) : 0;
+        const remainingDays = hasCurrentSlot ? (remainingSlots / 216000).toFixed(1) : null;
         return `<div style="padding:0.75rem;background:var(--card-bg);border-radius:8px;border:1px solid var(--border);margin-bottom:0.5rem;display:flex;justify-content:space-between;align-items:center;">
           <span style="font-weight:600;">${amt} LICN</span>
           ${claimable
@@ -1703,7 +1720,7 @@ async function showStakeModal() {
     } catch (e) { /* let RPC reject */ }
     try {
       statusEl.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Staking...';
-      await stakeLicn({ wallet, password, amountLicn: amountText, tier, network: state.network?.selected || 'local-testnet' });
+      await stakeLicn({ wallet, password, amountLicn: amountText, tier, network: state.network?.selected || DEFAULT_NETWORK });
       statusEl.innerHTML = '<span style="color:#10b981;">✓ Staked successfully!</span>';
       setTimeout(() => { overlay.remove(); loadStakingTab(); }, 1500);
     } catch (err) {
@@ -1765,7 +1782,7 @@ async function showUnstakeModal() {
     } catch (e) { /* let RPC reject */ }
     try {
       statusEl.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Unstaking...';
-      await unstakeStLicn({ wallet, password, amountLicn: amountText, network: state.network?.selected || 'local-testnet' });
+      await unstakeStLicn({ wallet, password, amountLicn: amountText, network: state.network?.selected || DEFAULT_NETWORK });
       statusEl.innerHTML = '<span style="color:#10b981;">✓ Unstake initiated! 7-day cooldown.</span>';
       setTimeout(() => { overlay.remove(); loadStakingTab(); }, 1500);
     } catch (err) {
@@ -1782,12 +1799,12 @@ async function handleFullClaim() {
   try {
     const queue = await rpc().call('getUnstakingQueue', [wallet.address]);
     const pending = queue?.pending_requests || [];
-    const currentSlot = await getCurrentChainSlotExt();
+    const currentSlot = getQueueCurrentSlotExt(queue) || await getCurrentChainSlotExt();
     if (currentSlot <= 0) {
       alert('Unable to confirm current chain slot');
       return;
     }
-    const claimable = pending.filter(r => r.claimable_at <= currentSlot);
+    const claimable = pending.filter(r => isQueueRequestClaimableExt(r, currentSlot));
     if (claimable.length === 0) {
       alert('No matured unstakes to claim');
       return;
@@ -1805,7 +1822,7 @@ async function handleFullClaim() {
   const password = prompt('Enter wallet password to claim unstake:');
   if (!password) return;
   try {
-    await claimMossStake({ wallet, password, network: state.network?.selected || 'local-testnet' });
+    await claimMossStake({ wallet, password, network: state.network?.selected || DEFAULT_NETWORK });
     alert('Claim successful!');
     loadStakingTab();
   } catch (err) {
@@ -3805,7 +3822,7 @@ async function startExtensionDeposit(chain) {
 async function executeExtensionDeposit(chain, asset, chainLabel, container) {
   const wallet = getActiveWallet();
   if (!wallet) return;
-  const network = state?.network?.selected || 'local-testnet';
+  const network = state?.network?.selected || DEFAULT_NETWORK;
 
   const resultEl = container.querySelector('#extDepositResult');
   if (resultEl) { resultEl.style.display = 'block'; resultEl.innerHTML = '<p style="text-align:center;"><i class="fas fa-spinner fa-spin"></i> Requesting deposit address...</p>'; }
@@ -4276,7 +4293,7 @@ function wireEvents() {
 
 function loadSettingsValues() {
   const ns = $('networkSelect');
-  if (ns) ns.value = state?.network?.selected || 'local-testnet';
+  if (ns) ns.value = state?.network?.selected || DEFAULT_NETWORK;
   const alt = $('autoLockTimer');
   if (alt) {
     const mins = Math.round((state?.settings?.lockTimeout || 300000) / 60000);
@@ -4297,7 +4314,7 @@ function loadSettingsValues() {
    ────────────────────────────────────────── */
 async function boot() {
   state = await loadState();
-  if (!state.network) state.network = { selected: 'local-testnet' };
+  if (!state.network) state.network = { selected: DEFAULT_NETWORK };
 
   wireEvents();
   applyExtensionInputGuards();

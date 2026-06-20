@@ -988,6 +988,22 @@ async function getCurrentChainSlot(client = rpc) {
     }
 }
 
+function getQueueCurrentSlot(queue, fallbackSlot = 0) {
+    return normalizeChainSlot(queue?.current_slot) || normalizeChainSlot(fallbackSlot);
+}
+
+function isQueueRequestClaimable(req, currentSlot) {
+    if (typeof req?.claimable === 'boolean') return req.claimable;
+    return currentSlot > 0 && Number(req?.claimable_at || 0) <= currentSlot;
+}
+
+function getQueueRequestRemainingSlots(req, currentSlot) {
+    const remaining = Number(req?.remaining_slots);
+    if (Number.isFinite(remaining) && remaining >= 0) return Math.floor(remaining);
+    const claimableAt = Number(req?.claimable_at || 0);
+    return currentSlot > 0 && claimableAt > currentSlot ? Math.floor(claimableAt - currentSlot) : 0;
+}
+
 function getTrustedRpcClient() {
     trustedRpc.url = getTrustedRpcEndpoint();
     return trustedRpc;
@@ -3125,6 +3141,7 @@ async function loadActivity(reset = true, options = {}) {
         const requestBeforeSlot = _activityBeforeSlot;
         let rpcHasMore = null;
         let rpcNextBeforeSlot = null;
+        let activityFetchError = null;
         try {
             const opts = { limit: ACTIVITY_PAGE_SIZE };
             if (requestBeforeSlot) opts.before_slot = requestBeforeSlot;
@@ -3136,7 +3153,7 @@ async function loadActivity(reset = true, options = {}) {
                 if (Number.isFinite(nextBeforeSlot) && nextBeforeSlot > 0) rpcNextBeforeSlot = nextBeforeSlot;
             }
         } catch (e) {
-            // Account may not exist on-chain yet
+            activityFetchError = e;
         }
 
         // Fetch airdrops from faucet (only on first page, only if faucet is configured)
@@ -3205,7 +3222,13 @@ async function loadActivity(reset = true, options = {}) {
         _activityItems = mergeActivityItems(_activityItems, newItems);
 
         if (_activityItems.length === 0) {
-            activityList.innerHTML = emptyHtml;
+            activityList.innerHTML = activityFetchError ? `
+                <div style="text-align: center; padding: 3rem; color: var(--text-muted);">
+                    <i class="fas fa-exclamation-triangle" style="font-size: 3rem; margin-bottom: 1rem; opacity: 0.35;"></i>
+                    <p>Activity unavailable</p>
+                    <p style="font-size: 0.85rem; opacity: 0.75; margin-top: 0.5rem;">The selected RPC could not return indexed transactions.</p>
+                </div>
+            ` : emptyHtml;
             return;
         }
 
@@ -3618,7 +3641,7 @@ async function loadMossStakePosition(address, options = {}) {
         const poolInfo = await rpc.call('getMossStakePoolInfo');
         const position = await rpc.call('getStakingPosition', [address]);
         const queue = await rpc.call('getUnstakingQueue', [address]);
-        const currentSlot = await getCurrentChainSlot();
+        const currentSlot = getQueueCurrentSlot(queue) || await getCurrentChainSlot();
         if (!isCurrentWalletView(expectedWalletId, generation)) return;
         const hasCurrentSlot = currentSlot > 0;
 
@@ -3700,8 +3723,8 @@ async function loadMossStakePosition(address, options = {}) {
             document.getElementById('pendingUnstakes').style.display = 'block';
             const unstakesList = document.getElementById('unstakesList');
             unstakesList.innerHTML = queue.pending_requests.map(req => {
-                const isClaimable = hasCurrentSlot && req.claimable_at <= currentSlot;
-                const remainSlots = hasCurrentSlot ? Math.max(0, req.claimable_at - currentSlot) : 0;
+                const isClaimable = isQueueRequestClaimable(req, currentSlot);
+                const remainSlots = hasCurrentSlot ? getQueueRequestRemainingSlots(req, currentSlot) : 0;
                 const remainDays = (remainSlots / SLOTS_PER_DAY).toFixed(1);
                 return `
                     <div class="staking-unstake-item">
@@ -3933,12 +3956,12 @@ async function claimMossStake() {
     try {
         const queue = await rpc.call('getUnstakingQueue', [wallet.address]);
         const pending = queue?.pending_requests || [];
-        const currentSlot = await getCurrentChainSlot();
+        const currentSlot = getQueueCurrentSlot(queue) || await getCurrentChainSlot();
         if (currentSlot <= 0) {
             showToast('Unable to confirm current chain slot');
             return;
         }
-        const claimable = pending.filter(r => r.claimable_at <= currentSlot);
+        const claimable = pending.filter(r => isQueueRequestClaimable(r, currentSlot));
         if (claimable.length === 0) {
             showToast('No matured unstakes to claim');
             return;

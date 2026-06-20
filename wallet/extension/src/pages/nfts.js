@@ -1,4 +1,4 @@
-import { loadState } from '../core/state-store.js';
+import { DEFAULT_NETWORK, loadState } from '../core/state-store.js';
 import { loadNftDetails } from '../core/nft-service.js';
 
 const MARKETPLACE_URL = 'https://marketplace.lichen.network';
@@ -47,7 +47,7 @@ async function loadNftPage() {
     return;
   }
 
-  const network = state.network?.selected || 'local-testnet';
+  const network = state.network?.selected || DEFAULT_NETWORK;
   setHtml('nftsMeta', `<strong>${wallet.name}</strong> • ${network} • ${shortAddress(wallet.address)}`);
 
   setStatus('Loading NFTs...');

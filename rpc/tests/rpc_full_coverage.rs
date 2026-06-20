@@ -1098,6 +1098,63 @@ async fn test_native_get_unstaking_queue() {
 }
 
 #[tokio::test]
+async fn test_native_get_unstaking_queue_returns_canonical_claim_state() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = StateStore::open(dir.path()).expect("state");
+    let user = Pubkey([0x42; 32]);
+    let request_slot = 100;
+    let current_slot = request_slot + lichen_core::consensus::UNSTAKE_COOLDOWN_SLOTS - 42;
+    put_ready_tip(&state, current_slot);
+    let _ = Box::leak(Box::new(dir));
+
+    let mut moss_pool = MossStakePool::new();
+    moss_pool
+        .stake(user, 2_000, 0)
+        .expect("stake into moss pool");
+    let request = moss_pool
+        .request_unstake(user, 500, request_slot)
+        .expect("request unstake");
+    state
+        .put_mossstake_pool(&moss_pool)
+        .expect("put mossstake pool");
+
+    let app = build_rpc_router(
+        state,
+        None,
+        Some(Arc::new(RwLock::new(StakePool::new()))),
+        None,
+        "lichen-test".to_string(),
+        "lichen-test".to_string(),
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+
+    let resp = rpc_p(&app, "/", "getUnstakingQueue", json!([user.to_base58()]))
+        .await
+        .unwrap();
+    assert_valid_rpc(&resp);
+
+    let result = &resp["result"];
+    assert_eq!(result["current_slot"], json!(current_slot));
+    assert_eq!(
+        result["cooldown_slots"],
+        json!(lichen_core::consensus::UNSTAKE_COOLDOWN_SLOTS)
+    );
+    assert_eq!(result["total_claimable"], json!(0));
+    let pending = result["pending_requests"]
+        .as_array()
+        .expect("pending requests");
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0]["claimable_at"], json!(request.claimable_at));
+    assert_eq!(pending[0]["claimable"], json!(false));
+    assert_eq!(pending[0]["remaining_slots"], json!(42));
+    assert_eq!(pending[0]["estimated_remaining_seconds"], json!(16));
+}
+
+#[tokio::test]
 async fn test_native_get_reward_adjustment_info() {
     let app = fresh_app();
     let resp = rpc(&app, "/", "getRewardAdjustmentInfo").await.unwrap();

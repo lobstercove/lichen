@@ -1,4 +1,4 @@
-import { loadState, saveState, DEFAULT_STATE, STORAGE_KEY } from '../core/state-store.js';
+import { DEFAULT_NETWORK, loadState, saveState, DEFAULT_STATE, STORAGE_KEY } from '../core/state-store.js';
 import { registerLockAlarmHandler } from '../core/lock-service.js';
 import { walletWsManager } from '../core/ws-service.js';
 import {
@@ -82,7 +82,7 @@ chrome.runtime.onStartup.addListener(async () => {
 
   const activeWallet = state.wallets?.find((wallet) => wallet.id === state.activeWalletId) || null;
   if (activeWallet && !state.isLocked) {
-    walletWsManager.connect(activeWallet.address, state?.network?.selected || 'local-testnet');
+    walletWsManager.connect(activeWallet.address, state?.network?.selected || DEFAULT_NETWORK);
   }
 });
 
@@ -108,7 +108,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const hasWallet = Array.isArray(state.wallets) && state.wallets.length > 0;
         return handleProviderRequest(message?.payload, {
           origin,
-          network: state?.network?.selected || 'local-testnet',
+          network: state?.network?.selected || DEFAULT_NETWORK,
           activeAddress: activeWallet?.address || null,
           hasWallet,
           isLocked: Boolean(state?.isLocked),
@@ -139,7 +139,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const hasWallet = Array.isArray(state.wallets) && state.wallets.length > 0;
         const providerState = await getProviderStateSnapshot({
           origin: request.origin,
-          network: state?.network?.selected || 'local-testnet',
+          network: state?.network?.selected || DEFAULT_NETWORK,
           activeAddress: activeWallet?.address || null,
           hasWallet,
           isLocked: Boolean(state?.isLocked)
@@ -180,7 +180,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           {
             activeAddress: activeWallet?.address || null,
             activeWallet: activeWallet || null,
-            network: state?.network?.selected || 'local-testnet'
+            network: state?.network?.selected || DEFAULT_NETWORK
           },
           message?.approvalInput || {}
         );
@@ -255,7 +255,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           return { state: walletWsManager.status() };
         }
 
-        walletWsManager.connect(activeWallet.address, state?.network?.selected || 'local-testnet');
+        walletWsManager.connect(activeWallet.address, state?.network?.selected || DEFAULT_NETWORK);
         return { state: walletWsManager.status() };
       })
       .then(async (result) => {

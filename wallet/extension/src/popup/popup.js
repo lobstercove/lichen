@@ -1,4 +1,4 @@
-import { loadState, saveState } from '../core/state-store.js';
+import { DEFAULT_NETWORK, loadState, saveState } from '../core/state-store.js';
 import { getRpcEndpoint, LichenRPC } from '../core/rpc-service.js';
 import { clearAutoLockAlarm, scheduleAutoLock } from '../core/lock-service.js';
 import {
@@ -90,6 +90,17 @@ function formatLicnBaseUnitsFixedPopup(value, digits = 4) {
 
 function formatMossStakeRewardLabel(_apyPercent, multiplier) {
   return `${formatRewardMultiplierPopup(multiplier)} rewards`;
+}
+
+function isPopupQueueRequestClaimable(req) {
+  if (typeof req?.claimable === 'boolean') return req.claimable;
+  if (typeof req?.ready === 'boolean') return req.ready;
+  return false;
+}
+
+function popupQueueRequestRemainingSlots(req) {
+  const remaining = Number(req?.remaining_slots);
+  return Number.isFinite(remaining) && remaining >= 0 ? Math.floor(remaining) : 0;
 }
 
 const POPUP_BASE58_ALLOWED_RE = /^[1-9A-HJ-NP-Za-km-z]$/;
@@ -496,7 +507,7 @@ function setImportStatus(message) {
 }
 
 function activeNetworkKey() {
-  return state?.network?.selected || 'local-testnet';
+  return state?.network?.selected || DEFAULT_NETWORK;
 }
 
 function setRestrictionElement(el, { kind = '', text = '' } = {}) {
@@ -1059,7 +1070,7 @@ async function loadAssets() {
   const assetsList = document.getElementById('assetsList');
   if (!wallet || !assetsList) return;
 
-  const endpoint = resolveRpcEndpoint(state.network?.selected || 'local-testnet');
+  const endpoint = resolveRpcEndpoint(state.network?.selected || DEFAULT_NETWORK);
   const rpc = new LichenRPC(endpoint);
 
   assetsList.innerHTML = '<div class="popup-status">Loading assets...</div>';
@@ -1131,7 +1142,7 @@ async function loadActivity(reset = true) {
   const activityList = document.getElementById('activityList');
   if (!wallet || !activityList) return;
 
-  const endpoint = resolveRpcEndpoint(state.network?.selected || 'local-testnet');
+  const endpoint = resolveRpcEndpoint(state.network?.selected || DEFAULT_NETWORK);
   const rpc = new LichenRPC(endpoint);
 
   if (reset) {
@@ -1306,7 +1317,7 @@ async function loadIdentityPanel() {
 
   container.innerHTML = '<div class="popup-status"><i class="fas fa-spinner fa-spin"></i> Loading LichenID...</div>';
 
-  const endpoint = resolveRpcEndpoint(state.network?.selected || 'local-testnet');
+  const endpoint = resolveRpcEndpoint(state.network?.selected || DEFAULT_NETWORK);
   const rpcClient = new LichenRPC(endpoint);
 
   try {
@@ -1397,7 +1408,7 @@ async function loadExtensionStaking() {
   const wallet = getActiveWallet();
   if (!wallet) return;
 
-  const endpoint = resolveRpcEndpoint(state.network?.selected || 'local-testnet');
+  const endpoint = resolveRpcEndpoint(state.network?.selected || DEFAULT_NETWORK);
   const rpc = new LichenRPC(endpoint);
   const statsEl = document.getElementById('mossStakeStats');
   const tiersEl = document.getElementById('mossTiersGrid');
@@ -1406,8 +1417,11 @@ async function loadExtensionStaking() {
   if (!statsEl) return;
 
   try {
-    const position = await rpc.call('getStakingPosition', [wallet.address]).catch(() => null);
-    const poolInfo = await rpc.call('getMossStakePoolInfo', []).catch(() => null);
+    const [position, poolInfo, queue] = await Promise.all([
+      rpc.call('getStakingPosition', [wallet.address]).catch(() => null),
+      rpc.call('getMossStakePoolInfo', []).catch(() => null),
+      rpc.call('getUnstakingQueue', [wallet.address]).catch(() => ({ pending_requests: [] })),
+    ]);
 
     const stLicn = Number(position?.st_licn_amount || 0) / 1e9;
     const stakeValue = Number(position?.current_value_licn || 0) / 1e9;
@@ -1460,14 +1474,16 @@ async function loadExtensionStaking() {
     }).join('');
 
     // Pending unstakes
-    const unstakes = position?.pending_unstakes || [];
+    const unstakes = queue?.pending_requests || position?.pending_unstakes || [];
     if (unstakes.length > 0) {
       pendingEl.style.display = 'block';
       pendingEl.innerHTML = `
         <div style="font-size:0.75rem;font-weight:600;margin-bottom:0.4rem;color:var(--text);"><i class="fas fa-clock"></i> Pending Unstakes</div>
         ${unstakes.map(u => {
-        const amt = (Number(u.amount || 0) / 1e9).toLocaleString(undefined, { maximumFractionDigits: 4 });
-        const ready = u.ready ? '<span style="color:#4ade80">Ready</span>' : '<span style="color:#f59e0b">Cooldown</span>';
+        const amt = (Number(u.licn_to_receive || u.amount || 0) / 1e9).toLocaleString(undefined, { maximumFractionDigits: 4 });
+        const ready = isPopupQueueRequestClaimable(u)
+          ? '<span style="color:#4ade80">Ready to claim</span>'
+          : `<span style="color:#f59e0b">Cooldown${popupQueueRequestRemainingSlots(u) > 0 ? ` · ~${(popupQueueRequestRemainingSlots(u) / 216000).toFixed(1)} days` : ''}</span>`;
         return `<div style="font-size:0.72rem;color:var(--text-muted);padding:0.25rem 0;border-bottom:1px solid var(--border);">${amt} LICN — ${ready}</div>`;
       }).join('')}
       `;
@@ -1486,7 +1502,7 @@ async function refreshBalance() {
     return;
   }
 
-  const endpoint = resolveRpcEndpoint(state.network?.selected || 'local-testnet');
+  const endpoint = resolveRpcEndpoint(state.network?.selected || DEFAULT_NETWORK);
   const rpc = new LichenRPC(endpoint);
 
   setStatus('Refreshing balance...');
@@ -1587,7 +1603,7 @@ async function handleSendNow() {
     return;
   }
 
-  const endpoint = resolveRpcEndpoint(state.network?.selected || 'local-testnet');
+  const endpoint = resolveRpcEndpoint(state.network?.selected || DEFAULT_NETWORK);
   const rpc = new LichenRPC(endpoint);
 
   try {
@@ -2061,7 +2077,7 @@ async function handleLogout() {
   await clearAutoLockAlarm();
   clearAllInputs();
   await chrome.storage.local.clear();
-  state = { wallets: [], activeWalletId: null, isLocked: false, settings: { currency: 'USD', lockTimeout: 300000 }, network: { selected: 'local-testnet' } };
+  state = { wallets: [], activeWalletId: null, isLocked: false, settings: { currency: 'USD', lockTimeout: 300000 }, network: { selected: DEFAULT_NETWORK } };
   showScreen('welcome');
 }
 
@@ -2081,7 +2097,7 @@ async function renderDashboard() {
   }
 
   refreshSelector();
-  document.getElementById('networkSelector').value = state.network?.selected || 'local-testnet';
+  document.getElementById('networkSelector').value = state.network?.selected || DEFAULT_NETWORK;
   document.getElementById('settingsMainnetRpc').value = state.settings?.mainnetRPC || '';
   document.getElementById('settingsTestnetRpc').value = state.settings?.testnetRPC || '';
   document.getElementById('settingsLocalTestnetRpc').value = state.settings?.localTestnetRPC || '';
@@ -2106,7 +2122,7 @@ async function renderDashboard() {
   startBalancePolling();
   // Update about section
   const aboutNet = document.getElementById('aboutNetwork');
-  if (aboutNet) aboutNet.textContent = state.network?.selected || 'local-testnet';
+  if (aboutNet) aboutNet.textContent = state.network?.selected || DEFAULT_NETWORK;
 }
 
 async function render() {
@@ -2170,7 +2186,7 @@ async function initChainStatusBar() {
   if (!dot || !heightEl) return;
 
   async function poll() {
-    const endpoint = resolveRpcEndpoint(state?.network?.selected || 'local-testnet');
+    const endpoint = resolveRpcEndpoint(state?.network?.selected || DEFAULT_NETWORK);
     const rpc = new LichenRPC(endpoint);
     const t0 = performance.now();
     try {
@@ -2408,7 +2424,7 @@ async function loadShieldPanel() {
   }
 
   // Fetch pool stats from RPC
-  const endpoint = resolveRpcEndpoint(state?.network?.selected || 'local-testnet');
+  const endpoint = resolveRpcEndpoint(state?.network?.selected || DEFAULT_NETWORK);
   const rpc = new LichenRPC(endpoint);
   try {
     const stats = await rpc.call('getShieldedPoolState', []).catch(() => rpc.call('getShieldedPoolStats', []));
@@ -2479,7 +2495,7 @@ function openExtShieldModal(type) {
 async function loadNftsPanel() {
   const wallet = getActiveWallet();
   if (!wallet) return;
-  const endpoint = resolveRpcEndpoint(state?.network?.selected || 'local-testnet');
+  const endpoint = resolveRpcEndpoint(state?.network?.selected || DEFAULT_NETWORK);
   const rpc = new LichenRPC(endpoint);
   try {
     const nftResult = await rpc.call('getNFTsByOwner', [wallet.address]);
@@ -2554,7 +2570,7 @@ async function requestExtBridgeDeposit(chain, asset, chainName) {
     await preflightBridgeDepositRoute({
       chain,
       asset,
-      network: state?.network?.selected || 'local-testnet'
+      network: state?.network?.selected || DEFAULT_NETWORK
     });
 
     const hasCachedBridgeAuth = hasBridgeAccessAuth(wallet, { chain, asset });
@@ -2574,7 +2590,7 @@ async function requestExtBridgeDeposit(chain, asset, chainName) {
       password,
       chain,
       asset,
-      network: state?.network?.selected || 'local-testnet'
+      network: state?.network?.selected || DEFAULT_NETWORK
     });
 
     if (!data?.address || !data?.deposit_id) throw new Error('Invalid response');
@@ -2631,7 +2647,7 @@ function startExtDepositPolling(depositId, wallet) {
       const deposit = await getBridgeDepositStatus({
         depositId,
         wallet,
-        network: state?.network?.selected || 'local-testnet'
+        network: state?.network?.selected || DEFAULT_NETWORK
       });
       errors = 0;
       const statusEl = document.getElementById('extDepositStatus');
@@ -2942,7 +2958,7 @@ function wireEvents() {
 
   // About section info
   const aboutNetwork = document.getElementById('aboutNetwork');
-  if (aboutNetwork) aboutNetwork.textContent = state?.network?.selected || 'local-testnet';
+  if (aboutNetwork) aboutNetwork.textContent = state?.network?.selected || DEFAULT_NETWORK;
 
   document.getElementById('walletSelector').addEventListener('change', async (event) => {
     await persistAndRender({
@@ -2976,7 +2992,7 @@ async function boot() {
 
   state = await loadState();
   if (!state.network) {
-    state.network = { selected: 'local-testnet' };
+    state.network = { selected: DEFAULT_NETWORK };
   }
   bindRuntimeRealtimeHandlers();
   wireEvents();

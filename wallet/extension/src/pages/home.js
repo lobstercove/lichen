@@ -1,4 +1,4 @@
-import { loadState } from '../core/state-store.js';
+import { DEFAULT_NETWORK, loadState } from '../core/state-store.js';
 import { loadIdentitySnapshot, registerIdentity, addIdentitySkill } from '../core/identity-service.js';
 import { loadStakingSnapshot, stakeLicn, unstakeStLicn } from '../core/staking-service.js';
 import { hasBridgeAccessAuth, loadBridgeSnapshot, requestBridgeDepositAddress, getBridgeDepositStatus } from '../core/bridge-service.js';
@@ -103,7 +103,7 @@ async function loadSnapshots() {
   latestState = state;
   const activeWallet = state.wallets?.find((wallet) => wallet.id === state.activeWalletId) || null;
 
-  setText('metaNetwork', state.network?.selected || 'local-testnet');
+  setText('metaNetwork', state.network?.selected || DEFAULT_NETWORK);
   setText('metaWallet', activeWallet?.name || 'No wallet');
   setText('metaAddress', shortAddress(activeWallet?.address || ''));
 
@@ -117,7 +117,7 @@ async function loadSnapshots() {
     return;
   }
 
-  const network = state.network?.selected || 'local-testnet';
+  const network = state.network?.selected || DEFAULT_NETWORK;
 
   const [identity, staking, bridge, nfts] = await Promise.all([
     loadIdentitySnapshot(activeWallet.address, network).catch(() => null),
@@ -266,7 +266,7 @@ async function requestDepositAddressAction() {
       password,
       chain,
       asset,
-      network: state.network?.selected || 'local-testnet'
+      network: state.network?.selected || DEFAULT_NETWORK
     });
 
     activeDepositId = response.deposit_id;
@@ -280,7 +280,7 @@ async function requestDepositAddressAction() {
         const statusResult = await getBridgeDepositStatus({
           depositId: activeDepositId,
           wallet: activeWallet,
-          network: state.network?.selected || 'local-testnet'
+          network: state.network?.selected || DEFAULT_NETWORK
         });
         const statusEl = document.getElementById('bridgeDepositStatus');
         const statusValue = String(statusResult.status || statusResult.state || 'unknown').toLowerCase();
@@ -334,7 +334,7 @@ async function withActiveWalletAction(run) {
     return;
   }
 
-  const network = state.network?.selected || 'local-testnet';
+  const network = state.network?.selected || DEFAULT_NETWORK;
   await run({ state, activeWallet, network });
 }
 

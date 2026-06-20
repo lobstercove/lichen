@@ -79,6 +79,31 @@
         <!-- Timeline -->
         <div class="changelog-timeline">
 
+            <!-- ============ v0.5.180 ============ -->
+            <div class="changelog-entry">
+                <div class="changelog-header">
+                    <span class="changelog-version">v0.5.180</span>
+                    <span class="changelog-date">June 20, 2026</span>
+                </div>
+                <h3 class="changelog-title">Wallet Activity and MossStake Status</h3>
+
+                <div class="changelog-section" data-type="fixed">
+                    <h4><i class="fas fa-bug" style="color: var(--warning)"></i> Fixes</h4>
+                    <ul>
+                        <li><strong>MossStake unstake status</strong> &mdash; RPC now returns canonical claimable state,
+                            current slot, cooldown slots, remaining slots, and estimated remaining seconds for pending
+                            unstake requests.</li>
+                        <li><strong>Wallet consistency</strong> &mdash; web wallet and extension staking views consume
+                            the canonical queue state before falling back to local slot checks.</li>
+                        <li><strong>Extension network default</strong> &mdash; packaged extension state now defaults to
+                            public testnet and migrates the old implicit localhost default when no custom local RPC is
+                            configured.</li>
+                        <li><strong>Activity errors</strong> &mdash; the web wallet no longer presents RPC/index failures
+                            as an empty "No activity yet" history.</li>
+                    </ul>
+                </div>
+            </div>
+
             <!-- ============ v0.5.179 ============ -->
             <div class="changelog-entry">
                 <div class="changelog-header">

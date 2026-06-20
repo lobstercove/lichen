@@ -1,4 +1,4 @@
-import { STORAGE_KEY } from './state-store.js';
+import { DEFAULT_NETWORK, STORAGE_KEY } from './state-store.js';
 
 const NETWORKS = {
   mainnet: 'https://rpc.lichen.network',
@@ -26,10 +26,10 @@ function endpointFromSettings(network, settings = {}) {
   return value || null;
 }
 
-function toWsEndpoint(rpcEndpoint, fallbackNetwork = 'local-testnet') {
+function toWsEndpoint(rpcEndpoint, fallbackNetwork = DEFAULT_NETWORK) {
   const raw = String(rpcEndpoint || '').trim();
   if (!raw) {
-    return WS_ENDPOINTS[fallbackNetwork] || WS_ENDPOINTS['local-testnet'];
+    return WS_ENDPOINTS[fallbackNetwork] || WS_ENDPOINTS[DEFAULT_NETWORK];
   }
 
   try {
@@ -41,7 +41,7 @@ function toWsEndpoint(rpcEndpoint, fallbackNetwork = 'local-testnet') {
     }
     return url.toString().replace(/\/$/, '');
   } catch {
-    return WS_ENDPOINTS[fallbackNetwork] || WS_ENDPOINTS['local-testnet'];
+    return WS_ENDPOINTS[fallbackNetwork] || WS_ENDPOINTS[DEFAULT_NETWORK];
   }
 }
 
@@ -116,7 +116,7 @@ export class LichenRPC {
   }
 }
 
-export function getRpcEndpoint(network = 'local-testnet', settings = null) {
+export function getRpcEndpoint(network = DEFAULT_NETWORK, settings = null) {
   if (settings && typeof settings === 'object') {
     const custom = endpointFromSettings(network, settings);
     if (custom) return custom;
@@ -124,17 +124,17 @@ export function getRpcEndpoint(network = 'local-testnet', settings = null) {
   return getTrustedRpcEndpoint(network);
 }
 
-export function getTrustedRpcEndpoint(network = 'local-testnet') {
-  return NETWORKS[network] || NETWORKS['local-testnet'];
+export function getTrustedRpcEndpoint(network = DEFAULT_NETWORK) {
+  return NETWORKS[network] || NETWORKS[DEFAULT_NETWORK];
 }
 
-export async function getConfiguredRpcEndpoint(network = 'local-testnet') {
+export async function getConfiguredRpcEndpoint(network = DEFAULT_NETWORK) {
   const result = await chrome.storage.local.get(STORAGE_KEY).catch(() => ({}));
   const settings = result?.[STORAGE_KEY]?.settings || {};
   return getRpcEndpoint(network, settings);
 }
 
-export async function getConfiguredWsEndpoint(network = 'local-testnet') {
+export async function getConfiguredWsEndpoint(network = DEFAULT_NETWORK) {
   const rpcEndpoint = await getConfiguredRpcEndpoint(network);
   return toWsEndpoint(rpcEndpoint, network);
 }

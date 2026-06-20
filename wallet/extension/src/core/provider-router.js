@@ -1,6 +1,6 @@
 import { decryptPrivateKey, signTransaction, bytesToHex } from './crypto-service.js';
 import { LichenRPC, getConfiguredRpcEndpoint } from './rpc-service.js';
-import { patchState } from './state-store.js';
+import { DEFAULT_NETWORK, patchState } from './state-store.js';
 import { serializeMessageForSigning } from './tx-service.js';
 import {
   getTrustedRestrictionRpc,
@@ -31,8 +31,8 @@ const EXTERNAL_EVM_NETWORKS = Object.freeze({
   }
 });
 
-function getNetworkMeta(network = 'local-testnet') {
-  const value = String(network || 'local-testnet').trim();
+function getNetworkMeta(network = DEFAULT_NETWORK) {
+  const value = String(network || DEFAULT_NETWORK).trim();
   if (value === 'mainnet') return { chainHex: '0x2710', netVersion: '10000' };
   if (value === 'testnet') return { chainHex: '0x2711', netVersion: '10001' };
   return { chainHex: '0x539', netVersion: '1337' };
@@ -94,7 +94,7 @@ function networkChangeFromPayload(payload, context, kind) {
     throw new Error(kind === 'add' ? 'Invalid chain definition' : 'Unsupported chainId for network switch');
   }
 
-  const previousNetwork = context.network || 'local-testnet';
+  const previousNetwork = context.network || DEFAULT_NETWORK;
   const change = {
     kind,
     origin: context.origin || null,
@@ -526,7 +526,7 @@ function normalizeCanTransferParams(payload) {
 }
 
 async function callProviderRestrictionMethod(payload, context, rpcMethod, normalizeParamsFn) {
-  const rpc = getTrustedRestrictionRpc(context.network || 'local-testnet');
+  const rpc = getTrustedRestrictionRpc(context.network || DEFAULT_NETWORK);
   return rpc.call(rpcMethod, normalizeParamsFn(payload));
 }
 
@@ -1106,7 +1106,7 @@ function buildTransactionIntentFromObject(txObject, context = {}, rpcEndpoint = 
     amount,
     token,
     tokenDecimals,
-    network: context.network || 'local-testnet',
+    network: context.network || DEFAULT_NETWORK,
     rpc: rpcEndpoint || '—',
     fee: 'Network base fee plus any priority fee',
     program: primaryProgram,
@@ -1135,13 +1135,13 @@ async function previewRestrictionPreflightForPayload(payload, context = {}) {
     return await preflightTransactionRestrictions({
       transaction: txObject,
       fromAddress: context.activeAddress || null,
-      network: context.network || 'local-testnet'
+      network: context.network || DEFAULT_NETWORK
     });
   } catch (error) {
     return {
       allowed: false,
       skipped: false,
-      network: context.network || 'local-testnet',
+      network: context.network || DEFAULT_NETWORK,
       targets: null,
       checks: [],
       warnings: [],
@@ -1154,7 +1154,7 @@ async function enforceRestrictionPreflight(txObject, activeWallet, context = {})
   const preflight = await preflightTransactionRestrictions({
     transaction: txObject,
     fromAddress: activeWallet?.address || null,
-    network: context.network || 'local-testnet'
+    network: context.network || DEFAULT_NETWORK
   });
   if (preflight.allowed === false) {
     return {
@@ -1167,16 +1167,16 @@ async function enforceRestrictionPreflight(txObject, activeWallet, context = {})
 }
 
 async function getRpcForContext(context = {}) {
-  const endpoint = await getConfiguredRpcEndpoint(context.network || 'local-testnet');
+  const endpoint = await getConfiguredRpcEndpoint(context.network || DEFAULT_NETWORK);
   return new LichenRPC(endpoint);
 }
 
 function getChainId(context = {}) {
-  return `lichen:${context.network || 'local-testnet'}`;
+  return `lichen:${context.network || DEFAULT_NETWORK}`;
 }
 
 async function buildTransactionIntentForPayload(payload, context = {}) {
-  const network = context.network || 'local-testnet';
+  const network = context.network || DEFAULT_NETWORK;
   let rpcEndpoint = '—';
   try {
     rpcEndpoint = await getConfiguredRpcEndpoint(network);
@@ -1489,7 +1489,7 @@ export async function handleProviderRequest(payload, context = {}) {
           connected,
           origin,
           chainId,
-          network: context.network || 'local-testnet',
+          network: context.network || DEFAULT_NETWORK,
           externalEvmNetworks: EXTERNAL_EVM_NETWORKS,
           accounts: activeAddress ? [activeAddress] : [],
           hasWallet,
@@ -1514,7 +1514,7 @@ export async function handleProviderRequest(payload, context = {}) {
       return {
         ok: true,
         result: {
-          network: context.network || 'local-testnet',
+          network: context.network || DEFAULT_NETWORK,
           chainId
         }
       };
@@ -1522,14 +1522,14 @@ export async function handleProviderRequest(payload, context = {}) {
     case 'licn_ethChainId': {
       return {
         ok: true,
-        result: getNetworkMeta(context.network || 'local-testnet').chainHex
+        result: getNetworkMeta(context.network || DEFAULT_NETWORK).chainHex
       };
     }
 
     case 'licn_netVersion': {
       return {
         ok: true,
-        result: getNetworkMeta(context.network || 'local-testnet').netVersion
+        result: getNetworkMeta(context.network || DEFAULT_NETWORK).netVersion
       };
     }
 
@@ -1717,21 +1717,15 @@ export async function handleProviderRequest(payload, context = {}) {
     case 'licn_getTransactions': {
       const params = normalizeParams(payload);
       const address = await resolveAddressForReadMethod(payload, activeAddress);
-      const argsLimit = Array.isArray(params.args) ? Number(params.args[1]) : NaN;
-      const limit = Math.max(1, Math.min(100, Number.isFinite(argsLimit) ? argsLimit : Number(params.limit || 20)));
       const rpc = await getRpcForContext(context);
-      const result = await rpc.getTransactionsByAddress(address, { limit });
       const requestedMethod = String(payload?.method || '').trim();
       if (requestedMethod === 'eth_getTransactionCount') {
-        const txs = Array.isArray(result?.transactions)
-          ? result.transactions
-          : Array.isArray(result?.items)
-            ? result.items
-            : Array.isArray(result)
-              ? result
-              : [];
-        return { ok: true, result: toHexQuantity(txs.length) };
+        const countResult = await rpc.call('getAccountTxCount', [address]);
+        return { ok: true, result: toHexQuantity(Number(countResult?.count || 0)) };
       }
+      const argsLimit = Array.isArray(params.args) ? Number(params.args[1]) : NaN;
+      const limit = Math.max(1, Math.min(100, Number.isFinite(argsLimit) ? argsLimit : Number(params.limit || 20)));
+      const result = await rpc.getTransactionsByAddress(address, { limit });
       return { ok: true, result };
     }
 
@@ -1850,7 +1844,7 @@ export async function getProviderStateSnapshot(context = {}) {
     connected,
     origin,
     chainId,
-    network: context.network || 'local-testnet',
+    network: context.network || DEFAULT_NETWORK,
     activeAddress,
     accounts: activeAddress ? [activeAddress] : [],
     hasWallet,

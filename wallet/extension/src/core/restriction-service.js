@@ -1,5 +1,6 @@
 import { base58Decode, base58Encode } from './crypto-service.js';
 import { LichenRPC, getTrustedRpcEndpoint } from './rpc-service.js';
+import { DEFAULT_NETWORK } from './state-store.js';
 
 export const NATIVE_RESTRICTION_ASSET = 'native';
 export const RESTRICTION_METHODS = Object.freeze({
@@ -18,8 +19,8 @@ const SYSTEM_PROGRAM_BYTES = new Uint8Array(32);
 const CONTRACT_PROGRAM_BYTES = new Uint8Array(32).fill(255);
 const BLOCKED_LIFECYCLE_STATUSES = new Set(['suspended', 'quarantined', 'terminated']);
 
-export function getTrustedRestrictionRpc(network = 'local-testnet') {
-  return new LichenRPC(getTrustedRpcEndpoint(network || 'local-testnet'));
+export function getTrustedRestrictionRpc(network = DEFAULT_NETWORK) {
+  return new LichenRPC(getTrustedRpcEndpoint(network || DEFAULT_NETWORK));
 }
 
 export function restrictionStatusIsActive(status) {
@@ -97,7 +98,7 @@ async function safeTrustedCall(rpc, method, params, errors) {
   }
 }
 
-export async function loadExtensionRestrictionStatus({ account, network = 'local-testnet' }) {
+export async function loadExtensionRestrictionStatus({ account, network = DEFAULT_NETWORK }) {
   const address = String(account || '').trim();
   if (!address) {
     return {
@@ -408,7 +409,7 @@ export async function preflightNativeTransferRestrictions({
   fromAddress,
   toAddress,
   amountLicn,
-  network = 'local-testnet'
+  network = DEFAULT_NETWORK
 }) {
   const from = String(fromAddress || '').trim();
   const to = String(toAddress || '').trim();
@@ -431,7 +432,7 @@ export async function preflightNativeTransferRestrictions({
 export async function preflightTransactionRestrictions({
   transaction,
   fromAddress = null,
-  network = 'local-testnet'
+  network = DEFAULT_NETWORK
 }) {
   const targets = analyzeRestrictionPreflightTargets(transaction, fromAddress);
   const rpc = getTrustedRestrictionRpc(network);

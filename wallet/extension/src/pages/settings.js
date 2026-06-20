@@ -1,4 +1,4 @@
-import { DEFAULT_STATE, loadState, saveState } from '../core/state-store.js';
+import { DEFAULT_NETWORK, DEFAULT_STATE, loadState, saveState } from '../core/state-store.js';
 import { clearAutoLockAlarm, scheduleAutoLock } from '../core/lock-service.js';
 import { decryptPrivateKey, encryptPrivateKey, hexToBytes } from '../core/crypto-service.js';
 
@@ -68,7 +68,7 @@ function renderMeta() {
   const wallet = getActiveWallet();
   const meta = document.getElementById('settingsMeta');
   meta.textContent = wallet
-    ? `${wallet.name} • ${state.network?.selected || 'local-testnet'} • ${shortAddress(wallet.address)}`
+    ? `${wallet.name} • ${state.network?.selected || DEFAULT_NETWORK} • ${shortAddress(wallet.address)}`
     : 'No active wallet';
 }
 
@@ -85,7 +85,7 @@ function renderWalletSelector() {
 }
 
 function renderControls() {
-  document.getElementById('settingsNetwork').value = state.network?.selected || 'local-testnet';
+  document.getElementById('settingsNetwork').value = state.network?.selected || DEFAULT_NETWORK;
   document.getElementById('settingsMainnetRpc').value = state.settings?.mainnetRPC || '';
   document.getElementById('settingsTestnetRpc').value = state.settings?.testnetRPC || '';
   document.getElementById('settingsLocalTestnetRpc').value = state.settings?.localTestnetRPC || '';

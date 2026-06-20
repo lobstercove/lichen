@@ -5,6 +5,28 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.180] - 2026-06-20
+
+### Fixed
+- Adds canonical MossStake unstake queue status to RPC responses, including
+  current slot, cooldown slots, claimable state, remaining slots, and estimated
+  remaining seconds so wallet surfaces do not recompute claimability
+  inconsistently.
+- Updates web wallet and extension MossStake views to consume the canonical
+  unstake queue state before falling back to local slot checks.
+- Changes the packaged wallet extension default network to public testnet and
+  migrates the old implicit localhost default when no custom local RPC is set.
+- Stops the web wallet from rendering RPC/index failures as a false "No
+  activity yet" empty state.
+- Makes extension provider `eth_getTransactionCount` use the canonical account
+  transaction count RPC instead of a capped activity page length.
+
+### Verified
+- Passed focused RPC queue tests, wallet audit, extension audit, extension
+  signing/provider E2E, JavaScript syntax checks, and a clean local
+  3-validator reset smoke with all three validators healthy and producing
+  matching slots.
+
 ## [0.5.179] - 2026-06-19
 
 ### Fixed

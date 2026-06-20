@@ -1,4 +1,4 @@
-import { loadState } from '../core/state-store.js';
+import { DEFAULT_NETWORK, loadState } from '../core/state-store.js';
 import {
   loadIdentityDetails,
   registerIdentity,
@@ -89,7 +89,7 @@ async function loadIdentityPage() {
     return;
   }
 
-  const network = state.network?.selected || 'local-testnet';
+  const network = state.network?.selected || DEFAULT_NETWORK;
   setHtml('identityMeta', `<strong>${wallet.name}</strong> • ${network} • ${shortAddress(wallet.address)}`);
 
   const details = await loadIdentityDetails(wallet.address, network).catch(() => null);
@@ -138,7 +138,7 @@ async function withWalletAction(run) {
     return;
   }
 
-  const network = state.network?.selected || 'local-testnet';
+  const network = state.network?.selected || DEFAULT_NETWORK;
   await run({ wallet, network });
 }
 

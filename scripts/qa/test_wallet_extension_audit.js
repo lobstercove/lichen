@@ -47,6 +47,7 @@ const bridgeServiceSrc = fs.readFileSync(path.join(extRoot, 'core', 'bridge-serv
 const identityServiceSrc = fs.readFileSync(path.join(extRoot, 'core', 'identity-service.js'), 'utf8');
 const restrictionServiceSrc = fs.readFileSync(path.join(extRoot, 'core', 'restriction-service.js'), 'utf8');
 const rpcServiceSrc = fs.readFileSync(path.join(extRoot, 'core', 'rpc-service.js'), 'utf8');
+const stateStoreSrc = fs.readFileSync(path.join(extRoot, 'core', 'state-store.js'), 'utf8');
 const providerRouterSrc = fs.readFileSync(path.join(extRoot, 'core', 'provider-router.js'), 'utf8');
 const wsServiceSrc = fs.readFileSync(path.join(extRoot, 'core', 'ws-service.js'), 'utf8');
 const serviceWorkerSrc = fs.readFileSync(path.join(extRoot, 'background', 'service-worker.js'), 'utf8');
@@ -511,11 +512,19 @@ test('E-10.6 wallet extension uses RPC-hosted production WebSocket ingress', () 
   assert.ok(!rpcServiceSrc.includes('wss://testnet-ws.lichen.network'), 'testnet legacy WS hostname should not be a default');
 });
 
+test('E-10.7 wallet extension defaults and migrates implicit localhost testnet to public testnet', () => {
+  assert.ok(stateStoreSrc.includes("const DEFAULT_NETWORK = 'testnet'"), 'extension default network should be public testnet');
+  assert.ok(stateStoreSrc.includes("selected === 'local-testnet' && !hasCustomLocalRpc"), 'old implicit localhost default should migrate when no custom local RPC exists');
+  assert.ok(rpcServiceSrc.includes('getTrustedRpcEndpoint(network = DEFAULT_NETWORK)'), 'trusted RPC fallback should use shared default network');
+});
+
 // ── E-11: Restriction status and signing preflight ──
 console.log('\n── E-11: Restriction Status And Signing Preflight ──');
 
 test('E-11.1 restriction-service pins all restriction checks to trusted RPC endpoints', () => {
-  assert.ok(restrictionServiceSrc.includes("getTrustedRpcEndpoint(network || 'local-testnet')"),
+  assert.ok(restrictionServiceSrc.includes('DEFAULT_NETWORK'),
+    'restriction-service should use the shared packaged default network');
+  assert.ok(restrictionServiceSrc.includes('getTrustedRpcEndpoint(network || DEFAULT_NETWORK)'),
     'restriction-service should build RPC clients from trusted endpoints');
   assert.ok(!restrictionServiceSrc.includes('getConfiguredRpcEndpoint'),
     'restriction-service must not use custom configured RPC endpoints');
@@ -610,7 +619,7 @@ test('E-12.2 provider router routes restriction helper aliases to trusted restri
   assert.ok(providerRouterSrc.includes("lichen_canTransfer: 'licn_canTransfer'"), 'canTransfer alias missing');
   assert.ok(providerRouterSrc.includes("lichen_getContractLifecycleStatus: 'licn_getContractLifecycleStatus'"), 'contract lifecycle alias missing');
   assert.ok(providerRouterSrc.includes('function callProviderRestrictionMethod('), 'trusted provider restriction call helper missing');
-  assert.ok(providerRouterSrc.includes("getTrustedRestrictionRpc(context.network || 'local-testnet')"),
+  assert.ok(providerRouterSrc.includes('getTrustedRestrictionRpc(context.network || DEFAULT_NETWORK)'),
     'provider restriction calls should use trusted endpoints');
 });
 
