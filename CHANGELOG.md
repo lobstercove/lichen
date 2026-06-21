@@ -5,6 +5,26 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.187] - 2026-06-21
+
+### Fixed
+- Preserves wallet/explorer Activity rows during snapshot export by merging hot
+  and cold `account_txs` indexes instead of exporting only the hot RocksDB view.
+- Refuses destructive `account_txs` rebuilds unless every existing activity row
+  can be proven from retained canonical block bodies, preventing pruned or
+  checkpoint-joined validators from wiping address history.
+- Clears stale `atxc:` counters when replacing the account-activity snapshot
+  category so imported rows and `getAccountTxCount` cannot diverge.
+- Exports canonical blocks through the hot/cold block reader so checkpoint
+  snapshots do not silently omit canonical blocks that moved out of hot storage.
+
+### Verified
+- Passed focused `account_txs` snapshot/rebuild regressions.
+- Passed `cargo test -p lobstercove-lichen-core --lib` and core clippy with
+  warnings denied.
+- Passed a clean local 3-validator run: fresh V2/V3 joins, V3 own-state restart
+  with zero drift, and all three validators producing before local cleanup.
+
 ## [0.5.186] - 2026-06-21
 
 ### Fixed

@@ -42,7 +42,7 @@ fn decode_snapshot_block_value(value: &[u8]) -> Result<Block, String> {
 }
 
 fn canonical_block_snapshot_value(key: &[u8], value: &[u8]) -> Result<Vec<u8>, String> {
-    let mut block = decode_snapshot_block_value(value)?;
+    let block = decode_snapshot_block_value(value)?;
     let block_hash = block.hash();
     if key != block_hash.0 {
         return Err(format!(
@@ -51,6 +51,10 @@ fn canonical_block_snapshot_value(key: &[u8], value: &[u8]) -> Result<Vec<u8>, S
             block_hash.to_hex()
         ));
     }
+    canonical_block_snapshot_value_from_block(block)
+}
+
+fn canonical_block_snapshot_value_from_block(mut block: Block) -> Result<Vec<u8>, String> {
     // Commit certificates are semantically a set; collection order can differ
     // across validators that finalized the same block.
     block.commit_signatures.sort_by(|a, b| {
@@ -73,7 +77,7 @@ fn canonical_block_snapshot_value(key: &[u8], value: &[u8]) -> Result<Vec<u8>, S
             .then(a.signature.sig.cmp(&b.signature.sig))
     });
 
-    let mut canonical = Vec::with_capacity(value.len().max(1));
+    let mut canonical = Vec::new();
     canonical.push(0xBC);
     append_legacy_bincode(&mut canonical, &block, "block").map_err(|err| {
         format!(
@@ -693,47 +697,29 @@ impl StateStore {
             });
         }
 
-        let cf = self
-            .db
-            .cf_handle(CF_ACCOUNT_TXS)
-            .ok_or_else(|| "Account transaction index CF not found".to_string())?;
-        let mut read_opts = rocksdb::ReadOptions::default();
-        read_opts.set_total_order_seek(true);
-        let iter = if let Some(after) = after_key {
-            self.db.iterator_cf_opt(
-                &cf,
-                read_opts,
-                rocksdb::IteratorMode::From(after, rocksdb::Direction::Forward),
-            )
-        } else {
-            self.db
-                .iterator_cf_opt(&cf, read_opts, rocksdb::IteratorMode::Start)
-        };
-
-        let mut entries = Vec::with_capacity(limit.min(10_000) as usize);
-        let mut has_more = false;
-
-        for item in iter {
-            let (key, value) =
-                item.map_err(|err| format!("Failed iterating Account transaction index: {}", err))?;
-            if let Some(after) = after_key {
-                if key.as_ref() == after {
-                    continue;
-                }
-            }
-
-            if !self.account_tx_snapshot_entry_is_canonical_or_unverifiable(&key)? {
-                continue;
-            }
-
-            entries.push((key.to_vec(), value.to_vec()));
-            if entries.len() > limit as usize {
-                has_more = true;
-                entries.pop();
-                break;
-            }
+        let mut merged = std::collections::BTreeMap::<Vec<u8>, Vec<u8>>::new();
+        self.collect_account_txs_snapshot_entries(
+            &self.db,
+            CF_ACCOUNT_TXS,
+            after_key,
+            limit,
+            &mut merged,
+        )?;
+        if let Some(ref cold) = self.cold_db {
+            self.collect_account_txs_snapshot_entries(
+                cold,
+                COLD_CF_ACCOUNT_TXS,
+                after_key,
+                limit,
+                &mut merged,
+            )?;
         }
 
+        let mut entries: Vec<_> = merged.into_iter().collect();
+        let has_more = entries.len() > limit as usize;
+        if has_more {
+            entries.truncate(limit as usize);
+        }
         let next_cursor = if has_more {
             entries.last().map(|(key, _)| key.clone())
         } else {
@@ -746,6 +732,55 @@ impl StateStore {
             next_cursor,
             has_more,
         })
+    }
+
+    fn collect_account_txs_snapshot_entries(
+        &self,
+        db: &DB,
+        cf_name: &str,
+        after_key: Option<&[u8]>,
+        limit: u64,
+        entries: &mut std::collections::BTreeMap<Vec<u8>, Vec<u8>>,
+    ) -> Result<(), String> {
+        let cf = db
+            .cf_handle(cf_name)
+            .ok_or_else(|| format!("{} CF not found", cf_name))?;
+        let mut read_opts = rocksdb::ReadOptions::default();
+        read_opts.set_total_order_seek(true);
+        let iter = if let Some(after) = after_key {
+            db.iterator_cf_opt(
+                &cf,
+                read_opts,
+                rocksdb::IteratorMode::From(after, rocksdb::Direction::Forward),
+            )
+        } else {
+            db.iterator_cf_opt(&cf, read_opts, rocksdb::IteratorMode::Start)
+        };
+
+        let mut collected = 0usize;
+        for item in iter {
+            let (key, value) =
+                item.map_err(|err| format!("Failed iterating {}: {}", cf_name, err))?;
+            if let Some(after) = after_key {
+                if key.as_ref() == after {
+                    continue;
+                }
+            }
+
+            if !self.account_tx_snapshot_entry_is_canonical_or_unverifiable(&key)? {
+                continue;
+            }
+
+            entries
+                .entry(key.to_vec())
+                .or_insert_with(|| value.to_vec());
+            collected += 1;
+            if collected > limit as usize {
+                break;
+            }
+        }
+
+        Ok(())
     }
 
     fn export_blocks_cursor_canonical(
@@ -766,11 +801,6 @@ impl StateStore {
             .db
             .cf_handle(CF_SLOTS)
             .ok_or_else(|| "Slots CF not found".to_string())?;
-        let block_cf = self
-            .db
-            .cf_handle(CF_BLOCKS)
-            .ok_or_else(|| "Blocks CF not found".to_string())?;
-
         let start_slot = parse_slot_snapshot_cursor(after_key, "blocks")?;
         let start_key = start_slot.to_be_bytes();
         let mut read_opts = rocksdb::ReadOptions::default();
@@ -806,12 +836,11 @@ impl StateStore {
 
             let mut block_hash = [0u8; 32];
             block_hash.copy_from_slice(&hash_value);
-            let value = self
-                .db
-                .get_cf(&block_cf, block_hash)
+            let block = self
+                .get_block(&Hash(block_hash))
                 .map_err(|err| format!("Failed reading canonical block {}: {}", slot, err))?
-                .ok_or_else(|| format!("Canonical block {} missing from Blocks CF", slot))?;
-            let canonical = canonical_block_snapshot_value(&block_hash, &value)?;
+                .ok_or_else(|| format!("Canonical block {} missing from hot/cold storage", slot))?;
+            let canonical = canonical_block_snapshot_value_from_block(block)?;
             entries.push((block_hash.to_vec(), canonical));
             next_cursor = Some(slot.to_be_bytes().to_vec());
         }
@@ -1072,11 +1101,88 @@ impl StateStore {
         Ok(deleted)
     }
 
+    fn ensure_account_txs_rebuild_source_complete(&self) -> Result<(), String> {
+        self.ensure_account_txs_rows_rebuildable_in_db(&self.db, CF_ACCOUNT_TXS)?;
+        if let Some(ref cold) = self.cold_db {
+            self.ensure_account_txs_rows_rebuildable_in_db(cold, COLD_CF_ACCOUNT_TXS)?;
+        }
+
+        let slot_cf = self
+            .db
+            .cf_handle(CF_SLOTS)
+            .ok_or_else(|| "Slots CF not found".to_string())?;
+        let mut read_opts = rocksdb::ReadOptions::default();
+        read_opts.set_total_order_seek(true);
+        let iter = self
+            .db
+            .iterator_cf_opt(&slot_cf, read_opts, rocksdb::IteratorMode::Start);
+        for item in iter {
+            let (slot_key, hash_value) =
+                item.map_err(|err| format!("Failed iterating Slots for rebuild guard: {}", err))?;
+            if slot_key.len() != 8 || hash_value.len() != 32 {
+                continue;
+            }
+            let mut slot_bytes = [0u8; 8];
+            slot_bytes.copy_from_slice(&slot_key);
+            let slot = u64::from_be_bytes(slot_bytes);
+            let mut hash = [0u8; 32];
+            hash.copy_from_slice(&hash_value);
+            if self.get_block(&Hash(hash))?.is_none() {
+                return Err(format!(
+                    "Refusing destructive account_txs rebuild: canonical slot {} has no source block body",
+                    slot
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
+    fn ensure_account_txs_rows_rebuildable_in_db(
+        &self,
+        db: &DB,
+        cf_name: &str,
+    ) -> Result<(), String> {
+        let cf = db
+            .cf_handle(cf_name)
+            .ok_or_else(|| format!("{} CF not found", cf_name))?;
+        let mut read_opts = rocksdb::ReadOptions::default();
+        read_opts.set_total_order_seek(true);
+        let iter = db.iterator_cf_opt(&cf, read_opts, rocksdb::IteratorMode::Start);
+        for item in iter {
+            let (key, _) = item.map_err(|err| {
+                format!("Failed iterating {} for rebuild guard: {}", cf_name, err)
+            })?;
+            let Some((slot, tx_hash)) = parse_account_tx_snapshot_key(&key)? else {
+                continue;
+            };
+            let Some(block) = self.get_block_by_slot(slot)? else {
+                return Err(format!(
+                    "Refusing destructive account_txs rebuild: indexed slot {} has no source block body",
+                    slot
+                ));
+            };
+            if !block
+                .transactions
+                .iter()
+                .any(|tx| tx.signature() == tx_hash)
+            {
+                return Err(format!(
+                    "Refusing destructive account_txs rebuild: indexed tx {} is not in source block {}",
+                    tx_hash.to_hex(),
+                    slot
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
     pub fn rebuild_account_txs_index_from_blocks(&self) -> Result<u64, String> {
         const WRITE_BATCH_SIZE: usize = 10_000;
 
+        self.ensure_account_txs_rebuild_source_complete()?;
         self.clear_snapshot_category("account_txs")?;
-        self.clear_account_tx_counters()?;
 
         let account_txs_cf = self
             .db
@@ -1493,6 +1599,10 @@ impl StateStore {
                 .write(batch)
                 .map_err(|e| format!("Failed to clear {}: {}", category, e))?;
             deleted = deleted.saturating_add(batch_count as u64);
+        }
+
+        if category == "account_txs" {
+            deleted = deleted.saturating_add(self.clear_account_tx_counters()?);
         }
 
         Ok(deleted)

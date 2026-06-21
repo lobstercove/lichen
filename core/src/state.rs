@@ -2645,6 +2645,136 @@ mod tests {
     }
 
     #[test]
+    fn account_txs_snapshot_roundtrip_preserves_activity_after_counter_clear() {
+        let source_dir = tempdir().unwrap();
+        let dest_dir = tempdir().unwrap();
+        let source = StateStore::open(source_dir.path()).unwrap();
+        let dest = StateStore::open(dest_dir.path()).unwrap();
+
+        let tracked = Pubkey([0x93; 32]);
+        let tx_hash = Hash([0x94; 32]);
+        let account_txs_cf = source.db.cf_handle(CF_ACCOUNT_TXS).unwrap();
+        let mut key = Vec::with_capacity(32 + 8 + 4 + 32);
+        key.extend_from_slice(&tracked.0);
+        key.extend_from_slice(&55u64.to_be_bytes());
+        key.extend_from_slice(&0u32.to_be_bytes());
+        key.extend_from_slice(&tx_hash.0);
+        source.db.put_cf(&account_txs_cf, &key, []).unwrap();
+
+        let page = source
+            .export_snapshot_category_cursor_untracked("account_txs", None, 10)
+            .unwrap();
+        assert_eq!(page.entries, vec![(key, Vec::new())]);
+
+        let stats_cf = dest.db.cf_handle(CF_STATS).unwrap();
+        let mut counter_key = Vec::with_capacity(5 + 32);
+        counter_key.extend_from_slice(b"atxc:");
+        counter_key.extend_from_slice(&tracked.0);
+        dest.db
+            .put_cf(&stats_cf, &counter_key, 0u64.to_le_bytes())
+            .unwrap();
+
+        dest.clear_snapshot_category("account_txs").unwrap();
+        dest.import_snapshot_category("account_txs", &page.entries)
+            .unwrap();
+
+        assert_eq!(dest.count_account_txs(&tracked).unwrap(), 1);
+        assert_eq!(
+            dest.get_account_tx_signatures_paginated(&tracked, 10, None)
+                .unwrap(),
+            vec![(tx_hash, 55)]
+        );
+    }
+
+    #[test]
+    fn account_txs_snapshot_export_includes_cold_history_index() {
+        let hot_dir = tempdir().unwrap();
+        let cold_dir = tempdir().unwrap();
+        let mut state = StateStore::open(hot_dir.path()).unwrap();
+        state.open_cold_store(cold_dir.path()).unwrap();
+
+        let tracked = Pubkey([0x93; 32]);
+        let other_old = Pubkey([0x94; 32]);
+        let other_new = Pubkey([0x95; 32]);
+        let old_tx = crate::transaction::Transaction::new(crate::transaction::Message::new(
+            vec![crate::transaction::Instruction {
+                program_id: Pubkey([0x96; 32]),
+                accounts: vec![tracked, other_old],
+                data: vec![1],
+            }],
+            Hash::hash(b"cold-export-old"),
+        ));
+        let new_tx = crate::transaction::Transaction::new(crate::transaction::Message::new(
+            vec![crate::transaction::Instruction {
+                program_id: Pubkey([0x97; 32]),
+                accounts: vec![tracked, other_new],
+                data: vec![2],
+            }],
+            Hash::hash(b"cold-export-new"),
+        ));
+        let old_block = crate::Block::new_with_timestamp(
+            3,
+            Hash::default(),
+            Hash::default(),
+            [0u8; 32],
+            vec![old_tx],
+            111,
+        );
+        let new_block = crate::Block::new_with_timestamp(
+            9,
+            old_block.hash(),
+            Hash::default(),
+            [0u8; 32],
+            vec![new_tx],
+            222,
+        );
+
+        state.put_block(&old_block).unwrap();
+        state.put_block(&new_block).unwrap();
+        assert_eq!(state.migrate_indexes_to_cold(5).unwrap(), 2);
+
+        let page = state
+            .export_snapshot_category_cursor_untracked("account_txs", None, 10)
+            .unwrap();
+        assert_eq!(page.entries.len(), 4);
+        assert_eq!(
+            page.entries
+                .iter()
+                .filter(|(key, _)| key.starts_with(&tracked.0))
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn account_txs_rebuild_refuses_to_drop_unbacked_history_rows() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+
+        let tracked = Pubkey([0x98; 32]);
+        let tx_hash = Hash([0x99; 32]);
+        let account_txs_cf = state.db.cf_handle(CF_ACCOUNT_TXS).unwrap();
+        let mut key = Vec::with_capacity(32 + 8 + 4 + 32);
+        key.extend_from_slice(&tracked.0);
+        key.extend_from_slice(&123u64.to_be_bytes());
+        key.extend_from_slice(&0u32.to_be_bytes());
+        key.extend_from_slice(&tx_hash.0);
+        state.db.put_cf(&account_txs_cf, &key, []).unwrap();
+
+        let err = state
+            .rebuild_account_txs_index_from_blocks()
+            .expect_err("rebuild must reject unbacked account history");
+        assert!(err.contains("Refusing destructive account_txs rebuild"));
+        assert_eq!(state.count_account_txs(&tracked).unwrap(), 1);
+        assert_eq!(
+            state
+                .get_account_tx_signatures_paginated(&tracked, 10, None)
+                .unwrap(),
+            vec![(tx_hash, 123)]
+        );
+    }
+
+    #[test]
     fn test_account_tx_and_recent_index_queries_roundtrip() {
         let temp = tempdir().unwrap();
         let state = StateStore::open(temp.path()).unwrap();
@@ -2709,7 +2839,7 @@ mod tests {
             vec![(tx_a_hash, 5)]
         );
         state.clear_snapshot_category("account_txs").unwrap();
-        assert_eq!(state.count_account_txs(&tracked).unwrap(), 2);
+        assert_eq!(state.count_account_txs(&tracked).unwrap(), 0);
         assert!(state
             .get_account_tx_signatures_paginated(&tracked, 10, None)
             .unwrap()

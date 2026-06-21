@@ -79,6 +79,49 @@
         <!-- Timeline -->
         <div class="changelog-timeline">
 
+            <!-- ============ v0.5.187 ============ -->
+            <div class="changelog-entry">
+                <div class="changelog-header">
+                    <span class="changelog-version">v0.5.187</span>
+                    <span class="changelog-date">June 21, 2026</span>
+                </div>
+                <h3 class="changelog-title">Account Activity Preservation</h3>
+
+                <div class="changelog-section" data-type="fixed">
+                    <h4><i class="fas fa-bug" style="color: var(--warning)"></i> Fixes</h4>
+                    <ul>
+                        <li><strong>Snapshot activity export</strong> &mdash; checkpoint snapshots now preserve stored
+                            wallet activity from hot and cold <code>account_txs</code> indexes instead of exporting only
+                            the hot RocksDB view.</li>
+                        <li><strong>Destructive rebuild guard</strong> &mdash; validators refuse an
+                            <code>account_txs</code> rebuild unless every existing activity row can be proven from
+                            retained canonical block bodies.</li>
+                        <li><strong>Counter consistency</strong> &mdash; account activity counter cache rows are cleared
+                            when the activity category is replaced, keeping <code>getAccountTxCount</code> aligned with
+                            imported history rows.</li>
+                    </ul>
+                </div>
+            </div>
+
+            <!-- ============ v0.5.186 ============ -->
+            <div class="changelog-entry">
+                <div class="changelog-header">
+                    <span class="changelog-version">v0.5.186</span>
+                    <span class="changelog-date">June 21, 2026</span>
+                </div>
+                <h3 class="changelog-title">Snapshot Activity Index Preservation</h3>
+
+                <div class="changelog-section" data-type="fixed">
+                    <h4><i class="fas fa-bug" style="color: var(--warning)"></i> Fixes</h4>
+                    <ul>
+                        <li><strong>Startup safety</strong> &mdash; validator startup no longer rebuilds wallet
+                            activity from partial local block archives on checkpoint-joined or pruned validators.</li>
+                        <li><strong>Activity snapshots</strong> &mdash; checkpoint snapshots keep stored address
+                            history rows that cannot be reconstructed from pruned block archives.</li>
+                    </ul>
+                </div>
+            </div>
+
             <!-- ============ v0.5.183 ============ -->
             <div class="changelog-entry">
                 <div class="changelog-header">
