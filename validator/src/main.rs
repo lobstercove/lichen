@@ -118,7 +118,6 @@ fn validator_log_filter() -> EnvFilter {
 const DEFAULT_WATCHDOG_TIMEOUT_SECS: u64 = 120;
 const GENESIS_SYNC_INCOMPLETE_MARKER: &str = "genesis_sync_incomplete";
 const TX_BY_SLOT_CANONICAL_INDEX_MARKER: &str = "tx_by_slot_canonical_index_v1";
-const ACCOUNT_TXS_CANONICAL_INDEX_MARKER: &str = "account_txs_canonical_index_v1";
 const RECENT_POST_BLOCK_EFFECTS_RECOVERY_WINDOW: u64 = 4096;
 const ACTIVATE_RESTRICTION_SCHEMA_FLAG: &str = "--activate-restriction-schema";
 const SHOW_RESTRICTION_SCHEMA_FLAG: &str = "--show-restriction-schema";
@@ -3593,56 +3592,6 @@ fn sync_tx_by_slot_index_for_startup(state: &StateStore, context: &str) {
         Err(err) => {
             error!(
                 "Failed to rebuild tx_by_slot archive index from canonical blocks ({}): {}",
-                context, err
-            );
-            std::process::exit(1);
-        }
-    }
-}
-
-fn sync_account_txs_index_for_startup(state: &StateStore, context: &str) {
-    let last_slot = state.get_last_slot().unwrap_or(0);
-    if last_slot == 0 {
-        return;
-    }
-
-    let already_canonical = matches!(
-        state
-            .get_metadata(ACCOUNT_TXS_CANONICAL_INDEX_MARKER)
-            .ok()
-            .flatten()
-            .as_deref(),
-        Some(b"1")
-    );
-    if already_canonical {
-        info!(
-            "✓ account_txs activity index already canonical ({}): marker={}",
-            context, ACCOUNT_TXS_CANONICAL_INDEX_MARKER
-        );
-        return;
-    }
-
-    info!(
-        "🧾 Rebuilding account_txs activity index from canonical blocks ({})",
-        context
-    );
-    match state.rebuild_account_txs_index_from_blocks() {
-        Ok(indexed) => {
-            if let Err(err) = state.put_metadata(ACCOUNT_TXS_CANONICAL_INDEX_MARKER, b"1") {
-                error!(
-                    "Failed to mark account_txs activity index canonical ({}): {}",
-                    context, err
-                );
-                std::process::exit(1);
-            }
-            info!(
-                "✓ Rebuilt account_txs activity index from canonical blocks ({}): {} entries",
-                context, indexed
-            );
-        }
-        Err(err) => {
-            error!(
-                "Failed to rebuild account_txs activity index from canonical blocks ({}): {}",
                 context, err
             );
             std::process::exit(1);
@@ -12378,7 +12327,6 @@ async fn run_validator() {
 
     configure_archive_mode(&state, &args, cold_store_path.is_some());
     sync_tx_by_slot_index_for_startup(&state, "startup");
-    sync_account_txs_index_for_startup(&state, "startup");
     sync_dex_indexes_for_startup(&state, "startup");
 
     // Create transaction processor

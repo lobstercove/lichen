@@ -5,6 +5,26 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.186] - 2026-06-21
+
+### Fixed
+- Stops validator startup from rebuilding the wallet activity `account_txs`
+  index from locally retained block archives, preserving stored address history
+  on checkpoint-joined or pruned validators.
+- Restores checkpoint snapshot export of `account_txs` from the stored account
+  transaction index while still filtering provably stale rows when the
+  canonical block is locally available.
+- Keeps fresh and resumed validators from erasing wallet/explorer Activity rows
+  that cannot be reconstructed from pruned block archives.
+
+### Verified
+- Passed focused core account activity, canonical snapshot, validator snapshot,
+  and RPC `getTransactionsByAddress`/`getAccountTxCount` tests.
+- Passed `cargo fmt --check`, `git diff --check`, and clippy for core,
+  validator, and RPC with warnings denied.
+- Passed a clean local 3-validator `start-reset` smoke: all three validators
+  healthy, online, and advancing at the same slot before local cleanup.
+
 ## [0.5.183] - 2026-06-20
 
 ### Fixed

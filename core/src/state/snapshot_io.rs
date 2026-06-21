@@ -145,6 +145,20 @@ fn parse_tx_snapshot_cursor(
     }
 }
 
+fn parse_account_tx_snapshot_key(key: &[u8]) -> Result<Option<(u64, Hash)>, String> {
+    if key.len() < 32 + 8 + 4 + 32 {
+        return Ok(None);
+    }
+
+    let slot_bytes: [u8; 8] = key[32..40]
+        .try_into()
+        .map_err(|_| "Invalid slot bytes in account tx snapshot key".to_string())?;
+    let mut hash_bytes = [0u8; 32];
+    hash_bytes.copy_from_slice(&key[44..76]);
+
+    Ok(Some((u64::from_be_bytes(slot_bytes), Hash(hash_bytes))))
+}
+
 fn directory_logical_size(path: &std::path::Path) -> Result<u64, String> {
     let mut total = 0u64;
     let mut stack = vec![path.to_path_buf()];
@@ -536,7 +550,7 @@ impl StateStore {
             );
         }
         if category == "account_txs" {
-            return self.export_account_txs_from_canonical_blocks_cursor(after_key, limit);
+            return self.export_account_txs_index_cursor(after_key, limit);
         }
         if category == "tx_by_slot" {
             return self.export_canonical_tx_snapshot_cursor(
@@ -623,6 +637,92 @@ impl StateStore {
                 .iter()
                 .any(|volatile| key.as_ref() == *volatile)
             {
+                continue;
+            }
+
+            entries.push((key.to_vec(), value.to_vec()));
+            if entries.len() > limit as usize {
+                has_more = true;
+                entries.pop();
+                break;
+            }
+        }
+
+        let next_cursor = if has_more {
+            entries.last().map(|(key, _)| key.clone())
+        } else {
+            None
+        };
+
+        Ok(KvPage {
+            entries,
+            total: 0,
+            next_cursor,
+            has_more,
+        })
+    }
+
+    fn account_tx_snapshot_entry_is_canonical_or_unverifiable(
+        &self,
+        key: &[u8],
+    ) -> Result<bool, String> {
+        let Some((slot, tx_hash)) = parse_account_tx_snapshot_key(key)? else {
+            return Ok(true);
+        };
+
+        match self.get_block_by_slot(slot)? {
+            Some(block) => Ok(block
+                .transactions
+                .iter()
+                .any(|tx| tx.signature() == tx_hash)),
+            None => Ok(true),
+        }
+    }
+
+    fn export_account_txs_index_cursor(
+        &self,
+        after_key: Option<&[u8]>,
+        limit: u64,
+    ) -> Result<KvPage, String> {
+        if limit == 0 {
+            return Ok(KvPage {
+                entries: Vec::new(),
+                total: 0,
+                next_cursor: None,
+                has_more: false,
+            });
+        }
+
+        let cf = self
+            .db
+            .cf_handle(CF_ACCOUNT_TXS)
+            .ok_or_else(|| "Account transaction index CF not found".to_string())?;
+        let mut read_opts = rocksdb::ReadOptions::default();
+        read_opts.set_total_order_seek(true);
+        let iter = if let Some(after) = after_key {
+            self.db.iterator_cf_opt(
+                &cf,
+                read_opts,
+                rocksdb::IteratorMode::From(after, rocksdb::Direction::Forward),
+            )
+        } else {
+            self.db
+                .iterator_cf_opt(&cf, read_opts, rocksdb::IteratorMode::Start)
+        };
+
+        let mut entries = Vec::with_capacity(limit.min(10_000) as usize);
+        let mut has_more = false;
+
+        for item in iter {
+            let (key, value) =
+                item.map_err(|err| format!("Failed iterating Account transaction index: {}", err))?;
+            if let Some(after) = after_key {
+                if key.as_ref() == after {
+                    continue;
+                }
+            }
+
+            if !self.account_tx_snapshot_entry_is_canonical_or_unverifiable(&key)? {
                 continue;
             }
 
@@ -848,88 +948,6 @@ impl StateStore {
 
                 entries.push(entry);
                 next_cursor = Some(encode_tx_snapshot_cursor(slot, tx_index));
-            }
-        }
-
-        Ok(KvPage {
-            entries,
-            total: 0,
-            next_cursor: if has_more { next_cursor } else { None },
-            has_more,
-        })
-    }
-
-    fn export_account_txs_from_canonical_blocks_cursor(
-        &self,
-        after_key: Option<&[u8]>,
-        limit: u64,
-    ) -> Result<KvPage, String> {
-        if limit == 0 {
-            return Ok(KvPage {
-                entries: Vec::new(),
-                total: 0,
-                next_cursor: None,
-                has_more: false,
-            });
-        }
-
-        let (start_slot, after_entry_index) = parse_tx_snapshot_cursor(after_key, "account_txs")?;
-        let slot_cf = self
-            .db
-            .cf_handle(CF_SLOTS)
-            .ok_or_else(|| "Slots CF not found".to_string())?;
-        let start_key = start_slot.to_be_bytes();
-        let mut read_opts = rocksdb::ReadOptions::default();
-        read_opts.set_total_order_seek(true);
-        let iter = self.db.iterator_cf_opt(
-            &slot_cf,
-            read_opts,
-            rocksdb::IteratorMode::From(&start_key, rocksdb::Direction::Forward),
-        );
-
-        let mut entries = Vec::with_capacity(limit.min(10_000) as usize);
-        let mut has_more = false;
-        let limit = limit as usize;
-        let mut next_cursor = None;
-
-        'slots: for item in iter {
-            let (slot_key, _) = item
-                .map_err(|err| format!("Failed iterating Slots for account_txs export: {}", err))?;
-            if slot_key.len() != 8 {
-                continue;
-            }
-
-            let mut slot_bytes = [0u8; 8];
-            slot_bytes.copy_from_slice(&slot_key);
-            let slot = u64::from_be_bytes(slot_bytes);
-            if slot < start_slot {
-                continue;
-            }
-
-            let first_entry_index = if Some(slot) == Some(start_slot) {
-                after_entry_index
-                    .map(|index| index.saturating_add(1))
-                    .unwrap_or(0)
-            } else {
-                0
-            };
-
-            let Some(block) = self.get_block_by_slot(slot)? else {
-                continue;
-            };
-            let account_entries =
-                super::secondary_indexes::account_tx_index_entries_for_block(&block);
-            for (entry_index, (_, key)) in account_entries.into_iter().enumerate() {
-                let entry_index = entry_index as u64;
-                if entry_index < first_entry_index {
-                    continue;
-                }
-                if entries.len() == limit {
-                    has_more = true;
-                    break 'slots;
-                }
-                entries.push((key, Vec::new()));
-                next_cursor = Some(encode_tx_snapshot_cursor(slot, entry_index));
             }
         }
 

@@ -2624,6 +2624,27 @@ mod tests {
     }
 
     #[test]
+    fn account_txs_snapshot_export_preserves_stored_history_index() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+
+        let tracked = Pubkey([0x91; 32]);
+        let tx_hash = Hash([0x92; 32]);
+        let account_txs_cf = state.db.cf_handle(CF_ACCOUNT_TXS).unwrap();
+        let mut key = Vec::with_capacity(32 + 8 + 4 + 32);
+        key.extend_from_slice(&tracked.0);
+        key.extend_from_slice(&1_234u64.to_be_bytes());
+        key.extend_from_slice(&0u32.to_be_bytes());
+        key.extend_from_slice(&tx_hash.0);
+        state.db.put_cf(&account_txs_cf, &key, []).unwrap();
+
+        let page = state
+            .export_snapshot_category_cursor_untracked("account_txs", None, 10)
+            .unwrap();
+        assert_eq!(page.entries, vec![(key, Vec::new())]);
+    }
+
+    #[test]
     fn test_account_tx_and_recent_index_queries_roundtrip() {
         let temp = tempdir().unwrap();
         let state = StateStore::open(temp.path()).unwrap();
@@ -4550,8 +4571,7 @@ mod tests {
             vec![(old_hash, 3)]
         );
 
-        // Startup rebuilds and snapshot imports clear the hot account_txs CF.
-        // Cold rows must remain visible so wallet activity does not disappear.
+        // Clearing the hot account_txs CF must not hide cold archival rows.
         state.clear_snapshot_category("account_txs").unwrap();
         assert_eq!(state.count_account_txs(&tracked).unwrap(), 1);
         assert_eq!(
