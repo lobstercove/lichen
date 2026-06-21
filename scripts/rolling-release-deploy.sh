@@ -4,12 +4,14 @@ set -euo pipefail
 # Non-destructive VPS release rollout.
 #
 # Usage:
-#   LICHEN_RELEASE_TAG=v0.5.187 bash scripts/rolling-release-deploy.sh testnet
-#   LICHEN_RELEASE_TAG=v0.5.187 bash scripts/rolling-release-deploy.sh mainnet
-#   LICHEN_RELEASE_TAG=v0.5.187 LICHEN_VERIFY_RELEASE_ONLY=1 bash scripts/rolling-release-deploy.sh testnet
+#   LICHEN_RELEASE_TAG=vX.Y.Z bash scripts/rolling-release-deploy.sh testnet
+#   LICHEN_RELEASE_TAG=vX.Y.Z bash scripts/rolling-release-deploy.sh mainnet
+#   LICHEN_RELEASE_TAG=vX.Y.Z LICHEN_VERIFY_RELEASE_ONLY=1 bash scripts/rolling-release-deploy.sh testnet
 #
 # This script installs an exact GitHub Release archive on each validator and
 # restarts one validator at a time. It never deletes chain state.
+# Do not use it for consensus-critical releases unless the operator has planned
+# mixed-version safety explicitly.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -48,6 +50,13 @@ DEX_SMOKE_TIMEOUT_SECS="${LICHEN_DEX_SMOKE_TIMEOUT_SECS:-90}"
 ARTIFACT_DIR="${LICHEN_RELEASE_ARTIFACT_DIR:-/tmp/lichen-rolling-${NETWORK}-${RELEASE_TAG:-unset}}"
 RELEASE_SIGNING_ADDRESS="${LICHEN_RELEASE_SIGNING_ADDRESS:-8HitBNnh8qbhfne5NCv2yHrQFoD6xbmHcWaUSgCGtsk}"
 REMOTE_RELEASE_DOWNLOAD="${LICHEN_REMOTE_RELEASE_DOWNLOAD:-auto}"
+
+is_consensus_critical_release() {
+  case "$RELEASE_TAG" in
+    v0.5.188) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 
 expected_validator_pubkey_for_host() {
   case "${NETWORK}:$1" in
@@ -876,6 +885,14 @@ if [ "${LICHEN_VERIFY_RELEASE_ONLY:-}" = "1" ]; then
   done
   echo "RELEASE VERIFY COMPLETE"
   exit 0
+fi
+
+if is_consensus_critical_release &&
+  [ "${LICHEN_ALLOW_CONSENSUS_CRITICAL_ROLLING:-0}" != "1" ]; then
+  echo "${RELEASE_TAG} changes consensus-critical leader selection; refusing mixed-version rolling restart." >&2
+  echo "Use a coordinated stop/install/start rollout, then run this script with LICHEN_VERIFY_RELEASE_ONLY=1." >&2
+  echo "Set LICHEN_ALLOW_CONSENSUS_CRITICAL_ROLLING=1 only after explicit operator review." >&2
+  exit 2
 fi
 
 for host in $HOSTS; do

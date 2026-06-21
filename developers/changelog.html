@@ -79,6 +79,27 @@
         <!-- Timeline -->
         <div class="changelog-timeline">
 
+            <!-- ============ v0.5.188 ============ -->
+            <div class="changelog-entry">
+                <div class="changelog-header">
+                    <span class="changelog-version">v0.5.188</span>
+                    <span class="changelog-date">June 21, 2026</span>
+                </div>
+                <h3 class="changelog-title">Four-Validator Proposer Rotation</h3>
+
+                <div class="changelog-section" data-type="fixed">
+                    <h4><i class="fas fa-bug" style="color: var(--warning)"></i> Fixes</h4>
+                    <ul>
+                        <li><strong>BFT leader schedule</strong> &mdash; leader selection now maps
+                            <code>(height, round)</code> to <code>height + round</code>, preventing the old
+                            <code>height * 1000</code> mapping from collapsing the effective weighted round-robin
+                            window in four-validator sets.</li>
+                        <li><strong>Four-validator production</strong> &mdash; an online validator can no longer remain
+                            active only as a voter while being starved from proposer duty by the schedule mapping.</li>
+                    </ul>
+                </div>
+            </div>
+
             <!-- ============ v0.5.187 ============ -->
             <div class="changelog-entry">
                 <div class="changelog-header">

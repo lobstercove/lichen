@@ -5,7 +5,7 @@ mainnet custody. It is intentionally step-by-step and gate-based. Do not skip a
 gate because mainnet genesis and custody routes handle real value.
 
 Written for the current mainnet package. Current signed-release target for this
-runbook is `v0.5.187`; keep `v0.5.186` as the signed rollback point. If a newer
+runbook is `v0.5.188`; keep `v0.5.187` as the signed rollback point. If a newer
 release is used, replace every example tag with the newer signed release tag
 after CI and release verification pass.
 
@@ -21,6 +21,8 @@ after CI and release verification pass.
 - Do not use the mainnet faucet pattern. There is no mainnet faucet.
 - Do not copy validator RocksDB state, `genesis-wallet.json`, `genesis-keys/`,
   `known-peers.json`, or consensus WAL to joiners.
+- Do not deploy `v0.5.188` with a mixed-version rolling restart; it changes BFT
+  leader selection and requires a coordinated stop/install/start rollout.
 - Do not commit provider URLs, auth tokens, keypair passwords, custody seeds,
   funded keypairs, signing keys, or filled production env files.
 - Do not print secrets in shell logs, tickets, chat, or launch notes. Print key
@@ -190,7 +192,7 @@ credentials, or keypair passwords.
 Use the signed release that passed CI. For the current package:
 
 ```bash
-export LICHEN_RELEASE_TAG=v0.5.187
+export LICHEN_RELEASE_TAG=v0.5.188
 export LICHEN_MAINNET_VPS_HOSTS="15.204.229.189 37.59.97.61 15.235.142.253 148.113.43.247"
 ```
 

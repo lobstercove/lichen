@@ -5,6 +5,22 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.188] - 2026-06-21
+
+### Fixed
+- Restores fair BFT proposer rotation for four-validator and larger validator
+  sets by deriving the leader-selection slot from `height + round` instead of
+  `height * 1000 + round`. The old mapping collapsed the effective weighted
+  round-robin window for four validators, allowing a validator to remain online
+  and voting while not being selected to propose.
+
+### Verified
+- Passed focused BFT leader-slot regression tests and weighted leader-selection
+  fairness tests.
+- Passed the validator consensus test suite.
+- Passed a clean local 4-validator run: V2/V3/V4 joined without copied state,
+  V4 restarted from its own state, and all four validators produced blocks.
+
 ## [0.5.187] - 2026-06-21
 
 ### Fixed

@@ -167,6 +167,10 @@ pub struct ConsensusEngine {
     future_precommits: BTreeMap<u64, Vec<Precommit>>,
 }
 
+fn leader_selection_slot(height: u64, round: u32) -> u64 {
+    height.saturating_add(round as u64)
+}
+
 impl ConsensusEngine {
     /// Create a new consensus engine for the given validator identity.
     pub fn new(keypair: Keypair, validator_pubkey: Pubkey) -> Self {
@@ -446,7 +450,7 @@ impl ConsensusEngine {
         }
         // Verify proposer is the correct leader for (height, round)
         let parent_hash = proposal.block.header.parent_hash;
-        let leader_slot = self.height * 1000 + proposal.round as u64;
+        let leader_slot = leader_selection_slot(self.height, proposal.round);
         let expected_leader = validator_set.select_leader_weighted(
             leader_slot,
             stake_pool,
@@ -1546,7 +1550,7 @@ impl ConsensusEngine {
         stake_pool: &StakePool,
         parent_hash: &Hash,
     ) -> bool {
-        let leader_slot = self.height * 1000 + self.round as u64;
+        let leader_slot = leader_selection_slot(self.height, self.round);
         let leader = validator_set.select_leader_weighted(
             leader_slot,
             stake_pool,
@@ -1815,6 +1819,36 @@ mod tests {
             sp.upsert_stake_full(entry);
         }
         (validators, vs, sp)
+    }
+
+    #[test]
+    fn test_bft_leader_slot_mapping_covers_four_round_zero_validators() {
+        let (validators, vs, sp) = make_test_env(4);
+        let expected: std::collections::BTreeSet<_> =
+            validators.iter().map(|(_, pk)| *pk).collect();
+        let mut observed = std::collections::BTreeSet::new();
+
+        for height in 1..=16 {
+            let leader_slot = leader_selection_slot(height, 0);
+            if let Some(leader) =
+                vs.select_leader_weighted(leader_slot, &sp, &[], MIN_VALIDATOR_STAKE)
+            {
+                observed.insert(leader);
+            }
+        }
+
+        assert_eq!(
+            observed, expected,
+            "round-0 leader mapping must not starve one validator in a four-validator set"
+        );
+    }
+
+    #[test]
+    fn test_bft_leader_slot_mapping_advances_on_round_change() {
+        let height = 42;
+        assert_eq!(leader_selection_slot(height, 0), height);
+        assert_eq!(leader_selection_slot(height, 1), height + 1);
+        assert_eq!(leader_selection_slot(height, 2), height + 2);
     }
 
     #[test]

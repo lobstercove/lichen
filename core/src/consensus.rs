@@ -4163,6 +4163,41 @@ mod tests {
     }
 
     #[test]
+    fn test_weighted_leader_selection_four_equal_stake_epoch_covers_all() {
+        let mut set = ValidatorSet::new();
+        let mut pool = StakePool::new();
+        let validators = [
+            Pubkey::new([1u8; 32]),
+            Pubkey::new([2u8; 32]),
+            Pubkey::new([3u8; 32]),
+            Pubkey::new([4u8; 32]),
+        ];
+
+        for pk in validators {
+            set.add_validator(ValidatorInfo::new(pk, 0));
+            pool.stake(pk, MIN_VALIDATOR_STAKE, 0).unwrap();
+        }
+
+        let mut counts = std::collections::BTreeMap::new();
+        for slot in 0..16 {
+            let leader = set
+                .select_leader_weighted(slot, &pool, &[], MIN_VALIDATOR_STAKE)
+                .expect("equal-stake validator set should have a leader");
+            *counts.entry(leader).or_insert(0u32) += 1;
+        }
+
+        assert_eq!(
+            counts.len(),
+            validators.len(),
+            "one four-validator epoch window must include every validator"
+        );
+        assert!(
+            counts.values().all(|count| *count == 4),
+            "equal-stake four-validator epoch should be balanced, got {counts:?}"
+        );
+    }
+
+    #[test]
     fn test_weighted_halts_when_no_min_stake() {
         let mut set = ValidatorSet::new();
         let pool = StakePool::new(); // empty pool — no validator meets MIN_VALIDATOR_STAKE

@@ -23,7 +23,7 @@ p3-goldilocks = "0.5.3"
 p3-symmetric = "0.5.2"
 
 [dev-dependencies]
-lichen-core = { package = "lobstercove-lichen-core", version = "=0.5.187", path = "../core" }
+lichen-core = { package = "lobstercove-lichen-core", version = "=0.5.188", path = "../core" }
 
 [features]
 default = []
