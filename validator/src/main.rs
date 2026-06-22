@@ -240,28 +240,11 @@ fn should_recover_partial_genesis_state(
         return true;
     }
 
-    if state.get_block_by_slot(0).unwrap_or(None).is_some() {
-        return false;
-    }
-
-    // Hard evidence: non-zero tip without a block-0 means this is legacy or
-    // partial state and cannot safely continue as a resumable validator state.
-    if state.get_last_slot().unwrap_or(0) > 0 {
-        return true;
-    }
-
-    // Strong heuristic evidence of previously initialized chain state.
-    if let Ok(set) = state.load_validator_set() {
-        if !set.validators().is_empty() {
-            return true;
-        }
-    }
-
-    let metrics = state.get_metrics();
-    if metrics.total_blocks > 0 || metrics.total_accounts > 0 {
-        return true;
-    }
-
+    // Do not infer corruption from missing public archive data. Older valid
+    // public-network nodes can have a committed non-zero tip without a stored
+    // slot-0 block in the hot state database. Only the explicit marker written
+    // by the genesis/import path is strong enough evidence for destructive
+    // local state recovery.
     false
 }
 
@@ -25195,6 +25178,10 @@ mod tests {
         }];
 
         state.put_block(&block).expect("put block");
+        assert!(
+            state.get_block_by_slot(0).expect("read slot 0").is_none(),
+            "test must cover legacy checkpoints whose hot state has no canonical slot-0 block"
+        );
 
         let checkpoint_path = temp_dir.path().join("checkpoints/slot-1");
         std::fs::create_dir_all(
@@ -25238,6 +25225,10 @@ mod tests {
         assert_eq!(meta.slot, 1);
         assert_eq!(meta.state_root, block.header.state_root.0);
         validate_advertised_snapshot_manifest_shape(&manifest).expect("manifest shape");
+        assert!(
+            !manifest.iter().any(|digest| digest.category == "blocks"),
+            "state-repair checkpoint manifests must not require public block archive rows"
+        );
         let manifest_root = snapshot_manifest_root(&manifest);
         let (anchored_meta, _, _, anchored_categories) = verified_checkpoint_for_anchor(
             temp_dir.path().to_str().expect("data dir"),
@@ -30514,7 +30505,7 @@ mod tests {
     }
 
     #[test]
-    fn should_recover_partial_genesis_state_triggers_on_non_zero_tip_without_genesis() {
+    fn should_recover_partial_genesis_state_keeps_legacy_non_zero_tip_without_genesis() {
         let temp_dir = tempfile::tempdir().expect("create temp dir");
         let state = StateStore::open(temp_dir.path()).expect("open state");
 
@@ -30523,7 +30514,7 @@ mod tests {
             .put_metadata(GENESIS_SYNC_INCOMPLETE_MARKER, b"0")
             .expect("store marker");
 
-        assert!(should_recover_partial_genesis_state(
+        assert!(!should_recover_partial_genesis_state(
             &state,
             Some("testnet"),
             None
