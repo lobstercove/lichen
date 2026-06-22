@@ -79,22 +79,23 @@
         <!-- Timeline -->
         <div class="changelog-timeline">
 
-            <!-- ============ v0.5.192 ============ -->
+            <!-- ============ v0.5.193 ============ -->
             <div class="changelog-entry">
                 <div class="changelog-header">
-                    <span class="changelog-version">v0.5.192</span>
+                    <span class="changelog-version">v0.5.193</span>
                     <span class="changelog-date">June 22, 2026</span>
                 </div>
-                <h3 class="changelog-title">Safe Resume Checkpoint Repair</h3>
+                <h3 class="changelog-title">Deterministic MossStake Snapshot Repair</h3>
 
                 <div class="changelog-section" data-type="fixed">
                     <h4><i class="fas fa-bug" style="color: var(--warning)"></i> Fixes</h4>
                     <ul>
-                        <li><strong>Legacy public-node resumes</strong> &mdash; startup recovery no longer scrubs valid
-                            public-network state just because archive slot 0 is absent from the hot RocksDB state.</li>
-                        <li><strong>Consensus-state repair snapshots</strong> &mdash; repair checkpoint manifests remain
-                            consensus-state-only and do not require public block-history rows before serving a fresh or
-                            resumed validator.</li>
+                        <li><strong>MossStake checkpoint snapshots</strong> &mdash; repair manifests and streamed
+                            singleton chunks now use deterministic MossStake snapshot bytes, so fresh or resumed
+                            validators cannot reject a valid checkpoint because unstake-request map order changed
+                            between manifest creation and chunk serving.</li>
+                        <li><strong>Safe resume baseline</strong> &mdash; retains the v0.5.192 public-network resume
+                            guard and consensus-state-only repair snapshot profile.</li>
                     </ul>
                 </div>
             </div>

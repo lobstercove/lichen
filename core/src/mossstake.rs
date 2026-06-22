@@ -1,7 +1,7 @@
 // Lichen MossStake - Liquid Staking Protocol
 // Stake LICN, receive stLICN (liquid receipt token)
 
-use crate::codec::serialize_legacy_bincode;
+use crate::codec::{deserialize_legacy_bincode_strict, serialize_legacy_bincode};
 use crate::consensus::UNSTAKE_COOLDOWN_SLOTS;
 use crate::Pubkey;
 use serde::{Deserialize, Serialize};
@@ -297,6 +297,16 @@ pub struct MossStakePool {
     pub total_validators: u64, // Number of validators staked to
     /// Average APY in basis points (10000 = 100.00%)
     pub average_apy_bp: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct MossStakePoolSnapshotV1 {
+    version: u8,
+    st_licn_token: StLicnToken,
+    positions: Vec<(Pubkey, StakingPosition)>,
+    unstake_requests: Vec<(Pubkey, Vec<UnstakeRequest>)>,
+    total_validators: u64,
+    average_apy_bp: u64,
 }
 
 impl Default for MossStakePool {
@@ -1099,6 +1109,54 @@ impl MossStakePool {
         self.unstake_requests.get(user).cloned().unwrap_or_default()
     }
 
+    pub fn canonical_snapshot_bytes(&self) -> Result<Vec<u8>, String> {
+        let positions = self
+            .positions
+            .iter()
+            .map(|(owner, position)| (*owner, position.clone()))
+            .collect();
+
+        let mut unstake_requests: Vec<_> = self
+            .unstake_requests
+            .iter()
+            .map(|(owner, requests)| (*owner, requests.clone()))
+            .collect();
+        unstake_requests.sort_by_key(|(owner, _)| owner.0);
+
+        let snapshot = MossStakePoolSnapshotV1 {
+            version: 1,
+            st_licn_token: self.st_licn_token.clone(),
+            positions,
+            unstake_requests,
+            total_validators: self.total_validators,
+            average_apy_bp: self.average_apy_bp,
+        };
+
+        serialize_legacy_bincode(&snapshot, "MossStake canonical snapshot")
+    }
+
+    pub fn from_canonical_snapshot_bytes(data: &[u8]) -> Result<Self, String> {
+        let snapshot: MossStakePoolSnapshotV1 = deserialize_legacy_bincode_strict(
+            data,
+            data.len() as u64,
+            "MossStake canonical snapshot v1",
+        )?;
+        if snapshot.version != 1 {
+            return Err(format!(
+                "unsupported MossStake snapshot version {}",
+                snapshot.version
+            ));
+        }
+
+        Ok(Self {
+            st_licn_token: snapshot.st_licn_token,
+            positions: snapshot.positions.into_iter().collect(),
+            unstake_requests: snapshot.unstake_requests.into_iter().collect(),
+            total_validators: snapshot.total_validators,
+            average_apy_bp: snapshot.average_apy_bp,
+        })
+    }
+
     /// Calculate current APY in basis points (10000 = 100.00%)
     pub fn calculate_apy_bp(&self, blocks_per_day: u64, block_reward: u64) -> u64 {
         if self.st_licn_token.total_licn_staked == 0 {
@@ -1244,6 +1302,31 @@ impl MossStakePool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canonical_snapshot_bytes_ignore_unstake_hashmap_order() {
+        let alice = Pubkey::from_base58("11111111111111111111111111111112").unwrap();
+        let bob = Pubkey::from_base58("6YkFWKH9HQZFVEy4QPw82xRx5qHRk84vU1H2Hk7JLj1H").unwrap();
+
+        let mut first = MossStakePool::new();
+        first.stake(alice, 1_000, 0).unwrap();
+        first.stake(bob, 2_000, 0).unwrap();
+        first.request_unstake(alice, 1_000, 0).unwrap();
+        first.request_unstake(bob, 2_000, 0).unwrap();
+
+        let mut second = MossStakePool::new();
+        second.stake(bob, 2_000, 0).unwrap();
+        second.stake(alice, 1_000, 0).unwrap();
+        second.request_unstake(bob, 2_000, 0).unwrap();
+        second.request_unstake(alice, 1_000, 0).unwrap();
+
+        let first_bytes = first.canonical_snapshot_bytes().unwrap();
+        let second_bytes = second.canonical_snapshot_bytes().unwrap();
+        assert_eq!(first_bytes, second_bytes);
+
+        let restored = MossStakePool::from_canonical_snapshot_bytes(&first_bytes).unwrap();
+        assert_eq!(restored.canonical_hash(), first.canonical_hash());
+    }
 
     #[test]
     fn test_liquid_staking_flow() {

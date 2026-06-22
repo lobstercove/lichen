@@ -569,8 +569,8 @@ fn import_ordered_snapshot_category(
             let Some((_, data)) = entries.first() else {
                 return Err("mossstake_pool snapshot category is empty".to_string());
             };
-            let pool: lichen_core::MossStakePool =
-                deserialize_snapshot_value(data, "mossstake_pool snapshot")?;
+            let pool = lichen_core::MossStakePool::from_canonical_snapshot_bytes(data)
+                .or_else(|_| deserialize_snapshot_value(data, "mossstake_pool snapshot"))?;
             state.put_mossstake_pool(&pool).map(|_| 1)
         }
         category_name => state.import_snapshot_category(category_name, entries),
@@ -10671,7 +10671,7 @@ fn export_roundtrip_snapshot_entries(
             let pool = state.get_mossstake_pool()?;
             return Ok(vec![(
                 b"mossstake_pool".to_vec(),
-                serialize_legacy_bincode(&pool, "mossstake_pool snapshot")?,
+                pool.canonical_snapshot_bytes()?,
             )]);
         }
         _ => {}
