@@ -1092,7 +1092,7 @@ Firewall minimums:
 - testnet P2P: `7001/tcp`
 - mainnet P2P: `8001/tcp`
 
-Expose RPC, WS, faucet, and custody only through the reverse proxy layout you actually operate. The supported repo-managed layout lives in `deploy/Caddyfile.common`, `deploy/Caddyfile.testnet`, `deploy/Caddyfile.testnet-us`, `deploy/Caddyfile.mainnet`, and `deploy/Caddyfile.mainnet-us`; `deploy/setup.sh` composes those fragments and validates the final Caddyfile before install. The testnet custody route is defined once in `deploy/Caddyfile.testnet`; `deploy/Caddyfile.testnet-us` is reserved for US/genesis-host-only overrides and must not duplicate that site block. Mainnet custody is defined in `deploy/Caddyfile.mainnet-us` on `127.0.0.1:9106`.
+Expose RPC, WS, faucet, and custody only through the reverse proxy layout you actually operate. The supported repo-managed layout lives in `deploy/Caddyfile.common`, `deploy/Caddyfile.testnet`, `deploy/Caddyfile.testnet-custody-local`, `deploy/Caddyfile.testnet-custody-forwarder`, `deploy/Caddyfile.testnet-us`, `deploy/Caddyfile.mainnet`, and `deploy/Caddyfile.mainnet-us`; `deploy/setup.sh` composes those fragments and validates the final Caddyfile before install. On testnet, only the US custody origin at `15.204.229.189` proxies `custody-testnet.lichen.network` to local `127.0.0.1:9105`; the other validator origins install the custody forwarder so Cloudflare cannot route custody traffic to an empty local port. Mainnet custody is defined in `deploy/Caddyfile.mainnet-us` on `127.0.0.1:9106`.
 
 ### Step 10: backup, restore, and disaster recovery
 
@@ -2355,7 +2355,7 @@ The static portal calls the API at `https://faucet.lichen.network/faucet/request
 1. `shared-config.js` sets `faucet: 'https://faucet.lichen.network'` in production
 2. `faucet.js` reads `LICHEN_CONFIG.faucet` as `FAUCET_API`
 3. DNS for `faucet.lichen.network` routes through Cloudflare to the active seed-origin fleet
-4. Caddy (`deploy/Caddyfile.testnet`) reverse proxies API traffic to `127.0.0.1:9100` on each active origin
+4. Caddy (`deploy/Caddyfile.testnet`) reverse proxies faucet API traffic to `127.0.0.1:9100` on each active origin
 5. The faucet-service CORS layer allows `https://faucet.lichen.network` and all portal origins
 
 The faucet service only serves API endpoints (`/health`, `/faucet/config`, `/faucet/status`, `/faucet/airdrops`, `/faucet/request`). It does NOT serve static HTML — that comes from Cloudflare Pages.

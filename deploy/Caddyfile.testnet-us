@@ -1,4 +1,4 @@
-# Reserved for US/genesis-host-only testnet overrides.
-# The testnet custody route is defined in deploy/Caddyfile.testnet so setup.sh
-# and clean-slate redeploy can compose the base and US fragments without
-# duplicate site blocks.
+# Reserved for US/genesis-host-only testnet overrides that are not generated
+# from host detection. setup.sh installs the custody route from either
+# deploy/Caddyfile.testnet-custody-local or
+# deploy/Caddyfile.testnet-custody-forwarder.

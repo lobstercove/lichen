@@ -1,0 +1,11 @@
+custody-testnet.lichen.network, testnet-custody.lichen.network {
+    tls internal
+    import common_headers
+    reverse_proxy https://15.204.229.189 {
+        header_up Host custody-testnet.lichen.network
+        transport http {
+            tls_server_name custody-testnet.lichen.network
+            tls_insecure_skip_verify
+        }
+    }
+}

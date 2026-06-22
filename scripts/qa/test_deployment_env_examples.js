@@ -473,7 +473,7 @@ assert(
 );
 const testnetCaddy = read('deploy/Caddyfile.testnet');
 assert(
-  productionDeployment.includes('Caddy (`deploy/Caddyfile.testnet`) reverse proxies API traffic to `127.0.0.1:9100`') &&
+  productionDeployment.includes('Caddy (`deploy/Caddyfile.testnet`) reverse proxies faucet API traffic to `127.0.0.1:9100`') &&
     productionDeployment.includes('`lichen-network-faucet.pages.dev`** (Cloudflare Pages): Static faucet portal') &&
     productionDeployment.includes('It does NOT serve static HTML — that comes from Cloudflare Pages') &&
     testnetCaddy.includes('faucet.lichen.network') &&
