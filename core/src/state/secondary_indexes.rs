@@ -485,7 +485,21 @@ impl StateStore {
                 let slot = u64::from_be_bytes(data.as_slice().try_into().unwrap());
                 Ok(Some(slot))
             }
-            Ok(_) => Ok(None),
+            Ok(_) => {
+                if let Some(ref cold) = self.cold_db {
+                    if let Some(cold_cf) = cold.cf_handle(COLD_CF_TX_TO_SLOT) {
+                        return match cold.get_cf(&cold_cf, sig.0) {
+                            Ok(Some(data)) if data.len() == 8 => {
+                                let slot = u64::from_be_bytes(data.as_slice().try_into().unwrap());
+                                Ok(Some(slot))
+                            }
+                            Ok(_) => Ok(None),
+                            Err(e) => Err(format!("Cold database error looking up tx slot: {}", e)),
+                        };
+                    }
+                }
+                Ok(None)
+            }
             Err(e) => Err(format!("Database error looking up tx slot: {}", e)),
         }
     }

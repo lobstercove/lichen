@@ -79,6 +79,30 @@
         <!-- Timeline -->
         <div class="changelog-timeline">
 
+            <!-- ============ v0.5.191 ============ -->
+            <div class="changelog-entry">
+                <div class="changelog-header">
+                    <span class="changelog-version">v0.5.191</span>
+                    <span class="changelog-date">June 22, 2026</span>
+                </div>
+                <h3 class="changelog-title">Guarded Public History Merge</h3>
+
+                <div class="changelog-section" data-type="fixed">
+                    <h4><i class="fas fa-bug" style="color: var(--warning)"></i> Fixes</h4>
+                    <ul>
+                        <li><strong>Read-only history sources</strong> &mdash; the validator public-history merge admin
+                            path now opens archive/backup sources read-only, so mounted backups can be inspected and
+                            merged without RocksDB attempting source log rotation.</li>
+                        <li><strong>Consensus-state repair snapshots</strong> &mdash; state-repair snapshot manifests no
+                            longer require public block, transaction, or account-history archives before a fresh or
+                            resumed validator can repair consensus state.</li>
+                        <li><strong>Archive merge guards</strong> &mdash; public-history merge skips live slot cursor
+                            metadata such as <code>last_slot</code> and <code>confirmed_slot</code>, and archive-backed
+                            transaction slot lookups now fall back to cold storage.</li>
+                    </ul>
+                </div>
+            </div>
+
             <!-- ============ v0.5.190 ============ -->
             <div class="changelog-entry">
                 <div class="changelog-header">

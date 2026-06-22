@@ -7,6 +7,17 @@ use super::*;
 
 const PUBLIC_HISTORY_WRITE_BATCH_SIZE: usize = 10_000;
 
+fn is_public_history_merge_row(cf_name: &str, key: &[u8], value: &[u8]) -> bool {
+    match cf_name {
+        // CF_SLOTS also stores live cursor metadata such as `last_slot` and
+        // `confirmed_slot`. Public-history merge may import canonical
+        // slot->block hash rows, but it must never downgrade those cursors
+        // from an older archive or backup source.
+        CF_SLOTS => key.len() == 8 && value.len() == 32,
+        _ => true,
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PublicHistoryMergeCfReport {
     pub source_cf: &'static str,
@@ -318,6 +329,9 @@ impl StateStore {
         for item in iter {
             let (key, value) =
                 item.map_err(|err| format!("Failed iterating {source_cf_name}: {err}"))?;
+            if !is_public_history_merge_row(source_cf_name, &key, &value) {
+                continue;
+            }
             report.source_rows = report.source_rows.saturating_add(1);
 
             if target_cold {

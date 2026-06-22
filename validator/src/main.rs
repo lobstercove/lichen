@@ -4771,40 +4771,21 @@ const SNAPSHOT_MERGE_CATEGORIES: &[&str] = &[
 
 const STATE_REPAIR_SNAPSHOT_CATEGORIES: &[&str] = &[
     "accounts",
-    "blocks",
-    "transactions",
-    "account_txs",
-    "slots",
     "contract_storage",
     "programs",
-    "program_calls",
-    "market_activity",
     "symbol_registry",
     "symbol_by_program",
     "evm_map",
     "evm_accounts",
     "evm_storage",
-    "evm_txs",
-    "evm_receipts",
-    "evm_logs_by_slot",
     "nft_by_owner",
     "nft_by_collection",
-    "nft_activity",
     "token_balances",
-    "token_transfers",
     "holder_tokens",
     "solana_token_accounts",
     "solana_holder_token_accounts",
-    "events",
-    "events_by_slot",
     "dex_orders_by_pair",
-    "dex_trades_by_pair",
-    "dex_trades_by_taker",
-    "dex_trades_by_pair_taker",
     "dex_orderbook_levels",
-    "tx_by_slot",
-    "tx_to_slot",
-    "tx_meta",
     "pending_validator_changes",
     "restrictions",
     "restriction_index_target",
@@ -4813,7 +4794,6 @@ const STATE_REPAIR_SNAPSHOT_CATEGORIES: &[&str] = &[
     "shielded_note_payloads",
     "shielded_nullifiers",
     "shielded_pool",
-    "shielded_txs",
     "stats",
     "validator_set",
     "stake_pool",
@@ -11631,11 +11611,11 @@ fn maybe_run_public_history_merge_admin(args: &[String]) -> Option<i32> {
         return Some(1);
     }
 
-    let source = match StateStore::open_with_cache_mb(&source_dir, cache_size_mb) {
+    let source = match StateStore::open_read_only_with_cache_mb(&source_dir, cache_size_mb) {
         Ok(source) => source,
         Err(err) => {
             eprintln!(
-                "Failed to open public history source DB at {}: {}",
+                "Failed to open public history source DB read-only at {}: {}",
                 source_dir.display(),
                 err
             );
@@ -28098,11 +28078,11 @@ mod tests {
     }
 
     #[test]
-    fn state_repair_snapshot_categories_include_public_transaction_history() {
+    fn state_repair_snapshot_categories_exclude_public_transaction_history() {
         for category in SNAPSHOT_MERGE_CATEGORIES {
             assert!(
-                STATE_REPAIR_SNAPSHOT_CATEGORIES.contains(category),
-                "state-repair snapshots must carry merge category {category}"
+                !STATE_REPAIR_SNAPSHOT_CATEGORIES.contains(category),
+                "state-repair snapshots must not depend on archive/history category {category}"
             );
         }
 
@@ -28111,6 +28091,12 @@ mod tests {
             "transactions",
             "account_txs",
             "slots",
+            "program_calls",
+            "market_activity",
+            "evm_txs",
+            "evm_receipts",
+            "evm_logs_by_slot",
+            "nft_activity",
             "tx_by_slot",
             "tx_to_slot",
             "tx_meta",
@@ -28118,10 +28104,31 @@ mod tests {
             "events_by_slot",
             "token_transfers",
             "shielded_txs",
+            "dex_trades_by_pair",
+            "dex_trades_by_taker",
+            "dex_trades_by_pair_taker",
+        ] {
+            assert!(
+                !STATE_REPAIR_SNAPSHOT_CATEGORIES.contains(&category),
+                "state-repair snapshots must not preserve public history category {category}"
+            );
+        }
+
+        for category in [
+            "accounts",
+            "contract_storage",
+            "programs",
+            "token_balances",
+            "dex_orders_by_pair",
+            "dex_orderbook_levels",
+            "shielded_pool",
+            "validator_set",
+            "stake_pool",
+            "mossstake_pool",
         ] {
             assert!(
                 STATE_REPAIR_SNAPSHOT_CATEGORIES.contains(&category),
-                "state-repair snapshots must preserve public history category {category}"
+                "state-repair snapshots must carry state category {category}"
             );
         }
 
@@ -28136,53 +28143,49 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_commit_merges_public_history_and_recomputes_account_tx_counts() {
+    fn guarded_public_history_merge_recomputes_account_tx_counts_from_read_only_source() {
         let source_dir = tempfile::tempdir().expect("create source dir");
-        let source = StateStore::open(source_dir.path()).expect("open source state");
+        let source_writer = StateStore::open(source_dir.path()).expect("open source state");
         let target_dir = tempfile::tempdir().expect("create target dir");
-        let target = StateStore::open(target_dir.path()).expect("open target state");
+        let cold_dir = tempfile::tempdir().expect("create target cold dir");
+        let mut target = StateStore::open(target_dir.path()).expect("open target state");
+        target
+            .open_cold_store(cold_dir.path())
+            .expect("open target cold store");
 
         let tracked = Pubkey([0x42; 32]);
         let (target_block_hash, target_tx_hash) =
             put_history_block(&target, 7, Hash::default(), tracked, 7);
         let (source_block_hash, source_tx_hash) =
-            put_history_block(&source, 9, target_block_hash, tracked, 9);
+            put_history_block(&source_writer, 9, target_block_hash, tracked, 9);
+        target.set_last_slot(42).expect("advance target live slot");
+        target
+            .set_last_confirmed_slot(40)
+            .expect("advance target confirmed slot");
 
         assert_eq!(target.count_account_txs(&tracked).unwrap(), 1);
-        assert_eq!(source.count_account_txs(&tracked).unwrap(), 1);
+        assert_eq!(source_writer.count_account_txs(&tracked).unwrap(), 1);
+        drop(source_writer);
 
-        let report = commit_snapshot_categories_from_store(
-            &source,
-            &target,
-            &[
-                "blocks",
-                "transactions",
-                "account_txs",
-                "slots",
-                "tx_by_slot",
-                "tx_to_slot",
-                "tx_meta",
-            ],
-        )
-        .expect("commit state-repair history categories");
-
-        for category in [
-            "blocks",
-            "transactions",
-            "account_txs",
-            "slots",
-            "tx_by_slot",
-            "tx_to_slot",
-            "tx_meta",
-        ] {
-            assert!(
-                report
-                    .imported
-                    .iter()
-                    .any(|(imported_category, _)| imported_category == category),
-                "missing imported report row for {category}"
-            );
-        }
+        let source = StateStore::open_read_only_with_cache_mb(source_dir.path(), Some(64))
+            .expect("open source ro");
+        let report = target
+            .merge_public_history_from_source(&source, false)
+            .expect("merge public history from read-only source");
+        assert!(!report.has_conflicts());
+        assert!(report.used_cold_store);
+        assert!(report.inserted_rows > 0);
+        assert!(report.cleared_account_tx_counters > 0);
+        assert_eq!(
+            target.get_last_slot().unwrap(),
+            42,
+            "public-history merge must not import older live slot cursors"
+        );
+        assert_eq!(
+            target.get_last_confirmed_slot().unwrap(),
+            40,
+            "public-history merge must not import older confirmed slot cursors"
+        );
 
         let (_post_repair_block_hash, post_repair_tx_hash) =
             put_history_block(&target, 10, source_block_hash, tracked, 10);
