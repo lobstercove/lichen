@@ -79,10 +79,10 @@
         <!-- Timeline -->
         <div class="changelog-timeline">
 
-            <!-- ============ v0.5.195 ============ -->
+            <!-- ============ v0.5.196 ============ -->
             <div class="changelog-entry">
                 <div class="changelog-header">
-                    <span class="changelog-version">v0.5.195</span>
+                    <span class="changelog-version">v0.5.196</span>
                     <span class="changelog-date">June 22, 2026</span>
                 </div>
                 <h3 class="changelog-title">Validator Resume Pace Fixes</h3>
@@ -96,7 +96,10 @@
                         <li><strong>Validator resume activation</strong> &mdash; non-genesis validators that already
                             completed their on-chain stake warmup now resume as active leaders after restart instead
                             of being re-added as pending local joiners.</li>
-                        <li><strong>Release baseline</strong> &mdash; keeps v0.5.194 as the signed rollback point.</li>
+                        <li><strong>Live BFT catch-up guard</strong> &mdash; resumed validators now keep proposer
+                            rotation active while they are only within the configured live catch-up gap, and yield
+                            only when materially behind peers.</li>
+                        <li><strong>Release baseline</strong> &mdash; keeps v0.5.195 as the signed rollback point.</li>
                     </ul>
                 </div>
             </div>

@@ -5,6 +5,18 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.196] - 2026-06-22
+
+### Fixed
+- Keeps resumed validators in live BFT proposer rotation by letting observed
+  peer tips use the configured `LIVE_BFT_CATCH_UP_GAP` before yielding, instead
+  of hard-pausing the BFT loop on a fixed two-slot observation gap. This prevents
+  an active restarted validator from remaining a vote-only follower while its
+  proposer turns fall into slower consensus rounds.
+
+### Verified
+- Passed focused live BFT catch-up guard and mature-validator resume tests.
+
 ## [0.5.189] - 2026-06-22
 
 ### Fixed

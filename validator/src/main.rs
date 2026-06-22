@@ -22855,8 +22855,8 @@ fn classify_bft_commit_storage(
     }
 }
 
-fn should_pause_live_bft_for_sync(current_tip: u64, bft_height: u64, observed_tip: u64) -> bool {
-    bft_height > current_tip.saturating_add(1) || observed_tip > current_tip.saturating_add(2)
+fn should_pause_live_bft_for_sync(current_tip: u64, bft_height: u64, _observed_tip: u64) -> bool {
+    bft_height > current_tip.saturating_add(1)
 }
 
 fn should_yield_live_bft_for_catch_up(
@@ -24019,10 +24019,10 @@ mod tests {
         assert!(!should_pause_live_bft_for_sync(10, 11, 11));
         assert!(!should_pause_live_bft_for_sync(10, 11, 12));
         assert!(should_pause_live_bft_for_sync(10, 12, 12));
-        assert!(should_pause_live_bft_for_sync(10, 11, 13));
+        assert!(!should_pause_live_bft_for_sync(10, 11, 13));
         assert!(!should_yield_live_bft_for_catch_up(10, 11, 12));
         assert!(should_yield_live_bft_for_catch_up(10, 12, 12));
-        assert!(should_yield_live_bft_for_catch_up(10, 11, 13));
+        assert!(!should_yield_live_bft_for_catch_up(10, 11, 13));
         assert!(should_yield_live_bft_for_catch_up(
             10,
             11,
