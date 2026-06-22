@@ -2184,6 +2184,40 @@ the expected historical rows for the affected accounts. If no real block,
 transaction, archive, or off-host backup source contains the old rows, do not
 synthesize activity from balances or current state.
 
+When a verified source exists, merge only public archive/history data into the
+target node. Do not replace live RocksDB, copy consensus/account state, or write
+contract storage from the backup:
+
+```bash
+sudo systemctl stop lichen-validator-testnet
+
+sudo -u lichen /usr/local/bin/lichen-validator \
+  --network testnet \
+  --db-path /var/lib/lichen/state-testnet \
+  --cold-store /var/lib/lichen/archive-testnet \
+  --cache-size-mb 256 \
+  --merge-public-history-from-source /mnt/ovh-backup-20260607T2158/var/lib/lichen/state-testnet \
+  --dry-run
+
+sudo -u lichen /usr/local/bin/lichen-validator \
+  --network testnet \
+  --db-path /var/lib/lichen/state-testnet \
+  --cold-store /var/lib/lichen/archive-testnet \
+  --cache-size-mb 256 \
+  --merge-public-history-from-source /mnt/ovh-backup-20260607T2158/var/lib/lichen/state-testnet \
+  --execute \
+  --confirm public-history-merge:v1
+
+sudo systemctl start lichen-validator-testnet
+```
+
+The merge command writes large historical blocks, transactions, account history,
+token transfers, contract events, and program-call rows into the attached cold
+store, and writes only small slot/tx ordering indexes into the hot DB. It aborts
+on conflicting existing keys, clears cached `atxc:` counters after a successful
+write, and leaves consensus state column families such as accounts, validators,
+stake pools, contract storage, Merkle nodes, and shielded pool state untouched.
+
 **Prevention**: Every public RPC validator must run with:
 
 ```text

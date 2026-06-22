@@ -138,6 +138,7 @@ const DUMP_BLOCK_JSON_FLAG: &str = "--dump-block-json";
 const SCAN_MOSSSTAKE_BLOCKS_FLAG: &str = "--scan-mossstake-blocks";
 const REBUILD_ACCOUNT_TXS_FLAG: &str = "--rebuild-account-txs";
 const INSPECT_ACCOUNT_HISTORY_FLAG: &str = "--inspect-account-history";
+const MERGE_PUBLIC_HISTORY_FROM_SOURCE_FLAG: &str = "--merge-public-history-from-source";
 const VERIFY_WARP_SNAPSHOT_ROUNDTRIP_FLAG: &str = "--verify-warp-snapshot-roundtrip";
 const REBUILD_SHIELDED_STATE_FROM_BLOCKS_FLAG: &str = "--rebuild-shielded-state-from-blocks";
 const EXPORT_SHIELDED_STATE_BUNDLE_FLAG: &str = "--export-shielded-state-bundle";
@@ -145,6 +146,7 @@ const IMPORT_SHIELDED_STATE_BUNDLE_FLAG: &str = "--import-shielded-state-bundle"
 const SHIELDED_STATE_REBUILD_CONFIRMATION: &str = "rebuild-shielded-state:v1";
 const SHIELDED_STATE_BUNDLE_IMPORT_CONFIRMATION: &str = "shielded-state-bundle:v1";
 const ACCOUNT_TXS_REBUILD_CONFIRMATION: &str = "rebuild-account-txs:v1";
+const PUBLIC_HISTORY_MERGE_CONFIRMATION: &str = "public-history-merge:v1";
 const REPAIR_ANALYTICS_24H_WINDOW_FLAG: &str = "--repair-analytics-24h-window";
 const ANALYTICS_24H_REPAIR_CONFIRMATION: &str = "repair-analytics-24h:v1";
 const TESTNET_DEX_REPAIR_CONTRACTS: &[(&str, &str)] = &[
@@ -11577,6 +11579,113 @@ fn maybe_run_account_txs_rebuild_admin(args: &[String]) -> Option<i32> {
     }
 }
 
+fn print_public_history_merge_report(report: &lichen_core::state::PublicHistoryMergeReport) {
+    println!("dry_run={}", report.dry_run);
+    println!("used_cold_store={}", report.used_cold_store);
+    println!("source_rows={}", report.source_rows);
+    println!("inserted_rows={}", report.inserted_rows);
+    println!("identical_rows={}", report.identical_rows);
+    println!("conflict_rows={}", report.conflict_rows);
+    println!(
+        "cleared_account_tx_counters={}",
+        report.cleared_account_tx_counters
+    );
+    for cf in &report.cf_reports {
+        println!(
+            "cf[{}->{}{}]=source_rows:{},inserted_rows:{},identical_rows:{},conflict_rows:{}",
+            cf.source_cf,
+            if cf.target_cold { "cold:" } else { "" },
+            cf.target_cf,
+            cf.source_rows,
+            cf.inserted_rows,
+            cf.identical_rows,
+            cf.conflict_rows
+        );
+    }
+}
+
+fn maybe_run_public_history_merge_admin(args: &[String]) -> Option<i32> {
+    let Some(source_dir) =
+        get_flag_value(args, &[MERGE_PUBLIC_HISTORY_FROM_SOURCE_FLAG]).map(PathBuf::from)
+    else {
+        return None;
+    };
+
+    let execute = has_flag(args, "--execute");
+    let dry_run = has_flag(args, "--dry-run") || !execute;
+    if execute && has_flag(args, "--dry-run") {
+        eprintln!("--execute and --dry-run are mutually exclusive");
+        return Some(2);
+    }
+    if execute {
+        let confirm = get_flag_value(args, &["--confirm"]);
+        if confirm != Some(PUBLIC_HISTORY_MERGE_CONFIRMATION) {
+            eprintln!("Refusing write without --confirm {PUBLIC_HISTORY_MERGE_CONFIRMATION}");
+            return Some(1);
+        }
+    }
+
+    let target_dir = restriction_schema_data_dir(args);
+    let cache_size_mb = get_flag_value(args, &["--cache-size-mb"]).and_then(|s| s.parse().ok());
+    let cold_store_path = get_flag_value(args, &["--cold-store"]).map(PathBuf::from);
+
+    if execute && cold_store_path.is_none() {
+        eprintln!("Refusing public history merge execution without --cold-store");
+        return Some(1);
+    }
+
+    let source = match StateStore::open_with_cache_mb(&source_dir, cache_size_mb) {
+        Ok(source) => source,
+        Err(err) => {
+            eprintln!(
+                "Failed to open public history source DB at {}: {}",
+                source_dir.display(),
+                err
+            );
+            return Some(1);
+        }
+    };
+
+    let mut target = match StateStore::open_with_cache_mb(&target_dir, cache_size_mb) {
+        Ok(target) => target,
+        Err(err) => {
+            eprintln!(
+                "Failed to open public history target DB at {}: {}",
+                target_dir.display(),
+                err
+            );
+            return Some(1);
+        }
+    };
+
+    if let Some(cold_path) = cold_store_path {
+        if let Err(err) = target.open_cold_store(&cold_path) {
+            eprintln!(
+                "Failed to open target cold store at {}: {}",
+                cold_path.display(),
+                err
+            );
+            return Some(1);
+        }
+    }
+
+    match target.merge_public_history_from_source(&source, dry_run) {
+        Ok(report) => {
+            print_public_history_merge_report(&report);
+            if report.has_conflicts() {
+                eprintln!("Public history merge source has conflicts with target");
+                Some(1)
+            } else {
+                Some(0)
+            }
+        }
+        Err(err) => {
+            eprintln!("Failed to merge public history: {err}");
+            Some(1)
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 struct Analytics24hRepairReport {
     tip: u64,
@@ -12213,6 +12322,9 @@ fn main() {
         std::process::exit(exit_code);
     }
     if let Some(exit_code) = maybe_run_account_txs_rebuild_admin(&args) {
+        std::process::exit(exit_code);
+    }
+    if let Some(exit_code) = maybe_run_public_history_merge_admin(&args) {
         std::process::exit(exit_code);
     }
     if let Some(exit_code) = maybe_run_analytics_24h_repair_admin(&args) {

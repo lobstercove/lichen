@@ -5,6 +5,37 @@ use crate::codec::deserialize_legacy_bincode;
 
 use super::*;
 
+const PUBLIC_HISTORY_WRITE_BATCH_SIZE: usize = 10_000;
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PublicHistoryMergeCfReport {
+    pub source_cf: &'static str,
+    pub target_cf: &'static str,
+    pub target_cold: bool,
+    pub source_rows: u64,
+    pub inserted_rows: u64,
+    pub identical_rows: u64,
+    pub conflict_rows: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PublicHistoryMergeReport {
+    pub dry_run: bool,
+    pub used_cold_store: bool,
+    pub cleared_account_tx_counters: u64,
+    pub source_rows: u64,
+    pub inserted_rows: u64,
+    pub identical_rows: u64,
+    pub conflict_rows: u64,
+    pub cf_reports: Vec<PublicHistoryMergeCfReport>,
+}
+
+impl PublicHistoryMergeReport {
+    pub fn has_conflicts(&self) -> bool {
+        self.conflict_rows > 0
+    }
+}
+
 impl StateStore {
     /// Open (or create) the cold archival DB at `cold_path` and attach it to
     /// this store. Once attached, `get_block` and `get_transaction` will
@@ -243,5 +274,193 @@ impl StateStore {
     /// Returns true if a cold DB is attached.
     pub fn has_cold_storage(&self) -> bool {
         self.cold_db.is_some()
+    }
+
+    fn merge_public_history_cf(
+        &self,
+        source: &StateStore,
+        source_cf_name: &'static str,
+        target_cf_name: &'static str,
+        target_cold: bool,
+        dry_run: bool,
+    ) -> Result<PublicHistoryMergeCfReport, String> {
+        let source_cf = source
+            .db
+            .cf_handle(source_cf_name)
+            .ok_or_else(|| format!("Source CF {source_cf_name} not found"))?;
+        let target_db = if target_cold {
+            self.cold_db
+                .as_ref()
+                .ok_or_else(|| "Cold storage must be attached for cold history merge".to_string())?
+                .as_ref()
+        } else {
+            self.db.as_ref()
+        };
+        let target_cf = target_db
+            .cf_handle(target_cf_name)
+            .ok_or_else(|| format!("Target CF {target_cf_name} not found"))?;
+
+        let mut read_opts = rocksdb::ReadOptions::default();
+        read_opts.set_total_order_seek(true);
+        let iter = source
+            .db
+            .iterator_cf_opt(&source_cf, read_opts, rocksdb::IteratorMode::Start);
+
+        let mut report = PublicHistoryMergeCfReport {
+            source_cf: source_cf_name,
+            target_cf: target_cf_name,
+            target_cold,
+            ..PublicHistoryMergeCfReport::default()
+        };
+        let mut batch = WriteBatch::default();
+        let mut pending = 0usize;
+
+        for item in iter {
+            let (key, value) =
+                item.map_err(|err| format!("Failed iterating {source_cf_name}: {err}"))?;
+            report.source_rows = report.source_rows.saturating_add(1);
+
+            if target_cold {
+                if let Some(hot_cf) = self.db.cf_handle(source_cf_name) {
+                    match self
+                        .db
+                        .get_cf(&hot_cf, &key)
+                        .map_err(|err| format!("Failed reading hot {source_cf_name}: {err}"))?
+                    {
+                        Some(existing) if existing.as_slice() == value.as_ref() => {
+                            report.identical_rows = report.identical_rows.saturating_add(1);
+                            continue;
+                        }
+                        Some(_) => {
+                            report.conflict_rows = report.conflict_rows.saturating_add(1);
+                            if !dry_run {
+                                return Err(format!(
+                                    "Refusing public history merge: hot {source_cf_name} key {} differs between source and target",
+                                    hex::encode(&key)
+                                ));
+                            }
+                            continue;
+                        }
+                        None => {}
+                    }
+                }
+            }
+
+            match target_db
+                .get_cf(&target_cf, &key)
+                .map_err(|err| format!("Failed reading {target_cf_name}: {err}"))?
+            {
+                Some(existing) if existing.as_slice() == value.as_ref() => {
+                    report.identical_rows = report.identical_rows.saturating_add(1);
+                }
+                Some(_) => {
+                    report.conflict_rows = report.conflict_rows.saturating_add(1);
+                    if !dry_run {
+                        return Err(format!(
+                            "Refusing public history merge: {target_cf_name} key {} differs between source and target",
+                            hex::encode(&key)
+                        ));
+                    }
+                }
+                None => {
+                    report.inserted_rows = report.inserted_rows.saturating_add(1);
+                    if !dry_run {
+                        batch.put_cf(&target_cf, &key, &value);
+                        pending += 1;
+                        if pending >= PUBLIC_HISTORY_WRITE_BATCH_SIZE {
+                            target_db.write(std::mem::take(&mut batch)).map_err(|err| {
+                                format!("Failed writing {target_cf_name} merge batch: {err}")
+                            })?;
+                            pending = 0;
+                        }
+                    }
+                }
+            }
+        }
+
+        if !dry_run && pending > 0 {
+            target_db
+                .write(batch)
+                .map_err(|err| format!("Failed writing {target_cf_name} merge batch: {err}"))?;
+        }
+
+        Ok(report)
+    }
+
+    pub fn merge_public_history_from_source(
+        &self,
+        source: &StateStore,
+        dry_run: bool,
+    ) -> Result<PublicHistoryMergeReport, String> {
+        let mut report = PublicHistoryMergeReport {
+            dry_run,
+            used_cold_store: self.cold_db.is_some(),
+            ..PublicHistoryMergeReport::default()
+        };
+
+        let cold_cf_pairs: &[(&str, &str)] = &[
+            (CF_BLOCKS, COLD_CF_BLOCKS),
+            (CF_TRANSACTIONS, COLD_CF_TRANSACTIONS),
+            (CF_TX_TO_SLOT, COLD_CF_TX_TO_SLOT),
+            (CF_ACCOUNT_TXS, COLD_CF_ACCOUNT_TXS),
+            (CF_EVENTS, COLD_CF_EVENTS),
+            (CF_TOKEN_TRANSFERS, COLD_CF_TOKEN_TRANSFERS),
+            (CF_PROGRAM_CALLS, COLD_CF_PROGRAM_CALLS),
+        ];
+        let hot_cf_names: &[&str] = &[
+            CF_SLOTS,
+            CF_TX_BY_SLOT,
+            CF_EVENTS_BY_SLOT,
+            CF_EVM_TXS,
+            CF_EVM_RECEIPTS,
+            CF_EVM_LOGS_BY_SLOT,
+            CF_SHIELDED_TXS,
+            CF_TX_META,
+            CF_NFT_ACTIVITY,
+            CF_MARKET_ACTIVITY,
+        ];
+
+        if self.cold_db.is_none() && !dry_run {
+            return Err("Refusing public history merge without an attached cold store".to_string());
+        }
+
+        for &(source_cf, cold_cf) in cold_cf_pairs {
+            let cf_report = self.merge_public_history_cf(
+                source,
+                source_cf,
+                if self.cold_db.is_some() {
+                    cold_cf
+                } else {
+                    source_cf
+                },
+                self.cold_db.is_some(),
+                dry_run,
+            )?;
+            report.source_rows = report.source_rows.saturating_add(cf_report.source_rows);
+            report.inserted_rows = report.inserted_rows.saturating_add(cf_report.inserted_rows);
+            report.identical_rows = report
+                .identical_rows
+                .saturating_add(cf_report.identical_rows);
+            report.conflict_rows = report.conflict_rows.saturating_add(cf_report.conflict_rows);
+            report.cf_reports.push(cf_report);
+        }
+
+        for &cf_name in hot_cf_names {
+            let cf_report =
+                self.merge_public_history_cf(source, cf_name, cf_name, false, dry_run)?;
+            report.source_rows = report.source_rows.saturating_add(cf_report.source_rows);
+            report.inserted_rows = report.inserted_rows.saturating_add(cf_report.inserted_rows);
+            report.identical_rows = report
+                .identical_rows
+                .saturating_add(cf_report.identical_rows);
+            report.conflict_rows = report.conflict_rows.saturating_add(cf_report.conflict_rows);
+            report.cf_reports.push(cf_report);
+        }
+
+        if !dry_run {
+            report.cleared_account_tx_counters = self.clear_account_tx_counters()?;
+        }
+
+        Ok(report)
     }
 }

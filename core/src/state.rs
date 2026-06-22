@@ -37,6 +37,7 @@ mod stats_metadata;
 mod storage_bootstrap;
 mod validator_state;
 
+pub use cold_storage::{PublicHistoryMergeCfReport, PublicHistoryMergeReport};
 pub use dex_index::{DexIndexBackfillReport, DexOrderbookLevel};
 pub use merkle_state::{
     AccountProof, MerkleProof, SparseMerkleProof, SparseProofStep, SparseStateCommitmentReport,
@@ -5312,6 +5313,145 @@ mod tests {
         assert!(cloned.has_cold_storage());
         let block = cloned.get_block_by_slot(0).unwrap();
         assert!(block.is_some(), "clone should read from shared cold DB");
+    }
+
+    #[test]
+    fn public_history_merge_restores_cold_history_without_replacing_hot_state() {
+        let source_dir = tempdir().unwrap();
+        let target_dir = tempdir().unwrap();
+        let cold_dir = tempdir().unwrap();
+        let source = StateStore::open(source_dir.path()).unwrap();
+        let mut target = StateStore::open(target_dir.path()).unwrap();
+        target.open_cold_store(cold_dir.path()).unwrap();
+
+        let tracked = Pubkey([0xA1; 32]);
+        let old_tx = crate::transaction::Transaction::new(crate::transaction::Message::new(
+            vec![crate::transaction::Instruction {
+                program_id: Pubkey([0xA2; 32]),
+                accounts: vec![tracked],
+                data: vec![1],
+            }],
+            Hash::hash(b"public-history-old"),
+        ));
+        let new_tx = crate::transaction::Transaction::new(crate::transaction::Message::new(
+            vec![crate::transaction::Instruction {
+                program_id: Pubkey([0xA3; 32]),
+                accounts: vec![tracked],
+                data: vec![2],
+            }],
+            Hash::hash(b"public-history-new"),
+        ));
+        let old_hash = old_tx.signature();
+        let new_hash = new_tx.signature();
+        let old_block = crate::Block::new_with_timestamp(
+            11,
+            Hash::default(),
+            Hash::default(),
+            [0u8; 32],
+            vec![old_tx],
+            111,
+        );
+        let new_block = crate::Block::new_with_timestamp(
+            22,
+            Hash::default(),
+            Hash::default(),
+            [0u8; 32],
+            vec![new_tx],
+            222,
+        );
+
+        source.put_block(&old_block).unwrap();
+        target.put_block(&new_block).unwrap();
+        assert_eq!(target.count_account_txs(&tracked).unwrap(), 1);
+
+        let dry_run = target
+            .merge_public_history_from_source(&source, true)
+            .unwrap();
+        assert!(dry_run.used_cold_store);
+        assert!(!dry_run.has_conflicts());
+        assert!(dry_run.inserted_rows > 0);
+
+        let report = target
+            .merge_public_history_from_source(&source, false)
+            .unwrap();
+        assert!(!report.has_conflicts());
+        assert!(report.inserted_rows > 0);
+        assert!(report.cleared_account_tx_counters > 0);
+
+        assert_eq!(
+            target
+                .get_account_tx_signatures_paginated(&tracked, 10, None)
+                .unwrap(),
+            vec![(new_hash, 22), (old_hash, 11)]
+        );
+        assert!(target.get_transaction(&old_hash).unwrap().is_some());
+        assert_eq!(
+            target
+                .get_block_by_slot(11)
+                .unwrap()
+                .map(|block| block.hash()),
+            Some(old_block.hash())
+        );
+    }
+
+    #[test]
+    fn public_history_merge_reports_conflicting_slot_indexes() {
+        let source_dir = tempdir().unwrap();
+        let target_dir = tempdir().unwrap();
+        let cold_dir = tempdir().unwrap();
+        let source = StateStore::open(source_dir.path()).unwrap();
+        let mut target = StateStore::open(target_dir.path()).unwrap();
+        target.open_cold_store(cold_dir.path()).unwrap();
+
+        let tracked = Pubkey([0xB1; 32]);
+        let source_tx = crate::transaction::Transaction::new(crate::transaction::Message::new(
+            vec![crate::transaction::Instruction {
+                program_id: Pubkey([0xB2; 32]),
+                accounts: vec![tracked],
+                data: vec![1],
+            }],
+            Hash::hash(b"public-history-source"),
+        ));
+        let target_tx = crate::transaction::Transaction::new(crate::transaction::Message::new(
+            vec![crate::transaction::Instruction {
+                program_id: Pubkey([0xB3; 32]),
+                accounts: vec![tracked],
+                data: vec![2],
+            }],
+            Hash::hash(b"public-history-target"),
+        ));
+        let source_block = crate::Block::new_with_timestamp(
+            33,
+            Hash::default(),
+            Hash::default(),
+            [0u8; 32],
+            vec![source_tx],
+            111,
+        );
+        let target_block = crate::Block::new_with_timestamp(
+            33,
+            Hash::default(),
+            Hash::default(),
+            [0u8; 32],
+            vec![target_tx],
+            222,
+        );
+
+        source.put_block(&source_block).unwrap();
+        target.put_block(&target_block).unwrap();
+
+        let report = target
+            .merge_public_history_from_source(&source, true)
+            .unwrap();
+        assert!(report.has_conflicts());
+        assert!(report
+            .cf_reports
+            .iter()
+            .any(|cf| cf.target_cf == CF_SLOTS && cf.conflict_rows > 0));
+        assert!(report
+            .cf_reports
+            .iter()
+            .any(|cf| cf.target_cf == CF_TX_BY_SLOT && cf.conflict_rows > 0));
     }
 
     // ─── Merkle proof tests (Task 1.3) ──────────────────────────────
