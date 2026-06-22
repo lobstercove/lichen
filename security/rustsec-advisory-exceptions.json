@@ -91,6 +91,15 @@
       "expires": "2026-07-31",
       "reason": "ARMv8 backend unsoundness is outside current production deployment targets, which run x86_64 and exclude the vulnerable backend.",
       "mitigation": "Upgrade the hashing dependency before ARM validator or custody deployments are considered production eligible."
+    },
+    {
+      "id": "RUSTSEC-2026-0186",
+      "crate": "memmap2",
+      "owner": "Smart Contract Runtime",
+      "tools": ["cargo-audit"],
+      "expires": "2026-07-31",
+      "reason": "Transitive through Wasmer/shared-buffer, which currently requires memmap2 ^0.6.1. Lichen does not call memmap2 APIs directly, and changing Wasmer major versions is a runtime compatibility change that must be tested separately from the live validator latency fix.",
+      "mitigation": "Track Wasmer/shared-buffer updates or a validated Wasmer major upgrade that permits a patched memmap2 release, then remove this exception before expiry."
     }
   ]
 }
