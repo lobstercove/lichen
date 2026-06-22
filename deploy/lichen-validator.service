@@ -19,7 +19,7 @@ ExecStart=/usr/local/bin/lichen-validator \
     --ws-port ${LICHEN_WS_PORT} \
     --p2p-port ${LICHEN_P2P_PORT} \
     --db-path /var/lib/lichen/state-${LICHEN_NETWORK} \
-    ${LICHEN_EXTRA_ARGS}
+    $LICHEN_EXTRA_ARGS
 
 Restart=always
 RestartSec=10

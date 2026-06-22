@@ -420,6 +420,20 @@ CUSTODY_URL
 CUSTODY_API_AUTH_TOKEN
 ```
 
+Required validator extra args:
+
+```text
+LICHEN_EXTRA_ARGS=--auto-update=off --archive-mode --cold-store /var/lib/lichen/archive-mainnet
+```
+
+Public RPC validators are archive validators. Do not launch or roll a public
+RPC node with state-only storage: consensus state can remain valid while
+`getTransactionsByAddress`, wallet activity, explorer activity, and historical
+block/transaction lookups lose their backed source rows. `deploy/setup.sh`
+creates `/var/lib/lichen/archive-<network>` and the systemd unit expands
+`$LICHEN_EXTRA_ARGS` so the three validator flags above arrive as separate argv
+entries.
+
 Required base custody env keys:
 
 ```text

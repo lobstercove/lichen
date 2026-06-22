@@ -65,8 +65,8 @@ function parseSystemdUnit(relPath) {
     if (environment) {
       inlineEnv.set(environment[1], environment[2]);
     }
-    for (const match of line.matchAll(/\$\{([A-Z][A-Z0-9_]+)\}/g)) {
-      execVars.add(match[1]);
+    for (const match of line.matchAll(/\$(?:\{([A-Z][A-Z0-9_]+)\}|([A-Z][A-Z0-9_]+))/g)) {
+      execVars.add(match[1] || match[2]);
     }
   }
 
@@ -158,6 +158,11 @@ assert(
   'custody mainnet unit must keep /etc/lichen/custody-env-mainnet contract',
 );
 assert(faucetUnit.envFiles.length === 0, 'faucet unit should remain inline-env only');
+assert(
+  read('deploy/lichen-validator.service').includes('$LICHEN_EXTRA_ARGS') &&
+    !read('deploy/lichen-validator.service').includes('${LICHEN_EXTRA_ARGS}'),
+  'validator unit must expand LICHEN_EXTRA_ARGS with systemd argv splitting',
+);
 
 const setupValidatorKeys = heredocKeys('cat > "$ENV_FILE" <<EOF', 'EOF', [
   'LICHEN_NETWORK',
@@ -214,7 +219,8 @@ const validatorExpected = {
     LICHEN_SERVICE_FLEET_STATUS_FILE:
       '/var/lib/lichen/service-fleet-status-testnet.json',
     LICHEN_CHECKPOINT_KEEP_COUNT: '2',
-    LICHEN_EXTRA_ARGS: '--auto-update=off',
+    LICHEN_EXTRA_ARGS:
+      '--auto-update=off --archive-mode --cold-store /var/lib/lichen/archive-testnet',
     CUSTODY_URL: 'http://127.0.0.1:9105',
   },
   'deploy/env-mainnet.example': {
@@ -231,7 +237,8 @@ const validatorExpected = {
     LICHEN_SERVICE_FLEET_STATUS_FILE:
       '/var/lib/lichen/service-fleet-status-mainnet.json',
     LICHEN_CHECKPOINT_KEEP_COUNT: '2',
-    LICHEN_EXTRA_ARGS: '--auto-update=off',
+    LICHEN_EXTRA_ARGS:
+      '--auto-update=off --archive-mode --cold-store /var/lib/lichen/archive-mainnet',
     CUSTODY_URL: 'http://127.0.0.1:9106',
   },
 };
