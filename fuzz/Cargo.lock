@@ -1755,6 +1755,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "dilithium-rs"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9b0aa9ae3a1b700e0ac9f707cdff5c3893f4f11a3b1b317c5113a422ef785809"
+dependencies = [
+ "getrandom 0.2.17",
+ "sha2 0.10.9",
+ "sha3 0.10.9",
+ "subtle",
+ "zeroize",
+]
+
+[[package]]
 name = "dirs"
 version = "5.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2682,7 +2695,7 @@ dependencies = [
 
 [[package]]
 name = "lichen-p2p"
-version = "0.5.65"
+version = "0.5.194"
 dependencies = [
  "anyhow",
  "bincode",
@@ -2714,7 +2727,7 @@ checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
 
 [[package]]
 name = "lobstercove-lichen-core"
-version = "0.5.65"
+version = "0.5.194"
 dependencies = [
  "aes-gcm",
  "alloy-consensus",
@@ -2733,6 +2746,7 @@ dependencies = [
  "chacha20poly1305",
  "chrono",
  "derive_more 1.0.0",
+ "dilithium-rs",
  "ed25519-dalek",
  "getrandom 0.4.2",
  "hex",
@@ -3759,9 +3773,9 @@ dependencies = [
 
 [[package]]
 name = "quinn-proto"
-version = "0.11.14"
+version = "0.11.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "434b42fec591c96ef50e21e886936e66d3cc3f737104fdb9b737c40ffb94c098"
+checksum = "4fcb935c5bec503c2f0e306bdd3e58bb9029dcb14fa8d9ac76e3a5256ac0763e"
 dependencies = [
  "bytes",
  "fastbloom",
