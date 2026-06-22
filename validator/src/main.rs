@@ -111,6 +111,10 @@ fn validator_log_filter() -> EnvFilter {
     validator_log_filter_from_env_value(env::var("RUST_LOG").ok().as_deref())
 }
 
+fn compact_block_full_block_fallback_request(slot: u64, local_addr: SocketAddr) -> P2PMessage {
+    P2PMessage::new(MessageType::BlockRequest { slot }, local_addr)
+}
+
 /// Default number of seconds with no block activity before the watchdog
 /// triggers a restart.  Override with `--watchdog-timeout <secs>`.
 /// Set to 120s to allow sufficient time for sync recovery under load.
@@ -20266,10 +20270,8 @@ async fn run_validator() {
                         );
                         // Fall through to request full block
                         if let Some(ref pm) = peer_mgr_for_compact {
-                            let request = lichen_p2p::P2PMessage::new(
-                                lichen_p2p::MessageType::BlockRequest { slot },
-                                pm.local_addr(),
-                            );
+                            let request =
+                                compact_block_full_block_fallback_request(slot, pm.local_addr());
                             let pm2 = pm.clone();
                             tokio::spawn(async move {
                                 if let Err(e) = pm2.send_to_peer(&sender, request).await {
@@ -20302,25 +20304,27 @@ async fn run_validator() {
                         }
                     }
                 } else {
-                    // Request missing transactions from the sender
+                    // A compact block cannot be applied until the full ordered
+                    // transaction list is known. The BlockTxs path warms the
+                    // mempool, but it does not replay the original compact
+                    // block, so request the full block immediately to avoid
+                    // waiting for periodic catch-up and missing proposer slots.
                     info!(
-                        "📦 Compact block slot {} missing {} txs, requesting from {}",
+                        "📦 Compact block slot {} missing {} txs, requesting full block from {}",
                         slot,
                         missing_hashes.len(),
                         sender
                     );
                     if let Some(ref pm) = peer_mgr_for_compact {
-                        let request = lichen_p2p::P2PMessage::new(
-                            lichen_p2p::MessageType::GetBlockTxs {
-                                slot,
-                                missing_hashes,
-                            },
-                            local_addr_for_compact,
-                        );
+                        let request =
+                            compact_block_full_block_fallback_request(slot, local_addr_for_compact);
                         let pm = pm.clone();
                         tokio::spawn(async move {
                             if let Err(e) = pm.send_to_peer(&sender, request).await {
-                                warn!("P2P: Failed to request missing txs from {}: {}", sender, e);
+                                warn!(
+                                    "P2P: Failed to request full block {} from {}: {}",
+                                    slot, sender, e
+                                );
                             }
                         });
                     }
@@ -23741,6 +23745,17 @@ mod tests {
                 .to_string(),
             "info"
         );
+    }
+
+    #[test]
+    fn compact_block_missing_txs_fallback_requests_full_block() {
+        let local_addr = SocketAddr::from(([127, 0, 0, 1], 7001));
+        let request = compact_block_full_block_fallback_request(42, local_addr);
+
+        match request.msg_type {
+            MessageType::BlockRequest { slot } => assert_eq!(slot, 42),
+            other => panic!("expected full block request, got {other:?}"),
+        }
     }
 
     #[test]
