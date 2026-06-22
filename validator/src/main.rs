@@ -11605,11 +11605,8 @@ fn print_public_history_merge_report(report: &lichen_core::state::PublicHistoryM
 }
 
 fn maybe_run_public_history_merge_admin(args: &[String]) -> Option<i32> {
-    let Some(source_dir) =
-        get_flag_value(args, &[MERGE_PUBLIC_HISTORY_FROM_SOURCE_FLAG]).map(PathBuf::from)
-    else {
-        return None;
-    };
+    let source_dir =
+        get_flag_value(args, &[MERGE_PUBLIC_HISTORY_FROM_SOURCE_FLAG]).map(PathBuf::from)?;
 
     let execute = has_flag(args, "--execute");
     let dry_run = has_flag(args, "--dry-run") || !execute;
@@ -12269,6 +12266,23 @@ fn configure_archive_mode(state: &StateStore, args: &[String], cold_store_attach
     true
 }
 
+fn production_archive_requirement_error(args: &[String]) -> Option<String> {
+    let network = get_flag_value(args, &["--network"]).map(|value| value.to_ascii_lowercase())?;
+    if !matches!(network.as_str(), "testnet" | "mainnet") || has_flag(args, "--dev-mode") {
+        return None;
+    }
+
+    let archive_mode = has_flag(args, "--archive-mode");
+    let cold_store = get_flag_value(args, &["--cold-store"]).is_some();
+    if archive_mode && cold_store {
+        return None;
+    }
+
+    Some(format!(
+        "Non-dev {network} validators must run archive-backed public history: add --archive-mode and --cold-store /var/lib/lichen/archive-{network}. Use --dev-mode only for disposable local validators."
+    ))
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 //  SUPERVISOR — wraps the validator in a restart loop.
 //  When the internal watchdog detects a stall it exits with EXIT_CODE_RESTART;
@@ -12329,6 +12343,11 @@ fn main() {
     }
     if let Some(exit_code) = maybe_run_analytics_24h_repair_admin(&args) {
         std::process::exit(exit_code);
+    }
+
+    if let Some(message) = production_archive_requirement_error(&args) {
+        eprintln!("FATAL: {message}");
+        std::process::exit(2);
     }
 
     // If we're the child (worker) process, go straight to the async validator.
@@ -30070,6 +30089,46 @@ mod tests {
 
         assert!(configure_archive_mode(&state, &args, true));
         assert!(state.is_archive_mode());
+    }
+
+    #[test]
+    fn production_testnet_requires_archive_backed_history() {
+        let args = vec![
+            "lichen-validator".to_string(),
+            "--network".to_string(),
+            "testnet".to_string(),
+        ];
+
+        let err = production_archive_requirement_error(&args)
+            .expect("production testnet without archive must be rejected");
+        assert!(err.contains("--archive-mode"));
+        assert!(err.contains("--cold-store"));
+    }
+
+    #[test]
+    fn production_testnet_accepts_archive_backed_history() {
+        let args = vec![
+            "lichen-validator".to_string(),
+            "--network".to_string(),
+            "testnet".to_string(),
+            "--archive-mode".to_string(),
+            "--cold-store".to_string(),
+            "/var/lib/lichen/archive-testnet".to_string(),
+        ];
+
+        assert!(production_archive_requirement_error(&args).is_none());
+    }
+
+    #[test]
+    fn dev_testnet_can_run_without_archive_backed_history() {
+        let args = vec![
+            "lichen-validator".to_string(),
+            "--network".to_string(),
+            "testnet".to_string(),
+            "--dev-mode".to_string(),
+        ];
+
+        assert!(production_archive_requirement_error(&args).is_none());
     }
 
     #[test]

@@ -79,6 +79,28 @@
         <!-- Timeline -->
         <div class="changelog-timeline">
 
+            <!-- ============ v0.5.190 ============ -->
+            <div class="changelog-entry">
+                <div class="changelog-header">
+                    <span class="changelog-version">v0.5.190</span>
+                    <span class="changelog-date">June 22, 2026</span>
+                </div>
+                <h3 class="changelog-title">Archive-Backed History Recovery</h3>
+
+                <div class="changelog-section" data-type="fixed">
+                    <h4><i class="fas fa-bug" style="color: var(--warning)"></i> Fixes</h4>
+                    <ul>
+                        <li><strong>Historical Activity Recovery</strong> &mdash; validators now have a guarded
+                            dry-run-first public-history merge path for importing real historical blocks,
+                            transactions, account history, events, and related public indexes from an archive or
+                            backup source without replacing consensus state.</li>
+                        <li><strong>Archive-backed public RPC</strong> &mdash; deployment defaults now run public RPC
+                            validators with archive mode and a cold store so future rejoins keep the public data
+                            required by wallets, explorers, and developers.</li>
+                    </ul>
+                </div>
+            </div>
+
             <!-- ============ v0.5.189 ============ -->
             <div class="changelog-entry">
                 <div class="changelog-header">

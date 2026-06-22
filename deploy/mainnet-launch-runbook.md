@@ -4,7 +4,7 @@ This is the operator runbook for launching Lichen mainnet and then enabling
 mainnet custody. It is intentionally step-by-step and gate-based. Do not skip a
 gate because mainnet genesis and custody routes handle real value.
 
-Written for the current mainnet package. Current signed-release target for this runbook is `v0.5.189`; keep `v0.5.188` as the signed rollback point. If a newer
+Written for the current mainnet package. Current signed-release target for this runbook is `v0.5.190`; keep `v0.5.189` as the signed rollback point. If a newer
 release is used, replace every example tag with the newer signed release tag
 after CI and release verification pass.
 
@@ -15,13 +15,17 @@ after CI and release verification pass.
   genesis. That is expected.
 - Start the Lichen chain first. Enable custody only after all four validators
   are healthy, synced, and serving the same genesis.
+- Public mainnet validators must be archive-backed from first boot. `v0.5.190`
+  and later refuse non-dev `mainnet` startup unless `--archive-mode` and
+  `--cold-store /var/lib/lichen/archive-mainnet` are both present.
 - Do not expose public custody or wallet routes until that exact route passes a
   dust deposit and dust withdrawal on mainnet.
 - Do not use the mainnet faucet pattern. There is no mainnet faucet.
 - Do not copy validator RocksDB state, `genesis-wallet.json`, `genesis-keys/`,
   `known-peers.json`, or consensus WAL to joiners.
 - Do not deploy a release that changes consensus rules with a mixed-version
-  rolling restart. The current rollback point `v0.5.188` changed BFT leader
+  rolling restart. The current rollback point `v0.5.189` includes public history
+  snapshot/rejoin hardening and archive-mode public RPC defaults after the BFT leader
   selection and required a coordinated stop/install/start rollout.
 - Do not commit provider URLs, auth tokens, keypair passwords, custody seeds,
   funded keypairs, signing keys, or filled production env files.
@@ -208,7 +212,7 @@ credentials, or keypair passwords.
 Use the signed release that passed CI. For the current package:
 
 ```bash
-export LICHEN_RELEASE_TAG=v0.5.189
+export LICHEN_RELEASE_TAG=v0.5.190
 export LICHEN_MAINNET_VPS_HOSTS="15.204.229.189 37.59.97.61 15.235.142.253 148.113.43.247"
 ```
 
@@ -255,7 +259,7 @@ For an emergency rollback to the current signed rollback point, set the tag
 explicitly and run the same signed-release path:
 
 ```bash
-export LICHEN_RELEASE_TAG=v0.5.188
+export LICHEN_RELEASE_TAG=v0.5.189
 LICHEN_VERIFY_RELEASE_ONLY=1 bash scripts/rolling-release-deploy.sh mainnet
 bash scripts/rolling-release-deploy.sh mainnet
 ```

@@ -446,16 +446,16 @@ assert(
   'BTC rollout plan must record the epoch-6 governed execution signatures and compute budget',
 );
 assert(
-  productionDeployment.includes('Current signed-release target for this runbook is `v0.5.189`') &&
-    productionDeployment.includes('keep `v0.5.188` as the signed rollback point') &&
+  productionDeployment.includes('Current signed-release target for this runbook is `v0.5.190`') &&
+    productionDeployment.includes('keep `v0.5.189` as the signed rollback point') &&
     productionDeployment.includes('32 manifest symbols') &&
     productionDeployment.includes('mandatory 13 DEX CLOB pairs, AMM pools, and router routes') &&
     productionDeployment.includes('wBTC/lUSD') &&
     productionDeployment.includes('wBTC/LICN') &&
-    productionDeployment.includes('v0.5.189` keeps the `v0.5.188` BFT leader-selection fix') &&
-    productionDeployment.includes('public-history snapshot/rejoin hardening') &&
+    productionDeployment.includes('v0.5.190` keeps the `v0.5.189` public-history merge and archive-mode hardening') &&
+    productionDeployment.includes('guarded public-history merge admin path') &&
     productionDeployment.includes('all validators must end on the same signed release') &&
-    productionDeployment.includes('export LICHEN_RELEASE_TAG=v0.5.189') &&
+    productionDeployment.includes('export LICHEN_RELEASE_TAG=v0.5.190') &&
     productionDeployment.includes('The script requires `LICHEN_RELEASE_TAG`') &&
     productionDeployment.includes('install the signed release archive') &&
     productionDeployment.includes('RocksDB read-only descriptors') &&
@@ -470,7 +470,7 @@ assert(
     !productionDeployment.includes('31 manifest symbols') &&
     !productionDeployment.includes('--repair-stake-pool-production-counters') &&
     !productionDeployment.includes('such as `v0.5.50`'),
-  'production clean-slate checklist must match current v0.5.189 rollback v0.5.188/32-symbol/13-market expectations',
+  'production clean-slate checklist must match current v0.5.190 rollback v0.5.189/32-symbol/13-market expectations',
 );
 assert(
   productionDeployment.includes('Do not add `faucet.lichen.network` as a Cloudflare Pages custom domain') &&
