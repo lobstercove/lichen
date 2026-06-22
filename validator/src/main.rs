@@ -43,19 +43,20 @@ use lichen_core::nft::decode_token_state;
 use lichen_core::STATE_SNAPSHOT_CATEGORIES;
 use lichen_core::{
     compute_bft_timestamp, compute_stake_weighted_median, compute_validators_hash, evm_tx_hash,
-    Account, Block, ContractAbi, ContractAccount, ContractInstruction, FeeConfig, FinalityTracker,
-    ForkChoice, GenesisConfig, GenesisPrices, GenesisStateBundle, GenesisStateChunk, GenesisWallet,
-    Hash, Keypair, MarketActivity, MarketActivityKind, Mempool, NftActivity, NftActivityKind,
-    PqSignature, Precommit, Prevote, ProgramCallActivity, Proposal, Pubkey, RoundStep,
-    SlashingEvidence, SlashingOffense, SparseStateCommitmentReport, StakePool,
-    StateRootComponentReport, StateStore, Transaction, TxProcessor, ValidatorInfo, ValidatorSet,
-    Vote, VoteAggregator, VoteAuthority, BASE_FEE, BOOTSTRAP_GRANT_AMOUNT, CHAIN_ID_METADATA_KEY,
-    CONTRACT_DEPLOY_FEE, CONTRACT_UPGRADE_FEE, EVM_PROGRAM_ID, GENESIS_DISTRIBUTION,
-    GENESIS_STATE_BUNDLE_VERSION, GENESIS_STATE_CHUNK_OPCODE, GENESIS_SUPPLY_SPORES,
-    MAX_TX_AGE_BLOCKS, MIN_VALIDATOR_STAKE, NFT_COLLECTION_FEE, NFT_MINT_FEE, ORACLE_ASSET_MAX_LEN,
-    ORACLE_ASSET_MIN_LEN, ORACLE_STALENESS_SLOTS, SLASHING_EVIDENCE_CODEC_LIMIT_BYTES,
-    STATE_SNAPSHOT_SPECIAL_CATEGORIES, SYSTEM_PROGRAM_ID as CORE_SYSTEM_PROGRAM_ID,
-    VALIDATOR_BOOTSTRAP_GRANTS_ENABLED_METADATA_KEY, VALIDATOR_BOOTSTRAP_GRANTS_ENABLED_VALUE,
+    Account, AccountTxsRebuildReport, AccountTxsSourceInspection, Block, ContractAbi,
+    ContractAccount, ContractInstruction, FeeConfig, FinalityTracker, ForkChoice, GenesisConfig,
+    GenesisPrices, GenesisStateBundle, GenesisStateChunk, GenesisWallet, Hash, Keypair,
+    MarketActivity, MarketActivityKind, Mempool, NftActivity, NftActivityKind, PqSignature,
+    Precommit, Prevote, ProgramCallActivity, Proposal, Pubkey, RoundStep, SlashingEvidence,
+    SlashingOffense, SparseStateCommitmentReport, StakePool, StateRootComponentReport, StateStore,
+    Transaction, TxProcessor, ValidatorInfo, ValidatorSet, Vote, VoteAggregator, VoteAuthority,
+    BASE_FEE, BOOTSTRAP_GRANT_AMOUNT, CHAIN_ID_METADATA_KEY, CONTRACT_DEPLOY_FEE,
+    CONTRACT_UPGRADE_FEE, EVM_PROGRAM_ID, GENESIS_DISTRIBUTION, GENESIS_STATE_BUNDLE_VERSION,
+    GENESIS_STATE_CHUNK_OPCODE, GENESIS_SUPPLY_SPORES, MAX_TX_AGE_BLOCKS, MIN_VALIDATOR_STAKE,
+    NFT_COLLECTION_FEE, NFT_MINT_FEE, ORACLE_ASSET_MAX_LEN, ORACLE_ASSET_MIN_LEN,
+    ORACLE_STALENESS_SLOTS, SLASHING_EVIDENCE_CODEC_LIMIT_BYTES, STATE_SNAPSHOT_SPECIAL_CATEGORIES,
+    SYSTEM_PROGRAM_ID as CORE_SYSTEM_PROGRAM_ID, VALIDATOR_BOOTSTRAP_GRANTS_ENABLED_METADATA_KEY,
+    VALIDATOR_BOOTSTRAP_GRANTS_ENABLED_VALUE,
 };
 use lichen_genesis::{
     genesis_assign_achievements, genesis_auto_deploy, genesis_bootstrap_bridge_committee,
@@ -135,12 +136,15 @@ const DIAGNOSE_BLOCK_REPLAY_FLAG: &str = "--diagnose-block-replay";
 const DIAGNOSE_CHAIN_REPLAY_FLAG: &str = "--diagnose-chain-replay";
 const DUMP_BLOCK_JSON_FLAG: &str = "--dump-block-json";
 const SCAN_MOSSSTAKE_BLOCKS_FLAG: &str = "--scan-mossstake-blocks";
+const REBUILD_ACCOUNT_TXS_FLAG: &str = "--rebuild-account-txs";
+const INSPECT_ACCOUNT_HISTORY_FLAG: &str = "--inspect-account-history";
 const VERIFY_WARP_SNAPSHOT_ROUNDTRIP_FLAG: &str = "--verify-warp-snapshot-roundtrip";
 const REBUILD_SHIELDED_STATE_FROM_BLOCKS_FLAG: &str = "--rebuild-shielded-state-from-blocks";
 const EXPORT_SHIELDED_STATE_BUNDLE_FLAG: &str = "--export-shielded-state-bundle";
 const IMPORT_SHIELDED_STATE_BUNDLE_FLAG: &str = "--import-shielded-state-bundle";
 const SHIELDED_STATE_REBUILD_CONFIRMATION: &str = "rebuild-shielded-state:v1";
 const SHIELDED_STATE_BUNDLE_IMPORT_CONFIRMATION: &str = "shielded-state-bundle:v1";
+const ACCOUNT_TXS_REBUILD_CONFIRMATION: &str = "rebuild-account-txs:v1";
 const REPAIR_ANALYTICS_24H_WINDOW_FLAG: &str = "--repair-analytics-24h-window";
 const ANALYTICS_24H_REPAIR_CONFIRMATION: &str = "repair-analytics-24h:v1";
 const TESTNET_DEX_REPAIR_CONTRACTS: &[(&str, &str)] = &[
@@ -965,11 +969,21 @@ fn commit_snapshot_categories_from_store(
     } else {
         None
     };
+    let merge_categories: &[&str] = if categories != WARP_SNAPSHOT_CATEGORIES
+        && categories
+            .iter()
+            .all(|category| STATE_REPAIR_SNAPSHOT_CATEGORIES.contains(category))
+    {
+        SNAPSHOT_MERGE_CATEGORIES
+    } else {
+        &[]
+    };
 
     for category_name in categories
         .iter()
         .copied()
         .filter(|category| !STATE_SNAPSHOT_SPECIAL_CATEGORIES.contains(category))
+        .filter(|category| !merge_categories.contains(category))
     {
         target.clear_snapshot_category(category_name)?;
     }
@@ -1014,6 +1028,10 @@ fn commit_snapshot_categories_from_store(
             )?,
         };
         report.imported.push((category_name.to_string(), count));
+    }
+
+    if categories.contains(&"account_txs") {
+        target.clear_account_tx_counters()?;
     }
 
     Ok(report)
@@ -4726,23 +4744,65 @@ const WARP_SNAPSHOT_CATEGORIES: &[&str] = &[
     "mossstake_pool",
 ];
 
+const SNAPSHOT_MERGE_CATEGORIES: &[&str] = &[
+    "blocks",
+    "transactions",
+    "account_txs",
+    "slots",
+    "program_calls",
+    "market_activity",
+    "evm_txs",
+    "evm_receipts",
+    "evm_logs_by_slot",
+    "nft_activity",
+    "token_transfers",
+    "events",
+    "events_by_slot",
+    "dex_trades_by_pair",
+    "dex_trades_by_taker",
+    "dex_trades_by_pair_taker",
+    "tx_by_slot",
+    "tx_to_slot",
+    "tx_meta",
+    "shielded_txs",
+];
+
 const STATE_REPAIR_SNAPSHOT_CATEGORIES: &[&str] = &[
     "accounts",
+    "blocks",
+    "transactions",
+    "account_txs",
+    "slots",
     "contract_storage",
     "programs",
+    "program_calls",
+    "market_activity",
     "symbol_registry",
     "symbol_by_program",
     "evm_map",
     "evm_accounts",
     "evm_storage",
+    "evm_txs",
+    "evm_receipts",
+    "evm_logs_by_slot",
     "nft_by_owner",
     "nft_by_collection",
+    "nft_activity",
     "token_balances",
+    "token_transfers",
     "holder_tokens",
     "solana_token_accounts",
     "solana_holder_token_accounts",
+    "events",
+    "events_by_slot",
     "dex_orders_by_pair",
+    "dex_trades_by_pair",
+    "dex_trades_by_taker",
+    "dex_trades_by_pair_taker",
     "dex_orderbook_levels",
+    "tx_by_slot",
+    "tx_to_slot",
+    "tx_meta",
     "pending_validator_changes",
     "restrictions",
     "restriction_index_target",
@@ -4751,6 +4811,7 @@ const STATE_REPAIR_SNAPSHOT_CATEGORIES: &[&str] = &[
     "shielded_note_payloads",
     "shielded_nullifiers",
     "shielded_pool",
+    "shielded_txs",
     "stats",
     "validator_set",
     "stake_pool",
@@ -11179,6 +11240,343 @@ fn maybe_run_shielded_state_rebuild_admin(args: &[String]) -> Option<i32> {
     }
 }
 
+fn print_account_txs_rebuild_report(data_dir: &Path, report: &AccountTxsRebuildReport) {
+    println!("data_dir={}", data_dir.display());
+    println!("source={}", report.source.as_str());
+    println!("mode={}", if report.dry_run { "dry-run" } else { "write" });
+    println!("last_slot={}", report.last_slot);
+    println!("canonical_slots={}", report.canonical_slots);
+    println!("available_blocks={}", report.available_blocks);
+    println!("missing_block_bodies={}", report.missing_block_bodies);
+    println!(
+        "first_missing_block_slot={}",
+        report
+            .first_missing_block_slot
+            .map(|slot| slot.to_string())
+            .unwrap_or_else(|| "none".to_string())
+    );
+    println!("header_only_blocks={}", report.header_only_blocks);
+    println!(
+        "first_header_only_slot={}",
+        report
+            .first_header_only_slot
+            .map(|slot| slot.to_string())
+            .unwrap_or_else(|| "none".to_string())
+    );
+    println!("reached_genesis={}", report.reached_genesis);
+    println!("tx_by_slot_rows={}", report.tx_by_slot_rows);
+    println!("missing_transactions={}", report.missing_transactions);
+    println!(
+        "first_missing_transaction_slot={}",
+        report
+            .first_missing_transaction_slot
+            .map(|slot| slot.to_string())
+            .unwrap_or_else(|| "none".to_string())
+    );
+    println!(
+        "oldest_tx_slot={}",
+        report
+            .oldest_tx_slot
+            .map(|slot| slot.to_string())
+            .unwrap_or_else(|| "none".to_string())
+    );
+    println!(
+        "newest_tx_slot={}",
+        report
+            .newest_tx_slot
+            .map(|slot| slot.to_string())
+            .unwrap_or_else(|| "none".to_string())
+    );
+    println!("source_complete={}", report.source_complete());
+    println!("transactions_seen={}", report.transactions_seen);
+    println!(
+        "expected_account_tx_rows={}",
+        report.expected_account_tx_rows
+    );
+    println!("existing_hot_rows={}", report.existing_hot_rows);
+    println!("existing_cold_rows={}", report.existing_cold_rows);
+    println!("existing_counter_keys={}", report.existing_counter_keys);
+    println!("rebuilt_rows={}", report.rebuilt_rows);
+    println!("after_hot_rows={}", report.after_hot_rows);
+    println!("after_counter_keys={}", report.after_counter_keys);
+}
+
+fn maybe_open_account_txs_secondary_state(
+    args: &[String],
+    data_dir: &Path,
+    cache_size_mb: Option<usize>,
+) -> Result<Option<StateStore>, String> {
+    let Some(secondary_dir) = get_flag_value(args, &["--secondary-dir"]).map(PathBuf::from) else {
+        return Ok(None);
+    };
+
+    fs::create_dir_all(&secondary_dir)
+        .map_err(|err| format!("Failed to create {}: {}", secondary_dir.display(), err))?;
+    let state =
+        StateStore::open_secondary_with_cache_mb(data_dir, secondary_dir.as_path(), cache_size_mb)?;
+    state.try_catch_up_with_primary()?;
+    Ok(Some(state))
+}
+
+fn parse_account_history_slots(args: &[String]) -> Result<Vec<u64>, String> {
+    let Some(raw) = get_flag_value(args, &["--slots"]) else {
+        return Ok(Vec::new());
+    };
+
+    raw.split(',')
+        .filter_map(|part| {
+            let trimmed = part.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(
+                    trimmed
+                        .parse::<u64>()
+                        .map_err(|err| format!("Invalid --slots value {trimmed:?}: {err}")),
+                )
+            }
+        })
+        .collect()
+}
+
+fn print_account_history_inspection(
+    data_dir: &Path,
+    account: &Pubkey,
+    report: &AccountTxsSourceInspection,
+) {
+    println!("data_dir={}", data_dir.display());
+    println!("account={}", account.to_base58());
+    println!("cached_account_tx_count={}", report.cached_account_tx_count);
+    println!("hot_account_tx_rows={}", report.hot_account_tx_rows);
+    println!("cold_account_tx_rows={}", report.cold_account_tx_rows);
+    println!(
+        "indexed_signature_sample_count={}",
+        report.indexed_signatures.len()
+    );
+    for (index, (hash, slot)) in report.indexed_signatures.iter().enumerate() {
+        println!(
+            "indexed_signature_sample[{index}]=slot:{slot},hash:{}",
+            hash.to_hex()
+        );
+    }
+    println!("tx_by_slot_rows={}", report.tx_by_slot_rows);
+    println!(
+        "tx_by_slot_missing_transactions={}",
+        report.tx_by_slot_missing_transactions
+    );
+    println!(
+        "tx_by_slot_oldest_slot={}",
+        report
+            .tx_by_slot_oldest_slot
+            .map(|slot| slot.to_string())
+            .unwrap_or_else(|| "none".to_string())
+    );
+    println!(
+        "tx_by_slot_newest_slot={}",
+        report
+            .tx_by_slot_newest_slot
+            .map(|slot| slot.to_string())
+            .unwrap_or_else(|| "none".to_string())
+    );
+    println!(
+        "tx_by_slot_matching_account_rows={}",
+        report.tx_by_slot_matching_account_rows
+    );
+    println!(
+        "tx_by_slot_matching_signature_sample_count={}",
+        report.tx_by_slot_matching_signatures.len()
+    );
+    for (index, (hash, slot)) in report.tx_by_slot_matching_signatures.iter().enumerate() {
+        println!(
+            "tx_by_slot_matching_signature_sample[{index}]=slot:{slot},hash:{}",
+            hash.to_hex()
+        );
+    }
+    for slot in &report.slots {
+        println!(
+            "slot[{}]=block_present:{},block_tx_count:{},block_matching_account_rows:{},tx_by_slot_rows:{},tx_by_slot_tx_bodies_present:{},tx_by_slot_matching_account_rows:{}",
+            slot.slot,
+            slot.block_present,
+            slot.block_tx_count,
+            slot.block_matching_account_rows,
+            slot.tx_by_slot_rows,
+            slot.tx_by_slot_tx_bodies_present,
+            slot.tx_by_slot_matching_account_rows
+        );
+    }
+}
+
+fn maybe_run_account_history_inspection_admin(args: &[String]) -> Option<i32> {
+    if !has_flag(args, INSPECT_ACCOUNT_HISTORY_FLAG) {
+        return None;
+    }
+
+    let account = match get_flag_value(args, &["--account"]) {
+        Some(raw) => match Pubkey::from_base58(raw) {
+            Ok(account) => account,
+            Err(err) => {
+                eprintln!("Invalid --account value: {err}");
+                return Some(2);
+            }
+        },
+        None => {
+            eprintln!("--inspect-account-history requires --account <base58>");
+            return Some(2);
+        }
+    };
+
+    let slots = match parse_account_history_slots(args) {
+        Ok(slots) => slots,
+        Err(err) => {
+            eprintln!("{err}");
+            return Some(2);
+        }
+    };
+    let max_matches = get_flag_value(args, &["--max-matches"])
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(32)
+        .min(1000);
+    let data_dir = restriction_schema_data_dir(args);
+    let cache_size_mb = get_flag_value(args, &["--cache-size-mb"]).and_then(|s| s.parse().ok());
+    let cold_store_path = get_flag_value(args, &["--cold-store"]).map(PathBuf::from);
+
+    let mut state = match maybe_open_account_txs_secondary_state(args, &data_dir, cache_size_mb) {
+        Ok(Some(state)) => state,
+        Ok(None) => match StateStore::open_with_cache_mb(&data_dir, cache_size_mb) {
+            Ok(state) => state,
+            Err(err) => {
+                eprintln!("Failed to open state DB at {}: {}", data_dir.display(), err);
+                return Some(1);
+            }
+        },
+        Err(err) => {
+            eprintln!(
+                "Failed to open secondary state DB for {}: {}",
+                data_dir.display(),
+                err
+            );
+            return Some(1);
+        }
+    };
+
+    if let Some(cold_path) = cold_store_path {
+        if let Err(err) = state.open_cold_store(&cold_path) {
+            eprintln!(
+                "Failed to open cold store at {}: {}",
+                cold_path.display(),
+                err
+            );
+            return Some(1);
+        }
+    }
+
+    match state.inspect_account_txs_sources(&account, &slots, max_matches) {
+        Ok(report) => {
+            print_account_history_inspection(&data_dir, &account, &report);
+            Some(0)
+        }
+        Err(err) => {
+            eprintln!("Failed to inspect account history sources: {err}");
+            Some(1)
+        }
+    }
+}
+
+fn maybe_run_account_txs_rebuild_admin(args: &[String]) -> Option<i32> {
+    if !has_flag(args, REBUILD_ACCOUNT_TXS_FLAG) {
+        return None;
+    }
+
+    let execute = has_flag(args, "--execute");
+    let dry_run = has_flag(args, "--dry-run") || !execute;
+    if execute && has_flag(args, "--dry-run") {
+        eprintln!("--execute and --dry-run are mutually exclusive");
+        return Some(2);
+    }
+    if execute {
+        let confirm = get_flag_value(args, &["--confirm"]);
+        if confirm != Some(ACCOUNT_TXS_REBUILD_CONFIRMATION) {
+            eprintln!("Refusing write without --confirm {ACCOUNT_TXS_REBUILD_CONFIRMATION}");
+            return Some(1);
+        }
+        if get_flag_value(args, &["--secondary-dir"]).is_some() {
+            eprintln!("--secondary-dir is only valid with dry-run diagnostics");
+            return Some(2);
+        }
+    }
+
+    let data_dir = restriction_schema_data_dir(args);
+    let cache_size_mb = get_flag_value(args, &["--cache-size-mb"]).and_then(|s| s.parse().ok());
+    let cold_store_path = get_flag_value(args, &["--cold-store"]).map(PathBuf::from);
+
+    let mut state = if dry_run {
+        match maybe_open_account_txs_secondary_state(args, &data_dir, cache_size_mb) {
+            Ok(Some(state)) => state,
+            Ok(None) => match StateStore::open_with_cache_mb(&data_dir, cache_size_mb) {
+                Ok(state) => state,
+                Err(err) => {
+                    eprintln!("Failed to open state DB at {}: {}", data_dir.display(), err);
+                    return Some(1);
+                }
+            },
+            Err(err) => {
+                eprintln!(
+                    "Failed to open secondary state DB for {}: {}",
+                    data_dir.display(),
+                    err
+                );
+                return Some(1);
+            }
+        }
+    } else {
+        match StateStore::open_with_cache_mb(&data_dir, cache_size_mb) {
+            Ok(state) => state,
+            Err(err) => {
+                eprintln!("Failed to open state DB at {}: {}", data_dir.display(), err);
+                return Some(1);
+            }
+        }
+    };
+
+    if let Some(cold_path) = cold_store_path {
+        if let Err(err) = state.open_cold_store(&cold_path) {
+            eprintln!(
+                "Failed to open cold store at {}: {}",
+                cold_path.display(),
+                err
+            );
+            return Some(1);
+        }
+    }
+
+    let source = get_flag_value(args, &["--source"]).unwrap_or("parent-chain");
+    let rebuild_result = match source {
+        "parent-chain" => state.rebuild_account_txs_index_from_parent_chain_with_report(dry_run),
+        "tx-index" => state.rebuild_account_txs_index_from_tx_index_with_report(dry_run),
+        other => {
+            eprintln!("Unsupported account_txs rebuild source: {other}");
+            return Some(2);
+        }
+    };
+
+    match rebuild_result {
+        Ok(report) => {
+            print_account_txs_rebuild_report(&data_dir, &report);
+            if execute && !report.source_complete() {
+                eprintln!(
+                    "Account tx rebuild source is incomplete after write; inspect missing/header-only block counts"
+                );
+                return Some(1);
+            }
+            Some(0)
+        }
+        Err(err) => {
+            eprintln!("Failed to rebuild account_txs from canonical blocks: {err}");
+            Some(1)
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 struct Analytics24hRepairReport {
     tip: u64,
@@ -11809,6 +12207,12 @@ fn main() {
         std::process::exit(exit_code);
     }
     if let Some(exit_code) = maybe_run_shielded_state_rebuild_admin(&args) {
+        std::process::exit(exit_code);
+    }
+    if let Some(exit_code) = maybe_run_account_history_inspection_admin(&args) {
+        std::process::exit(exit_code);
+    }
+    if let Some(exit_code) = maybe_run_account_txs_rebuild_admin(&args) {
         std::process::exit(exit_code);
     }
     if let Some(exit_code) = maybe_run_analytics_24h_repair_admin(&args) {
@@ -23187,6 +23591,47 @@ mod tests {
         }
     }
 
+    fn make_tx_for_account(account: Pubkey, seed: u8) -> Transaction {
+        Transaction {
+            signatures: vec![make_test_signature(seed, b"validator-main-history-test")],
+            message: Message {
+                instructions: vec![Instruction {
+                    program_id: CORE_SYSTEM_PROGRAM_ID,
+                    accounts: vec![account],
+                    data: vec![seed],
+                }],
+                recent_blockhash: Hash([seed; 32]),
+                compute_budget: None,
+                compute_unit_price: None,
+            },
+            tx_type: Default::default(),
+        }
+    }
+
+    fn put_history_block(
+        state: &StateStore,
+        slot: u64,
+        parent_hash: Hash,
+        account: Pubkey,
+        seed: u8,
+    ) -> (Hash, Hash) {
+        let tx = make_tx_for_account(account, seed);
+        let tx_hash = tx.signature();
+        let block = Block::new_with_timestamp(
+            slot,
+            parent_hash,
+            Hash::hash(&[seed]),
+            [seed; 32],
+            vec![tx],
+            1_700_000_000u64.saturating_add(slot),
+        );
+        let block_hash = block.hash();
+        state
+            .put_block_atomic(&block, Some(slot), Some(slot))
+            .expect("put history block");
+        (block_hash, tx_hash)
+    }
+
     #[test]
     fn validator_log_filter_honors_rust_log_value() {
         assert_eq!(
@@ -27519,6 +27964,159 @@ mod tests {
             validate_snapshot_manifest_shape(&repair_manifest).is_err(),
             "state-repair manifests must not masquerade as full archive manifests"
         );
+    }
+
+    #[test]
+    fn state_repair_snapshot_categories_include_public_transaction_history() {
+        for category in SNAPSHOT_MERGE_CATEGORIES {
+            assert!(
+                STATE_REPAIR_SNAPSHOT_CATEGORIES.contains(category),
+                "state-repair snapshots must carry merge category {category}"
+            );
+        }
+
+        for category in [
+            "blocks",
+            "transactions",
+            "account_txs",
+            "slots",
+            "tx_by_slot",
+            "tx_to_slot",
+            "tx_meta",
+            "events",
+            "events_by_slot",
+            "token_transfers",
+            "shielded_txs",
+        ] {
+            assert!(
+                STATE_REPAIR_SNAPSHOT_CATEGORIES.contains(&category),
+                "state-repair snapshots must preserve public history category {category}"
+            );
+        }
+
+        assert!(
+            !STATE_REPAIR_SNAPSHOT_CATEGORIES.contains(&"account_snapshots"),
+            "repair snapshots must not claim full per-slot account archive coverage"
+        );
+        assert_ne!(
+            STATE_REPAIR_SNAPSHOT_CATEGORIES, WARP_SNAPSHOT_CATEGORIES,
+            "repair snapshots remain a state-repair profile, not a full WARP archive"
+        );
+    }
+
+    #[test]
+    fn snapshot_commit_merges_public_history_and_recomputes_account_tx_counts() {
+        let source_dir = tempfile::tempdir().expect("create source dir");
+        let source = StateStore::open(source_dir.path()).expect("open source state");
+        let target_dir = tempfile::tempdir().expect("create target dir");
+        let target = StateStore::open(target_dir.path()).expect("open target state");
+
+        let tracked = Pubkey([0x42; 32]);
+        let (target_block_hash, target_tx_hash) =
+            put_history_block(&target, 7, Hash::default(), tracked, 7);
+        let (source_block_hash, source_tx_hash) =
+            put_history_block(&source, 9, target_block_hash, tracked, 9);
+
+        assert_eq!(target.count_account_txs(&tracked).unwrap(), 1);
+        assert_eq!(source.count_account_txs(&tracked).unwrap(), 1);
+
+        let report = commit_snapshot_categories_from_store(
+            &source,
+            &target,
+            &[
+                "blocks",
+                "transactions",
+                "account_txs",
+                "slots",
+                "tx_by_slot",
+                "tx_to_slot",
+                "tx_meta",
+            ],
+        )
+        .expect("commit state-repair history categories");
+
+        for category in [
+            "blocks",
+            "transactions",
+            "account_txs",
+            "slots",
+            "tx_by_slot",
+            "tx_to_slot",
+            "tx_meta",
+        ] {
+            assert!(
+                report
+                    .imported
+                    .iter()
+                    .any(|(imported_category, _)| imported_category == category),
+                "missing imported report row for {category}"
+            );
+        }
+
+        let (_post_repair_block_hash, post_repair_tx_hash) =
+            put_history_block(&target, 10, source_block_hash, tracked, 10);
+
+        assert_eq!(
+            target
+                .get_account_tx_signatures_paginated(&tracked, 10, None)
+                .unwrap(),
+            vec![
+                (post_repair_tx_hash, 10),
+                (source_tx_hash, 9),
+                (target_tx_hash, 7)
+            ]
+        );
+        assert_eq!(
+            target.count_account_txs(&tracked).unwrap(),
+            3,
+            "post-import block indexing must seed missing counters from imported account_txs rows"
+        );
+        assert!(target.get_transaction(&target_tx_hash).unwrap().is_some());
+        assert!(target.get_transaction(&source_tx_hash).unwrap().is_some());
+        assert!(target
+            .get_transaction(&post_repair_tx_hash)
+            .unwrap()
+            .is_some());
+        assert_eq!(target.get_tx_slot(&target_tx_hash).unwrap(), Some(7));
+        assert_eq!(target.get_tx_slot(&source_tx_hash).unwrap(), Some(9));
+        assert_eq!(target.get_tx_slot(&post_repair_tx_hash).unwrap(), Some(10));
+        assert_eq!(target.get_txs_by_slot(7, 10).unwrap(), vec![target_tx_hash]);
+        assert_eq!(target.get_txs_by_slot(9, 10).unwrap(), vec![source_tx_hash]);
+        assert_eq!(
+            target.get_txs_by_slot(10, 10).unwrap(),
+            vec![post_repair_tx_hash]
+        );
+    }
+
+    #[test]
+    fn snapshot_commit_replaces_public_history_for_non_repair_profiles() {
+        let source_dir = tempfile::tempdir().expect("create source dir");
+        let source = StateStore::open(source_dir.path()).expect("open source state");
+        let target_dir = tempfile::tempdir().expect("create target dir");
+        let target = StateStore::open(target_dir.path()).expect("open target state");
+
+        let tracked = Pubkey([0x43; 32]);
+        let (_target_block_hash, target_tx_hash) =
+            put_history_block(&target, 7, Hash::default(), tracked, 7);
+        assert_eq!(
+            target
+                .get_account_tx_signatures_paginated(&tracked, 10, None)
+                .unwrap(),
+            vec![(target_tx_hash, 7)]
+        );
+
+        commit_snapshot_categories_from_store(
+            &source,
+            &target,
+            &["account_txs", "account_snapshots"],
+        )
+        .expect("commit non-repair profile");
+
+        assert!(target
+            .get_account_tx_signatures_paginated(&tracked, 10, None)
+            .unwrap()
+            .is_empty());
+        assert_eq!(target.count_account_txs(&tracked).unwrap(), 0);
     }
 
     #[test]

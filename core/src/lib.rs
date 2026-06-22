@@ -127,7 +127,6 @@ pub use signing::{
     SIGNING_ENVELOPE_VERSION,
 };
 pub use state::AccountProof;
-pub use state::CheckpointMeta;
 pub use state::MerkleProof;
 pub use state::SparseMerkleProof;
 pub use state::SparseProofStep;
@@ -138,6 +137,9 @@ pub use state::StateStore;
 pub use state::SymbolRegistryEntry;
 pub use state::STATE_SNAPSHOT_CATEGORIES;
 pub use state::STATE_SNAPSHOT_SPECIAL_CATEGORIES;
+pub use state::{
+    AccountTxsRebuildReport, AccountTxsSlotInspection, AccountTxsSourceInspection, CheckpointMeta,
+};
 pub use transaction::{
     Instruction, Message, Transaction, TransactionType, DEFAULT_COMPUTE_BUDGET, MAX_COMPUTE_BUDGET,
     TX_WIRE_MAGIC, TX_WIRE_VERSION,

@@ -5,12 +5,99 @@ use crate::codec::{append_legacy_bincode, deserialize_legacy_bincode};
 
 use super::*;
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum AccountTxsRebuildSource {
+    #[default]
+    Blocks,
+    ParentChain,
+    TxIndex,
+}
+
+impl AccountTxsRebuildSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Blocks => "blocks",
+            Self::ParentChain => "parent-chain",
+            Self::TxIndex => "tx-index",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 enum CanonicalTxSnapshotCategory {
     Transactions,
     TxBySlot,
     TxToSlot,
     TxMeta,
+}
+
+type SnapshotEntry = (Vec<u8>, Vec<u8>);
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AccountTxsRebuildReport {
+    pub source: AccountTxsRebuildSource,
+    pub dry_run: bool,
+    pub last_slot: u64,
+    pub canonical_slots: u64,
+    pub available_blocks: u64,
+    pub missing_block_bodies: u64,
+    pub first_missing_block_slot: Option<u64>,
+    pub header_only_blocks: u64,
+    pub first_header_only_slot: Option<u64>,
+    pub reached_genesis: bool,
+    pub tx_by_slot_rows: u64,
+    pub missing_transactions: u64,
+    pub first_missing_transaction_slot: Option<u64>,
+    pub oldest_tx_slot: Option<u64>,
+    pub newest_tx_slot: Option<u64>,
+    pub transactions_seen: u64,
+    pub expected_account_tx_rows: u64,
+    pub existing_hot_rows: u64,
+    pub existing_cold_rows: u64,
+    pub existing_counter_keys: u64,
+    pub rebuilt_rows: u64,
+    pub after_hot_rows: u64,
+    pub after_counter_keys: u64,
+}
+
+impl AccountTxsRebuildReport {
+    pub fn source_complete(&self) -> bool {
+        match self.source {
+            AccountTxsRebuildSource::Blocks | AccountTxsRebuildSource::ParentChain => {
+                self.reached_genesis
+                    && self.missing_block_bodies == 0
+                    && self.header_only_blocks == 0
+            }
+            AccountTxsRebuildSource::TxIndex => self.missing_transactions == 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AccountTxsSlotInspection {
+    pub slot: u64,
+    pub block_present: bool,
+    pub block_tx_count: u64,
+    pub block_matching_account_rows: u64,
+    pub tx_by_slot_rows: u64,
+    pub tx_by_slot_tx_bodies_present: u64,
+    pub tx_by_slot_matching_account_rows: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccountTxsSourceInspection {
+    pub account: Pubkey,
+    pub cached_account_tx_count: u64,
+    pub hot_account_tx_rows: u64,
+    pub cold_account_tx_rows: u64,
+    pub indexed_signatures: Vec<(Hash, u64)>,
+    pub tx_by_slot_rows: u64,
+    pub tx_by_slot_missing_transactions: u64,
+    pub tx_by_slot_oldest_slot: Option<u64>,
+    pub tx_by_slot_newest_slot: Option<u64>,
+    pub tx_by_slot_matching_account_rows: u64,
+    pub tx_by_slot_matching_signatures: Vec<(Hash, u64)>,
+    pub slots: Vec<AccountTxsSlotInspection>,
 }
 
 /// Metadata stored alongside each checkpoint (serialized as JSON in the
@@ -149,7 +236,7 @@ fn parse_tx_snapshot_cursor(
     }
 }
 
-fn parse_account_tx_snapshot_key(key: &[u8]) -> Result<Option<(u64, Hash)>, String> {
+fn parse_account_tx_snapshot_key(key: &[u8]) -> Result<Option<(u64, u32, Hash)>, String> {
     if key.len() < 32 + 8 + 4 + 32 {
         return Ok(None);
     }
@@ -157,10 +244,41 @@ fn parse_account_tx_snapshot_key(key: &[u8]) -> Result<Option<(u64, Hash)>, Stri
     let slot_bytes: [u8; 8] = key[32..40]
         .try_into()
         .map_err(|_| "Invalid slot bytes in account tx snapshot key".to_string())?;
+    let seq_bytes: [u8; 4] = key[40..44]
+        .try_into()
+        .map_err(|_| "Invalid sequence bytes in account tx snapshot key".to_string())?;
     let mut hash_bytes = [0u8; 32];
     hash_bytes.copy_from_slice(&key[44..76]);
 
-    Ok(Some((u64::from_be_bytes(slot_bytes), Hash(hash_bytes))))
+    Ok(Some((
+        u64::from_be_bytes(slot_bytes),
+        u32::from_be_bytes(seq_bytes),
+        Hash(hash_bytes),
+    )))
+}
+
+fn parse_tx_by_slot_snapshot_row(
+    key: &[u8],
+    value: &[u8],
+) -> Result<Option<(u64, u64, Hash)>, String> {
+    if key.len() != 16 || value.len() != 32 {
+        return Ok(None);
+    }
+
+    let slot_bytes: [u8; 8] = key[0..8]
+        .try_into()
+        .map_err(|_| "Invalid slot bytes in tx_by_slot key".to_string())?;
+    let seq_bytes: [u8; 8] = key[8..16]
+        .try_into()
+        .map_err(|_| "Invalid sequence bytes in tx_by_slot key".to_string())?;
+    let mut hash_bytes = [0u8; 32];
+    hash_bytes.copy_from_slice(value);
+
+    Ok(Some((
+        u64::from_be_bytes(slot_bytes),
+        u64::from_be_bytes(seq_bytes),
+        Hash(hash_bytes),
+    )))
 }
 
 fn directory_logical_size(path: &std::path::Path) -> Result<u64, String> {
@@ -670,7 +788,7 @@ impl StateStore {
         &self,
         key: &[u8],
     ) -> Result<bool, String> {
-        let Some((slot, tx_hash)) = parse_account_tx_snapshot_key(key)? else {
+        let Some((slot, seq, tx_hash)) = parse_account_tx_snapshot_key(key)? else {
             return Ok(true);
         };
 
@@ -679,7 +797,7 @@ impl StateStore {
                 .transactions
                 .iter()
                 .any(|tx| tx.signature() == tx_hash)),
-            None => Ok(true),
+            None => self.account_txs_row_backed_by_tx_index(slot, seq, &tx_hash),
         }
     }
 
@@ -874,10 +992,6 @@ impl StateStore {
             CanonicalTxSnapshotCategory::TxToSlot => "tx_to_slot",
             CanonicalTxSnapshotCategory::TxMeta => "tx_meta",
         };
-        let slot_cf = self
-            .db
-            .cf_handle(CF_SLOTS)
-            .ok_or_else(|| "Slots CF not found".to_string())?;
         let tx_meta_cf = if matches!(category, CanonicalTxSnapshotCategory::TxMeta) {
             Some(
                 self.db
@@ -890,21 +1004,54 @@ impl StateStore {
 
         let (start_slot, after_index) = parse_tx_snapshot_cursor(after_key, category_name)?;
 
+        let make_entry = |slot: u64,
+                          tx_index: u64,
+                          tx_hash: Hash,
+                          tx: &crate::transaction::Transaction|
+         -> Result<Option<SnapshotEntry>, String> {
+            match category {
+                CanonicalTxSnapshotCategory::Transactions => Ok(Some((
+                    tx_hash.0.to_vec(),
+                    canonical_transaction_snapshot_value(tx)?,
+                ))),
+                CanonicalTxSnapshotCategory::TxBySlot => Ok(Some((
+                    encode_tx_snapshot_cursor(slot, tx_index),
+                    tx_hash.0.to_vec(),
+                ))),
+                CanonicalTxSnapshotCategory::TxToSlot => {
+                    Ok(Some((tx_hash.0.to_vec(), slot.to_be_bytes().to_vec())))
+                }
+                CanonicalTxSnapshotCategory::TxMeta => {
+                    let cf = tx_meta_cf
+                        .as_ref()
+                        .ok_or_else(|| "Transaction metadata CF not found".to_string())?;
+                    let meta = self
+                        .db
+                        .get_cf(cf, tx_hash.0)
+                        .map_err(|err| format!("Failed reading tx metadata: {}", err))?;
+                    Ok(meta.map(|value| (tx_hash.0.to_vec(), value.to_vec())))
+                }
+            }
+        };
+
+        let limit = limit as usize;
+        let mut merged = std::collections::BTreeMap::<Vec<u8>, SnapshotEntry>::new();
+
+        let slot_cf = self
+            .db
+            .cf_handle(CF_SLOTS)
+            .ok_or_else(|| "Slots CF not found".to_string())?;
         let start_key = start_slot.to_be_bytes();
-        let mut read_opts = rocksdb::ReadOptions::default();
-        read_opts.set_total_order_seek(true);
-        let iter = self.db.iterator_cf_opt(
+        let mut slot_read_opts = rocksdb::ReadOptions::default();
+        slot_read_opts.set_total_order_seek(true);
+        let slot_iter = self.db.iterator_cf_opt(
             &slot_cf,
-            read_opts,
+            slot_read_opts,
             rocksdb::IteratorMode::From(&start_key, rocksdb::Direction::Forward),
         );
+        let mut canonical_has_more = false;
 
-        let mut entries = Vec::with_capacity(limit.min(10_000) as usize);
-        let mut has_more = false;
-        let limit = limit as usize;
-        let mut next_cursor = None;
-
-        'slots: for item in iter {
+        'canonical: for item in slot_iter {
             let (slot_key, _) = item.map_err(|err| {
                 format!(
                     "Failed iterating Slots for {} export: {}",
@@ -914,71 +1061,91 @@ impl StateStore {
             if slot_key.len() != 8 {
                 continue;
             }
-
             let mut slot_bytes = [0u8; 8];
             slot_bytes.copy_from_slice(&slot_key);
             let slot = u64::from_be_bytes(slot_bytes);
             if slot < start_slot {
                 continue;
             }
-
-            let first_tx_index = if Some(slot) == Some(start_slot) {
-                after_index
-                    .map(|index| index.saturating_add(1))
-                    .unwrap_or(0)
-            } else {
-                0
-            };
-
             let Some(block) = self.get_block_by_slot(slot)? else {
                 continue;
             };
-
             for (tx_index, tx) in block.transactions.iter().enumerate() {
                 let tx_index = tx_index as u64;
-                if tx_index < first_tx_index {
+                if slot == start_slot && after_index.is_some_and(|index| tx_index <= index) {
                     continue;
                 }
-
-                let entry = match category {
-                    CanonicalTxSnapshotCategory::Transactions => Some((
-                        tx.signature().0.to_vec(),
-                        canonical_transaction_snapshot_value(tx)?,
-                    )),
-                    CanonicalTxSnapshotCategory::TxBySlot => {
-                        let mut key = Vec::with_capacity(16);
-                        key.extend_from_slice(&slot.to_be_bytes());
-                        key.extend_from_slice(&tx_index.to_be_bytes());
-                        Some((key, tx.signature().0.to_vec()))
-                    }
-                    CanonicalTxSnapshotCategory::TxToSlot => {
-                        Some((tx.signature().0.to_vec(), slot.to_be_bytes().to_vec()))
-                    }
-                    CanonicalTxSnapshotCategory::TxMeta => {
-                        let cf = tx_meta_cf
-                            .as_ref()
-                            .ok_or_else(|| "Transaction metadata CF not found".to_string())?;
-                        let meta = self
-                            .db
-                            .get_cf(cf, tx.signature().0)
-                            .map_err(|err| format!("Failed reading tx metadata: {}", err))?;
-                        meta.map(|value| (tx.signature().0.to_vec(), value.to_vec()))
-                    }
-                };
-
-                let Some(entry) = entry else {
+                let tx_hash = tx.signature();
+                let Some(entry) = make_entry(slot, tx_index, tx_hash, tx)? else {
                     continue;
                 };
-
-                if entries.len() == limit {
-                    has_more = true;
-                    break 'slots;
+                merged.insert(encode_tx_snapshot_cursor(slot, tx_index), entry);
+                if merged.len() > limit {
+                    canonical_has_more = true;
+                    break 'canonical;
                 }
-
-                entries.push(entry);
-                next_cursor = Some(encode_tx_snapshot_cursor(slot, tx_index));
             }
         }
+
+        let tx_by_slot_cf = self
+            .db
+            .cf_handle(CF_TX_BY_SLOT)
+            .ok_or_else(|| "TX by slot CF not found".to_string())?;
+        let start_key = encode_tx_snapshot_cursor(start_slot, 0);
+        let mut tx_read_opts = rocksdb::ReadOptions::default();
+        tx_read_opts.set_total_order_seek(true);
+        let tx_iter = self.db.iterator_cf_opt(
+            &tx_by_slot_cf,
+            tx_read_opts,
+            rocksdb::IteratorMode::From(&start_key, rocksdb::Direction::Forward),
+        );
+        let mut tx_index_has_more = false;
+
+        for item in tx_iter {
+            let (key, value) = item.map_err(|err| {
+                format!(
+                    "Failed iterating tx_by_slot for {} export: {}",
+                    category_name, err
+                )
+            })?;
+            let Some((slot, tx_index, tx_hash)) = parse_tx_by_slot_snapshot_row(&key, &value)?
+            else {
+                continue;
+            };
+            if slot < start_slot {
+                continue;
+            }
+            if slot == start_slot && after_index.is_some_and(|index| tx_index <= index) {
+                continue;
+            }
+            if self.get_block_by_slot(slot)?.is_some() {
+                continue;
+            }
+
+            let Some(tx) = self.get_transaction(&tx_hash)? else {
+                continue;
+            };
+            if tx.signature() != tx_hash {
+                continue;
+            }
+
+            let Some(entry) = make_entry(slot, tx_index, tx_hash, &tx)? else {
+                continue;
+            };
+            merged.insert(key.to_vec(), entry);
+            if merged.len() > limit {
+                tx_index_has_more = true;
+                break;
+            }
+        }
+
+        let mut ordered: Vec<_> = merged.into_iter().collect();
+        let has_more = canonical_has_more || tx_index_has_more || ordered.len() > limit;
+        if ordered.len() > limit {
+            ordered.truncate(limit);
+        }
+        let next_cursor = ordered.last().map(|(cursor, _)| cursor.clone());
+        let entries = ordered.into_iter().map(|(_, entry)| entry).collect();
 
         Ok(KvPage {
             entries,
@@ -1053,7 +1220,7 @@ impl StateStore {
         Ok(indexed)
     }
 
-    fn clear_account_tx_counters(&self) -> Result<u64, String> {
+    pub fn clear_account_tx_counters(&self) -> Result<u64, String> {
         const DELETE_BATCH_SIZE: usize = 10_000;
         let stats_cf = self
             .db
@@ -1101,6 +1268,442 @@ impl StateStore {
         Ok(deleted)
     }
 
+    fn count_rows_in_db(db: &DB, cf_name: &str) -> Result<u64, String> {
+        let cf = db
+            .cf_handle(cf_name)
+            .ok_or_else(|| format!("{} CF not found", cf_name))?;
+        let mut read_opts = rocksdb::ReadOptions::default();
+        read_opts.set_total_order_seek(true);
+        let iter = db.iterator_cf_opt(&cf, read_opts, rocksdb::IteratorMode::Start);
+        let mut rows = 0u64;
+        for item in iter {
+            item.map_err(|err| format!("Failed iterating {}: {}", cf_name, err))?;
+            rows = rows.saturating_add(1);
+        }
+        Ok(rows)
+    }
+
+    fn count_stats_prefix(&self, prefix: &[u8]) -> Result<u64, String> {
+        let stats_cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        let mut read_opts = rocksdb::ReadOptions::default();
+        read_opts.set_total_order_seek(true);
+        let iter = self.db.iterator_cf_opt(
+            &stats_cf,
+            read_opts,
+            rocksdb::IteratorMode::From(prefix, rocksdb::Direction::Forward),
+        );
+        let mut rows = 0u64;
+        for item in iter {
+            let (key, _) = item.map_err(|err| format!("Failed iterating stats prefix: {}", err))?;
+            if !key.starts_with(prefix) {
+                break;
+            }
+            rows = rows.saturating_add(1);
+        }
+        Ok(rows)
+    }
+
+    pub fn account_txs_rebuild_report_from_blocks(
+        &self,
+    ) -> Result<AccountTxsRebuildReport, String> {
+        let slot_cf = self
+            .db
+            .cf_handle(CF_SLOTS)
+            .ok_or_else(|| "Slots CF not found".to_string())?;
+
+        let mut report = AccountTxsRebuildReport {
+            source: AccountTxsRebuildSource::Blocks,
+            last_slot: self.get_last_slot().unwrap_or(0),
+            existing_hot_rows: Self::count_rows_in_db(&self.db, CF_ACCOUNT_TXS)?,
+            existing_cold_rows: if let Some(ref cold) = self.cold_db {
+                Self::count_rows_in_db(cold, COLD_CF_ACCOUNT_TXS)?
+            } else {
+                0
+            },
+            existing_counter_keys: self.count_stats_prefix(b"atxc:")?,
+            ..AccountTxsRebuildReport::default()
+        };
+
+        let mut read_opts = rocksdb::ReadOptions::default();
+        read_opts.set_total_order_seek(true);
+        let iter = self
+            .db
+            .iterator_cf_opt(&slot_cf, read_opts, rocksdb::IteratorMode::Start);
+
+        for item in iter {
+            let (slot_key, hash_value) =
+                item.map_err(|err| format!("Failed iterating Slots for rebuild report: {}", err))?;
+            if slot_key.len() != 8 || hash_value.len() != 32 {
+                continue;
+            }
+
+            let mut slot_bytes = [0u8; 8];
+            slot_bytes.copy_from_slice(&slot_key);
+            let slot = u64::from_be_bytes(slot_bytes);
+            let mut hash = [0u8; 32];
+            hash.copy_from_slice(&hash_value);
+            report.canonical_slots = report.canonical_slots.saturating_add(1);
+            if slot == 0 {
+                report.reached_genesis = true;
+            }
+
+            let Some(block) = self.get_block(&Hash(hash))? else {
+                report.missing_block_bodies = report.missing_block_bodies.saturating_add(1);
+                report.first_missing_block_slot.get_or_insert(slot);
+                continue;
+            };
+
+            report.available_blocks = report.available_blocks.saturating_add(1);
+            if block.transactions.is_empty() && block.header.tx_root != Hash::default() {
+                report.header_only_blocks = report.header_only_blocks.saturating_add(1);
+                report.first_header_only_slot.get_or_insert(slot);
+                continue;
+            }
+
+            report.transactions_seen = report
+                .transactions_seen
+                .saturating_add(block.transactions.len() as u64);
+            report.expected_account_tx_rows = report.expected_account_tx_rows.saturating_add(
+                super::secondary_indexes::account_tx_index_entries_for_block(&block).len() as u64,
+            );
+        }
+
+        Ok(report)
+    }
+
+    pub fn account_txs_rebuild_report_from_parent_chain(
+        &self,
+    ) -> Result<AccountTxsRebuildReport, String> {
+        let last_slot = self.get_last_slot().unwrap_or(0);
+        let mut report = AccountTxsRebuildReport {
+            source: AccountTxsRebuildSource::ParentChain,
+            last_slot,
+            existing_hot_rows: Self::count_rows_in_db(&self.db, CF_ACCOUNT_TXS)?,
+            existing_cold_rows: if let Some(ref cold) = self.cold_db {
+                Self::count_rows_in_db(cold, COLD_CF_ACCOUNT_TXS)?
+            } else {
+                0
+            },
+            existing_counter_keys: self.count_stats_prefix(b"atxc:")?,
+            ..AccountTxsRebuildReport::default()
+        };
+
+        let Some(tip) = self.get_block_by_slot(last_slot)? else {
+            report.missing_block_bodies = 1;
+            report.first_missing_block_slot = Some(last_slot);
+            return Ok(report);
+        };
+
+        let mut current = tip;
+        let mut seen = std::collections::HashSet::<Hash>::new();
+        loop {
+            let block_hash = current.hash();
+            if !seen.insert(block_hash) {
+                return Err(format!(
+                    "canonical parent chain cycle detected at slot {} hash {}",
+                    current.header.slot,
+                    block_hash.to_hex()
+                ));
+            }
+
+            report.canonical_slots = report.canonical_slots.saturating_add(1);
+            report.available_blocks = report.available_blocks.saturating_add(1);
+            if current.transactions.is_empty() && current.header.tx_root != Hash::default() {
+                report.header_only_blocks = report.header_only_blocks.saturating_add(1);
+                report
+                    .first_header_only_slot
+                    .get_or_insert(current.header.slot);
+            } else {
+                report.transactions_seen = report
+                    .transactions_seen
+                    .saturating_add(current.transactions.len() as u64);
+                report.expected_account_tx_rows = report.expected_account_tx_rows.saturating_add(
+                    super::secondary_indexes::account_tx_index_entries_for_block(&current).len()
+                        as u64,
+                );
+            }
+
+            if current.header.slot == 0 {
+                report.reached_genesis = true;
+                break;
+            }
+
+            if current.header.parent_hash == Hash::default() {
+                report.missing_block_bodies = report.missing_block_bodies.saturating_add(1);
+                report.first_missing_block_slot.get_or_insert(0);
+                break;
+            }
+
+            let parent_hash = current.header.parent_hash;
+            match self.get_block(&parent_hash)? {
+                Some(parent) => current = parent,
+                None => {
+                    report.missing_block_bodies = report.missing_block_bodies.saturating_add(1);
+                    report
+                        .first_missing_block_slot
+                        .get_or_insert(current.header.slot.saturating_sub(1));
+                    break;
+                }
+            }
+        }
+
+        Ok(report)
+    }
+
+    pub fn account_txs_rebuild_report_from_tx_index(
+        &self,
+    ) -> Result<AccountTxsRebuildReport, String> {
+        let tx_by_slot_cf = self
+            .db
+            .cf_handle(CF_TX_BY_SLOT)
+            .ok_or_else(|| "tx_by_slot CF not found".to_string())?;
+
+        let mut report = AccountTxsRebuildReport {
+            source: AccountTxsRebuildSource::TxIndex,
+            last_slot: self.get_last_slot().unwrap_or(0),
+            existing_hot_rows: Self::count_rows_in_db(&self.db, CF_ACCOUNT_TXS)?,
+            existing_cold_rows: if let Some(ref cold) = self.cold_db {
+                Self::count_rows_in_db(cold, COLD_CF_ACCOUNT_TXS)?
+            } else {
+                0
+            },
+            existing_counter_keys: self.count_stats_prefix(b"atxc:")?,
+            ..AccountTxsRebuildReport::default()
+        };
+
+        let mut read_opts = rocksdb::ReadOptions::default();
+        read_opts.set_total_order_seek(true);
+        let iter = self
+            .db
+            .iterator_cf_opt(&tx_by_slot_cf, read_opts, rocksdb::IteratorMode::Start);
+
+        for item in iter {
+            let (key, value) =
+                item.map_err(|err| format!("Failed iterating tx_by_slot for report: {}", err))?;
+            let Some((slot, tx_index, tx_hash)) = parse_tx_by_slot_snapshot_row(&key, &value)?
+            else {
+                continue;
+            };
+
+            let tx_index_usize = usize::try_from(tx_index).map_err(|_| {
+                format!(
+                    "tx_by_slot sequence {} at slot {} does not fit this platform",
+                    tx_index, slot
+                )
+            })?;
+            report.tx_by_slot_rows = report.tx_by_slot_rows.saturating_add(1);
+            report.oldest_tx_slot = Some(
+                report
+                    .oldest_tx_slot
+                    .map_or(slot, |oldest| oldest.min(slot)),
+            );
+            report.newest_tx_slot = Some(
+                report
+                    .newest_tx_slot
+                    .map_or(slot, |newest| newest.max(slot)),
+            );
+
+            match self.get_transaction(&tx_hash)? {
+                Some(tx) => {
+                    report.transactions_seen = report.transactions_seen.saturating_add(1);
+                    report.expected_account_tx_rows =
+                        report.expected_account_tx_rows.saturating_add(
+                            super::secondary_indexes::account_tx_index_entries_for_transaction(
+                                slot,
+                                tx_index_usize,
+                                &tx,
+                            )
+                            .len() as u64,
+                        );
+                }
+                None => {
+                    report.missing_transactions = report.missing_transactions.saturating_add(1);
+                    report.first_missing_transaction_slot.get_or_insert(slot);
+                }
+            }
+        }
+
+        Ok(report)
+    }
+
+    fn count_account_txs_rows_for_account_in_db(
+        db: &DB,
+        cf_name: &str,
+        account: &Pubkey,
+    ) -> Result<u64, String> {
+        let cf = db
+            .cf_handle(cf_name)
+            .ok_or_else(|| format!("{} CF not found", cf_name))?;
+        let prefix = account.0.to_vec();
+        let mut read_opts = rocksdb::ReadOptions::default();
+        read_opts.set_total_order_seek(true);
+        let iter = db.iterator_cf_opt(
+            &cf,
+            read_opts,
+            rocksdb::IteratorMode::From(&prefix, rocksdb::Direction::Forward),
+        );
+
+        let mut count = 0u64;
+        for item in iter {
+            let (key, _) = item.map_err(|err| format!("Failed iterating {}: {}", cf_name, err))?;
+            if !key.starts_with(&prefix) {
+                break;
+            }
+            if key.len() >= 32 + 8 + 4 + 32 {
+                count = count.saturating_add(1);
+            }
+        }
+        Ok(count)
+    }
+
+    fn transaction_indexes_account(
+        slot: u64,
+        tx_index: usize,
+        tx: &crate::transaction::Transaction,
+        account: &Pubkey,
+    ) -> bool {
+        super::secondary_indexes::account_tx_index_entries_for_transaction(slot, tx_index, tx)
+            .into_iter()
+            .any(|(indexed_account, _)| indexed_account == *account)
+    }
+
+    pub fn inspect_account_txs_sources(
+        &self,
+        account: &Pubkey,
+        slots: &[u64],
+        max_matches: usize,
+    ) -> Result<AccountTxsSourceInspection, String> {
+        let tx_by_slot_cf = self
+            .db
+            .cf_handle(CF_TX_BY_SLOT)
+            .ok_or_else(|| "tx_by_slot CF not found".to_string())?;
+
+        let mut slot_reports = std::collections::BTreeMap::<u64, AccountTxsSlotInspection>::new();
+        for slot in slots {
+            slot_reports
+                .entry(*slot)
+                .or_insert_with(|| AccountTxsSlotInspection {
+                    slot: *slot,
+                    ..AccountTxsSlotInspection::default()
+                });
+        }
+
+        for (slot, report) in slot_reports.iter_mut() {
+            if let Some(block) = self.get_block_by_slot(*slot)? {
+                report.block_present = true;
+                report.block_tx_count = block.transactions.len() as u64;
+                report.block_matching_account_rows = block
+                    .transactions
+                    .iter()
+                    .enumerate()
+                    .filter(|(tx_index, tx)| {
+                        Self::transaction_indexes_account(*slot, *tx_index, tx, account)
+                    })
+                    .count() as u64;
+            }
+        }
+
+        let mut inspection = AccountTxsSourceInspection {
+            account: *account,
+            cached_account_tx_count: self.count_account_txs(account)?,
+            hot_account_tx_rows: Self::count_account_txs_rows_for_account_in_db(
+                &self.db,
+                CF_ACCOUNT_TXS,
+                account,
+            )?,
+            cold_account_tx_rows: if let Some(ref cold) = self.cold_db {
+                Self::count_account_txs_rows_for_account_in_db(cold, COLD_CF_ACCOUNT_TXS, account)?
+            } else {
+                0
+            },
+            indexed_signatures: self.get_account_tx_signatures_paginated(
+                account,
+                max_matches,
+                None,
+            )?,
+            tx_by_slot_rows: 0,
+            tx_by_slot_missing_transactions: 0,
+            tx_by_slot_oldest_slot: None,
+            tx_by_slot_newest_slot: None,
+            tx_by_slot_matching_account_rows: 0,
+            tx_by_slot_matching_signatures: Vec::new(),
+            slots: Vec::new(),
+        };
+
+        let mut read_opts = rocksdb::ReadOptions::default();
+        read_opts.set_total_order_seek(true);
+        let iter = self
+            .db
+            .iterator_cf_opt(&tx_by_slot_cf, read_opts, rocksdb::IteratorMode::Start);
+
+        for item in iter {
+            let (key, value) =
+                item.map_err(|err| format!("Failed iterating tx_by_slot: {}", err))?;
+            let Some((slot, tx_index, tx_hash)) = parse_tx_by_slot_snapshot_row(&key, &value)?
+            else {
+                continue;
+            };
+
+            inspection.tx_by_slot_rows = inspection.tx_by_slot_rows.saturating_add(1);
+            inspection.tx_by_slot_oldest_slot = Some(
+                inspection
+                    .tx_by_slot_oldest_slot
+                    .map_or(slot, |oldest| oldest.min(slot)),
+            );
+            inspection.tx_by_slot_newest_slot = Some(
+                inspection
+                    .tx_by_slot_newest_slot
+                    .map_or(slot, |newest| newest.max(slot)),
+            );
+
+            let tx = self.get_transaction(&tx_hash)?;
+            if tx.is_none() {
+                inspection.tx_by_slot_missing_transactions =
+                    inspection.tx_by_slot_missing_transactions.saturating_add(1);
+            }
+
+            if let Some(slot_report) = slot_reports.get_mut(&slot) {
+                slot_report.tx_by_slot_rows = slot_report.tx_by_slot_rows.saturating_add(1);
+                if tx.is_some() {
+                    slot_report.tx_by_slot_tx_bodies_present =
+                        slot_report.tx_by_slot_tx_bodies_present.saturating_add(1);
+                }
+            }
+
+            let Some(tx) = tx else {
+                continue;
+            };
+            let tx_index_usize = usize::try_from(tx_index).map_err(|_| {
+                format!(
+                    "tx_by_slot sequence {} at slot {} does not fit this platform",
+                    tx_index, slot
+                )
+            })?;
+
+            if Self::transaction_indexes_account(slot, tx_index_usize, &tx, account) {
+                inspection.tx_by_slot_matching_account_rows = inspection
+                    .tx_by_slot_matching_account_rows
+                    .saturating_add(1);
+                if inspection.tx_by_slot_matching_signatures.len() < max_matches {
+                    inspection
+                        .tx_by_slot_matching_signatures
+                        .push((tx_hash, slot));
+                }
+                if let Some(slot_report) = slot_reports.get_mut(&slot) {
+                    slot_report.tx_by_slot_matching_account_rows = slot_report
+                        .tx_by_slot_matching_account_rows
+                        .saturating_add(1);
+                }
+            }
+        }
+
+        inspection.slots = slot_reports.into_values().collect();
+        Ok(inspection)
+    }
+
     fn ensure_account_txs_rebuild_source_complete(&self) -> Result<(), String> {
         self.ensure_account_txs_rows_rebuildable_in_db(&self.db, CF_ACCOUNT_TXS)?;
         if let Some(ref cold) = self.cold_db {
@@ -1138,6 +1741,68 @@ impl StateStore {
         Ok(())
     }
 
+    fn account_txs_row_backed_by_tx_index(
+        &self,
+        slot: u64,
+        seq: u32,
+        tx_hash: &Hash,
+    ) -> Result<bool, String> {
+        let tx_by_slot_cf = self
+            .db
+            .cf_handle(CF_TX_BY_SLOT)
+            .ok_or_else(|| "tx_by_slot CF not found".to_string())?;
+
+        let mut key = Vec::with_capacity(16);
+        key.extend_from_slice(&slot.to_be_bytes());
+        key.extend_from_slice(&(seq as u64).to_be_bytes());
+        let Some(value) = self
+            .db
+            .get_cf(&tx_by_slot_cf, &key)
+            .map_err(|err| format!("Failed reading tx_by_slot row: {}", err))?
+        else {
+            return Ok(false);
+        };
+        if value.len() != 32 || value.as_slice() != tx_hash.0.as_slice() {
+            return Ok(false);
+        }
+
+        self.get_transaction(tx_hash).map(|tx| tx.is_some())
+    }
+
+    fn ensure_account_txs_rows_rebuildable_from_tx_index_in_db(
+        &self,
+        db: &DB,
+        cf_name: &str,
+    ) -> Result<(), String> {
+        let cf = db
+            .cf_handle(cf_name)
+            .ok_or_else(|| format!("{} CF not found", cf_name))?;
+        let mut read_opts = rocksdb::ReadOptions::default();
+        read_opts.set_total_order_seek(true);
+        let iter = db.iterator_cf_opt(&cf, read_opts, rocksdb::IteratorMode::Start);
+        for item in iter {
+            let (key, _) = item.map_err(|err| {
+                format!(
+                    "Failed iterating {} for tx-index rebuild guard: {}",
+                    cf_name, err
+                )
+            })?;
+            let Some((slot, seq, tx_hash)) = parse_account_tx_snapshot_key(&key)? else {
+                continue;
+            };
+            if !self.account_txs_row_backed_by_tx_index(slot, seq, &tx_hash)? {
+                return Err(format!(
+                    "Refusing destructive account_txs rebuild: indexed tx {} at slot {} seq {} is not backed by tx_by_slot + transaction body",
+                    tx_hash.to_hex(),
+                    slot,
+                    seq
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
     fn ensure_account_txs_rows_rebuildable_in_db(
         &self,
         db: &DB,
@@ -1153,7 +1818,7 @@ impl StateStore {
             let (key, _) = item.map_err(|err| {
                 format!("Failed iterating {} for rebuild guard: {}", cf_name, err)
             })?;
-            let Some((slot, tx_hash)) = parse_account_tx_snapshot_key(&key)? else {
+            let Some((slot, _, tx_hash)) = parse_account_tx_snapshot_key(&key)? else {
                 continue;
             };
             let Some(block) = self.get_block_by_slot(slot)? else {
@@ -1264,6 +1929,329 @@ impl StateStore {
         }
 
         Ok(indexed)
+    }
+
+    pub fn rebuild_account_txs_index_from_blocks_with_report(
+        &self,
+        dry_run: bool,
+    ) -> Result<AccountTxsRebuildReport, String> {
+        let mut report = self.account_txs_rebuild_report_from_blocks()?;
+        report.dry_run = dry_run;
+        if dry_run {
+            return Ok(report);
+        }
+
+        report.rebuilt_rows = self.rebuild_account_txs_index_from_blocks()?;
+        report.after_hot_rows = Self::count_rows_in_db(&self.db, CF_ACCOUNT_TXS)?;
+        report.after_counter_keys = self.count_stats_prefix(b"atxc:")?;
+        Ok(report)
+    }
+
+    pub fn rebuild_account_txs_index_from_parent_chain_with_report(
+        &self,
+        dry_run: bool,
+    ) -> Result<AccountTxsRebuildReport, String> {
+        const WRITE_BATCH_SIZE: usize = 10_000;
+
+        let mut report = self.account_txs_rebuild_report_from_parent_chain()?;
+        report.dry_run = dry_run;
+        if dry_run {
+            return Ok(report);
+        }
+        if !report.source_complete() {
+            return Err(format!(
+                "Refusing account_txs parent-chain rebuild: source incomplete (reached_genesis={}, missing_block_bodies={}, header_only_blocks={})",
+                report.reached_genesis, report.missing_block_bodies, report.header_only_blocks
+            ));
+        }
+
+        if report.existing_hot_rows > 0 || report.existing_cold_rows > 0 {
+            self.ensure_account_txs_rebuild_source_complete()?;
+        }
+
+        self.clear_snapshot_category("account_txs")?;
+
+        let account_txs_cf = self
+            .db
+            .cf_handle(CF_ACCOUNT_TXS)
+            .ok_or_else(|| "Account txs CF not found".to_string())?;
+        let stats_cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        let slot_cf = self
+            .db
+            .cf_handle(CF_SLOTS)
+            .ok_or_else(|| "Slots CF not found".to_string())?;
+        let tx_cf = self
+            .db
+            .cf_handle(CF_TRANSACTIONS)
+            .ok_or_else(|| "Transactions CF not found".to_string())?;
+        let tx_to_slot_cf = self
+            .db
+            .cf_handle(CF_TX_TO_SLOT)
+            .ok_or_else(|| "tx_to_slot CF not found".to_string())?;
+        let tx_by_slot_cf = self
+            .db
+            .cf_handle(CF_TX_BY_SLOT)
+            .ok_or_else(|| "tx_by_slot CF not found".to_string())?;
+        let shielded_txs_cf = self.db.cf_handle(CF_SHIELDED_TXS);
+
+        let tip = self
+            .get_block_by_slot(report.last_slot)?
+            .ok_or_else(|| format!("canonical tip block {} is missing", report.last_slot))?;
+        let mut current = tip;
+        let mut seen = std::collections::HashSet::<Hash>::new();
+        let mut batch = WriteBatch::default();
+        let mut pending = 0usize;
+        let mut indexed = 0u64;
+        let mut counters = std::collections::BTreeMap::<Pubkey, u64>::new();
+
+        loop {
+            let block_hash = current.hash();
+            if !seen.insert(block_hash) {
+                return Err(format!(
+                    "canonical parent chain cycle detected at slot {} hash {}",
+                    current.header.slot,
+                    block_hash.to_hex()
+                ));
+            }
+
+            batch.put_cf(&slot_cf, current.header.slot.to_be_bytes(), block_hash.0);
+
+            for (tx_index, tx) in current.transactions.iter().enumerate() {
+                let sig = tx.signature();
+
+                let mut tx_value = Vec::with_capacity(512);
+                tx_value.push(0xBC);
+                append_legacy_bincode(&mut tx_value, tx, "transaction")
+                    .map_err(|err| format!("Failed to serialize tx {}: {}", sig.to_hex(), err))?;
+                batch.put_cf(&tx_cf, sig.0, &tx_value);
+                batch.put_cf(&tx_to_slot_cf, sig.0, current.header.slot.to_be_bytes());
+
+                let mut by_slot_key = Vec::with_capacity(16);
+                by_slot_key.extend_from_slice(&current.header.slot.to_be_bytes());
+                by_slot_key.extend_from_slice(&(tx_index as u64).to_be_bytes());
+                batch.put_cf(&tx_by_slot_cf, &by_slot_key, sig.0);
+
+                if super::is_shielded_transaction(tx) {
+                    if let Some(ref cf) = shielded_txs_cf {
+                        let mut shielded_key = Vec::with_capacity(48);
+                        shielded_key.extend_from_slice(&current.header.slot.to_be_bytes());
+                        shielded_key.extend_from_slice(&(tx_index as u64).to_be_bytes());
+                        shielded_key.extend_from_slice(&sig.0);
+                        batch.put_cf(cf, &shielded_key, []);
+                    }
+                }
+            }
+
+            let account_entries =
+                super::secondary_indexes::account_tx_index_entries_for_block(&current);
+            let account_entry_count = account_entries.len();
+            for (account, key) in account_entries {
+                batch.put_cf(&account_txs_cf, &key, []);
+                *counters.entry(account).or_default() += 1;
+                indexed = indexed.saturating_add(1);
+            }
+
+            pending = pending
+                .saturating_add(1)
+                .saturating_add(current.transactions.len())
+                .saturating_add(account_entry_count);
+            if pending >= WRITE_BATCH_SIZE {
+                self.db
+                    .write(batch)
+                    .map_err(|err| format!("Failed rebuilding history indexes: {}", err))?;
+                batch = WriteBatch::default();
+                pending = 0;
+            }
+
+            if current.header.slot == 0 {
+                break;
+            }
+            if current.header.parent_hash == Hash::default() {
+                return Err(format!(
+                    "canonical parent chain ended at slot {} before genesis",
+                    current.header.slot
+                ));
+            }
+            current = self
+                .get_block(&current.header.parent_hash)?
+                .ok_or_else(|| {
+                    "canonical parent block is missing below rebuilt chain".to_string()
+                })?;
+        }
+
+        for (account, count) in counters {
+            let mut counter_key = Vec::with_capacity(5 + 32);
+            counter_key.extend_from_slice(b"atxc:");
+            counter_key.extend_from_slice(&account.0);
+            batch.put_cf(&stats_cf, &counter_key, count.to_le_bytes());
+            pending += 1;
+
+            if pending >= WRITE_BATCH_SIZE {
+                self.db
+                    .write(batch)
+                    .map_err(|err| format!("Failed rebuilding account tx counters: {}", err))?;
+                batch = WriteBatch::default();
+                pending = 0;
+            }
+        }
+
+        if pending > 0 {
+            self.db
+                .write(batch)
+                .map_err(|err| format!("Failed finalizing history index rebuild: {}", err))?;
+        }
+
+        report.rebuilt_rows = indexed;
+        report.after_hot_rows = Self::count_rows_in_db(&self.db, CF_ACCOUNT_TXS)?;
+        report.after_counter_keys = self.count_stats_prefix(b"atxc:")?;
+        Ok(report)
+    }
+
+    pub fn rebuild_account_txs_index_from_tx_index_with_report(
+        &self,
+        dry_run: bool,
+    ) -> Result<AccountTxsRebuildReport, String> {
+        const WRITE_BATCH_SIZE: usize = 10_000;
+
+        let mut report = self.account_txs_rebuild_report_from_tx_index()?;
+        report.dry_run = dry_run;
+        if dry_run {
+            return Ok(report);
+        }
+        if !report.source_complete() {
+            return Err(format!(
+                "Refusing account_txs tx-index rebuild: source incomplete (tx_by_slot_rows={}, missing_transactions={})",
+                report.tx_by_slot_rows, report.missing_transactions
+            ));
+        }
+
+        if report.existing_hot_rows > 0 || report.existing_cold_rows > 0 {
+            self.ensure_account_txs_rows_rebuildable_from_tx_index_in_db(&self.db, CF_ACCOUNT_TXS)?;
+            if let Some(ref cold) = self.cold_db {
+                self.ensure_account_txs_rows_rebuildable_from_tx_index_in_db(
+                    cold,
+                    COLD_CF_ACCOUNT_TXS,
+                )?;
+            }
+        }
+
+        self.clear_snapshot_category("account_txs")?;
+
+        let account_txs_cf = self
+            .db
+            .cf_handle(CF_ACCOUNT_TXS)
+            .ok_or_else(|| "Account txs CF not found".to_string())?;
+        let stats_cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        let tx_by_slot_cf = self
+            .db
+            .cf_handle(CF_TX_BY_SLOT)
+            .ok_or_else(|| "tx_by_slot CF not found".to_string())?;
+        let tx_to_slot_cf = self
+            .db
+            .cf_handle(CF_TX_TO_SLOT)
+            .ok_or_else(|| "tx_to_slot CF not found".to_string())?;
+        let shielded_txs_cf = self.db.cf_handle(CF_SHIELDED_TXS);
+
+        let mut read_opts = rocksdb::ReadOptions::default();
+        read_opts.set_total_order_seek(true);
+        let iter = self
+            .db
+            .iterator_cf_opt(&tx_by_slot_cf, read_opts, rocksdb::IteratorMode::Start);
+
+        let mut batch = WriteBatch::default();
+        let mut pending = 0usize;
+        let mut indexed = 0u64;
+        let mut counters = std::collections::BTreeMap::<Pubkey, u64>::new();
+
+        for item in iter {
+            let (key, value) =
+                item.map_err(|err| format!("Failed iterating tx_by_slot for rebuild: {}", err))?;
+            let Some((slot, tx_index, tx_hash)) = parse_tx_by_slot_snapshot_row(&key, &value)?
+            else {
+                continue;
+            };
+            let tx_index_usize = usize::try_from(tx_index).map_err(|_| {
+                format!(
+                    "tx_by_slot sequence {} at slot {} does not fit this platform",
+                    tx_index, slot
+                )
+            })?;
+            let tx = self.get_transaction(&tx_hash)?.ok_or_else(|| {
+                format!(
+                    "tx_by_slot source became incomplete at slot {} tx {}",
+                    slot,
+                    tx_hash.to_hex()
+                )
+            })?;
+
+            batch.put_cf(&tx_to_slot_cf, tx_hash.0, slot.to_be_bytes());
+            if super::is_shielded_transaction(&tx) {
+                if let Some(ref cf) = shielded_txs_cf {
+                    let mut shielded_key = Vec::with_capacity(48);
+                    shielded_key.extend_from_slice(&slot.to_be_bytes());
+                    shielded_key.extend_from_slice(&tx_index.to_be_bytes());
+                    shielded_key.extend_from_slice(&tx_hash.0);
+                    batch.put_cf(cf, &shielded_key, []);
+                }
+            }
+
+            let account_entries =
+                super::secondary_indexes::account_tx_index_entries_for_transaction(
+                    slot,
+                    tx_index_usize,
+                    &tx,
+                );
+            let account_entry_count = account_entries.len();
+            for (account, key) in account_entries {
+                batch.put_cf(&account_txs_cf, &key, []);
+                *counters.entry(account).or_default() += 1;
+                indexed = indexed.saturating_add(1);
+            }
+
+            pending = pending
+                .saturating_add(2)
+                .saturating_add(account_entry_count);
+            if pending >= WRITE_BATCH_SIZE {
+                self.db.write(batch).map_err(|err| {
+                    format!("Failed rebuilding account_txs from tx-index: {}", err)
+                })?;
+                batch = WriteBatch::default();
+                pending = 0;
+            }
+        }
+
+        for (account, count) in counters {
+            let mut counter_key = Vec::with_capacity(5 + 32);
+            counter_key.extend_from_slice(b"atxc:");
+            counter_key.extend_from_slice(&account.0);
+            batch.put_cf(&stats_cf, &counter_key, count.to_le_bytes());
+            pending += 1;
+
+            if pending >= WRITE_BATCH_SIZE {
+                self.db
+                    .write(batch)
+                    .map_err(|err| format!("Failed rebuilding account tx counters: {}", err))?;
+                batch = WriteBatch::default();
+                pending = 0;
+            }
+        }
+
+        if pending > 0 {
+            self.db.write(batch).map_err(|err| {
+                format!("Failed finalizing tx-index account_txs rebuild: {}", err)
+            })?;
+        }
+
+        report.rebuilt_rows = indexed;
+        report.after_hot_rows = Self::count_rows_in_db(&self.db, CF_ACCOUNT_TXS)?;
+        report.after_counter_keys = self.count_stats_prefix(b"atxc:")?;
+        Ok(report)
     }
 
     /// Generic helper: read a page of (key, value) pairs from a column family.

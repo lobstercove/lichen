@@ -79,6 +79,29 @@
         <!-- Timeline -->
         <div class="changelog-timeline">
 
+            <!-- ============ v0.5.189 ============ -->
+            <div class="changelog-entry">
+                <div class="changelog-header">
+                    <span class="changelog-version">v0.5.189</span>
+                    <span class="changelog-date">June 22, 2026</span>
+                </div>
+                <h3 class="changelog-title">Account History Snapshot Repair</h3>
+
+                <div class="changelog-section" data-type="fixed">
+                    <h4><i class="fas fa-bug" style="color: var(--warning)"></i> Fixes</h4>
+                    <ul>
+                        <li><strong>Wallet and explorer Activity</strong> &mdash; clean validator rejoin, resumed sync,
+                            and state-repair snapshots preserve backed account transaction history instead of dropping
+                            it from fresh joiners.</li>
+                        <li><strong>Account transaction counts</strong> &mdash; imported history counters are rebuilt
+                            from existing backed rows before new block deltas are applied, keeping
+                            <code>getAccountTxCount</code> aligned with <code>getTransactionsByAddress</code>.</li>
+                        <li><strong>Snapshot import safety</strong> &mdash; repair snapshots can merge verified public
+                            history indexes, while full and fresh imports replace stale target history.</li>
+                    </ul>
+                </div>
+            </div>
+
             <!-- ============ v0.5.188 ============ -->
             <div class="changelog-entry">
                 <div class="changelog-header">

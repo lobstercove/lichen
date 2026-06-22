@@ -5,6 +5,29 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.189] - 2026-06-22
+
+### Fixed
+- Preserves wallet and explorer account activity through clean validator
+  rejoin, state-repair snapshots, and resumed sync by carrying backed public
+  transaction-history indexes alongside canonical state.
+- Rebuilds account transaction counters from existing backed rows before
+  applying new block deltas, so `getAccountTxCount` and
+  `getTransactionsByAddress` remain consistent immediately after snapshot
+  import or history repair.
+- Keeps full/fresh snapshot imports from merging stale target history while
+  allowing repair snapshots to merge verified public history indexes.
+- Adds guarded dry-run/write account-history rebuild tooling from retained
+  block archives or `tx_by_slot` transaction indexes, with source inspection
+  for proving what a node can and cannot reconstruct.
+
+### Verified
+- Passed full core tests, full validator tests, validator clippy with warnings
+  denied, and focused account-history snapshot/rebuild regressions.
+- Passed a clean local 3-validator runbook test where V2/V3 were wiped to empty
+  chain state, rejoined from V1 without copied RocksDB state, and preserved a
+  pre-rejoin account transaction on all three RPCs with matching block roots.
+
 ## [0.5.188] - 2026-06-21
 
 ### Fixed

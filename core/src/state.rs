@@ -44,7 +44,9 @@ pub use merkle_state::{
 };
 pub use metrics_state::{Metrics, MetricsStore};
 pub use shielded_state::ShieldedStateRebuildReport;
-pub use snapshot_io::CheckpointMeta;
+pub use snapshot_io::{
+    AccountTxsRebuildReport, AccountTxsSlotInspection, AccountTxsSourceInspection, CheckpointMeta,
+};
 
 #[cfg(test)]
 use merkle_state::{build_merkle_tree, generate_proof};
@@ -2629,14 +2631,41 @@ mod tests {
         let state = StateStore::open(temp.path()).unwrap();
 
         let tracked = Pubkey([0x91; 32]);
-        let tx_hash = Hash([0x92; 32]);
-        let account_txs_cf = state.db.cf_handle(CF_ACCOUNT_TXS).unwrap();
+        let tx = crate::transaction::Transaction::new(crate::transaction::Message::new(
+            vec![crate::transaction::Instruction {
+                program_id: Pubkey([0x92; 32]),
+                accounts: vec![tracked],
+                data: vec![1],
+            }],
+            Hash::hash(b"snapshot-backed-history"),
+        ));
+        let tx_hash = tx.signature();
+        let block = crate::Block::new_with_timestamp(
+            1_234,
+            Hash::default(),
+            Hash::default(),
+            [0u8; 32],
+            vec![tx],
+            111,
+        );
+        let block_hash = block.hash();
         let mut key = Vec::with_capacity(32 + 8 + 4 + 32);
         key.extend_from_slice(&tracked.0);
         key.extend_from_slice(&1_234u64.to_be_bytes());
         key.extend_from_slice(&0u32.to_be_bytes());
         key.extend_from_slice(&tx_hash.0);
-        state.db.put_cf(&account_txs_cf, &key, []).unwrap();
+        state.put_block_atomic(&block, None, None).unwrap();
+        state
+            .db
+            .delete_cf(&state.db.cf_handle(CF_BLOCKS).unwrap(), block_hash.0)
+            .unwrap();
+        state
+            .db
+            .delete_cf(
+                &state.db.cf_handle(CF_SLOTS).unwrap(),
+                block.header.slot.to_be_bytes(),
+            )
+            .unwrap();
 
         let page = state
             .export_snapshot_category_cursor_untracked("account_txs", None, 10)
@@ -2652,14 +2681,29 @@ mod tests {
         let dest = StateStore::open(dest_dir.path()).unwrap();
 
         let tracked = Pubkey([0x93; 32]);
-        let tx_hash = Hash([0x94; 32]);
-        let account_txs_cf = source.db.cf_handle(CF_ACCOUNT_TXS).unwrap();
+        let tx = crate::transaction::Transaction::new(crate::transaction::Message::new(
+            vec![crate::transaction::Instruction {
+                program_id: Pubkey([0x94; 32]),
+                accounts: vec![tracked],
+                data: vec![1],
+            }],
+            Hash::hash(b"snapshot-counter-clear"),
+        ));
+        let tx_hash = tx.signature();
+        let block = crate::Block::new_with_timestamp(
+            55,
+            Hash::default(),
+            Hash::default(),
+            [0u8; 32],
+            vec![tx],
+            111,
+        );
         let mut key = Vec::with_capacity(32 + 8 + 4 + 32);
         key.extend_from_slice(&tracked.0);
         key.extend_from_slice(&55u64.to_be_bytes());
         key.extend_from_slice(&0u32.to_be_bytes());
         key.extend_from_slice(&tx_hash.0);
-        source.db.put_cf(&account_txs_cf, &key, []).unwrap();
+        source.put_block_atomic(&block, None, None).unwrap();
 
         let page = source
             .export_snapshot_category_cursor_untracked("account_txs", None, 10)
@@ -2683,6 +2727,65 @@ mod tests {
             dest.get_account_tx_signatures_paginated(&tracked, 10, None)
                 .unwrap(),
             vec![(tx_hash, 55)]
+        );
+    }
+
+    #[test]
+    fn account_txs_counter_reseeds_existing_rows_before_new_block_delta() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+
+        let tracked = Pubkey([0x97; 32]);
+        let tx_a = crate::transaction::Transaction::new(crate::transaction::Message::new(
+            vec![crate::transaction::Instruction {
+                program_id: Pubkey([0x98; 32]),
+                accounts: vec![tracked],
+                data: vec![1],
+            }],
+            Hash::hash(b"counter-reseed-a"),
+        ));
+        let tx_b = crate::transaction::Transaction::new(crate::transaction::Message::new(
+            vec![crate::transaction::Instruction {
+                program_id: Pubkey([0x99; 32]),
+                accounts: vec![tracked],
+                data: vec![2],
+            }],
+            Hash::hash(b"counter-reseed-b"),
+        ));
+        let tx_a_hash = tx_a.signature();
+        let tx_b_hash = tx_b.signature();
+        let block_a = crate::Block::new_with_timestamp(
+            61,
+            Hash::default(),
+            Hash::default(),
+            [0u8; 32],
+            vec![tx_a],
+            111,
+        );
+        let block_b = crate::Block::new_with_timestamp(
+            62,
+            block_a.hash(),
+            Hash::default(),
+            [0u8; 32],
+            vec![tx_b],
+            222,
+        );
+
+        state.put_block_atomic(&block_a, None, None).unwrap();
+        assert_eq!(state.count_account_txs(&tracked).unwrap(), 1);
+        state.clear_account_tx_counters().unwrap();
+        state.put_block_atomic(&block_b, None, None).unwrap();
+
+        assert_eq!(
+            state.count_account_txs(&tracked).unwrap(),
+            2,
+            "new block indexing must seed missing counters from existing account_txs rows"
+        );
+        assert_eq!(
+            state
+                .get_account_tx_signatures_paginated(&tracked, 10, None)
+                .unwrap(),
+            vec![(tx_b_hash, 62), (tx_a_hash, 61)]
         );
     }
 
@@ -2818,8 +2921,8 @@ mod tests {
             222,
         );
 
-        state.put_block(&block_a).unwrap();
-        state.put_block(&block_b).unwrap();
+        state.put_block_atomic(&block_a, None, None).unwrap();
+        state.put_block_atomic(&block_b, None, None).unwrap();
 
         assert_eq!(state.count_account_txs(&tracked).unwrap(), 2);
         assert_eq!(
@@ -2870,6 +2973,478 @@ mod tests {
             state.get_holder_token_balances(&tracked, 10).unwrap(),
             vec![(token_a, 11), (token_b, 22)]
         );
+    }
+
+    #[test]
+    fn account_txs_rebuild_report_restores_complete_canonical_history() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+
+        let tracked = Pubkey([0xa1; 32]);
+        let other = Pubkey([0xa2; 32]);
+        let tx_a = crate::transaction::Transaction::new(crate::transaction::Message::new(
+            vec![crate::transaction::Instruction {
+                program_id: Pubkey([0xa3; 32]),
+                accounts: vec![tracked],
+                data: vec![1],
+            }],
+            Hash::hash(b"account-report-a"),
+        ));
+        let tx_b = crate::transaction::Transaction::new(crate::transaction::Message::new(
+            vec![crate::transaction::Instruction {
+                program_id: Pubkey([0xa4; 32]),
+                accounts: vec![tracked, other],
+                data: vec![2],
+            }],
+            Hash::hash(b"account-report-b"),
+        ));
+        let tx_a_hash = tx_a.signature();
+        let tx_b_hash = tx_b.signature();
+        let genesis = crate::Block::new_with_timestamp(
+            0,
+            Hash::default(),
+            Hash::default(),
+            [0u8; 32],
+            vec![],
+            1,
+        );
+        let block_a = crate::Block::new_with_timestamp(
+            11,
+            genesis.hash(),
+            Hash::default(),
+            [0u8; 32],
+            vec![tx_a],
+            111,
+        );
+        let block_b = crate::Block::new_with_timestamp(
+            12,
+            block_a.hash(),
+            Hash::default(),
+            [0u8; 32],
+            vec![tx_b],
+            222,
+        );
+
+        state.put_block(&genesis).unwrap();
+        state.put_block(&block_a).unwrap();
+        state.put_block(&block_b).unwrap();
+        state.clear_snapshot_category("account_txs").unwrap();
+
+        let dry_run = state
+            .rebuild_account_txs_index_from_blocks_with_report(true)
+            .unwrap();
+        assert!(dry_run.source_complete(), "{dry_run:?}");
+        assert!(dry_run.reached_genesis);
+        assert_eq!(dry_run.canonical_slots, 3);
+        assert_eq!(dry_run.available_blocks, 3);
+        assert_eq!(dry_run.missing_block_bodies, 0);
+        assert_eq!(dry_run.header_only_blocks, 0);
+        assert_eq!(dry_run.transactions_seen, 2);
+        assert_eq!(dry_run.expected_account_tx_rows, 3);
+        assert_eq!(dry_run.existing_hot_rows, 0);
+
+        let write = state
+            .rebuild_account_txs_index_from_blocks_with_report(false)
+            .unwrap();
+        assert_eq!(write.rebuilt_rows, 3);
+        assert_eq!(write.after_hot_rows, 3);
+        assert_eq!(
+            state
+                .get_account_tx_signatures_paginated(&tracked, 10, None)
+                .unwrap(),
+            vec![(tx_b_hash, 12), (tx_a_hash, 11)]
+        );
+    }
+
+    #[test]
+    fn account_txs_rebuild_report_flags_incomplete_archive_sources() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+
+        let tracked = Pubkey([0xb1; 32]);
+        let tx_a = crate::transaction::Transaction::new(crate::transaction::Message::new(
+            vec![crate::transaction::Instruction {
+                program_id: Pubkey([0xb2; 32]),
+                accounts: vec![tracked],
+                data: vec![1],
+            }],
+            Hash::hash(b"account-report-full"),
+        ));
+        let tx_header_only =
+            crate::transaction::Transaction::new(crate::transaction::Message::new(
+                vec![crate::transaction::Instruction {
+                    program_id: Pubkey([0xb3; 32]),
+                    accounts: vec![tracked],
+                    data: vec![2],
+                }],
+                Hash::hash(b"account-report-header-only"),
+            ));
+        let tx_missing = crate::transaction::Transaction::new(crate::transaction::Message::new(
+            vec![crate::transaction::Instruction {
+                program_id: Pubkey([0xb4; 32]),
+                accounts: vec![tracked],
+                data: vec![3],
+            }],
+            Hash::hash(b"account-report-missing"),
+        ));
+        let genesis = crate::Block::new_with_timestamp(
+            0,
+            Hash::default(),
+            Hash::default(),
+            [0u8; 32],
+            vec![],
+            1,
+        );
+        let block_full = crate::Block::new_with_timestamp(
+            21,
+            genesis.hash(),
+            Hash::default(),
+            [0u8; 32],
+            vec![tx_a],
+            111,
+        );
+        let block_header_only = crate::Block::new_with_timestamp(
+            22,
+            block_full.hash(),
+            Hash::default(),
+            [0u8; 32],
+            vec![tx_header_only],
+            222,
+        );
+        let block_missing = crate::Block::new_with_timestamp(
+            23,
+            block_header_only.hash(),
+            Hash::default(),
+            [0u8; 32],
+            vec![tx_missing],
+            333,
+        );
+
+        state.put_block(&genesis).unwrap();
+        state.put_block(&block_full).unwrap();
+        state
+            .put_replay_block_header_atomic(&block_header_only, None, None)
+            .unwrap();
+        state.put_block(&block_missing).unwrap();
+        let blocks_cf = state.db.cf_handle(CF_BLOCKS).unwrap();
+        state
+            .db
+            .delete_cf(&blocks_cf, block_missing.hash().0)
+            .unwrap();
+
+        let report = state.account_txs_rebuild_report_from_blocks().unwrap();
+        assert!(!report.source_complete());
+        assert!(report.reached_genesis);
+        assert_eq!(report.canonical_slots, 4);
+        assert_eq!(report.available_blocks, 3);
+        assert_eq!(report.missing_block_bodies, 1);
+        assert_eq!(report.first_missing_block_slot, Some(23));
+        assert_eq!(report.header_only_blocks, 1);
+        assert_eq!(report.first_header_only_slot, Some(22));
+        assert_eq!(report.transactions_seen, 1);
+        assert_eq!(report.expected_account_tx_rows, 1);
+    }
+
+    #[test]
+    fn account_txs_parent_chain_rebuild_restores_slot_index_gap() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+
+        let tracked = Pubkey([0xc1; 32]);
+        let tx_a = crate::transaction::Transaction::new(crate::transaction::Message::new(
+            vec![crate::transaction::Instruction {
+                program_id: Pubkey([0xc2; 32]),
+                accounts: vec![tracked],
+                data: vec![1],
+            }],
+            Hash::hash(b"parent-chain-a"),
+        ));
+        let tx_b = crate::transaction::Transaction::new(crate::transaction::Message::new(
+            vec![crate::transaction::Instruction {
+                program_id: Pubkey([0xc3; 32]),
+                accounts: vec![tracked],
+                data: vec![2],
+            }],
+            Hash::hash(b"parent-chain-b"),
+        ));
+        let tx_a_hash = tx_a.signature();
+        let tx_b_hash = tx_b.signature();
+        let genesis = crate::Block::new_with_timestamp(
+            0,
+            Hash::default(),
+            Hash::default(),
+            [0u8; 32],
+            vec![],
+            1,
+        );
+        let block_a = crate::Block::new_with_timestamp(
+            31,
+            genesis.hash(),
+            Hash::default(),
+            [0u8; 32],
+            vec![tx_a],
+            111,
+        );
+        let block_b = crate::Block::new_with_timestamp(
+            32,
+            block_a.hash(),
+            Hash::default(),
+            [0u8; 32],
+            vec![tx_b],
+            222,
+        );
+
+        state.put_block_atomic(&genesis, None, None).unwrap();
+        state.put_block_atomic(&block_a, None, None).unwrap();
+        state.put_block_atomic(&block_b, None, None).unwrap();
+
+        let slot_cf = state.db.cf_handle(CF_SLOTS).unwrap();
+        state
+            .db
+            .delete_cf(&slot_cf, block_a.header.slot.to_be_bytes())
+            .unwrap();
+        assert!(state.get_block_by_slot(31).unwrap().is_none());
+        state.clear_snapshot_category("account_txs").unwrap();
+
+        let dry_run = state
+            .rebuild_account_txs_index_from_parent_chain_with_report(true)
+            .unwrap();
+        assert!(dry_run.source_complete(), "{dry_run:?}");
+        assert!(dry_run.reached_genesis);
+        assert_eq!(dry_run.canonical_slots, 3);
+        assert_eq!(dry_run.expected_account_tx_rows, 2);
+
+        let write = state
+            .rebuild_account_txs_index_from_parent_chain_with_report(false)
+            .unwrap();
+        assert_eq!(write.rebuilt_rows, 2);
+        assert!(state.get_block_by_slot(31).unwrap().is_some());
+        assert_eq!(
+            state
+                .get_account_tx_signatures_paginated(&tracked, 10, None)
+                .unwrap(),
+            vec![(tx_b_hash, 32), (tx_a_hash, 31)]
+        );
+    }
+
+    #[test]
+    fn account_txs_tx_index_rebuild_restores_history_without_block_bodies() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+
+        let tracked = Pubkey([0xd1; 32]);
+        let other = Pubkey([0xd2; 32]);
+        let tx_a = crate::transaction::Transaction::new(crate::transaction::Message::new(
+            vec![crate::transaction::Instruction {
+                program_id: Pubkey([0xd3; 32]),
+                accounts: vec![tracked],
+                data: vec![1],
+            }],
+            Hash::hash(b"tx-index-a"),
+        ));
+        let tx_b = crate::transaction::Transaction::new(crate::transaction::Message::new(
+            vec![crate::transaction::Instruction {
+                program_id: Pubkey([0xd4; 32]),
+                accounts: vec![tracked, other],
+                data: vec![2],
+            }],
+            Hash::hash(b"tx-index-b"),
+        ));
+        let tx_a_hash = tx_a.signature();
+        let tx_b_hash = tx_b.signature();
+        let block_a = crate::Block::new_with_timestamp(
+            41,
+            Hash::default(),
+            Hash::default(),
+            [0u8; 32],
+            vec![tx_a],
+            111,
+        );
+        let block_b = crate::Block::new_with_timestamp(
+            42,
+            block_a.hash(),
+            Hash::default(),
+            [0u8; 32],
+            vec![tx_b],
+            222,
+        );
+
+        state.put_block_atomic(&block_a, None, None).unwrap();
+        state.put_block_atomic(&block_b, None, None).unwrap();
+
+        let block_cf = state.db.cf_handle(CF_BLOCKS).unwrap();
+        let slot_cf = state.db.cf_handle(CF_SLOTS).unwrap();
+        state.db.delete_cf(&block_cf, block_a.hash().0).unwrap();
+        state.db.delete_cf(&block_cf, block_b.hash().0).unwrap();
+        state
+            .db
+            .delete_cf(&slot_cf, block_a.header.slot.to_be_bytes())
+            .unwrap();
+        state
+            .db
+            .delete_cf(&slot_cf, block_b.header.slot.to_be_bytes())
+            .unwrap();
+        assert!(state.get_block_by_slot(41).unwrap().is_none());
+        state.clear_snapshot_category("account_txs").unwrap();
+
+        let parent_report = state
+            .rebuild_account_txs_index_from_parent_chain_with_report(true)
+            .unwrap();
+        assert!(!parent_report.source_complete());
+
+        let tx_report = state
+            .rebuild_account_txs_index_from_tx_index_with_report(true)
+            .unwrap();
+        assert!(tx_report.source_complete(), "{tx_report:?}");
+        assert_eq!(tx_report.tx_by_slot_rows, 2);
+        assert_eq!(tx_report.transactions_seen, 2);
+        assert_eq!(tx_report.expected_account_tx_rows, 3);
+        assert_eq!(tx_report.oldest_tx_slot, Some(41));
+
+        let write = state
+            .rebuild_account_txs_index_from_tx_index_with_report(false)
+            .unwrap();
+        assert_eq!(write.rebuilt_rows, 3);
+        assert_eq!(write.after_hot_rows, 3);
+        assert_eq!(
+            state
+                .get_account_tx_signatures_paginated(&tracked, 10, None)
+                .unwrap(),
+            vec![(tx_b_hash, 42), (tx_a_hash, 41)]
+        );
+    }
+
+    #[test]
+    fn transaction_history_snapshots_roundtrip_from_tx_index_without_block_bodies() {
+        let source_dir = tempdir().unwrap();
+        let source = StateStore::open(source_dir.path()).unwrap();
+        let dest_dir = tempdir().unwrap();
+        let dest = StateStore::open(dest_dir.path()).unwrap();
+
+        let tracked = Pubkey([0xd5; 32]);
+        let other = Pubkey([0xd6; 32]);
+        let tx_a = crate::transaction::Transaction::new(crate::transaction::Message::new(
+            vec![crate::transaction::Instruction {
+                program_id: Pubkey([0xd7; 32]),
+                accounts: vec![tracked],
+                data: vec![1],
+            }],
+            Hash::hash(b"tx-history-snapshot-a"),
+        ));
+        let tx_b = crate::transaction::Transaction::new(crate::transaction::Message::new(
+            vec![crate::transaction::Instruction {
+                program_id: Pubkey([0xd8; 32]),
+                accounts: vec![tracked, other],
+                data: vec![2],
+            }],
+            Hash::hash(b"tx-history-snapshot-b"),
+        ));
+        let tx_a_hash = tx_a.signature();
+        let tx_b_hash = tx_b.signature();
+        let block_a = crate::Block::new_with_timestamp(
+            71,
+            Hash::default(),
+            Hash::default(),
+            [0u8; 32],
+            vec![tx_a],
+            111,
+        );
+        let block_b = crate::Block::new_with_timestamp(
+            72,
+            block_a.hash(),
+            Hash::default(),
+            [0u8; 32],
+            vec![tx_b],
+            222,
+        );
+
+        source.put_block_atomic(&block_a, None, None).unwrap();
+        source.put_block_atomic(&block_b, None, None).unwrap();
+        let block_cf = source.db.cf_handle(CF_BLOCKS).unwrap();
+        let slot_cf = source.db.cf_handle(CF_SLOTS).unwrap();
+        source.db.delete_cf(&block_cf, block_a.hash().0).unwrap();
+        source.db.delete_cf(&block_cf, block_b.hash().0).unwrap();
+        source
+            .db
+            .delete_cf(&slot_cf, block_a.header.slot.to_be_bytes())
+            .unwrap();
+        source
+            .db
+            .delete_cf(&slot_cf, block_b.header.slot.to_be_bytes())
+            .unwrap();
+        assert!(source.get_block_by_slot(71).unwrap().is_none());
+
+        for (category, expected_len) in [
+            ("transactions", 2),
+            ("tx_by_slot", 2),
+            ("tx_to_slot", 2),
+            ("account_txs", 3),
+        ] {
+            let page = source
+                .export_snapshot_category_cursor_untracked(category, None, 10)
+                .unwrap_or_else(|err| panic!("export {category}: {err}"));
+            assert_eq!(
+                page.entries.len(),
+                expected_len,
+                "unexpected {category} entry count"
+            );
+            dest.import_snapshot_category(category, &page.entries)
+                .unwrap_or_else(|err| panic!("import {category}: {err}"));
+        }
+
+        assert!(dest.get_transaction(&tx_a_hash).unwrap().is_some());
+        assert!(dest.get_transaction(&tx_b_hash).unwrap().is_some());
+        assert_eq!(dest.get_tx_slot(&tx_a_hash).unwrap(), Some(71));
+        assert_eq!(dest.get_tx_slot(&tx_b_hash).unwrap(), Some(72));
+        assert_eq!(dest.get_txs_by_slot(71, 10).unwrap(), vec![tx_a_hash]);
+        assert_eq!(dest.get_txs_by_slot(72, 10).unwrap(), vec![tx_b_hash]);
+        assert_eq!(
+            dest.get_account_tx_signatures_paginated(&tracked, 10, None)
+                .unwrap(),
+            vec![(tx_b_hash, 72), (tx_a_hash, 71)]
+        );
+    }
+
+    #[test]
+    fn account_txs_tx_index_rebuild_refuses_missing_transaction_body() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+
+        let tracked = Pubkey([0xe1; 32]);
+        let tx = crate::transaction::Transaction::new(crate::transaction::Message::new(
+            vec![crate::transaction::Instruction {
+                program_id: Pubkey([0xe2; 32]),
+                accounts: vec![tracked],
+                data: vec![1],
+            }],
+            Hash::hash(b"tx-index-missing-body"),
+        ));
+        let tx_hash = tx.signature();
+        let block = crate::Block::new_with_timestamp(
+            51,
+            Hash::default(),
+            Hash::default(),
+            [0u8; 32],
+            vec![tx],
+            111,
+        );
+
+        state.put_block_atomic(&block, None, None).unwrap();
+        state.clear_snapshot_category("account_txs").unwrap();
+        let tx_cf = state.db.cf_handle(CF_TRANSACTIONS).unwrap();
+        state.db.delete_cf(&tx_cf, tx_hash.0).unwrap();
+
+        let report = state
+            .rebuild_account_txs_index_from_tx_index_with_report(true)
+            .unwrap();
+        assert!(!report.source_complete());
+        assert_eq!(report.tx_by_slot_rows, 1);
+        assert_eq!(report.missing_transactions, 1);
+        assert_eq!(report.first_missing_transaction_slot, Some(51));
+
+        assert!(state
+            .rebuild_account_txs_index_from_tx_index_with_report(false)
+            .is_err());
     }
 
     #[test]
