@@ -7062,13 +7062,13 @@ async fn activate_pending_validators_for_height(
                 //
                 // 100 slots ≈ 40s at 400ms/slot — enough for sync + BFT entry.
                 // Ethereum uses ~6.4min activation queue for comparison.
-                const ACTIVATION_WARMUP: u64 = 100;
                 let deterministic_join = height_pool
                     .get_stake(&pubkey)
                     .map(|si| si.start_slot)
                     .unwrap_or(0);
                 if deterministic_join > 0
-                    && new_height > deterministic_join.saturating_add(ACTIVATION_WARMUP)
+                    && new_height
+                        > deterministic_join.saturating_add(VALIDATOR_ACTIVATION_WARMUP_SLOTS)
                 {
                     validator.pending_activation = false;
                     validator.joined_slot = deterministic_join;
@@ -7924,7 +7924,19 @@ fn compute_promoted_pending_validators_hash(
     ))
 }
 
-fn should_add_local_validator_as_pending(is_joining_network: bool, current_tip: u64) -> bool {
+const VALIDATOR_ACTIVATION_WARMUP_SLOTS: u64 = 100;
+
+fn should_add_local_validator_as_pending(
+    is_joining_network: bool,
+    current_tip: u64,
+    stake_start_slot: Option<u64>,
+) -> bool {
+    if let Some(start_slot) = stake_start_slot {
+        if current_tip > start_slot.saturating_add(VALIDATOR_ACTIVATION_WARMUP_SLOTS) {
+            return false;
+        }
+    }
+
     // A validator discovered after genesis must cross at least one full local
     // height boundary before it can enter the frozen consensus snapshot.
     // This keeps restart and late-discovery behavior aligned across nodes.
@@ -13392,6 +13404,10 @@ async fn run_validator() {
             .unwrap_or(None)
             .map(|a| a.staked)
             .unwrap_or(0);
+        let persisted_pool = state.get_stake_pool().unwrap_or_else(|_| StakePool::new());
+        let stake_start_slot = persisted_pool
+            .get_stake(&validator_pubkey)
+            .map(|stake| stake.start_slot);
         // Use current chain tip so snapshots shared with peers pass the
         // slot-drift check (MAX_SLOT_DRIFT_FOR_NEW_VALIDATOR = 500).
         let current_tip = state.get_last_slot().unwrap_or(0);
@@ -13406,8 +13422,11 @@ async fn run_validator() {
                     .any(|v| v.pubkey == validator_pubkey.to_base58())
                 {
                     if on_chain_stake >= min_validator_stake || allow_founding_bootstrap_validator {
-                        let pending =
-                            should_add_local_validator_as_pending(is_joining_network, current_tip);
+                        let pending = should_add_local_validator_as_pending(
+                            is_joining_network,
+                            current_tip,
+                            stake_start_slot,
+                        );
                         info!("📋 This validator not in genesis set, adding local identity (on-chain stake: {} LICN, pending: {}, founding bootstrap: {})",
                             on_chain_stake / 1_000_000_000,
                             pending,
@@ -13443,8 +13462,11 @@ async fn run_validator() {
             .any(|v| v.pubkey == validator_pubkey.to_base58())
         {
             if on_chain_stake >= min_validator_stake || allow_founding_bootstrap_validator {
-                let pending =
-                    should_add_local_validator_as_pending(is_joining_network, current_tip);
+                let pending = should_add_local_validator_as_pending(
+                    is_joining_network,
+                    current_tip,
+                    stake_start_slot,
+                );
                 info!("📋 This validator not in genesis set, adding local identity (on-chain stake: {} LICN, pending: {}, founding bootstrap: {})",
                     on_chain_stake / 1_000_000_000,
                     pending,
@@ -13477,7 +13499,6 @@ async fn run_validator() {
             .iter()
             .filter_map(|v| Pubkey::from_base58(&v.pubkey).ok())
             .collect();
-        let persisted_pool = state.get_stake_pool().unwrap_or_else(|_| StakePool::new());
         let unbacked_validators: Vec<Pubkey> = set
             .validators()
             .iter()
@@ -27025,10 +27046,17 @@ mod tests {
     }
 
     #[test]
-    fn local_validator_is_pending_only_during_fresh_join() {
-        assert!(should_add_local_validator_as_pending(true, 0));
-        assert!(should_add_local_validator_as_pending(false, 10));
-        assert!(!should_add_local_validator_as_pending(false, 0));
+    fn local_validator_pending_status_uses_stake_warmup() {
+        assert!(should_add_local_validator_as_pending(true, 0, None));
+        assert!(should_add_local_validator_as_pending(false, 10, None));
+        assert!(should_add_local_validator_as_pending(true, 101, Some(1)));
+        assert!(!should_add_local_validator_as_pending(true, 102, Some(1)));
+        assert!(!should_add_local_validator_as_pending(
+            false,
+            10_000,
+            Some(1)
+        ));
+        assert!(!should_add_local_validator_as_pending(false, 0, None));
     }
 
     #[test]

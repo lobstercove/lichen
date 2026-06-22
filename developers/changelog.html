@@ -79,13 +79,13 @@
         <!-- Timeline -->
         <div class="changelog-timeline">
 
-            <!-- ============ v0.5.194 ============ -->
+            <!-- ============ v0.5.195 ============ -->
             <div class="changelog-entry">
                 <div class="changelog-header">
-                    <span class="changelog-version">v0.5.194</span>
+                    <span class="changelog-version">v0.5.195</span>
                     <span class="changelog-date">June 22, 2026</span>
                 </div>
-                <h3 class="changelog-title">Compact Block Fallback Latency Fix</h3>
+                <h3 class="changelog-title">Validator Resume Pace Fixes</h3>
 
                 <div class="changelog-section" data-type="fixed">
                     <h4><i class="fas fa-bug" style="color: var(--warning)"></i> Fixes</h4>
@@ -93,8 +93,10 @@
                         <li><strong>Live validator propagation</strong> &mdash; validators now request the full block
                             immediately when compact-block reconstruction is missing transactions, avoiding periodic
                             catch-up waits that could make a lagging validator miss its proposer window.</li>
-                        <li><strong>Release baseline</strong> &mdash; keeps the v0.5.193 deterministic MossStake
-                            repair snapshot baseline as the rollback point.</li>
+                        <li><strong>Validator resume activation</strong> &mdash; non-genesis validators that already
+                            completed their on-chain stake warmup now resume as active leaders after restart instead
+                            of being re-added as pending local joiners.</li>
+                        <li><strong>Release baseline</strong> &mdash; keeps v0.5.194 as the signed rollback point.</li>
                     </ul>
                 </div>
             </div>
