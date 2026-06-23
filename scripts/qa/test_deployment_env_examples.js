@@ -409,6 +409,9 @@ const custodyRouteProfile = read('deploy/custody-route-profile.md');
 const mainnetRunbook = read('deploy/mainnet-launch-runbook.md');
 const mainnetRunbookDoc = read('docs/deployment/MAINNET_LAUNCH_RUNBOOK.md');
 const productionDeployment = read('docs/deployment/PRODUCTION_DEPLOYMENT.md');
+const productionReleasePair = productionDeployment.match(
+  /Current signed-release target for this runbook is `(v\d+\.\d+\.\d+)`; keep `(v\d+\.\d+\.\d+)` as the signed rollback point/,
+);
 const dexLiquidityStrategy = read('docs/strategy/DEX_LIQUIDITY_STRATEGY.md');
 const btcRolloutPlan = read('docs/deployment/BTC_WRAPPED_ASSET_ROLLOUT_PLAN.md');
 const cleanSlateRedeployPath = path.join(root, 'scripts', 'clean-slate-redeploy.sh');
@@ -446,17 +449,17 @@ assert(
   'BTC rollout plan must record the epoch-6 governed execution signatures and compute budget',
 );
 assert(
-  productionDeployment.includes('Current signed-release target for this runbook is `v0.5.197`') &&
-    productionDeployment.includes('keep `v0.5.196` as the signed rollback point') &&
+  productionReleasePair &&
     productionDeployment.includes('32 manifest symbols') &&
     productionDeployment.includes('mandatory 13 DEX CLOB pairs, AMM pools, and router routes') &&
     productionDeployment.includes('wBTC/lUSD') &&
     productionDeployment.includes('wBTC/LICN') &&
-    productionDeployment.includes('v0.5.197` keeps the `v0.5.196` live BFT catch-up guard and tunes 400ms-slot BFT view-change timers') &&
+    productionDeployment.includes(`${productionReleasePair[1]}\` keeps the \`${productionReleasePair[2]}\` 400ms-slot BFT timing profile`) &&
+    productionDeployment.includes('fixes successful LiveSync catch-up cooldown reset') &&
     productionDeployment.includes('800ms propose, 500ms prevote, 500ms precommit, and a 5s max phase timeout') &&
     productionDeployment.includes('guarded public-history merge admin path') &&
     productionDeployment.includes('All validators must end on the same signed release') &&
-    productionDeployment.includes('export LICHEN_RELEASE_TAG=v0.5.197') &&
+    productionDeployment.includes(`export LICHEN_RELEASE_TAG=${productionReleasePair[1]}`) &&
     productionDeployment.includes('The script requires `LICHEN_RELEASE_TAG`') &&
     productionDeployment.includes('install the signed release archive') &&
     productionDeployment.includes('RocksDB read-only descriptors') &&
@@ -471,7 +474,7 @@ assert(
     !productionDeployment.includes('31 manifest symbols') &&
     !productionDeployment.includes('--repair-stake-pool-production-counters') &&
     !productionDeployment.includes('such as `v0.5.50`'),
-  'production clean-slate checklist must match current v0.5.197 rollback v0.5.196/32-symbol/13-market expectations',
+  'production clean-slate checklist must match current release/rollback, 32-symbol, and 13-market expectations',
 );
 assert(
   productionDeployment.includes('Do not add `faucet.lichen.network` as a Cloudflare Pages custom domain') &&
