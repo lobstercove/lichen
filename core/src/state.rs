@@ -5316,6 +5316,21 @@ mod tests {
     }
 
     #[test]
+    fn read_only_cold_store_can_attach_while_writer_is_open() {
+        let writer_hot_dir = tempdir().unwrap();
+        let reader_hot_dir = tempdir().unwrap();
+        let cold_dir = tempdir().unwrap();
+        let mut writer = StateStore::open(writer_hot_dir.path()).unwrap();
+        writer.open_cold_store(cold_dir.path()).unwrap();
+
+        let mut reader = StateStore::open(reader_hot_dir.path()).unwrap();
+        reader
+            .open_cold_store_read_only(cold_dir.path())
+            .expect("read-only archive diagnostics should not require the live cold lock");
+        assert!(reader.has_cold_storage());
+    }
+
+    #[test]
     fn public_history_merge_restores_cold_history_without_replacing_hot_state() {
         let source_dir = tempdir().unwrap();
         let target_dir = tempdir().unwrap();

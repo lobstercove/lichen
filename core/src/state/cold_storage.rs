@@ -21,6 +21,7 @@ fn is_public_history_merge_row(cf_name: &str, key: &[u8], value: &[u8]) -> bool 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PublicHistoryMergeCfReport {
     pub source_cf: &'static str,
+    pub source_cold: bool,
     pub target_cf: &'static str,
     pub target_cold: bool,
     pub source_rows: u64,
@@ -57,6 +58,22 @@ impl StateStore {
         )?));
         tracing::info!(
             "🗄️  Cold storage opened at {}",
+            cold_path.as_ref().display()
+        );
+        Ok(())
+    }
+
+    /// Attach an existing cold archival DB read-only. This is used by
+    /// offline repair/inspection tools when an archive backup is the source.
+    pub fn open_cold_store_read_only<P: AsRef<Path>>(
+        &mut self,
+        cold_path: P,
+    ) -> Result<(), String> {
+        self.cold_db = Some(Arc::new(storage_bootstrap::open_cold_db_read_only(
+            cold_path.as_ref(),
+        )?));
+        tracing::info!(
+            "🗄️  Cold storage opened read-only at {}",
             cold_path.as_ref().display()
         );
         Ok(())
@@ -287,16 +304,17 @@ impl StateStore {
         self.cold_db.is_some()
     }
 
-    fn merge_public_history_cf(
+    fn merge_public_history_cf_from_db(
         &self,
-        source: &StateStore,
+        source_db: &DB,
         source_cf_name: &'static str,
+        public_cf_name: &'static str,
         target_cf_name: &'static str,
+        source_cold: bool,
         target_cold: bool,
         dry_run: bool,
     ) -> Result<PublicHistoryMergeCfReport, String> {
-        let source_cf = source
-            .db
+        let source_cf = source_db
             .cf_handle(source_cf_name)
             .ok_or_else(|| format!("Source CF {source_cf_name} not found"))?;
         let target_db = if target_cold {
@@ -313,12 +331,11 @@ impl StateStore {
 
         let mut read_opts = rocksdb::ReadOptions::default();
         read_opts.set_total_order_seek(true);
-        let iter = source
-            .db
-            .iterator_cf_opt(&source_cf, read_opts, rocksdb::IteratorMode::Start);
+        let iter = source_db.iterator_cf_opt(&source_cf, read_opts, rocksdb::IteratorMode::Start);
 
         let mut report = PublicHistoryMergeCfReport {
             source_cf: source_cf_name,
+            source_cold,
             target_cf: target_cf_name,
             target_cold,
             ..PublicHistoryMergeCfReport::default()
@@ -329,17 +346,17 @@ impl StateStore {
         for item in iter {
             let (key, value) =
                 item.map_err(|err| format!("Failed iterating {source_cf_name}: {err}"))?;
-            if !is_public_history_merge_row(source_cf_name, &key, &value) {
+            if !is_public_history_merge_row(public_cf_name, &key, &value) {
                 continue;
             }
             report.source_rows = report.source_rows.saturating_add(1);
 
             if target_cold {
-                if let Some(hot_cf) = self.db.cf_handle(source_cf_name) {
+                if let Some(hot_cf) = self.db.cf_handle(public_cf_name) {
                     match self
                         .db
                         .get_cf(&hot_cf, &key)
-                        .map_err(|err| format!("Failed reading hot {source_cf_name}: {err}"))?
+                        .map_err(|err| format!("Failed reading hot {public_cf_name}: {err}"))?
                     {
                         Some(existing) if existing.as_slice() == value.as_ref() => {
                             report.identical_rows = report.identical_rows.saturating_add(1);
@@ -349,7 +366,7 @@ impl StateStore {
                             report.conflict_rows = report.conflict_rows.saturating_add(1);
                             if !dry_run {
                                 return Err(format!(
-                                    "Refusing public history merge: hot {source_cf_name} key {} differs between source and target",
+                                    "Refusing public history merge: hot {public_cf_name} key {} differs between source and target",
                                     hex::encode(&key)
                                 ));
                             }
@@ -401,6 +418,25 @@ impl StateStore {
         Ok(report)
     }
 
+    fn merge_public_history_cf(
+        &self,
+        source: &StateStore,
+        source_cf_name: &'static str,
+        target_cf_name: &'static str,
+        target_cold: bool,
+        dry_run: bool,
+    ) -> Result<PublicHistoryMergeCfReport, String> {
+        self.merge_public_history_cf_from_db(
+            source.db.as_ref(),
+            source_cf_name,
+            source_cf_name,
+            target_cf_name,
+            false,
+            target_cold,
+            dry_run,
+        )
+    }
+
     pub fn merge_public_history_from_source(
         &self,
         source: &StateStore,
@@ -412,7 +448,7 @@ impl StateStore {
             ..PublicHistoryMergeReport::default()
         };
 
-        let cold_cf_pairs: &[(&str, &str)] = &[
+        let cold_cf_pairs: &[(&'static str, &'static str)] = &[
             (CF_BLOCKS, COLD_CF_BLOCKS),
             (CF_TRANSACTIONS, COLD_CF_TRANSACTIONS),
             (CF_TX_TO_SLOT, COLD_CF_TX_TO_SLOT),
@@ -421,7 +457,7 @@ impl StateStore {
             (CF_TOKEN_TRANSFERS, COLD_CF_TOKEN_TRANSFERS),
             (CF_PROGRAM_CALLS, COLD_CF_PROGRAM_CALLS),
         ];
-        let hot_cf_names: &[&str] = &[
+        let hot_cf_names: &[&'static str] = &[
             CF_SLOTS,
             CF_TX_BY_SLOT,
             CF_EVENTS_BY_SLOT,
@@ -457,6 +493,30 @@ impl StateStore {
                 .saturating_add(cf_report.identical_rows);
             report.conflict_rows = report.conflict_rows.saturating_add(cf_report.conflict_rows);
             report.cf_reports.push(cf_report);
+
+            if let Some(source_cold) = source.cold_db.as_ref() {
+                let target_cf = if self.cold_db.is_some() {
+                    cold_cf
+                } else {
+                    source_cf
+                };
+                let cf_report = self.merge_public_history_cf_from_db(
+                    source_cold.as_ref(),
+                    cold_cf,
+                    source_cf,
+                    target_cf,
+                    true,
+                    self.cold_db.is_some(),
+                    dry_run,
+                )?;
+                report.source_rows = report.source_rows.saturating_add(cf_report.source_rows);
+                report.inserted_rows = report.inserted_rows.saturating_add(cf_report.inserted_rows);
+                report.identical_rows = report
+                    .identical_rows
+                    .saturating_add(cf_report.identical_rows);
+                report.conflict_rows = report.conflict_rows.saturating_add(cf_report.conflict_rows);
+                report.cf_reports.push(cf_report);
+            }
         }
 
         for &cf_name in hot_cf_names {

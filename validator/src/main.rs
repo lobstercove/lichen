@@ -143,6 +143,7 @@ const SCAN_MOSSSTAKE_BLOCKS_FLAG: &str = "--scan-mossstake-blocks";
 const REBUILD_ACCOUNT_TXS_FLAG: &str = "--rebuild-account-txs";
 const INSPECT_ACCOUNT_HISTORY_FLAG: &str = "--inspect-account-history";
 const MERGE_PUBLIC_HISTORY_FROM_SOURCE_FLAG: &str = "--merge-public-history-from-source";
+const SOURCE_COLD_STORE_FLAG: &str = "--source-cold-store";
 const VERIFY_WARP_SNAPSHOT_ROUNDTRIP_FLAG: &str = "--verify-warp-snapshot-roundtrip";
 const REBUILD_SHIELDED_STATE_FROM_BLOCKS_FLAG: &str = "--rebuild-shielded-state-from-blocks";
 const EXPORT_SHIELDED_STATE_BUNDLE_FLAG: &str = "--export-shielded-state-bundle";
@@ -483,7 +484,11 @@ const LIVE_BFT_CATCH_UP_GAP: u64 = 3;
 /// out of BFT, but must not require exact equality with a moving live tip.
 /// At 400ms slots, exact-tip gating can chase the head forever and leave a
 /// validator syncing one block at a time without re-entering proposer rotation.
-const PRE_CONSENSUS_CATCH_UP_TOLERANCE: u64 = 5;
+///
+/// Keep this wider than the live BFT catch-up gap. The pre-consensus gate only
+/// decides when the node may enter the BFT loop; `LIVE_BFT_CATCH_UP_GAP` still
+/// prevents stale voting/proposing until the node is close to the observed tip.
+const PRE_CONSENSUS_CATCH_UP_TOLERANCE: u64 = 32;
 const FUTURE_CONSENSUS_PROPOSAL_BUFFER_HEIGHTS: u64 = 10;
 
 /// QoS: per-peer block-range serving token bucket, measured in blocks.
@@ -11304,6 +11309,18 @@ fn maybe_open_account_txs_secondary_state(
     Ok(Some(state))
 }
 
+fn attach_account_history_cold_store(
+    state: &mut StateStore,
+    cold_path: &Path,
+    read_only: bool,
+) -> Result<(), String> {
+    if read_only {
+        state.open_cold_store_read_only(cold_path)
+    } else {
+        state.open_cold_store(cold_path)
+    }
+}
+
 fn parse_account_history_slots(args: &[String]) -> Result<Vec<u64>, String> {
     let Some(raw) = get_flag_value(args, &["--slots"]) else {
         return Ok(Vec::new());
@@ -11446,7 +11463,7 @@ fn maybe_run_account_history_inspection_admin(args: &[String]) -> Option<i32> {
     };
 
     if let Some(cold_path) = cold_store_path {
-        if let Err(err) = state.open_cold_store(&cold_path) {
+        if let Err(err) = attach_account_history_cold_store(&mut state, &cold_path, true) {
             eprintln!(
                 "Failed to open cold store at {}: {}",
                 cold_path.display(),
@@ -11525,7 +11542,7 @@ fn maybe_run_account_txs_rebuild_admin(args: &[String]) -> Option<i32> {
     };
 
     if let Some(cold_path) = cold_store_path {
-        if let Err(err) = state.open_cold_store(&cold_path) {
+        if let Err(err) = attach_account_history_cold_store(&mut state, &cold_path, dry_run) {
             eprintln!(
                 "Failed to open cold store at {}: {}",
                 cold_path.display(),
@@ -11576,7 +11593,8 @@ fn print_public_history_merge_report(report: &lichen_core::state::PublicHistoryM
     );
     for cf in &report.cf_reports {
         println!(
-            "cf[{}->{}{}]=source_rows:{},inserted_rows:{},identical_rows:{},conflict_rows:{}",
+            "cf[{}{}->{}{}]=source_rows:{},inserted_rows:{},identical_rows:{},conflict_rows:{}",
+            if cf.source_cold { "cold:" } else { "" },
             cf.source_cf,
             if cf.target_cold { "cold:" } else { "" },
             cf.target_cf,
@@ -11608,6 +11626,7 @@ fn maybe_run_public_history_merge_admin(args: &[String]) -> Option<i32> {
 
     let target_dir = restriction_schema_data_dir(args);
     let cache_size_mb = get_flag_value(args, &["--cache-size-mb"]).and_then(|s| s.parse().ok());
+    let source_cold_store_path = get_flag_value(args, &[SOURCE_COLD_STORE_FLAG]).map(PathBuf::from);
     let cold_store_path = get_flag_value(args, &["--cold-store"]).map(PathBuf::from);
 
     if execute && cold_store_path.is_none() {
@@ -11615,7 +11634,7 @@ fn maybe_run_public_history_merge_admin(args: &[String]) -> Option<i32> {
         return Some(1);
     }
 
-    let source = match StateStore::open_read_only_with_cache_mb(&source_dir, cache_size_mb) {
+    let mut source = match StateStore::open_read_only_with_cache_mb(&source_dir, cache_size_mb) {
         Ok(source) => source,
         Err(err) => {
             eprintln!(
@@ -11626,6 +11645,17 @@ fn maybe_run_public_history_merge_admin(args: &[String]) -> Option<i32> {
             return Some(1);
         }
     };
+
+    if let Some(source_cold_path) = source_cold_store_path {
+        if let Err(err) = source.open_cold_store_read_only(&source_cold_path) {
+            eprintln!(
+                "Failed to open source cold store read-only at {}: {}",
+                source_cold_path.display(),
+                err
+            );
+            return Some(1);
+        }
+    }
 
     let mut target = match StateStore::open_with_cache_mb(&target_dir, cache_size_mb) {
         Ok(target) => target,
@@ -28267,6 +28297,61 @@ mod tests {
     }
 
     #[test]
+    fn guarded_public_history_merge_reads_source_cold_store() {
+        let source_dir = tempfile::tempdir().expect("create source dir");
+        let source_cold_dir = tempfile::tempdir().expect("create source cold dir");
+        let mut source_writer = StateStore::open(source_dir.path()).expect("open source state");
+        source_writer
+            .open_cold_store(source_cold_dir.path())
+            .expect("open source cold store");
+        let target_dir = tempfile::tempdir().expect("create target dir");
+        let target_cold_dir = tempfile::tempdir().expect("create target cold dir");
+        let mut target = StateStore::open(target_dir.path()).expect("open target state");
+        target
+            .open_cold_store(target_cold_dir.path())
+            .expect("open target cold store");
+
+        let tracked = Pubkey([0x44; 32]);
+        let (_source_block_hash, source_tx_hash) =
+            put_history_block(&source_writer, 9, Hash::default(), tracked, 9);
+        assert_eq!(source_writer.migrate_to_cold(10).unwrap(), 1);
+        assert!(
+            source_writer.migrate_indexes_to_cold(10).unwrap() > 0,
+            "test source must move account_txs into cold storage"
+        );
+        drop(source_writer);
+
+        let mut source = StateStore::open_read_only_with_cache_mb(source_dir.path(), Some(64))
+            .expect("open source read-only");
+        source
+            .open_cold_store_read_only(source_cold_dir.path())
+            .expect("open source cold store read-only");
+
+        let report = target
+            .merge_public_history_from_source(&source, false)
+            .expect("merge public history from source cold store");
+        assert!(!report.has_conflicts());
+        assert!(report.used_cold_store);
+        assert!(
+            report
+                .cf_reports
+                .iter()
+                .any(|cf| cf.source_cold && cf.source_cf == "account_txs" && cf.inserted_rows > 0),
+            "source cold account_txs rows must be imported"
+        );
+
+        assert_eq!(
+            target
+                .get_account_tx_signatures_paginated(&tracked, 10, None)
+                .unwrap(),
+            vec![(source_tx_hash, 9)]
+        );
+        assert!(target.get_transaction(&source_tx_hash).unwrap().is_some());
+        assert_eq!(target.get_tx_slot(&source_tx_hash).unwrap(), Some(9));
+        assert_eq!(target.get_txs_by_slot(9, 10).unwrap(), vec![source_tx_hash]);
+    }
+
+    #[test]
     fn snapshot_commit_replaces_public_history_for_non_repair_profiles() {
         let source_dir = tempfile::tempdir().expect("create source dir");
         let source = StateStore::open(source_dir.path()).expect("open source state");
@@ -29913,11 +29998,27 @@ mod tests {
 
     #[test]
     fn pre_consensus_tip_catch_up_allows_live_next_height() {
-        assert!(!needs_pre_consensus_tip_catch_up(306_993, 306_994));
-        assert!(!needs_pre_consensus_tip_catch_up(306_989, 306_994));
-        assert!(needs_pre_consensus_tip_catch_up(306_988, 306_994));
-        assert!(!needs_pre_consensus_tip_catch_up(306_994, 306_994));
-        assert!(!needs_pre_consensus_tip_catch_up(306_995, 306_994));
+        let network_slot: u64 = 306_994;
+        assert!(!needs_pre_consensus_tip_catch_up(
+            network_slot.saturating_sub(1),
+            network_slot
+        ));
+        assert!(!needs_pre_consensus_tip_catch_up(
+            network_slot.saturating_sub(PRE_CONSENSUS_CATCH_UP_TOLERANCE),
+            network_slot
+        ));
+        assert!(needs_pre_consensus_tip_catch_up(
+            network_slot.saturating_sub(PRE_CONSENSUS_CATCH_UP_TOLERANCE + 1),
+            network_slot
+        ));
+        assert!(!needs_pre_consensus_tip_catch_up(
+            network_slot,
+            network_slot
+        ));
+        assert!(!needs_pre_consensus_tip_catch_up(
+            network_slot + 1,
+            network_slot
+        ));
     }
 
     #[test]

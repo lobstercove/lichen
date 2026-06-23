@@ -5,6 +5,26 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.200] - 2026-06-23
+
+### Fixed
+- Restores public-history repair from archive backups whose historical
+  block/transaction/account indexes have already migrated into cold storage.
+  The guarded merge path can now attach a source cold store read-only and still
+  refuses conflicting historical rows.
+- Opens cold stores read-only for account-history inspection and dry-run
+  account transaction rebuilds, so diagnostics can run against live or mounted
+  archive sources without taking the writer lock.
+- Widens the restarted-validator pre-consensus entry tolerance while keeping the
+  live BFT stale-vote guard unchanged. Near-tip validators can re-enter the BFT
+  loop instead of chasing an advancing head forever, but stale validators still
+  yield before voting or proposing.
+
+### Verified
+- Passed focused read-only cold-store attach coverage, guarded source-cold
+  public-history merge coverage, pre-consensus catch-up tolerance coverage, and
+  live BFT stale-tip guard coverage.
+
 ## [0.5.199] - 2026-06-23
 
 ### Fixed

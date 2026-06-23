@@ -588,6 +588,25 @@ pub(super) fn open_cold_db<P: AsRef<Path>>(cold_path: P) -> Result<DB, String> {
         .map_err(|e| format!("Failed to open cold DB: {}", e))
 }
 
+pub(super) fn open_cold_db_read_only<P: AsRef<Path>>(cold_path: P) -> Result<DB, String> {
+    let mut db_opts = Options::default();
+    db_opts.create_if_missing(false);
+    db_opts.create_missing_column_families(false);
+    db_opts.set_max_open_files(256);
+    db_opts.set_keep_log_file_num(3);
+    db_opts.set_max_total_wal_size(64 * 1024 * 1024);
+    db_opts.increase_parallelism(2);
+    db_opts.set_max_background_jobs(2);
+
+    DB::open_cf_descriptors_read_only(
+        &db_opts,
+        cold_path.as_ref(),
+        build_cold_cf_descriptors(),
+        false,
+    )
+    .map_err(|e| format!("Failed to open cold DB read-only: {}", e))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
