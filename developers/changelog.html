@@ -79,13 +79,13 @@
         <!-- Timeline -->
         <div class="changelog-timeline">
 
-            <!-- ============ v0.5.198 ============ -->
+            <!-- ============ v0.5.199 ============ -->
             <div class="changelog-entry">
                 <div class="changelog-header">
-                    <span class="changelog-version">v0.5.198</span>
+                    <span class="changelog-version">v0.5.199</span>
                     <span class="changelog-date">June 23, 2026</span>
                 </div>
-                <h3 class="changelog-title">Live Validator Rejoin Catch-Up</h3>
+                <h3 class="changelog-title">Live Validator Rejoin and Voting Gate</h3>
 
                 <div class="changelog-section" data-type="fixed">
                     <h4><i class="fas fa-bug" style="color: var(--warning)"></i> Fixes</h4>
@@ -94,6 +94,9 @@
                             reset against the active LiveSync cooldown instead of the initial-sync cooldown, so a
                             restarted near-tip validator can immediately request the next small gap and stay eligible
                             for proposer rotation.</li>
+                        <li><strong>Pre-consensus voting gate</strong> &mdash; resumed validators now enter BFT once they
+                            are within a bounded voting-ready tolerance of the moving live tip, instead of chasing exact
+                            tip equality and syncing one block at a time without proposing.</li>
                         <li><strong>Release baseline</strong> &mdash; keeps v0.5.197 as the signed rollback point.</li>
                     </ul>
                 </div>

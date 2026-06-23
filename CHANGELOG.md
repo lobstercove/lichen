@@ -5,9 +5,13 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.5.198] - 2026-06-23
+## [0.5.199] - 2026-06-23
 
 ### Fixed
+- Allows restarted near-tip validators to leave the pre-consensus sync gate once
+  they are within the explicit voting-ready tolerance of the moving live tip,
+  instead of chasing exact tip equality forever and syncing one block at a time
+  without re-entering proposer rotation.
 - Resets successful LiveSync catch-up batches against the active LiveSync
   cooldown instead of the initial-sync cooldown. A restarted near-tip validator
   can now immediately request the next small catch-up gap after a successful

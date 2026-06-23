@@ -479,6 +479,11 @@ const LIVE_SYNC_PROGRESS_CHECK_SECS: u64 = 5;
 /// the peer tip is several heights ahead this node must let sync catch up
 /// instead of proposing or committing from stale canonical state.
 const LIVE_BFT_CATCH_UP_GAP: u64 = 3;
+/// Pre-consensus gating should keep clearly stale restarted/joining validators
+/// out of BFT, but must not require exact equality with a moving live tip.
+/// At 400ms slots, exact-tip gating can chase the head forever and leave a
+/// validator syncing one block at a time without re-entering proposer rotation.
+const PRE_CONSENSUS_CATCH_UP_TOLERANCE: u64 = 5;
 const FUTURE_CONSENSUS_PROPOSAL_BUFFER_HEIGHTS: u64 = 10;
 
 /// QoS: per-peer block-range serving token bucket, measured in blocks.
@@ -2112,10 +2117,10 @@ fn should_use_join_checkpoint_bootstrap(
 }
 
 fn needs_pre_consensus_tip_catch_up(current_slot: u64, network_slot: u64) -> bool {
-    // Peer gossip can advertise the next BFT height before a block is
-    // committed. Requiring exact catch-up here can deadlock restarted
-    // validators at tip N while everyone waits for non-existent block N+1.
-    network_slot > current_slot.saturating_add(1)
+    // Peer gossip/RPC can report a live tip a few slots ahead while this node
+    // is actively applying blocks. Requiring exact equality here can keep a
+    // restarted validator in InitialSync forever on a healthy moving chain.
+    needs_bootstrap_slot_catch_up(current_slot, network_slot, PRE_CONSENSUS_CATCH_UP_TOLERANCE)
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -21210,8 +21215,11 @@ async fn run_validator() {
             }
             if needs_pre_consensus_tip_catch_up(current_slot, network_slot) {
                 info!(
-                    "⏳ Syncing to exact network tip before consensus (current: {}, network: {}, {} validators)",
-                    current_slot, network_slot, validator_count
+                    "⏳ Syncing to voting-ready network tip before consensus (current: {}, network: {}, tolerance: {}, {} validators)",
+                    current_slot,
+                    network_slot,
+                    PRE_CONSENSUS_CATCH_UP_TOLERANCE,
+                    validator_count
                 );
                 drain_and_log_pre_consensus_bft_queues(
                     &mut proposal_rx,
@@ -21283,8 +21291,10 @@ async fn run_validator() {
 
                 if needs_pre_consensus_tip_catch_up(current_slot, network_slot) {
                     info!(
-                        "⏳ Registration confirmed; syncing to exact network tip before voting (current: {}, network: {})",
-                        current_slot, network_slot
+                        "⏳ Registration confirmed; syncing to voting-ready network tip before voting (current: {}, network: {}, tolerance: {})",
+                        current_slot,
+                        network_slot,
+                        PRE_CONSENSUS_CATCH_UP_TOLERANCE
                     );
                     drain_and_log_pre_consensus_bft_queues(
                         &mut proposal_rx,
@@ -29904,7 +29914,8 @@ mod tests {
     #[test]
     fn pre_consensus_tip_catch_up_allows_live_next_height() {
         assert!(!needs_pre_consensus_tip_catch_up(306_993, 306_994));
-        assert!(needs_pre_consensus_tip_catch_up(306_992, 306_994));
+        assert!(!needs_pre_consensus_tip_catch_up(306_989, 306_994));
+        assert!(needs_pre_consensus_tip_catch_up(306_988, 306_994));
         assert!(!needs_pre_consensus_tip_catch_up(306_994, 306_994));
         assert!(!needs_pre_consensus_tip_catch_up(306_995, 306_994));
     }
@@ -29945,7 +29956,7 @@ mod tests {
                 "time::sleep(Duration::from_millis(500)).await;",
             ),
             (
-                "Syncing to exact network tip before consensus",
+                "Syncing to voting-ready network tip before consensus",
                 "time::sleep(Duration::from_millis(200)).await;",
             ),
             (
@@ -29953,7 +29964,7 @@ mod tests {
                 "tokio::time::sleep(Duration::from_secs(2)).await;",
             ),
             (
-                "Registration confirmed; syncing to exact network tip before voting",
+                "Registration confirmed; syncing to voting-ready network tip before voting",
                 "time::sleep(Duration::from_millis(200)).await;",
             ),
         ] {
