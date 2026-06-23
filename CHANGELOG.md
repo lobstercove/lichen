@@ -5,6 +5,22 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.201] - 2026-06-23
+
+### Fixed
+- Supersedes the `v0.5.200` canary by restoring the restarted-validator
+  pre-consensus entry tolerance to the stable five-slot window used by
+  `v0.5.199`. A restarted validator that is more than the voting-ready window
+  behind must remain in sync catch-up instead of entering live BFT and consuming
+  future votes without advancing its local tip.
+- Keeps the archive-backed public-history merge improvements from `v0.5.200`,
+  including read-only source cold-store attachment for restoring real
+  block/transaction/account-history rows from backed data.
+
+### Verified
+- Passed focused pre-consensus catch-up coverage and guarded source-cold
+  public-history merge coverage before the broader release gate.
+
 ## [0.5.200] - 2026-06-23
 
 ### Fixed

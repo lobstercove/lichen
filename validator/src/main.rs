@@ -484,11 +484,7 @@ const LIVE_BFT_CATCH_UP_GAP: u64 = 3;
 /// out of BFT, but must not require exact equality with a moving live tip.
 /// At 400ms slots, exact-tip gating can chase the head forever and leave a
 /// validator syncing one block at a time without re-entering proposer rotation.
-///
-/// Keep this wider than the live BFT catch-up gap. The pre-consensus gate only
-/// decides when the node may enter the BFT loop; `LIVE_BFT_CATCH_UP_GAP` still
-/// prevents stale voting/proposing until the node is close to the observed tip.
-const PRE_CONSENSUS_CATCH_UP_TOLERANCE: u64 = 32;
+const PRE_CONSENSUS_CATCH_UP_TOLERANCE: u64 = 5;
 const FUTURE_CONSENSUS_PROPOSAL_BUFFER_HEIGHTS: u64 = 10;
 
 /// QoS: per-peer block-range serving token bucket, measured in blocks.

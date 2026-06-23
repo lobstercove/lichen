@@ -79,6 +79,30 @@
         <!-- Timeline -->
         <div class="changelog-timeline">
 
+            <!-- ============ v0.5.201 ============ -->
+            <div class="changelog-entry">
+                <div class="changelog-header">
+                    <span class="changelog-version">v0.5.201</span>
+                    <span class="changelog-date">June 23, 2026</span>
+                </div>
+                <h3 class="changelog-title">Archive History Repair and Stable Rejoin Gate</h3>
+
+                <div class="changelog-section" data-type="fixed">
+                    <h4><i class="fas fa-bug" style="color: var(--warning)"></i> Fixes</h4>
+                    <ul>
+                        <li><strong>Public history repair</strong> &mdash; guarded account/block/transaction history
+                            merges can attach a source cold store read-only, allowing backed archive data to restore
+                            real wallet and explorer activity without replacing balances, contract storage, validator
+                            state, or tip cursors.</li>
+                        <li><strong>Validator rejoin gate</strong> &mdash; restored the stable five-slot voting-ready
+                            pre-consensus window from v0.5.199, so a restarted validator that is farther behind remains
+                            in sync catch-up instead of entering live BFT too early.</li>
+                        <li><strong>Release baseline</strong> &mdash; v0.5.199 is the signed rollback point for this
+                            release.</li>
+                    </ul>
+                </div>
+            </div>
+
             <!-- ============ v0.5.199 ============ -->
             <div class="changelog-entry">
                 <div class="changelog-header">
@@ -97,7 +121,8 @@
                         <li><strong>Pre-consensus voting gate</strong> &mdash; resumed validators now enter BFT once they
                             are within a bounded voting-ready tolerance of the moving live tip, instead of chasing exact
                             tip equality and syncing one block at a time without proposing.</li>
-                        <li><strong>Release baseline</strong> &mdash; keeps v0.5.197 as the signed rollback point.</li>
+                        <li><strong>Release baseline</strong> &mdash; retained as the current signed rollback point for
+                            the v0.5.201 release.</li>
                     </ul>
                 </div>
             </div>
