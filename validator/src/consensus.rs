@@ -2471,21 +2471,21 @@ mod tests {
         let (kp, pk) = make_validator(1);
         let mut engine = ConsensusEngine::new(kp, pk);
 
-        // Round 0: base = 2000ms
+        // Round 0: base = 800ms
         engine.round = 0;
-        assert_eq!(engine.propose_timeout(), Duration::from_millis(2000));
+        assert_eq!(engine.propose_timeout(), Duration::from_millis(800));
 
-        // Round 1: 2000 * 1.5 = 3000ms
+        // Round 1: 800 * 1.5 = 1200ms
         engine.round = 1;
-        assert_eq!(engine.propose_timeout(), Duration::from_millis(3000));
+        assert_eq!(engine.propose_timeout(), Duration::from_millis(1200));
 
-        // Round 2: 3000 * 1.5 = 4500ms
+        // Round 2: 1200 * 1.5 = 1800ms
         engine.round = 2;
-        assert_eq!(engine.propose_timeout(), Duration::from_millis(4500));
+        assert_eq!(engine.propose_timeout(), Duration::from_millis(1800));
 
-        // Round 3: 4500 * 1.5 = 6750ms
+        // Round 3: 1800 * 1.5 = 2700ms
         engine.round = 3;
-        assert_eq!(engine.propose_timeout(), Duration::from_millis(6750));
+        assert_eq!(engine.propose_timeout(), Duration::from_millis(2700));
     }
 
     #[test]
@@ -2493,17 +2493,17 @@ mod tests {
         let (kp, pk) = make_validator(1);
         let mut engine = ConsensusEngine::new(kp, pk);
 
-        // Round 0: base = 1000ms
+        // Round 0: base = 500ms
         engine.round = 0;
-        assert_eq!(engine.prevote_timeout(), Duration::from_millis(1000));
+        assert_eq!(engine.prevote_timeout(), Duration::from_millis(500));
 
-        // Round 1: 1000 * 1.5 = 1500ms
+        // Round 1: 500 * 1.5 = 750ms
         engine.round = 1;
-        assert_eq!(engine.prevote_timeout(), Duration::from_millis(1500));
+        assert_eq!(engine.prevote_timeout(), Duration::from_millis(750));
 
-        // Round 2: 1500 * 1.5 = 2250ms
+        // Round 2: 750 * 1.5 = 1125ms
         engine.round = 2;
-        assert_eq!(engine.prevote_timeout(), Duration::from_millis(2250));
+        assert_eq!(engine.prevote_timeout(), Duration::from_millis(1125));
     }
 
     #[test]
@@ -2511,11 +2511,11 @@ mod tests {
         let (kp, pk) = make_validator(1);
         let mut engine = ConsensusEngine::new(kp, pk);
 
-        // At very high rounds, should cap at 60 seconds
+        // At very high rounds, should cap at 5 seconds
         engine.round = 50;
-        assert_eq!(engine.propose_timeout(), Duration::from_millis(60_000));
-        assert_eq!(engine.prevote_timeout(), Duration::from_millis(60_000));
-        assert_eq!(engine.precommit_timeout(), Duration::from_millis(60_000));
+        assert_eq!(engine.propose_timeout(), Duration::from_millis(5_000));
+        assert_eq!(engine.prevote_timeout(), Duration::from_millis(5_000));
+        assert_eq!(engine.precommit_timeout(), Duration::from_millis(5_000));
     }
 
     #[test]

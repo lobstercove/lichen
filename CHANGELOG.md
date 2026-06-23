@@ -5,6 +5,20 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.197] - 2026-06-23
+
+### Fixed
+- Tunes the default 400ms-slot BFT view-change timers to avoid multi-second
+  stalls when an active staked proposer is offline. New genesis defaults use
+  800ms propose, 500ms prevote, 500ms precommit, and a 5s max phase timeout.
+- Documents the required consensus timing check in the mainnet launch runbook so
+  future networks do not keep the old multi-second timeout profile.
+
+### Verified
+- Passed focused consensus timeout validation tests, local clean 3-validator
+  startup from the deployment runbook, deterministic E2E smoke, and a local
+  one-validator-down fault sample that held roughly 400ms slots.
+
 ## [0.5.196] - 2026-06-22
 
 ### Fixed

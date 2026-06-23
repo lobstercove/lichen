@@ -1300,6 +1300,36 @@ mod tests {
     }
 
     #[test]
+    fn test_default_genesis_timing_matches_400ms_slots() {
+        for genesis in [
+            GenesisConfig::default_testnet(),
+            GenesisConfig::default_mainnet(),
+        ] {
+            assert_eq!(genesis.consensus.slot_duration_ms, 400);
+            assert_eq!(
+                genesis.consensus.propose_timeout_base_ms,
+                DEFAULT_BFT_PROPOSE_TIMEOUT_BASE_MS
+            );
+            assert_eq!(
+                genesis.consensus.prevote_timeout_base_ms,
+                DEFAULT_BFT_PREVOTE_TIMEOUT_BASE_MS
+            );
+            assert_eq!(
+                genesis.consensus.precommit_timeout_base_ms,
+                DEFAULT_BFT_PRECOMMIT_TIMEOUT_BASE_MS
+            );
+            assert_eq!(
+                genesis.consensus.max_phase_timeout_ms,
+                DEFAULT_BFT_MAX_PHASE_TIMEOUT_MS
+            );
+            assert!(
+                genesis.consensus.propose_timeout_base_ms <= genesis.consensus.slot_duration_ms * 2,
+                "propose timeout must not stall 400ms slots for multiple slot durations"
+            );
+        }
+    }
+
+    #[test]
     fn test_validate_rejects_zero_consensus_timeout_base() {
         let mut genesis = GenesisConfig::default_testnet();
         genesis.consensus.propose_timeout_base_ms = 0;

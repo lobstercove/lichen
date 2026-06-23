@@ -109,7 +109,7 @@ async function deriveReleaseSignerAddress() {
     );
     assert(
         runbook.includes('node "$REPO_ROOT/scripts/verify-release-checksums.mjs" .') &&
-            runbook.includes('export LICHEN_RELEASE_TAG=v0.5.195'),
+            runbook.includes('export LICHEN_RELEASE_TAG=v0.5.196'),
         'mainnet launch runbook verifies detached release checksums and documents signed rollback'
     );
 

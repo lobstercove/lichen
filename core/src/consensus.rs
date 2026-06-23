@@ -22,16 +22,20 @@ use std::sync::Arc;
 pub const MIN_VALIDATOR_STAKE: u64 = 75_000 * 1_000_000_000; // 75k LICN in spores
 
 /// Default BFT propose timeout base in milliseconds.
-pub const DEFAULT_BFT_PROPOSE_TIMEOUT_BASE_MS: u64 = 2000;
+///
+/// Lichen targets 400ms slots. The propose timeout must leave room for a
+/// delayed honest proposal to arrive, but it must not stall the chain for
+/// multiple slots when the selected proposer is offline.
+pub const DEFAULT_BFT_PROPOSE_TIMEOUT_BASE_MS: u64 = 800;
 
 /// Default BFT prevote timeout base in milliseconds.
-pub const DEFAULT_BFT_PREVOTE_TIMEOUT_BASE_MS: u64 = 1000;
+pub const DEFAULT_BFT_PREVOTE_TIMEOUT_BASE_MS: u64 = 500;
 
 /// Default BFT precommit timeout base in milliseconds.
-pub const DEFAULT_BFT_PRECOMMIT_TIMEOUT_BASE_MS: u64 = 1000;
+pub const DEFAULT_BFT_PRECOMMIT_TIMEOUT_BASE_MS: u64 = 500;
 
 /// Default cap for any BFT phase timeout in milliseconds.
-pub const DEFAULT_BFT_MAX_PHASE_TIMEOUT_MS: u64 = 60_000;
+pub const DEFAULT_BFT_MAX_PHASE_TIMEOUT_MS: u64 = 5_000;
 
 /// Bootstrap grant amount (100,000 LICN) — the initial stake granted to the first 200 validators.
 /// Funded from the genesis treasury reserve (not from block reward minting).
