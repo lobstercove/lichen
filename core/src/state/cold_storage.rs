@@ -42,6 +42,13 @@ pub struct PublicHistoryMergeReport {
     pub cf_reports: Vec<PublicHistoryMergeCfReport>,
 }
 
+struct PublicHistoryMergeCfSource<'a> {
+    db: &'a DB,
+    source_cf_name: &'static str,
+    public_cf_name: &'static str,
+    source_cold: bool,
+}
+
 impl PublicHistoryMergeReport {
     pub fn has_conflicts(&self) -> bool {
         self.conflict_rows > 0
@@ -306,17 +313,15 @@ impl StateStore {
 
     fn merge_public_history_cf_from_db(
         &self,
-        source_db: &DB,
-        source_cf_name: &'static str,
-        public_cf_name: &'static str,
+        source: PublicHistoryMergeCfSource<'_>,
         target_cf_name: &'static str,
-        source_cold: bool,
         target_cold: bool,
         dry_run: bool,
     ) -> Result<PublicHistoryMergeCfReport, String> {
-        let source_cf = source_db
-            .cf_handle(source_cf_name)
-            .ok_or_else(|| format!("Source CF {source_cf_name} not found"))?;
+        let source_cf = source
+            .db
+            .cf_handle(source.source_cf_name)
+            .ok_or_else(|| format!("Source CF {} not found", source.source_cf_name))?;
         let target_db = if target_cold {
             self.cold_db
                 .as_ref()
@@ -331,11 +336,13 @@ impl StateStore {
 
         let mut read_opts = rocksdb::ReadOptions::default();
         read_opts.set_total_order_seek(true);
-        let iter = source_db.iterator_cf_opt(&source_cf, read_opts, rocksdb::IteratorMode::Start);
+        let iter = source
+            .db
+            .iterator_cf_opt(&source_cf, read_opts, rocksdb::IteratorMode::Start);
 
         let mut report = PublicHistoryMergeCfReport {
-            source_cf: source_cf_name,
-            source_cold,
+            source_cf: source.source_cf_name,
+            source_cold: source.source_cold,
             target_cf: target_cf_name,
             target_cold,
             ..PublicHistoryMergeCfReport::default()
@@ -345,19 +352,17 @@ impl StateStore {
 
         for item in iter {
             let (key, value) =
-                item.map_err(|err| format!("Failed iterating {source_cf_name}: {err}"))?;
-            if !is_public_history_merge_row(public_cf_name, &key, &value) {
+                item.map_err(|err| format!("Failed iterating {}: {err}", source.source_cf_name))?;
+            if !is_public_history_merge_row(source.public_cf_name, &key, &value) {
                 continue;
             }
             report.source_rows = report.source_rows.saturating_add(1);
 
             if target_cold {
-                if let Some(hot_cf) = self.db.cf_handle(public_cf_name) {
-                    match self
-                        .db
-                        .get_cf(&hot_cf, &key)
-                        .map_err(|err| format!("Failed reading hot {public_cf_name}: {err}"))?
-                    {
+                if let Some(hot_cf) = self.db.cf_handle(source.public_cf_name) {
+                    match self.db.get_cf(&hot_cf, &key).map_err(|err| {
+                        format!("Failed reading hot {}: {err}", source.public_cf_name)
+                    })? {
                         Some(existing) if existing.as_slice() == value.as_ref() => {
                             report.identical_rows = report.identical_rows.saturating_add(1);
                             continue;
@@ -366,7 +371,8 @@ impl StateStore {
                             report.conflict_rows = report.conflict_rows.saturating_add(1);
                             if !dry_run {
                                 return Err(format!(
-                                    "Refusing public history merge: hot {public_cf_name} key {} differs between source and target",
+                                    "Refusing public history merge: hot {} key {} differs between source and target",
+                                    source.public_cf_name,
                                     hex::encode(&key)
                                 ));
                             }
@@ -427,11 +433,13 @@ impl StateStore {
         dry_run: bool,
     ) -> Result<PublicHistoryMergeCfReport, String> {
         self.merge_public_history_cf_from_db(
-            source.db.as_ref(),
-            source_cf_name,
-            source_cf_name,
+            PublicHistoryMergeCfSource {
+                db: source.db.as_ref(),
+                source_cf_name,
+                public_cf_name: source_cf_name,
+                source_cold: false,
+            },
             target_cf_name,
-            false,
             target_cold,
             dry_run,
         )
@@ -501,11 +509,13 @@ impl StateStore {
                     source_cf
                 };
                 let cf_report = self.merge_public_history_cf_from_db(
-                    source_cold.as_ref(),
-                    cold_cf,
-                    source_cf,
+                    PublicHistoryMergeCfSource {
+                        db: source_cold.as_ref(),
+                        source_cf_name: cold_cf,
+                        public_cf_name: source_cf,
+                        source_cold: true,
+                    },
                     target_cf,
-                    true,
                     self.cold_db.is_some(),
                     dry_run,
                 )?;
