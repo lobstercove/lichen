@@ -88,6 +88,16 @@ const SYNC_COOLDOWN_MAX_SECS: u64 = 30;
 /// gaps between fully applied batches.
 pub const INITIAL_SYNC_COOLDOWN_MS: u64 = 500;
 
+fn sync_cooldown_ms(phase: SyncPhase, failures: u32) -> u64 {
+    if phase == SyncPhase::InitialSync {
+        INITIAL_SYNC_COOLDOWN_MS
+    } else if failures == 0 {
+        SYNC_COOLDOWN_BASE_SECS * 1000
+    } else {
+        ((SYNC_COOLDOWN_BASE_SECS << failures.min(4)).min(SYNC_COOLDOWN_MAX_SECS)) * 1000
+    }
+}
+
 /// Tracks chain synchronization state
 pub struct SyncManager {
     /// Blocks we're waiting for (slot -> received candidates that can't apply yet).
@@ -312,13 +322,7 @@ impl SyncManager {
         // LiveSync uses exponential backoff to avoid flooding peers.
         let last_triggered = *self.last_sync_triggered_at.lock().await;
         let failures = *self.consecutive_failures.lock().await;
-        let cooldown_ms = if phase == SyncPhase::InitialSync {
-            INITIAL_SYNC_COOLDOWN_MS
-        } else if failures == 0 {
-            SYNC_COOLDOWN_BASE_SECS * 1000
-        } else {
-            ((SYNC_COOLDOWN_BASE_SECS << failures.min(4)).min(SYNC_COOLDOWN_MAX_SECS)) * 1000
-        };
+        let cooldown_ms = sync_cooldown_ms(phase, failures);
         if last_triggered.elapsed() < std::time::Duration::from_millis(cooldown_ms) {
             return None;
         }
@@ -580,9 +584,12 @@ impl SyncManager {
             info!("✅ Sync batch reached requested target at slot {}", slot);
             self.record_sync_success().await;
             if self.complete_sync_if_current(start, end).await {
+                let phase = *self.sync_phase.lock().await;
+                let failures = *self.consecutive_failures.lock().await;
+                let cooldown_ms = sync_cooldown_ms(phase, failures);
                 let mut last_triggered = self.last_sync_triggered_at.lock().await;
                 *last_triggered = Instant::now()
-                    .checked_sub(Duration::from_millis(INITIAL_SYNC_COOLDOWN_MS))
+                    .checked_sub(Duration::from_millis(cooldown_ms))
                     .unwrap_or_else(Instant::now);
                 return true;
             }
@@ -815,6 +822,24 @@ mod tests {
         sm.note_seen(10).await;
         let batch = sm.should_sync(9).await;
         assert_eq!(batch, Some((9, 10)));
+    }
+
+    #[tokio::test]
+    async fn test_live_sync_success_allows_immediate_follow_up_batch() {
+        let sm = SyncManager::new();
+        sm.transition_to_live().await;
+
+        sm.note_seen(10).await;
+        sm.start_sync(9, 10).await;
+        assert!(sm.record_progress(10).await);
+
+        sm.note_seen(12).await;
+        let batch = sm.should_sync(10).await;
+        assert_eq!(
+            batch,
+            Some((10, 12)),
+            "a live validator that completed a catch-up batch must not wait the full live cooldown before requesting the next near-tip gap"
+        );
     }
 
     #[tokio::test]

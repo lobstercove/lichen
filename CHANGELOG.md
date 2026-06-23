@@ -5,6 +5,20 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.198] - 2026-06-23
+
+### Fixed
+- Resets successful LiveSync catch-up batches against the active LiveSync
+  cooldown instead of the initial-sync cooldown. A restarted near-tip validator
+  can now immediately request the next small catch-up gap after a successful
+  live batch, so it does not remain a vote-only follower while proposer turns
+  move past it.
+
+### Verified
+- Passed focused LiveSync follow-up batch regression coverage, the full
+  validator sync test module, live BFT catch-up guard tests, and BFT timeout
+  validation tests.
+
 ## [0.5.197] - 2026-06-23
 
 ### Fixed
