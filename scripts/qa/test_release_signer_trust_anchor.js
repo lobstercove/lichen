@@ -103,13 +103,19 @@ async function deriveReleaseSignerAddress() {
     );
 
     const runbook = readText('deploy/mainnet-launch-runbook.md');
+    const releasePair = runbook.match(
+        /Current signed-release target for this runbook is `(v\d+\.\d+\.\d+)`; keep `(v\d+\.\d+\.\d+)` as the signed rollback point/
+    );
     assert(
         runbook.includes(releaseSigner),
         'mainnet launch runbook records the release signer trust anchor'
     );
+    assert(Boolean(releasePair), 'mainnet launch runbook declares current release and rollback tags');
     assert(
         runbook.includes('node "$REPO_ROOT/scripts/verify-release-checksums.mjs" .') &&
-            runbook.includes('export LICHEN_RELEASE_TAG=v0.5.196'),
+            releasePair &&
+            runbook.includes(`export LICHEN_RELEASE_TAG=${releasePair[1]}`) &&
+            runbook.includes(`export LICHEN_RELEASE_TAG=${releasePair[2]}`),
         'mainnet launch runbook verifies detached release checksums and documents signed rollback'
     );
 
