@@ -32,6 +32,7 @@ import {
   baseUnitsToDecimalString,
   parsePositiveDecimalBaseUnits
 } from '../core/amount-service.js';
+import { claimMossStake } from '../core/staking-service.js';
 
 const LICN_LOGO_URL = 'https://lichen.network/assets/img/coins/128x128/licn.png';
 
@@ -244,6 +245,55 @@ function securePasswordPrompt(label = 'Wallet password (for signing):') {
 
 function openPopupFullPage(hash = '') {
   chrome.tabs.create({ url: chrome.runtime.getURL('src/pages/full.html') + hash });
+}
+
+async function handlePopupMossStakeClaim(button) {
+  const wallet = getActiveWallet();
+  if (!wallet) {
+    setStatus('No active wallet');
+    return;
+  }
+
+  const originalHtml = button?.innerHTML || '';
+  if (button) {
+    button.disabled = true;
+    button.style.opacity = '0.65';
+    button.style.cursor = 'wait';
+    button.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Claiming';
+  }
+
+  try {
+    const password = await securePasswordPrompt('Enter your wallet password to claim matured MossStake unstake.');
+    if (!password) {
+      setStatus('Claim cancelled');
+      return;
+    }
+
+    setStatus('Claiming MossStake unstake...');
+    const result = await claimMossStake({
+      wallet,
+      password,
+      network: state.network?.selected || DEFAULT_NETWORK
+    });
+    const txHash = result?.txHash ? String(result.txHash) : '';
+    setStatus(txHash ? `Claim submitted • ${txHash.slice(0, 12)}...` : 'Claim submitted');
+    await notify('Lichen Wallet', 'MossStake claim submitted');
+    await refreshBalance();
+    await loadExtensionStaking();
+    const activeTab = document.querySelector('.popup-dash-tab.active')?.dataset?.tab;
+    if (activeTab === 'activity') await loadActivity();
+  } catch (error) {
+    const message = error?.message || String(error || 'Unknown error');
+    setStatus(`Claim failed: ${message}`);
+    await notify('Lichen Wallet', `MossStake claim failed: ${message}`);
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.style.opacity = '';
+      button.style.cursor = '';
+      button.innerHTML = originalHtml;
+    }
+  }
 }
 
 let createWizardState = {
@@ -1506,7 +1556,7 @@ async function loadExtensionStaking() {
       }).join('')}
       `;
       pendingEl.querySelectorAll('.popupClaimMossStakeBtn').forEach(btn => {
-        btn.addEventListener('click', () => openPopupFullPage('#staking'));
+        btn.addEventListener('click', () => handlePopupMossStakeClaim(btn));
       });
     } else {
       pendingEl.style.display = 'none';

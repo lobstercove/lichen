@@ -16,9 +16,10 @@ import {
   bytesToHex,
   base58Encode,
   base58Decode,
+  signTransaction,
   generateEVMAddress
 } from '../core/crypto-service.js';
-import { buildSignedNativeTransferTransaction, buildSignedSingleInstructionTransaction, encodeTransactionBase64, registerEvmAddress } from '../core/tx-service.js';
+import { buildSignedNativeTransferTransaction, buildSignedSingleInstructionTransaction, encodeTransactionBase64, registerEvmAddress, serializeMessageForSigning } from '../core/tx-service.js';
 import { notify } from '../core/notification-service.js';
 import {
   getBridgeDepositStatus,
@@ -1857,6 +1858,35 @@ function unspentExtensionShieldedNotes() {
   return (_shieldedState.notes || []).filter((note) => !note.spent && extensionNoteValueSpores(note) > 0n);
 }
 
+function selectExactExtensionUnshieldNotes(unspentNotes, targetAmount) {
+  const target = baseUnitBigIntExt(targetAmount);
+  if (target <= 0n) return null;
+  const candidates = (Array.isArray(unspentNotes) ? unspentNotes : [])
+    .map((note) => ({ note, value: extensionNoteValueSpores(note) }))
+    .filter((entry) => entry.value > 0n)
+    .sort((a, b) => (a.value === b.value ? 0 : a.value > b.value ? -1 : 1));
+
+  const exact = candidates.find((entry) => entry.value === target);
+  if (exact) return [exact.note];
+
+  const total = candidates.reduce((sum, entry) => sum + entry.value, 0n);
+  if (total === target) return candidates.map((entry) => entry.note);
+  if (total < target) return null;
+
+  const bySum = new Map([[0n, []]]);
+  for (const entry of candidates) {
+    const existing = Array.from(bySum.entries());
+    for (const [sum, notes] of existing) {
+      const next = sum + entry.value;
+      if (next > target || bySum.has(next)) continue;
+      const nextNotes = [...notes, entry.note];
+      if (next === target) return nextNotes;
+      bySum.set(next, nextNotes);
+    }
+  }
+  return null;
+}
+
 async function deriveExtensionShieldedStorageKey() {
   if (!_shieldedState.spendingKey || !_shieldedState.viewingKey) return null;
   const domain = new TextEncoder().encode('lichen-extension-shielded-storage-v1');
@@ -2164,16 +2194,32 @@ async function assertExtensionPublicFeeBalance(type) {
 }
 
 async function signAndSubmitExtensionShieldedInstruction({ wallet, password, instructionDataBytes }) {
+  return signAndSubmitExtensionShieldedInstructions({
+    wallet,
+    password,
+    instructions: [{ instructionDataBytes }],
+  });
+}
+
+async function signAndSubmitExtensionShieldedInstructions({ wallet, password, instructions }) {
   const client = rpc();
   const privateKeyHex = await decryptPrivateKey(wallet.encryptedKey, password);
   const blockhash = await client.getRecentBlockhash();
-  const tx = await buildSignedSingleInstructionTransaction({
-    privateKeyHex,
-    fromAddress: wallet.address,
+  if (!Array.isArray(instructions) || instructions.length === 0) {
+    throw new Error('No shielded instructions to submit');
+  }
+  const fromPubkey = base58Decode(wallet.address);
+  const message = {
+    instructions: instructions.map(({ instructionDataBytes }) => ({
+      program_id: Array.from(new Uint8Array(32)),
+      accounts: [Array.from(fromPubkey)],
+      data: Array.from(instructionDataBytes),
+    })),
     blockhash,
-    instructionDataBytes,
-  });
-  return client.sendTransactionWithPreflight(encodeTransactionBase64(tx));
+  };
+  const messageBytes = serializeMessageForSigning(message);
+  const signature = await signTransaction(privateKeyHex, messageBytes);
+  return client.sendTransactionWithPreflight(encodeTransactionBase64({ signatures: [signature], message }));
 }
 
 async function submitExtensionShield({ wallet, amountLicn, password, statusEl }) {
@@ -2270,44 +2316,58 @@ async function submitExtensionUnshield({ wallet, amountLicn, password, recipient
   }
 
   const amountSpores = parseLicnAmountSporesExt(amountLicn, 'Unshield amount');
-  const note = (_shieldedState.notes || []).find((n) => !n.spent && extensionNoteValueSpores(n) === amountSpores);
-  if (!note) throw new Error('Unshield currently requires a single note exactly matching the amount');
+  const notes = selectExactExtensionUnshieldNotes(unspentExtensionShieldedNotes(), amountSpores);
+  if (!notes || notes.length === 0) {
+    throw new Error('Unshield amount must match one note or an exact sum of your notes. Use the full shielded balance to withdraw all notes.');
+  }
 
   const client = rpc();
   const pool = await client.call('getShieldedPoolState', []).catch(() => _shieldedState.poolStats);
-  const noteIndex = await resolveExtensionNoteCommitmentIndex(client, note);
-  const merklePath = await client.call('getShieldedMerklePath', [noteIndex]);
-  const merkleRoot = merklePath?.root || merklePath?.merkleRoot || merklePath?.merkle_root || pool?.merkleRoot || pool?.merkle_root;
-  if (!merkleRoot) throw new Error('Shielded Merkle root unavailable');
-  _shieldedState.poolStats = { ...(_shieldedState.poolStats || {}), ...(pool || {}), merkleRoot };
-
-  statusEl.textContent = 'Generating unshield proof...';
-  const proof = await client.call('generateUnshieldProof', [{
-    amount: amountSpores.toString(),
-    merkle_root: merkleRoot,
-    recipient,
-    blinding: note.blinding,
-    serial: note.serial,
-    spending_key: bytesToHex(_shieldedState.spendingKey),
-    merkle_path: merklePath?.siblings || [],
-    path_bits: merklePath?.pathBits || merklePath?.path_bits || [],
-  }]);
+  const entries = [];
+  for (let index = 0; index < notes.length; index += 1) {
+    const note = notes[index];
+    const noteAmount = extensionNoteValueSpores(note);
+    statusEl.textContent = `Generating unshield proof ${index + 1}/${notes.length}...`;
+    const noteIndex = await resolveExtensionNoteCommitmentIndex(client, note);
+    const merklePath = await client.call('getShieldedMerklePath', [noteIndex]);
+    const merkleRoot = merklePath?.root || merklePath?.merkleRoot || merklePath?.merkle_root || pool?.merkleRoot || pool?.merkle_root;
+    if (!merkleRoot) throw new Error('Shielded Merkle root unavailable');
+    _shieldedState.poolStats = { ...(_shieldedState.poolStats || {}), ...(pool || {}), merkleRoot };
+    const proof = await client.call('generateUnshieldProof', [{
+      amount: noteAmount.toString(),
+      merkle_root: merkleRoot,
+      recipient,
+      blinding: note.blinding,
+      serial: note.serial,
+      spending_key: bytesToHex(_shieldedState.spendingKey),
+      merkle_path: merklePath?.siblings || [],
+      path_bits: merklePath?.pathBits || merklePath?.path_bits || [],
+    }]);
+    entries.push({
+      note,
+      proof,
+      amountSpores: noteAmount,
+      instructionDataBytes: buildExtUnshieldInstructionData(
+        noteAmount,
+        proof.nullifier,
+        proof.merkle_root,
+        proof.recipient_hash,
+        hexToBytesAnyExt(proof.proof),
+      ),
+    });
+  }
 
   statusEl.textContent = 'Submitting signed transaction...';
-  const signature = await signAndSubmitExtensionShieldedInstruction({
+  const signature = await signAndSubmitExtensionShieldedInstructions({
     wallet,
     password,
-    instructionDataBytes: buildExtUnshieldInstructionData(
-      amountSpores,
-      proof.nullifier,
-      proof.merkle_root,
-      proof.recipient_hash,
-      hexToBytesAnyExt(proof.proof),
-    ),
+    instructions: entries,
   });
 
-  note.spent = true;
-  note.nullifier = proof.nullifier;
+  for (const entry of entries) {
+    entry.note.spent = true;
+    entry.note.nullifier = entry.proof.nullifier;
+  }
   recalculateExtensionShieldedBalance();
   await saveExtensionShieldedNotes(wallet);
   return signature;
@@ -2705,7 +2765,10 @@ function showShieldModal(type) {
     <div style="background:var(--bg);border:1px solid var(--border);border-radius:16px;padding:2rem;width:420px;max-width:90vw;">
       <h3 style="margin:0 0 1rem;"><i class="fas ${icons[type]}" style="color:#10b981;"></i> ${titles[type]}</h3>
       <label style="font-size:0.85rem;font-weight:600;display:block;margin-bottom:0.25rem;">Amount (LICN)</label>
-      <input type="text" id="shieldModalAmount" placeholder="0.00" inputmode="decimal" data-wallet-numeric="true" data-min="0" style="width:100%;padding:0.75rem;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);margin-bottom:1rem;box-sizing:border-box;">
+      <div style="position:relative;margin-bottom:1rem;">
+        <input type="text" id="shieldModalAmount" placeholder="0.00" inputmode="decimal" data-wallet-numeric="true" data-min="0" style="width:100%;padding:0.75rem ${type === 'unshield' ? '3.5rem' : '0.75rem'} 0.75rem 0.75rem;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);box-sizing:border-box;">
+        ${type === 'unshield' ? '<button type="button" id="shieldModalMax" style="position:absolute;right:0.45rem;top:50%;transform:translateY(-50%);border:none;background:transparent;color:#00D9FF;font-weight:700;font-size:0.78rem;cursor:pointer;">MAX</button>' : ''}
+      </div>
       ${extraField}
       <label style="font-size:0.85rem;font-weight:600;display:block;margin-bottom:0.25rem;">Wallet Password</label>
       <input type="password" id="shieldModalPassword" placeholder="Enter password" style="width:100%;padding:0.75rem;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);margin-bottom:1.25rem;box-sizing:border-box;">
@@ -2739,6 +2802,9 @@ function showShieldModal(type) {
       const shieldedBal = extensionShieldedBalanceSpores();
       if (shieldedBal <= 0n) return 'No shielded balance available';
       if (amountSpores > shieldedBal) return `Max available: ${formatLicnBaseUnitsFixedExt(shieldedBal)} LICN`;
+      if (!selectExactExtensionUnshieldNotes(unspentExtensionShieldedNotes(), amountSpores)) {
+        return 'Amount must match one note or an exact note sum; use MAX to withdraw all notes';
+      }
     }
     if (type === 'transfer') {
       const recipient = normalizeExtensionViewingKey(recipientInput?.value || '');
@@ -2765,6 +2831,10 @@ function showShieldModal(type) {
     if (type !== 'transfer' && statusLine && !statusLine.dataset.busy) statusLine.textContent = message;
   };
   [amountInput, passwordInput, recipientInput].forEach((input) => input?.addEventListener('input', refreshModalValidation));
+  overlay.querySelector('#shieldModalMax')?.addEventListener('click', () => {
+    amountInput.value = formatLicnBaseUnitsExactExt(extensionShieldedBalanceSpores());
+    refreshModalValidation();
+  });
   refreshModalValidation();
 
   overlay.querySelector('#shieldModalCancel').addEventListener('click', () => overlay.remove());

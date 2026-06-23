@@ -1026,8 +1026,10 @@ test('CC-20 extension uses chain slot and normalized .lichen labels', () => {
   assert.ok(!fullSrc.includes('const currentSlot = Math.floor(Date.now() / 400);'), 'full page should not use wall-clock slot guesses for MossStake');
   assert.ok(popupSrc.includes('isPopupQueueRequestClaimable(u, currentSlot)'),
     'popup should use the canonical queue current_slot when rendering MossStake claimability');
-  assert.ok(popupSrc.includes('popupClaimMossStakeBtn') && popupSrc.includes("openPopupFullPage('#staking')"),
-    'popup should route matured MossStake unstakes to the full-page claim flow');
+  assert.ok(popupSrc.includes("import { claimMossStake } from '../core/staking-service.js';"),
+    'popup should use the canonical MossStake claim signing service');
+  assert.ok(popupSrc.includes('popupClaimMossStakeBtn') && popupSrc.includes('handlePopupMossStakeClaim(btn)'),
+    'popup should submit matured MossStake claims directly instead of relying on a page-route side effect');
   assert.ok(fullSrc.includes('function formatLichenNameExt('), 'full page should normalize .lichen labels');
   assert.ok(fullSrc.includes("replace(/(?:\\.lichen)+$/i, '')"), 'full page should strip repeated .lichen suffixes');
   assert.ok(fullSrc.includes('formatLichenNameExt(v.voucher_name)'), 'full page vouch labels should use normalized .lichen labels');
@@ -1043,6 +1045,18 @@ test('CC-20b extension reloads active identity tab after wallet switch refresh',
     fullSrc.includes("if (activeTab === 'identity') await loadIdentityTab();"),
     'full page should reload the identity tab after switching wallets while identity is active'
   );
+});
+
+test('CC-20c extension shielded unshield supports max/full balance across multiple notes', () => {
+  assert.ok(fullSrc.includes('id="shieldModalMax"'), 'extension unshield modal should expose a MAX control');
+  assert.ok(fullSrc.includes('function selectExactExtensionUnshieldNotes('),
+    'extension should select an exact set of real notes for unshield');
+  assert.ok(fullSrc.includes('signAndSubmitExtensionShieldedInstructions('),
+    'extension should submit multi-note unshield as one signed transaction');
+  assert.ok(fullSrc.includes("return 'Amount must match one note or an exact note sum; use MAX to withdraw all notes'"),
+    'extension should guide non-exact partial amounts to MAX/full-balance behavior');
+  assert.ok(!fullSrc.includes('Unshield currently requires a single note exactly matching the amount'),
+    'extension should not require users to unshield by individual note size');
 });
 
 test('CC-21 extension shield notes resolve commitment indexes before spending', () => {

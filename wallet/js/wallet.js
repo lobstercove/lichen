@@ -1786,6 +1786,14 @@ function bindStaticControls() {
             return;
         }
 
+        if (actionName === 'fillUnshieldMax') {
+            const unshieldAmountInput = document.getElementById('unshieldAmount');
+            if (unshieldAmountInput && typeof window.getShieldedBalanceForInput === 'function') {
+                unshieldAmountInput.value = window.getShieldedBalanceForInput();
+            }
+            return;
+        }
+
         const actionArg = normalizeWalletActionArg(actionName, actionEl.dataset.walletArg);
         const passElement = actionEl.dataset.walletPassEl === 'true';
         invokeWalletAction(actionName, actionArg, passElement ? actionEl : null);
@@ -3744,7 +3752,7 @@ async function loadMossStakePosition(address, options = {}) {
                         <span class="staking-unstake-status">
                             ${isClaimable
                         ? canPayClaimFee
-                            ? `<button class="btn btn-small btn-claim" data-wallet-action="claimMossStake">
+                            ? `<button class="btn btn-small btn-claim" data-wallet-action="claimMossStake" data-wallet-pass-el="true">
                                         <i class="fas fa-check-circle"></i> Claim
                                    </button>`
                             : `<button class="btn btn-small btn-claim btn-disabled" disabled title="${claimFeeTitle}">
@@ -3964,51 +3972,60 @@ async function showMossUnstakeModal() {
 }
 
 // Claim matured MossStake unstake (instruction type 15)
-async function claimMossStake() {
+async function claimMossStake(triggerEl) {
     const wallet = getActiveWallet();
     if (!wallet) { showToast('No active wallet'); return; }
 
-    // Balance guard: verify there is a claimable unstake
-    try {
-        const queue = await rpc.call('getUnstakingQueue', [wallet.address]);
-        const pending = queue?.pending_requests || [];
-        const currentSlot = getQueueCurrentSlot(queue) || await getCurrentChainSlot();
-        if (currentSlot <= 0) {
-            showToast('Unable to confirm current chain slot');
-            return;
-        }
-        const claimable = pending.filter(r => isQueueRequestClaimable(r, currentSlot));
-        if (claimable.length === 0) {
-            showToast('No matured unstakes to claim');
-            return;
-        }
-    } catch (e) { /* let RPC reject */ }
-
-    // Fee guard: need at least the base fee in spendable LICN
-    try {
-        const balResult = await rpc.call('getBalance', [wallet.address]);
-        const spendable = u64ValueToBigInt(balResult?.spendable ?? balResult?.available ?? balResult?.balance ?? 0);
-        const baseFeeSpores = getNetworkBaseFeeSpores();
-        if (spendable < baseFeeSpores) {
-            showToast(`Insufficient LICN for fee: need ${baseUnitsToDecimalString(baseFeeSpores, 9)} LICN`);
-            return;
-        }
-    } catch (e) { /* let RPC reject */ }
-
-    const values = await showPasswordModal({
-        title: 'Claim Unstaked LICN',
-        message: 'Enter your password to sign the claim transaction. Your matured LICN will be returned to your spendable balance.',
-        icon: 'fas fa-check-circle',
-        confirmText: 'Claim',
-        requiredLicn: typeof BASE_FEE_LICN !== 'undefined' ? BASE_FEE_LICN : 0.001,
-        fields: [
-            { id: 'password', label: 'Wallet Password', type: 'password', placeholder: 'Enter password to sign' }
-        ]
-    });
-
-    if (!values || !values.password) return;
+    const originalHtml = triggerEl?.innerHTML || '';
+    if (triggerEl) {
+        triggerEl.disabled = true;
+        triggerEl.classList.add('btn-disabled');
+        triggerEl.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Checking';
+    }
 
     try {
+        showToast('Checking MossStake claim...');
+        // Balance guard: verify there is a claimable unstake
+        try {
+            const queue = await rpc.call('getUnstakingQueue', [wallet.address]);
+            const pending = queue?.pending_requests || [];
+            const currentSlot = getQueueCurrentSlot(queue) || await getCurrentChainSlot();
+            if (currentSlot <= 0) {
+                showToast('Unable to confirm current chain slot');
+                return;
+            }
+            const claimable = pending.filter(r => isQueueRequestClaimable(r, currentSlot));
+            if (claimable.length === 0) {
+                showToast('No matured unstakes to claim');
+                return;
+            }
+        } catch (e) { /* let RPC reject */ }
+
+        // Fee guard: need at least the base fee in spendable LICN
+        try {
+            const balResult = await rpc.call('getBalance', [wallet.address]);
+            const spendable = u64ValueToBigInt(balResult?.spendable ?? balResult?.available ?? balResult?.balance ?? 0);
+            const baseFeeSpores = getNetworkBaseFeeSpores();
+            if (spendable < baseFeeSpores) {
+                showToast(`Insufficient LICN for fee: need ${baseUnitsToDecimalString(baseFeeSpores, 9)} LICN`);
+                return;
+            }
+        } catch (e) { /* let RPC reject */ }
+
+        if (triggerEl) triggerEl.innerHTML = '<i class="fas fa-check-circle"></i> Claim';
+        const values = await showPasswordModal({
+            title: 'Claim Unstaked LICN',
+            message: 'Enter your password to sign the claim transaction. Your matured LICN will be returned to your spendable balance.',
+            icon: 'fas fa-check-circle',
+            confirmText: 'Claim',
+            requiredLicn: typeof BASE_FEE_LICN !== 'undefined' ? BASE_FEE_LICN : 0.001,
+            fields: [
+                { id: 'password', label: 'Wallet Password', type: 'password', placeholder: 'Enter password to sign' }
+            ]
+        });
+
+        if (!values || !values.password) return;
+
         const blockhash = await rpc.getRecentBlockhash();
         const fromPubkey = LichenCrypto.addressToBytes(wallet.address);
 
@@ -4032,8 +4049,13 @@ async function claimMossStake() {
         const txBytes = new TextEncoder().encode(JSON.stringify(transaction));
         const txBase64 = btoa(String.fromCharCode(...txBytes));
 
+        if (triggerEl) triggerEl.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Claiming';
         showToast('Claiming unstaked LICN...');
-        const txSig = await rpc.sendTransaction(txBase64);
+        const result = await rpc.sendAndConfirmTransaction(txBase64);
+        const txSig = result?.signature || result;
+        if (result && result.confirmed === false) {
+            throw new Error(result.error || 'Claim transaction was not confirmed');
+        }
         showToast(`Claimed! Sig: ${String(txSig).slice(0, 16)}...`);
         await refreshBalance();
         const generation = _walletViewGeneration;
@@ -4041,6 +4063,12 @@ async function claimMossStake() {
         setTimeout(() => loadMossStakePosition(wallet.address, { walletId: wallet.id, generation }), 4000);
     } catch (error) {
         showToast('Claim failed: ' + error.message);
+    } finally {
+        if (triggerEl) {
+            triggerEl.disabled = false;
+            triggerEl.classList.remove('btn-disabled');
+            triggerEl.innerHTML = originalHtml;
+        }
     }
 }
 

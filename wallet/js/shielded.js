@@ -66,6 +66,7 @@ function resetShieldedForWalletSwitch() {
 if (typeof window !== 'undefined') {
     window.resetShieldedForWalletSwitch = resetShieldedForWalletSwitch;
     window.shieldedState = shieldedState;
+    window.getShieldedBalanceForInput = () => formatShieldedSpores(shieldedBalanceSpores());
 }
 
 const SHIELDED_SIGNED_SUBMISSION_AVAILABLE = true;
@@ -134,6 +135,35 @@ function shieldedBalanceSpores() {
 
 function unspentShieldedNotes() {
     return shieldedState.ownedNotes.filter(n => !n.spent && noteValueSpores(n) > 0n);
+}
+
+function selectExactUnshieldNotes(unspentNotes, targetAmount) {
+    const target = u64BigInt(targetAmount);
+    if (target <= 0n) return null;
+    const candidates = (Array.isArray(unspentNotes) ? unspentNotes : [])
+        .map((note) => ({ note, value: noteValueSpores(note) }))
+        .filter((entry) => entry.value > 0n)
+        .sort((a, b) => (a.value === b.value ? 0 : a.value > b.value ? -1 : 1));
+
+    const exact = candidates.find((entry) => entry.value === target);
+    if (exact) return [exact.note];
+
+    const total = candidates.reduce((sum, entry) => sum + entry.value, 0n);
+    if (total === target) return candidates.map((entry) => entry.note);
+    if (total < target) return null;
+
+    const bySum = new Map([[0n, []]]);
+    for (const entry of candidates) {
+        const existing = Array.from(bySum.entries());
+        for (const [sum, notes] of existing) {
+            const next = sum + entry.value;
+            if (next > target || bySum.has(next)) continue;
+            const nextNotes = [...notes, entry.note];
+            if (next === target) return nextNotes;
+            bySum.set(next, nextNotes);
+        }
+    }
+    return null;
 }
 
 function bytesToBase64(bytes) {
@@ -206,21 +236,24 @@ function buildShieldedTransferInstructionData(nullifiers, outputCommitments, mer
     return concatBytes(header, payloadHeader.subarray(0, 8), proofBytes, payloadHeader.subarray(8), notePayload);
 }
 
-async function signAndSubmitShieldedInstruction({ wallet, password, accounts, instructionData, onSubmitted }) {
+async function signAndSubmitShieldedInstructions({ wallet, password, instructions, onSubmitted }) {
     if (!wallet || !wallet.encryptedKey) {
         throw new Error('No active wallet');
     }
     if (!password) {
         throw new Error('Wallet password required');
     }
+    if (!Array.isArray(instructions) || instructions.length === 0) {
+        throw new Error('No shielded instructions to submit');
+    }
 
     const blockhash = await rpc.getRecentBlockhash();
     const message = {
-        instructions: [{
+        instructions: instructions.map(({ accounts, instructionData }) => ({
             program_id: Array.from(new Uint8Array(32)),
             accounts: accounts.map((account) => Array.from(account)),
             data: Array.from(instructionData),
-        }],
+        })),
         blockhash,
     };
 
@@ -241,6 +274,15 @@ async function signAndSubmitShieldedInstruction({ wallet, password, accounts, in
         }
     }
     return txSignature;
+}
+
+async function signAndSubmitShieldedInstruction({ wallet, password, accounts, instructionData, onSubmitted }) {
+    return signAndSubmitShieldedInstructions({
+        wallet,
+        password,
+        instructions: [{ accounts, instructionData }],
+        onSubmitted,
+    });
 }
 
 async function requestShieldedSigningPassword(title, message) {
@@ -280,23 +322,42 @@ async function submitShieldTransaction({ amountSpores, commitment, proof, encryp
 }
 
 async function submitUnshieldTransaction({ amountSpores, recipientAddress, nullifier, merkleRoot, recipientHash, proof }) {
+    return submitUnshieldBatchTransaction({
+        recipientAddress,
+        entries: [{ amountSpores, nullifier, merkleRoot, recipientHash, proof }],
+    });
+}
+
+async function submitUnshieldBatchTransaction({ recipientAddress, entries }) {
     const wallet = typeof getActiveWallet === 'function' ? getActiveWallet() : null;
     if (!wallet || recipientAddress !== wallet.address) {
         throw new Error('Unshield currently requires the active wallet as recipient');
     }
+    if (!Array.isArray(entries) || entries.length === 0) {
+        throw new Error('No shielded notes selected for unshield');
+    }
+    const totalSpores = entries.reduce((sum, entry) => sum + u64BigInt(entry.amountSpores), 0n);
     const password = await requestShieldedSigningPassword(
         'Unshield LICN',
-        `Sign unshield transaction for ${formatShieldedSpores(amountSpores)} LICN`,
+        `Sign unshield transaction for ${formatShieldedSpores(totalSpores)} LICN`,
     );
     if (!password) {
         throw new Error('Unshield cancelled');
     }
     const recipient = LichenCrypto.addressToBytes(recipientAddress);
-    const signature = await signAndSubmitShieldedInstruction({
+    const signature = await signAndSubmitShieldedInstructions({
         wallet,
         password,
-        accounts: [recipient],
-        instructionData: buildUnshieldInstructionData(amountSpores, nullifier, merkleRoot, recipientHash, proof),
+        instructions: entries.map((entry) => ({
+            accounts: [recipient],
+            instructionData: buildUnshieldInstructionData(
+                entry.amountSpores,
+                entry.nullifier,
+                entry.merkleRoot,
+                entry.recipientHash,
+                entry.proof,
+            ),
+        })),
     });
     return { success: true, signature };
 }
@@ -780,10 +841,9 @@ async function unshieldLicn(amountLicn, recipientAddress) {
         return;
     }
 
-    // Current unshield circuit supports one input note where value == amount.
-    const noteToSpend = unspentNotes.find((n) => noteValueSpores(n) === amountSpores);
-    if (!noteToSpend) {
-        showToast('Unshield currently requires a single note exactly matching the amount');
+    const notesToSpend = selectExactUnshieldNotes(unspentNotes, amountSpores);
+    if (!notesToSpend || notesToSpend.length === 0) {
+        showToast('Unshield amount must match one note or an exact sum of your notes. Use the full shielded balance to withdraw all notes.');
         return;
     }
 
@@ -795,43 +855,56 @@ async function unshieldLicn(amountLicn, recipientAddress) {
     showShieldedStatus('Generating ZK proof (may take ~3s)...', 'pending');
 
     try {
-        const noteIndex = await resolveNoteCommitmentIndex(noteToSpend);
-        const merklePath = await rpc.call('getShieldedMerklePath', [noteIndex]);
-        const merkleRoot = merklePath?.root || merklePath?.merkleRoot || merklePath?.merkle_root || shieldedState.merkleRoot;
-        if (!merkleRoot) {
-            throw new Error('Shielded Merkle root unavailable');
+        const entries = [];
+        for (let index = 0; index < notesToSpend.length; index += 1) {
+            const noteToSpend = notesToSpend[index];
+            const noteAmount = noteValueSpores(noteToSpend);
+            showShieldedStatus(
+                `Generating ZK proof ${index + 1}/${notesToSpend.length} (may take ~3s each)...`,
+                'pending',
+            );
+            const noteIndex = await resolveNoteCommitmentIndex(noteToSpend);
+            const merklePath = await rpc.call('getShieldedMerklePath', [noteIndex]);
+            const merkleRoot = merklePath?.root || merklePath?.merkleRoot || merklePath?.merkle_root || shieldedState.merkleRoot;
+            if (!merkleRoot) {
+                throw new Error('Shielded Merkle root unavailable');
+            }
+            shieldedState.merkleRoot = merkleRoot;
+            const unshieldProof = await generateUnshieldProof({
+                amount: noteAmount.toString(),
+                merkleRoot,
+                recipient: recipientAddress,
+                blinding: noteToSpend.blinding,
+                serial: noteToSpend.serial,
+                spendingKey: bytesToHex(shieldedState.spendingKey || new Uint8Array(32)),
+                merklePath: merklePath?.siblings || [],
+                pathBits: merklePath?.pathBits || merklePath?.path_bits || [],
+            });
+            entries.push({
+                note: noteToSpend,
+                amountSpores: noteAmount,
+                nullifier: unshieldProof.nullifier,
+                merkleRoot: unshieldProof.merkle_root,
+                recipientHash: unshieldProof.recipient_hash,
+                proof: hexToBytes(unshieldProof.proof),
+            });
         }
-        shieldedState.merkleRoot = merkleRoot;
-        const unshieldProof = await generateUnshieldProof({
-            amount: amountSpores.toString(),
-            merkleRoot,
-            recipient: recipientAddress,
-            blinding: noteToSpend.blinding,
-            serial: noteToSpend.serial,
-            spendingKey: bytesToHex(shieldedState.spendingKey || new Uint8Array(32)),
-            merklePath: merklePath?.siblings || [],
-            pathBits: merklePath?.pathBits || merklePath?.path_bits || [],
-        });
-        const proof = hexToBytes(unshieldProof.proof);
 
         showShieldedStatus('Submitting transaction...', 'pending');
 
-        const result = await submitUnshieldTransaction({
-            amountSpores,
+        const result = await submitUnshieldBatchTransaction({
             recipientAddress,
-            nullifier: unshieldProof.nullifier,
-            merkleRoot: unshieldProof.merkle_root,
-            recipientHash: unshieldProof.recipient_hash,
-            proof,
+            entries,
         });
 
         if (result && result.success) {
-            noteToSpend.spent = true;
-            noteToSpend.nullifier = unshieldProof.nullifier;
+            for (const entry of entries) {
+                entry.note.spent = true;
+                entry.note.nullifier = entry.nullifier;
+            }
             shieldedState.shieldedBalance =
                 (shieldedBalanceSpores() > amountSpores ? shieldedBalanceSpores() - amountSpores : 0n).toString();
 
-            // If change needed, a new note will appear in the commitment stream
             await saveNotesToStorage();
             updateShieldedUI();
 

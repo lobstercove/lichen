@@ -1412,6 +1412,25 @@ test('MossStake tier cards show deterministic reward multipliers', () => {
 test('MossStake lock and claim checks use chain slot instead of wall-clock slot guesses', () => {
     assert(walletSrc.includes('async function getCurrentChainSlot('), 'wallet should centralize current chain slot lookup');
     assert(!walletSrc.includes('Date.now() / MS_PER_SLOT'), 'wallet should not estimate MossStake slots from wall-clock time');
+    assert(walletSrc.includes('data-wallet-action="claimMossStake" data-wallet-pass-el="true"'),
+        'wallet MossStake claim button should pass itself to the claim handler for visible pending state');
+    assert(walletSrc.includes('async function claimMossStake(triggerEl)'),
+        'wallet MossStake claim handler should accept the clicked button');
+    assert(walletSrc.includes('sendAndConfirmTransaction(txBase64)'),
+        'wallet MossStake claim should preflight, broadcast, and wait for confirmation');
+});
+
+test('wallet shielded unshield supports max/full balance across multiple notes', () => {
+    assert(walletHtml.includes('data-wallet-action="fillUnshieldMax"'),
+        'web wallet unshield modal should expose a MAX control');
+    assert(walletSrc.includes("actionName === 'fillUnshieldMax'"),
+        'web wallet should wire the unshield MAX action');
+    assert(shieldedSrc.includes('function selectExactUnshieldNotes('),
+        'web wallet should select an exact set of real notes for unshield');
+    assert(shieldedSrc.includes('submitUnshieldBatchTransaction('),
+        'web wallet should submit multi-note unshield as one signed transaction');
+    assert(!shieldedSrc.includes('Unshield currently requires a single note exactly matching the amount'),
+        'web wallet should not require users to unshield by individual note size');
 });
 
 test('shielded.js uses the Merkle path root for unshield proofs when available', () => {
