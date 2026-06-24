@@ -49,6 +49,12 @@ struct PublicHistoryMergeCfSource<'a> {
     source_cold: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PublicHistoryMergeMode {
+    Full,
+    IndexesOnly,
+}
+
 impl PublicHistoryMergeReport {
     pub fn has_conflicts(&self) -> bool {
         self.conflict_rows > 0
@@ -450,13 +456,38 @@ impl StateStore {
         source: &StateStore,
         dry_run: bool,
     ) -> Result<PublicHistoryMergeReport, String> {
+        self.merge_public_history_from_source_with_mode(
+            source,
+            dry_run,
+            PublicHistoryMergeMode::Full,
+        )
+    }
+
+    pub fn merge_public_history_indexes_from_source(
+        &self,
+        source: &StateStore,
+        dry_run: bool,
+    ) -> Result<PublicHistoryMergeReport, String> {
+        self.merge_public_history_from_source_with_mode(
+            source,
+            dry_run,
+            PublicHistoryMergeMode::IndexesOnly,
+        )
+    }
+
+    fn merge_public_history_from_source_with_mode(
+        &self,
+        source: &StateStore,
+        dry_run: bool,
+        mode: PublicHistoryMergeMode,
+    ) -> Result<PublicHistoryMergeReport, String> {
         let mut report = PublicHistoryMergeReport {
             dry_run,
             used_cold_store: self.cold_db.is_some(),
             ..PublicHistoryMergeReport::default()
         };
 
-        let cold_cf_pairs: &[(&'static str, &'static str)] = &[
+        let full_cold_cf_pairs: &[(&'static str, &'static str)] = &[
             (CF_BLOCKS, COLD_CF_BLOCKS),
             (CF_TRANSACTIONS, COLD_CF_TRANSACTIONS),
             (CF_TX_TO_SLOT, COLD_CF_TX_TO_SLOT),
@@ -465,7 +496,15 @@ impl StateStore {
             (CF_TOKEN_TRANSFERS, COLD_CF_TOKEN_TRANSFERS),
             (CF_PROGRAM_CALLS, COLD_CF_PROGRAM_CALLS),
         ];
-        let hot_cf_names: &[&'static str] = &[
+        let index_cold_cf_pairs: &[(&'static str, &'static str)] = &[
+            (CF_TRANSACTIONS, COLD_CF_TRANSACTIONS),
+            (CF_TX_TO_SLOT, COLD_CF_TX_TO_SLOT),
+            (CF_ACCOUNT_TXS, COLD_CF_ACCOUNT_TXS),
+            (CF_EVENTS, COLD_CF_EVENTS),
+            (CF_TOKEN_TRANSFERS, COLD_CF_TOKEN_TRANSFERS),
+            (CF_PROGRAM_CALLS, COLD_CF_PROGRAM_CALLS),
+        ];
+        let full_hot_cf_names: &[&'static str] = &[
             CF_SLOTS,
             CF_TX_BY_SLOT,
             CF_EVENTS_BY_SLOT,
@@ -477,6 +516,25 @@ impl StateStore {
             CF_NFT_ACTIVITY,
             CF_MARKET_ACTIVITY,
         ];
+        let index_hot_cf_names: &[&'static str] = &[
+            CF_TX_BY_SLOT,
+            CF_EVENTS_BY_SLOT,
+            CF_EVM_TXS,
+            CF_EVM_RECEIPTS,
+            CF_EVM_LOGS_BY_SLOT,
+            CF_SHIELDED_TXS,
+            CF_TX_META,
+            CF_NFT_ACTIVITY,
+            CF_MARKET_ACTIVITY,
+        ];
+        let cold_cf_pairs = match mode {
+            PublicHistoryMergeMode::Full => full_cold_cf_pairs,
+            PublicHistoryMergeMode::IndexesOnly => index_cold_cf_pairs,
+        };
+        let hot_cf_names = match mode {
+            PublicHistoryMergeMode::Full => full_hot_cf_names,
+            PublicHistoryMergeMode::IndexesOnly => index_hot_cf_names,
+        };
 
         if self.cold_db.is_none() && !dry_run {
             return Err("Refusing public history merge without an attached cold store".to_string());

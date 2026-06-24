@@ -143,6 +143,8 @@ const SCAN_MOSSSTAKE_BLOCKS_FLAG: &str = "--scan-mossstake-blocks";
 const REBUILD_ACCOUNT_TXS_FLAG: &str = "--rebuild-account-txs";
 const INSPECT_ACCOUNT_HISTORY_FLAG: &str = "--inspect-account-history";
 const MERGE_PUBLIC_HISTORY_FROM_SOURCE_FLAG: &str = "--merge-public-history-from-source";
+const MERGE_PUBLIC_HISTORY_INDEXES_FROM_SOURCE_FLAG: &str =
+    "--merge-public-history-indexes-from-source";
 const SOURCE_COLD_STORE_FLAG: &str = "--source-cold-store";
 const VERIFY_WARP_SNAPSHOT_ROUNDTRIP_FLAG: &str = "--verify-warp-snapshot-roundtrip";
 const REBUILD_SHIELDED_STATE_FROM_BLOCKS_FLAG: &str = "--rebuild-shielded-state-from-blocks";
@@ -152,6 +154,7 @@ const SHIELDED_STATE_REBUILD_CONFIRMATION: &str = "rebuild-shielded-state:v1";
 const SHIELDED_STATE_BUNDLE_IMPORT_CONFIRMATION: &str = "shielded-state-bundle:v1";
 const ACCOUNT_TXS_REBUILD_CONFIRMATION: &str = "rebuild-account-txs:v1";
 const PUBLIC_HISTORY_MERGE_CONFIRMATION: &str = "public-history-merge:v1";
+const PUBLIC_HISTORY_INDEX_MERGE_CONFIRMATION: &str = "public-history-index-merge:v1";
 const REPAIR_ANALYTICS_24H_WINDOW_FLAG: &str = "--repair-analytics-24h-window";
 const ANALYTICS_24H_REPAIR_CONFIRMATION: &str = "repair-analytics-24h:v1";
 const TESTNET_DEX_REPAIR_CONTRACTS: &[(&str, &str)] = &[
@@ -11603,8 +11606,16 @@ fn print_public_history_merge_report(report: &lichen_core::state::PublicHistoryM
 }
 
 fn maybe_run_public_history_merge_admin(args: &[String]) -> Option<i32> {
-    let source_dir =
-        get_flag_value(args, &[MERGE_PUBLIC_HISTORY_FROM_SOURCE_FLAG]).map(PathBuf::from)?;
+    let full_source_dir = get_flag_value(args, &[MERGE_PUBLIC_HISTORY_FROM_SOURCE_FLAG]);
+    let index_source_dir = get_flag_value(args, &[MERGE_PUBLIC_HISTORY_INDEXES_FROM_SOURCE_FLAG]);
+    if full_source_dir.is_some() && index_source_dir.is_some() {
+        eprintln!(
+            "{MERGE_PUBLIC_HISTORY_FROM_SOURCE_FLAG} and {MERGE_PUBLIC_HISTORY_INDEXES_FROM_SOURCE_FLAG} are mutually exclusive"
+        );
+        return Some(2);
+    }
+    let index_only = index_source_dir.is_some();
+    let source_dir = full_source_dir.or(index_source_dir).map(PathBuf::from)?;
 
     let execute = has_flag(args, "--execute");
     let dry_run = has_flag(args, "--dry-run") || !execute;
@@ -11614,8 +11625,13 @@ fn maybe_run_public_history_merge_admin(args: &[String]) -> Option<i32> {
     }
     if execute {
         let confirm = get_flag_value(args, &["--confirm"]);
-        if confirm != Some(PUBLIC_HISTORY_MERGE_CONFIRMATION) {
-            eprintln!("Refusing write without --confirm {PUBLIC_HISTORY_MERGE_CONFIRMATION}");
+        let expected_confirm = if index_only {
+            PUBLIC_HISTORY_INDEX_MERGE_CONFIRMATION
+        } else {
+            PUBLIC_HISTORY_MERGE_CONFIRMATION
+        };
+        if confirm != Some(expected_confirm) {
+            eprintln!("Refusing write without --confirm {expected_confirm}");
             return Some(1);
         }
     }
@@ -11676,7 +11692,13 @@ fn maybe_run_public_history_merge_admin(args: &[String]) -> Option<i32> {
         }
     }
 
-    match target.merge_public_history_from_source(&source, dry_run) {
+    let merge_result = if index_only {
+        target.merge_public_history_indexes_from_source(&source, dry_run)
+    } else {
+        target.merge_public_history_from_source(&source, dry_run)
+    };
+
+    match merge_result {
         Ok(report) => {
             print_public_history_merge_report(&report);
             if report.has_conflicts() {

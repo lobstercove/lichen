@@ -5469,6 +5469,87 @@ mod tests {
             .any(|cf| cf.target_cf == CF_TX_BY_SLOT && cf.conflict_rows > 0));
     }
 
+    #[test]
+    fn public_history_index_merge_restores_indexes_without_replacing_blocks() {
+        let source_dir = tempdir().unwrap();
+        let target_dir = tempdir().unwrap();
+        let cold_dir = tempdir().unwrap();
+        let source = StateStore::open(source_dir.path()).unwrap();
+        let mut target = StateStore::open(target_dir.path()).unwrap();
+        target.open_cold_store(cold_dir.path()).unwrap();
+
+        let tracked = Pubkey([0xC1; 32]);
+        let tx = crate::transaction::Transaction::new(crate::transaction::Message::new(
+            vec![crate::transaction::Instruction {
+                program_id: Pubkey([0xC2; 32]),
+                accounts: vec![tracked],
+                data: vec![3],
+            }],
+            Hash::hash(b"public-history-index-only"),
+        ));
+        let tx_hash = tx.signature();
+        let source_block = crate::Block::new_with_timestamp(
+            44,
+            Hash::default(),
+            Hash::default(),
+            [0u8; 32],
+            vec![tx.clone()],
+            111,
+        );
+        let target_block = crate::Block::new_with_timestamp(
+            44,
+            Hash::default(),
+            Hash::default(),
+            [0u8; 32],
+            vec![tx],
+            222,
+        );
+
+        source.put_block(&source_block).unwrap();
+        target.put_block(&target_block).unwrap();
+        assert_ne!(source_block.hash(), target_block.hash());
+        target.clear_snapshot_category("account_txs").unwrap();
+        assert_eq!(target.count_account_txs(&tracked).unwrap(), 0);
+
+        let full_report = target
+            .merge_public_history_from_source(&source, true)
+            .unwrap();
+        assert!(
+            full_report.has_conflicts(),
+            "full public-history merge must still reject block/slot drift"
+        );
+
+        let dry_run = target
+            .merge_public_history_indexes_from_source(&source, true)
+            .unwrap();
+        assert!(!dry_run.has_conflicts());
+        assert!(dry_run
+            .cf_reports
+            .iter()
+            .all(|cf| cf.target_cf != CF_BLOCKS && cf.target_cf != COLD_CF_BLOCKS));
+        assert!(dry_run.cf_reports.iter().all(|cf| cf.target_cf != CF_SLOTS));
+
+        let report = target
+            .merge_public_history_indexes_from_source(&source, false)
+            .unwrap();
+        assert!(!report.has_conflicts());
+        assert!(report.inserted_rows > 0);
+        assert_eq!(
+            target
+                .get_account_tx_signatures_paginated(&tracked, 10, None)
+                .unwrap(),
+            vec![(tx_hash, 44)]
+        );
+        assert_eq!(
+            target
+                .get_block_by_slot(44)
+                .unwrap()
+                .map(|block| block.hash()),
+            Some(target_block.hash()),
+            "index-only repair must not replace the target block body"
+        );
+    }
+
     // ─── Merkle proof tests (Task 1.3) ──────────────────────────────
 
     #[test]

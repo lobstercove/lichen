@@ -5,6 +5,20 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.202] - 2026-06-24
+
+### Fixed
+- Adds a guarded public-history index-only merge for source-backed account
+  activity repairs where block bodies or slot cursors conflict but transaction,
+  account, and slot transaction indexes are conflict-free.
+- Keeps the broad public-history merge conflict checks intact, so operators do
+  not replace block bodies, balances, contract storage, validator state, or tip
+  cursors to restore wallet/explorer Activity.
+
+### Verified
+- Passed focused public-history merge tests, tx-index account rebuild tests,
+  validator check, workspace check, SDK checks, and deployment-doc QA.
+
 ## [0.5.201] - 2026-06-23
 
 ### Fixed
