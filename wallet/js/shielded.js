@@ -1771,6 +1771,10 @@ function confirmUnshield() {
         showToast(`Amount adjusted to shielded balance: ${formatShieldedSporesFixed(availableSpores)} LICN`);
         return; // Let user review
     }
+    if (!selectExactUnshieldNotes(unspentShieldedNotes(), amountSpores)) {
+        showToast('Amount must match one shielded note or an exact note sum. Use MAX to withdraw all notes.');
+        return;
+    }
     closeModal('unshieldModal');
     unshieldLicn(amountText, recipient);
 }
