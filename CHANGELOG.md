@@ -5,6 +5,24 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.203] - 2026-06-24
+
+### Fixed
+- Allows matured MossStake unstake claims to pay the base transaction fee from
+  the claim proceeds when the account has no spendable LICN, avoiding a
+  zero-spendable claim deadlock while still charging the normal network fee.
+- Aligns RPC `sendTransaction` preflight with the same matured-claim fee rule,
+  so wallet simulation and node admission agree.
+- Updates wallet and extension MossStake claim buttons to stay enabled for
+  matured claims when the fee will be deducted from claimed LICN.
+- Fixes shielded MAX/full-balance unshield for exact sums across multiple notes
+  by requesting the required per-note compute budget and splitting oversized
+  note batches under the protocol compute cap in both wallet and extension.
+
+### Verified
+- Passed focused MossStake claim and RPC preflight regression tests, JavaScript
+  syntax checks, SDK checks, plus wallet and extension QA.
+
 ## [0.5.202] - 2026-06-24
 
 ### Fixed

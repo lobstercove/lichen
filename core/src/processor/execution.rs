@@ -1,6 +1,80 @@
 use super::*;
 
 impl TxProcessor {
+    fn is_single_mossstake_claim_tx(tx: &Transaction) -> Option<Pubkey> {
+        if tx.message.instructions.len() != 1 {
+            return None;
+        }
+        let ix = tx.message.instructions.first()?;
+        if ix.program_id != SYSTEM_PROGRAM_ID || ix.data.first().copied() != Some(15) {
+            return None;
+        }
+        ix.accounts.first().copied()
+    }
+
+    fn mossstake_claimable_amount_for_fee(&self, user: &Pubkey) -> Result<u64, String> {
+        let mut pool = self.b_get_mossstake_pool()?;
+        let requests = pool.get_unstake_requests(user);
+        if requests.is_empty() {
+            return Ok(0);
+        }
+
+        if self.uses_legacy_wall_clock_mossstake() {
+            let (_current_slot, current_unix_seconds) = self.b_get_last_block_timestamp()?;
+            pool.backfill_wall_clock_times(|slot| self.block_timestamp_for_slot(slot));
+            Ok(pool
+                .get_unstake_requests(user)
+                .into_iter()
+                .filter(|request| {
+                    if request.claimable_at_unix_seconds > 0 {
+                        request.claimable_at_unix_seconds <= current_unix_seconds
+                    } else {
+                        self.b_get_last_slot().unwrap_or(0) >= request.claimable_at
+                    }
+                })
+                .fold(0u64, |sum, request| {
+                    sum.saturating_add(request.licn_to_receive)
+                }))
+        } else {
+            let current_slot = self.b_get_last_slot().unwrap_or(0);
+            Ok(requests
+                .into_iter()
+                .filter(|request| request.claimable_at <= current_slot)
+                .fold(0u64, |sum, request| {
+                    sum.saturating_add(request.licn_to_receive)
+                }))
+        }
+    }
+
+    pub fn should_defer_mossstake_claim_fee(
+        &self,
+        tx: &Transaction,
+        fee_payer: &Pubkey,
+        total_fee: u64,
+    ) -> bool {
+        if total_fee == 0 {
+            return false;
+        }
+        let Some(user) = Self::is_single_mossstake_claim_tx(tx) else {
+            return false;
+        };
+        if user != *fee_payer {
+            return false;
+        }
+        let spendable = self
+            .b_get_account(fee_payer)
+            .ok()
+            .flatten()
+            .map(|account| account.spendable)
+            .unwrap_or(0);
+        if spendable >= total_fee {
+            return false;
+        }
+        self.mossstake_claimable_amount_for_fee(fee_payer)
+            .map(|claimable| claimable >= total_fee)
+            .unwrap_or(false)
+    }
+
     fn simulate_contract_program_deploy(
         &self,
         ix: &Instruction,
@@ -233,13 +307,15 @@ impl TxProcessor {
         let priority_fee = Self::compute_priority_fee(tx);
         let total_fee = base_fee.saturating_add(priority_fee);
         let compute_budget = tx.message.effective_compute_budget();
+        let defer_mossstake_claim_fee =
+            self.should_defer_mossstake_claim_fee(tx, &fee_payer, total_fee);
 
         *self
             .tx_compute_budget
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = compute_budget;
 
-        if total_fee > 0 {
+        if total_fee > 0 && !defer_mossstake_claim_fee {
             if let Err(e) = self.charge_fee_with_priority(&fee_payer, total_fee, priority_fee) {
                 return self.make_result(false, 0, Some(format!("Fee error: {}", e)), 0);
             }
@@ -357,6 +433,28 @@ impl TxProcessor {
                         total_cu,
                     );
                 }
+            }
+        }
+
+        if defer_mossstake_claim_fee {
+            if let Err(e) =
+                self.charge_fee_with_priority_in_batch(&fee_payer, total_fee, priority_fee)
+            {
+                self.rollback_batch();
+                if !self.is_speculative() {
+                    if let Err(e2) = self.state.put_transaction(tx) {
+                        tracing::error!("Failed to store failed TX after deferred fee error: {e2}");
+                    }
+                    if let Err(e2) = self.store_tx_meta(&tx.signature(), total_cu) {
+                        tracing::error!("Failed to store TX meta after deferred fee error: {e2}");
+                    }
+                }
+                return self.make_result(
+                    false,
+                    0,
+                    Some(format!("Deferred MossStake claim fee error: {}", e)),
+                    total_cu,
+                );
             }
         }
 
@@ -825,7 +923,9 @@ impl TxProcessor {
         let total_fee = Self::compute_transaction_fee(tx, &fee_config);
         let fee_payer = tx.message.instructions[0].accounts[0];
         let balance = self.state.get_balance(&fee_payer).unwrap_or(0);
-        if balance < total_fee {
+        let deferred_mossstake_claim_fee =
+            self.should_defer_mossstake_claim_fee(tx, &fee_payer, total_fee);
+        if balance < total_fee && !deferred_mossstake_claim_fee {
             return SimulationResult {
                 success: false,
                 fee: total_fee,
@@ -839,6 +939,9 @@ impl TxProcessor {
                 return_code: None,
                 state_changes: 0,
             };
+        }
+        if deferred_mossstake_claim_fee {
+            logs.push("Fee source: matured MossStake claim proceeds".to_string());
         }
         logs.push(format!(
             "Fee estimate: {} spores (budget: {} CU)",

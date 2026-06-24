@@ -3663,7 +3663,9 @@ async function loadMossStakePosition(address, options = {}) {
             ? u64ValueToBigInt(balance?.spendable ?? balance?.available ?? balance?.balance ?? 0)
             : null;
         const canPayClaimFee = spendableSpores === null || spendableSpores >= baseFeeSpores;
-        const claimFeeTitle = `Need ${baseUnitsToDecimalString(baseFeeSpores, 9)} LICN spendable for transaction fee`;
+        const claimFeeTitle = canPayClaimFee
+            ? `Network fee: ${baseUnitsToDecimalString(baseFeeSpores, 9)} LICN`
+            : `Network fee will be deducted from the claimed LICN`;
 
         // Update basic stats
         document.getElementById('userStLicn').textContent = fmtToken(position.st_licn_amount / SPORES_PER_LICN);
@@ -3751,11 +3753,7 @@ async function loadMossStakePosition(address, options = {}) {
                         <span class="staking-unstake-amount">${fmtToken(req.licn_to_receive / SPORES_PER_LICN)} LICN</span>
                         <span class="staking-unstake-status">
                             ${isClaimable
-                        ? canPayClaimFee
-                            ? `<button class="btn btn-small btn-claim" data-wallet-action="claimMossStake" data-wallet-pass-el="true">
-                                        <i class="fas fa-check-circle"></i> Claim
-                                   </button>`
-                            : `<button class="btn btn-small btn-claim btn-disabled" disabled title="${claimFeeTitle}">
+                            ? `<button class="btn btn-small btn-claim" data-wallet-action="claimMossStake" data-wallet-pass-el="true" title="${claimFeeTitle}">
                                         <i class="fas fa-check-circle"></i> Claim
                                    </button>`
                         : `<span class="staking-unstake-timer"><i class="fas fa-clock"></i> ${hasCurrentSlot ? `~${remainDays} days` : 'Waiting for chain slot'}</span>`
@@ -4001,24 +3999,13 @@ async function claimMossStake(triggerEl) {
             }
         } catch (e) { /* let RPC reject */ }
 
-        // Fee guard: need at least the base fee in spendable LICN
-        try {
-            const balResult = await rpc.call('getBalance', [wallet.address]);
-            const spendable = u64ValueToBigInt(balResult?.spendable ?? balResult?.available ?? balResult?.balance ?? 0);
-            const baseFeeSpores = getNetworkBaseFeeSpores();
-            if (spendable < baseFeeSpores) {
-                showToast(`Insufficient LICN for fee: need ${baseUnitsToDecimalString(baseFeeSpores, 9)} LICN`);
-                return;
-            }
-        } catch (e) { /* let RPC reject */ }
-
         if (triggerEl) triggerEl.innerHTML = '<i class="fas fa-check-circle"></i> Claim';
         const values = await showPasswordModal({
             title: 'Claim Unstaked LICN',
-            message: 'Enter your password to sign the claim transaction. Your matured LICN will be returned to your spendable balance.',
+            message: 'Enter your password to sign the claim transaction. Your matured LICN will be returned to your spendable balance; if needed, the network fee is deducted from the claimed amount.',
             icon: 'fas fa-check-circle',
             confirmText: 'Claim',
-            requiredLicn: typeof BASE_FEE_LICN !== 'undefined' ? BASE_FEE_LICN : 0.001,
+            requiredLicn: 0,
             fields: [
                 { id: 'password', label: 'Wallet Password', type: 'password', placeholder: 'Enter password to sign' }
             ]

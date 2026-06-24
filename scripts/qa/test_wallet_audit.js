@@ -1418,6 +1418,10 @@ test('MossStake lock and claim checks use chain slot instead of wall-clock slot 
         'wallet MossStake claim handler should accept the clicked button');
     assert(walletSrc.includes('sendAndConfirmTransaction(txBase64)'),
         'wallet MossStake claim should preflight, broadcast, and wait for confirmation');
+    assert(walletSrc.includes('Network fee will be deducted from the claimed LICN'),
+        'wallet should explain matured MossStake claims can pay the network fee from claim proceeds');
+    assert(walletSrc.includes('requiredLicn: 0'),
+        'wallet MossStake claim password modal should not block zero-spendable matured claims');
 });
 
 test('wallet shielded unshield supports max/full balance across multiple notes', () => {
@@ -1428,7 +1432,15 @@ test('wallet shielded unshield supports max/full balance across multiple notes',
     assert(shieldedSrc.includes('function selectExactUnshieldNotes('),
         'web wallet should select an exact set of real notes for unshield');
     assert(shieldedSrc.includes('submitUnshieldBatchTransaction('),
-        'web wallet should submit multi-note unshield as one signed transaction');
+        'web wallet should submit multi-note unshield through the signed transaction path');
+    assert(shieldedSrc.includes('const SHIELDED_UNSHIELD_CU_PER_NOTE = 200_000'),
+        'web wallet should use the canonical per-note unshield compute cost');
+    assert(shieldedSrc.includes('const SHIELDED_MAX_TX_COMPUTE_BUDGET = 1_400_000'),
+        'web wallet should respect the protocol max compute budget');
+    assert(shieldedSrc.includes('computeBudget: computeUnshieldBatchBudget(chunk.length)'),
+        'web wallet should request enough compute budget for multi-note unshield batches');
+    assert(shieldedSrc.includes('chunkUnshieldEntries(entries)'),
+        'web wallet should split unshield submissions that exceed one transaction compute budget');
     assert(!shieldedSrc.includes('Unshield currently requires a single note exactly matching the amount'),
         'web wallet should not require users to unshield by individual note size');
 });

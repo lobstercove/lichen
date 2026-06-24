@@ -1197,6 +1197,66 @@ mod tests {
     }
 
     #[test]
+    fn test_mossstake_claim_can_pay_fee_from_matured_claim() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+
+        let initial_balance = state.get_balance(&alice).unwrap();
+        let deposit_amount = initial_balance.saturating_sub(BASE_FEE.saturating_mul(2));
+
+        let tx = make_mossstake_deposit_tx(&alice_kp, alice, deposit_amount, genesis_hash);
+        let deposit = processor.process_transaction(&tx, &validator);
+        assert!(
+            deposit.success,
+            "deposit should succeed: {:?}",
+            deposit.error
+        );
+        assert_eq!(state.get_balance(&alice).unwrap(), BASE_FEE);
+
+        let pool = state.get_mossstake_pool().unwrap();
+        let st_licn = pool.positions.get(&alice).unwrap().st_licn_amount;
+        let tx = make_mossstake_unstake_tx(&alice_kp, alice, st_licn, genesis_hash);
+        let unstake = processor.process_transaction(&tx, &validator);
+        assert!(
+            unstake.success,
+            "unstake should succeed: {:?}",
+            unstake.error
+        );
+        assert_eq!(state.get_balance(&alice).unwrap(), 0);
+
+        let mature_slot = crate::consensus::UNSTAKE_COOLDOWN_SLOTS + 1;
+        let mature_block = crate::Block::new_with_timestamp(
+            mature_slot,
+            genesis_hash,
+            Hash::hash(b"mature_claim_fee_state"),
+            [0u8; 32],
+            Vec::new(),
+            3_601,
+        );
+        let mature_hash = mature_block.hash();
+        state.put_block(&mature_block).unwrap();
+        state.set_last_slot(mature_slot).unwrap();
+
+        let tx = make_mossstake_claim_tx(&alice_kp, alice, mature_hash);
+        let claim = processor.process_transaction(&tx, &validator);
+        assert!(
+            claim.success,
+            "claim should pay fee from matured unstake proceeds: {:?}",
+            claim.error
+        );
+        assert_eq!(claim.fee_paid, BASE_FEE);
+        assert_eq!(
+            state.get_balance(&alice).unwrap(),
+            deposit_amount.saturating_sub(BASE_FEE)
+        );
+        assert!(state
+            .get_mossstake_pool()
+            .unwrap()
+            .get_unstake_requests(&alice)
+            .is_empty());
+    }
+
+    #[test]
     fn test_mossstake_claim_requires_slot_cooldown() {
         let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
         let validator = Pubkey([42u8; 32]);

@@ -1030,6 +1030,12 @@ test('CC-20 extension uses chain slot and normalized .lichen labels', () => {
     'popup should use the canonical MossStake claim signing service');
   assert.ok(popupSrc.includes('popupClaimMossStakeBtn') && popupSrc.includes('handlePopupMossStakeClaim(btn)'),
     'popup should submit matured MossStake claims directly instead of relying on a page-route side effect');
+  assert.ok(fullSrc.includes('Network fee will be deducted from the claimed LICN'),
+    'extension full page should explain matured MossStake claims can pay the network fee from claim proceeds');
+  assert.ok(popupSrc.includes('Network fee will be deducted from the claimed LICN'),
+    'extension popup should explain matured MossStake claims can pay the network fee from claim proceeds');
+  assert.ok(!stakingServiceSrc.includes('Insufficient LICN for transaction fee'),
+    'extension staking service should not block zero-spendable matured MossStake claims locally');
   assert.ok(fullSrc.includes('function formatLichenNameExt('), 'full page should normalize .lichen labels');
   assert.ok(fullSrc.includes("replace(/(?:\\.lichen)+$/i, '')"), 'full page should strip repeated .lichen suffixes');
   assert.ok(fullSrc.includes('formatLichenNameExt(v.voucher_name)'), 'full page vouch labels should use normalized .lichen labels');
@@ -1052,7 +1058,15 @@ test('CC-20c extension shielded unshield supports max/full balance across multip
   assert.ok(fullSrc.includes('function selectExactExtensionUnshieldNotes('),
     'extension should select an exact set of real notes for unshield');
   assert.ok(fullSrc.includes('signAndSubmitExtensionShieldedInstructions('),
-    'extension should submit multi-note unshield as one signed transaction');
+    'extension should submit multi-note unshield through the signed transaction path');
+  assert.ok(fullSrc.includes('const SHIELDED_UNSHIELD_CU_PER_NOTE_EXT = 200_000'),
+    'extension should use the canonical per-note unshield compute cost');
+  assert.ok(fullSrc.includes('const SHIELDED_MAX_TX_COMPUTE_BUDGET_EXT = 1_400_000'),
+    'extension should respect the protocol max compute budget');
+  assert.ok(fullSrc.includes('computeBudget: computeExtensionUnshieldBatchBudget(chunk.length)'),
+    'extension should request enough compute budget for multi-note unshield batches');
+  assert.ok(fullSrc.includes('chunkExtensionUnshieldEntries(entries)'),
+    'extension should split unshield submissions that exceed one transaction compute budget');
   assert.ok(fullSrc.includes("return 'Amount must match one note or an exact note sum; use MAX to withdraw all notes'"),
     'extension should guide non-exact partial amounts to MAX/full-balance behavior');
   assert.ok(!fullSrc.includes('Unshield currently requires a single note exactly matching the amount'),

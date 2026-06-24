@@ -8080,7 +8080,11 @@ pub(crate) async fn preflight_transaction_submission(
             if expected_fee > 0 {
                 match state.state.get_account(&payer) {
                     Ok(Some(acct)) => {
-                        if acct.spendable < expected_fee {
+                        let deferred_mossstake_claim_fee = acct.spendable < expected_fee
+                            && TxProcessor::new(state.state.clone())
+                                .should_defer_mossstake_claim_fee(tx, &payer, expected_fee);
+
+                        if acct.spendable < expected_fee && !deferred_mossstake_claim_fee {
                             return Err(RpcError {
                                 code: -32003,
                                 message: format!(
@@ -21096,6 +21100,52 @@ mod tests {
             Hash([0x22; 32]),
         ));
         assert!(!transaction_has_governed_system_preflight(&tx));
+    }
+
+    #[tokio::test]
+    async fn mossstake_claim_preflight_allows_fee_from_matured_claim_proceeds() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+        let user_kp = LichenKeypair::from_seed(&[0xA7; 32]);
+        let user = user_kp.pubkey();
+
+        state
+            .put_account(
+                &user,
+                &lichen_core::Account::new(0, lichen_core::SYSTEM_PROGRAM_ID),
+            )
+            .unwrap();
+        state.set_last_slot(101).unwrap();
+
+        let mut pool = lichen_core::mossstake::MossStakePool::new();
+        pool.unstake_requests.insert(
+            user,
+            vec![lichen_core::mossstake::UnstakeRequest {
+                owner: user,
+                st_licn_amount: 11_000_000_000,
+                licn_to_receive: 18_134_176_858_087,
+                requested_at: 10,
+                claimable_at: 100,
+                requested_at_unix_seconds: 0,
+                claimable_at_unix_seconds: 0,
+            }],
+        );
+        state.put_mossstake_pool(&pool).unwrap();
+
+        let ix = lichen_core::Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![user],
+            data: vec![15],
+        };
+        let message = lichen_core::Message::new(vec![ix], Hash([0x33; 32]));
+        let mut tx = Transaction::new(message);
+        tx.signatures
+            .push(user_kp.sign(&tx.message.signing_bytes_for_chain_id("lichen-test")));
+
+        let rpc_state = make_test_rpc_state(state);
+        super::preflight_transaction_submission(&rpc_state, &tx, false)
+            .await
+            .expect("matured MossStake claim proceeds should satisfy send preflight fee guard");
     }
 
     #[tokio::test]

@@ -4,18 +4,6 @@ import { buildAmountInstructionData, buildSignedSingleInstructionTransaction, en
 import { baseUnitsToDecimalString, parsePositiveDecimalBaseUnits } from './amount-service.js';
 
 const MAX_STAKING_AMOUNT_BASE_UNITS = 1_000_000_000n * 1_000_000_000n;
-const BASE_FEE_SPORES = 1_000_000n;
-
-function baseUnitBigInt(value) {
-  if (typeof value === 'bigint') return value > 0n ? value : 0n;
-  if (typeof value === 'number') {
-    if (!Number.isSafeInteger(value) || value <= 0) return 0n;
-    return BigInt(value);
-  }
-  const text = String(value ?? '0').trim();
-  if (!/^\d+$/.test(text)) return 0n;
-  return BigInt(text);
-}
 
 function validateAmount(amountLicn, label) {
   const baseUnits = parsePositiveDecimalBaseUnits(amountLicn, 9, label);
@@ -100,11 +88,6 @@ export async function unstakeStLicn({ wallet, password, amountLicn, network }) {
 export async function claimMossStake({ wallet, password, network }) {
   if (!wallet) throw new Error('No active wallet');
   const rpc = new LichenRPC(await getConfiguredRpcEndpoint(network));
-  const balance = await rpc.getBalance(wallet.address);
-  const spendable = baseUnitBigInt(balance?.spendable ?? balance?.available ?? balance?.spores ?? balance?.balance ?? 0);
-  if (spendable < BASE_FEE_SPORES) {
-    throw new Error(`Insufficient LICN for transaction fee (need ${baseUnitsToDecimalString(BASE_FEE_SPORES, 9)} LICN)`);
-  }
 
   const blockhash = await rpc.getRecentBlockhash();
   const privateKeyHex = await decryptPrivateKey(wallet.encryptedKey, password);

@@ -60,6 +60,12 @@ const NFT_MARKETPLACE_URL = 'https://marketplace.lichen.network';
 const LICN_LOGO_URL = 'https://lichen.network/assets/img/coins/128x128/licn.png';
 const SHIELDED_NOTE_PAYLOAD_MAGIC_EXT = new TextEncoder().encode('LNP1');
 const NOTE_ENCRYPTION_V1_PREFIX_EXT = 'a1:';
+const SHIELDED_UNSHIELD_CU_PER_NOTE_EXT = 200_000;
+const SHIELDED_MAX_TX_COMPUTE_BUDGET_EXT = 1_400_000;
+const SHIELDED_MAX_UNSHIELD_NOTES_PER_TX_EXT = Math.max(
+  1,
+  Math.floor(SHIELDED_MAX_TX_COMPUTE_BUDGET_EXT / SHIELDED_UNSHIELD_CU_PER_NOTE_EXT),
+);
 
 /* ──────────────────────────────────────────
    State
@@ -1519,7 +1525,9 @@ async function loadStakingTab() {
       ? baseUnitBigIntExt(balance?.spendable ?? balance?.available ?? balance?.spores ?? balance?.balance ?? 0)
       : null;
     const canPayClaimFee = spendableSpores === null || spendableSpores >= feeSpores;
-    const claimFeeTitle = `Need ${formatLicnBaseUnitsExactExt(feeSpores)} LICN spendable for transaction fee`;
+    const claimFeeTitle = canPayClaimFee
+      ? `Network fee: ${formatLicnBaseUnitsExactExt(feeSpores)} LICN`
+      : 'Network fee will be deducted from the claimed LICN';
 
     const stLicn = Number(position?.st_licn_amount || 0) / 1e9;
     const value = Number(position?.current_value_licn || 0) / 1e9;
@@ -1640,9 +1648,7 @@ async function loadStakingTab() {
         return `<div style="padding:0.75rem;background:var(--card-bg);border-radius:8px;border:1px solid var(--border);margin-bottom:0.5rem;display:flex;justify-content:space-between;align-items:center;">
           <span style="font-weight:600;">${amt} LICN</span>
           ${claimable
-            ? canPayClaimFee
-              ? '<button class="btn btn-small fullClaimBtn" style="padding:0.3rem 0.8rem;font-size:0.8rem;background:#10b981;border:none;border-radius:6px;color:#fff;cursor:pointer;font-weight:600;"><i class="fas fa-check-circle"></i> Claim</button>'
-              : `<button class="btn btn-small fullClaimBtn" disabled title="${claimFeeTitle}" style="padding:0.3rem 0.8rem;font-size:0.8rem;background:#64748b;border:none;border-radius:6px;color:#fff;cursor:not-allowed;font-weight:600;opacity:0.65;"><i class="fas fa-check-circle"></i> Claim</button>`
+            ? `<button class="btn btn-small fullClaimBtn" title="${claimFeeTitle}" style="padding:0.3rem 0.8rem;font-size:0.8rem;background:#10b981;border:none;border-radius:6px;color:#fff;cursor:pointer;font-weight:600;"><i class="fas fa-check-circle"></i> Claim</button>`
             : `<span style="color:var(--text-muted);font-size:0.8rem;"><i class="fas fa-clock"></i> ${remainingDays ? `~${remainingDays} days` : 'Waiting for chain slot'}</span>`
           }
         </div>`;
@@ -1805,7 +1811,7 @@ async function handleFullClaim() {
   const wallet = getActiveWallet();
   if (!wallet) return;
 
-  // Balance guard: verify there is a claimable unstake and enough for fee
+  // Verify there is a matured unstake. Fee can be paid from claim proceeds.
   try {
     const queue = await rpc().call('getUnstakingQueue', [wallet.address]);
     const pending = queue?.pending_requests || [];
@@ -1820,16 +1826,6 @@ async function handleFullClaim() {
       return;
     }
   } catch (e) { /* let RPC reject */ }
-  try {
-    const balResult = await rpc().call('getBalance', [wallet.address]);
-    const spendable = baseUnitBigIntExt(balResult?.spendable ?? balResult?.available ?? balResult?.spores ?? balResult?.balance ?? 0);
-    const feeSpores = 1_000_000n;
-    if (spendable < feeSpores) {
-      alert(`Insufficient LICN for transaction fee (need ${formatLicnBaseUnitsExactExt(feeSpores)} LICN)`);
-      return;
-    }
-  } catch (e) { /* let RPC reject */ }
-
   const password = prompt('Enter wallet password to claim unstake:');
   if (!password) return;
   try {
@@ -1885,6 +1881,22 @@ function selectExactExtensionUnshieldNotes(unspentNotes, targetAmount) {
     }
   }
   return null;
+}
+
+function computeExtensionUnshieldBatchBudget(noteCount) {
+  const count = Math.max(1, Number(noteCount) || 1);
+  return Math.min(
+    SHIELDED_MAX_TX_COMPUTE_BUDGET_EXT,
+    count * SHIELDED_UNSHIELD_CU_PER_NOTE_EXT,
+  );
+}
+
+function chunkExtensionUnshieldEntries(entries) {
+  const chunks = [];
+  for (let i = 0; i < entries.length; i += SHIELDED_MAX_UNSHIELD_NOTES_PER_TX_EXT) {
+    chunks.push(entries.slice(i, i + SHIELDED_MAX_UNSHIELD_NOTES_PER_TX_EXT));
+  }
+  return chunks;
 }
 
 async function deriveExtensionShieldedStorageKey() {
@@ -2193,15 +2205,16 @@ async function assertExtensionPublicFeeBalance(type) {
   }
 }
 
-async function signAndSubmitExtensionShieldedInstruction({ wallet, password, instructionDataBytes }) {
+async function signAndSubmitExtensionShieldedInstruction({ wallet, password, instructionDataBytes, computeBudget }) {
   return signAndSubmitExtensionShieldedInstructions({
     wallet,
     password,
+    computeBudget,
     instructions: [{ instructionDataBytes }],
   });
 }
 
-async function signAndSubmitExtensionShieldedInstructions({ wallet, password, instructions }) {
+async function signAndSubmitExtensionShieldedInstructions({ wallet, password, instructions, computeBudget }) {
   const client = rpc();
   const privateKeyHex = await decryptPrivateKey(wallet.encryptedKey, password);
   const blockhash = await client.getRecentBlockhash();
@@ -2217,6 +2230,12 @@ async function signAndSubmitExtensionShieldedInstructions({ wallet, password, in
     })),
     blockhash,
   };
+  if (Number.isFinite(computeBudget) && computeBudget > 0) {
+    message.compute_budget = Math.min(
+      SHIELDED_MAX_TX_COMPUTE_BUDGET_EXT,
+      Math.trunc(computeBudget),
+    );
+  }
   const messageBytes = serializeMessageForSigning(message);
   const signature = await signTransaction(privateKeyHex, messageBytes);
   return client.sendTransactionWithPreflight(encodeTransactionBase64({ signatures: [signature], message }));
@@ -2357,12 +2376,20 @@ async function submitExtensionUnshield({ wallet, amountLicn, password, recipient
     });
   }
 
-  statusEl.textContent = 'Submitting signed transaction...';
-  const signature = await signAndSubmitExtensionShieldedInstructions({
-    wallet,
-    password,
-    instructions: entries,
-  });
+  const chunks = chunkExtensionUnshieldEntries(entries);
+  statusEl.textContent = chunks.length > 1
+    ? `Submitting ${chunks.length} signed unshield transactions...`
+    : 'Submitting signed transaction...';
+  const signatures = [];
+  for (const chunk of chunks) {
+    const signature = await signAndSubmitExtensionShieldedInstructions({
+      wallet,
+      password,
+      computeBudget: computeExtensionUnshieldBatchBudget(chunk.length),
+      instructions: chunk,
+    });
+    signatures.push(signature);
+  }
 
   for (const entry of entries) {
     entry.note.spent = true;
@@ -2370,7 +2397,7 @@ async function submitExtensionUnshield({ wallet, amountLicn, password, recipient
   }
   recalculateExtensionShieldedBalance();
   await saveExtensionShieldedNotes(wallet);
-  return signature;
+  return signatures[0];
 }
 
 async function submitExtensionPrivateTransfer({ wallet, amountLicn, password, recipientViewingKey, statusEl }) {

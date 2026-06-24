@@ -16,6 +16,12 @@ const MERKLE_TREE_DEPTH = 32;
 const NOTE_ENCRYPTION_V1_PREFIX = 'a1:';
 const SHIELDED_STORAGE_VERSION = 1;
 const SHIELDED_NOTE_PAYLOAD_MAGIC = new TextEncoder().encode('LNP1');
+const SHIELDED_UNSHIELD_CU_PER_NOTE = 200_000;
+const SHIELDED_MAX_TX_COMPUTE_BUDGET = 1_400_000;
+const SHIELDED_MAX_UNSHIELD_NOTES_PER_TX = Math.max(
+    1,
+    Math.floor(SHIELDED_MAX_TX_COMPUTE_BUDGET / SHIELDED_UNSHIELD_CU_PER_NOTE),
+);
 
 // ===== Shielded Wallet State =====
 function createInitialShieldedState(previousState = {}) {
@@ -166,6 +172,22 @@ function selectExactUnshieldNotes(unspentNotes, targetAmount) {
     return null;
 }
 
+function computeUnshieldBatchBudget(noteCount) {
+    const count = Math.max(1, Number(noteCount) || 1);
+    return Math.min(
+        SHIELDED_MAX_TX_COMPUTE_BUDGET,
+        count * SHIELDED_UNSHIELD_CU_PER_NOTE,
+    );
+}
+
+function chunkUnshieldEntries(entries) {
+    const chunks = [];
+    for (let i = 0; i < entries.length; i += SHIELDED_MAX_UNSHIELD_NOTES_PER_TX) {
+        chunks.push(entries.slice(i, i + SHIELDED_MAX_UNSHIELD_NOTES_PER_TX));
+    }
+    return chunks;
+}
+
 function bytesToBase64(bytes) {
     let binary = '';
     const chunkSize = 0x8000;
@@ -236,7 +258,7 @@ function buildShieldedTransferInstructionData(nullifiers, outputCommitments, mer
     return concatBytes(header, payloadHeader.subarray(0, 8), proofBytes, payloadHeader.subarray(8), notePayload);
 }
 
-async function signAndSubmitShieldedInstructions({ wallet, password, instructions, onSubmitted }) {
+async function signAndSubmitShieldedInstructions({ wallet, password, instructions, computeBudget, onSubmitted }) {
     if (!wallet || !wallet.encryptedKey) {
         throw new Error('No active wallet');
     }
@@ -256,6 +278,12 @@ async function signAndSubmitShieldedInstructions({ wallet, password, instruction
         })),
         blockhash,
     };
+    if (Number.isFinite(computeBudget) && computeBudget > 0) {
+        message.compute_budget = Math.min(
+            SHIELDED_MAX_TX_COMPUTE_BUDGET,
+            Math.trunc(computeBudget),
+        );
+    }
 
     const privateKey = await LichenCrypto.decryptPrivateKey(wallet.encryptedKey, password);
     const messageBytes = serializeMessageBincode(message);
@@ -345,21 +373,27 @@ async function submitUnshieldBatchTransaction({ recipientAddress, entries }) {
         throw new Error('Unshield cancelled');
     }
     const recipient = LichenCrypto.addressToBytes(recipientAddress);
-    const signature = await signAndSubmitShieldedInstructions({
-        wallet,
-        password,
-        instructions: entries.map((entry) => ({
-            accounts: [recipient],
-            instructionData: buildUnshieldInstructionData(
-                entry.amountSpores,
-                entry.nullifier,
-                entry.merkleRoot,
-                entry.recipientHash,
-                entry.proof,
-            ),
-        })),
-    });
-    return { success: true, signature };
+    const chunks = chunkUnshieldEntries(entries);
+    const signatures = [];
+    for (const chunk of chunks) {
+        const signature = await signAndSubmitShieldedInstructions({
+            wallet,
+            password,
+            computeBudget: computeUnshieldBatchBudget(chunk.length),
+            instructions: chunk.map((entry) => ({
+                accounts: [recipient],
+                instructionData: buildUnshieldInstructionData(
+                    entry.amountSpores,
+                    entry.nullifier,
+                    entry.merkleRoot,
+                    entry.recipientHash,
+                    entry.proof,
+                ),
+            })),
+        });
+        signatures.push(signature);
+    }
+    return { success: true, signature: signatures[0], signatures };
 }
 
 async function submitShieldedTransferTransaction({ amountSpores, nullifiers, outputCommitments, merkleRoot, proof }) {
@@ -739,7 +773,11 @@ async function shieldLicn(amountLicn) {
         const poolBefore = await rpc.call('getShieldedPoolState').catch(() => shieldedState.poolStats || null);
         const expectedCommitmentIndex = Number(poolBefore?.commitmentCount ?? poolBefore?.commitment_count ?? shieldedState.commitments.length ?? 0);
 
-        showShieldedStatus('Submitting transaction...', 'pending');
+        const txCount = Math.ceil(entries.length / SHIELDED_MAX_UNSHIELD_NOTES_PER_TX);
+        showShieldedStatus(
+            txCount > 1 ? `Submitting ${txCount} unshield transactions...` : 'Submitting transaction...',
+            'pending',
+        );
 
         const ownedNote = {
             index: null,

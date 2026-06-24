@@ -79,6 +79,29 @@
         <!-- Timeline -->
         <div class="changelog-timeline">
 
+            <!-- ============ v0.5.203 ============ -->
+            <div class="changelog-entry">
+                <div class="changelog-header">
+                    <span class="changelog-version">v0.5.203</span>
+                    <span class="changelog-date">June 24, 2026</span>
+                </div>
+                <h3 class="changelog-title">MossStake Claim Fee And Shielded MAX Fixes</h3>
+
+                <div class="changelog-section" data-type="fixed">
+                    <h4><i class="fas fa-bug" style="color: var(--warning)"></i> Fixes</h4>
+                    <ul>
+                        <li><strong>Matured MossStake claims</strong> &mdash; accounts with zero spendable LICN can
+                            claim matured unstake requests by paying the base network fee from the claimed LICN
+                            proceeds atomically, with RPC send preflight using the same rule.</li>
+                        <li><strong>Wallet claim UX</strong> &mdash; wallet and extension claim buttons remain enabled
+                            for matured unstake requests and explain when the fee is deducted from the claim.</li>
+                        <li><strong>Shielded MAX unshield</strong> &mdash; wallet and extension now request the
+                            required per-note compute budget for exact multi-note unshield batches and split oversized
+                            batches under the protocol compute cap.</li>
+                    </ul>
+                </div>
+            </div>
+
             <!-- ============ v0.5.202 ============ -->
             <div class="changelog-entry">
                 <div class="changelog-header">

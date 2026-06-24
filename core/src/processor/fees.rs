@@ -223,7 +223,7 @@ impl TxProcessor {
         Ok(())
     }
 
-    fn charge_fee_with_priority_in_batch(
+    pub(super) fn charge_fee_with_priority_in_batch(
         &self,
         payer: &Pubkey,
         total_fee: u64,
