@@ -4,7 +4,7 @@ This is the operator runbook for launching Lichen mainnet and then enabling
 mainnet custody. It is intentionally step-by-step and gate-based. Do not skip a
 gate because mainnet genesis and custody routes handle real value.
 
-Written for the current mainnet package. Current signed-release target for this runbook is `v0.5.204`; keep `v0.5.203` as the signed rollback point. If a newer
+Written for the current mainnet package. Current signed-release target for this runbook is `v0.5.205`; keep `v0.5.204` as the signed rollback point. If a newer
 release is used, replace every example tag with the newer signed release tag
 after CI and release verification pass.
 
@@ -23,8 +23,18 @@ after CI and release verification pass.
 - Do not use the mainnet faucet pattern. There is no mainnet faucet.
 - Do not copy validator RocksDB state, `genesis-wallet.json`, `genesis-keys/`,
   `known-peers.json`, or consensus WAL to joiners.
+- Do not delete or unmount the original `genesis-keys/` governed signer bundle
+  until `scripts/verify-governed-key-custody.sh` has passed against the live
+  chain and at least two private/offline backup copies have been verified.
+  The genesis primary key is one governed signer; it is not a unilateral bypass
+  for distribution wallets, signer rotation, treasury execution, or timelocks.
+- Do not carry testnet lineage recovery hooks into a mainnet launch unless they
+  are provably unreachable for mainnet by chain ID, genesis wallet identity, and
+  activation slot. The `testnet_governed_signer_recovery_v1` hook exists only to
+  preserve replay compatibility for the June 2026 testnet after governed signer
+  custody was lost; mainnet must launch from verified custody instead.
 - Do not deploy a release that changes consensus rules with a mixed-version
-  rolling restart. The current rollback point `v0.5.203` includes public history
+  rolling restart. The current rollback point `v0.5.204` includes public history
   merge and archive-mode public RPC defaults after the BFT leader selection and
   required a coordinated stop/install/start rollout.
 - Do not commit provider URLs, auth tokens, keypair passwords, custody seeds,
@@ -169,6 +179,9 @@ Hard stop conditions:
 
 - Any host runs a binary hash that does not match the signed release package.
 - Any host has an unexpected non-empty mainnet state directory before genesis.
+- `rg "TESTNET_GOVERNED_SIGNER_RECOVERY|testnet_governed_signer_recovery" validator/src core/src`
+  finds a mainnet-reachable recovery path or any recovery hook that is not
+  chain-id and wallet guarded.
 - Mainnet genesis prices cannot be sourced from an audited file or live provider.
 - Fewer than four unique validator pubkeys are embedded in bridge/oracle
   genesis committees.
@@ -212,7 +225,7 @@ credentials, or keypair passwords.
 Use the signed release that passed CI. For the current package:
 
 ```bash
-export LICHEN_RELEASE_TAG=v0.5.204
+export LICHEN_RELEASE_TAG=v0.5.205
 export LICHEN_MAINNET_VPS_HOSTS="15.204.229.189 37.59.97.61 15.235.142.253 148.113.43.247"
 ```
 
@@ -259,7 +272,7 @@ For an emergency rollback to the current signed rollback point, set the tag
 explicitly and run the same signed-release path:
 
 ```bash
-export LICHEN_RELEASE_TAG=v0.5.203
+export LICHEN_RELEASE_TAG=v0.5.204
 LICHEN_VERIFY_RELEASE_ONLY=1 bash scripts/rolling-release-deploy.sh mainnet
 bash scripts/rolling-release-deploy.sh mainnet
 ```
@@ -973,6 +986,31 @@ sudo install -m 640 -o root -g lichen \
 ```
 
 Remove or unmount the staged signing key immediately after use.
+
+Verify governed signer custody before any launch cleanup:
+
+```bash
+cd ~/lichen
+LICHEN_KEYPAIR_PASSWORD=REPLACE_WITH_KEYPAIR_PASSWORD \
+scripts/verify-governed-key-custody.sh \
+  --rpc-url http://127.0.0.1:9899 \
+  --keys-dir /secure/offline-mounted/genesis-keys
+```
+
+Required result: every live `getGenesisAccounts` governed signer role resolves
+to a loadable encrypted keypair in the private/offline bundle. This gate is
+required for `community_treasury`, `builder_grants`, `reserve_pool`,
+`validator_rewards`, `founding_symbionts`, `ecosystem_partnerships`, and the
+genesis primary signer. Do not proceed with cleanup, rotation, or large governed
+transfers if any live signer key is missing. Governed signer rotation is itself
+a governed operation and requires the currently configured threshold; it cannot
+be performed later by the genesis primary key alone.
+
+The June 2026 testnet used a one-time, chain-id-gated
+`testnet_governed_signer_recovery_v1` activation after signer custody was lost.
+That hook must never be used as the mainnet custody plan. Mainnet launch approval
+requires this verifier to pass before cleanup, plus two independently restored
+private/offline backups of the same governed signer bundle.
 
 Verify manifest signer:
 

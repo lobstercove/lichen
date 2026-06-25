@@ -157,6 +157,38 @@ const PUBLIC_HISTORY_MERGE_CONFIRMATION: &str = "public-history-merge:v1";
 const PUBLIC_HISTORY_INDEX_MERGE_CONFIRMATION: &str = "public-history-index-merge:v1";
 const REPAIR_ANALYTICS_24H_WINDOW_FLAG: &str = "--repair-analytics-24h-window";
 const ANALYTICS_24H_REPAIR_CONFIRMATION: &str = "repair-analytics-24h:v1";
+const TESTNET_GOVERNED_SIGNER_RECOVERY_V1_METADATA_KEY: &str =
+    "testnet_governed_signer_recovery_v1";
+const TESTNET_GOVERNED_SIGNER_RECOVERY_V1_ACTIVATION_PARENT_SLOT: u64 = 5_950_000;
+const TESTNET_GOVERNED_SIGNER_RECOVERY_V1_COMMUNITY_TREASURY: &str =
+    "8i6Y9q1i2bKJwBXfzWrAfKMwbdeZxFxH3U4HJRJEEri";
+const TESTNET_GOVERNED_SIGNER_RECOVERY_V1_SIGNERS: &[(&str, &str)] = &[
+    ("genesis", "5kRNjXx67FqtJoHkno8zUWYQ3uQ3zwe3ugUMdoQ8uCc"),
+    (
+        "validator_rewards",
+        "6bC94QHpwKNPqaThxT94Dr2BmeFsXp9VEDydp5Nku7y",
+    ),
+    (
+        "community_treasury",
+        "58t5r246nixRS7Ho8yD3tZTNhFVvduYy1K3L8ETFhyw",
+    ),
+    (
+        "builder_grants",
+        "7o5kLJ3jzdAr9KGW7Kta59cb4K47tKbc7drMMPEFqKm",
+    ),
+    (
+        "founding_symbionts",
+        "8A9XM4oZtsyCGZvhyMeaUeeWwkLifAEaVHgddJmp9zm",
+    ),
+    (
+        "ecosystem_partnerships",
+        "8eLRMpnJ9RPpBmNAwddYQxKJKP2qk1QQMVMFNyMF6Jm",
+    ),
+    (
+        "reserve_pool",
+        "6iy61bTZUsn2WTCifjpiASMoFSH4VtsAoHcoSH1HuTi",
+    ),
+];
 const TESTNET_DEX_REPAIR_CONTRACTS: &[(&str, &str)] = &[
     ("LUSD", "lusd_token"),
     ("WSOL", "wsol_token"),
@@ -6474,6 +6506,17 @@ async fn apply_post_block_effects_after_store(
         error!("Failed post-block MossStake slot-only activation: {}", e);
         std::process::exit(1);
     }
+    if let Err(e) = maybe_activate_testnet_governed_signer_recovery(
+        state,
+        block.header.slot,
+        "post-block boundary",
+    ) {
+        error!(
+            "Failed post-block testnet governed signer recovery activation: {}",
+            e
+        );
+        std::process::exit(1);
+    }
     record_post_block_state_commitment_anchor(state, block, "post-block effects");
 }
 
@@ -6636,6 +6679,168 @@ fn maybe_activate_legacy_testnet_mossstake_slot_only(
     }
 
     clean_mossstake_wall_clock_state(state, context)
+}
+
+fn parse_testnet_recovery_pubkey(role: &str, value: &str) -> Result<Pubkey, String> {
+    Pubkey::from_base58(value).map_err(|err| {
+        format!(
+            "invalid testnet governed signer recovery pubkey for role {}: {}",
+            role, err
+        )
+    })
+}
+
+fn testnet_governed_signer_recovery_roles() -> Result<Vec<(String, Pubkey)>, String> {
+    TESTNET_GOVERNED_SIGNER_RECOVERY_V1_SIGNERS
+        .iter()
+        .map(|(role, pubkey)| {
+            Ok((
+                (*role).to_string(),
+                parse_testnet_recovery_pubkey(role, pubkey)?,
+            ))
+        })
+        .collect()
+}
+
+fn recovery_distribution_signers(role_signers: &[(String, Pubkey)]) -> Result<Vec<Pubkey>, String> {
+    let mut signers = Vec::with_capacity(TESTNET_GOVERNED_SIGNER_RECOVERY_V1_SIGNERS.len());
+    for (role, pubkey) in role_signers {
+        if !signers.contains(pubkey) {
+            signers.push(*pubkey);
+        } else {
+            return Err(format!(
+                "duplicate signer pubkey in testnet governed signer recovery for role {}",
+                role
+            ));
+        }
+    }
+    Ok(signers)
+}
+
+fn preserve_governed_config_policy(
+    mut replacement: lichen_core::multisig::GovernedWalletConfig,
+    existing: Option<lichen_core::multisig::GovernedWalletConfig>,
+) -> Result<lichen_core::multisig::GovernedWalletConfig, String> {
+    if let Some(existing) = existing {
+        if usize::from(existing.threshold) > replacement.signers.len() {
+            return Err(format!(
+                "refusing to downgrade governed threshold {} below replacement signer count {} for {}",
+                existing.threshold,
+                replacement.signers.len(),
+                replacement.label
+            ));
+        }
+        replacement.threshold = existing.threshold;
+        replacement.timelock_epochs = existing.timelock_epochs;
+        replacement.transfer_velocity_policy = existing.transfer_velocity_policy;
+    }
+    Ok(replacement)
+}
+
+fn set_recovered_governed_config(
+    state: &StateStore,
+    authority: &Pubkey,
+    replacement: lichen_core::multisig::GovernedWalletConfig,
+) -> Result<(), String> {
+    let existing = state.get_governed_wallet_config(authority)?;
+    let config = preserve_governed_config_policy(replacement, existing)?;
+    state.set_governed_wallet_config(authority, &config)
+}
+
+fn maybe_activate_testnet_governed_signer_recovery(
+    state: &StateStore,
+    parent_slot: u64,
+    context: &str,
+) -> Result<bool, String> {
+    if parent_slot < TESTNET_GOVERNED_SIGNER_RECOVERY_V1_ACTIVATION_PARENT_SLOT {
+        return Ok(false);
+    }
+
+    if matches!(
+        state
+            .get_metadata(TESTNET_GOVERNED_SIGNER_RECOVERY_V1_METADATA_KEY)?
+            .as_deref(),
+        Some(b"1")
+    ) {
+        return Ok(false);
+    }
+
+    let Some(chain_id) = state_chain_id_metadata(state) else {
+        return Ok(false);
+    };
+    if !chain_id.eq_ignore_ascii_case("lichen-testnet-1") {
+        return Ok(false);
+    }
+
+    let expected_community = parse_testnet_recovery_pubkey(
+        "community_treasury_wallet",
+        TESTNET_GOVERNED_SIGNER_RECOVERY_V1_COMMUNITY_TREASURY,
+    )?;
+    let Some(community_treasury) = state.get_community_treasury_pubkey()? else {
+        return Ok(false);
+    };
+    if community_treasury != expected_community {
+        return Ok(false);
+    }
+
+    let role_signers = testnet_governed_signer_recovery_roles()?;
+    let distribution_signers = recovery_distribution_signers(&role_signers)?;
+    let committee_role_signers: Vec<(String, Pubkey)> = role_signers
+        .iter()
+        .filter(|(role, _)| role != "genesis")
+        .cloned()
+        .collect();
+
+    for &(role, _, _) in GENESIS_DISTRIBUTION {
+        let Some(wallet) = state.get_wallet_pubkey(role)? else {
+            return Err(format!(
+                "testnet governed signer recovery missing genesis wallet role {}",
+                role
+            ));
+        };
+        let replacement = governed_wallet_config_for_role(role, &distribution_signers)
+            .ok_or_else(|| format!("no governed wallet config template for role {}", role))?;
+        set_recovered_governed_config(state, &wallet, replacement)?;
+    }
+
+    let (guardian_authority, guardian_config) =
+        incident_guardian_config_for_roles(&committee_role_signers, &community_treasury)?;
+    state.set_incident_guardian_authority(&guardian_authority)?;
+    set_recovered_governed_config(state, &guardian_authority, guardian_config)?;
+
+    let (bridge_authority, bridge_config) =
+        bridge_committee_admin_config_for_roles(&committee_role_signers, &community_treasury)?;
+    state.set_bridge_committee_admin_authority(&bridge_authority)?;
+    set_recovered_governed_config(state, &bridge_authority, bridge_config)?;
+
+    let (oracle_authority, oracle_config) =
+        oracle_committee_admin_config_for_roles(&committee_role_signers, &community_treasury)?;
+    state.set_oracle_committee_admin_authority(&oracle_authority)?;
+    set_recovered_governed_config(state, &oracle_authority, oracle_config)?;
+
+    let (treasury_authority, treasury_config) =
+        treasury_executor_config_for_roles(&committee_role_signers, &community_treasury)?;
+    state.set_treasury_executor_authority(&treasury_authority)?;
+    set_recovered_governed_config(state, &treasury_authority, treasury_config)?;
+
+    let (upgrade_authority, upgrade_config) =
+        upgrade_proposer_config_for_roles(&committee_role_signers, &community_treasury)?;
+    state.set_upgrade_proposer_authority(&upgrade_authority)?;
+    set_recovered_governed_config(state, &upgrade_authority, upgrade_config)?;
+
+    let (veto_authority, veto_config) =
+        upgrade_veto_guardian_config_for_roles(&committee_role_signers, &community_treasury)?;
+    state.set_upgrade_veto_guardian_authority(&veto_authority)?;
+    set_recovered_governed_config(state, &veto_authority, veto_config)?;
+
+    state.put_metadata(TESTNET_GOVERNED_SIGNER_RECOVERY_V1_METADATA_KEY, b"1")?;
+    warn!(
+        "🔐 {}: activated testnet governed signer recovery v1 at parent slot {} ({} signers)",
+        context,
+        parent_slot,
+        distribution_signers.len()
+    );
+    Ok(true)
 }
 
 fn genesis_sync_incomplete(state: &StateStore) -> bool {
@@ -13971,6 +14176,15 @@ async fn run_validator() {
         maybe_activate_legacy_testnet_mossstake_slot_only(&state, startup_tip, "startup boundary")
     {
         error!("Failed startup MossStake slot-only activation: {}", e);
+        std::process::exit(1);
+    }
+    if let Err(e) =
+        maybe_activate_testnet_governed_signer_recovery(&state, startup_tip, "startup boundary")
+    {
+        error!(
+            "Failed startup testnet governed signer recovery activation: {}",
+            e
+        );
         std::process::exit(1);
     }
     if let Err(e) = ensure_tip_post_state_commitment_anchor(&state) {
@@ -24666,6 +24880,13 @@ mod tests {
         );
         assert_eq!(
             section
+                .matches("maybe_activate_testnet_governed_signer_recovery(")
+                .count(),
+            0,
+            "testnet governed signer recovery belongs inside the post-store hook wrapper"
+        );
+        assert_eq!(
+            section
                 .matches("record_post_block_state_commitment_anchor(")
                 .count(),
             0,
@@ -27955,6 +28176,223 @@ mod tests {
                 .expect("read marker")
                 .as_deref(),
             Some(b"1".as_slice())
+        );
+    }
+
+    #[test]
+    fn testnet_governed_signer_recovery_rotates_configs_without_balance_changes() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let community = parse_testnet_recovery_pubkey(
+            "community_treasury_wallet",
+            TESTNET_GOVERNED_SIGNER_RECOVERY_V1_COMMUNITY_TREASURY,
+        )
+        .expect("parse community wallet");
+        let old_signers = vec![
+            Pubkey([0xA1; 32]),
+            Pubkey([0xA2; 32]),
+            Pubkey([0xA3; 32]),
+            Pubkey([0xA4; 32]),
+        ];
+        let mut genesis_accounts = Vec::new();
+
+        state
+            .put_metadata(CHAIN_ID_METADATA_KEY, b"lichen-testnet-1")
+            .expect("put chain id");
+        for (index, &(role, amount, pct)) in GENESIS_DISTRIBUTION.iter().enumerate() {
+            let wallet = if role == "community_treasury" {
+                community
+            } else {
+                Pubkey([(index as u8).saturating_add(1); 32])
+            };
+            genesis_accounts.push((role.to_string(), wallet, amount, pct));
+            state
+                .put_account(&wallet, &Account::new(amount, wallet))
+                .expect("put governed wallet account");
+            let mut config =
+                lichen_core::multisig::GovernedWalletConfig::new(4, old_signers.clone(), role)
+                    .with_timelock(3);
+            if role == "community_treasury" {
+                config.transfer_velocity_policy =
+                    Some(lichen_core::multisig::GovernedTransferVelocityPolicy::new(
+                        123, 456, 78, 90, 1, 2,
+                    ));
+            }
+            state
+                .set_governed_wallet_config(&wallet, &config)
+                .expect("seed governed config");
+        }
+        state
+            .set_genesis_accounts(&genesis_accounts)
+            .expect("seed genesis accounts");
+        let community_before = state.get_account(&community).expect("read account before");
+        let expected_signers = recovery_distribution_signers(
+            &testnet_governed_signer_recovery_roles().expect("recovery roles"),
+        )
+        .expect("recovery signers");
+
+        assert!(
+            !maybe_activate_testnet_governed_signer_recovery(
+                &state,
+                TESTNET_GOVERNED_SIGNER_RECOVERY_V1_ACTIVATION_PARENT_SLOT - 1,
+                "pre-boundary test",
+            )
+            .expect("pre-boundary check"),
+            "recovery must wait for the activation boundary"
+        );
+
+        assert!(
+            maybe_activate_testnet_governed_signer_recovery(
+                &state,
+                TESTNET_GOVERNED_SIGNER_RECOVERY_V1_ACTIVATION_PARENT_SLOT,
+                "boundary test",
+            )
+            .expect("activate recovery"),
+            "boundary slot must activate recovery"
+        );
+        let community_after = state.get_account(&community).expect("read account after");
+        assert_eq!(
+            community_after.as_ref().map(|account| (
+                account.spores,
+                account.spendable,
+                account.staked,
+                account.locked,
+            )),
+            community_before.as_ref().map(|account| (
+                account.spores,
+                account.spendable,
+                account.staked,
+                account.locked,
+            )),
+            "signer recovery must not mutate governed wallet balances"
+        );
+        let community_config = state
+            .get_governed_wallet_config(&community)
+            .expect("read community config")
+            .expect("community config");
+        assert_eq!(community_config.signers, expected_signers);
+        assert_eq!(community_config.threshold, 4);
+        assert_eq!(community_config.timelock_epochs, 3);
+        assert!(
+            community_config
+                .transfer_velocity_policy
+                .as_ref()
+                .is_some_and(|policy| policy.per_transfer_cap_spores == 123),
+            "existing velocity policy must be preserved"
+        );
+        for old_signer in old_signers {
+            assert!(
+                !community_config.signers.contains(&old_signer),
+                "old signer must not remain authorized after recovery"
+            );
+        }
+
+        let role_signers = testnet_governed_signer_recovery_roles().expect("roles");
+        let role_pubkey = |role: &str| {
+            role_signers
+                .iter()
+                .find_map(|(candidate, pubkey)| (candidate == role).then_some(*pubkey))
+                .expect("role signer")
+        };
+        let treasury_authority = state
+            .get_treasury_executor_authority()
+            .expect("read treasury authority")
+            .expect("treasury authority");
+        let treasury_config = state
+            .get_governed_wallet_config(&treasury_authority)
+            .expect("read treasury config")
+            .expect("treasury config");
+        assert_eq!(
+            treasury_config.signers,
+            vec![
+                role_pubkey("community_treasury"),
+                role_pubkey("ecosystem_partnerships"),
+                role_pubkey("reserve_pool"),
+            ],
+            "derived governance authorities must rotate to role-specific recovery signers"
+        );
+        assert_eq!(
+            state
+                .get_metadata(TESTNET_GOVERNED_SIGNER_RECOVERY_V1_METADATA_KEY)
+                .expect("read recovery marker")
+                .as_deref(),
+            Some(b"1".as_slice())
+        );
+        assert!(
+            !maybe_activate_testnet_governed_signer_recovery(
+                &state,
+                TESTNET_GOVERNED_SIGNER_RECOVERY_V1_ACTIVATION_PARENT_SLOT,
+                "idempotence test",
+            )
+            .expect("second activation"),
+            "recovery marker must make activation idempotent"
+        );
+    }
+
+    #[test]
+    fn testnet_governed_signer_recovery_ignores_other_chains() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let community = parse_testnet_recovery_pubkey(
+            "community_treasury_wallet",
+            TESTNET_GOVERNED_SIGNER_RECOVERY_V1_COMMUNITY_TREASURY,
+        )
+        .expect("parse community wallet");
+        state
+            .put_metadata(CHAIN_ID_METADATA_KEY, b"lichen-mainnet-1")
+            .expect("put chain id");
+        state
+            .set_genesis_accounts(&[("community_treasury".to_string(), community, 125_000_000, 25)])
+            .expect("seed genesis accounts");
+
+        assert!(
+            !maybe_activate_testnet_governed_signer_recovery(
+                &state,
+                TESTNET_GOVERNED_SIGNER_RECOVERY_V1_ACTIVATION_PARENT_SLOT,
+                "mainnet guard test",
+            )
+            .expect("mainnet guard"),
+            "recovery must be testnet-chain-id only"
+        );
+        assert_eq!(
+            state
+                .get_metadata(TESTNET_GOVERNED_SIGNER_RECOVERY_V1_METADATA_KEY)
+                .expect("read recovery marker"),
+            None
+        );
+    }
+
+    #[test]
+    fn testnet_governed_signer_recovery_requires_expected_treasury_wallet() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let wrong_community = Pubkey([0xCC; 32]);
+        state
+            .put_metadata(CHAIN_ID_METADATA_KEY, b"lichen-testnet-1")
+            .expect("put chain id");
+        state
+            .set_genesis_accounts(&[(
+                "community_treasury".to_string(),
+                wrong_community,
+                125_000_000,
+                25,
+            )])
+            .expect("seed genesis accounts");
+
+        assert!(
+            !maybe_activate_testnet_governed_signer_recovery(
+                &state,
+                TESTNET_GOVERNED_SIGNER_RECOVERY_V1_ACTIVATION_PARENT_SLOT,
+                "treasury guard test",
+            )
+            .expect("treasury guard"),
+            "recovery must require the exact June 2026 testnet treasury wallet"
+        );
+        assert_eq!(
+            state
+                .get_metadata(TESTNET_GOVERNED_SIGNER_RECOVERY_V1_METADATA_KEY)
+                .expect("read recovery marker"),
+            None
         );
     }
 

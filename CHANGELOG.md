@@ -5,6 +5,24 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.205] - 2026-06-25
+
+### Added
+- Adds a chain-id, treasury-wallet, and slot-guarded June 2026 testnet governed
+  signer recovery activation so the live testnet can rotate missing governed
+  signer configs without changing balances, history, contract storage, or
+  distribution wallet addresses.
+- Adds governed key custody verification and mainnet runbook gates requiring
+  live signer verification plus private/offline backups before key cleanup.
+
+### Fixed
+- Removes the final legacy project-name residue from tracked documentation.
+
+### Verified
+- Passed focused recovery guard tests, governed-transfer core tests, validator
+  check/clippy, deployment-doc QA, and a clean local 3-validator `start-reset`
+  run before release.
+
 ## [0.5.204] - 2026-06-25
 
 ### Fixed
@@ -878,7 +896,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - JS SDK `package.json` repository URL corrected to `lobstercove/lichen`
 
 ### Removed
-- MoltChain egg-info artifacts removed from source tree
+- Legacy egg-info artifacts removed from source tree
 - Python virtual environment removed from source tree
 - JS SDK `dist/` removed from source tracking
 
