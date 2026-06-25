@@ -24,7 +24,7 @@ after CI and release verification pass.
 - Do not copy validator RocksDB state, `genesis-wallet.json`, `genesis-keys/`,
   `known-peers.json`, or consensus WAL to joiners.
 - Do not deploy a release that changes consensus rules with a mixed-version
-  rolling restart. The current rollback point `v0.5.199` includes public history
+  rolling restart. The current rollback point `v0.5.203` includes public history
   merge and archive-mode public RPC defaults after the BFT leader selection and
   required a coordinated stop/install/start rollout.
 - Do not commit provider URLs, auth tokens, keypair passwords, custody seeds,
@@ -259,7 +259,7 @@ For an emergency rollback to the current signed rollback point, set the tag
 explicitly and run the same signed-release path:
 
 ```bash
-export LICHEN_RELEASE_TAG=v0.5.199
+export LICHEN_RELEASE_TAG=v0.5.203
 LICHEN_VERIFY_RELEASE_ONLY=1 bash scripts/rolling-release-deploy.sh mainnet
 bash scripts/rolling-release-deploy.sh mainnet
 ```
