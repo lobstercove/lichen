@@ -5,6 +5,21 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.206] - 2026-06-25
+
+### Fixed
+- Pins Cargo network retry/sparse-registry settings inside the Docker build so
+  the Docker CI job uses the same crates.io transport hardening as the rest of
+  GitHub Actions.
+- Supersedes `v0.5.205` before VPS rollout and moves the guarded June 2026
+  testnet governed-signer recovery boundary to slot `5,980,000` to preserve
+  deployment runway.
+
+### Verified
+- Reuses the green `v0.5.205` code/test gate results for recovery, governed
+  transfers, local 3-validator clean start, and release artifact generation;
+  `v0.5.206` adds the Docker CI transport hardening before deployment.
+
 ## [0.5.205] - 2026-06-25
 
 ### Added

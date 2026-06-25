@@ -1,6 +1,11 @@
 # Build stage
 FROM rust:1-bookworm AS builder
 
+ENV CARGO_HTTP_MULTIPLEXING=false \
+    CARGO_HTTP_TIMEOUT=120 \
+    CARGO_NET_RETRY=10 \
+    CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     clang libclang-dev && rm -rf /var/lib/apt/lists/*
 
