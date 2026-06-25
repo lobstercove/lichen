@@ -1,10 +1,10 @@
 // LichenWallet Service Worker — Cache-first assets with safe navigation fallback
 'use strict';
 
-const CACHE_VERSION = 'lichen-wallet-v4-20260625a';
-const INDEX_URL = './index.html';
+const CACHE_VERSION = 'lichen-wallet-v4-20260625b';
+const APP_SHELL_URL = './';
 const ASSETS = [
-    INDEX_URL,
+    APP_SHELL_URL,
     './shared-base-styles.css',
     './shared-theme.css',
     './shared-config.js',
@@ -30,21 +30,21 @@ function isCacheableResponse(response, type) {
     return response.status === 200 && response.type !== 'opaqueredirect';
 }
 
-function fetchIndexFallback(requestUrl) {
-    const fallbackUrl = new URL(INDEX_URL, self.location.href);
+function fetchAppShellFallback(requestUrl) {
+    const fallbackUrl = new URL(APP_SHELL_URL, self.location.href);
     fallbackUrl.search = requestUrl.search;
 
     return fetch(fallbackUrl.toString(), { cache: 'reload' }).then((response) => {
         if (isCacheableResponse(response, 'same-origin')) {
             const clone = response.clone();
             caches.open(CACHE_VERSION).then((cache) => {
-                cache.put(INDEX_URL, clone).catch(() => { });
+                cache.put(APP_SHELL_URL, clone).catch(() => { });
             });
             return response;
         }
 
-        return caches.match(INDEX_URL).then((cached) => cached || response);
-    }).catch(() => caches.match(INDEX_URL).then((cached) => cached || Response.error()));
+        return caches.match(APP_SHELL_URL).then((cached) => cached || response);
+    }).catch(() => caches.match(APP_SHELL_URL).then((cached) => cached || Response.error()));
 }
 
 // Install: pre-cache core assets
@@ -110,8 +110,8 @@ self.addEventListener('fetch', (event) => {
                 if (isCacheableResponse(response, 'same-origin')) {
                     return response;
                 }
-                return fetchIndexFallback(url);
-            }).catch(() => fetchIndexFallback(url))
+                return fetchAppShellFallback(url);
+            }).catch(() => fetchAppShellFallback(url))
         );
         return;
     }

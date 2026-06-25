@@ -56,6 +56,8 @@ const walletBootstrapSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'wal
 const walletSharedConfigSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'wallet', 'shared-config.js'), 'utf8');
 const walletSharedUtilsSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'wallet', 'shared', 'utils.js'), 'utf8');
 const walletCssSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'wallet', 'wallet.css'), 'utf8');
+const walletManifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'wallet', 'manifest.json'), 'utf8'));
+const walletServiceWorkerSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'wallet', 'sw.js'), 'utf8');
 const shieldedSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'wallet', 'js', 'shielded.js'), 'utf8');
 const identitySrc = fs.readFileSync(path.join(__dirname, '..', '..', 'wallet', 'js', 'identity.js'), 'utf8');
 const extensionFullSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'wallet', 'extension', 'src', 'pages', 'full.js'), 'utf8');
@@ -1663,6 +1665,19 @@ test('wallet password modal validates, reports, and clears wrong passwords for r
         'password modal should clear password inputs after validation failure');
     assert(walletSrc.includes('confirmBtn.disabled = false;'),
         'password modal should allow retry after validation failure');
+});
+
+test('wallet PWA starts at non-redirecting root app shell', () => {
+    assert.strictEqual(walletManifest.start_url, '/',
+        'wallet PWA start_url should avoid /index.html because Pages redirects it');
+    assert.strictEqual(walletManifest.scope, '/',
+        'wallet PWA scope should be rooted at the deployed app origin');
+    assert(walletServiceWorkerSrc.includes("const APP_SHELL_URL = './';"),
+        'service worker should cache the non-redirecting root app shell');
+    assert(!walletServiceWorkerSrc.includes("const INDEX_URL = './index.html';"),
+        'service worker should not use redirected /index.html as app shell');
+    assert(walletServiceWorkerSrc.includes('response.redirected) return false'),
+        'service worker cache guard should reject redirected responses');
 });
 
 // ============================================================================
