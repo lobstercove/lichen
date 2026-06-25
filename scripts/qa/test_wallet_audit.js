@@ -1639,6 +1639,32 @@ test('explorer token USD valuations expose oracle timestamps and peg fallbacks',
         'explorer token USD value cells should include valuation source details');
 });
 
+test('wallet staking and shielded modals expose MAX controls without crossing flows', () => {
+    assert(walletSrc.includes('function fillMossStakeMaxAmount('),
+        'wallet should centralize MossStake MAX amount filling');
+    assert(walletSrc.includes("modal.querySelector('#stakeAmountMax')?.addEventListener('click', () => fillMossStakeMaxAmount(modal, 'stake'))"),
+        'wallet stake modal should wire a MAX button');
+    assert(walletSrc.includes("modal.querySelector('#unstakeAmountMax')?.addEventListener('click', () => fillMossStakeMaxAmount(modal, 'unstake'))"),
+        'wallet unstake modal should wire a MAX button');
+    assert(walletSrc.includes('const shieldFeeLicn = getNetworkBaseFeeLicn() + ((zkFees.shield || 0) / 1_000_000_000);'),
+        'shield MAX should reserve base plus shield compute fee');
+    assert(!shieldedSrc.includes('const txCount = Math.ceil(entries.length / SHIELDED_MAX_UNSHIELD_NOTES_PER_TX);'),
+        'shield flow must not reference unshield batch entries');
+});
+
+test('wallet password modal validates, reports, and clears wrong passwords for retry', () => {
+    assert(walletSrc.includes('password-modal-error'),
+        'password modal should include an inline error container');
+    assert(walletSrc.includes('await validateModalValues(values);'),
+        'password modal should validate before resolving');
+    assert(walletSrc.includes('window.LichenCrypto.decryptPrivateKey(wallet.encryptedKey, values.password)'),
+        'password modal should verify the active wallet password');
+    assert(walletSrc.includes('modal.querySelectorAll(\'input[type="password"]\').forEach'),
+        'password modal should clear password inputs after validation failure');
+    assert(walletSrc.includes('confirmBtn.disabled = false;'),
+        'password modal should allow retry after validation failure');
+});
+
 // ============================================================================
 // SUMMARY
 // ============================================================================

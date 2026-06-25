@@ -1650,6 +1650,12 @@
     cursor: pointer;
     transition: background 0.2s;
     text-transform: uppercase;
+    font-family: inherit;
+    line-height: 1;
+}
+
+button.amount-max {
+    appearance: none;
 }
 
 .amount-max:hover {

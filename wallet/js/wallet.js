@@ -1780,7 +1780,9 @@ function bindStaticControls() {
         if (actionName === 'fillShieldMax') {
             const shieldAmountInput = document.getElementById('shieldAmount');
             if (shieldAmountInput) {
-                const maxShieldable = Math.max(0, (window.walletBalance || 0) - getNetworkBaseFeeLicn());
+                const zkFees = typeof ZK_COMPUTE_FEE !== 'undefined' ? ZK_COMPUTE_FEE : { shield: 100_000 };
+                const shieldFeeLicn = getNetworkBaseFeeLicn() + ((zkFees.shield || 0) / 1_000_000_000);
+                const maxShieldable = Math.max(0, (window.walletBalance || 0) - shieldFeeLicn);
                 shieldAmountInput.value = maxShieldable.toFixed(4);
             }
             return;
@@ -3771,6 +3773,44 @@ async function loadMossStakePosition(address, options = {}) {
     }
 }
 
+async function fillMossStakeMaxAmount(modal, mode) {
+    const wallet = getActiveWallet();
+    const inputId = mode === 'unstake' ? 'unstakeAmount' : 'stakeAmount';
+    const input = modal?.querySelector(`#${inputId}`);
+    const button = modal?.querySelector(`#${inputId}Max`);
+    if (!wallet || !input) return;
+
+    const previousText = button?.textContent;
+    if (button) {
+        button.textContent = '...';
+        button.disabled = true;
+    }
+
+    try {
+        if (mode === 'unstake') {
+            const position = await rpc.call('getStakingPosition', [wallet.address]);
+            const stLicn = u64ValueToBigInt(position?.st_licn_amount || 0);
+            input.value = stLicn > 0n ? baseUnitsToDecimalString(stLicn, 9) : '';
+            if (stLicn <= 0n) showToast('No stLICN balance to unstake');
+            return;
+        }
+
+        const balResult = await rpc.call('getBalance', [wallet.address]);
+        const spendable = u64ValueToBigInt(balResult?.spendable || balResult?.balance || 0);
+        const baseFeeSpores = getNetworkBaseFeeSpores();
+        const maxStakable = spendable > baseFeeSpores ? spendable - baseFeeSpores : 0n;
+        input.value = maxStakable > 0n ? baseUnitsToDecimalString(maxStakable, 9) : '';
+        if (maxStakable <= 0n) showToast('Insufficient LICN balance for staking');
+    } catch (error) {
+        showToast(error?.message || 'Failed to fetch max staking amount');
+    } finally {
+        if (button) {
+            button.textContent = previousText || 'MAX';
+            button.disabled = false;
+        }
+    }
+}
+
 // Show MossStake modal
 async function showMossStakeModal() {
     const wallet = getActiveWallet();
@@ -3789,7 +3829,7 @@ async function showMossStakeModal() {
         confirmText: 'Stake LICN',
         requiredLicn: typeof BASE_FEE_LICN !== 'undefined' ? BASE_FEE_LICN : 0.001,
         fields: [
-            { id: 'stakeAmount', label: 'Amount (LICN)', type: 'number', placeholder: '0.00', min: 0, step: 'any' },
+            { id: 'stakeAmount', label: 'Amount (LICN)', type: 'number', placeholder: '0.00', min: 0, step: 'any', maxButton: true },
             {
                 id: 'lockTier', label: 'Lock Tier', type: 'select',
                 options: [
@@ -3800,7 +3840,10 @@ async function showMossStakeModal() {
                 ]
             },
             { id: 'password', label: 'Wallet Password', type: 'password', placeholder: 'Enter password to sign' }
-        ]
+        ],
+        onRender: (modal) => {
+            modal.querySelector('#stakeAmountMax')?.addEventListener('click', () => fillMossStakeMaxAmount(modal, 'stake'));
+        }
     });
 
     if (!values) return;
@@ -3888,9 +3931,12 @@ async function showMossUnstakeModal() {
         confirmText: 'Unstake',
         requiredLicn: typeof BASE_FEE_LICN !== 'undefined' ? BASE_FEE_LICN : 0.001,
         fields: [
-            { id: 'unstakeAmount', label: 'Amount (stLICN)', type: 'number', placeholder: '0.00', min: 0, step: 'any' },
+            { id: 'unstakeAmount', label: 'Amount (stLICN)', type: 'number', placeholder: '0.00', min: 0, step: 'any', maxButton: true },
             { id: 'password', label: 'Wallet Password', type: 'password', placeholder: 'Enter password to sign' }
-        ]
+        ],
+        onRender: (modal) => {
+            modal.querySelector('#unstakeAmountMax')?.addEventListener('click', () => fillMossStakeMaxAmount(modal, 'unstake'));
+        }
     });
 
     if (!values) return;
@@ -5460,7 +5506,13 @@ function showPasswordModal(options) {
             const addressAttr = /address|recipient|vouchee/i.test(`${field.id} ${field.label || ''}`) ? ' data-address-input="base58"' : '';
             const inputMode = isNumber ? ` inputmode="${integerAttr ? 'numeric' : 'decimal'}"` : '';
             const inputType = isNumber ? 'text' : field.type;
-            return `<div class="form-group"><label>${field.label}</label><input type="${inputType}" id="${field.id}" class="form-input" placeholder="${field.placeholder || ''}"${val}${minAttr}${maxAttr}${stepAttr}${inputKind}${integerAttr}${addressAttr}${inputMode}></div>`;
+            const inputHtml = `<input type="${inputType}" id="${field.id}" class="form-input" placeholder="${field.placeholder || ''}"${val}${minAttr}${maxAttr}${stepAttr}${inputKind}${integerAttr}${addressAttr}${inputMode}>`;
+            if (field.maxButton) {
+                const maxLabel = escapeHtml(String(field.maxButtonLabel || 'MAX'));
+                const maxId = `${escapeHtml(String(field.id))}Max`;
+                return `<div class="form-group"><label>${field.label}</label><div class="amount-input">${inputHtml}<button type="button" id="${maxId}" class="amount-max password-modal-field-max" data-password-field-max="${escapeHtml(String(field.id))}">${maxLabel}</button></div></div>`;
+            }
+            return `<div class="form-group"><label>${field.label}</label>${inputHtml}</div>`;
         }).join('');
 
         modal.innerHTML = `
@@ -5474,6 +5526,7 @@ function showPasswordModal(options) {
                 <div class="password-modal-body">
                     ${options.message ? `<p>${options.message}</p>` : ''}
                     ${fieldsHTML}
+                    <div class="password-modal-error" id="passwordModalError" role="alert" aria-live="polite" style="display:none;color:#ef4444;font-size:0.82rem;margin:0.5rem 0 0.75rem;padding:0.5rem 0.75rem;background:rgba(239,68,68,0.08);border-radius:6px;"></div>
                     <div class="password-modal-actions">
                         <button class="btn btn-secondary password-modal-cancel-btn">
                             <i class="fas fa-times"></i> Cancel
@@ -5528,11 +5581,49 @@ function showPasswordModal(options) {
 
         // Handle confirm
         const confirmBtn = modal.querySelector('#passwordModalConfirm');
-        const handleConfirm = () => {
+        const errorEl = modal.querySelector('#passwordModalError');
+        const showPasswordError = (error) => {
+            const message = error?.message || String(error || 'Incorrect password');
+            if (errorEl) {
+                errorEl.innerHTML = `<i class="fas fa-exclamation-triangle"></i> ${escapeHtml(message)}`;
+                errorEl.style.display = 'block';
+            }
+            modal.querySelectorAll('input[type="password"]').forEach((input) => {
+                input.value = '';
+            });
+            const passwordInput = modal.querySelector('input[type="password"]');
+            if (passwordInput) passwordInput.focus();
+        };
+        const validateModalValues = async (values) => {
+            if (typeof options.validate === 'function') {
+                await options.validate(values);
+                return;
+            }
+            if (options.validatePassword === false) return;
+            if (!Object.prototype.hasOwnProperty.call(values, 'password')) return;
+            if (!values.password) throw new Error('Password required');
+            const wallet = typeof getActiveWallet === 'function' ? getActiveWallet() : null;
+            if (wallet?.encryptedKey && window.LichenCrypto?.decryptPrivateKey) {
+                await window.LichenCrypto.decryptPrivateKey(wallet.encryptedKey, values.password);
+            }
+        };
+        const handleConfirm = async () => {
             const values = {};
             fields.forEach(field => {
                 values[field.id] = modal.querySelector(`#${field.id}`).value;
             });
+            if (errorEl) {
+                errorEl.textContent = '';
+                errorEl.style.display = 'none';
+            }
+            confirmBtn.disabled = true;
+            try {
+                await validateModalValues(values);
+            } catch (error) {
+                confirmBtn.disabled = false;
+                showPasswordError(error);
+                return;
+            }
             modal.classList.remove('show');
             setTimeout(() => modal.remove(), 300);
             resolve(values);

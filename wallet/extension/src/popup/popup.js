@@ -213,7 +213,15 @@ function formatLichenNamePopup(name) {
   return bare ? `${bare}.lichen` : '';
 }
 
-function securePasswordPrompt(label = 'Wallet password (for signing):') {
+async function validateActiveWalletPasswordPopup(password) {
+  if (!password) throw new Error('Password required');
+  const wallet = getActiveWallet();
+  if (wallet?.encryptedKey) {
+    await decryptPrivateKey(wallet.encryptedKey, password);
+  }
+}
+
+function securePasswordPrompt(label = 'Wallet password (for signing):', validatePassword = validateActiveWalletPasswordPopup) {
   return new Promise((resolve) => {
     const overlay = document.createElement('div');
     overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;z-index:99999;';
@@ -221,7 +229,8 @@ function securePasswordPrompt(label = 'Wallet password (for signing):') {
       <div style="background:var(--bg,#1a1b26);border:1px solid var(--border,#333);border-radius:12px;padding:1rem;width:320px;max-width:92vw;box-sizing:border-box;">
         <p style="margin:0 0 0.75rem;font-size:0.85rem;color:var(--text,#e0e0e0);line-height:1.45;">${escapeHtml(label)}</p>
         <input type="password" id="_popupSecPwInput" placeholder="Enter password" autocomplete="off"
-          style="width:100%;padding:0.6rem;border-radius:8px;border:1px solid var(--border,#444);background:var(--card-bg,#24253a);color:var(--text,#e0e0e0);box-sizing:border-box;margin-bottom:0.75rem;">
+          style="width:100%;padding:0.6rem;border-radius:8px;border:1px solid var(--border,#444);background:var(--card-bg,#24253a);color:var(--text,#e0e0e0);box-sizing:border-box;margin-bottom:0.5rem;">
+        <div id="_popupSecPwError" role="alert" aria-live="polite" style="display:none;color:#ef4444;font-size:0.78rem;margin-bottom:0.75rem;"></div>
         <div style="display:flex;gap:0.5rem;">
           <button id="_popupSecPwOk" style="flex:1;padding:0.5rem;border-radius:8px;border:none;background:var(--primary,#6C5CE7);color:#fff;cursor:pointer;">OK</button>
           <button id="_popupSecPwCancel" style="flex:1;padding:0.5rem;border-radius:8px;border:1px solid var(--border,#444);background:transparent;color:var(--text,#e0e0e0);cursor:pointer;">Cancel</button>
@@ -229,15 +238,42 @@ function securePasswordPrompt(label = 'Wallet password (for signing):') {
       </div>`;
     document.body.appendChild(overlay);
     const input = overlay.querySelector('#_popupSecPwInput');
+    const errorEl = overlay.querySelector('#_popupSecPwError');
+    const okBtn = overlay.querySelector('#_popupSecPwOk');
     input.focus();
-    const finish = (value) => {
+    const showError = (error) => {
+      if (errorEl) {
+        errorEl.textContent = error?.message || 'Incorrect password';
+        errorEl.style.display = 'block';
+      }
+      input.value = '';
+      input.focus();
+    };
+    const finish = async (value) => {
+      if (value === null) {
+        overlay.remove();
+        resolve(null);
+        return;
+      }
+      if (errorEl) {
+        errorEl.textContent = '';
+        errorEl.style.display = 'none';
+      }
+      okBtn.disabled = true;
+      try {
+        if (typeof validatePassword === 'function') await validatePassword(value);
+      } catch (error) {
+        okBtn.disabled = false;
+        showError(error);
+        return;
+      }
       overlay.remove();
       resolve(value);
     };
-    overlay.querySelector('#_popupSecPwOk').addEventListener('click', () => finish(input.value || null));
+    okBtn.addEventListener('click', () => finish(input.value || ''));
     overlay.querySelector('#_popupSecPwCancel').addEventListener('click', () => finish(null));
     input.addEventListener('keydown', (event) => {
-      if (event.key === 'Enter') finish(input.value || null);
+      if (event.key === 'Enter') finish(input.value || '');
       if (event.key === 'Escape') finish(null);
     });
   });

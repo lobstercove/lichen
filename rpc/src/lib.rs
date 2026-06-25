@@ -3798,6 +3798,46 @@ fn parse_transfer_amount(ix: &Instruction) -> Option<u64> {
     }
 }
 
+fn aggregate_homogeneous_system_amount(tx: &Transaction, opcode: u8) -> Option<u64> {
+    let mut total = 0u64;
+    let mut seen = false;
+    for ix in &tx.message.instructions {
+        if ix.program_id != SYSTEM_PROGRAM_ID || ix.data.first().copied() != Some(opcode) {
+            return None;
+        }
+        total = total.checked_add(parse_transfer_amount(ix)?)?;
+        seen = true;
+    }
+    seen.then_some(total)
+}
+
+fn transaction_summary_fields(
+    tx: &Transaction,
+) -> (
+    &'static str,
+    Option<String>,
+    Option<String>,
+    Option<u64>,
+    Option<String>,
+) {
+    let Some(first_ix) = tx.message.instructions.first() else {
+        return ("Unknown", None, None, None, None);
+    };
+
+    let tx_type = instruction_type(first_ix);
+    let from = first_ix.accounts.first().map(|acc| acc.to_base58());
+    let to = first_ix.accounts.get(1).map(|acc| acc.to_base58());
+    let contract_fn = parse_contract_function(first_ix);
+    let amount = match first_ix.data.first().copied() {
+        Some(24) if first_ix.program_id == SYSTEM_PROGRAM_ID => {
+            aggregate_homogeneous_system_amount(tx, 24).or_else(|| parse_transfer_amount(first_ix))
+        }
+        _ => parse_transfer_amount(first_ix),
+    };
+
+    (tx_type, from, to, amount, contract_fn)
+}
+
 /// Extract the function name from a contract call instruction (for display purposes)
 fn parse_contract_function(ix: &Instruction) -> Option<String> {
     if ix.program_id != CONTRACT_PROGRAM_ID {
@@ -4967,15 +5007,7 @@ fn tx_to_rpc_json(
     store: &StateStore,
 ) -> serde_json::Value {
     let first_ix = tx.message.instructions.first();
-    let (tx_type, from, to, amount, contract_fn) = if let Some(ix) = first_ix {
-        let from = ix.accounts.first().map(|acc| acc.to_base58());
-        let to = ix.accounts.get(1).map(|acc| acc.to_base58());
-        let amount = parse_transfer_amount(ix);
-        let contract_fn = parse_contract_function(ix);
-        (instruction_type(ix), from, to, amount, contract_fn)
-    } else {
-        ("Unknown", None, None, None::<u64>, None)
-    };
+    let (tx_type, from, to, amount, contract_fn) = transaction_summary_fields(tx);
 
     let instructions: Vec<serde_json::Value> = tx
         .message
@@ -7562,22 +7594,10 @@ async fn handle_get_transactions_by_address(
         };
 
         let first_ix = tx.message.instructions.first();
-        let (tx_type, from, to, amount) = if let Some(ix) = first_ix {
-            let from = ix
-                .accounts
-                .first()
-                .map(|acc| acc.to_base58())
-                .unwrap_or_default();
-            let to = ix
-                .accounts
-                .get(1)
-                .map(|acc| acc.to_base58())
-                .unwrap_or_default();
-            let amount = parse_transfer_amount(ix).unwrap_or(0);
-            (instruction_type(ix), from, to, amount)
-        } else {
-            ("Unknown", String::new(), String::new(), 0)
-        };
+        let (tx_type, from, to, amount, _) = transaction_summary_fields(&tx);
+        let from = from.unwrap_or_default();
+        let to = to.unwrap_or_default();
+        let amount = amount.unwrap_or(0);
 
         let fee = TxProcessor::compute_transaction_fee(&tx, &fee_config);
 
@@ -7698,22 +7718,10 @@ async fn handle_get_recent_transactions(
         };
 
         let first_ix = tx.message.instructions.first();
-        let (tx_type, from, to, amount) = if let Some(ix) = first_ix {
-            let from = ix
-                .accounts
-                .first()
-                .map(|acc| acc.to_base58())
-                .unwrap_or_default();
-            let to = ix
-                .accounts
-                .get(1)
-                .map(|acc| acc.to_base58())
-                .unwrap_or_default();
-            let amount = parse_transfer_amount(ix).unwrap_or(0);
-            (instruction_type(ix), from, to, amount)
-        } else {
-            ("Unknown", String::new(), String::new(), 0)
-        };
+        let (tx_type, from, to, amount, _) = transaction_summary_fields(&tx);
+        let from = from.unwrap_or_default();
+        let to = to.unwrap_or_default();
+        let amount = amount.unwrap_or(0);
 
         let fee = TxProcessor::compute_transaction_fee(&tx, &fee_config);
 
@@ -20973,25 +20981,27 @@ mod tests {
         handle_get_program, handle_get_program_stats, handle_get_recent_blocks,
         handle_get_recent_shielded_transactions, handle_get_recent_transactions,
         handle_get_restriction, handle_get_restriction_status, handle_get_service_fleet_status,
-        handle_get_signed_metadata_manifest, handle_get_wbtc_stats, handle_get_wgas_stats,
-        handle_get_wneo_stats, handle_list_active_restrictions, handle_list_restrictions,
-        handle_set_fee_config, handle_solana_get_account_info,
-        handle_solana_get_token_account_balance, handle_solana_get_token_accounts_by_owner,
-        handle_verify_neo_reserve_liability_proof, live_signed_metadata_source_rpc,
-        method_allowed_when_rpc_unready, parse_bridge_access_auth, parse_get_block_slot_param,
-        parse_governance_event, parse_market_params_extended, parse_rpc_request,
-        parse_rpc_tier_probe, parse_topic_hash, pq_signature_json, prediction_address_aliases,
-        privileged_rpc_mutation_test_output, put_cached_program_list_response,
-        put_cached_read_slot_response, rpc_read_slot_cache_key, rpc_readiness, rpc_readiness_json,
-        rpc_unready_error, solana_method_allowed_when_rpc_unready, storage_key_with_pubkey_hex,
+        handle_get_signed_metadata_manifest, handle_get_transactions_by_address,
+        handle_get_wbtc_stats, handle_get_wgas_stats, handle_get_wneo_stats,
+        handle_list_active_restrictions, handle_list_restrictions, handle_set_fee_config,
+        handle_solana_get_account_info, handle_solana_get_token_account_balance,
+        handle_solana_get_token_accounts_by_owner, handle_verify_neo_reserve_liability_proof,
+        live_signed_metadata_source_rpc, method_allowed_when_rpc_unready, parse_bridge_access_auth,
+        parse_get_block_slot_param, parse_governance_event, parse_market_params_extended,
+        parse_rpc_request, parse_rpc_tier_probe, parse_topic_hash, pq_signature_json,
+        prediction_address_aliases, privileged_rpc_mutation_test_output,
+        put_cached_program_list_response, put_cached_read_slot_response, rpc_read_slot_cache_key,
+        rpc_readiness, rpc_readiness_json, rpc_unready_error,
+        solana_method_allowed_when_rpc_unready, storage_key_with_pubkey_hex,
         storage_key_with_u64_le, strip_admin_token_from_params,
-        transaction_has_governed_system_preflight, validate_incoming_transaction_limits,
-        validate_solana_encoding, validate_solana_transaction_details, verify_admin_auth,
-        verify_bridge_access_auth_at, verify_bridge_access_auth_for_create_at, AirdropCooldowns,
-        MethodTier, RateLimiter, RpcError, RpcResponse, RpcState, AIRDROP_COOLDOWN_MAX_ENTRIES,
-        AIRDROP_COOLDOWN_SECS, BRIDGE_ACCESS_DOMAIN_V2, BRIDGE_AUTH_ACTION_CREATE_DEPOSIT,
-        PROGRAM_LIST_CACHE_TTL_MS, RPC_DISK_CRITICAL_MIN_AVAILABLE_BYTES,
-        RPC_READ_SLOT_CACHE_MAX_ENTRIES, SOLANA_SPL_TOKEN_PROGRAM_ID, SOLANA_TOKEN_ACCOUNT_SPACE,
+        transaction_has_governed_system_preflight, transaction_summary_fields,
+        validate_incoming_transaction_limits, validate_solana_encoding,
+        validate_solana_transaction_details, verify_admin_auth, verify_bridge_access_auth_at,
+        verify_bridge_access_auth_for_create_at, AirdropCooldowns, MethodTier, RateLimiter,
+        RpcError, RpcResponse, RpcState, AIRDROP_COOLDOWN_MAX_ENTRIES, AIRDROP_COOLDOWN_SECS,
+        BRIDGE_ACCESS_DOMAIN_V2, BRIDGE_AUTH_ACTION_CREATE_DEPOSIT, PROGRAM_LIST_CACHE_TTL_MS,
+        RPC_DISK_CRITICAL_MIN_AVAILABLE_BYTES, RPC_READ_SLOT_CACHE_MAX_ENTRIES,
+        SOLANA_SPL_TOKEN_PROGRAM_ID, SOLANA_TOKEN_ACCOUNT_SPACE,
         SYSTEM_PROPOSE_GOVERNANCE_ACTION_IX,
     };
     use axum::{
@@ -21431,6 +21441,99 @@ mod tests {
         assert_eq!(txs[0]["signature"], shield_hash.to_hex());
         assert_eq!(txs[0]["slot"], 10);
         assert_eq!(txs[0]["amount_spores"], 10_000_000_000u64);
+    }
+
+    fn unshield_instruction(
+        recipient: Pubkey,
+        amount: u64,
+        marker: u8,
+    ) -> lichen_core::Instruction {
+        let mut data = vec![24u8];
+        data.extend_from_slice(&amount.to_le_bytes());
+        data.extend_from_slice(&[marker; 32]);
+        data.extend_from_slice(&[0x40; 32]);
+        data.extend_from_slice(&[0x50; 32]);
+        data.extend_from_slice(&[0x60; 32]);
+        lichen_core::Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![recipient],
+            data,
+        }
+    }
+
+    #[test]
+    fn transaction_summary_aggregates_batched_unshield_amounts() {
+        let recipient = Pubkey([0x77; 32]);
+        let tx = Transaction::new(lichen_core::Message::new(
+            vec![
+                unshield_instruction(recipient, 18_000_000_000_000, 1),
+                unshield_instruction(recipient, 5_000_000_000_000, 2),
+                unshield_instruction(recipient, 20_000_000_000, 3),
+                unshield_instruction(recipient, 5_000_000_000, 4),
+            ],
+            Hash([0x44; 32]),
+        ));
+
+        let (tx_type, from, to, amount, contract_fn) = transaction_summary_fields(&tx);
+
+        assert_eq!(tx_type, "Unshield");
+        assert_eq!(from, Some(recipient.to_base58()));
+        assert_eq!(to, None);
+        assert_eq!(amount, Some(23_025_000_000_000));
+        assert_eq!(contract_fn, None);
+    }
+
+    #[tokio::test]
+    async fn account_and_shielded_summaries_aggregate_batched_unshield_amounts() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+        let recipient = Pubkey([0x77; 32]);
+        let tx = Transaction::new(lichen_core::Message::new(
+            vec![
+                unshield_instruction(recipient, 18_000_000_000_000, 1),
+                unshield_instruction(recipient, 5_000_000_000_000, 2),
+                unshield_instruction(recipient, 20_000_000_000, 3),
+                unshield_instruction(recipient, 5_000_000_000, 4),
+            ],
+            Hash([0x45; 32]),
+        ));
+        let signature = tx.signature().to_hex();
+        let block = Block::new_with_timestamp(
+            42,
+            Hash::default(),
+            Hash::default(),
+            [0u8; 32],
+            vec![tx],
+            1_700_000_042,
+        );
+        state.put_block(&block).unwrap();
+        let rpc_state = make_test_rpc_state(state);
+
+        let account_history = handle_get_transactions_by_address(
+            &rpc_state,
+            Some(serde_json::json!([recipient.to_base58(), { "limit": 5 }])),
+        )
+        .await
+        .unwrap();
+        let account_txs = account_history["transactions"].as_array().unwrap();
+        assert_eq!(account_txs.len(), 1);
+        assert_eq!(account_txs[0]["hash"], signature);
+        assert_eq!(account_txs[0]["type"], "Unshield");
+        assert_eq!(account_txs[0]["amount_spores"], 23_025_000_000_000u64);
+        assert_eq!(account_txs[0]["amount"], 23_025.0);
+
+        let shielded = handle_get_recent_shielded_transactions(
+            &rpc_state,
+            Some(serde_json::json!([{ "limit": 5 }])),
+        )
+        .await
+        .unwrap();
+        let shielded_txs = shielded["transactions"].as_array().unwrap();
+        assert_eq!(shielded_txs.len(), 1);
+        assert_eq!(shielded_txs[0]["signature"], signature);
+        assert_eq!(shielded_txs[0]["type"], "Unshield");
+        assert_eq!(shielded_txs[0]["amount_spores"], 23_025_000_000_000u64);
+        assert_eq!(shielded_txs[0]["amount"], 23_025.0);
     }
 
     #[test]

@@ -555,7 +555,27 @@ async function getLiveLicnUsdPrice() {
   return normalizeLicnUsdQuote(_licnUsdPriceCache, now);
 }
 
-function securePasswordPrompt(label = 'Wallet password (for signing):') {
+async function validateActiveWalletPasswordExt(password) {
+  if (!password) throw new Error('Password required');
+  const wallet = getActiveWallet();
+  if (wallet?.encryptedKey) {
+    await decryptPrivateKey(wallet.encryptedKey, password);
+  }
+}
+
+function clearPasswordInputForRetry(input, statusEl, error) {
+  const message = error?.message || String(error || '');
+  if (!/password|decrypt|invalid|auth/i.test(message)) return;
+  if (input) {
+    input.value = '';
+    input.focus();
+  }
+  if (statusEl && !statusEl.dataset.busy) {
+    statusEl.textContent = message || 'Incorrect password';
+  }
+}
+
+function securePasswordPrompt(label = 'Wallet password (for signing):', validatePassword = validateActiveWalletPasswordExt) {
   return new Promise((resolve) => {
     const overlay = document.createElement('div');
     overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;z-index:99999;';
@@ -563,7 +583,8 @@ function securePasswordPrompt(label = 'Wallet password (for signing):') {
       <div style="background:var(--bg,#1a1b26);border:1px solid var(--border,#333);border-radius:12px;padding:1rem;width:320px;max-width:92vw;box-sizing:border-box;">
         <p style="margin:0 0 0.75rem;font-size:0.85rem;color:var(--text,#e0e0e0);line-height:1.45;">${escapeHtmlExt(label)}</p>
         <input type="password" id="_fullSecPwInput" placeholder="Enter password" autocomplete="off"
-          style="width:100%;padding:0.6rem;border-radius:8px;border:1px solid var(--border,#444);background:var(--card-bg,#24253a);color:var(--text,#e0e0e0);box-sizing:border-box;margin-bottom:0.75rem;">
+          style="width:100%;padding:0.6rem;border-radius:8px;border:1px solid var(--border,#444);background:var(--card-bg,#24253a);color:var(--text,#e0e0e0);box-sizing:border-box;margin-bottom:0.5rem;">
+        <div id="_fullSecPwError" role="alert" aria-live="polite" style="display:none;color:#ef4444;font-size:0.78rem;margin-bottom:0.75rem;"></div>
         <div style="display:flex;gap:0.5rem;">
           <button id="_fullSecPwOk" style="flex:1;padding:0.5rem;border-radius:8px;border:none;background:var(--primary,#6C5CE7);color:#fff;cursor:pointer;">OK</button>
           <button id="_fullSecPwCancel" style="flex:1;padding:0.5rem;border-radius:8px;border:1px solid var(--border,#444);background:transparent;color:var(--text,#e0e0e0);cursor:pointer;">Cancel</button>
@@ -571,15 +592,42 @@ function securePasswordPrompt(label = 'Wallet password (for signing):') {
       </div>`;
     document.body.appendChild(overlay);
     const input = overlay.querySelector('#_fullSecPwInput');
+    const errorEl = overlay.querySelector('#_fullSecPwError');
+    const okBtn = overlay.querySelector('#_fullSecPwOk');
     input.focus();
-    const finish = (value) => {
+    const showError = (error) => {
+      if (errorEl) {
+        errorEl.textContent = error?.message || 'Incorrect password';
+        errorEl.style.display = 'block';
+      }
+      input.value = '';
+      input.focus();
+    };
+    const finish = async (value) => {
+      if (value === null) {
+        overlay.remove();
+        resolve(null);
+        return;
+      }
+      if (errorEl) {
+        errorEl.textContent = '';
+        errorEl.style.display = 'none';
+      }
+      okBtn.disabled = true;
+      try {
+        if (typeof validatePassword === 'function') await validatePassword(value);
+      } catch (error) {
+        okBtn.disabled = false;
+        showError(error);
+        return;
+      }
       overlay.remove();
       resolve(value);
     };
-    overlay.querySelector('#_fullSecPwOk').addEventListener('click', () => finish(input.value || null));
+    okBtn.addEventListener('click', () => finish(input.value || ''));
     overlay.querySelector('#_fullSecPwCancel').addEventListener('click', () => finish(null));
     input.addEventListener('keydown', (event) => {
-      if (event.key === 'Enter') finish(input.value || null);
+      if (event.key === 'Enter') finish(input.value || '');
       if (event.key === 'Escape') finish(null);
     });
   });
@@ -1674,6 +1722,74 @@ async function loadStakingTab() {
   }
 }
 
+async function fillExtensionStakeMaxAmount(overlay) {
+  const wallet = getActiveWallet();
+  const input = overlay?.querySelector('#stakeAmountInput');
+  const button = overlay?.querySelector('#stakeAmountMax');
+  const statusEl = overlay?.querySelector('#stakeModalStatus');
+  if (!wallet || !input) return;
+
+  const originalText = button?.textContent;
+  if (button) {
+    button.textContent = '...';
+    button.disabled = true;
+  }
+  if (statusEl) statusEl.textContent = 'Checking available balance...';
+
+  try {
+    const balResult = await rpc().getBalance(wallet.address);
+    const spendable = baseUnitBigIntExt(balResult?.spendable || balResult?.spores || 0);
+    const feeSpores = 1_000_000n;
+    const maxStakable = spendable > feeSpores ? spendable - feeSpores : 0n;
+    input.value = maxStakable > 0n ? formatLicnBaseUnitsExactExt(maxStakable) : '';
+    if (statusEl) {
+      statusEl.textContent = maxStakable > 0n
+        ? `Max stakable: ${formatLicnBaseUnitsExactExt(maxStakable)} LICN`
+        : 'Insufficient LICN balance';
+    }
+  } catch (error) {
+    if (statusEl) statusEl.textContent = error?.message || 'Failed to fetch max staking amount';
+  } finally {
+    if (button) {
+      button.textContent = originalText || 'MAX';
+      button.disabled = false;
+    }
+  }
+}
+
+async function fillExtensionUnstakeMaxAmount(overlay) {
+  const wallet = getActiveWallet();
+  const input = overlay?.querySelector('#unstakeAmountInput');
+  const button = overlay?.querySelector('#unstakeAmountMax');
+  const statusEl = overlay?.querySelector('#unstakeModalStatus');
+  if (!wallet || !input) return;
+
+  const originalText = button?.textContent;
+  if (button) {
+    button.textContent = '...';
+    button.disabled = true;
+  }
+  if (statusEl) statusEl.textContent = 'Checking stLICN balance...';
+
+  try {
+    const pos = await rpc().call('getStakingPosition', [wallet.address]);
+    const stLicn = baseUnitBigIntExt(pos?.st_licn_amount || 0);
+    input.value = stLicn > 0n ? formatLicnBaseUnitsExactExt(stLicn) : '';
+    if (statusEl) {
+      statusEl.textContent = stLicn > 0n
+        ? `Max unstake: ${formatLicnBaseUnitsExactExt(stLicn)} stLICN`
+        : 'No stLICN balance to unstake';
+    }
+  } catch (error) {
+    if (statusEl) statusEl.textContent = error?.message || 'Failed to fetch max unstake amount';
+  } finally {
+    if (button) {
+      button.textContent = originalText || 'MAX';
+      button.disabled = false;
+    }
+  }
+}
+
 async function showStakeModal() {
   const wallet = getActiveWallet();
   if (!wallet) return;
@@ -1685,7 +1801,10 @@ async function showStakeModal() {
     <div style="background:var(--bg);border:1px solid var(--border);border-radius:16px;padding:2rem;width:420px;max-width:90vw;">
       <h3 style="margin:0 0 1rem;"><i class="fas fa-layer-group" style="color:#3b82f6;"></i> Stake to Liquid Staking</h3>
       <label style="font-size:0.85rem;font-weight:600;display:block;margin-bottom:0.25rem;">Amount (LICN)</label>
-      <input type="text" id="stakeAmountInput" placeholder="0.00" inputmode="decimal" data-wallet-numeric="true" data-min="0" style="width:100%;padding:0.75rem;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);margin-bottom:1rem;box-sizing:border-box;">
+      <div style="position:relative;margin-bottom:1rem;">
+        <input type="text" id="stakeAmountInput" placeholder="0.00" inputmode="decimal" data-wallet-numeric="true" data-min="0" style="width:100%;padding:0.75rem 3.5rem 0.75rem 0.75rem;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);box-sizing:border-box;">
+        <button type="button" id="stakeAmountMax" style="position:absolute;right:0.45rem;top:50%;transform:translateY(-50%);border:none;background:transparent;color:#00D9FF;font-weight:700;font-size:0.78rem;cursor:pointer;">MAX</button>
+      </div>
       <label style="font-size:0.85rem;font-weight:600;display:block;margin-bottom:0.25rem;">Lock Tier</label>
       <select id="stakeTierSelect" style="width:100%;padding:0.75rem;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);margin-bottom:1rem;box-sizing:border-box;">
         <option value="0">Flexible — 7-day target cooldown, 1x rewards</option>
@@ -1706,11 +1825,13 @@ async function showStakeModal() {
   applyExtensionInputGuards(overlay);
 
   overlay.querySelector('#stakeCancelBtn').addEventListener('click', () => overlay.remove());
+  overlay.querySelector('#stakeAmountMax')?.addEventListener('click', () => fillExtensionStakeMaxAmount(overlay));
   overlay.querySelector('#stakeConfirmBtn').addEventListener('click', async () => {
     const amountInput = overlay.querySelector('#stakeAmountInput');
     const amountText = amountInput.value.trim();
     const tier = parseInt(overlay.querySelector('#stakeTierSelect').value, 10);
-    const password = overlay.querySelector('#stakePasswordInput').value;
+    const passwordInput = overlay.querySelector('#stakePasswordInput');
+    const password = passwordInput.value;
     const statusEl = overlay.querySelector('#stakeModalStatus');
     let amountSpores;
     try {
@@ -1740,6 +1861,7 @@ async function showStakeModal() {
       statusEl.innerHTML = '<span style="color:#10b981;">✓ Staked successfully!</span>';
       setTimeout(() => { overlay.remove(); loadStakingTab(); }, 1500);
     } catch (err) {
+      clearPasswordInputForRetry(passwordInput, statusEl, err);
       statusEl.innerHTML = `<span style="color:#ef4444;">${escapeHtmlExt(err.message)}</span>`;
     }
   });
@@ -1757,7 +1879,10 @@ async function showUnstakeModal() {
       <h3 style="margin:0 0 1rem;"><i class="fas fa-unlock-alt" style="color:#f59e0b;"></i> Unstake from Liquid Staking</h3>
       <p style="font-size:0.85rem;color:var(--text-muted);margin-bottom:1rem;">After requesting, there is a <strong>slot-based cooldown</strong> before you can claim your LICN. The cooldown targets 7 days at normal block pace and requires a claim transaction after maturity.</p>
       <label style="font-size:0.85rem;font-weight:600;display:block;margin-bottom:0.25rem;">Amount (stLICN)</label>
-      <input type="text" id="unstakeAmountInput" placeholder="0.00" inputmode="decimal" data-wallet-numeric="true" data-min="0" style="width:100%;padding:0.75rem;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);margin-bottom:1rem;box-sizing:border-box;">
+      <div style="position:relative;margin-bottom:1rem;">
+        <input type="text" id="unstakeAmountInput" placeholder="0.00" inputmode="decimal" data-wallet-numeric="true" data-min="0" style="width:100%;padding:0.75rem 3.5rem 0.75rem 0.75rem;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);box-sizing:border-box;">
+        <button type="button" id="unstakeAmountMax" style="position:absolute;right:0.45rem;top:50%;transform:translateY(-50%);border:none;background:transparent;color:#00D9FF;font-weight:700;font-size:0.78rem;cursor:pointer;">MAX</button>
+      </div>
       <label style="font-size:0.85rem;font-weight:600;display:block;margin-bottom:0.25rem;">Wallet Password</label>
       <input type="password" id="unstakePasswordInput" placeholder="Enter password" style="width:100%;padding:0.75rem;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);margin-bottom:1.25rem;box-sizing:border-box;">
       <div style="display:flex;gap:0.75rem;">
@@ -1771,10 +1896,12 @@ async function showUnstakeModal() {
   applyExtensionInputGuards(overlay);
 
   overlay.querySelector('#unstakeCancelBtn').addEventListener('click', () => overlay.remove());
+  overlay.querySelector('#unstakeAmountMax')?.addEventListener('click', () => fillExtensionUnstakeMaxAmount(overlay));
   overlay.querySelector('#unstakeConfirmBtn').addEventListener('click', async () => {
     const amountInput = overlay.querySelector('#unstakeAmountInput');
     const amountText = amountInput.value.trim();
-    const password = overlay.querySelector('#unstakePasswordInput').value;
+    const passwordInput = overlay.querySelector('#unstakePasswordInput');
+    const password = passwordInput.value;
     const statusEl = overlay.querySelector('#unstakeModalStatus');
     let amountSpores;
     try {
@@ -1802,6 +1929,7 @@ async function showUnstakeModal() {
       statusEl.innerHTML = '<span style="color:#10b981;">✓ Unstake initiated. Claim after the slot-based cooldown.</span>';
       setTimeout(() => { overlay.remove(); loadStakingTab(); }, 1500);
     } catch (err) {
+      clearPasswordInputForRetry(passwordInput, statusEl, err);
       statusEl.innerHTML = `<span style="color:#ef4444;">${escapeHtmlExt(err.message)}</span>`;
     }
   });
@@ -1826,7 +1954,7 @@ async function handleFullClaim() {
       return;
     }
   } catch (e) { /* let RPC reject */ }
-  const password = prompt('Enter wallet password to claim unstake:');
+  const password = await securePasswordPrompt('Enter your wallet password to claim matured MossStake unstake.');
   if (!password) return;
   try {
     await claimMossStake({ wallet, password, network: state.network?.selected || DEFAULT_NETWORK });
@@ -2793,8 +2921,8 @@ function showShieldModal(type) {
       <h3 style="margin:0 0 1rem;"><i class="fas ${icons[type]}" style="color:#10b981;"></i> ${titles[type]}</h3>
       <label style="font-size:0.85rem;font-weight:600;display:block;margin-bottom:0.25rem;">Amount (LICN)</label>
       <div style="position:relative;margin-bottom:1rem;">
-        <input type="text" id="shieldModalAmount" placeholder="0.00" inputmode="decimal" data-wallet-numeric="true" data-min="0" style="width:100%;padding:0.75rem ${type === 'unshield' ? '3.5rem' : '0.75rem'} 0.75rem 0.75rem;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);box-sizing:border-box;">
-        ${type === 'unshield' ? '<button type="button" id="shieldModalMax" style="position:absolute;right:0.45rem;top:50%;transform:translateY(-50%);border:none;background:transparent;color:#00D9FF;font-weight:700;font-size:0.78rem;cursor:pointer;">MAX</button>' : ''}
+        <input type="text" id="shieldModalAmount" placeholder="0.00" inputmode="decimal" data-wallet-numeric="true" data-min="0" style="width:100%;padding:0.75rem ${type !== 'transfer' ? '3.5rem' : '0.75rem'} 0.75rem 0.75rem;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);box-sizing:border-box;">
+        ${type !== 'transfer' ? '<button type="button" id="shieldModalMax" style="position:absolute;right:0.45rem;top:50%;transform:translateY(-50%);border:none;background:transparent;color:#00D9FF;font-weight:700;font-size:0.78rem;cursor:pointer;">MAX</button>' : ''}
       </div>
       ${extraField}
       <label style="font-size:0.85rem;font-weight:600;display:block;margin-bottom:0.25rem;">Wallet Password</label>
@@ -2858,9 +2986,34 @@ function showShieldModal(type) {
     if (type !== 'transfer' && statusLine && !statusLine.dataset.busy) statusLine.textContent = message;
   };
   [amountInput, passwordInput, recipientInput].forEach((input) => input?.addEventListener('input', refreshModalValidation));
-  overlay.querySelector('#shieldModalMax')?.addEventListener('click', () => {
-    amountInput.value = formatLicnBaseUnitsExactExt(extensionShieldedBalanceSpores());
-    refreshModalValidation();
+  overlay.querySelector('#shieldModalMax')?.addEventListener('click', async () => {
+    const maxBtn = overlay.querySelector('#shieldModalMax');
+    const originalText = maxBtn?.textContent || 'MAX';
+    if (maxBtn) {
+      maxBtn.textContent = '...';
+      maxBtn.disabled = true;
+    }
+    try {
+      if (type === 'shield') {
+        const wallet = getActiveWallet();
+        if (!wallet) throw new Error('No active wallet');
+        const balResult = await rpc().call('getBalance', [wallet.address]);
+        const spendable = baseUnitBigIntExt(balResult?.spendable || balResult?.balance || 0);
+        const shieldFeeSpores = 1_100_000n;
+        const maxShieldable = spendable > shieldFeeSpores ? spendable - shieldFeeSpores : 0n;
+        amountInput.value = maxShieldable > 0n ? formatLicnBaseUnitsExactExt(maxShieldable) : '';
+      } else {
+        amountInput.value = formatLicnBaseUnitsExactExt(extensionShieldedBalanceSpores());
+      }
+    } catch (error) {
+      if (statusLine) statusLine.textContent = error?.message || 'Unable to calculate max amount';
+    } finally {
+      if (maxBtn) {
+        maxBtn.textContent = originalText;
+        maxBtn.disabled = false;
+      }
+      refreshModalValidation();
+    }
   });
   refreshModalValidation();
 
@@ -2893,7 +3046,7 @@ function showShieldModal(type) {
       if (type === 'shield') {
         const balResult = await rpc().call('getBalance', [wallet.address]);
         const spendable = baseUnitBigIntExt(balResult?.spendable || balResult?.balance || 0);
-        const feeSpores = 1_000_000n;
+        const feeSpores = 1_100_000n;
         const maxShieldable = spendable > feeSpores ? spendable - feeSpores : 0n;
         if (maxShieldable <= 0n) { statusEl.textContent = 'Insufficient LICN balance to shield'; return; }
         if (amountSpores > maxShieldable) { statusEl.textContent = `Max shieldable: ${formatLicnBaseUnitsFixedExt(maxShieldable)} LICN`; return; }
@@ -2936,6 +3089,7 @@ function showShieldModal(type) {
       }, 900);
     } catch (err) {
       delete statusEl.dataset.busy;
+      clearPasswordInputForRetry(passwordInput, statusEl, err);
       statusEl.innerHTML = '<i class="fas fa-exclamation-circle" style="color:#ef4444;"></i> ' + escapeHtmlExt(err.message);
     }
   });

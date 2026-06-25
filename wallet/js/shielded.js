@@ -773,11 +773,7 @@ async function shieldLicn(amountLicn) {
         const poolBefore = await rpc.call('getShieldedPoolState').catch(() => shieldedState.poolStats || null);
         const expectedCommitmentIndex = Number(poolBefore?.commitmentCount ?? poolBefore?.commitment_count ?? shieldedState.commitments.length ?? 0);
 
-        const txCount = Math.ceil(entries.length / SHIELDED_MAX_UNSHIELD_NOTES_PER_TX);
-        showShieldedStatus(
-            txCount > 1 ? `Submitting ${txCount} unshield transactions...` : 'Submitting transaction...',
-            'pending',
-        );
+        showShieldedStatus('Submitting transaction...', 'pending');
 
         const ownedNote = {
             index: null,

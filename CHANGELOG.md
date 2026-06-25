@@ -5,6 +5,23 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.204] - 2026-06-25
+
+### Fixed
+- Aggregates homogeneous batched shielded unshield instructions in RPC
+  transaction summaries, so wallet/explorer Activity and privacy list views
+  report the full transaction amount instead of only the first note.
+- Restores the web wallet shield confirmation flow after the batched-unshield
+  UX change, and keeps shield MAX from selecting more than the spendable amount
+  after network and ZK compute fees.
+- Aligns web wallet and extension staking/shield flows with MAX controls and
+  inline password retry errors that clear the bad password field without
+  closing the action modal.
+
+### Verified
+- Passed RPC library tests, focused batched-unshield coverage, JavaScript syntax
+  checks, wallet QA, extension QA, and diff hygiene before release.
+
 ## [0.5.203] - 2026-06-24
 
 ### Fixed

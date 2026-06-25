@@ -1247,6 +1247,38 @@ test('CC-28 extension USD valuations expose source, timestamp, and fallback stat
     'popup balance USD display should include quote source details');
 });
 
+test('CC-29 extension full-page staking and shielded modals expose MAX controls', () => {
+  assert.ok(fullSrc.includes('function fillExtensionStakeMaxAmount('),
+    'full page should centralize stake MAX amount filling');
+  assert.ok(fullSrc.includes('function fillExtensionUnstakeMaxAmount('),
+    'full page should centralize unstake MAX amount filling');
+  assert.ok(fullSrc.includes("id=\"stakeAmountMax\""),
+    'stake modal should render a MAX button');
+  assert.ok(fullSrc.includes("id=\"unstakeAmountMax\""),
+    'unstake modal should render a MAX button');
+  assert.ok(fullSrc.includes("type !== 'transfer' ? '<button type=\"button\" id=\"shieldModalMax\""),
+    'shield and unshield modals should both render MAX while transfer should not');
+  assert.ok(fullSrc.includes('const shieldFeeSpores = 1_100_000n;'),
+    'shield MAX should reserve base plus shield compute fee');
+});
+
+test('CC-30 extension password prompts report failures and clear for retry', () => {
+  for (const [label, src] of [['full page', fullSrc], ['popup', popupSrc]]) {
+    assert.ok(src.includes('validateActiveWalletPassword'),
+      `${label} should validate the active wallet password before closing prompt`);
+    assert.ok(src.includes('role="alert" aria-live="polite"'),
+      `${label} password prompt should expose inline error status`);
+    assert.ok(src.includes('input.value = \'\';'),
+      `${label} password prompt should clear failed password input`);
+    assert.ok(src.includes('okBtn.disabled = false;'),
+      `${label} password prompt should allow retry after validation failure`);
+  }
+  assert.ok(fullSrc.includes('clearPasswordInputForRetry(passwordInput, statusEl, err);'),
+    'full page inline password modals should clear password fields after failed decrypt');
+  assert.ok(!fullSrc.includes("prompt('Enter wallet password to claim unstake:')"),
+    'full page claim should not use a native prompt');
+});
+
 // ============================================================================
 console.log('\n' + '='.repeat(60));
 console.log(`Results: ${passed} passed, ${failed} failed, ${passed + failed} total`);
