@@ -58,6 +58,7 @@ const walletSharedUtilsSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'w
 const walletCssSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'wallet', 'wallet.css'), 'utf8');
 const walletManifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'wallet', 'manifest.json'), 'utf8'));
 const walletServiceWorkerSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'wallet', 'sw.js'), 'utf8');
+const walletRedirectsSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'wallet', '_redirects'), 'utf8');
 const shieldedSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'wallet', 'js', 'shielded.js'), 'utf8');
 const identitySrc = fs.readFileSync(path.join(__dirname, '..', '..', 'wallet', 'js', 'identity.js'), 'utf8');
 const extensionFullSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'wallet', 'extension', 'src', 'pages', 'full.js'), 'utf8');
@@ -1672,6 +1673,8 @@ test('wallet PWA starts at non-redirecting root app shell', () => {
         'wallet PWA start_url should avoid /index.html because Pages redirects it');
     assert.strictEqual(walletManifest.scope, '/',
         'wallet PWA scope should be rooted at the deployed app origin');
+    assert(walletRedirectsSrc.includes('/index.html  /  200'),
+        'wallet Cloudflare Pages redirects should rewrite legacy /index.html PWA launches to root with a 200 response');
     assert(walletServiceWorkerSrc.includes("const APP_SHELL_URL = './';"),
         'service worker should cache the non-redirecting root app shell');
     assert(!walletServiceWorkerSrc.includes("const INDEX_URL = './index.html';"),
