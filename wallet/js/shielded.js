@@ -118,6 +118,17 @@ function u64BigInt(value) {
     return BigInt(text);
 }
 
+function balanceSpendableSpores(result) {
+    if (!result || typeof result !== 'object') return 0n;
+    if (Object.prototype.hasOwnProperty.call(result, 'spendable')) {
+        return u64BigInt(result.spendable);
+    }
+    if (Object.prototype.hasOwnProperty.call(result, 'available')) {
+        return u64BigInt(result.available);
+    }
+    return 0n;
+}
+
 function parseShieldedAmountSpores(value, label = 'Shielded amount') {
     return parsePositiveDecimalBaseUnits(value, 9, label);
 }
@@ -132,11 +143,11 @@ function formatShieldedSporesFixed(value, digits = 4) {
 }
 
 function noteValueSpores(note) {
-    return u64BigInt(note?.value || 0);
+    return u64BigInt(note?.value ?? 0);
 }
 
 function shieldedBalanceSpores() {
-    return u64BigInt(shieldedState.shieldedBalance || 0);
+    return u64BigInt(shieldedState.shieldedBalance ?? 0);
 }
 
 function unspentShieldedNotes() {
@@ -1265,14 +1276,14 @@ function isOwnViewingKey(value) {
 function shieldedFeeSpores(type) {
     const baseFee = typeof BASE_FEE_SPORES !== 'undefined' ? BASE_FEE_SPORES : 1_000_000;
     const zkFees = typeof ZK_COMPUTE_FEE !== 'undefined' ? ZK_COMPUTE_FEE : { shield: 100_000, unshield: 150_000, transfer: 200_000 };
-    return baseFee + (zkFees[type] || 0);
+    return baseFee + (zkFees[type] ?? 0);
 }
 
 async function assertPublicFeeBalance(type) {
     const wallet = typeof getActiveWallet === 'function' ? getActiveWallet() : null;
     if (!wallet || typeof rpc === 'undefined') return;
     const balResult = await rpc.call('getBalance', [wallet.address]);
-    const spendableSpores = u64BigInt(balResult?.spendable ?? balResult?.spores ?? balResult?.balance ?? 0);
+    const spendableSpores = balanceSpendableSpores(balResult);
     const required = BigInt(shieldedFeeSpores(type));
     if (spendableSpores < required) {
         throw new Error(`Insufficient public LICN for fee: need ${formatShieldedSporesFixed(required)} LICN`);
@@ -1419,8 +1430,8 @@ async function loadNotesFromStorage() {
         );
         const data = JSON.parse(new TextDecoder().decode(decrypted));
         shieldedState.ownedNotes = data.ownedNotes || [];
-        shieldedState.lastSyncedIndex = data.lastSyncedIndex || 0;
-        shieldedState.shieldedBalance = u64BigInt(data.shieldedBalance || 0).toString();
+        shieldedState.lastSyncedIndex = data.lastSyncedIndex ?? 0;
+        shieldedState.shieldedBalance = u64BigInt(data.shieldedBalance ?? 0).toString();
         shieldedState.storageLoadFailed = false;
         shieldedState.storageKeyName = storageKey;
     } catch (e) {
@@ -1477,10 +1488,10 @@ function updateShieldedUI() {
     if (shieldedState.poolStats) {
         const poolBalEl = el('poolTotalShielded');
         if (poolBalEl) {
-            poolBalEl.textContent = formatShieldedSporesFixed(shieldedState.poolStats.pool_balance || 0, 2) + ' LICN';
+            poolBalEl.textContent = formatShieldedSporesFixed(shieldedState.poolStats.pool_balance ?? 0, 2) + ' LICN';
         }
         const poolCommitsEl = el('poolCommitmentCount');
-        if (poolCommitsEl) poolCommitsEl.textContent = (shieldedState.poolStats.commitment_count || 0).toLocaleString();
+        if (poolCommitsEl) poolCommitsEl.textContent = (shieldedState.poolStats.commitment_count ?? 0).toLocaleString();
     }
 
     const transferBtn = el('shieldedTransferOpenBtn');
@@ -1581,7 +1592,7 @@ function zkFeeDisplay(type) {
     const baseFee = typeof BASE_FEE_SPORES !== 'undefined' ? BASE_FEE_SPORES : 1_000_000;
     const zkFees = typeof ZK_COMPUTE_FEE !== 'undefined' ? ZK_COMPUTE_FEE : { shield: 100_000, unshield: 150_000, transfer: 200_000 };
     const spm = typeof SPORES_PER_LICN !== 'undefined' ? SPORES_PER_LICN : 1_000_000_000;
-    const total = (baseFee + (zkFees[type] || 0)) / spm;
+    const total = (baseFee + (zkFees[type] ?? 0)) / spm;
     return total.toFixed(4) + ' LICN (base + ZK compute)';
 }
 
@@ -1601,8 +1612,8 @@ function openShieldModal() {
             } catch (_) {
                 return;
             }
-            const walletBalanceSpores = parseDecimalBaseUnits(window.walletBalance || '0', 9, 'Wallet balance');
-            const feeSpores = typeof BASE_FEE_SPORES === 'number' ? BigInt(BASE_FEE_SPORES) : 1_000_000n;
+            const walletBalanceSpores = parseDecimalBaseUnits(window.walletBalance ?? '0', 9, 'Wallet balance');
+            const feeSpores = BigInt(shieldedFeeSpores('shield'));
             const maxSpores = walletBalanceSpores > feeSpores ? walletBalanceSpores - feeSpores : 0n;
             if (valueSpores > maxSpores) input.value = maxSpores > 0n ? formatShieldedSpores(maxSpores) : '';
         };
@@ -1695,7 +1706,7 @@ function _updateShieldModalBtn() {
         btn.title = 'Signed shielded transaction submission is not enabled yet';
         return;
     }
-    const spendable = parseDecimalBaseUnits(window.walletBalance || '0', 9, 'Wallet balance');
+    const spendable = parseDecimalBaseUnits(window.walletBalance ?? '0', 9, 'Wallet balance');
     const fee = typeof BASE_FEE_SPORES === 'number' ? BigInt(BASE_FEE_SPORES) : 1_000_000n;
     if (spendable <= fee) {
         btn.disabled = true;
@@ -1752,8 +1763,8 @@ async function confirmShield() {
         const wallet = getActiveWallet();
         if (wallet) {
             const balResult = await rpc.call('getBalance', [wallet.address]);
-            const spendable = u64BigInt(balResult?.spendable || balResult?.balance || 0);
-            const fee = typeof BASE_FEE_SPORES === 'number' ? BigInt(BASE_FEE_SPORES) : 1_000_000n;
+            const spendable = balanceSpendableSpores(balResult);
+            const fee = BigInt(shieldedFeeSpores('shield'));
             const maxShieldable = spendable > fee ? spendable - fee : 0n;
             if (maxShieldable <= 0n) {
                 showToast('Insufficient LICN balance to shield');

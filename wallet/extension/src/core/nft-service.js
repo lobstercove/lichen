@@ -30,7 +30,7 @@ export async function loadNftDetails(address, network, limit = 50) {
     standard: item.standard || item.token_standard || 'Unknown',
     name: item.name || item.metadata?.name || `NFT #${idx + 1}`,
     symbol: item.symbol || item.metadata?.symbol || 'NFT',
-    amount: Number(item.amount || item.balance || 1),
+    amount: Number(item.amount ?? item.balance ?? 1),
     image: item.image || item.metadata?.image || '',
     collection: item.collection || item.metadata?.collection || '',
     raw: item

@@ -296,12 +296,35 @@ impl StateStore {
             end_key.extend_from_slice(&[0xFF; 16]);
         }
 
+        let mut rows = std::collections::BTreeMap::new();
+        if let Some(cold) = self.cold_db.as_ref() {
+            if let Some(cold_cf) = cold.cf_handle(COLD_CF_EVENTS) {
+                let iter = cold.iterator_cf(
+                    &cold_cf,
+                    rocksdb::IteratorMode::From(&end_key, Direction::Reverse),
+                );
+                for (key, value) in iter.flatten() {
+                    if !key.starts_with(&prefix) {
+                        break;
+                    }
+                    if let Some(before_slot) = before_slot {
+                        if key.len() >= 40 {
+                            let slot_bytes: [u8; 8] = key[32..40].try_into().unwrap_or([0xFF; 8]);
+                            let slot = u64::from_be_bytes(slot_bytes);
+                            if slot >= before_slot {
+                                continue;
+                            }
+                        }
+                    }
+                    rows.insert(key.to_vec(), value.to_vec());
+                }
+            }
+        }
+
         let iter = self.db.iterator_cf(
             &cf,
             rocksdb::IteratorMode::From(&end_key, Direction::Reverse),
         );
-
-        let mut events = Vec::new();
         for (key, value) in iter.flatten() {
             if !key.starts_with(&prefix) {
                 break;
@@ -315,7 +338,12 @@ impl StateStore {
                     }
                 }
             }
-            if let Ok(event) = serde_json::from_slice::<ContractEvent>(&value) {
+            rows.insert(key.to_vec(), value.to_vec());
+        }
+
+        let mut events = Vec::new();
+        for value in rows.values().rev() {
+            if let Ok(event) = serde_json::from_slice::<ContractEvent>(value) {
                 events.push(event);
                 if events.len() >= limit {
                     break;
@@ -353,7 +381,20 @@ impl StateStore {
             if key.len() < 8 || key[..8] != slot_prefix {
                 break;
             }
-            if let Ok(Some(data)) = self.db.get_cf(&cf_events, &*event_key) {
+            let data = self
+                .db
+                .get_cf(&cf_events, &*event_key)
+                .map_err(|e| format!("Failed to read event: {}", e))?
+                .map(|value| value.to_vec())
+                .or_else(|| {
+                    self.cold_db.as_ref().and_then(|cold| {
+                        cold.cf_handle(COLD_CF_EVENTS)
+                            .and_then(|cold_cf| cold.get_cf(&cold_cf, &*event_key).ok().flatten())
+                            .map(|value| value.to_vec())
+                    })
+                });
+
+            if let Some(data) = data {
                 if let Ok(event) = serde_json::from_slice::<ContractEvent>(&data) {
                     events.push(event);
                     if events.len() >= limit {

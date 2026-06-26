@@ -185,6 +185,17 @@ function baseUnitBigInt(value) {
   return /^\d+$/.test(text) ? BigInt(text) : 0n;
 }
 
+function spendableBaseUnits(result) {
+  if (!result || typeof result !== 'object') return 0n;
+  if (Object.prototype.hasOwnProperty.call(result, 'spendable')) {
+    return baseUnitBigInt(result.spendable);
+  }
+  if (Object.prototype.hasOwnProperty.call(result, 'available')) {
+    return baseUnitBigInt(result.available);
+  }
+  return 0n;
+}
+
 function valueLicnToSpores(valueLicn) {
   if (typeof valueLicn === 'bigint') {
     if (valueLicn < 0n) throw new Error('Transaction value must be non-negative');
@@ -213,7 +224,7 @@ export async function loadIdentitySnapshot(address, network) {
   // reverseLichenName returns {"name": "x.lichen"} or null — extract string
   const lichenName = lichenNameResult?.name || null;
 
-  const rep = Number(profile?.reputation?.score || profile?.identity?.reputation || 0);
+  const rep = Number(profile?.reputation?.score ?? profile?.identity?.reputation ?? 0);
   const skills = Array.isArray(profile?.skills) ? profile.skills.length : 0;
   const identityName = profile?.identity?.name || null;
 
@@ -246,7 +257,7 @@ export async function loadIdentityDetails(address, network) {
   return {
     name: identityName,
     lichenName: lichenName2,
-    reputation: Number(profile?.reputation?.score || profile?.identity?.reputation || 0),
+    reputation: Number(profile?.reputation?.score ?? profile?.identity?.reputation ?? 0),
     agentType: profile?.identity?.agent_type ?? null,
     active: profile?.identity?.is_active !== false && profile?.identity?.is_active !== 0,
     skills: Array.isArray(profile?.skills) ? profile.skills : [],
@@ -255,7 +266,7 @@ export async function loadIdentityDetails(address, network) {
     vouchesGiven: Array.isArray(profile?.vouches?.given) ? profile.vouches.given : [],
     endpoint: profile?.agent?.endpoint || '',
     availability: profile?.agent?.availability_name || 'offline',
-    rate: Number(profile?.agent?.rate || 0) / 1_000_000_000,
+    rate: Number(profile?.agent?.rate ?? 0) / 1_000_000_000,
     raw: profile
   };
 }
@@ -303,7 +314,7 @@ async function sendIdentityContractCall({ wallet, password, network, functionNam
 
   try {
     const balanceResult = await rpc.getBalance(wallet.address);
-    const spendable = baseUnitBigInt(balanceResult?.spendable ?? balanceResult?.balance ?? 0);
+    const spendable = spendableBaseUnits(balanceResult);
     const required = valueSpores + BASE_FEE_SPORES;
     if (spendable < required) {
       throw new Error(`Insufficient LICN: need ${baseUnitsToDecimalString(required, 9)}, have ${baseUnitsToDecimalString(spendable, 9)} spendable`);

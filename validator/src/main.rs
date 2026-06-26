@@ -592,6 +592,12 @@ fn reconcile_validator_set_production_counters(
     repaired
 }
 
+fn validator_set_production_counter_total(set: &ValidatorSet) -> u64 {
+    set.validators().iter().fold(0u64, |total, validator| {
+        total.saturating_add(validator.blocks_proposed)
+    })
+}
+
 fn persist_validator_set_production_counter_repair(
     state: &StateStore,
     set: &mut ValidatorSet,
@@ -606,6 +612,167 @@ fn persist_validator_set_production_counter_repair(
             context, repaired
         );
     }
+    Ok(repaired)
+}
+
+fn canonical_validator_block_counts(
+    state: &StateStore,
+) -> Result<(HashMap<Pubkey, u64>, u64), String> {
+    let mut counts = HashMap::<Pubkey, u64>::new();
+    let mut total = 0u64;
+    let tip = state.get_last_slot().unwrap_or(0);
+    let mut reached_genesis = false;
+    let mut expected_next_slot = 0u64;
+    let mut first_missing_slot = None;
+
+    let visited = state.for_each_canonical_block_in_range(0, tip, |slot, block| {
+        if slot == 0 {
+            reached_genesis = true;
+        }
+        if slot != expected_next_slot && first_missing_slot.is_none() {
+            first_missing_slot = Some(expected_next_slot);
+        }
+        expected_next_slot = slot.saturating_add(1);
+
+        let producer = Pubkey(block.header.validator);
+        *counts.entry(producer).or_insert(0) = counts
+            .get(&producer)
+            .copied()
+            .unwrap_or(0)
+            .saturating_add(1);
+        total = total.saturating_add(1);
+        Ok(())
+    })?;
+
+    let expected_slots = tip.saturating_add(1);
+    if !reached_genesis || visited != expected_slots || first_missing_slot.is_some() {
+        return Err(format!(
+            "canonical block history is incomplete (reached_genesis={}, visited_blocks={}, expected_slots={}, first_missing_slot={:?})",
+            reached_genesis, visited, expected_slots, first_missing_slot
+        ));
+    }
+
+    Ok((counts, total))
+}
+
+fn repair_validator_set_block_counters_from_canonical_blocks(
+    state: &StateStore,
+    set: &mut ValidatorSet,
+    context: &str,
+) -> Result<u64, String> {
+    let tip = state.get_last_slot().unwrap_or(0);
+    let current_total = validator_set_production_counter_total(set);
+    if current_total >= tip.saturating_add(1).saturating_sub(1) {
+        return Ok(0);
+    }
+
+    let (counts, canonical_total) = canonical_validator_block_counts(state)?;
+    let mut repaired = 0u64;
+    for validator in set.validators_mut() {
+        let canonical_count = counts.get(&validator.pubkey).copied().unwrap_or(0);
+        if canonical_count > validator.blocks_proposed {
+            validator.blocks_proposed = canonical_count;
+            repaired = repaired.saturating_add(1);
+        }
+    }
+
+    if repaired > 0 {
+        state.save_validator_set(set)?;
+        info!(
+            "🔧 {}: repaired validator block counters for {} validator(s) from canonical block headers ({} total blocks)",
+            context, repaired, canonical_total
+        );
+    }
+
+    Ok(repaired)
+}
+
+fn validator_set_transaction_counter_total(set: &ValidatorSet) -> u64 {
+    set.validators().iter().fold(0u64, |total, validator| {
+        total.saturating_add(validator.transactions_processed)
+    })
+}
+
+fn canonical_validator_transaction_counts(
+    state: &StateStore,
+) -> Result<(HashMap<Pubkey, u64>, u64), String> {
+    let mut counts = HashMap::<Pubkey, u64>::new();
+    let mut total = 0u64;
+    let tip = state.get_last_slot().unwrap_or(0);
+    let mut reached_genesis = false;
+    let mut header_only_blocks = 0u64;
+    let mut first_header_only_slot = None;
+
+    let visited = state.for_each_canonical_block_in_range(0, tip, |slot, block| {
+        if slot == 0 {
+            reached_genesis = true;
+        }
+        if block.transactions.is_empty() && block.header.tx_root != Hash::default() {
+            header_only_blocks = header_only_blocks.saturating_add(1);
+            first_header_only_slot.get_or_insert(slot);
+            return Ok(());
+        }
+
+        let tx_count = block.transactions.len() as u64;
+        if tx_count > 0 {
+            let producer = Pubkey(block.header.validator);
+            *counts.entry(producer).or_insert(0) = counts
+                .get(&producer)
+                .copied()
+                .unwrap_or(0)
+                .saturating_add(tx_count);
+            total = total.saturating_add(tx_count);
+        }
+        Ok(())
+    })?;
+
+    let expected_slots = tip.saturating_add(1);
+    if !reached_genesis || visited != expected_slots || header_only_blocks > 0 {
+        return Err(format!(
+            "canonical block history is incomplete (reached_genesis={}, visited_blocks={}, expected_slots={}, header_only_blocks={}, first_header_only_slot={:?})",
+            reached_genesis, visited, expected_slots, header_only_blocks, first_header_only_slot
+        ));
+    }
+
+    Ok((counts, total))
+}
+
+fn repair_validator_set_transaction_counters_from_canonical_blocks(
+    state: &StateStore,
+    set: &mut ValidatorSet,
+    context: &str,
+) -> Result<u64, String> {
+    let metrics_total = state.get_metrics().total_transactions;
+    let current_total = validator_set_transaction_counter_total(set);
+    if metrics_total == 0 || current_total == metrics_total {
+        return Ok(0);
+    }
+
+    let (counts, canonical_total) = canonical_validator_transaction_counts(state)?;
+    if metrics_total != canonical_total {
+        return Err(format!(
+            "refusing validator transaction-counter repair: metrics total_transactions={} but canonical blocks contain {} transaction(s)",
+            metrics_total, canonical_total
+        ));
+    }
+
+    let mut repaired = 0u64;
+    for validator in set.validators_mut() {
+        let canonical_count = counts.get(&validator.pubkey).copied().unwrap_or(0);
+        if canonical_count != validator.transactions_processed {
+            validator.transactions_processed = canonical_count;
+            repaired = repaired.saturating_add(1);
+        }
+    }
+
+    if repaired > 0 {
+        state.save_validator_set(set)?;
+        info!(
+            "🔧 {}: repaired validator transaction counters for {} validator(s) from canonical blocks ({} total txs)",
+            context, repaired, canonical_total
+        );
+    }
+
     Ok(repaired)
 }
 
@@ -13880,6 +14047,48 @@ async fn run_validator() {
     if let Err(e) = state.save_validator_set(&*validator_set.read().await) {
         tracing::error!("Failed to save validator set: {e}");
     }
+    {
+        let mut persisted_set = match state.load_validator_set() {
+            Ok(set) => set,
+            Err(_) => validator_set.read().await.clone(),
+        };
+        let mut repaired_any = false;
+        match repair_validator_set_block_counters_from_canonical_blocks(
+            &state,
+            &mut persisted_set,
+            "Startup",
+        ) {
+            Ok(repaired) if repaired > 0 => {
+                repaired_any = true;
+            }
+            Ok(_) => {}
+            Err(err) => {
+                warn!(
+                    "⚠️  Startup validator block-counter repair skipped: {}",
+                    err
+                );
+            }
+        }
+        match repair_validator_set_transaction_counters_from_canonical_blocks(
+            &state,
+            &mut persisted_set,
+            "Startup",
+        ) {
+            Ok(repaired) if repaired > 0 => {
+                repaired_any = true;
+            }
+            Ok(_) => {}
+            Err(err) => {
+                warn!(
+                    "⚠️  Startup validator transaction-counter repair skipped: {}",
+                    err
+                );
+            }
+        }
+        if repaired_any {
+            *validator_set.write().await = persisted_set;
+        }
+    }
 
     info!(
         "✓ Validator set initialized with {} validators",
@@ -24285,6 +24494,221 @@ mod tests {
             .put_block_atomic(&block, Some(slot), Some(slot))
             .expect("put history block");
         (block_hash, tx_hash)
+    }
+
+    fn put_validator_transaction_count_block(
+        state: &StateStore,
+        slot: u64,
+        parent_hash: Hash,
+        producer: Pubkey,
+        tx_count: u8,
+        seed: u8,
+    ) -> Hash {
+        let txs = (0..tx_count)
+            .map(|offset| {
+                make_tx_for_account(
+                    Pubkey([seed.wrapping_add(offset); 32]),
+                    seed.wrapping_add(offset),
+                )
+            })
+            .collect::<Vec<_>>();
+        let block = Block::new_with_timestamp(
+            slot,
+            parent_hash,
+            Hash::hash(&[seed]),
+            producer.0,
+            txs,
+            1_700_100_000u64.saturating_add(slot),
+        );
+        let hash = block.hash();
+        state
+            .put_block_atomic(&block, Some(slot), Some(slot))
+            .expect("put validator tx-count block");
+        hash
+    }
+
+    #[test]
+    fn validator_block_counter_repair_uses_complete_canonical_blocks() {
+        let dir = tempfile::tempdir().expect("state temp dir");
+        let state = StateStore::open(dir.path()).expect("open state");
+        let validator_a = Pubkey([0xA7; 32]);
+        let validator_b = Pubkey([0xB7; 32]);
+
+        let mut set = ValidatorSet::new();
+        let mut info_a = ValidatorInfo::new(validator_a, 0);
+        info_a.stake = MIN_VALIDATOR_STAKE;
+        info_a.blocks_proposed = 0;
+        let mut info_b = ValidatorInfo::new(validator_b, 0);
+        info_b.stake = MIN_VALIDATOR_STAKE;
+        info_b.blocks_proposed = 0;
+        set.add_validator(info_a);
+        set.add_validator(info_b);
+        state.save_validator_set(&set).expect("save validator set");
+
+        let genesis_hash =
+            put_validator_transaction_count_block(&state, 0, Hash::default(), validator_a, 0, 0x11);
+        let block_1 =
+            put_validator_transaction_count_block(&state, 1, genesis_hash, validator_a, 0, 0x12);
+        put_validator_transaction_count_block(&state, 2, block_1, validator_b, 0, 0x13);
+
+        let repaired =
+            repair_validator_set_block_counters_from_canonical_blocks(&state, &mut set, "test")
+                .expect("repair block counters");
+
+        assert_eq!(repaired, 2);
+        assert_eq!(
+            set.get_validator(&validator_a)
+                .expect("validator a")
+                .blocks_proposed,
+            2
+        );
+        assert_eq!(
+            set.get_validator(&validator_b)
+                .expect("validator b")
+                .blocks_proposed,
+            1
+        );
+        assert_eq!(
+            state
+                .load_validator_set()
+                .expect("load persisted set")
+                .validators()
+                .iter()
+                .map(|validator| validator.blocks_proposed)
+                .sum::<u64>(),
+            3
+        );
+    }
+
+    #[test]
+    fn validator_block_counter_repair_refuses_incomplete_history() {
+        let dir = tempfile::tempdir().expect("state temp dir");
+        let state = StateStore::open(dir.path()).expect("open state");
+        let validator = Pubkey([0xC7; 32]);
+
+        let mut set = ValidatorSet::new();
+        let mut info = ValidatorInfo::new(validator, 0);
+        info.stake = MIN_VALIDATOR_STAKE;
+        info.blocks_proposed = 0;
+        set.add_validator(info);
+        state.save_validator_set(&set).expect("save validator set");
+
+        put_validator_transaction_count_block(&state, 1, Hash::default(), validator, 0, 0x14);
+
+        let err =
+            repair_validator_set_block_counters_from_canonical_blocks(&state, &mut set, "test")
+                .expect_err("incomplete canonical history must be refused");
+
+        assert!(err.contains("canonical block history is incomplete"));
+        assert_eq!(
+            set.get_validator(&validator)
+                .expect("validator")
+                .blocks_proposed,
+            0
+        );
+        assert_eq!(
+            state
+                .load_validator_set()
+                .expect("load persisted set")
+                .get_validator(&validator)
+                .expect("persisted validator")
+                .blocks_proposed,
+            0
+        );
+    }
+
+    #[test]
+    fn validator_transaction_counter_repair_uses_complete_canonical_blocks() {
+        let dir = tempfile::tempdir().expect("state temp dir");
+        let state = StateStore::open(dir.path()).expect("open state");
+        let validator_a = Pubkey([0xAA; 32]);
+        let validator_b = Pubkey([0xBB; 32]);
+
+        let mut set = ValidatorSet::new();
+        let mut info_a = ValidatorInfo::new(validator_a, 0);
+        info_a.stake = MIN_VALIDATOR_STAKE;
+        info_a.transactions_processed = 99;
+        let mut info_b = ValidatorInfo::new(validator_b, 0);
+        info_b.stake = MIN_VALIDATOR_STAKE;
+        info_b.transactions_processed = 0;
+        set.add_validator(info_a);
+        set.add_validator(info_b);
+        state.save_validator_set(&set).expect("save validator set");
+
+        let genesis_hash =
+            put_validator_transaction_count_block(&state, 0, Hash::default(), validator_a, 0, 0x10);
+        let block_1 =
+            put_validator_transaction_count_block(&state, 1, genesis_hash, validator_a, 2, 0x20);
+        put_validator_transaction_count_block(&state, 2, block_1, validator_b, 3, 0x30);
+
+        assert_eq!(state.get_metrics().total_transactions, 5);
+        let repaired = repair_validator_set_transaction_counters_from_canonical_blocks(
+            &state, &mut set, "test",
+        )
+        .expect("repair transaction counters");
+
+        assert_eq!(repaired, 2);
+        assert_eq!(
+            set.get_validator(&validator_a)
+                .expect("validator a")
+                .transactions_processed,
+            2
+        );
+        assert_eq!(
+            set.get_validator(&validator_b)
+                .expect("validator b")
+                .transactions_processed,
+            3
+        );
+        assert_eq!(
+            state
+                .load_validator_set()
+                .expect("load persisted set")
+                .validators()
+                .iter()
+                .map(|validator| validator.transactions_processed)
+                .sum::<u64>(),
+            5
+        );
+    }
+
+    #[test]
+    fn validator_transaction_counter_repair_refuses_incomplete_history() {
+        let dir = tempfile::tempdir().expect("state temp dir");
+        let state = StateStore::open(dir.path()).expect("open state");
+        let validator = Pubkey([0xCC; 32]);
+
+        let mut set = ValidatorSet::new();
+        let mut info = ValidatorInfo::new(validator, 0);
+        info.stake = MIN_VALIDATOR_STAKE;
+        info.transactions_processed = 0;
+        set.add_validator(info);
+        state.save_validator_set(&set).expect("save validator set");
+
+        put_validator_transaction_count_block(&state, 1, Hash::default(), validator, 2, 0x40);
+        assert_eq!(state.get_metrics().total_transactions, 2);
+
+        let err = repair_validator_set_transaction_counters_from_canonical_blocks(
+            &state, &mut set, "test",
+        )
+        .expect_err("incomplete canonical history must be refused");
+
+        assert!(err.contains("canonical block history is incomplete"));
+        assert_eq!(
+            set.get_validator(&validator)
+                .expect("validator")
+                .transactions_processed,
+            0
+        );
+        assert_eq!(
+            state
+                .load_validator_set()
+                .expect("load persisted set")
+                .get_validator(&validator)
+                .expect("persisted validator")
+                .transactions_processed,
+            0
+        );
     }
 
     #[test]

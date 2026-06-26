@@ -130,7 +130,9 @@ pub(crate) fn decode_transaction_bytes(bytes: &[u8]) -> Result<Transaction, RpcE
         })
 }
 use dashmap::DashMap;
-use lichen_core::consensus::{compute_block_reward, ValidatorInfo, GENESIS_SUPPLY_SPORES};
+use lichen_core::consensus::{
+    compute_block_reward, StakeInfo, ValidatorInfo, GENESIS_SUPPLY_SPORES,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fs::{self, OpenOptions};
@@ -2914,14 +2916,7 @@ fn should_expose_public_validator(state: &RpcState, validator: &ValidatorInfo) -
     // external peer broadcasts validator announcements solely for P2P routing.
     validator.blocks_proposed > 0
         || validator.votes_cast > 0
-        || validator.stake > 0
-        || state
-            .state
-            .get_account(&validator.pubkey)
-            .ok()
-            .flatten()
-            .map(|account| account.staked > 0)
-            .unwrap_or(false)
+        || canonical_validator_stake(state, &validator.pubkey, validator.stake) > 0
 }
 
 fn program_list_cache_key(method: &str, params: &Option<serde_json::Value>) -> String {
@@ -4105,12 +4100,7 @@ fn extract_token_info(
     if template != "wrapped" && template != "token" {
         return None;
     }
-    let decimals = entry
-        .metadata
-        .as_ref()
-        .and_then(|m| m.get("decimals"))
-        .and_then(|v| v.as_u64())
-        .unwrap_or(9);
+    let decimals = u64::from(token_registry_decimals(Some(&entry)));
     let function = parse_contract_function(ix)?;
     let args = parse_contract_call_args(ix)?;
     let (amount, recipient) = token_info_from_call_args(&function, &args).unwrap_or((0, None));
@@ -7910,12 +7900,7 @@ async fn handle_get_token_accounts(
             .as_ref()
             .and_then(|r| r.name.clone())
             .unwrap_or_default();
-        let decimals = registry
-            .as_ref()
-            .and_then(|r| r.metadata.as_ref())
-            .and_then(|m| m.get("decimals"))
-            .and_then(|d| d.as_u64())
-            .unwrap_or(9);
+        let decimals = token_registry_decimals(registry.as_ref());
 
         let ui_amount = *balance as f64 / 10_f64.powi(decimals as i32);
 
@@ -9815,38 +9800,21 @@ async fn handle_get_validators(state: &RpcState) -> Result<serde_json::Value, Rp
         .filter(|v| should_expose_public_validator(state, v))
         .map(|v| {
             // Get stake + bootstrap info from StakePool (authoritative source)
-            let (pool_stake, bootstrap_debt, vesting_status, earned_amount, graduation_slot) =
-                if let Some(ref pool_arc) = state.stake_pool {
-                    if let Ok(pool) = pool_arc.try_read() {
-                        if let Some(s) = pool.get_stake(&v.pubkey) {
-                            (
-                                s.amount,
-                                s.bootstrap_debt,
-                                format!("{:?}", s.status),
-                                s.earned_amount,
-                                s.graduation_slot,
-                            )
-                        } else {
-                            (0, 0, "Unknown".to_string(), 0, None)
-                        }
-                    } else {
-                        (0, 0, "Unknown".to_string(), 0, None)
-                    }
+            let (_pool_stake, bootstrap_debt, vesting_status, earned_amount, graduation_slot) =
+                if let Some(stake_info) = canonical_stake_info(state, &v.pubkey) {
+                    (
+                        stake_info.amount,
+                        stake_info.bootstrap_debt,
+                        format!("{:?}", stake_info.status),
+                        stake_info.earned_amount,
+                        stake_info.graduation_slot,
+                    )
                 } else {
                     (0, 0, "Unknown".to_string(), 0, None)
                 };
-            // Fallback to account staked field if pool has nothing
-            let actual_stake = if pool_stake > 0 {
-                pool_stake
-            } else {
-                state
-                    .state
-                    .get_account(&v.pubkey)
-                    .ok()
-                    .flatten()
-                    .map(|acc| acc.staked)
-                    .unwrap_or(0)
-            };
+            let actual_stake = canonical_validator_stake(state, &v.pubkey, v.stake);
+            let blocks_proposed =
+                canonical_validator_blocks_proposed(state, &v.pubkey, v.blocks_proposed);
 
             let normalized_reputation = if total_reputation > 0 {
                 v.reputation as f64 / total_reputation as f64
@@ -9859,8 +9827,8 @@ async fn handle_get_validators(state: &RpcState) -> Result<serde_json::Value, Rp
                 "stake": actual_stake,  // Use actual account balance
                 "reputation": v.reputation as f64,
                 "_normalized_reputation": normalized_reputation,
-                "_blocks_produced": v.blocks_proposed,
-                "blocks_proposed": v.blocks_proposed,
+                "_blocks_produced": blocks_proposed,
+                "blocks_proposed": blocks_proposed,
                 "transactions_processed": v.transactions_processed,
                 "votes_cast": v.votes_cast,
                 "correct_votes": v.correct_votes,
@@ -9918,26 +9886,7 @@ async fn handle_get_metrics(state: &RpcState) -> Result<serde_json::Value, RpcEr
 async fn compute_metrics(state: &RpcState) -> Result<serde_json::Value, RpcError> {
     let metrics = state.state.get_metrics();
     let validators = cached_validators(state).await?;
-    let total_staked: u64 = if let Some(ref pool_arc) = state.stake_pool {
-        if let Ok(pool) = pool_arc.try_read() {
-            pool.total_stake()
-        } else {
-            0
-        }
-    } else {
-        validators
-            .iter()
-            .map(|v| {
-                state
-                    .state
-                    .get_account(&v.pubkey)
-                    .ok()
-                    .flatten()
-                    .map(|acc| acc.staked)
-                    .unwrap_or(0)
-            })
-            .sum()
-    };
+    let total_staked = canonical_total_staked(state, &validators);
 
     // Calculate average transactions per block
     let avg_txs_per_block = if metrics.total_blocks > 0 {
@@ -10268,26 +10217,9 @@ async fn handle_get_cluster_info(state: &RpcState) -> Result<serde_json::Value, 
     let nodes: Vec<serde_json::Value> = public_validators
         .iter()
         .map(|v| {
-            let pool_stake = if let Some(ref pool_arc) = state.stake_pool {
-                if let Ok(pool) = pool_arc.try_read() {
-                    pool.get_stake(&v.pubkey).map(|s| s.amount).unwrap_or(0)
-                } else {
-                    0
-                }
-            } else {
-                0
-            };
-            let actual_stake = if pool_stake > 0 {
-                pool_stake
-            } else {
-                state
-                    .state
-                    .get_account(&v.pubkey)
-                    .ok()
-                    .flatten()
-                    .map(|acc| acc.staked)
-                    .unwrap_or(0)
-            };
+            let actual_stake = canonical_validator_stake(state, &v.pubkey, v.stake);
+            let blocks_proposed =
+                canonical_validator_blocks_proposed(state, &v.pubkey, v.blocks_proposed);
 
             let is_active = validator_is_active(current_slot, v.last_active_slot);
 
@@ -10295,7 +10227,7 @@ async fn handle_get_cluster_info(state: &RpcState) -> Result<serde_json::Value, 
                 "pubkey": v.pubkey.to_base58(),
                 "stake": actual_stake,
                 "reputation": v.reputation as f64,
-                "blocks_proposed": v.blocks_proposed,
+                "blocks_proposed": blocks_proposed,
                 "transactions_processed": v.transactions_processed,
                 "last_active_slot": v.last_active_slot,
                 "joined_slot": v.joined_slot,
@@ -10350,6 +10282,76 @@ fn validator_is_active(current_slot: u64, last_active_slot: u64) -> bool {
         || current_slot.saturating_sub(last_active_slot) <= VALIDATOR_ACTIVE_WINDOW_SLOTS
 }
 
+fn canonical_validator_stake(state: &RpcState, pubkey: &Pubkey, fallback_stake: u64) -> u64 {
+    if let Some(ref pool_arc) = state.stake_pool {
+        if let Ok(pool) = pool_arc.try_read() {
+            if let Some(stake) = pool.get_stake(pubkey).map(|entry| entry.total_stake()) {
+                return stake;
+            }
+        }
+    }
+
+    if let Ok(pool) = state.state.get_stake_pool() {
+        if let Some(stake) = pool.get_stake(pubkey).map(|entry| entry.total_stake()) {
+            return stake;
+        }
+    }
+
+    state
+        .state
+        .get_account(pubkey)
+        .ok()
+        .flatten()
+        .map(|account| account.staked)
+        .unwrap_or(fallback_stake)
+}
+
+fn canonical_stake_info(state: &RpcState, pubkey: &Pubkey) -> Option<StakeInfo> {
+    if let Some(ref pool_arc) = state.stake_pool {
+        if let Ok(pool) = pool_arc.try_read() {
+            if let Some(stake) = pool.get_stake(pubkey).cloned() {
+                return Some(stake);
+            }
+        }
+    }
+
+    state
+        .state
+        .get_stake_pool()
+        .ok()
+        .and_then(|pool| pool.get_stake(pubkey).cloned())
+}
+
+fn canonical_validator_blocks_proposed(
+    state: &RpcState,
+    pubkey: &Pubkey,
+    fallback_blocks: u64,
+) -> u64 {
+    canonical_stake_info(state, pubkey)
+        .map(|stake_info| stake_info.blocks_produced.max(fallback_blocks))
+        .unwrap_or(fallback_blocks)
+}
+
+fn canonical_total_staked(state: &RpcState, validators: &[ValidatorInfo]) -> u64 {
+    if let Some(ref pool_arc) = state.stake_pool {
+        if let Ok(pool) = pool_arc.try_read() {
+            return pool.total_stake();
+        }
+    }
+
+    if let Ok(pool) = state.state.get_stake_pool() {
+        let total = pool.total_stake();
+        if total > 0 || !pool.stake_entries().is_empty() {
+            return total;
+        }
+    }
+
+    validators
+        .iter()
+        .map(|validator| canonical_validator_stake(state, &validator.pubkey, validator.stake))
+        .sum()
+}
+
 // ============================================================================
 // VALIDATOR ENDPOINTS
 // ============================================================================
@@ -10387,9 +10389,13 @@ async fn handle_get_validator_info(
 
     Ok(serde_json::json!({
         "pubkey": validator.pubkey.to_base58(),
-        "stake": validator.stake,
+        "stake": canonical_validator_stake(state, &validator.pubkey, validator.stake),
         "reputation": validator.reputation,
-        "blocks_proposed": validator.blocks_proposed,
+        "blocks_proposed": canonical_validator_blocks_proposed(
+            state,
+            &validator.pubkey,
+            validator.blocks_proposed,
+        ),
         "transactions_processed": validator.transactions_processed,
         "votes_cast": validator.votes_cast,
         "correct_votes": validator.correct_votes,
@@ -10448,16 +10454,18 @@ async fn handle_get_validator_performance(
     // instead of the misleading last_active_slot delta.
     // blocks_proposed / slots_since_joined gives the fraction of slots
     // where this validator actually produced a block.
+    let blocks_proposed =
+        canonical_validator_blocks_proposed(state, &validator.pubkey, validator.blocks_proposed);
     let slots_since_joined = current_slot.saturating_sub(validator.joined_slot);
     let uptime = if slots_since_joined > 0 {
-        (validator.blocks_proposed as f64 / slots_since_joined as f64 * 100.0).min(100.0)
+        (blocks_proposed as f64 / slots_since_joined as f64 * 100.0).min(100.0)
     } else {
         100.0 // Just joined, assume 100%
     };
 
     Ok(serde_json::json!({
         "pubkey": validator.pubkey.to_base58(),
-        "blocks_proposed": validator.blocks_proposed,
+        "blocks_proposed": blocks_proposed,
         "transactions_processed": validator.transactions_processed,
         "votes_cast": validator.votes_cast,
         "correct_votes": validator.correct_votes,
@@ -10472,15 +10480,7 @@ async fn handle_get_chain_status(state: &RpcState) -> Result<serde_json::Value, 
     let current_slot = state.state.get_last_slot().unwrap_or(0);
     let validators = cached_validators(state).await?;
 
-    let total_stake: u64 = if let Some(ref pool_arc) = state.stake_pool {
-        if let Ok(pool) = pool_arc.try_read() {
-            pool.total_stake()
-        } else {
-            validators.iter().map(|v| v.stake).sum()
-        }
-    } else {
-        validators.iter().map(|v| v.stake).sum()
-    };
+    let total_stake = canonical_total_staked(state, &validators);
     let metrics = state.state.get_metrics();
 
     // Calculate epoch from consensus constant (SLOTS_PER_EPOCH = 432,000)
@@ -10694,46 +10694,20 @@ async fn handle_get_staking_status(
             vesting_status,
             start_slot,
             graduation_slot,
-        ) = if let Some(ref pool_arc) = state.stake_pool {
-            if let Ok(pool) = pool_arc.try_read() {
-                if let Some(s) = pool.get_stake(&pubkey) {
-                    (
-                        s.amount,
-                        s.bootstrap_debt,
-                        s.bootstrap_index,
-                        s.earned_amount,
-                        s.total_debt_repaid,
-                        format!("{:?}", s.status),
-                        s.start_slot,
-                        s.graduation_slot,
-                    )
-                } else {
-                    (
-                        validator.stake,
-                        0,
-                        u64::MAX,
-                        0,
-                        0,
-                        "Unknown".to_string(),
-                        0,
-                        None,
-                    )
-                }
-            } else {
-                (
-                    validator.stake,
-                    0,
-                    u64::MAX,
-                    0,
-                    0,
-                    "Unknown".to_string(),
-                    0,
-                    None,
-                )
-            }
+        ) = if let Some(stake_info) = canonical_stake_info(state, &pubkey) {
+            (
+                stake_info.amount,
+                stake_info.bootstrap_debt,
+                stake_info.bootstrap_index,
+                stake_info.earned_amount,
+                stake_info.total_debt_repaid,
+                format!("{:?}", stake_info.status),
+                stake_info.start_slot,
+                stake_info.graduation_slot,
+            )
         } else {
             (
-                validator.stake,
+                canonical_validator_stake(state, &pubkey, validator.stake),
                 0,
                 u64::MAX,
                 0,
@@ -18676,12 +18650,7 @@ async fn handle_get_token_balance(
         .ok()
         .flatten();
 
-    let decimals = registry
-        .as_ref()
-        .and_then(|r| r.metadata.as_ref())
-        .and_then(|m| m.get("decimals"))
-        .and_then(|d| d.as_u64())
-        .unwrap_or(9);
+    let decimals = token_registry_decimals(registry.as_ref());
 
     let symbol = registry
         .as_ref()
@@ -20981,8 +20950,9 @@ mod tests {
         handle_get_program, handle_get_program_stats, handle_get_recent_blocks,
         handle_get_recent_shielded_transactions, handle_get_recent_transactions,
         handle_get_restriction, handle_get_restriction_status, handle_get_service_fleet_status,
-        handle_get_signed_metadata_manifest, handle_get_transactions_by_address,
-        handle_get_wbtc_stats, handle_get_wgas_stats, handle_get_wneo_stats,
+        handle_get_signed_metadata_manifest, handle_get_staking_status, handle_get_token_accounts,
+        handle_get_token_balance, handle_get_transactions_by_address, handle_get_validator_info,
+        handle_get_validators, handle_get_wbtc_stats, handle_get_wgas_stats, handle_get_wneo_stats,
         handle_list_active_restrictions, handle_list_restrictions, handle_set_fee_config,
         handle_solana_get_account_info, handle_solana_get_token_account_balance,
         handle_solana_get_token_accounts_by_owner, handle_verify_neo_reserve_liability_proof,
@@ -21020,8 +20990,8 @@ mod tests {
     use lichen_core::{
         consensus::{ValidatorInfo, ValidatorSet},
         Block, Hash, Pubkey, RestrictionMode, RestrictionReason, RestrictionRecord,
-        RestrictionStatus, RestrictionTarget, StateStore, SymbolRegistryEntry, Transaction,
-        SYSTEM_PROGRAM_ID,
+        RestrictionStatus, RestrictionTarget, StakePool, StateStore, SymbolRegistryEntry,
+        Transaction, MIN_VALIDATOR_STAKE, SYSTEM_PROGRAM_ID,
     };
     use lru::LruCache;
     use std::collections::HashMap;
@@ -21704,6 +21674,88 @@ mod tests {
         assert_eq!(validators.len(), 1);
         assert_eq!(validators[0].last_active_slot, 42);
         assert_eq!(validators[0].votes_cast, 9);
+    }
+
+    #[tokio::test]
+    async fn get_validator_info_reports_canonical_stake_pool_stake() {
+        let dir = tempdir().unwrap();
+        let state = StateStore::open(dir.path()).unwrap();
+        let pubkey = Pubkey([8u8; 32]);
+
+        let mut stale_info = ValidatorInfo::new(pubkey, 0);
+        stale_info.stake = 1;
+        let mut set = ValidatorSet::new();
+        set.add_validator(stale_info);
+        state.save_validator_set(&set).unwrap();
+
+        let mut pool = StakePool::new();
+        pool.stake(pubkey, MIN_VALIDATOR_STAKE, 0).unwrap();
+        state.put_stake_pool(&pool).unwrap();
+
+        let rpc_state = make_test_rpc_state(state);
+        let response =
+            handle_get_validator_info(&rpc_state, Some(serde_json::json!([pubkey.to_base58()])))
+                .await
+                .unwrap();
+
+        assert_eq!(response["stake"], serde_json::json!(MIN_VALIDATOR_STAKE));
+    }
+
+    #[tokio::test]
+    async fn validator_list_and_staking_status_use_persisted_stake_pool() {
+        let dir = tempdir().unwrap();
+        let state = StateStore::open(dir.path()).unwrap();
+        let pubkey = Pubkey([9u8; 32]);
+
+        let stale_info = ValidatorInfo::new(pubkey, 0);
+        let mut set = ValidatorSet::new();
+        set.add_validator(stale_info);
+        state.save_validator_set(&set).unwrap();
+
+        let mut pool = StakePool::new();
+        pool.stake(pubkey, MIN_VALIDATOR_STAKE, 0).unwrap();
+        let stake_info = pool.get_stake_mut(&pubkey).unwrap();
+        stake_info.bootstrap_debt = 7;
+        stake_info.earned_amount = 11;
+        stake_info.total_debt_repaid = 13;
+        stake_info.start_slot = 17;
+        stake_info.blocks_produced = 123_456;
+        state.put_stake_pool(&pool).unwrap();
+
+        let rpc_state = make_test_rpc_state(state);
+        let validators = handle_get_validators(&rpc_state).await.unwrap();
+        let validator_list = validators["validators"].as_array().unwrap();
+        assert_eq!(validator_list.len(), 1);
+        assert_eq!(
+            validator_list[0]["stake"],
+            serde_json::json!(MIN_VALIDATOR_STAKE)
+        );
+        assert_eq!(
+            validator_list[0]["blocks_proposed"],
+            serde_json::json!(123_456)
+        );
+        assert_eq!(validator_list[0]["bootstrap_debt"], serde_json::json!(7));
+        assert_eq!(validator_list[0]["earned_amount"], serde_json::json!(11));
+
+        let info =
+            handle_get_validator_info(&rpc_state, Some(serde_json::json!([pubkey.to_base58()])))
+                .await
+                .unwrap();
+        assert_eq!(info["blocks_proposed"], serde_json::json!(123_456));
+
+        let status =
+            handle_get_staking_status(&rpc_state, Some(serde_json::json!([pubkey.to_base58()])))
+                .await
+                .unwrap();
+        assert_eq!(status["is_validator"], serde_json::json!(true));
+        assert_eq!(
+            status["total_staked"],
+            serde_json::json!(MIN_VALIDATOR_STAKE)
+        );
+        assert_eq!(status["bootstrap_debt"], serde_json::json!(7));
+        assert_eq!(status["earned_amount"], serde_json::json!(11));
+        assert_eq!(status["total_debt_repaid"], serde_json::json!(13));
+        assert_eq!(status["start_slot"], serde_json::json!(17));
     }
 
     fn put_test_contract_account(
@@ -26860,6 +26912,64 @@ mod tests {
         assert_eq!(balance["value"]["amount"], amount.to_string());
         assert_eq!(balance["value"]["decimals"], 9);
         assert_eq!(balance["value"]["uiAmountString"], "1.25");
+    }
+
+    #[tokio::test]
+    async fn test_token_account_endpoints_prefer_top_level_registry_decimals() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+        let rpc_state = make_test_rpc_state(state.clone());
+
+        let owner = Pubkey([0x31u8; 32]);
+        let mint = Pubkey([0x32u8; 32]);
+        let amount = 123_456_789u64;
+
+        state
+            .register_symbol(
+                "WBTC",
+                SymbolRegistryEntry {
+                    symbol: "WBTC".to_string(),
+                    program: mint,
+                    owner: Pubkey([0x33u8; 32]),
+                    name: Some("Wrapped Bitcoin".to_string()),
+                    template: Some("token".to_string()),
+                    metadata: Some(serde_json::json!({ "decimals": 9 })),
+                    decimals: Some(8),
+                },
+            )
+            .unwrap();
+        state.update_token_balance(&mint, &owner, amount).unwrap();
+
+        let token_accounts =
+            handle_get_token_accounts(&rpc_state, Some(serde_json::json!([owner.to_base58()])))
+                .await
+                .expect("token account listing should succeed");
+        let accounts = token_accounts["accounts"]
+            .as_array()
+            .expect("accounts should be an array");
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0]["decimals"].as_u64(), Some(8));
+        assert!((accounts[0]["ui_amount"].as_f64().unwrap() - 1.23456789).abs() < f64::EPSILON);
+
+        let token_balance = handle_get_token_balance(
+            &rpc_state,
+            Some(serde_json::json!([mint.to_base58(), owner.to_base58()])),
+        )
+        .await
+        .expect("token balance lookup should succeed");
+        assert_eq!(token_balance["decimals"].as_u64(), Some(8));
+        assert!((token_balance["ui_amount"].as_f64().unwrap() - 1.23456789).abs() < f64::EPSILON);
+
+        let token_account =
+            lichen_core::state::derive_solana_associated_token_address(&owner, &mint).unwrap();
+        let solana_balance = handle_solana_get_token_account_balance(
+            &rpc_state,
+            Some(serde_json::json!([token_account.to_base58()])),
+        )
+        .await
+        .expect("Solana token account balance lookup should succeed");
+        assert_eq!(solana_balance["value"]["decimals"].as_u64(), Some(8));
+        assert_eq!(solana_balance["value"]["uiAmountString"], "1.23456789");
     }
 
     #[tokio::test]

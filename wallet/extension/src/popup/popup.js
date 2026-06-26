@@ -76,6 +76,17 @@ function baseUnitBigIntPopup(value) {
   return BigInt(text);
 }
 
+function spendableBaseUnitsPopup(result) {
+  if (!result || typeof result !== 'object') return 0n;
+  if (Object.prototype.hasOwnProperty.call(result, 'spendable')) {
+    return baseUnitBigIntPopup(result.spendable);
+  }
+  if (Object.prototype.hasOwnProperty.call(result, 'available')) {
+    return baseUnitBigIntPopup(result.available);
+  }
+  return 0n;
+}
+
 function parseLicnAmountSporesPopup(value, label = 'Amount') {
   return parsePositiveDecimalBaseUnits(value, 9, label);
 }
@@ -876,8 +887,8 @@ function renderNeoGasRewardsPopupAsset(snapshot) {
   const position = snapshot?.position;
   if (!stats || !position) return '';
 
-  const principal = Number(position.principal || 0);
-  const claimable = Number(position.claimable || 0);
+  const principal = Number(position.principal ?? 0);
+  const claimable = Number(position.claimable ?? 0);
   const configured = stats.configured === true;
   if (!configured && principal <= 0 && claimable <= 0) return '';
 
@@ -900,9 +911,10 @@ function renderNeoGasRewardsPopupAsset(snapshot) {
 }
 
 function getPopupBalanceSnapshot(result) {
+  const spendable = spendableBaseUnitsPopup(result);
   return {
     totalLicn: sporesToLicn(result?.spores ?? result?.balance ?? result?.total ?? result?.spendable ?? 0),
-    spendableLicn: sporesToLicn(result?.spendable ?? result?.available ?? result?.spores ?? result?.balance ?? 0),
+    spendableLicn: sporesToLicn(spendable),
     stakedLicn: sporesToLicn(result?.staked ?? result?.staked_spores ?? 0),
     pendingRewardsLicn: sporesToLicn(result?.pending_rewards ?? result?.pendingRewards ?? 0),
     lockedLicn: sporesToLicn(result?.locked ?? result?.locked_spores ?? 0),
@@ -1173,11 +1185,11 @@ async function loadAssets() {
       rpc.getBalance(wallet.address),
       loadNeoGasRewardsSnapshot(rpc, wallet.address)
     ]);
-    const spendableRaw = Number(result?.spendable ?? result?.spores ?? 0);
+    const spendableRaw = Number(spendableBaseUnitsPopup(result));
     const totalRaw = Number(result?.spores ?? spendableRaw);
     const stakedRaw = Number(result?.staked ?? 0);
     const stakingPosition = await rpc.call('getStakingPosition', [wallet.address]).catch(() => null);
-    const stLicnRaw = Number(stakingPosition?.st_licn_amount || 0);
+    const stLicnRaw = Number(stakingPosition?.st_licn_amount ?? 0);
     const lockedRaw = Number(result?.locked ?? 0);
     const div = 1_000_000_000;
     const decimals = displayDecimals();
@@ -1225,7 +1237,7 @@ function getPopupActivityCursor(result, txs, previousCursor) {
   const rpcNextBeforeSlot = Number(result?.next_before_slot);
   if (Number.isFinite(rpcNextBeforeSlot) && rpcNextBeforeSlot > 0) return rpcNextBeforeSlot;
   const last = txs[txs.length - 1] || {};
-  const lastSlot = Number(last.slot || last.block_height || last.block);
+  const lastSlot = Number(last.slot ?? last.block_height ?? last.block ?? 0);
   if (Number.isFinite(lastSlot) && lastSlot > 0 && lastSlot !== previousCursor) return lastSlot;
   return null;
 }
@@ -1306,7 +1318,7 @@ async function loadActivity(reset = true) {
         'GenesisMint': 'Genesis Mint',
       };
       const type = typeMap[tx.type] || (isSent ? 'Sent' : 'Received');
-      const amountVal = tx.amount_spores ? tx.amount_spores : (tx.amount || 0);
+      const amountVal = tx.amount_spores ?? tx.amount ?? 0;
       const amt = (amountVal / 1_000_000_000).toLocaleString(undefined, { maximumFractionDigits: 4 });
       const ts = tx.timestamp ? new Date(tx.timestamp * 1000).toLocaleString() : '';
 
@@ -1352,7 +1364,7 @@ async function loadActivity(reset = true) {
       const isFeeOnly = tx.type === 'RegisterEvmAddress' || tx.type === 'CreateAccount'
         || tx.type === 'DeployContract' || tx.type === 'SetContractABI' || tx.type === 'RegisterSymbol'
         || ((tx.type === 'Contract' || tx.type === 'ContractCall') && isZeroAmount);
-      const feeSpores = tx.fee_spores || tx.fee || 0;
+      const feeSpores = tx.fee_spores ?? tx.fee ?? 0;
       const feeAmt = (feeSpores / 1_000_000_000).toLocaleString(undefined, { maximumFractionDigits: 4 });
       const amountUnit = tx.type === 'MossStakeUnstake' || tx.type === 'MossStakeTransfer'
         ? 'stLICN'
@@ -1432,7 +1444,7 @@ async function loadIdentityPanel() {
       });
       return;
     }
-    const rep = Number(profile.reputation?.score || 0);
+    const rep = Number(profile.reputation?.score ?? 0);
     const licnName = profile.licn_name;
     const tierName = profile.reputation?.tier_name || 'Newcomer';
     const skills = Array.isArray(profile.skills) ? profile.skills : [];
@@ -1517,17 +1529,15 @@ async function loadExtensionStaking() {
       rpc.getBalance(wallet.address).catch(() => null),
     ]);
 
-    const stLicn = Number(position?.st_licn_amount || 0) / 1e9;
-    const stakeValue = Number(position?.current_value_licn || 0) / 1e9;
-    const accruedRewards = Math.max(0, Number(position?.current_value_licn || 0) - Number(position?.licn_deposited || 0)) / 1e9;
+    const stLicn = Number(position?.st_licn_amount ?? 0) / 1e9;
+    const stakeValue = Number(position?.current_value_licn ?? 0) / 1e9;
+    const accruedRewards = Math.max(0, Number(position?.current_value_licn ?? 0) - Number(position?.licn_deposited ?? 0)) / 1e9;
     const tierName = position?.lock_tier_name || 'Flexible';
-    const multiplier = Number(position?.reward_multiplier || 1);
-    const totalPool = Number(poolInfo?.total_licn_staked || 0) / 1e9;
+    const multiplier = Number(position?.reward_multiplier ?? 1);
+    const totalPool = Number(poolInfo?.total_licn_staked ?? 0) / 1e9;
     const fmt = v => v.toLocaleString(undefined, { maximumFractionDigits: 4 });
     const feeSpores = 1_000_000n;
-    const spendableSpores = balance
-      ? baseUnitBigIntPopup(balance?.spendable ?? balance?.available ?? balance?.spores ?? balance?.balance ?? 0)
-      : null;
+    const spendableSpores = balance ? spendableBaseUnitsPopup(balance) : null;
     const canPayClaimFee = spendableSpores === null || spendableSpores >= feeSpores;
     const claimFeeTitle = canPayClaimFee
       ? `Network fee: ${formatLicnBaseUnitsPopup(feeSpores)} LICN`
@@ -1577,13 +1587,13 @@ async function loadExtensionStaking() {
 
     // Pending unstakes
     const unstakes = queue?.pending_requests || position?.pending_unstakes || [];
-    const currentSlot = Number(queue?.current_slot || 0);
+    const currentSlot = Number(queue?.current_slot ?? 0);
     if (unstakes.length > 0) {
       pendingEl.style.display = 'block';
       pendingEl.innerHTML = `
         <div style="font-size:0.75rem;font-weight:600;margin-bottom:0.4rem;color:var(--text);"><i class="fas fa-clock"></i> Pending Unstakes</div>
         ${unstakes.map(u => {
-        const amt = (Number(u.licn_to_receive || u.amount || 0) / 1e9).toLocaleString(undefined, { maximumFractionDigits: 4 });
+        const amt = (Number(u.licn_to_receive ?? u.amount ?? 0) / 1e9).toLocaleString(undefined, { maximumFractionDigits: 4 });
         const claimable = isPopupQueueRequestClaimable(u, currentSlot);
         const remainingSlots = popupQueueRequestRemainingSlots(u, currentSlot);
         const ready = claimable
@@ -1620,7 +1630,7 @@ async function refreshBalance() {
     const licnUsdQuote = await getLiveLicnUsdPrice(endpoint);
     const balanceSnapshot = getPopupBalanceSnapshot(result);
     window._cachedSpendableLicn = balanceSnapshot.spendableLicn;
-    window._cachedSpendableSpores = baseUnitBigIntPopup(result?.spendable ?? result?.available ?? result?.spores ?? result?.balance ?? 0).toString();
+    window._cachedSpendableSpores = spendableBaseUnitsPopup(result).toString();
     document.getElementById('walletBalance').textContent = `${balanceSnapshot.totalLicn.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 9 })} LICN`;
     const usdEl = document.getElementById('balanceUsd');
     if (usdEl) {
@@ -1631,9 +1641,9 @@ async function refreshBalance() {
     // Balance breakdown (matches wallet website)
     const breakdownEl = document.getElementById('balanceBreakdown');
     if (breakdownEl) {
-      const shieldedSpores = baseUnitBigIntPopup(shieldedPopupState?.shieldedBalance || 0);
+      const shieldedSpores = baseUnitBigIntPopup(shieldedPopupState?.shieldedBalance ?? 0);
       const stakingPosition = await rpc.call('getStakingPosition', [wallet.address]).catch(() => null);
-      const stLicnBalance = Number(stakingPosition?.st_licn_amount || 0) / 1_000_000_000;
+      const stLicnBalance = Number(stakingPosition?.st_licn_amount ?? 0) / 1_000_000_000;
       const hasBreakdown = balanceSnapshot.stakedLicn > 0 || balanceSnapshot.lockedLicn > 0 || stLicnBalance > 0 || balanceSnapshot.pendingRewardsLicn > 0 || shieldedSpores > 0n;
       if (hasBreakdown) {
         const parts = [`<i class="fas fa-wallet"></i> Spendable: <strong>${balanceSnapshot.spendableLicn.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`];
@@ -1718,7 +1728,7 @@ async function handleSendNow() {
     setStatus('Checking balance...');
 
     const balResult = await rpc.getBalance(wallet.address);
-    const spendable = baseUnitBigIntPopup(balResult?.spendable || balResult?.spores || 0);
+    const spendable = spendableBaseUnitsPopup(balResult);
     const feeSpores = 1_000_000n;
     const maxSendable = spendable > feeSpores ? spendable - feeSpores : 0n;
     if (maxSendable <= 0n) {
@@ -2549,7 +2559,7 @@ async function loadShieldPanel() {
     const notes = Array.isArray(shieldedPopupState.ownedNotes) ? shieldedPopupState.ownedNotes : [];
     shieldedPopupState.shieldedBalance = notes
       .filter((note) => !note.spent)
-      .reduce((sum, note) => sum + baseUnitBigIntPopup(note.value || 0), 0n)
+      .reduce((sum, note) => sum + baseUnitBigIntPopup(note.value ?? 0), 0n)
       .toString();
     void refreshBalance();
   }

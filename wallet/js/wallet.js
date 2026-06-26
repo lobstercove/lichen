@@ -21,7 +21,7 @@ let pendingWalletSecurityNotice = null;
 
 // ── Number formatting helpers ──
 function fmtToken(value, maxDecimals) {
-    const d = maxDecimals !== undefined ? maxDecimals : (walletState?.settings?.decimals || 9);
+    const d = maxDecimals !== undefined ? maxDecimals : (walletState?.settings?.decimals ?? 9);
     return Number(value).toLocaleString(undefined, { maximumFractionDigits: d });
 }
 function fmtUsd(value, sym = '$') {
@@ -301,6 +301,17 @@ function u64ValueToBigInt(value) {
     return BigInt(text);
 }
 
+function balanceSpendableSpores(result) {
+    if (!result || typeof result !== 'object') return 0n;
+    if (Object.prototype.hasOwnProperty.call(result, 'spendable')) {
+        return u64ValueToBigInt(result.spendable);
+    }
+    if (Object.prototype.hasOwnProperty.call(result, 'available')) {
+        return u64ValueToBigInt(result.available);
+    }
+    return 0n;
+}
+
 function tokenDecimalsForBaseUnits(selectedToken) {
     if (selectedToken === 'LICN' || selectedToken === 'stLICN') return 9;
     const token = TOKEN_REGISTRY[selectedToken];
@@ -339,7 +350,7 @@ async function fetchWrappedReserveStats(symbols) {
 
 function renderWrappedReserveNote(symbol, token, reserveStats) {
     if (!reserveStats) return '';
-    const decimals = token?.decimals || 9;
+    const decimals = token?.decimals ?? 9;
     const reserve = formatBaseUnitsAmount(reserveStats.reserve_attested, decimals);
     const supply = formatBaseUnitsAmount(reserveStats.supply, decimals);
     const asset = token?.reserveAsset || token?.symbol || symbol;
@@ -363,8 +374,8 @@ function renderNeoGasRewardsCard(snapshot) {
     const position = snapshot?.position;
     if (!stats || !position) return '';
 
-    const principal = Number(position.principal || 0);
-    const claimable = Number(position.claimable || 0);
+    const principal = Number(position.principal ?? 0);
+    const claimable = Number(position.claimable ?? 0);
     const configured = stats.configured === true;
     if (!configured && principal <= 0 && claimable <= 0) return '';
 
@@ -775,7 +786,7 @@ function stopBalancePolling() {
     }
 }
 
-window.currentShieldedBalanceSpores = Number(window.currentShieldedBalanceSpores || 0);
+window.currentShieldedBalanceSpores = Number(window.currentShieldedBalanceSpores ?? 0);
 window.currentWalletBalanceBreakdown = null;
 let _walletViewGeneration = 0;
 
@@ -851,7 +862,7 @@ function renderWalletBalanceBreakdown() {
     if (!breakdownEl || !snapshot) return;
 
     const sporesPerLicn = typeof SPORES_PER_LICN === 'number' ? SPORES_PER_LICN : 1_000_000_000;
-    const shielded = Math.max(0, Number(window.currentShieldedBalanceSpores || 0)) / sporesPerLicn;
+    const shielded = Math.max(0, Number(window.currentShieldedBalanceSpores ?? 0)) / sporesPerLicn;
     const hasBreakdown = snapshot.staked > 0 || snapshot.locked > 0 || snapshot.stLicn > 0 || shielded > 0;
     if (!hasBreakdown) {
         breakdownEl.innerHTML = '';
@@ -1153,7 +1164,7 @@ async function getTokenBalanceFormatted(symbol, holderAddress) {
 
     try {
         const result = await rpc.getTokenBalance(token.address, holderAddress);
-        const rawBalance = result.balance || 0;
+        const rawBalance = result.balance ?? 0;
         return rawBalance / Math.pow(10, token.decimals);
     } catch (e) {
         return 0;
@@ -1781,8 +1792,8 @@ function bindStaticControls() {
             const shieldAmountInput = document.getElementById('shieldAmount');
             if (shieldAmountInput) {
                 const zkFees = typeof ZK_COMPUTE_FEE !== 'undefined' ? ZK_COMPUTE_FEE : { shield: 100_000 };
-                const shieldFeeLicn = getNetworkBaseFeeLicn() + ((zkFees.shield || 0) / 1_000_000_000);
-                const maxShieldable = Math.max(0, (window.walletBalance || 0) - shieldFeeLicn);
+                const shieldFeeLicn = getNetworkBaseFeeLicn() + ((zkFees.shield ?? 0) / 1_000_000_000);
+                const maxShieldable = Math.max(0, (window.walletBalance ?? 0) - shieldFeeLicn);
                 shieldAmountInput.value = maxShieldable.toFixed(4);
             }
             return;
@@ -2902,9 +2913,12 @@ async function refreshBalance(options = {}) {
 
     try {
         const balance = await rpc.getBalance(wallet.address);
-        const licn = parseFloat(balance.licn) || 0;
+        const parsedLicn = parseFloat(balance.licn);
+        const licn = Number.isFinite(parsedLicn) ? parsedLicn : 0;
         const parsedSpendable = parseFloat(balance.spendable_licn);
-        const spendableLicn = Number.isFinite(parsedSpendable) ? parsedSpendable : licn;
+        const spendableLicn = Number.isFinite(parsedSpendable)
+            ? parsedSpendable
+            : Number(balanceSpendableSpores(balance)) / SPORES_PER_LICN;
         window.totalWalletBalance = licn;
         window.walletBalance = spendableLicn;
 
@@ -2923,7 +2937,7 @@ async function refreshBalance(options = {}) {
 
         // Use saved display settings
         const settings = walletState.settings || {};
-        const decimals = settings.decimals || 6;
+        const decimals = settings.decimals ?? 6;
         const currency = settings.currency || 'USD';
         const currencySymbols = { USD: '$', EUR: '€', GBP: '£', JPY: '¥' };
         const sym = currencySymbols[currency] || '$';
@@ -2938,10 +2952,10 @@ async function refreshBalance(options = {}) {
 
         // Balance breakdown — show spendable/staked/locked/stLICN split when non-trivial
         window.currentWalletBalanceBreakdown = {
-            spendable: parseFloat(balance.spendable_licn) || 0,
-            staked: parseFloat(balance.staked_licn) || 0,
-            locked: parseFloat(balance.locked_licn) || 0,
-            stLicn: Number(stakingPosition?.st_licn_amount || 0) / SPORES_PER_LICN,
+            spendable: Number.isFinite(parseFloat(balance.spendable_licn)) ? parseFloat(balance.spendable_licn) : 0,
+            staked: Number.isFinite(parseFloat(balance.staked_licn)) ? parseFloat(balance.staked_licn) : 0,
+            locked: Number.isFinite(parseFloat(balance.locked_licn)) ? parseFloat(balance.locked_licn) : 0,
+            stLicn: Number(stakingPosition?.st_licn_amount ?? 0) / SPORES_PER_LICN,
         };
         renderWalletBalanceBreakdown();
     } catch (error) {
@@ -2973,7 +2987,8 @@ async function loadAssets(options = {}) {
     if (!wallet) return;
 
     const balance = await rpc.getBalance(wallet.address).catch(() => ({ licn: 0 }));
-    const licn = parseFloat(balance.licn) || 0;
+    const parsedLicn = parseFloat(balance.licn);
+    const licn = Number.isFinite(parsedLicn) ? parsedLicn : 0;
 
     // Fetch all token balances in parallel
     const tokenBalances = await getAllTokenBalances(wallet.address);
@@ -2985,7 +3000,7 @@ async function loadAssets(options = {}) {
 
     // Live prices for display
     const settings = walletState.settings || {};
-    const decimals = settings.decimals || 6;
+    const decimals = settings.decimals ?? 6;
     const currency = settings.currency || 'USD';
     const currencySymbols = { USD: '$', EUR: '€', GBP: '£', JPY: '¥' };
     const sym = currencySymbols[currency] || '$';
@@ -3018,7 +3033,7 @@ async function loadAssets(options = {}) {
 
     // Wrapped tokens (only show when balance > 0)
     for (const [symbol, token] of Object.entries(TOKEN_REGISTRY)) {
-        const bal = tokenBalances[symbol] || 0;
+        const bal = tokenBalances[symbol] ?? 0;
         const quote = getPriceQuote(symbol);
         const usdVal = bal * quote.price;
 
@@ -3078,7 +3093,7 @@ function activityItemKey(tx) {
     return [
         tx?.type || '',
         tx?.timestamp || tx?.block_time || '',
-        tx?.amount_spores || tx?.amount || '',
+        tx?.amount_spores ?? tx?.amount ?? '',
         tx?.from || '',
         tx?.to || ''
     ].join(':');
@@ -3207,7 +3222,7 @@ async function loadActivity(reset = true, options = {}) {
                     _activityBeforeSlot = rpcNextBeforeSlot;
                 } else {
                     const lastTx = transactions[transactions.length - 1];
-                    const lastSlot = Number(lastTx?.slot || lastTx?.block_slot || 0);
+                    const lastSlot = Number(lastTx?.slot ?? lastTx?.block_slot ?? 0);
                     if (Number.isFinite(lastSlot) && lastSlot > 0 && lastSlot !== requestBeforeSlot) {
                         _activityBeforeSlot = lastSlot;
                     } else {
@@ -3221,7 +3236,7 @@ async function loadActivity(reset = true, options = {}) {
             // Legacy fallback: infer pagination from page size + last tx slot
             if (transactions.length > 0) {
                 const lastTx = transactions[transactions.length - 1];
-                const lastSlot = Number(lastTx?.slot || lastTx?.block_slot || 0);
+                const lastSlot = Number(lastTx?.slot ?? lastTx?.block_slot ?? 0);
                 if (Number.isFinite(lastSlot) && lastSlot > 0) _activityBeforeSlot = lastSlot;
             }
             _activityHasMore = transactions.length >= ACTIVITY_PAGE_SIZE;
@@ -3231,7 +3246,7 @@ async function loadActivity(reset = true, options = {}) {
         // RPC returns timestamp as unix seconds — convert to ms for Date()
         const newItems = [...transactions.map(tx => ({
             ...tx,
-            timestamp: (tx.block_time || tx.timestamp || 0) * 1000,
+            timestamp: (tx.block_time ?? tx.timestamp ?? 0) * 1000,
             isAirdrop: false
         })), ...airdrops];
         _activityItems = mergeActivityItems(_activityItems, newItems);
@@ -3349,7 +3364,7 @@ async function loadActivity(reset = true, options = {}) {
                     : isMossStakePoolTx
                         ? 'MossStake Pool'
                     : (isSent ? (tx.to || '') : (tx.from || ''));
-                const amountVal = tx.amount_spores ? tx.amount_spores : (tx.amount || 0);
+                const amountVal = tx.amount_spores ?? tx.amount ?? 0;
                 amount = fmtToken(amountVal / SPORES_PER_LICN);
                 sign = sign || (isSent ? '-' : '+');
             }
@@ -3367,7 +3382,7 @@ async function loadActivity(reset = true, options = {}) {
                 || tx.type === 'DeployContract' || tx.type === 'SetContractABI' || tx.type === 'RegisterSymbol'
                 || tx.type === 'CreateAccount');
             const isPaidContract = (tx.type === 'Contract' || tx.type === 'ContractCall') && amount !== '0' && parseFloat(amount) > 0;
-            const feeSpores = tx.fee_spores || tx.fee || 0;
+            const feeSpores = tx.fee_spores ?? tx.fee ?? 0;
             const feeAmt = fmtToken(feeSpores / SPORES_PER_LICN);
             const amountUnit = tx.type === 'MossStakeUnstake' || tx.type === 'MossStakeTransfer'
                 ? 'stLICN'
@@ -3530,21 +3545,21 @@ async function loadStaking(options = {}) {
                         <div class="staking-stat-label">Total Stake</div>
                         <div class="staking-stat-value" id="totalStake">Loading...</div>
                     </div>
-                    <div class="staking-stat-card">
+                    <div class="staking-stat-card" id="bootstrapGrantCard">
                         <div class="staking-stat-label">Bootstrap Grant</div>
-                        <div class="staking-stat-value">1,000 LICN</div>
+                        <div class="staking-stat-value" id="bootstrapGrantAmount">100,000 LICN</div>
                     </div>
-                    <div class="staking-stat-card">
+                    <div class="staking-stat-card" id="debtRemainingCard">
                         <div class="staking-stat-label">Debt Remaining</div>
                         <div class="staking-stat-value amber" id="debtRemaining">Loading...</div>
                     </div>
-                    <div class="staking-stat-card">
+                    <div class="staking-stat-card" id="earnedAmountCard">
                         <div class="staking-stat-label">Earned / Vested</div>
                         <div class="staking-stat-value green" id="earnedAmount">Loading...</div>
                     </div>
                 </div>
 
-                <div class="staking-stat-card" style="margin-bottom: 1.5rem;">
+                <div class="staking-stat-card" id="vestingProgressCard" style="margin-bottom: 1.5rem;">
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
                         <div class="staking-stat-label" style="margin-bottom:0;">Vesting Progress</div>
                         <div id="vestingPercent" style="font-weight: 600; color: var(--text);">0%</div>
@@ -3567,38 +3582,54 @@ async function loadStaking(options = {}) {
             `;
         }
 
-        // Get validator account to check actual stake
-        const account = await rpc.getAccount(wallet.address);
         if (!isCurrentWalletView(wallet, generation)) return;
-        const totalStake = account?.spores || 0;
-        const totalStakeLICN = totalStake / SPORES_PER_LICN;
+        const totalStake = u64ValueToBigInt(myValidator?.stake ?? 0);
+        const totalStakeLICN = Number(totalStake) / SPORES_PER_LICN;
 
         // Bootstrap grant info
         const BOOTSTRAP_GRANT = 100000; // 100K LICN
-        const bootstrapDebt = myValidator.bootstrap_debt || 0;
+        const bootstrapDebt = Number(myValidator.bootstrap_debt ?? 0);
+        const earnedSpores = Number(myValidator.earned_amount ?? 0);
+        const vestingStatus = String(myValidator.vesting_status || '');
+        const hasBootstrapGrant = bootstrapDebt > 0
+            || earnedSpores > 0
+            || /bootstrap|vesting|graduated/i.test(vestingStatus);
         const debtLICN = bootstrapDebt / SPORES_PER_LICN;
+        const earnedFromRpcLICN = earnedSpores / SPORES_PER_LICN;
 
         // Calculate earned/vested amount
-        const earnedAmount = BOOTSTRAP_GRANT - debtLICN;
-        const vestingPercent = (earnedAmount / BOOTSTRAP_GRANT * 100).toFixed(2);
+        const earnedAmount = hasBootstrapGrant
+            ? (earnedFromRpcLICN > 0 ? earnedFromRpcLICN : Math.max(0, BOOTSTRAP_GRANT - debtLICN))
+            : 0;
+        const grantAmount = hasBootstrapGrant
+            ? Math.max(BOOTSTRAP_GRANT, earnedAmount + debtLICN)
+            : 0;
+        const vestingPercent = grantAmount > 0 ? Math.min(100, earnedAmount / grantAmount * 100).toFixed(2) : '0.00';
 
         // Check if graduated
-        const isGraduated = myValidator.status === 'Active' && bootstrapDebt === 0;
+        const isGraduated = hasBootstrapGrant && myValidator.status === 'Active' && bootstrapDebt === 0;
         const graduationSlot = myValidator.graduation_slot;
 
         // Update UI
         document.getElementById('totalStake').textContent = `${fmtToken(totalStakeLICN)} LICN`;
+        document.getElementById('bootstrapGrantAmount').textContent = `${fmtToken(grantAmount)} LICN`;
         document.getElementById('debtRemaining').textContent = `${fmtToken(debtLICN)} LICN`;
         document.getElementById('earnedAmount').textContent = `${fmtToken(earnedAmount)} LICN`;
         document.getElementById('vestingPercent').textContent = `${vestingPercent}%`;
         document.getElementById('vestingProgressBar').style.width = `${vestingPercent}%`;
+        ['bootstrapGrantCard', 'debtRemainingCard', 'earnedAmountCard', 'vestingProgressCard'].forEach((id) => {
+            const el = document.getElementById(id);
+            if (el) el.style.display = hasBootstrapGrant ? '' : 'none';
+        });
 
         // Status message
         let statusHTML = '';
         if (isGraduated) {
             statusHTML = '<span style="color: #10b981;">✓ Active & Graduated</span>';
-        } else if (myValidator.status === 'Active') {
+        } else if (myValidator.status === 'Active' && hasBootstrapGrant) {
             statusHTML = `<span style="color: #f59e0b;">⚡ Active (Bootstrap phase - ${fmtToken(debtLICN)} LICN remaining)</span>`;
+        } else if (myValidator.status === 'Active') {
+            statusHTML = '<span style="color: #10b981;">Active</span>';
         } else if (myValidator.status === 'Jailed') {
             statusHTML = '<span style="color: #ef4444;">⚠️ Jailed (Offline or misbehaving)</span>';
         } else {
@@ -3608,7 +3639,9 @@ async function loadStaking(options = {}) {
 
         // Vesting info
         let vestingInfoHTML = '';
-        if (isGraduated) {
+        if (!hasBootstrapGrant) {
+            vestingInfoHTML = '';
+        } else if (isGraduated) {
             vestingInfoHTML = '<span style="color: #10b981;">✓ Fully vested - you own 100% of your stake!</span>';
         } else {
             const blocksUntilVested = Math.ceil(bootstrapDebt / 1000); // Rough estimate (depends on rewards)
@@ -3661,9 +3694,7 @@ async function loadMossStakePosition(address, options = {}) {
         if (!isCurrentWalletView(expectedWalletId, generation)) return;
         const hasCurrentSlot = currentSlot > 0;
         const baseFeeSpores = getNetworkBaseFeeSpores();
-        const spendableSpores = balance
-            ? u64ValueToBigInt(balance?.spendable ?? balance?.available ?? balance?.balance ?? 0)
-            : null;
+        const spendableSpores = balance ? balanceSpendableSpores(balance) : null;
         const canPayClaimFee = spendableSpores === null || spendableSpores >= baseFeeSpores;
         const claimFeeTitle = canPayClaimFee
             ? `Network fee: ${baseUnitsToDecimalString(baseFeeSpores, 9)} LICN`
@@ -3677,7 +3708,7 @@ async function loadMossStakePosition(address, options = {}) {
         // Rewards
         const rewardsEl = document.getElementById('userRewardsEarned');
         if (rewardsEl) {
-            const accruedRewards = Math.max(0, Number(position.current_value_licn || 0) - Number(position.licn_deposited || 0));
+            const accruedRewards = Math.max(0, Number(position.current_value_licn ?? 0) - Number(position.licn_deposited ?? 0));
             rewardsEl.textContent = `${fmtToken(accruedRewards / SPORES_PER_LICN)} LICN`;
             rewardsEl.title = 'Tier-weighted accrued rewards. This is already included in Redeemable Value.';
         }
@@ -3686,7 +3717,7 @@ async function loadMossStakePosition(address, options = {}) {
         const tierEl = document.getElementById('userLockTier');
         if (tierEl) tierEl.textContent = position.lock_tier_name || 'Flexible';
         const multEl = document.getElementById('userMultiplier');
-        if (multEl) multEl.textContent = `${position.reward_multiplier || 1.0}x`;
+        if (multEl) multEl.textContent = `${position.reward_multiplier ?? 1.0}x`;
 
         // Lock status
         const lockStatus = document.getElementById('lockStatus');
@@ -3789,14 +3820,14 @@ async function fillMossStakeMaxAmount(modal, mode) {
     try {
         if (mode === 'unstake') {
             const position = await rpc.call('getStakingPosition', [wallet.address]);
-            const stLicn = u64ValueToBigInt(position?.st_licn_amount || 0);
+            const stLicn = u64ValueToBigInt(position?.st_licn_amount ?? 0);
             input.value = stLicn > 0n ? baseUnitsToDecimalString(stLicn, 9) : '';
             if (stLicn <= 0n) showToast('No stLICN balance to unstake');
             return;
         }
 
         const balResult = await rpc.call('getBalance', [wallet.address]);
-        const spendable = u64ValueToBigInt(balResult?.spendable || balResult?.balance || 0);
+        const spendable = balanceSpendableSpores(balResult);
         const baseFeeSpores = getNetworkBaseFeeSpores();
         const maxStakable = spendable > baseFeeSpores ? spendable - baseFeeSpores : 0n;
         input.value = maxStakable > 0n ? baseUnitsToDecimalString(maxStakable, 9) : '';
@@ -3860,7 +3891,7 @@ async function showMossStakeModal() {
     // Balance guard: check spendable LICN and auto-correct
     try {
         const balResult = await rpc.call('getBalance', [wallet.address]);
-        const spendable = u64ValueToBigInt(balResult?.spendable || balResult?.balance || 0);
+        const spendable = balanceSpendableSpores(balResult);
         const baseFeeSpores = getNetworkBaseFeeSpores();
         const maxStakable = spendable > baseFeeSpores ? spendable - baseFeeSpores : 0n;
         if (maxStakable <= 0n) {
@@ -3953,7 +3984,7 @@ async function showMossUnstakeModal() {
     // Balance guard: check stLICN position and auto-correct
     try {
         const position = await rpc.call('getStakingPosition', [wallet.address]);
-        const stLicn = u64ValueToBigInt(position?.st_licn_amount || 0);
+        const stLicn = u64ValueToBigInt(position?.st_licn_amount ?? 0);
         if (stLicn <= 0n) {
             showToast('No stLICN balance to unstake');
             return;
@@ -3967,7 +3998,7 @@ async function showMossUnstakeModal() {
     // Fee guard: need LICN for tx fee
     try {
         const balResult = await rpc.call('getBalance', [wallet.address]);
-        const spendable = u64ValueToBigInt(balResult?.spendable || balResult?.balance || 0);
+        const spendable = balanceSpendableSpores(balResult);
         const baseFeeSpores = getNetworkBaseFeeSpores();
         if (spendable < baseFeeSpores) {
             showToast(`Insufficient LICN for fee: need ${baseUnitsToDecimalString(baseFeeSpores, 9)} LICN`);
@@ -4129,7 +4160,7 @@ async function showSend() {
                 const seen = new Set();
                 for (const acct of tokenAccounts) {
                     const sym = acct.symbol || acct.token_symbol || '';
-                    const bal = Number(acct.balance || acct.amount || 0);
+                    const bal = Number(acct.balance ?? acct.amount ?? 0);
                     if (sym && bal > 0 && !seen.has(sym)) {
                         seen.add(sym);
                         select.appendChild(new Option(sym, sym));
@@ -4141,7 +4172,7 @@ async function showSend() {
             try {
                 const tokenBalances = await getAllTokenBalances(wallet.address);
                 for (const [symbol, token] of Object.entries(TOKEN_REGISTRY)) {
-                    const bal = tokenBalances[symbol] || 0;
+                    const bal = tokenBalances[symbol] ?? 0;
                     if (bal > 0) {
                         const tokenSymbol = token.symbol || symbol;
                         select.appendChild(new Option(tokenSymbol, symbol));
@@ -4180,14 +4211,15 @@ async function showSend() {
             let maxSendBaseUnits = 0n;
             try {
                 if (sel === 'LICN') {
-                    const balanceBaseUnits = parseDecimalBaseUnits(String(window.walletBalance || 0), 9, 'Wallet balance');
+                    const balance = await rpc.call('getBalance', [getActiveWallet()?.address]);
+                    const balanceBaseUnits = balanceSpendableSpores(balance);
                     const baseFeeSpores = getNetworkBaseFeeSpores();
                     maxSendBaseUnits = balanceBaseUnits > baseFeeSpores ? balanceBaseUnits - baseFeeSpores : 0n;
                 } else if (sel === 'stLICN') {
                     const pos = await rpc.call('getStakingPosition', [getActiveWallet()?.address]);
-                    maxSendBaseUnits = u64ValueToBigInt(pos?.st_licn_amount || 0);
+                    maxSendBaseUnits = u64ValueToBigInt(pos?.st_licn_amount ?? 0);
                 } else {
-                    const formattedBalance = await getTokenBalanceFormatted(sel, getActiveWallet()?.address) || '0';
+                    const formattedBalance = await getTokenBalanceFormatted(sel, getActiveWallet()?.address) ?? '0';
                     maxSendBaseUnits = parseDecimalBaseUnits(String(formattedBalance), tokenDecimalsForBaseUnits(sel), `${sel} balance`);
                 }
             } catch (_) { /* keep 0 */ }
@@ -4203,7 +4235,7 @@ async function showSend() {
     const sendConfirmBtn = document.querySelector('#sendModal .modal-footer .btn-primary');
     if (sendConfirmBtn) {
         const baseFee = getNetworkBaseFeeLicn();
-        const bal = window.walletBalance || 0;
+        const bal = window.walletBalance ?? 0;
         if (bal <= baseFee) {
             sendConfirmBtn.disabled = true;
             sendConfirmBtn.style.opacity = '0.5';
@@ -5072,14 +5104,14 @@ async function setMaxAmount() {
     try {
         if (selectedToken === 'LICN') {
             const balance = await rpc.getBalance(wallet.address);
-            const licn = parseFloat(balance.licn) || 0;
-            // Reserve base fee for gas
-            const maxAmount = Math.max(0, licn - getNetworkBaseFeeLicn());
-            document.getElementById('sendAmount').value = maxAmount.toFixed(6);
+            const spendableSpores = balanceSpendableSpores(balance);
+            const baseFeeSpores = getNetworkBaseFeeSpores();
+            const maxSendable = spendableSpores > baseFeeSpores ? spendableSpores - baseFeeSpores : 0n;
+            document.getElementById('sendAmount').value = baseUnitsToDecimalString(maxSendable, 9);
         } else if (selectedToken === 'stLICN') {
             // AUDIT-FIX W-3: Fetch stLICN balance from staking position
             const position = await rpc.call('getStakingPosition', [wallet.address]);
-            const stLicn = (position?.st_licn_amount || 0) / SPORES_PER_LICN;
+            const stLicn = (position?.st_licn_amount ?? 0) / SPORES_PER_LICN;
             document.getElementById('sendAmount').value = stLicn.toFixed(6);
         } else {
             const bal = await getTokenBalanceFormatted(selectedToken, wallet.address);
@@ -5105,11 +5137,13 @@ async function updateSendTokenUI() {
         if (selectedToken === 'LICN') {
             const balance = await rpc.getBalance(wallet.address);
             const parsedSpendable = parseFloat(balance.spendable_licn);
-            const spendableLicn = Number.isFinite(parsedSpendable) ? parsedSpendable : (parseFloat(balance.licn) || 0);
+            const spendableLicn = Number.isFinite(parsedSpendable)
+                ? parsedSpendable
+                : Number(balanceSpendableSpores(balance)) / SPORES_PER_LICN;
             balanceHint.textContent = `Available: ${fmtToken(spendableLicn)} LICN`;
         } else if (selectedToken === 'stLICN') {
             const position = await rpc.call('getStakingPosition', [wallet.address]);
-            const stLicn = (position?.st_licn_amount || 0) / SPORES_PER_LICN;
+            const stLicn = (position?.st_licn_amount ?? 0) / SPORES_PER_LICN;
             balanceHint.textContent = `Available: ${fmtToken(stLicn)} stLICN`;
         } else {
             const bal = await getTokenBalanceFormatted(selectedToken, wallet.address);
@@ -5157,7 +5191,7 @@ async function confirmSend() {
     try {
         await refreshDynamicFeeConfig();
         const balResult = await rpc.call('getBalance', [wallet.address]);
-        const spendableSpores = u64ValueToBigInt(balResult?.spendable || balResult?.balance || 0);
+        const spendableSpores = balanceSpendableSpores(balResult);
         const baseFeeSpores = getNetworkBaseFeeSpores();
 
         if (selectedToken === 'LICN') {
@@ -5185,11 +5219,11 @@ async function confirmSend() {
             let tokenBalBaseUnits = 0n;
             if (selectedToken === 'stLICN') {
                 const position = await rpc.call('getStakingPosition', [wallet.address]);
-                tokenBalBaseUnits = u64ValueToBigInt(position?.st_licn_amount || 0);
+                tokenBalBaseUnits = u64ValueToBigInt(position?.st_licn_amount ?? 0);
             } else {
                 const token = TOKEN_REGISTRY[selectedToken];
                 const tokenResult = token?.address ? await rpc.getTokenBalance(token.address, wallet.address) : null;
-                tokenBalBaseUnits = u64ValueToBigInt(tokenResult?.balance || 0);
+                tokenBalBaseUnits = u64ValueToBigInt(tokenResult?.balance ?? 0);
             }
             if (tokenBalBaseUnits <= 0n) {
                 showToast(`No ${selectedToken} balance available`);
@@ -5546,7 +5580,7 @@ function showPasswordModal(options) {
         // Balance guard: disable confirm when wallet balance is too low
         if (options.requiredLicn != null && options.requiredLicn > 0) {
             const confirmBtn = modal.querySelector('#passwordModalConfirm');
-            const spendable = window.walletBalance || 0;
+            const spendable = window.walletBalance ?? 0;
             if (spendable < options.requiredLicn) {
                 confirmBtn.disabled = true;
                 confirmBtn.title = `Insufficient balance (need ${options.requiredLicn} LICN, have ${spendable.toFixed(4)})`;
@@ -6481,7 +6515,7 @@ function loadSettingsValues() {
     }
 
     if (document.getElementById('decimalPlaces')) {
-        document.getElementById('decimalPlaces').value = settings.decimals || 6;
+        document.getElementById('decimalPlaces').value = settings.decimals ?? 6;
     }
 
     updateUnsafeRpcControls();

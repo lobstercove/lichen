@@ -435,7 +435,7 @@ async function displayTransaction(tx) {
     const fee = tx.fee_spores !== undefined ? tx.fee_spores : (tx.fee ?? BASE_FEE_SPORES);
     const amountSpores = tx.amount_spores !== undefined
         ? tx.amount_spores
-        : Math.round((tx.amount || 0) * SPORES_PER_LICN);
+        : Math.round((tx.amount ?? 0) * SPORES_PER_LICN);
     const amountDisplay = typeRaw === 'ShieldedTransfer'
         ? 'Hidden'
         : tx.token_symbol
@@ -517,10 +517,10 @@ async function displayTransaction(tx) {
     }
 
     // Fee details
-    const baseFeeSpores = tx.base_fee_spores || fee;
-    const priorityFeeSpores = tx.priority_fee_spores || 0;
-    const computeBudget = tx.compute_budget || 200000;
-    const computeUnitPrice = tx.compute_unit_price || 0;
+    const baseFeeSpores = tx.base_fee_spores ?? fee;
+    const priorityFeeSpores = tx.priority_fee_spores ?? 0;
+    const computeBudget = tx.compute_budget ?? 200000;
+    const computeUnitPrice = tx.compute_unit_price ?? 0;
 
     document.getElementById('txFee').textContent = formatLicn(fee);
     document.getElementById('totalFee').textContent = formatLicn(fee) + ' (' + formatSpores(fee) + ')';

@@ -313,8 +313,8 @@ function renderNeoGasRewardsAsset(snapshot) {
   const position = snapshot?.position;
   if (!stats || !position) return '';
 
-  const principal = Number(position.principal || 0);
-  const claimable = Number(position.claimable || 0);
+  const principal = Number(position.principal ?? 0);
+  const claimable = Number(position.claimable ?? 0);
   const configured = stats.configured === true;
   if (!configured && principal <= 0 && claimable <= 0) return '';
 
@@ -337,9 +337,10 @@ function renderNeoGasRewardsAsset(snapshot) {
 }
 
 function getFullBalanceSnapshot(result) {
+  const spendable = spendableBaseUnitsExt(result);
   return {
     totalLicn: sporesToLicn(result?.spores ?? result?.balance ?? result?.total ?? result?.spendable ?? 0),
-    spendableLicn: sporesToLicn(result?.spendable ?? result?.available ?? result?.spores ?? result?.balance ?? 0),
+    spendableLicn: sporesToLicn(spendable),
     stakedLicn: sporesToLicn(result?.staked ?? result?.staked_spores ?? 0),
     pendingRewardsLicn: sporesToLicn(result?.pending_rewards ?? result?.pendingRewards ?? 0),
     lockedLicn: sporesToLicn(result?.locked ?? result?.locked_spores ?? 0),
@@ -392,6 +393,17 @@ function baseUnitBigIntExt(value) {
   const text = String(value ?? '0').trim();
   if (!/^\d+$/.test(text)) return 0n;
   return BigInt(text);
+}
+
+function spendableBaseUnitsExt(result) {
+  if (!result || typeof result !== 'object') return 0n;
+  if (Object.prototype.hasOwnProperty.call(result, 'spendable')) {
+    return baseUnitBigIntExt(result.spendable);
+  }
+  if (Object.prototype.hasOwnProperty.call(result, 'available')) {
+    return baseUnitBigIntExt(result.available);
+  }
+  return 0n;
 }
 
 function parseLicnAmountSporesExt(value, label = 'Amount') {
@@ -1327,7 +1339,7 @@ async function loadNftsTab() {
       const safeMint = escapeHtmlExt(item.mint || 'unknown');
       const safeStandard = escapeHtmlExt(item.standard || 'Unknown');
       const safeImage = safeImageUrlExt(item.image || '');
-      const safeAmount = escapeHtmlExt(String(item.amount || 1));
+      const safeAmount = escapeHtmlExt(String(item.amount ?? 1));
 
       return `
         <article class="nft-card" data-mint="${safeMint}">
@@ -1364,7 +1376,7 @@ async function refreshBalance() {
     if (breakdownEl) {
       const shieldedSpores = extensionShieldedBalanceSpores();
       const stakingPosition = await rpc().call('getStakingPosition', [wallet.address]).catch(() => null);
-      const stLicnBalance = Number(stakingPosition?.st_licn_amount || 0) / 1_000_000_000;
+      const stLicnBalance = Number(stakingPosition?.st_licn_amount ?? 0) / 1_000_000_000;
       const hasBreakdown = balanceSnapshot.stakedLicn > 0 || balanceSnapshot.lockedLicn > 0 || stLicnBalance > 0 || balanceSnapshot.pendingRewardsLicn > 0 || shieldedSpores > 0n;
       if (hasBreakdown) {
         const parts = [`<i class="fas fa-wallet" style="opacity:0.5;"></i> Spendable: <strong>${balanceSnapshot.spendableLicn.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`];
@@ -1569,21 +1581,19 @@ async function loadStakingTab() {
     const currentSlot = getQueueCurrentSlotExt(queue) || await getCurrentChainSlotExt(rpcClient);
     const hasCurrentSlot = currentSlot > 0;
     const feeSpores = 1_000_000n;
-    const spendableSpores = balance
-      ? baseUnitBigIntExt(balance?.spendable ?? balance?.available ?? balance?.spores ?? balance?.balance ?? 0)
-      : null;
+    const spendableSpores = balance ? spendableBaseUnitsExt(balance) : null;
     const canPayClaimFee = spendableSpores === null || spendableSpores >= feeSpores;
     const claimFeeTitle = canPayClaimFee
       ? `Network fee: ${formatLicnBaseUnitsExactExt(feeSpores)} LICN`
       : 'Network fee will be deducted from the claimed LICN';
 
-    const stLicn = Number(position?.st_licn_amount || 0) / 1e9;
-    const value = Number(position?.current_value_licn || 0) / 1e9;
-    const accruedRewards = Math.max(0, Number(position?.current_value_licn || 0) - Number(position?.licn_deposited || 0)) / 1e9;
-    const totalStaked = Number(poolInfo?.total_licn_staked || 0) / 1e9;
+    const stLicn = Number(position?.st_licn_amount ?? 0) / 1e9;
+    const value = Number(position?.current_value_licn ?? 0) / 1e9;
+    const accruedRewards = Math.max(0, Number(position?.current_value_licn ?? 0) - Number(position?.licn_deposited ?? 0)) / 1e9;
+    const totalStaked = Number(poolInfo?.total_licn_staked ?? 0) / 1e9;
     const lockTier = position?.lock_tier_name || 'Flexible';
-    const multiplier = position?.reward_multiplier || 1.0;
-    const lockUntil = Number(position?.lock_until || 0);
+    const multiplier = position?.reward_multiplier ?? 1.0;
+    const lockUntil = Number(position?.lock_until ?? 0);
 
     // Determine if position is locked
     const isLocked = lockUntil > 0 && (!hasCurrentSlot || lockUntil > currentSlot);
@@ -1689,7 +1699,7 @@ async function loadStakingTab() {
     if (pendingReqs.length > 0) {
       $('fullPendingUnstakes').style.display = 'block';
       $('fullUnstakesList').innerHTML = pendingReqs.map(req => {
-        const amt = (Number(req.licn_to_receive || req.amount || 0) / 1e9).toLocaleString(undefined, { maximumFractionDigits: 4 });
+        const amt = (Number(req.licn_to_receive ?? req.amount ?? 0) / 1e9).toLocaleString(undefined, { maximumFractionDigits: 4 });
         const claimable = isQueueRequestClaimableExt(req, currentSlot);
         const remainingSlots = hasCurrentSlot ? getQueueRequestRemainingSlotsExt(req, currentSlot) : 0;
         const remainingDays = hasCurrentSlot ? (remainingSlots / 216000).toFixed(1) : null;
@@ -1738,7 +1748,7 @@ async function fillExtensionStakeMaxAmount(overlay) {
 
   try {
     const balResult = await rpc().getBalance(wallet.address);
-    const spendable = baseUnitBigIntExt(balResult?.spendable || balResult?.spores || 0);
+    const spendable = spendableBaseUnitsExt(balResult);
     const feeSpores = 1_000_000n;
     const maxStakable = spendable > feeSpores ? spendable - feeSpores : 0n;
     input.value = maxStakable > 0n ? formatLicnBaseUnitsExactExt(maxStakable) : '';
@@ -1773,7 +1783,7 @@ async function fillExtensionUnstakeMaxAmount(overlay) {
 
   try {
     const pos = await rpc().call('getStakingPosition', [wallet.address]);
-    const stLicn = baseUnitBigIntExt(pos?.st_licn_amount || 0);
+    const stLicn = baseUnitBigIntExt(pos?.st_licn_amount ?? 0);
     input.value = stLicn > 0n ? formatLicnBaseUnitsExactExt(stLicn) : '';
     if (statusEl) {
       statusEl.textContent = stLicn > 0n
@@ -1844,7 +1854,7 @@ async function showStakeModal() {
     // Balance guard: check spendable LICN
     try {
       const balResult = await rpc().getBalance(wallet.address);
-      const spendable = baseUnitBigIntExt(balResult?.spendable || balResult?.spores || 0);
+      const spendable = spendableBaseUnitsExt(balResult);
       const feeSpores = 1_000_000n;
       const maxStakable = spendable > feeSpores ? spendable - feeSpores : 0n;
       if (maxStakable <= 0n) { statusEl.textContent = 'Insufficient LICN balance'; return; }
@@ -1914,7 +1924,7 @@ async function showUnstakeModal() {
     // Balance guard: check stLICN position
     try {
       const pos = await rpc().call('getStakingPosition', [wallet.address]);
-      const stLicn = baseUnitBigIntExt(pos?.st_licn_amount || 0);
+      const stLicn = baseUnitBigIntExt(pos?.st_licn_amount ?? 0);
       if (stLicn <= 0n) { statusEl.textContent = 'No stLICN balance to unstake'; return; }
       if (amountSpores > stLicn) {
         const adjusted = formatLicnBaseUnitsExactExt(stLicn);
@@ -1971,11 +1981,11 @@ async function handleFullClaim() {
 let _shieldedState = { initialized: false, balance: '0', address: null, viewingKey: null, notes: [], poolStats: null };
 
 function extensionNoteValueSpores(note) {
-  return baseUnitBigIntExt(note?.value || 0);
+  return baseUnitBigIntExt(note?.value ?? 0);
 }
 
 function extensionShieldedBalanceSpores() {
-  return baseUnitBigIntExt(_shieldedState.balance || 0);
+  return baseUnitBigIntExt(_shieldedState.balance ?? 0);
 }
 
 function unspentExtensionShieldedNotes() {
@@ -2324,9 +2334,9 @@ async function assertExtensionPublicFeeBalance(type) {
   const wallet = getActiveWallet();
   if (!wallet) return;
   const zkFees = { shield: 100_000, unshield: 150_000, transfer: 200_000 };
-  const required = 1_000_000 + (zkFees[type] || 0);
+  const required = 1_000_000 + (zkFees[type] ?? 0);
   const balResult = await rpc().call('getBalance', [wallet.address]);
-  const spendableSpores = baseUnitBigIntExt(balResult?.spendable ?? balResult?.spores ?? balResult?.balance ?? 0);
+  const spendableSpores = spendableBaseUnitsExt(balResult);
   const requiredSpores = BigInt(required);
   if (spendableSpores < requiredSpores) {
     throw new Error(`Insufficient public LICN for fee: need ${formatLicnBaseUnitsFixedExt(requiredSpores)} LICN`);
@@ -2781,8 +2791,8 @@ async function loadShieldTab() {
   void refreshBalance();
 
   const balLicn = formatLicnBaseUnitsFixedExt(shieldedBalance);
-  const poolLicn = poolStats ? formatLicnBaseUnitsFixedExt(poolStats.pool_balance || 0, 2) : '—';
-  const commitCount = poolStats ? (poolStats.commitment_count || poolStats.commitmentCount || 0).toLocaleString() : '—';
+  const poolLicn = poolStats ? formatLicnBaseUnitsFixedExt(poolStats.pool_balance ?? 0, 2) : '—';
+  const commitCount = poolStats ? (poolStats.commitment_count ?? poolStats.commitmentCount ?? 0).toLocaleString() : '—';
   const unspent = ownedNotes.filter(n => !n.spent);
   const transferPrereq = extensionPrivateTransferPrereqMessage();
 
@@ -2998,7 +3008,7 @@ function showShieldModal(type) {
         const wallet = getActiveWallet();
         if (!wallet) throw new Error('No active wallet');
         const balResult = await rpc().call('getBalance', [wallet.address]);
-        const spendable = baseUnitBigIntExt(balResult?.spendable || balResult?.balance || 0);
+        const spendable = spendableBaseUnitsExt(balResult);
         const shieldFeeSpores = 1_100_000n;
         const maxShieldable = spendable > shieldFeeSpores ? spendable - shieldFeeSpores : 0n;
         amountInput.value = maxShieldable > 0n ? formatLicnBaseUnitsExactExt(maxShieldable) : '';
@@ -3045,7 +3055,7 @@ function showShieldModal(type) {
     try {
       if (type === 'shield') {
         const balResult = await rpc().call('getBalance', [wallet.address]);
-        const spendable = baseUnitBigIntExt(balResult?.spendable || balResult?.balance || 0);
+        const spendable = spendableBaseUnitsExt(balResult);
         const feeSpores = 1_100_000n;
         const maxShieldable = spendable > feeSpores ? spendable - feeSpores : 0n;
         if (maxShieldable <= 0n) { statusEl.textContent = 'Insufficient LICN balance to shield'; return; }
@@ -3160,7 +3170,7 @@ async function loadIdentityTab() {
     const skillsHtml = skills.length > 0
       ? skills.slice(0, 8).map(s => {
         const name = escapeHtmlExt(String(s.name || s.skill || 'Unnamed'));
-        const prof = Number(s.proficiency || s.level || 0);
+        const prof = Number(s.proficiency ?? s.level ?? 0);
         const level = Math.max(0, Math.min(5, Math.round(prof / 20) || prof));
         const pct = (level / 5) * 100;
         return `<div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.35rem;font-size:0.85rem;">
@@ -3596,7 +3606,7 @@ async function loadAssets() {
       rpc().getBalance(wallet.address),
       loadNeoGasRewardsSnapshot(wallet.address)
     ]);
-    const raw = Number(result?.spores || result?.spendable || 0);
+    const raw = Number(result?.spores ?? result?.spendable ?? 0);
     const licn = raw / 1_000_000_000;
     const d = decimals();
 
@@ -3631,7 +3641,7 @@ function getActivityCursor(result, txs, previousCursor) {
   const rpcNextBeforeSlot = Number(result?.next_before_slot);
   if (Number.isFinite(rpcNextBeforeSlot) && rpcNextBeforeSlot > 0) return rpcNextBeforeSlot;
   const last = txs[txs.length - 1] || {};
-  const lastSlot = Number(last.slot || last.block_height || last.block);
+  const lastSlot = Number(last.slot ?? last.block_height ?? last.block ?? 0);
   if (Number.isFinite(lastSlot) && lastSlot > 0 && lastSlot !== previousCursor) return lastSlot;
   return null;
 }
@@ -3749,7 +3759,7 @@ async function loadActivity(reset = true) {
           ? 'MossStake Pool'
         : (isSend ? (tx.to || '') : (tx.from || ''));
       const displayAddr = address && address.length > 20 ? address.slice(0, 8) + '…' + address.slice(-4) : (address || '');
-      const amountVal = tx.amount_spores ? tx.amount_spores : (tx.amount || 0);
+      const amountVal = tx.amount_spores ?? tx.amount ?? 0;
       const amt = (Number(amountVal) / 1_000_000_000).toLocaleString(undefined, { maximumFractionDigits: 4 });
       const ts = tx.timestamp ? new Date(tx.timestamp * 1000).toLocaleString() : '';
       const explorerLink = sig !== 'unknown' ? `${explorerBase}${sig}` : '#';
@@ -3757,8 +3767,12 @@ async function loadActivity(reset = true) {
       // Fee display: show actual fee amount for 0-amount contract calls / EVM registration
       const isZeroAmount = Number(amountVal) === 0;
       const isFeeOnly = tx.type === 'RegisterEvmAddress'
+        || tx.type === 'CreateAccount'
+        || tx.type === 'DeployContract'
+        || tx.type === 'SetContractABI'
+        || tx.type === 'RegisterSymbol'
         || ((tx.type === 'Contract' || tx.type === 'ContractCall') && isZeroAmount);
-      const feeSpores = tx.fee_spores || tx.fee || 0;
+      const feeSpores = tx.fee_spores ?? tx.fee ?? 0;
       const feeAmt = (Number(feeSpores) / 1_000_000_000).toLocaleString(undefined, { maximumFractionDigits: 4 });
       const amountUnit = tx.type === 'MossStakeUnstake' || tx.type === 'MossStakeTransfer'
         ? 'stLICN'
@@ -3842,7 +3856,7 @@ async function handleSend() {
 
   try {
     const balResult = await rpc().getBalance(wallet.address);
-    const spendable = baseUnitBigIntExt(balResult?.spendable || balResult?.spores || 0);
+    const spendable = spendableBaseUnitsExt(balResult);
     const feeSpores = 1_000_000n;
     const maxSendable = spendable > feeSpores ? spendable - feeSpores : 0n;
     if (maxSendable <= 0n) {
@@ -4282,7 +4296,7 @@ async function populateSendTokenDropdown() {
     if (Array.isArray(accounts)) {
       for (const acct of accounts) {
         const sym = String(acct.symbol || acct.token_symbol || '').trim();
-        const bal = Number(acct.balance || acct.amount || 0);
+        const bal = Number(acct.balance ?? acct.amount ?? 0);
         if (/^[A-Za-z0-9._-]{1,24}$/.test(sym) && bal > 0 && !seen.has(sym)) {
           seen.add(sym);
           select.appendChild(createOption(sym));
@@ -4307,7 +4321,7 @@ async function updateSendAvailableBalance() {
   if (!wallet) { el.textContent = ''; return; }
   try {
     const result = await rpc().getBalance(wallet.address);
-    const raw = Number(result?.spendable || result?.spores || 0) / 1_000_000_000;
+    const raw = Number(spendableBaseUnitsExt(result)) / 1_000_000_000;
     el.textContent = `Available: ${raw.toLocaleString(undefined, { maximumFractionDigits: decimals() })} LICN`;
   } catch { el.textContent = ''; }
 }
@@ -4487,7 +4501,7 @@ function wireEvents() {
     if (!wallet) return;
     try {
       const result = await rpc().getBalance(wallet.address);
-      const spendable = baseUnitBigIntExt(result?.spendable || result?.spores || 0);
+      const spendable = spendableBaseUnitsExt(result);
       const feeSpores = 1_000_000n;
       const maxSend = spendable > feeSpores ? spendable - feeSpores : 0n;
       $('sendAmount').value = maxSend > 0n ? formatLicnBaseUnitsExactExt(maxSend) : '';
@@ -4563,7 +4577,7 @@ function loadSettingsValues() {
   const cd = $('currencyDisplay');
   if (cd) cd.value = state?.settings?.currency || 'USD';
   const dp = $('decimalPlaces');
-  if (dp) dp.value = String(state?.settings?.decimals || 6);
+  if (dp) dp.value = String(state?.settings?.decimals ?? 6);
   const mainnetRPC = $('mainnetRPC');
   if (mainnetRPC) mainnetRPC.value = state?.settings?.mainnetRPC || '';
   const testnetRPC = $('testnetRPC');

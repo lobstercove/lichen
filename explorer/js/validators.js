@@ -16,6 +16,11 @@ let currentPage = 1;
 let lastValidatorsRefreshAt = 0;
 let validatorsRefreshTimer = null;
 
+function validatorNumber(value, fallback = 0) {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : fallback;
+}
+
 function trustTierFromReputation(score) {
     return getTrustTier(score).label;
 }
@@ -65,7 +70,7 @@ async function loadValidators() {
         // Update stats
         document.getElementById('totalValidators').textContent = validatorCount;
 
-        validatorTotalStake = validators.reduce((sum, v) => sum + (v.stake || 0), 0);
+        validatorTotalStake = validators.reduce((sum, v) => sum + validatorNumber(v.stake), 0);
         document.getElementById('totalStake').textContent = formatLicn(validatorTotalStake);
 
         validatorNameMap = typeof batchResolveLichenNames === 'function'
@@ -100,12 +105,14 @@ function renderValidators() {
 
     table.innerHTML = pageValidators.map((validator, index) => {
         const validatorPubkey = validator.pubkey || validator.validator || validator.address || '';
-        const stake = validator.stake || 0;
-        const reputation = validator.reputation || 0;
-        const blocksProduced = validator.blocks_proposed || validator.blocks_produced || 0;
-        const txsProcessed = validator.transactions_processed || 0;
+        const stake = validatorNumber(validator.stake);
+        const reputation = validatorNumber(validator.reputation);
+        const blocksProduced = validatorNumber(
+            validator.blocks_proposed ?? validator.blocks_produced
+        );
+        const txsProcessed = validatorNumber(validator.transactions_processed);
         const votingPower = validatorTotalStake > 0 ? ((stake / validatorTotalStake) * 100).toFixed(2) : '0.00';
-        const lastActiveSlot = validator.last_active_slot || validator.lastActiveSlot || 0;
+        const lastActiveSlot = validatorNumber(validator.last_active_slot ?? validator.lastActiveSlot);
         const isOnline = validatorCurrentSlot - lastActiveSlot <= 100;
         const reputationScale = (reputation / VALIDATOR_MAX_REPUTATION) * 100;
         const lichenName = validatorNameMap[validatorPubkey] || null;

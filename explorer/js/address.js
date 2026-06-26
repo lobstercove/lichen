@@ -81,12 +81,12 @@ function explorerJsonSafeNumber(units, label = 'Amount') {
 }
 
 function numericRewardValue(value) {
-    const numeric = Number(value || 0);
+    const numeric = Number(value ?? 0);
     return Number.isFinite(numeric) ? numeric : 0;
 }
 
 function sporesToLicnNumber(value) {
-    const numeric = Number(value || 0);
+    const numeric = Number(value ?? 0);
     return Number.isFinite(numeric) ? numeric / 1_000_000_000 : 0;
 }
 
@@ -528,7 +528,7 @@ function renderSummaryIdentity(profile) {
     if (!displayNameEl || !tierBadgeEl) return;
 
     const hasIdentity = !!profile?.identity;
-    const reputationScore = Number(profile?.reputation?.score || profile?.reputation?.reputation || profile?.identity?.reputation || 0);
+    const reputationScore = Number(profile?.reputation?.score ?? profile?.reputation?.reputation ?? profile?.identity?.reputation ?? 0);
     const identityName = profile?.identity?.display_name || profile?.identity?.name || null;
 
     displayNameEl.textContent = hasIdentity
@@ -571,7 +571,7 @@ function renderIdentityPane(profile) {
         return;
     }
 
-    const reputationScore = Number(profile?.reputation?.score || profile?.reputation?.reputation || identity?.reputation || 0);
+    const reputationScore = Number(profile?.reputation?.score ?? profile?.reputation?.reputation ?? identity?.reputation ?? 0);
     const reputationTierName = profile?.reputation?.tier_name || getTrustTierLabel(reputationScore);
     const reputationTier = Number(profile?.reputation?.tier ?? trustTierNumber(reputationScore));
     const tier = getTrustTierLabel(reputationScore);
@@ -583,8 +583,8 @@ function renderIdentityPane(profile) {
     const repPct = Math.max(0, Math.min(100, (reputationScore / maxRep) * 100));
     const nextTierInfo = getNextTierInfo(reputationScore);
     const ladder = trustTierLadder(reputationTier);
-    const rawCreatedAt = Number(identity.created_at || profile.created_at || 0);
-    const rawUpdatedAt = Number(identity.updated_at || profile.updated_at || 0);
+    const rawCreatedAt = Number(identity.created_at ?? profile.created_at ?? 0);
+    const rawUpdatedAt = Number(identity.updated_at ?? profile.updated_at ?? 0);
     const registeredAtRaw = formatTimestamp(rawCreatedAt);
     const updatedAtRaw = formatTimestamp(rawUpdatedAt);
     const registeredAt = registeredAtRaw === 'Unknown'
@@ -595,7 +595,7 @@ function renderIdentityPane(profile) {
         : updatedAtRaw;
     const rawName = identity?.display_name || identity?.name || 'Unnamed';
     const displayName = escapeHtml(rawName);
-    const agentType = escapeHtml(String(identity.agent_type_name || identity.agent_type || 'Unknown'));
+    const agentType = escapeHtml(String(identity.agent_type_name ?? identity.agent_type ?? 'Unknown'));
     const availability = escapeHtml(String(profile?.agent?.availability_name || 'offline'));
     const rateLicn = formatLicnExact(Number(profile?.agent?.rate || 0) / SPORES_PER_LICN);
     const metadataText = escapeHtml(JSON.stringify(profile?.agent?.metadata || {}, null, 2));
@@ -614,9 +614,9 @@ function renderIdentityPane(profile) {
     const skillsHtml = skills.length
         ? skills.slice(0, 12).map(skill => {
             const skillName = escapeHtml(String(skill.name || skill.skill || 'Unnamed'));
-            const proficiency = Number(skill.proficiency || skill.level || 0);
+            const proficiency = Number(skill.proficiency ?? skill.level ?? 0);
             const level = Math.max(0, Math.min(5, Math.round(proficiency / 20) || proficiency));
-            const attCount = Number(skill.attestation_count || skill.attestations || 0);
+            const attCount = Number(skill.attestation_count ?? skill.attestations ?? 0);
             const pct = Math.max(0, Math.min(100, (level / 5) * 100));
             return `
                 <div class="skill-card">
@@ -1882,12 +1882,12 @@ async function loadValidatorRewards(address) {
         const card = document.getElementById('validatorRewardsCard');
         if (card) card.style.display = 'block';
 
-        const totalEarned = rewards.total_rewards || 0;
-        const pending = rewards.pending_rewards || 0;
-        const projectedPending = rewards.projected_pending || 0;
-        const projectedEpoch = rewards.projected_epoch_reward || 0;
-        const claimed = rewards.claimed_rewards || 0;
-        const rate = rewards.reward_rate || '0';
+        const totalEarned = rewards.total_rewards ?? 0;
+        const pending = rewards.pending_rewards ?? 0;
+        const projectedPending = rewards.projected_pending ?? 0;
+        const projectedEpoch = rewards.projected_epoch_reward ?? 0;
+        const claimed = rewards.claimed_rewards ?? 0;
+        const rate = rewards.reward_rate ?? '0';
         const recovery = buildBootstrapRecoveryDisplay(rewards, stakingStatus);
         const debt = recovery.debt;
         const earned = recovery.earned;
@@ -1895,8 +1895,8 @@ async function loadValidatorRewards(address) {
         if (recoverySection) {
             recoverySection.style.display = recovery.hasRecoverySchedule ? 'block' : 'none';
         }
-        const blocksProduced = rewards.blocks_produced || 0;
-        const rewardRateNumeric = parseFloat(rate) || 0;
+        const blocksProduced = rewards.blocks_proposed ?? rewards.blocks_produced ?? 0;
+        const rewardRateNumeric = numericRewardValue(rate);
 
         const hasMeaningfulData =
             Number(totalEarned) > 0 ||
@@ -1931,7 +1931,7 @@ async function loadValidatorRewards(address) {
 
         // Reward rate is a projected base accrual signal, not a continuously minted payout.
         const rateLabel = Number(debt) > 0 ? ' LICN/slot (base estimate)' : ' LICN/slot base estimate';
-        document.getElementById('rewardsRate').textContent = formatLicnExact(parseFloat(rate) || 0) + rateLabel;
+        document.getElementById('rewardsRate').textContent = formatLicnExact(numericRewardValue(rate)) + rateLabel;
 
         const blocksEl = document.getElementById('rewardsBlocksProduced');
         if (blocksEl) blocksEl.textContent = blocksProduced.toLocaleString();
@@ -1968,12 +1968,12 @@ async function loadTreasuryStats(address) {
         for (const tx of transactions) {
             if (tx.type === 'Airdrop' || tx.type === 'airdrop' || tx.memo === 'faucet_airdrop') {
                 airdropCount++;
-                totalAirdropped += tx.amount || 0;
+                totalAirdropped += tx.amount ?? 0;
                 if (tx.to) uniqueRecipients.add(tx.to);
             }
             // Count incoming fee revenue (treasury is a recipient of fee splits)
             if (tx.to === address && tx.type !== 'Airdrop' && tx.type !== 'airdrop') {
-                feeRevenue += tx.amount || 0;
+                feeRevenue += tx.amount ?? 0;
             }
         }
 
@@ -2023,7 +2023,7 @@ async function fetchAccountFromRPC(address) {
 
     if (!balanceData) return null;
 
-    const txCount = txCountData?.count || 0;
+    const txCount = txCountData?.count ?? 0;
     const tokens = tokenData?.accounts || [];
     const pendingRequests = Array.isArray(unstakingQueue?.pending_requests)
         ? unstakingQueue.pending_requests
@@ -2041,11 +2041,11 @@ async function fetchAccountFromRPC(address) {
         address: accountData?.pubkey || address,
         base58: accountData?.pubkey || address,
         evm: accountData?.evm_address || lichenToEvmAddress(address),
-        spores: balanceData.spores,
-        licn: parseFloat(balanceData.licn),
-        spendable: parseFloat(balanceData.spendable_licn),
-        staked: parseFloat(balanceData.staked_licn),
-        locked: parseFloat(balanceData.locked_licn),
+        spores: balanceData.spores ?? 0,
+        licn: numericRewardValue(balanceData.licn),
+        spendable: numericRewardValue(balanceData.spendable_licn),
+        staked: numericRewardValue(balanceData.staked_licn),
+        locked: numericRewardValue(balanceData.locked_licn),
         mossDeposited: sporesToLicnNumber(stakingPosition?.licn_deposited ?? balanceData.moss_staked),
         mossValue: sporesToLicnNumber(stakingPosition?.current_value_licn ?? balanceData.moss_value),
         mossRewards: sporesToLicnNumber(stakingPosition?.rewards_earned),
@@ -2055,7 +2055,7 @@ async function fetchAccountFromRPC(address) {
         claimableUnstakeLicn: sporesToLicnNumber(unstakingQueue?.total_claimable),
         owner: accountData?.owner || (typeof SYSTEM_PROGRAM_ID !== 'undefined' ? SYSTEM_PROGRAM_ID : '11111111111111111111111111111111'),
         executable: accountData?.executable || false,
-        data_len: accountData?.data_len || 0,
+        data_len: accountData?.data_len ?? 0,
         active: balanceData.spores > 0,
         txCount,
         tokens,
@@ -2106,9 +2106,9 @@ function displayAddressData(data) {
     document.getElementById('balanceSpores').textContent = `${formatNumber(data.spores)} spores`;
     const totalValueEl = document.getElementById('totalAccountValueLicn');
     if (totalValueEl) {
-        const totalValue = Number(data.licn || 0)
-            + Number(data.mossValue || 0)
-            + Number(data.pendingUnstakeLicn || 0);
+        const totalValue = numericRewardValue(data.licn)
+            + numericRewardValue(data.mossValue)
+            + numericRewardValue(data.pendingUnstakeLicn);
         totalValueEl.textContent = `${formatLicnExact(totalValue)} LICN`;
     }
 
@@ -2117,21 +2117,21 @@ function displayAddressData(data) {
     document.getElementById('lockedLicn').textContent = `${formatLicnExact(data.locked)} LICN`;
 
     const mossValueEl = document.getElementById('mossStakeValueLicn');
-    if (mossValueEl) mossValueEl.textContent = `${formatLicnExact(data.mossValue || 0)} LICN`;
+    if (mossValueEl) mossValueEl.textContent = `${formatLicnExact(data.mossValue ?? 0)} LICN`;
     const mossDepositedEl = document.getElementById('mossStakeDepositedLicn');
-    if (mossDepositedEl) mossDepositedEl.textContent = `${formatLicnExact(data.mossDeposited || 0)} LICN`;
+    if (mossDepositedEl) mossDepositedEl.textContent = `${formatLicnExact(data.mossDeposited ?? 0)} LICN`;
     const mossRewardsEl = document.getElementById('mossStakeRewardsLicn');
-    if (mossRewardsEl) mossRewardsEl.textContent = `${formatLicnExact(data.mossRewards || 0)} LICN`;
+    if (mossRewardsEl) mossRewardsEl.textContent = `${formatLicnExact(data.mossRewards ?? 0)} LICN`;
     const stakingStLicnEl = document.getElementById('stakingStLicn');
     if (stakingStLicnEl) {
-        const stLicn = data.stLicn || 0;
+        const stLicn = data.stLicn ?? 0;
         stakingStLicnEl.textContent = stLicn > 0 ? `${formatLicnExact(stLicn)} stLICN` : '0 stLICN';
     }
     const pendingUnstakeEl = document.getElementById('mossStakePendingUnstakeLicn');
     if (pendingUnstakeEl) {
-        const pendingLicn = data.pendingUnstakeLicn || 0;
-        const pendingStLicn = data.pendingUnstakeStLicn || 0;
-        const claimableLicn = data.claimableUnstakeLicn || 0;
+        const pendingLicn = data.pendingUnstakeLicn ?? 0;
+        const pendingStLicn = data.pendingUnstakeStLicn ?? 0;
+        const claimableLicn = data.claimableUnstakeLicn ?? 0;
         if (pendingLicn > 0) {
             const suffix = claimableLicn > 0 ? `, ${formatLicnExact(claimableLicn)} LICN claimable` : ' cooling down';
             pendingUnstakeEl.textContent = `${formatLicnExact(pendingLicn)} LICN (${formatLicnExact(pendingStLicn)} stLICN)${suffix}`;
@@ -2193,8 +2193,8 @@ function displayTokenBalances(tokens, oraclePrices) {
         const mintAddr = token.mint || '';
         const symbol = escapeHtml(token.symbol || 'Unknown');
         const name = escapeHtml(token.name || symbol);
-        const decimals = Number(token.decimals || 9);
-        const rawBalance = Number(token.balance || 0);
+        const decimals = Number(token.decimals ?? 9);
+        const rawBalance = Number(token.balance ?? 0);
         const uiAmount = token.ui_amount !== undefined
             ? Number(token.ui_amount)
             : rawBalance / Math.pow(10, decimals);
@@ -2369,7 +2369,7 @@ function displayTransactions(transactions) {
         };
         const txTypeDisplay = txTypeDisplayMap[txType] || txType;
         const rawAmount = tx.amount ?? tx.value ?? (tx.amount_spores !== undefined ? Number(tx.amount_spores) / 1_000_000_000 : 0);
-        const txAmount = Number(rawAmount || 0);
+        const txAmount = numericRewardValue(rawAmount);
         let effectiveOutgoing = isOutgoing;
         if (txType === 'Unshield') {
             effectiveOutgoing = false;
@@ -2395,7 +2395,7 @@ function displayTransactions(transactions) {
         const amountDisplay = txType === 'ShieldedTransfer'
             ? 'Hidden'
             : tx.token_symbol
-                ? `${signedPrefix}${formatNumber(tx.token_amount || 0)} ${tx.token_symbol}`
+                ? `${signedPrefix}${formatNumber(numericRewardValue(tx.token_amount))} ${tx.token_symbol}`
                 : `${signedPrefix}${formatLicnExact(txAmount)} ${amountUnit}`;
         const success = tx.success !== undefined
             ? !!tx.success

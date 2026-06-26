@@ -5178,7 +5178,18 @@ mod tests {
             slot: 4,
             tx_hash: Some("tx-a".to_string()),
         };
+        let newer_transfer = TokenTransfer {
+            token_program: "token-a".to_string(),
+            from: "carol".to_string(),
+            to: "dave".to_string(),
+            amount: 99,
+            slot: 7,
+            tx_hash: Some("tx-b".to_string()),
+        };
         state.put_token_transfer(&token_program, &transfer).unwrap();
+        state
+            .put_token_transfer(&token_program, &newer_transfer)
+            .unwrap();
 
         let hot_cf = state.db.cf_handle(CF_TOKEN_TRANSFERS).unwrap();
         let hot_before = state
@@ -5186,7 +5197,7 @@ mod tests {
             .iterator_cf(&hot_cf, rocksdb::IteratorMode::Start)
             .flatten()
             .count();
-        assert_eq!(hot_before, 1);
+        assert_eq!(hot_before, 2);
 
         let migrated = state.migrate_indexes_to_cold(5).unwrap();
         assert_eq!(migrated, 1);
@@ -5196,7 +5207,7 @@ mod tests {
             .iterator_cf(&hot_cf, rocksdb::IteratorMode::Start)
             .flatten()
             .count();
-        assert_eq!(hot_after, 0);
+        assert_eq!(hot_after, 1);
 
         let cold = state.cold_db.as_ref().unwrap();
         let cold_cf = cold.cf_handle(COLD_CF_TOKEN_TRANSFERS).unwrap();
@@ -5210,6 +5221,60 @@ mod tests {
         assert_eq!(stored.slot, transfer.slot);
         assert_eq!(stored.amount, transfer.amount);
         assert_eq!(stored.tx_hash.as_deref(), transfer.tx_hash.as_deref());
+
+        let transfers = state.get_token_transfers(&token_program, 10, None).unwrap();
+        assert_eq!(transfers.len(), 2);
+        assert_eq!(transfers[0].slot, newer_transfer.slot);
+        assert_eq!(transfers[1].slot, transfer.slot);
+
+        let paged = state
+            .get_token_transfers(&token_program, 10, Some(newer_transfer.slot))
+            .unwrap();
+        assert_eq!(paged.len(), 1);
+        assert_eq!(paged[0].slot, transfer.slot);
+    }
+
+    #[test]
+    fn test_cold_event_index_is_merged_with_hot_queries() {
+        let hot_dir = tempdir().unwrap();
+        let cold_dir = tempdir().unwrap();
+        let mut state = StateStore::open(hot_dir.path()).unwrap();
+        state.open_cold_store(cold_dir.path()).unwrap();
+
+        let program = Pubkey([0x35; 32]);
+        let old_event = ContractEvent {
+            program,
+            name: "OldEvent".to_string(),
+            data: std::collections::HashMap::from([("amount".to_string(), "10".to_string())]),
+            slot: 4,
+        };
+        let new_event = ContractEvent {
+            program,
+            name: "NewEvent".to_string(),
+            data: std::collections::HashMap::from([("amount".to_string(), "20".to_string())]),
+            slot: 7,
+        };
+
+        state.put_contract_event(&program, &old_event).unwrap();
+        state.put_contract_event(&program, &new_event).unwrap();
+
+        let migrated = state.migrate_indexes_to_cold(5).unwrap();
+        assert_eq!(migrated, 1);
+
+        let by_program = state.get_events_by_program(&program, 10, None).unwrap();
+        assert_eq!(by_program.len(), 2);
+        assert_eq!(by_program[0].name, "NewEvent");
+        assert_eq!(by_program[1].name, "OldEvent");
+
+        let paged = state
+            .get_events_by_program(&program, 10, Some(new_event.slot))
+            .unwrap();
+        assert_eq!(paged.len(), 1);
+        assert_eq!(paged[0].name, "OldEvent");
+
+        let by_old_slot = state.get_events_by_slot(old_event.slot, 10).unwrap();
+        assert_eq!(by_old_slot.len(), 1);
+        assert_eq!(by_old_slot[0].name, "OldEvent");
     }
 
     #[test]
@@ -5295,6 +5360,61 @@ mod tests {
                 .unwrap(),
             vec![(new_hash, 7), (old_hash, 3)]
         );
+    }
+
+    #[test]
+    fn test_cold_program_call_index_is_merged_with_hot_queries() {
+        let hot_dir = tempdir().unwrap();
+        let cold_dir = tempdir().unwrap();
+        let mut state = StateStore::open(hot_dir.path()).unwrap();
+        state.open_cold_store(cold_dir.path()).unwrap();
+
+        let program = Pubkey([0x51; 32]);
+        let caller = Pubkey([0x52; 32]);
+        let old_call = crate::ProgramCallActivity {
+            slot: 4,
+            timestamp: 1_700_000_000_000,
+            program,
+            caller,
+            function: "old".to_string(),
+            value: 1,
+            tx_signature: Hash::hash(b"cold-program-call-old"),
+        };
+        let new_call = crate::ProgramCallActivity {
+            slot: 7,
+            timestamp: 1_700_000_001_000,
+            program,
+            caller,
+            function: "new".to_string(),
+            value: 2,
+            tx_signature: Hash::hash(b"cold-program-call-new"),
+        };
+
+        state.record_program_call(&old_call, 0).unwrap();
+        state.record_program_call(&new_call, 0).unwrap();
+        let migrated = state.migrate_indexes_to_cold(5).unwrap();
+        assert_eq!(migrated, 1);
+
+        let cf_stats = state.db.cf_handle(CF_STATS).unwrap();
+        let mut counter_key = Vec::with_capacity(6 + 32);
+        counter_key.extend_from_slice(b"pcall:");
+        counter_key.extend_from_slice(&program.0);
+        state
+            .db
+            .put_cf(&cf_stats, &counter_key, 99u64.to_le_bytes())
+            .unwrap();
+
+        let calls = state.get_program_calls(&program, 10, None).unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].function, "new");
+        assert_eq!(calls[1].function, "old");
+        assert_eq!(state.count_program_calls(&program).unwrap(), 2);
+
+        let paged = state
+            .get_program_calls(&program, 10, Some(new_call.slot))
+            .unwrap();
+        assert_eq!(paged.len(), 1);
+        assert_eq!(paged[0].function, "old");
     }
 
     #[test]

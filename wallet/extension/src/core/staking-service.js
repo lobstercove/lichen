@@ -19,9 +19,9 @@ export async function loadStakingSnapshot(address, network) {
   const rpc = new LichenRPC(await getConfiguredRpcEndpoint(network));
   const position = await rpc.call('getStakingPosition', [address]).catch(() => null);
 
-  const stLicn = Number(position?.st_licn_amount || 0) / 1_000_000_000;
-  const deposited = Number(position?.licn_deposited || 0) / 1_000_000_000;
-  const redeemableValue = Number(position?.current_value_licn || 0) / 1_000_000_000;
+  const stLicn = Number(position?.st_licn_amount ?? 0) / 1_000_000_000;
+  const deposited = Number(position?.licn_deposited ?? 0) / 1_000_000_000;
+  const redeemableValue = Number(position?.current_value_licn ?? 0) / 1_000_000_000;
   const rewards = position?.rewards_earned !== undefined && position?.rewards_earned !== null
     ? Number(position.rewards_earned) / 1_000_000_000
     : Math.max(0, redeemableValue - deposited);

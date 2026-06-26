@@ -372,12 +372,38 @@ impl StateStore {
             end_key.extend_from_slice(&[0xFF; 44]);
         }
 
+        let mut rows = std::collections::BTreeMap::new();
+        if let Some(cold) = self.cold_db.as_ref() {
+            if let Some(cold_cf) = cold.cf_handle(COLD_CF_PROGRAM_CALLS) {
+                let iter = cold.iterator_cf(
+                    &cold_cf,
+                    rocksdb::IteratorMode::From(&end_key, Direction::Reverse),
+                );
+                for item in iter {
+                    let (key, value) = item.map_err(|e| format!("Iterator error: {}", e))?;
+                    if !key.starts_with(&prefix) {
+                        break;
+                    }
+
+                    if let Some(bs) = before_slot {
+                        if key.len() >= 40 {
+                            let slot_bytes: [u8; 8] = key[32..40].try_into().unwrap_or([0xFF; 8]);
+                            let slot = u64::from_be_bytes(slot_bytes);
+                            if slot >= bs {
+                                continue;
+                            }
+                        }
+                    }
+
+                    rows.insert(key.to_vec(), value.to_vec());
+                }
+            }
+        }
+
         let iter = self.db.iterator_cf(
             &cf,
             rocksdb::IteratorMode::From(&end_key, Direction::Reverse),
         );
-
-        let mut items = Vec::with_capacity(limit);
         for item in iter {
             let (key, value) = item.map_err(|e| format!("Iterator error: {}", e))?;
             if !key.starts_with(&prefix) {
@@ -394,7 +420,12 @@ impl StateStore {
                 }
             }
 
-            let activity = crate::decode_program_call_activity(&value)?;
+            rows.insert(key.to_vec(), value.to_vec());
+        }
+
+        let mut items = Vec::with_capacity(limit);
+        for value in rows.values().rev() {
+            let activity = crate::decode_program_call_activity(value)?;
             items.push(activity);
             if items.len() >= limit {
                 break;
@@ -414,22 +445,19 @@ impl StateStore {
         counter_key.extend_from_slice(b"pcall:");
         counter_key.extend_from_slice(&program.0);
 
-        match self.db.get_cf(&cf_stats, &counter_key) {
-            Ok(Some(data)) if data.len() == 8 => {
-                Ok(u64::from_le_bytes(data.as_slice().try_into().unwrap()))
-            }
-            _ => {
-                let cf = self
-                    .db
-                    .cf_handle(CF_PROGRAM_CALLS)
-                    .ok_or_else(|| "Program calls CF not found".to_string())?;
+        let cf = self
+            .db
+            .cf_handle(CF_PROGRAM_CALLS)
+            .ok_or_else(|| "Program calls CF not found".to_string())?;
 
-                let mut prefix = Vec::with_capacity(32);
-                prefix.extend_from_slice(&program.0);
+        let mut prefix = Vec::with_capacity(32);
+        prefix.extend_from_slice(&program.0);
 
-                let mut count = 0u64;
-                let iter = self.db.iterator_cf(
-                    &cf,
+        let mut keys = std::collections::BTreeSet::new();
+        if let Some(cold) = self.cold_db.as_ref() {
+            if let Some(cold_cf) = cold.cf_handle(COLD_CF_PROGRAM_CALLS) {
+                let iter = cold.iterator_cf(
+                    &cold_cf,
                     rocksdb::IteratorMode::From(&prefix, Direction::Forward),
                 );
                 for item in iter {
@@ -437,15 +465,28 @@ impl StateStore {
                     if !key.starts_with(&prefix) {
                         break;
                     }
-                    count += 1;
+                    keys.insert(key.to_vec());
                 }
-
-                if let Err(e) = self.db.put_cf(&cf_stats, &counter_key, count.to_le_bytes()) {
-                    tracing::warn!("Failed to cache program TX count: {e}");
-                }
-                Ok(count)
             }
         }
+
+        let iter = self.db.iterator_cf(
+            &cf,
+            rocksdb::IteratorMode::From(&prefix, Direction::Forward),
+        );
+        for item in iter {
+            let (key, _) = item.map_err(|e| format!("Iterator error: {}", e))?;
+            if !key.starts_with(&prefix) {
+                break;
+            }
+            keys.insert(key.to_vec());
+        }
+
+        let count = keys.len() as u64;
+        if let Err(e) = self.db.put_cf(&cf_stats, &counter_key, count.to_le_bytes()) {
+            tracing::warn!("Failed to cache program TX count: {e}");
+        }
+        Ok(count)
     }
 
     pub(crate) fn normalize_symbol(raw: &str) -> Result<String, String> {

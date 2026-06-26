@@ -20,6 +20,11 @@ const SYSTEM_PROGRAM_ID = '11111111111111111111111111111111';
 let dashboardLatestSlot = 0;
 let dashboardLatestBlocksTopSlot = 0;
 
+function explorerNumber(value, fallback = 0) {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : fallback;
+}
+
 function updateDashboardLatestSlot(slot) {
     const numericSlot = Number(slot);
     if (!Number.isFinite(numericSlot) || numericSlot < 0) return;
@@ -591,19 +596,19 @@ async function updateDashboardStats() {
             }
             if (metrics.total_accounts !== undefined) {
                 const activeAccountsEl = document.getElementById('activeAccounts');
-                const totalContracts = metrics.total_contracts || 0;
-                const totalAll = (metrics.total_accounts || 0) + totalContracts;
+                const totalContracts = explorerNumber(metrics.total_contracts);
+                const totalAll = explorerNumber(metrics.total_accounts) + totalContracts;
                 if (activeAccountsEl) activeAccountsEl.textContent = formatNumber(totalAll);
                 const breakdownEl = document.getElementById('accountBreakdown');
-                if (breakdownEl) breakdownEl.textContent = `${formatNumber(metrics.active_accounts || 0)} funded · ${formatNumber(totalContracts)} contracts`;
+                if (breakdownEl) breakdownEl.textContent = `${formatNumber(explorerNumber(metrics.active_accounts))} funded · ${formatNumber(totalContracts)} contracts`;
             }
             // Wire burn percentage and observed/target slot cadence from API.
             if (metrics.fee_burn_percent !== undefined) {
                 const burnEl = document.getElementById('burnPctLabel');
                 if (burnEl) burnEl.textContent = metrics.fee_burn_percent;
             }
-            const observedSlotMs = Number(metrics.observed_block_interval_ms || 0);
-            const targetSlotMs = Number(metrics.cadence_target_ms || metrics.slot_duration_ms || 0);
+            const observedSlotMs = explorerNumber(metrics.observed_block_interval_ms);
+            const targetSlotMs = explorerNumber(metrics.cadence_target_ms ?? metrics.slot_duration_ms);
             if (observedSlotMs > 0 || targetSlotMs > 0) {
                 const slotEl = document.getElementById('slotTimeLabel');
                 const targetEl = document.getElementById('slotTargetLabel');
@@ -650,7 +655,9 @@ async function updateDashboardStats() {
             const validators = validatorsResult.validators || [];
             const onlineCount = slot !== null
                 ? validators.filter((validator) => {
-                    const lastActive = validator.last_active_slot || validator.lastActiveSlot || 0;
+                    const lastActive = explorerNumber(
+                        validator.last_active_slot ?? validator.lastActiveSlot
+                    );
                     return slot - lastActive <= 100;
                 }).length
                 : validators.length;
@@ -663,7 +670,7 @@ async function updateDashboardStats() {
             const totalStakeEl = document.getElementById('totalStake');
             if (totalStakeEl && validatorsResult.validators) {
                 const totalStake = validatorsResult.validators.reduce((sum, v) => {
-                    return sum + (v.stake || 0);
+                    return sum + explorerNumber(v.stake);
                 }, 0);
                 // Convert spores to LICN (1 LICN = 1B spores)
                 const totalStakeLICN = totalStake / SPORES_PER_LICN;
@@ -726,7 +733,7 @@ async function updateShieldedOverview() {
         const merkleRootEl = document.getElementById('merkleRoot');
 
         if (shieldedBalanceEl) {
-            const balance = Number(balanceLicn) || 0;
+            const balance = explorerNumber(balanceLicn);
             shieldedBalanceEl.textContent = formatLicnAmount(balance);
         }
         if (shieldedBalanceSporesEl) shieldedBalanceSporesEl.textContent = formatNumber(totalShielded) + ' spores';
@@ -772,7 +779,7 @@ async function updateLatestBlocks() {
                 <span class="hash-short" title="${escapeExplorerHtml(block.hash)}">${formatHash(block.hash)}</span>
                     <i class="fas fa-copy copy-hash" data-copy="${escapeExplorerHtml(block.hash)}" title="Copy hash"></i>
                 </td>
-                <td><span class="pill pill-info">${block.transaction_count || 0} txs</span></td>
+                <td><span class="pill pill-info">${explorerNumber(block.transaction_count)} txs</span></td>
                 <td>${formatValidator(block.validator)}</td>
                 <td>${formatTime(block.timestamp)}</td>
             </tr>
@@ -801,11 +808,13 @@ async function updateLatestTransactions() {
             const signature = tx.hash || tx.signature || 'unknown';
             const type = tx.type || 'Transfer';
             const pillClass = getTransactionPillClass(type);
-            const amountSpores = tx.amount_spores || (tx.amount !== undefined ? Math.round(tx.amount * SPORES_PER_LICN) : 0);
+            const amountSpores = tx.amount_spores !== undefined
+                ? tx.amount_spores
+                : (tx.amount !== undefined ? Math.round(tx.amount * SPORES_PER_LICN) : 0);
             const amountDisplay = tx.token_symbol
-                ? formatNumber(tx.token_amount || 0) + ' ' + tx.token_symbol
+                ? formatNumber(explorerNumber(tx.token_amount)) + ' ' + tx.token_symbol
                 : (amountSpores ? formatLicn(amountSpores) : '-');
-            const timestamp = tx.timestamp || 0;
+            const timestamp = tx.timestamp ?? 0;
             const isError = isFailedTransactionStatus(tx);
             const statusClass = isError ? 'error' : 'success';
             const statusIcon = isError ? 'times' : 'check';

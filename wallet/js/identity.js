@@ -89,6 +89,17 @@ function identityU64ToBigInt(value) {
     return /^\d+$/.test(text) ? BigInt(text) : 0n;
 }
 
+function identitySpendableSpores(result) {
+    if (!result || typeof result !== 'object') return 0n;
+    if (Object.prototype.hasOwnProperty.call(result, 'spendable')) {
+        return identityU64ToBigInt(result.spendable);
+    }
+    if (Object.prototype.hasOwnProperty.call(result, 'available')) {
+        return identityU64ToBigInt(result.available);
+    }
+    return 0n;
+}
+
 function parseIdentityInteger(value, label, min, max, fallback = null) {
     const text = String(value ?? '').trim();
     if (!text && fallback !== null) return fallback;
@@ -411,7 +422,7 @@ async function buildContractCall(functionName, args, password, valueLicn = 0) {
     // Pre-flight: check LICN balance covers fee + value
     try {
         const balResult = await rpc.call('getBalance', [wallet.address]);
-        const spendableSpores = identityU64ToBigInt(balResult?.spendable || balResult?.balance || 0);
+        const spendableSpores = identitySpendableSpores(balResult);
         const baseFeeSpores = typeof BASE_FEE_SPORES === 'number' ? BigInt(BASE_FEE_SPORES) : 1_000_000n;
         const totalNeededSpores = valueSpores + baseFeeSpores;
         if (spendableSpores < totalNeededSpores) {
@@ -594,7 +605,7 @@ function renderNoIdentity(container) {
 function renderIdentity(container, data) {
     const { profile, lichenName, nameDetails } = data;
     const identity = profile.identity;
-    const rep = Number(profile?.reputation?.score || identity?.reputation || 0);
+    const rep = Number(profile?.reputation?.score ?? identity?.reputation ?? 0);
     const tier = getTrustTier(rep);
     const nextTier = getNextTier(rep);
     const maxRep = 100000;
@@ -775,9 +786,9 @@ function renderSkillsSection(skills) {
     const list = skills.length > 0
         ? skills.slice(0, 8).map(s => {
             const name = escHtml(String(s.name || s.skill || 'Unnamed'));
-            const prof = Number(s.proficiency || s.level || 0);
+            const prof = Number(s.proficiency ?? s.level ?? 0);
             const level = Math.max(0, Math.min(5, Math.round(prof / 20) || prof));
-            const attCount = Number(s.attestation_count || s.attestations || 0);
+            const attCount = Number(s.attestation_count ?? s.attestations ?? 0);
             const pct = (level / 5) * 100;
             return `
                 <div class="id-skill-row">

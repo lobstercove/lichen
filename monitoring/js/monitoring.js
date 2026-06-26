@@ -197,6 +197,11 @@ function formatLicnPrecise(spores) {
     return trimTrailingZeros(licn.toFixed(9));
 }
 
+function metricNumber(value, fallback = 0) {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : fallback;
+}
+
 function formatNum(n) {
     if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
     if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
@@ -291,7 +296,7 @@ function parseGovernanceMetadata(metadata) {
 function governanceSeverityForMonitoring(ruleId, event, metadata) {
     const kind = String(event.kind || '').toLowerCase();
     if (ruleId === 'treasury-transfer') {
-        const amount = Number(metadata.amount_spores || 0);
+        const amount = Number(metadata.amount_spores ?? 0);
         if (kind === 'executed' && amount >= GOVERNANCE_LARGE_TRANSFER_SPORES) return 'critical';
         return kind === 'executed' ? 'high' : 'warning';
     }
@@ -362,7 +367,9 @@ function buildGovernanceAlertMeta(alert) {
     const metadata = alert.metadata || {};
     const event = alert.event || {};
     const target = event.target_function || metadata.function || metadata.contract || 'watch';
-    const amount = metadata.amount_spores ? ` · ${formatLicn(Number(metadata.amount_spores || 0))} LICN` : '';
+    const amount = metadata.amount_spores !== undefined
+        ? ` · ${formatLicn(Number(metadata.amount_spores ?? 0))} LICN`
+        : '';
     return `${String(event.kind || 'unknown').toUpperCase()} · ${target} · proposal ${formatNum(Number(event.proposal_id || 0))}${amount}`;
 }
 
@@ -400,7 +407,7 @@ async function ensureGenesisTimestamp() {
     }
 
     const genesisBlock = await rpc('getBlock', [0]).catch(() => null);
-    const timestamp = Number(genesisBlock?.timestamp || genesisBlock?.blockTime || 0);
+    const timestamp = Number(genesisBlock?.timestamp ?? genesisBlock?.blockTime ?? 0);
     if (Number.isFinite(timestamp) && timestamp > 0) {
         genesisTimestampSecs = timestamp;
     }
@@ -450,7 +457,7 @@ function appendCadenceSample(samples, previousSlot, nextSlot, deltaMs) {
 
 function deriveCadenceSnapshot(metrics, cluster, currentSlot) {
     const sampledAtMs = Date.now();
-    const cadenceTargetMs = Number(metrics?.cadence_target_ms || metrics?.slot_duration_ms || 0);
+    const cadenceTargetMs = Number(metrics?.cadence_target_ms ?? metrics?.slot_duration_ms ?? 0);
     const nodes = Array.isArray(cluster?.cluster_nodes) ? cluster.cluster_nodes : [];
     const samples = [];
 
@@ -469,7 +476,7 @@ function deriveCadenceSnapshot(metrics, cluster, currentSlot) {
     const activePubkeys = new Set();
     nodes.forEach((node) => {
         const pubkey = node?.pubkey;
-        const blockSlot = Number(node?.last_observed_block_slot || 0);
+        const blockSlot = Number(node?.last_observed_block_slot ?? 0);
         if (!pubkey) return;
         activePubkeys.add(pubkey);
         if (!Number.isFinite(blockSlot) || blockSlot <= 0) {
@@ -500,11 +507,11 @@ function deriveCadenceSnapshot(metrics, cluster, currentSlot) {
         .filter(value => Number.isFinite(value) && value > 0)
         .sort((a, b) => a - b)) || 0;
 
-    const intervalMs = median(samples) || Number(metrics?.observed_block_interval_ms || 0);
-    const sampleCount = samples.length > 0 ? samples.length : Number(metrics?.cadence_samples || 0);
+    const intervalMs = median(samples) || Number(metrics?.observed_block_interval_ms ?? 0);
+    const sampleCount = samples.length > 0 ? samples.length : Number(metrics?.cadence_samples ?? 0);
     const pacePct = cadenceTargetMs > 0 && intervalMs > 0
         ? clampPercentage((cadenceTargetMs / intervalMs) * 100)
-        : clampPercentage(metrics?.slot_pace_pct || 0);
+        : clampPercentage(metrics?.slot_pace_pct ?? 0);
 
     lastCadenceSnapshot = {
         intervalMs,
@@ -512,8 +519,8 @@ function deriveCadenceSnapshot(metrics, cluster, currentSlot) {
         pacePct: Math.round(pacePct),
         sampleCount,
         source: samples.length > 0 ? 'cluster_level_observer' : (metrics?.cadence_source || 'observer_wall_clock'),
-        headStalenessMs: clusterStalenessMs || Number(metrics?.head_staleness_ms || 0),
-        lastObservedBlockSlot: Number(metrics?.last_observed_block_slot || currentSlot || 0),
+        headStalenessMs: clusterStalenessMs || Number(metrics?.head_staleness_ms ?? 0),
+        lastObservedBlockSlot: Number(metrics?.last_observed_block_slot ?? currentSlot ?? 0),
     };
 
     return lastCadenceSnapshot;
@@ -588,7 +595,7 @@ function updateStatusBeacon(rpcOnline) {
 }
 
 function updateEndpointTelemetry(peers = lastPeersSnapshot) {
-    const peerCount = peers?.peer_count || peers?.count || 0;
+    const peerCount = peers?.peer_count ?? peers?.count ?? 0;
     const wsState = currentWsState();
     const wsStatusText = wsState === 'online'
         ? 'LIVE'
@@ -997,21 +1004,21 @@ async function refresh() {
         if (metrics) {
             await ensureGenesisTimestamp();
             flashVital('vitalTPS', metrics.tps !== undefined ? metrics.tps.toFixed(1) : '--');
-            flashVital('vitalTotalTx', formatNum(metrics.total_transactions || 0));
+            flashVital('vitalTotalTx', formatNum(metricNumber(metrics.total_transactions)));
             flashVital('vitalUptime', networkAge());
 
             // TPS history
-            tpsHistory.push({ t: Date.now(), v: metrics.tps || 0 });
+            tpsHistory.push({ t: Date.now(), v: metricNumber(metrics.tps) });
             if (tpsHistory.length > 3000) tpsHistory.shift();
             drawTPSChart();
 
             // Supply
-            const totalSupply = metrics.total_supply || 0;
-            const totalBurned = metrics.total_burned || 0;
-            const totalStaked = metrics.total_staked || 0;
+            const totalSupply = metricNumber(metrics.total_supply);
+            const totalBurned = metricNumber(metrics.total_burned);
+            const totalStaked = metricNumber(metrics.total_staked);
             const effectiveSupply = totalSupply - totalBurned;
-            const genesisSpores = metrics.genesis_balance || 0;
-            const circulating = metrics.circulating_supply || 0;
+            const genesisSpores = metricNumber(metrics.genesis_balance);
+            const circulating = metricNumber(metrics.circulating_supply);
             const nonCirculating = Math.max(0, effectiveSupply - circulating);
             document.getElementById('supplyTotal').textContent = formatLicn(totalSupply) + ' LICN';
             document.getElementById('supplyEffective').textContent = formatLicn(effectiveSupply) + ' LICN';
@@ -1026,12 +1033,12 @@ async function refresh() {
 
             // Whitepaper distribution wallets from getMetrics.distribution_wallets
             const dw = metrics.distribution_wallets || {};
-            const vrBal = dw.validator_rewards_balance || 0;
-            const ctBal = dw.community_treasury_balance || 0;
-            const bgBal = dw.builder_grants_balance || 0;
-            const fmBal = dw.founding_symbionts_balance || 0;
-            const epBal = dw.ecosystem_partnerships_balance || 0;
-            const rpBal = dw.reserve_pool_balance || 0;
+            const vrBal = metricNumber(dw.validator_rewards_balance);
+            const ctBal = metricNumber(dw.community_treasury_balance);
+            const bgBal = metricNumber(dw.builder_grants_balance);
+            const fmBal = metricNumber(dw.founding_symbionts_balance);
+            const epBal = metricNumber(dw.ecosystem_partnerships_balance);
+            const rpBal = metricNumber(dw.reserve_pool_balance);
 
             document.getElementById('supplyValidatorRewards').textContent = formatLicn(vrBal) + ' LICN';
             document.getElementById('supplyCommunityTreasury').textContent = formatLicn(ctBal) + ' LICN';
@@ -1067,19 +1074,19 @@ async function refresh() {
         if (metrics) {
             // Performance stats
             document.getElementById('perfAvgBlock').textContent = formatCadenceMs(cadence.intervalMs);
-            document.getElementById('perfAvgTxBlock').textContent = (metrics.avg_txs_per_block || 0).toFixed(2);
-            document.getElementById('perfAccounts').textContent = formatNum(metrics.total_accounts || 0);
-            document.getElementById('perfActive').textContent = formatNum(metrics.active_accounts || 0);
+            document.getElementById('perfAvgTxBlock').textContent = metricNumber(metrics.avg_txs_per_block).toFixed(2);
+            document.getElementById('perfAccounts').textContent = formatNum(metricNumber(metrics.total_accounts));
+            document.getElementById('perfActive').textContent = formatNum(metricNumber(metrics.active_accounts));
 
             // INF-05: Performance rings are heuristic proxies derived from
             // on-chain metrics, NOT real OS-level CPU/Memory/Disk stats.
             // Labels are explicit about what each ring actually measures.
-            const blockRate = cadence.pacePct || 0;
+            const blockRate = cadence.pacePct ?? 0;
             // TPS vs Peak: current TPS relative to observed peak TPS.
-            const peakTps = Math.max(1, metrics.peak_tps || metrics.tps || 1);
-            const tpsLoadPct = Math.min(100, Math.round(((metrics.tps || 0) / peakTps) * 100));
+            const peakTps = Math.max(1, metrics.peak_tps ?? metrics.tps ?? 1);
+            const tpsLoadPct = Math.min(100, Math.round(((metrics.tps ?? 0) / peakTps) * 100));
             // Accounts: on-chain account count relative to capacity (~100k = 100%)
-            const accountsPct = Math.min(100, Math.round((metrics.total_accounts || 0) / 1000));
+            const accountsPct = Math.min(100, Math.round(metricNumber(metrics.total_accounts) / 1000));
             // Chain Size: slot height as proxy for data growth (~1.2M slots = 100%)
             const chainSizePct = Math.min(100, Math.round(slot / 12000));
             setRing('perfCPU', tpsLoadPct);
@@ -1176,25 +1183,25 @@ async function renderValidators(cluster, currentSlot) {
         // Dynamic path: build probe list from live cluster data
         probes = cluster.cluster_nodes
             .filter((node) => {
-                const stake = Number(node.stake || 0);
-                const blocks = Number(node.blocks_proposed || 0);
-                const lastActive = Number(node.last_active_slot || 0);
+                const stake = Number(node.stake ?? 0);
+                const blocks = Number(node.blocks_proposed ?? 0);
+                const lastActive = Number(node.last_active_slot ?? 0);
                 return stake > 0 || blocks > 0 || lastActive > 0;
             })
             .map((node, idx) => {
-                const lastActive = Number(node.last_active_slot || 0);
+                const lastActive = Number(node.last_active_slot ?? 0);
                 return {
                     name: `V${idx + 1}`,
                     rpc: rpcUrl,
                     pubkey: node.pubkey || null,
                     slot: lastActive,
-                    observed_block_slot: Number(node.last_observed_block_slot || 0),
-                    head_staleness_ms: Number(node.head_staleness_ms || 0),
+                    observed_block_slot: Number(node.last_observed_block_slot ?? 0),
+                    head_staleness_ms: Number(node.head_staleness_ms ?? 0),
                     head_hash: node.head_hash || node.tip_hash || node.block_hash || node.last_block_hash || null,
                     online: node.active !== false && (currentSlot === null || currentSlot - lastActive <= 100),
-                    stake: node.stake || 0,
-                    reputation: node.reputation || 0,
-                    blocks_proposed: node.blocks_proposed || 0,
+                    stake: node.stake ?? 0,
+                    reputation: node.reputation ?? 0,
+                    blocks_proposed: node.blocks_proposed ?? 0,
                     last_active_slot: lastActive,
                 };
             });
@@ -1203,20 +1210,20 @@ async function renderValidators(cluster, currentSlot) {
         const vals = await rpc('getValidators');
         if (vals && vals.validators) {
             probes = vals.validators.map((v, idx) => {
-                const lastActive = v.last_active_slot || v.lastActiveSlot || 0;
+                const lastActive = v.last_active_slot ?? v.lastActiveSlot ?? 0;
                 const isOnline = currentSlot !== null && currentSlot - lastActive <= 100;
                 return {
                     name: `V${idx + 1}`,
                     rpc: rpcUrl,
                     pubkey: v.pubkey || null,
                     slot: lastActive,
-                    observed_block_slot: Number(v.last_observed_block_slot || 0),
-                    head_staleness_ms: Number(v.head_staleness_ms || 0),
+                    observed_block_slot: Number(v.last_observed_block_slot ?? 0),
+                    head_staleness_ms: Number(v.head_staleness_ms ?? 0),
                     head_hash: v.head_hash || v.tip_hash || v.block_hash || v.last_block_hash || null,
                     online: isOnline,
-                    stake: v.stake || 0,
-                    reputation: v.reputation || 0,
-                    blocks_proposed: v.blocks_proposed || 0,
+                    stake: v.stake ?? 0,
+                    reputation: v.reputation ?? 0,
+                    blocks_proposed: v.blocks_proposed ?? 0,
                     last_active_slot: lastActive,
                 };
             });
@@ -1280,11 +1287,11 @@ async function updateHealth(metrics, probes, peers, cadence) {
 
     // Block cadence: measured from observer wall-clock deltas, preferring
     // cluster-level validator samples over the single-node RPC fallback.
-    const blockPct = clampPercentage(cadence?.pacePct || metrics?.slot_pace_pct || 0);
+    const blockPct = clampPercentage(cadence?.pacePct ?? metrics?.slot_pace_pct ?? 0);
     setBar('healthBlocks', blockPct);
 
     // TX Rate
-    const txPct = Math.min(100, Math.round((metrics?.tps || 0) * 10));
+    const txPct = Math.min(100, Math.round(metricNumber(metrics?.tps) * 10));
     setBar('healthTxRate', txPct);
 
     // P2P: compare current peers to the minimum mesh expected from the visible validator set.
@@ -1292,7 +1299,7 @@ async function updateHealth(metrics, probes, peers, cadence) {
     setBar('healthP2P', p2pPct);
 
     // Account footprint: derive from account count (same formula as perf ring)
-    const memPct = Math.min(100, Math.round((metrics?.total_accounts || 0) / 1000));
+    const memPct = Math.min(100, Math.round(metricNumber(metrics?.total_accounts) / 1000));
     setBar('healthMemory', memPct);
 
     // Overall badge uses cluster liveness signals, not cadence heuristics.
@@ -3001,7 +3008,7 @@ function detectThreats(metrics, probes) {
     }
 
     // Stake anomaly detection
-    const totalStake = probes.reduce((sum, p) => sum + (p.stake || 0), 0);
+    const totalStake = probes.reduce((sum, p) => sum + (p.stake ?? 0), 0);
     probes.forEach(p => {
         if (p.online && p.stake === 0) {
             addThreat('low', 'Unstaked Node', p.name, 'Staking',
@@ -3021,8 +3028,8 @@ function detectThreats(metrics, probes) {
 
     // Single validator dominance
     if (onlineProbes.length >= 2) {
-        const maxBlocks = Math.max(...onlineProbes.map(p => p.blocks_proposed || 0));
-        const totalBlocks = onlineProbes.reduce((s, p) => s + (p.blocks_proposed || 0), 0);
+        const maxBlocks = Math.max(...onlineProbes.map(p => p.blocks_proposed ?? 0));
+        const totalBlocks = onlineProbes.reduce((s, p) => s + (p.blocks_proposed ?? 0), 0);
         if (totalBlocks > 10 && maxBlocks / totalBlocks > 0.8) {
             const dominant = onlineProbes.find(p => p.blocks_proposed === maxBlocks);
             addThreat('medium', 'Centralization Risk', dominant?.name || 'Unknown', 'Consensus',
@@ -3102,8 +3109,8 @@ async function updateDexMonitor() {
                 const stats = await rpc('getDexCoreStats');
                 if (stats) {
                     metricsData = {
-                        pairs: stats.pair_count || 0, orders: stats.order_count || 0,
-                        trades: stats.trade_count || 0, volume: stats.total_volume || 0
+                        pairs: metricNumber(stats.pair_count), orders: metricNumber(stats.order_count),
+                        trades: metricNumber(stats.trade_count), volume: metricNumber(stats.total_volume)
                     };
                     deployed = true;
                 }
@@ -3111,8 +3118,8 @@ async function updateDexMonitor() {
                 const stats = await rpc('getDexAmmStats');
                 if (stats) {
                     metricsData = {
-                        pools: stats.pool_count || 0, positions: stats.position_count || 0,
-                        swaps: stats.swap_count || 0, volume: stats.total_volume || 0
+                        pools: metricNumber(stats.pool_count), positions: metricNumber(stats.position_count),
+                        swaps: metricNumber(stats.swap_count), volume: metricNumber(stats.total_volume)
                     };
                     deployed = true;
                 }
@@ -3120,8 +3127,8 @@ async function updateDexMonitor() {
                 const stats = await rpc('getDexMarginStats');
                 if (stats) {
                     metricsData = {
-                        positions: stats.position_count || 0, volume: stats.total_volume || 0,
-                        liquidations: stats.liquidation_count || 0, max_leverage: (stats.max_leverage || 100) + 'x'
+                        positions: metricNumber(stats.position_count), volume: metricNumber(stats.total_volume),
+                        liquidations: metricNumber(stats.liquidation_count), max_leverage: metricNumber(stats.max_leverage, 100) + 'x'
                     };
                     deployed = true;
                 }
@@ -3129,8 +3136,8 @@ async function updateDexMonitor() {
                 const stats = await rpc('getPredictionMarketStats');
                 if (stats) {
                     metricsData = {
-                        markets: stats.total_markets || 0, open_markets: stats.open_markets || 0,
-                        volume: stats.total_volume || 0, traders: stats.total_traders || 0
+                        markets: metricNumber(stats.total_markets), open_markets: metricNumber(stats.open_markets),
+                        volume: metricNumber(stats.total_volume), traders: metricNumber(stats.total_traders)
                     };
                     deployed = true;
                 }
@@ -3138,8 +3145,8 @@ async function updateDexMonitor() {
                 const stats = await rpc('getDexRouterStats');
                 if (stats) {
                     metricsData = {
-                        routes: stats.route_count || 0, swaps: stats.swap_count || 0,
-                        volume: stats.total_volume || 0, status: stats.paused ? 'PAUSED' : 'LIVE'
+                        routes: metricNumber(stats.route_count), swaps: metricNumber(stats.swap_count),
+                        volume: metricNumber(stats.total_volume), status: stats.paused ? 'PAUSED' : 'LIVE'
                     };
                     deployed = true;
                 }
@@ -3147,8 +3154,8 @@ async function updateDexMonitor() {
                 const stats = await rpc('getDexGovernanceStats');
                 if (stats) {
                     metricsData = {
-                        proposals: stats.proposal_count || 0, votes: stats.total_votes || 0,
-                        voters: stats.voter_count || 0, status: stats.paused ? 'PAUSED' : 'LIVE'
+                        proposals: metricNumber(stats.proposal_count), votes: metricNumber(stats.total_votes),
+                        voters: metricNumber(stats.voter_count), status: stats.paused ? 'PAUSED' : 'LIVE'
                     };
                     deployed = true;
                 }
@@ -3156,8 +3163,8 @@ async function updateDexMonitor() {
                 const stats = await rpc('getDexRewardsStats');
                 if (stats) {
                     metricsData = {
-                        trades: stats.trade_count || 0, traders: stats.trader_count || 0,
-                        distributed: stats.total_distributed || 0, epoch: stats.epoch || 0
+                        trades: metricNumber(stats.trade_count), traders: metricNumber(stats.trader_count),
+                        distributed: metricNumber(stats.total_distributed), epoch: metricNumber(stats.epoch)
                     };
                     deployed = true;
                 }
@@ -3165,8 +3172,8 @@ async function updateDexMonitor() {
                 const stats = await rpc('getDexAnalyticsStats');
                 if (stats) {
                     metricsData = {
-                        candles: stats.total_candles || 0, pairs: stats.tracked_pairs || 0,
-                        records: stats.record_count || 0, traders: stats.trader_count || 0
+                        candles: metricNumber(stats.total_candles), pairs: metricNumber(stats.tracked_pairs),
+                        records: metricNumber(stats.record_count), traders: metricNumber(stats.trader_count)
                     };
                     deployed = true;
                 }
@@ -3174,8 +3181,8 @@ async function updateDexMonitor() {
                 const stats = await rpc('getLichenSwapStats');
                 if (stats) {
                     metricsData = {
-                        swaps: stats.swap_count || 0, volume_a: stats.volume_a || 0,
-                        volume_b: stats.volume_b || 0, status: stats.paused ? 'PAUSED' : 'LIVE'
+                        swaps: metricNumber(stats.swap_count), volume_a: metricNumber(stats.volume_a),
+                        volume_b: metricNumber(stats.volume_b), status: stats.paused ? 'PAUSED' : 'LIVE'
                     };
                     deployed = true;
                 }
@@ -3251,21 +3258,21 @@ async function updateDexMonitor() {
     const el = id => document.getElementById(id);
     const dexCoreStats = await rpc('getDexCoreStats').catch(() => null);
     if (dexCoreStats) {
-        if (el('dexTotalPairs')) el('dexTotalPairs').textContent = formatNum(dexCoreStats.pair_count || 0);
-        if (el('dexVolume24h')) el('dexVolume24h').textContent = formatLicn(dexCoreStats.total_volume || 0);
-        if (el('dexOpenOrders')) el('dexOpenOrders').textContent = formatNum(dexCoreStats.order_count || 0);
+        if (el('dexTotalPairs')) el('dexTotalPairs').textContent = formatNum(metricNumber(dexCoreStats.pair_count));
+        if (el('dexVolume24h')) el('dexVolume24h').textContent = formatLicn(metricNumber(dexCoreStats.total_volume));
+        if (el('dexOpenOrders')) el('dexOpenOrders').textContent = formatNum(metricNumber(dexCoreStats.order_count));
     }
     const ammStats = await rpc('getDexAmmStats').catch(() => null);
     if (ammStats) {
-        if (el('dexTVL')) el('dexTVL').textContent = formatLicn(ammStats.total_volume || 0);
+        if (el('dexTVL')) el('dexTVL').textContent = formatLicn(metricNumber(ammStats.total_volume));
     }
     const marginStats = await rpc('getDexMarginStats').catch(() => null);
     if (marginStats) {
-        if (el('dexMarginPos')) el('dexMarginPos').textContent = formatNum(marginStats.position_count || 0);
+        if (el('dexMarginPos')) el('dexMarginPos').textContent = formatNum(metricNumber(marginStats.position_count));
     }
     const predictStats = await rpc('getPredictionMarketStats').catch(() => null);
     if (predictStats) {
-        if (el('dexPredictMkts')) el('dexPredictMkts').textContent = formatNum(predictStats.open_markets || 0);
+        if (el('dexPredictMkts')) el('dexPredictMkts').textContent = formatNum(metricNumber(predictStats.open_markets));
     }
 }
 
@@ -3403,29 +3410,29 @@ async function updateIdentitiesMonitor() {
         return;
     }
 
-    const totalIdentities = stats.total_identities || 0;
-    const totalNames = stats.total_names || 0;
+    const totalIdentities = metricNumber(stats.total_identities);
+    const totalNames = metricNumber(stats.total_names);
     const tier = stats.tier_distribution || {};
 
     // Summary bar
     if (el('idTotalIdentities')) el('idTotalIdentities').textContent = formatNum(totalIdentities);
     if (el('idTotalNames')) el('idTotalNames').textContent = formatNum(totalNames);
-    if (el('idTierNewcomer')) el('idTierNewcomer').textContent = formatNum(tier.newcomer || 0);
-    if (el('idTierVerified')) el('idTierVerified').textContent = formatNum(tier.verified || 0);
-    if (el('idTierTrusted')) el('idTierTrusted').textContent = formatNum(tier.trusted || 0);
-    if (el('idTierEstablished')) el('idTierEstablished').textContent = formatNum(tier.established || 0);
-    if (el('idTierElite')) el('idTierElite').textContent = formatNum(tier.elite || 0);
-    if (el('idTierLegendary')) el('idTierLegendary').textContent = formatNum(tier.legendary || 0);
+    if (el('idTierNewcomer')) el('idTierNewcomer').textContent = formatNum(metricNumber(tier.newcomer));
+    if (el('idTierVerified')) el('idTierVerified').textContent = formatNum(metricNumber(tier.verified));
+    if (el('idTierTrusted')) el('idTierTrusted').textContent = formatNum(metricNumber(tier.trusted));
+    if (el('idTierEstablished')) el('idTierEstablished').textContent = formatNum(metricNumber(tier.established));
+    if (el('idTierElite')) el('idTierElite').textContent = formatNum(metricNumber(tier.elite));
+    if (el('idTierLegendary')) el('idTierLegendary').textContent = formatNum(metricNumber(tier.legendary));
 
     // Tier distribution visual cards
     if (tierGrid) {
         const tiers = [
-            { name: 'Newcomer', count: tier.newcomer || 0, color: '#94a3b8', icon: 'fas fa-seedling' },
-            { name: 'Verified', count: tier.verified || 0, color: '#4ade80', icon: 'fas fa-check-circle' },
-            { name: 'Trusted', count: tier.trusted || 0, color: '#60a5fa', icon: 'fas fa-shield-alt' },
-            { name: 'Established', count: tier.established || 0, color: '#a78bfa', icon: 'fas fa-star' },
-            { name: 'Elite', count: tier.elite || 0, color: '#f59e0b', icon: 'fas fa-crown' },
-            { name: 'Legendary', count: tier.legendary || 0, color: '#ef4444', icon: 'fas fa-gem' },
+            { name: 'Newcomer', count: metricNumber(tier.newcomer), color: '#94a3b8', icon: 'fas fa-seedling' },
+            { name: 'Verified', count: metricNumber(tier.verified), color: '#4ade80', icon: 'fas fa-check-circle' },
+            { name: 'Trusted', count: metricNumber(tier.trusted), color: '#60a5fa', icon: 'fas fa-shield-alt' },
+            { name: 'Established', count: metricNumber(tier.established), color: '#a78bfa', icon: 'fas fa-star' },
+            { name: 'Elite', count: metricNumber(tier.elite), color: '#f59e0b', icon: 'fas fa-crown' },
+            { name: 'Legendary', count: metricNumber(tier.legendary), color: '#ef4444', icon: 'fas fa-gem' },
         ];
         const maxCount = Math.max(1, ...tiers.map(t => t.count));
         tierGrid.innerHTML = tiers.map(t => {
@@ -3477,68 +3484,68 @@ async function updateTradingMetrics() {
     // DEX Core
     if (dexCore) {
         activeFeeds++;
-        if (el('tradeTotalVolume')) el('tradeTotalVolume').textContent = formatLicn(dexCore.total_volume || 0);
-        if (el('tradeOrderCount')) el('tradeOrderCount').textContent = formatNum(dexCore.order_count || 0);
-        if (el('tradeFills24h')) el('tradeFills24h').textContent = formatNum(dexCore.trade_count || 0);
-        if (el('tradeFeeTreasury')) el('tradeFeeTreasury').textContent = formatLicn(dexCore.fee_treasury || 0);
-        if (el('tradePairCount')) el('tradePairCount').textContent = formatNum(dexCore.pair_count || 0);
+        if (el('tradeTotalVolume')) el('tradeTotalVolume').textContent = formatLicn(metricNumber(dexCore.total_volume));
+        if (el('tradeOrderCount')) el('tradeOrderCount').textContent = formatNum(metricNumber(dexCore.order_count));
+        if (el('tradeFills24h')) el('tradeFills24h').textContent = formatNum(metricNumber(dexCore.trade_count));
+        if (el('tradeFeeTreasury')) el('tradeFeeTreasury').textContent = formatLicn(metricNumber(dexCore.fee_treasury));
+        if (el('tradePairCount')) el('tradePairCount').textContent = formatNum(metricNumber(dexCore.pair_count));
     }
 
     // AMM
     if (amm) {
         activeFeeds++;
-        if (el('tradeAmmPools')) el('tradeAmmPools').textContent = formatNum(amm.pool_count || 0);
-        if (el('tradeAmmSwaps')) el('tradeAmmSwaps').textContent = formatNum(amm.swap_count || 0);
-        if (el('tradeAmmTVL')) el('tradeAmmTVL').textContent = formatLicn(amm.total_volume || 0);
-        if (el('tradeAmmFees')) el('tradeAmmFees').textContent = formatLicn(amm.total_fees || 0);
+        if (el('tradeAmmPools')) el('tradeAmmPools').textContent = formatNum(metricNumber(amm.pool_count));
+        if (el('tradeAmmSwaps')) el('tradeAmmSwaps').textContent = formatNum(metricNumber(amm.swap_count));
+        if (el('tradeAmmTVL')) el('tradeAmmTVL').textContent = formatLicn(metricNumber(amm.total_volume));
+        if (el('tradeAmmFees')) el('tradeAmmFees').textContent = formatLicn(metricNumber(amm.total_fees));
     }
 
     // Margin
     if (margin) {
         activeFeeds++;
-        if (el('tradeMarginPos')) el('tradeMarginPos').textContent = formatNum(margin.position_count || 0);
-        if (el('tradeMaxLeverage')) el('tradeMaxLeverage').textContent = (margin.max_leverage || 100) + 'x';
-        if (el('tradeLiquidations')) el('tradeLiquidations').textContent = formatNum(margin.liquidation_count || 0);
-        if (el('tradeInsurance')) el('tradeInsurance').textContent = formatLicn(margin.insurance_fund || 0);
+        if (el('tradeMarginPos')) el('tradeMarginPos').textContent = formatNum(metricNumber(margin.position_count));
+        if (el('tradeMaxLeverage')) el('tradeMaxLeverage').textContent = metricNumber(margin.max_leverage, 100) + 'x';
+        if (el('tradeLiquidations')) el('tradeLiquidations').textContent = formatNum(metricNumber(margin.liquidation_count));
+        if (el('tradeInsurance')) el('tradeInsurance').textContent = formatLicn(metricNumber(margin.insurance_fund));
     }
 
     // Router
     if (router) {
         activeFeeds++;
-        if (el('tradeRoutes')) el('tradeRoutes').textContent = formatNum(router.route_count || 0);
+        if (el('tradeRoutes')) el('tradeRoutes').textContent = formatNum(metricNumber(router.route_count));
     }
 
     // Analytics
     if (analytics) {
         activeFeeds++;
-        if (el('tradeAnalyticsRecords')) el('tradeAnalyticsRecords').textContent = formatNum(analytics.record_count || 0);
-        if (el('tradeTrackedPairs')) el('tradeTrackedPairs').textContent = formatNum(analytics.tracked_pairs || 0);
+        if (el('tradeAnalyticsRecords')) el('tradeAnalyticsRecords').textContent = formatNum(metricNumber(analytics.record_count));
+        if (el('tradeTrackedPairs')) el('tradeTrackedPairs').textContent = formatNum(metricNumber(analytics.tracked_pairs));
     }
 
     // LichenSwap
     if (lichenswap) {
         activeFeeds++;
-        if (el('tradeLichenSwaps')) el('tradeLichenSwaps').textContent = formatNum(lichenswap.swap_count || 0);
+        if (el('tradeLichenSwaps')) el('tradeLichenSwaps').textContent = formatNum(metricNumber(lichenswap.swap_count));
     }
 
     // Rewards
     if (rewards) {
         activeFeeds++;
-        if (el('tradeRewardsDistributed')) el('tradeRewardsDistributed').textContent = formatLicn(rewards.total_distributed || 0);
-        if (el('tradeRewardsEpoch')) el('tradeRewardsEpoch').textContent = formatNum(rewards.epoch || 0);
+        if (el('tradeRewardsDistributed')) el('tradeRewardsDistributed').textContent = formatLicn(metricNumber(rewards.total_distributed));
+        if (el('tradeRewardsEpoch')) el('tradeRewardsEpoch').textContent = formatNum(metricNumber(rewards.epoch));
     }
 
     // Governance
     if (governance) {
         activeFeeds++;
-        if (el('tradeGovProposals')) el('tradeGovProposals').textContent = formatNum(governance.proposal_count || 0);
-        if (el('tradeGovVoters')) el('tradeGovVoters').textContent = formatNum(governance.voter_count || 0);
+        if (el('tradeGovProposals')) el('tradeGovProposals').textContent = formatNum(metricNumber(governance.proposal_count));
+        if (el('tradeGovVoters')) el('tradeGovVoters').textContent = formatNum(metricNumber(governance.voter_count));
     }
 
     // Peak TPS from getMetrics
     if (metrics) {
         activeFeeds++;
-        if (el('tradePeakTPS')) el('tradePeakTPS').textContent = (metrics.peak_tps || 0).toFixed(1);
+        if (el('tradePeakTPS')) el('tradePeakTPS').textContent = metricNumber(metrics.peak_tps).toFixed(1);
     }
 
     if (badge) {
@@ -3563,22 +3570,22 @@ async function updatePredictionMonitor() {
         return;
     }
 
-    if (el('predTotalMarkets')) el('predTotalMarkets').textContent = formatNum(stats.total_markets || 0);
-    if (el('predOpenMarkets')) el('predOpenMarkets').textContent = formatNum(stats.open_markets || 0);
-    if (el('predTotalVolume')) el('predTotalVolume').textContent = formatLicn(stats.total_volume || 0);
-    if (el('predTotalCollateral')) el('predTotalCollateral').textContent = formatLicn(stats.total_collateral || 0);
-    if (el('predFeesCollected')) el('predFeesCollected').textContent = formatLicn(stats.fees_collected || 0);
-    if (el('predTotalTraders')) el('predTotalTraders').textContent = formatNum(stats.total_traders || 0);
+    if (el('predTotalMarkets')) el('predTotalMarkets').textContent = formatNum(metricNumber(stats.total_markets));
+    if (el('predOpenMarkets')) el('predOpenMarkets').textContent = formatNum(metricNumber(stats.open_markets));
+    if (el('predTotalVolume')) el('predTotalVolume').textContent = formatLicn(metricNumber(stats.total_volume));
+    if (el('predTotalCollateral')) el('predTotalCollateral').textContent = formatLicn(metricNumber(stats.total_collateral));
+    if (el('predFeesCollected')) el('predFeesCollected').textContent = formatLicn(metricNumber(stats.fees_collected));
+    if (el('predTotalTraders')) el('predTotalTraders').textContent = formatNum(metricNumber(stats.total_traders));
     if (el('predStatus')) el('predStatus').textContent = stats.paused ? 'PAUSED' : 'ACTIVE';
 
     // Render detail grid
     const grid = document.getElementById('predictionDetailGrid');
     if (grid) {
-        const total = stats.total_markets || 0;
-        const open = stats.open_markets || 0;
+        const total = metricNumber(stats.total_markets);
+        const open = metricNumber(stats.open_markets);
         const closed = total - open;
-        const avgVolPerMarket = total > 0 ? Math.round((stats.total_volume || 0) / total) : 0;
-        const avgCollateral = total > 0 ? Math.round((stats.total_collateral || 0) / total) : 0;
+        const avgVolPerMarket = total > 0 ? Math.round(metricNumber(stats.total_volume) / total) : 0;
+        const avgCollateral = total > 0 ? Math.round(metricNumber(stats.total_collateral) / total) : 0;
         grid.innerHTML = `
             <div class="tier-card">
                 <div class="tier-label">Open / Total</div>
@@ -3600,17 +3607,17 @@ async function updatePredictionMonitor() {
             </div>
             <div class="tier-card">
                 <div class="tier-label">Total Fees Collected</div>
-                <div class="tier-value">${formatLicn(stats.fees_collected || 0)}</div>
+                <div class="tier-value">${formatLicn(metricNumber(stats.fees_collected))}</div>
             </div>
             <div class="tier-card">
                 <div class="tier-label">Unique Traders</div>
-                <div class="tier-value">${formatNum(stats.total_traders || 0)}</div>
+                <div class="tier-value">${formatNum(metricNumber(stats.total_traders))}</div>
             </div>
         `;
     }
 
     if (badge) {
-        const total = stats.total_markets || 0;
+        const total = metricNumber(stats.total_markets);
         badge.textContent = `${formatNum(total)} Markets`;
         badge.className = 'panel-badge ' + (total > 0 ? 'success' : 'info');
     }
@@ -3658,98 +3665,98 @@ async function updateEcosystemMonitor() {
     // Tokens
     if (lusd) {
         activeFeeds++;
-        if (el('ecoLusdSupply')) el('ecoLusdSupply').textContent = formatLicn(lusd.supply || 0);
-        if (el('ecoLusdMinted')) el('ecoLusdMinted').textContent = formatNum(lusd.mint_events || 0);
-        if (el('ecoLusdTransfers')) el('ecoLusdTransfers').textContent = formatNum(lusd.transfer_count || 0);
+        if (el('ecoLusdSupply')) el('ecoLusdSupply').textContent = formatLicn(lusd.supply ?? 0);
+        if (el('ecoLusdMinted')) el('ecoLusdMinted').textContent = formatNum(metricNumber(lusd.mint_events));
+        if (el('ecoLusdTransfers')) el('ecoLusdTransfers').textContent = formatNum(metricNumber(lusd.transfer_count));
     }
     if (weth) {
         activeFeeds++;
-        if (el('ecoWethSupply')) el('ecoWethSupply').textContent = formatLicn(weth.supply || 0);
+        if (el('ecoWethSupply')) el('ecoWethSupply').textContent = formatLicn(weth.supply ?? 0);
     }
     if (wsol) {
         activeFeeds++;
-        if (el('ecoWsolSupply')) el('ecoWsolSupply').textContent = formatLicn(wsol.supply || 0);
+        if (el('ecoWsolSupply')) el('ecoWsolSupply').textContent = formatLicn(wsol.supply ?? 0);
     }
     if (wbnb) {
         activeFeeds++;
-        if (el('ecoWbnbSupply')) el('ecoWbnbSupply').textContent = formatLicn(wbnb.total_supply || wbnb.supply || 0);
+        if (el('ecoWbnbSupply')) el('ecoWbnbSupply').textContent = formatLicn(wbnb.total_supply ?? wbnb.supply ?? 0);
     }
     if (wneo) {
         activeFeeds++;
-        if (el('ecoWneoSupply')) el('ecoWneoSupply').textContent = formatLicn(wneo.total_supply || wneo.supply || 0);
+        if (el('ecoWneoSupply')) el('ecoWneoSupply').textContent = formatLicn(wneo.total_supply ?? wneo.supply ?? 0);
     }
     if (wgas) {
         activeFeeds++;
-        if (el('ecoWgasSupply')) el('ecoWgasSupply').textContent = formatLicn(wgas.total_supply || wgas.supply || 0);
+        if (el('ecoWgasSupply')) el('ecoWgasSupply').textContent = formatLicn(wgas.total_supply ?? wgas.supply ?? 0);
     }
     if (wbtc) {
         activeFeeds++;
-        if (el('ecoWbtcSupply')) el('ecoWbtcSupply').textContent = formatLicn(wbtc.total_supply || wbtc.supply || 0);
+        if (el('ecoWbtcSupply')) el('ecoWbtcSupply').textContent = formatLicn(wbtc.total_supply ?? wbtc.supply ?? 0);
     }
 
     // Platform services
     if (lend) {
         activeFeeds++;
-        if (el('ecoLendDeposits')) el('ecoLendDeposits').textContent = formatLicn(lend.total_deposits || 0);
-        if (el('ecoLendBorrows')) el('ecoLendBorrows').textContent = formatLicn(lend.total_borrows || 0);
+        if (el('ecoLendDeposits')) el('ecoLendDeposits').textContent = formatLicn(metricNumber(lend.total_deposits));
+        if (el('ecoLendBorrows')) el('ecoLendBorrows').textContent = formatLicn(metricNumber(lend.total_borrows));
     }
     if (sporepay) {
         activeFeeds++;
-        if (el('ecoSporePayStreams')) el('ecoSporePayStreams').textContent = formatNum(sporepay.stream_count || 0);
+        if (el('ecoSporePayStreams')) el('ecoSporePayStreams').textContent = formatNum(metricNumber(sporepay.stream_count));
     }
     if (vault) {
         activeFeeds++;
-        if (el('ecoVaultAssets')) el('ecoVaultAssets').textContent = formatLicn(vault.total_assets || 0);
+        if (el('ecoVaultAssets')) el('ecoVaultAssets').textContent = formatLicn(metricNumber(vault.total_assets));
     }
     if (pump) {
         activeFeeds++;
-        if (el('ecoPumpTokens')) el('ecoPumpTokens').textContent = formatNum(pump.token_count || 0);
+        if (el('ecoPumpTokens')) el('ecoPumpTokens').textContent = formatNum(metricNumber(pump.token_count));
     }
 
     // Infrastructure
     if (bridge) {
         activeFeeds++;
-        if (el('ecoBridgeTxs')) el('ecoBridgeTxs').textContent = formatNum(bridge.nonce || 0);
-        if (el('ecoBridgeLocked')) el('ecoBridgeLocked').textContent = formatLicn(bridge.locked_amount || 0);
+        if (el('ecoBridgeTxs')) el('ecoBridgeTxs').textContent = formatNum(metricNumber(bridge.nonce));
+        if (el('ecoBridgeLocked')) el('ecoBridgeLocked').textContent = formatLicn(metricNumber(bridge.locked_amount));
     }
     if (dao) {
         activeFeeds++;
-        if (el('ecoDaoProposals')) el('ecoDaoProposals').textContent = formatNum(dao.proposal_count || 0);
+        if (el('ecoDaoProposals')) el('ecoDaoProposals').textContent = formatNum(metricNumber(dao.proposal_count));
     }
     if (oracle) {
         activeFeeds++;
-        if (el('ecoOracleFeeds')) el('ecoOracleFeeds').textContent = formatNum(oracle.feeds || 0);
+        if (el('ecoOracleFeeds')) el('ecoOracleFeeds').textContent = formatNum(metricNumber(oracle.feeds));
     }
     if (mossStorage) {
         activeFeeds++;
-        if (el('ecoMossData')) el('ecoMossData').textContent = formatNum(mossStorage.data_count || 0);
+        if (el('ecoMossData')) el('ecoMossData').textContent = formatNum(metricNumber(mossStorage.data_count));
     }
     if (shieldedState) {
         activeFeeds++;
-        if (el('ecoShieldedBalance')) el('ecoShieldedBalance').textContent = formatLicn(shieldedState.total_shielded || 0);
-        if (el('ecoShieldedCommitments')) el('ecoShieldedCommitments').textContent = formatNum(shieldedState.pool_size || 0);
+        if (el('ecoShieldedBalance')) el('ecoShieldedBalance').textContent = formatLicn(metricNumber(shieldedState.total_shielded));
+        if (el('ecoShieldedCommitments')) el('ecoShieldedCommitments').textContent = formatNum(metricNumber(shieldedState.pool_size));
     }
 
     // NFT & Marketplace
     if (market) {
         activeFeeds++;
-        if (el('ecoMarketListings')) el('ecoMarketListings').textContent = formatNum(market.listing_count || 0);
+        if (el('ecoMarketListings')) el('ecoMarketListings').textContent = formatNum(metricNumber(market.listing_count));
     }
     if (auction) {
         activeFeeds++;
-        if (el('ecoAuctionVolume')) el('ecoAuctionVolume').textContent = formatLicn(auction.total_volume || 0);
+        if (el('ecoAuctionVolume')) el('ecoAuctionVolume').textContent = formatLicn(metricNumber(auction.total_volume));
     }
     if (punks) {
         activeFeeds++;
-        if (el('ecoPunksMinted')) el('ecoPunksMinted').textContent = formatNum(punks.total_minted || 0);
+        if (el('ecoPunksMinted')) el('ecoPunksMinted').textContent = formatNum(punks.total_minted ?? 0);
     }
     if (bounty) {
         activeFeeds++;
-        if (el('ecoBounties')) el('ecoBounties').textContent = formatNum(bounty.bounty_count || 0);
+        if (el('ecoBounties')) el('ecoBounties').textContent = formatNum(metricNumber(bounty.bounty_count));
     }
     if (compute) {
         activeFeeds++;
-        if (el('ecoComputeJobs')) el('ecoComputeJobs').textContent = formatNum(compute.job_count || 0);
+        if (el('ecoComputeJobs')) el('ecoComputeJobs').textContent = formatNum(metricNumber(compute.job_count));
     }
 
     // Detail grid
@@ -3764,40 +3771,40 @@ async function updateEcosystemMonitor() {
         };
 
         if (lend) {
-            addCard('Lending TVL', formatLicn((lend.total_deposits || 0) - (lend.total_borrows || 0)), 'piggy-bank', 'var(--accent-green)');
-            addCard('Liquidations', formatNum(lend.liquidation_count || 0), 'gavel', 'var(--accent-red)');
+            addCard('Lending TVL', formatLicn(metricNumber(lend.total_deposits) - metricNumber(lend.total_borrows)), 'piggy-bank', 'var(--accent-green)');
+            addCard('Liquidations', formatNum(metricNumber(lend.liquidation_count)), 'gavel', 'var(--accent-red)');
         }
         if (sporepay) {
-            addCard('Total Streamed', formatLicn(sporepay.total_streamed || 0), 'stream', 'var(--accent-blue)');
-            addCard('Stream Cancels', formatNum(sporepay.cancel_count || 0), 'times-circle', 'var(--cyan-accent)');
+            addCard('Total Streamed', formatLicn(metricNumber(sporepay.total_streamed)), 'stream', 'var(--accent-blue)');
+            addCard('Stream Cancels', formatNum(metricNumber(sporepay.cancel_count)), 'times-circle', 'var(--cyan-accent)');
         }
         if (vault) {
-            addCard('Vault Strategies', formatNum(vault.strategy_count || 0), 'layer-group', 'var(--accent-purple)');
-            addCard('Vault Earnings', formatLicn(vault.total_earned || 0), 'chart-line', 'var(--accent-green)');
+            addCard('Vault Strategies', formatNum(metricNumber(vault.strategy_count)), 'layer-group', 'var(--accent-purple)');
+            addCard('Vault Earnings', formatLicn(metricNumber(vault.total_earned)), 'chart-line', 'var(--accent-green)');
         }
         if (pump) {
-            addCard('SporePump Tokens', formatNum(pump.token_count || 0), 'rocket', 'var(--accent)');
-            addCard('Graduated Tokens', formatNum(pump.total_graduated || 0), 'arrow-up-right-dots', 'var(--accent-orange)');
+            addCard('SporePump Tokens', formatNum(metricNumber(pump.token_count)), 'rocket', 'var(--accent)');
+            addCard('Graduated Tokens', formatNum(metricNumber(pump.total_graduated)), 'arrow-up-right-dots', 'var(--accent-orange)');
         }
         if (bridge) {
-            addCard('Bridge Validators', formatNum(bridge.validator_count || 0), 'link', 'var(--accent-blue)');
-            addCard('Required Confirms', formatNum(bridge.required_confirms || 0), 'check-double', 'var(--cyan-accent)');
+            addCard('Bridge Validators', formatNum(metricNumber(bridge.validator_count)), 'link', 'var(--accent-blue)');
+            addCard('Required Confirms', formatNum(metricNumber(bridge.required_confirms)), 'check-double', 'var(--cyan-accent)');
         }
         if (bounty) {
-            addCard('Bounties Completed', formatNum(bounty.completed_count || 0), 'trophy', 'var(--accent-green)');
-            addCard('Reward Volume', formatLicn(bounty.reward_volume || 0), 'coins', 'var(--accent-purple)');
+            addCard('Bounties Completed', formatNum(metricNumber(bounty.completed_count)), 'trophy', 'var(--accent-green)');
+            addCard('Reward Volume', formatLicn(metricNumber(bounty.reward_volume)), 'coins', 'var(--accent-purple)');
         }
         if (compute) {
-            addCard('Jobs Completed', formatNum(compute.completed_count || 0), 'microchip', 'var(--accent-green)');
-            addCard('Payment Volume', formatLicn(compute.payment_volume || 0), 'money-bill', 'var(--accent-blue)');
+            addCard('Jobs Completed', formatNum(metricNumber(compute.completed_count)), 'microchip', 'var(--accent-green)');
+            addCard('Payment Volume', formatLicn(metricNumber(compute.payment_volume)), 'money-bill', 'var(--accent-blue)');
         }
         if (mossStorage) {
-            addCard('Storage Bytes', formatNum(mossStorage.total_bytes || 0), 'database', 'var(--accent-purple)');
-            addCard('Challenges', formatNum(mossStorage.challenge_count || 0), 'shield-alt', 'var(--cyan-accent)');
+            addCard('Storage Bytes', formatNum(metricNumber(mossStorage.total_bytes)), 'database', 'var(--accent-purple)');
+            addCard('Challenges', formatNum(metricNumber(mossStorage.challenge_count)), 'shield-alt', 'var(--cyan-accent)');
         }
         if (shieldedState) {
             addCard('Shielded Root', truncAddr(shieldedState.merkle_root || '--'), 'user-shield', 'var(--accent-purple)');
-            addCard('Shielded Pool Size', formatNum(shieldedState.pool_size || 0), 'eye-slash', 'var(--cyan-accent)');
+            addCard('Shielded Pool Size', formatNum(metricNumber(shieldedState.pool_size)), 'eye-slash', 'var(--cyan-accent)');
         }
 
         grid.innerHTML = cards.join('');
@@ -3851,22 +3858,22 @@ async function updateControlPlaneMonitor() {
 
     if (element('controlPlaneBaseFee')) {
         element('controlPlaneBaseFee').textContent = feeConfig
-            ? `${formatLicnPrecise(feeConfig.base_fee_spores || 0)} LICN`
+            ? `${formatLicnPrecise(feeConfig.base_fee_spores ?? 0)} LICN`
             : '--';
     }
     if (element('controlPlaneRentRate')) {
         element('controlPlaneRentRate').textContent = rentParams
-            ? `${formatNum(rentParams.rent_rate_spores_per_kb_month || 0)} spores`
+            ? `${formatNum(metricNumber(rentParams.rent_rate_spores_per_kb_month))} spores`
             : '--';
     }
     if (element('controlPlaneStakeTvl')) {
         element('controlPlaneStakeTvl').textContent = mossStakePool
-            ? `${formatLicn(mossStakePool.total_licn_staked || 0)} LICN`
+            ? `${formatLicn(metricNumber(mossStakePool.total_licn_staked))} LICN`
             : '--';
     }
     if (element('controlPlaneApy')) {
         element('controlPlaneApy').textContent = mossStakePool
-            ? formatPercent(mossStakePool.average_apy_percent || 0)
+            ? formatPercent(metricNumber(mossStakePool.average_apy_percent))
             : '--';
     }
     if (element('controlPlaneIncidentMode')) {
@@ -3896,16 +3903,16 @@ async function updateControlPlaneMonitor() {
                 'percent',
                 'var(--accent-blue)'
             );
-            addCard('Deploy Fee', `${formatLicnPrecise(feeConfig.contract_deploy_fee_spores || 0)} LICN`, 'Per contract deployment', 'upload', 'var(--accent-purple)');
-            addCard('Upgrade Fee', `${formatLicnPrecise(feeConfig.contract_upgrade_fee_spores || 0)} LICN`, 'Per contract upgrade', 'wrench', 'var(--cyan-accent)');
-            addCard('NFT Mint Fee', `${formatLicnPrecise(feeConfig.nft_mint_fee_spores || 0)} LICN`, 'Per NFT mint', 'image', 'var(--accent-green)');
+            addCard('Deploy Fee', `${formatLicnPrecise(feeConfig.contract_deploy_fee_spores ?? 0)} LICN`, 'Per contract deployment', 'upload', 'var(--accent-purple)');
+            addCard('Upgrade Fee', `${formatLicnPrecise(feeConfig.contract_upgrade_fee_spores ?? 0)} LICN`, 'Per contract upgrade', 'wrench', 'var(--cyan-accent)');
+            addCard('NFT Mint Fee', `${formatLicnPrecise(feeConfig.nft_mint_fee_spores ?? 0)} LICN`, 'Per NFT mint', 'image', 'var(--accent-green)');
         }
 
         if (rentParams) {
             addCard(
                 'Rent-Free Tier',
-                `${formatNum(rentParams.rent_free_kb || 0)} KB`,
-                `${formatNum(rentParams.rent_rate_spores_per_kb_month || 0)} spores / KB / month`,
+                `${formatNum(metricNumber(rentParams.rent_free_kb))} KB`,
+                `${formatNum(metricNumber(rentParams.rent_rate_spores_per_kb_month))} spores / KB / month`,
                 'warehouse',
                 'var(--accent-blue)'
             );
@@ -3913,12 +3920,12 @@ async function updateControlPlaneMonitor() {
 
         if (rewardInfo) {
             addCard('Inflation Rate', formatPercent(rewardInfo.inflationRatePercent, 4), `Est. APY ${rewardInfo.estimatedApy || '--'}%`, 'chart-line', 'var(--accent-green)');
-            addCard('Min Validator Stake', `${formatLicn(rewardInfo.minValidatorStake || 0)} LICN`, `${formatNum(rewardInfo.activeValidators || 0)} active validators`, 'shield-alt', 'var(--accent-red)');
+            addCard('Min Validator Stake', `${formatLicn(metricNumber(rewardInfo.minValidatorStake))} LICN`, `${formatNum(metricNumber(rewardInfo.activeValidators))} active validators`, 'shield-alt', 'var(--accent-red)');
         }
 
         if (mossStakePool) {
-            addCard('stLICN Exchange', `${Number(mossStakePool.exchange_rate || 0).toFixed(4)}x`, `${formatNum(mossStakePool.total_stakers || 0)} stakers · ${mossStakePool.cooldown_days || 0} day cooldown`, 'seedling', 'var(--accent-purple)');
-            addCard('MossStake Tiers', `${formatNum((mossStakePool.tiers || []).length)} tiers`, `${formatNum(mossStakePool.total_validators || 0)} validators routing rewards`, 'layer-group', 'var(--cyan-accent)');
+            addCard('stLICN Exchange', `${metricNumber(mossStakePool.exchange_rate).toFixed(4)}x`, `${formatNum(metricNumber(mossStakePool.total_stakers))} stakers · ${metricNumber(mossStakePool.cooldown_days)} day cooldown`, 'seedling', 'var(--accent-purple)');
+            addCard('MossStake Tiers', `${formatNum((mossStakePool.tiers || []).length)} tiers`, `${formatNum(metricNumber(mossStakePool.total_validators))} validators routing rewards`, 'layer-group', 'var(--cyan-accent)');
         }
 
         if (signedManifest) {
@@ -4032,8 +4039,8 @@ async function updateTreasuryDistributionBoard() {
     }
 
     const wallets = rewardInfo.wallets || {};
-    const genesisSupply = Number(rewardInfo.genesisSupply || 0);
-    const totalSupply = Number(rewardInfo.totalSupply || 0);
+    const genesisSupply = metricNumber(rewardInfo.genesisSupply);
+    const totalSupply = metricNumber(rewardInfo.totalSupply);
 
     let totalTracked = 0;
     let belowFloorCount = 0;
@@ -4171,7 +4178,7 @@ async function updateNetworkInfrastructureBoard() {
             ));
         } else {
             nodes
-                .sort((left, right) => Number(right.stake || 0) - Number(left.stake || 0))
+                .sort((left, right) => Number(right.stake ?? 0) - Number(left.stake ?? 0))
                 .forEach((node, index) => {
                     const delta = currentSlot > 0 ? Math.max(0, currentSlot - Number(node.last_active_slot || 0)) : 0;
                     const active = node.active !== false && delta <= 100;
@@ -4182,7 +4189,7 @@ async function updateNetworkInfrastructureBoard() {
                             : 'var(--danger)';
                     const label = `Validator ${index + 1}`;
                     const value = active ? `${formatNum(delta)} slot delta` : 'STALE';
-                    const meta = `${formatLicn(Number(node.stake || 0))} LICN · ${formatNum(Number(node.blocks_proposed || 0))} blocks · ${truncAddr(node.pubkey || '--')}`;
+                    const meta = `${formatLicn(Number(node.stake ?? 0))} LICN · ${formatNum(Number(node.blocks_proposed ?? 0))} blocks · ${truncAddr(node.pubkey || '--')}`;
                     const healthPct = active ? Math.max(6, 100 - clampPercentage(delta * 8)) : 4;
 
                     cards.push(renderOperatorTierCard(label, value, meta, active ? 'server' : 'triangle-exclamation', color, healthPct));
@@ -4357,15 +4364,15 @@ async function updateOracleBridgeHealthBoard() {
         rpc('getNeoGasRewardsStats').catch(() => null),
     ]);
 
-    setText('oracleFeedCount', oracle ? formatNum(Number(oracle.feeds || 0)) : '--');
-    setText('oracleQueryCount', oracle ? formatNum(Number(oracle.queries || 0)) : '--');
-    setText('oracleAttestationCount', oracle ? formatNum(Number(oracle.attestations || 0)) : '--');
-    setText('bridgeValidatorCount', bridge ? formatNum(Number(bridge.validator_count || 0)) : '--');
-    setText('bridgeRequiredConfirms', bridge ? formatNum(Number(bridge.required_confirms || 0)) : '--');
-    setText('bridgeLockedAmount', bridge ? `${formatLicn(Number(bridge.locked_amount || 0))} LICN` : '--');
+    setText('oracleFeedCount', oracle ? formatNum(metricNumber(oracle.feeds)) : '--');
+    setText('oracleQueryCount', oracle ? formatNum(metricNumber(oracle.queries)) : '--');
+    setText('oracleAttestationCount', oracle ? formatNum(metricNumber(oracle.attestations)) : '--');
+    setText('bridgeValidatorCount', bridge ? formatNum(metricNumber(bridge.validator_count)) : '--');
+    setText('bridgeRequiredConfirms', bridge ? formatNum(metricNumber(bridge.required_confirms)) : '--');
+    setText('bridgeLockedAmount', bridge ? `${formatLicn(metricNumber(bridge.locked_amount))} LICN` : '--');
 
-    const neoGasPaused = Boolean(neoGasRoute?.route_paused || neoGasRoute?.paused);
-    const neoPaused = Boolean(neoRoute?.route_paused || neoRoute?.paused);
+    const neoGasPaused = Boolean(neoGasRoute?.route_paused ?? neoGasRoute?.paused);
+    const neoPaused = Boolean(neoRoute?.route_paused ?? neoRoute?.paused);
     const neoPauseCount = [neoGasPaused, neoPaused].filter(Boolean).length;
     const neoRoutesAvailable = Boolean(neoGasRoute) || Boolean(neoRoute);
     const wgasSupply = Number(wgas?.total_supply ?? wgas?.supply ?? 0);
@@ -4377,10 +4384,10 @@ async function updateOracleBridgeHealthBoard() {
     const wgasReserveDeficit = Math.max(0, wgasSupply - wgasReserve);
     const wneoReserveDeficit = Math.max(0, wneoSupply - wneoReserve);
     const neoReserveDeficit = wgasReserveDeficit + wneoReserveDeficit;
-    const btcPaused = Boolean(btcRoute?.route_paused || btcRoute?.paused);
+    const btcPaused = Boolean(btcRoute?.route_paused ?? btcRoute?.paused);
     const btcReserveDeficit = Math.max(0, wbtcSupply - wbtcReserve);
-    const rewardsOutstanding = Number(neoGasRewards?.outstanding_rewards || 0);
-    const rewardsPrincipal = Number(neoGasRewards?.total_principal || 0);
+    const rewardsOutstanding = metricNumber(neoGasRewards?.outstanding_rewards);
+    const rewardsPrincipal = metricNumber(neoGasRewards?.total_principal);
     const rewardsPaused = Boolean(neoGasRewards?.paused);
     const rewardsConfigured = neoGasRewards?.configured === true;
     setText('neoGasRouteStatus', !neoGasRoute ? '--' : neoGasPaused ? 'PAUSED' : 'ACTIVE');
@@ -4399,7 +4406,7 @@ async function updateOracleBridgeHealthBoard() {
 
     const oraclePaused = Boolean(oracle?.paused);
     const bridgePaused = Boolean(bridge?.paused);
-    const requestTimeout = Number(bridge?.request_timeout || 0);
+    const requestTimeout = metricNumber(bridge?.request_timeout);
     const neoRouteNote = neoRoutesAvailable
         ? ` Neo X GAS route is ${neoGasPaused ? 'paused' : 'live'}; wNEO route status remains governed by route restrictions and source-route configuration.`
         : '';
@@ -4418,9 +4425,9 @@ async function updateOracleBridgeHealthBoard() {
         const cards = [];
 
         if (oracle) {
-            const feeds = Number(oracle.feeds || 0);
-            const queries = Number(oracle.queries || 0);
-            const attestations = Number(oracle.attestations || 0);
+            const feeds = metricNumber(oracle.feeds);
+            const queries = metricNumber(oracle.queries);
+            const attestations = metricNumber(oracle.attestations);
             const queriesPerFeed = feeds > 0 ? queries / feeds : 0;
             const attestationsPerFeed = feeds > 0 ? attestations / feeds : 0;
             const oracleColor = oraclePaused ? 'var(--warning)' : 'var(--success)';
@@ -4444,10 +4451,10 @@ async function updateOracleBridgeHealthBoard() {
         }
 
         if (bridge) {
-            const validators = Number(bridge.validator_count || 0);
-            const confirms = Number(bridge.required_confirms || 0);
-            const lockedAmount = Number(bridge.locked_amount || 0);
-            const nonce = Number(bridge.nonce || 0);
+            const validators = metricNumber(bridge.validator_count);
+            const confirms = metricNumber(bridge.required_confirms);
+            const lockedAmount = metricNumber(bridge.locked_amount);
+            const nonce = metricNumber(bridge.nonce);
             const bridgeColor = bridgePaused ? 'var(--warning)' : 'var(--primary)';
             const lockedPerValidator = validators > 0 ? lockedAmount / validators : 0;
 
@@ -4528,9 +4535,9 @@ async function updateOracleBridgeHealthBoard() {
                 : rewardsConfigured
                     ? 'var(--success)'
                     : 'var(--text-muted)';
-            const imported = Number(neoGasRewards.total_imported || 0);
-            const claimed = Number(neoGasRewards.total_claimed || 0);
-            const budget = Number(neoGasRewards.campaign_budget || 0);
+            const imported = metricNumber(neoGasRewards.total_imported);
+            const claimed = metricNumber(neoGasRewards.total_claimed);
+            const budget = metricNumber(neoGasRewards.campaign_budget);
             const budgetPct = budget > 0 ? clampPercentage((imported / budget) * 100) : 0;
             cards.push(renderOperatorTierCard(
                 'Neo GAS Rewards',
@@ -4577,7 +4584,7 @@ async function updatePrivacyPoolAuditBoard() {
     const transferCount = Number(shieldedState?.transferCount ?? shieldedState?.transfer_count ?? 0);
     const totalShielded = Number(shieldedState?.totalShielded ?? shieldedState?.total_shielded ?? shieldedState?.pool_balance ?? 0);
     const liveNotes = Math.max(0, commitmentCount - nullifierCount);
-    const effectiveSupply = Math.max(0, Number(metrics?.total_supply || 0) - Number(metrics?.total_burned || 0));
+    const effectiveSupply = Math.max(0, Number(metrics?.total_supply ?? 0) - Number(metrics?.total_burned ?? 0));
     const shieldedSharePct = effectiveSupply > 0 ? (totalShielded / effectiveSupply) * 100 : 0;
     const zkScheme = shieldedState?.zkScheme || shieldedState?.zk_scheme || '--';
 
@@ -4667,7 +4674,7 @@ async function updateGovernanceWatchBoard() {
                 owner: wallet.pubkey,
                 ownerLabel: wallet.label,
                 mint,
-                amount: Number(info?.tokenAmount?.amount || 0),
+                amount: Number(info?.tokenAmount?.amount ?? 0),
             });
         });
 

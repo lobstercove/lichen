@@ -259,8 +259,8 @@ async function displayBlock(block) {
     // Actual inflation settles at epoch boundaries across all stakers.
     const rewardCard = document.getElementById('rewardCard');
     if (reward && rewardCard && slot > 0) {
-        const projectedPerSlot = reward.projected_per_slot || reward.amount || 0;
-        const projectedLicn = reward.projected_per_slot_licn || reward.amount_licn || 0;
+        const projectedPerSlot = reward.projected_per_slot ?? reward.amount ?? 0;
+        const projectedLicn = reward.projected_per_slot_licn ?? reward.amount_licn ?? 0;
         if (projectedPerSlot > 0) {
             rewardCard.style.display = '';
             document.getElementById('rewardAmount').textContent =

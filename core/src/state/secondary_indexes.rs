@@ -364,12 +364,35 @@ impl StateStore {
             end_key.extend_from_slice(&[0xFF; 16]);
         }
 
+        let mut rows = std::collections::BTreeMap::new();
+        if let Some(cold) = self.cold_db.as_ref() {
+            if let Some(cold_cf) = cold.cf_handle(COLD_CF_TOKEN_TRANSFERS) {
+                let iter = cold.iterator_cf(
+                    &cold_cf,
+                    rocksdb::IteratorMode::From(&end_key, Direction::Reverse),
+                );
+                for (key, value) in iter.flatten() {
+                    if !key.starts_with(&prefix) {
+                        break;
+                    }
+                    if let Some(before_slot) = before_slot {
+                        if key.len() >= 40 {
+                            let slot_bytes: [u8; 8] = key[32..40].try_into().unwrap_or([0xFF; 8]);
+                            let slot = u64::from_be_bytes(slot_bytes);
+                            if slot >= before_slot {
+                                continue;
+                            }
+                        }
+                    }
+                    rows.insert(key.to_vec(), value.to_vec());
+                }
+            }
+        }
+
         let iter = self.db.iterator_cf(
             &cf,
             rocksdb::IteratorMode::From(&end_key, Direction::Reverse),
         );
-
-        let mut transfers = Vec::new();
         for (key, value) in iter.flatten() {
             if !key.starts_with(&prefix) {
                 break;
@@ -383,7 +406,12 @@ impl StateStore {
                     }
                 }
             }
-            if let Ok(transfer) = serde_json::from_slice::<TokenTransfer>(&value) {
+            rows.insert(key.to_vec(), value.to_vec());
+        }
+
+        let mut transfers = Vec::new();
+        for value in rows.values().rev() {
+            if let Ok(transfer) = serde_json::from_slice::<TokenTransfer>(value) {
                 transfers.push(transfer);
                 if transfers.len() >= limit {
                     break;

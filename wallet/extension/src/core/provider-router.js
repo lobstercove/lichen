@@ -154,10 +154,23 @@ function toHexQuantity(value) {
   return `0x${bigint.toString(16)}`;
 }
 
+function rpcSpendableBaseUnits(result) {
+  if (!result || typeof result !== 'object') return 0n;
+  const parse = (value) => {
+    if (typeof value === 'bigint') return value > 0n ? value : 0n;
+    if (typeof value === 'number') return Number.isSafeInteger(value) && value > 0 ? BigInt(value) : 0n;
+    const text = String(value ?? '0').trim();
+    return /^\d+$/.test(text) ? BigInt(text) : 0n;
+  };
+  if (Object.prototype.hasOwnProperty.call(result, 'spendable')) return parse(result.spendable);
+  if (Object.prototype.hasOwnProperty.call(result, 'available')) return parse(result.available);
+  return 0n;
+}
+
 function prunePendingRequests(now = Date.now()) {
   for (const [requestId, request] of pendingRequests.entries()) {
     if (request?.finalized) {
-      const finalizedAt = Number(request?.finalizedAt || request?.createdAt || 0);
+      const finalizedAt = Number(request?.finalizedAt ?? request?.createdAt ?? 0);
       if (finalizedAt > 0 && now - finalizedAt > FINALIZED_REQUEST_TTL_MS) {
         pendingRequests.delete(requestId);
       }
@@ -1695,7 +1708,7 @@ export async function handleProviderRequest(payload, context = {}) {
       const result = await rpc.getBalance(address);
       const requestedMethod = String(payload?.method || '').trim();
       if (requestedMethod === 'eth_getBalance') {
-        const spores = Number(result?.spendable ?? result?.balance ?? 0);
+        const spores = rpcSpendableBaseUnits(result);
         return { ok: true, result: toHexQuantity(spores) };
       }
       return { ok: true, result };
