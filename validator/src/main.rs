@@ -575,6 +575,40 @@ fn canonical_validator_set_snapshot(set: &ValidatorSet) -> ValidatorSet {
     canonical
 }
 
+fn reconcile_validator_set_production_counters(
+    set: &mut ValidatorSet,
+    stake_pool: &StakePool,
+) -> u64 {
+    let mut repaired = 0u64;
+    for validator in set.validators_mut() {
+        let Some(stake_info) = stake_pool.get_stake(&validator.pubkey) else {
+            continue;
+        };
+        if stake_info.blocks_produced > validator.blocks_proposed {
+            validator.blocks_proposed = stake_info.blocks_produced;
+            repaired = repaired.saturating_add(1);
+        }
+    }
+    repaired
+}
+
+fn persist_validator_set_production_counter_repair(
+    state: &StateStore,
+    set: &mut ValidatorSet,
+    stake_pool: &StakePool,
+    context: &str,
+) -> Result<u64, String> {
+    let repaired = reconcile_validator_set_production_counters(set, stake_pool);
+    if repaired > 0 {
+        state.save_validator_set(set)?;
+        info!(
+            "🔧 {}: backfilled validator production counters for {} validator(s) from stake pool",
+            context, repaired
+        );
+    }
+    Ok(repaired)
+}
+
 fn deserialize_validator_set_snapshot(data: &[u8]) -> Result<ValidatorSet, String> {
     let set: ValidatorSet = deserialize_snapshot_value(data, "validator_set snapshot")?;
     Ok(canonical_validator_set_snapshot(&set))
@@ -595,7 +629,10 @@ fn import_ordered_snapshot_category(
             let Some((_, data)) = entries.first() else {
                 return Err("validator_set snapshot category is empty".to_string());
             };
-            let set = deserialize_validator_set_snapshot(data)?;
+            let mut set = deserialize_validator_set_snapshot(data)?;
+            if let Ok(pool) = state.get_stake_pool() {
+                reconcile_validator_set_production_counters(&mut set, &pool);
+            }
             state
                 .save_validator_set(&set)
                 .map(|_| set.validators().len())
@@ -605,9 +642,16 @@ fn import_ordered_snapshot_category(
                 return Err("stake_pool snapshot category is empty".to_string());
             };
             let pool = deserialize_stake_pool_snapshot(data)?;
-            state
-                .put_stake_pool(&pool)
-                .map(|_| pool.stake_entries().len())
+            let count = pool.stake_entries().len();
+            state.put_stake_pool(&pool)?;
+            let mut set = state.load_validator_set()?;
+            persist_validator_set_production_counter_repair(
+                state,
+                &mut set,
+                &pool,
+                "stake_pool snapshot import",
+            )?;
+            Ok(count)
         }
         "mossstake_pool" => {
             let Some((_, data)) = entries.first() else {
@@ -981,7 +1025,7 @@ fn commit_snapshot_categories_from_store(
     target: &StateStore,
     categories: &[&str],
 ) -> Result<SnapshotCategoryCommitReport, String> {
-    let validator_set_snapshot = if categories.contains(&"validator_set") {
+    let mut validator_set_snapshot = if categories.contains(&"validator_set") {
         Some(canonical_validator_set_snapshot(
             &source.load_validator_set()?,
         ))
@@ -998,6 +1042,9 @@ fn commit_snapshot_categories_from_store(
     } else {
         None
     };
+    if let (Some(set), Some(pool)) = (&mut validator_set_snapshot, &stake_pool_snapshot) {
+        reconcile_validator_set_production_counters(set, pool);
+    }
     let merge_categories: &[&str] = if categories != WARP_SNAPSHOT_CATEGORIES
         && categories
             .iter()
@@ -13794,6 +13841,14 @@ async fn run_validator() {
             );
         }
 
+        let repaired = reconcile_validator_set_production_counters(&mut set, &persisted_pool);
+        if repaired > 0 {
+            info!(
+                "🔧 Startup: backfilled validator production counters for {} validator(s) from stake pool",
+                repaired
+            );
+        }
+
         set
     }));
 
@@ -20347,15 +20402,35 @@ async fn run_validator() {
         let mut interval = time::interval(Duration::from_secs(60));
         loop {
             interval.tick().await;
-            if let Ok(loaded_set) = state_for_reconcile.load_validator_set() {
+            let loaded_pool = state_for_reconcile.get_stake_pool().ok();
+            if let Ok(mut loaded_set) = state_for_reconcile.load_validator_set() {
+                let repaired = if let Some(pool) = loaded_pool.as_ref() {
+                    match persist_validator_set_production_counter_repair(
+                        &state_for_reconcile,
+                        &mut loaded_set,
+                        pool,
+                        "Periodic reconcile",
+                    ) {
+                        Ok(count) => count,
+                        Err(err) => {
+                            warn!(
+                                "⚠️  Periodic validator production counter repair failed: {}",
+                                err
+                            );
+                            0
+                        }
+                    }
+                } else {
+                    0
+                };
                 let mut vs = validator_set_for_reconcile.write().await;
-                if hash_validator_set(&vs) != hash_validator_set(&loaded_set) {
+                if repaired > 0 || hash_validator_set(&vs) != hash_validator_set(&loaded_set) {
                     *vs = loaded_set;
                     info!("🔄 Validator set reconciled from state");
                 }
             }
 
-            if let Ok(loaded_pool) = state_for_reconcile.get_stake_pool() {
+            if let Some(loaded_pool) = loaded_pool {
                 let mut pool = stake_pool_for_reconcile.write().await;
                 if reconcile_live_stake_pool_from_state(&mut pool, loaded_pool) {
                     info!("🔄 Stake pool reconciled from state");
@@ -24006,6 +24081,169 @@ mod tests {
             commit_round: 0,
             commit_signatures: vec![],
         }
+    }
+
+    #[test]
+    fn validator_counter_repair_uses_stake_pool_high_watermark() {
+        let validator_a = Pubkey([0xA1; 32]);
+        let validator_b = Pubkey([0xB2; 32]);
+        let mut set = ValidatorSet::new();
+        let mut info_a = ValidatorInfo::new(validator_a, 0);
+        info_a.stake = MIN_VALIDATOR_STAKE;
+        info_a.blocks_proposed = 12;
+        let mut info_b = ValidatorInfo::new(validator_b, 0);
+        info_b.stake = MIN_VALIDATOR_STAKE;
+        info_b.blocks_proposed = 99;
+        set.add_validator(info_a);
+        set.add_validator(info_b);
+
+        let mut pool = StakePool::new();
+        pool.stake(validator_a, MIN_VALIDATOR_STAKE, 0)
+            .expect("stake validator a");
+        pool.stake(validator_b, MIN_VALIDATOR_STAKE, 0)
+            .expect("stake validator b");
+        pool.get_stake_mut(&validator_a)
+            .expect("stake a")
+            .blocks_produced = 1_234;
+        pool.get_stake_mut(&validator_b)
+            .expect("stake b")
+            .blocks_produced = 50;
+
+        let validators_hash_before = compute_validators_hash(&set, &pool);
+        let repaired = reconcile_validator_set_production_counters(&mut set, &pool);
+        let validators_hash_after = compute_validators_hash(&set, &pool);
+
+        assert_eq!(repaired, 1);
+        assert_eq!(
+            set.get_validator(&validator_a)
+                .expect("validator a")
+                .blocks_proposed,
+            1_234
+        );
+        assert_eq!(
+            set.get_validator(&validator_b)
+                .expect("validator b")
+                .blocks_proposed,
+            99,
+            "repair must never lower a validator-set counter"
+        );
+        assert_eq!(
+            validators_hash_before, validators_hash_after,
+            "production counter repair must not alter consensus validator hash"
+        );
+    }
+
+    #[test]
+    fn validator_counter_repair_snapshot_commit_backfills_from_stake_pool() {
+        let validator = Pubkey([0xC3; 32]);
+        let source_dir = tempfile::tempdir().expect("source temp dir");
+        let target_dir = tempfile::tempdir().expect("target temp dir");
+        let source = StateStore::open(source_dir.path()).expect("open source");
+        let target = StateStore::open(target_dir.path()).expect("open target");
+
+        let mut set = ValidatorSet::new();
+        let mut info = ValidatorInfo::new(validator, 0);
+        info.stake = MIN_VALIDATOR_STAKE;
+        info.blocks_proposed = 7;
+        set.add_validator(info);
+        source.save_validator_set(&set).expect("save source set");
+
+        let mut pool = StakePool::new();
+        pool.stake(validator, MIN_VALIDATOR_STAKE, 0)
+            .expect("stake validator");
+        pool.get_stake_mut(&validator)
+            .expect("stake")
+            .blocks_produced = 1_808_551;
+        source.put_stake_pool(&pool).expect("save source pool");
+
+        let report = commit_snapshot_categories_from_store(
+            &source,
+            &target,
+            &["validator_set", "stake_pool"],
+        )
+        .expect("commit snapshot categories");
+
+        assert_eq!(
+            report
+                .validator_set
+                .as_ref()
+                .and_then(|set| set.get_validator(&validator))
+                .expect("report validator")
+                .blocks_proposed,
+            1_808_551
+        );
+        assert_eq!(
+            target
+                .load_validator_set()
+                .expect("load target set")
+                .get_validator(&validator)
+                .expect("target validator")
+                .blocks_proposed,
+            1_808_551
+        );
+        assert_eq!(
+            target
+                .get_stake_pool()
+                .expect("load target pool")
+                .get_stake(&validator)
+                .expect("target stake")
+                .blocks_produced,
+            1_808_551
+        );
+    }
+
+    #[test]
+    fn validator_counter_repair_ordered_import_backfills_after_stake_pool() {
+        let validator = Pubkey([0xD4; 32]);
+        let source_dir = tempfile::tempdir().expect("source temp dir");
+        let target_dir = tempfile::tempdir().expect("target temp dir");
+        let source = StateStore::open(source_dir.path()).expect("open source");
+        let target = StateStore::open(target_dir.path()).expect("open target");
+
+        let mut set = ValidatorSet::new();
+        let mut info = ValidatorInfo::new(validator, 0);
+        info.stake = MIN_VALIDATOR_STAKE;
+        info.blocks_proposed = 42;
+        set.add_validator(info);
+        source.save_validator_set(&set).expect("save source set");
+
+        let mut pool = StakePool::new();
+        pool.stake(validator, MIN_VALIDATOR_STAKE, 0)
+            .expect("stake validator");
+        pool.get_stake_mut(&validator)
+            .expect("stake")
+            .blocks_produced = 776_978;
+        source.put_stake_pool(&pool).expect("save source pool");
+
+        let validator_entries = export_roundtrip_snapshot_entries(&source, "validator_set", 1000)
+            .expect("export validator set");
+        let stake_entries = export_roundtrip_snapshot_entries(&source, "stake_pool", 1000)
+            .expect("export stake pool");
+
+        import_ordered_snapshot_category(&target, "validator_set", &validator_entries)
+            .expect("import validator set");
+        assert_eq!(
+            target
+                .load_validator_set()
+                .expect("load target set before pool")
+                .get_validator(&validator)
+                .expect("target validator before pool")
+                .blocks_proposed,
+            0,
+            "canonical validator snapshots still reset service counters until stake-pool repair"
+        );
+
+        import_ordered_snapshot_category(&target, "stake_pool", &stake_entries)
+            .expect("import stake pool");
+        assert_eq!(
+            target
+                .load_validator_set()
+                .expect("load target set after pool")
+                .get_validator(&validator)
+                .expect("target validator after pool")
+                .blocks_proposed,
+            776_978
+        );
     }
 
     fn make_tx_for_account(account: Pubkey, seed: u8) -> Transaction {
