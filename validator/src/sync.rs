@@ -316,6 +316,7 @@ impl SyncManager {
         let is_syncing = *self.is_syncing.lock().await;
         let current_batch = *self.current_sync_batch.lock().await;
         let phase = *self.sync_phase.lock().await;
+        let has_pending = !self.pending_blocks.lock().await.is_empty();
         // Cooldown: don't re-trigger sync within the adaptive cooldown period.
         // InitialSync uses a short fixed cooldown (500ms) for fast catch-up.
         // LiveSync uses exponential backoff to avoid flooding peers.
@@ -361,13 +362,12 @@ impl SyncManager {
         // proposal/full block.
         if highest > current_slot {
             // Determine start slot.
-            // InitialSync requests the first missing descendant. Pending blocks
-            // may be far-future live blocks seen while catching up; overlapping
-            // the already-stored tip can keep replay pinned behind duplicate
-            // range responses. LiveSync keeps tip overlap for fork resolution.
-            // LiveSync: include current_slot (overlap) for fork resolution —
-            //   the peer's version of our tip may replace ours if theirs has
-            //   more weight.
+            // Normal catch-up requests the first missing descendant. Pending
+            // blocks may be far-future live blocks seen while catching up; an
+            // unconditional overlap of the already-stored tip can pin replay
+            // behind finalized duplicates. LiveSync only overlaps the current
+            // tip when pending descendants prove there is a fork boundary to
+            // resolve.
             let start_slot = if phase == SyncPhase::InitialSync {
                 if current_slot == 0 {
                     // Pre-genesis callers request slot 0 explicitly. Once slot
@@ -386,8 +386,10 @@ impl SyncManager {
                 } else {
                     current_slot
                 }
+            } else if has_pending {
+                current_slot
             } else {
-                current_slot // Include overlap for fork resolution
+                current_slot.saturating_add(1)
             };
 
             // Calculate batch end. InitialSync only asks for the contiguous
@@ -812,12 +814,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_live_sync_overlaps_current_slot_when_one_block_behind() {
+    async fn test_live_sync_requests_first_missing_child_when_one_block_behind() {
         let sm = SyncManager::new();
         sm.transition_to_live().await;
         sm.note_seen(10).await;
         let batch = sm.should_sync(9).await;
-        assert_eq!(batch, Some((9, 10)));
+        assert_eq!(batch, Some((10, 10)));
     }
 
     #[tokio::test]
@@ -833,7 +835,7 @@ mod tests {
         let batch = sm.should_sync(10).await;
         assert_eq!(
             batch,
-            Some((10, 12)),
+            Some((11, 12)),
             "a live validator that completed a catch-up batch must not wait the full live cooldown before requesting the next near-tip gap"
         );
     }
@@ -924,15 +926,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_should_sync_overlap_live_sync() {
+    async fn test_should_sync_no_overlap_live_sync_without_pending() {
         let sm = SyncManager::new();
         sm.note_seen(100).await;
         sm.transition_to_live().await;
-        // LiveSync: start at current_slot (overlap for fork resolution)
         let batch = sm.should_sync(50).await;
         assert!(batch.is_some());
         let (start, end) = batch.unwrap();
-        assert_eq!(start, 50); // Overlap for fork resolution
+        assert_eq!(start, 51);
+        assert!(end <= 100);
+    }
+
+    #[tokio::test]
+    async fn test_should_sync_overlap_live_sync_with_pending_fork_boundary() {
+        let sm = SyncManager::new();
+        sm.note_seen(100).await;
+        sm.transition_to_live().await;
+        sm.add_pending_block(test_block(75)).await;
+
+        let batch = sm.should_sync(50).await;
+        assert!(batch.is_some());
+        let (start, end) = batch.unwrap();
+        assert_eq!(start, 50);
         assert!(end <= 100);
     }
 

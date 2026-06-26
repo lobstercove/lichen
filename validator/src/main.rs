@@ -15315,6 +15315,7 @@ async fn run_validator() {
                                 // finalized we must treat the overlap as an ordinary
                                 // duplicate. Re-evaluating it would immediately trip the
                                 // finality guard and strand the rest of the sync batch.
+                                sync_mgr.record_progress(block_slot).await;
                                 continue;
                             }
                             if should_reconsider_duplicate_block(
@@ -17061,6 +17062,16 @@ async fn run_validator() {
                     // Fork choice is only safe at the CURRENT TIP.
                     if block_slot < current_slot {
                         continue;
+                    }
+                    if is_sync_block && block_slot == current_slot {
+                        if let Ok(Some(existing)) = state_for_blocks.get_block_by_slot(block_slot) {
+                            if existing.hash() == block.hash()
+                                && !sync_mgr.has_pending_child(&existing.hash()).await
+                            {
+                                sync_mgr.record_progress(block_slot).await;
+                                continue;
+                            }
+                        }
                     }
                     let _block_apply_guard = block_apply_lock_for_blocks.lock().await;
                     let current_slot = state_for_blocks.get_last_slot().unwrap_or(current_slot);

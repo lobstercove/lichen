@@ -60,7 +60,7 @@ is_consensus_critical_release() {
 
 expected_validator_pubkey_for_host() {
   case "${NETWORK}:$1" in
-    testnet:15.204.229.189|testnet:vps-cdb47b12) echo "7LFPJ8gqmAtjbhfRg1P4VXmTQJV4AeZxzws3UsA6SVq" ;;
+    testnet:15.204.229.189|testnet:us-vps|testnet:vps-cdb47b12) echo "7LFPJ8gqmAtjbhfRg1P4VXmTQJV4AeZxzws3UsA6SVq" ;;
     testnet:37.59.97.61|testnet:eu-vps|testnet:vps-210edd4a) echo "6RMeoigHdJWB47pEZEMSj5gvT7nbJPYSfPqjcur9vMJ" ;;
     testnet:15.235.142.253|testnet:vps-df7100d5) echo "6TghL7ioQz5R8pfrX1Qcfy8rNMzRP5F2pndmmRQ2sPm" ;;
     testnet:148.113.43.247|testnet:seed-04) echo "6XhsGituXoWSd1wLtutZgdJve6gLrdSi7YhEx1ZDFHW" ;;
@@ -216,14 +216,25 @@ download_release_artifacts() {
     archives+=("$(archive_for_arch "$arch")")
   done
 
-  local archive
+  local unique_archives=()
+  local archive archives_seen
+  archives_seen=""
   for archive in "${archives[@]}"; do
-    if [ ! -f "$ARTIFACT_DIR/$archive" ]; then
-      gh release download "$RELEASE_TAG" --repo "$RELEASE_REPO" \
-        -p "$archive" \
-        -D "$ARTIFACT_DIR" \
+    case " $archives_seen " in
+      *" $archive "*) ;;
+      *)
+        unique_archives+=("$archive")
+        archives_seen="$archives_seen $archive"
+        ;;
+    esac
+  done
+  archives=("${unique_archives[@]}")
+
+  for archive in "${archives[@]}"; do
+    gh release download "$RELEASE_TAG" --repo "$RELEASE_REPO" \
+      -p "$archive" \
+      -D "$ARTIFACT_DIR" \
       --clobber
-    fi
   done
 
   SHA256SUMS_FILE="$ARTIFACT_DIR/SHA256SUMS" \
