@@ -14047,7 +14047,7 @@ async fn run_validator() {
     if let Err(e) = state.save_validator_set(&*validator_set.read().await) {
         tracing::error!("Failed to save validator set: {e}");
     }
-    {
+    if std::env::var("LICHEN_STARTUP_ARCHIVE_COUNTER_REPAIR").as_deref() == Ok("1") {
         let mut persisted_set = match state.load_validator_set() {
             Ok(set) => set,
             Err(_) => validator_set.read().await.clone(),
@@ -14088,6 +14088,10 @@ async fn run_validator() {
         if repaired_any {
             *validator_set.write().await = persisted_set;
         }
+    } else {
+        info!(
+            "Startup archive counter repair skipped; set LICHEN_STARTUP_ARCHIVE_COUNTER_REPAIR=1 for an explicit maintenance rebuild"
+        );
     }
 
     info!(

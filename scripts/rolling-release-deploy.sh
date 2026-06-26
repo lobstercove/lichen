@@ -359,11 +359,12 @@ REMOTE
   else
     scp_to "$ARTIFACT_DIR/$archive" "$host" "/tmp/$archive"
   fi
-  ssh_run_script "$host" "NETWORK='$NETWORK' SERVICE='$SERVICE' CUSTODY_SERVICE='$CUSTODY_SERVICE' ARCHIVE='/tmp/$archive' EXPECTED_VALIDATOR_SHA='$expected_validator_sha' EXPECTED_CUSTODY_SHA='$expected_custody_sha' EXPECTED_FAUCET_SHA='$expected_faucet_sha'" <<'REMOTE'
+  ssh_run_script "$host" "NETWORK='$NETWORK' SERVICE='$SERVICE' CUSTODY_SERVICE='$CUSTODY_SERVICE' RELEASE_TAG='$RELEASE_TAG' ARCHIVE='/tmp/$archive' EXPECTED_VALIDATOR_SHA='$expected_validator_sha' EXPECTED_CUSTODY_SHA='$expected_custody_sha' EXPECTED_FAUCET_SHA='$expected_faucet_sha'" <<'REMOTE'
 set -euo pipefail
 sudo() { command sudo -n "$@" </dev/null; }
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp" "$ARCHIVE"' EXIT
+backup_suffix="before-${RELEASE_TAG}-$(date -u +%Y%m%dT%H%M%SZ)"
 before_pid="$(systemctl show "$SERVICE" -p MainPID --value || true)"
 before_start="$(systemctl show "$SERVICE" -p ExecMainStartTimestampMonotonic --value || true)"
 
@@ -492,6 +493,9 @@ install_staged_bin() {
     return 0
   fi
   if [ -f "/usr/local/bin/$bin.new" ]; then
+    if [ -x "/usr/local/bin/$bin" ]; then
+      sudo -n cp -p "/usr/local/bin/$bin" "/usr/local/bin/$bin.${backup_suffix}"
+    fi
     sudo -n mv -f "/usr/local/bin/$bin.new" "/usr/local/bin/$bin"
   fi
 }
