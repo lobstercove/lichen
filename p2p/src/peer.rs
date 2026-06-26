@@ -27,7 +27,13 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
+use tokio::task::JoinSet;
+use tokio::time;
 use tracing::{error, info, warn};
+
+const P2P_DIRECT_STREAM_OPEN_TIMEOUT: Duration = Duration::from_secs(3);
+const P2P_BROADCAST_STREAM_OPEN_TIMEOUT: Duration = Duration::from_millis(250);
+const MAX_PARALLEL_BROADCAST_SENDS: usize = 64;
 
 fn runtime_lichen_dir(runtime_home: Option<&Path>) -> PathBuf {
     runtime_home
@@ -261,6 +267,134 @@ fn consensus_relay_targets(peers: &DashMap<SocketAddr, PeerInfo>) -> Vec<SocketA
         .filter(|entry| entry.value().score > -5)
         .map(|entry| *entry.key())
         .collect()
+}
+
+#[derive(Clone)]
+struct PeerSendTarget {
+    addr: SocketAddr,
+    connection_id: Option<usize>,
+    connection: Option<Connection>,
+    secure_session: Option<Arc<SecureSession>>,
+}
+
+type FailedSendTarget = Option<(SocketAddr, Option<usize>)>;
+type SendJoinResult = Option<Result<FailedSendTarget, tokio::task::JoinError>>;
+
+async fn open_uni_with_timeout(
+    connection: &Connection,
+    peer_addr: SocketAddr,
+    timeout: Duration,
+    label: &str,
+) -> Result<quinn::SendStream, String> {
+    match time::timeout(timeout, connection.open_uni()).await {
+        Ok(Ok(stream)) => Ok(stream),
+        Ok(Err(err)) => Err(format!(
+            "Failed to open {} stream to {}: {}",
+            label, peer_addr, err
+        )),
+        Err(_) => Err(format!(
+            "Timed out opening {} stream to {} after {}ms",
+            label,
+            peer_addr,
+            timeout.as_millis()
+        )),
+    }
+}
+
+async fn send_serialized_to_target(
+    target: PeerSendTarget,
+    plaintext: Arc<Vec<u8>>,
+    stream_label: &'static str,
+    log_label: &'static str,
+) -> Option<(SocketAddr, Option<usize>)> {
+    let (Some(conn), Some(session)) = (target.connection, target.secure_session) else {
+        return None;
+    };
+
+    let bytes = match session.encrypt(plaintext.as_ref()) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            warn!(
+                "P2P: Failed to encrypt {} send to {}: {}",
+                log_label, target.addr, e
+            );
+            return Some((target.addr, target.connection_id));
+        }
+    };
+    match open_uni_with_timeout(
+        &conn,
+        target.addr,
+        P2P_BROADCAST_STREAM_OPEN_TIMEOUT,
+        stream_label,
+    )
+    .await
+    {
+        Ok(mut stream) => {
+            if let Err(e) = stream.write_all(&bytes).await {
+                tracing::debug!("P2P: {} send to {} failed: {}", log_label, target.addr, e);
+                return Some((target.addr, target.connection_id));
+            }
+            if let Err(e) = stream.finish() {
+                tracing::debug!("P2P: {} finish to {} failed: {}", log_label, target.addr, e);
+                return Some((target.addr, target.connection_id));
+            }
+        }
+        Err(e) => {
+            tracing::debug!("P2P: {}", e);
+            return Some((target.addr, target.connection_id));
+        }
+    }
+    None
+}
+
+fn dedupe_hash_for_message(message: &P2PMessage, wire_bytes: &[u8]) -> Option<[u8; 32]> {
+    let semantic_bft_hash = matches!(
+        message.msg_type,
+        crate::MessageType::Proposal(_)
+            | crate::MessageType::Prevote(_)
+            | crate::MessageType::Precommit(_)
+    );
+
+    if semantic_bft_hash {
+        return match serialize_legacy_bincode_limited(
+            &message.msg_type,
+            crate::message::P2P_MESSAGE_CODEC_LIMIT_BYTES,
+            "P2P semantic message type",
+        ) {
+            Ok(payload) => Some(Sha256::digest(&payload).into()),
+            Err(e) => {
+                warn!(
+                    "P2P: Failed to build semantic BFT dedupe key, falling back to envelope hash: {}",
+                    e
+                );
+                Some(Sha256::digest(wire_bytes).into())
+            }
+        };
+    }
+
+    let should_dedup = matches!(
+        message.msg_type,
+        crate::MessageType::Block(_)
+            | crate::MessageType::Vote(_)
+            | crate::MessageType::Transaction(_)
+            | crate::MessageType::SlashingEvidence(_)
+            | crate::MessageType::ValidatorAnnounce { .. }
+            | crate::MessageType::CompactBlockMsg(_)
+    );
+
+    should_dedup.then(|| Sha256::digest(wire_bytes).into())
+}
+
+fn log_connection_handler_error(peer_addr: SocketAddr, err: &str) {
+    if err.contains("Failed to accept stream: timed out") {
+        tracing::debug!(
+            "P2P: Connection with {} accept timed out: {}",
+            peer_addr,
+            err
+        );
+    } else {
+        error!("P2P: Connection error with {}: {}", peer_addr, err);
+    }
 }
 
 /// Check whether two IPs share the same subnet.
@@ -724,7 +858,7 @@ impl PeerManager {
             )
             .await
             {
-                error!("P2P: Connection error with {}: {}", peer_addr, e);
+                log_connection_handler_error(peer_addr, &e);
             }
             // Remove only the connection this task owns. A reconnect can replace
             // the same peer address while the old QUIC handler is still exiting.
@@ -770,10 +904,13 @@ impl PeerManager {
                 );
             }
 
-            let mut send_stream = connection
-                .open_uni()
-                .await
-                .map_err(|e| format!("Failed to open stream to {}: {}", peer_addr, e))?;
+            let mut send_stream = open_uni_with_timeout(
+                &connection,
+                *peer_addr,
+                P2P_DIRECT_STREAM_OPEN_TIMEOUT,
+                "direct",
+            )
+            .await?;
 
             send_stream
                 .write_all(&bytes)
@@ -795,18 +932,71 @@ impl PeerManager {
         }
     }
 
+    fn send_target_for_addr(&self, addr: SocketAddr) -> PeerSendTarget {
+        let peer = self.peers.get(&addr);
+        PeerSendTarget {
+            addr,
+            connection_id: peer.as_ref().and_then(|p| p.connection_id),
+            connection: peer.as_ref().and_then(|p| p.connection.clone()),
+            secure_session: peer.as_ref().and_then(|p| p.secure_session.clone()),
+        }
+    }
+
+    async fn send_serialized_to_targets_bounded(
+        &self,
+        plaintext: Arc<Vec<u8>>,
+        targets: Vec<PeerSendTarget>,
+        stream_label: &'static str,
+        log_label: &'static str,
+    ) {
+        let mut join_set = JoinSet::new();
+
+        for target in targets {
+            while join_set.len() >= MAX_PARALLEL_BROADCAST_SENDS {
+                self.handle_send_join_result(join_set.join_next().await, log_label);
+            }
+
+            let plaintext = plaintext.clone();
+            join_set.spawn(send_serialized_to_target(
+                target,
+                plaintext,
+                stream_label,
+                log_label,
+            ));
+        }
+
+        while !join_set.is_empty() {
+            self.handle_send_join_result(join_set.join_next().await, log_label);
+        }
+    }
+
+    fn handle_send_join_result(&self, result: SendJoinResult, log_label: &str) {
+        match result {
+            Some(Ok(Some((addr, connection_id)))) => {
+                self.record_transient_failure_for_connection(&addr, connection_id);
+            }
+            Some(Ok(None)) | None => {}
+            Some(Err(e)) => warn!("P2P: {} send task panicked: {}", log_label, e),
+        }
+    }
+
     /// Broadcast message to all peers except the specified sender (for relay/re-broadcasting).
     /// Uses concurrent sends like broadcast() but skips the sender to avoid echo.
     /// F-17 audit fix: Also skips low-score peers.
     pub async fn broadcast_except(&self, message: &P2PMessage, except: &SocketAddr) {
-        let peers: Vec<SocketAddr> = self
+        let targets: Vec<PeerSendTarget> = self
             .peers
             .iter()
             .filter(|entry| entry.value().score > -5)
-            .map(|entry| *entry.key())
-            .filter(|addr| addr != except)
+            .filter(|entry| entry.key() != except)
+            .map(|entry| PeerSendTarget {
+                addr: *entry.key(),
+                connection_id: entry.value().connection_id,
+                connection: entry.value().connection.clone(),
+                secure_session: entry.value().secure_session.clone(),
+            })
             .collect();
-        if peers.is_empty() {
+        if targets.is_empty() {
             return;
         }
 
@@ -818,48 +1008,8 @@ impl PeerManager {
             }
         };
 
-        let mut conn_tasks: Vec<(
-            SocketAddr,
-            Option<quinn::Connection>,
-            Option<Arc<SecureSession>>,
-        )> = Vec::with_capacity(peers.len());
-        for addr in &peers {
-            let peer = self.peers.get(addr);
-            let conn = peer.as_ref().and_then(|p| p.connection.clone());
-            let session = peer.as_ref().and_then(|p| p.secure_session.clone());
-            conn_tasks.push((*addr, conn, session));
-        }
-
-        let mut handles = Vec::with_capacity(conn_tasks.len());
-        for (peer_addr, connection, secure_session) in conn_tasks {
-            let plaintext = plaintext.clone();
-            handles.push(tokio::spawn(async move {
-                if let (Some(conn), Some(session)) = (connection, secure_session) {
-                    let bytes = match session.encrypt(plaintext.as_ref()) {
-                        Ok(bytes) => bytes,
-                        Err(e) => {
-                            warn!("P2P: Failed to encrypt relay to {}: {}", peer_addr, e);
-                            return;
-                        }
-                    };
-                    match conn.open_uni().await {
-                        Ok(mut stream) => {
-                            if let Err(e) = stream.write_all(&bytes).await {
-                                warn!("P2P: Failed to relay to {}: {}", peer_addr, e);
-                            }
-                            drop(stream.finish());
-                        }
-                        Err(e) => warn!("P2P: Failed to open relay stream to {}: {}", peer_addr, e),
-                    }
-                }
-            }));
-        }
-
-        for handle in handles {
-            if let Err(e) = handle.await {
-                warn!("P2P: relay task panicked: {}", e);
-            }
-        }
+        self.send_serialized_to_targets_bounded(plaintext, targets, "relay", "relay")
+            .await;
     }
 
     /// Broadcast message to all peers (parallel — PERF-FIX 1)
@@ -867,13 +1017,18 @@ impl PeerManager {
     /// With 500 validators, sequential = 2.5s; parallel = ~50ms.
     /// F-17 audit fix: Skip peers with score <= -5 (degraded but not yet evicted).
     pub async fn broadcast(&self, message: P2PMessage) {
-        let peers: Vec<SocketAddr> = self
+        let targets: Vec<PeerSendTarget> = self
             .peers
             .iter()
             .filter(|entry| entry.value().score > -5)
-            .map(|entry| *entry.key())
+            .map(|entry| PeerSendTarget {
+                addr: *entry.key(),
+                connection_id: entry.value().connection_id,
+                connection: entry.value().connection.clone(),
+                secure_session: entry.value().secure_session.clone(),
+            })
             .collect();
-        if peers.is_empty() {
+        if targets.is_empty() {
             return;
         }
 
@@ -886,51 +1041,8 @@ impl PeerManager {
             }
         };
 
-        // Extract connection handles upfront (drop DashMap guards before async)
-        let mut conn_tasks: Vec<(
-            SocketAddr,
-            Option<quinn::Connection>,
-            Option<Arc<SecureSession>>,
-        )> = Vec::with_capacity(peers.len());
-        for addr in &peers {
-            let peer = self.peers.get(addr);
-            let conn = peer.as_ref().and_then(|p| p.connection.clone());
-            let session = peer.as_ref().and_then(|p| p.secure_session.clone());
-            conn_tasks.push((*addr, conn, session));
-        }
-
-        // Spawn concurrent send tasks
-        let mut handles = Vec::with_capacity(conn_tasks.len());
-        for (peer_addr, connection, secure_session) in conn_tasks {
-            let plaintext = plaintext.clone();
-            handles.push(tokio::spawn(async move {
-                if let (Some(conn), Some(session)) = (connection, secure_session) {
-                    let bytes = match session.encrypt(plaintext.as_ref()) {
-                        Ok(bytes) => bytes,
-                        Err(e) => {
-                            warn!("P2P: Failed to encrypt send to {}: {}", peer_addr, e);
-                            return;
-                        }
-                    };
-                    match conn.open_uni().await {
-                        Ok(mut stream) => {
-                            if let Err(e) = stream.write_all(&bytes).await {
-                                warn!("P2P: Failed to send to {}: {}", peer_addr, e);
-                            }
-                            drop(stream.finish());
-                        }
-                        Err(e) => warn!("P2P: Failed to open stream to {}: {}", peer_addr, e),
-                    }
-                }
-            }));
-        }
-
-        // Await all sends concurrently
-        for handle in handles {
-            if let Err(e) = handle.await {
-                warn!("P2P: send task panicked: {}", e);
-            }
-        }
+        self.send_serialized_to_targets_bounded(plaintext, targets, "broadcast", "broadcast")
+            .await;
     }
 
     fn non_consensus_targets(&self, target_id: &[u8; 32], fanout: usize) -> Vec<SocketAddr> {
@@ -985,38 +1097,12 @@ impl PeerManager {
             }
         };
 
-        let mut handles = Vec::with_capacity(targets.len());
-        for addr in targets {
-            let peer = self.peers.get(&addr);
-            let conn = peer.as_ref().and_then(|p| p.connection.clone());
-            let session = peer.as_ref().and_then(|p| p.secure_session.clone());
-            let plaintext = plaintext.clone();
-            handles.push(tokio::spawn(async move {
-                if let (Some(conn), Some(session)) = (conn, session) {
-                    let bytes = match session.encrypt(plaintext.as_ref()) {
-                        Ok(bytes) => bytes,
-                        Err(e) => {
-                            warn!("P2P: Failed to encrypt routed send to {}: {}", addr, e);
-                            return;
-                        }
-                    };
-                    match conn.open_uni().await {
-                        Ok(mut stream) => {
-                            if let Err(e) = stream.write_all(&bytes).await {
-                                warn!("P2P: routed send to {} failed: {}", addr, e);
-                            }
-                            drop(stream.finish());
-                        }
-                        Err(e) => warn!("P2P: routed stream to {} failed: {}", addr, e),
-                    }
-                }
-            }));
-        }
-        for handle in handles {
-            if let Err(e) = handle.await {
-                warn!("P2P: routed send task panicked: {}", e);
-            }
-        }
+        let targets = targets
+            .into_iter()
+            .map(|addr| self.send_target_for_addr(addr))
+            .collect();
+        self.send_serialized_to_targets_bounded(plaintext, targets, "routed", "routed")
+            .await;
     }
 
     /// P3-2: Update the Kademlia routing table when a peer's node_id is learned.
@@ -1074,38 +1160,12 @@ impl PeerManager {
             }
         };
 
-        let mut handles = Vec::with_capacity(relay_addrs.len());
-        for addr in relay_addrs {
-            let peer = self.peers.get(&addr);
-            let conn = peer.as_ref().and_then(|p| p.connection.clone());
-            let session = peer.as_ref().and_then(|p| p.secure_session.clone());
-            let plaintext = plaintext.clone();
-            handles.push(tokio::spawn(async move {
-                if let (Some(conn), Some(session)) = (conn, session) {
-                    let bytes = match session.encrypt(plaintext.as_ref()) {
-                        Ok(bytes) => bytes,
-                        Err(e) => {
-                            warn!("P2P: Failed to encrypt validator send to {}: {}", addr, e);
-                            return;
-                        }
-                    };
-                    match conn.open_uni().await {
-                        Ok(mut stream) => {
-                            if let Err(e) = stream.write_all(&bytes).await {
-                                warn!("P2P: validator send to {} failed: {}", addr, e);
-                            }
-                            drop(stream.finish());
-                        }
-                        Err(e) => warn!("P2P: validator stream to {} failed: {}", addr, e),
-                    }
-                }
-            }));
-        }
-        for handle in handles {
-            if let Err(e) = handle.await {
-                warn!("P2P: validator send task panicked: {}", e);
-            }
-        }
+        let targets = relay_addrs
+            .into_iter()
+            .map(|addr| self.send_target_for_addr(addr))
+            .collect();
+        self.send_serialized_to_targets_bounded(plaintext, targets, "validator", "validator")
+            .await;
     }
 
     /// P3-5: Get addresses of all connected validator peers.
@@ -1158,6 +1218,36 @@ impl PeerManager {
                 drop(peer);
                 self.peers.remove(&addr);
                 warn!("P2P: Removed peer {} due to low score", addr);
+            }
+        }
+    }
+
+    /// Record a transient delivery failure such as a timed-out stream open.
+    /// This degrades/removes the current connection so hot paths stop waiting
+    /// on it, but it does not persist a ban. A validator or honest peer that
+    /// comes back after an outage must be able to reconnect and resync.
+    pub fn record_transient_failure(&self, peer_addr: &SocketAddr) {
+        self.record_transient_failure_for_connection(peer_addr, None);
+    }
+
+    fn record_transient_failure_for_connection(
+        &self,
+        peer_addr: &SocketAddr,
+        connection_id: Option<usize>,
+    ) {
+        if let Some(mut peer) = self.peers.get_mut(peer_addr) {
+            if connection_id.is_some() && peer.connection_id != connection_id {
+                return;
+            }
+            peer.adjust_score(-2);
+            if peer.score <= -5 {
+                let addr = *peer_addr;
+                drop(peer);
+                self.peers.remove(&addr);
+                warn!(
+                    "P2P: Removed peer {} after transient delivery failures",
+                    addr
+                );
             }
         }
     }
@@ -1364,7 +1454,7 @@ impl PeerManager {
                             )
                             .await
                             {
-                                error!("P2P: Connection error with {}: {}", peer_addr, e);
+                                log_connection_handler_error(peer_addr, &e);
                             }
                             // Remove only the connection this task owns. A newer
                             // outbound or inbound connection for the same address
@@ -1474,7 +1564,7 @@ async fn handle_connection(
         // Log every Nth stream for debugging connection liveness, and always
         // log large payloads that might be sync responses.
         if stream_count <= 3 || stream_count.is_multiple_of(100) || bytes.len() > 1024 {
-            tracing::info!(
+            tracing::debug!(
                 "📥 P2P STREAM #{} from {}: {} bytes",
                 stream_count,
                 peer_addr,
@@ -1514,27 +1604,11 @@ async fn handle_connection(
                     _ => {}
                 }
 
-                // C2-01: Dedup — hash the raw message bytes and skip if already seen.
-                // Only dedup gossip message types (Block, Vote, Transaction,
-                // SlashingEvidence, ValidatorAnnounce, and BFT consensus
-                // messages). Request/response types (Ping, Pong, BlockRequest,
-                // StatusRequest, etc.) are point-to-point and must always be
-                // processed. BFT messages (Proposal, Prevote, Precommit) are
-                // included because validators re-gossip them (CometBFT reactor
-                // pattern) and we must prevent infinite relay loops.
-                let should_dedup = matches!(
-                    message.msg_type,
-                    crate::MessageType::Block(_)
-                        | crate::MessageType::Vote(_)
-                        | crate::MessageType::Transaction(_)
-                        | crate::MessageType::SlashingEvidence(_)
-                        | crate::MessageType::ValidatorAnnounce { .. }
-                        | crate::MessageType::Proposal(_)
-                        | crate::MessageType::Prevote(_)
-                        | crate::MessageType::Precommit(_)
-                );
-                if should_dedup {
-                    let hash: [u8; 32] = Sha256::digest(&bytes).into();
+                // C2-01: Dedup gossip messages before they enter the network
+                // manager. BFT messages use a semantic payload hash so the same
+                // signed vote/proposal cannot bypass dedupe by changing the
+                // unsigned P2P envelope sender or timestamp.
+                if let Some(hash) = dedupe_hash_for_message(&message, &bytes) {
                     let already_seen = seen_messages
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
@@ -2793,6 +2867,162 @@ mod tests {
         peer.adjust_score(-2); // violation 1
         peer.adjust_score(-2); // violation 2
         assert_eq!(peer.score, 1); // still positive — wouldn't be evicted
+    }
+
+    #[tokio::test]
+    async fn transient_delivery_failures_remove_without_banning_peer() {
+        let tmp = std::env::temp_dir().join(format!(
+            "lichen-test-transient-peer-failure-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let (tx, _rx) = mpsc::channel(8);
+        let mgr = PeerManager::new(
+            "127.0.0.1:0".parse().unwrap(),
+            tx,
+            Some(tmp.clone()),
+            None,
+            10,
+            vec![],
+        )
+        .await
+        .unwrap();
+
+        let addr: SocketAddr = "10.0.0.1:7001".parse().unwrap();
+        mgr.peers.insert(addr, PeerInfo::new(addr));
+
+        mgr.record_transient_failure(&addr);
+        mgr.record_transient_failure(&addr);
+        mgr.record_transient_failure(&addr);
+
+        assert!(!mgr.peers.contains_key(&addr));
+        assert!(!mgr.is_banned(&addr));
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn stale_transient_failure_does_not_remove_newer_connection() {
+        let tmp = std::env::temp_dir().join(format!(
+            "lichen-test-stale-transient-peer-failure-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let (tx, _rx) = mpsc::channel(8);
+        let mgr = PeerManager::new(
+            "127.0.0.1:0".parse().unwrap(),
+            tx,
+            Some(tmp.clone()),
+            None,
+            10,
+            vec![],
+        )
+        .await
+        .unwrap();
+
+        let addr: SocketAddr = "10.0.0.3:7001".parse().unwrap();
+        let mut peer = PeerInfo::new(addr);
+        peer.connection_id = Some(2);
+        mgr.peers.insert(addr, peer);
+
+        for _ in 0..3 {
+            mgr.record_transient_failure_for_connection(&addr, Some(1));
+        }
+
+        {
+            let current = mgr.peers.get(&addr).expect("newer connection remains");
+            assert_eq!(current.connection_id, Some(2));
+            assert_eq!(
+                current.score, 0,
+                "stale failures from an old connection must not penalize the new one"
+            );
+        }
+
+        for _ in 0..3 {
+            mgr.record_transient_failure_for_connection(&addr, Some(2));
+        }
+        assert!(!mgr.peers.contains_key(&addr));
+        assert!(!mgr.is_banned(&addr));
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn explicit_violations_still_ban_peer() {
+        let tmp = std::env::temp_dir().join(format!(
+            "lichen-test-explicit-peer-ban-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let (tx, _rx) = mpsc::channel(8);
+        let mgr = PeerManager::new(
+            "127.0.0.1:0".parse().unwrap(),
+            tx,
+            Some(tmp.clone()),
+            None,
+            10,
+            vec![],
+        )
+        .await
+        .unwrap();
+
+        let addr: SocketAddr = "10.0.0.2:7001".parse().unwrap();
+        mgr.peers.insert(addr, PeerInfo::new(addr));
+
+        for _ in 0..5 {
+            mgr.record_violation(&addr);
+        }
+
+        assert!(!mgr.peers.contains_key(&addr));
+        assert!(mgr.is_banned(&addr));
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn bft_dedupe_hash_ignores_envelope_sender_and_timestamp() {
+        let keypair = Keypair::generate();
+        let block_hash = Some(lichen_core::Hash::hash(b"dedupe-prevote"));
+        let prevote = lichen_core::Prevote {
+            height: 42,
+            round: 1,
+            block_hash,
+            validator: keypair.pubkey(),
+            signature: keypair.sign(&lichen_core::Prevote::signable_bytes(42, 1, &block_hash)),
+        };
+
+        let mut first = P2PMessage::new(
+            crate::MessageType::Prevote(prevote.clone()),
+            "10.0.0.1:7001".parse().unwrap(),
+        );
+        first.timestamp = 100;
+        let mut second = P2PMessage::new(
+            crate::MessageType::Prevote(prevote),
+            "10.0.0.2:7001".parse().unwrap(),
+        );
+        second.timestamp = 200;
+
+        let first_wire = first.serialize().expect("serialize first");
+        let second_wire = second.serialize().expect("serialize second");
+        assert_ne!(Sha256::digest(&first_wire), Sha256::digest(&second_wire));
+
+        let first_hash = dedupe_hash_for_message(&first, &first_wire).expect("first dedupe hash");
+        let second_hash =
+            dedupe_hash_for_message(&second, &second_wire).expect("second dedupe hash");
+        assert_eq!(first_hash, second_hash);
+
+        let mut cache = SeenMessageCache::new(8);
+        assert!(!cache.check_and_insert(first_hash));
+        assert!(
+            cache.check_and_insert(second_hash),
+            "same BFT payload with different envelope must dedupe"
+        );
     }
 
     // ── Eclipse Attack Resistance ────────────────────────────────────

@@ -16,7 +16,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Semaphore};
 use tracing::{debug, error, info, warn};
 
 const MAX_BLOCK_RANGE_REQUEST_SPAN: u64 = 500;
@@ -27,8 +27,52 @@ const MAX_BLOCK_TXS_TRANSACTIONS: usize = MAX_TX_PER_BLOCK;
 const MAX_STATE_SNAPSHOT_REQUEST_CHUNK_SIZE: u64 = 2000;
 const MAX_STATE_SNAPSHOT_REQUEST_CHUNK_INDEX: u64 = 10_000_000;
 const MAX_EXPENSIVE_REQUESTS_PER_WINDOW: u32 = 30;
+const MAX_CONCURRENT_RELAY_FANOUT_TASKS: usize = 64;
+const MAX_CONCURRENT_BFT_RELAY_FANOUT_TASKS: usize = 64;
 const SYNC_BLOCK_QUEUE_SEND_TIMEOUT: Duration = Duration::from_secs(10);
 const SNAPSHOT_REQUEST_QUEUE_SEND_TIMEOUT: Duration = Duration::from_secs(2);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BftAdmission {
+    validator: Pubkey,
+    height: u64,
+    signature_valid: bool,
+}
+
+fn proposal_bft_admission(proposal: &Proposal, chain_id: &str) -> BftAdmission {
+    BftAdmission {
+        validator: proposal.proposer,
+        height: proposal.height,
+        signature_valid: proposal.verify_signature_with_chain_id(chain_id),
+    }
+}
+
+fn prevote_bft_admission(prevote: &Prevote, chain_id: &str) -> BftAdmission {
+    BftAdmission {
+        validator: prevote.validator,
+        height: prevote.height,
+        signature_valid: prevote.verify_signature_with_chain_id(chain_id),
+    }
+}
+
+fn precommit_bft_admission(precommit: &Precommit, chain_id: &str) -> BftAdmission {
+    BftAdmission {
+        validator: precommit.validator,
+        height: precommit.height,
+        signature_valid: precommit.verify_signature_with_chain_id(chain_id),
+    }
+}
+
+#[cfg(test)]
+fn bft_admission_for_message(msg_type: &MessageType, chain_id: &str) -> Option<BftAdmission> {
+    match msg_type {
+        MessageType::Proposal(proposal) => Some(proposal_bft_admission(proposal, chain_id)),
+        MessageType::Prevote(prevote) => Some(prevote_bft_admission(prevote, chain_id)),
+        MessageType::Precommit(precommit) => Some(precommit_bft_admission(precommit, chain_id)),
+        _ => None,
+    }
+}
+
 fn is_allowed_state_snapshot_category(category: &str) -> bool {
     STATE_SNAPSHOT_CATEGORIES.contains(&category)
         || STATE_SNAPSHOT_SPECIAL_CATEGORIES.contains(&category)
@@ -538,6 +582,14 @@ pub struct P2PNetwork {
     /// False for sync-only nodes.
     consensus_gossip_enabled: bool,
 
+    /// Bounds asynchronous non-consensus gossip relay fanout work so a flood of
+    /// unique valid envelopes cannot create unbounded relay tasks.
+    relay_task_semaphore: Arc<Semaphore>,
+
+    /// Separate bounded capacity for BFT relay. Consensus messages must not be
+    /// starved by non-consensus gossip saturation.
+    bft_relay_task_semaphore: Arc<Semaphore>,
+
     /// AUDIT-FIX H11: Track last announcement slot per validator pubkey
     /// to reject stale/replayed validator announcements.
     last_announce_slot: std::sync::Mutex<std::collections::HashMap<[u8; 32], u64>>,
@@ -661,6 +713,10 @@ impl P2PNetwork {
             consensus_activity_tx,
             consensus_chain_id: config.consensus_chain_id,
             consensus_gossip_enabled: config.consensus_gossip_enabled,
+            relay_task_semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_RELAY_FANOUT_TASKS)),
+            bft_relay_task_semaphore: Arc::new(Semaphore::new(
+                MAX_CONCURRENT_BFT_RELAY_FANOUT_TASKS,
+            )),
             last_announce_slot: std::sync::Mutex::new(std::collections::HashMap::new()),
         })
     }
@@ -758,12 +814,10 @@ impl P2PNetwork {
                 | MessageType::CompactBlockMsg(_)
         );
         let should_relay_bft = is_bft_message && self.consensus_gossip_enabled;
-        let should_relay_gossip =
-            is_relay_or_seed && is_gossip_message && (!is_bft_message || should_relay_bft);
-        if should_relay_gossip || should_relay_bft {
-            self.peer_manager
-                .broadcast_except(&message, &peer_addr)
-                .await;
+        let bft_relay_message = should_relay_bft.then(|| message.clone());
+        let should_relay_gossip = is_relay_or_seed && is_gossip_message && !is_bft_message;
+        if should_relay_gossip {
+            self.spawn_relay_except(message.clone(), peer_addr);
         }
 
         match message.msg_type {
@@ -805,16 +859,28 @@ impl P2PNetwork {
                     );
                     return Ok(());
                 }
-                info!(
+                debug!(
                     "📥 BFT RECV: Proposal h={} r={} from peer {}",
                     proposal.height, proposal.round, peer_addr
                 );
+                let admission = proposal_bft_admission(&proposal, &self.consensus_chain_id);
                 self.record_consensus_activity(
                     peer_addr,
-                    proposal.proposer,
-                    proposal.height,
-                    proposal.verify_signature_with_chain_id(&self.consensus_chain_id),
+                    admission.validator,
+                    admission.height,
+                    admission.signature_valid,
                 );
+                if !admission.signature_valid {
+                    debug!(
+                        "P2P: Dropping invalid BFT proposal h={} r={} from {}",
+                        proposal.height, proposal.round, peer_addr
+                    );
+                    self.peer_manager.record_violation(&peer_addr);
+                    return Ok(());
+                }
+                if let Some(relay_message) = bft_relay_message.clone() {
+                    self.relay_bft_except(relay_message, peer_addr).await;
+                }
                 if let Err(e) = self.proposal_tx.try_send(proposal) {
                     warn!(
                         "P2P: Proposal channel full, dropping proposal from {} ({})",
@@ -831,16 +897,28 @@ impl P2PNetwork {
                     );
                     return Ok(());
                 }
-                info!(
+                debug!(
                     "📥 BFT RECV: Prevote h={} r={} from peer {}",
                     prevote.height, prevote.round, peer_addr
                 );
+                let admission = prevote_bft_admission(&prevote, &self.consensus_chain_id);
                 self.record_consensus_activity(
                     peer_addr,
-                    prevote.validator,
-                    prevote.height,
-                    prevote.verify_signature_with_chain_id(&self.consensus_chain_id),
+                    admission.validator,
+                    admission.height,
+                    admission.signature_valid,
                 );
+                if !admission.signature_valid {
+                    debug!(
+                        "P2P: Dropping invalid BFT prevote h={} r={} from {}",
+                        prevote.height, prevote.round, peer_addr
+                    );
+                    self.peer_manager.record_violation(&peer_addr);
+                    return Ok(());
+                }
+                if let Some(relay_message) = bft_relay_message.clone() {
+                    self.relay_bft_except(relay_message, peer_addr).await;
+                }
                 if let Err(e) = self.prevote_tx.try_send(prevote) {
                     warn!(
                         "P2P: Prevote channel full, dropping prevote from {} ({})",
@@ -857,16 +935,28 @@ impl P2PNetwork {
                     );
                     return Ok(());
                 }
-                info!(
+                debug!(
                     "📥 BFT RECV: Precommit h={} r={} from peer {}",
                     precommit.height, precommit.round, peer_addr
                 );
+                let admission = precommit_bft_admission(&precommit, &self.consensus_chain_id);
                 self.record_consensus_activity(
                     peer_addr,
-                    precommit.validator,
-                    precommit.height,
-                    precommit.verify_signature_with_chain_id(&self.consensus_chain_id),
+                    admission.validator,
+                    admission.height,
+                    admission.signature_valid,
                 );
+                if !admission.signature_valid {
+                    debug!(
+                        "P2P: Dropping invalid BFT precommit h={} r={} from {}",
+                        precommit.height, precommit.round, peer_addr
+                    );
+                    self.peer_manager.record_violation(&peer_addr);
+                    return Ok(());
+                }
+                if let Some(relay_message) = bft_relay_message.clone() {
+                    self.relay_bft_except(relay_message, peer_addr).await;
+                }
                 if let Err(e) = self.precommit_tx.try_send(precommit) {
                     warn!(
                         "P2P: Precommit channel full, dropping precommit from {} ({})",
@@ -1595,6 +1685,45 @@ impl P2PNetwork {
         Ok(())
     }
 
+    fn spawn_relay_except(&self, relay_message: P2PMessage, peer_addr: SocketAddr) {
+        let peer_manager = self.peer_manager.clone();
+        let relay_task_semaphore = self.relay_task_semaphore.clone();
+
+        match relay_task_semaphore.try_acquire_owned() {
+            Ok(permit) => {
+                tokio::spawn(async move {
+                    let _permit = permit;
+                    peer_manager
+                        .broadcast_except(&relay_message, &peer_addr)
+                        .await;
+                });
+            }
+            Err(_) => {
+                debug!(
+                    "P2P: Relay fanout saturated; skipping relay for message from {}",
+                    peer_addr
+                );
+            }
+        }
+    }
+
+    async fn relay_bft_except(&self, relay_message: P2PMessage, peer_addr: SocketAddr) {
+        let permit = match self.bft_relay_task_semaphore.clone().acquire_owned().await {
+            Ok(permit) => permit,
+            Err(e) => {
+                warn!(
+                    "P2P: BFT relay semaphore closed; cannot relay consensus message from {} ({})",
+                    peer_addr, e
+                );
+                return;
+            }
+        };
+        let _permit = permit;
+        self.peer_manager
+            .broadcast_except(&relay_message, &peer_addr)
+            .await;
+    }
+
     fn record_consensus_activity(
         &self,
         peer_addr: SocketAddr,
@@ -1622,7 +1751,7 @@ impl P2PNetwork {
 
     /// Disseminate a block through the non-consensus gossip path.
     pub async fn broadcast_block(&self, block: Block) {
-        info!("🦞 P2P: Broadcasting block slot {}", block.header.slot);
+        debug!("🦞 P2P: Broadcasting block slot {}", block.header.slot);
         let target_id = block.hash().0;
         let message = P2PMessage::new(MessageType::Block(block), self.local_addr);
         self.peer_manager
@@ -1632,14 +1761,14 @@ impl P2PNetwork {
 
     /// Broadcast a vote to all peers
     pub async fn broadcast_vote(&self, vote: Vote) {
-        info!("🦞 P2P: Broadcasting vote for slot {}", vote.slot);
+        debug!("🦞 P2P: Broadcasting vote for slot {}", vote.slot);
         let message = P2PMessage::new(MessageType::Vote(vote), self.local_addr);
         self.peer_manager.broadcast(message).await;
     }
 
     /// Disseminate a transaction through the non-consensus gossip path.
     pub async fn broadcast_transaction(&self, tx: Transaction) {
-        info!("🦞 P2P: Broadcasting transaction");
+        debug!("🦞 P2P: Broadcasting transaction");
         let target_id = tx.hash().0;
         let message = P2PMessage::new(MessageType::Transaction(tx), self.local_addr);
         self.peer_manager
@@ -1660,7 +1789,9 @@ mod tests {
         ML_DSA_65_PUBLIC_KEY_BYTES, ML_DSA_65_SIGNATURE_BYTES, PQ_SCHEME_ML_DSA_65,
     };
     use lichen_core::transaction::MAX_SIGNATURES_PER_TX;
-    use lichen_core::{Hash, Message, PqPublicKey};
+    use lichen_core::{Hash, Keypair, Message, PqPublicKey};
+
+    const TEST_CHAIN_ID: &str = "lichen-testnet-p2p-bft-admission";
 
     fn test_pq_signature(fill: u8) -> PqSignature {
         let public_key =
@@ -1672,6 +1803,166 @@ mod tests {
             vec![fill; ML_DSA_65_SIGNATURE_BYTES],
         )
         .expect("test signature")
+    }
+
+    fn signed_test_proposal(
+        signer: &Keypair,
+        proposer: Pubkey,
+        height: u64,
+        chain_id: &str,
+    ) -> Proposal {
+        let block = Block::new(
+            height,
+            Hash::hash(b"p2p-bft-proposal-parent"),
+            Hash::hash(b"p2p-bft-proposal-state"),
+            proposer.0,
+            Vec::new(),
+        );
+        let block_hash = block.hash();
+        let signature = signer.sign(&Proposal::signing_bytes_static_for_chain_id(
+            chain_id,
+            height,
+            0,
+            &block_hash,
+            -1,
+        ));
+
+        Proposal {
+            height,
+            round: 0,
+            block,
+            valid_round: -1,
+            proposer,
+            signature,
+        }
+    }
+
+    fn signed_test_prevote(
+        signer: &Keypair,
+        validator: Pubkey,
+        height: u64,
+        chain_id: &str,
+    ) -> Prevote {
+        let block_hash = Some(Hash::hash(b"p2p-bft-prevote-block"));
+        let signature = signer.sign(&Prevote::signing_bytes_for_chain_id(
+            chain_id,
+            height,
+            0,
+            &block_hash,
+        ));
+
+        Prevote {
+            height,
+            round: 0,
+            block_hash,
+            validator,
+            signature,
+        }
+    }
+
+    fn signed_test_precommit(
+        signer: &Keypair,
+        validator: Pubkey,
+        height: u64,
+        chain_id: &str,
+    ) -> Precommit {
+        let block_hash = Some(Hash::hash(b"p2p-bft-precommit-block"));
+        let timestamp = 1_720_000_000;
+        let signature = signer.sign(&Precommit::signing_bytes_for_chain_id(
+            chain_id,
+            height,
+            0,
+            &block_hash,
+            timestamp,
+        ));
+
+        Precommit {
+            height,
+            round: 0,
+            block_hash,
+            validator,
+            signature,
+            timestamp,
+        }
+    }
+
+    #[test]
+    fn test_bft_admission_accepts_valid_chain_domain_signatures() {
+        let validator = Keypair::generate();
+        let validator_pubkey = validator.pubkey();
+
+        let proposal = signed_test_proposal(&validator, validator_pubkey, 41, TEST_CHAIN_ID);
+        let prevote = signed_test_prevote(&validator, validator_pubkey, 42, TEST_CHAIN_ID);
+        let precommit = signed_test_precommit(&validator, validator_pubkey, 43, TEST_CHAIN_ID);
+
+        assert_eq!(
+            bft_admission_for_message(&MessageType::Proposal(proposal), TEST_CHAIN_ID,),
+            Some(BftAdmission {
+                validator: validator_pubkey,
+                height: 41,
+                signature_valid: true,
+            })
+        );
+        assert_eq!(
+            bft_admission_for_message(&MessageType::Prevote(prevote), TEST_CHAIN_ID),
+            Some(BftAdmission {
+                validator: validator_pubkey,
+                height: 42,
+                signature_valid: true,
+            })
+        );
+        assert_eq!(
+            bft_admission_for_message(&MessageType::Precommit(precommit), TEST_CHAIN_ID,),
+            Some(BftAdmission {
+                validator: validator_pubkey,
+                height: 43,
+                signature_valid: true,
+            })
+        );
+    }
+
+    #[test]
+    fn test_bft_admission_rejects_claimed_validator_signature_mismatch() {
+        let claimed_validator = Keypair::generate();
+        let signer = Keypair::generate();
+        let claimed_pubkey = claimed_validator.pubkey();
+
+        let proposal = signed_test_proposal(&signer, claimed_pubkey, 51, TEST_CHAIN_ID);
+        let prevote = signed_test_prevote(&signer, claimed_pubkey, 52, TEST_CHAIN_ID);
+        let precommit = signed_test_precommit(&signer, claimed_pubkey, 53, TEST_CHAIN_ID);
+
+        assert_eq!(
+            bft_admission_for_message(&MessageType::Proposal(proposal), TEST_CHAIN_ID),
+            Some(BftAdmission {
+                validator: claimed_pubkey,
+                height: 51,
+                signature_valid: false,
+            })
+        );
+        assert_eq!(
+            bft_admission_for_message(&MessageType::Prevote(prevote), TEST_CHAIN_ID),
+            Some(BftAdmission {
+                validator: claimed_pubkey,
+                height: 52,
+                signature_valid: false,
+            })
+        );
+        assert_eq!(
+            bft_admission_for_message(&MessageType::Precommit(precommit), TEST_CHAIN_ID),
+            Some(BftAdmission {
+                validator: claimed_pubkey,
+                height: 53,
+                signature_valid: false,
+            })
+        );
+    }
+
+    #[test]
+    fn test_bft_admission_ignores_non_bft_messages() {
+        assert_eq!(
+            bft_admission_for_message(&MessageType::Ping, TEST_CHAIN_ID),
+            None
+        );
     }
 
     #[test]

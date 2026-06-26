@@ -50,6 +50,9 @@ impl Default for ConsensusTimeoutConfig {
 /// Messages beyond this range are dropped to prevent memory exhaustion.
 const FUTURE_MSG_BUFFER_HEIGHTS: u64 = 10;
 
+/// Maximum proposer-selection cache entries retained within one height.
+const LEADER_CACHE_MAX_ENTRIES: usize = 256;
+
 /// Actions emitted by the consensus engine for the caller to execute.
 ///
 /// The engine is a pure state machine — it never touches I/O directly.
@@ -94,6 +97,52 @@ pub enum ConsensusAction {
     },
 }
 
+#[derive(Debug, Clone, Default)]
+struct ConsensusPowerSnapshot {
+    eligible_power: HashMap<Pubkey, u64>,
+    total_eligible_stake: u128,
+}
+
+impl ConsensusPowerSnapshot {
+    fn build(
+        validator_set: &ValidatorSet,
+        stake_pool: &StakePool,
+        min_validator_stake: u64,
+    ) -> Self {
+        let mut eligible_power = HashMap::new();
+        let mut total_eligible_stake = 0u128;
+
+        for validator in validator_set.sorted_validators() {
+            if validator.pending_activation {
+                continue;
+            }
+
+            let Some(stake) = stake_pool
+                .get_stake(&validator.pubkey)
+                .map(|stake| stake.total_stake())
+            else {
+                continue;
+            };
+
+            if stake < min_validator_stake {
+                continue;
+            }
+
+            eligible_power.insert(validator.pubkey, stake);
+            total_eligible_stake = total_eligible_stake.saturating_add(u128::from(stake));
+        }
+
+        Self {
+            eligible_power,
+            total_eligible_stake,
+        }
+    }
+
+    fn eligible_stake(&self, validator: &Pubkey) -> Option<u64> {
+        self.eligible_power.get(validator).copied()
+    }
+}
+
 /// Tendermint-style BFT consensus engine.
 ///
 /// Pure state machine: call methods with incoming messages / timeout events,
@@ -131,6 +180,14 @@ pub struct ConsensusEngine {
     prevotes: HashMap<(u32, Option<Hash>), Vec<Pubkey>>,
     /// Precommits per (round, block_hash_or_nil) → list of validators.
     precommits: HashMap<(u32, Option<Hash>), Vec<Pubkey>>,
+    /// Cached voting power per prevote bucket.
+    prevote_power: HashMap<(u32, Option<Hash>), u128>,
+    /// Cached voting power per precommit bucket.
+    precommit_power: HashMap<(u32, Option<Hash>), u128>,
+    /// Cached unique prevote power per round, regardless of value.
+    prevote_any_power: HashMap<u32, u128>,
+    /// Cached unique precommit power per round, regardless of value.
+    precommit_any_power: HashMap<u32, u128>,
     /// Blocks received via proposals, keyed by hash.
     proposal_blocks: HashMap<Hash, Block>,
 
@@ -165,6 +222,14 @@ pub struct ConsensusEngine {
     future_prevotes: BTreeMap<u64, Vec<Prevote>>,
     /// Precommits for heights > self.height.
     future_precommits: BTreeMap<u64, Vec<Precommit>>,
+    /// Frozen voting power for the current height. The validator loop builds
+    /// this from the same height-frozen validator set/stake pool used by BFT,
+    /// avoiding repeated stake scans on vote hot paths.
+    power_snapshot: Option<ConsensusPowerSnapshot>,
+    /// Deterministic proposer selections keyed by (leader slot, parent hash).
+    /// Cleared at height/snapshot boundaries so validator-set or stake changes
+    /// cannot leak into the next height.
+    leader_cache: HashMap<(u64, [u8; 32]), Option<Pubkey>>,
 }
 
 fn leader_selection_slot(height: u64, round: u32) -> u64 {
@@ -233,6 +298,10 @@ impl ConsensusEngine {
             proposals: HashMap::new(),
             prevotes: HashMap::new(),
             precommits: HashMap::new(),
+            prevote_power: HashMap::new(),
+            precommit_power: HashMap::new(),
+            prevote_any_power: HashMap::new(),
+            precommit_any_power: HashMap::new(),
             proposal_blocks: HashMap::new(),
             seen_prevotes: HashMap::new(),
             seen_precommits: HashMap::new(),
@@ -242,6 +311,8 @@ impl ConsensusEngine {
             last_committed_block_timestamp: None,
             future_prevotes: BTreeMap::new(),
             future_precommits: BTreeMap::new(),
+            power_snapshot: None,
+            leader_cache: HashMap::new(),
         }
     }
 
@@ -257,16 +328,100 @@ impl ConsensusEngine {
         self.proposals.clear();
         self.prevotes.clear();
         self.precommits.clear();
+        self.prevote_power.clear();
+        self.precommit_power.clear();
+        self.prevote_any_power.clear();
+        self.precommit_any_power.clear();
         self.proposal_blocks.clear();
         self.seen_prevotes.clear();
         self.seen_precommits.clear();
         self.precommit_sigs.clear();
         self.signed_prevote_rounds.clear();
         self.signed_precommit_rounds.clear();
+        self.power_snapshot = None;
+        self.leader_cache.clear();
         // Prune future message buffers: discard entries below the new height
         self.future_prevotes.retain(|h, _| *h >= height);
         self.future_precommits.retain(|h, _| *h >= height);
         info!("🔷 BFT: Starting height {} round 0", height);
+    }
+
+    /// Cache the current height's deterministic voting power snapshot.
+    ///
+    /// Callers must pass the same frozen validator set and stake pool used for
+    /// this height's proposal/vote handling.
+    pub fn rebuild_power_snapshot(&mut self, validator_set: &ValidatorSet, stake_pool: &StakePool) {
+        self.leader_cache.clear();
+        self.power_snapshot = Some(ConsensusPowerSnapshot::build(
+            validator_set,
+            stake_pool,
+            self.min_validator_stake,
+        ));
+        self.rebuild_vote_power_tallies();
+    }
+
+    fn rebuild_vote_power_tallies(&mut self) {
+        self.prevote_power.clear();
+        self.precommit_power.clear();
+        self.prevote_any_power.clear();
+        self.precommit_any_power.clear();
+
+        let Some(snapshot) = &self.power_snapshot else {
+            return;
+        };
+
+        for (key, voters) in &self.prevotes {
+            let power = voters
+                .iter()
+                .filter_map(|pk| snapshot.eligible_stake(pk))
+                .map(u128::from)
+                .sum();
+            self.prevote_power.insert(*key, power);
+        }
+        for (round, pk) in self.seen_prevotes.keys() {
+            if let Some(power) = snapshot.eligible_stake(pk) {
+                *self.prevote_any_power.entry(*round).or_default() += u128::from(power);
+            }
+        }
+
+        for (key, voters) in &self.precommits {
+            let power = voters
+                .iter()
+                .filter_map(|pk| snapshot.eligible_stake(pk))
+                .map(u128::from)
+                .sum();
+            self.precommit_power.insert(*key, power);
+        }
+        for (round, pk) in self.seen_precommits.keys() {
+            if let Some(power) = snapshot.eligible_stake(pk) {
+                *self.precommit_any_power.entry(*round).or_default() += u128::from(power);
+            }
+        }
+    }
+
+    fn expected_leader_cached(
+        &mut self,
+        leader_slot: u64,
+        parent_hash: &Hash,
+        validator_set: &ValidatorSet,
+        stake_pool: &StakePool,
+    ) -> Option<Pubkey> {
+        let key = (leader_slot, parent_hash.0);
+        if let Some(leader) = self.leader_cache.get(&key) {
+            return *leader;
+        }
+
+        let leader = validator_set.select_leader_weighted(
+            leader_slot,
+            stake_pool,
+            &parent_hash.0,
+            self.min_validator_stake,
+        );
+        if self.leader_cache.len() >= LEADER_CACHE_MAX_ENTRIES {
+            self.leader_cache.clear();
+        }
+        self.leader_cache.insert(key, leader);
+        leader
     }
 
     /// Advance to the next round within the current height.
@@ -451,12 +606,8 @@ impl ConsensusEngine {
         // Verify proposer is the correct leader for (height, round)
         let parent_hash = proposal.block.header.parent_hash;
         let leader_slot = leader_selection_slot(self.height, proposal.round);
-        let expected_leader = validator_set.select_leader_weighted(
-            leader_slot,
-            stake_pool,
-            &parent_hash.0,
-            self.min_validator_stake,
-        );
+        let expected_leader =
+            self.expected_leader_cached(leader_slot, &parent_hash, validator_set, stake_pool);
         if expected_leader != Some(proposal.proposer) {
             warn!(
                 "🚨 BFT: Proposal from non-leader {:?} (expected {:?})",
@@ -570,9 +721,10 @@ impl ConsensusEngine {
             return ConsensusAction::None;
         }
         // Verify voter is eligible for this height's BFT voting power.
-        if !self.is_eligible_validator(&prevote.validator, validator_set, stake_pool) {
+        let Some(voter_power) = self.eligible_stake(&prevote.validator, validator_set, stake_pool)
+        else {
             return ConsensusAction::None;
-        }
+        };
         // Deduplicate and detect equivocation (G-9 evidence reactor fix)
         let dedup_key = (prevote.round, prevote.validator);
         if let Some(existing_hash) = self.seen_prevotes.get(&dedup_key) {
@@ -605,6 +757,7 @@ impl ConsensusEngine {
             .entry((prevote.round, prevote.block_hash))
             .or_default()
             .push(prevote.validator);
+        self.add_prevote_power(prevote.round, prevote.block_hash, voter_power);
 
         let round = prevote.round;
         let mut actions = Vec::new();
@@ -614,13 +767,22 @@ impl ConsensusEngine {
             // Find the polka hash (if any) without holding a borrow on self
             let polka_hash = {
                 let mut found = None;
-                for (key, voters) in &self.prevotes {
+                for key in self.prevotes.keys() {
                     if key.0 != round {
                         continue;
                     }
-                    if let Some(bh) = &key.1 {
-                        if self.has_supermajority_voters(voters, validator_set, stake_pool) {
-                            found = Some(*bh);
+                    if let Some(bh) = key.1 {
+                        let vote_power =
+                            self.prevote_power.get(key).copied().unwrap_or_else(|| {
+                                self.prevotes
+                                    .get(key)
+                                    .map(|voters| {
+                                        self.voter_stake(voters.iter(), validator_set, stake_pool)
+                                    })
+                                    .unwrap_or(0)
+                            });
+                        if self.has_supermajority_power(vote_power, validator_set, stake_pool) {
+                            found = Some(bh);
                             break;
                         }
                     }
@@ -647,12 +809,18 @@ impl ConsensusEngine {
 
         // Rule 2: Upon 2/3+ prevotes for nil at current round
         if round == self.round && self.step == RoundStep::Prevote {
-            let nil_voters = self
-                .prevotes
-                .get(&(round, None))
-                .map(|v| v.as_slice())
-                .unwrap_or(&[]);
-            if self.has_supermajority_voters(nil_voters, validator_set, stake_pool) {
+            let nil_key = (round, None);
+            let nil_power = self
+                .prevote_power
+                .get(&nil_key)
+                .copied()
+                .unwrap_or_else(|| {
+                    self.prevotes
+                        .get(&nil_key)
+                        .map(|voters| self.voter_stake(voters.iter(), validator_set, stake_pool))
+                        .unwrap_or(0)
+                });
+            if self.has_supermajority_power(nil_power, validator_set, stake_pool) {
                 info!(
                     "⭕ BFT: Nil polka at height={} round={}",
                     self.height, round
@@ -719,9 +887,11 @@ impl ConsensusEngine {
             warn!("🚨 BFT: Invalid precommit signature");
             return ConsensusAction::None;
         }
-        if !self.is_eligible_validator(&precommit.validator, validator_set, stake_pool) {
+        let Some(voter_power) =
+            self.eligible_stake(&precommit.validator, validator_set, stake_pool)
+        else {
             return ConsensusAction::None;
-        }
+        };
         // Deduplicate and detect equivocation (G-9 evidence reactor fix)
         let dedup_key = (precommit.round, precommit.validator);
         if let Some(existing_hash) = self.seen_precommits.get(&dedup_key) {
@@ -757,6 +927,7 @@ impl ConsensusEngine {
             .entry((precommit.round, precommit.block_hash))
             .or_default()
             .push(precommit.validator);
+        self.add_precommit_power(precommit.round, precommit.block_hash, voter_power);
 
         // Retain precommit signature + timestamp for commit certificate
         self.precommit_sigs.insert(
@@ -771,13 +942,21 @@ impl ConsensusEngine {
         // Find the committed hash without holding a borrow on self
         let commit_hash = {
             let mut found = None;
-            for (key, voters) in &self.precommits {
+            for key in self.precommits.keys() {
                 if key.0 != round {
                     continue;
                 }
-                if let Some(bh) = &key.1 {
-                    if self.has_supermajority_voters(voters, validator_set, stake_pool) {
-                        found = Some(*bh);
+                if let Some(bh) = key.1 {
+                    let vote_power = self.precommit_power.get(key).copied().unwrap_or_else(|| {
+                        self.precommits
+                            .get(key)
+                            .map(|voters| {
+                                self.voter_stake(voters.iter(), validator_set, stake_pool)
+                            })
+                            .unwrap_or(0)
+                    });
+                    if self.has_supermajority_power(vote_power, validator_set, stake_pool) {
+                        found = Some(bh);
                         break;
                     }
                 }
@@ -819,13 +998,18 @@ impl ConsensusEngine {
         }
 
         // Rule 2: 2/3+ precommits for nil → advance to next round
-        let nil_voters = self
-            .precommits
-            .get(&(round, None))
-            .map(|v| v.as_slice())
-            .unwrap_or(&[]);
-        if round == self.round
-            && self.has_supermajority_voters(nil_voters, validator_set, stake_pool)
+        let nil_key = (round, None);
+        let nil_power = self
+            .precommit_power
+            .get(&nil_key)
+            .copied()
+            .unwrap_or_else(|| {
+                self.precommits
+                    .get(&nil_key)
+                    .map(|voters| self.voter_stake(voters.iter(), validator_set, stake_pool))
+                    .unwrap_or(0)
+            });
+        if round == self.round && self.has_supermajority_power(nil_power, validator_set, stake_pool)
         {
             info!(
                 "⭕ BFT: Nil commit at height={} round={}, advancing",
@@ -1024,6 +1208,11 @@ impl ConsensusEngine {
             .entry((self.round, block_hash))
             .or_default()
             .push(self.validator_pubkey);
+        if let Some(voter_power) =
+            self.eligible_stake(&self.validator_pubkey, validator_set, stake_pool)
+        {
+            self.add_prevote_power(self.round, block_hash, voter_power);
+        }
 
         debug!(
             "🗳️ BFT: Prevote height={} round={} hash={:?}",
@@ -1044,7 +1233,12 @@ impl ConsensusEngine {
                 .get(&(round, Some(bh)))
                 .map(|v| v.as_slice())
                 .unwrap_or(&[]);
-            if self.has_supermajority_voters(voters, validator_set, stake_pool) {
+            let vote_power = self
+                .prevote_power
+                .get(&(round, Some(bh)))
+                .copied()
+                .unwrap_or_else(|| self.voter_stake(voters.iter(), validator_set, stake_pool));
+            if self.has_supermajority_power(vote_power, validator_set, stake_pool) {
                 info!(
                     "🔒 BFT: Polka at height={} round={} for {}",
                     self.height,
@@ -1067,7 +1261,12 @@ impl ConsensusEngine {
                 .get(&(round, None))
                 .map(|v| v.as_slice())
                 .unwrap_or(&[]);
-            if self.has_supermajority_voters(nil_voters, validator_set, stake_pool) {
+            let nil_power = self
+                .prevote_power
+                .get(&(round, None))
+                .copied()
+                .unwrap_or_else(|| self.voter_stake(nil_voters.iter(), validator_set, stake_pool));
+            if self.has_supermajority_power(nil_power, validator_set, stake_pool) {
                 info!(
                     "⭕ BFT: Nil polka at height={} round={}",
                     self.height, round
@@ -1133,6 +1332,11 @@ impl ConsensusEngine {
         // Retain own signature + timestamp for commit certificate
         self.precommit_sigs
             .insert((self.round, self.validator_pubkey), (signature, timestamp));
+        if let Some(voter_power) =
+            self.eligible_stake(&self.validator_pubkey, validator_set, stake_pool)
+        {
+            self.add_precommit_power(self.round, block_hash, voter_power);
+        }
 
         debug!(
             "🗳️ BFT: Precommit height={} round={} hash={:?}",
@@ -1151,7 +1355,12 @@ impl ConsensusEngine {
                 .get(&(round, Some(bh)))
                 .map(|v| v.as_slice())
                 .unwrap_or(&[]);
-            let has_commit = self.has_supermajority_voters(voters, validator_set, stake_pool);
+            let vote_power = self
+                .precommit_power
+                .get(&(round, Some(bh)))
+                .copied()
+                .unwrap_or_else(|| self.voter_stake(voters.iter(), validator_set, stake_pool));
+            let has_commit = self.has_supermajority_power(vote_power, validator_set, stake_pool);
             let block_clone = if has_commit {
                 self.proposal_blocks.get(&bh).cloned()
             } else {
@@ -1185,7 +1394,12 @@ impl ConsensusEngine {
                 .get(&(round, None))
                 .map(|v| v.as_slice())
                 .unwrap_or(&[]);
-            if self.has_supermajority_voters(nil_voters, validator_set, stake_pool) {
+            let nil_power = self
+                .precommit_power
+                .get(&(round, None))
+                .copied()
+                .unwrap_or_else(|| self.voter_stake(nil_voters.iter(), validator_set, stake_pool));
+            if self.has_supermajority_power(nil_power, validator_set, stake_pool) {
                 info!(
                     "⭕ BFT: Nil commit at height={} round={}, advancing",
                     self.height, round
@@ -1222,6 +1436,10 @@ impl ConsensusEngine {
         validator_set: &ValidatorSet,
         stake_pool: &StakePool,
     ) -> Option<u64> {
+        if let Some(snapshot) = &self.power_snapshot {
+            return snapshot.eligible_stake(validator);
+        }
+
         let info = validator_set.get_validator(validator)?;
         if info.pending_activation {
             return None;
@@ -1257,12 +1475,38 @@ impl ConsensusEngine {
     }
 
     fn total_eligible_stake(&self, validator_set: &ValidatorSet, stake_pool: &StakePool) -> u128 {
+        if let Some(snapshot) = &self.power_snapshot {
+            return snapshot.total_eligible_stake;
+        }
+
         validator_set
             .sorted_validators()
             .iter()
             .filter_map(|v| self.eligible_stake(&v.pubkey, validator_set, stake_pool))
             .map(u128::from)
             .sum()
+    }
+
+    fn add_prevote_power(&mut self, round: u32, block_hash: Option<Hash>, voting_power: u64) {
+        let power = u128::from(voting_power);
+        *self.prevote_power.entry((round, block_hash)).or_default() += power;
+        *self.prevote_any_power.entry(round).or_default() += power;
+    }
+
+    fn add_precommit_power(&mut self, round: u32, block_hash: Option<Hash>, voting_power: u64) {
+        let power = u128::from(voting_power);
+        *self.precommit_power.entry((round, block_hash)).or_default() += power;
+        *self.precommit_any_power.entry(round).or_default() += power;
+    }
+
+    fn has_supermajority_power(
+        &self,
+        vote_power: u128,
+        validator_set: &ValidatorSet,
+        stake_pool: &StakePool,
+    ) -> bool {
+        let total_eligible_stake = self.total_eligible_stake(validator_set, stake_pool);
+        total_eligible_stake > 0 && vote_power * 3 >= total_eligible_stake * 2
     }
 
     /// Collect commit signatures for the given round and block hash.
@@ -1325,6 +1569,10 @@ impl ConsensusEngine {
             return false;
         }
 
+        if let Some(vote_power) = self.prevote_any_power.get(&round).copied() {
+            return vote_power * 3 >= total_eligible_stake * 2;
+        }
+
         let total_voted_stake: u128 = self
             .seen_prevotes
             .keys()
@@ -1347,6 +1595,10 @@ impl ConsensusEngine {
 
         if total_eligible_stake == 0 {
             return false;
+        }
+
+        if let Some(vote_power) = self.precommit_any_power.get(&round).copied() {
+            return vote_power * 3 >= total_eligible_stake * 2;
         }
 
         let total_voted_stake: u128 = self
@@ -1545,18 +1797,14 @@ impl ConsensusEngine {
     /// Determine if this validator is the proposer for (height, round)
     /// using the shared leader-election deterministic algorithm.
     pub fn is_proposer(
-        &self,
+        &mut self,
         validator_set: &ValidatorSet,
         stake_pool: &StakePool,
         parent_hash: &Hash,
     ) -> bool {
         let leader_slot = leader_selection_slot(self.height, self.round);
-        let leader = validator_set.select_leader_weighted(
-            leader_slot,
-            stake_pool,
-            &parent_hash.0,
-            self.min_validator_stake,
-        );
+        let leader =
+            self.expected_leader_cached(leader_slot, parent_hash, validator_set, stake_pool);
         let is_us = leader == Some(self.validator_pubkey);
         if is_us {
             info!(
@@ -1702,6 +1950,13 @@ impl ConsensusEngine {
         let voters = self.prevotes.entry((round, block_hash)).or_default();
         if !voters.contains(&self.validator_pubkey) {
             voters.push(self.validator_pubkey);
+            if let Some(power) = self
+                .power_snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.eligible_stake(&self.validator_pubkey))
+            {
+                self.add_prevote_power(round, block_hash, power);
+            }
         }
         Ok(())
     }
@@ -1756,6 +2011,13 @@ impl ConsensusEngine {
         let voters = self.precommits.entry((round, block_hash)).or_default();
         if !voters.contains(&self.validator_pubkey) {
             voters.push(self.validator_pubkey);
+            if let Some(power) = self
+                .power_snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.eligible_stake(&self.validator_pubkey))
+            {
+                self.add_precommit_power(round, block_hash, power);
+            }
         }
         self.precommit_sigs
             .insert((round, self.validator_pubkey), (signature, timestamp));
@@ -1849,6 +2111,121 @@ mod tests {
         assert_eq!(leader_selection_slot(height, 0), height);
         assert_eq!(leader_selection_slot(height, 1), height + 1);
         assert_eq!(leader_selection_slot(height, 2), height + 2);
+    }
+
+    #[test]
+    fn test_bft_leader_cache_matches_weighted_selection() {
+        let stakes = [
+            MIN_VALIDATOR_STAKE,
+            MIN_VALIDATOR_STAKE * 2,
+            MIN_VALIDATOR_STAKE * 3,
+            MIN_VALIDATOR_STAKE * 4,
+        ];
+        let (validators, vs, sp) = make_custom_test_env(&stakes);
+        let (kp, pk) = &validators[0];
+        let mut engine = ConsensusEngine::new_with_min_stake(
+            Keypair::from_seed(kp.secret_key()),
+            *pk,
+            MIN_VALIDATOR_STAKE,
+        );
+        engine.start_height(123);
+
+        for parent_hash in [Hash::hash(b"parent-a"), Hash::hash(b"parent-b")] {
+            for round in 0..32 {
+                let leader_slot = leader_selection_slot(engine.height, round);
+                let direct = vs.select_leader_weighted(
+                    leader_slot,
+                    &sp,
+                    &parent_hash.0,
+                    MIN_VALIDATOR_STAKE,
+                );
+                let cached = engine.expected_leader_cached(leader_slot, &parent_hash, &vs, &sp);
+                assert_eq!(cached, direct);
+                let cached_again =
+                    engine.expected_leader_cached(leader_slot, &parent_hash, &vs, &sp);
+                assert_eq!(cached_again, direct);
+            }
+        }
+
+        assert!(!engine.leader_cache.is_empty());
+    }
+
+    #[test]
+    fn test_bft_leader_cache_clears_on_height_and_snapshot_rebuild() {
+        let (validators, vs, sp) = make_test_env(4);
+        let (kp, pk) = &validators[0];
+        let mut engine = ConsensusEngine::new_with_min_stake(
+            Keypair::from_seed(kp.secret_key()),
+            *pk,
+            MIN_VALIDATOR_STAKE,
+        );
+        engine.start_height(7);
+        let parent_hash = Hash::hash(b"parent");
+        let leader_slot = leader_selection_slot(engine.height, engine.round);
+
+        engine.expected_leader_cached(leader_slot, &parent_hash, &vs, &sp);
+        assert_eq!(engine.leader_cache.len(), 1);
+
+        engine.rebuild_power_snapshot(&vs, &sp);
+        assert!(engine.leader_cache.is_empty());
+
+        engine.expected_leader_cached(leader_slot, &parent_hash, &vs, &sp);
+        assert_eq!(engine.leader_cache.len(), 1);
+
+        engine.start_height(8);
+        assert!(engine.leader_cache.is_empty());
+    }
+
+    #[test]
+    fn test_bft_leader_cache_snapshot_rebuild_prevents_stale_context() {
+        let stakes = [MIN_VALIDATOR_STAKE, MIN_VALIDATOR_STAKE * 8];
+        let (validators, vs, sp) = make_custom_test_env(&stakes);
+        let mut active_only_vs = vs.clone();
+        active_only_vs
+            .get_validator_mut(&validators[1].1)
+            .expect("second validator exists")
+            .pending_activation = true;
+
+        let (kp, pk) = &validators[0];
+        let mut engine = ConsensusEngine::new_with_min_stake(
+            Keypair::from_seed(kp.secret_key()),
+            *pk,
+            MIN_VALIDATOR_STAKE,
+        );
+        engine.start_height(77);
+        let leader_slot = leader_selection_slot(engine.height, engine.round);
+
+        let mut chosen_parent = None;
+        for seed in 0..4096u64 {
+            let parent_hash = Hash::hash(&seed.to_le_bytes());
+            let before =
+                vs.select_leader_weighted(leader_slot, &sp, &parent_hash.0, MIN_VALIDATOR_STAKE);
+            let after = active_only_vs.select_leader_weighted(
+                leader_slot,
+                &sp,
+                &parent_hash.0,
+                MIN_VALIDATOR_STAKE,
+            );
+            if before != after {
+                chosen_parent = Some((parent_hash, before, after));
+                break;
+            }
+        }
+
+        let (parent_hash, first_leader, second_leader) =
+            chosen_parent.expect("test fixture should expose a leader change");
+        assert_eq!(second_leader, Some(validators[0].1));
+
+        let cached_first = engine.expected_leader_cached(leader_slot, &parent_hash, &vs, &sp);
+        assert_eq!(cached_first, first_leader);
+        assert!(!engine.leader_cache.is_empty());
+
+        engine.rebuild_power_snapshot(&active_only_vs, &sp);
+        assert!(engine.leader_cache.is_empty());
+
+        let cached_second =
+            engine.expected_leader_cached(leader_slot, &parent_hash, &active_only_vs, &sp);
+        assert_eq!(cached_second, second_leader);
     }
 
     #[test]
@@ -2127,6 +2504,25 @@ mod tests {
     }
 
     #[test]
+    fn test_power_snapshot_matches_runtime_min_stake_supermajority() {
+        let (validators, vs, sp) = make_custom_test_env(&[60, 60, 49]);
+        let (kp, pk) = make_validator(1);
+        let mut engine = ConsensusEngine::new_with_min_stake(kp, pk, 50);
+        engine.start_height(1);
+        engine.rebuild_power_snapshot(&vs, &sp);
+
+        assert_eq!(engine.total_eligible_stake(&vs, &sp), 120);
+        assert_eq!(engine.eligible_stake(&validators[0].1, &vs, &sp), Some(60));
+        assert_eq!(engine.eligible_stake(&validators[2].1, &vs, &sp), None);
+
+        let voters = vec![validators[0].1, validators[1].1];
+        assert!(engine.has_supermajority_voters(&voters, &vs, &sp));
+
+        let below_min_voters = vec![validators[0].1, validators[2].1];
+        assert!(!engine.has_supermajority_voters(&below_min_voters, &vs, &sp));
+    }
+
+    #[test]
     fn test_supermajority_ignores_cached_validator_stake_without_pool_entry() {
         let (validators, vs, _) = make_custom_test_env(&[
             MIN_VALIDATOR_STAKE,
@@ -2139,6 +2535,161 @@ mod tests {
 
         let voters = vec![validators[0].1, validators[1].1];
         assert!(!engine.has_supermajority_voters(&voters, &vs, &empty_pool));
+    }
+
+    #[test]
+    fn test_power_snapshot_ignores_cached_validator_stake_without_pool_entry() {
+        let (validators, vs, _) = make_custom_test_env(&[
+            MIN_VALIDATOR_STAKE,
+            MIN_VALIDATOR_STAKE,
+            MIN_VALIDATOR_STAKE,
+        ]);
+        let (kp, pk) = make_validator(1);
+        let mut engine = ConsensusEngine::new_with_min_stake(kp, pk, MIN_VALIDATOR_STAKE);
+        let empty_pool = StakePool::new();
+
+        engine.start_height(1);
+        engine.rebuild_power_snapshot(&vs, &empty_pool);
+
+        let voters = vec![validators[0].1, validators[1].1];
+        assert_eq!(engine.total_eligible_stake(&vs, &empty_pool), 0);
+        assert!(!engine.has_supermajority_voters(&voters, &vs, &empty_pool));
+    }
+
+    #[test]
+    fn test_power_snapshot_excludes_pending_validators() {
+        let (validators, mut vs, sp) = make_custom_test_env(&[100, 100, 100]);
+        vs.get_validator_mut(&validators[2].1)
+            .expect("validator exists")
+            .pending_activation = true;
+
+        let (kp, pk) = make_validator(1);
+        let mut engine = ConsensusEngine::new_with_min_stake(kp, pk, 50);
+        engine.start_height(1);
+        engine.rebuild_power_snapshot(&vs, &sp);
+
+        assert_eq!(engine.total_eligible_stake(&vs, &sp), 200);
+        assert_eq!(engine.eligible_stake(&validators[2].1, &vs, &sp), None);
+        assert!(engine.has_supermajority_voters(&[validators[0].1, validators[1].1], &vs, &sp));
+        assert!(!engine.has_supermajority_voters(&[validators[0].1, validators[2].1], &vs, &sp));
+    }
+
+    #[test]
+    fn test_prevote_power_tally_dedupes_votes() {
+        let (validators, vs, sp) = make_custom_test_env(&[100, 100, 100]);
+        let (kp, pk) = make_validator(1);
+        let mut engine = ConsensusEngine::new_with_min_stake(kp, pk, 50);
+        engine.start_height(10);
+        engine.rebuild_power_snapshot(&vs, &sp);
+        engine.step = RoundStep::Prevote;
+
+        let vote_hash = Some(Hash::hash(b"cached-prevote"));
+        let signable = Prevote::signable_bytes(10, 0, &vote_hash);
+        let prevote = Prevote {
+            height: 10,
+            round: 0,
+            block_hash: vote_hash,
+            validator: validators[1].1,
+            signature: validators[1].0.sign(&signable),
+        };
+
+        let _ = engine.on_prevote(prevote.clone(), &vs, &sp);
+        assert_eq!(
+            engine.prevote_power.get(&(0, vote_hash)).copied(),
+            Some(100)
+        );
+        assert_eq!(engine.prevote_any_power.get(&0).copied(), Some(100));
+
+        let _ = engine.on_prevote(prevote, &vs, &sp);
+        assert_eq!(
+            engine.prevote_power.get(&(0, vote_hash)).copied(),
+            Some(100),
+            "duplicate prevote must not inflate block-specific power"
+        );
+        assert_eq!(
+            engine.prevote_any_power.get(&0).copied(),
+            Some(100),
+            "duplicate prevote must not inflate any-value power"
+        );
+    }
+
+    #[test]
+    fn test_precommit_power_tally_dedupes_votes() {
+        let (validators, vs, sp) = make_custom_test_env(&[100, 100, 100]);
+        let (kp, pk) = make_validator(1);
+        let mut engine = ConsensusEngine::new_with_min_stake(kp, pk, 50);
+        engine.start_height(10);
+        engine.rebuild_power_snapshot(&vs, &sp);
+        engine.step = RoundStep::Precommit;
+
+        let vote_hash = Some(Hash::hash(b"cached-precommit"));
+        let timestamp = 123;
+        let signable = Precommit::signable_bytes(10, 0, &vote_hash, timestamp);
+        let precommit = Precommit {
+            height: 10,
+            round: 0,
+            block_hash: vote_hash,
+            validator: validators[1].1,
+            signature: validators[1].0.sign(&signable),
+            timestamp,
+        };
+
+        let _ = engine.on_precommit(precommit.clone(), &vs, &sp);
+        assert_eq!(
+            engine.precommit_power.get(&(0, vote_hash)).copied(),
+            Some(100)
+        );
+        assert_eq!(engine.precommit_any_power.get(&0).copied(), Some(100));
+
+        let _ = engine.on_precommit(precommit, &vs, &sp);
+        assert_eq!(
+            engine.precommit_power.get(&(0, vote_hash)).copied(),
+            Some(100),
+            "duplicate precommit must not inflate block-specific power"
+        );
+        assert_eq!(
+            engine.precommit_any_power.get(&0).copied(),
+            Some(100),
+            "duplicate precommit must not inflate any-value power"
+        );
+    }
+
+    #[test]
+    fn test_power_snapshot_rebuild_tallies_restored_wal_votes() {
+        let (_, vs, sp) = make_custom_test_env(&[100, 100, 100]);
+        let (local_kp, local_pk) = make_validator(1);
+        let mut engine = ConsensusEngine::new_with_min_stake(local_kp, local_pk, 50);
+        engine.start_height(10);
+
+        let vote_hash = Some(Hash::hash(b"restored-prevote-tally"));
+        let (signer_kp, _) = make_validator(1);
+        let prevote_sig = signer_kp.sign(&Prevote::signable_bytes(10, 0, &vote_hash));
+        engine
+            .restore_signed_prevote(10, 0, vote_hash, prevote_sig)
+            .expect("restore signed prevote");
+
+        let timestamp = 456;
+        let precommit_sig =
+            signer_kp.sign(&Precommit::signable_bytes(10, 0, &vote_hash, timestamp));
+        engine
+            .restore_signed_precommit(10, 0, vote_hash, precommit_sig, timestamp)
+            .expect("restore signed precommit");
+
+        assert!(engine.prevote_power.is_empty());
+        assert!(engine.precommit_power.is_empty());
+
+        engine.rebuild_power_snapshot(&vs, &sp);
+
+        assert_eq!(
+            engine.prevote_power.get(&(0, vote_hash)).copied(),
+            Some(100)
+        );
+        assert_eq!(engine.prevote_any_power.get(&0).copied(), Some(100));
+        assert_eq!(
+            engine.precommit_power.get(&(0, vote_hash)).copied(),
+            Some(100)
+        );
+        assert_eq!(engine.precommit_any_power.get(&0).copied(), Some(100));
     }
 
     #[test]
@@ -2633,6 +3184,7 @@ mod tests {
             .precommit_sigs
             .insert((0, pk1), (kp1_sign.sign(&signable1), ts1));
         engine.signed_precommit_rounds.insert(0, Some(block_hash));
+        engine.rebuild_power_snapshot(&vs, &sp);
 
         let action = engine.on_precommit(pc3, &vs, &sp);
 
@@ -2689,6 +3241,7 @@ mod tests {
             .push(pk1);
         engine.seen_precommits.insert((0, pk1), Some(block_hash));
         engine.signed_precommit_rounds.insert(0, Some(block_hash));
+        engine.rebuild_power_snapshot(&vs, &sp);
 
         let ts2 = 1000u64;
         let pc2 = Precommit {

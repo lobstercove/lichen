@@ -100,7 +100,6 @@ const SYSTEM_ACCOUNT_OWNER: Pubkey = Pubkey([0x01; 32]);
 /// Exit code used by the internal health watchdog to signal the supervisor
 /// that the validator should be restarted (deadlock/stall detected).
 const EXIT_CODE_RESTART: i32 = 75;
-
 fn validator_log_filter_from_env_value(value: Option<&str>) -> EnvFilter {
     value
         .and_then(|value| EnvFilter::builder().parse(value).ok())
@@ -5359,6 +5358,16 @@ fn proposal_slot_delay_ms(
         current_unix_millis(),
     );
     block_producer::wall_clock_safe_delay(state, parent_hash, cadence_delay)
+}
+
+fn duration_millis_u64(duration: Duration) -> u64 {
+    duration.as_millis().min(u128::from(u64::MAX)) as u64
+}
+
+fn propose_timeout_delay(slot_boundary_delay_ms: u64, configured_timeout: Duration) -> Duration {
+    let configured_timeout_ms = duration_millis_u64(configured_timeout).max(1);
+    let delay_ms = slot_boundary_delay_ms.saturating_add(configured_timeout_ms);
+    Duration::from_millis(delay_ms)
 }
 
 /// Validate a received or committed block by deterministically executing its
@@ -21803,6 +21812,7 @@ async fn run_validator() {
         min_validator_stake,
     )
     .await;
+    bft.rebuild_power_snapshot(&height_vs, &height_pool);
     let mut pending_consensus_proposals: BTreeMap<u64, Vec<Proposal>> = BTreeMap::new();
     let mut startup_current_proposals = Vec::new();
     for (height, proposals) in startup_buffered_proposals {
@@ -21978,7 +21988,7 @@ async fn run_validator() {
         if bft.step == RoundStep::Commit {
             propose_timer = None;
             timeout_handle = None;
-        } else if bft.is_proposer(&height_vs, &height_pool, &parent_hash) {
+        } else {
             let delay_ms = proposal_slot_delay_ms(
                 &state,
                 &parent_hash,
@@ -21986,25 +21996,24 @@ async fn run_validator() {
                 start_height,
                 slot_duration_ms,
             );
-            info!(
-                "👑 BFT: We are proposer for height={} round=0; proposing in {}ms",
-                start_height, delay_ms
-            );
-            propose_timer = Some(Box::pin(tokio::time::sleep(Duration::from_millis(
-                delay_ms,
-            ))));
+            if bft.is_proposer(&height_vs, &height_pool, &parent_hash) {
+                info!(
+                    "👑 BFT: We are proposer for height={} round=0; proposing in {}ms",
+                    start_height, delay_ms
+                );
+                propose_timer = Some(Box::pin(tokio::time::sleep(Duration::from_millis(
+                    delay_ms,
+                ))));
+            } else {
+                propose_timer = None;
+            }
             timeout_handle = Some((
                 RoundStep::Propose,
                 bft.round,
-                Box::pin(tokio::time::sleep(bft.initial_propose_timeout())),
-            ));
-        } else {
-            // Not proposer — schedule propose timeout
-            propose_timer = None;
-            timeout_handle = Some((
-                RoundStep::Propose,
-                bft.round,
-                Box::pin(tokio::time::sleep(bft.initial_propose_timeout())),
+                Box::pin(tokio::time::sleep(propose_timeout_delay(
+                    delay_ms,
+                    bft.initial_propose_timeout(),
+                ))),
             ));
         }
     }
@@ -22120,6 +22129,7 @@ async fn run_validator() {
                 min_validator_stake,
             )
             .await;
+            bft.rebuild_power_snapshot(&height_vs, &height_pool);
 
             if let Some(proposals) = pending_consensus_proposals.remove(&new_height) {
                 for proposal in proposals {
@@ -22251,14 +22261,14 @@ async fn run_validator() {
                 continue;
             }
 
+            let delay_ms = proposal_slot_delay_ms(
+                &state,
+                &parent_hash,
+                genesis_time_secs,
+                new_height,
+                slot_duration_ms,
+            );
             if bft.is_proposer(&height_vs, &height_pool, &parent_hash) {
-                let delay_ms = proposal_slot_delay_ms(
-                    &state,
-                    &parent_hash,
-                    genesis_time_secs,
-                    new_height,
-                    slot_duration_ms,
-                );
                 info!(
                     "👑 BFT: We are proposer for height={} round=0; proposing in {}ms",
                     new_height, delay_ms
@@ -22269,14 +22279,20 @@ async fn run_validator() {
                 timeout_handle = Some((
                     RoundStep::Propose,
                     bft.round,
-                    Box::pin(tokio::time::sleep(bft.initial_propose_timeout())),
+                    Box::pin(tokio::time::sleep(propose_timeout_delay(
+                        delay_ms,
+                        bft.initial_propose_timeout(),
+                    ))),
                 ));
             } else {
                 propose_timer = None;
                 timeout_handle = Some((
                     RoundStep::Propose,
                     bft.round,
-                    Box::pin(tokio::time::sleep(bft.initial_propose_timeout())),
+                    Box::pin(tokio::time::sleep(propose_timeout_delay(
+                        delay_ms,
+                        bft.initial_propose_timeout(),
+                    ))),
                 ));
             }
         }
@@ -22833,7 +22849,10 @@ async fn run_validator() {
                         timeout_handle = Some((
                             RoundStep::Propose,
                             bft.round,
-                            Box::pin(tokio::time::sleep(bft.initial_propose_timeout())),
+                            Box::pin(tokio::time::sleep(propose_timeout_delay(
+                                0,
+                                bft.initial_propose_timeout(),
+                            ))),
                         ));
                     }
                 }
@@ -22904,6 +22923,7 @@ async fn run_validator() {
                         min_validator_stake,
                     )
                     .await;
+                    bft.rebuild_power_snapshot(&height_vs, &height_pool);
 
                     if let Some(proposals) = pending_consensus_proposals.remove(&new_height) {
                         for proposal in proposals {
@@ -23012,14 +23032,14 @@ async fn run_validator() {
                     )
                     .await;
 
+                    let delay_ms = proposal_slot_delay_ms(
+                        &state,
+                        &parent_hash,
+                        genesis_time_secs,
+                        new_height,
+                        slot_duration_ms,
+                    );
                     if bft.is_proposer(&height_vs, &height_pool, &parent_hash) {
-                        let delay_ms = proposal_slot_delay_ms(
-                            &state,
-                            &parent_hash,
-                            genesis_time_secs,
-                            new_height,
-                            slot_duration_ms,
-                        );
                         propose_timer = Some(Box::pin(tokio::time::sleep(Duration::from_millis(
                             delay_ms,
                         ))));
@@ -23027,14 +23047,20 @@ async fn run_validator() {
                         timeout_handle = Some((
                             RoundStep::Propose,
                             bft.round,
-                            Box::pin(tokio::time::sleep(bft.initial_propose_timeout())),
+                            Box::pin(tokio::time::sleep(propose_timeout_delay(
+                                delay_ms,
+                                bft.initial_propose_timeout(),
+                            ))),
                         ));
                     } else {
                         propose_timer = None;
                         timeout_handle = Some((
                             RoundStep::Propose,
                             bft.round,
-                            Box::pin(tokio::time::sleep(bft.initial_propose_timeout())),
+                            Box::pin(tokio::time::sleep(propose_timeout_delay(
+                                delay_ms,
+                                bft.initial_propose_timeout(),
+                            ))),
                         ));
                     }
                 }
@@ -23375,7 +23401,7 @@ async fn execute_consensus_actions(
                     return;
                 }
             }
-            info!(
+            debug!(
                 "📡 BFT SEND: Proposal h={} r={} hash={}",
                 proposal.height,
                 proposal.round,
@@ -23383,7 +23409,7 @@ async fn execute_consensus_actions(
             );
             if let Some(ref pm) = p2p_peer_manager {
                 let peers_count = pm.validator_peers().len();
-                info!(
+                debug!(
                     "📡 BFT SEND: Broadcasting proposal to {} validator peers",
                     peers_count
                 );
@@ -23425,7 +23451,7 @@ async fn execute_consensus_actions(
                     return;
                 }
             }
-            info!(
+            debug!(
                 "📡 BFT SEND: Prevote h={} r={} block={}",
                 prevote.height,
                 prevote.round,
@@ -23436,7 +23462,7 @@ async fn execute_consensus_actions(
             );
             if let Some(ref pm) = p2p_peer_manager {
                 let peers_count = pm.validator_peers().len();
-                info!(
+                debug!(
                     "📡 BFT SEND: Broadcasting prevote to {} validator peers",
                     peers_count
                 );
@@ -23489,7 +23515,7 @@ async fn execute_consensus_actions(
                     }
                 }
             }
-            info!(
+            debug!(
                 "📡 BFT SEND: Precommit h={} r={} block={}",
                 precommit.height,
                 precommit.round,
@@ -23500,7 +23526,7 @@ async fn execute_consensus_actions(
             );
             if let Some(ref pm) = p2p_peer_manager {
                 let peers_count = pm.validator_peers().len();
-                info!(
+                debug!(
                     "📡 BFT SEND: Broadcasting precommit to {} validator peers",
                     peers_count
                 );
@@ -23649,7 +23675,7 @@ async fn execute_consensus_actions(
             // Store block FIRST — before effects, so the block receiver's
             // duplicate guard (get_block_by_slot) fires and prevents the
             // same block from being processed twice via BFT + P2P paths.
-            info!(
+            debug!(
                 "🔐 BFT: Block {} stored hash={} state_root={} proposer={}",
                 height,
                 hex::encode(&final_hash.0[..8]),
@@ -23779,7 +23805,7 @@ async fn execute_consensus_actions(
             // Log
             let tx_count = block.transactions.len();
             if tx_count == 0 {
-                info!(
+                debug!(
                     "💓 COMMITTED {} | hash: {} | BFT round {} | liveness",
                     height,
                     hex::encode(&block_hash.0[..4]),
@@ -24248,6 +24274,36 @@ mod tests {
         assert_eq!(
             chain_slot_clock_delay_ms(genesis, height, 0, genesis * 1000 + height),
             0
+        );
+    }
+
+    #[test]
+    fn propose_timeout_delay_preserves_full_configured_wait_after_slot_boundary() {
+        let configured = Duration::from_millis(800);
+
+        assert_eq!(
+            propose_timeout_delay(0, configured),
+            Duration::from_millis(800)
+        );
+        assert_eq!(
+            propose_timeout_delay(100, configured),
+            Duration::from_millis(900)
+        );
+        assert_eq!(
+            propose_timeout_delay(700, configured),
+            Duration::from_millis(1500)
+        );
+    }
+
+    #[test]
+    fn propose_timeout_delay_saturates_without_shortening_configured_wait() {
+        assert_eq!(
+            propose_timeout_delay(500, Duration::from_millis(550)),
+            Duration::from_millis(1050)
+        );
+        assert_eq!(
+            propose_timeout_delay(u64::MAX, Duration::from_millis(550)),
+            Duration::from_millis(u64::MAX)
         );
     }
 
