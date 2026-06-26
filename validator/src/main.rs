@@ -507,7 +507,7 @@ fn oracle_pair_prices(
 /// instead of broadcasting to all peers.
 const SYNC_REQUEST_FANOUT: usize = 3;
 const INITIAL_SYNC_POLL_MS: u64 = sync::INITIAL_SYNC_COOLDOWN_MS;
-const INITIAL_SYNC_PROGRESS_CHECK_SECS: u64 = 1;
+const INITIAL_SYNC_PROGRESS_CHECK_SECS: u64 = 5;
 const LIVE_SYNC_PROGRESS_CHECK_SECS: u64 = 5;
 
 /// Live BFT can tolerate a tiny gap through future-message buffering, but once

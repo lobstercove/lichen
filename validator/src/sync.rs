@@ -316,7 +316,6 @@ impl SyncManager {
         let is_syncing = *self.is_syncing.lock().await;
         let current_batch = *self.current_sync_batch.lock().await;
         let phase = *self.sync_phase.lock().await;
-        let has_pending = !self.pending_blocks.lock().await.is_empty();
         // Cooldown: don't re-trigger sync within the adaptive cooldown period.
         // InitialSync uses a short fixed cooldown (500ms) for fast catch-up.
         // LiveSync uses exponential backoff to avoid flooding peers.
@@ -362,11 +361,10 @@ impl SyncManager {
         // proposal/full block.
         if highest > current_slot {
             // Determine start slot.
-            // InitialSync normally requests the first missing descendant. When
-            // pending blocks already exist, include the current tip so a
-            // divergent parent at the local boundary can be fetched and the
-            // pending chain can drain. This preserves the v0.5.93 recovery path
-            // instead of relying exclusively on checkpoint repair.
+            // InitialSync requests the first missing descendant. Pending blocks
+            // may be far-future live blocks seen while catching up; overlapping
+            // the already-stored tip can keep replay pinned behind duplicate
+            // range responses. LiveSync keeps tip overlap for fork resolution.
             // LiveSync: include current_slot (overlap) for fork resolution —
             //   the peer's version of our tip may replace ours if theirs has
             //   more weight.
@@ -377,8 +375,6 @@ impl SyncManager {
                     // post-genesis block and must not re-request genesis on
                     // retry.
                     1
-                } else if has_pending {
-                    current_slot
                 } else {
                     current_slot.saturating_add(1)
                 }
@@ -915,7 +911,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_should_sync_overlap_initial_sync_when_pending() {
+    async fn test_should_sync_no_overlap_initial_sync_when_pending() {
         let sm = SyncManager::new();
         sm.note_seen(100).await;
         sm.add_pending_block(test_block(75)).await;
@@ -923,7 +919,7 @@ mod tests {
         let batch = sm.should_sync(50).await;
         assert!(batch.is_some());
         let (start, end) = batch.unwrap();
-        assert_eq!(start, 50); // Overlap tip to recover a divergent parent.
+        assert_eq!(start, 51); // InitialSync always requests the first missing child.
         assert!(end <= 100);
     }
 
@@ -1021,6 +1017,25 @@ mod tests {
             batch,
             Some((251, 750)),
             "next initial-sync request must continue from the new local tip"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_initial_sync_pending_blocks_do_not_overlap_tip() {
+        let sm = SyncManager::new();
+        sm.note_seen(2_000).await;
+
+        let parent = Hash([7u8; 32]);
+        let pending = test_block_with_parent(900, parent, 9);
+        sm.add_pending_block(pending).await;
+
+        *sm.last_sync_triggered_at.lock().await =
+            Instant::now() - std::time::Duration::from_secs(1);
+        let batch = sm.should_sync(500).await;
+        assert_eq!(
+            batch,
+            Some((501, 1_000)),
+            "InitialSync must request the first missing child even when far-future pending blocks exist"
         );
     }
 
