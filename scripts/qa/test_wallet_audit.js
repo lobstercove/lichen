@@ -1649,8 +1649,12 @@ test('wallet staking and shielded modals expose MAX controls without crossing fl
         'wallet stake modal should wire a MAX button');
     assert(walletSrc.includes("modal.querySelector('#unstakeAmountMax')?.addEventListener('click', () => fillMossStakeMaxAmount(modal, 'unstake'))"),
         'wallet unstake modal should wire a MAX button');
-    assert(walletSrc.includes('const shieldFeeLicn = getNetworkBaseFeeLicn() + ((zkFees.shield || 0) / 1_000_000_000);'),
-        'shield MAX should reserve base plus shield compute fee');
+    assert(walletSrc.includes('async function fillShieldMaxAmount()'),
+        'wallet should centralize shield MAX amount filling');
+    assert(walletSrc.includes('const shieldFeeSpores = getNetworkBaseFeeSpores() + BigInt(zkFees.shield ?? 0);'),
+        'shield MAX should reserve base plus shield compute fee in base units');
+    assert(walletSrc.includes('const maxShieldable = spendableSpores > shieldFeeSpores ? spendableSpores - shieldFeeSpores : 0n;'),
+        'shield MAX should subtract the full shield fee from spendable LICN');
     assert(!shieldedSrc.includes('const txCount = Math.ceil(entries.length / SHIELDED_MAX_UNSHIELD_NOTES_PER_TX);'),
         'shield flow must not reference unshield batch entries');
 });

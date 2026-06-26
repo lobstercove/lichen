@@ -1764,6 +1764,24 @@ function invokeWalletAction(actionName, actionArg, triggerEl) {
     fn();
 }
 
+async function fillShieldMaxAmount() {
+    const wallet = getActiveWallet();
+    const shieldAmountInput = document.getElementById('shieldAmount');
+    if (!wallet || !shieldAmountInput) return;
+
+    try {
+        const balance = await rpc.getBalance(wallet.address);
+        const spendableSpores = balanceSpendableSpores(balance);
+        const zkFees = typeof ZK_COMPUTE_FEE !== 'undefined' ? ZK_COMPUTE_FEE : { shield: 100_000 };
+        const shieldFeeSpores = getNetworkBaseFeeSpores() + BigInt(zkFees.shield ?? 0);
+        const maxShieldable = spendableSpores > shieldFeeSpores ? spendableSpores - shieldFeeSpores : 0n;
+        shieldAmountInput.value = maxShieldable > 0n ? baseUnitsToDecimalString(maxShieldable, 9) : '';
+    } catch (error) {
+        console.warn('Failed to fill shield max amount:', error);
+        showToast('Failed to fetch spendable balance');
+    }
+}
+
 function bindStaticControls() {
     if (bindStaticControls.bound) return;
     bindStaticControls.bound = true;
@@ -1789,13 +1807,7 @@ function bindStaticControls() {
         if (!actionName) return;
 
         if (actionName === 'fillShieldMax') {
-            const shieldAmountInput = document.getElementById('shieldAmount');
-            if (shieldAmountInput) {
-                const zkFees = typeof ZK_COMPUTE_FEE !== 'undefined' ? ZK_COMPUTE_FEE : { shield: 100_000 };
-                const shieldFeeLicn = getNetworkBaseFeeLicn() + ((zkFees.shield ?? 0) / 1_000_000_000);
-                const maxShieldable = Math.max(0, (window.walletBalance ?? 0) - shieldFeeLicn);
-                shieldAmountInput.value = maxShieldable.toFixed(4);
-            }
+            void fillShieldMaxAmount();
             return;
         }
 
