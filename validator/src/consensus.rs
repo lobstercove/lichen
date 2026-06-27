@@ -558,7 +558,7 @@ impl ConsensusEngine {
             .insert(block_hash, proposal.block.clone());
         self.proposals.insert(self.round, proposal.clone());
 
-        info!(
+        debug!(
             "📦 BFT: Proposing block at height={} round={} hash={}",
             self.height,
             self.round,
@@ -1807,7 +1807,7 @@ impl ConsensusEngine {
             self.expected_leader_cached(leader_slot, parent_hash, validator_set, stake_pool);
         let is_us = leader == Some(self.validator_pubkey);
         if is_us {
-            info!(
+            debug!(
                 "🔑 BFT: Leader election h={} r={} seed={} eligible={} → US",
                 self.height,
                 self.round,

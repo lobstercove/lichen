@@ -814,7 +814,9 @@ impl P2PNetwork {
                 | MessageType::CompactBlockMsg(_)
         );
         let should_relay_bft = is_bft_message && self.consensus_gossip_enabled;
-        let bft_relay_message = should_relay_bft.then(|| message.clone());
+        let relay_version = message.version;
+        let relay_sender = message.sender;
+        let relay_timestamp = message.timestamp;
         let should_relay_gossip = is_relay_or_seed && is_gossip_message && !is_bft_message;
         if should_relay_gossip {
             self.spawn_relay_except(message.clone(), peer_addr);
@@ -878,14 +880,20 @@ impl P2PNetwork {
                     self.peer_manager.record_violation(&peer_addr);
                     return Ok(());
                 }
-                if let Some(relay_message) = bft_relay_message.clone() {
-                    self.relay_bft_except(relay_message, peer_addr).await;
-                }
+                let relay_message = should_relay_bft.then(|| P2PMessage {
+                    version: relay_version,
+                    msg_type: MessageType::Proposal(proposal.clone()),
+                    sender: relay_sender,
+                    timestamp: relay_timestamp,
+                });
                 if let Err(e) = self.proposal_tx.try_send(proposal) {
                     warn!(
                         "P2P: Proposal channel full, dropping proposal from {} ({})",
                         peer_addr, e
                     );
+                }
+                if let Some(relay_message) = relay_message {
+                    self.relay_bft_except(relay_message, peer_addr).await;
                 }
             }
 
@@ -916,14 +924,20 @@ impl P2PNetwork {
                     self.peer_manager.record_violation(&peer_addr);
                     return Ok(());
                 }
-                if let Some(relay_message) = bft_relay_message.clone() {
-                    self.relay_bft_except(relay_message, peer_addr).await;
-                }
+                let relay_message = should_relay_bft.then(|| P2PMessage {
+                    version: relay_version,
+                    msg_type: MessageType::Prevote(prevote.clone()),
+                    sender: relay_sender,
+                    timestamp: relay_timestamp,
+                });
                 if let Err(e) = self.prevote_tx.try_send(prevote) {
                     warn!(
                         "P2P: Prevote channel full, dropping prevote from {} ({})",
                         peer_addr, e
                     );
+                }
+                if let Some(relay_message) = relay_message {
+                    self.relay_bft_except(relay_message, peer_addr).await;
                 }
             }
 
@@ -954,14 +968,20 @@ impl P2PNetwork {
                     self.peer_manager.record_violation(&peer_addr);
                     return Ok(());
                 }
-                if let Some(relay_message) = bft_relay_message.clone() {
-                    self.relay_bft_except(relay_message, peer_addr).await;
-                }
+                let relay_message = should_relay_bft.then(|| P2PMessage {
+                    version: relay_version,
+                    msg_type: MessageType::Precommit(precommit.clone()),
+                    sender: relay_sender,
+                    timestamp: relay_timestamp,
+                });
                 if let Err(e) = self.precommit_tx.try_send(precommit) {
                     warn!(
                         "P2P: Precommit channel full, dropping precommit from {} ({})",
                         peer_addr, e
                     );
+                }
+                if let Some(relay_message) = relay_message {
+                    self.relay_bft_except(relay_message, peer_addr).await;
                 }
             }
 

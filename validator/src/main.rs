@@ -5578,10 +5578,36 @@ fn duration_millis_u64(duration: Duration) -> u64 {
     duration.as_millis().min(u128::from(u64::MAX)) as u64
 }
 
+const FAST_MISSED_PROPOSER_MIN_GRACE_MS: u64 = 150;
+const FAST_MISSED_PROPOSER_MAX_GRACE_MS: u64 = 300;
+
+fn missed_proposer_grace_timeout(configured_timeout: Duration, slot_duration_ms: u64) -> Duration {
+    let configured_timeout_ms = duration_millis_u64(configured_timeout).max(1);
+    let slot_grace_ms = slot_duration_ms.saturating_div(2).clamp(
+        FAST_MISSED_PROPOSER_MIN_GRACE_MS,
+        FAST_MISSED_PROPOSER_MAX_GRACE_MS,
+    );
+    Duration::from_millis(configured_timeout_ms.min(slot_grace_ms))
+}
+
 fn propose_timeout_delay(slot_boundary_delay_ms: u64, configured_timeout: Duration) -> Duration {
     let configured_timeout_ms = duration_millis_u64(configured_timeout).max(1);
     let delay_ms = slot_boundary_delay_ms.saturating_add(configured_timeout_ms);
     Duration::from_millis(delay_ms)
+}
+
+fn propose_timeout_delay_for_role(
+    slot_boundary_delay_ms: u64,
+    configured_timeout: Duration,
+    slot_duration_ms: u64,
+    local_proposer: bool,
+) -> Duration {
+    let timeout = if local_proposer {
+        configured_timeout
+    } else {
+        missed_proposer_grace_timeout(configured_timeout, slot_duration_ms)
+    };
+    propose_timeout_delay(slot_boundary_delay_ms, timeout)
 }
 
 /// Validate a received or committed block by deterministically executing its
@@ -22318,8 +22344,9 @@ async fn run_validator() {
                 start_height,
                 slot_duration_ms,
             );
-            if bft.is_proposer(&height_vs, &height_pool, &parent_hash) {
-                info!(
+            let local_proposer = bft.is_proposer(&height_vs, &height_pool, &parent_hash);
+            if local_proposer {
+                debug!(
                     "👑 BFT: We are proposer for height={} round=0; proposing in {}ms",
                     start_height, delay_ms
                 );
@@ -22332,9 +22359,11 @@ async fn run_validator() {
             timeout_handle = Some((
                 RoundStep::Propose,
                 bft.round,
-                Box::pin(tokio::time::sleep(propose_timeout_delay(
+                Box::pin(tokio::time::sleep(propose_timeout_delay_for_role(
                     delay_ms,
                     bft.initial_propose_timeout(),
+                    slot_duration_ms,
+                    local_proposer,
                 ))),
             ));
         }
@@ -22590,8 +22619,9 @@ async fn run_validator() {
                 new_height,
                 slot_duration_ms,
             );
-            if bft.is_proposer(&height_vs, &height_pool, &parent_hash) {
-                info!(
+            let local_proposer = bft.is_proposer(&height_vs, &height_pool, &parent_hash);
+            if local_proposer {
+                debug!(
                     "👑 BFT: We are proposer for height={} round=0; proposing in {}ms",
                     new_height, delay_ms
                 );
@@ -22601,9 +22631,11 @@ async fn run_validator() {
                 timeout_handle = Some((
                     RoundStep::Propose,
                     bft.round,
-                    Box::pin(tokio::time::sleep(propose_timeout_delay(
+                    Box::pin(tokio::time::sleep(propose_timeout_delay_for_role(
                         delay_ms,
                         bft.initial_propose_timeout(),
+                        slot_duration_ms,
+                        local_proposer,
                     ))),
                 ));
             } else {
@@ -22611,9 +22643,11 @@ async fn run_validator() {
                 timeout_handle = Some((
                     RoundStep::Propose,
                     bft.round,
-                    Box::pin(tokio::time::sleep(propose_timeout_delay(
+                    Box::pin(tokio::time::sleep(propose_timeout_delay_for_role(
                         delay_ms,
                         bft.initial_propose_timeout(),
+                        slot_duration_ms,
+                        local_proposer,
                     ))),
                 ));
             }
@@ -22835,7 +22869,7 @@ async fn run_validator() {
                 if bft.step == RoundStep::Propose
                     && bft.is_proposer(&height_vs, &height_pool, &parent_hash)
                 {
-                    info!(
+                    debug!(
                         "👑 BFT: We are proposer for height={} round={}",
                         bft.height, bft.round
                     );
@@ -22967,7 +23001,7 @@ async fn run_validator() {
                     if bft.step == RoundStep::Propose
                         && bft.is_proposer(&height_vs, &height_pool, &parent_hash)
                         {
-                            info!(
+                            debug!(
                                 "👑 BFT: We are proposer for height={} round={}",
                                 bft.height, bft.round
                             );
@@ -23080,8 +23114,9 @@ async fn run_validator() {
                     // propose timeout.  Without this, a late-joining validator
                     // that round-skips to r=8 would wait ~51s before proposing,
                     // causing all validators to nil-vote that round.
-                    if bft.is_proposer(&height_vs, &height_pool, &parent_hash) {
-                        info!(
+                    let local_proposer = bft.is_proposer(&height_vs, &height_pool, &parent_hash);
+                    if local_proposer {
+                        debug!(
                             "👑 BFT: We are proposer for height={} round={} (post-skip)",
                             bft.height, bft.round
                         );
@@ -23171,9 +23206,11 @@ async fn run_validator() {
                         timeout_handle = Some((
                             RoundStep::Propose,
                             bft.round,
-                            Box::pin(tokio::time::sleep(propose_timeout_delay(
+                            Box::pin(tokio::time::sleep(propose_timeout_delay_for_role(
                                 0,
                                 bft.initial_propose_timeout(),
+                                slot_duration_ms,
+                                local_proposer,
                             ))),
                         ));
                     }
@@ -23361,7 +23398,8 @@ async fn run_validator() {
                         new_height,
                         slot_duration_ms,
                     );
-                    if bft.is_proposer(&height_vs, &height_pool, &parent_hash) {
+                    let local_proposer = bft.is_proposer(&height_vs, &height_pool, &parent_hash);
+                    if local_proposer {
                         propose_timer = Some(Box::pin(tokio::time::sleep(Duration::from_millis(
                             delay_ms,
                         ))));
@@ -23369,9 +23407,11 @@ async fn run_validator() {
                         timeout_handle = Some((
                             RoundStep::Propose,
                             bft.round,
-                            Box::pin(tokio::time::sleep(propose_timeout_delay(
+                            Box::pin(tokio::time::sleep(propose_timeout_delay_for_role(
                                 delay_ms,
                                 bft.initial_propose_timeout(),
+                                slot_duration_ms,
+                                local_proposer,
                             ))),
                         ));
                     } else {
@@ -23379,9 +23419,11 @@ async fn run_validator() {
                         timeout_handle = Some((
                             RoundStep::Propose,
                             bft.round,
-                            Box::pin(tokio::time::sleep(propose_timeout_delay(
+                            Box::pin(tokio::time::sleep(propose_timeout_delay_for_role(
                                 delay_ms,
                                 bft.initial_propose_timeout(),
+                                slot_duration_ms,
+                                local_proposer,
                             ))),
                         ));
                     }
@@ -25004,6 +25046,40 @@ mod tests {
         assert_eq!(
             propose_timeout_delay(u64::MAX, Duration::from_millis(550)),
             Duration::from_millis(u64::MAX)
+        );
+    }
+
+    #[test]
+    fn missed_proposer_grace_timeout_is_bounded_by_slot_cadence() {
+        assert_eq!(
+            missed_proposer_grace_timeout(Duration::from_millis(800), 400),
+            Duration::from_millis(200)
+        );
+        assert_eq!(
+            missed_proposer_grace_timeout(Duration::from_millis(800), 100),
+            Duration::from_millis(150)
+        );
+        assert_eq!(
+            missed_proposer_grace_timeout(Duration::from_millis(800), 1_200),
+            Duration::from_millis(300)
+        );
+        assert_eq!(
+            missed_proposer_grace_timeout(Duration::from_millis(80), 400),
+            Duration::from_millis(80)
+        );
+    }
+
+    #[test]
+    fn propose_timeout_delay_for_role_keeps_local_proposer_safety_window() {
+        let configured = Duration::from_millis(800);
+
+        assert_eq!(
+            propose_timeout_delay_for_role(100, configured, 400, true),
+            Duration::from_millis(900)
+        );
+        assert_eq!(
+            propose_timeout_delay_for_role(100, configured, 400, false),
+            Duration::from_millis(300)
         );
     }
 

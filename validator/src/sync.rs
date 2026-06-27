@@ -1453,10 +1453,12 @@ mod tests {
     /// P0-3: Batch sizes match expectations
     #[test]
     fn test_batch_size_constants() {
+        const {
+            assert!(INITIAL_SYNC_BLOCK_RANGE_LIMIT <= P2P_BLOCK_RANGE_LIMIT);
+        }
         assert_eq!(SYNC_BATCH_SIZE, 2000);
         assert_eq!(P2P_BLOCK_RANGE_LIMIT, 500);
         assert_eq!(INITIAL_SYNC_BLOCK_RANGE_LIMIT, 100);
-        assert!(INITIAL_SYNC_BLOCK_RANGE_LIMIT <= P2P_BLOCK_RANGE_LIMIT);
         assert_eq!(INITIAL_SYNC_FORWARD_WINDOW, INITIAL_SYNC_BLOCK_RANGE_LIMIT);
         assert_eq!(INITIAL_SYNC_COOLDOWN_MS, 500);
         // 2000 / 500 = 4 chunks per batch
