@@ -60,6 +60,11 @@ const SYNC_BATCH_SIZE: u64 = 2000;
 /// Must match `MAX_BLOCK_RANGE` in `p2p/src/network.rs`.
 pub const P2P_BLOCK_RANGE_LIMIT: u64 = 500;
 
+/// Initial catch-up request size. Keep this below the P2P hard cap so resumed
+/// validators do not depend on repeatedly moving 10+ MiB range responses while
+/// live compact-block traffic is also flowing.
+pub const INITIAL_SYNC_BLOCK_RANGE_LIMIT: u64 = 100;
+
 /// Pipeline depth: when far behind, prefetch this many batches concurrently.
 /// Overlaps download and application to eliminate idle time between batches.
 pub const SYNC_PIPELINE_DEPTH: u64 = 3;
@@ -67,7 +72,7 @@ pub const SYNC_PIPELINE_DEPTH: u64 = 3;
 /// Forward window accepted by the block receiver during InitialSync. Blocks
 /// beyond this window are not actionable until the local tip advances, and
 /// buffering them first can starve the exact parent blocks needed for catch-up.
-pub const INITIAL_SYNC_FORWARD_WINDOW: u64 = P2P_BLOCK_RANGE_LIMIT;
+pub const INITIAL_SYNC_FORWARD_WINDOW: u64 = INITIAL_SYNC_BLOCK_RANGE_LIMIT;
 
 /// Maximum blocks to hold in pending state (memory limit).
 /// Sized to hold one full pipeline: SYNC_BATCH_SIZE * SYNC_PIPELINE_DEPTH.
@@ -976,7 +981,7 @@ mod tests {
         let batch = sm.should_sync(0).await;
         assert!(
             batch.is_none(),
-            "post-genesis batch 1..500 must not be replaced by an overlapping 0-based batch"
+            "post-genesis batch must not be replaced by an overlapping 0-based batch"
         );
     }
 
@@ -1030,7 +1035,7 @@ mod tests {
         let batch = sm.should_sync(250).await;
         assert_eq!(
             batch,
-            Some((251, 750)),
+            Some((251, 250 + INITIAL_SYNC_FORWARD_WINDOW)),
             "next initial-sync request must continue from the new local tip"
         );
     }
@@ -1049,7 +1054,7 @@ mod tests {
         let batch = sm.should_sync(500).await;
         assert_eq!(
             batch,
-            Some((501, 1_000)),
+            Some((501, 500 + INITIAL_SYNC_FORWARD_WINDOW)),
             "InitialSync must request the first missing child even when far-future pending blocks exist"
         );
     }
@@ -1103,7 +1108,7 @@ mod tests {
         let batch = sm.should_sync(500).await;
         assert_eq!(
             batch,
-            Some((501, 1_000)),
+            Some((501, 500 + INITIAL_SYNC_FORWARD_WINDOW)),
             "reaching an initial-sync target should not wait for the retry cooldown"
         );
     }
@@ -1450,7 +1455,9 @@ mod tests {
     fn test_batch_size_constants() {
         assert_eq!(SYNC_BATCH_SIZE, 2000);
         assert_eq!(P2P_BLOCK_RANGE_LIMIT, 500);
-        assert_eq!(INITIAL_SYNC_FORWARD_WINDOW, P2P_BLOCK_RANGE_LIMIT);
+        assert_eq!(INITIAL_SYNC_BLOCK_RANGE_LIMIT, 100);
+        assert!(INITIAL_SYNC_BLOCK_RANGE_LIMIT <= P2P_BLOCK_RANGE_LIMIT);
+        assert_eq!(INITIAL_SYNC_FORWARD_WINDOW, INITIAL_SYNC_BLOCK_RANGE_LIMIT);
         assert_eq!(INITIAL_SYNC_COOLDOWN_MS, 500);
         // 2000 / 500 = 4 chunks per batch
         assert_eq!(SYNC_BATCH_SIZE / P2P_BLOCK_RANGE_LIMIT, 4);
@@ -1562,16 +1569,15 @@ mod tests {
     #[tokio::test]
     async fn test_normal_batch_when_close() {
         let sm = SyncManager::new();
-        // 500 blocks behind (< SYNC_BATCH_SIZE) → normal batch, no pipeline
-        sm.note_seen(510).await;
+        // Close enough that the receiver's InitialSync forward window reaches
+        // the observed tip in a single request.
+        sm.note_seen(90).await;
         let batch = sm.should_sync(10).await;
         assert!(batch.is_some());
         let (start, end) = batch.unwrap();
         // InitialSync: start = current_slot + 1 = 11 (no overlap)
         assert_eq!(start, 11);
-        // Gap is 500, which is < SYNC_BATCH_SIZE(2000), so effective_batch = 2000
-        // but we're capped at highest (510)
-        assert_eq!(end, 510);
+        assert_eq!(end, 90);
     }
 
     /// P3-1: Warp sync mode threshold constant

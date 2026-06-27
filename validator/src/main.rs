@@ -20781,6 +20781,7 @@ async fn run_validator() {
         let block_tx_for_compact_task = block_tx_for_compact;
         let bft_committing_for_compact = bft_committing_slot.clone();
         let sync_mgr_for_compact = sync_manager.clone();
+        let state_for_compact = state.clone();
         tokio::spawn(async move {
             while let Some(msg) = compact_block_rx.recv().await {
                 let cb = msg.compact_block;
@@ -20865,6 +20866,17 @@ async fn run_validator() {
                             slot, sender
                         );
                         // Fall through to request full block
+                        let current_slot = state_for_compact.get_last_slot().unwrap_or(0);
+                        if sync_mgr_for_compact
+                            .should_defer_far_future_block(current_slot, slot)
+                            .await
+                        {
+                            debug!(
+                                "📦 Compact block slot {} full-block fallback deferred during InitialSync (tip={})",
+                                slot, current_slot
+                            );
+                            continue;
+                        }
                         if let Some(ref pm) = peer_mgr_for_compact {
                             let request =
                                 compact_block_full_block_fallback_request(slot, pm.local_addr());
@@ -20911,6 +20923,17 @@ async fn run_validator() {
                         missing_hashes.len(),
                         sender
                     );
+                    let current_slot = state_for_compact.get_last_slot().unwrap_or(0);
+                    if sync_mgr_for_compact
+                        .should_defer_far_future_block(current_slot, slot)
+                        .await
+                    {
+                        debug!(
+                            "📦 Compact block slot {} full-block fallback deferred during InitialSync (tip={})",
+                            slot, current_slot
+                        );
+                        continue;
+                    }
                     if let Some(ref pm) = peer_mgr_for_compact {
                         let request =
                             compact_block_full_block_fallback_request(slot, local_addr_for_compact);
