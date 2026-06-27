@@ -958,6 +958,9 @@ function validateFrontendInputGuards() {
     const monitoringJs = fs.readFileSync(path.join(repoRoot, 'monitoring', 'js', 'monitoring.js'), 'utf8');
     const monitoringHtml = fs.readFileSync(path.join(repoRoot, 'monitoring', 'index.html'), 'utf8');
     const websiteJs = fs.readFileSync(path.join(repoRoot, 'website', 'script.js'), 'utf8');
+    const walletJs = fs.readFileSync(path.join(repoRoot, 'wallet', 'js', 'wallet.js'), 'utf8');
+    const extensionPopupJs = fs.readFileSync(path.join(repoRoot, 'wallet', 'extension', 'src', 'popup', 'popup.js'), 'utf8');
+    const extensionFullJs = fs.readFileSync(path.join(repoRoot, 'wallet', 'extension', 'src', 'pages', 'full.js'), 'utf8');
 
     const nativeNumberHits = portals.flatMap((portal) => (
         getPortalSourceFiles(portal)
@@ -1235,6 +1238,20 @@ function validateFrontendInputGuards() {
             explorerAddressJs.includes('pendingUnstakeLicn') &&
             explorerAddressJs.includes('mossValue'),
         'explorer account summary shows native balance, total account value, MossStake redeemable value, stLICN receipt balance, and pending unstake separately'
+    );
+
+    assert(
+        walletJs.includes("'ProposeGovernedTransfer': 'Governance Proposal'") &&
+            walletJs.includes('`Pending ${amount} LICN`') &&
+            walletJs.includes("'ApproveGovernedTransfer': 'Governance Approval'") &&
+            extensionPopupJs.includes("'ProposeGovernedTransfer': 'Governance Proposal'") &&
+            extensionPopupJs.includes('`Pending ${amt} LICN`') &&
+            extensionFullJs.includes("'ProposeGovernedTransfer': 'Governance Proposal'") &&
+            extensionFullJs.includes('`Pending ${amt} LICN`') &&
+            explorerAddressJs.includes("'ProposeGovernedTransfer': 'Gov. Proposal'") &&
+            explorerAddressJs.includes('isGovernanceTransferProposal') &&
+            explorerAddressJs.includes('`Pending ${formatLicnExact(txAmount)} LICN`'),
+        'wallet, extension, and explorer render governed transfer proposals as pending governance activity, not received funds'
     );
 }
 

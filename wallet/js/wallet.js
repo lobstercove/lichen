@@ -3316,6 +3316,8 @@ async function loadActivity(reset = true, options = {}) {
                     'GrantRepay': 'Grant Repay',
                     'GenesisTransfer': 'Genesis Transfer',
                     'GenesisMint': 'Genesis Mint',
+                    'ProposeGovernedTransfer': 'Governance Proposal',
+                    'ApproveGovernedTransfer': 'Governance Approval',
                 };
                 type = typeMap[tx.type] || (isSent ? 'Sent' : 'Received');
                 // Enhance Contract Call labels with function name from RPC
@@ -3367,6 +3369,8 @@ async function loadActivity(reset = true, options = {}) {
                     icon = 'fa-hand-holding-usd'; color = '#94a3b8'; sign = isSent ? '-' : '+';
                 } else if (tx.type === 'CreateAccount') {
                     icon = 'fa-user-plus'; color = '#94a3b8';
+                } else if (tx.type === 'ProposeGovernedTransfer' || tx.type === 'ApproveGovernedTransfer') {
+                    icon = 'fa-landmark'; color = '#f59e0b'; sign = '';
                 }
                 const isMossStakePoolTx = tx.type === 'MossStakeDeposit'
                     || tx.type === 'MossStakeUnstake'
@@ -3399,7 +3403,11 @@ async function loadActivity(reset = true, options = {}) {
             const amountUnit = tx.type === 'MossStakeUnstake' || tx.type === 'MossStakeTransfer'
                 ? 'stLICN'
                 : 'LICN';
-            const amountStr = isFeeOnly ? `${feeAmt} LICN` : `${sign}${amount} ${amountUnit}`;
+            const amountStr = tx.type === 'ProposeGovernedTransfer'
+                ? `Pending ${amount} LICN`
+                : tx.type === 'ApproveGovernedTransfer'
+                    ? `Proposal #${Number(amountVal || 0).toLocaleString()}`
+                    : isFeeOnly ? `${feeAmt} LICN` : `${sign}${amount} ${amountUnit}`;
             const feeTag = isFeeOnly ? '<span style="display:inline-block;margin-left:0.35rem;padding:0.05rem 0.4rem;border-radius:4px;font-size:0.65rem;background:rgba(245,158,11,0.15);color:#f59e0b;font-weight:600;vertical-align:middle;">FEE</span>' : '';
             const paidTag = isPaidContract ? '<span style="display:inline-block;margin-left:0.35rem;padding:0.05rem 0.4rem;border-radius:4px;font-size:0.65rem;background:rgba(139,92,246,0.15);color:#a78bfa;font-weight:600;vertical-align:middle;">PAID</span>' : '';
 

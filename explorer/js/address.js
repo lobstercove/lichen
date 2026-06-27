@@ -2366,6 +2366,8 @@ function displayTransactions(transactions) {
             'GrantRepay': 'Grant Repay',
             'GenesisTransfer': 'Genesis',
             'GenesisMint': 'Mint',
+            'ProposeGovernedTransfer': 'Gov. Proposal',
+            'ApproveGovernedTransfer': 'Gov. Approval',
         };
         const txTypeDisplay = txTypeDisplayMap[txType] || txType;
         const rawAmount = tx.amount ?? tx.value ?? (tx.amount_spores !== undefined ? Number(tx.amount_spores) / 1_000_000_000 : 0);
@@ -2379,21 +2381,33 @@ function displayTransactions(transactions) {
         if (mossStakePoolTypes.has(txType)) {
             effectiveOutgoing = txType !== 'MossStakeClaim';
         }
+        const isGovernanceTransferProposal = txType === 'ProposeGovernedTransfer'
+            || txType === 'ApproveGovernedTransfer';
         const otherAddress = txType === 'ShieldedTransfer'
             ? null
             : (mossStakePoolTypes.has(txType) ? null : (effectiveOutgoing ? txTo : txFrom));
         const direction = txType === 'ShieldedTransfer'
             ? 'PRIVATE'
-            : (mossStakePoolTypes.has(txType) ? 'MOSS' : (effectiveOutgoing ? 'OUT' : 'IN'));
+            : isGovernanceTransferProposal
+                ? 'GOV'
+                : (mossStakePoolTypes.has(txType) ? 'MOSS' : (effectiveOutgoing ? 'OUT' : 'IN'));
         const directionClass = txType === 'ShieldedTransfer'
             ? ''
+            : isGovernanceTransferProposal
+                ? ''
             : (effectiveOutgoing ? 'negative' : 'positive');
         const signedPrefix = txType === 'ShieldedTransfer'
             ? ''
+            : isGovernanceTransferProposal
+                ? ''
             : (effectiveOutgoing ? '-' : '+');
         const amountUnit = stLicnAmountTypes.has(txType) ? 'stLICN' : 'LICN';
         const amountDisplay = txType === 'ShieldedTransfer'
             ? 'Hidden'
+            : txType === 'ProposeGovernedTransfer'
+                ? `Pending ${formatLicnExact(txAmount)} LICN`
+            : txType === 'ApproveGovernedTransfer'
+                ? `Proposal #${formatNumber(Number(rawAmount) || 0)}`
             : tx.token_symbol
                 ? `${signedPrefix}${formatNumber(numericRewardValue(tx.token_amount))} ${tx.token_symbol}`
                 : `${signedPrefix}${formatLicnExact(txAmount)} ${amountUnit}`;

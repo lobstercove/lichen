@@ -1316,6 +1316,8 @@ async function loadActivity(reset = true) {
         'GrantRepay': 'Grant Repay',
         'GenesisTransfer': 'Genesis Transfer',
         'GenesisMint': 'Genesis Mint',
+        'ProposeGovernedTransfer': 'Governance Proposal',
+        'ApproveGovernedTransfer': 'Governance Approval',
       };
       const type = typeMap[tx.type] || (isSent ? 'Sent' : 'Received');
       const amountVal = tx.amount_spores ?? tx.amount ?? 0;
@@ -1347,6 +1349,8 @@ async function loadActivity(reset = true) {
         icon = 'fa-gift'; color = '#4ade80'; sign = '+';
       } else if (tx.type === 'Airdrop' || tx.type === 'FaucetAirdrop') {
         icon = 'fa-parachute-box'; color = '#60a5fa';
+      } else if (tx.type === 'ProposeGovernedTransfer' || tx.type === 'ApproveGovernedTransfer') {
+        icon = 'fa-landmark'; color = '#f59e0b'; sign = '';
       }
 
       const isMossStakePoolTx = tx.type === 'MossStakeDeposit'
@@ -1369,7 +1373,11 @@ async function loadActivity(reset = true) {
       const amountUnit = tx.type === 'MossStakeUnstake' || tx.type === 'MossStakeTransfer'
         ? 'stLICN'
         : 'LICN';
-      const amountStr = isFeeOnly ? `${feeAmt} LICN` : `${sign}${amt} ${amountUnit}`;
+      const amountStr = tx.type === 'ProposeGovernedTransfer'
+        ? `Pending ${amt} LICN`
+        : tx.type === 'ApproveGovernedTransfer'
+          ? `Proposal #${Number(amountVal || 0).toLocaleString()}`
+          : isFeeOnly ? `${feeAmt} LICN` : `${sign}${amt} ${amountUnit}`;
       const feeTag = isFeeOnly ? '<span style="display:inline-block;margin-left:0.3rem;padding:0.05rem 0.35rem;border-radius:4px;font-size:0.6rem;background:rgba(245,158,11,0.15);color:#f59e0b;font-weight:600;vertical-align:middle;">FEE</span>' : '';
 
       const safeType = escapeHtml(type);
