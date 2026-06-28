@@ -3277,6 +3277,16 @@ async function loadActivity(reset = true, options = {}) {
         // Render activity
         activityList.innerHTML = _activityItems.map(tx => {
             let icon, color, type, address, amount, sign;
+            const governed = tx.governed_transfer || tx.governedTransfer || null;
+            const governedStatus = String(
+                governed?.status || (governed?.executed ? 'executed' : governed?.cancelled ? 'cancelled' : 'pending')
+            ).toLowerCase();
+            const governedSource = governed?.source || '';
+            const governedRecipient = governed?.recipient || '';
+            const isGovernedSource = governedSource === wallet.address;
+            const isGovernedRecipient = governedRecipient === wallet.address;
+            const payloadVal = tx.amount_spores ?? tx.amount ?? 0;
+            const amountVal = governed?.amount_spores ?? payloadVal;
 
             if (tx.isAirdrop) {
                 icon = 'fa-parachute-box';
@@ -3318,8 +3328,17 @@ async function loadActivity(reset = true, options = {}) {
                     'GenesisMint': 'Genesis Mint',
                     'ProposeGovernedTransfer': 'Governance Proposal',
                     'ApproveGovernedTransfer': 'Governance Approval',
+                    'ExecuteGovernedTransfer': 'Governance Execution',
+                    'CancelGovernedTransfer': 'Governance Cancelled',
                 };
                 type = typeMap[tx.type] || (isSent ? 'Sent' : 'Received');
+                if (tx.type === 'ProposeGovernedTransfer' && governed) {
+                    type = governedStatus === 'executed'
+                        ? 'Governance Transfer'
+                        : governedStatus === 'cancelled'
+                            ? 'Governance Cancelled'
+                            : 'Governance Proposal';
+                }
                 // Enhance Contract Call labels with function name from RPC
                 if ((tx.type === 'Contract' || tx.type === 'ContractCall') && tx.contract_function) {
                     const fnMap = {
@@ -3369,18 +3388,33 @@ async function loadActivity(reset = true, options = {}) {
                     icon = 'fa-hand-holding-usd'; color = '#94a3b8'; sign = isSent ? '-' : '+';
                 } else if (tx.type === 'CreateAccount') {
                     icon = 'fa-user-plus'; color = '#94a3b8';
-                } else if (tx.type === 'ProposeGovernedTransfer' || tx.type === 'ApproveGovernedTransfer') {
-                    icon = 'fa-landmark'; color = '#f59e0b'; sign = '';
+                } else if (tx.type === 'ProposeGovernedTransfer' || tx.type === 'ApproveGovernedTransfer'
+                    || tx.type === 'ExecuteGovernedTransfer' || tx.type === 'CancelGovernedTransfer') {
+                    icon = 'fa-landmark';
+                    if (tx.type === 'ProposeGovernedTransfer' && governedStatus === 'executed') {
+                        color = isGovernedSource ? '#00C9DB' : '#4ade80';
+                        sign = isGovernedSource ? '-' : (isGovernedRecipient ? '+' : '');
+                    } else if (tx.type === 'ProposeGovernedTransfer' && governedStatus === 'cancelled') {
+                        color = '#94a3b8';
+                        sign = '';
+                    } else {
+                        color = '#f59e0b';
+                        sign = '';
+                    }
                 }
                 const isMossStakePoolTx = tx.type === 'MossStakeDeposit'
                     || tx.type === 'MossStakeUnstake'
                     || tx.type === 'MossStakeClaim';
+                const governanceCounterparty = tx.type === 'ProposeGovernedTransfer' && governed
+                    ? (isGovernedRecipient ? governedSource : (isGovernedSource ? governedRecipient : (governedRecipient || governedSource)))
+                    : null;
                 address = (tx.type === 'Shield' || tx.type === 'Unshield' || tx.type === 'ShieldedTransfer')
                     ? 'Shielded Pool'
                     : isMossStakePoolTx
                         ? 'MossStake Pool'
+                    : governanceCounterparty !== null
+                        ? governanceCounterparty
                     : (isSent ? (tx.to || '') : (tx.from || ''));
-                const amountVal = tx.amount_spores ?? tx.amount ?? 0;
                 amount = fmtToken(amountVal / SPORES_PER_LICN);
                 sign = sign || (isSent ? '-' : '+');
             }
@@ -3403,10 +3437,17 @@ async function loadActivity(reset = true, options = {}) {
             const amountUnit = tx.type === 'MossStakeUnstake' || tx.type === 'MossStakeTransfer'
                 ? 'stLICN'
                 : 'LICN';
+            const proposalId = governed?.proposal_id ?? payloadVal ?? 0;
+            const governedPrefix = isGovernedSource ? '-' : (isGovernedRecipient ? '+' : '');
             const amountStr = tx.type === 'ProposeGovernedTransfer'
-                ? `Pending ${amount} LICN`
-                : tx.type === 'ApproveGovernedTransfer'
-                    ? `Proposal #${Number(amountVal || 0).toLocaleString()}`
+                ? (governedStatus === 'executed'
+                    ? `${governedPrefix}${amount} LICN`
+                    : governedStatus === 'cancelled'
+                        ? `Cancelled ${amount} LICN`
+                        : `Pending ${amount} LICN`)
+                : tx.type === 'ApproveGovernedTransfer' || tx.type === 'ExecuteGovernedTransfer'
+                    || tx.type === 'CancelGovernedTransfer'
+                    ? `Proposal #${Number(proposalId || 0).toLocaleString()}`
                     : isFeeOnly ? `${feeAmt} LICN` : `${sign}${amount} ${amountUnit}`;
             const feeTag = isFeeOnly ? '<span style="display:inline-block;margin-left:0.35rem;padding:0.05rem 0.4rem;border-radius:4px;font-size:0.65rem;background:rgba(245,158,11,0.15);color:#f59e0b;font-weight:600;vertical-align:middle;">FEE</span>' : '';
             const paidTag = isPaidContract ? '<span style="display:inline-block;margin-left:0.35rem;padding:0.05rem 0.4rem;border-radius:4px;font-size:0.65rem;background:rgba(139,92,246,0.15);color:#a78bfa;font-weight:600;vertical-align:middle;">PAID</span>' : '';

@@ -1141,6 +1141,45 @@ impl StateBatch {
         Ok(())
     }
 
+    pub fn link_governed_proposal_tx(
+        &mut self,
+        tx_hash: &Hash,
+        proposal_id: u64,
+    ) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        let mut key = Vec::with_capacity(b"governed_proposal_tx:".len() + 32);
+        key.extend_from_slice(b"governed_proposal_tx:");
+        key.extend_from_slice(&tx_hash.0);
+        if let Some(existing) = self
+            .db
+            .get_cf(&cf, &key)
+            .map_err(|e| format!("DB error loading governed proposal tx link: {}", e))?
+        {
+            if existing.len() != 8 {
+                return Err(format!(
+                    "Invalid governed proposal tx link length for {}: {}",
+                    tx_hash.to_hex(),
+                    existing.len()
+                ));
+            }
+            let existing_id = u64::from_le_bytes(existing[..8].try_into().unwrap());
+            if existing_id == proposal_id {
+                return Ok(());
+            }
+            return Err(format!(
+                "Refusing to overwrite governed proposal tx link {}: existing proposal {} new proposal {}",
+                tx_hash.to_hex(),
+                existing_id,
+                proposal_id
+            ));
+        }
+        self.batch.put_cf(&cf, &key, proposal_id.to_le_bytes());
+        Ok(())
+    }
+
     pub fn get_governed_proposal(
         &self,
         id: u64,

@@ -298,6 +298,11 @@ impl TxProcessor {
             return self.make_result(false, 0, Some(error), 0);
         }
 
+        *self
+            .current_tx_signature
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(tx.signature());
+
         let fee_payer = tx.message.instructions[0].accounts[0];
         let fee_config = self
             .state

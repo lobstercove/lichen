@@ -50,6 +50,19 @@ impl TxProcessor {
         }
     }
 
+    pub(super) fn b_link_governed_proposal_tx(
+        &self,
+        tx_hash: &Hash,
+        proposal_id: u64,
+    ) -> Result<(), String> {
+        let mut guard = self.batch.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(batch) = guard.as_mut() {
+            batch.link_governed_proposal_tx(tx_hash, proposal_id)
+        } else {
+            self.state.link_governed_proposal_tx(tx_hash, proposal_id)
+        }
+    }
+
     pub(super) fn b_has_transaction(&self, sig: &Hash) -> Result<bool, String> {
         let guard = self.batch.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(batch) = guard.as_ref() {

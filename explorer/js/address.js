@@ -2344,6 +2344,14 @@ function displayTransactions(transactions) {
         const slot = Number(slotRaw);
         const txHash = tx.hash || tx.signature || tx.txid || tx.id || '-';
         const txType = tx.type || tx.kind || 'Unknown';
+        const governed = tx.governed_transfer || tx.governedTransfer || null;
+        const governedStatus = String(
+            governed?.status || (governed?.executed ? 'executed' : governed?.cancelled ? 'cancelled' : 'pending')
+        ).toLowerCase();
+        const governedSource = governed?.source || null;
+        const governedRecipient = governed?.recipient || null;
+        const isGovernedSource = governedSource === currentAddress || governedSource?.toLowerCase?.() === currentAddress?.toLowerCase?.();
+        const isGovernedRecipient = governedRecipient === currentAddress || governedRecipient?.toLowerCase?.() === currentAddress?.toLowerCase?.();
         // Display-friendly type names
         const txTypeDisplayMap = {
             'MossStakeDeposit': 'MossStake Deposit',
@@ -2368,9 +2376,20 @@ function displayTransactions(transactions) {
             'GenesisMint': 'Mint',
             'ProposeGovernedTransfer': 'Gov. Proposal',
             'ApproveGovernedTransfer': 'Gov. Approval',
+            'ExecuteGovernedTransfer': 'Gov. Execution',
+            'CancelGovernedTransfer': 'Gov. Cancelled',
         };
-        const txTypeDisplay = txTypeDisplayMap[txType] || txType;
-        const rawAmount = tx.amount ?? tx.value ?? (tx.amount_spores !== undefined ? Number(tx.amount_spores) / 1_000_000_000 : 0);
+        let txTypeDisplay = txTypeDisplayMap[txType] || txType;
+        if (txType === 'ProposeGovernedTransfer' && governed) {
+            txTypeDisplay = governedStatus === 'executed'
+                ? 'Gov. Transfer'
+                : governedStatus === 'cancelled'
+                    ? 'Gov. Cancelled'
+                    : 'Gov. Proposal';
+        }
+        const governedAmount = governed?.amount_licn
+            ?? (governed?.amount_spores !== undefined ? Number(governed.amount_spores) / 1_000_000_000 : null);
+        const rawAmount = governedAmount ?? tx.amount ?? tx.value ?? (tx.amount_spores !== undefined ? Number(tx.amount_spores) / 1_000_000_000 : 0);
         const txAmount = numericRewardValue(rawAmount);
         let effectiveOutgoing = isOutgoing;
         if (txType === 'Unshield') {
@@ -2381,33 +2400,49 @@ function displayTransactions(transactions) {
         if (mossStakePoolTypes.has(txType)) {
             effectiveOutgoing = txType !== 'MossStakeClaim';
         }
+        if (txType === 'ProposeGovernedTransfer' && governedStatus === 'executed') {
+            effectiveOutgoing = isGovernedSource;
+        }
         const isGovernanceTransferProposal = txType === 'ProposeGovernedTransfer'
-            || txType === 'ApproveGovernedTransfer';
+            || txType === 'ApproveGovernedTransfer'
+            || txType === 'ExecuteGovernedTransfer'
+            || txType === 'CancelGovernedTransfer';
+        const isExecutedGovernedTransfer = txType === 'ProposeGovernedTransfer'
+            && governedStatus === 'executed';
+        const governanceCounterparty = txType === 'ProposeGovernedTransfer' && governed
+            ? (isGovernedRecipient ? governedSource : (isGovernedSource ? governedRecipient : (governedRecipient || governedSource)))
+            : null;
         const otherAddress = txType === 'ShieldedTransfer'
             ? null
-            : (mossStakePoolTypes.has(txType) ? null : (effectiveOutgoing ? txTo : txFrom));
+            : (mossStakePoolTypes.has(txType) ? null : (governanceCounterparty ?? (effectiveOutgoing ? txTo : txFrom)));
         const direction = txType === 'ShieldedTransfer'
             ? 'PRIVATE'
             : isGovernanceTransferProposal
-                ? 'GOV'
+                ? (isExecutedGovernedTransfer ? (effectiveOutgoing ? 'OUT' : 'IN') : 'GOV')
                 : (mossStakePoolTypes.has(txType) ? 'MOSS' : (effectiveOutgoing ? 'OUT' : 'IN'));
         const directionClass = txType === 'ShieldedTransfer'
             ? ''
             : isGovernanceTransferProposal
-                ? ''
+                ? (isExecutedGovernedTransfer ? (effectiveOutgoing ? 'negative' : 'positive') : '')
             : (effectiveOutgoing ? 'negative' : 'positive');
         const signedPrefix = txType === 'ShieldedTransfer'
             ? ''
             : isGovernanceTransferProposal
-                ? ''
+                ? (isExecutedGovernedTransfer ? (effectiveOutgoing ? '-' : '+') : '')
             : (effectiveOutgoing ? '-' : '+');
         const amountUnit = stLicnAmountTypes.has(txType) ? 'stLICN' : 'LICN';
+        const proposalId = governed?.proposal_id ?? tx.amount_spores ?? tx.amount ?? 0;
         const amountDisplay = txType === 'ShieldedTransfer'
             ? 'Hidden'
             : txType === 'ProposeGovernedTransfer'
-                ? `Pending ${formatLicnExact(txAmount)} LICN`
-            : txType === 'ApproveGovernedTransfer'
-                ? `Proposal #${formatNumber(Number(rawAmount) || 0)}`
+                ? (governedStatus === 'executed'
+                    ? `${signedPrefix}${formatLicnExact(txAmount)} LICN`
+                    : governedStatus === 'cancelled'
+                        ? `Cancelled ${formatLicnExact(txAmount)} LICN`
+                        : `Pending ${formatLicnExact(txAmount)} LICN`)
+            : txType === 'ApproveGovernedTransfer' || txType === 'ExecuteGovernedTransfer'
+                || txType === 'CancelGovernedTransfer'
+                ? `Proposal #${formatNumber(Number(proposalId) || 0)}`
             : tx.token_symbol
                 ? `${signedPrefix}${formatNumber(numericRewardValue(tx.token_amount))} ${tx.token_symbol}`
                 : `${signedPrefix}${formatLicnExact(txAmount)} ${amountUnit}`;

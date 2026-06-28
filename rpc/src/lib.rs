@@ -3833,6 +3833,117 @@ fn transaction_summary_fields(
     (tx_type, from, to, amount, contract_fn)
 }
 
+fn governed_transfer_status(proposal: &lichen_core::multisig::GovernedProposal) -> &'static str {
+    if proposal.cancelled {
+        "cancelled"
+    } else if proposal.executed {
+        "executed"
+    } else {
+        "pending"
+    }
+}
+
+fn governed_transfer_proposal_json(
+    proposal: &lichen_core::multisig::GovernedProposal,
+) -> serde_json::Value {
+    serde_json::json!({
+        "proposal_id": proposal.id,
+        "source": proposal.source.to_base58(),
+        "recipient": proposal.recipient.to_base58(),
+        "amount_spores": proposal.amount,
+        "amount_licn": proposal.amount as f64 / 1_000_000_000.0,
+        "approvals": proposal.approvals.iter().map(|p| p.to_base58()).collect::<Vec<_>>(),
+        "approval_count": proposal.approvals.len(),
+        "threshold": proposal.threshold,
+        "execute_after_epoch": proposal.execute_after_epoch,
+        "velocity_tier": proposal.velocity_tier.as_str(),
+        "daily_cap_spores": proposal.daily_cap_spores,
+        "executed": proposal.executed,
+        "cancelled": proposal.cancelled,
+        "status": governed_transfer_status(proposal),
+        "metadata_complete": true,
+    })
+}
+
+fn parse_governed_proposal_id(ix: &Instruction) -> Option<u64> {
+    if ix.program_id != SYSTEM_PROGRAM_ID || ix.data.len() < 9 {
+        return None;
+    }
+    match ix.data.first().copied()? {
+        22 | 32 | 33 => {
+            let bytes: [u8; 8] = ix.data[1..9].try_into().ok()?;
+            Some(u64::from_le_bytes(bytes))
+        }
+        _ => None,
+    }
+}
+
+fn enrich_governed_transfer_entry(
+    state: &StateStore,
+    tx_hash: &Hash,
+    tx_type: &str,
+    first_ix: Option<&Instruction>,
+    amount: u64,
+    entry: &mut serde_json::Value,
+) {
+    let Some(ix) = first_ix else {
+        return;
+    };
+    if ix.program_id != SYSTEM_PROGRAM_ID {
+        return;
+    }
+
+    match tx_type {
+        "ProposeGovernedTransfer" => {
+            let proposer = ix.accounts.first().map(|p| p.to_base58());
+            let source = ix.accounts.get(1);
+            let recipient = ix.accounts.get(2);
+            let mut metadata = serde_json::json!({
+                "proposer": proposer,
+                "source": source.map(|p| p.to_base58()),
+                "recipient": recipient.map(|p| p.to_base58()),
+                "amount_spores": amount,
+                "amount_licn": amount as f64 / 1_000_000_000.0,
+                "status": "pending",
+                "metadata_complete": false,
+            });
+
+            if let Ok(Some(proposal)) = state.get_governed_proposal_for_tx(tx_hash) {
+                metadata = governed_transfer_proposal_json(&proposal);
+                metadata["proposer"] = proposer
+                    .map(serde_json::Value::String)
+                    .unwrap_or(serde_json::Value::Null);
+            } else if let (Some(source), Some(recipient)) = (source, recipient) {
+                if let Ok(Some(proposal)) =
+                    state.find_governed_transfer_proposal(source, recipient, amount)
+                {
+                    metadata = governed_transfer_proposal_json(&proposal);
+                    metadata["proposer"] = proposer
+                        .map(serde_json::Value::String)
+                        .unwrap_or(serde_json::Value::Null);
+                }
+            }
+
+            entry["governed_transfer"] = metadata;
+        }
+        "ApproveGovernedTransfer" | "ExecuteGovernedTransfer" | "CancelGovernedTransfer" => {
+            let Some(proposal_id) = parse_governed_proposal_id(ix) else {
+                return;
+            };
+            let mut metadata = serde_json::json!({
+                "proposal_id": proposal_id,
+                "status": "unknown",
+                "metadata_complete": false,
+            });
+            if let Ok(Some(proposal)) = state.get_governed_proposal(proposal_id) {
+                metadata = governed_transfer_proposal_json(&proposal);
+            }
+            entry["governed_transfer"] = metadata;
+        }
+        _ => {}
+    }
+}
+
 /// Extract the function name from a contract call instruction (for display purposes)
 fn parse_contract_function(ix: &Instruction) -> Option<String> {
     if ix.program_id != CONTRACT_PROGRAM_ID {
@@ -4204,6 +4315,12 @@ fn instruction_type(ix: &Instruction) -> &'static str {
         }
         if ix.data.first() == Some(&31) {
             return "DeregisterValidator";
+        }
+        if ix.data.first() == Some(&32) {
+            return "ExecuteGovernedTransfer";
+        }
+        if ix.data.first() == Some(&33) {
+            return "CancelGovernedTransfer";
         }
         return "System";
     }
@@ -7628,6 +7745,8 @@ async fn handle_get_transactions_by_address(
             }
         }
 
+        enrich_governed_transfer_entry(&state.state, hash, tx_type, first_ix, amount, &mut entry);
+
         results.push(entry);
 
         last_slot = Some(*slot);
@@ -7751,6 +7870,8 @@ async fn handle_get_recent_transactions(
                 }
             }
         }
+
+        enrich_governed_transfer_entry(&state.state, hash, tx_type, first_ix, amount, &mut entry);
 
         results.push(entry);
 
@@ -21281,6 +21402,77 @@ mod tests {
         assert_eq!(response["velocity_tier"], "elevated");
         assert_eq!(response["daily_cap_spores"], 1_000_000_000_000u64);
         assert_eq!(response["cancelled"], true);
+    }
+
+    #[tokio::test]
+    async fn account_history_enriches_executed_governed_transfer_proposal() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+        let proposer = Pubkey([0x10; 32]);
+        let source = Pubkey([0x11; 32]);
+        let recipient = Pubkey([0x22; 32]);
+        let approver = Pubkey([0x33; 32]);
+        let amount = 1_000_000_000_000_000u64;
+
+        state
+            .set_governed_proposal(&lichen_core::multisig::GovernedProposal {
+                id: 2,
+                source,
+                recipient,
+                amount,
+                approvals: vec![approver],
+                threshold: 5,
+                execute_after_epoch: 15,
+                velocity_tier: lichen_core::multisig::GovernedTransferVelocityTier::Elevated,
+                daily_cap_spores: 10_000_000_000_000_000,
+                executed: true,
+                cancelled: false,
+            })
+            .unwrap();
+
+        let mut data = vec![21u8];
+        data.extend_from_slice(&amount.to_le_bytes());
+        let tx = Transaction::new(lichen_core::Message::new(
+            vec![lichen_core::Instruction {
+                program_id: SYSTEM_PROGRAM_ID,
+                accounts: vec![proposer, source, recipient],
+                data,
+            }],
+            Hash([0x52; 32]),
+        ));
+        let signature = tx.signature().to_hex();
+        state.link_governed_proposal_tx(&tx.signature(), 2).unwrap();
+        let block = Block::new_with_timestamp(
+            50,
+            Hash::default(),
+            Hash::default(),
+            [0u8; 32],
+            vec![tx],
+            1_700_000_050,
+        );
+        state.put_block(&block).unwrap();
+
+        let rpc_state = make_test_rpc_state(state);
+        let account_history = handle_get_transactions_by_address(
+            &rpc_state,
+            Some(serde_json::json!([recipient.to_base58(), { "limit": 5 }])),
+        )
+        .await
+        .unwrap();
+        let txs = account_history["transactions"].as_array().unwrap();
+        assert_eq!(txs.len(), 1);
+        assert_eq!(txs[0]["hash"], signature);
+        assert_eq!(txs[0]["type"], "ProposeGovernedTransfer");
+        assert_eq!(txs[0]["governed_transfer"]["proposal_id"], 2);
+        assert_eq!(txs[0]["governed_transfer"]["source"], source.to_base58());
+        assert_eq!(
+            txs[0]["governed_transfer"]["recipient"],
+            recipient.to_base58()
+        );
+        assert_eq!(txs[0]["governed_transfer"]["amount_spores"], amount);
+        assert_eq!(txs[0]["governed_transfer"]["status"], "executed");
+        assert_eq!(txs[0]["governed_transfer"]["executed"], true);
+        assert_eq!(txs[0]["governed_transfer"]["metadata_complete"], true);
     }
 
     fn put_tip_block_with_timestamp(state: &StateStore, slot: u64, timestamp: u64) {

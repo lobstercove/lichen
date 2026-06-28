@@ -45,18 +45,18 @@ use lichen_core::{
     compute_bft_timestamp, compute_stake_weighted_median, compute_validators_hash, evm_tx_hash,
     Account, AccountTxsRebuildReport, AccountTxsSourceInspection, Block, ContractAbi,
     ContractAccount, ContractInstruction, FeeConfig, FinalityTracker, ForkChoice, GenesisConfig,
-    GenesisPrices, GenesisStateBundle, GenesisStateChunk, GenesisWallet, Hash, Keypair,
-    MarketActivity, MarketActivityKind, Mempool, NftActivity, NftActivityKind, PqSignature,
-    Precommit, Prevote, ProgramCallActivity, Proposal, Pubkey, RoundStep, SlashingEvidence,
-    SlashingOffense, SparseStateCommitmentReport, StakePool, StateRootComponentReport, StateStore,
-    Transaction, TxProcessor, ValidatorInfo, ValidatorSet, Vote, VoteAggregator, VoteAuthority,
-    BASE_FEE, BOOTSTRAP_GRANT_AMOUNT, CHAIN_ID_METADATA_KEY, CONTRACT_DEPLOY_FEE,
-    CONTRACT_UPGRADE_FEE, EVM_PROGRAM_ID, GENESIS_DISTRIBUTION, GENESIS_STATE_BUNDLE_VERSION,
-    GENESIS_STATE_CHUNK_OPCODE, GENESIS_SUPPLY_SPORES, MAX_TX_AGE_BLOCKS, MIN_VALIDATOR_STAKE,
-    NFT_COLLECTION_FEE, NFT_MINT_FEE, ORACLE_ASSET_MAX_LEN, ORACLE_ASSET_MIN_LEN,
-    ORACLE_STALENESS_SLOTS, SLASHING_EVIDENCE_CODEC_LIMIT_BYTES, STATE_SNAPSHOT_SPECIAL_CATEGORIES,
-    SYSTEM_PROGRAM_ID as CORE_SYSTEM_PROGRAM_ID, VALIDATOR_BOOTSTRAP_GRANTS_ENABLED_METADATA_KEY,
-    VALIDATOR_BOOTSTRAP_GRANTS_ENABLED_VALUE,
+    GenesisPrices, GenesisStateBundle, GenesisStateChunk, GenesisWallet,
+    GovernedProposalTxBackfillReport, Hash, Keypair, MarketActivity, MarketActivityKind, Mempool,
+    NftActivity, NftActivityKind, PqSignature, Precommit, Prevote, ProgramCallActivity, Proposal,
+    Pubkey, RoundStep, SlashingEvidence, SlashingOffense, SparseStateCommitmentReport, StakePool,
+    StateRootComponentReport, StateStore, Transaction, TxProcessor, ValidatorInfo, ValidatorSet,
+    Vote, VoteAggregator, VoteAuthority, BASE_FEE, BOOTSTRAP_GRANT_AMOUNT, CHAIN_ID_METADATA_KEY,
+    CONTRACT_DEPLOY_FEE, CONTRACT_UPGRADE_FEE, EVM_PROGRAM_ID, GENESIS_DISTRIBUTION,
+    GENESIS_STATE_BUNDLE_VERSION, GENESIS_STATE_CHUNK_OPCODE, GENESIS_SUPPLY_SPORES,
+    MAX_TX_AGE_BLOCKS, MIN_VALIDATOR_STAKE, NFT_COLLECTION_FEE, NFT_MINT_FEE, ORACLE_ASSET_MAX_LEN,
+    ORACLE_ASSET_MIN_LEN, ORACLE_STALENESS_SLOTS, SLASHING_EVIDENCE_CODEC_LIMIT_BYTES,
+    STATE_SNAPSHOT_SPECIAL_CATEGORIES, SYSTEM_PROGRAM_ID as CORE_SYSTEM_PROGRAM_ID,
+    VALIDATOR_BOOTSTRAP_GRANTS_ENABLED_METADATA_KEY, VALIDATOR_BOOTSTRAP_GRANTS_ENABLED_VALUE,
 };
 use lichen_genesis::{
     genesis_assign_achievements, genesis_auto_deploy, genesis_bootstrap_bridge_committee,
@@ -140,6 +140,7 @@ const DIAGNOSE_CHAIN_REPLAY_FLAG: &str = "--diagnose-chain-replay";
 const DUMP_BLOCK_JSON_FLAG: &str = "--dump-block-json";
 const SCAN_MOSSSTAKE_BLOCKS_FLAG: &str = "--scan-mossstake-blocks";
 const REBUILD_ACCOUNT_TXS_FLAG: &str = "--rebuild-account-txs";
+const BACKFILL_GOVERNED_PROPOSAL_TX_INDEX_FLAG: &str = "--backfill-governed-proposal-tx-index";
 const INSPECT_ACCOUNT_HISTORY_FLAG: &str = "--inspect-account-history";
 const MERGE_PUBLIC_HISTORY_FROM_SOURCE_FLAG: &str = "--merge-public-history-from-source";
 const MERGE_PUBLIC_HISTORY_INDEXES_FROM_SOURCE_FLAG: &str =
@@ -152,6 +153,7 @@ const IMPORT_SHIELDED_STATE_BUNDLE_FLAG: &str = "--import-shielded-state-bundle"
 const SHIELDED_STATE_REBUILD_CONFIRMATION: &str = "rebuild-shielded-state:v1";
 const SHIELDED_STATE_BUNDLE_IMPORT_CONFIRMATION: &str = "shielded-state-bundle:v1";
 const ACCOUNT_TXS_REBUILD_CONFIRMATION: &str = "rebuild-account-txs:v1";
+const GOVERNED_PROPOSAL_TX_BACKFILL_CONFIRMATION: &str = "backfill-governed-proposal-tx-index:v1";
 const PUBLIC_HISTORY_MERGE_CONFIRMATION: &str = "public-history-merge:v1";
 const PUBLIC_HISTORY_INDEX_MERGE_CONFIRMATION: &str = "public-history-index-merge:v1";
 const REPAIR_ANALYTICS_24H_WINDOW_FLAG: &str = "--repair-analytics-24h-window";
@@ -12033,6 +12035,86 @@ fn maybe_run_account_txs_rebuild_admin(args: &[String]) -> Option<i32> {
     }
 }
 
+fn print_governed_proposal_tx_backfill_report(
+    data_dir: &Path,
+    report: &GovernedProposalTxBackfillReport,
+) {
+    println!("data_dir={}", data_dir.display());
+    println!("mode={}", if report.dry_run { "dry-run" } else { "write" });
+    println!("tx_by_slot_rows={}", report.tx_by_slot_rows);
+    println!("proposal_txs={}", report.proposal_txs);
+    println!("missing_transactions={}", report.missing_transactions);
+    println!("existing_links={}", report.existing_links);
+    println!("linked={}", report.linked);
+    println!("unresolved={}", report.unresolved);
+    println!(
+        "first_unresolved_tx={}",
+        report.first_unresolved_tx.as_deref().unwrap_or("none")
+    );
+}
+
+fn maybe_run_governed_proposal_tx_backfill_admin(args: &[String]) -> Option<i32> {
+    if !has_flag(args, BACKFILL_GOVERNED_PROPOSAL_TX_INDEX_FLAG) {
+        return None;
+    }
+
+    let execute = has_flag(args, "--execute");
+    let dry_run = has_flag(args, "--dry-run") || !execute;
+    if execute && has_flag(args, "--dry-run") {
+        eprintln!("--execute and --dry-run are mutually exclusive");
+        return Some(2);
+    }
+    if execute {
+        let confirm = get_flag_value(args, &["--confirm"]);
+        if confirm != Some(GOVERNED_PROPOSAL_TX_BACKFILL_CONFIRMATION) {
+            eprintln!(
+                "Refusing write without --confirm {GOVERNED_PROPOSAL_TX_BACKFILL_CONFIRMATION}"
+            );
+            return Some(1);
+        }
+    }
+
+    let data_dir = restriction_schema_data_dir(args);
+    let cache_size_mb = get_flag_value(args, &["--cache-size-mb"]).and_then(|s| s.parse().ok());
+    let cold_store_path = get_flag_value(args, &["--cold-store"]).map(PathBuf::from);
+
+    let mut state = match StateStore::open_with_cache_mb(&data_dir, cache_size_mb) {
+        Ok(state) => state,
+        Err(err) => {
+            eprintln!("Failed to open state DB at {}: {}", data_dir.display(), err);
+            return Some(1);
+        }
+    };
+
+    if let Some(cold_path) = cold_store_path {
+        if let Err(err) = attach_account_history_cold_store(&mut state, &cold_path, dry_run) {
+            eprintln!(
+                "Failed to open cold store at {}: {}",
+                cold_path.display(),
+                err
+            );
+            return Some(1);
+        }
+    }
+
+    match state.backfill_governed_proposal_tx_index(dry_run) {
+        Ok(report) => {
+            print_governed_proposal_tx_backfill_report(&data_dir, &report);
+            if execute && (report.missing_transactions > 0 || report.unresolved > 0) {
+                eprintln!(
+                    "Governed proposal tx backfill completed with unresolved source rows; inspect report before treating as complete"
+                );
+                return Some(1);
+            }
+            Some(0)
+        }
+        Err(err) => {
+            eprintln!("Failed to backfill governed proposal tx index: {err}");
+            Some(1)
+        }
+    }
+}
+
 fn print_public_history_merge_report(report: &lichen_core::state::PublicHistoryMergeReport) {
     println!("dry_run={}", report.dry_run);
     println!("used_cold_store={}", report.used_cold_store);
@@ -12822,6 +12904,9 @@ fn main() {
         std::process::exit(exit_code);
     }
     if let Some(exit_code) = maybe_run_account_txs_rebuild_admin(&args) {
+        std::process::exit(exit_code);
+    }
+    if let Some(exit_code) = maybe_run_governed_proposal_tx_backfill_admin(&args) {
         std::process::exit(exit_code);
     }
     if let Some(exit_code) = maybe_run_public_history_merge_admin(&args) {

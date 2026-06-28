@@ -1,6 +1,13 @@
 use super::*;
 use crate::codec::{deserialize_legacy_bincode, serialize_legacy_bincode};
 
+fn governed_proposal_tx_key(tx_hash: &Hash) -> Vec<u8> {
+    let mut key = Vec::with_capacity(b"governed_proposal_tx:".len() + 32);
+    key.extend_from_slice(b"governed_proposal_tx:");
+    key.extend_from_slice(&tx_hash.0);
+    key
+}
+
 impl StateStore {
     /// Store treasury public key
     pub fn set_treasury_pubkey(&self, pubkey: &Pubkey) -> Result<(), String> {
@@ -291,6 +298,140 @@ impl StateStore {
             Ok(None) => Ok(None),
             Err(e) => Err(format!("DB error loading governed proposal: {}", e)),
         }
+    }
+
+    /// Link a governed transfer proposal creation tx to its generated proposal
+    /// ID. This is a derived public-history index, not consensus balance state.
+    pub fn link_governed_proposal_tx(
+        &self,
+        tx_hash: &Hash,
+        proposal_id: u64,
+    ) -> Result<(), String> {
+        if let Some(existing_id) = self.get_governed_proposal_id_for_tx(tx_hash)? {
+            if existing_id == proposal_id {
+                return Ok(());
+            }
+            return Err(format!(
+                "Refusing to overwrite governed proposal tx link {}: existing proposal {} new proposal {}",
+                tx_hash.to_hex(),
+                existing_id,
+                proposal_id
+            ));
+        }
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        self.db
+            .put_cf(
+                &cf,
+                governed_proposal_tx_key(tx_hash),
+                proposal_id.to_le_bytes(),
+            )
+            .map_err(|e| format!("Failed to store governed proposal tx link: {}", e))
+    }
+
+    pub(crate) fn batch_link_governed_proposal_tx(
+        &self,
+        batch: &mut WriteBatch,
+        tx_hash: &Hash,
+        proposal_id: u64,
+    ) -> Result<(), String> {
+        if let Some(existing_id) = self.get_governed_proposal_id_for_tx(tx_hash)? {
+            if existing_id == proposal_id {
+                return Ok(());
+            }
+            return Err(format!(
+                "Refusing to overwrite governed proposal tx link {}: existing proposal {} new proposal {}",
+                tx_hash.to_hex(),
+                existing_id,
+                proposal_id
+            ));
+        }
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        batch.put_cf(
+            &cf,
+            governed_proposal_tx_key(tx_hash),
+            proposal_id.to_le_bytes(),
+        );
+        Ok(())
+    }
+
+    pub fn get_governed_proposal_id_for_tx(&self, tx_hash: &Hash) -> Result<Option<u64>, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        match self.db.get_cf(&cf, governed_proposal_tx_key(tx_hash)) {
+            Ok(Some(data)) if data.len() == 8 => {
+                Ok(Some(u64::from_le_bytes(data[..8].try_into().unwrap())))
+            }
+            Ok(Some(data)) => Err(format!(
+                "Invalid governed proposal tx link length for {}: {}",
+                tx_hash.to_hex(),
+                data.len()
+            )),
+            Ok(None) => Ok(None),
+            Err(e) => Err(format!("DB error loading governed proposal tx link: {}", e)),
+        }
+    }
+
+    pub fn get_governed_proposal_for_tx(
+        &self,
+        tx_hash: &Hash,
+    ) -> Result<Option<crate::multisig::GovernedProposal>, String> {
+        let Some(proposal_id) = self.get_governed_proposal_id_for_tx(tx_hash)? else {
+            return Ok(None);
+        };
+        self.get_governed_proposal(proposal_id)
+    }
+
+    /// Find the unique governed transfer proposal matching an existing proposal
+    /// transaction. Historical proposal transactions predate a proposal-id index,
+    /// so RPC display enrichment must resolve through stored proposal state.
+    pub fn find_governed_transfer_proposal(
+        &self,
+        source: &Pubkey,
+        recipient: &Pubkey,
+        amount: u64,
+    ) -> Result<Option<crate::multisig::GovernedProposal>, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        let prefix = b"governed_proposal:";
+        let mut read_opts = rocksdb::ReadOptions::default();
+        read_opts.set_total_order_seek(true);
+
+        let mut matched: Option<crate::multisig::GovernedProposal> = None;
+        let iter = self.db.iterator_cf_opt(
+            &cf,
+            read_opts,
+            rocksdb::IteratorMode::From(prefix, Direction::Forward),
+        );
+        for item in iter {
+            let (key, data) =
+                item.map_err(|e| format!("DB error scanning governed proposals: {}", e))?;
+            if !key.starts_with(prefix) {
+                break;
+            }
+            let proposal: crate::multisig::GovernedProposal = serde_json::from_slice(&data)
+                .map_err(|e| format!("Failed to deserialize governed proposal: {}", e))?;
+            if proposal.source == *source
+                && proposal.recipient == *recipient
+                && proposal.amount == amount
+            {
+                if matched.is_some() {
+                    return Ok(None);
+                }
+                matched = Some(proposal);
+            }
+        }
+
+        Ok(matched)
     }
 
     /// Load the executed governed-transfer volume for a wallet on a UTC day.

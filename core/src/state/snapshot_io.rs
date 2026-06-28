@@ -100,6 +100,18 @@ pub struct AccountTxsSourceInspection {
     pub slots: Vec<AccountTxsSlotInspection>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GovernedProposalTxBackfillReport {
+    pub dry_run: bool,
+    pub tx_by_slot_rows: u64,
+    pub proposal_txs: u64,
+    pub missing_transactions: u64,
+    pub existing_links: u64,
+    pub linked: u64,
+    pub unresolved: u64,
+    pub first_unresolved_tx: Option<String>,
+}
+
 /// Metadata stored alongside each checkpoint (serialized as JSON in the
 /// checkpoint directory).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -279,6 +291,22 @@ fn parse_tx_by_slot_snapshot_row(
         u64::from_be_bytes(seq_bytes),
         Hash(hash_bytes),
     )))
+}
+
+fn governed_transfer_proposal_instruction(
+    tx: &Transaction,
+) -> Option<(Pubkey, Pubkey, Pubkey, u64)> {
+    let ix = tx.message.instructions.first()?;
+    if ix.program_id != crate::SYSTEM_PROGRAM_ID
+        || ix.data.first().copied() != Some(21)
+        || ix.data.len() < 9
+        || ix.accounts.len() < 3
+    {
+        return None;
+    }
+
+    let amount = u64::from_le_bytes(ix.data[1..9].try_into().ok()?);
+    Some((ix.accounts[0], ix.accounts[1], ix.accounts[2], amount))
 }
 
 fn directory_logical_size(path: &std::path::Path) -> Result<u64, String> {
@@ -2251,6 +2279,125 @@ impl StateStore {
         report.rebuilt_rows = indexed;
         report.after_hot_rows = Self::count_rows_in_db(&self.db, CF_ACCOUNT_TXS)?;
         report.after_counter_keys = self.count_stats_prefix(b"atxc:")?;
+        Ok(report)
+    }
+
+    /// Backfill the derived governed proposal tx->proposal-id index from
+    /// canonical transaction history. This never changes account balances,
+    /// proposal state, or state roots.
+    pub fn backfill_governed_proposal_tx_index(
+        &self,
+        dry_run: bool,
+    ) -> Result<GovernedProposalTxBackfillReport, String> {
+        const WRITE_BATCH_SIZE: usize = 10_000;
+
+        let tx_by_slot_cf = self
+            .db
+            .cf_handle(CF_TX_BY_SLOT)
+            .ok_or_else(|| "tx_by_slot CF not found".to_string())?;
+        let mut read_opts = rocksdb::ReadOptions::default();
+        read_opts.set_total_order_seek(true);
+        let iter = self
+            .db
+            .iterator_cf_opt(&tx_by_slot_cf, read_opts, rocksdb::IteratorMode::Start);
+
+        let mut report = GovernedProposalTxBackfillReport {
+            dry_run,
+            ..GovernedProposalTxBackfillReport::default()
+        };
+        let mut batch = WriteBatch::default();
+        let mut pending = 0usize;
+
+        for item in iter {
+            let (key, value) = item.map_err(|err| {
+                format!("Failed iterating tx_by_slot for proposal backfill: {}", err)
+            })?;
+            let Some((_slot, _tx_index, tx_hash)) = parse_tx_by_slot_snapshot_row(&key, &value)?
+            else {
+                continue;
+            };
+            report.tx_by_slot_rows = report.tx_by_slot_rows.saturating_add(1);
+
+            let Some(tx) = self.get_transaction(&tx_hash)? else {
+                report.missing_transactions = report.missing_transactions.saturating_add(1);
+                continue;
+            };
+
+            let Some((proposer, source, recipient, amount)) =
+                governed_transfer_proposal_instruction(&tx)
+            else {
+                continue;
+            };
+            report.proposal_txs = report.proposal_txs.saturating_add(1);
+
+            if let Some(existing_id) = self.get_governed_proposal_id_for_tx(&tx_hash)? {
+                let proposal = self.get_governed_proposal(existing_id)?.ok_or_else(|| {
+                    format!(
+                        "Governed proposal tx link {} points to missing proposal {}",
+                        tx_hash.to_hex(),
+                        existing_id
+                    )
+                })?;
+                if proposal.source != source
+                    || proposal.recipient != recipient
+                    || proposal.amount != amount
+                {
+                    return Err(format!(
+                        "Governed proposal tx link {} points to mismatched proposal {}",
+                        tx_hash.to_hex(),
+                        existing_id
+                    ));
+                }
+                report.existing_links = report.existing_links.saturating_add(1);
+                continue;
+            }
+
+            let Some(proposal) =
+                self.find_governed_transfer_proposal(&source, &recipient, amount)?
+            else {
+                report.unresolved = report.unresolved.saturating_add(1);
+                if report.first_unresolved_tx.is_none() {
+                    report.first_unresolved_tx = Some(tx_hash.to_hex());
+                }
+                continue;
+            };
+
+            if !proposal.approvals.contains(&proposer) {
+                report.unresolved = report.unresolved.saturating_add(1);
+                if report.first_unresolved_tx.is_none() {
+                    report.first_unresolved_tx = Some(tx_hash.to_hex());
+                }
+                continue;
+            }
+
+            report.linked = report.linked.saturating_add(1);
+            if dry_run {
+                continue;
+            }
+
+            self.batch_link_governed_proposal_tx(&mut batch, &tx_hash, proposal.id)?;
+            pending = pending.saturating_add(1);
+            if pending >= WRITE_BATCH_SIZE {
+                self.db.write(batch).map_err(|err| {
+                    format!(
+                        "Failed writing governed proposal tx index backfill: {}",
+                        err
+                    )
+                })?;
+                batch = WriteBatch::default();
+                pending = 0;
+            }
+        }
+
+        if !dry_run && pending > 0 {
+            self.db.write(batch).map_err(|err| {
+                format!(
+                    "Failed finalizing governed proposal tx index backfill: {}",
+                    err
+                )
+            })?;
+        }
+
         Ok(report)
     }
 

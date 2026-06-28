@@ -1286,6 +1286,14 @@ async function loadActivity(reset = true) {
       const sig = tx.signature || tx.hash || tx.txid || 'unknown';
       const shortSig = `${String(sig).slice(0, 8)}...${String(sig).slice(-4)}`;
       const isSent = (tx.from === wallet.address);
+      const governed = tx.governed_transfer || tx.governedTransfer || null;
+      const governedStatus = String(
+        governed?.status || (governed?.executed ? 'executed' : governed?.cancelled ? 'cancelled' : 'pending')
+      ).toLowerCase();
+      const governedSource = governed?.source || '';
+      const governedRecipient = governed?.recipient || '';
+      const isGovernedSource = governedSource === wallet.address;
+      const isGovernedRecipient = governedRecipient === wallet.address;
 
       // 22 type mappings — aligned with wallet website
       const typeMap = {
@@ -1318,9 +1326,19 @@ async function loadActivity(reset = true) {
         'GenesisMint': 'Genesis Mint',
         'ProposeGovernedTransfer': 'Governance Proposal',
         'ApproveGovernedTransfer': 'Governance Approval',
+        'ExecuteGovernedTransfer': 'Governance Execution',
+        'CancelGovernedTransfer': 'Governance Cancelled',
       };
-      const type = typeMap[tx.type] || (isSent ? 'Sent' : 'Received');
-      const amountVal = tx.amount_spores ?? tx.amount ?? 0;
+      let type = typeMap[tx.type] || (isSent ? 'Sent' : 'Received');
+      if (tx.type === 'ProposeGovernedTransfer' && governed) {
+        type = governedStatus === 'executed'
+          ? 'Governance Transfer'
+          : governedStatus === 'cancelled'
+            ? 'Governance Cancelled'
+            : 'Governance Proposal';
+      }
+      const payloadVal = tx.amount_spores ?? tx.amount ?? 0;
+      const amountVal = governed?.amount_spores ?? payloadVal;
       const amt = (amountVal / 1_000_000_000).toLocaleString(undefined, { maximumFractionDigits: 4 });
       const ts = tx.timestamp ? new Date(tx.timestamp * 1000).toLocaleString() : '';
 
@@ -1349,17 +1367,33 @@ async function loadActivity(reset = true) {
         icon = 'fa-gift'; color = '#4ade80'; sign = '+';
       } else if (tx.type === 'Airdrop' || tx.type === 'FaucetAirdrop') {
         icon = 'fa-parachute-box'; color = '#60a5fa';
-      } else if (tx.type === 'ProposeGovernedTransfer' || tx.type === 'ApproveGovernedTransfer') {
-        icon = 'fa-landmark'; color = '#f59e0b'; sign = '';
+      } else if (tx.type === 'ProposeGovernedTransfer' || tx.type === 'ApproveGovernedTransfer'
+        || tx.type === 'ExecuteGovernedTransfer' || tx.type === 'CancelGovernedTransfer') {
+        icon = 'fa-landmark';
+        if (tx.type === 'ProposeGovernedTransfer' && governedStatus === 'executed') {
+          color = isGovernedSource ? '#00C9DB' : '#4ade80';
+          sign = isGovernedSource ? '-' : (isGovernedRecipient ? '+' : '');
+        } else if (tx.type === 'ProposeGovernedTransfer' && governedStatus === 'cancelled') {
+          color = '#94a3b8';
+          sign = '';
+        } else {
+          color = '#f59e0b';
+          sign = '';
+        }
       }
 
       const isMossStakePoolTx = tx.type === 'MossStakeDeposit'
         || tx.type === 'MossStakeUnstake'
         || tx.type === 'MossStakeClaim';
+      const governanceCounterparty = tx.type === 'ProposeGovernedTransfer' && governed
+        ? (isGovernedRecipient ? governedSource : (isGovernedSource ? governedRecipient : (governedRecipient || governedSource)))
+        : null;
       const address = (tx.type === 'Shield' || tx.type === 'Unshield' || tx.type === 'ShieldedTransfer')
         ? 'Shielded Pool'
         : isMossStakePoolTx
           ? 'MossStake Pool'
+        : governanceCounterparty !== null
+          ? governanceCounterparty
         : (isSent ? (tx.to || '') : (tx.from || ''));
       const displayAddr = address && address.length > 20 ? address.slice(0, 8) + '...' + address.slice(-4) : (address || '');
 
@@ -1373,10 +1407,17 @@ async function loadActivity(reset = true) {
       const amountUnit = tx.type === 'MossStakeUnstake' || tx.type === 'MossStakeTransfer'
         ? 'stLICN'
         : 'LICN';
+      const proposalId = governed?.proposal_id ?? payloadVal ?? 0;
+      const governedPrefix = isGovernedSource ? '-' : (isGovernedRecipient ? '+' : '');
       const amountStr = tx.type === 'ProposeGovernedTransfer'
-        ? `Pending ${amt} LICN`
-        : tx.type === 'ApproveGovernedTransfer'
-          ? `Proposal #${Number(amountVal || 0).toLocaleString()}`
+        ? (governedStatus === 'executed'
+          ? `${governedPrefix}${amt} LICN`
+          : governedStatus === 'cancelled'
+            ? `Cancelled ${amt} LICN`
+            : `Pending ${amt} LICN`)
+        : tx.type === 'ApproveGovernedTransfer' || tx.type === 'ExecuteGovernedTransfer'
+          || tx.type === 'CancelGovernedTransfer'
+          ? `Proposal #${Number(proposalId || 0).toLocaleString()}`
           : isFeeOnly ? `${feeAmt} LICN` : `${sign}${amt} ${amountUnit}`;
       const feeTag = isFeeOnly ? '<span style="display:inline-block;margin-left:0.3rem;padding:0.05rem 0.35rem;border-radius:4px;font-size:0.6rem;background:rgba(245,158,11,0.15);color:#f59e0b;font-weight:600;vertical-align:middle;">FEE</span>' : '';
 

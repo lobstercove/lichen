@@ -518,6 +518,7 @@ pub struct TxProcessor {
     #[allow(clippy::type_complexity)]
     contract_meta: Mutex<(Option<i64>, Vec<String>, u64, Vec<u8>)>,
     tx_compute_budget: Mutex<u64>,
+    current_tx_signature: Mutex<Option<Hash>>,
     #[cfg(feature = "zk")]
     zk_verifier: Mutex<crate::zk::Verifier>,
 }
@@ -531,6 +532,7 @@ impl TxProcessor {
             mossstake_replay_mode_override: None,
             contract_meta: Mutex::new((None, Vec::new(), 0, Vec::new())),
             tx_compute_budget: Mutex::new(0),
+            current_tx_signature: Mutex::new(None),
             #[cfg(feature = "zk")]
             zk_verifier: Mutex::new(crate::zk::Verifier::new()),
         }
@@ -544,6 +546,7 @@ impl TxProcessor {
             mossstake_replay_mode_override: None,
             contract_meta: Mutex::new((None, Vec::new(), 0, Vec::new())),
             tx_compute_budget: Mutex::new(0),
+            current_tx_signature: Mutex::new(None),
             #[cfg(feature = "zk")]
             zk_verifier: Mutex::new(crate::zk::Verifier::new()),
         }
@@ -560,6 +563,7 @@ impl TxProcessor {
             mossstake_replay_mode_override: Some(replay_mode),
             contract_meta: Mutex::new((None, Vec::new(), 0, Vec::new())),
             tx_compute_budget: Mutex::new(0),
+            current_tx_signature: Mutex::new(None),
             #[cfg(feature = "zk")]
             zk_verifier: Mutex::new(crate::zk::Verifier::new()),
         }
@@ -609,6 +613,13 @@ impl TxProcessor {
         )
     }
 
+    pub(super) fn current_tx_signature(&self) -> Option<Hash> {
+        *self
+            .current_tx_signature
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
     fn make_result(
         &self,
         success: bool,
@@ -616,6 +627,10 @@ impl TxProcessor {
         error: Option<String>,
         compute_units_used: u64,
     ) -> TxResult {
+        *self
+            .current_tx_signature
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = None;
         let (return_code, contract_logs, _meta_cu, return_data) = self.drain_contract_meta();
         TxResult {
             success,
@@ -5769,6 +5784,12 @@ mod tests {
         let proposal = state.get_governed_proposal(1).unwrap().unwrap();
         assert_eq!(proposal.approvals.len(), 1);
         assert_eq!(proposal.approvals[0], alice);
+        assert_eq!(
+            state
+                .get_governed_proposal_id_for_tx(&propose_tx.signature())
+                .unwrap(),
+            Some(1)
+        );
         assert!(
             !proposal.executed,
             "Proposal should not be executed with only 1 approval"

@@ -139,6 +139,7 @@ pub use state::STATE_SNAPSHOT_CATEGORIES;
 pub use state::STATE_SNAPSHOT_SPECIAL_CATEGORIES;
 pub use state::{
     AccountTxsRebuildReport, AccountTxsSlotInspection, AccountTxsSourceInspection, CheckpointMeta,
+    GovernedProposalTxBackfillReport,
 };
 pub use transaction::{
     Instruction, Message, Transaction, TransactionType, DEFAULT_COMPUTE_BUDGET, MAX_COMPUTE_BUDGET,

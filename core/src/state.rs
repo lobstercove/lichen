@@ -47,6 +47,7 @@ pub use metrics_state::{Metrics, MetricsStore};
 pub use shielded_state::ShieldedStateRebuildReport;
 pub use snapshot_io::{
     AccountTxsRebuildReport, AccountTxsSlotInspection, AccountTxsSourceInspection, CheckpointMeta,
+    GovernedProposalTxBackfillReport,
 };
 
 #[cfg(test)]
@@ -3312,6 +3313,74 @@ mod tests {
                 .get_account_tx_signatures_paginated(&tracked, 10, None)
                 .unwrap(),
             vec![(tx_b_hash, 42), (tx_a_hash, 41)]
+        );
+    }
+
+    #[test]
+    fn governed_proposal_tx_backfill_links_existing_history() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+        let proposer = Pubkey([0x10; 32]);
+        let source = Pubkey([0x11; 32]);
+        let recipient = Pubkey([0x22; 32]);
+        let amount = Account::licn_to_spores(1_000_000);
+
+        state
+            .set_governed_proposal(&crate::multisig::GovernedProposal {
+                id: 7,
+                source,
+                recipient,
+                amount,
+                approvals: vec![proposer],
+                threshold: 5,
+                execute_after_epoch: 15,
+                velocity_tier: crate::multisig::GovernedTransferVelocityTier::Elevated,
+                daily_cap_spores: Account::licn_to_spores(5_000_000),
+                executed: true,
+                cancelled: false,
+            })
+            .unwrap();
+
+        let mut data = vec![21u8];
+        data.extend_from_slice(&amount.to_le_bytes());
+        let tx = crate::transaction::Transaction::new(crate::transaction::Message::new(
+            vec![crate::transaction::Instruction {
+                program_id: crate::SYSTEM_PROGRAM_ID,
+                accounts: vec![proposer, source, recipient],
+                data,
+            }],
+            Hash::hash(b"governed-proposal-backfill"),
+        ));
+        let tx_hash = tx.signature();
+        state.put_transaction(&tx).unwrap();
+        state.index_tx_by_slot(101, &tx_hash).unwrap();
+
+        assert_eq!(
+            state.get_governed_proposal_id_for_tx(&tx_hash).unwrap(),
+            None
+        );
+        let dry_run = state.backfill_governed_proposal_tx_index(true).unwrap();
+        assert!(dry_run.dry_run);
+        assert_eq!(dry_run.tx_by_slot_rows, 1);
+        assert_eq!(dry_run.proposal_txs, 1);
+        assert_eq!(dry_run.linked, 1);
+        assert_eq!(
+            state.get_governed_proposal_id_for_tx(&tx_hash).unwrap(),
+            None
+        );
+
+        let write = state.backfill_governed_proposal_tx_index(false).unwrap();
+        assert_eq!(write.linked, 1);
+        assert_eq!(
+            state.get_governed_proposal_id_for_tx(&tx_hash).unwrap(),
+            Some(7)
+        );
+        assert_eq!(
+            state
+                .backfill_governed_proposal_tx_index(false)
+                .unwrap()
+                .existing_links,
+            1
         );
     }
 

@@ -73,6 +73,11 @@ impl TxProcessor {
         self.b_set_governed_proposal(&proposal)
             .map_err(|e| format!("Failed to store proposal: {}", e))?;
 
+        if let Some(tx_hash) = self.current_tx_signature() {
+            self.b_link_governed_proposal_tx(&tx_hash, proposal_id)
+                .map_err(|e| format!("Failed to link governed proposal transaction: {}", e))?;
+        }
+
         Ok(())
     }
 
