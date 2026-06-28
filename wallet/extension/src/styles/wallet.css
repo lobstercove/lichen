@@ -1012,7 +1012,7 @@
 /* Dashboard content — offset for fixed nav */
 .dashboard-content {
     padding-top: 88px;
-    max-width: 800px;
+    max-width: 1040px;
     margin: 0 auto;
     padding-left: 1.5rem;
     padding-right: 1.5rem;

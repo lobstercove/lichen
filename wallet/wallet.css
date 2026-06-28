@@ -1100,7 +1100,7 @@
 /* Dashboard content — offset for fixed nav */
 .dashboard-content {
     padding-top: 88px;
-    max-width: 800px;
+    max-width: 1040px;
     margin: 0 auto;
     padding-left: 1.5rem;
     padding-right: 1.5rem;
@@ -1915,9 +1915,10 @@ button.amount-max {
 /* ── Staking UI Classes ── */
 .staking-stats-grid {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 1rem;
     margin-bottom: 1.5rem;
+    align-items: stretch;
 }
 
 .staking-stat-card {
@@ -1925,6 +1926,11 @@ button.amount-max {
     padding: 1.25rem;
     border-radius: 12px;
     border: 1px solid var(--border);
+    min-height: 8rem;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    min-width: 0;
 }
 
 .staking-stat-label {
@@ -1962,8 +1968,9 @@ button.amount-max {
 
 .staking-tiers-grid {
     display: grid;
-    grid-template-columns: repeat(2, 1fr);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 0.75rem;
+    align-items: stretch;
 }
 
 .staking-tier-card {
@@ -1971,6 +1978,11 @@ button.amount-max {
     padding: 1rem;
     border-radius: 10px;
     border: 2px solid var(--border);
+    min-height: 7rem;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    min-width: 0;
 }
 
 .staking-tier-card.active {
@@ -4308,6 +4320,13 @@ div.staking-tier-card.staking-tier-active {
     padding: 0.2rem 0.6rem;
     border-radius: 8px;
     font-weight: 600;
+}
+
+.shield-notes-pagination {
+    margin-top: 0.9rem;
+    display: flex;
+    justify-content: center;
+    gap: 0.45rem;
 }
 
 /* Shield Modal Info Boxes */

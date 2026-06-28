@@ -2443,6 +2443,55 @@ let shieldedPopupState = {
   shieldedBalance: '0',
   ownedNotes: [],
 };
+const POPUP_SHIELDED_NOTES_PAGE_SIZE = 3;
+let shieldedPopupNotesPage = 1;
+
+function popupShieldedNoteIndex(note) {
+  const raw = Number(note?.index);
+  return Number.isFinite(raw) && raw >= 0 ? raw : null;
+}
+
+function popupShieldedNoteTime(note) {
+  const raw = Number(note?.confirmedAt ?? note?.broadcastAt ?? note?.createdAt ?? note?.recoveredAt ?? 0);
+  return Number.isFinite(raw) ? raw : 0;
+}
+
+function sortPopupShieldedNotesDesc(notes) {
+  return [...notes].sort((a, b) => {
+    const aPending = Boolean(a?.pendingConfirmation || a?.pendingIndex);
+    const bPending = Boolean(b?.pendingConfirmation || b?.pendingIndex);
+    if (aPending !== bPending) return aPending ? -1 : 1;
+
+    const aIndex = popupShieldedNoteIndex(a);
+    const bIndex = popupShieldedNoteIndex(b);
+    if (aIndex !== null && bIndex !== null && aIndex !== bIndex) return bIndex - aIndex;
+    if (aIndex !== null && bIndex === null) return -1;
+    if (aIndex === null && bIndex !== null) return 1;
+
+    return popupShieldedNoteTime(b) - popupShieldedNoteTime(a);
+  });
+}
+
+function renderPopupPager(currentPage, totalPages) {
+  if (totalPages <= 1) return '';
+  return `
+    <div class="popup-inline-pager" style="display:flex;align-items:center;justify-content:center;gap:0.4rem;margin-top:0.55rem;">
+      <button type="button" data-page="${currentPage - 1}" ${currentPage <= 1 ? 'disabled' : ''} style="border:1px solid var(--border);border-radius:8px;background:var(--card-bg);color:var(--text-primary);padding:0.28rem 0.55rem;font-size:0.7rem;">Prev</button>
+      <span style="font-size:0.72rem;color:var(--text-muted);">Page ${currentPage} / ${totalPages}</span>
+      <button type="button" data-page="${currentPage + 1}" ${currentPage >= totalPages ? 'disabled' : ''} style="border:1px solid var(--border);border-radius:8px;background:var(--card-bg);color:var(--text-primary);padding:0.28rem 0.55rem;font-size:0.7rem;">Next</button>
+    </div>`;
+}
+
+function bindPopupPager(root, totalPages) {
+  root?.querySelectorAll('.popup-inline-pager button[data-page]')?.forEach((button) => {
+    button.addEventListener('click', () => {
+      const page = Number(button.dataset.page);
+      if (!Number.isFinite(page) || page < 1 || page > totalPages) return;
+      shieldedPopupNotesPage = page;
+      loadShieldPanel();
+    });
+  });
+}
 
 async function derivePopupShieldedStorageKey() {
   if (!shieldedPopupState.spendingKey || !shieldedPopupState.viewingKey) return null;
@@ -2486,6 +2535,7 @@ function resetShieldedPopupState() {
     shieldedBalance: '0',
     ownedNotes: [],
   };
+  shieldedPopupNotesPage = 1;
 }
 
 async function deriveShieldedSeedFromWallet(wallet, password) {
@@ -2630,9 +2680,13 @@ async function loadShieldPanel() {
 
   const notesRoot = document.getElementById('extShieldedNotes');
   if (notesRoot) {
-    const unspentNotes = shieldedPopupState.ownedNotes.filter((note) => !note.spent);
+    const unspentNotes = sortPopupShieldedNotesDesc(shieldedPopupState.ownedNotes.filter((note) => !note.spent));
+    const totalPages = Math.max(1, Math.ceil(unspentNotes.length / POPUP_SHIELDED_NOTES_PAGE_SIZE));
+    shieldedPopupNotesPage = Math.min(Math.max(1, shieldedPopupNotesPage), totalPages);
+    const start = (shieldedPopupNotesPage - 1) * POPUP_SHIELDED_NOTES_PAGE_SIZE;
+    const pageNotes = unspentNotes.slice(start, start + POPUP_SHIELDED_NOTES_PAGE_SIZE);
     notesRoot.innerHTML = unspentNotes.length > 0
-      ? unspentNotes.map((note) => {
+      ? pageNotes.map((note) => {
         const label = note.pendingConfirmation ? 'Submitted' : (note.pendingIndex ? 'Indexing' : 'Unspent');
         return `
           <div style="padding:0.65rem 0.75rem;background:var(--card-bg);border:1px solid var(--border);border-radius:10px;margin-bottom:0.45rem;display:flex;justify-content:space-between;align-items:center;gap:0.75rem;">
@@ -2642,13 +2696,14 @@ async function loadShieldPanel() {
             </div>
             <span style="font-size:0.7rem;background:rgba(16,185,129,0.1);color:#10b981;padding:0.2rem 0.45rem;border-radius:999px;white-space:nowrap;">${label}</span>
           </div>`;
-      }).join('')
+      }).join('') + renderPopupPager(shieldedPopupNotesPage, totalPages)
       : `
           <div class="popup-shield-empty">
             <i class="fas fa-shield-alt"></i>
             <p>No shielded notes yet</p>
             <p style="font-size:0.72rem;color:var(--text-muted);">Shield LICN to create your first private note</p>
           </div>`;
+    bindPopupPager(notesRoot, totalPages);
   }
 }
 

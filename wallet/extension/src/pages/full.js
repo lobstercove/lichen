@@ -66,6 +66,7 @@ const SHIELDED_MAX_UNSHIELD_NOTES_PER_TX_EXT = Math.max(
   1,
   Math.floor(SHIELDED_MAX_TX_COMPUTE_BUDGET_EXT / SHIELDED_UNSHIELD_CU_PER_NOTE_EXT),
 );
+const EXT_SHIELDED_NOTES_PAGE_SIZE = 5;
 
 /* ──────────────────────────────────────────
    State
@@ -1629,41 +1630,41 @@ async function loadStakingTab() {
         </p>
       </div>
 
-      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:1rem;margin-bottom:1.5rem;">
-        <div style="background:var(--card-bg);padding:1rem;border-radius:10px;border:1px solid var(--border);text-align:center;">
+      <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1rem;margin-bottom:1.5rem;align-items:stretch;">
+        <div style="background:var(--card-bg);padding:1rem;border-radius:10px;border:1px solid var(--border);text-align:center;min-height:7rem;display:flex;flex-direction:column;justify-content:center;min-width:0;">
           <div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:0.25rem;">Your stLICN</div>
           <div style="font-size:1.2rem;font-weight:700;color:var(--text);">${stLicn.toLocaleString(undefined, { maximumFractionDigits: 4 })}</div>
         </div>
-        <div style="background:var(--card-bg);padding:1rem;border-radius:10px;border:1px solid var(--border);text-align:center;">
+        <div style="background:var(--card-bg);padding:1rem;border-radius:10px;border:1px solid var(--border);text-align:center;min-height:7rem;display:flex;flex-direction:column;justify-content:center;min-width:0;">
           <div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:0.25rem;">Redeemable Value</div>
           <div style="font-size:1.2rem;font-weight:700;color:var(--text);">${value.toLocaleString(undefined, { maximumFractionDigits: 4 })} LICN</div>
         </div>
-        <div style="background:var(--card-bg);padding:1rem;border-radius:10px;border:1px solid var(--border);text-align:center;">
+        <div style="background:var(--card-bg);padding:1rem;border-radius:10px;border:1px solid var(--border);text-align:center;min-height:7rem;display:flex;flex-direction:column;justify-content:center;min-width:0;">
           <div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:0.25rem;">Accrued Rewards</div>
           <div title="Tier-weighted accrued rewards. This is already included in Redeemable Value." style="font-size:1.2rem;font-weight:700;color:#10b981;">${accruedRewards.toLocaleString(undefined, { maximumFractionDigits: 4 })} LICN</div>
         </div>
       </div>
 
-      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:0.75rem;margin-bottom:1.5rem;">
-        <div style="background:var(--card-bg);padding:0.75rem;border-radius:8px;border:1px solid var(--border);text-align:center;">
+      <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:0.75rem;margin-bottom:1.5rem;align-items:stretch;">
+        <div style="background:var(--card-bg);padding:0.75rem;border-radius:8px;border:1px solid var(--border);text-align:center;min-height:5.5rem;display:flex;flex-direction:column;justify-content:center;min-width:0;">
           <div style="font-size:0.7rem;color:var(--text-muted);">Your Tier</div>
           <div style="font-weight:600;color:#a78bfa;">${lockTier}</div>
         </div>
-        <div style="background:var(--card-bg);padding:0.75rem;border-radius:8px;border:1px solid var(--border);text-align:center;">
+        <div style="background:var(--card-bg);padding:0.75rem;border-radius:8px;border:1px solid var(--border);text-align:center;min-height:5.5rem;display:flex;flex-direction:column;justify-content:center;min-width:0;">
           <div style="font-size:0.7rem;color:var(--text-muted);">Multiplier</div>
           <div style="font-weight:600;color:var(--text);">${multiplier}x</div>
         </div>
-        <div style="background:var(--card-bg);padding:0.75rem;border-radius:8px;border:1px solid var(--border);text-align:center;">
+        <div style="background:var(--card-bg);padding:0.75rem;border-radius:8px;border:1px solid var(--border);text-align:center;min-height:5.5rem;display:flex;flex-direction:column;justify-content:center;min-width:0;">
           <div style="font-size:0.7rem;color:var(--text-muted);">Total Pool</div>
           <div style="font-weight:600;color:var(--text);">${totalStaked.toLocaleString(undefined, { maximumFractionDigits: 0 })} LICN</div>
         </div>
       </div>
 
-      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:0.75rem;margin-bottom:1.5rem;" id="fullTiersGrid">
+      <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:0.75rem;margin-bottom:1.5rem;align-items:stretch;" id="fullTiersGrid">
         ${displayTiers.map((tier, i) => {
       const isActive = lockTier === tier.name && stLicn > 0;
       const apyLabel = formatMossStakeRewardLabel(tier.apyPercent, tier.multiplier);
-      return `<div style="background:var(--card-bg);padding:0.75rem;border-radius:8px;border:2px solid ${isActive ? tierColors[i] : 'var(--border)'};text-align:center;">
+      return `<div style="background:var(--card-bg);padding:0.75rem;border-radius:8px;border:2px solid ${isActive ? tierColors[i] : 'var(--border)'};text-align:center;min-height:6rem;display:flex;flex-direction:column;justify-content:center;min-width:0;">
             <div style="font-size:0.8rem;font-weight:600;color:${tierColors[i]};">${tier.name}</div>
             <div style="font-size:0.72rem;color:var(--text-muted);">${apyLabel}</div>
             ${isActive ? '<div style="font-size:0.65rem;color:#10b981;margin-top:0.25rem;"><i class="fas fa-check-circle"></i> Active</div>' : ''}
@@ -1803,6 +1804,13 @@ async function fillExtensionUnstakeMaxAmount(overlay) {
 async function showStakeModal() {
   const wallet = getActiveWallet();
   if (!wallet) return;
+  const activeTier = await getActiveExtensionMossStakeTier(wallet);
+  const tierOptions = activeTier
+    ? [{ value: activeTier.tier, label: `${activeTier.label} - current position tier` }]
+    : EXT_MOSS_STAKE_TIER_OPTIONS;
+  const tierOptionsHtml = tierOptions.map((tier) => (
+    `<option value="${Number(tier.value)}">${escapeHtmlExt(tier.label)}</option>`
+  )).join('');
 
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
@@ -1817,11 +1825,9 @@ async function showStakeModal() {
       </div>
       <label style="font-size:0.85rem;font-weight:600;display:block;margin-bottom:0.25rem;">Lock Tier</label>
       <select id="stakeTierSelect" style="width:100%;padding:0.75rem;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);margin-bottom:1rem;box-sizing:border-box;">
-        <option value="0">Flexible — 7-day target cooldown, 1x rewards</option>
-        <option value="1">30-Day Lock — 1.6x rewards</option>
-        <option value="2">180-Day Lock — 2.4x rewards</option>
-        <option value="3">365-Day Lock — 3.6x rewards</option>
+        ${tierOptionsHtml}
       </select>
+      ${activeTier ? `<div style="font-size:0.78rem;color:var(--text-muted);margin:-0.55rem 0 1rem;">Additional stake keeps ${escapeHtmlExt(activeTier.label)}.</div>` : ''}
       <label style="font-size:0.85rem;font-weight:600;display:block;margin-bottom:0.25rem;">Wallet Password</label>
       <input type="password" id="stakePasswordInput" placeholder="Enter password" style="width:100%;padding:0.75rem;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);margin-bottom:1.25rem;box-sizing:border-box;">
       <div style="display:flex;gap:0.75rem;">
@@ -1839,7 +1845,7 @@ async function showStakeModal() {
   overlay.querySelector('#stakeConfirmBtn').addEventListener('click', async () => {
     const amountInput = overlay.querySelector('#stakeAmountInput');
     const amountText = amountInput.value.trim();
-    const tier = parseInt(overlay.querySelector('#stakeTierSelect').value, 10);
+    const tier = activeTier ? activeTier.tier : parseInt(overlay.querySelector('#stakeTierSelect').value, 10);
     const passwordInput = overlay.querySelector('#stakePasswordInput');
     const password = passwordInput.value;
     const statusEl = overlay.querySelector('#stakeModalStatus');
@@ -1979,6 +1985,7 @@ async function handleFullClaim() {
 // Shield (ZK Privacy) Tab
 // ──────────────────────────────────────────
 let _shieldedState = { initialized: false, balance: '0', address: null, viewingKey: null, notes: [], poolStats: null };
+let _shieldedNotesPage = 1;
 
 function extensionNoteValueSpores(note) {
   return baseUnitBigIntExt(note?.value ?? 0);
@@ -1990,6 +1997,73 @@ function extensionShieldedBalanceSpores() {
 
 function unspentExtensionShieldedNotes() {
   return (_shieldedState.notes || []).filter((note) => !note.spent && extensionNoteValueSpores(note) > 0n);
+}
+
+function extensionShieldedNoteIndex(note) {
+  const raw = Number(note?.index);
+  return Number.isFinite(raw) && raw >= 0 ? raw : null;
+}
+
+function extensionShieldedNoteTime(note) {
+  const raw = Number(note?.confirmedAt ?? note?.broadcastAt ?? note?.createdAt ?? note?.recoveredAt ?? 0);
+  return Number.isFinite(raw) ? raw : 0;
+}
+
+function sortExtensionShieldedNotesDesc(notes) {
+  return [...notes].sort((a, b) => {
+    const aPending = Boolean(a?.pendingConfirmation || a?.pendingIndex);
+    const bPending = Boolean(b?.pendingConfirmation || b?.pendingIndex);
+    if (aPending !== bPending) return aPending ? -1 : 1;
+
+    const aIndex = extensionShieldedNoteIndex(a);
+    const bIndex = extensionShieldedNoteIndex(b);
+    if (aIndex !== null && bIndex !== null && aIndex !== bIndex) return bIndex - aIndex;
+    if (aIndex !== null && bIndex === null) return -1;
+    if (aIndex === null && bIndex !== null) return 1;
+
+    return extensionShieldedNoteTime(b) - extensionShieldedNoteTime(a);
+  });
+}
+
+function renderExtensionPager(currentPage, totalPages, onPageChange) {
+  if (totalPages <= 1) return '';
+  const prevDisabled = currentPage <= 1 ? 'disabled' : '';
+  const nextDisabled = currentPage >= totalPages ? 'disabled' : '';
+  return `
+    <div class="wallet-inline-pager" style="display:flex;align-items:center;justify-content:center;gap:0.5rem;margin-top:0.75rem;">
+      <button type="button" data-page="${currentPage - 1}" ${prevDisabled} style="padding:0.35rem 0.7rem;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);cursor:pointer;">Prev</button>
+      <span style="font-size:0.8rem;color:var(--text-muted);">Page ${currentPage} / ${totalPages}</span>
+      <button type="button" data-page="${currentPage + 1}" ${nextDisabled} style="padding:0.35rem 0.7rem;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);cursor:pointer;">Next</button>
+    </div>
+  `;
+}
+
+function bindExtensionPager(container, totalPages, onPageChange) {
+  container?.querySelectorAll('.wallet-inline-pager button[data-page]')?.forEach((button) => {
+    button.addEventListener('click', () => {
+      const page = Number(button.dataset.page);
+      if (!Number.isFinite(page) || page < 1 || page > totalPages) return;
+      onPageChange(page);
+    });
+  });
+}
+
+const EXT_MOSS_STAKE_TIER_OPTIONS = [
+  { value: 0, label: 'Flexible - 7-day target cooldown, 1x rewards' },
+  { value: 1, label: '30-Day Lock - 1.6x rewards' },
+  { value: 2, label: '180-Day Lock - 2.4x rewards' },
+  { value: 3, label: '365-Day Lock - 3.6x rewards' },
+];
+
+async function getActiveExtensionMossStakeTier(wallet) {
+  if (!wallet?.address) return null;
+  const position = await rpc().call('getStakingPosition', [wallet.address]).catch(() => null);
+  const stLicn = baseUnitBigIntExt(position?.st_licn_amount ?? 0);
+  if (stLicn <= 0n) return null;
+  const tier = Number(position?.lock_tier ?? position?.lock_tier_id ?? 0);
+  if (!Number.isFinite(tier) || tier < 0) return null;
+  const label = position?.lock_tier_name || EXT_MOSS_STAKE_TIER_OPTIONS[tier]?.label || `Tier ${tier}`;
+  return { tier, label };
 }
 
 function selectExactExtensionUnshieldNotes(unspentNotes, targetAmount) {
@@ -2793,11 +2867,15 @@ async function loadShieldTab() {
   const balLicn = formatLicnBaseUnitsFixedExt(shieldedBalance);
   const poolLicn = poolStats ? formatLicnBaseUnitsFixedExt(poolStats.pool_balance ?? 0, 2) : '—';
   const commitCount = poolStats ? (poolStats.commitment_count ?? poolStats.commitmentCount ?? 0).toLocaleString() : '—';
-  const unspent = ownedNotes.filter(n => !n.spent);
+  const unspent = sortExtensionShieldedNotesDesc(ownedNotes.filter(n => !n.spent));
   const transferPrereq = extensionPrivateTransferPrereqMessage();
+  const notesTotalPages = Math.max(1, Math.ceil(unspent.length / EXT_SHIELDED_NOTES_PAGE_SIZE));
+  _shieldedNotesPage = Math.min(Math.max(1, _shieldedNotesPage), notesTotalPages);
+  const notesStart = (_shieldedNotesPage - 1) * EXT_SHIELDED_NOTES_PAGE_SIZE;
+  const visibleNotes = unspent.slice(notesStart, notesStart + EXT_SHIELDED_NOTES_PAGE_SIZE);
 
   const notesHtml = unspent.length > 0
-    ? unspent.map(n => {
+    ? visibleNotes.map(n => {
       const label = n.pendingConfirmation ? 'Submitted' : (n.pendingIndex ? 'Indexing' : 'Unspent');
       const icon = n.pendingConfirmation || n.pendingIndex ? 'fas fa-clock' : 'fas fa-check-circle';
       return `
@@ -2808,7 +2886,7 @@ async function loadShieldTab() {
           </div>
           <span style="font-size:0.7rem;background:rgba(16,185,129,0.1);color:#10b981;padding:0.2rem 0.5rem;border-radius:4px;"><i class="${icon}"></i> ${label}</span>
         </div>`;
-    }).join('')
+    }).join('') + renderExtensionPager(_shieldedNotesPage, notesTotalPages)
     : `<div style="text-align:center;padding:1.5rem;color:var(--text-muted);">
         <i class="fas fa-shield-alt" style="font-size:1.5rem;opacity:0.4;display:block;margin-bottom:0.5rem;"></i>
         <p style="margin:0 0 0.25rem;">No shielded notes yet</p>
@@ -2894,6 +2972,10 @@ async function loadShieldTab() {
   });
   $('extCopyShieldAddr')?.addEventListener('click', () => {
     if (_shieldedState.address) { navigator.clipboard.writeText(_shieldedState.address); showToast('Shielded address copied', 'success'); }
+  });
+  bindExtensionPager(container, notesTotalPages, (page) => {
+    _shieldedNotesPage = page;
+    void loadShieldTab();
   });
   $('extCopyViewKey')?.addEventListener('click', () => {
     if (_shieldedState.viewingKey) {

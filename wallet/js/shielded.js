@@ -22,6 +22,8 @@ const SHIELDED_MAX_UNSHIELD_NOTES_PER_TX = Math.max(
     1,
     Math.floor(SHIELDED_MAX_TX_COMPUTE_BUDGET / SHIELDED_UNSHIELD_CU_PER_NOTE),
 );
+const SHIELDED_NOTES_PAGE_SIZE = 5;
+let shieldedNotesPage = 1;
 
 // ===== Shielded Wallet State =====
 function createInitialShieldedState(previousState = {}) {
@@ -601,6 +603,32 @@ function recalculateShieldedBalance() {
         .filter(n => !n.spent)
         .reduce((sum, n) => sum + noteValueSpores(n), 0n)
         .toString();
+}
+
+function shieldedNoteSortTime(note) {
+    const raw = Number(note?.confirmedAt ?? note?.broadcastAt ?? note?.createdAt ?? note?.recoveredAt ?? 0);
+    return Number.isFinite(raw) ? raw : 0;
+}
+
+function shieldedNoteIndex(note) {
+    const raw = Number(note?.index);
+    return Number.isFinite(raw) && raw >= 0 ? raw : null;
+}
+
+function sortShieldedNotesDesc(notes) {
+    return [...notes].sort((a, b) => {
+        const aPending = Boolean(a?.pendingConfirmation || a?.pendingIndex);
+        const bPending = Boolean(b?.pendingConfirmation || b?.pendingIndex);
+        if (aPending !== bPending) return aPending ? -1 : 1;
+
+        const aIndex = shieldedNoteIndex(a);
+        const bIndex = shieldedNoteIndex(b);
+        if (aIndex !== null && bIndex !== null && aIndex !== bIndex) return bIndex - aIndex;
+        if (aIndex !== null && bIndex === null) return -1;
+        if (aIndex === null && bIndex !== null) return 1;
+
+        return shieldedNoteSortTime(b) - shieldedNoteSortTime(a);
+    });
 }
 
 async function upsertOwnedShieldedNote(note) {
@@ -1512,9 +1540,10 @@ function renderNoteList() {
     const container = document.getElementById('shieldedNotesList');
     if (!container) return;
 
-    const unspent = shieldedState.ownedNotes.filter(n => !n.spent);
+    const unspent = sortShieldedNotesDesc(shieldedState.ownedNotes.filter(n => !n.spent));
 
     if (unspent.length === 0) {
+        shieldedNotesPage = 1;
         container.innerHTML = `
             <div class="shield-empty-state">
                 <i class="fas fa-shield-alt"></i>
@@ -1525,7 +1554,12 @@ function renderNoteList() {
         return;
     }
 
-    container.innerHTML = unspent.map((note, i) => {
+    const totalPages = Math.max(1, Math.ceil(unspent.length / SHIELDED_NOTES_PAGE_SIZE));
+    shieldedNotesPage = Math.min(Math.max(1, shieldedNotesPage), totalPages);
+    const start = (shieldedNotesPage - 1) * SHIELDED_NOTES_PAGE_SIZE;
+    const pageNotes = unspent.slice(start, start + SHIELDED_NOTES_PAGE_SIZE);
+
+    container.innerHTML = pageNotes.map((note) => {
         const pending = note.pendingConfirmation || note.pendingIndex;
         const badgeIcon = pending ? 'fas fa-clock' : 'fas fa-check-circle';
         const badgeText = note.pendingConfirmation ? 'Submitted' : (note.pendingIndex ? 'Indexing' : 'Unspent');
@@ -1545,7 +1579,19 @@ function renderNoteList() {
                 </span>
             </div>
         `;
-    }).join('');
+    }).join('') + '<div id="shieldedNotesPagination" class="shield-notes-pagination"></div>';
+
+    if (typeof updatePagination === 'function') {
+        updatePagination({
+            container: 'shieldedNotesPagination',
+            currentPage: shieldedNotesPage,
+            totalPages,
+            onPageChange: (page) => {
+                shieldedNotesPage = page;
+                renderNoteList();
+            },
+        });
+    }
 }
 
 function showShieldedStatus(message, state) {

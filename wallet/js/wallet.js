@@ -3903,19 +3903,49 @@ async function fillMossStakeMaxAmount(modal, mode) {
     }
 }
 
+const MOSS_STAKE_TIER_OPTIONS = [
+    { value: '0', label: 'Flexible — 7-day target cooldown, 1x rewards' },
+    { value: '1', label: '30-Day Lock — 1.6x rewards' },
+    { value: '2', label: '180-Day Lock — 2.4x rewards' },
+    { value: '3', label: '365-Day Lock — 3.6x rewards' },
+];
+
+async function getActiveMossStakeTier(address) {
+    if (!address) return null;
+    const position = await rpc.call('getStakingPosition', [address]).catch(() => null);
+    const stLicn = u64ValueToBigInt(position?.st_licn_amount ?? 0);
+    if (stLicn <= 0n) return null;
+    const tier = Number(position?.lock_tier ?? position?.lock_tier_id ?? 0);
+    if (!Number.isFinite(tier) || tier < 0) return null;
+    const label = position?.lock_tier_name || MOSS_STAKE_TIER_OPTIONS[tier]?.label || `Tier ${tier}`;
+    return { tier, label };
+}
+
 // Show MossStake modal
 async function showMossStakeModal() {
     const wallet = getActiveWallet();
     if (!wallet) { showToast('No active wallet'); return; }
 
+    const activeTier = await getActiveMossStakeTier(wallet.address);
+    const tierOptions = activeTier
+        ? [{
+            value: String(activeTier.tier),
+            label: `${activeTier.label} — current position tier`,
+            selected: true,
+        }]
+        : MOSS_STAKE_TIER_OPTIONS;
+    const tierHelp = activeTier
+        ? `<strong>Current tier:</strong> ${escapeHtml(activeTier.label)}. Additional stake keeps the same position tier.`
+        : `<strong>Flexible:</strong> 7-day target cooldown, 1x rewards<br>
+                <strong>30-Day Lock:</strong> 1.6x rewards<br>
+                <strong>180-Day Lock:</strong> 2.4x rewards<br>
+                <strong>365-Day Lock:</strong> 3.6x rewards`;
+
     const values = await showPasswordModal({
         title: 'Stake to Liquid Staking',
         message: `Enter the amount of LICN to stake, choose a lock tier, and sign with your password.
             <div style="margin-top:0.75rem;font-size:0.8rem;color:var(--text-muted);">
-                <strong>Flexible:</strong> 7-day target cooldown, 1x rewards<br>
-                <strong>30-Day Lock:</strong> 1.6x rewards<br>
-                <strong>180-Day Lock:</strong> 2.4x rewards<br>
-                <strong>365-Day Lock:</strong> 3.6x rewards
+                ${tierHelp}
             </div>`,
         icon: 'fas fa-layer-group',
         confirmText: 'Stake LICN',
@@ -3924,12 +3954,7 @@ async function showMossStakeModal() {
             { id: 'stakeAmount', label: 'Amount (LICN)', type: 'number', placeholder: '0.00', min: 0, step: 'any', maxButton: true },
             {
                 id: 'lockTier', label: 'Lock Tier', type: 'select',
-                options: [
-                    { value: '0', label: 'Flexible — 7-day target cooldown, 1x rewards' },
-                    { value: '1', label: '30-Day Lock — 1.6x rewards' },
-                    { value: '2', label: '180-Day Lock — 2.4x rewards' },
-                    { value: '3', label: '365-Day Lock — 3.6x rewards' },
-                ]
+                options: tierOptions
             },
             { id: 'password', label: 'Wallet Password', type: 'password', placeholder: 'Enter password to sign' }
         ],
@@ -3966,7 +3991,7 @@ async function showMossStakeModal() {
     } catch (e) { /* let RPC reject */ }
 
     try {
-        const tierByte = parseInt(values.lockTier || '0');
+        const tierByte = activeTier ? activeTier.tier : parseInt(values.lockTier || '0');
         const blockhash = await rpc.getRecentBlockhash();
         const fromPubkey = LichenCrypto.addressToBytes(wallet.address);
 
