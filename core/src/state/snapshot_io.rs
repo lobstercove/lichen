@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 
 use crate::block::Block;
 use crate::codec::{append_legacy_bincode, deserialize_legacy_bincode};
@@ -2289,6 +2290,19 @@ impl StateStore {
         &self,
         dry_run: bool,
     ) -> Result<GovernedProposalTxBackfillReport, String> {
+        self.backfill_governed_proposal_tx_index_throttled(dry_run, 0, Duration::ZERO)
+    }
+
+    /// Backfill governed proposal tx links while optionally yielding between
+    /// scan batches. The throttle is for live validator maintenance: it keeps
+    /// derived-index repair off the consensus hot path without changing what
+    /// gets linked.
+    pub fn backfill_governed_proposal_tx_index_throttled(
+        &self,
+        dry_run: bool,
+        throttle_every_rows: u64,
+        throttle_sleep: Duration,
+    ) -> Result<GovernedProposalTxBackfillReport, String> {
         const WRITE_BATCH_SIZE: usize = 10_000;
 
         let tx_by_slot_cf = self
@@ -2317,6 +2331,12 @@ impl StateStore {
                 continue;
             };
             report.tx_by_slot_rows = report.tx_by_slot_rows.saturating_add(1);
+            if throttle_every_rows > 0
+                && !throttle_sleep.is_zero()
+                && report.tx_by_slot_rows.is_multiple_of(throttle_every_rows)
+            {
+                std::thread::sleep(throttle_sleep);
+            }
 
             let Some(tx) = self.get_transaction(&tx_hash)? else {
                 report.missing_transactions = report.missing_transactions.saturating_add(1);

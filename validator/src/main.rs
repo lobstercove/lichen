@@ -120,6 +120,9 @@ fn compact_block_full_block_fallback_request(slot: u64, local_addr: SocketAddr) 
 /// The watchdog is also sync-aware: it won't fire while the node has
 /// pending blocks or is actively syncing.
 const DEFAULT_WATCHDOG_TIMEOUT_SECS: u64 = 120;
+const BACKGROUND_HISTORY_REPAIR_START_DELAY_SECS: u64 = 120;
+const GOVERNED_TX_BACKFILL_THROTTLE_EVERY_ROWS: u64 = 25_000;
+const GOVERNED_TX_BACKFILL_THROTTLE_SLEEP_MS: u64 = 10;
 const GENESIS_SYNC_INCOMPLETE_MARKER: &str = "genesis_sync_incomplete";
 const TX_BY_SLOT_CANONICAL_INDEX_MARKER: &str = "tx_by_slot_canonical_index_v1";
 const RECENT_POST_BLOCK_EFFECTS_RECOVERY_WINDOW: u64 = 4096;
@@ -9440,6 +9443,65 @@ fn spawn_log_cleanup_task(log_dir: PathBuf, max_age_days: u64) {
                 }
             }
             tokio::time::sleep(sweep_interval).await;
+        }
+    });
+}
+
+fn spawn_governed_proposal_tx_index_backfill_task(state: StateStore) {
+    if env_flag_enabled("LICHEN_DISABLE_BACKGROUND_HISTORY_REPAIR") {
+        info!("🧾 Background history repair disabled via LICHEN_DISABLE_BACKGROUND_HISTORY_REPAIR");
+        return;
+    }
+
+    tokio::spawn(async move {
+        time::sleep(Duration::from_secs(
+            BACKGROUND_HISTORY_REPAIR_START_DELAY_SECS,
+        ))
+        .await;
+
+        let started = Instant::now();
+        let result = tokio::task::spawn_blocking(move || {
+            state.backfill_governed_proposal_tx_index_throttled(
+                false,
+                GOVERNED_TX_BACKFILL_THROTTLE_EVERY_ROWS,
+                Duration::from_millis(GOVERNED_TX_BACKFILL_THROTTLE_SLEEP_MS),
+            )
+        })
+        .await;
+
+        match result {
+            Ok(Ok(report)) => {
+                let elapsed_ms = started.elapsed().as_millis();
+                if report.linked > 0 || report.existing_links > 0 || report.proposal_txs > 0 {
+                    info!(
+                        "🧾 Governed proposal tx index repair completed in {}ms: rows={}, proposal_txs={}, existing_links={}, linked={}",
+                        elapsed_ms,
+                        report.tx_by_slot_rows,
+                        report.proposal_txs,
+                        report.existing_links,
+                        report.linked
+                    );
+                } else {
+                    debug!(
+                        "🧾 Governed proposal tx index repair found no proposal txs (rows={}, {}ms)",
+                        report.tx_by_slot_rows, elapsed_ms
+                    );
+                }
+                if report.missing_transactions > 0 || report.unresolved > 0 {
+                    warn!(
+                        "🧾 Governed proposal tx index repair source incomplete: missing_transactions={}, unresolved={}, first_unresolved_tx={}",
+                        report.missing_transactions,
+                        report.unresolved,
+                        report.first_unresolved_tx.as_deref().unwrap_or("none")
+                    );
+                }
+            }
+            Ok(Err(err)) => {
+                warn!("🧾 Governed proposal tx index repair failed: {}", err);
+            }
+            Err(err) => {
+                warn!("🧾 Governed proposal tx index repair task failed: {}", err);
+            }
         }
     });
 }
@@ -20462,6 +20524,7 @@ async fn run_validator() {
         }
     });
     info!("✅ RPC server starting on http://0.0.0.0:{}", rpc_port);
+    spawn_governed_proposal_tx_index_backfill_task(state.clone());
 
     // Start the oracle price feeder background task
     // Connects to Binance WebSocket (aggTrade) for real-time wrapped-asset prices
