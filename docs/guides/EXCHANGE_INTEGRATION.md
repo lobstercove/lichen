@@ -13,18 +13,22 @@ This document is the canonical exchange-facing integration guide for native LICN
 It is not approved for exchange outreach until every release-blocking gate in the
 tracker is closed and the public testnet exchange run has passed. The
 three-validator local exchange simulation passed from a clean stack with cleanup
-evidence on 2026-06-29; public endpoint readiness remains blocked.
+evidence on 2026-06-29, and the public faucet-backed testnet exchange simulation
+passed after the signed `v0.5.219` rollout on 2026-06-30. External publication
+still depends on the remaining operations and developer-portal gates.
 
 ## Publication Gate
 
 Do not send this guide to exchanges while any of these remain open:
 
-- Public RPC and WebSocket readiness checks.
-- Runtime fee config verification on a healthy public target network.
+- Runtime fee config verification on every public network included in the
+  package. Testnet was verified after `v0.5.219`; mainnet remains pending until
+  mainnet launch.
 - Public developer portal exchange page deployment.
 - Public status page and incident alias approval.
 - Final signed exchange-package release tag.
-- Public testnet exchange simulation.
+- Mainnet RPC/WebSocket readiness, unless the package is explicitly scoped to
+  testnet-only integration testing before mainnet launch.
 
 ## Scope
 
@@ -132,8 +136,10 @@ Minimum flow:
 
 1. Generate or allocate a native account for the user.
 2. Persist the user-to-address assignment before showing the address.
-3. Poll the deposit address history through `getTransactionsByAddress`, or use
-   WebSocket notifications after the WebSocket path is validated.
+3. Poll the deposit address history through `getTransactionsByAddress`.
+   WebSocket `subscribeSlots` may be used as a freshness signal, but exchange
+   credit must still reconcile through archive-backed JSON-RPC history and
+   `getTransaction`.
 4. For each candidate transfer, fetch the transaction with `getTransaction`.
 5. Confirm the transaction transfers native LICN to the deposit address.
 6. Wait for `confirmation_status = "finalized"` plus the configured operational
@@ -142,9 +148,9 @@ Minimum flow:
    idempotency key.
 8. Reconcile address balance with internal credits and pending sweeps.
 
-Local evidence: this flow passed in the three-validator exchange simulation on
-2026-06-29. Publication remains blocked until the same flow passes on the public
-testnet after public RPC readiness is restored.
+Evidence: this flow passed in the three-validator exchange simulation on
+2026-06-29 and in the public faucet-backed testnet exchange simulation after the
+signed `v0.5.219` rollout on 2026-06-30.
 
 ## Withdrawal Model
 
@@ -218,9 +224,11 @@ Exchange policy:
 - High-value policy: require finalized slot at least transaction slot plus 32 or
   manual review.
 
-Local finality and the full deposit/withdrawal simulation are validated. Exchange
-release still requires public testnet validation after public RPC readiness is
-restored.
+Local finality and the full deposit/withdrawal simulation are validated. Public
+testnet validation also passed after the signed `v0.5.219` rollout: the public
+simulation funded a customer through the faucet, detected deposit, waited for
+the standard and high-value operational buffers, swept, withdrew, and reconciled
+history and transaction lookup through finalized slots.
 
 ## Archive Requirement
 
@@ -252,9 +260,9 @@ entries, and account history rows move out of hot storage.
 
 Evidence is recorded in
 [EXCHANGE_LISTING_READINESS_TRACKER.md](../strategy/EXCHANGE_LISTING_READINESS_TRACKER.md#phase-3-evidence).
-The full deposit/sweep/withdrawal simulation also passed locally; public archive
-and history readiness must still be proven on the selected public endpoint before
-publication.
+The full deposit/sweep/withdrawal simulation passed locally and on the public
+testnet after the signed `v0.5.219` rollout. Public mainnet archive/history
+readiness remains a mainnet-launch gate.
 
 ## SDK Compatibility
 
@@ -395,13 +403,12 @@ WebSocket endpoints are configured in `developers/shared-config.js`:
 - Mainnet: `wss://rpc.lichen.network/ws`
 - Testnet: `wss://testnet-rpc.lichen.network/ws`
 
-Pending blocker: exchange deposit detection must be validated with WebSocket and
-JSON-RPC polling side by side before WebSocket subscriptions are documented as a
-primary exchange credit path. A public testnet WebSocket handshake returned HTTP
-`101` on 2026-06-29, but the public testnet RPC was stale/readiness-gated during
-the same check. Until application-level WebSocket subscription validation passes
-against a healthy endpoint, polling archive-backed JSON-RPC is the canonical
-detection path.
+Public testnet `subscribeSlots` validation passed against
+`wss://testnet-rpc.lichen.network/ws` after the signed `v0.5.219` rollout on
+2026-06-30. WebSocket notifications are acceptable as a wake-up/freshness signal,
+but polling archive-backed JSON-RPC remains the canonical exchange credit path
+because it provides idempotent transaction, account-history, and reconciliation
+records.
 
 ## Reconciliation Requirements
 

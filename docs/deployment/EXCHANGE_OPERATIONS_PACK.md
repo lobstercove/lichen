@@ -17,13 +17,14 @@ Do not include this pack in an external listing package until:
 
 - Incident contact aliases are approved.
 - Status page URL is public and monitored.
-- Public RPC and WebSocket endpoints are healthy from outside the operator
-  network.
+- Public RPC and WebSocket endpoints for every network included in the package
+  are healthy from outside the operator network.
 - Upgrade and rollback policy is confirmed against the signed release process.
 - Archive retention and repair procedures are tested against the public target
   network.
-- A public testnet exchange simulation passes after local validation.
-- Public testnet exchange run passes after the local gates.
+- A public exchange simulation passes after local validation for every public
+  network included in the package. Testnet passed this gate after `v0.5.219`;
+  mainnet remains out of scope until mainnet launch.
 
 ## Service Surfaces
 
@@ -31,8 +32,8 @@ Do not include this pack in an external listing package until:
 | --- | --- | --- | --- |
 | Mainnet RPC | `https://rpc.lichen.network` | Live check failed on 2026-06-29: Cloudflare `525` | `seeds.json`, `developers/shared-config.js` |
 | Mainnet WebSocket | `wss://rpc.lichen.network/ws` | Live check failed on 2026-06-29: Cloudflare `525` | `developers/shared-config.js` |
-| Testnet RPC | `https://testnet-rpc.lichen.network` | Recovered on 2026-06-30 after signed `v0.5.217` rollout; twelve-sample watch showed public/local `health.status = ok` through public slot `6715694`. Final package should use the clean `v0.5.219` faucet-signing and exchange-simulation follow-up release after it passes. | `seeds.json`, `developers/shared-config.js`, tracker Phase 5 evidence |
-| Testnet WebSocket | `wss://testnet-rpc.lichen.network/ws` | Transport previously upgraded; rerun application slot-subscription smoke after the final signed release is installed. | `developers/shared-config.js` |
+| Testnet RPC | `https://testnet-rpc.lichen.network` | Healthy after signed `v0.5.219` rollout on 2026-06-30; twelve-sample watch advanced from slot `6763900` to `6764099` with `status = ok` and block age `0-1s`; public exchange simulation passed | `seeds.json`, `developers/shared-config.js`, tracker Phase 5 evidence |
+| Testnet WebSocket | `wss://testnet-rpc.lichen.network/ws` | Application-level `subscribeSlots` smoke passed after signed `v0.5.219` rollout on 2026-06-30 | `developers/shared-config.js` |
 | Explorer | `https://explorer.lichen.network` | Route templates verified | `seeds.json`, `developers/shared-config.js`, `explorer/js/*.js` |
 | Status page | Candidate: `https://monitoring.lichen.network` | Public monitoring page reachable; not operator-approved as exchange status page | Operator decision required |
 | Developer portal exchange page | `https://developers.lichen.network/exchange-integration.html` | Public path returns generic developer hub fallback and misses the required exchange content snippets | Deploy/publish developer portal update after local gates |
@@ -142,10 +143,20 @@ Verified rollback release subset on 2026-06-29:
 - `node scripts/verify-release-checksums.mjs /tmp/lichen-v05215-release`
   verified signer `8HitBNnh8qbhfne5NCv2yHrQFoD6xbmHcWaUSgCGtsk`.
 
-Pending blocker: publish exact exchange-package release URLs only after the
-signed target release and public exchange docs package are selected.
+Current signed recovery release verified on 2026-06-30:
 
-Current recovery candidate: `v0.5.219`, with `v0.5.215` retained as the rollback
+- `https://github.com/lobstercove/lichen/releases/tag/v0.5.219`
+- GitHub release is published, not a draft, and not a prerelease.
+- Linux release archives include `lichen-validator`, `lichen-custody`, and
+  `lichen-faucet`.
+- `SHA256SUMS` and `SHA256SUMS.sig` downloaded from the release.
+- `scripts/verify-release-checksums.mjs` verified all archive hashes and the PQ
+  signature against signer `8HitBNnh8qbhfne5NCv2yHrQFoD6xbmHcWaUSgCGtsk`.
+
+Pending blocker: publish exact exchange-package release URLs only after the
+public exchange docs package is selected and deployed.
+
+Current recovery release: `v0.5.219`, with `v0.5.215` retained as the rollback
 anchor until a newer signed rollback point is explicitly recorded.
 
 ## Rollback Policy
@@ -238,6 +249,15 @@ twelve-sample watch showed public/local `health.status = ok` through public slot
 keeps the consensus liveness fix and refreshes `anyhow` to the patched
 `1.0.103` lockfile version so Cargo Audit/Deny pass.
 
+Final update on 2026-06-30: signed `v0.5.219` was published, signature-verified,
+and deployed through the rolling release runbook. All four validators and CLIs
+now report `0.5.219`, all four local RPC health checks return `status = ok`, and
+all four faucet units are active. The verify-only release runbook completed
+`RELEASE VERIFY COMPLETE`, proving the installed validator, custody, and faucet
+binaries match the signed release archive hashes on every host. Public RPC,
+public WebSocket, public faucet, public DEX oracle/candle smoke, and the public
+faucet-backed exchange simulation all passed after the rollout.
+
 ## Local Validation Evidence
 
 Before public testnet exchange release, create evidence under an ignored local
@@ -269,9 +289,9 @@ Do not commit private keys or filled production env files as evidence.
 | --- | --- | --- |
 | O-01 | Status page URL not final | Verify deployed monitoring/status surface or select status provider |
 | O-02 | Incident aliases not approved | Define public aliases and escalation windows |
-| O-04 | Final exchange-package release URLs not attached | Confirm target release artifacts after public endpoint blockers close |
+| O-04 | Final external exchange-package release URLs not attached | Attach the selected docs/package artifacts after developer-portal deployment |
 | O-06 | Rollback runbook not exchange-specific | Add exchange notification/reconciliation steps |
-| O-08 | Public RPC and WebSocket endpoints not fully exchange-ready | Fix mainnet Cloudflare `525` or explicitly scope the gate to testnet until mainnet launch; rerun health, fee, WS, archive, and simulation checks after public developer-page deployment |
+| O-08 | Mainnet RPC and WebSocket endpoints not live | Fix mainnet Cloudflare `525` before including mainnet in an exchange package; testnet-only integration testing is unblocked |
 | O-10 | Public developer portal exchange page is not deployed | Publish developer portal update and verify the public URL contains `Exchange Integration`, `Exchange Integration Guide`, `Exchange Chain Metadata`, and `Exchange Operations Pack` |
 
 ## Resolved Operations Checks
@@ -282,4 +302,6 @@ Do not commit private keys or filled production env files as evidence.
 | O-05 | Local archive/history behavior | Core and RPC archive regressions passed after hot-to-cold migration and reopen |
 | O-07 | Local cleanup evidence | Local stack stop/status/process checks passed; generated credentials, state dirs, manifests, and staging dirs were removed after the local exchange simulation |
 | O-09 | Rollback release checksum/signature verification | `v0.5.215` release checksum and detached PQ signature were verified against `deploy/release-trust-anchor.json` |
-| O-11 | June 29 live testnet consensus incident recovery evidence preserved | Operator-approved evidence-preserving recovery restarted only stale validator `15.204.229.189`; the June 30 recurrence is tracked separately in `docs/deployment/TESTNET_RECOVERY_INCIDENT_2026-06-30.md`; signed `v0.5.217` restored testnet liveness, and `v0.5.219` is the clean faucet-signing and exchange-simulation follow-up candidate |
+| O-11 | June 29 live testnet consensus incident recovery evidence preserved | Operator-approved evidence-preserving recovery restarted only stale validator `15.204.229.189`; the June 30 recurrence is tracked separately in `docs/deployment/TESTNET_RECOVERY_INCIDENT_2026-06-30.md`; signed `v0.5.217` restored testnet liveness, and signed `v0.5.219` completed the faucet-signing and exchange-simulation follow-up |
+| O-12 | Signed `v0.5.219` testnet recovery release verification | Release artifacts and detached PQ signature verified; all four live hosts installed matching validator, custody, and faucet binaries through the runbook verify-only gate |
+| O-13 | Public testnet exchange simulation | Public faucet-backed simulation passed on `https://testnet-rpc.lichen.network`, covering funding, deposit detection, finalized transaction lookup, account history, operational buffers, sweep, withdrawal, CLI smoke, and reconciliation |

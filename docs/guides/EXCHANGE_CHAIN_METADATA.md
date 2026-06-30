@@ -22,7 +22,7 @@ resolved with evidence.
 | Base unit | `spore` | Source mapped | `core/src/account.rs` |
 | Unit conversion | `1 LICN = 1,000,000,000 spores` | Source mapped | `core/src/account.rs` |
 | Fee unit | Native LICN spores | Source mapped | `core/src/processor/fees.rs`, `core/src/genesis.rs`, `rpc/src/lib.rs` |
-| Default base fee | `1,000,000` spores at genesis defaults | Runtime public verification must be refreshed after the final signed `v0.5.219` rollout | `core/src/genesis.rs`, runtime `getFeeConfig`, tracker Phase 5 metadata evidence |
+| Default base fee | `1,000,000` spores | Public testnet runtime `getFeeConfig` verified after signed `v0.5.219` rollout on 2026-06-30 | `core/src/genesis.rs`, runtime `getFeeConfig`, tracker Phase 5 metadata evidence |
 | Native mainnet chain ID | `lichen-mainnet-1` | Source mapped | `seeds.json`, `core/src/network.rs` |
 | Native testnet chain ID | `lichen-testnet-1` | Source mapped | `seeds.json`, `core/src/network.rs` |
 | EVM compatibility ID | `8001` in core EVM compatibility code; runtime RPC derives an EVM chain ID from native chain ID | Needs final wording | `core/src/evm.rs`, `rpc/src/lib.rs` |
@@ -32,12 +32,12 @@ resolved with evidence.
 | Memo/tag requirement | None for native LICN base transfer flow | Locally validated | Native transfer/account model, local exchange simulation |
 | Mainnet RPC URL | `https://rpc.lichen.network` | Live check failed: Cloudflare `525` on 2026-06-29 | `seeds.json`, `core/src/network.rs`, `developers/shared-config.js`, tracker Phase 5 metadata evidence |
 | Mainnet WebSocket URL | `wss://rpc.lichen.network/ws` | Live check failed: Cloudflare `525` on 2026-06-29 | `developers/shared-config.js`, tracker Phase 5 metadata evidence |
-| Testnet RPC URL | `https://testnet-rpc.lichen.network` | Recovered on 2026-06-30 after signed `v0.5.217` rollout; public `health.status = ok` through slot `6715694`. Refresh metadata evidence after the final signed `v0.5.219` rollout. | `seeds.json`, `core/src/network.rs`, `developers/shared-config.js`, tracker Phase 5 metadata evidence |
-| Testnet WebSocket URL | `wss://testnet-rpc.lichen.network/ws` | TLS/WebSocket upgrade passed; rerun app-level slot subscription after the final signed `v0.5.219` rollout | `developers/shared-config.js`, tracker Phase 5 metadata evidence |
+| Testnet RPC URL | `https://testnet-rpc.lichen.network` | Healthy after signed `v0.5.219` rollout on 2026-06-30; twelve-sample watch advanced from slot `6763900` to `6764099` with `status = ok` and block age `0-1s` | `seeds.json`, `core/src/network.rs`, `developers/shared-config.js`, tracker Phase 5 metadata evidence |
+| Testnet WebSocket URL | `wss://testnet-rpc.lichen.network/ws` | Application-level `subscribeSlots` passed after signed `v0.5.219` rollout on 2026-06-30 | `developers/shared-config.js`, tracker Phase 5 metadata evidence |
 | Explorer URL | `https://explorer.lichen.network` | Route templates verified on 2026-06-29 | `seeds.json`, `developers/shared-config.js`, `explorer/js/*.js`, tracker Phase 5 metadata evidence |
 | Logo URL | `https://lichen.network/Lichen_Logo_256.png` | Public asset verified on 2026-06-29: PNG, 256x256, SHA-256 matches repo asset | `website/Lichen_Logo_256.png`, tracker Phase 5 metadata evidence |
 | Status page | Candidate: `https://monitoring.lichen.network` | Public monitoring app reachable; not operator-approved as exchange status page | Operations pack decision required |
-| Release verification | GitHub release `v0.5.215` has `SHA256SUMS` plus `SHA256SUMS.sig`; PQ signature verified locally | Rollback release verified; final exchange package tag still required | `.github/workflows/release.yml`, `scripts/sign-release.sh`, `scripts/verify-release-checksums.mjs`, GitHub release API |
+| Release verification | GitHub releases `v0.5.215` and `v0.5.219` have `SHA256SUMS` plus `SHA256SUMS.sig`; PQ signatures verified locally | Rollback release and current signed testnet recovery release verified; final external docs package publication still required | `.github/workflows/release.yml`, `scripts/sign-release.sh`, `scripts/verify-release-checksums.mjs`, GitHub release API |
 | Release signer | `8HitBNnh8qbhfne5NCv2yHrQFoD6xbmHcWaUSgCGtsk` | Source mapped | `deploy/release-trust-anchor.json` |
 | Current rollback anchor | `v0.5.215` | Operator anchored | Operator note on 2026-06-29 |
 
@@ -143,16 +143,24 @@ Verified rollback release metadata on 2026-06-29:
   verified the PQ signature against signer
   `8HitBNnh8qbhfne5NCv2yHrQFoD6xbmHcWaUSgCGtsk`.
 
-Pending blocker: confirm the intended exchange-package release tag and attach
-the final external docs/package artifacts before publishing exchange-facing
-release links.
+Current signed testnet recovery release metadata on 2026-06-30:
+
+- Release page: `https://github.com/lobstercove/lichen/releases/tag/v0.5.219`
+- GitHub release is published, not a draft, and not a prerelease.
+- Linux release archives include `lichen-validator`, `lichen-custody`, and
+  `lichen-faucet`.
+- `SHA256SUMS` and `SHA256SUMS.sig` downloaded from the release.
+- `scripts/verify-release-checksums.mjs` verified all archive hashes and the PQ
+  signature against signer `8HitBNnh8qbhfne5NCv2yHrQFoD6xbmHcWaUSgCGtsk`.
+
+Pending blocker: attach the final external docs/package artifacts before
+publishing exchange-facing release links outside the repository.
 
 ## Remaining Final Metadata Blockers
 
 | ID | Blocker | Required evidence |
 | --- | --- | --- |
-| M-02 | Runtime fee value needs refreshed public evidence for the final release | `getFeeConfig` result from a healthy public target network after the final signed `v0.5.219` rollout |
-| M-03 | Public RPC endpoints are not exchange-ready | Mainnet RPC/WS must stop returning Cloudflare `525`; testnet RPC must return healthy `health` and operational read/write methods |
+| M-03 | Mainnet public RPC/WS not live | Mainnet RPC/WS must stop returning Cloudflare `525` before mainnet is included in an exchange package; testnet-only exchange testing is unblocked |
 | M-06 | Status page not finalized | Operator-approved URL and uptime policy |
 | M-07 | Final exchange package release tag not selected | Signed release evidence for the external exchange package, not only rollback validator archives |
 | M-08 | EVM chain ID wording not reconciled | Runtime RPC and EVM docs comparison |
@@ -164,3 +172,6 @@ release links.
 | M-04 | Explorer route templates | Source route inspection plus hosted `200` checks for root, account, transaction, and block pages on 2026-06-29 |
 | M-05 | Logo URL cache verification | `https://lichen.network/Lichen_Logo_256.png` returned `200`, `image/png`, 45,415 bytes; downloaded file is PNG 256x256 and SHA-256 `bfa0986bc4bde64c3c7ce590782beba78980985f301fbd0fbd4a39dc045ca876`, matching `website/Lichen_Logo_256.png` |
 | M-07 rollback subset | `v0.5.215` rollback release signatures | GitHub release is published, checksum/signature assets downloaded, and `scripts/verify-release-checksums.mjs` verified signer `8HitBNnh8qbhfne5NCv2yHrQFoD6xbmHcWaUSgCGtsk` |
+| M-02 | Runtime fee value refreshed on public testnet | `getFeeConfig` returned `base_fee_spores = 1000000`, contract/NFT fee fields, and `40/30/10/10/10` fee split after signed `v0.5.219` rollout |
+| M-09 | Testnet RPC/WS readiness after final rollout | Public `getHealth` returned `status = ok`; twelve-sample slot watch advanced from `6763900` to `6764099`; WebSocket `subscribeSlots` returned a subscription id |
+| M-10 | Current signed testnet recovery release signatures | `v0.5.219` release checksum and detached PQ signature were verified against `deploy/release-trust-anchor.json` |

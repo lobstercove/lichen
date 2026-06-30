@@ -329,10 +329,11 @@ Outside explicit local development, set `LICHEN_KEYPAIR_PASSWORD` before the fir
 
 Operational rules:
 
-- canonical validator, treasury, genesis-primary, and signer keypair JSON files are encrypted at rest when `LICHEN_KEYPAIR_PASSWORD` is set
+- canonical validator, treasury, genesis-primary, faucet, and signer keypair JSON files are encrypted at rest when `LICHEN_KEYPAIR_PASSWORD` is set
 - production loaders now refuse plaintext keypair files unless `LICHEN_LOCAL_DEV=1` or `LICHEN_ALLOW_PLAINTEXT_KEYPAIRS=1` is explicitly set
 - local launchers still allow plaintext compatibility for throwaway development, but the secure local E2E path should export `LICHEN_KEYPAIR_PASSWORD` so the same code path is exercised before redeploy
 - any helper copy of a keypair file must preserve owner-only permissions; use the checked-in scripts rather than ad hoc `cp`
+- on testnet, every enabled `lichen-faucet.service` unit must load the same keypair password used to encrypt `FAUCET_KEYPAIR`; a healthy validator does not make the faucet healthy if this service secret is missing
 
 ## Local Runbook
 
@@ -481,9 +482,13 @@ Keep `LICHEN_KEYPAIR_PASSWORD` exported while running Python or SDK-driven E2Es 
 For production-like validation, the minimum local gate is:
 
 1. Run `scripts/start-local-stack.sh testnet` from a clean reset.
-2. Run the intended E2E or matrix workload.
-3. Re-run the same workload without resetting state to catch reused-signer, reused-faucet, and long-lived-chain issues.
-4. Only after that, run the VPS or staging gate for systemd and ingress-specific behavior.
+2. Run `bash tests/local-multi-validator-test.sh 4` and preserve the evidence that a joiner restarts from its own state, keeps its validator keypair, does not reimport genesis, and catches back up without copied RocksDB, WAL, genesis-wallet, or genesis-key artifacts.
+3. Run the intended E2E or matrix workload, including faucet-backed native LICN funding when faucet behavior is part of the release.
+4. Re-run the same workload without resetting state to catch reused-signer, reused-faucet, and long-lived-chain issues.
+5. Stop one local validator, restart it from its existing state, and verify all validators continue producing and converge again before any live rollout.
+6. Only after that, run the VPS or staging gate for systemd and ingress-specific behavior.
+
+This gate is mandatory for every live deployment, including small exchange-readiness changes. A release that has not passed clean local multi-validator stop/restart/rejoin testing is not ready for public testnet deployment.
 
 ## Genesis Runbook
 

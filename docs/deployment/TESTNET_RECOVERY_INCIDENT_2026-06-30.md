@@ -184,8 +184,76 @@ After `v0.5.217` installed and restarted, all four validators reported:
 - twelve live health samples stayed green, with public RPC advancing through
   slot `6715694`.
 
-The clean follow-up candidate is `v0.5.218`. It keeps the `v0.5.217` consensus
-liveness fix and refreshes both Cargo lockfiles from vulnerable `anyhow
-1.0.102` to patched `anyhow 1.0.103` so Cargo Audit/Deny can pass without a new
-exception. Do not reset or copy validator state as a substitute for a verified
-release.
+The clean follow-up release is `v0.5.219`. It keeps the `v0.5.217` consensus
+liveness fix, refreshes both Cargo lockfiles from vulnerable `anyhow 1.0.102` to
+patched `anyhow 1.0.103`, and moves public faucet funding to signed native LICN
+transfers from the faucet service instead of depending on validator
+`requestAirdrop` treasury material. Do not reset or copy validator state as a
+substitute for a verified release.
+
+## Final `v0.5.219` Recovery Evidence
+
+Signed release `v0.5.219` was published on 2026-06-30. The release artifacts were
+downloaded fresh, verified against `SHA256SUMS`, and the detached native PQ
+signature verified against signer
+`8HitBNnh8qbhfne5NCv2yHrQFoD6xbmHcWaUSgCGtsk`. The GitHub release page is:
+
+```text
+https://github.com/lobstercove/lichen/releases/tag/v0.5.219
+```
+
+Local and CI gates for the final release passed:
+
+- GitHub CI run for commit `e37d7e29`: `Test`, `Cargo Deny`, `Cargo Audit`,
+  `Clippy`, `Format`, `Integration Tests`, `Docker Build`, `WASM Contract
+  Builds`, `Prediction Market Tests`, `Wallet Extension`, dependency health, and
+  SBOM jobs all succeeded.
+- OpenSSF Scorecard succeeded.
+- `cargo test --workspace` passed locally.
+- `cargo deny check --config deny.toml advisories licenses sources` passed.
+- `cargo audit -q -D warnings` passed.
+- `cargo test -p lichen-faucet -- --nocapture`: `13 passed; 0 failed`.
+- `cargo test -p lichen-validator --bin lichen-validator -- --nocapture`:
+  `334 passed; 0 failed`.
+- `bash tests/local-multi-validator-test.sh 4` passed with V4 restarting from
+  its own state, preserving its keypair, not reimporting genesis, catching up
+  with drift `0`, and cleaning up local state.
+- The local full-stack faucet-backed exchange simulation passed against a clean
+  local testnet stack.
+
+Deployment used `scripts/rolling-release-deploy.sh` with `LICHEN_RELEASE_TAG`
+set to `v0.5.219`. State, cold archives, WAL, validator keypairs, node identity,
+known-peer evidence, service secrets, and release evidence were preserved. No
+RocksDB state directory was copied, no archive was deleted, and no clean-slate
+reset was performed.
+
+All four live public testnet hosts now report:
+
+- `/usr/local/bin/lichen-validator --version`: `lichen-validator 0.5.219`
+- `/usr/local/bin/lichen --version`: `lichen 0.5.219`
+- local RPC `getHealth`: `status = ok`
+- `lichen-faucet.service`: `active`
+
+The release verifier was then run in verify-only mode and completed
+`RELEASE VERIFY COMPLETE`, proving installed validator, custody, and faucet
+binaries match the signed release archive hashes on all four hosts.
+
+Public endpoint evidence after the final rollout:
+
+- Public JSON-RPC `getHealth` returned `status = ok`, `reason = ok`, slot
+  `6764490`, `block_age_secs = 0`.
+- A twelve-sample public slot watch advanced from slot `6763900` to `6764099`
+  with every health sample `status = ok` and block age `0-1s`.
+- Public WebSocket `wss://testnet-rpc.lichen.network/ws` accepted
+  `subscribeSlots` and returned a subscription id.
+- Public faucet `/health` returned `OK`; `/faucet/status` returned faucet
+  balance and address.
+- Public DEX oracle/candle smoke returned fresh oracle data and candle rows:
+  oracle slot `6764490`, wSOL slot `6764481`, wBTC slot `6764481`, and `20`
+  candle rows for pair `2`.
+- Public faucet-backed exchange simulation passed on
+  `https://testnet-rpc.lichen.network`, writing
+  `tests/artifacts/exchange-simulation-public-testnet-v0.5.219.json`.
+  The simulation covered customer funding, deposit detection, finalized
+  `getTransaction`, account history, operational finality buffers, sweep,
+  withdrawal, CLI balance/transfer/history/tx lookup, and reconciliation.

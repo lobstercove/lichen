@@ -1,8 +1,8 @@
 # Lichen Exchange Listing Readiness Plan
 
 **Created:** 2026-06-29
-**Status:** Execution; local gates have passed, but public endpoint readiness, operations approval, and final exchange-package release blockers remain open
-**Release candidate:** `v0.5.219`; keep `v0.5.215` as the rollback anchor until a newer signed rollback point is explicitly recorded.
+**Status:** Execution; local gates and public testnet exchange validation have passed, but developer-portal publication, operations approval, mainnet scope, and final external package blockers remain open
+**Current signed testnet recovery release:** `v0.5.219`; keep `v0.5.215` as the rollback anchor until a newer signed rollback point is explicitly recorded.
 **Scope:** Native LICN exchange integration package, public RPC/WebSocket behavior, archive/history guarantees, exchange deposit/withdrawal operations, SDK/CLI/docs parity, and listing operations pack.
 
 ## Executive Position
@@ -13,10 +13,10 @@ The priority is credibility. Do not contact serious exchanges with a partial gui
 
 ## Current Repo Facts To Carry Forward
 
-These facts were updated for the 2026-06-30 recovery candidate and must be reconciled before any external package is published:
+These facts were updated for the 2026-06-30 signed recovery release and must be reconciled before any external package is published:
 
 - Core protocol crates are at `0.5.219`: `core`, `rpc`, `validator`, and `cli`.
-- The root `README.md` and production deployment runbook now describe `v0.5.219` as the recovery candidate while keeping `v0.5.215` as the rollback anchor.
+- The root `README.md` and production deployment runbook now describe `v0.5.219` as the current signed testnet recovery release while keeping `v0.5.215` as the rollback anchor.
 - The mainnet launch runbook remains anchored to `v0.5.215` because mainnet is not live and is outside the public testnet recovery scope.
 - `sdk/rust/Cargo.toml` package version is `0.1.5` and now depends on `lobstercove-lichen-core = "=0.5.219"` while using the local `../../core` path.
 - `sdk/js/package.json` is `1.0.5`; `sdk/python/pyproject.toml` is `1.0.0`.
@@ -40,8 +40,8 @@ Exchange readiness means an integration engineer can perform the full LICN lifec
 
 ## Non-Negotiables
 
-- No serious exchange outreach before the exchange simulation passes locally on a clean three-validator testnet.
-- No public testnet release for exchange work before the local e2e pass is complete and cleaned up.
+- No serious exchange outreach before the exchange simulation passes locally and on the public testnet target included in the package.
+- No public testnet release for exchange work before the local e2e pass, four-validator restart/rejoin gate, and cleanup are complete.
 - No exchange guide may claim archive support until `getTransaction`, `getTransactionsByAddress`, `getBlock`, latest block, and account history are verified against hot and cold archive-backed data.
 - No docs may publish guessed address regexes, chain IDs, fee units, logo URLs, or finality buffers. Values must come from source code, deployed configuration, or signed release artifacts.
 - No public docs may expose secrets, private RPC provider URLs, hot wallet key material, custody seeds, private contacts beyond approved incident aliases, or filled production env files.
@@ -346,7 +346,8 @@ Exit gate:
 
 ### Phase 7: Public Testnet Release Gate
 
-Status: blocked on public RPC readiness and operations approval.
+Status: complete for testnet after signed `v0.5.219`; external package remains
+blocked on Phase 8 items.
 
 Purpose: publish only after local proof.
 
@@ -358,7 +359,9 @@ Preconditions:
 - SDK/CLI examples are current.
 - Rollback anchor `v0.5.215` is recorded.
 - Public testnet RPC is healthy and not stale/readiness-gated.
-- Mainnet RPC/WebSocket TLS checks are not returning Cloudflare `525`.
+- Mainnet RPC/WebSocket TLS checks are not returning Cloudflare `525`, unless
+  the package is explicitly scoped to testnet-only integration testing before
+  mainnet launch.
 - Public developer portal exchange page serves exchange-specific content instead
   of a generic hub fallback.
 - Status page, incident aliases, and target exchange-package release tag are
@@ -371,14 +374,25 @@ Tasks:
 - Re-run the exchange simulation against public testnet with tiny amounts.
 - Record rollback command path and expected service impact.
 
+2026-06-30 result:
+
+- Signed `v0.5.219` was published, checksum/signature verified, and deployed
+  through the rolling release runbook.
+- All four live testnet validators and CLIs reported `0.5.219`; runbook
+  verify-only completed `RELEASE VERIFY COMPLETE`.
+- Public RPC, WebSocket `subscribeSlots`, faucet health/status, DEX
+  oracle/candle smoke, and faucet-backed exchange simulation passed.
+
 Exit gate:
 
 - Public testnet evidence matches local evidence.
-- No release blocker remains in the tracker.
+- Remaining release blockers are explicitly external-package blockers, not
+  testnet recovery blockers.
 
 ### Phase 8: External Listing Package
 
-Status: blocked until Phase 7.
+Status: blocked on developer-portal publication, operations approval, mainnet
+scope decision or recovery, EVM wording, and final external package publication.
 
 Purpose: produce the package an exchange can review without backchannel dependency.
 
@@ -420,18 +434,18 @@ Exit gate:
 
 | Gate                                 | Status      | Release blocker | Evidence                         |
 | ------------------------------------ | ----------- | --------------- | -------------------------------- |
-| Source map completed                 | Not started | Yes             | Tracker                          |
-| Version drift resolved or documented | Not started | Yes             | Version matrix                   |
-| Exchange guide skeleton              | Not started | Yes             | GitHub docs and developer portal |
-| Chain metadata sheet                 | Not started | Yes             | Docs                             |
-| Finality policy validated            | Not started | Yes             | Local e2e evidence               |
-| Archive/history validated            | Not started | Yes             | Local e2e evidence               |
-| Local exchange simulation passed     | Not started | Yes             | Local evidence directory         |
-| Local cleanup verified               | Not started | Yes             | Process/status evidence          |
-| SDK/CLI examples verified            | Not started | Yes             | Test output                      |
-| Explorer URL patterns verified       | Not started | Yes             | Metadata sheet                   |
-| Operational listing pack completed   | Not started | Yes             | Deployment docs                  |
-| Public testnet exchange run passed   | Blocked     | Yes             | Testnet evidence                 |
+| Source map completed                 | Done        | No              | Tracker                          |
+| Version drift resolved or documented | Done        | No              | Version matrix                   |
+| Exchange guide skeleton              | Done        | Yes             | GitHub docs and developer portal |
+| Chain metadata sheet                 | Done        | Yes             | Docs                             |
+| Finality policy validated            | Done        | No              | Local e2e evidence               |
+| Archive/history validated            | Done        | No              | Local e2e evidence               |
+| Local exchange simulation passed     | Done        | No              | Local evidence directory         |
+| Local cleanup verified               | Done        | No              | Process/status evidence          |
+| SDK/CLI examples verified            | Done        | No              | Test output                      |
+| Explorer URL patterns verified       | Done        | No              | Metadata sheet                   |
+| Operational listing pack completed   | In progress | Yes             | Deployment docs                  |
+| Public testnet exchange run passed   | Done        | No              | Testnet evidence                 |
 | External listing package reviewed    | Blocked     | Yes             | Go/no-go record                  |
 
 ## Go/No-Go Rule
