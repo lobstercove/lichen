@@ -140,9 +140,11 @@ assert_start_local_stack_clears_peer_trust_state() {
     copy_repo_script "scripts/start-local-stack.sh" "$fixture_root"
     seed_peer_trust_state "$fixture_root" 7001 7002 7003
     mkdir -p "$fixture_root/data/state-7001/genesis-keys"
+    mkdir -p "$fixture_root/data/local-cluster"
     mkdir -p "$fixture_root/keypairs"
     printf '{}' >"$fixture_root/data/state-7001/genesis-keys/genesis-primary-lichen-testnet-1.json"
     printf '{}' >"$fixture_root/data/state-7001/genesis-keys/treasury-lichen-testnet-1.json"
+    printf 'fixture-local-keypair-password' >"$fixture_root/data/local-cluster/keypair-password"
     printf '{"privateKey":[0]}' >"$fixture_root/keypairs/release-signing-key.json"
     expected_signing_key="$(cd "$fixture_root/keypairs" && pwd)/release-signing-key.json"
 
@@ -203,6 +205,7 @@ assert_start_local_3validators_clears_peer_trust_state() {
     seed_peer_trust_state "$fixture_root" 7001 7002 7003
     mkdir -p "$fixture_root/data/local-cluster"
     mkdir -p "$fixture_root/keypairs"
+    printf 'fixture-local-keypair-password' >"$fixture_root/data/local-cluster/keypair-password"
     printf '{}' >"$fixture_root/keypairs/release-signing-key.json"
 
     write_file_from_stdin "$fixture_root/run-validator.sh" <<'EOF'
