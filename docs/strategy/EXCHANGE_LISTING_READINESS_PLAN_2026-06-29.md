@@ -2,7 +2,7 @@
 
 **Created:** 2026-06-29
 **Status:** Execution; local gates have passed, but public endpoint readiness, operations approval, and final exchange-package release blockers remain open
-**Release candidate:** `v0.5.216`; keep `v0.5.215` as the rollback anchor until a newer signed rollback point is explicitly recorded.
+**Release candidate:** `v0.5.217`; keep `v0.5.215` as the rollback anchor until a newer signed rollback point is explicitly recorded.
 **Scope:** Native LICN exchange integration package, public RPC/WebSocket behavior, archive/history guarantees, exchange deposit/withdrawal operations, SDK/CLI/docs parity, and listing operations pack.
 
 ## Executive Position
@@ -15,10 +15,10 @@ The priority is credibility. Do not contact serious exchanges with a partial gui
 
 These facts were updated for the 2026-06-30 recovery candidate and must be reconciled before any external package is published:
 
-- Core protocol crates are at `0.5.216`: `core`, `rpc`, `validator`, and `cli`.
-- The root `README.md` and production deployment runbook now describe `v0.5.216` as the recovery candidate while keeping `v0.5.215` as the rollback anchor.
+- Core protocol crates are at `0.5.217`: `core`, `rpc`, `validator`, and `cli`.
+- The root `README.md` and production deployment runbook now describe `v0.5.217` as the recovery candidate while keeping `v0.5.215` as the rollback anchor.
 - The mainnet launch runbook remains anchored to `v0.5.215` because mainnet is not live and is outside the public testnet recovery scope.
-- `sdk/rust/Cargo.toml` package version is `0.1.5` and now depends on `lobstercove-lichen-core = "=0.5.216"` while using the local `../../core` path.
+- `sdk/rust/Cargo.toml` package version is `0.1.5` and now depends on `lobstercove-lichen-core = "=0.5.217"` while using the local `../../core` path.
 - `sdk/js/package.json` is `1.0.5`; `sdk/python/pyproject.toml` is `1.0.0`.
 - Mainnet launch docs already require public RPC validators to run `--archive-mode --cold-store /var/lib/lichen/archive-mainnet`.
 - Testnet state policy already treats account activity and transaction history as persistent user-facing indexes.

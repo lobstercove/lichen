@@ -7,7 +7,7 @@ Ultra-low fees · Sub-second BFT block commitment · Agent-native identity · Mu
 [![License: Apache--2.0%20%2B%20MIT](https://img.shields.io/badge/License-Apache--2.0%20%2B%20MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.88+-00C9DB.svg)](https://www.rust-lang.org)
 
-**Current release candidate:** `v0.5.216`. Keep `v0.5.215` as the signed rollback point until a newer signed rollback anchor is explicitly recorded. This candidate preserves the `v0.5.215` exchange-readiness surface and hardens validator restart/rejoin recovery: cold storage is attached before startup classifies local state, stale bootstrap markers cannot scrub validators with real progress, live snapshot rollback does not require hot archive rows that have already migrated to cold storage, and fresh archive imports are covered for mixed hot/cold history with matching state-root and public-history digests.
+**Current release candidate:** `v0.5.217`. Keep `v0.5.215` as the signed rollback point until a newer signed rollback anchor is explicitly recorded. This candidate preserves the `v0.5.215` exchange-readiness surface, removes unsafe fast nil-voting for missed proposers, and hardens validator restart/rejoin recovery: cold storage is attached before startup classifies local state, stale bootstrap markers cannot scrub validators with real progress, live snapshot rollback does not require hot archive rows that have already migrated to cold storage, and fresh archive imports are covered for mixed hot/cold history with matching state-root and public-history digests.
 
 **Website:** https://lichen.network  
 **Documentation:** https://developers.lichen.network  
@@ -135,9 +135,9 @@ https://github.com/lobstercove/lichen/releases/download/<tag>/lichen-validator-<
 ```
 
 Examples:
-- `https://github.com/lobstercove/lichen/releases/download/v0.5.216/lichen-validator-linux-x86_64.tar.gz`
-- `https://github.com/lobstercove/lichen/releases/download/v0.5.216/lichen-validator-darwin-aarch64.tar.gz`
-- `https://github.com/lobstercove/lichen/releases/download/v0.5.216/lichen-validator-windows-x86_64.tar.gz`
+- `https://github.com/lobstercove/lichen/releases/download/v0.5.217/lichen-validator-linux-x86_64.tar.gz`
+- `https://github.com/lobstercove/lichen/releases/download/v0.5.217/lichen-validator-darwin-aarch64.tar.gz`
+- `https://github.com/lobstercove/lichen/releases/download/v0.5.217/lichen-validator-windows-x86_64.tar.gz`
 
 Linux x86_64:
 

@@ -6,9 +6,13 @@ This incident covers the June 30, 2026 public testnet liveness failure observed
 after validator release/recovery work. Mainnet was not live and was not part of
 the incident scope.
 
-## Root Cause
+## Root Causes
 
-The failing live node had an incomplete live snapshot rollback marker. Startup
+Two separate issues were found during the June 30 recovery work.
+
+### 1. Hot/cold startup recovery risk
+
+One failing live node had an incomplete live snapshot rollback marker. Startup
 rollback recovery was unsafe for archive-backed validators whose old public
 history had moved from hot RocksDB into the local cold archive:
 
@@ -24,9 +28,28 @@ validator lifecycle contract: a stopped validator must restart from its own
 state, archive, keypair, and node identity unless an operator explicitly runs
 the owner-approved clean-slate path.
 
+### 2. Consensus timeout liveness regression
+
+After the signed `v0.5.216` rollout preserved state and put all four validators
+on the same release hash, the public testnet remained stale at height
+`6715446`. Live logs showed repeated nil polkas and nil commits while validators
+were also building valid candidate blocks. The immediate cause was the
+missed-proposer grace path in `validator/src/main.rs`: non-proposers shortened
+their propose timeout to the slot-derived `150-300ms` range instead of waiting
+the configured BFT propose timeout. Under live load, proposer block builds were
+commonly around `300-460ms`, so non-proposers nil-voted before a valid proposal
+could be built, relayed, and processed. The validators then formed
+supermajority nil votes and advanced rounds indefinitely.
+
+This was a liveness bug in the consensus loop, not operator configuration, host
+trust state, validator key loss, or archive deletion. The service config still
+carried the expected `--archive-mode --cold-store /var/lib/lichen/archive-testnet`
+arguments and all four validators preserved their state and identity.
+
 ## Fix
 
-The recovery patch in `validator/src/main.rs` enforces these invariants:
+The hot/cold recovery patch in `validator/src/main.rs` enforces these
+invariants:
 
 - destructive partial-genesis recovery returns `Result<bool, String>` and only
   runs from positive local evidence; database read errors no longer default to
@@ -44,6 +67,13 @@ that a source with old canonical history in cold storage and recent canonical
 history in hot storage can export/import both into a clean target with the same
 state root, account state, canonical snapshot digests, tip, block bodies,
 transactions, and account history.
+
+The consensus liveness patch for `v0.5.217` removes the unsafe
+missed-proposer grace path. `propose_timeout_delay_for_role()` now preserves the
+configured BFT propose timeout for both proposers and non-proposers, including
+high recovered rounds capped at the configured maximum phase timeout. A
+regression test pins this behavior so a future change cannot reintroduce
+sub-configured nil-vote timing.
 
 The deployment runbook now has a mandatory local deployment drill and an
 explicit restart/rejoin invariant requiring validators to preserve state,
@@ -103,11 +133,11 @@ Emergency Linux validator artifact:
 - file type: ELF 64-bit LSB pie executable, x86-64, GNU/Linux
 - amd64 Debian smoke: `lichen-validator 0.5.215`
 
-Local macOS `v0.5.216` release-candidate harness binary:
+Local macOS `v0.5.217` release-candidate harness binary:
 
 - path: `target/release/lichen-validator`
-- hash: `dcbf8a4737fac3087986aea7f5d26d394de53677dddca13ccb76cd17cb24e184`
-- version: `lichen-validator 0.5.216`
+- hash: `78528223a960120c0bec905dde088e489df3808030e6ed54806414239ea60eb0`
+- version: `lichen-validator 0.5.217`
 
 ## Current Live State Before Signed Recovery Release
 
@@ -115,17 +145,28 @@ Deployment SSH on TCP `2222` is reachable on all four public testnet hosts.
 Raw public TCP `8899` is not exposed externally; public RPC is served through
 `https://testnet-rpc.lichen.network`.
 
-All four validator services are active but stale at slot `6715444`, and all four
-currently run the same non-published validator binary hash:
+Before the signed `v0.5.216` rollout, all four validator services were active
+but stale at slot `6715444`, and all four ran the same non-published validator
+binary hash:
 
 - `/usr/local/bin/lichen-validator` hash:
   `f151f34529c4de147edebf3166871fdb3a6829a730884f3169a0a4ab6a707eeb`
 - local health: `status=behind`, `reason=stale_tip`
 - public health: `status=behind`, `reason=stale_tip`
 
-The published `v0.5.215` release verifier rejects this installed hash. The live
-recovery path is therefore a new signed GitHub release, installed through
-`scripts/rolling-release-deploy.sh`, so every validator ends on the same
-release-archive hash with state, cold archive, keypair, node identity, known-peer
-evidence, service secrets, and release evidence preserved. Do not reset or copy
+The published `v0.5.215` release verifier rejected that installed hash. The
+first recovery path was therefore the signed `v0.5.216` GitHub release,
+installed with state, cold archive, keypair, node identity, known-peer evidence,
+service secrets, and release evidence preserved.
+
+After `v0.5.216` installed, all four validators reported:
+
+- `/usr/local/bin/lichen-validator --version`: `lichen-validator 0.5.216`
+- `/usr/local/bin/lichen-validator` hash:
+  `5159b83314a85db52b88bfe465e9f292e3543c337b85b195c2eb1163d0c37d73`
+- local health: `status=behind`, `reason=stale_tip`, slot `6715445`
+- consensus logs: repeated nil polka/nil commit at height `6715446`
+
+The remaining recovery path is the signed `v0.5.217` GitHub release after local
+tests, release signing, and release verification pass. Do not reset or copy
 validator state as a substitute for the verified recovery release.

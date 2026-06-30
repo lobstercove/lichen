@@ -31,7 +31,7 @@ Do not include this pack in an external listing package until:
 | --- | --- | --- | --- |
 | Mainnet RPC | `https://rpc.lichen.network` | Live check failed on 2026-06-29: Cloudflare `525` | `seeds.json`, `developers/shared-config.js` |
 | Mainnet WebSocket | `wss://rpc.lichen.network/ws` | Live check failed on 2026-06-29: Cloudflare `525` | `developers/shared-config.js` |
-| Testnet RPC | `https://testnet-rpc.lichen.network` | Not exchange-ready on 2026-06-30: public/local health reports `status = behind`, `reason = stale_tip`, slot `6715444`; recovery is pending signed `v0.5.216` rollout | `seeds.json`, `developers/shared-config.js`, tracker Phase 5 evidence |
+| Testnet RPC | `https://testnet-rpc.lichen.network` | Not exchange-ready on 2026-06-30: public/local health reports `status = behind`, `reason = stale_tip`, slot `6715444`; recovery is pending signed `v0.5.217` rollout | `seeds.json`, `developers/shared-config.js`, tracker Phase 5 evidence |
 | Testnet WebSocket | `wss://testnet-rpc.lichen.network/ws` | Transport previously upgraded, but application readiness is blocked while public RPC is stale | `developers/shared-config.js` |
 | Explorer | `https://explorer.lichen.network` | Route templates verified | `seeds.json`, `developers/shared-config.js`, `explorer/js/*.js` |
 | Status page | Candidate: `https://monitoring.lichen.network` | Public monitoring page reachable; not operator-approved as exchange status page | Operator decision required |
@@ -145,7 +145,7 @@ Verified rollback release subset on 2026-06-29:
 Pending blocker: publish exact exchange-package release URLs only after the
 signed target release and public exchange docs package are selected.
 
-Current recovery candidate: `v0.5.216`, with `v0.5.215` retained as the rollback
+Current recovery candidate: `v0.5.217`, with `v0.5.215` retained as the rollback
 anchor until a newer signed rollback point is explicitly recorded.
 
 ## Rollback Policy
@@ -232,7 +232,7 @@ tag is not selected.
 Update on 2026-06-30: the public testnet is stale again at slot `6715444` while
 all four services remain active. The current live binaries report
 `lichen-validator 0.5.215` but do not match the published `v0.5.215` release
-hash, so the recovery path is the signed `v0.5.216` release rollout through the
+hash, so the recovery path is the signed `v0.5.217` release rollout through the
 deployment runbook, preserving state and cold archives.
 
 ## Local Validation Evidence
@@ -275,8 +275,8 @@ Do not commit private keys or filled production env files as evidence.
 
 | ID | Check | Evidence |
 | --- | --- | --- |
-| O-03 | Current release drift for core docs and Rust SDK pin | Core crates and the Rust SDK pin were updated to `0.5.216`; `v0.5.215` remains the rollback anchor; JS/Python package boundaries are documented in the tracker |
+| O-03 | Current release drift for core docs and Rust SDK pin | Core crates and the Rust SDK pin were updated to `0.5.217`; `v0.5.215` remains the rollback anchor; JS/Python package boundaries are documented in the tracker |
 | O-05 | Local archive/history behavior | Core and RPC archive regressions passed after hot-to-cold migration and reopen |
 | O-07 | Local cleanup evidence | Local stack stop/status/process checks passed; generated credentials, state dirs, manifests, and staging dirs were removed after the local exchange simulation |
 | O-09 | Rollback release checksum/signature verification | `v0.5.215` release checksum and detached PQ signature were verified against `deploy/release-trust-anchor.json` |
-| O-11 | June 29 live testnet consensus incident recovery evidence preserved | Operator-approved evidence-preserving recovery restarted only stale validator `15.204.229.189`; the June 30 recurrence is tracked separately in `docs/deployment/TESTNET_RECOVERY_INCIDENT_2026-06-30.md` and requires signed `v0.5.216` rollout |
+| O-11 | June 29 live testnet consensus incident recovery evidence preserved | Operator-approved evidence-preserving recovery restarted only stale validator `15.204.229.189`; the June 30 recurrence is tracked separately in `docs/deployment/TESTNET_RECOVERY_INCIDENT_2026-06-30.md` and requires signed `v0.5.217` rollout |
