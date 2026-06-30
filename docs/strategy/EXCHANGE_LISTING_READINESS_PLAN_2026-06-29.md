@@ -1,7 +1,7 @@
 # Lichen Exchange Listing Readiness Plan
 
 **Created:** 2026-06-29
-**Status:** Execution; local gates, public testnet exchange validation, and developer-portal publication have passed. The current package is testnet-only until mainnet launch, and operations approval plus final external package blockers remain open.
+**Status:** Testnet technical gates green; local gates, public testnet exchange validation, developer-portal publication, GitHub CI, and public technical readiness have passed. The current package is testnet-only until mainnet launch, and operations approval plus final signed external package publication remain open.
 **Current signed testnet recovery release:** `v0.5.219`; keep `v0.5.215` as the rollback anchor until a newer signed rollback point is explicitly recorded.
 **Scope:** Native LICN exchange integration package, public RPC/WebSocket behavior, archive/history guarantees, exchange deposit/withdrawal operations, SDK/CLI/docs parity, and listing operations pack.
 
