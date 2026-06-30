@@ -5432,6 +5432,377 @@ mod tests {
     }
 
     #[test]
+    fn exchange_archive_history_survives_hot_to_cold_migration_and_reopen() {
+        fn exchange_tx(
+            deposit_address: Pubkey,
+            counterparty: Pubkey,
+            recent_blockhash: Hash,
+            marker: u8,
+        ) -> crate::transaction::Transaction {
+            crate::transaction::Transaction::new(crate::transaction::Message::new(
+                vec![crate::transaction::Instruction {
+                    program_id: crate::SYSTEM_PROGRAM_ID,
+                    accounts: vec![deposit_address, counterparty],
+                    data: vec![marker],
+                }],
+                recent_blockhash,
+            ))
+        }
+
+        fn assert_exchange_history(
+            state: &StateStore,
+            deposit_address: Pubkey,
+            old_hash: Hash,
+            old_slot: u64,
+            old_block_hash: Hash,
+            new_hash: Hash,
+            new_slot: u64,
+            new_block_hash: Hash,
+        ) {
+            assert_eq!(state.count_account_txs(&deposit_address).unwrap(), 2);
+            assert_eq!(
+                state
+                    .get_account_tx_signatures_paginated(&deposit_address, 10, None)
+                    .unwrap(),
+                vec![(new_hash, new_slot), (old_hash, old_slot)]
+            );
+            assert_eq!(
+                state
+                    .get_account_tx_signatures_paginated(&deposit_address, 10, Some(new_slot),)
+                    .unwrap(),
+                vec![(old_hash, old_slot)]
+            );
+
+            assert_eq!(state.get_tx_slot(&old_hash).unwrap(), Some(old_slot));
+            assert_eq!(state.get_tx_slot(&new_hash).unwrap(), Some(new_slot));
+            assert_eq!(
+                state
+                    .get_transaction(&old_hash)
+                    .unwrap()
+                    .map(|tx| tx.signature()),
+                Some(old_hash)
+            );
+            assert_eq!(
+                state
+                    .get_transaction(&new_hash)
+                    .unwrap()
+                    .map(|tx| tx.signature()),
+                Some(new_hash)
+            );
+            assert_eq!(
+                state
+                    .get_block_by_slot(old_slot)
+                    .unwrap()
+                    .map(|block| block.hash()),
+                Some(old_block_hash)
+            );
+            assert_eq!(
+                state
+                    .get_block_by_slot(new_slot)
+                    .unwrap()
+                    .map(|block| block.hash()),
+                Some(new_block_hash)
+            );
+        }
+
+        let hot_dir = tempdir().unwrap();
+        let cold_dir = tempdir().unwrap();
+
+        let deposit_address = Pubkey([0x61; 32]);
+        let hot_wallet = Pubkey([0x62; 32]);
+        let customer_wallet = Pubkey([0x63; 32]);
+        let old_slot = 12;
+        let new_slot = 20;
+
+        let old_tx = exchange_tx(
+            deposit_address,
+            hot_wallet,
+            Hash::hash(b"exchange-archive-old-recent-blockhash"),
+            1,
+        );
+        let new_tx = exchange_tx(
+            deposit_address,
+            customer_wallet,
+            Hash::hash(b"exchange-archive-new-recent-blockhash"),
+            2,
+        );
+        let old_hash = old_tx.signature();
+        let new_hash = new_tx.signature();
+
+        let old_block = crate::Block::new_with_timestamp(
+            old_slot,
+            Hash::default(),
+            Hash::default(),
+            [0u8; 32],
+            vec![old_tx],
+            1_700_000_012,
+        );
+        let old_block_hash = old_block.hash();
+        let new_block = crate::Block::new_with_timestamp(
+            new_slot,
+            old_block_hash,
+            Hash::default(),
+            [0u8; 32],
+            vec![new_tx],
+            1_700_000_020,
+        );
+        let new_block_hash = new_block.hash();
+
+        {
+            let mut state = StateStore::open(hot_dir.path()).unwrap();
+            state.open_cold_store(cold_dir.path()).unwrap();
+
+            state
+                .put_block_atomic(&old_block, Some(old_slot), Some(old_slot))
+                .unwrap();
+            state
+                .put_block_atomic(&new_block, Some(new_slot), Some(new_slot))
+                .unwrap();
+
+            assert_exchange_history(
+                &state,
+                deposit_address,
+                old_hash,
+                old_slot,
+                old_block_hash,
+                new_hash,
+                new_slot,
+                new_block_hash,
+            );
+
+            assert_eq!(state.migrate_to_cold(15).unwrap(), 1);
+            assert_eq!(state.migrate_indexes_to_cold(15).unwrap(), 2);
+
+            let tx_cf = state.db.cf_handle(CF_TRANSACTIONS).unwrap();
+            assert!(state.db.get_cf(&tx_cf, old_hash.0).unwrap().is_none());
+            let tx_to_slot_cf = state.db.cf_handle(CF_TX_TO_SLOT).unwrap();
+            assert!(state
+                .db
+                .get_cf(&tx_to_slot_cf, old_hash.0)
+                .unwrap()
+                .is_none());
+
+            assert_exchange_history(
+                &state,
+                deposit_address,
+                old_hash,
+                old_slot,
+                old_block_hash,
+                new_hash,
+                new_slot,
+                new_block_hash,
+            );
+        }
+
+        let mut reopened = StateStore::open(hot_dir.path()).unwrap();
+        reopened.open_cold_store(cold_dir.path()).unwrap();
+        assert_exchange_history(
+            &reopened,
+            deposit_address,
+            old_hash,
+            old_slot,
+            old_block_hash,
+            new_hash,
+            new_slot,
+            new_block_hash,
+        );
+    }
+
+    #[test]
+    fn fresh_snapshot_import_restores_history_from_source_hot_and_cold() {
+        fn import_category(source: &StateStore, target: &StateStore, category: &str) {
+            let mut cursor: Option<Vec<u8>> = None;
+            loop {
+                let page = source
+                    .export_snapshot_category_cursor_untracked(category, cursor.as_deref(), 1)
+                    .unwrap_or_else(|err| panic!("export {category}: {err}"));
+                if !page.entries.is_empty() {
+                    target
+                        .import_snapshot_category(category, &page.entries)
+                        .unwrap_or_else(|err| panic!("import {category}: {err}"));
+                }
+                if !page.has_more {
+                    break;
+                }
+                cursor = page.next_cursor;
+            }
+        }
+
+        let source_hot_dir = tempdir().unwrap();
+        let source_cold_dir = tempdir().unwrap();
+        let target_dir = tempdir().unwrap();
+        let tracked = Pubkey([0x64; 32]);
+        let old_counterparty = Pubkey([0x65; 32]);
+        let new_counterparty = Pubkey([0x66; 32]);
+
+        let old_tx = crate::transaction::Transaction::new(crate::transaction::Message::new(
+            vec![crate::transaction::Instruction {
+                program_id: crate::SYSTEM_PROGRAM_ID,
+                accounts: vec![tracked, old_counterparty],
+                data: vec![1],
+            }],
+            Hash::hash(b"fresh-sync-old"),
+        ));
+        let new_tx = crate::transaction::Transaction::new(crate::transaction::Message::new(
+            vec![crate::transaction::Instruction {
+                program_id: crate::SYSTEM_PROGRAM_ID,
+                accounts: vec![tracked, new_counterparty],
+                data: vec![2],
+            }],
+            Hash::hash(b"fresh-sync-new"),
+        ));
+        let old_tx_hash = old_tx.signature();
+        let new_tx_hash = new_tx.signature();
+        let old_block = crate::Block::new_with_timestamp(
+            10,
+            Hash::default(),
+            Hash::hash(b"fresh-sync-old-state"),
+            [1u8; 32],
+            vec![old_tx],
+            1_700_000_010,
+        );
+        let old_block_hash = old_block.hash();
+        let new_block = crate::Block::new_with_timestamp(
+            20,
+            old_block_hash,
+            Hash::hash(b"fresh-sync-new-state"),
+            [2u8; 32],
+            vec![new_tx],
+            1_700_000_020,
+        );
+        let new_block_hash = new_block.hash();
+
+        let mut source = StateStore::open(source_hot_dir.path()).unwrap();
+        source.open_cold_store(source_cold_dir.path()).unwrap();
+        source
+            .put_account(&tracked, &Account::new(12_345, tracked))
+            .unwrap();
+        source
+            .put_account(&old_counterparty, &Account::new(6_789, old_counterparty))
+            .unwrap();
+        source
+            .put_block_atomic(&old_block, Some(10), Some(10))
+            .unwrap();
+        source
+            .put_block_atomic(&new_block, Some(20), Some(20))
+            .unwrap();
+        let expected_state_root = source.compute_state_root_cold_start();
+        assert_eq!(source.migrate_to_cold(15).unwrap(), 1);
+        assert_eq!(source.migrate_indexes_to_cold(15).unwrap(), 2);
+
+        let hot_blocks = source.db.cf_handle(CF_BLOCKS).unwrap();
+        assert!(source
+            .db
+            .get_cf(&hot_blocks, old_block_hash.0)
+            .unwrap()
+            .is_none());
+        assert!(source
+            .db
+            .get_cf(&hot_blocks, new_block_hash.0)
+            .unwrap()
+            .is_some());
+        let hot_transactions = source.db.cf_handle(CF_TRANSACTIONS).unwrap();
+        assert!(source
+            .db
+            .get_cf(&hot_transactions, old_tx_hash.0)
+            .unwrap()
+            .is_none());
+        assert!(source
+            .db
+            .get_cf(&hot_transactions, new_tx_hash.0)
+            .unwrap()
+            .is_some());
+        assert_eq!(
+            source
+                .get_block_by_slot(10)
+                .unwrap()
+                .map(|block| block.hash()),
+            Some(old_block_hash)
+        );
+        assert_eq!(
+            source
+                .get_block_by_slot(20)
+                .unwrap()
+                .map(|block| block.hash()),
+            Some(new_block_hash)
+        );
+
+        let target = StateStore::open(target_dir.path()).unwrap();
+        for category in [
+            "accounts",
+            "blocks",
+            "transactions",
+            "tx_by_slot",
+            "tx_to_slot",
+            "account_txs",
+            "slots",
+        ] {
+            import_category(&source, &target, category);
+        }
+
+        assert_eq!(target.compute_state_root_cold_start(), expected_state_root);
+        assert_eq!(
+            account_snapshot(&target, &tracked),
+            account_snapshot(&source, &tracked)
+        );
+        for category in [
+            "accounts",
+            "blocks",
+            "transactions",
+            "tx_by_slot",
+            "tx_to_slot",
+            "account_txs",
+            "slots",
+        ] {
+            let source_digest = snapshot_category_digest(&source, category);
+            let target_digest = snapshot_category_digest(&target, category);
+            assert_eq!(
+                target_digest.count, source_digest.count,
+                "fresh import must preserve {category} row count"
+            );
+            assert_eq!(
+                target_digest.digest, source_digest.digest,
+                "fresh import must preserve {category} digest"
+            );
+        }
+        assert_eq!(target.get_last_slot().unwrap(), 20);
+        assert_eq!(
+            target
+                .get_block_by_slot(10)
+                .unwrap()
+                .map(|block| block.hash()),
+            Some(old_block_hash)
+        );
+        assert_eq!(
+            target
+                .get_block_by_slot(20)
+                .unwrap()
+                .map(|block| block.hash()),
+            Some(new_block_hash)
+        );
+        assert_eq!(
+            target
+                .get_transaction(&old_tx_hash)
+                .unwrap()
+                .map(|tx| tx.signature()),
+            Some(old_tx_hash)
+        );
+        assert_eq!(
+            target
+                .get_transaction(&new_tx_hash)
+                .unwrap()
+                .map(|tx| tx.signature()),
+            Some(new_tx_hash)
+        );
+        assert_eq!(
+            target
+                .get_account_tx_signatures_paginated(&tracked, 10, None)
+                .unwrap(),
+            vec![(new_tx_hash, 20), (old_tx_hash, 10)]
+        );
+    }
+
+    #[test]
     fn test_cold_program_call_index_is_merged_with_hot_queries() {
         let hot_dir = tempdir().unwrap();
         let cold_dir = tempdir().unwrap();

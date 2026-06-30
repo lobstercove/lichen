@@ -194,6 +194,14 @@ export interface TransactionHistoryResponse {
 }
 
 /**
+ * Account transaction count.
+ */
+export interface AccountTxCount {
+  address: string;
+  count: number;
+}
+
+/**
  * A single step in a Merkle inclusion proof
  */
 export interface ProofStep {
@@ -284,6 +292,14 @@ export class Connection {
     this.rpcUrl = rpcUrl;
     this.wsUrl = wsUrl;
     this.timeoutMs = options?.timeoutMs ?? 30_000;
+  }
+
+  private transactionHistoryOptions(limit: number, beforeSlot?: number): { limit: number; before_slot?: number } {
+    const options: { limit: number; before_slot?: number } = { limit };
+    if (beforeSlot !== undefined) {
+      options.before_slot = beforeSlot;
+    }
+    return options;
   }
 
   /**
@@ -692,18 +708,38 @@ export class Connection {
   }
 
   /**
-   * Get transaction history
+   * Get transactions involving an address using the canonical RPC method.
+   */
+  async getTransactionsByAddress(
+    pubkey: PublicKey,
+    limit: number = 10,
+    beforeSlot?: number,
+  ): Promise<TransactionHistoryResponse> {
+    return this.rpc('getTransactionsByAddress', [
+      pubkey.toBase58(),
+      this.transactionHistoryOptions(limit, beforeSlot),
+    ]);
+  }
+
+  /**
+   * Get transaction history through the compatibility alias.
    */
   async getTransactionHistory(
     pubkey: PublicKey,
     limit: number = 10,
     beforeSlot?: number,
   ): Promise<TransactionHistoryResponse> {
-    const options: { limit: number; before_slot?: number } = { limit };
-    if (beforeSlot !== undefined) {
-      options.before_slot = beforeSlot;
-    }
-    return this.rpc('getTransactionHistory', [pubkey.toBase58(), options]);
+    return this.rpc('getTransactionHistory', [
+      pubkey.toBase58(),
+      this.transactionHistoryOptions(limit, beforeSlot),
+    ]);
+  }
+
+  /**
+   * Get the indexed transaction count for an address.
+   */
+  async getAccountTxCount(pubkey: PublicKey): Promise<AccountTxCount> {
+    return this.rpc('getAccountTxCount', [pubkey.toBase58()]);
   }
 
   /**

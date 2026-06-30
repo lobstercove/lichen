@@ -262,26 +262,32 @@ fn should_recover_partial_genesis_state(
     state: &StateStore,
     network_arg: Option<&str>,
     explicit_genesis_path: Option<&str>,
-) -> bool {
+) -> Result<bool, String> {
     // Only recover automatically when we are intentionally running against a
     // named public network. Explicit --genesis starts are operator-directed, so
     // avoid scrubbing local state behind that flag.
     if explicit_genesis_path.is_some() {
-        return false;
+        return Ok(false);
     }
     if !matches!(network_arg, Some("testnet") | Some("mainnet")) {
-        return false;
+        return Ok(false);
     }
 
     if matches!(
         state
             .get_metadata(GENESIS_SYNC_INCOMPLETE_MARKER)
-            .ok()
-            .flatten()
+            .map_err(|err| format!("failed reading genesis recovery marker: {}", err))?
             .as_deref(),
         Some(b"1")
     ) {
-        return true;
+        let last_slot = state
+            .get_last_slot()
+            .map_err(|err| format!("failed reading local tip for genesis recovery: {}", err))?;
+        let has_genesis_block = state
+            .get_block_by_slot(0)
+            .map_err(|err| format!("failed reading local genesis block: {}", err))?
+            .is_some();
+        return Ok(last_slot == 0 && !has_genesis_block);
     }
 
     // Do not infer corruption from missing public archive data. Older valid
@@ -289,7 +295,7 @@ fn should_recover_partial_genesis_state(
     // slot-0 block in the hot state database. Only the explicit marker written
     // by the genesis/import path is strong enough evidence for destructive
     // local state recovery.
-    false
+    Ok(false)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1298,8 +1304,17 @@ fn restore_snapshot_live_rollback(
         marker.rollback_slot,
         rollback_root,
     )?;
+    // RocksDB checkpoints cover only the hot state database. Public archive
+    // block/transaction rows may already be migrated to cold storage, so
+    // rollback recovery must not require full history categories from the
+    // checkpoint. Restore state-root-bearing categories plus the canonical slot
+    // cursor/index that lets the validator resume from its own tip; archive
+    // block/transaction reconciliation remains a separate guarded operator path.
+    let mut rollback_categories = Vec::with_capacity(STATE_REPAIR_SNAPSHOT_CATEGORIES.len() + 1);
+    rollback_categories.extend_from_slice(STATE_REPAIR_SNAPSHOT_CATEGORIES);
+    rollback_categories.push("slots");
     let report =
-        commit_snapshot_categories_from_store(&checkpoint_state, state, WARP_SNAPSHOT_CATEGORIES)?;
+        commit_snapshot_categories_from_store(&checkpoint_state, state, &rollback_categories)?;
     for (category, count) in report.imported {
         info!(
             "🛟 Restored {} {} entries from pre-snapshot rollback checkpoint",
@@ -13411,13 +13426,29 @@ async fn run_validator() {
         }
     };
 
+    let cold_store_path: Option<String> =
+        get_flag_value(&args, &["--cold-store"]).map(|s| s.to_string());
+    if let Some(ref cold_path) = cold_store_path {
+        if let Err(e) = state.open_cold_store(cold_path) {
+            error!("Failed to open cold store at {}: {}", cold_path, e);
+            return;
+        }
+    }
+
     let data_dir_genesis = data_dir_path.join("genesis.json");
     let has_genesis_block = state.get_block_by_slot(0).unwrap_or(None).is_some();
-    let should_recover_partial_state = should_recover_partial_genesis_state(
+    let last_slot_before_genesis_recovery = state.get_last_slot().unwrap_or(0);
+    let should_recover_partial_state = match should_recover_partial_genesis_state(
         &state,
         network_arg.as_deref(),
         genesis_path.as_deref(),
-    );
+    ) {
+        Ok(value) => value,
+        Err(err) => {
+            error!("Failed to evaluate partial genesis recovery: {}", err);
+            return;
+        }
+    };
 
     if should_recover_partial_state {
         warn!(
@@ -13437,6 +13468,12 @@ async fn run_validator() {
                 return;
             }
         };
+        if let Some(ref cold_path) = cold_store_path {
+            if let Err(e) = state.open_cold_store(cold_path) {
+                error!("Failed to reopen cold store at {}: {}", cold_path, e);
+                return;
+            }
+        }
     } else {
         let genesis_sync_incomplete = matches!(
             state
@@ -13446,7 +13483,7 @@ async fn run_validator() {
                 .as_deref(),
             Some(b"1")
         );
-        if has_genesis_block && genesis_sync_incomplete {
+        if (last_slot_before_genesis_recovery > 0 || has_genesis_block) && genesis_sync_incomplete {
             if let Err(e) = state.put_metadata(GENESIS_SYNC_INCOMPLETE_MARKER, b"0") {
                 warn!("⚠️  Failed to clear stale genesis sync marker: {}", e);
             }
@@ -13479,17 +13516,6 @@ async fn run_validator() {
                     last_block.header.state_root.to_hex(),
                 );
             }
-        }
-    }
-
-    // ── P2-3: Open cold/archival storage if --cold-store is given ──
-    let cold_store_path: Option<String> =
-        get_flag_value(&args, &["--cold-store"]).map(|s| s.to_string());
-
-    if let Some(ref cold_path) = cold_store_path {
-        if let Err(e) = state.open_cold_store(cold_path) {
-            error!("Failed to open cold store at {}: {}", cold_path, e);
-            return;
         }
     }
 
@@ -30510,6 +30536,67 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_live_rollback_recovery_does_not_require_hot_archive_blocks() {
+        let live_dir = tempfile::tempdir().expect("create live dir");
+        let live_path = live_dir.path().to_string_lossy().to_string();
+        let old_account = Keypair::generate().pubkey();
+        let stale_account = Keypair::generate().pubkey();
+        let live = StateStore::open(live_dir.path()).expect("open live state");
+        live.put_account(&old_account, &Account::new(77, old_account))
+            .expect("put old account");
+
+        let genesis = Block::genesis(Hash::hash(b"rollback-archive-genesis"), 1, vec![]);
+        live.put_block_atomic(&genesis, Some(0), Some(0))
+            .expect("put canonical genesis block");
+        let tip = Block::new_with_timestamp(
+            7,
+            genesis.hash(),
+            live.compute_state_root_cold_start(),
+            [3u8; 32],
+            Vec::new(),
+            7,
+        );
+        live.put_block_atomic(&tip, Some(7), Some(7))
+            .expect("put canonical tip block");
+        live.clear_snapshot_category("blocks")
+            .expect("simulate hot block body migrated to cold storage");
+        assert!(
+            live.get_block_by_slot(0)
+                .expect("read simulated migrated genesis")
+                .is_none(),
+            "test must cover a rollback checkpoint with slot index but no hot block body"
+        );
+
+        let rollback_root = live.compute_state_root_cold_start();
+        prepare_snapshot_live_rollback(&live, &live_path, 999, Hash([9u8; 32]))
+            .expect("prepare rollback marker");
+        live.clear_snapshot_category("accounts")
+            .expect("simulate live clear");
+        live.put_account(&stale_account, &Account::new(88, stale_account))
+            .expect("simulate partial import");
+        drop(live);
+
+        recover_incomplete_snapshot_live_apply(&live_path, None)
+            .expect("recover rollback without hot archive blocks");
+        let restored = StateStore::open(live_dir.path()).expect("reopen restored state");
+        assert!(restored
+            .get_account(&old_account)
+            .expect("read restored old account")
+            .is_some());
+        assert!(restored
+            .get_account(&stale_account)
+            .expect("read stale partial account")
+            .is_none());
+        assert_eq!(
+            restored.get_last_slot().expect("read restored last slot"),
+            7
+        );
+        assert_eq!(restored.compute_state_root_cold_start(), rollback_root);
+        assert!(!snapshot_live_rollback_marker_path(&live_path).exists());
+        assert!(!snapshot_live_rollback_checkpoint_dir(&live_path).exists());
+    }
+
+    #[test]
     fn warp_snapshot_import_applies_stats_before_mossstake_pool() {
         let source_dir = tempfile::tempdir().expect("create source dir");
         let source = StateStore::open(source_dir.path()).expect("open source state");
@@ -32092,7 +32179,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().expect("create temp dir");
         let state = StateStore::open(temp_dir.path()).expect("open state");
 
-        assert!(!should_recover_partial_genesis_state(&state, None, None));
+        assert!(!should_recover_partial_genesis_state(&state, None, None).unwrap());
     }
 
     #[test]
@@ -32105,11 +32192,7 @@ mod tests {
             .put_metadata(GENESIS_SYNC_INCOMPLETE_MARKER, b"0")
             .expect("store marker");
 
-        assert!(!should_recover_partial_genesis_state(
-            &state,
-            Some("testnet"),
-            None
-        ));
+        assert!(!should_recover_partial_genesis_state(&state, Some("testnet"), None).unwrap());
     }
 
     #[test]
@@ -32130,11 +32213,7 @@ mod tests {
             .put_metadata(GENESIS_SYNC_INCOMPLETE_MARKER, b"0")
             .expect("store complete marker");
 
-        assert!(!should_recover_partial_genesis_state(
-            &state,
-            Some("testnet"),
-            None
-        ));
+        assert!(!should_recover_partial_genesis_state(&state, Some("testnet"), None).unwrap());
     }
 
     #[test]
@@ -32146,15 +32225,11 @@ mod tests {
             .put_metadata(GENESIS_SYNC_INCOMPLETE_MARKER, b"1")
             .expect("store marker");
 
-        assert!(should_recover_partial_genesis_state(
-            &state,
-            Some("testnet"),
-            None
-        ));
+        assert!(should_recover_partial_genesis_state(&state, Some("testnet"), None).unwrap());
     }
 
     #[test]
-    fn should_recover_partial_genesis_state_triggers_when_marker_survives_block_zero() {
+    fn should_recover_partial_genesis_state_keeps_stored_block_zero_even_with_marker() {
         let temp_dir = tempfile::tempdir().expect("create temp dir");
         let state = StateStore::open(temp_dir.path()).expect("open state");
         let block = Block::new_with_timestamp(
@@ -32173,11 +32248,19 @@ mod tests {
             .put_metadata(GENESIS_SYNC_INCOMPLETE_MARKER, b"1")
             .expect("store marker");
 
-        assert!(should_recover_partial_genesis_state(
-            &state,
-            Some("testnet"),
-            None
-        ));
+        assert!(!should_recover_partial_genesis_state(&state, Some("testnet"), None).unwrap());
+    }
+
+    #[test]
+    fn should_recover_partial_genesis_state_keeps_non_zero_tip_even_with_marker() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        state.set_last_slot(42).expect("seed last slot");
+        state
+            .put_metadata(GENESIS_SYNC_INCOMPLETE_MARKER, b"1")
+            .expect("store marker");
+
+        assert!(!should_recover_partial_genesis_state(&state, Some("testnet"), None).unwrap());
     }
 
     #[test]

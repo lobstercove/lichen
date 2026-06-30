@@ -37,6 +37,23 @@ connection.onBlock((block) => {
 
 See the [JavaScript SDK reference](https://developers.lichen.network/sdk-js.html) for detailed API reference.
 
+## Exchange Accounting Boundary
+
+The JavaScript SDK uses native `JSON.parse` through `response.json()`. Large
+u64 spore values can exceed `Number.MAX_SAFE_INTEGER`, so this package is not
+approved for exchange accounting of raw balances or transfer amounts until a
+lossless integer parser is added. For exchange deposit, withdrawal, and
+reconciliation accounting, use Rust/Python SDK paths or a raw JSON-RPC client
+with lossless integer handling.
+
+The SDK does expose archive lookup helpers:
+
+- `getTransaction(signature)`
+- `getBlock(slot)`
+- `getTransactionsByAddress(pubkey, limit, beforeSlot)`
+- `getTransactionHistory(pubkey, limit, beforeSlot)`
+- `getAccountTxCount(pubkey)`
+
 ## Features
 
 - ✅ Core RPC client for chain, account, transaction, network, restriction, and Neo route reads

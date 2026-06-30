@@ -937,6 +937,34 @@ function validateProgramsWalletBridgeParity() {
     );
 }
 
+function validateDeveloperExchangePage() {
+    const exchangePath = path.join(repoRoot, 'developers', 'exchange-integration.html');
+    const indexPath = path.join(repoRoot, 'developers', 'index.html');
+    const searchPath = path.join(repoRoot, 'developers', 'js', 'developers.js');
+
+    const exchangeHtml = fs.existsSync(exchangePath) ? fs.readFileSync(exchangePath, 'utf8') : '';
+    const indexHtml = fs.readFileSync(indexPath, 'utf8');
+    const searchJs = fs.readFileSync(searchPath, 'utf8');
+
+    assert(
+        exchangeHtml.includes('<title>Exchange Integration - Lichen Developer Portal</title>') &&
+            exchangeHtml.includes('<h1>Exchange Integration</h1>') &&
+            exchangeHtml.includes('Exchange Integration Guide') &&
+            exchangeHtml.includes('Exchange Chain Metadata') &&
+            exchangeHtml.includes('Exchange Operations Pack'),
+        'developers exchange integration page is present and contains exchange-specific content'
+    );
+
+    assert(
+        indexHtml.includes('href="exchange-integration.html"') &&
+            indexHtml.includes('Exchange Integration') &&
+            searchJs.includes("title: 'Exchange Integration'") &&
+            searchJs.includes("url: 'exchange-integration.html'") &&
+            searchJs.includes("category: 'Exchange'"),
+        'developers hub and search index expose the exchange integration page'
+    );
+}
+
 function validateFrontendInputGuards() {
     const dexJs = fs.readFileSync(path.join(repoRoot, 'dex', 'dex.js'), 'utf8');
     const dexHtml = fs.readFileSync(path.join(repoRoot, 'dex', 'index.html'), 'utf8');
@@ -1278,6 +1306,7 @@ validateDexWalletAndPairState();
 validateWalletConnectionOriginGuards();
 validateMarketplaceWalletBridgeParity();
 validateProgramsWalletBridgeParity();
+validateDeveloperExchangePage();
 validateFrontendInputGuards();
 
 console.log(`\nFrontend asset integrity: ${passed} passed, ${failed} failed`);

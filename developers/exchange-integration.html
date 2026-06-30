@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Exchange Integration - Lichen Developer Portal</title>
+    <meta name="description"
+        content="Native LICN exchange integration readiness, metadata, operations pack, and validation gates.">
+    <link rel="stylesheet" href="shared-base-styles.css">
+    <link rel="stylesheet" href="shared-theme.css">
+    <link rel="stylesheet" href="css/developers.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap"
+        rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
+</head>
+
+<body>
+    <nav class="nav">
+        <div class="nav-container">
+            <div class="nav-logo">
+                <img src="LichenDevelopers_Logo_256.png" class="logo-icon" alt="Lichen Dev">
+                <span class="logo-text">Lichen Dev</span>
+            </div>
+            <ul class="nav-menu">
+                <li><a href="index.html">Hub</a></li>
+                <li><a href="getting-started.html">Get Started</a></li>
+                <li><a href="rpc-reference.html">API</a></li>
+                <li><a href="sdk-js.html">SDK</a></li>
+                <li><a href="contracts.html">Contracts</a></li>
+                <li><a href="cli-reference.html">CLI</a></li>
+                <li><a href="lichenid.html">LichenID</a></li>
+                <li><a href="zk-privacy.html">Privacy</a></li>
+            </ul>
+            <div class="nav-actions">
+                <div class="search-container">
+                    <input type="text" id="searchInput" class="search-input" placeholder="Search docs... (Cmd+K)">
+                    <i class="fas fa-search search-icon"></i>
+                </div>
+                <select id="devNetworkSelect" class="network-select"></select>
+            </div>
+            <button class="nav-toggle" id="navToggle"
+                aria-label="Toggle navigation menu"><span></span><span></span><span></span></button>
+        </div>
+    </nav>
+
+    <div class="search-overlay" id="searchOverlay">
+        <div class="search-modal">
+            <input type="text" class="search-modal-input" id="searchModalInput" placeholder="Search documentation...">
+            <div class="search-results" id="searchResults"></div>
+        </div>
+    </div>
+
+    <button class="sidebar-toggle" id="sidebarToggle" aria-label="Toggle sidebar"><i class="fas fa-bars"></i></button>
+    <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
+
+    <div class="docs-layout">
+        <aside class="docs-sidebar">
+            <div class="sidebar-section">
+                <h3 class="sidebar-heading">Exchange</h3>
+                <a href="#status" class="sidebar-link active">Status</a>
+                <a href="#canonical-docs" class="sidebar-link">Canonical Docs</a>
+                <a href="#integration-anchors" class="sidebar-link">Integration Anchors</a>
+                <a href="#validation-gates" class="sidebar-link">Validation Gates</a>
+                <a href="#next-step" class="sidebar-link">Next Step</a>
+            </div>
+            <div class="sidebar-divider"></div>
+            <div class="sidebar-section">
+                <h3 class="sidebar-heading">Related</h3>
+                <a href="rpc-reference.html" class="sidebar-link">JSON-RPC API</a>
+                <a href="ws-reference.html" class="sidebar-link">WebSocket API</a>
+                <a href="cli-reference.html" class="sidebar-link">CLI Reference</a>
+                <a href="validator.html" class="sidebar-link">Validator Guide</a>
+            </div>
+        </aside>
+
+        <main class="docs-main">
+            <div class="breadcrumb">
+                <a href="index.html">Dev Hub</a>
+                <span>/</span>
+                <span>Exchange Integration</span>
+            </div>
+
+            <section id="status">
+                <h1>Exchange Integration</h1>
+                <p class="lead">
+                    Native LICN exchange integration is in readiness work. The local source-backed gates now cover
+                    metadata, operations policy, archive/history regressions, SDK/CLI boundaries, and the
+                    three-validator exchange simulation. Public endpoint readiness and operator approvals remain
+                    release blockers.
+                </p>
+                <div class="callout callout-warning">
+                    <div class="callout-title">Draft status</div>
+                    This page is not an external listing package. Serious exchange outreach is blocked until public
+                    RPC/WebSocket readiness, public developer page deployment, status-page approval, incident aliases,
+                    final package tag selection, and public testnet simulation all pass.
+                </div>
+            </section>
+
+            <section id="canonical-docs">
+                <h2>Canonical Docs</h2>
+                <p>
+                    The markdown files below are the source of truth for this work. This portal page intentionally
+                    links to them instead of duplicating the full cookbook.
+                </p>
+                <div>
+                    <div class="method-card">
+                        <h3><a
+                                href="https://github.com/lobstercove/lichen/blob/main/docs/guides/EXCHANGE_INTEGRATION.md"
+                                target="_blank" rel="noopener">Exchange Integration Guide</a></h3>
+                        <p>Deposit, withdrawal, polling, retry, finality, archive, and reconciliation draft.</p>
+                    </div>
+                    <div class="method-card">
+                        <h3><a
+                                href="https://github.com/lobstercove/lichen/blob/main/docs/guides/EXCHANGE_CHAIN_METADATA.md"
+                                target="_blank" rel="noopener">Exchange Chain Metadata</a></h3>
+                        <p>Ticker, decimals, chain IDs, RPC URLs, address validation, logo, and release metadata.</p>
+                    </div>
+                    <div class="method-card">
+                        <h3><a
+                                href="https://github.com/lobstercove/lichen/blob/main/docs/guides/EXCHANGE_ADDRESS_VALIDATION_VECTORS.md"
+                                target="_blank" rel="noopener">Address Validation Vectors</a></h3>
+                        <p>Native Base58 address regex prefilter, decoded-length rule, valid vectors, and invalid cases.</p>
+                    </div>
+                    <div class="method-card">
+                        <h3><a
+                                href="https://github.com/lobstercove/lichen/blob/main/docs/deployment/EXCHANGE_OPERATIONS_PACK.md"
+                                target="_blank" rel="noopener">Exchange Operations Pack</a></h3>
+                        <p>Status page, incident contacts, upgrade policy, rollback, release signatures, and archive
+                            policy.</p>
+                    </div>
+                    <div class="method-card">
+                        <h3><a
+                                href="https://github.com/lobstercove/lichen/blob/main/docs/strategy/EXCHANGE_LISTING_READINESS_TRACKER.md"
+                                target="_blank" rel="noopener">Readiness Tracker</a></h3>
+                        <p>Gate status, blockers, source map, and ordered execution record.</p>
+                    </div>
+                </div>
+            </section>
+
+            <section id="integration-anchors">
+                <h2>Integration Anchors</h2>
+                <table class="param-table">
+                    <thead>
+                        <tr>
+                            <th>Area</th>
+                            <th>Current source-backed rule</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>Asset</td>
+                            <td>Native LICN uses 9 decimals; 1 LICN equals 1,000,000,000 spores.</td>
+                        </tr>
+                        <tr>
+                            <td>Accounting</td>
+                            <td>Use raw spores as integers. RPC formatted LICN fields are display-only.</td>
+                        </tr>
+                        <tr>
+                            <td>Address</td>
+                            <td>Native addresses match the Base58 prefilter and decode to exactly 32 bytes.</td>
+                        </tr>
+                        <tr>
+                            <td>Native RPC</td>
+                            <td>Use canonical JSON-RPC on / with getSlot, getBlock, getTransaction, history, balance, and sendTransaction.</td>
+                        </tr>
+                        <tr>
+                            <td>Archive</td>
+                            <td>Exchange operations require archive-backed endpoints. State-only RPC is not enough.</td>
+                        </tr>
+                        <tr>
+                            <td>Rollback</td>
+                            <td>Current rollback anchor is v0.5.215 until a newer signed rollback point is recorded.</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </section>
+
+            <section id="validation-gates">
+                <h2>Validation Gates</h2>
+                <ul>
+                    <li>Keep address validation vectors passing before publishing or changing a regex.</li>
+                    <li>Keep deterministic finality plus the selected exchange buffer validated on a local three-validator testnet.</li>
+                    <li>Keep archive-backed getTransaction, getBlock, and address history covered across hot/cold data and restart.</li>
+                    <li>Keep the deposit, credit, sweep, withdrawal, retry, and reconciliation simulation passing locally.</li>
+                    <li>Clean up every local stack run and prove validator, custody, faucet, and source-chain mock processes are stopped.</li>
+                    <li>Do not release until the public readiness gate and public testnet exchange simulation pass.</li>
+                </ul>
+            </section>
+
+            <section id="next-step">
+                <h2>Next Step</h2>
+                <p>
+                    The next readiness task is public endpoint recovery: testnet RPC must stop reporting stale
+                    readiness, mainnet RPC and WebSocket must stop returning Cloudflare 525, and this page must be
+                    deployed publicly with exchange-specific content before public testnet exchange validation can run.
+                </p>
+            </section>
+        </main>
+    </div>
+
+    <script src="shared/utils.js"></script>
+    <script src="shared/env.js"></script>
+    <script src="shared-config.js"></script>
+    <script src="js/developers.js"></script>
+</body>
+
+</html>

@@ -378,6 +378,12 @@ const SEARCH_INDEX = [
     { title: 'getWgasStats', desc: 'Read wrapped GAS reserve and supply stats', url: 'rpc-reference.html#getWgasStats', category: 'Neo' },
     { title: 'Wrapped Assets', desc: 'wBNB, wNEO, and wGAS wrapped asset custody and reserve model', url: 'contract-reference.html#wneo-token', category: 'Neo' },
 
+    // Exchange integration
+    { title: 'Exchange Integration', desc: 'Native LICN exchange listing readiness and integration gates', url: 'exchange-integration.html', category: 'Exchange' },
+    { title: 'Exchange Chain Metadata', desc: 'Ticker, decimals, chain IDs, RPC URLs, address validation, and release metadata', url: 'exchange-integration.html#canonical-docs', category: 'Exchange' },
+    { title: 'Exchange Address Validation Vectors', desc: 'Native Base58 regex prefilter, decoded-length rule, valid vectors, and invalid cases', url: 'exchange-integration.html#canonical-docs', category: 'Exchange' },
+    { title: 'Exchange Operations Pack', desc: 'Status page, incident contacts, release signatures, rollback, and archive policy', url: 'exchange-integration.html#canonical-docs', category: 'Exchange' },
+
     // SDK
     { title: 'JavaScript SDK', desc: 'Client library for Node.js and browsers', url: 'sdk-js.html', category: 'SDK' },
     { title: 'Python SDK', desc: 'Client library for Python applications', url: 'sdk-python.html', category: 'SDK' },

@@ -37,6 +37,7 @@ export {
 export type {
   Balance,
   Account,
+  AccountTxCount,
   Block,
   Validator,
   NetworkInfo,
@@ -48,6 +49,7 @@ export type {
   ContractSummary,
   DeployContractResult,
   ReadonlyContractResult,
+  TransactionHistoryResponse,
   TransactionProof,
 } from './connection.js';
 export type {

@@ -666,6 +666,73 @@ mod tests {
     }
 
     #[test]
+    fn test_exchange_address_validation_vectors() {
+        let vectors = [
+            (
+                "all_zero",
+                Pubkey([0u8; 32]),
+                "0000000000000000000000000000000000000000000000000000000000000000",
+                "11111111111111111111111111111111",
+                "0x88386fc84ba6bc95484008f6362f93160ef3e563",
+            ),
+            (
+                "minimal_nonzero",
+                {
+                    let mut bytes = [0u8; 32];
+                    bytes[31] = 1;
+                    Pubkey(bytes)
+                },
+                "0000000000000000000000000000000000000000000000000000000000000001",
+                "11111111111111111111111111111112",
+                "0x717e6a320cf44b4afac2b0732d9fcbe2b7fa0cf6",
+            ),
+            (
+                "all_ones",
+                Pubkey([1u8; 32]),
+                "0101010101010101010101010101010101010101010101010101010101010101",
+                "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+                "0xb312bec018884c2d66667c67a90508214bd8bafc",
+            ),
+            (
+                "all_ff",
+                Pubkey([0xffu8; 32]),
+                "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+                "JEKNVnkbo3jma5nREBBJCDoXFVeKkD56V3xKrvRmWxFG",
+                "0xab758a3376d22aedc6a55823d1b3ecbee81b8fb9",
+            ),
+            (
+                "ml_dsa_seed_07",
+                Keypair::from_seed(&[7u8; 32]).pubkey(),
+                "01d3a1e51ecf491b79ca7691bd269271f8d8e8d94313a6abcc6c8ae8bc34b5f9",
+                "88aSEgG26m1Tnoco64rGqoVGjYaGgUbxja6GdRub7A8",
+                "0x279e75e415dc4eb29935e1381e65fa92cfc114e1",
+            ),
+        ];
+
+        for (name, pubkey, expected_hex, expected_base58, expected_evm) in vectors {
+            assert_eq!(hex::encode(pubkey.0), expected_hex, "{name} hex");
+            assert_eq!(pubkey.to_base58(), expected_base58, "{name} base58");
+            assert_eq!(pubkey.to_evm(), expected_evm, "{name} evm mapping");
+            assert_eq!(
+                Pubkey::from_base58(expected_base58).unwrap(),
+                pubkey,
+                "{name} roundtrip"
+            );
+        }
+
+        let too_short = "1";
+        let too_long = "111111111111111111111111111111111";
+        let evm_shaped = "0x88386fc84ba6bc95484008f6362f93160ef3e563";
+
+        for invalid in ["", "0OIl", too_short, too_long, evm_shaped] {
+            assert!(
+                Pubkey::from_base58(invalid).is_err(),
+                "{invalid} must not validate as a native address"
+            );
+        }
+    }
+
+    #[test]
     fn test_pq_sign_and_verify_roundtrip() {
         let keypair = Keypair::new();
         let message = b"lichen-native-pq";

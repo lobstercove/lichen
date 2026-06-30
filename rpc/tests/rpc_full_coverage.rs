@@ -3458,6 +3458,188 @@ async fn test_native_get_transaction_found() {
     );
 }
 
+#[tokio::test]
+async fn test_native_archive_history_rpc_survives_cold_migration_and_reopen() {
+    let hot_dir = tempfile::tempdir().expect("hot tempdir");
+    let cold_dir = tempfile::tempdir().expect("cold tempdir");
+
+    let deposit_address = Pubkey([0x71; 32]);
+    let hot_wallet = Pubkey([0x72; 32]);
+    let customer_wallet = Pubkey([0x73; 32]);
+    let old_slot = 12;
+    let new_slot = 20;
+
+    let old_tx = Transaction::new(Message::new(
+        vec![Instruction {
+            program_id: lichen_core::SYSTEM_PROGRAM_ID,
+            accounts: vec![deposit_address, hot_wallet],
+            data: vec![1],
+        }],
+        Hash::hash(b"rpc-archive-old-recent-blockhash"),
+    ));
+    let new_tx = Transaction::new(Message::new(
+        vec![Instruction {
+            program_id: lichen_core::SYSTEM_PROGRAM_ID,
+            accounts: vec![deposit_address, customer_wallet],
+            data: vec![2],
+        }],
+        Hash::hash(b"rpc-archive-new-recent-blockhash"),
+    ));
+    let old_hash = old_tx.signature();
+    let new_hash = new_tx.signature();
+    let now = current_unix_secs();
+
+    let old_block = Block::new_with_timestamp(
+        old_slot,
+        Hash::default(),
+        Hash::default(),
+        [0u8; 32],
+        vec![old_tx],
+        now.saturating_sub(8),
+    );
+    let new_block = Block::new_with_timestamp(
+        new_slot,
+        old_block.hash(),
+        Hash::default(),
+        [0u8; 32],
+        vec![new_tx],
+        now,
+    );
+
+    {
+        let mut state = StateStore::open(hot_dir.path()).expect("state");
+        state
+            .open_cold_store(cold_dir.path())
+            .expect("open cold store");
+        state
+            .put_block_atomic(&old_block, Some(old_slot), Some(old_slot))
+            .expect("put old block");
+        state
+            .put_block_atomic(&new_block, Some(new_slot), Some(new_slot))
+            .expect("put new block");
+
+        assert_eq!(state.migrate_to_cold(15).expect("migrate blocks"), 1);
+        assert_eq!(
+            state.migrate_indexes_to_cold(15).expect("migrate indexes"),
+            2
+        );
+    }
+
+    let mut state = StateStore::open(hot_dir.path()).expect("reopen state");
+    state
+        .open_cold_store(cold_dir.path())
+        .expect("reopen cold store");
+    assert_eq!(state.get_tx_slot(&old_hash).unwrap(), Some(old_slot));
+    assert!(state.get_transaction(&old_hash).unwrap().is_some());
+    assert!(state.get_block_by_slot(old_slot).unwrap().is_some());
+    assert_eq!(
+        state
+            .get_account_tx_signatures_paginated(&deposit_address, 10, None)
+            .unwrap(),
+        vec![(new_hash, new_slot), (old_hash, old_slot)]
+    );
+
+    let app = build_rpc_router(
+        state,
+        None,
+        None,
+        None,
+        "lichen-test".to_string(),
+        "lichen-test".to_string(),
+        None,
+        Some(FinalityTracker::new(new_slot, new_slot)),
+        None,
+        None,
+        None,
+    );
+
+    let old_sig = old_hash.to_hex();
+    let new_sig = new_hash.to_hex();
+    let deposit_b58 = deposit_address.to_base58();
+    assert_eq!(Hash::from_hex(&old_sig).unwrap(), old_hash);
+
+    let block_resp = rpc_p(&app, "/", "getBlock", json!([old_slot]))
+        .await
+        .unwrap();
+    assert_valid_rpc(&block_resp);
+    assert!(
+        block_resp.get("error").is_none(),
+        "unexpected getBlock error: {block_resp}"
+    );
+    assert_eq!(block_resp["result"]["slot"], old_slot);
+    assert_eq!(block_resp["result"]["transaction_count"], 1);
+
+    let tx_resp = rpc_p(&app, "/", "getTransaction", json!([old_sig]))
+        .await
+        .unwrap();
+    assert_valid_rpc(&tx_resp);
+    assert!(
+        tx_resp.get("error").is_none(),
+        "unexpected getTransaction error: {tx_resp}"
+    );
+    assert_eq!(tx_resp["result"]["signature"], old_hash.to_hex());
+    assert_eq!(tx_resp["result"]["slot"], old_slot);
+    assert_eq!(tx_resp["result"]["confirmation_status"], "finalized");
+    assert!(tx_resp["result"]["confirmations"].is_null());
+
+    let history_resp = rpc_p(
+        &app,
+        "/",
+        "getTransactionsByAddress",
+        json!([deposit_b58, { "limit": 10 }]),
+    )
+    .await
+    .unwrap();
+    assert_valid_rpc(&history_resp);
+    assert!(
+        history_resp.get("error").is_none(),
+        "unexpected getTransactionsByAddress error: {history_resp}"
+    );
+    let history = history_resp["result"]["transactions"]
+        .as_array()
+        .expect("transactions array");
+    assert_eq!(history.len(), 2);
+    assert_eq!(history[0]["hash"], new_sig);
+    assert_eq!(history[0]["slot"], new_slot);
+    assert_eq!(history[1]["hash"], old_hash.to_hex());
+    assert_eq!(history[1]["slot"], old_slot);
+
+    let paged_resp = rpc_p(
+        &app,
+        "/",
+        "getTransactionHistory",
+        json!([deposit_address.to_base58(), { "limit": 10, "before_slot": new_slot }]),
+    )
+    .await
+    .unwrap();
+    assert_valid_rpc(&paged_resp);
+    assert!(
+        paged_resp.get("error").is_none(),
+        "unexpected getTransactionHistory error: {paged_resp}"
+    );
+    let paged = paged_resp["result"]["transactions"]
+        .as_array()
+        .expect("paged transactions array");
+    assert_eq!(paged.len(), 1);
+    assert_eq!(paged[0]["hash"], old_hash.to_hex());
+    assert_eq!(paged[0]["slot"], old_slot);
+
+    let count_resp = rpc_p(
+        &app,
+        "/",
+        "getAccountTxCount",
+        json!([deposit_address.to_base58()]),
+    )
+    .await
+    .unwrap();
+    assert_valid_rpc(&count_resp);
+    assert!(
+        count_resp.get("error").is_none(),
+        "unexpected getAccountTxCount error: {count_resp}"
+    );
+    assert_eq!(count_resp["result"]["count"], 2);
+}
+
 // ── getTransaction response includes message_hash (Task 4.1) ────────────────
 
 #[tokio::test]

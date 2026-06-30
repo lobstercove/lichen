@@ -402,6 +402,22 @@ class Connection:
             options["before_slot"] = before_slot
         return await self._rpc("getTransactionHistory", [str(pubkey), options])
 
+    async def get_transactions_by_address(
+        self,
+        pubkey: PublicKey,
+        limit: int = 10,
+        before_slot: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Get transactions involving an address using the canonical RPC method."""
+        options: Dict[str, Any] = {"limit": limit}
+        if before_slot is not None:
+            options["before_slot"] = before_slot
+        return await self._rpc("getTransactionsByAddress", [str(pubkey), options])
+
+    async def get_account_tx_count(self, pubkey: PublicKey) -> Dict[str, Any]:
+        """Get the indexed transaction count for an address."""
+        return await self._rpc("getAccountTxCount", [str(pubkey)])
+
     async def call_readonly_contract(
         self,
         contract_id: PublicKey,

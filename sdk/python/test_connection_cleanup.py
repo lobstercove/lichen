@@ -5,7 +5,7 @@ import asyncio
 
 import pytest
 
-from lichen import Connection
+from lichen import Connection, PublicKey
 
 
 def test_local_validator_rpc_ports_derive_matching_ws_ports():
@@ -46,6 +46,16 @@ class ConfirmCleanupConnection(Connection):
         return {"signature": signature, "confirmed": True}
 
 
+class RecordingConnection(Connection):
+    def __init__(self):
+        super().__init__("http://127.0.0.1:8899")
+        self.calls = []
+
+    async def _rpc(self, method, params=None, headers=None):
+        self.calls.append((method, params, headers))
+        return {"method": method, "params": params}
+
+
 @pytest.mark.asyncio
 async def test_signature_subscription_is_unsubscribed_when_rpc_wins_race():
     conn = ConfirmCleanupConnection()
@@ -59,3 +69,23 @@ async def test_signature_subscription_is_unsubscribed_when_rpc_wins_race():
         await asyncio.sleep(0.01)
     assert conn.unsubscribed == [("signatureUnsubscribe", 101)]
     assert conn._subscriptions == {}
+
+
+@pytest.mark.asyncio
+async def test_exchange_history_wrappers_use_expected_rpc_methods():
+    conn = RecordingConnection()
+    account = PublicKey(bytes([0x44]) * 32)
+
+    await conn.get_transactions_by_address(account, limit=25, before_slot=99)
+    await conn.get_transaction_history(account, limit=10)
+    await conn.get_account_tx_count(account)
+
+    assert conn.calls == [
+        (
+            "getTransactionsByAddress",
+            [account.to_base58(), {"limit": 25, "before_slot": 99}],
+            None,
+        ),
+        ("getTransactionHistory", [account.to_base58(), {"limit": 10}], None),
+        ("getAccountTxCount", [account.to_base58()], None),
+    ]

@@ -47,6 +47,7 @@ Choose the least destructive path that matches the evidence:
 Rolling-release rules:
 
 - A rolling release must use a published or draft GitHub Release with `SHA256SUMS` and `SHA256SUMS.sig` attached.
+- A validator release, including an emergency recovery release, is blocked until the mandatory local deployment drill below passes from the release binary. Do not skip it because the change looks small, docs-only, or "obviously safe"; if the deployed artifact changes, the drill runs first.
 - `scripts/rolling-release-deploy.sh` performs the VPS disk/log preflight, refuses non-live state backup directories under `/var/lib/lichen`, installs release binaries and `seeds.json`, restarts one validator at a time, proves the service PID/start timestamp changed, verifies every running validator process in the service executes the expected release binary hash, waits for local health, then checks the public RPC edge.
 - Rolling release is the default for cadence, WebSocket, RPC indexing, and consensus performance fixes because those fixes do not require a new genesis.
 - Any release that changes replay, block import, post-block effects, fees, staking, oracle, or validator-set handling must include deterministic-state coverage for local-observer differences, including commit-certificate subsets.
@@ -54,6 +55,74 @@ Rolling-release rules:
 - For an existing chain, Neo route/rewards/proof/agent code ships as a normal signed rolling release first. Do not set `LICHEN_GENESIS_NEO_GAS_REWARDS_ENABLE=1`, do not inject fresh-genesis Neo env, and do not activate Neo post-genesis payloads until every validator is running the new release and health/WS/DEX smokes pass.
 - If a rolling release exposes a state-root mismatch, split tip, or stalled BFT height, stop every validator service, keep state/logs intact for evidence, fix and tag the code, then use the owner-approved clean-slate path only after the fix is verified. Do not copy RocksDB state between validators to "heal" the split.
 - A full reset is not a code-deploy mechanism. Use it only when the chain identity or genesis state must intentionally change, or after captured evidence proves the whole network state is unrecoverable.
+
+## Mandatory Local Deployment Drill
+
+Every validator deployment must pass this drill before any VPS validator is
+rolled, restarted for release, or declared exchange-ready. The minimum local
+cluster is three validators. Use four validators when the target public fleet is
+four validators or when the change touches consensus, sync, snapshots, archive
+storage, startup recovery, release install, custody/faucet sequencing, or public
+exchange readiness.
+
+This gate is required for normal releases and emergency recovery releases:
+
+1. Build the exact release binaries that will be installed on VPSes.
+2. Start a fresh local production-parity stack with archive mode and cold
+   history enabled through `scripts/start-local-stack.sh testnet` or the
+   documented four-validator equivalent.
+3. Verify all validators produce blocks, finalize, serve `getHealth`,
+   `getFeeConfig`, `getBlock`, `getTransaction`, `getTransactionsByAddress`,
+   and WebSocket slot subscriptions.
+4. Force hot-to-cold archive migration or otherwise prove old block and
+   transaction history are served through the cold-store path, then restart the
+   affected validator and verify the same archive queries still pass.
+5. Stop one non-seed validator, wait for the remaining validators to continue
+   finalizing, restart it from its own state directory, and prove it catches up
+   without a state copy.
+6. Stop the seed validator, wait for the remaining validators to continue
+   finalizing or record the documented quorum behavior, restart it from its own
+   state directory, and prove it catches up without a state copy.
+7. Run a same-tip stale-cluster restart drill: stop all local validators after a
+   healthy run, restart all from preserved state, and prove they observe peer
+   tips, exit any pre-consensus gate, and resume finality.
+8. Run a snapshot/checkpoint recovery drill with cold-migrated archive rows:
+   trigger or simulate an interrupted live snapshot apply, restart the affected
+   validator, and prove rollback recovery restores state without requiring hot
+   block-history rows.
+9. Run the exchange simulation end to end: create a deposit wallet, send LICN,
+   detect deposit, credit an internal account, withdraw, poll finality, and
+   reconcile balances and transaction history.
+10. Run the public-readiness checks against the local stack shape first, then
+    rerun against public testnet only after the VPS rollout is complete.
+11. Save command transcripts, local validator logs, restart PIDs/timestamps,
+    archive query outputs, and cleanup output under an ignored evidence
+    directory before approving the VPS deployment.
+
+Failure of any item blocks deployment. Do not replace a failed drill with a
+manual live restart, RocksDB copy, marker deletion, or reset. Fix the code or
+runbook, rerun the full drill from clean local state, then continue.
+
+Restart/rejoin invariant:
+
+- Stopping a validator, restarting a validator, or restarting it after a release
+  must preserve its state directory, cold archive directory, validator keypair,
+  node identity, known peer evidence, service secrets, and release evidence.
+- A resumed validator must rejoin from its own durable state. It must not
+  regenerate identity, wipe RocksDB, delete archive history, or import another
+  validator's state unless the operator is intentionally executing the
+  owner-approved clean-slate runbook.
+- Startup recovery may repair an interrupted local operation only from positive
+  local evidence. If the node has a non-zero tip, a stored genesis block, a slot
+  cursor, or an attached cold archive that backs historical blocks, recovery must
+  preserve that chain progress and clear stale bootstrap markers instead of
+  treating the node as a fresh joiner.
+- Hot/cold archive split is a storage optimization only. Hot data may serve
+  recent reads faster and cold data may serve old history, but together they are
+  the validator's local archive. Any release touching this path must prove old
+  `getBlock`, `getTransaction`, and account-history reads survive hot-to-cold
+  migration, process restart, validator stop/rejoin, and rollback-marker
+  recovery.
 
 ## TLS termination model
 
@@ -1559,7 +1628,7 @@ Do not distribute `genesis-wallet.json` or `genesis-keys/` to validator joiners.
 
 This is the full step-by-step procedure for stopping everything, flushing all state, and redeploying from scratch so VPSes match the live validator set exactly.
 
-Current signed-release target for this runbook is `v0.5.206`; keep `v0.5.204` as the signed rollback point. The GitHub Release archive must be installed on all four VPSes, the seed creates genesis, and `seed-02`, `seed-03`, plus `seed-04` start from empty chain state and join from peers without a state copy. A passing verifier must report all four validators healthy with bridge `4/2`, oracle feeds including BTC, empty faucet history, 32 manifest symbols, and the mandatory 13 DEX CLOB pairs, AMM pools, and router routes including `wBTC/lUSD` and `wBTC/LICN`. `v0.5.206` keeps the `v0.5.204` 400ms-slot BFT timing profile, signed public-history repair behavior, batched unshield list summaries, wallet/extension MAX/password UX parity, and fixes successful LiveSync catch-up cooldown reset while adding the guarded June 2026 testnet governed-signer recovery plus Docker CI transport hardening. All validators must end on the same signed release before the rollout is considered complete. Use `scripts/rolling-release-deploy.sh` only for non-consensus code-only updates; do not flush state for that path.
+Current signed-release target for this runbook is `v0.5.216`; keep `v0.5.215` as the signed rollback point. Do not change that rollback anchor until a newer signed rollback point is explicitly recorded. The GitHub Release archive must be installed on all four VPSes, the seed creates genesis, and `seed-02`, `seed-03`, plus `seed-04` start from empty chain state and join from peers without a state copy. A passing verifier must report all four validators healthy with bridge `4/2`, oracle feeds including BTC, empty faucet history, 32 manifest symbols, and the mandatory 13 DEX CLOB pairs, AMM pools, and router routes including `wBTC/lUSD` and `wBTC/LICN`. `v0.5.216` keeps the `v0.5.215` 400ms-slot BFT timing profile, including 800ms propose, 500ms prevote, 500ms precommit, and a 5s max phase timeout, fixes successful LiveSync catch-up cooldown reset, keeps the guarded public-history merge admin path, opens checkpoint stores through RocksDB read-only descriptors, verifies checkpoint metadata through non-mutating cached/sparse-root reads so snapshot serving cannot cold-rebuild or compact checkpoint Merkle state, enforces `LICHEN_CHECKPOINT_MAX_BYTES`, requests catch-up block ranges from one primary peer per chunk with fallback, accepts authenticated PQ node checkpoint sources only after the signed checkpoint header verifies, anchors chunks to the source-pinned snapshot manifest root after the checkpoint state root has active-validator quorum, rejects checkpoint sources whose deterministic archive manifest differs from the verified checkpoint metadata, and hardens restart/rejoin recovery so cold-migrated archive rows and stale bootstrap markers cannot cause state loss. All validators must end on the same signed release before the rollout is considered complete. Use `scripts/rolling-release-deploy.sh` only for non-consensus code-only updates; do not flush state for that path.
 
 The `testnet_governed_signer_recovery_v1` hook is live-testnet lineage recovery
 only. It must not be copied into a fresh mainnet launch plan or treated as a
@@ -1585,7 +1654,7 @@ The transaction is only valid for an existing exact 100,000 LICN explicit-funded
 ```bash
 export LICHEN_OWNER_APPROVED_RESET='owner-approved:testnet:15.204.229.189,37.59.97.61,15.235.142.253,148.113.43.247'
 export LICHEN_CLEAN_SLATE_REDEPLOY_CONFIRM='clean-slate:testnet:15.204.229.189,37.59.97.61,15.235.142.253,148.113.43.247'
-export LICHEN_RELEASE_TAG=v0.5.206
+export LICHEN_RELEASE_TAG=v0.5.216
 bash scripts/clean-slate-redeploy.sh testnet
 ```
 
@@ -2320,7 +2389,7 @@ wallet/explorer activity green.
 
 Also, the wiped validator's new pubkey registers as a separate entry in the validator set. With N+1 validators and only N-1 online (original minus the ghost), BFT quorum (2/3+) may be unreachable.
 
-**Current release behavior**: `v0.5.206` preserves backed public account-history indexes through clean validator rejoin and resumed sync, rebuilds account transaction counters from existing backed rows before new block deltas, keeps full/fresh archive snapshot imports from merging stale target history, and retains the `v0.5.204` wallet/explorer unshield summary behavior. It also adds the guarded June 2026 testnet governed-signer recovery boundary and Docker CI transport hardening. It keeps the `v0.5.203` 400ms-slot BFT timing profile, including 800ms propose, 500ms prevote, 500ms precommit, and a 5s max phase timeout, and fixes successful LiveSync catch-up cooldown reset so restarted near-tip validators can immediately request the next small live gap instead of remaining vote-only followers. State-repair snapshots are consensus-state-only: they carry accounts, contracts, validator/stake/MossStake state, DEX order state, shielded state, and other root-relevant data, but they do not require or import public block/transaction/account-history archives before a validator can rejoin consensus. Public history restoration is handled by the guarded public-history merge admin path, which opens the source read-only and restores real historical block/transaction/account-history rows from an archive or backup source without replacing balances, validator state, contract storage, tip cursors, or other consensus state. This preserves backed history; it does not infer or synthesize old account activity if no real block, transaction, archive, or backup source contains it. It also keeps exact legacy testnet MossStake replay boundaries, so pre-v0.5.93 history replays slot-only, the retained v0.5.93 through v0.5.97 interval replays wall-clock MossStake state, and v0.5.98+ cleanup resumes slot-only state. It keeps endpoint pinning strict for configured seed and reserved peers, keeps durable cached peers in `known-peers.json` instead of promoting them into configured seed identity pins, treats non-reserved inbound and outbound learned validators as fresh transport locators after the native PQ handshake verifies their node identity, persists consensus proposal values in the WAL before any non-nil vote can reference them, ignores stale same-slot checkpoint repair comparisons after later blocks already exist locally, keeps speculative BFT proposal/vote heights out of durable block sync targets, starts normal initial block catch-up from the first missing descendant, drains pending descendants when an overlapping range replays the already-canonical current tip, restores the v0.5.93 pending-block overlap path when replay must recover a divergent local boundary, keeps bounded block-range replay active while warp checkpoint metadata is probed, then pauses block replay while a verified checkpoint snapshot transfer is active, advertises recent verified checkpoint anchors so peers can form quorum on a common older snapshot instead of splitting on each node's latest checkpoint, accepts configured reserved-seed checkpoint metadata for clean far-behind joiners after the signed checkpoint header verifies, includes canonical block-archive checkpoint snapshots with sorted commit certificates, shielded pool state and historical archive column families in full warp snapshots, advertises state-repair checkpoint manifests for fresh or resumed consensus repair without requiring sources to scan full archival column families before serving the first chunk, streams checkpoint snapshots through a staging RocksDB before touching live state, rejects checkpoint snapshot sources whose staged archive is incomplete or whose deterministic archive manifest differs from the verified checkpoint metadata, pins each checkpoint repair to one verified source peer until that source succeeds or is rejected, anchors every checkpoint snapshot chunk request to the exact advertised slot, state root, and source-pinned snapshot manifest root after the checkpoint state root has active-validator quorum, bounds checkpoint-metadata probes while waiting for corroborated checkpoint anchors, refreshes verified checkpoint metadata in a background cache so checkpoint Merkle recomputation cannot block the live snapshot request path, retries stalled snapshot chunks independently of fresh metadata responses once a source is pinned, abandons an unservable checkpoint snapshot source after bounded no-progress retries, clears staging state, requests fresh checkpoint metadata, invalidates exact stale checkpoint advertisements when local checkpoint storage can no longer serve the requested slot/root/manifest, opens checkpoint stores through RocksDB read-only descriptors, and verifies checkpoint metadata through non-mutating cached/sparse-root reads so snapshot serving cannot cold-rebuild or compact checkpoint Merkle state, prunes oversized checkpoint directories by total logical size while retaining the newest checkpoint, requests catch-up block ranges from one primary peer per chunk with fallback instead of flooding every peer, requests a full block immediately when compact-block reconstruction misses referenced transactions so live validators do not wait for periodic catch-up before applying the block, exposes a guarded shielded-state bundle import/export for replacing only shielded column families from an archive origin when existing testnet nodes lack the historical shielded blocks needed for local replay, completes missing deterministic post-block effects for recent stored canonical blocks during startup so stake-pool singleton counters cannot remain stale after restart, uses the same shared post-store hook wrapper for BFT-committed and network-applied blocks, keeps normal `lichen-testnet-1` validator registration on bootstrap recovery until the on-chain grant cap is reached, supports a signed validator-key `ReclassifyValidatorBootstrap` transaction for exact 100,000 LICN explicit-funded validator stake entries that must enter bootstrap-recovery accounting, exempts verified state snapshot chunks from the generic expensive-request throttle, sizes nested snapshot payloads below the outer P2P message envelope, verifies commit certificates and BFT timestamps with delegated total stake to match live consensus, drains stale pre-consensus BFT queues during bootstrap/catch-up waits, and keeps fresh-join initial sync on the batched block-range requester. This lets an external agent reinstall from a clean state and reuse the same public P2P address without manual TOFU cleanup on seed nodes, while resumed validators keep signed-vote protection without freezing on an unrecoverable legacy lock value.
+**Current release behavior**: `v0.5.216` is the current signed-release target for this runbook, with `v0.5.215` retained as the signed rollback anchor until a newer signed rollback point is explicitly recorded. State-repair snapshots are consensus-state-only: they carry accounts, contracts, validator/stake/MossStake state, DEX order state, shielded state, and other root-relevant data, but they do not require or import public block/transaction/account-history archives before a validator can rejoin consensus. Public history restoration is handled by the guarded public-history merge admin path, which opens the source read-only and restores real historical block/transaction/account-history rows from an archive or backup source without replacing balances, validator state, contract storage, tip cursors, or other consensus state. This preserves backed history; it does not infer or synthesize old account activity if no real block, transaction, archive, or backup source contains it. Startup recovery must preserve validators with a non-zero tip, stored genesis block, slot cursor, or attached cold archive, and live snapshot rollback must not require public block or transaction rows to still be present in hot RocksDB after cold migration.
 
 **Fix for local dev**: Remove the wiped validator's entry from all other validators' TOFU stores, then restart all validators from scratch:
 
