@@ -331,9 +331,9 @@ dependencies = [
 
 [[package]]
 name = "anyhow"
-version = "1.0.102"
+version = "1.0.103"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
+checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
 
 [[package]]
 name = "arbitrary"
@@ -2695,7 +2695,7 @@ dependencies = [
 
 [[package]]
 name = "lichen-p2p"
-version = "0.5.199"
+version = "0.5.218"
 dependencies = [
  "anyhow",
  "bincode",
@@ -2727,7 +2727,7 @@ checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
 
 [[package]]
 name = "lobstercove-lichen-core"
-version = "0.5.199"
+version = "0.5.218"
 dependencies = [
  "aes-gcm",
  "alloy-consensus",
