@@ -203,7 +203,9 @@ Exit gate:
 
 ### Phase 1: Documentation Architecture
 
-Status: draft skeletons created; still blocked on validation and operator approvals.
+Status: documentation architecture created, linked, deployed to the developer
+portal, and verified. External exchange use remains blocked only by the
+operator-approval and final package-publication gates tracked below.
 
 Purpose: create the external package skeleton before code changes.
 
@@ -300,8 +302,10 @@ Exit gate:
 
 ### Phase 5: SDK, CLI, Explorer, And Developer Portal Parity
 
-Status: completed for local SDK/CLI/developer portal/explorer checks; public
-RPC readiness remains blocked.
+Status: completed for SDK, CLI, developer portal, explorer, and public testnet
+RPC/WS checks. JavaScript remains excluded from exchange accounting until its
+lossless u64 boundary is approved; Python, Rust, CLI, and raw JSON-RPC paths are
+the current exchange-accounting surfaces.
 
 Purpose: remove integration drift before exchanges read the package.
 
