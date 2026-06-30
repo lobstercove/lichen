@@ -4,7 +4,6 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use lichen_core::Pubkey;
-use serde_json::json;
 use std::net::SocketAddr;
 use tracing::info;
 
@@ -24,7 +23,7 @@ use models::{
     FaucetStatusResponse, SPORES_PER_LICN,
 };
 use rate_limit::RateLimiter;
-use rpc_support::{fetch_treasury_info, rpc_call};
+use rpc_support::{fetch_treasury_info, submit_faucet_transfer};
 use storage::{load_airdrops, save_airdrops};
 
 #[tokio::main]
@@ -149,13 +148,13 @@ async fn request_airdrop(
         );
     }
 
-    if Pubkey::from_base58(request.address.trim()).is_err() {
-        return error_json(StatusCode::BAD_REQUEST, "Invalid recipient address");
-    }
-
     let now_ms = now_ms();
     let client_ip = extract_client_ip(&headers, peer_addr, &state.config.trusted_proxies);
     let recipient = request.address.trim().to_string();
+    let recipient_pubkey = match Pubkey::from_base58(&recipient) {
+        Ok(pubkey) => pubkey,
+        Err(_) => return error_json(StatusCode::BAD_REQUEST, "Invalid recipient address"),
+    };
 
     let reservation = {
         let mut limiter = state.rate_limiter.write().await;
@@ -181,6 +180,39 @@ async fn request_airdrop(
         }
     };
 
+    let faucet_pubkey = match state.faucet_keypair.as_ref() {
+        Some(keypair) => keypair.pubkey().to_base58(),
+        None => {
+            let mut limiter = state.rate_limiter.write().await;
+            limiter.rollback(&reservation);
+            return error_response(
+                StatusCode::BAD_GATEWAY,
+                "Faucet keypair not configured - cannot sign airdrop transactions",
+            );
+        }
+    };
+    let Some(treasury_pubkey) = treasury
+        .treasury_pubkey
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        let mut limiter = state.rate_limiter.write().await;
+        limiter.rollback(&reservation);
+        return error_response(
+            StatusCode::BAD_GATEWAY,
+            "Treasury RPC response missing treasury account",
+        );
+    };
+    if treasury_pubkey != faucet_pubkey {
+        let mut limiter = state.rate_limiter.write().await;
+        limiter.rollback(&reservation);
+        return error_response(
+            StatusCode::BAD_GATEWAY,
+            "Faucet keypair does not match configured treasury account",
+        );
+    }
+
     let required_spores = amount_licn.saturating_mul(SPORES_PER_LICN);
     if treasury.treasury_balance < required_spores {
         let mut limiter = state.rate_limiter.write().await;
@@ -191,14 +223,8 @@ async fn request_airdrop(
         );
     }
 
-    let rpc_result = match rpc_call(
-        &state,
-        "requestAirdrop",
-        json!([request.address.trim(), amount_licn]),
-    )
-    .await
-    {
-        Ok(value) => value,
+    let signature = match submit_faucet_transfer(&state, recipient_pubkey, required_spores).await {
+        Ok(signature) => signature,
         Err(err) => {
             let mut limiter = state.rate_limiter.write().await;
             limiter.rollback(&reservation);
@@ -208,23 +234,13 @@ async fn request_airdrop(
 
     let response = FaucetResponse {
         success: true,
-        signature: rpc_result
-            .get("signature")
-            .and_then(|value| value.as_str())
-            .map(|value| value.to_string()),
-        amount: rpc_result
-            .get("amount")
-            .and_then(|value| value.as_u64())
-            .or(Some(amount_licn)),
+        signature: Some(signature),
+        amount: Some(amount_licn),
         recipient: Some(recipient.clone()),
-        message: rpc_result
-            .get("message")
-            .and_then(|value| value.as_str())
-            .map(|value| value.to_string())
-            .or(Some(format!(
-                "{} LICN airdropped successfully",
-                amount_licn
-            ))),
+        message: Some(format!(
+            "{} LICN airdrop transaction submitted",
+            amount_licn
+        )),
         error: None,
     };
 

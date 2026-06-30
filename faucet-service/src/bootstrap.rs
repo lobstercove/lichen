@@ -3,10 +3,15 @@ use axum::{
     routing::{get, post},
     Router,
 };
+use lichen_core::{
+    keypair_file::load_keypair_with_password_policy, plaintext_keypair_compat_allowed,
+    require_runtime_keypair_password, Keypair,
+};
 use reqwest::Client;
-use std::{net::SocketAddr, sync::Arc};
+use std::{net::SocketAddr, path::Path, sync::Arc};
 use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
+use tracing::{info, warn};
 
 use super::{
     get_airdrop, get_config, get_status, health, list_airdrops, load_airdrops,
@@ -21,6 +26,10 @@ pub(super) fn build_config() -> FaucetConfig {
     FaucetConfig {
         rpc_url: std::env::var("RPC_URL").unwrap_or_else(|_| "http://127.0.0.1:8899".to_string()),
         network: std::env::var("NETWORK").unwrap_or_else(|_| "testnet".to_string()),
+        faucet_keypair_path: std::env::var("FAUCET_KEYPAIR")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
         max_per_request: parse_env_u64("MAX_PER_REQUEST", DEFAULT_MAX_PER_REQUEST),
         daily_limit_per_ip: parse_env_u64("DAILY_LIMIT_PER_IP", DEFAULT_DAILY_LIMIT_PER_IP),
         cooldown_seconds: parse_env_u64("COOLDOWN_SECONDS", DEFAULT_COOLDOWN_SECONDS),
@@ -40,6 +49,7 @@ pub(super) fn validate_rpc_url(config: &FaucetConfig) -> Result<(), String> {
 
 pub(super) fn build_state(config: FaucetConfig) -> (FaucetState, usize, usize) {
     let airdrops = load_airdrops(&config.airdrops_file);
+    let faucet_keypair = load_configured_faucet_keypair(&config);
 
     let mut rate_limiter = RateLimiter::default();
     rate_limiter.restore_from_airdrops(&airdrops);
@@ -49,11 +59,33 @@ pub(super) fn build_state(config: FaucetConfig) -> (FaucetState, usize, usize) {
     let state = FaucetState {
         config,
         http: Client::builder().build().expect("reqwest client"),
+        faucet_keypair: faucet_keypair.map(Arc::new),
         rate_limiter: Arc::new(RwLock::new(rate_limiter)),
         airdrops: Arc::new(RwLock::new(airdrops)),
     };
 
     (state, restored_addrs, restored_ips)
+}
+
+fn load_configured_faucet_keypair(config: &FaucetConfig) -> Option<Keypair> {
+    let Some(path) = config.faucet_keypair_path.as_deref() else {
+        warn!("FAUCET_KEYPAIR is not set; /faucet/request will fail closed.");
+        return None;
+    };
+    let password = require_runtime_keypair_password("faucet keypair load")
+        .unwrap_or_else(|err| panic!("invalid faucet keypair configuration: {}", err));
+    let keypair = load_keypair_with_password_policy(
+        Path::new(path),
+        password.as_deref(),
+        plaintext_keypair_compat_allowed(),
+    )
+    .unwrap_or_else(|err| panic!("failed to load FAUCET_KEYPAIR {}: {}", path, err));
+    info!(
+        "Loaded faucet keypair {} from {}",
+        keypair.pubkey().to_base58(),
+        path
+    );
+    Some(keypair)
 }
 
 pub(super) fn build_app(state: FaucetState) -> Router {

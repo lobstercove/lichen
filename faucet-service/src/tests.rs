@@ -1,12 +1,14 @@
 use super::bootstrap::{cors_origin_values, cors_origin_values_for_dev};
 use super::models::AirdropQuery;
 use super::rate_limit::RateLimiter;
+use super::rpc_support::build_faucet_transfer_transaction;
 use super::storage::{load_airdrops, save_airdrops};
 use super::{
     find_airdrop_record,
     models::{AirdropRecord, DEFAULT_COOLDOWN_SECONDS, DEFAULT_DAILY_LIMIT_PER_IP},
     now_ms, select_airdrop_records,
 };
+use lichen_core::{Hash, Keypair, SYSTEM_PROGRAM_ID};
 use std::{
     fs,
     time::{SystemTime, UNIX_EPOCH},
@@ -67,6 +69,34 @@ fn faucet_dev_cors_allows_local_wallet_origin() {
             .any(|origin| origin == "http://127.0.0.1:3009"),
         "127.0.0.1 wallet dev origin must be allowed when DEV_CORS is enabled"
     );
+}
+
+#[test]
+fn faucet_transfer_transaction_uses_native_transfer_wire_format() {
+    let faucet = Keypair::new();
+    let recipient = Keypair::new().pubkey();
+    let tx = build_faucet_transfer_transaction(
+        &faucet,
+        recipient,
+        123,
+        Hash([7u8; 32]),
+        "lichen-testnet-1",
+    );
+
+    assert_eq!(tx.signatures.len(), 1);
+    assert_eq!(tx.message.instructions.len(), 1);
+    let ix = &tx.message.instructions[0];
+    assert_eq!(ix.program_id, SYSTEM_PROGRAM_ID);
+    assert_eq!(ix.accounts, vec![faucet.pubkey(), recipient]);
+    assert_eq!(ix.data[0], 0);
+    assert_eq!(u64::from_le_bytes(ix.data[1..9].try_into().unwrap()), 123);
+    assert!(tx.to_wire().len() > 32);
+    assert!(tx
+        .verify_required_signatures_with_chain_id("lichen-testnet-1")
+        .is_ok());
+    assert!(tx
+        .verify_required_signatures_with_chain_id("lichen-mainnet-1")
+        .is_err());
 }
 
 #[test]

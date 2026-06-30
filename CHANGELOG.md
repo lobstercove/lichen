@@ -5,6 +5,24 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.219] - 2026-06-30
+
+### Fixed
+- Makes the testnet faucet service sign native LICN funding transfers with its
+  configured `FAUCET_KEYPAIR` instead of proxying to validator `requestAirdrop`,
+  so validators do not need treasury signing material and public faucet funding
+  works after non-genesis validator restarts/upgrades.
+- Fails faucet requests closed when the configured faucet keypair is missing or
+  does not match the chain treasury account reported by RPC.
+- Passes the local cluster keypair password into the local faucet process so
+  `scripts/start-local-stack.sh testnet` exercises encrypted treasury keypairs.
+
+### Verified
+- Passed `cargo fmt --check`, `cargo check -p lichen-validator -p lichen-cli
+  -p lichen-custody -p lichen-faucet`, `cargo deny check`, `cargo audit`,
+  `cargo test -p lichen-faucet`, validator unit tests, the 4-validator
+  restart/rejoin local gate, and the local faucet-funded exchange simulation.
+
 ## [0.5.206] - 2026-06-25
 
 ### Fixed

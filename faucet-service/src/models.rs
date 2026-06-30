@@ -1,3 +1,4 @@
+use lichen_core::Keypair;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -63,6 +64,7 @@ pub(super) struct AirdropRecord {
 pub(super) struct FaucetConfig {
     pub(super) rpc_url: String,
     pub(super) network: String,
+    pub(super) faucet_keypair_path: Option<String>,
     pub(super) max_per_request: u64,
     pub(super) daily_limit_per_ip: u64,
     pub(super) cooldown_seconds: u64,
@@ -74,6 +76,7 @@ pub(super) struct FaucetConfig {
 pub(super) struct FaucetState {
     pub(super) config: FaucetConfig,
     pub(super) http: Client,
+    pub(super) faucet_keypair: Option<Arc<Keypair>>,
     pub(super) rate_limiter: Arc<RwLock<RateLimiter>>,
     pub(super) airdrops: Arc<RwLock<Vec<AirdropRecord>>>,
 }

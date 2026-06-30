@@ -485,8 +485,9 @@ fi
 echo ""
 
 # ── Faucet service (testnet only) ──
-# The faucet binary is a rate-limiting proxy — it calls requestAirdrop RPC on
-# the validator, which signs with the treasury keypair.  No local keypair needed.
+# The faucet binary is a rate-limiting signer. Production/testnet operators must
+# provide FAUCET_KEYPAIR and LICHEN_KEYPAIR_PASSWORD so validators do not hold
+# treasury signing material.
 FAUCET_PID=""
 FAUCET_BIN="${REPO_ROOT}/target/release/lichen-faucet"
 if [ "$NETWORK" = "testnet" ] && ! $NO_FAUCET && [ -x "$FAUCET_BIN" ]; then

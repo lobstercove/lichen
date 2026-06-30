@@ -31,7 +31,7 @@
 | P5-02 | SDK compatibility boundary verified | Done | No | Rust check passed; JS build passed with documented integer-precision boundary; Python wrapper test passed |
 | P5-03 | Explorer URL patterns verified | Done | No | Source route inspection plus hosted root/account/transaction/block `200` checks on 2026-06-29 |
 | P6-01 | Native LICN integration separated from DEX/custody/wrapped-asset context | Done | No | Phase 6 evidence below; native guide excludes DEX/custody/oracle from base deposit flow |
-| P7-01 | Public testnet exchange run passed | Blocked | Yes | Public testnet liveness was restored on 2026-06-30 by signed `v0.5.217`; still blocked on the clean signed `v0.5.218` follow-up release, public developer-page deployment, status/incident approval, final exchange package release tag, and the public testnet simulation/archive run |
+| P7-01 | Public testnet exchange run passed | Blocked | Yes | Public testnet liveness was restored on 2026-06-30 by signed `v0.5.217`; still blocked on the clean signed `v0.5.219` follow-up release, public developer-page deployment, status/incident approval, final exchange package release tag, and the public testnet simulation/archive run |
 | P8-01 | External listing package reviewed | Blocked | Yes | Blocked on P7 |
 
 ## Phase 0 Source Map
@@ -71,16 +71,16 @@ These are release-blocking inconsistencies for any exchange-facing package.
 
 | Component | Observed value | Source | Status |
 | --- | --- | --- | --- |
-| Core crate | `0.5.218` | `core/Cargo.toml` | Current candidate |
-| RPC crate | `0.5.218` | `rpc/Cargo.toml` | Current candidate |
-| Validator crate | `0.5.218` | `validator/Cargo.toml` | Current candidate |
-| CLI crate | `0.5.218` | `cli/Cargo.toml` | Current candidate |
-| Root README release text | `v0.5.218` candidate with `v0.5.215` rollback anchor | `README.md` | Updated |
+| Core crate | `0.5.219` | `core/Cargo.toml` | Current candidate |
+| RPC crate | `0.5.219` | `rpc/Cargo.toml` | Current candidate |
+| Validator crate | `0.5.219` | `validator/Cargo.toml` | Current candidate |
+| CLI crate | `0.5.219` | `cli/Cargo.toml` | Current candidate |
+| Root README release text | `v0.5.219` candidate with `v0.5.215` rollback anchor | `README.md` | Updated |
 | Mainnet runbook release text | `v0.5.215` rollback anchor; mainnet is not live and is not part of the testnet recovery release | `docs/deployment/MAINNET_LAUNCH_RUNBOOK.md` | Updated |
-| Production deployment runbook release text | `v0.5.218` recovery target with `v0.5.215` rollback anchor | `docs/deployment/PRODUCTION_DEPLOYMENT.md` | Updated |
+| Production deployment runbook release text | `v0.5.219` recovery target with `v0.5.215` rollback anchor | `docs/deployment/PRODUCTION_DEPLOYMENT.md` | Updated |
 | RPC API docs version | `0.5.215` pending exchange-doc package refresh | `docs/guides/RPC_API_REFERENCE.md` | Not part of the current recovery patch |
 | Rust SDK package | `0.1.5` | `sdk/rust/Cargo.toml` | Needs compatibility decision |
-| Rust SDK core dependency | `=0.5.218` plus local `../../core` path | `sdk/rust/Cargo.toml`, `sdk/rust/Cargo.lock` | Updated; `cargo check --manifest-path sdk/rust/Cargo.toml` passed |
+| Rust SDK core dependency | `=0.5.219` plus local `../../core` path | `sdk/rust/Cargo.toml`, `sdk/rust/Cargo.lock` | Updated; `cargo check --manifest-path sdk/rust/Cargo.toml` passed |
 | JS SDK package | `1.0.5` | `sdk/js/package.json`, `sdk/js/README.md` | Build passed; archive wrappers added; not approved for exchange accounting until lossless u64 parsing replaces native JSON number parsing |
 | Python SDK package | `1.0.0` | `sdk/python/pyproject.toml`, `sdk/python/README.md` | Exact JSON integer path; archive wrappers added and tested |
 
@@ -103,8 +103,8 @@ This table names the source of truth. It is not yet the final external metadata 
 | EVM address mapping | `0x` plus Keccak-derived 20-byte address from native 32-byte pubkey | `core/src/account.rs` | Source mapped |
 | Mainnet RPC URL | `https://rpc.lichen.network` | `seeds.json`, `developers/shared-config.js`, `core/src/network.rs` | Live check failed on 2026-06-29: Cloudflare `525` |
 | Mainnet WebSocket URL | `wss://rpc.lichen.network/ws` | `developers/shared-config.js`, deployment docs | Live check failed on 2026-06-29: Cloudflare `525` |
-| Testnet RPC URL | `https://testnet-rpc.lichen.network` | `seeds.json`, `developers/shared-config.js`, `core/src/network.rs` | Recovered on 2026-06-30 after signed `v0.5.217`; public/local health returned `status = ok` through public slot `6715694`. Refresh after final signed `v0.5.218` rollout. |
-| Testnet WebSocket URL | `wss://testnet-rpc.lichen.network/ws` | `developers/shared-config.js`, deployment docs | Transport previously upgraded; rerun application slot-subscription smoke after final signed `v0.5.218` rollout |
+| Testnet RPC URL | `https://testnet-rpc.lichen.network` | `seeds.json`, `developers/shared-config.js`, `core/src/network.rs` | Recovered on 2026-06-30 after signed `v0.5.217`; public/local health returned `status = ok` through public slot `6715694`. Refresh after final signed `v0.5.219` rollout. |
+| Testnet WebSocket URL | `wss://testnet-rpc.lichen.network/ws` | `developers/shared-config.js`, deployment docs | Transport previously upgraded; rerun application slot-subscription smoke after final signed `v0.5.219` rollout |
 | Explorer URL | `https://explorer.lichen.network` | `seeds.json`, `developers/shared-config.js`, `explorer/js/*.js` | Verified: public templates are `/address?address=...`, `/transaction?sig=...`, and `/block?slot=...` |
 | Logo asset | Public asset: `https://lichen.network/Lichen_Logo_256.png`; repo asset exists at `website/Lichen_Logo_256.png` | `website/`, deployed site config | Verified public PNG: 256x256, 45,415 bytes, SHA-256 matches repo asset |
 | Status/monitoring page | Candidate app: `https://monitoring.lichen.network` | Monitoring app/deployment docs | Public monitoring page is reachable but not operator-approved as exchange status page |
@@ -117,7 +117,7 @@ This table names the source of truth. It is not yet the final external metadata 
 | --- | --- | --- | --- |
 | B0-05 | `getBalance` formatted LICN string only has four decimals | Display value is not suitable for 9-decimal exchange accounting | Exchange guide must require spores for accounting; consider docs/API display clarification |
 | B0-08 | Status page is not operator-approved as the exchange status page | Listing metadata incomplete; exchanges need an official incident URL and update policy | Choose/approve the public status URL and update cadence |
-| B0-09 | Public RPC endpoints are not fully exchange-ready | Public testnet liveness is restored, but mainnet endpoint is not live from external TLS checks and public archive/simulation gates are still pending | Roll out the clean signed `v0.5.218` follow-up to testnet through the deployment runbook, fix mainnet Cloudflare `525` or explicitly scope the gate to testnet, then rerun health, `getFeeConfig`, history, and write-path checks after developer-page deployment |
+| B0-09 | Public RPC endpoints are not fully exchange-ready | Public testnet liveness is restored, but mainnet endpoint is not live from external TLS checks and public archive/simulation gates are still pending | Roll out the clean signed `v0.5.219` follow-up to testnet through the deployment runbook, fix mainnet Cloudflare `525` or explicitly scope the gate to testnet, then rerun health, `getFeeConfig`, history, and write-path checks after developer-page deployment |
 | B0-10 | Final exchange package release tag is not selected | Exchange docs cannot link to a stable package artifact yet | Cut or choose the signed exchange-package release tag after blockers close |
 | B0-14 | Public developer portal exchange page is not deployed | Exchanges cannot be sent to the public developer portal page yet | Deploy the developer portal update after local gates, then verify the public path contains `Exchange Integration`, `Exchange Integration Guide`, `Exchange Chain Metadata`, and `Exchange Operations Pack` |
 
@@ -125,8 +125,8 @@ This table names the source of truth. It is not yet the final external metadata 
 
 | ID | Former blocker | Resolution | Evidence |
 | --- | --- | --- | --- |
-| B0-01 | Release docs disagreed with operator anchor `v0.5.215` and recovery candidate `v0.5.218` | Updated README and production deployment runbook to `v0.5.218` while keeping `v0.5.215` as rollback anchor; mainnet runbook remains anchored to `v0.5.215` because mainnet is not live | Targeted version scan completed before release staging |
-| B0-02 | Rust SDK dependency pinned `lobstercove-lichen-core = "=0.5.207"` while protocol crates moved to `0.5.218` | Updated Rust SDK manifest and lockfile to `0.5.218` | `cargo check --manifest-path sdk/rust/Cargo.toml` |
+| B0-01 | Release docs disagreed with operator anchor `v0.5.215` and recovery candidate `v0.5.219` | Updated README and production deployment runbook to `v0.5.219` while keeping `v0.5.215` as rollback anchor; mainnet runbook remains anchored to `v0.5.215` because mainnet is not live | Targeted version scan completed before release staging |
+| B0-02 | Rust SDK dependency pinned `lobstercove-lichen-core = "=0.5.207"` while protocol crates moved to `0.5.219` | Updated Rust SDK manifest and lockfile to `0.5.219` | `cargo check --manifest-path sdk/rust/Cargo.toml` |
 | B0-03 | RPC docs reported version `0.5.178` | Updated RPC API reference version and sample network-info response to `0.5.215` | `docs/guides/RPC_API_REFERENCE.md` |
 | B0-04 | Address regex not backed by generated vectors | Added source-derived valid/invalid vectors and a focused core regression test | `docs/guides/EXCHANGE_ADDRESS_VALIDATION_VECTORS.md`; `cargo test -p lobstercove-lichen-core account::tests::test_exchange_address_validation_vectors` |
 | B0-07 | Finality policy not operationally validated under restart/lag | Validated processed/confirmed/finalized reporting, sampled finalized transaction status, plus-8/plus-32 buffer, V2 restart convergence, and cleanup on a local three-validator stack | Commands/results recorded in Phase 2 Evidence below |
@@ -176,7 +176,7 @@ SDK compatibility validation ran on 2026-06-29.
 
 | Check | Result |
 | --- | --- |
-| Rust SDK | `cargo check --manifest-path sdk/rust/Cargo.toml` passed after pinning `lobstercove-lichen-core = "=0.5.218"` |
+| Rust SDK | `cargo check --manifest-path sdk/rust/Cargo.toml` passed after pinning `lobstercove-lichen-core = "=0.5.219"` |
 | JavaScript SDK | `npm run build` passed in `sdk/js` |
 | JavaScript exchange boundary | `sdk/js/README.md` now states the SDK is not approved for exchange accounting because native JSON parsing cannot preserve all u64 spore values |
 | JavaScript archive helpers | Added `getTransactionsByAddress` and `getAccountTxCount`; existing `getTransaction`, `getBlock`, and `getTransactionHistory` remain available |

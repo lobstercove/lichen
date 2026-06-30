@@ -17,12 +17,15 @@ This script is intended for a clean local three-validator stack:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import re
 import subprocess
 import sys
 import time
+import urllib.parse
+import urllib.request
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -37,6 +40,7 @@ from lichen import Connection, Keypair, PublicKey  # noqa: E402
 
 SPORES_PER_LICN = 1_000_000_000
 DEFAULT_RPC_URL = "http://127.0.0.1:8899"
+DEFAULT_FAUCET_URL = "https://faucet.lichen.network"
 DEFAULT_FUNDER = ROOT / "keypairs" / "deployer.json"
 DEFAULT_REPORT = ROOT / "tests" / "artifacts" / "exchange-simulation-report.json"
 DEFAULT_KEYPAIR_PASSWORD_FILE = ROOT / "data" / "local-cluster" / "keypair-password"
@@ -52,6 +56,10 @@ MIN_FINALITY_BUFFER_SLOTS = 8
 HIGH_VALUE_FINALITY_BUFFER_SLOTS = 32
 TX_TIMEOUT_SECS = 45.0
 BALANCE_TIMEOUT_SECS = 30.0
+
+
+def ceil_div(value: int, divisor: int) -> int:
+    return (value + divisor - 1) // divisor
 
 
 def now_ms() -> int:
@@ -111,6 +119,39 @@ def extract_hex_signature(output: str) -> str:
     if not match:
         raise ValueError(f"no 64-char hex signature found in CLI output: {output}")
     return match.group(0).lower()
+
+
+def synthetic_client_ip(seed: str) -> str:
+    digest = hashlib.sha256(seed.encode("utf-8")).digest()
+    return ".".join(str(max(1, part)) for part in (10, digest[0], digest[1], digest[2]))
+
+
+def request_faucet_funding(faucet_url: str, recipient: str, amount_licn: int) -> Dict[str, Any]:
+    parsed = urllib.parse.urlparse(faucet_url)
+    base = faucet_url.rstrip("/")
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "User-Agent": "lichen-exchange-simulation/1.0",
+    }
+    if parsed.hostname in {"127.0.0.1", "localhost", "::1"}:
+        forwarded_ip = synthetic_client_ip(recipient)
+        headers["X-Forwarded-For"] = forwarded_ip
+        headers["X-Real-IP"] = forwarded_ip
+    payload = json.dumps({"address": recipient, "amount": amount_licn}).encode("utf-8")
+    request = urllib.request.Request(
+        f"{base}/faucet/request",
+        data=payload,
+        headers=headers,
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=15) as response:
+        result = json.loads(response.read().decode("utf-8"))
+    if result.get("success") is False:
+        raise RuntimeError(result.get("error") or result.get("message") or result)
+    if not (result.get("success") or result.get("signature")):
+        raise RuntimeError(f"unexpected faucet response: {result}")
+    return result
 
 
 async def wait_for_slot(conn: Connection, min_slot: int = 1, timeout: float = 45.0) -> int:
@@ -225,6 +266,8 @@ class InternalLedger:
 
 async def main() -> int:
     rpc_url = os.getenv("RPC_URL", DEFAULT_RPC_URL)
+    funding_mode = os.getenv("EXCHANGE_SIM_FUNDING_MODE", "keypair").strip().lower()
+    faucet_url = os.getenv("EXCHANGE_SIM_FAUCET_URL", DEFAULT_FAUCET_URL)
     fun_keypair = resolve_funder_keypair()
     report_path = Path(os.getenv("EXCHANGE_SIM_REPORT", str(DEFAULT_REPORT)))
     lichen_bin = Path(os.getenv("LICHEN_BIN", str(DEFAULT_CLI)))
@@ -233,9 +276,19 @@ async def main() -> int:
     if keypair_password is None and DEFAULT_KEYPAIR_PASSWORD_FILE.exists():
         keypair_password = DEFAULT_KEYPAIR_PASSWORD_FILE.read_text().strip()
 
-    if not fun_keypair.exists():
+    if funding_mode not in {"keypair", "faucet"}:
+        print(
+            "FATAL: EXCHANGE_SIM_FUNDING_MODE must be either 'keypair' or 'faucet'.",
+            file=sys.stderr,
+        )
+        return 2
+    if funding_mode == "keypair" and not fun_keypair.exists():
         print(f"FATAL: funder keypair not found: {fun_keypair}", file=sys.stderr)
-        print("Start the local stack first or set EXCHANGE_SIM_FUNDER_KEYPAIR.", file=sys.stderr)
+        print(
+            "Start the local stack first, set EXCHANGE_SIM_FUNDER_KEYPAIR, "
+            "or use EXCHANGE_SIM_FUNDING_MODE=faucet.",
+            file=sys.stderr,
+        )
         return 2
     if not skip_cli and not lichen_bin.exists():
         print(f"FATAL: CLI binary not found: {lichen_bin}", file=sys.stderr)
@@ -246,7 +299,6 @@ async def main() -> int:
     started_at = now_ms()
     initial_slot = await wait_for_slot(conn)
 
-    funder = Keypair.load(fun_keypair, password=keypair_password)
     customer = Keypair.generate()
     deposit = Keypair.generate()
     hot = Keypair.generate()
@@ -257,7 +309,7 @@ async def main() -> int:
     customer_id = "local-customer-1"
 
     participants = {
-        "funder": address_str(funder),
+        "funder": None,
         "customer": address_str(customer),
         "deposit": address_str(deposit),
         "hot": address_str(hot),
@@ -267,8 +319,28 @@ async def main() -> int:
 
     print(json.dumps({"event": "start", "rpc_url": rpc_url, "slot": initial_slot, **participants}))
 
-    fund_sig = await conn.transfer(funder, address(customer), CUSTOMER_FUND_AMOUNT)
-    fund_tx = await wait_for_transaction(conn, fund_sig)
+    funding_report: Dict[str, Any]
+    if funding_mode == "faucet":
+        amount_licn = ceil_div(CUSTOMER_FUND_AMOUNT, SPORES_PER_LICN)
+        faucet_response = request_faucet_funding(faucet_url, address_str(customer), amount_licn)
+        fund_sig = str(faucet_response.get("signature") or "")
+        fund_tx = await wait_for_transaction(conn, fund_sig) if fund_sig else {}
+        participants["funder"] = faucet_response.get("faucet_address") or faucet_url
+        funding_report = {
+            "mode": "faucet",
+            "faucet_url": faucet_url,
+            "amount_licn": amount_licn,
+            "response": faucet_response,
+        }
+    else:
+        funder = Keypair.load(fun_keypair, password=keypair_password)
+        participants["funder"] = address_str(funder)
+        fund_sig = await conn.transfer(funder, address(customer), CUSTOMER_FUND_AMOUNT)
+        fund_tx = await wait_for_transaction(conn, fund_sig)
+        funding_report = {
+            "mode": "keypair",
+            "funder_keypair": str(fun_keypair),
+        }
     await wait_for_balance_at_least(conn, address(customer), CUSTOMER_FUND_AMOUNT - 2_000_000)
 
     deposit_sig = await conn.transfer(customer, address(deposit), DEPOSIT_AMOUNT)
@@ -411,6 +483,7 @@ async def main() -> int:
         "initial_slot": initial_slot,
         "final_slot": await conn.get_slot(),
         "participants": participants,
+        "funding": funding_report,
         "amounts_spores": {
             "customer_funding": CUSTOMER_FUND_AMOUNT,
             "deposit": DEPOSIT_AMOUNT,

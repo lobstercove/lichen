@@ -22,7 +22,7 @@ resolved with evidence.
 | Base unit | `spore` | Source mapped | `core/src/account.rs` |
 | Unit conversion | `1 LICN = 1,000,000,000 spores` | Source mapped | `core/src/account.rs` |
 | Fee unit | Native LICN spores | Source mapped | `core/src/processor/fees.rs`, `core/src/genesis.rs`, `rpc/src/lib.rs` |
-| Default base fee | `1,000,000` spores at genesis defaults | Runtime public verification must be refreshed after the final signed `v0.5.218` rollout | `core/src/genesis.rs`, runtime `getFeeConfig`, tracker Phase 5 metadata evidence |
+| Default base fee | `1,000,000` spores at genesis defaults | Runtime public verification must be refreshed after the final signed `v0.5.219` rollout | `core/src/genesis.rs`, runtime `getFeeConfig`, tracker Phase 5 metadata evidence |
 | Native mainnet chain ID | `lichen-mainnet-1` | Source mapped | `seeds.json`, `core/src/network.rs` |
 | Native testnet chain ID | `lichen-testnet-1` | Source mapped | `seeds.json`, `core/src/network.rs` |
 | EVM compatibility ID | `8001` in core EVM compatibility code; runtime RPC derives an EVM chain ID from native chain ID | Needs final wording | `core/src/evm.rs`, `rpc/src/lib.rs` |
@@ -32,8 +32,8 @@ resolved with evidence.
 | Memo/tag requirement | None for native LICN base transfer flow | Locally validated | Native transfer/account model, local exchange simulation |
 | Mainnet RPC URL | `https://rpc.lichen.network` | Live check failed: Cloudflare `525` on 2026-06-29 | `seeds.json`, `core/src/network.rs`, `developers/shared-config.js`, tracker Phase 5 metadata evidence |
 | Mainnet WebSocket URL | `wss://rpc.lichen.network/ws` | Live check failed: Cloudflare `525` on 2026-06-29 | `developers/shared-config.js`, tracker Phase 5 metadata evidence |
-| Testnet RPC URL | `https://testnet-rpc.lichen.network` | Recovered on 2026-06-30 after signed `v0.5.217` rollout; public `health.status = ok` through slot `6715694`. Refresh metadata evidence after the final signed `v0.5.218` rollout. | `seeds.json`, `core/src/network.rs`, `developers/shared-config.js`, tracker Phase 5 metadata evidence |
-| Testnet WebSocket URL | `wss://testnet-rpc.lichen.network/ws` | TLS/WebSocket upgrade passed; rerun app-level slot subscription after the final signed `v0.5.218` rollout | `developers/shared-config.js`, tracker Phase 5 metadata evidence |
+| Testnet RPC URL | `https://testnet-rpc.lichen.network` | Recovered on 2026-06-30 after signed `v0.5.217` rollout; public `health.status = ok` through slot `6715694`. Refresh metadata evidence after the final signed `v0.5.219` rollout. | `seeds.json`, `core/src/network.rs`, `developers/shared-config.js`, tracker Phase 5 metadata evidence |
+| Testnet WebSocket URL | `wss://testnet-rpc.lichen.network/ws` | TLS/WebSocket upgrade passed; rerun app-level slot subscription after the final signed `v0.5.219` rollout | `developers/shared-config.js`, tracker Phase 5 metadata evidence |
 | Explorer URL | `https://explorer.lichen.network` | Route templates verified on 2026-06-29 | `seeds.json`, `developers/shared-config.js`, `explorer/js/*.js`, tracker Phase 5 metadata evidence |
 | Logo URL | `https://lichen.network/Lichen_Logo_256.png` | Public asset verified on 2026-06-29: PNG, 256x256, SHA-256 matches repo asset | `website/Lichen_Logo_256.png`, tracker Phase 5 metadata evidence |
 | Status page | Candidate: `https://monitoring.lichen.network` | Public monitoring app reachable; not operator-approved as exchange status page | Operations pack decision required |
@@ -151,7 +151,7 @@ release links.
 
 | ID | Blocker | Required evidence |
 | --- | --- | --- |
-| M-02 | Runtime fee value needs refreshed public evidence for the final release | `getFeeConfig` result from a healthy public target network after the final signed `v0.5.218` rollout |
+| M-02 | Runtime fee value needs refreshed public evidence for the final release | `getFeeConfig` result from a healthy public target network after the final signed `v0.5.219` rollout |
 | M-03 | Public RPC endpoints are not exchange-ready | Mainnet RPC/WS must stop returning Cloudflare `525`; testnet RPC must return healthy `health` and operational read/write methods |
 | M-06 | Status page not finalized | Operator-approved URL and uptime policy |
 | M-07 | Final exchange package release tag not selected | Signed release evidence for the external exchange package, not only rollback validator archives |

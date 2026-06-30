@@ -46,6 +46,8 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "$REPO_ROOT" || exit 1
 LOCAL_CLUSTER_SCRIPT="$REPO_ROOT/scripts/start-local-3validators.sh"
 LOCAL_CLUSTER_RESET="${LICHEN_LOCAL_RESET_CLUSTER:-1}"
+LOCAL_CLUSTER_ARTIFACT_DIR="${LICHEN_LOCAL_CLUSTER_ARTIFACT_DIR:-$REPO_ROOT/data/local-cluster}"
+LOCAL_KEYPAIR_PASSWORD_FILE="$LOCAL_CLUSTER_ARTIFACT_DIR/keypair-password"
 
 LOCAL_SIGNED_METADATA_KEYPAIR_DEFAULT="$REPO_ROOT/keypairs/release-signing-key.json"
 
@@ -547,6 +549,13 @@ if ! wait_for_file "$GENESIS_PRIMARY_KEYPAIR" "genesis primary keypair"; then
   cleanup_started_processes
   exit 1
 fi
+if [ -z "${LICHEN_KEYPAIR_PASSWORD:-}" ]; then
+  if ! wait_for_file "$LOCAL_KEYPAIR_PASSWORD_FILE" "local keypair password"; then
+    cleanup_started_processes
+    exit 1
+  fi
+  export LICHEN_KEYPAIR_PASSWORD="$(cat "$LOCAL_KEYPAIR_PASSWORD_FILE")"
+fi
 
 mkdir -p ./keypairs
 install -m 600 "$GENESIS_PRIMARY_KEYPAIR" "$LOCAL_DEPLOYER_KEYPAIR"
@@ -633,6 +642,7 @@ if [ "$NETWORK" = "testnet" ]; then
   FAUCET_PID="$(start_detached_process "${LOG_DIR}/faucet.log" \
     env PORT=$FAUCET_PORT RPC_URL="$CLUSTER_RPC_URL" NETWORK="$NETWORK" \
     TRUSTED_PROXY="127.0.0.1,::1" \
+    LICHEN_KEYPAIR_PASSWORD="${LICHEN_KEYPAIR_PASSWORD:-}" \
     FAUCET_KEYPAIR="$GENESIS_TREASURY_KEYPAIR" \
     AIRDROPS_FILE="$LOCAL_AIRDROPS_FILE" \
     ./target/release/lichen-faucet)"
