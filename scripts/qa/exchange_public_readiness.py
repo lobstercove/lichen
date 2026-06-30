@@ -46,7 +46,9 @@ DEVELOPER_EXCHANGE_REQUIRED_SNIPPETS = (
     "Exchange Integration Guide",
     "Exchange Chain Metadata",
     "Exchange Operations Pack",
+    "testnet-only",
 )
+PACKAGE_SCOPES = ("testnet", "full")
 
 
 class Gate:
@@ -72,6 +74,15 @@ class Gate:
 
     def failed(self) -> list[dict[str, Any]]:
         return [check for check in self.checks if check["blocking"] and not check["ok"]]
+
+
+def default_package_scope() -> str:
+    scope = os.environ.get("LICHEN_EXCHANGE_PACKAGE_SCOPE", "testnet").strip().lower()
+    return scope if scope in PACKAGE_SCOPES else "testnet"
+
+
+def package_includes_mainnet(scope: str) -> bool:
+    return scope == "full"
 
 
 def request_json(url: str, body: dict[str, Any] | None = None, timeout: int = 15) -> tuple[int, Any]:
@@ -307,6 +318,15 @@ def main() -> int:
     parser.add_argument("--report", default=str(DEFAULT_REPORT))
     parser.add_argument("--max-block-age-secs", type=int, default=15)
     parser.add_argument(
+        "--scope",
+        choices=PACKAGE_SCOPES,
+        default=default_package_scope(),
+        help=(
+            "exchange package scope: 'testnet' skips mainnet readiness until "
+            "mainnet launch; 'full' requires mainnet RPC/WS readiness too"
+        ),
+    )
+    parser.add_argument(
         "--status-approved",
         action="store_true",
         default=os.environ.get("LICHEN_EXCHANGE_STATUS_APPROVED") == "1",
@@ -322,16 +342,45 @@ def main() -> int:
 
     gate = Gate()
     started = int(time.time())
+    includes_mainnet = package_includes_mainnet(args.scope)
+
+    gate.add(
+        "exchange package scope",
+        True,
+        detail=(
+            "testnet-only until mainnet launch"
+            if not includes_mainnet
+            else "full package; mainnet readiness checks are blocking"
+        ),
+    )
 
     check_rpc_health(gate, "testnet public RPC health", TESTNET_RPC, args.max_block_age_secs)
     check_rpc_method(gate, "testnet getFeeConfig", TESTNET_RPC, "getFeeConfig")
     check_rpc_method(gate, "testnet finalized slot", TESTNET_RPC, "getSlot", [{"commitment": "finalized"}])
     check_rpc_method(gate, "testnet latest block", TESTNET_RPC, "getLatestBlock")
-    check_rpc_health(gate, "mainnet public RPC health", MAINNET_RPC, args.max_block_age_secs)
+    if includes_mainnet:
+        check_rpc_health(gate, "mainnet public RPC health", MAINNET_RPC, args.max_block_age_secs)
+    else:
+        gate.add(
+            "mainnet public RPC health",
+            True,
+            blocking=False,
+            detail="deferred by current testnet-only package scope; rerun with --scope full for mainnet launch",
+        )
 
-    for name, url in (("testnet public WebSocket", TESTNET_WS), ("mainnet public WebSocket", MAINNET_WS)):
+    ws_targets = [("testnet public WebSocket", TESTNET_WS)]
+    if includes_mainnet:
+        ws_targets.append(("mainnet public WebSocket", MAINNET_WS))
+    for name, url in ws_targets:
         ok, detail = ws_upgrade(url)
         gate.add(name, ok, detail=detail)
+    if not includes_mainnet:
+        gate.add(
+            "mainnet public WebSocket",
+            True,
+            blocking=False,
+            detail="deferred by current testnet-only package scope; rerun with --scope full for mainnet launch",
+        )
 
     check_http(gate, "explorer root", EXPLORER + "/", contains="Lichen Explorer")
     check_http(
@@ -368,6 +417,7 @@ def main() -> int:
     )
 
     report = {
+        "scope": args.scope,
         "started_at_unix": started,
         "completed_at_unix": int(time.time()),
         "checks": gate.checks,

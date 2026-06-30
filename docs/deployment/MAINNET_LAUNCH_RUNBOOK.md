@@ -22,6 +22,9 @@ after CI and release verification pass.
 - Do not expose public custody or wallet routes until that exact route passes a
   dust deposit and dust withdrawal on mainnet.
 - Do not use the mainnet faucet pattern. There is no mainnet faucet.
+- Do not publish a mainnet exchange package or remove the testnet-only exchange
+  label until the exchange readiness handoff in this runbook passes and
+  `scripts/qa/exchange_public_readiness.py --scope full` is green.
 - Do not copy validator RocksDB state, `genesis-wallet.json`, `genesis-keys/`,
   `known-peers.json`, or consensus WAL to joiners.
 - Do not delete or unmount the original `genesis-keys/` governed signer bundle
@@ -158,6 +161,7 @@ command summary, and result.
 | Custody health gate | custody `/health`, `/status`, logs, and route readiness pass |
 | Route smoke gate | every public route passes dust deposit and dust withdrawal |
 | Public gate | only passed routes are enabled in wallet/frontend/public docs |
+| Exchange handoff gate | public mainnet RPC/WS/archive/history, native and EVM chain IDs, status page, incident contacts, dust exchange flow, and `exchange_public_readiness.py --scope full` pass before mainnet is added to any exchange package |
 
 Hard stop conditions:
 
@@ -1161,6 +1165,51 @@ Only after a route passes deposit and withdrawal:
 
 Routes that did not pass remain hidden, even if their env values are staged.
 
+## Exchange Readiness Handoff
+
+This gate is mandatory before replacing the current testnet-only exchange
+package with a mainnet package. It is not satisfied by a healthy genesis alone.
+
+Required evidence:
+
+- `getNetworkInfo` records the native mainnet chain ID, network ID, version,
+  validator count, and current slot from `https://rpc.lichen.network`.
+- `/evm` `eth_chainId` is queried from the live mainnet `/evm` endpoint and
+  recorded beside the native chain ID. Do not reuse the testnet value or the
+  `core/src/evm.rs` compatibility/default constant.
+- Public RPC and WebSocket checks pass from outside the operator network:
+  `getHealth`, `getFeeConfig`, finalized `getSlot`, `getLatestBlock`,
+  `getBlock`, `getTransaction`, `getTransactionsByAddress`,
+  `getTransactionHistory`, `getAccountTxCount`, and `subscribeSlots`.
+- Archive/history queries prove old and recent transactions remain queryable
+  after validator restart/rejoin. Mainnet public RPC must be archive-backed from
+  first boot.
+- Status page coverage includes mainnet RPC, mainnet WebSocket,
+  archive/history, validator/finality status, planned maintenance, and
+  deposit/withdrawal-impacting incidents.
+- Incident contact aliases, escalation windows, maintenance notice policy, and
+  emergency exception policy are approved for exchange use.
+- An operator-approved mainnet dust exchange flow passes with approved test
+  accounts: deposit detection, exactly-once internal credit, hot/cold sweep if
+  used, withdrawal, retry/idempotency checks, and reconciliation. There is no
+  mainnet faucet.
+- The exchange docs, metadata sheet, operations pack, and developer portal page
+  are updated from testnet-only to mainnet-inclusive wording only after the
+  evidence above is recorded.
+- The final mainnet exchange package tag is signed and selected.
+
+Required command after the evidence above is available:
+
+```bash
+scripts/qa/exchange_public_readiness.py --scope full \
+  --status-approved \
+  --package-release-tag "$LICHEN_EXCHANGE_PACKAGE_TAG"
+```
+
+The handoff fails closed if any mainnet RPC/WS/archive check is stale,
+unreachable, non-archive-backed, or divergent. Keep the public exchange package
+testnet-only until this section is recorded as passed in the launch log.
+
 ## Phase 15: Monitoring And Watchtower
 
 Start or confirm monitoring for:
@@ -1310,5 +1359,6 @@ Before public launch:
 - [ ] Each public route passed dust deposit.
 - [ ] Each public route passed dust withdrawal.
 - [ ] Wallet/frontend enables only passed routes.
+- [ ] Exchange readiness handoff is complete before any mainnet exchange package is published.
 - [ ] Monitoring and on-call are active.
 - [ ] The launch log has no secrets.

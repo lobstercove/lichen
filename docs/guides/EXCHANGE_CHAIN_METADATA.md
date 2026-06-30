@@ -11,6 +11,10 @@ This sheet is the canonical exchange metadata work area. It must not be sent as 
 final listing sheet until every `Blocked` or `Needs verification` row below is
 resolved with evidence.
 
+Current package scope: testnet-only integration testing until mainnet launch.
+Mainnet rows below are launch placeholders and must not be used in an external
+listing sheet until the mainnet launch runbook closes its exchange handoff gate.
+
 ## Listing Metadata
 
 | Field | Current value | Status | Source |
@@ -25,13 +29,13 @@ resolved with evidence.
 | Default base fee | `1,000,000` spores | Public testnet runtime `getFeeConfig` verified after signed `v0.5.219` rollout on 2026-06-30 | `core/src/genesis.rs`, runtime `getFeeConfig`, tracker Phase 5 metadata evidence |
 | Native mainnet chain ID | `lichen-mainnet-1` | Source mapped | `seeds.json`, `core/src/network.rs` |
 | Native testnet chain ID | `lichen-testnet-1` | Source mapped | `seeds.json`, `core/src/network.rs` |
-| EVM compatibility ID | `8001` in core EVM compatibility code; runtime RPC derives an EVM chain ID from native chain ID | Needs final wording | `core/src/evm.rs`, `rpc/src/lib.rs` |
+| EVM compatibility chain ID | Query `/evm` `eth_chainId` at runtime; live testnet returned `0xca3f1595a6c25e9f` on 2026-06-30. `8001` is a core compatibility/default constant, not the native LICN listing chain ID. | Source mapped and public testnet verified | `core/src/evm.rs`, `rpc/src/lib.rs`, public testnet `eth_chainId` |
 | Native address format | Base58-encoded 32-byte account ID | Source mapped and tested | `core/src/account.rs` |
 | Address validation | Decode Base58 and require exactly 32 decoded bytes | Source mapped and tested | `core/src/account.rs`, `EXCHANGE_ADDRESS_VALIDATION_VECTORS.md` |
 | Address regex | `^[1-9A-HJ-NP-Za-km-z]{32,44}$` as prefilter only; decoded length must be exactly 32 bytes | Source mapped and tested | `core/src/account.rs`, `EXCHANGE_ADDRESS_VALIDATION_VECTORS.md` |
 | Memo/tag requirement | None for native LICN base transfer flow | Locally validated | Native transfer/account model, local exchange simulation |
-| Mainnet RPC URL | `https://rpc.lichen.network` | Live check failed: Cloudflare `525` on 2026-06-29 | `seeds.json`, `core/src/network.rs`, `developers/shared-config.js`, tracker Phase 5 metadata evidence |
-| Mainnet WebSocket URL | `wss://rpc.lichen.network/ws` | Live check failed: Cloudflare `525` on 2026-06-29 | `developers/shared-config.js`, tracker Phase 5 metadata evidence |
+| Mainnet RPC URL | `https://rpc.lichen.network` | Launch placeholder; excluded from the current testnet-only package until mainnet launch handoff passes | `seeds.json`, `core/src/network.rs`, `developers/shared-config.js`, mainnet launch runbook |
+| Mainnet WebSocket URL | `wss://rpc.lichen.network/ws` | Launch placeholder; excluded from the current testnet-only package until mainnet launch handoff passes | `developers/shared-config.js`, mainnet launch runbook |
 | Testnet RPC URL | `https://testnet-rpc.lichen.network` | Healthy after signed `v0.5.219` rollout on 2026-06-30; twelve-sample watch advanced from slot `6763900` to `6764099` with `status = ok` and block age `0-1s` | `seeds.json`, `core/src/network.rs`, `developers/shared-config.js`, tracker Phase 5 metadata evidence |
 | Testnet WebSocket URL | `wss://testnet-rpc.lichen.network/ws` | Application-level `subscribeSlots` passed after signed `v0.5.219` rollout on 2026-06-30 | `developers/shared-config.js`, tracker Phase 5 metadata evidence |
 | Explorer URL | `https://explorer.lichen.network` | Route templates verified on 2026-06-29 | `seeds.json`, `developers/shared-config.js`, `explorer/js/*.js`, tracker Phase 5 metadata evidence |
@@ -78,14 +82,21 @@ Native integration:
 
 EVM compatibility:
 
-- `core/src/evm.rs` declares `LICHEN_CHAIN_ID = 8001`.
-- `rpc/src/lib.rs` also derives an EVM chain ID from the configured native chain
-  ID for runtime RPC state.
+- `/evm` `eth_chainId` returns `RpcState.evm_chain_id`.
+- `rpc/src/lib.rs` derives `RpcState.evm_chain_id` by hashing the configured
+  native chain ID. On public testnet, `getNetworkInfo.chain_id` returned
+  `lichen-testnet-1` and `/evm` `eth_chainId` returned
+  `0xca3f1595a6c25e9f` on 2026-06-30.
+- `core/src/evm.rs` declares `LICHEN_CHAIN_ID = 8001`, but that is a core
+  compatibility/default constant. It is not the native LICN listing chain ID and
+  must not be used for native deposit/withdrawal signing.
 - EVM-format addresses are derived mappings from native pubkeys, not the native
   LICN deposit address format.
 
-Final external wording must be settled after runtime RPC behavior and EVM docs are
-checked together.
+Exchange native LICN listings should publish the native string chain ID and
+Base58 account format. If an exchange separately tests EVM compatibility, it
+must query `eth_chainId` from the target network at integration time instead of
+hard-coding `8001`.
 
 ## Explorer URL Patterns
 
@@ -160,10 +171,19 @@ publishing exchange-facing release links outside the repository.
 
 | ID | Blocker | Required evidence |
 | --- | --- | --- |
-| M-03 | Mainnet public RPC/WS not live | Mainnet RPC/WS must stop returning Cloudflare `525` before mainnet is included in an exchange package; testnet-only exchange testing is unblocked |
 | M-06 | Status page not finalized | Operator-approved URL and uptime policy |
 | M-07 | Final exchange package release tag not selected | Signed release evidence for the external exchange package, not only rollback validator archives |
-| M-08 | EVM chain ID wording not reconciled | Runtime RPC and EVM docs comparison |
+
+## Deferred Mainnet Launch Items
+
+These are not blockers for the current testnet-only package, but they are
+mandatory before mainnet is included in an external exchange package.
+
+| ID | Deferred item | Required evidence |
+| --- | --- | --- |
+| MM-01 | Mainnet public RPC/WS readiness | `https://rpc.lichen.network` and `wss://rpc.lichen.network/ws` pass health, fee, finalized-slot, latest-block, WebSocket subscription, archive/history, and exchange simulation checks after mainnet launch |
+| MM-02 | Mainnet metadata refresh | Mainnet `getNetworkInfo`, `/evm` `eth_chainId`, fee config, explorer routes, release tag, status page, and incident contacts recorded in this sheet |
+| MM-03 | Mainnet exchange handoff | Mainnet launch runbook exchange handoff gate closed and public readiness gate rerun with `--scope full` |
 
 ## Resolved Metadata Checks
 
@@ -175,3 +195,4 @@ publishing exchange-facing release links outside the repository.
 | M-02 | Runtime fee value refreshed on public testnet | `getFeeConfig` returned `base_fee_spores = 1000000`, contract/NFT fee fields, and `40/30/10/10/10` fee split after signed `v0.5.219` rollout |
 | M-09 | Testnet RPC/WS readiness after final rollout | Public `getHealth` returned `status = ok`; twelve-sample slot watch advanced from `6763900` to `6764099`; WebSocket `subscribeSlots` returned a subscription id |
 | M-10 | Current signed testnet recovery release signatures | `v0.5.219` release checksum and detached PQ signature were verified against `deploy/release-trust-anchor.json` |
+| M-08 | EVM chain ID wording reconciled for native listings | Native exchange integrations use string chain IDs from `getNetworkInfo`; EVM compatibility uses runtime `/evm` `eth_chainId`; live testnet returned `0xca3f1595a6c25e9f`; `8001` is documented as a core compatibility/default constant, not the native listing chain ID |

@@ -1,7 +1,7 @@
 # Lichen Exchange Listing Readiness Plan
 
 **Created:** 2026-06-29
-**Status:** Execution; local gates and public testnet exchange validation have passed, but developer-portal publication, operations approval, mainnet scope, and final external package blockers remain open
+**Status:** Execution; local gates, public testnet exchange validation, and developer-portal publication have passed. The current package is testnet-only until mainnet launch, and operations approval plus final external package blockers remain open.
 **Current signed testnet recovery release:** `v0.5.219`; keep `v0.5.215` as the rollback anchor until a newer signed rollback point is explicitly recorded.
 **Scope:** Native LICN exchange integration package, public RPC/WebSocket behavior, archive/history guarantees, exchange deposit/withdrawal operations, SDK/CLI/docs parity, and listing operations pack.
 
@@ -20,7 +20,7 @@ These facts were updated for the 2026-06-30 signed recovery release and must be 
 - The mainnet launch runbook remains anchored to `v0.5.215` because mainnet is not live and is outside the public testnet recovery scope.
 - `sdk/rust/Cargo.toml` package version is `0.1.5` and now depends on `lobstercove-lichen-core = "=0.5.219"` while using the local `../../core` path.
 - `sdk/js/package.json` is `1.0.5`; `sdk/python/pyproject.toml` is `1.0.0`.
-- Mainnet launch docs already require public RPC validators to run `--archive-mode --cold-store /var/lib/lichen/archive-mainnet`.
+- Mainnet launch docs already require public RPC validators to run `--archive-mode --cold-store /var/lib/lichen/archive-mainnet` and now require a post-launch exchange handoff before any mainnet exchange package is published.
 - Testnet state policy already treats account activity and transaction history as persistent user-facing indexes.
 - Local full-stack testing is supported by `scripts/start-local-stack.sh testnet`, which starts the local three-validator cluster plus custody/faucet/source-chain mocks; cleanup is `scripts/stop-local-stack.sh testnet`.
 
@@ -212,7 +212,7 @@ Tasks:
 - Create the GitHub exchange guide and developer portal page.
 - Create the tracker and chain metadata sheet.
 - Add developer portal navigation without burying the page.
-- Decide whether exchange docs are testnet-first or mainnet-ready, and label unfinished mainnet values clearly.
+- Scope the current exchange docs as testnet-only until mainnet launch, and label unfinished mainnet values clearly.
 
 Exit gate:
 
@@ -359,11 +359,11 @@ Preconditions:
 - SDK/CLI examples are current.
 - Rollback anchor `v0.5.215` is recorded.
 - Public testnet RPC is healthy and not stale/readiness-gated.
-- Mainnet RPC/WebSocket TLS checks are not returning Cloudflare `525`, unless
-  the package is explicitly scoped to testnet-only integration testing before
-  mainnet launch.
-- Public developer portal exchange page serves exchange-specific content instead
-  of a generic hub fallback.
+- Mainnet RPC/WebSocket/archive checks are deferred because the package is
+  explicitly scoped to testnet-only integration testing before mainnet launch.
+  They become blocking again during the mainnet launch exchange handoff.
+- Public developer portal exchange page serves exchange-specific testnet-only
+  content.
 - Status page, incident aliases, and target exchange-package release tag are
   approved.
 
@@ -391,8 +391,10 @@ Exit gate:
 
 ### Phase 8: External Listing Package
 
-Status: blocked on developer-portal publication, operations approval, mainnet
-scope decision or recovery, EVM wording, and final external package publication.
+Status: blocked on operations approval and final external package publication.
+Developer-portal publication is complete. Mainnet is excluded from the current
+package until the mainnet launch exchange handoff closes; EVM wording is
+reconciled for native listings.
 
 Purpose: produce the package an exchange can review without backchannel dependency.
 
@@ -416,6 +418,16 @@ Exit gate:
 - Package reviewed internally.
 - No stale version references remain.
 - Go/no-go decision is documented before outreach.
+
+Mainnet handoff after launch:
+
+- Verify mainnet public RPC, WebSocket, archive/history, native chain ID, `/evm`
+  `eth_chainId`, explorer routes, status page coverage, and incident contacts.
+- Run `scripts/qa/exchange_public_readiness.py --scope full`.
+- Perform operator-approved mainnet dust deposit, withdrawal, and reconciliation
+  through approved exchange test accounts. There is no mainnet faucet.
+- Replace the testnet-only package label only after signed evidence is recorded
+  and a new external package tag is selected.
 
 ## Risk Register
 

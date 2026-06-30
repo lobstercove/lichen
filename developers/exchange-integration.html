@@ -87,16 +87,17 @@
             <section id="status">
                 <h1>Exchange Integration</h1>
                 <p class="lead">
-                    Native LICN exchange integration is in readiness work. The local source-backed gates now cover
-                    metadata, operations policy, archive/history regressions, SDK/CLI boundaries, and the
-                    three-validator exchange simulation. Public endpoint readiness and operator approvals remain
+                    Native LICN exchange integration is in testnet-only readiness work until mainnet launch. Local and
+                    public testnet gates now cover metadata, operations policy, archive/history regressions, SDK/CLI
+                    boundaries, the three-validator exchange simulation, and the public faucet-backed testnet exchange
+                    simulation. Developer-portal publication, operator approvals, and final package publication remain
                     release blockers.
                 </p>
                 <div class="callout callout-warning">
                     <div class="callout-title">Draft status</div>
-                    This page is not an external listing package. Serious exchange outreach is blocked until public
-                    RPC/WebSocket readiness, public developer page deployment, status-page approval, incident aliases,
-                    final package tag selection, and public testnet simulation all pass.
+                    This page is not an external listing package. The current package is testnet-only; do not present it
+                    as mainnet-ready or accept mainnet LICN deposits until the mainnet launch exchange handoff passes,
+                    the readiness gate is rerun with full scope, and a signed mainnet-inclusive package is published.
                 </div>
             </section>
 
@@ -152,6 +153,10 @@
                     </thead>
                     <tbody>
                         <tr>
+                            <td>Package scope</td>
+                            <td>Testnet-only until mainnet launch. Mainnet exchange publication requires the launch runbook exchange handoff and full-scope public readiness.</td>
+                        </tr>
+                        <tr>
                             <td>Asset</td>
                             <td>Native LICN uses 9 decimals; 1 LICN equals 1,000,000,000 spores.</td>
                         </tr>
@@ -166,6 +171,10 @@
                         <tr>
                             <td>Native RPC</td>
                             <td>Use canonical JSON-RPC on / with getSlot, getBlock, getTransaction, history, balance, and sendTransaction.</td>
+                        </tr>
+                        <tr>
+                            <td>EVM compatibility</td>
+                            <td>Native listings use getNetworkInfo chain IDs; /evm eth_chainId is runtime compatibility data. Public testnet currently returns 0xca3f1595a6c25e9f.</td>
                         </tr>
                         <tr>
                             <td>Archive</td>
@@ -187,16 +196,19 @@
                     <li>Keep archive-backed getTransaction, getBlock, and address history covered across hot/cold data and restart.</li>
                     <li>Keep the deposit, credit, sweep, withdrawal, retry, and reconciliation simulation passing locally.</li>
                     <li>Clean up every local stack run and prove validator, custody, faucet, and source-chain mock processes are stopped.</li>
-                    <li>Do not release until the public readiness gate and public testnet exchange simulation pass.</li>
+                    <li>Keep the public testnet exchange simulation evidence attached to the signed recovery release.</li>
+                    <li>Do not publish the testnet package until the public developer page, status-page approval, incident aliases, package tag, and testnet-scope readiness gate pass.</li>
+                    <li>Do not publish a mainnet package until the mainnet launch exchange handoff and full-scope readiness gate pass.</li>
                 </ul>
             </section>
 
             <section id="next-step">
                 <h2>Next Step</h2>
                 <p>
-                    The next readiness task is public endpoint recovery: testnet RPC must stop reporting stale
-                    readiness, mainnet RPC and WebSocket must stop returning Cloudflare 525, and this page must be
-                    deployed publicly with exchange-specific content before public testnet exchange validation can run.
+                    The next readiness task is developer-portal publication: deploy this exchange page, verify the
+                    public URL serves exchange-specific testnet-only content, resolve the approved status page and
+                    incident aliases, select the final package tag, and rerun the public readiness gate with testnet
+                    scope.
                 </p>
             </section>
         </main>

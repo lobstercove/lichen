@@ -951,8 +951,11 @@ function validateDeveloperExchangePage() {
             exchangeHtml.includes('<h1>Exchange Integration</h1>') &&
             exchangeHtml.includes('Exchange Integration Guide') &&
             exchangeHtml.includes('Exchange Chain Metadata') &&
-            exchangeHtml.includes('Exchange Operations Pack'),
-        'developers exchange integration page is present and contains exchange-specific content'
+            exchangeHtml.includes('Exchange Operations Pack') &&
+            exchangeHtml.includes('testnet-only') &&
+            exchangeHtml.includes('mainnet launch exchange handoff') &&
+            exchangeHtml.includes('0xca3f1595a6c25e9f'),
+        'developers exchange integration page is present and contains exchange-specific testnet-only content'
     );
 
     assert(

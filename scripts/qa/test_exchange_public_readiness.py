@@ -74,6 +74,7 @@ class ExchangePublicReadinessTests(unittest.TestCase):
             self.assertFalse(gate.checks[0]["ok"])
             self.assertIn("Exchange Integration", gate.checks[0]["detail"]["missing"])
             self.assertIn("Exchange Operations Pack", gate.checks[0]["detail"]["missing"])
+            self.assertIn("testnet-only", gate.checks[0]["detail"]["missing"])
         finally:
             readiness.request_bytes = original_request_bytes
 
@@ -102,6 +103,11 @@ class ExchangePublicReadinessTests(unittest.TestCase):
         png = b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\rIHDR" + struct.pack(">II", 256, 256)
         self.assertEqual(readiness.png_dimensions(png), (256, 256))
         self.assertIsNone(readiness.png_dimensions(b"not a png"))
+
+    def test_scope_controls_mainnet_readiness(self) -> None:
+        self.assertFalse(readiness.package_includes_mainnet("testnet"))
+        self.assertTrue(readiness.package_includes_mainnet("full"))
+        self.assertIn(readiness.default_package_scope(), readiness.PACKAGE_SCOPES)
 
 
 if __name__ == "__main__":

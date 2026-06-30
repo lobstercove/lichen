@@ -15,7 +15,8 @@ tracker is closed and the public testnet exchange run has passed. The
 three-validator local exchange simulation passed from a clean stack with cleanup
 evidence on 2026-06-29, and the public faucet-backed testnet exchange simulation
 passed after the signed `v0.5.219` rollout on 2026-06-30. External publication
-still depends on the remaining operations and developer-portal gates.
+is currently scoped to testnet-only integration testing until mainnet launch.
+It still depends on the remaining operator approval and final package gates.
 
 ## Publication Gate
 
@@ -24,11 +25,21 @@ Do not send this guide to exchanges while any of these remain open:
 - Runtime fee config verification on every public network included in the
   package. Testnet was verified after `v0.5.219`; mainnet remains pending until
   mainnet launch.
-- Public developer portal exchange page deployment.
 - Public status page and incident alias approval.
 - Final signed exchange-package release tag.
-- Mainnet RPC/WebSocket readiness, unless the package is explicitly scoped to
-  testnet-only integration testing before mainnet launch.
+
+## Current Package Scope
+
+The current exchange package is testnet-only until mainnet launch. Exchange
+engineers may use it to test native LICN deposits, withdrawals, finality,
+history, and reconciliation on `lichen-testnet-1`.
+
+Do not present this package as mainnet-ready, do not include mainnet deposit or
+withdrawal instructions in an external listing sheet, and do not accept mainnet
+LICN deposits until the mainnet launch runbook closes its exchange handoff gate.
+After mainnet launch, rerun the public readiness gate with `--scope full`, verify
+mainnet RPC/WebSocket/archive behavior, and publish an updated signed external
+package.
 
 ## Scope
 
@@ -59,15 +70,22 @@ metadata sheet. The source-backed facts needed by integrators are:
 | Unit rule | `1 LICN = 1,000,000,000 spores` |
 | Native mainnet chain ID | `lichen-mainnet-1` |
 | Native testnet chain ID | `lichen-testnet-1` |
-| EVM compatibility chain ID | `8001` in core EVM compatibility code; runtime RPC derives an EVM chain ID from the native chain ID |
-| Mainnet RPC | `https://rpc.lichen.network` |
-| Mainnet WebSocket | `wss://rpc.lichen.network/ws` |
+| EVM compatibility chain ID | Query `eth_chainId` on `/evm`; live testnet currently returns `0xca3f1595a6c25e9f`. Do not use `8001` for native LICN deposits. |
+| Mainnet RPC | `https://rpc.lichen.network` - launch placeholder, excluded from the current testnet-only package |
+| Mainnet WebSocket | `wss://rpc.lichen.network/ws` - launch placeholder, excluded from the current testnet-only package |
 | Testnet RPC | `https://testnet-rpc.lichen.network` |
 | Testnet WebSocket | `wss://testnet-rpc.lichen.network/ws` |
 | Explorer | `https://explorer.lichen.network` |
 
 Source files: `core/src/account.rs`, `core/src/network.rs`, `core/src/evm.rs`,
 `rpc/src/lib.rs`, `seeds.json`, `developers/shared-config.js`.
+
+Native exchange integrations use the string chain ID returned by
+`getNetworkInfo.chain_id` for signing and replay protection. EVM compatibility
+uses the `/evm` `eth_chainId` value derived by `rpc/src/lib.rs` from the native
+chain ID. The `core/src/evm.rs` `LICHEN_CHAIN_ID = 8001` constant is a core
+compatibility/default constant and is not the exchange listing chain ID for
+native LICN deposits.
 
 ## Address Handling
 
