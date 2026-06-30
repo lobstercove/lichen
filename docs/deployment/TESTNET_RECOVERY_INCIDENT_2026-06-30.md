@@ -167,6 +167,25 @@ After `v0.5.216` installed, all four validators reported:
 - local health: `status=behind`, `reason=stale_tip`, slot `6715445`
 - consensus logs: repeated nil polka/nil commit at height `6715446`
 
-The remaining recovery path is the signed `v0.5.217` GitHub release after local
-tests, release signing, and release verification pass. Do not reset or copy
-validator state as a substitute for the verified recovery release.
+Signed `v0.5.217` was then installed from the published GitHub release on all
+four validators and the validator services were restarted together because this
+was a consensus-liveness fix. The rollout preserved state, cold archives, WAL,
+validator keypairs, node identity, known-peer evidence, service secrets, and
+release evidence. No RocksDB directory was copied, no archive was deleted, and
+no state reset was performed.
+
+After `v0.5.217` installed and restarted, all four validators reported:
+
+- `/usr/local/bin/lichen-validator --version`: `lichen-validator 0.5.217`
+- `/usr/local/bin/lichen-validator` hash:
+  `aa7dd5fc1ecef1f1ca331ba2d7cace5df5ec9d502111f0aa14b6ef6bb8c2efba`
+- process executable hash for each running service matched the installed hash;
+- local and public health returned `status=ok`, `reason=ok`;
+- twelve live health samples stayed green, with public RPC advancing through
+  slot `6715694`.
+
+The clean follow-up candidate is `v0.5.218`. It keeps the `v0.5.217` consensus
+liveness fix and refreshes both Cargo lockfiles from vulnerable `anyhow
+1.0.102` to patched `anyhow 1.0.103` so Cargo Audit/Deny can pass without a new
+exception. Do not reset or copy validator state as a substitute for a verified
+release.

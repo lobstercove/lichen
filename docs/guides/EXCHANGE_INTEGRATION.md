@@ -262,7 +262,7 @@ For exchange accounting, use exact raw spore integers.
 
 Current SDK boundary:
 
-- Rust SDK: core dependency is pinned to `=0.5.217`; `cargo check` passed.
+- Rust SDK: core dependency is pinned to `=0.5.218`; `cargo check` passed.
 - Python SDK: acceptable exact-integer SDK path because Python preserves JSON
   integer precision. Archive helpers are available for `get_transaction`,
   `get_block`, `get_transactions_by_address`, `get_transaction_history`, and
