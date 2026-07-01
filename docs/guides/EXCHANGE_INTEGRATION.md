@@ -14,7 +14,7 @@ It is not approved for exchange outreach until every release-blocking gate in th
 tracker is closed and the public testnet exchange run has passed. The
 three-validator local exchange simulation passed from a clean stack with cleanup
 evidence on 2026-06-29, and the public faucet-backed testnet exchange simulation
-passed after the signed `v0.5.219` rollout on 2026-06-30. External publication
+passed after the signed `v0.5.220` rollout on 2026-07-01. External publication
 is currently scoped to testnet-only integration testing until mainnet launch.
 It still depends on the remaining operator approval and final package gates.
 
@@ -23,10 +23,10 @@ It still depends on the remaining operator approval and final package gates.
 Do not send this guide to exchanges while any of these remain open:
 
 - Runtime fee config verification on every public network included in the
-  package. Testnet was verified after `v0.5.219`; mainnet remains pending until
+  package. Testnet was verified after `v0.5.220`; mainnet remains pending until
   mainnet launch.
 - Public status page and incident alias approval.
-- Final signed exchange-package release tag.
+- Final external exchange-package publication approval.
 
 ## Current Package Scope
 
@@ -168,7 +168,7 @@ Minimum flow:
 
 Evidence: this flow passed in the three-validator exchange simulation on
 2026-06-29 and in the public faucet-backed testnet exchange simulation after the
-signed `v0.5.219` rollout on 2026-06-30.
+signed `v0.5.220` rollout on 2026-07-01.
 
 ## Withdrawal Model
 
@@ -243,7 +243,7 @@ Exchange policy:
   manual review.
 
 Local finality and the full deposit/withdrawal simulation are validated. Public
-testnet validation also passed after the signed `v0.5.219` rollout: the public
+testnet validation also passed after the signed `v0.5.220` rollout: the public
 simulation funded a customer through the faucet, detected deposit, waited for
 the standard and high-value operational buffers, swept, withdrew, and reconciled
 history and transaction lookup through finalized slots.
@@ -279,7 +279,7 @@ entries, and account history rows move out of hot storage.
 Evidence is recorded in
 [EXCHANGE_LISTING_READINESS_TRACKER.md](../strategy/EXCHANGE_LISTING_READINESS_TRACKER.md#phase-3-evidence).
 The full deposit/sweep/withdrawal simulation passed locally and on the public
-testnet after the signed `v0.5.219` rollout. Public mainnet archive/history
+testnet after the signed `v0.5.220` rollout. Public mainnet archive/history
 readiness remains a mainnet-launch gate.
 
 ## SDK Compatibility
@@ -288,7 +288,7 @@ For exchange accounting, use exact raw spore integers.
 
 Current SDK boundary:
 
-- Rust SDK: core dependency is pinned to `=0.5.219`; `cargo check` passed.
+- Rust SDK: core dependency is pinned to `=0.5.220`; `cargo check` passed.
 - Python SDK: acceptable exact-integer SDK path because Python preserves JSON
   integer precision. Archive helpers are available for `get_transaction`,
   `get_block`, `get_transactions_by_address`, `get_transaction_history`, and
@@ -422,8 +422,8 @@ WebSocket endpoints are configured in `developers/shared-config.js`:
 - Testnet: `wss://testnet-rpc.lichen.network/ws`
 
 Public testnet `subscribeSlots` validation passed against
-`wss://testnet-rpc.lichen.network/ws` after the signed `v0.5.219` rollout on
-2026-06-30. WebSocket notifications are acceptable as a wake-up/freshness signal,
+`wss://testnet-rpc.lichen.network/ws` after the signed `v0.5.220` rollout on
+2026-07-01. WebSocket notifications are acceptable as a wake-up/freshness signal,
 but polling archive-backed JSON-RPC remains the canonical exchange credit path
 because it provides idempotent transaction, account-history, and reconciliation
 records.

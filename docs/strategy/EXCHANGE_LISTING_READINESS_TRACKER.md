@@ -3,7 +3,7 @@
 **Created:** 2026-06-29
 **Plan:** [EXCHANGE_LISTING_READINESS_PLAN_2026-06-29.md](./EXCHANGE_LISTING_READINESS_PLAN_2026-06-29.md)
 **Current rollback anchor:** `v0.5.215` per operator note on 2026-06-29
-**Current phase:** Phase 8 - testnet-only package technical gates green; operator approval and final signed package publication remain blocked
+**Current phase:** Phase 8 - testnet-only package technical gates green; operator approval and final external package publication remain blocked
 **Rule:** Do not publish exchange-facing docs, release to public testnet for exchange work, or begin serious exchange outreach while any release-blocker row is open.
 
 ## Gate Status
@@ -14,7 +14,7 @@
 | P0-02 | Version drift documented | Done | Yes | Version drift table below |
 | P0-03 | Version drift resolved for core docs and Rust SDK pin | Done | No | README, mainnet/production runbooks, RPC docs, easy-node docs, Rust SDK pin and lockfile |
 | P0-04 | Chain metadata source map completed | Done | No | Chain metadata source map below |
-| P0-05 | Chain metadata final values verified | In progress | Yes | Explorer routes, logo, rollback release signatures, signed `v0.5.219` release signatures, testnet runtime fee, testnet RPC/WS readiness, current testnet-only scope, EVM wording, raw-spores accounting guidance, public developer-page deployment, CI, and final public technical readiness checked; status approval and final external package publication remain blocked |
+| P0-05 | Chain metadata final values verified | In progress | Yes | Explorer routes, logo, rollback release signatures, signed `v0.5.220` release signatures, testnet runtime fee, testnet RPC/WS readiness, current testnet-only scope, EVM wording, raw-spores accounting guidance, public developer-page deployment, CI, and final public technical readiness checked; status approval and final external package publication remain blocked |
 | P1-01 | Exchange integration guide skeleton | Done | Yes | `docs/guides/EXCHANGE_INTEGRATION.md`, `developers/exchange-integration.html` |
 | P1-02 | Dedicated checklist reviewed | In progress | Yes | This tracker; technical checklist rows are green, remaining blocker rows require operator approval/publication |
 | P1-03 | Chain metadata sheet skeleton | Done | Yes | `docs/guides/EXCHANGE_CHAIN_METADATA.md` |
@@ -31,7 +31,7 @@
 | P5-02 | SDK compatibility boundary verified | Done | No | Rust check passed; JS build passed with documented integer-precision boundary; Python wrapper test passed |
 | P5-03 | Explorer URL patterns verified | Done | No | Source route inspection plus hosted root/account/transaction/block `200` checks on 2026-06-29 |
 | P6-01 | Native LICN integration separated from DEX/custody/wrapped-asset context | Done | No | Phase 6 evidence below; native guide excludes DEX/custody/oracle from base deposit flow |
-| P7-01 | Public testnet exchange run passed | Done | No | Signed `v0.5.219` deployed through the runbook; public RPC/WS/faucet/DEX smoke passed; public faucet-backed exchange simulation passed and wrote `tests/artifacts/exchange-simulation-public-testnet-v0.5.219.json` |
+| P7-01 | Public testnet exchange run passed | Done | No | Signed `v0.5.220` deployed through the runbook; public RPC/WS/faucet/DEX smoke passed; public faucet-backed exchange simulation passed and wrote `tests/artifacts/exchange-simulation-public-testnet-v0.5.220.json` |
 | P8-01 | External listing package reviewed | Blocked | Yes | Technical package gates are green for testnet scope; blocked on status/incident approval and final signed external package publication; mainnet is deferred until mainnet launch handoff and is excluded from the current testnet-only package |
 
 ## Phase 0 Source Map
@@ -71,16 +71,16 @@ These are release-blocking inconsistencies for any exchange-facing package.
 
 | Component | Observed value | Source | Status |
 | --- | --- | --- | --- |
-| Core crate | `0.5.219` | `core/Cargo.toml` | Current signed testnet recovery release |
-| RPC crate | `0.5.219` | `rpc/Cargo.toml` | Current signed testnet recovery release |
-| Validator crate | `0.5.219` | `validator/Cargo.toml` | Current signed testnet recovery release |
-| CLI crate | `0.5.219` | `cli/Cargo.toml` | Current signed testnet recovery release |
-| Root README release text | `v0.5.219` with `v0.5.215` rollback anchor | `README.md` | Updated |
+| Core crate | `0.5.220` | `core/Cargo.toml` | Current signed testnet recovery release |
+| RPC crate | `0.5.220` | `rpc/Cargo.toml` | Current signed testnet recovery release |
+| Validator crate | `0.5.220` | `validator/Cargo.toml` | Current signed testnet recovery release |
+| CLI crate | `0.5.220` | `cli/Cargo.toml` | Current signed testnet recovery release |
+| Root README release text | `v0.5.220` with `v0.5.215` rollback anchor | `README.md` | Updated |
 | Mainnet runbook release text | `v0.5.215` rollback anchor; mainnet is not live and is not part of the testnet recovery release | `docs/deployment/MAINNET_LAUNCH_RUNBOOK.md` | Updated |
-| Production deployment runbook release text | `v0.5.219` current recovery release with `v0.5.215` rollback anchor | `docs/deployment/PRODUCTION_DEPLOYMENT.md` | Updated |
+| Production deployment runbook release text | `v0.5.220` current recovery release with `v0.5.215` rollback anchor | `docs/deployment/PRODUCTION_DEPLOYMENT.md` | Updated |
 | RPC API docs version | `0.5.215` pending exchange-doc package refresh | `docs/guides/RPC_API_REFERENCE.md` | Not part of the current recovery patch |
 | Rust SDK package | `0.1.5` | `sdk/rust/Cargo.toml` | Needs compatibility decision |
-| Rust SDK core dependency | `=0.5.219` plus local `../../core` path | `sdk/rust/Cargo.toml`, `sdk/rust/Cargo.lock` | Updated; `cargo check --manifest-path sdk/rust/Cargo.toml` passed |
+| Rust SDK core dependency | `=0.5.220` plus local `../../core` path | `sdk/rust/Cargo.toml`, `sdk/rust/Cargo.lock` | Updated; `cargo check --manifest-path sdk/rust/Cargo.toml --locked` passed |
 | JS SDK package | `1.0.5` | `sdk/js/package.json`, `sdk/js/README.md` | Build passed; archive wrappers added; not approved for exchange accounting until lossless u64 parsing replaces native JSON number parsing |
 | Python SDK package | `1.0.0` | `sdk/python/pyproject.toml`, `sdk/python/README.md` | Exact JSON integer path; archive wrappers added and tested |
 
@@ -95,7 +95,7 @@ This table names the source of truth. It is not yet the final external metadata 
 | Native decimals | `9` | `Account::licn_to_spores`, token docs, RPC examples | Source mapped |
 | Base unit | `spore`; `1 LICN = 1,000,000,000 spores` | `core/src/account.rs` | Source mapped |
 | Fee unit | Native LICN spores | `core/src/processor/fees.rs`, `core/src/genesis.rs` | Source mapped |
-| Default base fee | `1,000,000` spores (`0.001 LICN`) | `core/src/genesis.rs`, `getFeeConfig` at runtime | Public testnet runtime value verified after signed `v0.5.219` rollout on 2026-06-30: `base_fee_spores = 1000000` |
+| Default base fee | `1,000,000` spores (`0.001 LICN`) | `core/src/genesis.rs`, `getFeeConfig` at runtime | Public testnet runtime value verified after signed `v0.5.220` rollout on 2026-07-01: `base_fee_spores = 1000000` |
 | Native mainnet chain ID | `lichen-mainnet-1` | `seeds.json`, `core/src/network.rs` | Source mapped |
 | Native testnet chain ID | `lichen-testnet-1` | `seeds.json`, `core/src/network.rs` | Source mapped |
 | EVM compatibility chain ID | Query `/evm` `eth_chainId` at runtime; live public testnet returned `0xca3f1595a6c25e9f` on 2026-06-30. `8001` is a core compatibility/default constant and must not be published as the native LICN listing chain ID. | `core/src/evm.rs`, `rpc/src/lib.rs`, public testnet `eth_chainId` | Source mapped and wording reconciled |
@@ -103,20 +103,20 @@ This table names the source of truth. It is not yet the final external metadata 
 | EVM address mapping | `0x` plus Keccak-derived 20-byte address from native 32-byte pubkey | `core/src/account.rs` | Source mapped |
 | Mainnet RPC URL | `https://rpc.lichen.network` | `seeds.json`, `developers/shared-config.js`, `core/src/network.rs`, mainnet launch runbook | Launch placeholder; excluded from current testnet-only package until mainnet launch handoff passes |
 | Mainnet WebSocket URL | `wss://rpc.lichen.network/ws` | `developers/shared-config.js`, deployment docs, mainnet launch runbook | Launch placeholder; excluded from current testnet-only package until mainnet launch handoff passes |
-| Testnet RPC URL | `https://testnet-rpc.lichen.network` | `seeds.json`, `developers/shared-config.js`, `core/src/network.rs` | Healthy after signed `v0.5.219` rollout; twelve-sample public watch advanced from slot `6763900` to `6764099` with `status = ok` and block age `0-1s` |
-| Testnet WebSocket URL | `wss://testnet-rpc.lichen.network/ws` | `developers/shared-config.js`, deployment docs | Application-level `subscribeSlots` smoke passed after signed `v0.5.219` rollout |
+| Testnet RPC URL | `https://testnet-rpc.lichen.network` | `seeds.json`, `developers/shared-config.js`, `core/src/network.rs` | Healthy after signed `v0.5.220` rollout; postdeploy public cadence sampled `337.3ms/block`, `getMetrics.observed_block_interval_ms = 304`, and `avg_block_time_ms = 330` |
+| Testnet WebSocket URL | `wss://testnet-rpc.lichen.network/ws` | `developers/shared-config.js`, deployment docs | Public readiness WebSocket check passed after signed `v0.5.220` rollout |
 | Explorer URL | `https://explorer.lichen.network` | `seeds.json`, `developers/shared-config.js`, `explorer/js/*.js` | Verified: public templates are `/address?address=...`, `/transaction?sig=...`, and `/block?slot=...` |
 | Logo asset | Public asset: `https://lichen.network/Lichen_Logo_256.png`; repo asset exists at `website/Lichen_Logo_256.png` | `website/`, deployed site config | Verified public PNG: 256x256, 45,415 bytes, SHA-256 matches repo asset |
 | Status/monitoring page | Candidate app: `https://monitoring.lichen.network` | Monitoring app/deployment docs | Public monitoring page is reachable but not operator-approved as exchange status page |
 | Release signer | `8HitBNnh8qbhfne5NCv2yHrQFoD6xbmHcWaUSgCGtsk` | `deploy/release-trust-anchor.json` | Source mapped |
-| Release signatures | `SHA256SUMS.sig` signed by release signer; verification via `scripts/verify-release-checksums.mjs` | `scripts/sign-release.sh`, `scripts/verify-release-checksums.mjs`, `.github/workflows/release.yml` | Verified for rollback tag `v0.5.215` and current signed testnet recovery tag `v0.5.219`; final external docs package still required |
+| Release signatures | `SHA256SUMS.sig` signed by release signer; verification via `scripts/verify-release-checksums.mjs` | `scripts/sign-release.sh`, `scripts/verify-release-checksums.mjs`, `.github/workflows/release.yml` | Verified for rollback tag `v0.5.215` and current signed testnet recovery tag `v0.5.220`; final external docs package still required |
 
 ## Open Phase 0 Blockers
 
 | ID | Blocker | Impact | Required next step |
 | --- | --- | --- | --- |
 | B0-08 | Status page is not operator-approved as the exchange status page | Listing metadata incomplete; exchanges need an official incident URL and update policy | Choose/approve the public status URL and update cadence |
-| B0-10 | Final exchange package release tag is not selected | Exchange docs cannot link to a stable package artifact yet | Cut or choose the signed exchange-package release tag after blockers close |
+| B0-11 | Final external exchange package is not published | Exchange outreach cannot begin until operator approvals are closed and the package is published intentionally | Publish the final external package after status page and incident aliases are approved |
 
 ## Resolved Blockers
 
@@ -178,7 +178,7 @@ SDK compatibility validation ran on 2026-06-29.
 
 | Check | Result |
 | --- | --- |
-| Rust SDK | `cargo check --manifest-path sdk/rust/Cargo.toml` passed after pinning `lobstercove-lichen-core = "=0.5.219"` |
+| Rust SDK | `cargo check --manifest-path sdk/rust/Cargo.toml --locked` passed after pinning `lobstercove-lichen-core = "=0.5.220"` |
 | JavaScript SDK | `npm run build` passed in `sdk/js` |
 | JavaScript exchange boundary | `sdk/js/README.md` now states the SDK is not approved for exchange accounting because native JSON parsing cannot preserve all u64 spore values |
 | JavaScript archive helpers | Added `getTransactionsByAddress` and `getAccountTxCount`; existing `getTransaction`, `getBlock`, and `getTransactionHistory` remain available |
@@ -212,10 +212,10 @@ validator stack.
 | Rollback release page | `https://github.com/lobstercove/lichen/releases/tag/v0.5.215` returned HTTP `200`; GitHub API reports `draft = false`, `prerelease = false`, and `published_at = 2026-06-29T00:47:53Z` |
 | Rollback release assets | API lists Linux, macOS, and Windows validator archives plus `SHA256SUMS` and `SHA256SUMS.sig`; checksum and signature assets downloaded successfully |
 | Rollback signature verification | `node scripts/verify-release-checksums.mjs /tmp/lichen-v05215-release` returned `SHA256SUMS PQ signature verified by 8HitBNnh8qbhfne5NCv2yHrQFoD6xbmHcWaUSgCGtsk` |
-| Public readiness gate script | `scripts/qa/exchange_public_readiness.py` writes `tests/artifacts/exchange-public-readiness-report.json`, requires the exchange developer-page content snippets including `testnet-only`, honors `--scope testnet` versus `--scope full`, and fails closed while blocking public endpoint, developer portal, status approval, or package-tag gates remain open |
+| Public readiness gate script | `scripts/qa/exchange_public_readiness.py` writes `tests/artifacts/exchange-public-readiness-report.json`, requires the exchange developer-page content snippets including `testnet-only`, honors `--scope testnet` versus `--scope full`, and fails closed while blocking public endpoint, developer portal, status approval, or release-selection gates remain open |
 | Public readiness gate unit tests | `python3 scripts/qa/test_exchange_public_readiness.py` passed (`5` tests): stale RPC health fails, stale/generic developer page fails, complete developer page passes, PNG dimension parsing is guarded, and testnet/full package scope controls mainnet readiness |
 | Public readiness gate result before recovery | Failed as expected on 2026-06-29 after the stricter check: testnet RPC stale/readiness-gated (`slot = 6708256`, `block_age_secs = 22561`), public developer exchange page content missing, status page not operator-approved, final package tag not selected, and full-scope mainnet RPC/WS readiness not yet available |
-| Public readiness gate result after recovery and page deploy | Testnet public RPC health, `getFeeConfig`, finalized-slot, latest-block, WebSocket, explorer, logo, rollback release API, and the deployed developer exchange page passed; the current testnet-only gate still fails closed on status page approval and final external package publication |
+| Public readiness gate result after `v0.5.220` deploy | Testnet public RPC health, `getFeeConfig`, finalized-slot, latest-block, WebSocket, explorer, logo, rollback release API, deployed developer exchange page, and selected release tag passed; the current testnet-only gate still fails closed only on status page approval |
 | Public readiness state on 2026-06-30 | Testnet public/local health was stale at slot `6715444`; signed `v0.5.217` restored liveness, and signed `v0.5.219` completed the clean faucet-signing and exchange-simulation follow-up with all four validators on the signed release |
 | Public DNS check | `testnet-rpc.lichen.network`, `rpc.lichen.network`, and `developers.lichen.network` resolve to Cloudflare addresses; dedicated `testnet-ws.lichen.network` and `ws.lichen.network` resolve directly to validator VPS IPs, so the exchange docs continue to advertise only RPC-hosted `/ws` endpoints |
 | Testnet VPS service check before recovery | Operator-approved SSH evidence showed all four `lichen-validator-testnet` services active on `v0.5.215` with `--archive-mode --cold-store /var/lib/lichen/archive-testnet`; all four binaries had SHA-256 `e7842eb8533e55e91060ca744e9a130f5fb658062623a3e6940a1f9dd474683e` |
@@ -225,29 +225,29 @@ validator stack.
 | Testnet recovery result | Five-sample cluster watch showed all four validators recovered to `status = ok` and advanced fresh slots through `6708526`-`6708536`; public testnet `getHealth`, `getFeeConfig`, finalized-slot, latest-block, and WebSocket checks passed |
 | Testnet recovery evidence path | Ignored local evidence stored under `evidence/exchange-readiness/live-20260629T154831Z/`, including pre/post RPC snapshots, journals, restart record, cluster watch, public page capture, and public readiness report |
 | Developer portal deploy audit | Added an exchange-page assertion to `scripts/qa/test_frontend_asset_integrity.js`; `bash scripts/deploy-cloudflare-pages.sh developers` reran the audit (`359 passed, 0 failed`) and deployed the updated page to Cloudflare Pages |
-| Current public testnet scope check | `exchange_public_readiness.py --scope testnet` initially sampled public `getHealth` with `block_age_secs = 100`; immediate host checks showed all four validators and direct-host HTTPS routes healthy at slots `6784864`-`6784868` with block age `0-1s`. A public-domain rerun advanced slots `6784884`-`6784922` with block age `1-10s`. After developer portal deployment, final reruns passed all technical and public-content gates, then failed closed only on the expected operator/package blockers: status approval and final package tag. Latest report: `/tmp/lichen-exchange-public-readiness-final.json` with testnet health `status = ok`, slot `6793113`, block age `1s`, `getFeeConfig`, finalized slot, latest block, public WebSocket, explorer routes, developer exchange page, monitoring candidate page, logo, and rollback release API all passing. |
+| Current public testnet scope check | After the signed `v0.5.220` deploy and developer portal redeploy, `exchange_public_readiness.py --scope testnet` passed testnet public RPC health, `getFeeConfig`, finalized slot, latest block, public WebSocket, explorer routes, developer exchange page, monitoring candidate page, logo, rollback release API, and selected release tag. It still fails closed only on the expected operator blocker: status-page approval. Latest report: `tests/artifacts/exchange-public-readiness-v0.5.220-postdeploy-after-docs.json`. |
 | Public testnet pace after exchange-docs commit | 45/45 documented public RPC `getHealth` samples succeeded against `https://testnet-rpc.lichen.network`; slots advanced from `6792393` to `6792586`, block age stayed `0-1s`, and estimated cadence was `228.0ms/slot`. Public HTTP latency from the runner location was p50 `460.5ms`, min `452.0ms`, max `935.4ms`; this separates healthy chain cadence from public edge/network latency. |
 | Final CI after exchange-docs commit | GitHub Actions CI run `28444514913` for commit `c2ef5ad4873a582c3fd5ad459e70a2fae07e79a1` completed successfully. Green jobs: Prediction Market Tests, Cargo Deny, Expected Contract Lockfile, Test, JS and Python Dependency Health, Cargo Audit, Clippy, Rust SBOM, Wallet Extension, WASM Contract Builds, Format, Docker Build, and Integration Tests. Integration built release validator tooling, started a local validator, and ran RPC integration, CLI integration, deterministic E2E smoke, and full RPC/DEX REST coverage. |
 | Final local QA after exchange-docs commit | `python3 scripts/qa/test_exchange_public_readiness.py` passed `5` tests; `node scripts/qa/test_frontend_asset_integrity.js` passed `359` checks; local `cargo test --workspace` passed before the CI test job completed. |
 
 ## Phase 7 Public Testnet Evidence
 
-Public testnet validation ran on 2026-06-30 after the signed `v0.5.219` rollout.
+Public testnet validation ran on 2026-07-01 after the signed `v0.5.220` rollout.
 
 | Check | Result |
 | --- | --- |
-| Signed release | `v0.5.219` GitHub release published, not draft, not prerelease |
+| Signed release | `v0.5.220` GitHub release published, not draft, not prerelease |
 | Release signature | `SHA256SUMS` and `SHA256SUMS.sig` verified against signer `8HitBNnh8qbhfne5NCv2yHrQFoD6xbmHcWaUSgCGtsk` |
 | Runbook deployment | `scripts/rolling-release-deploy.sh testnet` installed the release without state reset, RocksDB copy, archive deletion, key replacement, or clean-slate redeploy |
 | Verify-only runbook | Completed `RELEASE VERIFY COMPLETE`; installed validator, custody, and faucet binaries matched signed release archive hashes on all four hosts |
-| Live host versions | All four hosts reported `/usr/local/bin/lichen-validator --version = lichen-validator 0.5.219` and `/usr/local/bin/lichen --version = lichen 0.5.219` |
+| Live host versions | All four hosts reported `/usr/local/bin/lichen-validator --version = lichen-validator 0.5.220` and `/usr/local/bin/lichen --version = lichen 0.5.220` |
 | Live host health | All four local RPC health checks returned `status = ok`; all four `lichen-faucet.service` units were active |
-| Public RPC progression | Twelve-sample watch advanced from slot `6763900` to `6764099`; every health sample returned `status = ok` with block age `0-1s` |
-| Public WebSocket | `wss://testnet-rpc.lichen.network/ws` accepted `subscribeSlots` and returned subscription id `1` |
+| Public RPC progression | Postdeploy public cadence advanced from slot `6833035` to `6833096` across 20.573s, estimated `337.3ms/block`; public `getMetrics` returned `observed_block_interval_ms = 304`, `avg_block_time_ms = 330`, and `validator_count = 4` |
+| Public WebSocket | `wss://testnet-rpc.lichen.network/ws` passed the public readiness WebSocket check |
 | Public faucet | `https://faucet.lichen.network/health` returned `OK`; `/faucet/status` returned faucet address and balance |
 | Public DEX/oracle smoke | `/api/v1/oracle/prices` returned fresh wSOL and wBTC feeds; `/api/v1/pairs/2/candles?interval=60&limit=4` returned candle rows |
 | Public exchange simulation | `EXCHANGE_SIM_FUNDING_MODE=faucet RPC_URL=https://testnet-rpc.lichen.network EXCHANGE_SIM_FAUCET_URL=https://faucet.lichen.network ./.venv/bin/python scripts/qa/exchange_simulation.py` passed |
-| Public exchange report | `tests/artifacts/exchange-simulation-public-testnet-v0.5.219.json` recorded customer funding, deposit, finalized transaction lookup, account history, finality buffers, sweep, withdrawal, CLI smoke, and reconciliation |
+| Public exchange report | `tests/artifacts/exchange-simulation-public-testnet-v0.5.220.json` recorded customer funding, deposit, finalized transaction lookup, account history, finality buffers, sweep, withdrawal, CLI smoke, and reconciliation |
 
 ## Phase 6 Native Scope Evidence
 
@@ -308,7 +308,7 @@ Phase 1 created the external-package skeleton without marking it exchange-approv
 
 ## Current Verification Pass
 
-Latest verification ran on 2026-06-30 after the signed `v0.5.219` rollout.
+Latest verification ran on 2026-07-01 after the signed `v0.5.220` rollout.
 Local, CI, release, deployment, and public testnet checks are green for testnet.
 External outreach remains blocked by the operator/final-package gates listed
 above. Mainnet is deliberately deferred until mainnet launch.
@@ -343,14 +343,14 @@ above. Mainnet is deliberately deferred until mainnet launch.
 | `cargo test -p lichen-validator --bin lichen-validator -- --nocapture` | Passed: `334 passed; 0 failed` |
 | `bash tests/local-multi-validator-test.sh 4` | Passed; joiner restart preserved keypair, avoided genesis reimport, caught up with drift `0`, and cleaned up |
 | Local faucet-backed exchange simulation | Passed against clean local testnet stack |
-| Release workflow for tag `v0.5.219` | Passed; release artifacts published, checksummed, signed, downloaded, and verified |
-| Live runbook verify-only for `v0.5.219` | Passed: `RELEASE VERIFY COMPLETE` |
-| Public testnet exchange simulation | Passed; report written to `tests/artifacts/exchange-simulation-public-testnet-v0.5.219.json` |
+| Release workflow for tag `v0.5.220` | Passed; release artifacts published, checksummed, signed, downloaded, and verified |
+| Live runbook verify-only for `v0.5.220` | Passed: `RELEASE VERIFY COMPLETE` |
+| Public testnet exchange simulation | Passed; report written to `tests/artifacts/exchange-simulation-public-testnet-v0.5.220.json` |
 | Public RPC/faucet final sample | Passed: `getHealth.status = ok`, slot `6772418`, `block_age_secs = 0`; faucet `/health = OK` |
 
 ## Next Ordered Work
 
-1. Resolve operations contacts/status page approval and select the final external package publication target.
-2. Re-run `scripts/qa/exchange_public_readiness.py --scope testnet --status-approved --package-release-tag <tag>` after operator approvals and package-tag selection; testnet RPC/WS/faucet/exchange simulation do not need rework unless code or deployment changes.
+1. Resolve operations contacts/status page approval and publish the final external package intentionally.
+2. Re-run `scripts/qa/exchange_public_readiness.py --scope testnet --status-approved --release-tag-selected` after operator approvals; testnet RPC/WS/faucet/exchange simulation do not need rework unless code or deployment changes.
 3. Prepare the external listing package only after the remaining release blockers close.
 4. At mainnet launch, run the mainnet launch exchange handoff gate and `scripts/qa/exchange_public_readiness.py --scope full` before publishing any mainnet exchange package.

@@ -5,6 +5,23 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.220] - 2026-07-01
+
+### Fixed
+- Restores the bounded missed-proposer grace used by the stable `v0.5.215`
+  timing profile while preserving the full configured propose timeout for the
+  selected proposer.
+- Adds startup-only stale-height WAL round rendezvous so a restarted validator
+  can rejoin an already-stale BFT height without signing skipped intermediate
+  rounds or replaying hours of obsolete timeout history.
+
+### Verified
+- Passed focused validator timing/restart tests, consensus tests, multi-crate
+  checks, Cargo Deny, deployment-env QA, local 3-validator stop/restart/rejoin,
+  local 4-validator topology restart, signed release verification, rolling
+  testnet deployment, runbook verify-only, public RPC cadence, DEX/oracle smoke,
+  and public faucet-backed exchange simulation.
+
 ## [0.5.219] - 2026-06-30
 
 ### Fixed
