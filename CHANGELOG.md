@@ -5,6 +5,24 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.221] - 2026-07-01
+
+### Fixed
+- Removes the sub-slot remote-proposer timeout from the active BFT path so
+  validators wait the configured proposal window before nil-voting when the
+  designated proposer is delayed by catch-up or archive-range traffic.
+- Reduces block-range response chunks from the protocol cap to the
+  initial-sync window so validator catch-up cannot monopolize multi-megabyte
+  QUIC streams while live proposal/vote messages are in flight.
+
+### Verified
+- Passed `cargo fmt --check`, `cargo check --workspace --release`,
+  `cargo deny check`, focused validator regression tests, the full
+  `cargo test -p lichen-validator --release` suite, release binary build, and
+  a local 4-validator stop/restart/rejoin matrix covering a joiner restart,
+  seed restart with the other three validators finalizing, and same-tip
+  all-validator restart from preserved local state.
+
 ## [0.5.220] - 2026-07-01
 
 ### Fixed

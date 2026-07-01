@@ -454,7 +454,9 @@ assert(
     productionDeployment.includes('mandatory 13 DEX CLOB pairs, AMM pools, and router routes') &&
     productionDeployment.includes('wBTC/lUSD') &&
     productionDeployment.includes('wBTC/LICN') &&
-    productionDeployment.includes(`${productionReleasePair[1]}\` keeps the \`${productionReleasePair[2]}\` 400ms-slot BFT timing profile`) &&
+    productionDeployment.includes(`${productionReleasePair[1]}\` keeps the configured 800ms propose, 500ms prevote, 500ms precommit, and a 5s max phase timeout`) &&
+    productionDeployment.includes('removes the sub-slot remote-proposer timeout') &&
+    productionDeployment.includes('reduces block-range response chunks') &&
     productionDeployment.includes('fixes successful LiveSync catch-up cooldown reset') &&
     productionDeployment.includes('800ms propose, 500ms prevote, 500ms precommit, and a 5s max phase timeout') &&
     productionDeployment.includes('guarded public-history merge admin path') &&

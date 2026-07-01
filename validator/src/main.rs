@@ -535,7 +535,7 @@ const FUTURE_CONSENSUS_PROPOSAL_BUFFER_HEIGHTS: u64 = 10;
 /// QoS: per-peer block-range serving token bucket, measured in blocks.
 const BLOCK_RANGE_SERVE_BURST_BLOCKS: u64 = 5000;
 const BLOCK_RANGE_SERVE_REFILL_BLOCKS_PER_SEC: u64 = 1000;
-const BLOCK_RANGE_RESPONSE_BATCH_BLOCKS: usize = sync::P2P_BLOCK_RANGE_LIMIT as usize;
+const BLOCK_RANGE_RESPONSE_BATCH_BLOCKS: usize = sync::INITIAL_SYNC_BLOCK_RANGE_LIMIT as usize;
 
 /// QoS: per-peer snapshot serving token bucket, measured in request units.
 const SNAPSHOT_SERVE_BURST_UNITS: u64 = 32;
@@ -5598,18 +5598,6 @@ fn duration_millis_u64(duration: Duration) -> u64 {
     duration.as_millis().min(u128::from(u64::MAX)) as u64
 }
 
-const FAST_MISSED_PROPOSER_MIN_GRACE_MS: u64 = 150;
-const FAST_MISSED_PROPOSER_MAX_GRACE_MS: u64 = 300;
-
-fn missed_proposer_grace_timeout(configured_timeout: Duration, slot_duration_ms: u64) -> Duration {
-    let configured_timeout_ms = duration_millis_u64(configured_timeout).max(1);
-    let slot_grace_ms = slot_duration_ms.saturating_div(2).clamp(
-        FAST_MISSED_PROPOSER_MIN_GRACE_MS,
-        FAST_MISSED_PROPOSER_MAX_GRACE_MS,
-    );
-    Duration::from_millis(configured_timeout_ms.min(slot_grace_ms))
-}
-
 fn propose_timeout_delay(slot_boundary_delay_ms: u64, configured_timeout: Duration) -> Duration {
     let configured_timeout_ms = duration_millis_u64(configured_timeout).max(1);
     let delay_ms = slot_boundary_delay_ms.saturating_add(configured_timeout_ms);
@@ -5619,15 +5607,13 @@ fn propose_timeout_delay(slot_boundary_delay_ms: u64, configured_timeout: Durati
 fn propose_timeout_delay_for_role(
     slot_boundary_delay_ms: u64,
     configured_timeout: Duration,
-    slot_duration_ms: u64,
-    local_proposer: bool,
+    _slot_duration_ms: u64,
+    _local_proposer: bool,
 ) -> Duration {
-    let timeout = if local_proposer {
-        configured_timeout
-    } else {
-        missed_proposer_grace_timeout(configured_timeout, slot_duration_ms)
-    };
-    propose_timeout_delay(slot_boundary_delay_ms, timeout)
+    // All validators must give the designated proposer the configured network
+    // window. A sub-slot "missed proposer" grace can nil-vote before a valid
+    // proposal arrives when a peer is catching up or serving archive ranges.
+    propose_timeout_delay(slot_boundary_delay_ms, configured_timeout)
 }
 
 const STALE_BFT_RESTART_RENDEZVOUS_AFTER_SECS: u64 = 120;
@@ -18181,9 +18167,9 @@ async fn run_validator() {
                 }
 
                 if !blocks.is_empty() {
-                    // Send responses at the protocol cap. Restart catch-up uses
-                    // 500-block requests, and splitting them into ten tiny
-                    // messages adds latency without changing validation safety.
+                    // Send responses below the protocol cap so catch-up traffic
+                    // cannot monopolize large QUIC streams while consensus
+                    // proposal/vote messages are trying to advance the live tip.
                     let batch_size = BLOCK_RANGE_RESPONSE_BATCH_BLOCKS.min(blocks.len()).max(1);
                     info!(
                         "📤 Sending {} blocks to {} (batch_size={})",
@@ -25276,27 +25262,7 @@ mod tests {
     }
 
     #[test]
-    fn missed_proposer_grace_timeout_is_bounded_by_slot_cadence() {
-        assert_eq!(
-            missed_proposer_grace_timeout(Duration::from_millis(800), 400),
-            Duration::from_millis(200)
-        );
-        assert_eq!(
-            missed_proposer_grace_timeout(Duration::from_millis(800), 100),
-            Duration::from_millis(150)
-        );
-        assert_eq!(
-            missed_proposer_grace_timeout(Duration::from_millis(800), 1_200),
-            Duration::from_millis(300)
-        );
-        assert_eq!(
-            missed_proposer_grace_timeout(Duration::from_millis(80), 400),
-            Duration::from_millis(80)
-        );
-    }
-
-    #[test]
-    fn propose_timeout_delay_for_role_keeps_local_proposer_safety_window() {
+    fn propose_timeout_delay_for_role_preserves_remote_proposer_window() {
         let configured = Duration::from_millis(800);
 
         assert_eq!(
@@ -25305,12 +25271,22 @@ mod tests {
         );
         assert_eq!(
             propose_timeout_delay_for_role(100, configured, 400, false),
-            Duration::from_millis(300)
+            Duration::from_millis(900)
         );
         assert_eq!(
             propose_timeout_delay_for_role(0, Duration::from_millis(5_000), 400, false),
-            Duration::from_millis(200)
+            Duration::from_millis(5_000)
         );
+    }
+
+    #[test]
+    fn block_range_response_batch_uses_small_consensus_safe_chunks() {
+        assert_eq!(
+            BLOCK_RANGE_RESPONSE_BATCH_BLOCKS,
+            sync::INITIAL_SYNC_BLOCK_RANGE_LIMIT as usize
+        );
+        assert!(BLOCK_RANGE_RESPONSE_BATCH_BLOCKS > 0);
+        assert!(BLOCK_RANGE_RESPONSE_BATCH_BLOCKS as u64 <= sync::P2P_BLOCK_RANGE_LIMIT);
     }
 
     #[test]
