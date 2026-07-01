@@ -5,7 +5,7 @@
 **Integration guide:** [../guides/EXCHANGE_INTEGRATION.md](../guides/EXCHANGE_INTEGRATION.md)
 **Metadata sheet:** [../guides/EXCHANGE_CHAIN_METADATA.md](../guides/EXCHANGE_CHAIN_METADATA.md)
 **Tracker:** [../strategy/EXCHANGE_LISTING_READINESS_TRACKER.md](../strategy/EXCHANGE_LISTING_READINESS_TRACKER.md)
-**Rollback anchor:** `v0.5.215`, per operator note on 2026-06-29
+**Rollback anchor:** `v0.5.221`, per operator update on 2026-07-01
 
 This pack defines the operational material an exchange expects before listing
 native LICN. The current publication scope is testnet-only integration testing
@@ -17,7 +17,8 @@ final package evidence is still missing.
 Do not include this pack in an external listing package until:
 
 - Incident contact aliases are approved.
-- Status page URL is public and monitored.
+- Status page URL is public or operator-private as disclosed, monitored, and
+  approved for exchange use.
 - Public RPC and WebSocket endpoints for every network included in the package
   are healthy from outside the operator network. The current package includes
   testnet only.
@@ -38,7 +39,7 @@ Do not include this pack in an external listing package until:
 | Testnet RPC | `https://testnet-rpc.lichen.network` | Healthy after signed `v0.5.221` recovery rollout on 2026-07-01; sustained public cadence sampled `370.0ms/block`, `getMetrics.observed_block_interval_ms = 372`, and `avg_block_time_ms = 380`; public exchange simulation passed | `seeds.json`, `developers/shared-config.js`, tracker Phase 5 evidence |
 | Testnet WebSocket | `wss://testnet-rpc.lichen.network/ws` | Public readiness WebSocket check passed after signed `v0.5.221` recovery rollout on 2026-07-01; live slot notifications advanced `6871609` -> `6871611` | `developers/shared-config.js` |
 | Explorer | `https://explorer.lichen.network` | Route templates verified | `seeds.json`, `developers/shared-config.js`, `explorer/js/*.js` |
-| Status page | Candidate: `https://monitoring.lichen.network` | Public monitoring page reachable; not operator-approved as exchange status page | Operator decision required |
+| Status page | `https://monitoring.lichen.network` | Operator-approved exchange status page for the current testnet-only package on 2026-07-01; private operator surface | Operator update on 2026-07-01 |
 | Developer portal exchange page | `https://developers.lichen.network/exchange-integration` | Deployed and verified after the scope update; public page contains `testnet-only`, `mainnet launch exchange handoff`, and operations-pack links | Cloudflare Pages deployment and tracker verification |
 | GitHub exchange docs | `docs/guides/EXCHANGE_INTEGRATION.md` | Draft | Phase 1 docs work |
 
@@ -47,22 +48,30 @@ Do not include this pack in an external listing package until:
 Do not publish personal emails, private keys, private RPC URLs, or ad hoc chat
 handles in exchange docs.
 
-Required external aliases:
+Known public inboxes in the repository are `security@lichen.network`
+(`SECURITY.md`) and `hello@lichen.network` (`README.md`). They are not enough by
+themselves for exchange operations unless the operator explicitly approves which
+inbox owns each escalation path below and what acknowledgement/update policy
+applies.
 
-| Alias | Purpose | Status |
-| --- | --- | --- |
-| Security incident alias | Vulnerability, compromise, signing, or fund-safety issue | Blocked on operator approval |
-| Exchange operations alias | Deposits, withdrawals, RPC/archive, maintenance coordination | Blocked on operator approval |
-| Business/listing alias | Listing paperwork and relationship management | Blocked on operator approval |
-| Status page | Public incident and maintenance updates | Blocked on operator approval |
+Required exchange contact aliases:
+
+| Alias class | Minimum purpose | Candidate/source | Status |
+| --- | --- | --- | --- |
+| Security incident alias | Vulnerability reports, suspected key compromise, signing compromise, bridge/custody fund-safety issues, and coordinated disclosure | Existing `security@lichen.network` from `SECURITY.md` | Needs operator approval for exchange escalation use, acknowledgement target, and authenticated outbound response policy |
+| Exchange operations alias | Deposit/withdrawal incidents, RPC/WebSocket/archive degradation, finality delays, maintenance coordination, stuck transaction investigation, and exchange-side pause/resume notices | Dedicated alias recommended, for example `exchange-ops@lichen.network`; no dedicated alias is documented yet | Blocked until alias/inbox and owner are approved |
+| Business/listing alias | Listing paperwork, legal/compliance coordination, market/asset metadata updates, and relationship management | Existing `hello@lichen.network` from `README.md` or a dedicated listings alias | Blocked until alias/inbox and owner are approved |
+| Status page contact surface | Incident and maintenance updates that exchanges can cite during operational events | `https://monitoring.lichen.network` | Approved as the status page on 2026-07-01; still needs explicit update cadence and owner |
 
 Required escalation fields before publication:
 
+- Alias/inbox address and owner.
 - Acknowledgement target for critical incidents.
 - Update cadence during active incidents.
 - Maintenance notice period.
 - Emergency exception policy.
 - PGP/PQ signing or authenticated-contact policy if used.
+- Backup contact path if the primary alias is unavailable.
 
 ## Status Page Policy
 
@@ -90,11 +99,12 @@ LICN deposits, the same status surface must separately report:
 These optional ecosystem surfaces must not be presented as prerequisites for
 native LICN deposits or withdrawals.
 
-The candidate public monitoring surface `https://monitoring.lichen.network`
-returned HTTP `200` on 2026-06-29 and served the `Lichen Mission Control -
-Network Monitoring` page. This is not enough for exchange publication until an
-operator approves it as the official status page and defines update cadence,
-incident ownership, and maintenance-window policy.
+The monitoring surface `https://monitoring.lichen.network` returned HTTP `200`
+on 2026-06-29 and served the `Lichen Mission Control - Network Monitoring`
+page. The operator approved it on 2026-07-01 as the exchange status page for the
+current testnet-only package. Before publication, record the update cadence,
+incident owner, and maintenance-window policy next to the approved incident
+aliases.
 
 ## Upgrade Policy
 
@@ -110,7 +120,7 @@ External exchange docs must define:
 Current rollback anchor:
 
 ```text
-v0.5.215
+v0.5.221
 ```
 
 Version drift is a release blocker. Root README, mainnet runbook, RPC docs, and
@@ -139,14 +149,15 @@ Current trust-anchor signer:
 8HitBNnh8qbhfne5NCv2yHrQFoD6xbmHcWaUSgCGtsk
 ```
 
-Verified rollback release subset on 2026-06-29:
+Verified rollback-anchor release subset on 2026-07-01:
 
-- `https://github.com/lobstercove/lichen/releases/tag/v0.5.215` returned HTTP
+- `https://github.com/lobstercove/lichen/releases/tag/v0.5.221` returned HTTP
   `200`.
-- GitHub API reports `tag_name = v0.5.215`, `draft = false`,
-  `prerelease = false`, and `published_at = 2026-06-29T00:47:53Z`.
+- GitHub API reports `tag_name = v0.5.221`, `draft = false`, and
+  `prerelease = false`.
 - `SHA256SUMS` and `SHA256SUMS.sig` downloaded from the release.
-- `node scripts/verify-release-checksums.mjs /tmp/lichen-v05215-release`
+- `scripts/verify-release-checksums.mjs` against the downloaded `v0.5.221`
+  release artifacts
   verified signer `8HitBNnh8qbhfne5NCv2yHrQFoD6xbmHcWaUSgCGtsk`.
 
 Current signed recovery release verified on 2026-07-01:
@@ -159,11 +170,11 @@ Current signed recovery release verified on 2026-07-01:
 - `scripts/verify-release-checksums.mjs` verified all archive hashes and the PQ
   signature against signer `8HitBNnh8qbhfne5NCv2yHrQFoD6xbmHcWaUSgCGtsk`.
 
-Pending blocker: publish the external exchange package only after the status
-page and incident aliases are operator-approved.
+Pending blocker: publish the external exchange package only after incident
+aliases are operator-approved and the final package tag is selected.
 
-Current recovery release: `v0.5.221`, with `v0.5.215` retained as the rollback
-anchor until a newer signed rollback point is explicitly recorded.
+Current recovery release and rollback anchor: `v0.5.221`, retained until a newer
+signed rollback point is explicitly recorded.
 
 ## Rollback Policy
 
@@ -179,7 +190,7 @@ Rollback policy must define:
 - Expected effect on deposits and withdrawals.
 - Evidence required before declaring recovery.
 
-Current rule: keep `v0.5.215` as the rollback anchor until a newer signed rollback
+Current rule: keep `v0.5.221` as the rollback anchor until a newer signed rollback
 point is explicitly recorded.
 
 Exchange rollback procedure:
@@ -262,11 +273,12 @@ Observed result:
   finalized-slot, latest-block, and WebSocket upgrade passed.
 
 The public exchange package is still not approved because the current package is
-testnet-only, the status page is not operator-approved, incident aliases are not
-approved, and the final external exchange package has not been published. Mainnet
-RPC/WS readiness is deferred to the mainnet launch exchange handoff gate and
-must be rechecked with the public readiness gate in `--scope full` mode before
-mainnet is added.
+testnet-only, incident aliases are not approved, and the final external exchange
+package has not been published. The status page was approved on 2026-07-01 as
+`https://monitoring.lichen.network` for the current testnet-only package.
+Mainnet RPC/WS readiness is deferred to the mainnet launch exchange handoff gate
+and must be rechecked with the public readiness gate in `--scope full` mode
+before mainnet is added.
 
 Update on 2026-06-30: the public testnet was stale again at slot `6715444`
 while all four services remained active. The signed `v0.5.217` rollout was
@@ -344,7 +356,6 @@ Do not commit private keys or filled production env files as evidence.
 
 | ID | Blocker | Required next step |
 | --- | --- | --- |
-| O-01 | Status page URL not final | Verify deployed monitoring/status surface or select status provider |
 | O-02 | Incident aliases not approved | Define public aliases and escalation windows |
 | O-04 | Final external exchange-package release URLs not attached | Attach the selected docs/package artifacts after operator approvals and package tag selection |
 
@@ -352,10 +363,11 @@ Do not commit private keys or filled production env files as evidence.
 
 | ID | Check | Evidence |
 | --- | --- | --- |
-| O-03 | Current release drift for core docs and Rust SDK pin | Core crates and the Rust SDK pin were updated to `0.5.221`; `v0.5.215` remains the rollback anchor; JS/Python package boundaries are documented in the tracker |
+| O-01 | Status page URL approved | `https://monitoring.lichen.network` approved by the operator on 2026-07-01 for the current testnet-only package |
+| O-03 | Current release drift for core docs and Rust SDK pin | Core crates and the Rust SDK pin were updated to `0.5.221`; `v0.5.221` is the rollback anchor; JS/Python package boundaries are documented in the tracker |
 | O-05 | Local archive/history behavior | Core and RPC archive regressions passed after hot-to-cold migration and reopen |
 | O-07 | Local cleanup evidence | Local stack stop/status/process checks passed; generated credentials, state dirs, manifests, and staging dirs were removed after the local exchange simulation |
-| O-09 | Rollback release checksum/signature verification | `v0.5.215` release checksum and detached PQ signature were verified against `deploy/release-trust-anchor.json` |
+| O-09 | Rollback release checksum/signature verification | `v0.5.221` release checksum and detached PQ signature were verified against `deploy/release-trust-anchor.json` |
 | O-11 | June 29 live testnet consensus incident recovery evidence preserved | Operator-approved evidence-preserving recovery restarted only stale validator `15.204.229.189`; the June 30 recurrence is tracked separately in `docs/deployment/TESTNET_RECOVERY_INCIDENT_2026-06-30.md`; signed `v0.5.217` restored testnet liveness, and signed `v0.5.219` completed the faucet-signing and exchange-simulation follow-up |
 | O-12 | Signed `v0.5.221` testnet recovery release verification | Release artifacts and detached PQ signature verified; all four live hosts installed matching validator, custody, and faucet binaries through the runbook verify-only gate |
 | O-13 | Public testnet exchange simulation | Public faucet-backed simulation passed on `https://testnet-rpc.lichen.network` and wrote `tests/artifacts/exchange-simulation-public-testnet-v0.5.221.json`, covering funding, deposit detection, finalized transaction lookup, account history, operational buffers, sweep, withdrawal, CLI smoke, and reconciliation |

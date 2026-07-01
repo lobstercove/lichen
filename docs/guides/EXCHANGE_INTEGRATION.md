@@ -7,7 +7,7 @@
 **Metadata:** [EXCHANGE_CHAIN_METADATA.md](EXCHANGE_CHAIN_METADATA.md)
 **Address vectors:** [EXCHANGE_ADDRESS_VALIDATION_VECTORS.md](EXCHANGE_ADDRESS_VALIDATION_VECTORS.md)
 **Operations pack:** [../deployment/EXCHANGE_OPERATIONS_PACK.md](../deployment/EXCHANGE_OPERATIONS_PACK.md)
-**Rollback anchor:** `v0.5.215`, per operator note on 2026-06-29
+**Rollback anchor:** `v0.5.221`, per operator update on 2026-07-01
 
 This document is the canonical exchange-facing integration guide for native LICN.
 It is not approved for exchange outreach until every release-blocking gate in the
@@ -25,7 +25,7 @@ Do not send this guide to exchanges while any of these remain open:
 - Runtime fee config verification on every public network included in the
   package. Testnet was verified after `v0.5.221`; mainnet remains pending until
   mainnet launch.
-- Public status page and incident alias approval.
+- Incident/contact alias approval.
 - Final external exchange-package publication approval.
 
 ## Current Package Scope

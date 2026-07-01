@@ -5,7 +5,7 @@
 **Integration guide:** [EXCHANGE_INTEGRATION.md](EXCHANGE_INTEGRATION.md)
 **Address vectors:** [EXCHANGE_ADDRESS_VALIDATION_VECTORS.md](EXCHANGE_ADDRESS_VALIDATION_VECTORS.md)
 **Tracker:** [../strategy/EXCHANGE_LISTING_READINESS_TRACKER.md](../strategy/EXCHANGE_LISTING_READINESS_TRACKER.md)
-**Rollback anchor:** `v0.5.215`, per operator note on 2026-06-29
+**Rollback anchor:** `v0.5.221`, per operator update on 2026-07-01
 
 This sheet is the canonical exchange metadata work area. It must not be sent as a
 final listing sheet until every `Blocked` or `Needs verification` row below is
@@ -40,10 +40,10 @@ listing sheet until the mainnet launch runbook closes its exchange handoff gate.
 | Testnet WebSocket URL | `wss://testnet-rpc.lichen.network/ws` | Public readiness WebSocket upgrade passed after signed `v0.5.221` recovery rollout on 2026-07-01; live slot notifications advanced `6871609` -> `6871611` | `developers/shared-config.js`, tracker Phase 5 metadata evidence |
 | Explorer URL | `https://explorer.lichen.network` | Route templates verified on 2026-06-29 | `seeds.json`, `developers/shared-config.js`, `explorer/js/*.js`, tracker Phase 5 metadata evidence |
 | Logo URL | `https://lichen.network/Lichen_Logo_256.png` | Public asset verified on 2026-06-29: PNG, 256x256, SHA-256 matches repo asset | `website/Lichen_Logo_256.png`, tracker Phase 5 metadata evidence |
-| Status page | Candidate: `https://monitoring.lichen.network` | Public monitoring app reachable; not operator-approved as exchange status page | Operations pack decision required |
-| Release verification | GitHub releases `v0.5.215` and `v0.5.221` have `SHA256SUMS` plus `SHA256SUMS.sig`; PQ signatures verified locally | Rollback release and current signed testnet recovery release verified; final external docs package publication still required | `.github/workflows/release.yml`, `scripts/sign-release.sh`, `scripts/verify-release-checksums.mjs`, GitHub release API |
+| Status page | `https://monitoring.lichen.network` | Operator-approved exchange status page for the current testnet-only package on 2026-07-01; private operator surface | Operations pack policy |
+| Release verification | GitHub release `v0.5.221` has `SHA256SUMS` plus `SHA256SUMS.sig`; PQ signature verified locally | Current signed rollback anchor and testnet recovery release verified; final external docs package publication still required | `.github/workflows/release.yml`, `scripts/sign-release.sh`, `scripts/verify-release-checksums.mjs`, GitHub release API |
 | Release signer | `8HitBNnh8qbhfne5NCv2yHrQFoD6xbmHcWaUSgCGtsk` | Source mapped | `deploy/release-trust-anchor.json` |
-| Current rollback anchor | `v0.5.215` | Operator anchored | Operator note on 2026-06-29 |
+| Current rollback anchor | `v0.5.221` | Operator anchored | Operator update on 2026-07-01 |
 
 ## Native Address Validation
 
@@ -141,16 +141,16 @@ Source-backed release artifacts:
 - Verification helper: `scripts/verify-release-checksums.mjs`
 - Release workflow: `.github/workflows/release.yml`
 
-Verified rollback release metadata on 2026-06-29:
+Verified rollback-anchor release metadata on 2026-07-01:
 
-- Release page: `https://github.com/lobstercove/lichen/releases/tag/v0.5.215`
-- GitHub API fields: `tag_name = v0.5.215`, `draft = false`,
-  `prerelease = false`, `published_at = 2026-06-29T00:47:53Z`.
+- Release page: `https://github.com/lobstercove/lichen/releases/tag/v0.5.221`
+- GitHub release is published, not a draft, and not a prerelease.
 - Assets listed by the API: Linux, macOS, and Windows validator archives,
   `SHA256SUMS`, and `SHA256SUMS.sig`.
 - `SHA256SUMS` and `SHA256SUMS.sig` both downloaded successfully from the
-  `v0.5.215` release.
-- `node scripts/verify-release-checksums.mjs /tmp/lichen-v05215-release`
+  `v0.5.221` release.
+- `scripts/verify-release-checksums.mjs` against the downloaded `v0.5.221`
+  release artifacts
   verified the PQ signature against signer
   `8HitBNnh8qbhfne5NCv2yHrQFoD6xbmHcWaUSgCGtsk`.
 
@@ -171,7 +171,7 @@ publishing exchange-facing release links outside the repository.
 
 | ID | Blocker | Required evidence |
 | --- | --- | --- |
-| M-06 | Status page not finalized | Operator-approved URL and uptime policy |
+| M-06 | Status page approved | `https://monitoring.lichen.network` operator-approved on 2026-07-01 for the current testnet-only package; incident alias details still belong in the operations pack |
 | M-07 | Final external package publication not approved | Operator-approved publication evidence for the exchange package, not only validator release artifacts |
 
 ## Deferred Mainnet Launch Items
@@ -191,7 +191,7 @@ mandatory before mainnet is included in an external exchange package.
 | --- | --- | --- |
 | M-04 | Explorer route templates | Source route inspection plus hosted `200` checks for root, account, transaction, and block pages on 2026-06-29 |
 | M-05 | Logo URL cache verification | `https://lichen.network/Lichen_Logo_256.png` returned `200`, `image/png`, 45,415 bytes; downloaded file is PNG 256x256 and SHA-256 `bfa0986bc4bde64c3c7ce590782beba78980985f301fbd0fbd4a39dc045ca876`, matching `website/Lichen_Logo_256.png` |
-| M-07 rollback subset | `v0.5.215` rollback release signatures | GitHub release is published, checksum/signature assets downloaded, and `scripts/verify-release-checksums.mjs` verified signer `8HitBNnh8qbhfne5NCv2yHrQFoD6xbmHcWaUSgCGtsk` |
+| M-07 rollback subset | `v0.5.221` rollback-anchor release signatures | GitHub release is published, checksum/signature assets downloaded, and `scripts/verify-release-checksums.mjs` verified signer `8HitBNnh8qbhfne5NCv2yHrQFoD6xbmHcWaUSgCGtsk` |
 | M-02 | Runtime fee value refreshed on public testnet | `getFeeConfig` returned `base_fee_spores = 1000000`, contract/NFT fee fields, and `40/30/10/10/10` fee split after signed `v0.5.221` recovery rollout |
 | M-09 | Testnet RPC/WS readiness after final rollout | Public `getHealth` returned `status = ok`; sustained public cadence sampled `370.0ms/block`; public `getMetrics` returned `observed_block_interval_ms = 372` and `avg_block_time_ms = 380`; WebSocket readiness and live slot notifications passed |
 | M-10 | Current signed testnet recovery release signatures | `v0.5.221` release checksum and detached PQ signature were verified against `deploy/release-trust-anchor.json`; live runbook verify-only completed `RELEASE VERIFY COMPLETE` |

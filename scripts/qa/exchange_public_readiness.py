@@ -35,7 +35,7 @@ EXPLORER = "https://explorer.lichen.network"
 LOGO_URL = "https://lichen.network/Lichen_Logo_256.png"
 STATUS_URL = "https://monitoring.lichen.network"
 DEVELOPER_EXCHANGE_URL = "https://developers.lichen.network/exchange-integration"
-ROLLBACK_TAG = "v0.5.215"
+ROLLBACK_TAG = "v0.5.221"
 ROLLBACK_RELEASE_API = (
     "https://api.github.com/repos/lobstercove/lichen/releases/tags/" + ROLLBACK_TAG
 )
