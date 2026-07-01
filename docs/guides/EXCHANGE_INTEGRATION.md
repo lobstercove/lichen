@@ -14,9 +14,10 @@ It is not approved for exchange outreach until every release-blocking gate in th
 tracker is closed and the public testnet exchange run has passed. The
 three-validator local exchange simulation passed from a clean stack with cleanup
 evidence on 2026-06-29, and the public faucet-backed testnet exchange simulation
-passed after the signed `v0.5.221` recovery rollout on 2026-07-01. External publication
-is currently scoped to testnet-only integration testing until mainnet launch.
-It still depends on the remaining operator approval and final package gates.
+passed after the signed `v0.5.221` recovery rollout on 2026-07-01. External
+publication is currently scoped to testnet-only integration testing until
+mainnet launch. It still depends on the remaining final package publication
+gate.
 
 ## Publication Gate
 
@@ -25,7 +26,6 @@ Do not send this guide to exchanges while any of these remain open:
 - Runtime fee config verification on every public network included in the
   package. Testnet was verified after `v0.5.221`; mainnet remains pending until
   mainnet launch.
-- Incident/contact alias approval.
 - Final external exchange-package publication approval.
 
 ## Current Package Scope

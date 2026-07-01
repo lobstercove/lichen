@@ -171,7 +171,6 @@ publishing exchange-facing release links outside the repository.
 
 | ID | Blocker | Required evidence |
 | --- | --- | --- |
-| M-06 | Status page approved | `https://monitoring.lichen.network` operator-approved on 2026-07-01 for the current testnet-only package; incident alias details still belong in the operations pack |
 | M-07 | Final external package publication not approved | Operator-approved publication evidence for the exchange package, not only validator release artifacts |
 
 ## Deferred Mainnet Launch Items
@@ -189,6 +188,7 @@ mandatory before mainnet is included in an external exchange package.
 
 | ID | Check | Evidence |
 | --- | --- | --- |
+| M-06 | Status page and incident contacts approved | `https://monitoring.lichen.network` operator-approved on 2026-07-01 for the current testnet-only package; `security@lichen.network`, `exchange-ops@lichen.network`, and `business@lichen.network` recorded in the operations pack |
 | M-04 | Explorer route templates | Source route inspection plus hosted `200` checks for root, account, transaction, and block pages on 2026-06-29 |
 | M-05 | Logo URL cache verification | `https://lichen.network/Lichen_Logo_256.png` returned `200`, `image/png`, 45,415 bytes; downloaded file is PNG 256x256 and SHA-256 `bfa0986bc4bde64c3c7ce590782beba78980985f301fbd0fbd4a39dc045ca876`, matching `website/Lichen_Logo_256.png` |
 | M-07 rollback subset | `v0.5.221` rollback-anchor release signatures | GitHub release is published, checksum/signature assets downloaded, and `scripts/verify-release-checksums.mjs` verified signer `8HitBNnh8qbhfne5NCv2yHrQFoD6xbmHcWaUSgCGtsk` |

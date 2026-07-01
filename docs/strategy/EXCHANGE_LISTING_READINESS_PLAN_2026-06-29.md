@@ -1,8 +1,8 @@
 # Lichen Exchange Listing Readiness Plan
 
 **Created:** 2026-06-29
-**Status:** Testnet technical gates green; local gates, public testnet exchange validation, developer-portal publication, GitHub CI, and public technical readiness have passed. The current package is testnet-only until mainnet launch, and operations approval plus final signed external package publication remain open.
-**Current signed testnet recovery release:** `v0.5.220`; keep `v0.5.215` as the rollback anchor until a newer signed rollback point is explicitly recorded.
+**Status:** Testnet technical gates green; local gates, public testnet exchange validation, developer-portal publication, GitHub CI, public technical readiness, status-page approval, and incident alias approval have passed. The current package is testnet-only until mainnet launch, and final signed external package publication remains open.
+**Current signed testnet recovery release:** `v0.5.221`; rollback anchor `v0.5.221` per operator update on 2026-07-01.
 **Scope:** Native LICN exchange integration package, public RPC/WebSocket behavior, archive/history guarantees, exchange deposit/withdrawal operations, SDK/CLI/docs parity, and listing operations pack.
 
 ## Executive Position
@@ -13,12 +13,12 @@ The priority is credibility. Do not contact serious exchanges with a partial gui
 
 ## Current Repo Facts To Carry Forward
 
-These facts were updated for the 2026-06-30 signed recovery release and must be reconciled before any external package is published:
+These facts were updated for the 2026-07-01 signed recovery release and must be reconciled before any external package is published:
 
-- Core protocol crates are at `0.5.220`: `core`, `rpc`, `validator`, and `cli`.
-- The root `README.md` and production deployment runbook now describe `v0.5.220` as the current signed testnet recovery release while keeping `v0.5.215` as the rollback anchor.
-- The mainnet launch runbook remains anchored to `v0.5.215` because mainnet is not live and is outside the public testnet recovery scope.
-- `sdk/rust/Cargo.toml` package version is `0.1.5` and now depends on `lobstercove-lichen-core = "=0.5.220"` while using the local `../../core` path.
+- Core protocol crates are at `0.5.221`: `core`, `rpc`, `validator`, and `cli`.
+- The root `README.md`, production deployment runbook, mainnet launch runbook, exchange docs, and public readiness gate now use `v0.5.221` as the rollback anchor.
+- Mainnet is not live and remains outside the current public testnet exchange package scope until the mainnet launch exchange handoff closes.
+- `sdk/rust/Cargo.toml` package version is `0.1.5` and now depends on `lobstercove-lichen-core = "=0.5.221"` while using the local `../../core` path.
 - `sdk/js/package.json` is `1.0.5`; `sdk/python/pyproject.toml` is `1.0.0`.
 - Mainnet launch docs already require public RPC validators to run `--archive-mode --cold-store /var/lib/lichen/archive-mainnet` and now require a post-launch exchange handoff before any mainnet exchange package is published.
 - Testnet state policy already treats account activity and transaction history as persistent user-facing indexes.
@@ -45,7 +45,7 @@ Exchange readiness means an integration engineer can perform the full LICN lifec
 - No exchange guide may claim archive support until `getTransaction`, `getTransactionsByAddress`, `getBlock`, latest block, and account history are verified against hot and cold archive-backed data.
 - No docs may publish guessed address regexes, chain IDs, fee units, logo URLs, or finality buffers. Values must come from source code, deployed configuration, or signed release artifacts.
 - No public docs may expose secrets, private RPC provider URLs, hot wallet key material, custody seeds, private contacts beyond approved incident aliases, or filled production env files.
-- Any release after this work keeps `v0.5.215` as the rollback anchor until a newer signed rollback point is explicitly recorded.
+- Any release after this work keeps `v0.5.221` as the rollback anchor until a newer signed rollback point is explicitly recorded.
 
 ## Deliverables
 
@@ -134,7 +134,7 @@ Required content:
 - Incident contact aliases and escalation windows.
 - Upgrade policy: release cadence, maintenance windows, breaking-change notice period, and emergency exception process.
 - Release verification: GitHub release URLs, `SHA256SUMS`, detached signatures, attestations, trust anchor, and binary hash evidence.
-- Rollback policy: current rollback anchor `v0.5.215`, rollback decision criteria, service restart order, and expected exchange-facing impact.
+- Rollback policy: current rollback anchor `v0.5.221`, rollback decision criteria, service restart order, and expected exchange-facing impact.
 - Archive policy: retention, backup/restore, repair, and public-history merge rules.
 - Chain halt / delayed finality communication policy.
 
@@ -361,15 +361,15 @@ Preconditions:
 - Archive/history tests passed.
 - Docs package passes link/static checks.
 - SDK/CLI examples are current.
-- Rollback anchor `v0.5.215` is recorded.
+- Rollback anchor `v0.5.221` is recorded.
 - Public testnet RPC is healthy and not stale/readiness-gated.
 - Mainnet RPC/WebSocket/archive checks are deferred because the package is
   explicitly scoped to testnet-only integration testing before mainnet launch.
   They become blocking again during the mainnet launch exchange handoff.
 - Public developer portal exchange page serves exchange-specific testnet-only
   content.
-- Status page, incident aliases, and target exchange-package release tag are
-  approved.
+- Status page and incident aliases are approved. Target exchange-package release
+  tag is selected before publication.
 
 Tasks:
 
@@ -397,7 +397,7 @@ Exit gate:
 
 ### Phase 8: External Listing Package
 
-Status: blocked on operations approval and final external package publication.
+Status: blocked on final external package publication.
 Developer-portal publication is complete. Mainnet is excluded from the current
 package until the mainnet launch exchange handoff closes; EVM wording is
 reconciled for native listings.
@@ -446,7 +446,7 @@ Mainnet handoff after launch:
 | SDK package drift                     | Integration examples fail                                         | Version consistency pass and smoke tests                            |
 | DEX/custody confusion                 | Native LICN listing appears dependent on bridge routes            | Separate native LICN integration from optional ecosystem context    |
 | Retry/idempotency gaps                | Duplicate credits or withdrawals                                  | Simulation must include retries and ledger idempotency checks       |
-| Rollback unproven                     | Incident response looks improvised                                | Keep `v0.5.215` rollback anchor until superseded by signed evidence |
+| Rollback unproven                     | Incident response looks improvised                                | Keep `v0.5.221` rollback anchor until superseded by signed evidence |
 
 ## Initial Tracker
 

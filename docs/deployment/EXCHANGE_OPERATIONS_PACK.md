@@ -1,6 +1,6 @@
 # Lichen Exchange Operations Pack
 
-**Status:** Draft, not approved for external listing package
+**Status:** Draft, pending final external listing package publication
 **Created:** 2026-06-29
 **Integration guide:** [../guides/EXCHANGE_INTEGRATION.md](../guides/EXCHANGE_INTEGRATION.md)
 **Metadata sheet:** [../guides/EXCHANGE_CHAIN_METADATA.md](../guides/EXCHANGE_CHAIN_METADATA.md)
@@ -9,14 +9,13 @@
 
 This pack defines the operational material an exchange expects before listing
 native LICN. The current publication scope is testnet-only integration testing
-until mainnet launch. It is intentionally incomplete where operator approval or
-final package evidence is still missing.
+until mainnet launch. Operator contact and status-page approvals are recorded;
+final external package evidence is still missing.
 
 ## Publication Gate
 
 Do not include this pack in an external listing package until:
 
-- Incident contact aliases are approved.
 - Status page URL is public or operator-private as disclosed, monitored, and
   approved for exchange use.
 - Public RPC and WebSocket endpoints for every network included in the package
@@ -48,30 +47,40 @@ Do not include this pack in an external listing package until:
 Do not publish personal emails, private keys, private RPC URLs, or ad hoc chat
 handles in exchange docs.
 
-Known public inboxes in the repository are `security@lichen.network`
-(`SECURITY.md`) and `hello@lichen.network` (`README.md`). They are not enough by
-themselves for exchange operations unless the operator explicitly approves which
-inbox owns each escalation path below and what acknowledgement/update policy
-applies.
+Operator-approved exchange contact aliases were recorded on 2026-07-01. Do not
+substitute personal emails, private chat handles, or undocumented inboxes in the
+external package.
 
 Required exchange contact aliases:
 
 | Alias class | Minimum purpose | Candidate/source | Status |
 | --- | --- | --- | --- |
-| Security incident alias | Vulnerability reports, suspected key compromise, signing compromise, bridge/custody fund-safety issues, and coordinated disclosure | Existing `security@lichen.network` from `SECURITY.md` | Needs operator approval for exchange escalation use, acknowledgement target, and authenticated outbound response policy |
-| Exchange operations alias | Deposit/withdrawal incidents, RPC/WebSocket/archive degradation, finality delays, maintenance coordination, stuck transaction investigation, and exchange-side pause/resume notices | Dedicated alias recommended, for example `exchange-ops@lichen.network`; no dedicated alias is documented yet | Blocked until alias/inbox and owner are approved |
-| Business/listing alias | Listing paperwork, legal/compliance coordination, market/asset metadata updates, and relationship management | Existing `hello@lichen.network` from `README.md` or a dedicated listings alias | Blocked until alias/inbox and owner are approved |
-| Status page contact surface | Incident and maintenance updates that exchanges can cite during operational events | `https://monitoring.lichen.network` | Approved as the status page on 2026-07-01; still needs explicit update cadence and owner |
+| Security incident alias | Vulnerability reports, suspected key compromise, signing compromise, bridge/custody fund-safety issues, and coordinated disclosure | `security@lichen.network` | Approved on 2026-07-01 for exchange escalation use; repository security policy response targets still apply to non-critical vulnerability reports |
+| Exchange operations alias | Deposit/withdrawal incidents, RPC/WebSocket/archive degradation, finality delays, maintenance coordination, stuck transaction investigation, and exchange-side pause/resume notices | `exchange-ops@lichen.network` | Approved on 2026-07-01 for exchange operations escalation |
+| Business/listing alias | Listing paperwork, legal/compliance coordination, market/asset metadata updates, and relationship management | `business@lichen.network` | Approved on 2026-07-01 for exchange business and listing coordination |
+| Status page contact surface | Incident and maintenance updates that exchanges can cite during operational events | `https://monitoring.lichen.network` | Approved as the status page on 2026-07-01 for the current testnet-only package |
 
-Required escalation fields before publication:
+Approved escalation policy:
 
-- Alias/inbox address and owner.
-- Acknowledgement target for critical incidents.
-- Update cadence during active incidents.
-- Maintenance notice period.
-- Emergency exception policy.
-- PGP/PQ signing or authenticated-contact policy if used.
-- Backup contact path if the primary alias is unavailable.
+- Owner: Lichen operations owns `security@lichen.network`,
+  `exchange-ops@lichen.network`, `business@lichen.network`, and the monitoring
+  status surface for the current testnet-only package.
+- Critical exchange-impacting incidents: acknowledge through the relevant alias
+  within 1 hour when the incident affects deposits, withdrawals, RPC/WebSocket
+  availability, archive/history lookup, finality, signing, keys, custody, or
+  fund safety.
+- Active incident updates: publish a status-page update at first
+  acknowledgement and at least every 2 hours until mitigation or resolution.
+- Planned maintenance: target 72 hours notice; use 24 hours minimum where
+  operationally possible. Emergency security releases may use shorter notice
+  with immediate status-page publication.
+- Authenticated outbound policy: exchanges should treat status-page updates and
+  replies from the approved aliases as the authoritative exchange contact
+  surface unless a separate signed-contact ceremony is agreed bilaterally.
+- Backup path: if `exchange-ops@lichen.network` is unavailable during a live
+  incident, use `security@lichen.network` for security or fund-safety impact and
+  `business@lichen.network` for listing or relationship coordination; the status
+  page remains the shared operational reference.
 
 ## Status Page Policy
 
@@ -102,9 +111,9 @@ native LICN deposits or withdrawals.
 The monitoring surface `https://monitoring.lichen.network` returned HTTP `200`
 on 2026-06-29 and served the `Lichen Mission Control - Network Monitoring`
 page. The operator approved it on 2026-07-01 as the exchange status page for the
-current testnet-only package. Before publication, record the update cadence,
-incident owner, and maintenance-window policy next to the approved incident
-aliases.
+current testnet-only package. During active exchange-impacting incidents, publish
+the first update at acknowledgement and continue updates at least every 2 hours
+until mitigation or resolution.
 
 ## Upgrade Policy
 
@@ -244,8 +253,7 @@ During a halt, delayed finality, archive lag, or divergent endpoint incident:
 - Recovery notice must include the affected slot range and whether replay or
   reconciliation is required.
 
-Pending blocker: define exact exchange notice cadence after status page and
-incident aliases are approved.
+Approved exchange notice cadence is defined in the incident contact policy above.
 
 ## Live Testnet Recovery Evidence
 
@@ -273,12 +281,13 @@ Observed result:
   finalized-slot, latest-block, and WebSocket upgrade passed.
 
 The public exchange package is still not approved because the current package is
-testnet-only, incident aliases are not approved, and the final external exchange
-package has not been published. The status page was approved on 2026-07-01 as
-`https://monitoring.lichen.network` for the current testnet-only package.
-Mainnet RPC/WS readiness is deferred to the mainnet launch exchange handoff gate
-and must be rechecked with the public readiness gate in `--scope full` mode
-before mainnet is added.
+testnet-only and the final external exchange package has not been published. The
+status page was approved on 2026-07-01 as `https://monitoring.lichen.network`
+for the current testnet-only package, and exchange contact aliases were approved
+on 2026-07-01 as `security@lichen.network`, `exchange-ops@lichen.network`, and
+`business@lichen.network`. Mainnet RPC/WS readiness is deferred to the mainnet
+launch exchange handoff gate and must be rechecked with the public readiness
+gate in `--scope full` mode before mainnet is added.
 
 Update on 2026-06-30: the public testnet was stale again at slot `6715444`
 while all four services remained active. The signed `v0.5.217` rollout was
@@ -356,14 +365,14 @@ Do not commit private keys or filled production env files as evidence.
 
 | ID | Blocker | Required next step |
 | --- | --- | --- |
-| O-02 | Incident aliases not approved | Define public aliases and escalation windows |
-| O-04 | Final external exchange-package release URLs not attached | Attach the selected docs/package artifacts after operator approvals and package tag selection |
+| O-04 | Final external exchange-package release URLs not attached | Attach the selected docs/package artifacts after package tag selection |
 
 ## Resolved Operations Checks
 
 | ID | Check | Evidence |
 | --- | --- | --- |
 | O-01 | Status page URL approved | `https://monitoring.lichen.network` approved by the operator on 2026-07-01 for the current testnet-only package |
+| O-02 | Incident aliases approved | Operator approved `security@lichen.network`, `exchange-ops@lichen.network`, and `business@lichen.network` on 2026-07-01; critical acknowledgement, active update, maintenance notice, emergency exception, authenticated outbound, and backup-path policy are recorded above |
 | O-03 | Current release drift for core docs and Rust SDK pin | Core crates and the Rust SDK pin were updated to `0.5.221`; `v0.5.221` is the rollback anchor; JS/Python package boundaries are documented in the tracker |
 | O-05 | Local archive/history behavior | Core and RPC archive regressions passed after hot-to-cold migration and reopen |
 | O-07 | Local cleanup evidence | Local stack stop/status/process checks passed; generated credentials, state dirs, manifests, and staging dirs were removed after the local exchange simulation |
