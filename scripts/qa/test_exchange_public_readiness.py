@@ -109,6 +109,52 @@ class ExchangePublicReadinessTests(unittest.TestCase):
         self.assertTrue(readiness.package_includes_mainnet("full"))
         self.assertIn(readiness.default_package_scope(), readiness.PACKAGE_SCOPES)
 
+    def test_exchange_package_release_requires_published_assets(self) -> None:
+        original_request_json = readiness.request_json
+
+        def fake_missing_asset(_url: str):
+            return 200, {
+                "tag_name": readiness.EXCHANGE_PACKAGE_TAG,
+                "draft": False,
+                "prerelease": False,
+                "assets": [{"name": "SHA256SUMS"}],
+            }
+
+        readiness.request_json = fake_missing_asset
+        try:
+            gate = readiness.Gate()
+            readiness.check_exchange_package_release(gate)
+            self.assertFalse(gate.checks[0]["ok"])
+            self.assertIn(
+                "lichen-exchange-testnet-v0.5.221.tar.gz",
+                gate.checks[0]["detail"]["required_assets"],
+            )
+        finally:
+            readiness.request_json = original_request_json
+
+    def test_exchange_package_release_accepts_published_package(self) -> None:
+        original_request_json = readiness.request_json
+
+        def fake_release(_url: str):
+            return 200, {
+                "tag_name": readiness.EXCHANGE_PACKAGE_TAG,
+                "draft": False,
+                "prerelease": False,
+                "assets": [{"name": name} for name in readiness.EXCHANGE_PACKAGE_REQUIRED_ASSETS],
+            }
+
+        readiness.request_json = fake_release
+        try:
+            gate = readiness.Gate()
+            readiness.check_exchange_package_release(gate)
+            self.assertTrue(gate.checks[0]["ok"])
+            self.assertEqual(
+                sorted(readiness.EXCHANGE_PACKAGE_REQUIRED_ASSETS),
+                gate.checks[0]["detail"]["required_assets"],
+            )
+        finally:
+            readiness.request_json = original_request_json
+
 
 if __name__ == "__main__":
     unittest.main()

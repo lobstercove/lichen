@@ -40,12 +40,24 @@ ROLLBACK_RELEASE_API = (
     "https://api.github.com/repos/lobstercove/lichen/releases/tags/" + ROLLBACK_TAG
 )
 ROLLBACK_RELEASE_PAGE = "https://github.com/lobstercove/lichen/releases/tag/" + ROLLBACK_TAG
+EXCHANGE_PACKAGE_TAG = "exchange-testnet-v0.5.221"
+EXCHANGE_PACKAGE_RELEASE_API = (
+    "https://api.github.com/repos/lobstercove/lichen/releases/tags/" + EXCHANGE_PACKAGE_TAG
+)
+EXCHANGE_PACKAGE_RELEASE_PAGE = (
+    "https://github.com/lobstercove/lichen/releases/tag/" + EXCHANGE_PACKAGE_TAG
+)
+EXCHANGE_PACKAGE_REQUIRED_ASSETS = (
+    "SHA256SUMS",
+    "lichen-exchange-testnet-v0.5.221.tar.gz",
+)
 EXPECTED_LOGO_SHA256 = "bfa0986bc4bde64c3c7ce590782beba78980985f301fbd0fbd4a39dc045ca876"
 DEVELOPER_EXCHANGE_REQUIRED_SNIPPETS = (
     "Exchange Integration",
     "Exchange Integration Guide",
     "Exchange Chain Metadata",
     "Exchange Operations Pack",
+    "exchange-testnet-v0.5.221",
     "testnet-only",
 )
 PACKAGE_SCOPES = ("testnet", "full")
@@ -313,6 +325,35 @@ def check_release(gate: Gate) -> None:
     )
 
 
+def check_exchange_package_release(gate: Gate) -> None:
+    try:
+        status, payload = request_json(EXCHANGE_PACKAGE_RELEASE_API)
+    except Exception as exc:
+        gate.add("final exchange package release tag selected", False, detail=str(exc))
+        return
+    assets = payload.get("assets") if isinstance(payload, dict) else []
+    asset_names = sorted(asset.get("name") for asset in assets if isinstance(asset, dict))
+    required = set(EXCHANGE_PACKAGE_REQUIRED_ASSETS)
+    ok = (
+        status == 200
+        and payload.get("tag_name") == EXCHANGE_PACKAGE_TAG
+        and payload.get("draft") is False
+        and payload.get("prerelease") is False
+        and required.issubset(set(asset_names))
+    )
+    gate.add(
+        "final exchange package release tag selected",
+        ok,
+        detail={
+            "release": EXCHANGE_PACKAGE_RELEASE_PAGE,
+            "draft": payload.get("draft"),
+            "prerelease": payload.get("prerelease"),
+            "assets": asset_names,
+            "required_assets": sorted(required),
+        },
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--report", default=str(DEFAULT_REPORT))
@@ -410,11 +451,14 @@ def main() -> int:
         args.status_approved,
         detail="set LICHEN_EXCHANGE_STATUS_APPROVED=1 only after operator approval",
     )
-    gate.add(
-        "final exchange package release tag selected",
-        args.release_tag_selected,
-        detail="set LICHEN_EXCHANGE_RELEASE_TAG_SELECTED=1 only after the signed package tag is selected",
-    )
+    if args.release_tag_selected:
+        check_exchange_package_release(gate)
+    else:
+        gate.add(
+            "final exchange package release tag selected",
+            False,
+            detail="set LICHEN_EXCHANGE_RELEASE_TAG_SELECTED=1 only after the exchange package release is published",
+        )
 
     report = {
         "scope": args.scope,

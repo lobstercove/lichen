@@ -3,8 +3,9 @@
 **Created:** 2026-06-29
 **Plan:** [EXCHANGE_LISTING_READINESS_PLAN_2026-06-29.md](./EXCHANGE_LISTING_READINESS_PLAN_2026-06-29.md)
 **Current rollback anchor:** `v0.5.221` per operator update on 2026-07-01
-**Current phase:** Phase 8 - testnet-only package technical gates green; final external package publication remains blocked
-**Rule:** Do not publish exchange-facing docs, release to public testnet for exchange work, or begin serious exchange outreach while any release-blocker row is open.
+**Exchange package tag:** `exchange-testnet-v0.5.221`
+**Current phase:** Phase 8 complete for the testnet-only package; mainnet remains deferred until mainnet launch handoff
+**Rule:** Do not present this package as mainnet-ready, and do not publish any mainnet exchange package until the mainnet launch handoff and full-scope readiness gate pass.
 
 ## Gate Status
 
@@ -14,11 +15,11 @@
 | P0-02 | Version drift documented | Done | Yes | Version drift table below |
 | P0-03 | Version drift resolved for core docs and Rust SDK pin | Done | No | README, mainnet/production runbooks, RPC docs, easy-node docs, Rust SDK pin and lockfile |
 | P0-04 | Chain metadata source map completed | Done | No | Chain metadata source map below |
-| P0-05 | Chain metadata final values verified | In progress | Yes | Explorer routes, logo, `v0.5.221` rollback-anchor signatures, testnet runtime fee, testnet RPC/WS readiness, current testnet-only scope, EVM wording, raw-spores accounting guidance, approved monitoring page, approved incident aliases, public developer-page deployment, CI, and final public technical readiness checked; final external package publication remains blocked |
-| P1-01 | Exchange integration guide skeleton | Done | Yes | `docs/guides/EXCHANGE_INTEGRATION.md`, `developers/exchange-integration.html` |
-| P1-02 | Dedicated checklist reviewed | In progress | Yes | This tracker; technical checklist rows are green; the remaining blocker is final external package publication/tag selection |
-| P1-03 | Chain metadata sheet skeleton | Done | Yes | `docs/guides/EXCHANGE_CHAIN_METADATA.md` |
-| P1-04 | Operations pack skeleton | Done | Yes | `docs/deployment/EXCHANGE_OPERATIONS_PACK.md` |
+| P0-05 | Chain metadata final values verified | Done | No | Explorer routes, logo, `v0.5.221` rollback-anchor signatures, testnet runtime fee, testnet RPC/WS readiness, current testnet-only scope, EVM wording, raw-spores accounting guidance, approved monitoring page, approved incident aliases, public developer-page deployment, CI, final public technical readiness, and package release `exchange-testnet-v0.5.221` checked |
+| P1-01 | Exchange integration guide skeleton | Done | No | `docs/guides/EXCHANGE_INTEGRATION.md`, `developers/exchange-integration.html`; published for testnet-only package |
+| P1-02 | Dedicated checklist reviewed | Done | No | This tracker; technical checklist rows are green for testnet-only scope |
+| P1-03 | Chain metadata sheet skeleton | Done | No | `docs/guides/EXCHANGE_CHAIN_METADATA.md`; published for testnet-only package |
+| P1-04 | Operations pack skeleton | Done | No | `docs/deployment/EXCHANGE_OPERATIONS_PACK.md`; published for testnet-only package |
 | P1-05 | Developer portal exchange page discoverable | Done | No | Local source page and hub links exist; `bash scripts/deploy-cloudflare-pages.sh developers` deployed the update; public check of `https://developers.lichen.network/exchange-integration` returned HTTP `200` and contained `testnet-only`, `mainnet launch exchange handoff`, and `Exchange Operations Pack` |
 | P1-06 | Native address validation vectors documented and tested | Done | No | `docs/guides/EXCHANGE_ADDRESS_VALIDATION_VECTORS.md`, `core/src/account.rs` test |
 | P2-01 | Finality policy validated locally | Done | No | Local three-validator stack on 2026-06-29; evidence section below |
@@ -32,7 +33,7 @@
 | P5-03 | Explorer URL patterns verified | Done | No | Source route inspection plus hosted root/account/transaction/block `200` checks on 2026-06-29 |
 | P6-01 | Native LICN integration separated from DEX/custody/wrapped-asset context | Done | No | Phase 6 evidence below; native guide excludes DEX/custody/oracle from base deposit flow |
 | P7-01 | Public testnet exchange run passed | Done | No | Signed `v0.5.221` deployed through the runbook; public RPC/WS/faucet/DEX smoke passed; public faucet-backed exchange simulation passed and wrote `tests/artifacts/exchange-simulation-public-testnet-v0.5.221.json` |
-| P8-01 | External listing package reviewed | Blocked | Yes | Technical package gates are green for testnet scope; status page and incident aliases are approved; blocked on final signed external package publication; mainnet is deferred until mainnet launch handoff and is excluded from the current testnet-only package |
+| P8-01 | External listing package reviewed | Done | No | Technical package gates are green for testnet scope; status page and incident aliases are approved; package release `exchange-testnet-v0.5.221` is published; mainnet is deferred until mainnet launch handoff and is excluded from the current testnet-only package |
 
 ## Phase 0 Source Map
 
@@ -115,12 +116,13 @@ This table names the source of truth. It is not yet the final external metadata 
 
 | ID | Blocker | Impact | Required next step |
 | --- | --- | --- | --- |
-| B0-11 | Final external exchange package is not published | Exchange outreach cannot begin until the package is published intentionally | Publish the final external package after the package tag is selected |
+| None for current testnet-only package | Mainnet remains deferred | Run mainnet launch exchange handoff and full-scope readiness before adding mainnet |
 
 ## Resolved Blockers
 
 | ID | Former blocker | Resolution | Evidence |
 | --- | --- | --- | --- |
+| B0-11 | Final external exchange package was not published | Published testnet-only exchange package under `exchange-testnet-v0.5.221` | `https://github.com/lobstercove/lichen/releases/tag/exchange-testnet-v0.5.221`; package assets `lichen-exchange-testnet-v0.5.221.tar.gz` and `SHA256SUMS` |
 | B0-10 | Incident/contact aliases were not approved for exchange use | Operator approved `security@lichen.network`, `exchange-ops@lichen.network`, and `business@lichen.network` on 2026-07-01 with acknowledgement/update/maintenance policy recorded in the operations pack | `docs/deployment/EXCHANGE_OPERATIONS_PACK.md` |
 | B0-08 | Status page was not operator-approved as the exchange status page | Operator approved `https://monitoring.lichen.network` on 2026-07-01 as the exchange status page for the current testnet-only package | Operator update on 2026-07-01; public readiness gate can now be run with `--status-approved` |
 | B0-01 | Release docs disagreed with the then-current operator anchor `v0.5.215` and signed recovery release `v0.5.219` | Superseded by the 2026-07-01 operator update: README, mainnet runbook, production runbook, exchange docs, and readiness gate now use `v0.5.221` as the rollback anchor | Targeted version scan completed after the `v0.5.221` anchor update |
@@ -289,30 +291,31 @@ three-validator stack.
 
 ## Phase 1 Output
 
-Phase 1 created the external-package skeleton without marking it exchange-approved.
+Phase 1 created the external-package skeleton and the final testnet-only package
+now publishes those artifacts under `exchange-testnet-v0.5.221`.
 
 | Artifact | Status | Notes |
 | --- | --- | --- |
-| GitHub exchange integration guide | Draft created | `docs/guides/EXCHANGE_INTEGRATION.md`; source-backed facts only, validation gaps are explicit blockers |
-| GitHub chain metadata sheet | Draft created | `docs/guides/EXCHANGE_CHAIN_METADATA.md`; live URLs, logo, approved status page, approved incident contacts, fee runtime value, and release metadata are recorded; final package release URLs remain blocked |
-| GitHub operations pack | Draft created and updated | `docs/deployment/EXCHANGE_OPERATIONS_PACK.md`; incident aliases and status page approval are recorded; final package release URLs remain blocked; rollback and archive/history procedures are documented and locally verified |
-| Developer portal exchange page | Draft created | `developers/exchange-integration.html`; links to canonical markdown docs to avoid duplicating the cookbook |
-| Docs hub links | Draft created | `docs/README.md` now links the exchange guide, metadata sheet, and operations pack |
+| GitHub exchange integration guide | Published for testnet package | `docs/guides/EXCHANGE_INTEGRATION.md`; source-backed facts only, mainnet deferred explicitly |
+| GitHub chain metadata sheet | Published for testnet package | `docs/guides/EXCHANGE_CHAIN_METADATA.md`; live URLs, logo, approved status page, approved incident contacts, fee runtime value, rollback release metadata, and package release metadata are recorded |
+| GitHub operations pack | Published for testnet package | `docs/deployment/EXCHANGE_OPERATIONS_PACK.md`; incident aliases, status page approval, rollback/archive/history procedures, and final package release URLs are recorded |
+| Developer portal exchange page | Published for testnet package | `developers/exchange-integration.html`; links to release-tagged canonical markdown docs to avoid duplicating the cookbook |
+| Docs hub links | Created | `docs/README.md` links the exchange guide, metadata sheet, and operations pack |
 
 ## Phase 1 Blockers
 
 | ID | Blocker | Impact | Required next step |
 | --- | --- | --- | --- |
-| B1-01 | Exchange guide is a draft and not externally approved | Outreach risk if sent too early | Keep publication gate in place until Phase 2-5 validation passes |
-| B1-02 | Developer portal page links to GitHub `main` docs | External URL depends on branch/tag choice | Switch to release-tagged docs URL when the exchange package release is cut |
+| B1-01 | Exchange guide was a draft and not externally approved | Resolved for testnet-only package | Published under `exchange-testnet-v0.5.221`; mainnet still deferred |
+| B1-02 | Developer portal page linked to GitHub `main` docs | Resolved for testnet-only package | Portal links now use package tag `exchange-testnet-v0.5.221` |
 | B1-04 | Operations contacts/status page were not approved | Resolved on 2026-07-01 | Status page and aliases are recorded in the operations pack |
 
 ## Current Verification Pass
 
-Latest verification ran on 2026-07-01 after the signed `v0.5.221` recovery rollout.
-Local, CI, release, deployment, and public testnet checks are green for testnet.
-External outreach remains blocked by the final-package gate listed above. Mainnet
-is deliberately deferred until mainnet launch.
+Latest verification ran on 2026-07-01 after the signed `v0.5.221` recovery rollout
+and package publication work. Local, CI, release, deployment, and public testnet
+checks are green for the current testnet-only package. Mainnet is deliberately
+deferred until mainnet launch.
 
 | Command | Result |
 | --- | --- |
@@ -351,10 +354,11 @@ is deliberately deferred until mainnet launch.
 | Live runbook verify-only for `v0.5.221` | Passed: `RELEASE VERIFY COMPLETE` |
 | Public testnet exchange simulation | Passed; report written to `tests/artifacts/exchange-simulation-public-testnet-v0.5.221.json` |
 | Public RPC/faucet final sample | Passed: `getHealth.status = ok`, slot `6871959`, `block_age_secs = 1`; faucet `/health = OK` |
+| Final package tag | `exchange-testnet-v0.5.221` selected for the testnet-only exchange package |
+| Final package release | `https://github.com/lobstercove/lichen/releases/tag/exchange-testnet-v0.5.221` with `lichen-exchange-testnet-v0.5.221.tar.gz` and `SHA256SUMS` |
 
 ## Next Ordered Work
 
-1. Publish the final external package intentionally after selecting the package tag.
-2. Re-run `scripts/qa/exchange_public_readiness.py --scope testnet --status-approved --release-tag-selected` after package publication/tag selection; testnet RPC/WS/faucet/exchange simulation do not need rework unless code or deployment changes.
-3. Prepare the external listing package only after the remaining release blockers close.
-4. At mainnet launch, run the mainnet launch exchange handoff gate and `scripts/qa/exchange_public_readiness.py --scope full` before publishing any mainnet exchange package.
+1. Keep the published testnet package, developer portal, and public readiness gate aligned before outreach or any package update.
+2. Re-run `scripts/qa/exchange_public_readiness.py --scope testnet --status-approved --release-tag-selected` before exchange outreach or package refresh.
+3. At mainnet launch, run the mainnet launch exchange handoff gate and `scripts/qa/exchange_public_readiness.py --scope full` before publishing any mainnet exchange package.

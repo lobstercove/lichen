@@ -1,7 +1,7 @@
 # Lichen Exchange Listing Readiness Plan
 
 **Created:** 2026-06-29
-**Status:** Testnet technical gates green; local gates, public testnet exchange validation, developer-portal publication, GitHub CI, public technical readiness, status-page approval, and incident alias approval have passed. The current package is testnet-only until mainnet launch, and final signed external package publication remains open.
+**Status:** Testnet technical gates green; local gates, public testnet exchange validation, developer-portal publication, GitHub CI, public technical readiness, status-page approval, incident alias approval, and final testnet-only package publication have passed. The current package is testnet-only until mainnet launch.
 **Current signed testnet recovery release:** `v0.5.221`; rollback anchor `v0.5.221` per operator update on 2026-07-01.
 **Scope:** Native LICN exchange integration package, public RPC/WebSocket behavior, archive/history guarantees, exchange deposit/withdrawal operations, SDK/CLI/docs parity, and listing operations pack.
 
@@ -56,7 +56,7 @@ Target files:
 - `docs/guides/EXCHANGE_INTEGRATION.md`
 - `developers/exchange-integration.html`
 
-Current draft:
+Current artifact:
 
 - [../guides/EXCHANGE_INTEGRATION.md](../guides/EXCHANGE_INTEGRATION.md)
 - [../../developers/exchange-integration.html](../../developers/exchange-integration.html)
@@ -93,7 +93,7 @@ Target file:
 
 - `docs/guides/EXCHANGE_CHAIN_METADATA.md`
 
-Current draft:
+Current artifact:
 
 - [../guides/EXCHANGE_CHAIN_METADATA.md](../guides/EXCHANGE_CHAIN_METADATA.md)
 - [../guides/EXCHANGE_ADDRESS_VALIDATION_VECTORS.md](../guides/EXCHANGE_ADDRESS_VALIDATION_VECTORS.md)
@@ -124,7 +124,7 @@ Target files:
 - `docs/deployment/EXCHANGE_OPERATIONS_PACK.md`
 - developer portal link from the exchange guide
 
-Current draft:
+Current artifact:
 
 - [../deployment/EXCHANGE_OPERATIONS_PACK.md](../deployment/EXCHANGE_OPERATIONS_PACK.md)
 
@@ -204,8 +204,7 @@ Exit gate:
 ### Phase 1: Documentation Architecture
 
 Status: documentation architecture created, linked, deployed to the developer
-portal, and verified. External exchange use remains blocked only by the
-operator-approval and final package-publication gates tracked below.
+portal, verified, and published for the testnet-only exchange package.
 
 Purpose: create the external package skeleton before code changes.
 
@@ -350,8 +349,8 @@ Exit gate:
 
 ### Phase 7: Public Testnet Release Gate
 
-Status: complete for testnet after signed `v0.5.220`; external package remains
-blocked on Phase 8 items.
+Status: complete for testnet after signed `v0.5.221`; external package
+publication is complete for testnet-only scope.
 
 Purpose: publish only after local proof.
 
@@ -369,7 +368,7 @@ Preconditions:
 - Public developer portal exchange page serves exchange-specific testnet-only
   content.
 - Status page and incident aliases are approved. Target exchange-package release
-  tag is selected before publication.
+  tag `exchange-testnet-v0.5.221` is selected before publication.
 
 Tasks:
 
@@ -380,14 +379,13 @@ Tasks:
 
 2026-07-01 result:
 
-- Signed `v0.5.220` was published, checksum/signature verified, and deployed
+- Signed `v0.5.221` was published, checksum/signature verified, and deployed
   through the rolling release runbook.
-- All four live testnet validators and CLIs reported `0.5.220`; runbook
+- All four live testnet validators and CLIs reported `0.5.221`; runbook
   verify-only completed `RELEASE VERIFY COMPLETE`.
 - Public RPC cadence, WebSocket readiness, faucet-backed exchange simulation,
   DEX oracle/candle smoke, developer exchange page, and public readiness
-  technical gates passed. The readiness gate still fails closed on the
-  operator-approved status-page blocker.
+  technical gates passed.
 
 Exit gate:
 
@@ -397,7 +395,7 @@ Exit gate:
 
 ### Phase 8: External Listing Package
 
-Status: blocked on final external package publication.
+Status: complete for testnet-only package publication.
 Developer-portal publication is complete. Mainnet is excluded from the current
 package until the mainnet launch exchange handoff closes; EVM wording is
 reconciled for native listings.
@@ -418,6 +416,18 @@ Contents:
 - Deposit/withdrawal cookbook.
 - Finality and confirmation policy.
 - Known limitations and support escalation path.
+
+Publication tag:
+
+```text
+exchange-testnet-v0.5.221
+```
+
+Package release:
+
+```text
+https://github.com/lobstercove/lichen/releases/tag/exchange-testnet-v0.5.221
+```
 
 Exit gate:
 

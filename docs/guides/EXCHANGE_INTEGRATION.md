@@ -1,6 +1,6 @@
 # Lichen Exchange Integration
 
-**Status:** Draft, internal readiness work only
+**Status:** Published testnet-only exchange package
 **Created:** 2026-06-29
 **Plan:** [../strategy/EXCHANGE_LISTING_READINESS_PLAN_2026-06-29.md](../strategy/EXCHANGE_LISTING_READINESS_PLAN_2026-06-29.md)
 **Tracker:** [../strategy/EXCHANGE_LISTING_READINESS_TRACKER.md](../strategy/EXCHANGE_LISTING_READINESS_TRACKER.md)
@@ -8,25 +8,26 @@
 **Address vectors:** [EXCHANGE_ADDRESS_VALIDATION_VECTORS.md](EXCHANGE_ADDRESS_VALIDATION_VECTORS.md)
 **Operations pack:** [../deployment/EXCHANGE_OPERATIONS_PACK.md](../deployment/EXCHANGE_OPERATIONS_PACK.md)
 **Rollback anchor:** `v0.5.221`, per operator update on 2026-07-01
+**Exchange package tag:** `exchange-testnet-v0.5.221`
+**Exchange package release:** `https://github.com/lobstercove/lichen/releases/tag/exchange-testnet-v0.5.221`
 
 This document is the canonical exchange-facing integration guide for native LICN.
-It is not approved for exchange outreach until every release-blocking gate in the
-tracker is closed and the public testnet exchange run has passed. The
-three-validator local exchange simulation passed from a clean stack with cleanup
-evidence on 2026-06-29, and the public faucet-backed testnet exchange simulation
-passed after the signed `v0.5.221` recovery rollout on 2026-07-01. External
-publication is currently scoped to testnet-only integration testing until
-mainnet launch. It still depends on the remaining final package publication
-gate.
+It is approved for testnet-only exchange integration under package tag
+`exchange-testnet-v0.5.221`. The three-validator local exchange simulation
+passed from a clean stack with cleanup evidence on 2026-06-29, and the public
+faucet-backed testnet exchange simulation passed after the signed `v0.5.221`
+recovery rollout on 2026-07-01. External publication is scoped to testnet-only
+integration testing until mainnet launch.
 
 ## Publication Gate
 
-Do not send this guide to exchanges while any of these remain open:
+The current testnet-only package is published. Do not extend this guide to a
+mainnet exchange package while any of these remain open:
 
 - Runtime fee config verification on every public network included in the
   package. Testnet was verified after `v0.5.221`; mainnet remains pending until
   mainnet launch.
-- Final external exchange-package publication approval.
+- Mainnet launch exchange handoff and full-scope public readiness.
 
 ## Current Package Scope
 
@@ -481,8 +482,8 @@ Implementation and latest evidence:
 - Evidence:
   [EXCHANGE_LISTING_READINESS_TRACKER.md](../strategy/EXCHANGE_LISTING_READINESS_TRACKER.md#phase-4-exchange-simulation-evidence)
 
-## Open Blockers
+## Deferred Mainnet Items
 
-This guide remains blocked on the release-blocking rows in
-[../strategy/EXCHANGE_LISTING_READINESS_TRACKER.md](../strategy/EXCHANGE_LISTING_READINESS_TRACKER.md).
-Do not weaken this gate to make the document look complete.
+The current guide is published only for testnet integration. Mainnet remains
+blocked until the mainnet launch exchange handoff closes and the public
+readiness gate passes with `--scope full`.

@@ -1,16 +1,19 @@
 # Lichen Exchange Operations Pack
 
-**Status:** Draft, pending final external listing package publication
+**Status:** Published testnet-only exchange package
 **Created:** 2026-06-29
 **Integration guide:** [../guides/EXCHANGE_INTEGRATION.md](../guides/EXCHANGE_INTEGRATION.md)
 **Metadata sheet:** [../guides/EXCHANGE_CHAIN_METADATA.md](../guides/EXCHANGE_CHAIN_METADATA.md)
 **Tracker:** [../strategy/EXCHANGE_LISTING_READINESS_TRACKER.md](../strategy/EXCHANGE_LISTING_READINESS_TRACKER.md)
 **Rollback anchor:** `v0.5.221`, per operator update on 2026-07-01
+**Exchange package tag:** `exchange-testnet-v0.5.221`
+**Exchange package release:** `https://github.com/lobstercove/lichen/releases/tag/exchange-testnet-v0.5.221`
 
 This pack defines the operational material an exchange expects before listing
 native LICN. The current publication scope is testnet-only integration testing
-until mainnet launch. Operator contact and status-page approvals are recorded;
-final external package evidence is still missing.
+until mainnet launch. Operator contact and status-page approvals are recorded,
+and the final testnet-only exchange package is published under
+`exchange-testnet-v0.5.221`.
 
 ## Publication Gate
 
@@ -40,7 +43,7 @@ Do not include this pack in an external listing package until:
 | Explorer | `https://explorer.lichen.network` | Route templates verified | `seeds.json`, `developers/shared-config.js`, `explorer/js/*.js` |
 | Status page | `https://monitoring.lichen.network` | Operator-approved exchange status page for the current testnet-only package on 2026-07-01; private operator surface | Operator update on 2026-07-01 |
 | Developer portal exchange page | `https://developers.lichen.network/exchange-integration` | Deployed and verified after the scope update; public page contains `testnet-only`, `mainnet launch exchange handoff`, and operations-pack links | Cloudflare Pages deployment and tracker verification |
-| GitHub exchange docs | `docs/guides/EXCHANGE_INTEGRATION.md` | Draft | Phase 1 docs work |
+| GitHub exchange docs | `docs/guides/EXCHANGE_INTEGRATION.md` | Published under package tag `exchange-testnet-v0.5.221` for the current testnet-only package | Phase 1 docs work; final package release |
 
 ## Incident Contacts
 
@@ -179,8 +182,14 @@ Current signed recovery release verified on 2026-07-01:
 - `scripts/verify-release-checksums.mjs` verified all archive hashes and the PQ
   signature against signer `8HitBNnh8qbhfne5NCv2yHrQFoD6xbmHcWaUSgCGtsk`.
 
-Pending blocker: publish the external exchange package only after incident
-aliases are operator-approved and the final package tag is selected.
+Published exchange package metadata:
+
+- Package tag: `exchange-testnet-v0.5.221`
+- Package release page:
+  `https://github.com/lobstercove/lichen/releases/tag/exchange-testnet-v0.5.221`
+- Package archive asset: `lichen-exchange-testnet-v0.5.221.tar.gz`
+- Package checksum asset: `SHA256SUMS`
+- Scope: testnet-only until the mainnet launch exchange handoff closes.
 
 Current recovery release and rollback anchor: `v0.5.221`, retained until a newer
 signed rollback point is explicitly recorded.
@@ -280,11 +289,11 @@ Observed result:
 - The public testnet readiness checks for RPC health, `getFeeConfig`,
   finalized-slot, latest-block, and WebSocket upgrade passed.
 
-The public exchange package is still not approved because the current package is
-testnet-only and the final external exchange package has not been published. The
-status page was approved on 2026-07-01 as `https://monitoring.lichen.network`
-for the current testnet-only package, and exchange contact aliases were approved
-on 2026-07-01 as `security@lichen.network`, `exchange-ops@lichen.network`, and
+The public exchange package is published for testnet-only integration under
+`exchange-testnet-v0.5.221`. The status page was approved on 2026-07-01 as
+`https://monitoring.lichen.network` for the current testnet-only package, and
+exchange contact aliases were approved on 2026-07-01 as
+`security@lichen.network`, `exchange-ops@lichen.network`, and
 `business@lichen.network`. Mainnet RPC/WS readiness is deferred to the mainnet
 launch exchange handoff gate and must be rechecked with the public readiness
 gate in `--scope full` mode before mainnet is added.
@@ -365,7 +374,7 @@ Do not commit private keys or filled production env files as evidence.
 
 | ID | Blocker | Required next step |
 | --- | --- | --- |
-| O-04 | Final external exchange-package release URLs not attached | Attach the selected docs/package artifacts after package tag selection |
+| None for current testnet-only package | Mainnet remains deferred | Run mainnet launch exchange handoff and full-scope readiness before adding mainnet |
 
 ## Resolved Operations Checks
 
@@ -374,6 +383,7 @@ Do not commit private keys or filled production env files as evidence.
 | O-01 | Status page URL approved | `https://monitoring.lichen.network` approved by the operator on 2026-07-01 for the current testnet-only package |
 | O-02 | Incident aliases approved | Operator approved `security@lichen.network`, `exchange-ops@lichen.network`, and `business@lichen.network` on 2026-07-01; critical acknowledgement, active update, maintenance notice, emergency exception, authenticated outbound, and backup-path policy are recorded above |
 | O-03 | Current release drift for core docs and Rust SDK pin | Core crates and the Rust SDK pin were updated to `0.5.221`; `v0.5.221` is the rollback anchor; JS/Python package boundaries are documented in the tracker |
+| O-04 | Final external exchange-package release URLs attached | Package release `https://github.com/lobstercove/lichen/releases/tag/exchange-testnet-v0.5.221` contains `lichen-exchange-testnet-v0.5.221.tar.gz` and `SHA256SUMS` |
 | O-05 | Local archive/history behavior | Core and RPC archive regressions passed after hot-to-cold migration and reopen |
 | O-07 | Local cleanup evidence | Local stack stop/status/process checks passed; generated credentials, state dirs, manifests, and staging dirs were removed after the local exchange simulation |
 | O-09 | Rollback release checksum/signature verification | `v0.5.221` release checksum and detached PQ signature were verified against `deploy/release-trust-anchor.json` |

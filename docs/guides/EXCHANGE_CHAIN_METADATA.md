@@ -1,15 +1,17 @@
 # Lichen Exchange Chain Metadata
 
-**Status:** Draft, source-mapped but not externally approved
+**Status:** Published testnet-only exchange metadata
 **Created:** 2026-06-29
 **Integration guide:** [EXCHANGE_INTEGRATION.md](EXCHANGE_INTEGRATION.md)
 **Address vectors:** [EXCHANGE_ADDRESS_VALIDATION_VECTORS.md](EXCHANGE_ADDRESS_VALIDATION_VECTORS.md)
 **Tracker:** [../strategy/EXCHANGE_LISTING_READINESS_TRACKER.md](../strategy/EXCHANGE_LISTING_READINESS_TRACKER.md)
 **Rollback anchor:** `v0.5.221`, per operator update on 2026-07-01
+**Exchange package tag:** `exchange-testnet-v0.5.221`
+**Exchange package release:** `https://github.com/lobstercove/lichen/releases/tag/exchange-testnet-v0.5.221`
 
-This sheet is the canonical exchange metadata work area. It must not be sent as a
-final listing sheet until every `Blocked` or `Needs verification` row below is
-resolved with evidence.
+This sheet is the canonical exchange metadata sheet for the current testnet-only
+exchange package. It must not be used as a mainnet listing sheet until every
+mainnet deferred item below is resolved with evidence.
 
 Current package scope: testnet-only integration testing until mainnet launch.
 Mainnet rows below are launch placeholders and must not be used in an external
@@ -41,7 +43,7 @@ listing sheet until the mainnet launch runbook closes its exchange handoff gate.
 | Explorer URL | `https://explorer.lichen.network` | Route templates verified on 2026-06-29 | `seeds.json`, `developers/shared-config.js`, `explorer/js/*.js`, tracker Phase 5 metadata evidence |
 | Logo URL | `https://lichen.network/Lichen_Logo_256.png` | Public asset verified on 2026-06-29: PNG, 256x256, SHA-256 matches repo asset | `website/Lichen_Logo_256.png`, tracker Phase 5 metadata evidence |
 | Status page | `https://monitoring.lichen.network` | Operator-approved exchange status page for the current testnet-only package on 2026-07-01; private operator surface | Operations pack policy |
-| Release verification | GitHub release `v0.5.221` has `SHA256SUMS` plus `SHA256SUMS.sig`; PQ signature verified locally | Current signed rollback anchor and testnet recovery release verified; final external docs package publication still required | `.github/workflows/release.yml`, `scripts/sign-release.sh`, `scripts/verify-release-checksums.mjs`, GitHub release API |
+| Release verification | GitHub release `v0.5.221` has `SHA256SUMS` plus `SHA256SUMS.sig`; PQ signature verified locally. Exchange package release is `exchange-testnet-v0.5.221`. | Current signed rollback anchor and testnet recovery release verified; final testnet exchange docs package published | `.github/workflows/release.yml`, `scripts/sign-release.sh`, `scripts/verify-release-checksums.mjs`, GitHub release API, exchange package release |
 | Release signer | `8HitBNnh8qbhfne5NCv2yHrQFoD6xbmHcWaUSgCGtsk` | Source mapped | `deploy/release-trust-anchor.json` |
 | Current rollback anchor | `v0.5.221` | Operator anchored | Operator update on 2026-07-01 |
 
@@ -164,14 +166,14 @@ Current signed testnet recovery release metadata on 2026-07-01:
 - `scripts/verify-release-checksums.mjs` verified all archive hashes and the PQ
   signature against signer `8HitBNnh8qbhfne5NCv2yHrQFoD6xbmHcWaUSgCGtsk`.
 
-Pending blocker: attach the final external docs/package artifacts before
-publishing exchange-facing release links outside the repository.
+Final external testnet docs/package artifacts are attached to the
+`exchange-testnet-v0.5.221` package release.
 
 ## Remaining Final Metadata Blockers
 
 | ID | Blocker | Required evidence |
 | --- | --- | --- |
-| M-07 | Final external package publication not approved | Operator-approved publication evidence for the exchange package, not only validator release artifacts |
+| None for current testnet-only package | Mainnet remains deferred | Run mainnet launch exchange handoff and full-scope readiness before adding mainnet |
 
 ## Deferred Mainnet Launch Items
 
@@ -189,6 +191,7 @@ mandatory before mainnet is included in an external exchange package.
 | ID | Check | Evidence |
 | --- | --- | --- |
 | M-06 | Status page and incident contacts approved | `https://monitoring.lichen.network` operator-approved on 2026-07-01 for the current testnet-only package; `security@lichen.network`, `exchange-ops@lichen.network`, and `business@lichen.network` recorded in the operations pack |
+| M-07 | Final external package publication approved | Package release `https://github.com/lobstercove/lichen/releases/tag/exchange-testnet-v0.5.221` contains `lichen-exchange-testnet-v0.5.221.tar.gz` and `SHA256SUMS` |
 | M-04 | Explorer route templates | Source route inspection plus hosted `200` checks for root, account, transaction, and block pages on 2026-06-29 |
 | M-05 | Logo URL cache verification | `https://lichen.network/Lichen_Logo_256.png` returned `200`, `image/png`, 45,415 bytes; downloaded file is PNG 256x256 and SHA-256 `bfa0986bc4bde64c3c7ce590782beba78980985f301fbd0fbd4a39dc045ca876`, matching `website/Lichen_Logo_256.png` |
 | M-07 rollback subset | `v0.5.221` rollback-anchor release signatures | GitHub release is published, checksum/signature assets downloaded, and `scripts/verify-release-checksums.mjs` verified signer `8HitBNnh8qbhfne5NCv2yHrQFoD6xbmHcWaUSgCGtsk` |
