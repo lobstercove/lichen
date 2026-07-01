@@ -56,7 +56,7 @@ class ExchangePublicReadinessTests(unittest.TestCase):
             )
         )
 
-    def test_developer_exchange_page_check_requires_exchange_pack_links(self) -> None:
+    def test_developer_exchange_page_check_requires_inline_exchange_cookbook(self) -> None:
         original_request_bytes = readiness.request_bytes
 
         def fake_generic_page(_url: str):
@@ -74,6 +74,9 @@ class ExchangePublicReadinessTests(unittest.TestCase):
             self.assertFalse(gate.checks[0]["ok"])
             self.assertIn("Exchange Integration", gate.checks[0]["detail"]["missing"])
             self.assertIn("Exchange Operations Pack", gate.checks[0]["detail"]["missing"])
+            self.assertIn("Deposit Cookbook", gate.checks[0]["detail"]["missing"])
+            self.assertIn("Withdrawal Cookbook", gate.checks[0]["detail"]["missing"])
+            self.assertIn("Mainnet Handoff", gate.checks[0]["detail"]["missing"])
             self.assertIn("testnet-only", gate.checks[0]["detail"]["missing"])
         finally:
             readiness.request_bytes = original_request_bytes

@@ -952,10 +952,15 @@ function validateDeveloperExchangePage() {
             exchangeHtml.includes('Exchange Integration Guide') &&
             exchangeHtml.includes('Exchange Chain Metadata') &&
             exchangeHtml.includes('Exchange Operations Pack') &&
+            exchangeHtml.includes('Deposit Cookbook') &&
+            exchangeHtml.includes('Withdrawal Cookbook') &&
+            exchangeHtml.includes('Canonical JSON-RPC Cookbook') &&
+            exchangeHtml.includes('Finality And Archive') &&
+            exchangeHtml.includes('Mainnet Handoff') &&
             exchangeHtml.includes('testnet-only') &&
             exchangeHtml.includes('mainnet launch exchange handoff') &&
             exchangeHtml.includes('0xca3f1595a6c25e9f'),
-        'developers exchange integration page is present and contains exchange-specific testnet-only content'
+        'developers exchange integration page is present and contains inline exchange-specific testnet-only content'
     );
 
     assert(

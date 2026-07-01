@@ -57,6 +57,10 @@ DEVELOPER_EXCHANGE_REQUIRED_SNIPPETS = (
     "Exchange Integration Guide",
     "Exchange Chain Metadata",
     "Exchange Operations Pack",
+    "Deposit Cookbook",
+    "Withdrawal Cookbook",
+    "Canonical JSON-RPC Cookbook",
+    "Mainnet Handoff",
     "exchange-testnet-v0.5.221",
     "testnet-only",
 )

@@ -62,10 +62,17 @@
             <div class="sidebar-section">
                 <h3 class="sidebar-heading">Exchange</h3>
                 <a href="#status" class="sidebar-link active">Status</a>
-                <a href="#canonical-docs" class="sidebar-link">Canonical Docs</a>
-                <a href="#integration-anchors" class="sidebar-link">Integration Anchors</a>
+                <a href="#package" class="sidebar-link">Testnet Package</a>
+                <a href="#metadata" class="sidebar-link">Metadata</a>
+                <a href="#addressing" class="sidebar-link">Addressing</a>
+                <a href="#deposits" class="sidebar-link">Deposits</a>
+                <a href="#withdrawals" class="sidebar-link">Withdrawals</a>
+                <a href="#finality-archive" class="sidebar-link">Finality &amp; Archive</a>
+                <a href="#rpc-cookbook" class="sidebar-link">RPC Cookbook</a>
+                <a href="#operations" class="sidebar-link">Operations</a>
                 <a href="#validation-gates" class="sidebar-link">Validation Gates</a>
-                <a href="#next-step" class="sidebar-link">Next Step</a>
+                <a href="#mainnet-handoff" class="sidebar-link">Mainnet Handoff</a>
+                <a href="#source-artifacts" class="sidebar-link">Source &amp; Artifacts</a>
             </div>
             <div class="sidebar-divider"></div>
             <div class="sidebar-section">
@@ -87,13 +94,10 @@
             <section id="status">
                 <h1>Exchange Integration</h1>
                 <p class="lead">
-                    Native LICN exchange integration is in testnet-only readiness work until mainnet launch. Local and
-                    public testnet gates now cover metadata, operations policy, archive/history regressions, SDK/CLI
-                    boundaries, the three-validator exchange simulation, and the public faucet-backed testnet exchange
-                    simulation. The developer portal page is deployed and verified; the monitoring status page is
-                    approved for the current testnet-only package; exchange contact aliases are approved as
-                    security@lichen.network, exchange-ops@lichen.network, and business@lichen.network. The final
-                    testnet-only exchange package is published under exchange-testnet-v0.5.221.
+                    Native LICN exchange integration is published for testnet-only integration testing under
+                    exchange-testnet-v0.5.221. This page is the exchange-facing portal version of the package: metadata,
+                    address handling, deposits, withdrawals, finality, archive expectations, operations contacts, and
+                    validation gates are documented here directly. GitHub remains the immutable source and audit trail.
                 </p>
                 <div class="callout callout-warning">
                     <div class="callout-title">Testnet package status</div>
@@ -104,88 +108,349 @@
                 </div>
             </section>
 
-            <section id="canonical-docs">
-                <h2>Canonical Docs</h2>
+            <section id="package">
+                <h2>Testnet Package</h2>
                 <p>
-                    The markdown files below are the source of truth for this work. This portal page intentionally
-                    links to them instead of duplicating the full cookbook.
+                    The current exchange package is for native LICN testing on <code>lichen-testnet-1</code>. It is
+                    intended for exchange engineering, wallet/custody integration, deposit/withdrawal rehearsal,
+                    archive/history verification, and reconciliation testing before mainnet launch.
                 </p>
-                <div>
-                    <div class="method-card">
-                        <h3><a
-                                href="https://github.com/lobstercove/lichen/blob/exchange-testnet-v0.5.221/docs/guides/EXCHANGE_INTEGRATION.md"
-                                target="_blank" rel="noopener">Exchange Integration Guide</a></h3>
-                        <p>Deposit, withdrawal, polling, retry, finality, archive, and reconciliation guide.</p>
-                    </div>
-                    <div class="method-card">
-                        <h3><a
-                                href="https://github.com/lobstercove/lichen/blob/exchange-testnet-v0.5.221/docs/guides/EXCHANGE_CHAIN_METADATA.md"
-                                target="_blank" rel="noopener">Exchange Chain Metadata</a></h3>
-                        <p>Ticker, decimals, chain IDs, RPC URLs, address validation, logo, and release metadata.</p>
-                    </div>
-                    <div class="method-card">
-                        <h3><a
-                                href="https://github.com/lobstercove/lichen/blob/exchange-testnet-v0.5.221/docs/guides/EXCHANGE_ADDRESS_VALIDATION_VECTORS.md"
-                                target="_blank" rel="noopener">Address Validation Vectors</a></h3>
-                        <p>Native Base58 address regex prefilter, decoded-length rule, valid vectors, and invalid cases.</p>
-                    </div>
-                    <div class="method-card">
-                        <h3><a
-                                href="https://github.com/lobstercove/lichen/blob/exchange-testnet-v0.5.221/docs/deployment/EXCHANGE_OPERATIONS_PACK.md"
-                                target="_blank" rel="noopener">Exchange Operations Pack</a></h3>
-                        <p>Status page, incident contacts, upgrade policy, rollback, release signatures, and archive
-                            policy.</p>
-                    </div>
-                    <div class="method-card">
-                        <h3><a
-                                href="https://github.com/lobstercove/lichen/blob/exchange-testnet-v0.5.221/docs/strategy/EXCHANGE_LISTING_READINESS_TRACKER.md"
-                                target="_blank" rel="noopener">Readiness Tracker</a></h3>
-                        <p>Gate status, blockers, source map, and ordered execution record.</p>
-                    </div>
-                </div>
-            </section>
-
-            <section id="integration-anchors">
-                <h2>Integration Anchors</h2>
                 <table class="param-table">
                     <thead>
                         <tr>
-                            <th>Area</th>
-                            <th>Current source-backed rule</th>
+                            <th>Item</th>
+                            <th>Value</th>
                         </tr>
                     </thead>
                     <tbody>
                         <tr>
-                            <td>Package scope</td>
-                            <td>Testnet-only until mainnet launch. Mainnet exchange publication requires the launch runbook exchange handoff and full-scope public readiness.</td>
+                            <td>Package tag</td>
+                            <td><code>exchange-testnet-v0.5.221</code></td>
                         </tr>
                         <tr>
-                            <td>Asset</td>
-                            <td>Native LICN uses 9 decimals; 1 LICN equals 1,000,000,000 spores.</td>
+                            <td>Package release</td>
+                            <td><a href="https://github.com/lobstercove/lichen/releases/tag/exchange-testnet-v0.5.221"
+                                    target="_blank" rel="noopener">GitHub release</a></td>
                         </tr>
                         <tr>
-                            <td>Accounting</td>
-                            <td>Use raw spores as integers. RPC formatted LICN fields are display-only.</td>
+                            <td>Current rollback anchor</td>
+                            <td><code>v0.5.221</code></td>
                         </tr>
                         <tr>
-                            <td>Address</td>
-                            <td>Native addresses match the Base58 prefilter and decode to exactly 32 bytes.</td>
+                            <td>Scope</td>
+                            <td>Testnet-only until the mainnet launch exchange handoff and full-scope readiness gate
+                                pass.</td>
                         </tr>
                         <tr>
-                            <td>Native RPC</td>
-                            <td>Use canonical JSON-RPC on / with getSlot, getBlock, getTransaction, history, balance, and sendTransaction.</td>
+                            <td>Final readiness gate</td>
+                            <td><code>python3 scripts/qa/exchange_public_readiness.py --scope testnet --status-approved --release-tag-selected</code></td>
+                        </tr>
+                    </tbody>
+                </table>
+            </section>
+
+            <section id="metadata">
+                <h2>Exchange Chain Metadata</h2>
+                <table class="param-table">
+                    <thead>
+                        <tr>
+                            <th>Field</th>
+                            <th>Current value</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>Chain name</td>
+                            <td>Lichen</td>
                         </tr>
                         <tr>
-                            <td>EVM compatibility</td>
-                            <td>Native listings use getNetworkInfo chain IDs; /evm eth_chainId is runtime compatibility data. Public testnet currently returns 0xca3f1595a6c25e9f.</td>
+                            <td>Native asset / ticker</td>
+                            <td><code>LICN</code></td>
                         </tr>
                         <tr>
-                            <td>Archive</td>
-                            <td>Exchange operations require archive-backed endpoints. State-only RPC is not enough.</td>
+                            <td>Base unit</td>
+                            <td><code>spore</code></td>
                         </tr>
                         <tr>
-                            <td>Rollback</td>
-                            <td>Current rollback anchor is v0.5.221 until a newer signed rollback point is recorded.</td>
+                            <td>Decimals</td>
+                            <td><code>9</code>; <code>1 LICN = 1,000,000,000 spores</code></td>
+                        </tr>
+                        <tr>
+                            <td>Fee unit</td>
+                            <td>Native LICN spores; runtime fee values must be read through <code>getFeeConfig</code>.</td>
+                        </tr>
+                        <tr>
+                            <td>Native testnet chain ID</td>
+                            <td><code>lichen-testnet-1</code></td>
+                        </tr>
+                        <tr>
+                            <td>Native mainnet chain ID</td>
+                            <td><code>lichen-mainnet-1</code>; launch placeholder, excluded from this package.</td>
+                        </tr>
+                        <tr>
+                            <td>EVM compatibility chain ID</td>
+                            <td>Query <code>/evm</code> <code>eth_chainId</code> at runtime. Public testnet currently
+                                returns <code>0xca3f1595a6c25e9f</code>. Do not use <code>8001</code> for native LICN
+                                deposit or withdrawal signing.</td>
+                        </tr>
+                        <tr>
+                            <td>Testnet RPC / WebSocket</td>
+                            <td><code>https://testnet-rpc.lichen.network</code> /
+                                <code>wss://testnet-rpc.lichen.network/ws</code></td>
+                        </tr>
+                        <tr>
+                            <td>Mainnet RPC / WebSocket</td>
+                            <td><code>https://rpc.lichen.network</code> /
+                                <code>wss://rpc.lichen.network/ws</code>; launch placeholders until mainnet handoff.</td>
+                        </tr>
+                        <tr>
+                            <td>Explorer</td>
+                            <td><code>https://explorer.lichen.network</code></td>
+                        </tr>
+                        <tr>
+                            <td>Logo URL</td>
+                            <td><code>https://lichen.network/Lichen_Logo_256.png</code></td>
+                        </tr>
+                    </tbody>
+                </table>
+            </section>
+
+            <section id="addressing">
+                <h2>Addressing And Accounting</h2>
+                <div class="method-card">
+                    <h3>Native Address Rule</h3>
+                    <p>
+                        Native LICN deposit addresses are Base58 strings encoding exactly 32 bytes. A regex is only a
+                        prefilter; production validation must Base58-decode and reject any decoded length other than
+                        32 bytes. EVM-format <code>0x...</code> addresses are mappings, not native deposit addresses.
+                    </p>
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-lang">Text</span></div>
+                        <pre><code>prefilter: ^[1-9A-HJ-NP-Za-km-z]{32,44}$
+
+valid_native_address(address):
+    if not matches(address, "^[1-9A-HJ-NP-Za-km-z]{32,44}$"):
+        return false
+    decoded = base58_decode(address)
+    return len(decoded) == 32</code></pre>
+                    </div>
+                </div>
+                <div class="method-card">
+                    <h3>Exchange Accounting Rule</h3>
+                    <p>
+                        Store balances, credits, debits, and fees as raw integer spores. Formatted LICN strings in RPC
+                        responses are display-only and must not drive the exchange ledger.
+                    </p>
+                    <ul>
+                        <li>Credit amount: exact <code>amount_spores</code> from transaction or history data.</li>
+                        <li>Debit amount: exact withdrawal spores plus exact fee spores.</li>
+                        <li>Idempotency key: native transaction hash plus credited account or withdrawal id.</li>
+                        <li>JavaScript SDK is not approved for exchange accounting until lossless u64 parsing is used.</li>
+                    </ul>
+                </div>
+            </section>
+
+            <section id="deposits">
+                <h2>Deposit Cookbook</h2>
+                <p>
+                    The recommended model is one native Lichen address per exchange user or account allocation. Native
+                    LICN base transfers do not require a memo or tag. If pooled deposit addresses are used, user
+                    attribution is an exchange-owned off-chain ledger responsibility.
+                </p>
+                <ol>
+                    <li>Generate or allocate a native account for the user.</li>
+                    <li>Persist the user-to-address assignment before displaying the address.</li>
+                    <li>Poll <code>getTransactionsByAddress</code> for the deposit address; WebSocket slot events may
+                        wake the poller but do not replace archive-backed reconciliation.</li>
+                    <li>Fetch every candidate transaction with <code>getTransaction</code>.</li>
+                    <li>Confirm that the transaction transfers native LICN to the assigned address.</li>
+                    <li>Require <code>confirmation_status = "finalized"</code> plus the configured operational buffer.</li>
+                    <li>Credit raw spores exactly once using the transaction hash and credited account as the
+                        idempotency key.</li>
+                    <li>Reconcile address balance, credited deposits, pending sweeps, and hot/cold balances.</li>
+                </ol>
+                <div class="callout callout-info">
+                    <div class="callout-title">Validated flow</div>
+                    The deposit, credit, sweep, withdrawal, retry, and reconciliation flow passed in the local
+                    three-validator exchange simulation and in the public faucet-backed testnet simulation after the
+                    signed <code>v0.5.221</code> recovery rollout.
+                </div>
+            </section>
+
+            <section id="withdrawals">
+                <h2>Withdrawal Cookbook</h2>
+                <p>
+                    Use a cold wallet for the majority reserve, a limited hot wallet for normal withdrawals, and
+                    deposit wallets that sweep according to the exchange custody policy.
+                </p>
+                <ol>
+                    <li>Validate the destination as a native Base58 address decoding to exactly 32 bytes.</li>
+                    <li>Convert the requested withdrawal amount to spores before transaction construction.</li>
+                    <li>Check hot-wallet spendable balance in spores.</li>
+                    <li>Build and sign a native transfer transaction with the target native chain ID.</li>
+                    <li>Submit through canonical <code>sendTransaction</code>.</li>
+                    <li>Persist the returned native transaction hash before any retry.</li>
+                    <li>Poll <code>getTransaction</code> until finalized plus buffer.</li>
+                    <li>Mark the withdrawal complete once, then reconcile the hot wallet, ledger, and fee spend.</li>
+                </ol>
+                <div class="callout callout-warning">
+                    <div class="callout-title">Retry policy</div>
+                    After signing and submitting a withdrawal, do not blindly create a replacement withdrawal. Poll the
+                    recorded hash through <code>getTransaction</code> and account history first. Escalate to manual
+                    review if the hash remains unavailable beyond the exchange timeout policy.
+                </div>
+            </section>
+
+            <section id="finality-archive">
+                <h2>Finality And Archive</h2>
+                <div class="method-card">
+                    <h3>Confirmation Policy</h3>
+                    <p>
+                        Lichen finality is deterministic under the active BFT commitment model. Exchanges must still
+                        apply an operational buffer to cover endpoint lag, archive lag, monitoring delay, and internal
+                        retry races.
+                    </p>
+                    <ul>
+                        <li>Standard policy: credit after <code>getTransaction</code> reports
+                            <code>confirmation_status = "finalized"</code> and current finalized slot is at least
+                            transaction slot plus 8.</li>
+                        <li>High-value policy: require finalized slot at least transaction slot plus 32 or manual
+                            review.</li>
+                    </ul>
+                </div>
+                <div class="method-card">
+                    <h3>Archive Requirement</h3>
+                    <p>
+                        Exchange integrations must use archive-backed RPC. A pruned or state-only endpoint is not
+                        acceptable because exchanges need old transaction and account-history data for replay,
+                        reconciliation after outages, withdrawal proof, support, and audits.
+                    </p>
+                    <ul>
+                        <li>Required methods: <code>getBlock</code>, <code>getLatestBlock</code>,
+                            <code>getTransaction</code>, <code>getTransactionsByAddress</code>,
+                            <code>getTransactionHistory</code>, and <code>getAccountTxCount</code>.</li>
+                        <li>Hot/cold archive behavior is regression-tested after migration and reopen at storage and
+                            RPC boundaries.</li>
+                        <li>A new validator must be able to sync and serve complete history when configured as an
+                            archive-backed exchange endpoint.</li>
+                    </ul>
+                </div>
+            </section>
+
+            <section id="rpc-cookbook">
+                <h2>Canonical JSON-RPC Cookbook</h2>
+                <p>All examples use the canonical JSON-RPC route at <code>/</code> and public testnet endpoint.</p>
+
+                <div class="method-card">
+                    <h3>Get Finalized Slot</h3>
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-lang">cURL</span></div>
+                        <pre><code>curl -s https://testnet-rpc.lichen.network \
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"getSlot","params":[{"commitment":"finalized"}]}'</code></pre>
+                    </div>
+                </div>
+
+                <div class="method-card">
+                    <h3>Get Runtime Fee Config</h3>
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-lang">cURL</span></div>
+                        <pre><code>curl -s https://testnet-rpc.lichen.network \
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"getFeeConfig","params":[]}'</code></pre>
+                    </div>
+                </div>
+
+                <div class="method-card">
+                    <h3>Get Balance</h3>
+                    <p>Use <code>spores</code> and <code>spendable</code> for accounting.</p>
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-lang">cURL</span></div>
+                        <pre><code>curl -s https://testnet-rpc.lichen.network \
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"getBalance","params":["&lt;native_base58_address&gt;"]}'</code></pre>
+                    </div>
+                </div>
+
+                <div class="method-card">
+                    <h3>Get Transaction</h3>
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-lang">cURL</span></div>
+                        <pre><code>curl -s https://testnet-rpc.lichen.network \
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"getTransaction","params":["&lt;tx_hash_hex&gt;"]}'</code></pre>
+                    </div>
+                </div>
+
+                <div class="method-card">
+                    <h3>Get Address History</h3>
+                    <p>Pagination uses <code>next_before_slot</code> with <code>before_slot</code>.</p>
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-lang">cURL</span></div>
+                        <pre><code>curl -s https://testnet-rpc.lichen.network \
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"getTransactionsByAddress","params":["&lt;native_base58_address&gt;",{"limit":100}]}'</code></pre>
+                    </div>
+                </div>
+
+                <div class="method-card">
+                    <h3>Broadcast Native Transaction</h3>
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-lang">cURL</span></div>
+                        <pre><code>curl -s https://testnet-rpc.lichen.network \
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"sendTransaction","params":["&lt;base64_signed_native_transaction&gt;"]}'</code></pre>
+                    </div>
+                </div>
+            </section>
+
+            <section id="operations">
+                <h2>Operations</h2>
+                <table class="param-table">
+                    <thead>
+                        <tr>
+                            <th>Surface</th>
+                            <th>Exchange-facing value</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>Status page</td>
+                            <td><a href="https://monitoring.lichen.network" target="_blank"
+                                    rel="noopener">https://monitoring.lichen.network</a>; operator-approved for the
+                                current testnet-only package.</td>
+                        </tr>
+                        <tr>
+                            <td>Security incidents</td>
+                            <td><code>security@lichen.network</code></td>
+                        </tr>
+                        <tr>
+                            <td>Exchange operations</td>
+                            <td><code>exchange-ops@lichen.network</code></td>
+                        </tr>
+                        <tr>
+                            <td>Business/listing</td>
+                            <td><code>business@lichen.network</code></td>
+                        </tr>
+                        <tr>
+                            <td>Critical acknowledgement target</td>
+                            <td>Within 1 hour for deposit, withdrawal, RPC/WebSocket, archive, finality, signing, key,
+                                custody, or fund-safety impact.</td>
+                        </tr>
+                        <tr>
+                            <td>Active incident updates</td>
+                            <td>Status-page update at acknowledgement and at least every 2 hours until mitigation or
+                                resolution.</td>
+                        </tr>
+                        <tr>
+                            <td>Planned maintenance</td>
+                            <td>Target 72 hours notice; 24 hours minimum where operationally possible. Emergency
+                                security releases may use shorter notice with immediate status publication.</td>
+                        </tr>
+                        <tr>
+                            <td>Release verification</td>
+                            <td>Use GitHub release assets, <code>SHA256SUMS</code>, <code>SHA256SUMS.sig</code>, and
+                                signer <code>8HitBNnh8qbhfne5NCv2yHrQFoD6xbmHcWaUSgCGtsk</code>.</td>
                         </tr>
                     </tbody>
                 </table>
@@ -205,13 +470,61 @@
                 </ul>
             </section>
 
-            <section id="next-step">
-                <h2>Next Step</h2>
+            <section id="mainnet-handoff">
+                <h2>Mainnet Handoff</h2>
                 <p>
-                    The next readiness task is ongoing package hygiene: keep this deployed exchange page verified,
-                    keep the external package release intact, and rerun the public readiness gate before outreach or
-                    any package update.
+                    Mainnet is not live and is excluded from this exchange package. Before any mainnet exchange package
+                    exists, the mainnet launch runbook must close the exchange handoff gate, public mainnet RPC and
+                    WebSocket endpoints must pass readiness, archive/history must be verified on mainnet, a dust
+                    deposit/withdrawal flow must pass, and the public readiness gate must be rerun with
+                    <code>--scope full</code>.
                 </p>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">Shell</span></div>
+                    <pre><code>python3 scripts/qa/exchange_public_readiness.py --scope full --status-approved --release-tag-selected</code></pre>
+                </div>
+            </section>
+
+            <section id="source-artifacts">
+                <h2>Source And Artifacts</h2>
+                <p>
+                    The portal carries the reviewer-facing content directly. The release-tagged GitHub links below are
+                    retained as source, checksum, and audit references.
+                </p>
+                <div>
+                    <div class="method-card">
+                        <h3><a
+                                href="https://github.com/lobstercove/lichen/blob/exchange-testnet-v0.5.221/docs/guides/EXCHANGE_INTEGRATION.md"
+                                target="_blank" rel="noopener">Exchange Integration Guide</a></h3>
+                        <p>Full source guide for deposit, withdrawal, polling, retry, finality, archive, and
+                            reconciliation.</p>
+                    </div>
+                    <div class="method-card">
+                        <h3><a
+                                href="https://github.com/lobstercove/lichen/blob/exchange-testnet-v0.5.221/docs/guides/EXCHANGE_CHAIN_METADATA.md"
+                                target="_blank" rel="noopener">Exchange Chain Metadata</a></h3>
+                        <p>Exchange metadata sheet with source mapping and deferred mainnet rows.</p>
+                    </div>
+                    <div class="method-card">
+                        <h3><a
+                                href="https://github.com/lobstercove/lichen/blob/exchange-testnet-v0.5.221/docs/guides/EXCHANGE_ADDRESS_VALIDATION_VECTORS.md"
+                                target="_blank" rel="noopener">Address Validation Vectors</a></h3>
+                        <p>Native Base58 validation vectors and invalid cases.</p>
+                    </div>
+                    <div class="method-card">
+                        <h3><a
+                                href="https://github.com/lobstercove/lichen/blob/exchange-testnet-v0.5.221/docs/deployment/EXCHANGE_OPERATIONS_PACK.md"
+                                target="_blank" rel="noopener">Exchange Operations Pack</a></h3>
+                        <p>Status page, contacts, upgrade policy, rollback policy, release signatures, and archive
+                            policy.</p>
+                    </div>
+                    <div class="method-card">
+                        <h3><a
+                                href="https://github.com/lobstercove/lichen/blob/exchange-testnet-v0.5.221/docs/strategy/EXCHANGE_LISTING_READINESS_TRACKER.md"
+                                target="_blank" rel="noopener">Readiness Tracker</a></h3>
+                        <p>Gate status, source map, evidence, and execution record.</p>
+                    </div>
+                </div>
             </section>
         </main>
     </div>
