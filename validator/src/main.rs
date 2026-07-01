@@ -5598,6 +5598,18 @@ fn duration_millis_u64(duration: Duration) -> u64 {
     duration.as_millis().min(u128::from(u64::MAX)) as u64
 }
 
+const FAST_MISSED_PROPOSER_MIN_GRACE_MS: u64 = 150;
+const FAST_MISSED_PROPOSER_MAX_GRACE_MS: u64 = 300;
+
+fn missed_proposer_grace_timeout(configured_timeout: Duration, slot_duration_ms: u64) -> Duration {
+    let configured_timeout_ms = duration_millis_u64(configured_timeout).max(1);
+    let slot_grace_ms = slot_duration_ms.saturating_div(2).clamp(
+        FAST_MISSED_PROPOSER_MIN_GRACE_MS,
+        FAST_MISSED_PROPOSER_MAX_GRACE_MS,
+    );
+    Duration::from_millis(configured_timeout_ms.min(slot_grace_ms))
+}
+
 fn propose_timeout_delay(slot_boundary_delay_ms: u64, configured_timeout: Duration) -> Duration {
     let configured_timeout_ms = duration_millis_u64(configured_timeout).max(1);
     let delay_ms = slot_boundary_delay_ms.saturating_add(configured_timeout_ms);
@@ -5607,10 +5619,34 @@ fn propose_timeout_delay(slot_boundary_delay_ms: u64, configured_timeout: Durati
 fn propose_timeout_delay_for_role(
     slot_boundary_delay_ms: u64,
     configured_timeout: Duration,
-    _slot_duration_ms: u64,
-    _local_proposer: bool,
+    slot_duration_ms: u64,
+    local_proposer: bool,
 ) -> Duration {
-    propose_timeout_delay(slot_boundary_delay_ms, configured_timeout)
+    let timeout = if local_proposer {
+        configured_timeout
+    } else {
+        missed_proposer_grace_timeout(configured_timeout, slot_duration_ms)
+    };
+    propose_timeout_delay(slot_boundary_delay_ms, timeout)
+}
+
+const STALE_BFT_RESTART_RENDEZVOUS_AFTER_SECS: u64 = 120;
+const STALE_BFT_RESTART_RENDEZVOUS_ROUND_SECS: u64 = 5;
+
+fn stale_bft_restart_rendezvous_round(
+    current_tip: u64,
+    start_height: u64,
+    last_block_age_secs: u64,
+) -> Option<u32> {
+    if current_tip == 0 || start_height != current_tip.saturating_add(1) {
+        return None;
+    }
+    if last_block_age_secs < STALE_BFT_RESTART_RENDEZVOUS_AFTER_SECS {
+        return None;
+    }
+
+    let target_round = last_block_age_secs.saturating_div(STALE_BFT_RESTART_RENDEZVOUS_ROUND_SECS);
+    Some(target_round.min(u64::from(u32::MAX)) as u32)
 }
 
 /// Validate a received or committed block by deterministically executing its
@@ -22236,6 +22272,19 @@ async fn run_validator() {
     }
     let recovered_bft_round =
         wal_recovery.max_recovered_round_for_height(start_height, &validator_pubkey);
+    let stale_restart_rendezvous = {
+        let current_tip = start_height.saturating_sub(1);
+        state
+            .get_block_by_slot(current_tip)
+            .ok()
+            .flatten()
+            .and_then(|last_block| {
+                let now_secs = current_unix_timestamp_secs();
+                let age_secs = now_secs.saturating_sub(last_block.header.timestamp);
+                stale_bft_restart_rendezvous_round(current_tip, start_height, age_secs)
+                    .map(|round| (round, age_secs))
+            })
+    };
     bft.start_height(start_height);
     // Signal block receiver: BFT owns this height and above.
     bft_committing_slot.store(start_height, Ordering::Release);
@@ -22304,8 +22353,28 @@ async fn run_validator() {
             last_wal_lock = None;
         }
     }
-    if let Some(recovered_round) = recovered_bft_round {
-        bft.resume_after_recovered_round(recovered_round);
+    let wal_resume_round = recovered_bft_round.map(|round| {
+        (
+            round.saturating_add(1),
+            format!("after recovered round {}", round),
+        )
+    });
+    let stale_resume_round = stale_restart_rendezvous.map(|(round, age_secs)| {
+        (
+            round,
+            format!(
+                "stale restart rendezvous: tip={}, block_age_secs={}",
+                start_height.saturating_sub(1),
+                age_secs
+            ),
+        )
+    });
+    if let Some((target_round, reason)) = wal_resume_round
+        .into_iter()
+        .chain(stale_resume_round)
+        .max_by_key(|(round, _)| *round)
+    {
+        bft.resume_at_round_if_higher(target_round, &reason);
     }
     parent_hash = get_parent_hash(&state);
 
@@ -25207,7 +25276,27 @@ mod tests {
     }
 
     #[test]
-    fn propose_timeout_delay_for_role_preserves_configured_wait_for_every_validator() {
+    fn missed_proposer_grace_timeout_is_bounded_by_slot_cadence() {
+        assert_eq!(
+            missed_proposer_grace_timeout(Duration::from_millis(800), 400),
+            Duration::from_millis(200)
+        );
+        assert_eq!(
+            missed_proposer_grace_timeout(Duration::from_millis(800), 100),
+            Duration::from_millis(150)
+        );
+        assert_eq!(
+            missed_proposer_grace_timeout(Duration::from_millis(800), 1_200),
+            Duration::from_millis(300)
+        );
+        assert_eq!(
+            missed_proposer_grace_timeout(Duration::from_millis(80), 400),
+            Duration::from_millis(80)
+        );
+    }
+
+    #[test]
+    fn propose_timeout_delay_for_role_keeps_local_proposer_safety_window() {
         let configured = Duration::from_millis(800);
 
         assert_eq!(
@@ -25216,11 +25305,31 @@ mod tests {
         );
         assert_eq!(
             propose_timeout_delay_for_role(100, configured, 400, false),
-            Duration::from_millis(900)
+            Duration::from_millis(300)
         );
         assert_eq!(
             propose_timeout_delay_for_role(0, Duration::from_millis(5_000), 400, false),
-            Duration::from_millis(5_000)
+            Duration::from_millis(200)
+        );
+    }
+
+    #[test]
+    fn stale_bft_restart_rendezvous_round_only_for_stale_resumed_tip() {
+        assert_eq!(stale_bft_restart_rendezvous_round(0, 1, 10_000), None);
+        assert_eq!(stale_bft_restart_rendezvous_round(50, 52, 10_000), None);
+        assert_eq!(stale_bft_restart_rendezvous_round(50, 51, 119), None);
+        assert_eq!(stale_bft_restart_rendezvous_round(50, 51, 120), Some(24));
+        assert_eq!(
+            stale_bft_restart_rendezvous_round(6_818_621, 6_818_622, 28_600),
+            Some(5_720)
+        );
+    }
+
+    #[test]
+    fn stale_bft_restart_rendezvous_round_saturates_at_u32_max() {
+        assert_eq!(
+            stale_bft_restart_rendezvous_round(1, 2, u64::MAX),
+            Some(u32::MAX)
         );
     }
 

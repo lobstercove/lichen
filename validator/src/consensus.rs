@@ -440,14 +440,26 @@ impl ConsensusEngine {
     /// protection; this only avoids replaying already-exhausted rounds.
     pub fn resume_after_recovered_round(&mut self, recovered_round: u32) {
         let next_round = recovered_round.saturating_add(1);
-        if next_round <= self.round {
+        self.resume_at_round_if_higher(
+            next_round,
+            &format!("after recovered round {}", recovered_round),
+        );
+    }
+
+    /// Move the engine to a higher round without signing intermediate rounds.
+    ///
+    /// This is used only during startup recovery. Restored signed-vote records
+    /// still protect every previously signed round; advancing here merely
+    /// avoids forcing a restarted validator to replay stale timeout history.
+    pub fn resume_at_round_if_higher(&mut self, target_round: u32, reason: &str) {
+        if target_round <= self.round {
             return;
         }
-        self.round = next_round;
+        self.round = target_round;
         self.step = RoundStep::Propose;
         info!(
-            "🔐 WAL: Resuming height {} at round {} after recovered round {}",
-            self.height, self.round, recovered_round
+            "🔐 WAL: Resuming height {} at round {} ({})",
+            self.height, self.round, reason
         );
     }
 
