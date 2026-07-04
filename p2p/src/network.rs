@@ -1222,6 +1222,8 @@ impl P2PNetwork {
                     "P2P: Peer {} is at slot {} ({} blocks)",
                     peer_addr, current_slot, total_blocks
                 );
+                self.peer_manager
+                    .record_peer_advertised_slot(&peer_addr, current_slot);
                 let response = StatusResponseMsg {
                     requester: peer_addr,
                     current_slot,
@@ -1462,6 +1464,8 @@ impl P2PNetwork {
                 // Validator pubkeys remain metadata only until the validator binary
                 // verifies local stake/validator-set membership. A self-signed P2P
                 // announcement alone must not grant validator-route status.
+                self.peer_manager
+                    .record_peer_advertised_slot(&peer_addr, current_slot);
                 let announcement = ValidatorAnnouncement {
                     peer_addr,
                     pubkey,

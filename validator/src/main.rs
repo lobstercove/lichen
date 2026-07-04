@@ -558,6 +558,28 @@ fn sync_range_peer_order(peers: &[SocketAddr], chunk_index: usize) -> Vec<Socket
         .collect()
 }
 
+fn sync_range_peer_candidates(
+    peer_infos: &[(SocketAddr, i64, u64)],
+    required_slot: u64,
+    fanout: usize,
+) -> Vec<SocketAddr> {
+    let mut candidates = peer_infos.to_vec();
+    candidates.sort_by(|a, b| {
+        let a_fresh = a.2 >= required_slot;
+        let b_fresh = b.2 >= required_slot;
+        b_fresh
+            .cmp(&a_fresh)
+            .then_with(|| b.2.cmp(&a.2))
+            .then_with(|| b.1.cmp(&a.1))
+            .then_with(|| a.0.to_string().cmp(&b.0.to_string()))
+    });
+    candidates
+        .into_iter()
+        .take(fanout)
+        .map(|(addr, _, _)| addr)
+        .collect()
+}
+
 fn deserialize_snapshot_value<T>(data: &[u8], context: &str) -> Result<T, String>
 where
     T: serde::de::DeserializeOwned,
@@ -14968,6 +14990,7 @@ async fn run_validator() {
     if needs_genesis {
         if let Some(ref pm) = p2p_peer_manager {
             info!("📡 Requesting genesis block (slot 0) from network");
+            sync_manager.mark_requested(0).await;
             let request_msg = P2PMessage::new(
                 MessageType::BlockRangeRequest {
                     start_slot: 0,
@@ -14976,7 +14999,6 @@ async fn run_validator() {
                 p2p_config.listen_addr,
             );
             pm.broadcast(request_msg).await;
-            sync_manager.mark_requested(0).await;
         }
     }
 
@@ -14984,6 +15006,7 @@ async fn run_validator() {
         if let Some(ref pm) = p2p_peer_manager {
             let state_for_genesis_retry = state.clone();
             let peer_mgr_for_genesis_retry = pm.clone();
+            let sync_manager_for_genesis_retry = sync_manager.clone();
             let local_addr_for_genesis_retry = p2p_config.listen_addr;
             tokio::spawn(async move {
                 let mut interval = time::interval(Duration::from_secs(5));
@@ -14996,6 +15019,7 @@ async fn run_validator() {
                     // Always re-request genesis block — the initial broadcast
                     // may have fired before P2P connections were established,
                     // so we must retry unconditionally until it arrives.
+                    sync_manager_for_genesis_retry.mark_requested(0).await;
                     let request = P2PMessage::new(
                         MessageType::BlockRangeRequest {
                             start_slot: 0,
@@ -15155,11 +15179,26 @@ async fn run_validator() {
                                 false,
                             ) {
                                 warn!("{}", err);
-                                error!(
-                                    "FATAL: refusing to replay pending block {} into canonical state after staging state-root mismatch",
+                                warn!(
+                                    "⚠️  Rejecting pending block {} after staged state-root mismatch; switching to verified checkpoint repair",
                                     pending_slot
                                 );
-                                std::process::exit(1);
+                                sync_mgr.set_sync_mode(sync::SyncMode::Warp).await;
+                                sync_mgr.complete_sync().await;
+                                sync_mgr.record_sync_failure().await;
+                                sync_mgr.clear_requested_slots().await;
+                                sync_mgr.clear_pending_blocks().await;
+                                snapshot_sync_for_blocks
+                                    .lock()
+                                    .await
+                                    .mark_checkpoint_repair_pending();
+                                request_checkpoint_metadata_from_peers(
+                                    &peer_mgr_for_sync,
+                                    local_addr,
+                                    "pending state-root mismatch",
+                                )
+                                .await;
+                                continue;
                             }
                         }
                         if state_for_blocks
@@ -15220,6 +15259,7 @@ async fn run_validator() {
                         if !genesis_ready {
                             if !genesis_sync_in_progress_for_blocks.load(Ordering::Acquire) {
                                 info!("📡 Periodic sync: requesting genesis block (slot 0)");
+                                sync_mgr.mark_requested(0).await;
                                 let request_msg = P2PMessage::new(
                                     MessageType::BlockRangeRequest {
                                         start_slot: 0,
@@ -15282,7 +15322,8 @@ async fn run_validator() {
                                 continue;
                             }
                             let sync_peer_manager = Some(peer_mgr_for_sync.clone());
-                            request_block_range_from_peers(
+                            request_unrequested_block_range_from_peers(
+                                &sync_mgr,
                                 &sync_peer_manager,
                                 local_addr,
                                 start,
@@ -15290,9 +15331,6 @@ async fn run_validator() {
                                 "periodic",
                             )
                             .await;
-                            for slot in start..=end {
-                                sync_mgr.mark_requested(slot).await;
-                            }
 
                             // Spawn completion handler (same pattern as main sync path).
                             // Without this, is_syncing stays true forever and blocks
@@ -15330,6 +15368,13 @@ async fn run_validator() {
                 };
                 let block_slot = block.header.slot;
                 let block_has_user_transactions = !block.transactions.is_empty();
+                if is_sync_block && !sync_mgr.is_requested(block_slot).await {
+                    debug!(
+                        "⏭️  Ignoring unrequested sync block {} from stale range response",
+                        block_slot
+                    );
+                    continue;
+                }
 
                 // ── Block validation (T2.2) ──────────────────────────
                 // Verify producer signature and structural limits BEFORE
@@ -16532,11 +16577,26 @@ async fn run_validator() {
                                     false,
                                 ) {
                                     warn!("{}", err);
-                                    error!(
-                                        "FATAL: refusing to replay pending block {} into canonical state after staging state-root mismatch",
+                                    warn!(
+                                        "⚠️  Rejecting pending block {} after staged state-root mismatch; switching to verified checkpoint repair",
                                         pending_slot
                                     );
-                                    std::process::exit(1);
+                                    sync_mgr.set_sync_mode(sync::SyncMode::Warp).await;
+                                    sync_mgr.complete_sync().await;
+                                    sync_mgr.record_sync_failure().await;
+                                    sync_mgr.clear_requested_slots().await;
+                                    sync_mgr.clear_pending_blocks().await;
+                                    snapshot_sync_for_blocks
+                                        .lock()
+                                        .await
+                                        .mark_checkpoint_repair_pending();
+                                    request_checkpoint_metadata_from_peers(
+                                        &peer_mgr_for_sync,
+                                        local_addr,
+                                        "pending state-root mismatch",
+                                    )
+                                    .await;
+                                    continue;
                                 }
                             }
                             if state_for_blocks
@@ -16659,7 +16719,8 @@ async fn run_validator() {
                         }
 
                         let sync_peer_manager = Some(peer_mgr_for_sync.clone());
-                        request_block_range_from_peers(
+                        request_unrequested_block_range_from_peers(
+                            &sync_mgr,
                             &sync_peer_manager,
                             local_addr,
                             start,
@@ -16810,31 +16871,27 @@ async fn run_validator() {
                                 false,
                             ) {
                                 warn!("{}", err);
-                                if is_sync_block {
-                                    warn!(
-                                        "⚠️  Rejecting synced block {} after staged state-root mismatch; switching to verified checkpoint repair",
-                                        block_slot
-                                    );
-                                    sync_mgr.set_sync_mode(sync::SyncMode::Warp).await;
-                                    sync_mgr.complete_sync().await;
-                                    sync_mgr.record_sync_failure().await;
-                                    snapshot_sync_for_blocks
-                                        .lock()
-                                        .await
-                                        .mark_checkpoint_repair_pending();
-                                    request_checkpoint_metadata_from_peers(
-                                        &peer_mgr_for_sync,
-                                        local_addr,
-                                        "sync state-root mismatch",
-                                    )
-                                    .await;
-                                    continue;
-                                }
-                                error!(
-                                    "FATAL: refusing to replay synced block {} into canonical state after staging state-root mismatch",
+                                warn!(
+                                    "⚠️  Rejecting {} block {} after staged state-root mismatch; switching to verified checkpoint repair",
+                                    if is_sync_block { "synced" } else { "gossip" },
                                     block_slot
                                 );
-                                std::process::exit(1);
+                                sync_mgr.set_sync_mode(sync::SyncMode::Warp).await;
+                                sync_mgr.complete_sync().await;
+                                sync_mgr.record_sync_failure().await;
+                                sync_mgr.clear_requested_slots().await;
+                                sync_mgr.clear_pending_blocks().await;
+                                snapshot_sync_for_blocks
+                                    .lock()
+                                    .await
+                                    .mark_checkpoint_repair_pending();
+                                request_checkpoint_metadata_from_peers(
+                                    &peer_mgr_for_sync,
+                                    local_addr,
+                                    "block state-root mismatch",
+                                )
+                                .await;
+                                continue;
                             }
                         }
                         if state_for_blocks
@@ -17080,33 +17137,29 @@ async fn run_validator() {
                         sync_mgr.add_pending_block(block).await;
 
                         if request_alternative_tip {
-                            let request_msg = P2PMessage::new(
-                                MessageType::BlockRangeRequest {
-                                    start_slot: current_slot,
-                                    end_slot: current_slot,
-                                },
+                            let sync_peer_manager = Some(peer_mgr_for_sync.clone());
+                            request_unrequested_block_range_from_peers(
+                                &sync_mgr,
+                                &sync_peer_manager,
                                 local_addr,
-                            );
-                            peer_mgr_for_sync.broadcast(request_msg).await;
+                                current_slot,
+                                current_slot,
+                                "alternative-tip",
+                            )
+                            .await;
                         }
 
                         if let Some((gap_start, gap_end)) = missing_gap {
-                            let mut chunk_start = gap_start;
-                            while chunk_start <= gap_end {
-                                let chunk_end = std::cmp::min(
-                                    chunk_start + sync::P2P_BLOCK_RANGE_LIMIT - 1,
-                                    gap_end,
-                                );
-                                let request_msg = P2PMessage::new(
-                                    MessageType::BlockRangeRequest {
-                                        start_slot: chunk_start,
-                                        end_slot: chunk_end,
-                                    },
-                                    local_addr,
-                                );
-                                peer_mgr_for_sync.broadcast(request_msg).await;
-                                chunk_start = chunk_end + 1;
-                            }
+                            let sync_peer_manager = Some(peer_mgr_for_sync.clone());
+                            request_unrequested_block_range_from_peers(
+                                &sync_mgr,
+                                &sync_peer_manager,
+                                local_addr,
+                                gap_start,
+                                gap_end,
+                                "parent-gap",
+                            )
+                            .await;
                         }
                     }
 
@@ -17122,6 +17175,7 @@ async fn run_validator() {
                             .is_some();
                     if !genesis_ready_for_sync {
                         if !genesis_sync_in_progress_for_blocks.load(Ordering::Acquire) {
+                            sync_mgr.mark_requested(0).await;
                             let request_msg = P2PMessage::new(
                                 MessageType::BlockRangeRequest {
                                     start_slot: 0,
@@ -17200,7 +17254,8 @@ async fn run_validator() {
                         // range requests.
                         //
                         let sync_peer_manager = Some(peer_mgr_for_sync.clone());
-                        request_block_range_from_peers(
+                        request_unrequested_block_range_from_peers(
+                            &sync_mgr,
                             &sync_peer_manager,
                             local_addr,
                             start,
@@ -17208,11 +17263,6 @@ async fn run_validator() {
                             "catch-up",
                         )
                         .await;
-
-                        // Mark slots as requested in sync manager
-                        for slot in start..=end {
-                            sync_mgr.mark_requested(slot).await;
-                        }
 
                         // Progress-based sync completion.
                         // Record the slot when sync started.  After a delay, check
@@ -17455,11 +17505,56 @@ async fn run_validator() {
                                         false,
                                     ) {
                                         warn!("{}", err);
-                                        error!(
-                                            "FATAL: refusing to replay replacement block {} into canonical state after staging state-root mismatch",
+                                        warn!(
+                                            "⚠️  Rejecting replacement block {} after staged state-root mismatch; restoring canonical block and switching to verified checkpoint repair",
                                             block_slot
                                         );
-                                        std::process::exit(1);
+                                        if let Err(restore_err) =
+                                            validate_then_replay_block_transactions(
+                                                &state_for_blocks,
+                                                &existing,
+                                                "fork replacement rollback",
+                                                false,
+                                            )
+                                        {
+                                            warn!(
+                                                "⚠️  Failed to restore canonical block {} after rejected replacement: {}",
+                                                block_slot, restore_err
+                                            );
+                                        } else {
+                                            let slot_duration_ms =
+                                                runtime_genesis_config_for_blocks
+                                                    .read()
+                                                    .await
+                                                    .consensus
+                                                    .slot_duration_ms
+                                                    .max(1);
+                                            apply_post_block_effects_after_store(
+                                                &state_for_blocks,
+                                                &validator_set_for_blocks,
+                                                &stake_pool_for_blocks,
+                                                &existing,
+                                                min_validator_stake,
+                                                slot_duration_ms,
+                                            )
+                                            .await;
+                                        }
+                                        sync_mgr.set_sync_mode(sync::SyncMode::Warp).await;
+                                        sync_mgr.complete_sync().await;
+                                        sync_mgr.record_sync_failure().await;
+                                        sync_mgr.clear_requested_slots().await;
+                                        sync_mgr.clear_pending_blocks().await;
+                                        snapshot_sync_for_blocks
+                                            .lock()
+                                            .await
+                                            .mark_checkpoint_repair_pending();
+                                        request_checkpoint_metadata_from_peers(
+                                            &peer_mgr_for_sync,
+                                            local_addr,
+                                            "fork replacement state-root mismatch",
+                                        )
+                                        .await;
+                                        continue;
                                     }
                                 }
 
@@ -20288,13 +20383,18 @@ async fn run_validator() {
                             Err(e) => warn!("⚠️  Failed to create local checkpoint: {}", e),
                         }
                         sync_mgr_for_snapshot.set_checkpoint(snapshot_slot).await;
-                        let pruned_pending = sync_mgr_for_snapshot
-                            .prune_pending_through_slot(snapshot_slot)
-                            .await;
-                        if pruned_pending > 0 {
+                        let cleared_requested = sync_mgr_for_snapshot.clear_requested_slots().await;
+                        if cleared_requested > 0 {
                             info!(
-                                "🧹 Pruned {} stale pending block(s) through imported snapshot slot {}",
-                                pruned_pending, snapshot_slot
+                                "🧹 Cleared {} in-flight sync request marker(s) after imported snapshot slot {}",
+                                cleared_requested, snapshot_slot
+                            );
+                        }
+                        let cleared_pending = sync_mgr_for_snapshot.clear_pending_blocks().await;
+                        if cleared_pending > 0 {
+                            info!(
+                                "🧹 Cleared {} stale pending block candidate(s) after imported snapshot slot {}",
+                                cleared_pending, snapshot_slot
                             );
                         }
                         sync_mgr_for_snapshot.record_progress(snapshot_slot).await;
@@ -22636,10 +22736,8 @@ async fn run_validator() {
                     tip_slot, bft.height, observed_tip, start, end
                 );
                 sync_manager.start_sync(start, end).await;
-                for slot in start..=end {
-                    sync_manager.mark_requested(slot).await;
-                }
-                request_block_range_from_peers(
+                request_unrequested_block_range_from_peers(
+                    &sync_manager,
                     &p2p_peer_manager,
                     p2p_config.listen_addr,
                     start,
@@ -23729,6 +23827,25 @@ fn classify_bft_commit_storage(
     }
 }
 
+async fn enter_bft_commit_repair_mode(
+    sync_manager: &Arc<SyncManager>,
+    bft_committing_slot: &Arc<AtomicU64>,
+    height: u64,
+    reason: &str,
+) {
+    warn!(
+        "🔧 BFT: entering verified repair mode at height {} ({})",
+        height, reason
+    );
+    bft_committing_slot.store(0, Ordering::Release);
+    sync_manager.note_seen(height).await;
+    sync_manager.set_sync_mode(sync::SyncMode::Warp).await;
+    sync_manager.complete_sync().await;
+    sync_manager.record_sync_failure().await;
+    sync_manager.clear_requested_slots().await;
+    sync_manager.clear_pending_blocks().await;
+}
+
 fn should_pause_live_bft_for_sync(current_tip: u64, bft_height: u64, _observed_tip: u64) -> bool {
     bft_height > current_tip.saturating_add(1)
 }
@@ -23761,21 +23878,14 @@ async fn request_block_range_from_peers(
         return;
     };
 
-    let mut peer_infos = pm.get_peer_infos();
-    peer_infos.sort_by(|a, b| {
-        b.1.cmp(&a.1)
-            .then_with(|| a.0.to_string().cmp(&b.0.to_string()))
-    });
-    let all_peers: Vec<SocketAddr> = peer_infos
-        .into_iter()
-        .take(SYNC_REQUEST_FANOUT.max(1))
-        .map(|(addr, _)| addr)
-        .collect();
+    let peer_infos = pm.get_peer_tip_infos();
 
     let mut chunk_start = start_slot;
     let mut chunk_index = 0usize;
     while chunk_start <= end_slot {
         let chunk_end = std::cmp::min(chunk_start + sync::P2P_BLOCK_RANGE_LIMIT - 1, end_slot);
+        let all_peers =
+            sync_range_peer_candidates(&peer_infos, chunk_end, SYNC_REQUEST_FANOUT.max(1));
 
         if all_peers.is_empty() {
             let request_msg = P2PMessage::new(
@@ -23835,6 +23945,46 @@ async fn request_block_range_from_peers(
         chunk_start = chunk_end + 1;
         chunk_index += 1;
     }
+}
+
+async fn request_unrequested_block_range_from_peers(
+    sync_manager: &Arc<SyncManager>,
+    p2p_peer_manager: &Option<Arc<lichen_p2p::PeerManager>>,
+    local_addr: SocketAddr,
+    start_slot: u64,
+    end_slot: u64,
+    reason: &str,
+) -> usize {
+    if p2p_peer_manager.is_none() {
+        request_block_range_from_peers(p2p_peer_manager, local_addr, start_slot, end_slot, reason)
+            .await;
+        return 0;
+    }
+
+    let ranges = sync_manager
+        .claim_unrequested_ranges(start_slot, end_slot)
+        .await;
+    if ranges.is_empty() {
+        debug!(
+            "📡 {} sync request skipped — range already in flight ({}..{})",
+            reason, start_slot, end_slot
+        );
+        return 0;
+    }
+
+    let mut requested = 0usize;
+    for (range_start, range_end) in ranges {
+        requested = requested.saturating_add(range_end.saturating_sub(range_start) as usize + 1);
+        request_block_range_from_peers(
+            p2p_peer_manager,
+            local_addr,
+            range_start,
+            range_end,
+            reason,
+        )
+        .await;
+    }
+    requested
 }
 
 async fn request_checkpoint_metadata_from_peers(
@@ -24137,12 +24287,19 @@ async fn execute_consensus_actions(
             let final_hash = block.hash();
             if final_hash != block_hash {
                 error!(
-                    "FATAL: BFT commit block hash mismatch at height {}: action={} block={}",
+                    "BFT commit block hash mismatch at height {}: action={} block={}",
                     height,
                     hex::encode(&block_hash.0[..8]),
                     hex::encode(&final_hash.0[..8]),
                 );
-                std::process::exit(1);
+                enter_bft_commit_repair_mode(
+                    sync_manager,
+                    bft_committing_slot,
+                    height,
+                    "commit action block hash mismatch",
+                )
+                .await;
+                return;
             }
 
             match classify_bft_commit_storage(height, current_tip, stored_hash, block_hash) {
@@ -24159,11 +24316,18 @@ async fn execute_consensus_actions(
                     )
                     .await
                     {
-                        error!(
-                            "FATAL: failed to complete duplicate-tip post-block effects at height {}: {}",
+                        warn!(
+                            "⚠️  Failed to complete duplicate-tip post-block effects at height {}: {}; switching to verified repair",
                             height, err
                         );
-                        std::process::exit(1);
+                        enter_bft_commit_repair_mode(
+                            sync_manager,
+                            bft_committing_slot,
+                            height,
+                            "duplicate-tip post-block recovery failed",
+                        )
+                        .await;
+                        return;
                     }
                     info!(
                         "🔐 BFT: Block {} already applied at tip — duplicate canonical side effects complete",
@@ -24181,18 +24345,32 @@ async fn execute_consensus_actions(
                     return;
                 }
                 BftCommitStorageDecision::StoredAheadOfTip => {
-                    error!(
-                        "FATAL: block {} is stored but local tip is only {}; refusing inconsistent BFT commit",
+                    warn!(
+                        "⚠️  Block {} is stored but local tip is only {}; switching to verified repair",
                         height, current_tip
                     );
-                    std::process::exit(1);
+                    enter_bft_commit_repair_mode(
+                        sync_manager,
+                        bft_committing_slot,
+                        height,
+                        "stored-ahead-of-tip BFT commit",
+                    )
+                    .await;
+                    return;
                 }
                 BftCommitStorageDecision::StaleMissingBlock => {
-                    error!(
-                        "FATAL: BFT commit for height {} is below/equal local tip {} but block is missing from storage",
+                    warn!(
+                        "⚠️  BFT commit for height {} is below/equal local tip {} but block is missing from storage; switching to verified repair",
                         height, current_tip
                     );
-                    std::process::exit(1);
+                    enter_bft_commit_repair_mode(
+                        sync_manager,
+                        bft_committing_slot,
+                        height,
+                        "stale missing BFT commit block",
+                    )
+                    .await;
+                    return;
                 }
                 BftCommitStorageDecision::MissingParentGap => {
                     warn!(
@@ -24204,10 +24382,8 @@ async fn execute_consensus_actions(
                     let sync_start = current_tip.saturating_add(1);
                     if sync_start <= height {
                         sync_manager.start_sync(sync_start, height).await;
-                        for slot in sync_start..=height {
-                            sync_manager.mark_requested(slot).await;
-                        }
-                        request_block_range_from_peers(
+                        request_unrequested_block_range_from_peers(
+                            sync_manager,
                             p2p_peer_manager,
                             p2p_config.listen_addr,
                             sync_start,
@@ -24220,13 +24396,20 @@ async fn execute_consensus_actions(
                 }
                 BftCommitStorageDecision::ConflictingStoredHash => {
                     let stored = stored_hash.expect("stored hash exists for conflict");
-                    error!(
-                        "FATAL: stored block conflict at height {}: stored={} committed={}",
+                    warn!(
+                        "⚠️  Stored block conflict at height {}: stored={} committed={}; switching to verified repair",
                         height,
                         hex::encode(&stored.0[..8]),
                         hex::encode(&block_hash.0[..8]),
                     );
-                    std::process::exit(1);
+                    enter_bft_commit_repair_mode(
+                        sync_manager,
+                        bft_committing_slot,
+                        height,
+                        "stored block conflicts with BFT commit",
+                    )
+                    .await;
+                    return;
                 }
             }
 
@@ -24237,11 +24420,18 @@ async fn execute_consensus_actions(
                 validate_then_replay_block_transactions(state, &block, "committed block", false)
             {
                 warn!("{}", err);
-                error!(
-                    "FATAL: refusing to replay committed block {} into canonical state after state-root mismatch",
+                warn!(
+                    "⚠️  Rejecting committed block {} after state-root mismatch; switching to verified repair",
                     height
                 );
-                std::process::exit(1);
+                enter_bft_commit_repair_mode(
+                    sync_manager,
+                    bft_committing_slot,
+                    height,
+                    "committed block state-root mismatch",
+                )
+                .await;
+                return;
             }
 
             // Apply block effects (rewards, staking, oracle) — these
@@ -24421,23 +24611,15 @@ async fn execute_consensus_actions(
                 hex::encode(&block_hash.0[..4])
             );
             sync_manager.note_seen(end_slot).await;
-            if start_slot <= end_slot {
-                for slot in start_slot..=end_slot {
-                    sync_manager.mark_requested(slot).await;
-                }
-            }
-            if let Some(ref pm) = p2p_peer_manager {
-                let msg = P2PMessage::new(
-                    MessageType::BlockRangeRequest {
-                        start_slot,
-                        end_slot,
-                    },
-                    p2p_config.listen_addr,
-                );
-                pm.broadcast(msg).await;
-            } else {
-                warn!("📡 BFT: missing-block request skipped — no P2P peer manager");
-            }
+            request_unrequested_block_range_from_peers(
+                sync_manager,
+                p2p_peer_manager,
+                p2p_config.listen_addr,
+                start_slot,
+                end_slot,
+                "bft-missing-block",
+            )
+            .await;
         }
 
         ConsensusAction::EquivocationDetected {
@@ -28215,6 +28397,40 @@ mod tests {
     }
 
     #[test]
+    fn live_parent_gap_repair_uses_claimed_range_requester() {
+        let source = include_str!("main.rs");
+        let start = source
+            .find("if let Some((gap_start, gap_end)) = missing_gap {")
+            .expect("parent-gap repair block exists");
+        let end = start
+            + source[start..]
+                .find("// Check if we should start sync.")
+                .expect("parent-gap repair block end exists");
+        let body = &source[start..end];
+
+        assert!(body.contains("request_unrequested_block_range_from_peers"));
+        assert!(!body.contains("MessageType::BlockRangeRequest"));
+        assert!(!body.contains(".broadcast("));
+    }
+
+    #[test]
+    fn bft_missing_block_recovery_uses_claimed_range_requester() {
+        let source = include_str!("main.rs");
+        let start = source
+            .find("ConsensusAction::RequestBlockRange {")
+            .expect("BFT missing-block action exists");
+        let end = start
+            + source[start..]
+                .find("ConsensusAction::EquivocationDetected {")
+                .expect("BFT missing-block action end exists");
+        let body = &source[start..end];
+
+        assert!(body.contains("request_unrequested_block_range_from_peers"));
+        assert!(!body.contains("MessageType::BlockRangeRequest"));
+        assert!(!body.contains(".broadcast("));
+    }
+
+    #[test]
     fn fresh_join_far_gap_uses_warp_before_bootstrap_prefix() {
         assert_eq!(
             select_catch_up_mode(0, sync::WARP_SYNC_THRESHOLD + 1),
@@ -31959,6 +32175,30 @@ mod tests {
             vec![peers[2], peers[0], peers[1]]
         );
         assert!(sync_range_peer_order(&[], 0).is_empty());
+    }
+
+    #[test]
+    fn sync_range_peer_candidates_prefer_peers_that_advertise_requested_tip() {
+        let stale_high_score: SocketAddr = "127.0.0.1:7001".parse().unwrap();
+        let stale_low_score: SocketAddr = "127.0.0.1:7002".parse().unwrap();
+        let fresh_peer: SocketAddr = "127.0.0.1:7003".parse().unwrap();
+        let fresher_peer: SocketAddr = "127.0.0.1:7004".parse().unwrap();
+        let peer_infos = vec![
+            (stale_high_score, 20, 641),
+            (fresh_peer, 0, 642),
+            (stale_low_score, -5, 641),
+            (fresher_peer, 0, 643),
+        ];
+
+        assert_eq!(
+            sync_range_peer_candidates(&peer_infos, 642, 4),
+            vec![fresher_peer, fresh_peer, stale_high_score, stale_low_score]
+        );
+        assert_eq!(
+            sync_range_peer_candidates(&peer_infos, 642, 1),
+            vec![fresher_peer],
+            "single-peer catch-up must not choose a stale peer when fresh peers are known"
+        );
     }
 
     // ── constants sanity ────────────────────────────────────────────

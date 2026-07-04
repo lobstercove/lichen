@@ -5,6 +5,32 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.222] - 2026-07-04
+
+### Fixed
+- Stops live catch-up and parent-gap recovery from broadcasting overlapping
+  block-range requests to every peer. Validators now claim unrequested slot
+  ranges centrally, request each claimed range from one scored peer with
+  fallback, expire stale request markers, and clear completed or snapshot-jumped
+  ranges.
+- Records peer-advertised tips from signed validator announcements and status
+  responses, then prefers peers that have advertised enough height to serve the
+  requested block range. This prevents restarted validators from repeatedly
+  asking stale peers for the next missing slot after a same-tip fleet restart.
+- Converts recoverable live replay and BFT commit consistency faults into the
+  verified checkpoint repair path instead of exiting the validator process.
+  Startup/configuration/genesis/snapshot/WAL fatal exits remain fail-closed.
+
+### Verified
+- Passed `cargo fmt --check`, `git diff --check`,
+  `cargo check --workspace --release --locked`, locked release binary build,
+  `cargo test -p lichen-validator --locked`, `cargo test -p lichen-p2p --locked`,
+  and `bash tests/local-multi-validator-test.sh 4`.
+- The 4-validator drill covered empty-state V2/V3/V4 joins, single-validator
+  own-state restarts, seed restart, and same-tip all-validator restart from
+  preserved local state; after the all-validator restart the cluster advanced
+  42 blocks in 10 seconds and finished with all four validators active.
+
 ## [0.5.221] - 2026-07-01
 
 ### Fixed
