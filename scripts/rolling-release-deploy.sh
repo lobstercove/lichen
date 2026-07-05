@@ -53,7 +53,7 @@ REMOTE_RELEASE_DOWNLOAD="${LICHEN_REMOTE_RELEASE_DOWNLOAD:-auto}"
 
 is_consensus_critical_release() {
   case "$RELEASE_TAG" in
-    v0.5.188) return 0 ;;
+    v0.5.188|v0.5.223) return 0 ;;
     *) return 1 ;;
   esac
 }

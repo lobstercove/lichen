@@ -5,6 +5,29 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.223] - 2026-07-05
+
+### Fixed
+- Replays a verified proposal that arrived for a future BFT round as soon as
+  that round becomes current. Validators no longer store the proposal, enter
+  the matching round later, and then nil-vote/time out forever while a valid
+  proposal is already buffered.
+- Separates sync request retry timing from delayed-response acceptance. Parent
+  gap recovery can retry a missing block range after the short anti-spam window
+  without rejecting late block-range responses from the original request as
+  unrequested.
+- Keeps request markers through no-progress delayed batch checks and only clears
+  completed ranges after the requested target is reached, while snapshot and
+  repair paths still clear stale generations explicitly.
+- Marks `v0.5.223` as consensus-critical in the rolling deploy guard so the
+  fleet is stopped/installed/started together instead of mixed-version rolling.
+
+### Verified
+- Passed `cargo fmt --check`, focused BFT proposal replay and sync request
+  marker regression tests, `cargo test -p lichen-validator --locked`,
+  `cargo check --workspace --release --locked`, `git diff --check`, and a
+  clean local three-validator start plus preserved-state all-validator restart.
+
 ## [0.5.222] - 2026-07-04
 
 ### Fixed

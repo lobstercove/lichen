@@ -78,7 +78,8 @@ pub const INITIAL_SYNC_FORWARD_WINDOW: u64 = INITIAL_SYNC_BLOCK_RANGE_LIMIT;
 /// Sized to hold one full pipeline: SYNC_BATCH_SIZE * SYNC_PIPELINE_DEPTH.
 const MAX_PENDING_BLOCKS: usize = (SYNC_BATCH_SIZE * SYNC_PIPELINE_DEPTH) as usize;
 const MAX_REQUESTED_SLOTS: usize = 10_000;
-const REQUESTED_SLOT_TTL: Duration = Duration::from_secs(15);
+const REQUESTED_SLOT_RETRY_TTL: Duration = Duration::from_secs(15);
+const REQUESTED_SLOT_ACCEPT_TTL: Duration = Duration::from_secs(300);
 
 /// Checkpoint interval - only need to sync from last checkpoint
 /// Set to 0 to disable checkpointing
@@ -105,9 +106,13 @@ fn sync_cooldown_ms(phase: SyncPhase, failures: u32) -> u64 {
     }
 }
 
-fn prune_expired_requested_slots(requested: &mut HashMap<u64, Instant>) {
+fn prune_requested_slots_older_than(requested: &mut HashMap<u64, Instant>, ttl: Duration) {
     let now = Instant::now();
-    requested.retain(|_, requested_at| now.duration_since(*requested_at) < REQUESTED_SLOT_TTL);
+    requested.retain(|_, requested_at| now.duration_since(*requested_at) < ttl);
+}
+
+fn requested_slot_retry_due(requested_at: Instant, now: Instant) -> bool {
+    now.duration_since(requested_at) >= REQUESTED_SLOT_RETRY_TTL
 }
 
 /// Tracks chain synchronization state
@@ -477,7 +482,6 @@ impl SyncManager {
             *batch = None;
             drop(batch);
             drop(is_syncing);
-            self.clear_requested_range(start, end).await;
             info!("✅ Sync batch completed");
             true
         } else {
@@ -514,6 +518,9 @@ impl SyncManager {
         };
 
         if self.complete_sync_if_current(start, end).await {
+            if outcome == SyncBatchOutcome::ReachedTarget {
+                self.clear_requested_range(start, end).await;
+            }
             outcome
         } else {
             SyncBatchOutcome::StaleTimeout
@@ -604,6 +611,7 @@ impl SyncManager {
             info!("✅ Sync batch reached requested target at slot {}", slot);
             self.record_sync_success().await;
             if self.complete_sync_if_current(start, end).await {
+                self.clear_requested_range(start, end).await;
                 let phase = *self.sync_phase.lock().await;
                 let failures = *self.consecutive_failures.lock().await;
                 let cooldown_ms = sync_cooldown_ms(phase, failures);
@@ -657,7 +665,7 @@ impl SyncManager {
     /// Check if a slot has been requested by the current sync generation.
     pub async fn is_requested(&self, slot: u64) -> bool {
         let mut requested = self.requested_slots.lock().await;
-        prune_expired_requested_slots(&mut requested);
+        prune_requested_slots_older_than(&mut requested, REQUESTED_SLOT_ACCEPT_TTL);
         requested.contains_key(&slot)
     }
 
@@ -677,7 +685,7 @@ impl SyncManager {
     /// Mark a slot as requested.
     pub async fn mark_requested(&self, slot: u64) {
         let mut requested = self.requested_slots.lock().await;
-        prune_expired_requested_slots(&mut requested);
+        prune_requested_slots_older_than(&mut requested, REQUESTED_SLOT_ACCEPT_TTL);
         // P10-VAL-03: Cap requested_slots to prevent unbounded growth during long syncs.
         // 10K entries ≈ 80 KB, well within reason. If exceeded, clear old entries
         // (slots already synced will be re-requested if still needed).
@@ -699,7 +707,7 @@ impl SyncManager {
         }
 
         let mut requested = self.requested_slots.lock().await;
-        prune_expired_requested_slots(&mut requested);
+        prune_requested_slots_older_than(&mut requested, REQUESTED_SLOT_ACCEPT_TTL);
         let span = end.saturating_sub(start).saturating_add(1) as usize;
         if requested.len().saturating_add(span) > MAX_REQUESTED_SLOTS {
             warn!(
@@ -714,13 +722,26 @@ impl SyncManager {
         let now = Instant::now();
 
         for slot in start..=end {
-            if let std::collections::hash_map::Entry::Vacant(entry) = requested.entry(slot) {
-                entry.insert(now);
-                if range_start.is_none() {
-                    range_start = Some(slot);
+            match requested.entry(slot) {
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(now);
+                    if range_start.is_none() {
+                        range_start = Some(slot);
+                    }
                 }
-            } else if let Some(range_start_slot) = range_start.take() {
-                ranges.push((range_start_slot, slot.saturating_sub(1)));
+                std::collections::hash_map::Entry::Occupied(mut entry)
+                    if requested_slot_retry_due(*entry.get(), now) =>
+                {
+                    entry.insert(now);
+                    if range_start.is_none() {
+                        range_start = Some(slot);
+                    }
+                }
+                std::collections::hash_map::Entry::Occupied(_) => {
+                    if let Some(range_start_slot) = range_start.take() {
+                        ranges.push((range_start_slot, slot.saturating_sub(1)));
+                    }
+                }
             }
         }
 
@@ -856,6 +877,11 @@ pub struct SyncStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn age_requested_slot(sm: &SyncManager, slot: u64, age: Duration) {
+        let mut requested = sm.requested_slots.lock().await;
+        requested.insert(slot, Instant::now() - age);
+    }
 
     #[tokio::test]
     async fn test_sync_manager_new() {
@@ -1156,6 +1182,11 @@ mod tests {
     async fn test_record_progress_completes_batch_at_target() {
         let sm = SyncManager::new();
         sm.start_sync(100, 150).await;
+        assert_eq!(
+            sm.claim_unrequested_ranges(100, 150).await,
+            vec![(100, 150)]
+        );
+        assert!(sm.is_requested(100).await);
         assert!(*sm.is_syncing.lock().await);
 
         let completed = sm.record_progress(149).await;
@@ -1167,6 +1198,7 @@ mod tests {
             *sm.is_syncing.lock().await,
             "batch should stay active until the requested target is reached"
         );
+        assert!(sm.is_requested(100).await);
 
         let completed = sm.record_progress(150).await;
         assert!(
@@ -1177,6 +1209,7 @@ mod tests {
             !*sm.is_syncing.lock().await,
             "batch should complete once progress reaches the requested end"
         );
+        assert!(!sm.is_requested(100).await);
     }
 
     #[tokio::test]
@@ -1446,6 +1479,48 @@ mod tests {
         assert_eq!(
             sm.claim_unrequested_ranges(101, 103).await,
             vec![(101, 103)]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_claim_unrequested_ranges_retries_without_rejecting_late_response() {
+        let sm = SyncManager::new();
+
+        assert_eq!(
+            sm.claim_unrequested_ranges(101, 103).await,
+            vec![(101, 103)]
+        );
+
+        for slot in 101..=103 {
+            age_requested_slot(&sm, slot, REQUESTED_SLOT_RETRY_TTL + Duration::from_secs(1)).await;
+        }
+
+        assert_eq!(
+            sm.claim_unrequested_ranges(101, 103).await,
+            vec![(101, 103)]
+        );
+        assert!(
+            sm.is_requested(101).await,
+            "late response from the first request must still be accepted after retry"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_no_progress_batch_check_preserves_response_acceptance_markers() {
+        let sm = SyncManager::new();
+        sm.start_sync(101, 103).await;
+
+        assert_eq!(
+            sm.claim_unrequested_ranges(101, 103).await,
+            vec![(101, 103)]
+        );
+
+        let outcome = sm.finish_sync_batch_check(101, 103, 100, 100).await;
+        assert_eq!(outcome, SyncBatchOutcome::NoProgress);
+        assert!(!*sm.is_syncing.lock().await);
+        assert!(
+            sm.is_requested(101).await,
+            "delayed responses remain acceptable after the batch guard releases"
         );
     }
 

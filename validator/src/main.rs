@@ -23424,8 +23424,51 @@ async fn run_validator() {
                     // propose timeout.  Without this, a late-joining validator
                     // that round-skips to r=8 would wait ~51s before proposing,
                     // causing all validators to nil-vote that round.
-                    let local_proposer = bft.is_proposer(&height_vs, &height_pool, &parent_hash);
-                    if local_proposer {
+                    let stored_proposal_action =
+                        bft.process_current_round_proposal_if_present(&height_vs, &height_pool);
+                    if !matches!(stored_proposal_action, ConsensusAction::None) {
+                        execute_consensus_actions(
+                            stored_proposal_action,
+                            &bft,
+                            &mut consensus_wal,
+                            &state,
+                            &validator_set,
+                            &stake_pool,
+                            &vote_aggregator,
+                            &mempool,
+                            &processor,
+                            &finality_tracker,
+                            &p2p_peer_manager,
+                            &p2p_config,
+                            &ws_event_tx,
+                            &ws_dex_broadcaster,
+                            &shared_oracle_prices,
+                            &last_block_time_for_local,
+                            &mut last_dex_trade_count,
+                            &data_dir,
+                            &sync_manager,
+                            &mut parent_hash,
+                            slot_duration_ms,
+                            &validator_keypair,
+                            min_validator_stake,
+                            &block_apply_lock,
+                            &bft_committing_slot,
+                        )
+                        .await;
+                        timeout_handle = match bft.step {
+                            RoundStep::Prevote => Some((
+                                RoundStep::Prevote,
+                                bft.round,
+                                Box::pin(tokio::time::sleep(bft.prevote_timeout())),
+                            )),
+                            RoundStep::Precommit => Some((
+                                RoundStep::Precommit,
+                                bft.round,
+                                Box::pin(tokio::time::sleep(bft.precommit_timeout())),
+                            )),
+                            _ => None,
+                        };
+                    } else if bft.is_proposer(&height_vs, &height_pool, &parent_hash) {
                         debug!(
                             "👑 BFT: We are proposer for height={} round={} (post-skip)",
                             bft.height, bft.round
@@ -23520,7 +23563,7 @@ async fn run_validator() {
                                 0,
                                 bft.initial_propose_timeout(),
                                 slot_duration_ms,
-                                local_proposer,
+                                false,
                             ))),
                         ));
                     }

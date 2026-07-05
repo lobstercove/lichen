@@ -435,6 +435,24 @@ impl ConsensusEngine {
         ConsensusAction::ScheduleTimeout(RoundStep::Propose, self.propose_timeout())
     }
 
+    /// If a future-round proposal arrived before this validator entered the
+    /// round, replay the verified proposal now that the round is current.
+    pub fn process_current_round_proposal_if_present(
+        &mut self,
+        validator_set: &ValidatorSet,
+        stake_pool: &StakePool,
+    ) -> ConsensusAction {
+        if self.step != RoundStep::Propose {
+            return ConsensusAction::None;
+        }
+
+        let Some(proposal) = self.proposals.get(&self.round).cloned() else {
+            return ConsensusAction::None;
+        };
+
+        self.prevote_for_current_round_proposal(proposal, validator_set, stake_pool)
+    }
+
     /// Resume after WAL recovery at the first round where this validator has
     /// not already signed. Signed-vote records remain restored for slashing
     /// protection; this only avoids replaying already-exhausted rounds.
@@ -677,31 +695,7 @@ impl ConsensusEngine {
             return ConsensusAction::None;
         }
 
-        // Tendermint prevote rule:
-        // prevote(h, r, block_hash) if:
-        //   - locked_round == None (not locked) OR
-        //   - locked_value == block_hash (locked on same value) OR
-        //   - proposal.valid_round >= 0 AND proposal.valid_round > locked_round
-        //     AND we've seen 2/3+ prevotes for block_hash at valid_round (POL unlock)
-        let should_prevote_block =
-            if self.locked_round.is_none() || self.locked_value == Some(block_hash) {
-                true
-            } else if proposal.valid_round >= 0 {
-                let vr = proposal.valid_round as u32;
-                if let Some(lr) = self.locked_round {
-                    vr > lr && self.has_polka_for(vr, &Some(block_hash), validator_set, stake_pool)
-                } else {
-                    self.has_polka_for(vr, &Some(block_hash), validator_set, stake_pool)
-                }
-            } else {
-                false
-            };
-
-        if should_prevote_block {
-            self.do_prevote(Some(block_hash), validator_set, stake_pool)
-        } else {
-            self.do_prevote(None, validator_set, stake_pool)
-        }
+        self.prevote_for_current_round_proposal(proposal, validator_set, stake_pool)
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -1705,31 +1699,11 @@ impl ConsensusEngine {
 
                 // 1. Stored proposal → prevote for it and stop.
                 if let Some(proposal) = self.proposals.get(&round).cloned() {
-                    let block_hash = proposal.block.hash();
-                    let should_prevote_block =
-                        if self.locked_round.is_none() || self.locked_value == Some(block_hash) {
-                            true
-                        } else if proposal.valid_round >= 0 {
-                            let vr = proposal.valid_round as u32;
-                            if let Some(lr) = self.locked_round {
-                                vr > lr
-                                    && self.has_polka_for(
-                                        vr,
-                                        &Some(block_hash),
-                                        validator_set,
-                                        stake_pool,
-                                    )
-                            } else {
-                                self.has_polka_for(vr, &Some(block_hash), validator_set, stake_pool)
-                            }
-                        } else {
-                            false
-                        };
-                    let prevote_action = if should_prevote_block {
-                        self.do_prevote(Some(block_hash), validator_set, stake_pool)
-                    } else {
-                        self.do_prevote(None, validator_set, stake_pool)
-                    };
+                    let prevote_action = self.prevote_for_current_round_proposal(
+                        proposal,
+                        validator_set,
+                        stake_pool,
+                    );
                     all_actions.push(prevote_action);
                     break;
                 }
@@ -1768,6 +1742,54 @@ impl ConsensusEngine {
         }
 
         ConsensusAction::None
+    }
+
+    fn should_prevote_proposal_block(
+        &self,
+        proposal: &Proposal,
+        block_hash: Hash,
+        validator_set: &ValidatorSet,
+        stake_pool: &StakePool,
+    ) -> bool {
+        // Tendermint prevote rule:
+        // prevote(h, r, block_hash) if:
+        //   - locked_round == None (not locked) OR
+        //   - locked_value == block_hash (locked on same value) OR
+        //   - proposal.valid_round >= 0 AND proposal.valid_round > locked_round
+        //     AND we've seen 2/3+ prevotes for block_hash at valid_round (POL unlock)
+        if self.locked_round.is_none() || self.locked_value == Some(block_hash) {
+            true
+        } else if proposal.valid_round >= 0 {
+            let vr = proposal.valid_round as u32;
+            if let Some(lr) = self.locked_round {
+                vr > lr && self.has_polka_for(vr, &Some(block_hash), validator_set, stake_pool)
+            } else {
+                self.has_polka_for(vr, &Some(block_hash), validator_set, stake_pool)
+            }
+        } else {
+            false
+        }
+    }
+
+    fn prevote_for_current_round_proposal(
+        &mut self,
+        proposal: Proposal,
+        validator_set: &ValidatorSet,
+        stake_pool: &StakePool,
+    ) -> ConsensusAction {
+        if proposal.height != self.height
+            || proposal.round != self.round
+            || self.step != RoundStep::Propose
+        {
+            return ConsensusAction::None;
+        }
+
+        let block_hash = proposal.block.hash();
+        if self.should_prevote_proposal_block(&proposal, block_hash, validator_set, stake_pool) {
+            self.do_prevote(Some(block_hash), validator_set, stake_pool)
+        } else {
+            self.do_prevote(None, validator_set, stake_pool)
+        }
     }
 
     // ── Timeouts (exponential backoff with 1.5x multiplier, capped at 60s) ──
@@ -2095,6 +2117,53 @@ mod tests {
         (validators, vs, sp)
     }
 
+    fn make_signed_proposal(
+        proposer: &Keypair,
+        proposer_pk: Pubkey,
+        height: u64,
+        round: u32,
+        parent_hash: Hash,
+        state_root: Hash,
+    ) -> Proposal {
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let mut block = Block::new_with_timestamp(
+            height,
+            parent_hash,
+            state_root,
+            proposer_pk.0,
+            Vec::new(),
+            timestamp,
+        );
+        block.sign(proposer);
+        let block_hash = block.hash();
+        let valid_round = -1;
+        let signature = proposer.sign(&Proposal::signable_bytes_static(
+            height,
+            round,
+            &block_hash,
+            valid_round,
+        ));
+        Proposal {
+            height,
+            round,
+            block,
+            valid_round,
+            proposer: proposer_pk,
+            signature,
+        }
+    }
+
+    fn action_prevote_hash(action: &ConsensusAction) -> Option<Option<Hash>> {
+        match action {
+            ConsensusAction::BroadcastPrevote(prevote) => Some(prevote.block_hash),
+            ConsensusAction::Multiple(actions) => actions.iter().find_map(action_prevote_hash),
+            _ => None,
+        }
+    }
+
     #[test]
     fn test_bft_leader_slot_mapping_covers_four_round_zero_validators() {
         let (validators, vs, sp) = make_test_env(4);
@@ -2411,6 +2480,68 @@ mod tests {
         assert_eq!(
             engine.signed_prevote_rounds.get(&2),
             Some(&Some(restored_hash))
+        );
+    }
+
+    #[test]
+    fn test_stored_future_round_proposal_is_prevoted_when_round_becomes_current() {
+        let (validators, vs, sp) = make_test_env(4);
+        let local_seed = *validators[0].0.secret_key();
+        let local_pk = validators[0].1;
+        let mut engine = ConsensusEngine::new_with_min_stake(
+            Keypair::from_seed(&local_seed),
+            local_pk,
+            MIN_VALIDATOR_STAKE,
+        );
+        let height = 10;
+        let parent_hash = Hash::hash(b"stored-future-proposal-parent");
+        engine.start_height(height);
+
+        let (round, proposer_idx) = (1..128)
+            .find_map(|round| {
+                let leader_slot = leader_selection_slot(height, round);
+                let leader = vs.select_leader_weighted(
+                    leader_slot,
+                    &sp,
+                    &parent_hash.0,
+                    MIN_VALIDATOR_STAKE,
+                )?;
+                let idx = validators.iter().position(|(_, pk)| *pk == leader)?;
+                (leader != local_pk).then_some((round, idx))
+            })
+            .expect("test validator set should select a non-local proposer");
+
+        let proposer_seed = *validators[proposer_idx].0.secret_key();
+        let proposer_kp = Keypair::from_seed(&proposer_seed);
+        let proposer_pk = validators[proposer_idx].1;
+        let proposal = make_signed_proposal(
+            &proposer_kp,
+            proposer_pk,
+            height,
+            round,
+            parent_hash,
+            Hash::hash(b"stored-future-proposal-state"),
+        );
+        let block_hash = proposal.block.hash();
+
+        let action = engine.on_proposal(proposal, &vs, &sp);
+        assert!(
+            matches!(action, ConsensusAction::None),
+            "future-round proposal should be stored without signing early"
+        );
+        assert_eq!(engine.signed_prevote_rounds.get(&round), None);
+
+        let action = engine.start_round(round);
+        assert!(matches!(
+            action,
+            ConsensusAction::ScheduleTimeout(RoundStep::Propose, _)
+        ));
+
+        let action = engine.process_current_round_proposal_if_present(&vs, &sp);
+        assert_eq!(action_prevote_hash(&action), Some(Some(block_hash)));
+        assert_eq!(
+            engine.signed_prevote_rounds.get(&round),
+            Some(&Some(block_hash))
         );
     }
 
