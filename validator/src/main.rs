@@ -54,13 +54,13 @@ use lichen_core::{
     SlashingEvidence, SlashingOffense, SparseStateCommitmentReport, StakePool, StateBatch,
     StateRootComponentReport, StateStore, Transaction, TxProcessor, ValidatorInfo, ValidatorSet,
     Vote, VoteAggregator, VoteAuthority, BASE_FEE, BOOTSTRAP_GRANT_AMOUNT, CHAIN_ID_METADATA_KEY,
-    CONTRACT_DEPLOY_FEE, CONTRACT_UPGRADE_FEE, EVM_PROGRAM_ID, GENESIS_DISTRIBUTION,
-    GENESIS_STATE_BUNDLE_VERSION, GENESIS_STATE_CHUNK_OPCODE, GENESIS_SUPPLY_SPORES,
-    MAX_TX_AGE_BLOCKS, MIN_VALIDATOR_STAKE, NFT_COLLECTION_FEE, NFT_MINT_FEE, ORACLE_ASSET_MAX_LEN,
-    ORACLE_ASSET_MIN_LEN, ORACLE_STALENESS_SLOTS, PUBLIC_HISTORY_SNAPSHOT_CATEGORIES,
-    SLASHING_EVIDENCE_CODEC_LIMIT_BYTES, STATE_SNAPSHOT_SPECIAL_CATEGORIES,
-    SYSTEM_PROGRAM_ID as CORE_SYSTEM_PROGRAM_ID, VALIDATOR_BOOTSTRAP_GRANTS_ENABLED_METADATA_KEY,
-    VALIDATOR_BOOTSTRAP_GRANTS_ENABLED_VALUE,
+    CONSENSUS_V1_ACTIVATION_SLOT_METADATA_KEY, CONTRACT_DEPLOY_FEE, CONTRACT_UPGRADE_FEE,
+    EVM_PROGRAM_ID, GENESIS_DISTRIBUTION, GENESIS_STATE_BUNDLE_VERSION, GENESIS_STATE_CHUNK_OPCODE,
+    GENESIS_SUPPLY_SPORES, MAX_TX_AGE_BLOCKS, MIN_VALIDATOR_STAKE, NFT_COLLECTION_FEE,
+    NFT_MINT_FEE, ORACLE_ASSET_MAX_LEN, ORACLE_ASSET_MIN_LEN, ORACLE_STALENESS_SLOTS,
+    PUBLIC_HISTORY_SNAPSHOT_CATEGORIES, SLASHING_EVIDENCE_CODEC_LIMIT_BYTES,
+    STATE_SNAPSHOT_SPECIAL_CATEGORIES, SYSTEM_PROGRAM_ID as CORE_SYSTEM_PROGRAM_ID,
+    VALIDATOR_BOOTSTRAP_GRANTS_ENABLED_METADATA_KEY, VALIDATOR_BOOTSTRAP_GRANTS_ENABLED_VALUE,
 };
 use lichen_genesis::{
     genesis_assign_achievements, genesis_auto_deploy, genesis_bootstrap_bridge_committee,
@@ -138,7 +138,7 @@ const GENESIS_SYNC_INCOMPLETE_MARKER: &str = "genesis_sync_incomplete";
 const TX_BY_SLOT_CANONICAL_INDEX_MARKER: &str = "tx_by_slot_canonical_index_v1";
 const RECENT_POST_BLOCK_EFFECTS_RECOVERY_WINDOW: u64 = 4096;
 const POST_BLOCK_EFFECTS_MARKER_RETENTION_SLOTS: u64 = 10_000;
-const POST_BLOCK_EFFECTS_ACTIVATION_SLOT_KEY: &str = "post_block_effects_activation_slot_v1";
+const POST_BLOCK_EFFECTS_ACTIVATION_SLOT_KEY: &str = CONSENSUS_V1_ACTIVATION_SLOT_METADATA_KEY;
 const _: () =
     assert!(POST_BLOCK_EFFECTS_MARKER_RETENTION_SLOTS > RECENT_POST_BLOCK_EFFECTS_RECOVERY_WINDOW);
 const ACTIVATE_RESTRICTION_SCHEMA_FLAG: &str = "--activate-restriction-schema";
@@ -153,7 +153,7 @@ const REPAIR_TESTNET_DEX_CONTRACTS_FLAG: &str = "--repair-testnet-dex-contracts"
 const DEX_REPAIR_CONFIRMATION: &str = "repair-dex-contracts:testnet:v0.5.77";
 const SHOW_CONTRACT_STORAGE_DIGEST_FLAG: &str = "--show-contract-storage-digest";
 const SHOW_STAKE_POOL_DIGEST_FLAG: &str = "--show-stake-pool-digest";
-const PREPARE_POST_BLOCK_EFFECTS_ACTIVATION_FLAG: &str = "--prepare-post-block-effects-activation";
+const PREPARE_CONSENSUS_V1_ACTIVATION_FLAG: &str = "--prepare-consensus-v1-activation";
 const REPAIR_RECENT_POST_BLOCK_EFFECTS_FLAG: &str = "--repair-recent-post-block-effects";
 const RECENT_POST_BLOCK_EFFECTS_REPAIR_CONFIRMATION: &str = "recent-post-block-effects-repair:v1";
 const DIAGNOSE_BLOCK_REPLAY_FLAG: &str = "--diagnose-block-replay";
@@ -8147,7 +8147,7 @@ fn initialize_post_block_effects_activation_slot(
             "existing public chain at slot {} has no {}; stop and align every validator at one exact tip, then run {} with that common next slot before starting this release",
             tip,
             POST_BLOCK_EFFECTS_ACTIVATION_SLOT_KEY,
-            PREPARE_POST_BLOCK_EFFECTS_ACTIVATION_FLAG
+            PREPARE_CONSENSUS_V1_ACTIVATION_FLAG
         ));
     }
     let slot = tip
@@ -8158,7 +8158,7 @@ fn initialize_post_block_effects_activation_slot(
 }
 
 fn maybe_run_post_block_effects_activation_admin(args: &[String]) -> Option<i32> {
-    if !has_flag(args, PREPARE_POST_BLOCK_EFFECTS_ACTIVATION_FLAG) {
+    if !has_flag(args, PREPARE_CONSENSUS_V1_ACTIVATION_FLAG) {
         return None;
     }
 
@@ -8166,7 +8166,9 @@ fn maybe_run_post_block_effects_activation_admin(args: &[String]) -> Option<i32>
         .map(|value| value.to_ascii_lowercase())
         .unwrap_or_else(|| "testnet".to_string());
     if network != "testnet" && network != "mainnet" {
-        eprintln!("Refusing post-block activation preparation on unsupported network '{network}'");
+        eprintln!(
+            "Refusing consensus-v1 activation preparation on unsupported network '{network}'"
+        );
         return Some(1);
     }
     let requested_slot = match get_flag_value(args, &["--activation-slot"])
@@ -8179,7 +8181,7 @@ fn maybe_run_post_block_effects_activation_admin(args: &[String]) -> Option<i32>
         }
     };
     let execute = has_flag(args, "--execute");
-    let expected_confirmation = format!("post-block-effects-activation:{network}:{requested_slot}");
+    let expected_confirmation = format!("consensus-v1-activation:{network}:{requested_slot}");
     if execute && get_flag_value(args, &["--confirm"]) != Some(expected_confirmation.as_str()) {
         eprintln!("Refusing write without --confirm {expected_confirmation}");
         return Some(1);
@@ -8211,7 +8213,7 @@ fn maybe_run_post_block_effects_activation_admin(args: &[String]) -> Option<i32>
     let existing_slot = match post_block_effects_activation_slot(&state) {
         Ok(slot) => slot,
         Err(err) => {
-            eprintln!("Failed to read post-block activation boundary: {err}");
+            eprintln!("Failed to read consensus-v1 activation boundary: {err}");
             return Some(1);
         }
     };
@@ -8258,7 +8260,7 @@ fn maybe_run_post_block_effects_activation_admin(args: &[String]) -> Option<i32>
             Some(0)
         }
         Err(err) => {
-            eprintln!("Failed to persist post-block activation boundary: {err}");
+            eprintln!("Failed to persist consensus-v1 activation boundary: {err}");
             Some(1)
         }
     }
@@ -18671,7 +18673,7 @@ async fn run_validator() {
     ) {
         Ok(slot) => {
             info!(
-                    "Post-block effects recovery activation starts at slot {}; earlier slots require quorum-verified state alignment and will never be inferred from absent markers",
+                    "Consensus v1 activates post-block recovery and chain-domain transaction signatures at slot {}; earlier slots require quorum-verified state alignment and retain their historical signature domain",
                     slot
                 );
             slot
@@ -34165,7 +34167,7 @@ mod tests {
         );
         let error = initialize_post_block_effects_activation_slot(&state, false)
             .expect_err("existing public chain must not auto-activate");
-        assert!(error.contains(PREPARE_POST_BLOCK_EFFECTS_ACTIVATION_FLAG));
+        assert!(error.contains(PREPARE_CONSENSUS_V1_ACTIVATION_FLAG));
         assert_eq!(
             persist_post_block_effects_activation_slot(&state, 8)
                 .expect("prepare coordinated activation"),
@@ -34217,7 +34219,7 @@ mod tests {
         let args = |slot: u64, execute: bool| {
             let mut args = vec![
                 "lichen-validator".to_string(),
-                PREPARE_POST_BLOCK_EFFECTS_ACTIVATION_FLAG.to_string(),
+                PREPARE_CONSENSUS_V1_ACTIVATION_FLAG.to_string(),
                 "--network".to_string(),
                 "testnet".to_string(),
                 "--db-path".to_string(),
@@ -34229,7 +34231,7 @@ mod tests {
                 args.extend([
                     "--execute".to_string(),
                     "--confirm".to_string(),
-                    format!("post-block-effects-activation:testnet:{slot}"),
+                    format!("consensus-v1-activation:testnet:{slot}"),
                 ]);
             }
             args

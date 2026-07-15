@@ -469,7 +469,7 @@ assert(
     productionDeployment.includes('LICHEN_RUN_VOLUME_E2E=1') &&
     productionDeployment.includes('bash tests/local-multi-validator-test.sh 4') &&
     productionDeployment.includes('Every block range is bounded and source-proven') &&
-    productionDeployment.includes('--prepare-post-block-effects-activation') &&
+    productionDeployment.includes('--prepare-consensus-v1-activation') &&
     productionDeployment.includes('same tip and tip hash') &&
     productionDeployment.includes('absent preparation exits 78') &&
     productionDeployment.includes('analytics v2 waits for the same boundary') &&

@@ -109,32 +109,37 @@ Coordinated signed-release recovery rules for a stalled live height:
 - Download the GitHub Release archives, verify `SHA256SUMS`, attach and verify `SHA256SUMS.sig`, and verify the expected binary hashes before any service stop.
 - Prestage or install the exact signed release binaries on all validators while preserving `/var/lib/lichen/state-<network>`, `/var/lib/lichen/archive-<network>`, `/etc/lichen`, validator keypairs, node identity, peer cache, and consensus WAL.
 - Stop all validator services only after every host has the signed release staged. Start all validator services from preserved state, then verify every running process hash matches the release hash and no process is executing a deleted binary.
-- For a release with an unset post-block activation marker, prove every stopped
-  database has the same tip and tip hash. Let `ACTIVATION_SLOT` be exactly that
-  common tip plus one. Run this command first without `--execute` on all hosts;
-  every output must report the same `last_slot`, `expected_activation_slot`, and
-  `activation_ready=true`. Then run the execute form with the exact confirmation
+- For a release with an unset consensus-v1 activation marker, prove every
+  stopped database has the same tip and tip hash. Let `ACTIVATION_SLOT` be
+  exactly that common tip plus one. Run this command first without `--execute`
+  on all hosts; every output must report the same `last_slot`,
+  `expected_activation_slot`, and `activation_ready=true`. Then run the execute
+  form with the exact confirmation
   on every host before starting any validator:
 
   ```bash
   sudo -u lichen /usr/local/bin/lichen-validator \
     --network testnet \
     --db-path /var/lib/lichen/state-testnet \
-    --prepare-post-block-effects-activation \
+    --prepare-consensus-v1-activation \
     --activation-slot "$ACTIVATION_SLOT"
 
   sudo -u lichen /usr/local/bin/lichen-validator \
     --network testnet \
     --db-path /var/lib/lichen/state-testnet \
-    --prepare-post-block-effects-activation \
+    --prepare-consensus-v1-activation \
     --activation-slot "$ACTIVATION_SLOT" \
     --execute \
-    --confirm "post-block-effects-activation:testnet:$ACTIVATION_SLOT"
+    --confirm "consensus-v1-activation:testnet:$ACTIVATION_SLOT"
   ```
 
   A mismatched tip, requested slot, existing marker, binary hash, or dry-run
   result blocks the whole start. Do not prepare a lagging node and do not start
   any candidate process until all databases have the same durable boundary.
+  This boundary activates crash-complete post-block effects, analytics v2, and
+  strict chain-ID transaction signatures together. Blocks below it retain the
+  bounded `v0.5.223` chain-domain-then-legacy transition policy; blocks at or
+  above it have no legacy verification fallback.
 - The recovery is green only when every validator reports the same release, public RPC returns healthy fresh blocks, block height advances for a sustained window, `getMetrics` is available, WebSocket slot subscriptions advance, and explorer-facing endpoints display current data.
 
 ## Mandatory Local Deployment Drill

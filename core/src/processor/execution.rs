@@ -196,7 +196,8 @@ impl TxProcessor {
 
     /// Process a transaction.
     pub fn process_transaction(&self, tx: &Transaction, _validator: &Pubkey) -> TxResult {
-        let result = self.process_transaction_inner(tx, _validator, None);
+        let execution_slot = self.state.get_last_slot().unwrap_or(0).saturating_add(1);
+        let result = self.process_transaction_inner(tx, _validator, None, execution_slot);
         if !self.is_speculative()
             && result.receipt_eligible
             && self
@@ -222,6 +223,7 @@ impl TxProcessor {
         tx: &Transaction,
         _validator: &Pubkey,
         cached_blockhashes: Option<&HashSet<Hash>>,
+        execution_slot: u64,
     ) -> TxResult {
         {
             let mut meta = self.contract_meta.lock().unwrap_or_else(|e| e.into_inner());
@@ -287,7 +289,7 @@ impl TxProcessor {
             return self.process_evm_transaction(tx);
         }
 
-        if let Err(error) = self.verify_transaction_signatures(tx) {
+        if let Err(error) = self.verify_transaction_signatures(tx, execution_slot) {
             return self.make_invalid_result(error, 0);
         }
 
@@ -568,8 +570,12 @@ impl TxProcessor {
         for tx in txs {
             let child = cumulative.clone_for_speculative();
             self.set_active_batch(child);
-            let mut result =
-                self.process_transaction_inner(tx, validator, Some(&cached_blockhashes));
+            let mut result = self.process_transaction_inner(
+                tx,
+                validator,
+                Some(&cached_blockhashes),
+                archive_slot,
+            );
             if result.receipt_eligible {
                 let active_batch = self.take_active_batch();
                 let had_execution_batch = active_batch.is_some();
@@ -641,11 +647,19 @@ impl TxProcessor {
             .unwrap_or_default()
             .into_iter()
             .collect();
+        let execution_slot = self.state.get_last_slot().unwrap_or(0).saturating_add(1);
 
         if txs.len() <= 1 {
             return txs
                 .iter()
-                .map(|tx| self.process_transaction_inner(tx, validator, Some(&cached_blockhashes)))
+                .map(|tx| {
+                    self.process_transaction_inner(
+                        tx,
+                        validator,
+                        Some(&cached_blockhashes),
+                        execution_slot,
+                    )
+                })
                 .collect();
         }
 
@@ -763,6 +777,7 @@ impl TxProcessor {
                     &txs[idx],
                     validator,
                     Some(&cached_blockhashes),
+                    execution_slot,
                 );
                 group_results.push((idx, result));
             }
@@ -932,7 +947,8 @@ impl TxProcessor {
             };
         }
 
-        if let Err(error) = self.verify_transaction_signatures(tx) {
+        let execution_slot = self.state.get_last_slot().unwrap_or(0).saturating_add(1);
+        if let Err(error) = self.verify_transaction_signatures(tx, execution_slot) {
             return SimulationResult {
                 success: false,
                 fee: 0,

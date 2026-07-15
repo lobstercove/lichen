@@ -14,7 +14,7 @@ use crate::evm::{
     EvmReceipt, EvmTxRecord, EVM_PROGRAM_ID,
 };
 use crate::governance::{GovernanceAction, GovernanceProposal};
-use crate::signing::CHAIN_ID_METADATA_KEY;
+use crate::signing::{CHAIN_ID_METADATA_KEY, CONSENSUS_V1_ACTIVATION_SLOT_METADATA_KEY};
 use crate::state::{StateBatch, StateStore, SymbolRegistryEntry};
 use crate::transaction::{Instruction, Transaction};
 use crate::{Hash, MAX_CONTRACT_CODE};
@@ -72,6 +72,12 @@ pub struct TxResult {
 enum TxProcessorMode {
     Canonical,
     Speculative,
+}
+
+enum TransactionSignaturePolicy {
+    Legacy,
+    HistoricalChainOrLegacy(String),
+    ChainDomain(String),
 }
 
 /// Result of deterministic proposal execution against an in-memory batch.
@@ -623,10 +629,75 @@ impl TxProcessor {
         }
     }
 
-    fn verify_transaction_signatures(&self, tx: &Transaction) -> Result<(), String> {
+    fn historical_transaction_signature_policy(
+        &self,
+    ) -> Result<TransactionSignaturePolicy, String> {
+        Ok(match self.transaction_signing_chain_id()? {
+            Some(chain_id) => TransactionSignaturePolicy::HistoricalChainOrLegacy(chain_id),
+            None => TransactionSignaturePolicy::Legacy,
+        })
+    }
+
+    fn transaction_signature_policy_at_slot(
+        &self,
+        execution_slot: u64,
+    ) -> Result<TransactionSignaturePolicy, String> {
+        let Some(encoded_activation_slot) = self
+            .state
+            .get_metadata(CONSENSUS_V1_ACTIVATION_SLOT_METADATA_KEY)?
+        else {
+            return self.historical_transaction_signature_policy();
+        };
+        let activation_slot_bytes: [u8; 8] =
+            encoded_activation_slot
+                .try_into()
+                .map_err(|value: Vec<u8>| {
+                    format!(
+                        "invalid {} metadata length: expected 8 bytes, found {}",
+                        CONSENSUS_V1_ACTIVATION_SLOT_METADATA_KEY,
+                        value.len()
+                    )
+                })?;
+        let activation_slot = u64::from_le_bytes(activation_slot_bytes);
+        if activation_slot == 0 {
+            return Err(format!(
+                "{} must be at least slot 1",
+                CONSENSUS_V1_ACTIVATION_SLOT_METADATA_KEY
+            ));
+        }
+        if execution_slot < activation_slot {
+            return self.historical_transaction_signature_policy();
+        }
+
         match self.transaction_signing_chain_id()? {
-            Some(chain_id) => tx.verify_required_signatures_with_chain_id(&chain_id),
-            None => tx.verify_required_signatures(),
+            Some(chain_id) => Ok(TransactionSignaturePolicy::ChainDomain(chain_id)),
+            None => Err(format!(
+                "missing or empty {} metadata at activated slot {}",
+                CHAIN_ID_METADATA_KEY, execution_slot
+            )),
+        }
+    }
+
+    fn verify_transaction_signatures(
+        &self,
+        tx: &Transaction,
+        execution_slot: u64,
+    ) -> Result<(), String> {
+        match self.transaction_signature_policy_at_slot(execution_slot)? {
+            TransactionSignaturePolicy::Legacy => tx.verify_required_signatures(),
+            TransactionSignaturePolicy::HistoricalChainOrLegacy(chain_id) => tx
+                .verify_required_signatures_with_chain_id(&chain_id)
+                .or_else(|domain_error| {
+                    tx.verify_required_signatures().map_err(|legacy_error| {
+                        format!(
+                            "{}; historical legacy verification also failed: {}",
+                            domain_error, legacy_error
+                        )
+                    })
+                }),
+            TransactionSignaturePolicy::ChainDomain(chain_id) => {
+                tx.verify_required_signatures_with_chain_id(&chain_id)
+            }
         }
         .map(|_| ())
     }
@@ -798,13 +869,79 @@ mod tests {
     }
 
     #[test]
-    fn verify_transaction_signatures_uses_chain_id_metadata() {
+    fn transaction_signature_domain_changes_at_consensus_v1_activation() {
         let temp_dir = tempdir().unwrap();
         let state = StateStore::open(temp_dir.path()).unwrap();
         state
             .put_metadata(CHAIN_ID_METADATA_KEY, b"lichen-testnet-1")
             .expect("put chain id");
-        let processor = TxProcessor::new(state);
+        state
+            .put_metadata(
+                CONSENSUS_V1_ACTIVATION_SLOT_METADATA_KEY,
+                &10u64.to_le_bytes(),
+            )
+            .expect("put activation slot");
+        let processor = TxProcessor::new(state.clone());
+        let kp = Keypair::generate();
+        let ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![kp.pubkey()],
+            data: vec![0],
+        };
+        let message = crate::transaction::Message::new(vec![ix], Hash::hash(b"recent"));
+        let mut legacy_tx = Transaction::new(message.clone());
+        legacy_tx
+            .signatures
+            .push(kp.sign(&legacy_tx.message.serialize()));
+        let mut domain_tx = Transaction::new(message);
+        domain_tx.signatures.push(
+            kp.sign(
+                &domain_tx
+                    .message
+                    .signing_bytes_for_chain_id("lichen-testnet-1"),
+            ),
+        );
+        let mut wrong_domain_tx = Transaction::new(domain_tx.message.clone());
+        wrong_domain_tx.signatures.push(
+            kp.sign(
+                &wrong_domain_tx
+                    .message
+                    .signing_bytes_for_chain_id("lichen-mainnet-1"),
+            ),
+        );
+
+        processor
+            .verify_transaction_signatures(&legacy_tx, 9)
+            .expect("legacy signatures must verify below activation");
+        processor
+            .verify_transaction_signatures(&domain_tx, 9)
+            .expect("deployed chain-domain signatures must also replay below activation");
+        assert!(processor
+            .verify_transaction_signatures(&wrong_domain_tx, 9)
+            .is_err());
+        processor
+            .verify_transaction_signatures(&domain_tx, 10)
+            .expect("matching chain id must verify at activation");
+        assert!(processor
+            .verify_transaction_signatures(&legacy_tx, 10)
+            .is_err());
+
+        state
+            .put_metadata(CHAIN_ID_METADATA_KEY, b"lichen-mainnet-1")
+            .expect("put wrong chain id");
+        assert!(processor
+            .verify_transaction_signatures(&domain_tx, 10)
+            .is_err());
+    }
+
+    #[test]
+    fn transaction_signature_activation_metadata_fails_closed() {
+        let temp_dir = tempdir().unwrap();
+        let state = StateStore::open(temp_dir.path()).unwrap();
+        state
+            .put_metadata(CHAIN_ID_METADATA_KEY, b"lichen-testnet-1")
+            .expect("put chain id");
+        let processor = TxProcessor::new(state.clone());
         let kp = Keypair::generate();
         let ix = Instruction {
             program_id: SYSTEM_PROGRAM_ID,
@@ -813,21 +950,35 @@ mod tests {
         };
         let message = crate::transaction::Message::new(vec![ix], Hash::hash(b"recent"));
         let mut tx = Transaction::new(message);
-        tx.signatures
-            .push(kp.sign(&tx.message.signing_bytes_for_chain_id("lichen-testnet-1")));
+        tx.signatures.push(kp.sign(&tx.message.serialize()));
 
         processor
-            .verify_transaction_signatures(&tx)
-            .expect("matching chain id should verify");
+            .verify_transaction_signatures(&tx, 100)
+            .expect("an unactivated historical database remains legacy");
 
-        let temp_dir = tempdir().unwrap();
-        let wrong_state = StateStore::open(temp_dir.path()).unwrap();
-        wrong_state
-            .put_metadata(CHAIN_ID_METADATA_KEY, b"lichen-mainnet-1")
-            .expect("put wrong chain id");
-        let wrong_processor = TxProcessor::new(wrong_state);
+        state
+            .put_metadata(CONSENSUS_V1_ACTIVATION_SLOT_METADATA_KEY, &[1, 2, 3])
+            .expect("put malformed activation slot");
+        assert!(processor.verify_transaction_signatures(&tx, 100).is_err());
 
-        assert!(wrong_processor.verify_transaction_signatures(&tx).is_err());
+        state
+            .put_metadata(
+                CONSENSUS_V1_ACTIVATION_SLOT_METADATA_KEY,
+                &0u64.to_le_bytes(),
+            )
+            .expect("put zero activation slot");
+        assert!(processor.verify_transaction_signatures(&tx, 100).is_err());
+
+        state
+            .put_metadata(
+                CONSENSUS_V1_ACTIVATION_SLOT_METADATA_KEY,
+                &10u64.to_le_bytes(),
+            )
+            .expect("put valid activation slot");
+        state
+            .put_metadata(CHAIN_ID_METADATA_KEY, b"")
+            .expect("put empty chain id");
+        assert!(processor.verify_transaction_signatures(&tx, 100).is_err());
     }
 
     fn advance_test_slot(state: &StateStore, slot: u64) -> Hash {
@@ -872,6 +1023,74 @@ mod tests {
         let sig = from_kp.sign(&tx.message.serialize());
         tx.signatures.push(sig);
         tx
+    }
+
+    #[test]
+    fn speculative_replay_uses_declared_slot_for_transaction_signature_domain() {
+        let (_processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let recipient = Pubkey([2u8; 32]);
+        let chain_id = "lichen-testnet-1";
+        state
+            .put_metadata(CHAIN_ID_METADATA_KEY, chain_id.as_bytes())
+            .expect("put chain id");
+        state
+            .put_metadata(
+                CONSENSUS_V1_ACTIVATION_SLOT_METADATA_KEY,
+                &10u64.to_le_bytes(),
+            )
+            .expect("put activation slot");
+
+        let legacy_tx = make_transfer_tx(&alice_kp, alice, recipient, 1, genesis_hash);
+        let mut domain_tx = Transaction::new(legacy_tx.message.clone());
+        domain_tx
+            .signatures
+            .push(alice_kp.sign(&domain_tx.message.signing_bytes_for_chain_id(chain_id)));
+        let processor = TxProcessor::new_speculative(state);
+
+        let pre_activation = processor.process_transactions_speculative_at_slot(
+            std::slice::from_ref(&legacy_tx),
+            &validator,
+            9,
+        );
+        assert!(
+            pre_activation.results[0].success,
+            "historical legacy transaction failed: {:?}",
+            pre_activation.results[0].error
+        );
+        let pre_activation_domain = processor.process_transactions_speculative_at_slot(
+            std::slice::from_ref(&domain_tx),
+            &validator,
+            9,
+        );
+        assert!(
+            pre_activation_domain.results[0].success,
+            "historical chain-domain transaction failed: {:?}",
+            pre_activation_domain.results[0].error
+        );
+
+        let activated = processor.process_transactions_speculative_at_slot(
+            std::slice::from_ref(&domain_tx),
+            &validator,
+            10,
+        );
+        assert!(
+            activated.results[0].success,
+            "activated chain-domain transaction failed: {:?}",
+            activated.results[0].error
+        );
+
+        let rejected = processor.process_transactions_speculative_at_slot(
+            std::slice::from_ref(&legacy_tx),
+            &validator,
+            10,
+        );
+        assert!(!rejected.results[0].receipt_eligible);
+        assert!(rejected.results[0]
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("signature"));
     }
 
     #[test]
@@ -3819,6 +4038,12 @@ mod tests {
         state
             .put_metadata(CHAIN_ID_METADATA_KEY, chain_id.as_bytes())
             .unwrap();
+        state
+            .put_metadata(
+                CONSENSUS_V1_ACTIVATION_SLOT_METADATA_KEY,
+                &1u64.to_le_bytes(),
+            )
+            .unwrap();
         state.set_last_slot(128).unwrap();
         let block_producer = Pubkey([42u8; 32]);
         fund_treasury_for_validator_bootstrap(&state, treasury);
@@ -3853,6 +4078,12 @@ mod tests {
         let chain_id = "lichen-testnet-1";
         state
             .put_metadata(CHAIN_ID_METADATA_KEY, chain_id.as_bytes())
+            .unwrap();
+        state
+            .put_metadata(
+                CONSENSUS_V1_ACTIVATION_SLOT_METADATA_KEY,
+                &1u64.to_le_bytes(),
+            )
             .unwrap();
         let repair_boundary_block = crate::Block::new_with_timestamp(
             2_710_766,
@@ -3899,6 +4130,12 @@ mod tests {
         let chain_id = "lichen-mainnet-1";
         state
             .put_metadata(CHAIN_ID_METADATA_KEY, chain_id.as_bytes())
+            .unwrap();
+        state
+            .put_metadata(
+                CONSENSUS_V1_ACTIVATION_SLOT_METADATA_KEY,
+                &1u64.to_le_bytes(),
+            )
             .unwrap();
         state.set_last_slot(128).unwrap();
         let block_producer = Pubkey([42u8; 32]);

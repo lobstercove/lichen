@@ -1,6 +1,6 @@
 # Archive Parity Repair Plan - 2026-07-09
 
-**Status:** Local four-validator parity/fault and earlier ten-validator scale gates passed; public archive storage is now an automatic non-dev testnet/mainnet invariant; live four-VPS liveness, EU/IN capacity recovery, and redundant public RPC ingress are complete; the owner accepted the irrecoverable AP-060 gap for this existing testnet only, while mainnet remains fail-closed
+**Status:** Public archive storage is an automatic non-dev testnet/mainnet invariant; EU/IN capacity recovery and redundant public RPC ingress are complete; the owner accepted the irrecoverable AP-060 gap for this existing testnet only, while mainnet remains fail-closed. AP-073 four- and ten-validator local release gates pass on the final source. US/EU/SEA/IN are currently healthy on `v0.5.223`; EU still runs the audited exact-tag sparse-maintenance bridge while the other three run the signed rollback artifact. Hosted CI, signed artifacts, source-backed SEA repair, coordinated activation/deployment, fixed-tip live parity, and publication remain.
 **Scope:** Public testnet archive parity, validator resume parity, and release gate
 **Rule:** No live VPS rollout until the local four-validator testnet gate proves the repair.
 
@@ -1172,8 +1172,12 @@ Recovery evidence:
 - Fixed slot `9,139,000` returned block hash
   `ac7be90e...be6e` independently from US, EU, SEA, and IN.
 - `lichen-validator-testnet.service` is active and enabled on every VPS with
-  `NRestarts=0`. All four now run the identical signed `v0.5.223` rollback
-  binary (`e956a8fb...2e810`); no `v0.5.224` candidate has been installed.
+  `NRestarts=0`. US/SEA/IN run the signed `v0.5.223` rollback binary
+  (`e956a8fb...2e810`). A later process-image audit found that EU still runs
+  the audited exact-tag `v0.5.223` sparse-maintenance bridge
+  (`9b71e7a9...6ccee`) through its temporary catch-up override even though the
+  installed canonical binary is signed `v0.5.223`; the earlier identical-image
+  claim was incorrect. No `v0.5.224` candidate is installed or running.
 - The final post-maintenance multiplexed read-only fleet pass completed without
   stopping any service. US/EU/SEA/IN were healthy at slots
   `9,182,142..9,182,188`, a 46-slot spread, and all four returned digest
@@ -1321,6 +1325,61 @@ repaired additively from one of those sources through the guarded stream repair
 path, then all four must pass the fixed-tip offline manifest gate. The repair
 must not copy another validator database or synthesize a block body.
 
+## 2026-07-15 Historical Transaction-Domain Replay Audit
+
+A read-only replay of the first block rejected by US, canonical slot
+`9,273,160`, exposed a release-blocking candidate regression before tag or
+deployment. The block contains three valid native oracle transactions signed
+with the historical raw-message domain used by signed `v0.5.223`. Each verifies
+with `verify_required_signatures()` and fails the new chain-ID verifier. The
+candidate Core processor selected chain-ID verification whenever `chain_id`
+metadata existed, without considering the block slot, so it would reject valid
+pre-upgrade transactions during catch-up or diagnostic replay.
+
+Consensus v1 now uses the same durable, guarded activation slot for
+crash-complete post-block effects, analytics migration, and native transaction
+signature domains. A block below that boundary reproduces the deployed
+`v0.5.223` transition policy: verify the chain-ID domain first, then the legacy
+domain required by historical internal transactions. At or above the boundary,
+execution requires a nonempty canonical chain ID and accepts only chain-domain
+signatures. Missing activation metadata retains that bounded historical replay
+behavior for an unmodified pre-upgrade database; malformed metadata fails
+closed. Existing
+public chains must align at one exact stopped tip and persist the same next-slot
+boundary with `--prepare-consensus-v1-activation`; fresh chains persist slot 1.
+RPC and validator ingress continue to require chain-domain signatures for all
+new transactions, with no verification fallback.
+
+The same signing audit found that custody wrapped-credit minting still signed
+raw message bytes. It now fetches the canonical chain ID from `getNetworkInfo`
+and signs the mint transaction for that exact network before V1 wire encoding.
+A regression proves the mint verifies only on the selected chain. No candidate
+binary was installed and no live database was mutated during this audit.
+
+The exact AP-073 release gates then passed on the final source. The
+four-validator run recovered V4 in the same process after a 140-slot LiveSync
+pause, restarted V4 and V1 from their own state, resumed all four from one
+preserved tip, and matched the canonical certificate at slot `946`. Its
+checkpoint-1000 hot/cold manifest root was identical on every validator, the
+volume/user journeys passed 140/140, the launchpad/governance/graduation
+journeys passed 104/104, and every checkpoint-3000 manifest matched root
+`b7232593...1bae1de`. Transcript:
+`evidence/post-block-effects-recovery/testnet-20260715T-final/four-validator-ap073-final.log`,
+SHA-256 `cf8e487ca2aeea98b7c6c1c8757b7c37803542d2f9de58988ceadac1a46204a5`.
+
+The ten-validator expansion independently joined V2 through V10 from empty
+hot/cold stores, recovered V10 in the same process after the same 140-slot
+pause, passed individual and coordinated preserved-state restarts, and kept
+finalizing with V9 and V10 stopped before both rejoined with their original
+identities and databases. Every validator proposed and voted, the canonical
+certificate matched at slot `2600`, and all ten checkpoint-3000 manifests
+matched root `48cb5614...649255`. Transcript:
+`evidence/post-block-effects-recovery/testnet-20260715T-final/ten-validator-ap073-final.log`,
+SHA-256 `13642d7d3bfb618091ffaf6d65c5af3e0cfbf00f965de52c651a4dd1c91a31fc`.
+The final locked workspace suite, strict Clippy, dependency policy/security,
+all 34 contract native/WASM builds, SDK/compiler/fuzz suites, deployment/static
+QA, developer portal 244/244, and marketplace 390/390 also pass on this source.
+
 ## Tracker
 
 | ID | Work item | Evidence | Status |
@@ -1347,21 +1406,22 @@ must not copy another validator database or synthesize a block body.
 | AP-057K | Make `--from-slot`/`--to-slot` repair exports exactly inclusive across every page | Final-slot multi-transaction pagination and later-slot exclusion tests | Done locally: bounded exports for slots, blocks, transactions, `tx_by_slot`, `tx_to_slot`, and `tx_meta` retain every final-slot row with chunk size 1, exclude the next slot, and reject unsupported categories; updated Core 981/981, all integrations, Validator 393/393, helper guards 12/12, strict Clippy, and final AP-050 four-validator gate pass. |
 | AP-057L | Prevent a complete canonical parent with an incomplete producer/post-effects projection from wedging the next BFT height | Block-hash-bound recent startup recovery, pre-BFT parent gate, exact-once regressions, live state digest | Done locally. Two separate `v0.5.223` incidents reproduced the fault, including slot `9,000,623`; candidate startup and BFT-gate regressions repair the stale parent exactly once before the next-height root is read, and AP-050 passes. |
 | AP-057M | Prevent legacy/pruned marker absence from replaying already-applied post-block effects | Durable activation-boundary persistence, pre-activation no-replay, activated missing-body failure, and offline-admin refusal tests | Done locally. Every startup/BFT/duplicate-tip/admin repair path is activation-bounded. Pre-activation slots are never inferred from marker absence, and the superseded candidate was never installed or allowed to write live state. |
-| AP-057N | Prevent a lagging existing-chain validator from selecting an earlier upgrade height | Exact stopped-tip activation dry-run/execute, status-78 absent-boundary startup, shared analytics gate, and fresh-genesis slot-1 tests | Done locally; Validator 396/396, strict workspace Clippy, full workspace tests, and final AP-050 pass. Existing public databases never auto-select `local tip + 1`. The guarded command accepts only the exact next slot, requires `post-block-effects-activation:<network>:<slot>`, WAL-syncs/readbacks the durable marker, and analytics v2 waits for it. After derived-cache repair, EU is catching up through the tested full-replay-compatible `v0.5.223` bridge; ordinary signed `v0.5.223` must not be started for this gap. All four must then stop at one exact tip/hash before the candidate activation command runs. |
+| AP-057N | Prevent a lagging existing-chain validator from selecting an earlier upgrade height | Exact stopped-tip activation dry-run/execute, status-78 absent-boundary startup, shared analytics gate, and fresh-genesis slot-1 tests | Done locally; Validator 396/396, strict workspace Clippy, full workspace tests, and final AP-050 pass. Existing public databases never auto-select `local tip + 1`. The guarded command accepts only the exact next slot, requires `consensus-v1-activation:<network>:<slot>`, WAL-syncs/readbacks the durable marker, and analytics v2 waits for it. All four must stop at one exact tip/hash before the candidate activation command runs. |
 | AP-057O | Make every recovery inspection command provably non-mutating | Read-only root APIs, disposable RocksDB secondary, primary-before/after sparse verification, and secondary mutation refusal | Done locally and against the provider rollback. Contract-storage, stake-pool, and commitment-schema inspection use read-only root computation and support `--secondary-dir`; sparse rebuild and activation refuse secondary mode. The first guarded EU attempt exposed the old mutating cold-start call and reversed its swap before service start. The local rollback was restored from the read-only provider copy and reconciled by checksum/inventory. Corrected Linux/amd64 binary `e82cd6f5...59201` then opened the pristine, read-only July 12 provider rollback only through disposable secondaries and returned exact slot `8,915,275`, current/cached root `cbf7770f...03d3a`, stake digest `3ea8c6c5...37747`, four active validators, and `state_root_recompute=read_only`. Core 983/983 plus integrations, Validator 396/396, the full locked workspace, strict Clippy, helper guards 12/12, and AP-050 pass. |
 | AP-057P | Serialize canonical state writes with derived sparse commitment mutation and self-repair stale clean metadata at startup | Same-key commit/root race, lost-marker startup reconstruction, full Core/Validator suites, AP-050 | Done locally. One state-level lock covers canonical batch/direct writes and every mutating root/rebuild path. Startup verifies clean metadata from canonical accounts/contracts and rebuilds then re-verifies before BFT on mismatch. The 1,000-commit/1,000-root race and clean-looking lost-marker regressions pass, as do Core 983/983 plus integrations, Validator 396/396, the full locked workspace, strict Clippy, helper guards 12/12, and AP-050 through checkpoint 3000 with identical hot/cold roots on all four validators. |
 | AP-057Q | Prevent point-lookup RocksDB iterators from silently skipping migration rows and fail closed on missing block-referenced transaction indexes | Large-store total-order audit, absent/corrupt/cold-only transaction tests, bounded compaction test | Done in source. Runtime and stopped-node block scans plus auxiliary-history scans use total-order iteration. Audit and both migration paths require every referenced transaction and exact slot mapping in hot or cold storage. Focused cold migration 12/12, strict Core/Validator Clippy, the locked full workspace all-target/all-feature suite, and the final AP-050 four-validator gate all pass. Exact-final Linux build and live read-only repeat audit remain before execute. |
 | AP-057R | Bound sparse Merkle cache storage and provide a stopped-node canonical rebuild | Repeated-update node-count/proof/checkpoint regressions, exact-tag Linux recovery build, EU/IN pre/post evidence | Done. Current Core passes 994/994. Exact-tag optimized Linux tests passed. Recovery binary `9b71e7a9...ccee` rebuilt EU at slot `8,953,695`, reducing contract-node SST bytes from `42,022,557,879` to `246,455,989`, and rebuilt IN at slot `9,180,291` to 249,527 reachable contract nodes. Typed verification passed on both; protected and cold-archive metadata hashes were unchanged. Checkpoints `8,954,000` and `9,181,000` pruned the obsolete hard-linked files, leaving about 58.7 GB and 70.1 GB free respectively. Ongoing boundedness is in the candidate and exact-tag replay bridge. |
 | AP-058 | Restore EU runtime headroom and prove restart-loop suppression | Current provider backup mount, stopped rollback evidence, corrected total-order audit, bounded migration, sparse-cache rebuild, `df`, `getHealth.disk`, systemd status | Done without volume expansion. The guarded restore, full integrity audit, bounded hot-to-cold migration, derived-cache rebuild, root proof, and checkpoint rollover completed. Free space rose from 15.12 GB before rebuild to 58.72 GB after old-checkpoint pruning and remained about 53 GB in the July 15 live sample. EU caught up, serves fresh blocks through the authenticated edge, and `lichen-validator-testnet.service` is active/enabled with zero systemd restarts. The 500 GiB blocker is superseded. |
 | AP-060 | Repair the current July chain on US, EU, SEA, and IN from verified source history | Per-range proof, per-host dry-run/execute evidence, fixed-tip manifests | Accepted testnet-only legacy-loss exception; remains a hard mainnet blocker. No current/provider copy contains bodies `2,872,006..4,298,999`; signed bodies must never be synthesized. The owner explicitly accepted that irrecoverable interval on 2026-07-15 only for upgrading the existing `lichen-testnet-1`. Mainnet startup, joining, and snapshot import remain fail-closed on any absent, behind, or mismatched genesis-to-tip archive proof. The US slot `5,275,999` body remains preserved for later additive repair, and any newly discovered real source may still be merged only through the guarded fixed-tip path. |
-| AP-065 | Recover four-validator live production and prove fresh-tip liveness | Same current slot/hash, fresh block age, all four producers observed | Done. US/EU/SEA/IN are active and enabled with zero systemd restarts; strict edge health reports all four ready at fresh tips. The final post-maintenance read-only pass found slots `9,182,142..9,182,188` at a 46-slot spread and the same digest `6c15273f...8cdd88` for fixed slot `9,139,000` on every host. All four run the identical signed `v0.5.223` rollback binary `e956a8fb...2e810`; no `0.5.224` candidate is installed. AP-060 remains the separate full-genesis archive release blocker. |
+| AP-065 | Recover four-validator live production and prove fresh-tip liveness | Same current slot/hash, fresh block age, all four producers observed | Done for liveness. US/EU/SEA/IN are active and enabled with zero systemd restarts; the July 15 read-only sample found healthy slots `9,295,963..9,295,967` at block age `0..1` seconds. US/SEA/IN execute signed `v0.5.223` hash `e956a8fb...2e810`; EU executes the audited exact-tag sparse-maintenance bridge `9b71e7a9...6ccee` through a temporary catch-up override while its installed canonical binary remains signed `v0.5.223`. The override and image mismatch must be retired by the coordinated AP-070 deployment. No `0.5.224` candidate is installed. AP-060 remains the separate full-genesis archive blocker. |
 | AP-066 | Remove the public RPC single-origin failure mode | Four authenticated origins, strict fleet health, failover tests, explorer same-origin smoke | Done. `testnet-api.lichen.network` is canonical. `edge/testnet-rpc` routes across US/EU/SEA/IN with unique origin credentials, bounded body replay, deterministic affinity, and failover. Caddy is active/enabled on every origin, direct unauthenticated origin requests return 403, Worker tests pass 7/7, frontend assets pass 377/377, all ten Pages projects are live on the canonical configuration, RPC/WS smokes pass, and a 24-request sample reached every region. |
 | AP-067 | Make every committed Rust graph independently reproducible and bound contract build-cache growth | Fresh lock regeneration, locked metadata/audit, standalone compiler/SDK/fuzz tests, dependency policy QA | Done. All 40 lockfiles regenerate with the exact PQ-compatible PKCS#8 prerelease and pass locked metadata plus cargo-audit. Cargo-deny passes. Compiler 30/30, contract SDK 28/28, Rust client SDK 88/88, all examples, all 14 fuzz targets, and all 34 contract workspaces pass native tests and locked WASM builds. The 34 comprise 32 genesis catalog contracts, the genesis-bound `launchpad_token` graduation template, and the standalone `mt20_token` template. The final locked workspace all-target/all-feature suite, strict workspace Clippy with `-D warnings`, compiler sandbox, and Rust SBOM generation also pass. CI/release enforce the manifest anchor and shared non-runtime contract target directory. |
 | AP-068 | Recover IN disk headroom without deleting canonical state or public history | Protected hash comparison, typed sparse proof, checkpoint pruning, final fleet preflight | Done. IN stopped cleanly at `9,180,291`; the audited derived-cache rebuild passed, protected/cold metadata hashes matched, checkpoint `9,181,000` released obsolete cache files, free space rose to about 70.1 GB, and the clean-exit four-host verifier passed at a 46-slot spread with identical fixed-block digest. |
 | AP-069 | Make archive-backed hot/cold retention an automatic public-network invariant | Runtime/admin flag rejection tests, environment contracts, four-validator archive gate | Done in source. Every non-dev testnet/mainnet runtime and public-history admin command derives `archive-<network>` beside `state-<network>`, enables archive retention automatically, and rejects `--archive-mode` or `--cold-store`. Disposable `--dev-mode` clusters retain explicit controls. The production verifier and stream-repair path pass neither flag; env contracts and maintained runbooks use no public archive opt-in. |
 | AP-071 | Prevent post-checkpoint LiveSync stalls and repair SEA's bounded July 15 archive gap | Same-process material-gap recovery, progress-watchdog tests, source range proof, fixed-tip fleet manifests | Code and exact local gates done; live repair is part of AP-070 deployment. Material gaps and every checkpoint-repair entry return to bounded InitialSync, and only canonical or verified snapshot progress feeds the watchdog. The final four- and ten-validator gates passed the 140-slot same-process pause and identical checkpoint-3000 manifests. SEA range `9,236,790..9,237,999` remains to be additively repaired from US/EU/IN before final live parity. |
 | AP-072 | Prevent binary ABI marker collisions from corrupting nested caller identity or custody arguments | Canonical descriptor parser, explicit SDK layouts, nested caller regression, preserved-chain recovery, exact release gates | Done. Layout mode requires descriptor/signature/payload agreement instead of a leading `0xAB` byte. The old DEX WASM succeeds on the preserved failed database under the corrected runtime, focused Core/SDK/DEX tests pass, and exact four- and ten-validator release gates pass. |
-| AP-070 | Cut new tag and publish release artifacts | Tag, checksums, crates/npm status | In progress after the explicit AP-060 testnet-only waiver. The final-candidate four-local-validator gate passes through restart, one-node-offline finality, 244/244 user journeys, and identical post-journey archive manifests. The ten-validator expansion also passes fresh join through V10, same-process gap recovery, individual and coordinated restarts, 8-of-10 finality, dual preserved-state recovery, and identical checkpoint-3000 manifests. Workspace, contract, standalone Rust, dependency, security, SDK, frontend, wallet, deployment, running-chain integration, compiler-sandbox, and SBOM gates pass. Hosted CI, signed artifacts, SEA repair, coordinated deployment, and package publication remain. AP-058 and AP-065 through AP-069 are complete. Mainnet release remains prohibited until a fresh chain proves complete genesis-to-tip archives without any waiver. |
+| AP-073 | Preserve historical native transaction replay while activating strict chain-domain signatures and repair custody mint signing | Exact live block `9,273,160`, activation-boundary unit/execution tests, custody cross-chain rejection, full local gates | Done locally. Core 998/998 and custody 172/172 pass. Below the shared durable consensus-v1 slot, execution reproduces the bounded `v0.5.223` chain-domain-then-legacy transition policy; at/above activation it requires strict chain-ID verification. Malformed activated metadata fails closed. The operator command is `--prepare-consensus-v1-activation` with no legacy alias. The exact four-validator gate passed 140/140 volume journeys, 104/104 launchpad journeys, same-process gap recovery, own-state restarts, and root `b7232593...1bae1de`; the exact ten-validator expansion passed 8/10 liveness, preserved-state recovery, and root `48cb5614...649255`. Workspace, strict Clippy, dependency, contract, SDK, frontend, and static gates pass; hosted CI remains part of AP-070. |
+| AP-070 | Cut new tag and publish release artifacts | Tag, checksums, crates/npm status | Blocked on hosted CI, signed artifacts, source-backed SEA repair, coordinated deployment/activation, fixed-tip fleet parity, and package publication. AP-058, AP-065 through AP-069, and AP-073 local release gates are complete. Mainnet release remains prohibited until a fresh chain proves complete genesis-to-tip archives without any waiver. |
 
 ## Release Acceptance
 

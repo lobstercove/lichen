@@ -16,6 +16,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   block body and required transaction index from genesis through canonical tip.
 
 ### Fixed
+- Uses the guarded consensus-v1 activation slot as the deterministic native
+  transaction signature boundary. Historical blocks below the boundary retain
+  the bounded `v0.5.223` chain-domain-then-legacy transition policy, while
+  blocks at and above it require the canonical chain-ID domain with no fallback.
+  Existing public chains use
+  `--prepare-consensus-v1-activation` at one common stopped `tip + 1`; fresh
+  chains activate at slot 1, and malformed activated metadata fails closed.
+- Makes custody wrapped-credit mint transactions fetch `getNetworkInfo.chain_id`
+  and sign for that exact network. A confirmed bridge deposit can no longer
+  reach a legacy-signed mint that strict V1 RPC admission will reject.
 - Commits canonical transaction execution, durable receipts, block body,
   transaction slot indexes, archive watermark, and tip/finality cursors in one
   RocksDB batch. Validator oracle-attestation projections join the same batch,

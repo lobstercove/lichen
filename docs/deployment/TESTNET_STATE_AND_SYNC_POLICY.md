@@ -128,18 +128,23 @@ This policy exists because an active testnet is shared infrastructure. Developer
   counters, while preserving the validator's independent cold archive. The
   recovered checkpoint must be persisted and synced before the durable recovery
   marker is removed; any cleanup failure is fatal.
-- Post-block repair uses a durable upgrade activation boundary, not marker
-  absence by itself. Fresh chains persist slot 1. For an existing public chain,
-  stop every validator at one exact tip/hash and dry-run then execute
-  `--prepare-post-block-effects-activation --activation-slot <common-tip+1>` on
-  every independent database with confirmation
-  `post-block-effects-activation:<network>:<slot>`. Each write must WAL-sync and
+- Consensus v1 post-block repair and chain-domain transaction verification use
+  one durable upgrade activation boundary, not marker absence by itself. Fresh
+  chains persist slot 1. For an existing public chain, stop every validator at
+  one exact tip/hash and dry-run then execute
+  `--prepare-consensus-v1-activation --activation-slot <common-tip+1>` on every
+  independent database with confirmation
+  `consensus-v1-activation:<network>:<slot>`. Each write must WAL-sync and
   read back the same value. Startup without it exits 78; it must never choose a
   node-local height. A missing marker before that slot is legacy or pruned state
-  and must never trigger replay. Inside the activated interval, repair requires
-  the exact canonical block and fails closed when its body is unavailable.
-  Analytics and every coordinated state-projection migration must wait for the
-  same boundary. An operator must not invent, backdate, change, or delete it.
+  and must never trigger replay; transactions below it retain the bounded
+  `v0.5.223` chain-domain-then-legacy transition policy. At and above the
+  boundary, native transactions must be signed for the canonical chain ID with
+  no fallback. Inside the activated interval, repair
+  requires the exact canonical block and fails closed when its body is
+  unavailable. Analytics and every coordinated state-projection migration must
+  wait for the same boundary. An operator must not invent, backdate, change, or
+  delete it.
 - For an existing public chain, the complete genesis configuration embedded in
   slot 0 is the runtime authority. Cached genesis files may be durably repaired
   from that payload; explicitly supplied conflicting files must fail startup.

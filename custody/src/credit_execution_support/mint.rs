@@ -72,6 +72,27 @@ fn load_treasury_keypair(path: &Path) -> Result<Keypair, String> {
     Ok(Keypair::from_seed(&seed))
 }
 
+fn build_contract_mint_transaction(
+    contract_pubkey: &Pubkey,
+    treasury_keypair: &Keypair,
+    to_pubkey: &Pubkey,
+    amount: u64,
+    blockhash: Hash,
+    chain_id: &str,
+) -> Transaction {
+    let instruction = build_contract_mint_instruction(
+        contract_pubkey,
+        &treasury_keypair.pubkey(),
+        to_pubkey,
+        amount,
+    );
+    let message = Message::new(vec![instruction], blockhash);
+    let signature = treasury_keypair.sign(&message.signing_bytes_for_chain_id(chain_id));
+    let mut tx = Transaction::new(message);
+    tx.signatures.push(signature);
+    tx
+}
+
 pub(super) async fn submit_wrapped_credit(
     state: &CustodyState,
     job: &CreditJob,
@@ -104,18 +125,16 @@ pub(super) async fn submit_wrapped_credit(
     let to_pubkey = Pubkey::from_base58(&job.to_address)
         .map_err(|_| "invalid recipient address".to_string())?;
 
-    let instruction = build_contract_mint_instruction(
+    let blockhash = licn_get_recent_blockhash(&state.http, rpc_url).await?;
+    let chain_id = licn_get_chain_id(&state.http, rpc_url).await?;
+    let tx = build_contract_mint_transaction(
         &contract_pubkey,
-        &treasury_keypair.pubkey(),
+        &treasury_keypair,
         &to_pubkey,
         job.amount_spores,
+        blockhash,
+        &chain_id,
     );
-
-    let blockhash = licn_get_recent_blockhash(&state.http, rpc_url).await?;
-    let message = Message::new(vec![instruction], blockhash);
-    let signature = treasury_keypair.sign(&message.serialize());
-    let mut tx = Transaction::new(message);
-    tx.signatures.push(signature);
 
     let tx_bytes = tx.to_wire();
     let tx_base64 = base64::engine::general_purpose::STANDARD.encode(tx_bytes);
@@ -136,4 +155,31 @@ pub(super) async fn submit_wrapped_credit(
     );
 
     licn_send_transaction(&state.http, rpc_url, &tx_base64).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wrapped_credit_mint_signature_is_bound_to_rpc_chain_id() {
+        let treasury = Keypair::from_seed(&[0x41; 32]);
+        let contract = Pubkey([0x42; 32]);
+        let recipient = Pubkey([0x43; 32]);
+        let tx = build_contract_mint_transaction(
+            &contract,
+            &treasury,
+            &recipient,
+            123_456,
+            Hash::hash(b"recent"),
+            "lichen-testnet-1",
+        );
+
+        tx.verify_required_signatures_with_chain_id("lichen-testnet-1")
+            .expect("mint transaction must verify on its RPC network");
+        assert!(tx
+            .verify_required_signatures_with_chain_id("lichen-mainnet-1")
+            .is_err());
+        assert!(tx.verify_required_signatures().is_err());
+    }
 }

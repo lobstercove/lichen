@@ -12,6 +12,24 @@ pub(super) async fn licn_get_recent_blockhash(
     Hash::from_hex(hash).map_err(|error| format!("blockhash: {}", error))
 }
 
+pub(super) async fn licn_get_chain_id(
+    client: &reqwest::Client,
+    url: &str,
+) -> Result<String, String> {
+    let result = licn_rpc_call(client, url, "getNetworkInfo", json!([])).await?;
+    parse_chain_id(&result)
+}
+
+fn parse_chain_id(result: &Value) -> Result<String, String> {
+    result
+        .get("chain_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|chain_id| !chain_id.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| "missing chain_id".to_string())
+}
+
 pub(super) async fn licn_send_transaction(
     client: &reqwest::Client,
     url: &str,
@@ -53,4 +71,19 @@ pub(super) async fn licn_rpc_call(
         .get("result")
         .cloned()
         .ok_or_else(|| "rpc result missing".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chain_id_response_must_be_nonempty() {
+        assert_eq!(
+            parse_chain_id(&json!({"chain_id": " lichen-testnet-1 "})).unwrap(),
+            "lichen-testnet-1"
+        );
+        assert!(parse_chain_id(&json!({"chain_id": "  "})).is_err());
+        assert!(parse_chain_id(&json!({})).is_err());
+    }
 }

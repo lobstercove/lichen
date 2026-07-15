@@ -126,9 +126,9 @@ pub use restrictions::{
     RestrictionTransferDirection, GUARDIAN_RESTRICTION_MAX_SLOTS, NATIVE_LICN_ASSET_ID,
 };
 pub use signing::{
-    maybe_versioned_signing_bytes, versioned_signing_bytes, CHAIN_ID_METADATA_KEY, DOMAIN_BLOCK,
-    DOMAIN_NATIVE_TX, DOMAIN_PRECOMMIT, DOMAIN_PREVOTE, DOMAIN_PROPOSAL, SIGNING_ENVELOPE_MAGIC,
-    SIGNING_ENVELOPE_VERSION,
+    maybe_versioned_signing_bytes, versioned_signing_bytes, CHAIN_ID_METADATA_KEY,
+    CONSENSUS_V1_ACTIVATION_SLOT_METADATA_KEY, DOMAIN_BLOCK, DOMAIN_NATIVE_TX, DOMAIN_PRECOMMIT,
+    DOMAIN_PREVOTE, DOMAIN_PROPOSAL, SIGNING_ENVELOPE_MAGIC, SIGNING_ENVELOPE_VERSION,
 };
 pub use state::AccountProof;
 pub use state::MerkleProof;

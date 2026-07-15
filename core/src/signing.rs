@@ -7,6 +7,7 @@
 pub const SIGNING_ENVELOPE_MAGIC: &[u8; 10] = b"LICHEN-SIG";
 pub const SIGNING_ENVELOPE_VERSION: u8 = 1;
 pub const CHAIN_ID_METADATA_KEY: &str = "chain_id";
+pub const CONSENSUS_V1_ACTIVATION_SLOT_METADATA_KEY: &str = "post_block_effects_activation_slot_v1";
 
 pub const DOMAIN_NATIVE_TX: &str = "native-tx";
 pub const DOMAIN_BLOCK: &str = "block";

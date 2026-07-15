@@ -169,7 +169,9 @@ use job_persistence_support::{
     list_sweep_jobs_by_status, list_withdrawal_jobs_by_status, store_rebalance_job,
     store_sweep_job, store_withdrawal_job,
 };
-use lichen_rpc_support::{licn_get_recent_blockhash, licn_rpc_call, licn_send_transaction};
+use lichen_rpc_support::{
+    licn_get_chain_id, licn_get_recent_blockhash, licn_rpc_call, licn_send_transaction,
+};
 #[cfg(test)]
 use pending_burn_support::burn_signature_index_key;
 use pending_burn_support::submit_pending_burn_signature;
