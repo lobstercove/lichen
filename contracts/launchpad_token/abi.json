@@ -1,0 +1,22 @@
+{
+  "contract": "launchpad_token",
+  "version": "1.0",
+  "template": "sporepump-graduated-token-v1",
+  "functions": [
+    {"name":"initialize","params":[{"name":"sporepump","type":"Pubkey"},{"name":"token_id","type":"u64"},{"name":"creator","type":"Pubkey"},{"name":"max_supply","type":"u64"},{"name":"holder_obligations","type":"u64"}],"result_semantics":{"kind":"return_code","success_codes":[0]}},
+    {"name":"get_provenance","params":[],"result_semantics":{"kind":"return_code","success_codes":[0]}},
+    {"name":"mint_migration_inventory","params":[{"name":"to","type":"Pubkey"},{"name":"amount","type":"u64"}],"result_semantics":{"kind":"return_code","success_codes":[0]}},
+    {"name":"claim","params":[{"name":"holder","type":"Pubkey"}],"result_semantics":{"kind":"nonzero_return_value"}},
+    {"name":"balance_of","params":[{"name":"account","type":"Pubkey"}],"result_semantics":{"kind":"return_value"}},
+    {"name":"total_supply","params":[],"result_semantics":{"kind":"return_value"}},
+    {"name":"transfer","params":[{"name":"from","type":"Pubkey"},{"name":"to","type":"Pubkey"},{"name":"amount","type":"u64"}],"result_semantics":{"kind":"return_code","success_codes":[0]}},
+    {"name":"approve","params":[{"name":"owner","type":"Pubkey"},{"name":"spender","type":"Pubkey"},{"name":"amount","type":"u64"}],"result_semantics":{"kind":"return_code","success_codes":[0]}},
+    {"name":"allowance","params":[{"name":"owner","type":"Pubkey"},{"name":"spender","type":"Pubkey"}],"result_semantics":{"kind":"return_value"}},
+    {"name":"transfer_from","params":[{"name":"caller","type":"Pubkey"},{"name":"from","type":"Pubkey"},{"name":"to","type":"Pubkey"},{"name":"amount","type":"u64"}],"result_semantics":{"kind":"return_code","success_codes":[0]}},
+    {"name":"decimals","params":[],"result_semantics":{"kind":"return_value"}},
+    {"name":"name","params":[],"result_semantics":{"kind":"return_code","success_codes":[0]}},
+    {"name":"symbol","params":[],"result_semantics":{"kind":"return_code","success_codes":[0]}},
+    {"name":"sporepump_token_id","params":[],"result_semantics":{"kind":"return_value"}},
+    {"name":"sporepump_program","params":[],"result_semantics":{"kind":"return_code","success_codes":[0]}}
+  ]
+}

@@ -44,16 +44,19 @@ pub use block::{
     MAX_TX_PER_BLOCK,
 };
 pub use consensus::{
+    canonical_block_metadata_hash, canonical_validator_powers, canonical_validator_powers_hash,
     compute_block_reward, compute_epoch_mint, consensus_oracle_price_from_state, epoch_start_slot,
     inflation_rate_bps, is_epoch_boundary, licn_price_from_state,
     read_consensus_oracle_price_from_state, read_licn_price_feed_from_state, slot_to_epoch,
-    BootstrapStatus, EpochInfo, FinalityTracker, ForkChoice, PendingValidatorChange, Precommit,
-    Prevote, PriceOracle, Proposal, RewardAdjustmentInfo, RewardConfig, RoundStep,
-    SlashingEvidence, SlashingOffense, SlashingTracker, StakeInfo, StakePool, StakingStats,
-    StateOracle, ValidatorChangeType, ValidatorInfo, ValidatorSet, Vote, VoteAggregator,
-    VoteAuthority, BOOTSTRAP_GRANT_AMOUNT, DOWNTIME_FORGIVENESS_SLOTS, DOWNTIME_SUSPENSION_SLOTS,
-    DOWNTIME_TIER2_SLASH_BPS, FINALITY_DEPTH, GENESIS_SUPPLY_SPORES, INFLATION_DECAY_RATE_BPS,
-    INITIAL_INFLATION_RATE_BPS, MAX_BOOTSTRAP_SLOTS, MAX_BOOTSTRAP_VALIDATORS,
+    BootstrapStatus, CanonicalCommitCertificate, CanonicalValidatorPower, EpochInfo,
+    FinalityTracker, ForkChoice, PendingValidatorChange, Precommit, Prevote, PriceOracle, Proposal,
+    RewardAdjustmentInfo, RewardConfig, RoundStep, SlashingEvidence, SlashingOffense,
+    SlashingTracker, StakeInfo, StakePool, StakingStats, StateOracle, ValidatorChangeType,
+    ValidatorInfo, ValidatorSet, Vote, VoteAggregator, VoteAuthority, BOOTSTRAP_GRANT_AMOUNT,
+    CANONICAL_COMMIT_ENVELOPE_OPCODE, CANONICAL_COMMIT_ENVELOPE_VERSION,
+    DOWNTIME_FORGIVENESS_SLOTS, DOWNTIME_SUSPENSION_SLOTS, DOWNTIME_TIER2_SLASH_BPS,
+    FINALITY_DEPTH, GENESIS_SUPPLY_SPORES, INFLATION_DECAY_RATE_BPS, INITIAL_INFLATION_RATE_BPS,
+    MAX_BOOTSTRAP_SLOTS, MAX_BOOTSTRAP_VALIDATORS, MAX_CANONICAL_COMMIT_ENVELOPE_BYTES,
     MIGRATION_COOLDOWN_SLOTS, MIN_VALIDATOR_STAKE, PENALTY_REPAYMENT_BOOST_SLOTS,
     PERFORMANCE_BONUS_BPS, SLASHING_EVIDENCE_CODEC_LIMIT_BYTES, SLOTS_PER_EPOCH, SLOTS_PER_YEAR,
     TERMINAL_INFLATION_RATE_BPS, UPTIME_BONUS_THRESHOLD_BPS,
@@ -84,12 +87,13 @@ pub use genesis::{
 pub use governance::{GovernanceAction, GovernanceProposal};
 pub use hash::Hash;
 pub use keypair_file::{
-    copy_secure_file, keypair_password_from_env, plaintext_keypair_compat_allowed,
+    copy_secure_file, keypair_password_from_env, plaintext_keypair_allowed_for_local_dev,
     repair_key_file_permissions, require_runtime_keypair_password, write_secure_file, KeypairFile,
-    ALLOW_PLAINTEXT_KEYPAIR_ENV, KEYPAIR_PASSWORD_ENV,
+    KEYPAIR_PASSWORD_ENV,
 };
 pub use marketplace::{
-    decode_market_activity, encode_market_activity, MarketActivity, MarketActivityKind,
+    build_market_activity_from_contract_call, decode_market_activity, encode_market_activity,
+    market_activity_kind_for_contract_function, MarketActivity, MarketActivityKind,
 };
 pub use mempool::Mempool;
 pub use mossstake::{
@@ -103,7 +107,7 @@ pub use nft::{
 pub use processor::{
     compute_graduated_rent, compute_stake_weighted_median, compute_units_for_system_ix,
     compute_units_for_tx, get_trust_tier, FeeConfig, NonceState, OracleAttestation,
-    OracleConsensusPrice, SimulationResult, TxProcessor, TxResult, BASE_FEE,
+    OracleConsensusPrice, SimulationResult, TxMeta, TxProcessor, TxResult, BASE_FEE,
     CONFLICT_KEY_GOVERNED_PROPOSALS, CONFLICT_KEY_MOSSSTAKE_POOL, CONFLICT_KEY_SHIELDED_POOL,
     CONFLICT_KEY_STAKE_POOL, CONTRACT_DEPLOY_FEE, CONTRACT_PROGRAM_ID, CONTRACT_UPGRADE_FEE,
     CU_DEPLOY_CONTRACT, CU_MINT_NFT, CU_NONCE, CU_ORACLE_ATTESTATION, CU_STAKE, CU_TRANSFER,
@@ -139,9 +143,10 @@ pub use state::STATE_SNAPSHOT_CATEGORIES;
 pub use state::STATE_SNAPSHOT_SPECIAL_CATEGORIES;
 pub use state::{
     AccountTxsRebuildReport, AccountTxsSlotInspection, AccountTxsSourceInspection, CheckpointMeta,
-    GovernedProposalTxBackfillReport,
+    GovernedProposalTxBackfillReport, PublicHistoryCategoryDigest, PublicHistoryImportReport,
+    PublicHistoryManifest, PUBLIC_HISTORY_SNAPSHOT_CATEGORIES,
 };
 pub use transaction::{
     Instruction, Message, Transaction, TransactionType, DEFAULT_COMPUTE_BUDGET, MAX_COMPUTE_BUDGET,
-    TX_WIRE_MAGIC, TX_WIRE_VERSION,
+    MAX_TRANSACTION_WIRE_SIZE, TX_WIRE_MAGIC, TX_WIRE_VERSION,
 };

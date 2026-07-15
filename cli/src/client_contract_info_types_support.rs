@@ -6,9 +6,7 @@ fn default_lifecycle_status() -> String {
 
 #[derive(Deserialize)]
 pub struct ContractInfo {
-    #[serde(alias = "contract_id", alias = "address")]
-    pub address: String,
-    #[serde(default, alias = "owner", alias = "deployer")]
+    pub contract_id: String,
     pub owner: String,
     pub deployed_at: u64,
     pub code_size: usize,
@@ -59,7 +57,7 @@ mod tests {
     }
 
     #[test]
-    fn contract_info_lifecycle_fields_default_for_legacy_rpc() {
+    fn contract_info_lifecycle_fields_use_current_defaults() {
         let info: ContractInfo = serde_json::from_value(serde_json::json!({
             "contract_id": "contract",
             "owner": "owner",

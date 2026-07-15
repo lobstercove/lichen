@@ -10,14 +10,12 @@ pub(super) async fn handle_defi_overview(client: &RpcClient, json_output: bool) 
         "AMM Pools",
         "ThallLend",
         "SporePay",
-        "LichenSwap",
     ];
     let methods = [
         "getDexCoreStats",
         "getDexAmmStats",
         "getThallLendStats",
         "getSporePayStats",
-        "getLichenSwapStats",
     ];
 
     if json_output {

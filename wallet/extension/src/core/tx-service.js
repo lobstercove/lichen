@@ -2,8 +2,91 @@ import { base58Decode, signTransaction, generateEVMAddress } from './crypto-serv
 import { LichenRPC, getRpcEndpoint } from './rpc-service.js';
 import { parsePositiveDecimalBaseUnits } from './amount-service.js';
 
+const TX_WIRE_MAGIC = new Uint8Array([0x4d, 0x54]);
+const TX_WIRE_VERSION = 1;
+const TX_TYPE_NATIVE = 0;
+const SIGNING_ENVELOPE_MAGIC = new TextEncoder().encode('LICHEN-SIG');
+const SIGNING_ENVELOPE_VERSION = 1;
+const DOMAIN_NATIVE_TX = 'native-tx';
+
+function concatBytes(parts) {
+  const total = parts.reduce((sum, part) => sum + part.length, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.length;
+  }
+  return out;
+}
+
+function encodeU64LE(value) {
+  const out = new Uint8Array(8);
+  new DataView(out.buffer).setBigUint64(0, BigInt(value), true);
+  return out;
+}
+
+function encodeU32LE(value) {
+  const out = new Uint8Array(4);
+  new DataView(out.buffer).setUint32(0, value, true);
+  return out;
+}
+
+function encodeU16LE(value) {
+  const out = new Uint8Array(2);
+  new DataView(out.buffer).setUint16(0, value, true);
+  return out;
+}
+
+function hexBytes(value, fieldName) {
+  const text = String(value || '').replace(/^0x/, '');
+  if (!/^[0-9a-fA-F]*$/.test(text) || text.length % 2 !== 0) {
+    throw new Error(`Invalid ${fieldName} hex`);
+  }
+  const out = new Uint8Array(text.length / 2);
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(text.slice(i * 2, i * 2 + 2), 16);
+  return out;
+}
+
+function encodeVecBytes(bytes) {
+  return concatBytes([encodeU64LE(bytes.length), bytes]);
+}
+
+function encodePqSignature(signature) {
+  const schemeVersion = Number(signature?.scheme_version);
+  const publicKeySchemeVersion = Number(signature?.public_key?.scheme_version);
+  if (!Number.isInteger(schemeVersion) || !Number.isInteger(publicKeySchemeVersion)) {
+    throw new Error('Invalid PQ signature scheme version');
+  }
+  const publicKey = hexBytes(signature.public_key.bytes, 'PQ public key');
+  const signatureBytes = hexBytes(signature.sig, 'PQ signature');
+  return concatBytes([
+    Uint8Array.of(schemeVersion),
+    Uint8Array.of(publicKeySchemeVersion),
+    encodeVecBytes(publicKey),
+    encodeVecBytes(signatureBytes),
+  ]);
+}
+
+export function signingBytesForChainId(messageBytes, chainId) {
+  const normalizedChainId = String(chainId || '').trim();
+  if (!normalizedChainId) throw new Error('Chain id is required for transaction signing');
+  const domainBytes = new TextEncoder().encode(DOMAIN_NATIVE_TX);
+  const chainBytes = new TextEncoder().encode(normalizedChainId);
+  return concatBytes([
+    SIGNING_ENVELOPE_MAGIC,
+    Uint8Array.of(SIGNING_ENVELOPE_VERSION),
+    encodeU16LE(domainBytes.length),
+    domainBytes,
+    encodeU16LE(chainBytes.length),
+    chainBytes,
+    encodeU64LE(messageBytes.length),
+    messageBytes,
+  ]);
+}
+
 /**
- * Serialize a transaction message using Bincode format (matches Rust legacy bincode serialization)
+ * Serialize a transaction message using the canonical Rust bincode payload format.
  * This MUST match the website's serializeMessageBincode() exactly for signature compatibility.
  */
 export function serializeMessageForSigning(message) {
@@ -100,7 +183,19 @@ export function serializeMessageForSigning(message) {
 }
 
 export function encodeTransactionBase64(transaction) {
-  const txBytes = new TextEncoder().encode(JSON.stringify(transaction));
+  const signatures = Array.isArray(transaction?.signatures) ? transaction.signatures : [];
+  const messageBytes = serializeMessageForSigning(transaction?.message || {});
+  const payload = concatBytes([
+    encodeU64LE(signatures.length),
+    ...signatures.map(encodePqSignature),
+    messageBytes,
+    encodeU32LE(TX_TYPE_NATIVE),
+  ]);
+  const txBytes = concatBytes([
+    TX_WIRE_MAGIC,
+    Uint8Array.of(TX_WIRE_VERSION, TX_TYPE_NATIVE),
+    payload,
+  ]);
   let binary = '';
   const chunkSize = 0x8000;
   for (let offset = 0; offset < txBytes.length; offset += chunkSize) {
@@ -137,11 +232,12 @@ export async function buildSignedNativeTransferTransaction({
   fromAddress,
   toAddress,
   amountLicn,
-  blockhash
+  blockhash,
+  chainId,
 }) {
   const message = buildNativeTransferMessage(fromAddress, toAddress, amountLicn, blockhash);
   const messageBytes = serializeMessageForSigning(message);
-  const signature = await signTransaction(privateKeyHex, messageBytes);
+  const signature = await signTransaction(privateKeyHex, signingBytesForChainId(messageBytes, chainId));
 
   return {
     signatures: [signature],
@@ -165,6 +261,7 @@ export async function buildSignedSingleInstructionTransaction({
   privateKeyHex,
   fromAddress,
   blockhash,
+  chainId,
   programIdBytes,
   accountPubkeys,
   instructionDataBytes
@@ -185,7 +282,7 @@ export async function buildSignedSingleInstructionTransaction({
   };
 
   const messageBytes = serializeMessageForSigning(message);
-  const signature = await signTransaction(privateKeyHex, messageBytes);
+  const signature = await signTransaction(privateKeyHex, signingBytesForChainId(messageBytes, chainId));
 
   return {
     signatures: [signature],
@@ -238,11 +335,12 @@ export async function registerEvmAddress({ wallet, privateKeyHex, network, setti
     instructionData[0] = 12;
     instructionData.set(evmBytes, 1);
 
-    const blockhash = await rpc.getRecentBlockhash();
+    const [blockhash, chainId] = await Promise.all([rpc.getRecentBlockhash(), rpc.getChainId()]);
     const tx = await buildSignedSingleInstructionTransaction({
       privateKeyHex,
       fromAddress: wallet.address,
       blockhash,
+      chainId,
       instructionDataBytes: instructionData
     });
 

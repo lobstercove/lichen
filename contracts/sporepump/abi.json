@@ -40,6 +40,26 @@
       }
     },
     {
+      "name": "create_token_with_metadata",
+      "params": [
+        { "name": "creator_ptr", "type": "Pubkey" },
+        { "name": "name_ptr", "type": "bytes", "length_field": "name_len" },
+        { "name": "name_len", "type": "u32" },
+        { "name": "symbol_ptr", "type": "bytes", "length_field": "symbol_len" },
+        { "name": "symbol_len", "type": "u32" },
+        { "name": "fee_paid", "type": "u64" }
+      ],
+      "result_semantics": {
+        "kind": "return_value",
+        "failure_codes": [-1, 200]
+      }
+    },
+    {
+      "name": "get_token_metadata",
+      "params": [{ "name": "token_id", "type": "u64" }],
+      "result_semantics": { "kind": "return_code", "success_codes": [0] }
+    },
+    {
       "name": "buy",
       "opcode": 2,
       "params": [
@@ -367,6 +387,65 @@
           0
         ]
       }
+    },
+    {
+      "name": "set_graduation_governance",
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "governance_ptr", "type": "Pubkey" }
+      ],
+      "result_semantics": { "kind": "return_code", "success_codes": [0] }
+    },
+    {
+      "name": "set_graduation_config",
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "router_ptr", "type": "Pubkey" },
+        { "name": "template_hash_ptr", "type": "Pubkey" },
+        { "name": "tick_size", "type": "u64" },
+        { "name": "lot_size", "type": "u64" },
+        { "name": "min_order", "type": "u64" },
+        { "name": "amm_fee_tier", "type": "u32" }
+      ],
+      "result_semantics": { "kind": "return_code", "success_codes": [0] }
+    },
+    {
+      "name": "begin_migration",
+      "params": [
+        { "name": "keeper_ptr", "type": "Pubkey" },
+        { "name": "token_id", "type": "u64" },
+        { "name": "candidate_ptr", "type": "Pubkey" }
+      ],
+      "result_semantics": { "kind": "return_code", "success_codes": [0] }
+    },
+    {
+      "name": "abort_migration",
+      "params": [
+        { "name": "keeper_ptr", "type": "Pubkey" },
+        { "name": "token_id", "type": "u64" }
+      ],
+      "result_semantics": { "kind": "return_code", "success_codes": [0] }
+    },
+    {
+      "name": "finalize_migration",
+      "params": [
+        { "name": "keeper_ptr", "type": "Pubkey" },
+        { "name": "token_id", "type": "u64" }
+      ],
+      "result_semantics": { "kind": "return_code", "success_codes": [0] }
+    },
+    {
+      "name": "consume_graduation_claim",
+      "params": [
+        { "name": "token_id", "type": "u64" },
+        { "name": "holder_ptr", "type": "Pubkey" }
+      ],
+      "result_semantics": { "kind": "nonzero_return_value" }
+    },
+    {
+      "name": "get_graduation_status",
+      "params": [{ "name": "token_id", "type": "u64" }],
+      "result_semantics": { "kind": "return_code", "success_codes": [0] }
     }
   ]
 }

@@ -241,14 +241,9 @@ impl BountyBoardClient {
     }
 
     pub async fn get_program_id(&self) -> Result<Pubkey> {
-        if let Some(program_id) = self
-            .program_id
-            .lock()
-            .map_err(|_| {
-                Error::ConfigError("BountyBoardClient program cache lock poisoned".into())
-            })?
-            .clone()
-        {
+        if let Some(program_id) = *self.program_id.lock().map_err(|_| {
+            Error::ConfigError("BountyBoardClient program cache lock poisoned".into())
+        })? {
             return Ok(program_id);
         }
 

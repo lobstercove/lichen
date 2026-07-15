@@ -6,6 +6,14 @@ This incident covers the June 30, 2026 public testnet liveness failure observed
 after validator release/recovery work. Mainnet was not live and was not part of
 the incident scope.
 
+> **Superseded recovery detail (2026-07-13):** the June mitigation below is
+> historical evidence, not the current snapshot contract. `0.5.224` requires
+> target slot/root **and** complete genesis-to-target public history before a
+> live snapshot apply is complete. Interrupted apply restores every exact
+> pre-apply hot category and account-history counter from the local rollback
+> profile, preserves the independent cold archive, persists the recovered
+> checkpoint, and removes the durable marker last.
+
 ## Root Causes
 
 Two separate issues were found during the June 30 recovery work.
@@ -57,9 +65,10 @@ invariants:
 - public-network nodes with a non-zero tip or stored genesis block clear stale
   bootstrap markers instead of wiping state;
 - cold storage is attached before startup classifies local chain state;
-- live snapshot rollback restores state-root-bearing categories plus the
-  canonical `slots` cursor/index, but does not require `blocks` or
-  `transactions` to be present in the hot checkpoint;
+- the June mitigation restored state-root-bearing categories plus the canonical
+  `slots` cursor/index. This narrower rule is superseded by the current complete
+  hot-profile rollback invariant above because slot/root equality alone can
+  hide missing hot public-history rows;
 - archive/history reconciliation remains a separate guarded operator path.
 
 The storage patch in `core/src/state.rs` adds a fresh-target regression proving

@@ -13,6 +13,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import socket
 import ssl
 import struct
@@ -27,13 +28,15 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_REPORT = ROOT / "tests" / "artifacts" / "exchange-public-readiness-report.json"
 
-TESTNET_RPC = "https://testnet-rpc.lichen.network"
-TESTNET_WS = "wss://testnet-rpc.lichen.network/ws"
+TESTNET_RPC = "https://testnet-api.lichen.network"
+TESTNET_WS = "wss://testnet-api.lichen.network/ws"
 MAINNET_RPC = "https://rpc.lichen.network"
 MAINNET_WS = "wss://rpc.lichen.network/ws"
 EXPLORER = "https://explorer.lichen.network"
 LOGO_URL = "https://lichen.network/Lichen_Logo_256.png"
-STATUS_URL = "https://monitoring.lichen.network"
+ADMIN_MONITORING_HOST = "monitoring.lichen.network"
+EXCHANGE_STATUS_URL = "https://exchanges.lichen.network"
+DEFAULT_STATUS_URL = os.environ.get("LICHEN_EXCHANGE_STATUS_URL", EXCHANGE_STATUS_URL).strip()
 DEVELOPER_EXCHANGE_URL = "https://developers.lichen.network/exchange-integration"
 ROLLBACK_TAG = "v0.5.221"
 ROLLBACK_RELEASE_API = (
@@ -64,7 +67,20 @@ DEVELOPER_EXCHANGE_REQUIRED_SNIPPETS = (
     "exchange-testnet-v0.5.221",
     "testnet-only",
 )
+DEVELOPER_EXCHANGE_FORBIDDEN_SNIPPETS = (ADMIN_MONITORING_HOST,)
+STATUS_REQUIRED_SNIPPETS = (
+    "Lichen Exchange Status",
+    "Exchange Package",
+    "Exchange Contacts",
+    "testnet-only",
+    "exchange-ops@lichen.network",
+)
+STATUS_FORBIDDEN_SNIPPETS = (
+    "Lichen Mission Control",
+    "Network Monitoring",
+)
 PACKAGE_SCOPES = ("testnet", "full")
+CF_EMAIL_RE = re.compile(rb'data-cfemail="([0-9a-fA-F]+)"')
 
 
 class Gate:
@@ -127,6 +143,31 @@ def request_bytes(url: str, timeout: int = 15) -> tuple[int, dict[str, str], byt
     with urllib.request.urlopen(request, timeout=timeout) as response:
         headers = {key.lower(): value for key, value in response.headers.items()}
         return response.status, headers, response.read()
+
+
+def decode_cfemail_hex(value: bytes) -> str | None:
+    try:
+        raw = bytes.fromhex(value.decode("ascii"))
+    except ValueError:
+        return None
+    if len(raw) < 2:
+        return None
+    key = raw[0]
+    try:
+        return bytes(byte ^ key for byte in raw[1:]).decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+def searchable_html_body(body: bytes) -> bytes:
+    decoded = []
+    for match in CF_EMAIL_RE.finditer(body):
+        email = decode_cfemail_hex(match.group(1))
+        if email:
+            decoded.append(email)
+    if not decoded:
+        return body
+    return body + b"\n" + "\n".join(decoded).encode("utf-8")
 
 
 def rpc_call(url: str, method: str, params: list[Any] | None = None) -> dict[str, Any]:
@@ -234,6 +275,7 @@ def check_http(
     *,
     contains: str | None = None,
     contains_all: tuple[str, ...] = (),
+    forbidden_all: tuple[str, ...] = (),
 ) -> bytes:
     try:
         status, headers, body = request_bytes(url)
@@ -244,8 +286,10 @@ def check_http(
     if contains is not None:
         required.append(contains)
     required.extend(contains_all)
-    missing = [snippet for snippet in required if snippet.encode("utf-8") not in body]
-    ok = status == 200 and not missing
+    search_body = searchable_html_body(body)
+    missing = [snippet for snippet in required if snippet.encode("utf-8") not in search_body]
+    forbidden = [snippet for snippet in forbidden_all if snippet.encode("utf-8") in search_body]
+    ok = status == 200 and not missing and not forbidden
     gate.add(
         name,
         ok,
@@ -254,9 +298,40 @@ def check_http(
             "content_type": headers.get("content-type"),
             "content_length": len(body),
             "missing": missing,
+            "forbidden": forbidden,
         },
     )
     return body
+
+
+def public_status_url_allowed(url: str) -> tuple[bool, str]:
+    normalized = url.strip()
+    if not normalized:
+        return False, "missing public exchange status URL; internal monitoring is admin-only"
+    if ADMIN_MONITORING_HOST in normalized.lower():
+        return False, "internal monitoring is admin-only and must not be used as the exchange status page"
+    return True, normalized
+
+
+def check_exchange_status_page(gate: Gate, url: str) -> None:
+    allowed, detail = public_status_url_allowed(url)
+    gate.add("public exchange status page selected", allowed, detail=detail)
+    if not allowed:
+        return
+
+    body = check_http(
+        gate,
+        "public exchange status page",
+        detail,
+        contains_all=STATUS_REQUIRED_SNIPPETS,
+    )
+    text = body.decode("utf-8", errors="replace")
+    forbidden = [snippet for snippet in STATUS_FORBIDDEN_SNIPPETS if snippet in text]
+    gate.add(
+        "public exchange status page is non-admin",
+        bool(body) and not forbidden,
+        detail={"url": detail, "forbidden_snippets": forbidden},
+    )
 
 
 def png_dimensions(body: bytes) -> tuple[int, int] | None:
@@ -375,7 +450,15 @@ def main() -> int:
         "--status-approved",
         action="store_true",
         default=os.environ.get("LICHEN_EXCHANGE_STATUS_APPROVED") == "1",
-        help="mark status-page approval complete; default also reads LICHEN_EXCHANGE_STATUS_APPROVED=1",
+        help="mark public status-page approval complete; default also reads LICHEN_EXCHANGE_STATUS_APPROVED=1",
+    )
+    parser.add_argument(
+        "--status-url",
+        default=DEFAULT_STATUS_URL,
+        help=(
+            "approved public exchange status URL; default also reads "
+            "LICHEN_EXCHANGE_STATUS_URL, falling back to https://exchanges.lichen.network"
+        ),
     )
     parser.add_argument(
         "--release-tag-selected",
@@ -445,15 +528,19 @@ def main() -> int:
         "developer exchange page",
         DEVELOPER_EXCHANGE_URL,
         contains_all=DEVELOPER_EXCHANGE_REQUIRED_SNIPPETS,
+        forbidden_all=DEVELOPER_EXCHANGE_FORBIDDEN_SNIPPETS,
     )
-    check_http(gate, "candidate monitoring page", STATUS_URL, contains="Lichen Mission Control")
+    check_exchange_status_page(gate, args.status_url)
     check_logo(gate)
     check_release(gate)
 
     gate.add(
         "operator-approved exchange status page",
         args.status_approved,
-        detail="set LICHEN_EXCHANGE_STATUS_APPROVED=1 only after operator approval",
+        detail=(
+            "set LICHEN_EXCHANGE_STATUS_APPROVED=1 only after the public "
+            "exchange status page is operator-approved"
+        ),
     )
     if args.release_tag_selected:
         check_exchange_package_release(gate)

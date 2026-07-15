@@ -38,7 +38,6 @@ const LICN_LOGO_URL = 'https://lichen.network/assets/img/coins/128x128/licn.png'
 
 let state = null;
 let pendingGeneratedMnemonic = '';
-let fullCarouselTimer = null;
 const LICN_USD_PRICE_CACHE_MS = 60 * 1000;
 const LICN_USD_PRICE_STALE_MS = 5 * 60 * 1000;
 let _licnUsdPriceCache = { value: 0.10, ts: 0, source: 'offline-fallback', fallback: true };
@@ -349,11 +348,6 @@ let createWizardState = {
   selectedWords: []
 };
 
-function isFullPageMode() {
-  const params = new URLSearchParams(window.location.search);
-  return params.get('mode') === 'full';
-}
-
 function getPendingConnectRequestId() {
   const params = new URLSearchParams(window.location.search);
   return String(params.get('requestId') || '').trim();
@@ -394,55 +388,6 @@ async function maybeResumePendingConnectFlow() {
   pendingConnectRedirectInFlight = true;
   window.location.replace(chrome.runtime.getURL(`src/pages/approve.html?requestId=${encodeURIComponent(requestId)}`));
   return true;
-}
-
-function applyViewMode() {
-  if (isFullPageMode()) {
-    document.body.classList.add('full-page');
-    document.getElementById('welcomeScreen')?.classList.add('welcome-screen');
-  }
-}
-
-function initFullWelcomeCarousel() {
-  if (!isFullPageMode()) return;
-
-  const root = document.querySelector('.web-welcome');
-  if (!root) return;
-
-  const slides = Array.from(root.querySelectorAll('.carousel-slide'));
-  const dots = Array.from(root.querySelectorAll('.carousel-dot'));
-  if (!slides.length || !dots.length) return;
-
-  let current = Math.max(0, slides.findIndex((slide) => slide.classList.contains('active')));
-  if (current === -1) current = 0;
-
-  const showSlide = (index) => {
-    const normalized = ((index % slides.length) + slides.length) % slides.length;
-    current = normalized;
-
-    slides.forEach((slide, i) => {
-      slide.classList.toggle('active', i === normalized);
-    });
-    dots.forEach((dot, i) => {
-      dot.classList.toggle('active', i === normalized);
-    });
-  };
-
-  dots.forEach((dot) => {
-    dot.addEventListener('click', () => {
-      const next = Number(dot.dataset.slide || 0);
-      showSlide(next);
-    });
-  });
-
-  if (fullCarouselTimer) {
-    clearInterval(fullCarouselTimer);
-  }
-  fullCarouselTimer = setInterval(() => {
-    showSlide(current + 1);
-  }, 3500);
-
-  showSlide(current);
 }
 
 const screens = {
@@ -1234,6 +1179,7 @@ let popupActivityHasMore = true;
 const POPUP_ACTIVITY_LIMIT = 12;
 
 function getPopupActivityCursor(result, txs, previousCursor) {
+  if (typeof result?.next_before === 'string' && result.next_before) return result.next_before;
   const rpcNextBeforeSlot = Number(result?.next_before_slot);
   if (Number.isFinite(rpcNextBeforeSlot) && rpcNextBeforeSlot > 0) return rpcNextBeforeSlot;
   const last = txs[txs.length - 1] || {};
@@ -1262,10 +1208,14 @@ async function loadActivity(reset = true) {
   try {
     const requestBeforeSlot = popupActivityBeforeSlot;
     const opts = { limit: POPUP_ACTIVITY_LIMIT };
-    if (requestBeforeSlot) opts.before_slot = requestBeforeSlot;
+    if (typeof requestBeforeSlot === 'string') opts.before = requestBeforeSlot;
+    else if (requestBeforeSlot) opts.before_slot = requestBeforeSlot;
     const result = await rpc.getTransactionsByAddress(wallet.address, opts);
 
-    const txs = result?.transactions || (Array.isArray(result) ? result : []);
+    if (!result || typeof result !== 'object' || Array.isArray(result) || !Array.isArray(result.transactions)) {
+      throw new Error('Invalid RPC response: expected transactions array');
+    }
+    const txs = result.transactions;
     const rpcHasMore = typeof result?.has_more === 'boolean' ? result.has_more : txs.length >= POPUP_ACTIVITY_LIMIT;
     if (rpcHasMore) {
       const nextCursor = getPopupActivityCursor(result, txs, requestBeforeSlot);
@@ -1805,13 +1755,14 @@ async function handleSendNow() {
     const privateKeyHex = await decryptPrivateKey(wallet.encryptedKey, password);
 
     setStatus('Building transaction...');
-    const blockhash = await rpc.getRecentBlockhash();
+    const [blockhash, chainId] = await Promise.all([rpc.getRecentBlockhash(), rpc.getChainId()]);
     const transaction = await buildSignedNativeTransferTransaction({
       privateKeyHex,
       fromAddress: wallet.address,
       toAddress: to,
       amountLicn: amountText,
-      blockhash
+      blockhash,
+      chainId,
     });
 
     const txBase64 = encodeTransactionBase64(transaction);
@@ -2644,11 +2595,11 @@ async function loadShieldPanel() {
   const endpoint = resolveRpcEndpoint(state?.network?.selected || DEFAULT_NETWORK);
   const rpc = new LichenRPC(endpoint);
   try {
-    const stats = await rpc.call('getShieldedPoolState', []).catch(() => rpc.call('getShieldedPoolStats', []));
+    const stats = await rpc.call('getShieldedPoolState', []);
     if (stats) {
       const poolShielded = document.getElementById('extPoolShielded');
       const poolCommits = document.getElementById('extPoolCommitments');
-      const commitmentCount = Number(stats.commitment_count ?? stats.commitmentCount ?? 0);
+      const commitmentCount = Number(stats.commitmentCount ?? 0);
       if (poolShielded) poolShielded.textContent = `${formatLicnBaseUnitsFixedPopup(stats.total_shielded ?? stats.totalShielded ?? 0)} LICN`;
       if (poolCommits) poolCommits.textContent = String(commitmentCount);
     }
@@ -2721,11 +2672,10 @@ async function loadNftsPanel() {
   const rpc = new LichenRPC(endpoint);
   try {
     const nftResult = await rpc.call('getNFTsByOwner', [wallet.address]);
-    const nfts = Array.isArray(nftResult)
-      ? nftResult
-      : Array.isArray(nftResult?.nfts)
-        ? nftResult.nfts
-        : [];
+    if (!nftResult || typeof nftResult !== 'object' || Array.isArray(nftResult) || !Array.isArray(nftResult.nfts)) {
+      throw new Error('Invalid RPC response: expected nfts array');
+    }
+    const nfts = nftResult.nfts;
     const grid = document.getElementById('nftsGrid');
     const empty = document.getElementById('nftsEmpty');
     const countEl = document.getElementById('nftCount');
@@ -3209,9 +3159,6 @@ function wireEvents() {
 }
 
 async function boot() {
-  applyViewMode();
-  initFullWelcomeCarousel();
-
   state = await loadState();
   if (!state.network) {
     state.network = { selected: DEFAULT_NETWORK };

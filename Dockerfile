@@ -36,7 +36,7 @@ RUN mkdir -p core/src validator/src rpc/src cli/src p2p/src faucet-service/src c
     echo "" > compiler/src/lib.rs
 
 # Build dependencies only (cached layer)
-RUN cargo build --release 2>/dev/null || true
+RUN cargo build --release --locked 2>/dev/null || true
 
 # Copy real source code
 COPY core/ core/
@@ -53,9 +53,13 @@ COPY shared/incident-guardian-pause-allowlist.json shared/incident-guardian-paus
 COPY contracts/lusd_token/abi.json contracts/lusd_token/abi.json
 COPY config.toml .
 
+# LTO links several large binaries; serialize the final build by default so an
+# 8 GiB release builder cannot kill the validator link under parallel pressure.
+ARG CARGO_BUILD_JOBS=1
+
 # Force rebuild with real sources
 RUN touch core/src/lib.rs validator/src/main.rs && \
-    cargo build --release
+    cargo build --release --locked --jobs "${CARGO_BUILD_JOBS}"
 
 # Runtime stage
 FROM debian:bookworm-slim
@@ -107,4 +111,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
     CMD curl -sf http://localhost:8899/ -d '{"jsonrpc":"2.0","id":1,"method":"getHealth"}' -H 'Content-Type: application/json' || exit 1
 
 ENTRYPOINT ["lichen-validator"]
-CMD ["--data-dir", "/var/lib/lichen"]
+CMD ["--db-path", "/var/lib/lichen"]

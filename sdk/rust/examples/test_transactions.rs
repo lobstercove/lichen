@@ -24,6 +24,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let blockhash_str = client.get_recent_blockhash().await?;
     let blockhash = Hash::from_hex(&blockhash_str)?;
+    let chain_id = client.get_network_info().await?.chain_id;
 
     // Create transfer instruction
     println!("\n📝 Building transaction...");
@@ -43,7 +44,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match TransactionBuilder::new()
         .add_instruction(instruction.clone())
         .recent_blockhash(blockhash)
-        .build_and_sign(&sender)
+        .build_and_sign(&sender, &chain_id)
     {
         Ok(tx) => {
             println!("✅ Transaction built successfully!");
@@ -79,7 +80,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .add_instruction(instruction)
         .add_instruction(memo_instruction)
         .recent_blockhash(blockhash)
-        .build_and_sign(&sender)
+        .build_and_sign(&sender, &chain_id)
     {
         Ok(tx) => {
             println!("✅ Multi-instruction transaction built!");

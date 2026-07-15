@@ -38,11 +38,11 @@ listing sheet until the mainnet launch runbook closes its exchange handoff gate.
 | Memo/tag requirement | None for native LICN base transfer flow | Locally validated | Native transfer/account model, local exchange simulation |
 | Mainnet RPC URL | `https://rpc.lichen.network` | Launch placeholder; excluded from the current testnet-only package until mainnet launch handoff passes | `seeds.json`, `core/src/network.rs`, `developers/shared-config.js`, mainnet launch runbook |
 | Mainnet WebSocket URL | `wss://rpc.lichen.network/ws` | Launch placeholder; excluded from the current testnet-only package until mainnet launch handoff passes | `developers/shared-config.js`, mainnet launch runbook |
-| Testnet RPC URL | `https://testnet-rpc.lichen.network` | Healthy after signed `v0.5.221` recovery rollout on 2026-07-01; sustained public cadence sampled `370.0ms/block`, public `getMetrics.observed_block_interval_ms = 372`, and `avg_block_time_ms = 380` | `seeds.json`, `core/src/network.rs`, `developers/shared-config.js`, tracker Phase 5 metadata evidence |
-| Testnet WebSocket URL | `wss://testnet-rpc.lichen.network/ws` | Public readiness WebSocket upgrade passed after signed `v0.5.221` recovery rollout on 2026-07-01; live slot notifications advanced `6871609` -> `6871611` | `developers/shared-config.js`, tracker Phase 5 metadata evidence |
+| Testnet RPC URL | `https://testnet-api.lichen.network` | Healthy after signed `v0.5.221` recovery rollout on 2026-07-01; sustained public cadence sampled `370.0ms/block`, public `getMetrics.observed_block_interval_ms = 372`, and `avg_block_time_ms = 380` | `seeds.json`, `core/src/network.rs`, `developers/shared-config.js`, tracker Phase 5 metadata evidence |
+| Testnet WebSocket URL | `wss://testnet-api.lichen.network/ws` | Public readiness WebSocket upgrade passed after signed `v0.5.221` recovery rollout on 2026-07-01; live slot notifications advanced `6871609` -> `6871611` | `developers/shared-config.js`, tracker Phase 5 metadata evidence |
 | Explorer URL | `https://explorer.lichen.network` | Route templates verified on 2026-06-29 | `seeds.json`, `developers/shared-config.js`, `explorer/js/*.js`, tracker Phase 5 metadata evidence |
 | Logo URL | `https://lichen.network/Lichen_Logo_256.png` | Public asset verified on 2026-06-29: PNG, 256x256, SHA-256 matches repo asset | `website/Lichen_Logo_256.png`, tracker Phase 5 metadata evidence |
-| Status page | `https://monitoring.lichen.network` | Operator-approved exchange status page for the current testnet-only package on 2026-07-01; private operator surface | Operations pack policy |
+| Public exchange status page | `https://exchanges.lichen.network` | Active on Cloudflare Pages project `lichen-network-exchanges`; production readiness is green; page uses a same-origin read-only status RPC proxy and remains explicitly testnet-only until mainnet launch handoff | Operations pack policy |
 | Release verification | GitHub release `v0.5.221` has `SHA256SUMS` plus `SHA256SUMS.sig`; PQ signature verified locally. Exchange package release is `exchange-testnet-v0.5.221`. | Current signed rollback anchor and testnet recovery release verified; final testnet exchange docs package published | `.github/workflows/release.yml`, `scripts/sign-release.sh`, `scripts/verify-release-checksums.mjs`, GitHub release API, exchange package release |
 | Release signer | `8HitBNnh8qbhfne5NCv2yHrQFoD6xbmHcWaUSgCGtsk` | Source mapped | `deploy/release-trust-anchor.json` |
 | Current rollback anchor | `v0.5.221` | Operator anchored | Operator update on 2026-07-01 |
@@ -116,20 +116,17 @@ Exchange-facing public route templates verified on 2026-06-29:
 
 Source/static implementation details:
 
-- `explorer/js/address.js` reads `address` and legacy `addr` query
-  parameters.
-- `explorer/js/transaction.js` accepts `sig`, `tx`, `hash`, and `signature`;
-  exchange-facing docs should use `sig`.
-- `explorer/js/block.js` accepts `slot` and legacy `block` query parameters;
-  exchange-facing docs should use `slot`.
+- `explorer/js/address.js` requires the `address` query parameter.
+- `explorer/js/transaction.js` requires the `sig` query parameter.
+- `explorer/js/block.js` requires the `slot` query parameter.
 - Static source files use `.html` routes. The deployed site redirects
   `.html` route requests to extensionless public routes with `308`, then returns
   `200`.
 
 The hosted explorer root, account, transaction, and block routes returned
 `200` in external HTTP checks on 2026-06-29. The production frontend config
-defines hosted RPC/WS connectivity to `https://testnet-rpc.lichen.network` and
-`wss://testnet-rpc.lichen.network/ws` by default; route verification does not
+defines hosted RPC/WS connectivity to `https://testnet-api.lichen.network` and
+`wss://testnet-api.lichen.network/ws` by default; route verification does not
 mean the public RPC was healthy during the same check.
 
 ## Release Verification Metadata
@@ -190,7 +187,7 @@ mandatory before mainnet is included in an external exchange package.
 
 | ID | Check | Evidence |
 | --- | --- | --- |
-| M-06 | Status page and incident contacts approved | `https://monitoring.lichen.network` operator-approved on 2026-07-01 for the current testnet-only package; `security@lichen.network`, `exchange-ops@lichen.network`, and `business@lichen.network` recorded in the operations pack |
+| M-06 | Incident contacts approved; public status page active | `security@lichen.network`, `exchange-ops@lichen.network`, and `business@lichen.network` recorded in the operations pack. The public status/operations portal is active at `https://exchanges.lichen.network`, production readiness passed on 2026-07-05, and internal monitoring remains admin-only. |
 | M-07 | Final external package publication approved | Package release `https://github.com/lobstercove/lichen/releases/tag/exchange-testnet-v0.5.221` contains `lichen-exchange-testnet-v0.5.221.tar.gz` and `SHA256SUMS` |
 | M-04 | Explorer route templates | Source route inspection plus hosted `200` checks for root, account, transaction, and block pages on 2026-06-29 |
 | M-05 | Logo URL cache verification | `https://lichen.network/Lichen_Logo_256.png` returned `200`, `image/png`, 45,415 bytes; downloaded file is PNG 256x256 and SHA-256 `bfa0986bc4bde64c3c7ce590782beba78980985f301fbd0fbd4a39dc045ca876`, matching `website/Lichen_Logo_256.png` |

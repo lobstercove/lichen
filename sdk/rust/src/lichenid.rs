@@ -419,7 +419,7 @@ fn validate_auction_name(name: &str) -> Result<String> {
 }
 
 fn normalize_duration_years(duration_years: u8) -> u8 {
-    duration_years.max(1).min(10)
+    duration_years.clamp(1, 10)
 }
 
 fn validate_skill_name(name: &str) -> Result<String> {
@@ -427,7 +427,7 @@ fn validate_skill_name(name: &str) -> Result<String> {
     if skill_name.is_empty() {
         return Err(Error::BuildError("Skill name cannot be empty".into()));
     }
-    if skill_name.as_bytes().len() > MAX_SKILL_NAME_BYTES {
+    if skill_name.len() > MAX_SKILL_NAME_BYTES {
         return Err(Error::BuildError(
             "Skill names must be at most 32 bytes".into(),
         ));
@@ -440,7 +440,7 @@ fn normalize_endpoint_url(url: &str) -> Result<String> {
     if endpoint.is_empty() {
         return Err(Error::BuildError("Endpoint URL cannot be empty".into()));
     }
-    if endpoint.as_bytes().len() > MAX_ENDPOINT_BYTES {
+    if endpoint.len() > MAX_ENDPOINT_BYTES {
         return Err(Error::BuildError(
             "Endpoint URL must be at most 255 bytes".into(),
         ));
@@ -453,7 +453,7 @@ fn normalize_metadata_json(metadata_json: &str) -> Result<String> {
     if trimmed.is_empty() {
         return Err(Error::BuildError("Metadata cannot be empty".into()));
     }
-    if trimmed.as_bytes().len() > MAX_METADATA_BYTES {
+    if trimmed.len() > MAX_METADATA_BYTES {
         return Err(Error::BuildError(
             "Metadata must be at most 1024 bytes".into(),
         ));
@@ -829,7 +829,7 @@ fn registration_cost_per_year_licn(name: &str) -> u64 {
 }
 
 pub fn estimate_lichenid_name_registration_cost(name: &str, duration_years: u8) -> Result<u64> {
-    let years = duration_years.max(1).min(10) as u64;
+    let years = duration_years.clamp(1, 10) as u64;
     registration_cost_per_year_licn(name)
         .checked_mul(years)
         .and_then(|value| value.checked_mul(SPORES_PER_LICN))
@@ -917,11 +917,10 @@ impl LichenIdClient {
     }
 
     pub async fn get_program_id(&self) -> Result<Pubkey> {
-        if let Some(program_id) = self
+        if let Some(program_id) = *self
             .program_id
             .lock()
             .map_err(|_| Error::ConfigError("LichenIdClient program cache lock poisoned".into()))?
-            .clone()
         {
             return Ok(program_id);
         }

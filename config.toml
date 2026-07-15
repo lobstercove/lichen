@@ -3,7 +3,7 @@
 
 [validator]
 # Validator identity keypair path
-# Generate with: lichen init --output ~/.lichen/validator-keypair.json
+# Generate with: lichen identity new --output ~/.lichen/validator-keypair.json
 keypair_path = "~/.lichen/validator-keypair.json"
 
 # Data directory for blockchain state
@@ -142,10 +142,3 @@ allowed_rpc_methods = []
 
 # Rate limiting (requests per second)
 rpc_rate_limit = 100
-
-# Admin token for state-mutating RPC endpoints (setFeeConfig, setRentParams, setContractAbi)
-# Generate a strong random token before production:  openssl rand -hex 32
-# SECURITY: If empty, ALL admin endpoints are disabled (return error).
-#           For production, set a unique 64-char hex token and keep it secret.
-#           Can also be set via LICHEN_ADMIN_TOKEN env var or --admin-token CLI flag.
-admin_token = ""

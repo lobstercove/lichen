@@ -668,6 +668,14 @@
           0
         ]
       }
+    },
+    {
+      "name": "set_sporepump_authority",
+      "params": [
+        { "name": "caller", "type": "Pubkey" },
+        { "name": "sporepump", "type": "Pubkey" }
+      ],
+      "result_semantics": { "kind": "return_code", "success_codes": [0] }
     }
   ]
 }

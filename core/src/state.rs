@@ -37,11 +37,14 @@ mod stats_metadata;
 mod storage_bootstrap;
 mod validator_state;
 
-pub use cold_storage::{PublicHistoryMergeCfReport, PublicHistoryMergeReport};
+pub use cold_storage::{
+    ColdMigrationAuditReport, ColdMigrationAuditRows, PublicHistoryMergeCfReport,
+    PublicHistoryMergeReport, COLD_BLOCK_MIGRATION_COMPACTION_BATCH_SIZE,
+};
 pub use dex_index::{DexIndexBackfillReport, DexOrderbookLevel};
 pub use merkle_state::{
     AccountProof, MerkleProof, SparseMerkleProof, SparseProofStep, SparseStateCommitmentReport,
-    StateRootComponentReport,
+    SparseStateCommitmentStartupReport, StateRootComponentReport,
 };
 pub use metrics_state::{Metrics, MetricsStore};
 pub use shielded_state::ShieldedStateRebuildReport;
@@ -66,6 +69,118 @@ pub struct KvPage {
     pub next_cursor: Option<Vec<u8>>,
     /// Whether more entries are available after this page.
     pub has_more: bool,
+}
+
+/// Public-history categories that must remain aligned across archive validators.
+///
+/// These categories are not all state-root-bearing, but they back public RPC
+/// surfaces such as historical blocks, transactions, account activity, events,
+/// token transfers, and per-slot indexes.
+pub const PUBLIC_HISTORY_SNAPSHOT_CATEGORIES: &[&str] = &[
+    "slots",
+    "blocks",
+    "transactions",
+    "tx_by_slot",
+    "tx_to_slot",
+    "tx_meta",
+    "account_txs",
+    "events_by_slot",
+    "events",
+    "token_transfers",
+    "program_calls",
+    "evm_txs",
+    "evm_receipts",
+    "evm_logs_by_slot",
+    "shielded_txs",
+    "nft_activity",
+    "market_activity",
+    "dex_trades_by_pair",
+    "dex_trades_by_taker",
+    "dex_trades_by_pair_taker",
+    "account_snapshots",
+];
+
+/// Deterministic digest for one public-history category.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PublicHistoryCategoryDigest {
+    pub category: String,
+    pub entry_count: u64,
+    pub sha256: [u8; 32],
+    pub first_key_hex: Option<String>,
+    pub last_key_hex: Option<String>,
+}
+
+/// Deterministic manifest for archive/public-history parity checks.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PublicHistoryManifest {
+    pub schema_version: u32,
+    pub categories: Vec<PublicHistoryCategoryDigest>,
+    pub root: [u8; 32],
+}
+
+/// Additive import report for a public-history snapshot page/category.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PublicHistoryImportReport {
+    pub category: String,
+    pub target_cf: String,
+    pub target_cold: bool,
+    pub source_rows: u64,
+    pub source_bytes: u64,
+    pub inserted_rows: u64,
+    pub inserted_bytes: u64,
+    pub identical_rows: u64,
+    pub conflict_rows: u64,
+}
+
+impl PublicHistoryImportReport {
+    pub fn has_conflicts(&self) -> bool {
+        self.conflict_rows > 0
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct RawBlockHistoryRepairReport {
+    pub dry_run: bool,
+    pub from_slot: Option<u64>,
+    pub to_slot: Option<u64>,
+    pub hot_rows_scanned: u64,
+    pub cold_rows_scanned: u64,
+    pub decoded_blocks: u64,
+    pub body_slots_in_range: u64,
+    pub slot_cursors_scanned: u64,
+    pub decode_errors: u64,
+    pub hash_mismatch_rows: u64,
+    pub duplicate_identical_body_slots: u64,
+    pub duplicate_conflicting_body_slots: u64,
+    pub existing_slot_cursors: u64,
+    pub missing_slot_cursors: u64,
+    pub repairable_slot_cursors: u64,
+    pub repaired_slot_cursors: u64,
+    pub conflicting_slot_cursors: u64,
+    pub orphan_slot_cursors: u64,
+    pub invalid_slot_cursors: u64,
+    pub min_body_slot: Option<u64>,
+    pub max_body_slot: Option<u64>,
+    pub first_missing_slot_cursor: Option<u64>,
+    pub first_repairable_slot_cursor: Option<u64>,
+    pub first_repaired_slot_cursor: Option<u64>,
+    pub first_conflicting_slot_cursor: Option<u64>,
+    pub first_orphan_slot_cursor: Option<u64>,
+    pub first_invalid_slot_cursor: Option<u64>,
+    pub first_duplicate_conflicting_body_slot: Option<u64>,
+    pub first_decode_error: Option<String>,
+    pub first_hash_mismatch: Option<String>,
+}
+
+impl RawBlockHistoryRepairReport {
+    pub fn has_conflicts(&self) -> bool {
+        self.decode_errors > 0
+            || self.hash_mismatch_rows > 0
+            || self.duplicate_conflicting_body_slots > 0
+            || self.conflicting_slot_cursors > 0
+            || self.orphan_slot_cursors > 0
+            || self.invalid_slot_cursors > 0
+    }
 }
 
 /// Canonical contract-storage stats for a single program.
@@ -281,6 +396,7 @@ const COLD_CF_BLOCKS: &str = "blocks";
 const COLD_CF_TRANSACTIONS: &str = "transactions";
 const COLD_CF_TX_TO_SLOT: &str = "tx_to_slot";
 const COLD_CF_ACCOUNT_TXS: &str = "account_txs";
+const COLD_CF_ACCOUNT_SNAPSHOTS: &str = "account_snapshots";
 const COLD_CF_EVENTS: &str = "events";
 const COLD_CF_TOKEN_TRANSFERS: &str = "token_transfers";
 const COLD_CF_PROGRAM_CALLS: &str = "program_calls";
@@ -295,6 +411,10 @@ pub const COLD_RETENTION_SLOTS: u64 = 100_000;
 struct BlockhashCache {
     /// Sorted by slot (oldest first). Capped to ~300 entries.
     entries: Vec<(u64, Hash)>,
+    /// Inclusive slot range scanned from canonical storage. Incremental pushes
+    /// may extend this range, but a cache created by a lone push after restart
+    /// has no proven coverage until the recent window is loaded from disk.
+    covered_range: Option<(u64, u64)>,
 }
 
 // AUDIT-FIX C-7: Blockhash cache moved from static global to StateStore instance field
@@ -358,6 +478,10 @@ pub struct StateStore {
     treasury_lock: Arc<std::sync::Mutex<()>>,
     /// Serialize DEX derived orderbook-level read-modify-write updates.
     dex_index_lock: Arc<std::sync::Mutex<()>>,
+    /// Serialize root-cache mutation with canonical writes that create dirty
+    /// markers. Without one boundary, a root computation can delete a marker
+    /// for a newer same-key write and leave the sparse commitment stale.
+    state_commitment_lock: Arc<std::sync::Mutex<()>>,
     /// AUDIT-FIX C-7: Per-instance blockhash cache (was previously a static global).
     /// Populated lazily on first `get_recent_blockhashes`, kept warm by `push_blockhash_cache`.
     blockhash_cache: Arc<Mutex<Option<BlockhashCache>>>,
@@ -365,6 +489,17 @@ pub struct StateStore {
     /// CF_ACCOUNT_SNAPSHOTS keyed by `pubkey(32) + slot(8,BE)`, enabling
     /// historical state queries via `get_account_at_slot`.
     archive_mode: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl StateStore {
+    pub(crate) fn lock_state_commitment(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.state_commitment_lock
+            .lock()
+            .unwrap_or_else(|poisoned| {
+                tracing::error!("State commitment lock was poisoned; recovering ownership");
+                poisoned.into_inner()
+            })
+    }
 }
 
 /// Atomic write batch for transaction processing (T1.4/T3.1).
@@ -462,13 +597,14 @@ mod tests {
     };
     use super::*;
     use crate::block::{Block, CommitSignature};
+    use crate::codec::append_legacy_bincode;
     use crate::restrictions::{
         ContractRestrictionAccess, ProtocolModuleId, RestrictionLiftReason, RestrictionMode,
         RestrictionReason, RestrictionRecord, RestrictionStatus, RestrictionTarget,
         RestrictionTransferDirection, NATIVE_LICN_ASSET_ID,
     };
     use crate::transaction::Message;
-    use crate::{PqPublicKey, PqSignature};
+    use crate::{Instruction, PqPublicKey, PqSignature};
     use tempfile::tempdir;
 
     fn directory_fingerprint(root: &std::path::Path) -> Vec<(String, u64)> {
@@ -1009,6 +1145,74 @@ mod tests {
     }
 
     #[test]
+    fn public_history_manifest_compares_block_body_without_local_commit_certificate_subset() {
+        let first_dir = tempdir().unwrap();
+        let second_dir = tempdir().unwrap();
+        let first = StateStore::open(first_dir.path()).unwrap();
+        let second = StateStore::open(second_dir.path()).unwrap();
+
+        let commit = |validator_byte: u8, timestamp: u64, sig_byte: u8| CommitSignature {
+            validator: [validator_byte; 32],
+            signature: PqSignature {
+                scheme_version: 1,
+                public_key: PqPublicKey {
+                    scheme_version: 1,
+                    bytes: vec![validator_byte; 4],
+                },
+                sig: vec![sig_byte; 8],
+            },
+            timestamp,
+        };
+        let commit_a = commit(1, 10, 11);
+        let commit_b = commit(2, 20, 22);
+        let commit_c = commit(3, 30, 33);
+
+        let mut first_block = Block::new(
+            9,
+            Hash::hash(b"prev"),
+            Hash::hash(b"state"),
+            [9u8; 32],
+            Vec::new(),
+        );
+        first_block.commit_round = 1;
+        first_block.commit_signatures = vec![commit_a.clone(), commit_c.clone()];
+
+        let mut second_block = first_block.clone();
+        second_block.commit_round = 2;
+        second_block.commit_signatures = vec![commit_b, commit_c, commit_a];
+
+        assert_eq!(first_block.hash(), second_block.hash());
+        first
+            .put_block_atomic(&first_block, Some(9), Some(9))
+            .expect("put first block");
+        second
+            .put_block_atomic(&second_block, Some(9), Some(9))
+            .expect("put second block");
+
+        let first_manifest = first
+            .compute_public_history_manifest(&["blocks"], 1)
+            .expect("first manifest");
+        let second_manifest = second
+            .compute_public_history_manifest(&["blocks"], 1)
+            .expect("second manifest");
+        assert_eq!(first_manifest.root, second_manifest.root);
+        assert_eq!(first_manifest.categories, second_manifest.categories);
+
+        let first_stored = first
+            .get_block(&first_block.hash())
+            .expect("read first block")
+            .expect("first block stored");
+        let second_stored = second
+            .get_block(&second_block.hash())
+            .expect("read second block")
+            .expect("second block stored");
+        assert_eq!(first_stored.commit_round, 1);
+        assert_eq!(first_stored.commit_signatures.len(), 2);
+        assert_eq!(second_stored.commit_round, 2);
+        assert_eq!(second_stored.commit_signatures.len(), 3);
+    }
+
+    #[test]
     fn test_state_store() {
         let temp_dir = tempdir().unwrap();
         let state = StateStore::open(temp_dir.path()).unwrap();
@@ -1022,6 +1226,68 @@ mod tests {
         // Retrieve
         let retrieved = state.get_account(&pubkey).unwrap().unwrap();
         assert_eq!(retrieved.spores, Account::licn_to_spores(100));
+    }
+
+    #[test]
+    fn validator_power_snapshot_is_canonical_and_restart_durable() {
+        let temp_dir = tempdir().unwrap();
+        let powers = vec![
+            crate::CanonicalValidatorPower {
+                validator: Pubkey([1u8; 32]),
+                power: 10,
+            },
+            crate::CanonicalValidatorPower {
+                validator: Pubkey([2u8; 32]),
+                power: 20,
+            },
+        ];
+        let validators_hash = crate::canonical_validator_powers_hash(&powers);
+
+        {
+            let state = StateStore::open(temp_dir.path()).unwrap();
+            state
+                .put_validator_power_snapshot(&validators_hash, &powers)
+                .unwrap();
+            assert_eq!(
+                state
+                    .get_validator_power_snapshot(&validators_hash)
+                    .unwrap(),
+                Some(powers.clone())
+            );
+
+            let mut noncanonical = powers.clone();
+            noncanonical.reverse();
+            assert!(state
+                .put_validator_power_snapshot(&validators_hash, &noncanonical)
+                .unwrap_err()
+                .contains("strictly validator-ordered"));
+        }
+
+        let reopened = StateStore::open(temp_dir.path()).unwrap();
+        assert_eq!(
+            reopened
+                .get_validator_power_snapshot(&validators_hash)
+                .unwrap(),
+            Some(powers.clone())
+        );
+
+        let mut noncanonical = powers;
+        noncanonical.reverse();
+        let corrupted = crate::codec::serialize_legacy_bincode(
+            &noncanonical,
+            "corrupted validator power snapshot",
+        )
+        .unwrap();
+        reopened
+            .put_metadata(
+                &format!("validator_power_snapshot_v2:{}", validators_hash.to_hex()),
+                &corrupted,
+            )
+            .unwrap();
+        assert!(reopened
+            .get_validator_power_snapshot(&validators_hash)
+            .unwrap_err()
+            .contains("empty or noncanonical"));
     }
 
     #[test]
@@ -1821,6 +2087,220 @@ mod tests {
             proposal_root, committed_root,
             "contract proposal root must match the committed canonical root"
         );
+    }
+
+    #[test]
+    fn sparse_contract_nodes_remain_bounded_and_checkpoints_keep_prior_roots() {
+        let temp = tempdir().unwrap();
+        let state_dir = temp.path().join("state");
+        let checkpoint_dir = temp.path().join("checkpoint-before-updates");
+        let state = StateStore::open(&state_dir).unwrap();
+        let program = Pubkey([8u8; 32]);
+
+        for index in 0..64u64 {
+            state
+                .put_contract_storage(
+                    &program,
+                    &index.to_be_bytes(),
+                    &index.wrapping_mul(7).to_be_bytes(),
+                )
+                .unwrap();
+        }
+        let initial = state.rebuild_sparse_state_commitment(true).unwrap();
+        let node_cf = state.db.cf_handle(CF_CONTRACT_MERKLE_NODES).unwrap();
+        let count_nodes = || {
+            let mut read_opts = rocksdb::ReadOptions::default();
+            read_opts.set_total_order_seek(true);
+            state
+                .db
+                .iterator_cf_opt(&node_cf, read_opts, rocksdb::IteratorMode::Start)
+                .try_fold(0u64, |count, item| item.map(|_| count + 1))
+                .expect("read contract sparse node")
+        };
+        assert_eq!(count_nodes(), initial.contract_node_count);
+        assert!(state
+            .db
+            .get_cf(&node_cf, initial.contract_root.0)
+            .unwrap()
+            .is_some());
+        state
+            .create_raw_checkpoint(checkpoint_dir.to_str().unwrap())
+            .unwrap();
+
+        // Rebuild is the one-time recovery path for stores created by releases
+        // that retained every historical sparse root. It must discard all
+        // unreachable cache rows without touching canonical contract storage.
+        for index in 0..128u64 {
+            let garbage_hash =
+                Hash::hash_two_parts(b"unreachable-sparse-node", &index.to_be_bytes());
+            state
+                .db
+                .put_cf(&node_cf, garbage_hash.0, b"derived-garbage")
+                .unwrap();
+        }
+        assert_eq!(count_nodes(), initial.contract_node_count + 128);
+        let rebuilt = state.rebuild_sparse_state_commitment(false).unwrap();
+        assert_eq!(rebuilt.contract_root, initial.contract_root);
+        assert_eq!(count_nodes(), rebuilt.contract_node_count);
+
+        for value in 1..=500u64 {
+            state
+                .put_contract_storage(&program, b"hot-key", &value.to_be_bytes())
+                .unwrap();
+            let _ = state.compute_state_root();
+        }
+
+        let final_report = state.verify_sparse_state_commitment().unwrap();
+        assert_eq!(
+            count_nodes(),
+            final_report.contract_node_count,
+            "canonical updates must atomically retire superseded sparse path nodes"
+        );
+        assert!(state
+            .db
+            .get_cf(&node_cf, initial.contract_root.0)
+            .unwrap()
+            .is_none());
+
+        let checkpoint = StateStore::open_checkpoint(checkpoint_dir.to_str().unwrap()).unwrap();
+        let checkpoint_node_cf = checkpoint.db.cf_handle(CF_CONTRACT_MERKLE_NODES).unwrap();
+        assert!(checkpoint
+            .db
+            .get_cf(&checkpoint_node_cf, initial.contract_root.0)
+            .unwrap()
+            .is_some());
+        assert_eq!(
+            checkpoint.compute_state_root_read_only(),
+            initial.current_state_root,
+            "live cache reclamation must not invalidate a point-in-time checkpoint"
+        );
+    }
+
+    #[test]
+    fn sparse_account_nodes_remain_bounded_and_current_proofs_verify() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+        let accounts = (1..=64u8)
+            .map(|index| Pubkey([index; 32]))
+            .collect::<Vec<_>>();
+        for (index, pubkey) in accounts.iter().enumerate() {
+            state
+                .put_account(pubkey, &Account::new(index as u64 + 1, *pubkey))
+                .unwrap();
+        }
+
+        state.rebuild_sparse_state_commitment(true).unwrap();
+        let node_cf = state.db.cf_handle(CF_ACCOUNT_MERKLE_NODES).unwrap();
+        for balance in 100..=600u64 {
+            state
+                .put_account(&accounts[0], &Account::new(balance, accounts[0]))
+                .unwrap();
+            let _ = state.compute_state_root();
+        }
+
+        let final_report = state.verify_sparse_state_commitment().unwrap();
+        let mut read_opts = rocksdb::ReadOptions::default();
+        read_opts.set_total_order_seek(true);
+        let node_count = state
+            .db
+            .iterator_cf_opt(&node_cf, read_opts, rocksdb::IteratorMode::Start)
+            .try_fold(0u64, |count, item| item.map(|_| count + 1))
+            .expect("read account sparse node");
+        assert_eq!(node_count, final_report.accounts_node_count);
+
+        let proof = state.get_account_proof(&accounts[0]).unwrap();
+        assert!(proof.sparse_proof.as_ref().unwrap().verify_account(
+            &final_report.accounts_root,
+            &accounts[0],
+            &proof.account_data,
+        ));
+    }
+
+    #[test]
+    fn concurrent_same_contract_key_commit_cannot_lose_sparse_dirty_marker() {
+        let temp = tempdir().unwrap();
+        let state = Arc::new(StateStore::open(temp.path()).unwrap());
+        let program = Pubkey([9u8; 32]);
+        state
+            .put_contract_storage(&program, b"hot-key", &0u64.to_le_bytes())
+            .unwrap();
+        state.rebuild_sparse_state_commitment(true).unwrap();
+
+        let start = Arc::new(std::sync::Barrier::new(2));
+        let writer_state = Arc::clone(&state);
+        let writer_start = Arc::clone(&start);
+        let writer = std::thread::spawn(move || {
+            writer_start.wait();
+            for value in 1..=1_000u64 {
+                let mut batch = writer_state.begin_batch();
+                batch
+                    .put_contract_storage(&program, b"hot-key", &value.to_le_bytes())
+                    .unwrap();
+                writer_state.commit_batch(batch).unwrap();
+                std::thread::yield_now();
+            }
+        });
+
+        let root_state = Arc::clone(&state);
+        let root_start = Arc::clone(&start);
+        let root_reader = std::thread::spawn(move || {
+            root_start.wait();
+            for _ in 0..1_000 {
+                let _ = root_state.compute_state_root();
+                std::thread::yield_now();
+            }
+        });
+
+        writer.join().unwrap();
+        root_reader.join().unwrap();
+
+        let final_cached_root = state.compute_state_root();
+        let report = state.verify_sparse_state_commitment().unwrap();
+        assert_eq!(
+            report.current_state_root,
+            state.compute_state_root_read_only(),
+            "cached sparse root must match a full read-only recomputation"
+        );
+        assert_eq!(report.current_state_root, final_cached_root);
+    }
+
+    #[test]
+    fn startup_repairs_clean_but_stale_sparse_contract_commitment() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+        let program = Pubkey([10u8; 32]);
+        let storage_key = b"hot-key";
+        state
+            .put_contract_storage(&program, storage_key, b"old")
+            .unwrap();
+        let initial = state.rebuild_sparse_state_commitment(true).unwrap();
+        assert!(state.can_skip_active_sparse_startup_rebuild());
+
+        let mut full_key = program.0.to_vec();
+        full_key.extend_from_slice(storage_key);
+        let cf = state.db.cf_handle(CF_CONTRACT_STORAGE).unwrap();
+        state.db.put_cf(&cf, &full_key, b"new").unwrap();
+
+        assert!(
+            state.can_skip_active_sparse_startup_rebuild(),
+            "lost-marker regression must look clean to the metadata-only check"
+        );
+        assert!(state.verify_sparse_state_commitment().is_err());
+
+        let repaired = state
+            .audit_and_repair_active_sparse_state_commitment()
+            .unwrap();
+        assert!(repaired.rebuilt);
+        assert!(repaired.prior_verification_error.is_some());
+        assert_ne!(
+            repaired.commitment.current_state_root,
+            initial.current_state_root
+        );
+        assert_eq!(
+            repaired.commitment,
+            state.verify_sparse_state_commitment().unwrap()
+        );
+        assert!(state.can_skip_active_sparse_startup_rebuild());
     }
 
     #[test]
@@ -2978,6 +3458,221 @@ mod tests {
     }
 
     #[test]
+    fn exact_transaction_cursors_do_not_skip_rows_within_a_slot() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+        let tracked = Pubkey([0xA1; 32]);
+        let counterparty = Pubkey([0xA2; 32]);
+
+        let make_tx = |marker: u8| {
+            crate::transaction::Transaction::new(crate::transaction::Message::new(
+                vec![crate::transaction::Instruction {
+                    program_id: Pubkey([0xA3; 32]),
+                    accounts: vec![tracked, counterparty],
+                    data: vec![marker],
+                }],
+                Hash::hash(&[marker]),
+            ))
+        };
+        let old_tx = make_tx(1);
+        let old_hash = old_tx.signature();
+        let old_block = crate::Block::new_with_timestamp(
+            6,
+            Hash::default(),
+            Hash::default(),
+            [0u8; 32],
+            vec![old_tx],
+            106,
+        );
+        state.put_block_atomic(&old_block, None, None).unwrap();
+
+        let same_slot_txs = vec![make_tx(2), make_tx(3), make_tx(4)];
+        let same_slot_hashes = same_slot_txs
+            .iter()
+            .map(crate::transaction::Transaction::signature)
+            .collect::<Vec<_>>();
+        let same_slot_block = crate::Block::new_with_timestamp(
+            7,
+            old_block.hash(),
+            Hash::default(),
+            [0u8; 32],
+            same_slot_txs,
+            107,
+        );
+        state
+            .put_block_atomic(&same_slot_block, None, None)
+            .unwrap();
+
+        let account_first = state
+            .get_account_tx_signatures_paginated_exact(&tracked, 2, None)
+            .unwrap();
+        assert_eq!(
+            account_first,
+            vec![(same_slot_hashes[2], 7, 2), (same_slot_hashes[1], 7, 1)]
+        );
+        let account_second = state
+            .get_account_tx_signatures_paginated_exact(&tracked, 2, Some((7, 1)))
+            .unwrap();
+        assert_eq!(
+            account_second,
+            vec![(same_slot_hashes[0], 7, 0), (old_hash, 6, 0)]
+        );
+
+        let recent_first = state.get_recent_txs_paginated_exact(2, None).unwrap();
+        assert_eq!(
+            recent_first,
+            vec![(same_slot_hashes[2], 7, 2), (same_slot_hashes[1], 7, 1)]
+        );
+        let recent_second = state
+            .get_recent_txs_paginated_exact(2, Some((7, 1)))
+            .unwrap();
+        assert_eq!(
+            recent_second,
+            vec![(same_slot_hashes[0], 7, 0), (old_hash, 6, 0)]
+        );
+    }
+
+    #[test]
+    fn recent_user_transactions_skip_consensus_rows_without_short_pages() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+        let make_tx = |marker: u8| {
+            crate::Transaction::new(crate::Message::new(Vec::new(), Hash::hash(&[marker])))
+        };
+        let older = make_tx(1);
+        let newer = make_tx(2);
+        let newer_hash = newer.signature();
+        let older_hash = older.signature();
+        let consensus = crate::Transaction {
+            signatures: Vec::new(),
+            message: crate::Message::new(Vec::new(), Hash::hash(b"consensus-row")),
+            tx_type: crate::TransactionType::Consensus,
+        };
+        let block = crate::Block::new_with_timestamp(
+            8,
+            Hash::default(),
+            Hash::default(),
+            [0u8; 32],
+            vec![older, consensus, newer],
+            108,
+        );
+        state.put_block_atomic(&block, None, None).unwrap();
+
+        assert_eq!(
+            state.get_recent_user_txs_paginated_exact(2, None).unwrap(),
+            vec![(newer_hash, 8, 2), (older_hash, 8, 0)]
+        );
+        assert_eq!(
+            state.get_recent_txs_paginated_exact(3, None).unwrap().len(),
+            3
+        );
+    }
+
+    #[test]
+    fn exact_activity_cursors_preserve_same_slot_rows_and_emission_order() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+        let program = Pubkey([0xB1; 32]);
+
+        for marker in 0..3u64 {
+            state
+                .put_token_transfer(
+                    &program,
+                    &TokenTransfer {
+                        token_program: program.to_base58(),
+                        from: Pubkey([0xB2; 32]).to_base58(),
+                        to: Pubkey([0xB3; 32]).to_base58(),
+                        amount: marker + 1,
+                        slot: 20,
+                        tx_hash: Some(Hash::hash(&marker.to_be_bytes()).to_hex()),
+                    },
+                )
+                .unwrap();
+        }
+        let transfer_first = state
+            .get_token_transfers_paginated_exact(&program, 2, None)
+            .unwrap();
+        assert_eq!(
+            transfer_first
+                .iter()
+                .map(|(transfer, seq)| (transfer.amount, *seq))
+                .collect::<Vec<_>>(),
+            vec![(3, 2), (2, 1)]
+        );
+        let transfer_second = state
+            .get_token_transfers_paginated_exact(&program, 2, Some((20, 1)))
+            .unwrap();
+        assert_eq!(
+            transfer_second
+                .iter()
+                .map(|(transfer, seq)| (transfer.amount, *seq))
+                .collect::<Vec<_>>(),
+            vec![(1, 0)]
+        );
+
+        for sequence in 0..3u32 {
+            state
+                .record_program_call(
+                    &crate::ProgramCallActivity {
+                        slot: 21,
+                        timestamp: 121,
+                        program,
+                        caller: Pubkey([0xB4; 32]),
+                        function: format!("call_{sequence}"),
+                        value: sequence as u64,
+                        tx_signature: Hash::hash(&sequence.to_be_bytes()),
+                    },
+                    sequence,
+                )
+                .unwrap();
+        }
+        let call_first = state
+            .get_program_calls_paginated_exact(&program, 2, None)
+            .unwrap();
+        assert_eq!(
+            call_first
+                .iter()
+                .map(|(call, seq)| (call.function.as_str(), *seq))
+                .collect::<Vec<_>>(),
+            vec![("call_2", 2), ("call_1", 1)]
+        );
+        let call_second = state
+            .get_program_calls_paginated_exact(&program, 2, Some((21, 1)))
+            .unwrap();
+        assert_eq!(call_second[0].0.function, "call_0");
+        assert_eq!(call_second[0].1, 0);
+
+        for name in ["zeta", "alpha", "middle"] {
+            state
+                .put_contract_event(
+                    &program,
+                    &ContractEvent {
+                        program,
+                        name: name.to_string(),
+                        data: std::collections::HashMap::new(),
+                        slot: 22,
+                    },
+                )
+                .unwrap();
+        }
+        let event_first = state
+            .get_events_by_program_paginated_exact(&program, 2, None)
+            .unwrap();
+        assert_eq!(
+            event_first
+                .iter()
+                .map(|(event, seq)| (event.name.as_str(), *seq))
+                .collect::<Vec<_>>(),
+            vec![("middle", 2), ("alpha", 1)]
+        );
+        let event_second = state
+            .get_events_by_program_paginated_exact(&program, 2, Some((22, 1)))
+            .unwrap();
+        assert_eq!(event_second[0].0.name, "zeta");
+        assert_eq!(event_second[0].1, 0);
+    }
+
+    #[test]
     fn account_txs_rebuild_report_restores_complete_canonical_history() {
         let temp = tempdir().unwrap();
         let state = StateStore::open(temp.path()).unwrap();
@@ -3227,6 +3922,191 @@ mod tests {
                 .unwrap(),
             vec![(tx_b_hash, 32), (tx_a_hash, 31)]
         );
+    }
+
+    #[test]
+    fn raw_block_history_repair_restores_missing_cold_slot_cursor() {
+        let hot_dir = tempdir().unwrap();
+        let cold_dir = tempdir().unwrap();
+        let mut state = StateStore::open(hot_dir.path()).unwrap();
+        state.open_cold_store(cold_dir.path()).unwrap();
+
+        let block = crate::Block::new_with_timestamp(
+            44,
+            Hash::default(),
+            Hash::default(),
+            [0x44; 32],
+            vec![],
+            444,
+        );
+        let block_hash = block.hash();
+        state.put_block(&block).unwrap();
+        assert_eq!(state.migrate_to_cold(45).unwrap(), 1);
+        assert_eq!(
+            state
+                .get_block_by_slot(44)
+                .unwrap()
+                .map(|stored| stored.hash()),
+            Some(block_hash)
+        );
+
+        let slot_cf = state.db.cf_handle(CF_SLOTS).unwrap();
+        state.db.delete_cf(&slot_cf, 44u64.to_be_bytes()).unwrap();
+        assert!(state.get_block_by_slot(44).unwrap().is_none());
+
+        let dry_run = state
+            .repair_missing_slot_cursors_from_raw_blocks(Some(44), Some(44), true)
+            .unwrap();
+        assert_eq!(dry_run.cold_rows_scanned, 1);
+        assert_eq!(dry_run.body_slots_in_range, 1);
+        assert_eq!(dry_run.missing_slot_cursors, 1);
+        assert_eq!(dry_run.repairable_slot_cursors, 1);
+        assert_eq!(dry_run.repaired_slot_cursors, 0);
+        assert!(!dry_run.has_conflicts(), "{dry_run:?}");
+        assert!(state.get_block_by_slot(44).unwrap().is_none());
+
+        let report = state
+            .repair_missing_slot_cursors_from_raw_blocks(Some(44), Some(44), false)
+            .unwrap();
+        assert_eq!(report.repairable_slot_cursors, 1);
+        assert_eq!(report.repaired_slot_cursors, 1);
+        assert!(!report.has_conflicts(), "{report:?}");
+        assert_eq!(
+            state
+                .get_block_by_slot(44)
+                .unwrap()
+                .map(|stored| stored.hash()),
+            Some(block_hash)
+        );
+    }
+
+    #[test]
+    fn raw_block_history_repair_recovers_stranded_hot_duplicate_before_migration() {
+        let hot_dir = tempdir().unwrap();
+        let cold_dir = tempdir().unwrap();
+        let mut state = StateStore::open(hot_dir.path()).unwrap();
+        state.open_cold_store(cold_dir.path()).unwrap();
+
+        let block = crate::Block::new_with_timestamp(
+            44,
+            Hash::default(),
+            Hash::default(),
+            [0x45; 32],
+            vec![],
+            445,
+        );
+        let block_hash = block.hash();
+        state.put_block(&block).unwrap();
+
+        let hot_blocks = state.db.cf_handle(CF_BLOCKS).unwrap();
+        let encoded = state.db.get_cf(&hot_blocks, block_hash.0).unwrap().unwrap();
+        let cold = state.cold_db.as_ref().unwrap();
+        let cold_blocks = cold.cf_handle(COLD_CF_BLOCKS).unwrap();
+        cold.put_cf(&cold_blocks, block_hash.0, &encoded).unwrap();
+
+        let hot_slots = state.db.cf_handle(CF_SLOTS).unwrap();
+        state
+            .db
+            .delete_cf(&hot_slots, block.header.slot.to_be_bytes())
+            .unwrap();
+        assert!(state
+            .get_block_by_slot(block.header.slot)
+            .unwrap()
+            .is_none());
+
+        let dry_run = state
+            .repair_missing_slot_cursors_from_raw_blocks(Some(44), Some(44), true)
+            .unwrap();
+        assert_eq!(dry_run.hot_rows_scanned, 1);
+        assert_eq!(dry_run.cold_rows_scanned, 1);
+        assert_eq!(dry_run.duplicate_identical_body_slots, 1);
+        assert_eq!(dry_run.missing_slot_cursors, 1);
+        assert_eq!(dry_run.repairable_slot_cursors, 1);
+        assert!(!dry_run.has_conflicts(), "{dry_run:?}");
+
+        let repaired = state
+            .repair_missing_slot_cursors_from_raw_blocks(Some(44), Some(44), false)
+            .unwrap();
+        assert_eq!(repaired.repaired_slot_cursors, 1);
+
+        let audit = state.audit_cold_migration(45).unwrap();
+        assert_eq!(audit.blocks.hot_rows, 1);
+        assert_eq!(audit.blocks.identical_cold_rows, 1);
+        assert_eq!(state.migrate_to_cold(45).unwrap(), 1);
+        assert!(state
+            .db
+            .get_cf(&hot_blocks, block_hash.0)
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            cold.get_cf(&cold_blocks, block_hash.0).unwrap(),
+            Some(encoded)
+        );
+        assert_eq!(
+            state
+                .get_block_by_slot(block.header.slot)
+                .unwrap()
+                .map(|stored| stored.hash()),
+            Some(block_hash)
+        );
+    }
+
+    #[test]
+    fn raw_block_history_repair_refuses_orphan_slot_cursor() {
+        let hot_dir = tempdir().unwrap();
+        let state = StateStore::open(hot_dir.path()).unwrap();
+        let hot_slots = state.db.cf_handle(CF_SLOTS).unwrap();
+        state
+            .db
+            .put_cf(&hot_slots, 44u64.to_be_bytes(), [0x44; 32])
+            .unwrap();
+
+        let dry_run = state
+            .repair_missing_slot_cursors_from_raw_blocks(Some(44), Some(44), true)
+            .unwrap();
+        assert_eq!(dry_run.slot_cursors_scanned, 1);
+        assert_eq!(dry_run.orphan_slot_cursors, 1);
+        assert_eq!(dry_run.first_orphan_slot_cursor, Some(44));
+        assert!(dry_run.has_conflicts(), "{dry_run:?}");
+
+        let error = state
+            .repair_missing_slot_cursors_from_raw_blocks(Some(44), Some(44), false)
+            .unwrap_err();
+        assert!(error.contains("orphan_slot_cursors=1"), "{error}");
+    }
+
+    #[test]
+    fn raw_block_history_report_fails_closed_on_every_integrity_error() {
+        let reports = [
+            RawBlockHistoryRepairReport {
+                decode_errors: 1,
+                ..Default::default()
+            },
+            RawBlockHistoryRepairReport {
+                hash_mismatch_rows: 1,
+                ..Default::default()
+            },
+            RawBlockHistoryRepairReport {
+                duplicate_conflicting_body_slots: 1,
+                ..Default::default()
+            },
+            RawBlockHistoryRepairReport {
+                conflicting_slot_cursors: 1,
+                ..Default::default()
+            },
+            RawBlockHistoryRepairReport {
+                orphan_slot_cursors: 1,
+                ..Default::default()
+            },
+            RawBlockHistoryRepairReport {
+                invalid_slot_cursors: 1,
+                ..Default::default()
+            },
+        ];
+
+        for report in reports {
+            assert!(report.has_conflicts(), "{report:?}");
+        }
     }
 
     #[test]
@@ -3574,6 +4454,52 @@ mod tests {
         assert_eq!(
             state.get_recent_shielded_txs(10, Some(7)).unwrap(),
             Vec::<(Hash, u64)>::new()
+        );
+    }
+
+    #[test]
+    fn exact_shielded_transaction_cursor_preserves_same_slot_rows() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+        let account = Pubkey([0x39; 32]);
+        let make_shield_tx = |marker: u8| {
+            let mut data = vec![23u8];
+            data.extend_from_slice(&(marker as u64 + 1).to_le_bytes());
+            crate::transaction::Transaction::new(crate::transaction::Message::new(
+                vec![crate::transaction::Instruction {
+                    program_id: crate::SYSTEM_PROGRAM_ID,
+                    accounts: vec![account],
+                    data,
+                }],
+                Hash::hash(&[marker]),
+            ))
+        };
+        let transactions = vec![make_shield_tx(1), make_shield_tx(2), make_shield_tx(3)];
+        let hashes = transactions
+            .iter()
+            .map(crate::transaction::Transaction::signature)
+            .collect::<Vec<_>>();
+        let block = crate::Block::new_with_timestamp(
+            9,
+            Hash::default(),
+            Hash::default(),
+            [0u8; 32],
+            transactions,
+            333,
+        );
+        state.put_block(&block).unwrap();
+
+        assert_eq!(
+            state
+                .get_recent_shielded_txs_paginated_exact(2, None)
+                .unwrap(),
+            vec![(hashes[2], 9, 2), (hashes[1], 9, 1)]
+        );
+        assert_eq!(
+            state
+                .get_recent_shielded_txs_paginated_exact(2, Some((9, 1)))
+                .unwrap(),
+            vec![(hashes[0], 9, 0)]
         );
     }
 
@@ -3995,6 +4921,38 @@ mod tests {
         assert_eq!(legacy_full.return_code, None);
         assert!(legacy_full.return_data.is_empty());
         assert!(legacy_full.logs.is_empty());
+        assert_eq!(legacy_full.success, None);
+
+        #[derive(Serialize)]
+        struct LegacyTxMetaV1ForTest {
+            compute_units_used: u64,
+            return_code: Option<i64>,
+            return_data: Vec<u8>,
+            logs: Vec<String>,
+        }
+        let legacy_v1_sig = Hash([0x43; 32]);
+        let legacy_v1 = LegacyTxMetaV1ForTest {
+            compute_units_used: 432,
+            return_code: Some(3),
+            return_data: vec![9, 8],
+            logs: vec!["legacy".to_string()],
+        };
+        let legacy_v1_bytes =
+            crate::codec::serialize_legacy_bincode(&legacy_v1, "legacy transaction metadata test")
+                .unwrap();
+        let tx_meta_cf = state.db.cf_handle(CF_TX_META).unwrap();
+        state
+            .db
+            .put_cf(&tx_meta_cf, legacy_v1_sig.0, legacy_v1_bytes)
+            .unwrap();
+        let loaded_v1 = state.get_tx_meta_full(&legacy_v1_sig).unwrap().unwrap();
+        assert_eq!(loaded_v1.compute_units_used, 432);
+        assert_eq!(loaded_v1.return_code, Some(3));
+        assert_eq!(loaded_v1.return_data, vec![9, 8]);
+        assert_eq!(loaded_v1.logs, vec!["legacy"]);
+        assert_eq!(loaded_v1.success, None);
+        assert_eq!(loaded_v1.error, None);
+        assert_eq!(loaded_v1.fee_paid, None);
 
         let full_sig = Hash([0x42; 32]);
         let full_meta = crate::processor::TxMeta {
@@ -4002,6 +4960,9 @@ mod tests {
             return_code: Some(7),
             return_data: vec![1, 2, 3],
             logs: vec!["first".to_string(), "second".to_string()],
+            success: Some(false),
+            error: Some("execution failed".to_string()),
+            fee_paid: Some(42),
         };
         state.put_tx_meta_full(&full_sig, &full_meta).unwrap();
 
@@ -4011,6 +4972,9 @@ mod tests {
         assert_eq!(loaded_full.return_code, full_meta.return_code);
         assert_eq!(loaded_full.return_data, full_meta.return_data);
         assert_eq!(loaded_full.logs, full_meta.logs);
+        assert_eq!(loaded_full.success, Some(false));
+        assert_eq!(loaded_full.error, full_meta.error);
+        assert_eq!(loaded_full.fee_paid, Some(42));
     }
 
     #[test]
@@ -4033,6 +4997,9 @@ mod tests {
             return_code: Some(12),
             return_data: vec![7, 7, 7],
             logs: vec!["batched".to_string()],
+            success: Some(true),
+            error: None,
+            fee_paid: Some(99),
         };
 
         let mut batch = state.begin_batch();
@@ -5010,6 +5977,17 @@ mod tests {
         )
     }
 
+    fn make_test_transaction(tag: u8) -> Transaction {
+        Transaction::new(Message::new(
+            vec![Instruction {
+                program_id: Pubkey([tag; 32]),
+                accounts: vec![Pubkey([tag.wrapping_add(1); 32])],
+                data: vec![tag],
+            }],
+            Hash([tag.wrapping_add(2); 32]),
+        ))
+    }
+
     #[test]
     fn test_cold_storage_open_and_attach() {
         let hot_dir = tempdir().unwrap();
@@ -5033,6 +6011,65 @@ mod tests {
         assert_eq!(state.get_last_confirmed_slot().unwrap(), 7);
         assert_eq!(state.get_last_finalized_slot().unwrap(), 7);
         assert_eq!(state.get_block_by_slot(7).unwrap().unwrap().header.slot, 7);
+    }
+
+    #[test]
+    fn canonical_execution_batch_and_block_anchor_commit_together() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+        let account_key = Pubkey([4u8; 32]);
+        let mut account = Account::new(1, account_key);
+        account.spendable = 777;
+        account.spores = 777;
+
+        let tx = Transaction::new(Message::new(
+            vec![crate::Instruction {
+                program_id: Pubkey([9u8; 32]),
+                accounts: vec![account_key],
+                data: vec![1],
+            }],
+            Hash::hash(b"atomic-blockhash"),
+        ));
+        let tx_hash = tx.signature();
+        let block = Block::new_with_timestamp(
+            1,
+            Hash::default(),
+            Hash::hash(b"atomic-state-root"),
+            [8u8; 32],
+            vec![tx.clone()],
+            123,
+        );
+
+        let mut batch = state.begin_batch_at_slot(1);
+        batch.put_account(&account_key, &account).unwrap();
+        batch.put_transaction(&tx).unwrap();
+        batch
+            .put_tx_meta_full(&tx_hash, &crate::TxMeta::default())
+            .unwrap();
+        state
+            .commit_batch_with_block(batch, &block, Some(1), Some(1))
+            .unwrap();
+
+        let stored_account = state.get_account(&account_key).unwrap().unwrap();
+        assert_eq!(stored_account.spendable, account.spendable);
+        assert_eq!(stored_account.spores, account.spores);
+        assert_eq!(
+            state.get_block_by_slot(1).unwrap().unwrap().hash(),
+            block.hash()
+        );
+        assert_eq!(state.get_last_slot().unwrap(), 1);
+        assert_eq!(state.get_last_confirmed_slot().unwrap(), 1);
+        assert_eq!(state.get_last_finalized_slot().unwrap(), 1);
+        assert_eq!(
+            state
+                .get_transaction(&tx_hash)
+                .unwrap()
+                .unwrap()
+                .signature(),
+            tx.signature()
+        );
+        assert_eq!(state.get_tx_slot(&tx_hash).unwrap(), Some(1));
+        assert_eq!(state.get_txs_by_slot(1, 10).unwrap(), vec![tx_hash]);
     }
 
     #[test]
@@ -5150,6 +6187,177 @@ mod tests {
     }
 
     #[test]
+    fn test_put_block_atomic_indexes_public_activity_for_archive_parity() {
+        let temp_a = tempdir().unwrap();
+        let temp_b = tempdir().unwrap();
+        let state_a = StateStore::open(temp_a.path()).unwrap();
+        let state_b = StateStore::open(temp_b.path()).unwrap();
+
+        let caller = Pubkey([0x11; 32]);
+        let program = Pubkey([0x22; 32]);
+        let collection = Pubkey([0x33; 32]);
+        let token = Pubkey([0x44; 32]);
+        let owner = Pubkey([0x55; 32]);
+        let args = serde_json::to_vec(&serde_json::json!({
+            "collection": collection.to_base58(),
+            "token_id": 7,
+            "price": "9000",
+            "buyer": caller.to_base58(),
+        }))
+        .unwrap();
+        let contract_ix = crate::transaction::Instruction {
+            program_id: crate::CONTRACT_PROGRAM_ID,
+            accounts: vec![caller, program],
+            data: crate::ContractInstruction::Call {
+                function: "buy_nft".to_string(),
+                args,
+                value: 9_000,
+            }
+            .serialize()
+            .unwrap(),
+        };
+        let nft_mint_ix = crate::transaction::Instruction {
+            program_id: crate::SYSTEM_PROGRAM_ID,
+            accounts: vec![caller, collection, token, owner],
+            data: vec![7],
+        };
+        let tx = crate::transaction::Transaction::new(crate::transaction::Message::new(
+            vec![nft_mint_ix, contract_ix],
+            Hash::hash(b"public-activity-blockhash"),
+        ));
+        let tx_signature = tx.signature();
+        let block = crate::Block::new_with_timestamp(
+            42,
+            Hash::default(),
+            Hash::default(),
+            [0x66; 32],
+            vec![tx],
+            1_700_000_042,
+        );
+
+        for state in [&state_a, &state_b] {
+            state.put_block_atomic(&block, Some(42), Some(42)).unwrap();
+
+            let calls = state.get_program_calls(&program, 10, None).unwrap();
+            assert_eq!(calls.len(), 1);
+            assert_eq!(calls[0].slot, 42);
+            assert_eq!(calls[0].function, "buy_nft");
+            assert_eq!(calls[0].value, 9_000);
+            assert_eq!(calls[0].tx_signature, tx_signature);
+
+            let market = state
+                .get_market_activity(Some(&collection), None, 10)
+                .unwrap();
+            assert_eq!(market.len(), 1);
+            assert_eq!(market[0].kind, crate::MarketActivityKind::Sale);
+            assert_eq!(market[0].price, Some(9_000));
+            assert_eq!(market[0].buyer, Some(caller));
+            assert_eq!(market[0].tx_signature, tx_signature);
+
+            let nft = state
+                .get_nft_activity_by_collection(&collection, 10)
+                .unwrap();
+            assert_eq!(nft.len(), 1);
+            assert!(matches!(nft[0].kind, crate::NftActivityKind::Mint));
+            assert_eq!(nft[0].token, token);
+            assert_eq!(nft[0].tx_signature, tx_signature);
+        }
+
+        let manifest_a = state_a
+            .compute_public_history_manifest(PUBLIC_HISTORY_SNAPSHOT_CATEGORIES, 1_000)
+            .unwrap();
+        let manifest_b = state_b
+            .compute_public_history_manifest(PUBLIC_HISTORY_SNAPSHOT_CATEGORIES, 1_000)
+            .unwrap();
+        assert_eq!(manifest_a, manifest_b);
+
+        let category_count = |manifest: &PublicHistoryManifest, category: &str| -> u64 {
+            manifest
+                .categories
+                .iter()
+                .find(|digest| digest.category == category)
+                .map(|digest| digest.entry_count)
+                .unwrap_or(0)
+        };
+        assert_eq!(category_count(&manifest_a, "program_calls"), 1);
+        assert_eq!(category_count(&manifest_a, "market_activity"), 1);
+        assert_eq!(category_count(&manifest_a, "nft_activity"), 1);
+    }
+
+    #[test]
+    fn test_failed_receipt_is_account_history_but_not_state_change_activity() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+        let caller = Pubkey([0x71; 32]);
+        let program = Pubkey([0x72; 32]);
+        let collection = Pubkey([0x73; 32]);
+        let token = Pubkey([0x74; 32]);
+        let owner = Pubkey([0x75; 32]);
+        let contract_ix = crate::transaction::Instruction {
+            program_id: crate::CONTRACT_PROGRAM_ID,
+            accounts: vec![caller, program],
+            data: crate::ContractInstruction::Call {
+                function: "buy_nft".to_string(),
+                args: serde_json::to_vec(&serde_json::json!({
+                    "collection": collection.to_base58(),
+                    "token_id": 8,
+                    "price": "10000",
+                    "buyer": caller.to_base58(),
+                }))
+                .unwrap(),
+                value: 10_000,
+            }
+            .serialize()
+            .unwrap(),
+        };
+        let nft_mint_ix = crate::transaction::Instruction {
+            program_id: crate::SYSTEM_PROGRAM_ID,
+            accounts: vec![caller, collection, token, owner],
+            data: vec![7],
+        };
+        let tx = crate::transaction::Transaction::new(crate::transaction::Message::new(
+            vec![nft_mint_ix, contract_ix],
+            Hash::hash(b"failed-public-activity-blockhash"),
+        ));
+        let tx_signature = tx.signature();
+        state
+            .put_tx_meta_full(
+                &tx_signature,
+                &crate::processor::TxMeta {
+                    success: Some(false),
+                    error: Some("Execution error: rejected call".to_string()),
+                    fee_paid: Some(500),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let block = crate::Block::new_with_timestamp(
+            43,
+            Hash::default(),
+            Hash::default(),
+            [0x76; 32],
+            vec![tx],
+            1_700_000_043,
+        );
+
+        state.put_block_atomic(&block, Some(43), Some(43)).unwrap();
+
+        assert_eq!(state.count_account_txs(&caller).unwrap(), 1);
+        assert!(state
+            .get_program_calls(&program, 10, None)
+            .unwrap()
+            .is_empty());
+        assert!(state
+            .get_market_activity(Some(&collection), None, 10)
+            .unwrap()
+            .is_empty());
+        assert!(state
+            .get_nft_activity_by_collection(&collection, 10)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
     fn test_cold_storage_migrate_and_fallthrough() {
         let hot_dir = tempdir().unwrap();
         let cold_dir = tempdir().unwrap();
@@ -5224,11 +6432,298 @@ mod tests {
         // Second migration with same cutoff: nothing to move (already in cold)
         let migrated2 = state.migrate_to_cold(3).unwrap();
         assert_eq!(migrated2, 0);
+        state.compact_migrated_hot_history().unwrap();
 
         // All blocks still readable
         for slot in 0..5u64 {
             assert!(state.get_block_by_slot(slot).unwrap().is_some());
         }
+    }
+
+    #[test]
+    fn test_cold_migration_audit_reports_missing_identical_and_conflicting_rows() {
+        let hot_dir = tempdir().unwrap();
+        let cold_dir = tempdir().unwrap();
+        let mut state = StateStore::open(hot_dir.path()).unwrap();
+        state.open_cold_store(cold_dir.path()).unwrap();
+
+        let blocks = [make_test_block(0), make_test_block(1), make_test_block(2)];
+        for block in &blocks {
+            state.put_block(block).unwrap();
+        }
+
+        let initial = state.audit_cold_migration(3).unwrap();
+        assert_eq!(initial.scanned_slots, 3);
+        assert_eq!(initial.blocks.hot_rows, 3);
+        assert_eq!(initial.blocks.missing_cold_rows, 3);
+        assert_eq!(initial.conflict_rows(), 0);
+
+        let hot_blocks = state.db.cf_handle(CF_BLOCKS).unwrap();
+        let cold = state.cold_db.as_ref().unwrap();
+        let cold_blocks = cold.cf_handle(COLD_CF_BLOCKS).unwrap();
+        let first_hash = blocks[0].hash();
+        let first_data = state.db.get_cf(&hot_blocks, first_hash.0).unwrap().unwrap();
+        cold.put_cf(&cold_blocks, first_hash.0, first_data).unwrap();
+        cold.put_cf(&cold_blocks, blocks[1].hash().0, b"conflict")
+            .unwrap();
+
+        let audited = state.audit_cold_migration(3).unwrap();
+        assert_eq!(audited.blocks.hot_rows, 3);
+        assert_eq!(audited.blocks.identical_cold_rows, 1);
+        assert_eq!(audited.blocks.missing_cold_rows, 1);
+        assert_eq!(audited.blocks.conflicting_cold_rows, 1);
+        assert_eq!(audited.conflict_rows(), 1);
+    }
+
+    #[test]
+    fn test_cold_migration_audit_refuses_missing_slot_cursor_without_mutation() {
+        let hot_dir = tempdir().unwrap();
+        let cold_dir = tempdir().unwrap();
+        let mut state = StateStore::open(hot_dir.path()).unwrap();
+        state.open_cold_store(cold_dir.path()).unwrap();
+
+        let block = make_test_block(1);
+        let hash = block.hash();
+        state.put_block(&block).unwrap();
+        let slots = state.db.cf_handle(CF_SLOTS).unwrap();
+        state.db.delete_cf(&slots, 1u64.to_be_bytes()).unwrap();
+
+        let audit = state.audit_cold_migration(2).unwrap();
+        assert_eq!(audit.scanned_slots, 1);
+        assert_eq!(audit.missing_slot_cursors, 1);
+        assert_eq!(audit.integrity_errors(), 1);
+        assert_eq!(audit.conflict_rows(), 1);
+        assert_eq!(audit.blocks.hot_rows, 0);
+
+        let hot_blocks = state.db.cf_handle(CF_BLOCKS).unwrap();
+        assert!(state.db.get_cf(&hot_blocks, hash.0).unwrap().is_some());
+    }
+
+    #[test]
+    fn test_cold_migration_refuses_missing_block_transaction_indexes() {
+        let hot_dir = tempdir().unwrap();
+        let cold_dir = tempdir().unwrap();
+        let mut state = StateStore::open(hot_dir.path()).unwrap();
+        state.open_cold_store(cold_dir.path()).unwrap();
+
+        let tx = make_test_transaction(0x41);
+        let signature = tx.signature();
+        let block = Block::new(1, Hash::default(), Hash::default(), [0x41; 32], vec![tx]);
+        let block_hash = block.hash();
+        state.put_block(&block).unwrap();
+
+        let hot_transactions = state.db.cf_handle(CF_TRANSACTIONS).unwrap();
+        let hot_tx_to_slot = state.db.cf_handle(CF_TX_TO_SLOT).unwrap();
+        state.db.delete_cf(&hot_transactions, signature.0).unwrap();
+        state.db.delete_cf(&hot_tx_to_slot, signature.0).unwrap();
+
+        let audit = state.audit_cold_migration(2).unwrap();
+        assert_eq!(audit.missing_transaction_rows, 1);
+        assert_eq!(audit.missing_tx_to_slot_rows, 1);
+        assert_eq!(audit.integrity_errors(), 2);
+        assert_eq!(audit.conflict_rows(), 2);
+
+        let error = state.migrate_to_cold(2).unwrap_err();
+        assert!(
+            error.contains("missing from hot and cold storage"),
+            "{error}"
+        );
+        let hot_blocks = state.db.cf_handle(CF_BLOCKS).unwrap();
+        assert!(state
+            .db
+            .get_cf(&hot_blocks, block_hash.0)
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    fn test_cold_migration_audit_rejects_corrupt_transaction_indexes() {
+        let hot_dir = tempdir().unwrap();
+        let cold_dir = tempdir().unwrap();
+        let mut state = StateStore::open(hot_dir.path()).unwrap();
+        state.open_cold_store(cold_dir.path()).unwrap();
+
+        let tx_a = make_test_transaction(0x51);
+        let tx_b = make_test_transaction(0x52);
+        let signature_a = tx_a.signature();
+        let signature_b = tx_b.signature();
+        let block = Block::new(
+            7,
+            Hash::default(),
+            Hash::default(),
+            [0x51; 32],
+            vec![tx_a, tx_b.clone()],
+        );
+        state.put_block(&block).unwrap();
+
+        let hot_transactions = state.db.cf_handle(CF_TRANSACTIONS).unwrap();
+        let hot_tx_to_slot = state.db.cf_handle(CF_TX_TO_SLOT).unwrap();
+        let mut mismatched_tx = vec![0xBC];
+        append_legacy_bincode(&mut mismatched_tx, &tx_b, "test transaction").unwrap();
+        state
+            .db
+            .put_cf(&hot_transactions, signature_a.0, mismatched_tx)
+            .unwrap();
+        state
+            .db
+            .put_cf(&hot_transactions, signature_b.0, b"not-a-transaction")
+            .unwrap();
+        state
+            .db
+            .put_cf(&hot_tx_to_slot, signature_a.0, 8u64.to_be_bytes())
+            .unwrap();
+        state.db.delete_cf(&hot_tx_to_slot, signature_b.0).unwrap();
+
+        let audit = state.audit_cold_migration(8).unwrap();
+        assert_eq!(audit.decode_errors, 1);
+        assert_eq!(audit.mismatched_transaction_rows, 1);
+        assert_eq!(audit.invalid_tx_to_slot_rows, 1);
+        assert_eq!(audit.missing_tx_to_slot_rows, 1);
+        assert_eq!(audit.integrity_errors(), 4);
+        assert_eq!(audit.conflict_rows(), 4);
+
+        let error = state
+            .migrate_to_cold_with_bounded_compaction(8, 1)
+            .unwrap_err();
+        assert!(
+            error.contains("does not match block transaction"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn test_cold_migration_accepts_durable_cold_only_transaction_indexes() {
+        let hot_dir = tempdir().unwrap();
+        let cold_dir = tempdir().unwrap();
+        let mut state = StateStore::open(hot_dir.path()).unwrap();
+        state.open_cold_store(cold_dir.path()).unwrap();
+
+        let tx = make_test_transaction(0x61);
+        let signature = tx.signature();
+        let block = Block::new(9, Hash::default(), Hash::default(), [0x61; 32], vec![tx]);
+        state.put_block(&block).unwrap();
+
+        let hot_transactions = state.db.cf_handle(CF_TRANSACTIONS).unwrap();
+        let hot_tx_to_slot = state.db.cf_handle(CF_TX_TO_SLOT).unwrap();
+        let cold = state.cold_db.as_ref().unwrap();
+        let cold_transactions = cold.cf_handle(COLD_CF_TRANSACTIONS).unwrap();
+        let cold_tx_to_slot = cold.cf_handle(COLD_CF_TX_TO_SLOT).unwrap();
+        let tx_data = state
+            .db
+            .get_cf(&hot_transactions, signature.0)
+            .unwrap()
+            .unwrap();
+        let slot_data = state
+            .db
+            .get_cf(&hot_tx_to_slot, signature.0)
+            .unwrap()
+            .unwrap();
+        cold.put_cf(&cold_transactions, signature.0, &tx_data)
+            .unwrap();
+        cold.put_cf(&cold_tx_to_slot, signature.0, &slot_data)
+            .unwrap();
+        cold.flush_wal(true).unwrap();
+        state.db.delete_cf(&hot_transactions, signature.0).unwrap();
+        state.db.delete_cf(&hot_tx_to_slot, signature.0).unwrap();
+
+        let audit = state.audit_cold_migration(10).unwrap();
+        assert_eq!(audit.integrity_errors(), 0);
+        assert_eq!(audit.transactions.hot_rows, 0);
+        assert_eq!(audit.tx_to_slot.hot_rows, 0);
+        assert_eq!(state.migrate_to_cold(10).unwrap(), 1);
+        assert_eq!(
+            state.get_transaction(&signature).unwrap().unwrap().hash(),
+            signature
+        );
+        assert_eq!(state.get_tx_slot(&signature).unwrap(), Some(9));
+    }
+
+    #[test]
+    fn test_cold_block_migration_recovers_identical_write_first_duplicate() {
+        let hot_dir = tempdir().unwrap();
+        let cold_dir = tempdir().unwrap();
+        let mut state = StateStore::open(hot_dir.path()).unwrap();
+        state.open_cold_store(cold_dir.path()).unwrap();
+
+        let block = make_test_block(1);
+        let hash = block.hash();
+        state.put_block(&block).unwrap();
+        let hot_cf = state.db.cf_handle(CF_BLOCKS).unwrap();
+        let encoded = state.db.get_cf(&hot_cf, hash.0).unwrap().unwrap();
+        let cold = state.cold_db.as_ref().unwrap();
+        let cold_cf = cold.cf_handle(COLD_CF_BLOCKS).unwrap();
+        cold.put_cf(&cold_cf, hash.0, &encoded).unwrap();
+
+        assert_eq!(state.migrate_to_cold(2).unwrap(), 1);
+        assert!(state.db.get_cf(&hot_cf, hash.0).unwrap().is_none());
+        assert_eq!(state.get_block_by_slot(1).unwrap().unwrap().hash(), hash);
+    }
+
+    #[test]
+    fn test_bounded_cold_migration_compacts_incrementally_and_is_idempotent() {
+        let hot_dir = tempdir().unwrap();
+        let cold_dir = tempdir().unwrap();
+        let mut state = StateStore::open(hot_dir.path()).unwrap();
+        state.open_cold_store(cold_dir.path()).unwrap();
+
+        let blocks = (0..5u64).map(make_test_block).collect::<Vec<_>>();
+        for block in &blocks {
+            state.put_block(block).unwrap();
+        }
+
+        let (migrated, batches) = state.migrate_to_cold_with_bounded_compaction(3, 1).unwrap();
+        assert_eq!(migrated, 3);
+        assert_eq!(batches, 3);
+
+        let hot_blocks = state.db.cf_handle(CF_BLOCKS).unwrap();
+        for block in &blocks[..3] {
+            assert!(state
+                .db
+                .get_cf(&hot_blocks, block.hash().0)
+                .unwrap()
+                .is_none());
+            assert_eq!(
+                state
+                    .get_block_by_slot(block.header.slot)
+                    .unwrap()
+                    .unwrap()
+                    .hash(),
+                block.hash()
+            );
+        }
+        for block in &blocks[3..] {
+            assert!(state
+                .db
+                .get_cf(&hot_blocks, block.hash().0)
+                .unwrap()
+                .is_some());
+        }
+
+        assert_eq!(
+            state.migrate_to_cold_with_bounded_compaction(3, 1).unwrap(),
+            (0, 0)
+        );
+    }
+
+    #[test]
+    fn test_cold_block_migration_refuses_conflict_without_hot_deletion() {
+        let hot_dir = tempdir().unwrap();
+        let cold_dir = tempdir().unwrap();
+        let mut state = StateStore::open(hot_dir.path()).unwrap();
+        state.open_cold_store(cold_dir.path()).unwrap();
+
+        let block = make_test_block(1);
+        let hash = block.hash();
+        state.put_block(&block).unwrap();
+        let cold = state.cold_db.as_ref().unwrap();
+        let cold_cf = cold.cf_handle(COLD_CF_BLOCKS).unwrap();
+        cold.put_cf(&cold_cf, hash.0, b"conflict").unwrap();
+
+        let error = state.migrate_to_cold(2).unwrap_err();
+        assert!(error.contains("conflicts with the hot value"));
+        let hot_cf = state.db.cf_handle(CF_BLOCKS).unwrap();
+        assert!(state.db.get_cf(&hot_cf, hash.0).unwrap().is_some());
+        assert_eq!(state.get_block_by_slot(1).unwrap().unwrap().hash(), hash);
     }
 
     #[test]
@@ -5452,13 +6947,11 @@ mod tests {
         fn assert_exchange_history(
             state: &StateStore,
             deposit_address: Pubkey,
-            old_hash: Hash,
-            old_slot: u64,
-            old_block_hash: Hash,
-            new_hash: Hash,
-            new_slot: u64,
-            new_block_hash: Hash,
+            old: (Hash, u64, Hash),
+            new: (Hash, u64, Hash),
         ) {
+            let (old_hash, old_slot, old_block_hash) = old;
+            let (new_hash, new_slot, new_block_hash) = new;
             assert_eq!(state.count_account_txs(&deposit_address).unwrap(), 2);
             assert_eq!(
                 state
@@ -5562,12 +7055,8 @@ mod tests {
             assert_exchange_history(
                 &state,
                 deposit_address,
-                old_hash,
-                old_slot,
-                old_block_hash,
-                new_hash,
-                new_slot,
-                new_block_hash,
+                (old_hash, old_slot, old_block_hash),
+                (new_hash, new_slot, new_block_hash),
             );
 
             assert_eq!(state.migrate_to_cold(15).unwrap(), 1);
@@ -5585,12 +7074,8 @@ mod tests {
             assert_exchange_history(
                 &state,
                 deposit_address,
-                old_hash,
-                old_slot,
-                old_block_hash,
-                new_hash,
-                new_slot,
-                new_block_hash,
+                (old_hash, old_slot, old_block_hash),
+                (new_hash, new_slot, new_block_hash),
             );
         }
 
@@ -5599,12 +7084,8 @@ mod tests {
         assert_exchange_history(
             &reopened,
             deposit_address,
-            old_hash,
-            old_slot,
-            old_block_hash,
-            new_hash,
-            new_slot,
-            new_block_hash,
+            (old_hash, old_slot, old_block_hash),
+            (new_hash, new_slot, new_block_hash),
         );
     }
 
@@ -5803,6 +7284,377 @@ mod tests {
     }
 
     #[test]
+    fn public_history_repair_import_restores_hot_and_cold_archive_parity() {
+        fn import_public_history_category(
+            source: &StateStore,
+            target: &StateStore,
+            category: &str,
+        ) -> PublicHistoryImportReport {
+            let mut aggregate = PublicHistoryImportReport {
+                category: category.to_string(),
+                ..PublicHistoryImportReport::default()
+            };
+            let mut cursor: Option<Vec<u8>> = None;
+            loop {
+                let page = source
+                    .export_public_history_category_cursor_untracked(category, cursor.as_deref(), 1)
+                    .unwrap_or_else(|err| panic!("export public history {category}: {err}"));
+                if !page.entries.is_empty() {
+                    let report = target
+                        .import_public_history_category_entries(category, &page.entries, false)
+                        .unwrap_or_else(|err| panic!("import public history {category}: {err}"));
+                    aggregate.source_rows =
+                        aggregate.source_rows.saturating_add(report.source_rows);
+                    aggregate.source_bytes =
+                        aggregate.source_bytes.saturating_add(report.source_bytes);
+                    aggregate.inserted_rows =
+                        aggregate.inserted_rows.saturating_add(report.inserted_rows);
+                    aggregate.inserted_bytes = aggregate
+                        .inserted_bytes
+                        .saturating_add(report.inserted_bytes);
+                    aggregate.identical_rows = aggregate
+                        .identical_rows
+                        .saturating_add(report.identical_rows);
+                    aggregate.conflict_rows =
+                        aggregate.conflict_rows.saturating_add(report.conflict_rows);
+                }
+                if !page.has_more {
+                    break;
+                }
+                cursor = page.next_cursor;
+            }
+            if category == "account_txs" {
+                target.clear_account_tx_counters().unwrap();
+            }
+            aggregate
+        }
+
+        let source_hot_dir = tempdir().unwrap();
+        let source_cold_dir = tempdir().unwrap();
+        let target_hot_dir = tempdir().unwrap();
+        let target_cold_dir = tempdir().unwrap();
+
+        let tracked = Pubkey([0x71; 32]);
+        let counterparty = Pubkey([0x72; 32]);
+        let old_tx = crate::transaction::Transaction::new(crate::transaction::Message::new(
+            vec![crate::transaction::Instruction {
+                program_id: crate::SYSTEM_PROGRAM_ID,
+                accounts: vec![tracked, counterparty],
+                data: vec![9],
+            }],
+            Hash::hash(b"public-history-old"),
+        ));
+        let new_tx = crate::transaction::Transaction::new(crate::transaction::Message::new(
+            vec![crate::transaction::Instruction {
+                program_id: crate::SYSTEM_PROGRAM_ID,
+                accounts: vec![tracked, counterparty],
+                data: vec![10],
+            }],
+            Hash::hash(b"public-history-new"),
+        ));
+        let old_tx_hash = old_tx.signature();
+        let new_tx_hash = new_tx.signature();
+        let old_block = crate::Block::new_with_timestamp(
+            10,
+            Hash::default(),
+            Hash::hash(b"public-history-old-state"),
+            [3u8; 32],
+            vec![old_tx],
+            1_700_000_010,
+        );
+        let old_block_hash = old_block.hash();
+        let new_block = crate::Block::new_with_timestamp(
+            20,
+            old_block_hash,
+            Hash::hash(b"public-history-new-state"),
+            [4u8; 32],
+            vec![new_tx],
+            1_700_000_020,
+        );
+
+        let mut source = StateStore::open(source_hot_dir.path()).unwrap();
+        source.open_cold_store(source_cold_dir.path()).unwrap();
+        source
+            .put_block_atomic(&old_block, Some(10), Some(10))
+            .unwrap();
+        source
+            .put_block_atomic(&new_block, Some(20), Some(20))
+            .unwrap();
+
+        let events_cf = source.db.cf_handle(CF_EVENTS).unwrap();
+        let mut event_key = Vec::new();
+        event_key.extend_from_slice(&tracked.0);
+        event_key.extend_from_slice(&10u64.to_be_bytes());
+        event_key.extend_from_slice(&0u64.to_be_bytes());
+        source
+            .db
+            .put_cf(&events_cf, &event_key, b"cold-backed-event")
+            .unwrap();
+
+        assert_eq!(source.migrate_to_cold(15).unwrap(), 1);
+        assert_eq!(source.migrate_indexes_to_cold(15).unwrap(), 3);
+
+        let source_manifest = source
+            .compute_public_history_manifest(PUBLIC_HISTORY_SNAPSHOT_CATEGORIES, 1)
+            .unwrap();
+
+        let mut target = StateStore::open(target_hot_dir.path()).unwrap();
+        target.open_cold_store(target_cold_dir.path()).unwrap();
+        let before_manifest = target
+            .compute_public_history_manifest(PUBLIC_HISTORY_SNAPSHOT_CATEGORIES, 1)
+            .unwrap();
+        assert_ne!(before_manifest.root, source_manifest.root);
+
+        let mut inserted_rows = 0u64;
+        for category in PUBLIC_HISTORY_SNAPSHOT_CATEGORIES {
+            let report = import_public_history_category(&source, &target, category);
+            assert_eq!(
+                report.conflict_rows, 0,
+                "public-history repair must not conflict for {category}"
+            );
+            inserted_rows = inserted_rows.saturating_add(report.inserted_rows);
+        }
+        assert!(inserted_rows > 0);
+
+        let after_manifest = target
+            .compute_public_history_manifest(PUBLIC_HISTORY_SNAPSHOT_CATEGORIES, 1)
+            .unwrap();
+        assert_eq!(after_manifest, source_manifest);
+        assert_eq!(
+            target
+                .get_block_by_slot(10)
+                .unwrap()
+                .map(|block| block.hash()),
+            Some(old_block_hash)
+        );
+        assert_eq!(
+            target
+                .get_transaction(&old_tx_hash)
+                .unwrap()
+                .map(|tx| tx.signature()),
+            Some(old_tx_hash)
+        );
+        assert_eq!(
+            target
+                .get_transaction(&new_tx_hash)
+                .unwrap()
+                .map(|tx| tx.signature()),
+            Some(new_tx_hash)
+        );
+        assert_eq!(target.count_account_txs(&tracked).unwrap(), 2);
+        assert_eq!(
+            target
+                .export_public_history_category_cursor_untracked("events", None, 10)
+                .unwrap()
+                .entries
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn slot_bounded_public_history_export_never_leaks_or_truncates_rows() {
+        let dir = tempdir().unwrap();
+        let state = StateStore::open(dir.path()).unwrap();
+        let make_tx = |seed: &[u8]| {
+            crate::transaction::Transaction::new(crate::transaction::Message::new(
+                vec![crate::transaction::Instruction {
+                    program_id: crate::SYSTEM_PROGRAM_ID,
+                    accounts: vec![Pubkey([0x81; 32]), Pubkey([0x82; 32])],
+                    data: seed.to_vec(),
+                }],
+                Hash::hash(seed),
+            ))
+        };
+
+        let block_10 = crate::Block::new_with_timestamp(
+            10,
+            Hash::default(),
+            Hash::hash(b"bounded-state-10"),
+            [0x10; 32],
+            vec![make_tx(b"bounded-tx-10")],
+            1_700_000_010,
+        );
+        let block_11 = crate::Block::new_with_timestamp(
+            11,
+            block_10.hash(),
+            Hash::hash(b"bounded-state-11"),
+            [0x11; 32],
+            vec![
+                make_tx(b"bounded-tx-11-a"),
+                make_tx(b"bounded-tx-11-b"),
+                make_tx(b"bounded-tx-11-c"),
+            ],
+            1_700_000_011,
+        );
+        let block_12 = crate::Block::new_with_timestamp(
+            12,
+            block_11.hash(),
+            Hash::hash(b"bounded-state-12"),
+            [0x12; 32],
+            vec![make_tx(b"bounded-tx-12")],
+            1_700_000_012,
+        );
+        for block in [&block_10, &block_11, &block_12] {
+            state
+                .put_block_atomic(block, Some(block.header.slot), Some(block.header.slot))
+                .unwrap();
+            for tx in &block.transactions {
+                state
+                    .put_tx_meta(&tx.signature(), block.header.slot)
+                    .unwrap();
+            }
+        }
+
+        let included_tx_hashes: std::collections::BTreeSet<Vec<u8>> = block_10
+            .transactions
+            .iter()
+            .chain(block_11.transactions.iter())
+            .map(|tx| tx.signature().0.to_vec())
+            .collect();
+        let excluded_tx_hash = block_12.transactions[0].signature().0.to_vec();
+
+        for category in [
+            "slots",
+            "blocks",
+            "transactions",
+            "tx_by_slot",
+            "tx_to_slot",
+            "tx_meta",
+        ] {
+            let mut cursor = if matches!(category, "slots" | "blocks") {
+                Some(9u64.to_be_bytes().to_vec())
+            } else {
+                let mut value = 9u64.to_be_bytes().to_vec();
+                value.extend_from_slice(&u64::MAX.to_be_bytes());
+                Some(value)
+            };
+            let mut rows = Vec::new();
+            let mut pages = 0usize;
+            loop {
+                let page = state
+                    .export_public_history_category_range_cursor_untracked(
+                        category,
+                        cursor.as_deref(),
+                        1,
+                        Some(11),
+                    )
+                    .unwrap();
+                pages += 1;
+                rows.extend(page.entries);
+                if !page.has_more {
+                    break;
+                }
+                cursor = page.next_cursor;
+                assert!(cursor.is_some(), "{category} must advance bounded pages");
+            }
+
+            let expected_rows = if matches!(category, "slots" | "blocks") {
+                2
+            } else {
+                4
+            };
+            assert_eq!(rows.len(), expected_rows, "bounded {category} row count");
+            assert_eq!(pages, expected_rows, "bounded {category} page count");
+
+            match category {
+                "slots" => {
+                    assert!(rows.iter().all(|(key, _)| {
+                        u64::from_be_bytes(key.as_slice().try_into().unwrap()) <= 11
+                    }));
+                }
+                "blocks" => {
+                    let hashes: std::collections::BTreeSet<_> =
+                        rows.iter().map(|(key, _)| key.clone()).collect();
+                    assert_eq!(
+                        hashes,
+                        [block_10.hash().0.to_vec(), block_11.hash().0.to_vec()]
+                            .into_iter()
+                            .collect::<std::collections::BTreeSet<_>>()
+                    );
+                }
+                "tx_by_slot" => {
+                    assert!(rows.iter().all(|(key, _)| {
+                        let slot: [u8; 8] = key[..8].try_into().unwrap();
+                        u64::from_be_bytes(slot) <= 11
+                    }));
+                }
+                "tx_to_slot" => {
+                    assert!(rows.iter().all(|(_, value)| {
+                        u64::from_be_bytes(value.as_slice().try_into().unwrap()) <= 11
+                    }));
+                }
+                "transactions" | "tx_meta" => {
+                    let hashes: std::collections::BTreeSet<_> =
+                        rows.iter().map(|(key, _)| key.clone()).collect();
+                    assert_eq!(hashes, included_tx_hashes);
+                    assert!(!hashes.contains(&excluded_tx_hash));
+                }
+                _ => unreachable!(),
+            }
+        }
+
+        let unsupported = state.export_public_history_category_range_cursor_untracked(
+            "events",
+            None,
+            10,
+            Some(11),
+        );
+        let Err(unsupported) = unsupported else {
+            panic!("slot-bounded events export must be rejected");
+        };
+        assert!(unsupported.contains("Slot-bounded"));
+    }
+
+    #[test]
+    fn public_history_repair_dry_run_reports_conflicts_without_writing() {
+        let source_dir = tempdir().unwrap();
+        let target_dir = tempdir().unwrap();
+        let source = StateStore::open(source_dir.path()).unwrap();
+        let target = StateStore::open(target_dir.path()).unwrap();
+        let source_hash = Hash::hash(b"source-tx");
+        let target_hash = Hash::hash(b"target-tx");
+        let key = 7u64.to_be_bytes();
+
+        let source_report = source
+            .import_public_history_category_entries(
+                "slots",
+                &[(key.to_vec(), source_hash.0.to_vec())],
+                false,
+            )
+            .unwrap();
+        assert_eq!(source_report.inserted_rows, 1);
+        assert_eq!(source_report.source_bytes, 40);
+        assert_eq!(source_report.inserted_bytes, 40);
+        target
+            .import_public_history_category_entries(
+                "slots",
+                &[(key.to_vec(), target_hash.0.to_vec())],
+                false,
+            )
+            .unwrap();
+
+        let page = source
+            .export_public_history_category_cursor_untracked("slots", None, 10)
+            .unwrap();
+        let dry_run = target
+            .import_public_history_category_entries("slots", &page.entries, true)
+            .unwrap();
+        assert_eq!(dry_run.conflict_rows, 1);
+        assert_eq!(dry_run.inserted_rows, 0);
+        assert_eq!(dry_run.source_bytes, 40);
+        assert_eq!(dry_run.inserted_bytes, 0);
+        assert_eq!(
+            target
+                .export_public_history_category_cursor_untracked("slots", None, 10)
+                .unwrap()
+                .entries[0]
+                .1,
+            target_hash.0.to_vec()
+        );
+    }
+
+    #[test]
     fn test_cold_program_call_index_is_merged_with_hot_queries() {
         let hot_dir = tempdir().unwrap();
         let cold_dir = tempdir().unwrap();
@@ -5855,6 +7707,46 @@ mod tests {
             .unwrap();
         assert_eq!(paged.len(), 1);
         assert_eq!(paged[0].function, "old");
+    }
+
+    #[test]
+    fn test_checkpoint_open_attaches_cold_archive_snapshot() {
+        let hot_dir = tempdir().unwrap();
+        let cold_dir = tempdir().unwrap();
+        let checkpoint_root = tempdir().unwrap();
+        let checkpoint_path = checkpoint_root.path().join("slot-10");
+        let mut state = StateStore::open(hot_dir.path()).unwrap();
+        state.open_cold_store(cold_dir.path()).unwrap();
+
+        let program = Pubkey([0x61; 32]);
+        let caller = Pubkey([0x62; 32]);
+        let old_call = crate::ProgramCallActivity {
+            slot: 4,
+            timestamp: 1_700_000_010_000,
+            program,
+            caller,
+            function: "cold_checkpoint".to_string(),
+            value: 3,
+            tx_signature: Hash::hash(b"cold-checkpoint-program-call"),
+        };
+
+        state.record_program_call(&old_call, 0).unwrap();
+        assert_eq!(state.migrate_indexes_to_cold(5).unwrap(), 1);
+        assert_eq!(
+            state.get_program_calls(&program, 10, None).unwrap().len(),
+            1
+        );
+
+        state
+            .create_checkpoint(checkpoint_path.to_str().unwrap(), 10)
+            .unwrap();
+        let checkpoint = StateStore::open_checkpoint(checkpoint_path.to_str().unwrap()).unwrap();
+        assert!(checkpoint.has_cold_storage());
+
+        let calls = checkpoint.get_program_calls(&program, 10, None).unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].function, "cold_checkpoint");
+        assert_eq!(calls[0].tx_signature, old_call.tx_signature);
     }
 
     #[test]
@@ -6672,6 +8564,98 @@ mod tests {
     }
 
     #[test]
+    fn account_snapshot_cold_migration_preserves_queries_and_manifest() {
+        let hot_dir = tempdir().unwrap();
+        let cold_dir = tempdir().unwrap();
+        let mut state = StateStore::open(hot_dir.path()).unwrap();
+        state.open_cold_store(cold_dir.path()).unwrap();
+
+        let pk = Pubkey([0x71; 32]);
+        state
+            .put_account_snapshot(&pk, &Account::new(4, pk), 4)
+            .unwrap();
+        state
+            .put_account_snapshot(&pk, &Account::new(7, pk), 7)
+            .unwrap();
+        let manifest_before = state
+            .compute_public_history_manifest(&["account_snapshots"], 1)
+            .unwrap();
+
+        assert_eq!(state.migrate_indexes_to_cold(5).unwrap(), 1);
+        assert_eq!(
+            state.get_account_at_slot(&pk, 4).unwrap().unwrap().spores,
+            4_000_000_000
+        );
+        assert_eq!(
+            state.get_account_at_slot(&pk, 6).unwrap().unwrap().spores,
+            4_000_000_000
+        );
+        assert_eq!(
+            state.get_account_at_slot(&pk, 7).unwrap().unwrap().spores,
+            7_000_000_000
+        );
+        assert_eq!(state.get_oldest_snapshot_slot().unwrap(), Some(4));
+        assert_eq!(
+            state
+                .compute_public_history_manifest(&["account_snapshots"], 1)
+                .unwrap(),
+            manifest_before,
+            "hot-to-cold placement must not change public history"
+        );
+        assert_eq!(
+            state.migrate_indexes_to_cold(5).unwrap(),
+            0,
+            "account snapshot migration must be idempotent"
+        );
+    }
+
+    #[test]
+    fn account_snapshot_cold_migration_refuses_conflicting_history() {
+        let hot_dir = tempdir().unwrap();
+        let cold_dir = tempdir().unwrap();
+        let mut state = StateStore::open(hot_dir.path()).unwrap();
+        state.open_cold_store(cold_dir.path()).unwrap();
+
+        let pk = Pubkey([0x72; 32]);
+        state
+            .put_account_snapshot(&pk, &Account::new(4, pk), 4)
+            .unwrap();
+        let mut key = [0u8; 40];
+        key[..32].copy_from_slice(&pk.0);
+        key[32..].copy_from_slice(&4u64.to_be_bytes());
+        let cold = state.cold_db.as_ref().unwrap();
+        let cold_cf = cold.cf_handle(COLD_CF_ACCOUNT_SNAPSHOTS).unwrap();
+        cold.put_cf(&cold_cf, key, b"conflict").unwrap();
+
+        let error = state.migrate_indexes_to_cold(5).unwrap_err();
+        assert!(error.contains("conflicts with the hot value"));
+        let hot_cf = state.db.cf_handle(CF_ACCOUNT_SNAPSHOTS).unwrap();
+        assert!(state.db.get_cf(&hot_cf, key).unwrap().is_some());
+        assert!(state
+            .compute_public_history_manifest(&["account_snapshots"], 1)
+            .unwrap_err()
+            .contains("Conflicting hot/cold account_snapshots"));
+    }
+
+    #[test]
+    fn archive_backed_store_refuses_destructive_snapshot_pruning() {
+        let hot_dir = tempdir().unwrap();
+        let cold_dir = tempdir().unwrap();
+        let mut state = StateStore::open(hot_dir.path()).unwrap();
+        state.open_cold_store(cold_dir.path()).unwrap();
+        let pk = Pubkey([0x73; 32]);
+        state
+            .put_account_snapshot(&pk, &Account::new(1, pk), 1)
+            .unwrap();
+
+        assert!(state
+            .prune_account_snapshots(2)
+            .unwrap_err()
+            .contains("Refusing"));
+        assert!(state.get_account_at_slot(&pk, 1).unwrap().is_some());
+    }
+
+    #[test]
     fn test_archive_no_snapshot_before_slot() {
         let temp = tempdir().unwrap();
         let state = StateStore::open(temp.path()).unwrap();
@@ -6755,6 +8739,26 @@ mod tests {
         // Snapshot should exist at slot 100
         let r = state.get_account_at_slot(&pk, 100).unwrap().unwrap();
         assert_eq!(r.spores, 50_000_000_000);
+    }
+
+    #[test]
+    fn test_archive_batch_explicit_slot_ignores_local_tip() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+
+        let pk = Pubkey([0x14; 32]);
+        state.set_last_slot(100).unwrap();
+        state.set_archive_mode(true);
+
+        let mut batch = state.begin_batch_at_slot(101);
+        batch.put_account(&pk, &Account::new(25, pk)).unwrap();
+        state.commit_batch(batch).unwrap();
+
+        assert!(state.get_account_at_slot(&pk, 100).unwrap().is_none());
+        assert_eq!(
+            state.get_account_at_slot(&pk, 101).unwrap().unwrap().spores,
+            25_000_000_000
+        );
     }
 
     #[test]

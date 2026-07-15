@@ -45,7 +45,7 @@ pub(super) async fn handle_account_history(
     println!("📊 Showing last {} transactions", limit);
     println!();
 
-    match client.get_transaction_history(address, limit).await {
+    match client.get_transactions_by_address(address, limit).await {
         Ok(history) => {
             if history.transactions.is_empty() {
                 println!("No transactions found");
@@ -62,7 +62,9 @@ pub(super) async fn handle_account_history(
                     println!();
                 }
                 if history.has_more {
-                    if let Some(next_before_slot) = history.next_before_slot {
+                    if let Some(next_before) = history.next_before {
+                        println!("More transactions available (cursor {}).", next_before);
+                    } else if let Some(next_before_slot) = history.next_before_slot {
                         println!(
                             "More transactions available before slot {}.",
                             next_before_slot

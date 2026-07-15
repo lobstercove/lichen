@@ -532,9 +532,48 @@ pub struct TraderQuery {
     pair_id: Option<u64>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CandleInterval(u64);
+
+impl<'de> Deserialize<'de> for CandleInterval {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Value {
+            Seconds(u64),
+            Label(String),
+        }
+
+        let seconds = match Value::deserialize(deserializer)? {
+            Value::Seconds(seconds) => seconds,
+            Value::Label(label) => match label.as_str() {
+                "1m" => 60,
+                "5m" => 300,
+                "15m" => 900,
+                "1h" => 3_600,
+                "4h" => 14_400,
+                "1d" => 86_400,
+                "3d" => 259_200,
+                "1w" => 604_800,
+                "1y" => 31_536_000,
+                _ => label.parse::<u64>().map_err(serde::de::Error::custom)?,
+            },
+        };
+        if seconds == 0 {
+            return Err(serde::de::Error::custom(
+                "candle interval must be greater than zero",
+            ));
+        }
+        Ok(Self(seconds))
+    }
+}
+
 #[derive(Deserialize)]
 pub struct CandleQuery {
-    interval: Option<u64>,
+    interval: Option<CandleInterval>,
     limit: Option<usize>,
     from: Option<u64>,
     to: Option<u64>,
@@ -571,11 +610,11 @@ fn default_limit() -> String {
 
 #[derive(Deserialize)]
 pub struct SwapBody {
-    #[serde(rename = "tokenIn", alias = "token_in")]
+    #[serde(rename = "tokenIn")]
     pub token_in: String,
-    #[serde(rename = "tokenOut", alias = "token_out")]
+    #[serde(rename = "tokenOut")]
     pub token_out: String,
-    #[serde(rename = "amountIn", alias = "amount_in")]
+    #[serde(rename = "amountIn")]
     pub amount_in: u64,
     pub slippage: f64,
 }
@@ -785,8 +824,14 @@ fn governance_proposal_storage_key(proposal_id: u64) -> String {
     core_dex::governance_proposal_key(proposal_id)
 }
 
-/// Symbol map cache: (last_refresh, cached_map). Refreshes every 30 seconds.
-static SYMBOL_MAP_CACHE: Mutex<Option<(Instant, HashMap<String, String>)>> = Mutex::new(None);
+struct TokenSymbolMapCache {
+    refreshed_at: Instant,
+    graduation_revision: u64,
+    symbols: HashMap<String, String>,
+}
+
+/// Symbol map cache. Refreshes every 30 seconds or after a graduation.
+static SYMBOL_MAP_CACHE: Mutex<Option<TokenSymbolMapCache>> = Mutex::new(None);
 const SYMBOL_CACHE_TTL_SECS: u64 = 30;
 
 /// Ticker cache: avoids 4+ DB reads per pair on every /tickers request.
@@ -800,10 +845,15 @@ const TICKERS_CACHE_TTL_SECS: u64 = 2;
 /// Results are cached for 30 seconds to avoid redundant storage queries.
 fn build_token_symbol_map(state: &crate::RpcState) -> HashMap<String, String> {
     let mut cache = SYMBOL_MAP_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    let graduation_revision = state
+        .state
+        .get_program_storage_u64("SPOREPUMP", b"cp_graduation_revision");
 
-    if let Some((ref ts, ref map)) = *cache {
-        if ts.elapsed().as_secs() < SYMBOL_CACHE_TTL_SECS {
-            return map.clone();
+    if let Some(cached) = cache.as_ref() {
+        if cached.graduation_revision == graduation_revision
+            && cached.refreshed_at.elapsed().as_secs() < SYMBOL_CACHE_TTL_SECS
+        {
+            return cached.symbols.clone();
         }
     }
 
@@ -829,11 +879,41 @@ fn build_token_symbol_map(state: &crate::RpcState) -> HashMap<String, String> {
         }
     }
 
+    // Graduated SporePump tokens are independently deployed public programs,
+    // not static genesis registry entries. Their canonical address and symbol
+    // remain replicated in SporePump state and must enrich every DEX reader.
+    let launch_count = state
+        .state
+        .get_program_storage_u64("SPOREPUMP", b"cp_token_count")
+        .min(10_000);
+    for token_id in 1..=launch_count {
+        let candidate_key = format!("cpgt:{:016x}", token_id);
+        let Some(candidate) = state
+            .state
+            .get_program_storage("SPOREPUMP", candidate_key.as_bytes())
+            .filter(|value| value.len() >= 32 && value[..32].iter().any(|byte| *byte != 0))
+        else {
+            continue;
+        };
+        let symbol_key = format!("cpsy:{:016x}", token_id);
+        let symbol = state
+            .state
+            .get_program_storage("SPOREPUMP", symbol_key.as_bytes())
+            .and_then(|value| String::from_utf8(value).ok())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| format!("SPT{}", token_id));
+        map.insert(hex::encode(&candidate[..32]), symbol);
+    }
+
     // Native LICN coin uses zero address sentinel [0u8; 32] — always map it
     let zero_hex = "00".repeat(32);
     map.entry(zero_hex).or_insert_with(|| "LICN".to_string());
 
-    *cache = Some((Instant::now(), map.clone()));
+    *cache = Some(TokenSymbolMapCache {
+        refreshed_at: Instant::now(),
+        graduation_revision,
+        symbols: map.clone(),
+    });
     map
 }
 
@@ -949,6 +1029,32 @@ fn decode_margin_position(data: &[u8]) -> Option<MarginPositionJson> {
     })
 }
 
+fn amm_price_for_pair(state: &RpcState, pair: &TradingPairJson) -> Option<f64> {
+    let pool_count = read_u64(state, DEX_AMM_PROGRAM, AMM_POOL_COUNT_KEY).min(10_000);
+    let mut candidate_ids = Vec::with_capacity(2);
+    if pair.pair_id <= pool_count {
+        candidate_ids.push(pair.pair_id);
+    }
+    candidate_ids.extend((1..=pool_count).filter(|pool_id| *pool_id != pair.pair_id));
+
+    for pool_id in candidate_ids {
+        let Some(data) = read_bytes(state, DEX_AMM_PROGRAM, &amm_pool_storage_key(pool_id)) else {
+            continue;
+        };
+        let Some(pool) = decode_pool(&data) else {
+            continue;
+        };
+        if pool.token_a == pair.base_token
+            && pool.token_b == pair.quote_token
+            && pool.price.is_finite()
+            && pool.price > 0.0
+        {
+            return Some(pool.price);
+        }
+    }
+    None
+}
+
 /// Decode a candle from 48-byte blob
 fn decode_candle(data: &[u8]) -> Option<CandleJson> {
     core_dex::decode_candle(data).map(Into::into)
@@ -1014,6 +1120,9 @@ async fn get_pairs(State(state): State<Arc<RpcState>>, Query(q): Query<PairsQuer
                         }
                     }
                 }
+                if pair.last_price.is_none_or(|price| price <= 0.0) {
+                    pair.last_price = amm_price_for_pair(&state, &pair);
+                }
 
                 // Read 24h stats for change
                 let stats_key = analytics_24h_storage_key(pair.pair_id);
@@ -1060,6 +1169,11 @@ async fn get_pair(State(state): State<Arc<RpcState>>, Path(pair_id): Path<u64>) 
                 );
                 if lp_raw > 0 {
                     pair.last_price = Some(lp_raw as f64 / PRICE_SCALE as f64);
+                }
+                if pair.last_price.is_none_or(|price| price <= 0.0) {
+                    pair.last_price = oracle_price_for_pair(&state.state, pair.pair_id)
+                        .filter(|price| *price > 0.0)
+                        .or_else(|| amm_price_for_pair(&state, &pair));
                 }
                 ApiResponse::ok(pair, slot).into_response()
             }
@@ -1168,14 +1282,14 @@ async fn get_candles(
     Path(pair_id): Path<u64>,
     Query(q): Query<CandleQuery>,
 ) -> Response {
-    let interval = q.interval.unwrap_or(3600);
+    let interval = q.interval.map(|value| value.0).unwrap_or(3600);
     let limit = q.limit.unwrap_or(100).min(500);
     let slot = current_slot(&state);
 
     let count_key = analytics_candle_count_storage_key(pair_id, interval);
     let candle_count = read_u64(&state, DEX_ANALYTICS_PROGRAM, &count_key);
 
-    // F5.1+F5.2: Compute timestamps from slot and use 1-based inclusive range
+    // Compute response timestamps after reading the canonical ring sequence.
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -1183,18 +1297,16 @@ async fn get_candles(
     let now_sec = now_ms / 1000;
 
     let mut candles = Vec::new();
-    // Candle IDs are 0-based; candle_count is the number of stored candles.
-    // Scale scan range for small intervals so 1m charts (~60s) cover the same
-    // wall-clock duration as 5m charts (~300s).  Base: limit × 300s = 25h.
-    let effective_limit = if interval > 0 && interval < 300 {
-        ((limit as u64) * 300 / interval).min(candle_count)
-    } else {
-        (limit as u64).min(candle_count)
-    };
+    // Candle IDs use a bounded zero-based ring. `candle_count` is the monotonic
+    // logical sequence, while the retention cap bounds physical state growth.
+    let retention = core_dex::analytics_candle_retention(interval);
+    let retained_count = candle_count.min(retention);
+    let effective_limit = candle_response_limit(limit, retained_count);
     let start = candle_count.saturating_sub(effective_limit);
 
-    for i in start..candle_count {
-        let key = analytics_candle_storage_key(pair_id, interval, i);
+    for sequence in start..candle_count {
+        let index = core_dex::analytics_candle_storage_index(sequence, interval);
+        let key = analytics_candle_storage_key(pair_id, interval, index);
         if let Some(data) = read_bytes(&state, DEX_ANALYTICS_PROGRAM, &key) {
             if let Some(mut candle) = decode_candle(&data) {
                 // The slot field stores the unix timestamp directly (written by
@@ -1224,6 +1336,10 @@ async fn get_candles(
     }
 
     ApiResponse::ok(candles, slot).into_response()
+}
+
+fn candle_response_limit(requested: usize, retained_count: u64) -> u64 {
+    (requested as u64).min(retained_count)
 }
 
 /// GET /api/v1/pairs/:id/stats — 24h rolling stats
@@ -1283,6 +1399,13 @@ async fn get_pair_ticker(State(state): State<Arc<RpcState>>, Path(pair_id): Path
             if oracle_price > 0.0 {
                 last_price = oracle_price;
             }
+        }
+    }
+    if last_price <= 0.0 {
+        if let Some(pair) = read_bytes(&state, DEX_CORE_PROGRAM, &pair_storage_key(pair_id))
+            .and_then(|data| decode_pair(&data))
+        {
+            last_price = amm_price_for_pair(&state, &pair).unwrap_or(0.0);
         }
     }
 
@@ -1383,6 +1506,13 @@ async fn get_all_tickers(State(state): State<Arc<RpcState>>) -> Response {
                 if oracle_price > 0.0 {
                     last_price = oracle_price;
                 }
+            }
+        }
+        if last_price <= 0.0 {
+            if let Some(pair) = read_bytes(&state, DEX_CORE_PROGRAM, &pair_storage_key(pair_id))
+                .and_then(|data| decode_pair(&data))
+            {
+                last_price = amm_price_for_pair(&state, &pair).unwrap_or(0.0);
             }
         }
 
@@ -1864,45 +1994,8 @@ async fn post_router_swap(
                             best_route = Some(route);
                         }
                     } else if best_route.is_none() {
-                        // No CLOB liquidity, but record the route for fallback error messaging
+                        // Preserve the registered route for an explicit no-liquidity response.
                         best_route = Some(route);
-                    }
-                }
-            }
-        }
-    }
-
-    // Fallback: if no explicit route found, scan all AMM pools for a matching pair
-    if best_route.is_none() {
-        let pool_count = read_u64(&state, DEX_AMM_PROGRAM, AMM_POOL_COUNT_KEY);
-        // Hard cap fallback scan to keep quote latency bounded when pool_count is very large.
-        // Route registry remains the primary path; this is best-effort compatibility fallback.
-        let scan_limit = pool_count.min(10_000);
-        for pid in 0..scan_limit {
-            let pk = amm_pool_storage_key(pid);
-            if let Some(data) = read_bytes(&state, DEX_AMM_PROGRAM, &pk) {
-                if data.len() >= 96 {
-                    let ta = hex::encode(&data[0..32]);
-                    let tb = hex::encode(&data[32..64]);
-                    if (ta == token_in && tb == token_out) || (tb == token_in && ta == token_out) {
-                        if let Some((amount_out, impact)) =
-                            quote_amm_swap(&state, pid, &token_in, body.amount_in)
-                        {
-                            if amount_out > best_output {
-                                best_output = amount_out;
-                                best_impact = impact;
-                                best_route = Some(RouteJson {
-                                    route_id: pid,
-                                    token_in: token_in.clone(),
-                                    token_out: token_out.clone(),
-                                    route_type: "amm",
-                                    pool_or_pair_id: pid,
-                                    secondary_id: 0,
-                                    split_percent: 100,
-                                    enabled: true,
-                                });
-                            }
-                        }
                     }
                 }
             }
@@ -2746,6 +2839,23 @@ async fn get_lichenswap_stats(State(state): State<Arc<RpcState>>) -> Response {
 mod tests {
     use super::*;
 
+    #[test]
+    fn candle_query_accepts_standard_labels_and_numeric_seconds() {
+        let hourly: CandleQuery = serde_json::from_str(r#"{"interval":"1h"}"#).unwrap();
+        let numeric: CandleQuery = serde_json::from_str(r#"{"interval":300}"#).unwrap();
+        let numeric_string: CandleQuery = serde_json::from_str(r#"{"interval":"60"}"#).unwrap();
+
+        assert_eq!(hourly.interval, Some(CandleInterval(3_600)));
+        assert_eq!(numeric.interval, Some(CandleInterval(300)));
+        assert_eq!(numeric_string.interval, Some(CandleInterval(60)));
+    }
+
+    #[test]
+    fn candle_query_rejects_unknown_or_zero_intervals() {
+        assert!(serde_json::from_str::<CandleQuery>(r#"{"interval":"2fortnights"}"#).is_err());
+        assert!(serde_json::from_str::<CandleQuery>(r#"{"interval":0}"#).is_err());
+    }
+
     // ── helpers ──────────────────────────────────────────────────────────
 
     /// Build a minimal 112-byte trading-pair blob for decode_pair.
@@ -3191,6 +3301,20 @@ mod tests {
         assert!((c.close - 105.0).abs() < 1e-6);
         assert_eq!(c.volume, 5000);
         assert_eq!(c.slot, 42);
+    }
+
+    #[test]
+    fn candle_limit_is_an_item_count_for_every_interval() {
+        for interval in [60, 300, 900, 3600, 86_400] {
+            let retained = core_dex::analytics_candle_retention(interval);
+            assert_eq!(candle_response_limit(100, retained), 100);
+        }
+    }
+
+    #[test]
+    fn candle_limit_never_exceeds_retained_history() {
+        assert_eq!(candle_response_limit(100, 37), 37);
+        assert_eq!(candle_response_limit(0, 37), 0);
     }
 
     // ── decode_stats_24h ────────────────────────────────────────────────

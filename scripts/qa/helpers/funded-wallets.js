@@ -70,8 +70,19 @@ function decodeStoredBytes(value, fieldName) {
   throw new Error(`${fieldName} must be a hex string, byte array, or buffer`);
 }
 
+function resolveLocalKeypairPassword() {
+  for (const root of [process.cwd(), path.resolve(process.cwd(), '..')]) {
+    const passwordFile = path.join(root, 'data', 'local-cluster', 'keypair-password');
+    try {
+      const password = fs.readFileSync(passwordFile, 'utf8').trim();
+      if (password) return password;
+    } catch (_) { }
+  }
+  return null;
+}
+
 function resolveKeypairPassword(password) {
-  return password ?? process.env[KEYPAIR_PASSWORD_ENV] ?? null;
+  return password ?? process.env[KEYPAIR_PASSWORD_ENV] ?? resolveLocalKeypairPassword();
 }
 
 function deriveCanonicalKey(password, salt) {

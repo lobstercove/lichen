@@ -242,7 +242,7 @@ function formatAddress(addr) {
     return formatHash(addr, 6);
 }
 
-// Normalize legacy transaction type names to current terminology
+// Normalize terminology stored in early public-chain transaction history.
 function normalizeTxType(type) {
     if (!type) return type;
     return type === 'DebtRepay' ? 'GrantRepay' : type;
@@ -783,9 +783,6 @@ async function getLiveRegistryEntries(method, fallbackRpcCall) {
         if (liveResponse && Array.isArray(liveResponse.entries)) {
             return normalizeRegistryEntries(liveResponse.entries);
         }
-        if (Array.isArray(liveResponse)) {
-            return normalizeRegistryEntries(liveResponse);
-        }
     } catch (_) {
         return [];
     }
@@ -815,8 +812,7 @@ async function signedMetadataRpcCall(method, params, networkKey, fallbackRpcCall
     switch (String(method || '')) {
         case 'getSignedMetadataManifest':
             return (await getSignedMetadataManifest(networkKey)).payload;
-        case 'getAllSymbolRegistry':
-        case 'getAllSymbols': {
+        case 'getAllSymbolRegistry': {
             var manifest = await getSignedMetadataManifestOrNull(networkKey);
             if (!manifest) {
                 if (typeof fallbackRpcCall === 'function') {
@@ -912,7 +908,7 @@ function readLeU64(bytes) {
 }
 
 // ── Bincode Message Serializer ──
-// Produces the same bytes as Rust's legacy bincode message codec so signatures match.
+// Produces the same bytes as Rust's canonical bincode message payload codec.
 
 function serializeMessageBincode(message) {
     var parts = [];

@@ -13,11 +13,9 @@
 //
 // JSON-RPC methods (dispatched from handle_rpc):
 //   getShieldedPoolState       — equivalent of GET /pool
-//   getShieldedPoolStats       — alias of getShieldedPoolState (wallet compat)
 //   getShieldedMerkleRoot      — equivalent of GET /merkle-root
 //   getShieldedMerklePath      — args: [index]
 //   isNullifierSpent           — args: [hex_hash]
-//   checkNullifier             — args: [hex_hash] (alias of isNullifierSpent)
 //   getShieldedCommitments     — args: [{from, limit}]
 //   computeShieldNullifier     — args: [{serial, spending_key}]
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -393,7 +391,7 @@ async fn submit_shielded_tx(
         Err(e) => return api_err(&format!("Invalid base64: {}", e)),
     };
 
-    // M-6: Decode via wire-format envelope (supports V1 envelope, legacy bincode, JSON)
+    // Decode the mandatory V1 transaction wire envelope.
     let tx: lichen_core::Transaction = match crate::decode_transaction_bytes(&tx_bytes) {
         Ok(t) => t,
         Err(e) => return api_err(&format!("Invalid transaction: {}", e.message)),
@@ -419,7 +417,7 @@ async fn submit_shielded_tx(
     }
 
     // Submit to mempool
-    match crate::submit_transaction(state, tx) {
+    match crate::submit_transaction(state, tx).await {
         Ok(signature) => ApiResponse::ok(SubmitShieldedResponse {
             signature,
             shielded_type: type_name.to_string(),
@@ -443,23 +441,6 @@ async fn submit_shielded_tx(
 /// JSON-RPC: getShieldedPoolState
 /// Params: none
 pub(crate) async fn handle_get_shielded_pool_state(
-    state: &RpcState,
-    _params: Option<serde_json::Value>,
-) -> Result<serde_json::Value, RpcError> {
-    let pool = state
-        .state
-        .get_shielded_pool_state()
-        .map_err(|e| RpcError {
-            code: -32000,
-            message: format!("Database error: {}", e),
-        })?;
-
-    Ok(shielded_pool_stats_json(&pool))
-}
-
-/// JSON-RPC: getShieldedPoolStats (compat alias of getShieldedPoolState)
-/// Params: none
-pub(crate) async fn handle_get_shielded_pool_stats(
     state: &RpcState,
     _params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
@@ -1298,19 +1279,6 @@ fn shielded_pool_stats_json(pool: &lichen_core::zk::ShieldedPoolState) -> serde_
         "unshieldCount": pool.unshield_count,
         "transferCount": pool.transfer_count,
         "zkScheme": zk_scheme,
-
-        // snake_case compatibility for wallet/extension callers
-        "merkle_root": hex::encode(pool.merkle_root),
-        "commitment_count": pool.commitment_count,
-        "pool_balance": pool.total_shielded,
-        "pool_balance_licn": pool.total_shielded as f64 / 1_000_000_000.0,
-        "total_shielded": pool.total_shielded,
-        "total_shielded_licn": format!("{:.9}", pool.total_shielded as f64 / 1_000_000_000.0),
-        "nullifier_count": pool.nullifier_count,
-        "shield_count": pool.shield_count,
-        "unshield_count": pool.unshield_count,
-        "transfer_count": pool.transfer_count,
-        "zk_scheme": zk_scheme,
     })
 }
 

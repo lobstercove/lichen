@@ -1042,6 +1042,36 @@ fn test_recent_blockhashes_bounded() {
     assert!(!hashes.is_empty(), "Should have recent blockhashes");
 }
 
+#[test]
+fn partial_blockhash_cache_warmup_after_restart_loads_complete_recent_window() {
+    let temp_dir = TempDir::new().unwrap();
+    let state = StateStore::open(temp_dir.path()).unwrap();
+    let validator = Keypair::new();
+    let mut parent = Hash::default();
+    let mut expected_old_hash = Hash::default();
+    for slot in 0..=3 {
+        let block = make_block(slot, parent, &validator, vec![]);
+        parent = block.hash();
+        if slot == 1 {
+            expected_old_hash = parent;
+        }
+        state.put_block(&block).unwrap();
+        state.set_last_slot(slot).unwrap();
+    }
+    drop(state);
+
+    let reopened = StateStore::open(temp_dir.path()).unwrap();
+    let tip = reopened.get_block_by_slot(3).unwrap().unwrap();
+    reopened.put_block_atomic(&tip, Some(3), Some(3)).unwrap();
+
+    let hashes = reopened.get_recent_blockhashes(3).unwrap();
+    assert!(
+        hashes.contains(&expected_old_hash),
+        "a recovery-time tip push must not hide older still-recent blockhashes"
+    );
+    assert_eq!(hashes.len(), 4);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // 21. KEYPAIR OPERATIONS
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1548,15 +1578,15 @@ fn test_stake_pool_save_load_roundtrip() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// 38. FORK CHOICE — LEGACY API
+// 38. FORK CHOICE
 // ═══════════════════════════════════════════════════════════════════════════════
 
 #[test]
-fn test_fork_choice_legacy_weight() {
+fn test_fork_choice_weight() {
     let mut fc = ForkChoice::new();
     let hash_a = Hash::new([1u8; 32]);
-    fc.add_weight(hash_a, 100);
-    fc.add_weight(hash_a, 200);
+    fc.add_head(1, hash_a, 100);
+    fc.add_head(1, hash_a, 200);
     assert_eq!(fc.get_weight(&hash_a), 300);
 }
 

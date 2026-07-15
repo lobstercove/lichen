@@ -21,6 +21,7 @@ async function main() {
     
     // Get recent blockhash
     const blockhash = await connection.getRecentBlockhash();
+    const chainId = (await connection.getNetworkInfo()).chain_id;
     console.log(`🔗 Blockhash: ${blockhash.substring(0, 16)}...\n`);
     
     // Build and send transactions
@@ -36,7 +37,7 @@ async function main() {
         const tx = new TransactionBuilder()
             .add(instruction)
             .setRecentBlockhash(blockhash)
-            .buildAndSign(sender);
+            .buildAndSignForChainId(sender, chainId);
         const sig = await connection.sendTransaction(tx);
         console.log(`   ✅ Transaction ${i + 1} sent: ${sig.substring(0, 16)}...`);
     }

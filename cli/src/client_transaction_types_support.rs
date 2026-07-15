@@ -17,6 +17,7 @@ pub struct TransactionInfo {
 pub struct TransactionHistoryResponse {
     pub transactions: Vec<TransactionInfo>,
     pub has_more: bool,
+    pub next_before: Option<String>,
     pub next_before_slot: Option<u64>,
 }
 
@@ -44,11 +45,13 @@ mod tests {
                 "success": true
             }],
             "has_more": true,
+            "next_before": "def",
             "next_before_slot": 41
         }))
         .expect("current transaction history envelope parses");
 
         assert!(history.has_more);
+        assert_eq!(history.next_before.as_deref(), Some("def"));
         assert_eq!(history.next_before_slot, Some(41));
         assert_eq!(history.transactions[0].amount_spores, 1_250_000_000);
     }

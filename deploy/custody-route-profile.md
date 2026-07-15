@@ -336,7 +336,7 @@ cargo run -p lichen-rpc --bin bridge_auth_payload -- \
   --chain solana --asset usdc --seed-byte 42 --ttl-secs 3600 \
   > /tmp/bridge-auth-solana-usdc.json
 
-curl -fsS https://testnet-rpc.lichen.network \
+curl -fsS https://testnet-api.lichen.network \
   -H 'Content-Type: application/json' \
   --data "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"createBridgeDeposit\",\"params\":[$(cat /tmp/bridge-auth-solana-usdc.json)]}"
 ```
@@ -381,7 +381,7 @@ cargo run -p lichen-rpc --bin withdrawal_auth_payload -- \
 
 # Burn the wrapped asset on Lichen using the raw call format.
 cargo run -p lichen-rpc --bin wrapped_burn -- \
-  --rpc-url https://testnet-rpc.lichen.network \
+  --rpc-url https://testnet-api.lichen.network \
   --contract "$CUSTODY_WSOL_TOKEN_ADDR" \
   --amount 1000000 \
   --seed-byte 81

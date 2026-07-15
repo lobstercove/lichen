@@ -165,8 +165,12 @@ async function run() {
       }
     }
   };
-  globalThis.fetch = async () => {
-    throw new Error('signTransaction E2E must not submit or call RPC');
+  globalThis.fetch = async (_url, options) => {
+    const body = JSON.parse(String(options?.body || '{}'));
+    if (body.method === 'getNetworkInfo') {
+      return { json: async () => ({ jsonrpc: '2.0', id: body.id, result: { chain_id: 'lichen-testnet-1' } }) };
+    }
+    throw new Error(`signTransaction E2E must not call ${body.method || 'unknown RPC'}`);
   };
 
   try {
@@ -239,11 +243,13 @@ async function run() {
     const signed = consumeFinalizedResult(pending.requestId);
     assert.strictEqual(signed.ok, true, 'signed result should be finalized successfully');
     assert.strictEqual(signed.result.sourceTransactionFormat, 'lichen_tx_v1');
-    assert.strictEqual(signed.result.signedTransactionFormat, 'wallet_json_base64');
+    assert.strictEqual(signed.result.signedTransactionFormat, 'lichen_tx_v1');
     assert.ok(signed.result.signature, 'signature should be returned');
     assert.ok(signed.result.signedTransactionBase64, 'signed transaction base64 should be returned');
 
-    const signedTx = fromBase64Json(signed.result.signedTransactionBase64);
+    const signedWire = Buffer.from(signed.result.signedTransactionBase64, 'base64');
+    assert.deepStrictEqual(Array.from(signedWire.subarray(0, 4)), [0x4d, 0x54, 0x01, 0x00]);
+    const signedTx = signed.result.signedTransaction;
     assert.strictEqual(signedTx.tx_type, 'native');
     assert.strictEqual(signedTx.message.blockhash, bytes(32, 0xaa).reduce((hex, byte) => hex + byte.toString(16).padStart(2, '0'), ''));
     assert.deepStrictEqual(signedTx.message.instructions[0].data.slice(0, 2), [34, 10]);
@@ -267,6 +273,9 @@ async function run() {
             }
           })
         };
+      }
+      if (body.method === 'getNetworkInfo') {
+        return { json: async () => ({ jsonrpc: '2.0', id: body.id, result: { chain_id: 'lichen-testnet-1' } }) };
       }
       if (body.method === 'getContractLifecycleStatus') {
         return {

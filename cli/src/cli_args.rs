@@ -47,7 +47,7 @@ pub(super) enum CodegenLang {
     Native token: LICN (1 LICN = 1,000,000,000 spores)\n\
     Run 'lichen fees' for current fee schedule\n\n\
     Mainnet RPC: https://rpc.lichen.network\n\
-    Testnet RPC: https://testnet-rpc.lichen.network\n\
+    Testnet RPC: https://testnet-api.lichen.network\n\
     Explorer:    https://explorer.lichen.network\n\
     Docs:        https://developers.lichen.network"
 )]
@@ -118,14 +118,6 @@ pub(super) enum Commands {
     /// Wallet management (multi-wallet support)
     #[command(subcommand)]
     Wallet(WalletCommands),
-
-    /// [DEPRECATED] Use 'identity new' instead. Creates a new keypair.
-    #[command(hide = true)]
-    Init {
-        /// Output file path
-        #[arg(short, long, id = "init_output_path")]
-        output: Option<PathBuf>,
-    },
 
     /// Check account balance
     Balance {
@@ -890,7 +882,7 @@ pub(super) enum RestrictionCommands {
         limit: u64,
 
         /// Return records after this restriction ID
-        #[arg(long, alias = "cursor")]
+        #[arg(long)]
         after_id: Option<u64>,
     },
 
@@ -1009,15 +1001,15 @@ pub(super) enum RestrictionStatusCommands {
 #[derive(Args)]
 pub(super) struct RestrictionBuilderBaseArgs {
     /// Governance action proposer address
-    #[arg(long, alias = "payer", alias = "signer")]
+    #[arg(long)]
     pub(super) proposer: String,
 
     /// Governance authority address
-    #[arg(long, alias = "authority")]
+    #[arg(long)]
     pub(super) governance_authority: String,
 
     /// Recent blockhash in hex. If omitted, the RPC uses the current head.
-    #[arg(long, alias = "blockhash")]
+    #[arg(long)]
     pub(super) recent_blockhash: Option<String>,
 }
 

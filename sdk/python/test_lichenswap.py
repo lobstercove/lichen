@@ -89,15 +89,6 @@ class FakeConnection:
             return {"success": True, "returnCode": 0, "returnData": base64.b64encode(payload).decode("ascii")}
         raise RuntimeError(f"unexpected readonly function: {function_name}")
 
-    async def get_lichenswap_stats(self):
-        return {
-            "swap_count": 9,
-            "volume_a": 100,
-            "volume_b": 200,
-            "paused": False,
-        }
-
-
 @pytest.mark.asyncio
 async def test_lichenswap_write_helpers_use_expected_calls() -> None:
     connection = FakeConnection()
@@ -149,7 +140,6 @@ async def test_lichenswap_read_helpers_decode_expected_payloads() -> None:
     swap_count = await client.get_swap_count()
     total_volume = await client.get_total_volume()
     swap_stats = await client.get_swap_stats()
-    stats = await client.get_stats()
 
     assert pool_info == {"reserve_a": 1_000, "reserve_b": 2_000, "total_liquidity": 3_000}
     assert quote == 777
@@ -169,4 +159,3 @@ async def test_lichenswap_read_helpers_decode_expected_payloads() -> None:
         "pool_count": 2,
         "total_liquidity": 3_000,
     }
-    assert stats == {"swap_count": 9, "volume_a": 100, "volume_b": 200, "paused": False}

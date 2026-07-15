@@ -296,8 +296,8 @@
 
 // Connect to public testnet
 const connection = new Connection(
-    'https://testnet-rpc.lichen.network',
-    'wss://testnet-rpc.lichen.network/ws'
+    'https://testnet-api.lichen.network',
+    'wss://testnet-api.lichen.network/ws'
 );
 
 // Get balance for an address
@@ -321,8 +321,8 @@ from lichen import Connection, PublicKey
 
 async def main():
     connection = Connection(
-        "https://testnet-rpc.lichen.network",
-        ws_url="wss://testnet-rpc.lichen.network/ws"
+        "https://testnet-api.lichen.network",
+        ws_url="wss://testnet-api.lichen.network/ws"
     )
 
     pubkey = PublicKey("11111111111111111111111111111112")
@@ -347,7 +347,7 @@ asyncio.run(main())
 
 #[tokio::main]
 async fn main() -> Result&lt;()&gt; {
-    let client = Client::new("https://testnet-rpc.lichen.network");
+    let client = Client::new("https://testnet-api.lichen.network");
 
     let pubkey = Pubkey::from_base58("11111111111111111111111111111112")?;
     let balance = client.get_balance(&amp;pubkey).await?;
@@ -366,11 +366,11 @@ async fn main() -> Result&lt;()&gt; {
                         <button class="code-copy-btn">Copy</button>
                     </div>
                     <pre><code># Check balance of the default identity
-$ lichen --rpc-url https://testnet-rpc.lichen.network balance
+$ lichen --rpc-url https://testnet-api.lichen.network balance
 42.500000000 LICN
 
 # Check balance of a specific address
-$ lichen --rpc-url https://testnet-rpc.lichen.network balance 11111111111111111111111111111112
+$ lichen --rpc-url https://testnet-api.lichen.network balance 11111111111111111111111111111112
 42.500000000 LICN
 
 # Switch to mainnet by replacing the endpoint

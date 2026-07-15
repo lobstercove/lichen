@@ -1,0 +1,355 @@
+:root {
+    --primary: #00C9DB;
+    --primary-dark: #008B9E;
+    --accent: #00E5FF;
+    --secondary: #004E89;
+    --info: #118AB2;
+    --success: #06D6A0;
+    --warning: #FFD23F;
+    --danger: #EF476F;
+    --bg: #0A0E27;
+    --bg-darker: #060812;
+    --panel: #141830;
+    --panel-strong: #1a213d;
+    --panel-hover: #1a1f3a;
+    --border: #1F2544;
+    --border-light: #2a3052;
+    --text: #FFFFFF;
+    --muted: #B8C1EC;
+    --soft: #6B7A99;
+    --shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+    --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    --sans: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    min-height: 100vh;
+    color: var(--text);
+    background: var(--bg);
+    font-family: var(--sans);
+}
+
+a {
+    color: inherit;
+    text-decoration: none;
+}
+
+.topbar {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    min-height: 60px;
+    padding: 0 clamp(1rem, 4vw, 2rem);
+    border-bottom: 1px solid var(--border);
+    background: rgba(6, 8, 18, 0.96);
+    backdrop-filter: blur(12px);
+}
+
+.brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.65rem;
+    font-size: 1.05rem;
+    font-weight: 700;
+}
+
+.brand-mark {
+    display: inline-grid;
+    width: 2rem;
+    height: 2rem;
+    place-items: center;
+    border-radius: 8px;
+    color: var(--bg-darker);
+    background: linear-gradient(135deg, var(--primary), var(--accent));
+    box-shadow: 0 0 20px rgba(0, 201, 219, 0.25);
+}
+
+.topbar-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.75rem;
+    min-width: 0;
+}
+
+.scope-pill,
+.badge {
+    display: inline-flex;
+    align-items: center;
+    min-height: 1.75rem;
+    padding: 0.25rem 0.65rem;
+    border: 1px solid rgba(0, 201, 219, 0.45);
+    border-radius: 8px;
+    color: var(--accent);
+    background: rgba(0, 201, 219, 0.08);
+    font-size: 0.75rem;
+    font-weight: 800;
+    letter-spacing: 0;
+    text-transform: uppercase;
+    white-space: nowrap;
+}
+
+.last-updated {
+    color: var(--muted);
+    font-size: 0.82rem;
+    white-space: nowrap;
+}
+
+.shell {
+    width: min(1880px, calc(100vw - 32px));
+    margin: 0 auto;
+    padding: 1.5rem 2rem 2rem;
+}
+
+.summary {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
+    gap: 1.5rem;
+    align-items: stretch;
+    margin-bottom: 1.5rem;
+}
+
+.eyebrow {
+    margin: 0 0 0.4rem;
+    color: var(--accent);
+    font-size: 0.78rem;
+    font-weight: 800;
+    text-transform: uppercase;
+}
+
+h1,
+h2 {
+    margin: 0;
+    letter-spacing: 0;
+}
+
+h1 {
+    font-size: clamp(2rem, 3.6vw, 3.35rem);
+    line-height: 1.02;
+}
+
+h2 {
+    font-size: 1rem;
+}
+
+.summary-copy {
+    max-width: 760px;
+    margin: 0.85rem 0 0;
+    color: var(--muted);
+    font-size: 1rem;
+    line-height: 1.65;
+}
+
+.overall,
+.status-card,
+.panel {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--panel);
+    box-shadow: var(--shadow);
+}
+
+.overall {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 0.45rem;
+    padding: 1.25rem;
+}
+
+.overall-label,
+.card-title,
+.metric-table span,
+.maintenance-list span,
+.contacts span,
+.incident-box span {
+    color: var(--soft);
+    font-size: 0.8rem;
+}
+
+.overall strong {
+    font-size: 1.65rem;
+}
+
+.overall span:last-child {
+    color: var(--muted);
+    font-size: 0.9rem;
+    line-height: 1.45;
+}
+
+.status-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 1rem;
+    margin-bottom: 1rem;
+}
+
+.status-card {
+    min-height: 148px;
+    padding: 1rem;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    gap: 0.75rem;
+}
+
+.card-title {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-weight: 700;
+}
+
+.status-card strong {
+    font-size: 1.35rem;
+}
+
+.status-card span:last-child {
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+}
+
+.status-ok {
+    border-color: rgba(6, 214, 160, 0.38);
+}
+
+.status-ok strong,
+.ok-text {
+    color: var(--success);
+}
+
+.status-warn {
+    border-color: rgba(255, 210, 63, 0.45);
+}
+
+.status-warn strong,
+.warn-text {
+    color: var(--warning);
+}
+
+.status-bad {
+    border-color: rgba(239, 71, 111, 0.45);
+}
+
+.status-bad strong,
+.bad-text {
+    color: var(--danger);
+}
+
+.panel-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 1rem;
+    margin-top: 1rem;
+}
+
+.panel {
+    padding: 1rem;
+}
+
+.panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-bottom: 1rem;
+}
+
+.metric-table,
+.maintenance-list,
+.contacts,
+.link-list {
+    display: grid;
+    gap: 0.75rem;
+}
+
+.metric-table {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.metric-table div,
+.maintenance-list div,
+.contacts div,
+.incident-box,
+.link-list a {
+    display: grid;
+    gap: 0.25rem;
+    min-width: 0;
+    padding: 0.85rem;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--panel-strong);
+}
+
+.metric-table strong,
+.maintenance-list strong,
+.contacts a {
+    min-width: 0;
+    font-size: 0.92rem;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+}
+
+.metric-table strong {
+    font-family: var(--mono);
+}
+
+.incident-box strong {
+    font-size: 1rem;
+}
+
+.link-list a,
+.contacts a {
+    color: var(--accent);
+    font-weight: 700;
+}
+
+.link-list a:hover,
+.contacts a:hover {
+    color: var(--text);
+}
+
+@media (max-width: 920px) {
+    .summary,
+    .panel-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .status-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
+@media (max-width: 620px) {
+    .topbar {
+        align-items: flex-start;
+        flex-direction: column;
+    }
+
+    .topbar-actions {
+        width: 100%;
+        justify-content: space-between;
+    }
+
+    .status-grid,
+    .metric-table {
+        grid-template-columns: 1fr;
+    }
+
+    .last-updated {
+        white-space: normal;
+        text-align: right;
+    }
+}

@@ -51,7 +51,8 @@ pub(crate) async fn build_signed_instruction(
         compute_unit_price: None,
     };
 
-    let signature = signer.sign(&message.serialize());
+    let chain_id = client.get_network_info().await?.chain_id;
+    let signature = signer.sign(&message.signing_bytes_for_chain_id(&chain_id));
 
     let transaction = Transaction {
         signatures: vec![signature],

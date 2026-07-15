@@ -291,6 +291,17 @@ fn test_resolve_compile_backend_accepts_local_dev_host_mode() {
 }
 
 #[test]
+fn test_compiler_sandbox_user_requires_non_root_numeric_identity() {
+    assert_eq!(validate_sandbox_user("1001:1002").unwrap(), "1001:1002");
+    for invalid in ["", "1001", "user:group", "0:1002", "1001:0"] {
+        assert!(
+            validate_sandbox_user(invalid).is_err(),
+            "sandbox identity {invalid:?} must be rejected"
+        );
+    }
+}
+
+#[test]
 fn test_validate_api_key_rejects_missing_header() {
     let state = AppState {
         api_key: Arc::new("test-key-long-enough".to_string()),

@@ -122,7 +122,7 @@ Supported Lichen provider methods:
 - `licn_signTransaction`
 - `licn_sendTransaction`
 
-Supported compatibility aliases:
+Supported standard EVM provider methods:
 
 - `wallet_getPermissions`
 - `wallet_revokePermissions`

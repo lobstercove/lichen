@@ -141,10 +141,6 @@ function normalizeRpcInstruction(ix, signerAddress) {
     };
 }
 
-function encodeTransactionPayload(transaction) {
-    return btoa(String.fromCharCode.apply(null, new TextEncoder().encode(JSON.stringify(transaction))));
-}
-
 function unwrapTransactionResult(result) {
     return result && typeof result === 'object' && result.txHash ? result.txHash : result;
 }

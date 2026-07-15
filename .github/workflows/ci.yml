@@ -31,9 +31,18 @@ jobs:
       - name: Audit all Cargo.lock files
         run: |
           set -euo pipefail
+          first_lock=1
           while IFS= read -r lockfile; do
             echo "Auditing ${lockfile}"
-            cargo audit -q -D warnings --file "$lockfile"
+            manifest="${lockfile%Cargo.lock}Cargo.toml"
+            cargo metadata --locked --no-deps --format-version 1 \
+              --manifest-path "$manifest" >/dev/null
+            if [ "$first_lock" -eq 1 ]; then
+              cargo audit -q -D warnings --file "$lockfile"
+              first_lock=0
+            else
+              cargo audit --no-fetch -q -D warnings --file "$lockfile"
+            fi
           done < <(find . -path '*/target' -prune -o -name Cargo.lock -print | sort)
 
   cargo-deny:
@@ -63,12 +72,12 @@ jobs:
           python-version: "3.12"
       - name: Install root npm dependencies from lockfile
         run: npm ci --ignore-scripts
-      - name: Audit root npm production dependencies
-        run: npm audit --omit=dev
+      - name: Audit complete root npm dependency graph
+        run: npm audit
       - name: Install JS SDK dependencies from lockfile
         run: cd sdk/js && npm ci --ignore-scripts
-      - name: Audit JS SDK production dependencies
-        run: cd sdk/js && npm audit --omit=dev
+      - name: Audit complete JS SDK dependency graph
+        run: cd sdk/js && npm audit
       - name: Check Python SDK release supply chain
         run: bash scripts/qa/test_python_sdk_release_supply_chain.sh
 
@@ -83,12 +92,28 @@ jobs:
         run: node scripts/qa/test_rustsec_advisory_policy.js
       - name: Verify legacy bincode codec policy
         run: node scripts/qa/test_legacy_bincode_codec_policy.js
+      - name: Verify RocksDB WAL recovery diagnostics
+        run: python3 scripts/qa/test_rocksdb_wal_inventory.py
       - name: Verify release audit summaries
         run: node scripts/qa/test_release_audit_summaries.js
       - name: Verify release signer trust anchor
         run: node scripts/qa/test_release_signer_trust_anchor.js
       - name: Verify deployment env examples
         run: node scripts/qa/test_deployment_env_examples.js
+      - name: Verify Rust dependency policy
+        run: node scripts/qa/test_rust_dependency_policy.js
+      - name: Verify archive parity gate assets are trackable
+        run: |
+          set -euo pipefail
+          for path in \
+            tests/local-multi-validator-test.sh \
+            docs/deployment/ARCHIVE_PARITY_REPAIR_PLAN_2026-07-09.md \
+            docs/deployment/TESTNET_STATE_AND_SYNC_POLICY.md; do
+            if git check-ignore -q "$path"; then
+              echo "$path is ignored; archive parity cannot be enforced from release CI" >&2
+              exit 1
+            fi
+          done
       - name: Verify rolling release custody sequencing
         run: node scripts/qa/test_rolling_release_custody_sequence.js
       - name: Verify DEX frontend wiring
@@ -120,7 +145,7 @@ jobs:
           toolchain: stable
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
       - name: Run workspace tests
-        run: cargo test --workspace
+        run: cargo test --workspace --all-features --locked
       - name: Reclaim workspace test artifacts
         run: cargo clean
       - name: Run standalone contract tests
@@ -133,7 +158,7 @@ jobs:
             if [ -f "$dir/Cargo.toml" ]; then
               name=$(basename "$dir")
               echo "Testing $name..."
-              if ! (cd "$dir" && CARGO_TARGET_DIR="$CONTRACT_TARGET_DIR" cargo test 2>&1); then
+              if ! (cd "$dir" && CARGO_TARGET_DIR="$CONTRACT_TARGET_DIR" cargo test --locked 2>&1); then
                 echo "❌ FAILED: $name"
                 FAIL=1
               fi
@@ -143,6 +168,47 @@ jobs:
           if [ $FAIL -ne 0 ]; then echo "❌ Contract tests failed"; exit 1; fi
       - name: Run local helper guard checks
         run: bash scripts/qa/test_local_helper_guards.sh
+
+  standalone-rust-workspaces:
+    name: Standalone Rust Workspaces
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: stable
+          components: clippy
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+      - name: Test compiler workspace
+        run: cargo test --manifest-path compiler/Cargo.toml --locked
+      - name: Lint compiler workspace
+        run: cargo clippy --manifest-path compiler/Cargo.toml --all-targets --locked -- -D warnings
+      - name: Reclaim compiler artifacts
+        run: cargo clean --manifest-path compiler/Cargo.toml
+      - name: Test contract SDK workspace
+        run: cargo test --manifest-path sdk/Cargo.toml --locked
+      - name: Lint contract SDK workspace
+        run: cargo clippy --manifest-path sdk/Cargo.toml --all-targets --locked -- -D warnings
+      - name: Reclaim contract SDK artifacts
+        run: cargo clean --manifest-path sdk/Cargo.toml
+      - name: Test Rust client SDK workspace
+        run: cargo test --manifest-path sdk/rust/Cargo.toml --locked
+      - name: Lint Rust client SDK workspace
+        run: cargo clippy --manifest-path sdk/rust/Cargo.toml --all-targets --locked -- -D warnings
+      - name: Reclaim Rust client SDK artifacts
+        run: cargo clean --manifest-path sdk/rust/Cargo.toml
+      - name: Check fuzz targets
+        run: cargo check --manifest-path fuzz/Cargo.toml --locked --bins
+
+  compiler-sandbox:
+    name: Compiler Sandbox
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - name: Build compiler sandbox image
+        run: docker build -f compiler/Dockerfile.sandbox -t lichen-compiler-sandbox:audit .
+      - name: Compile all supported languages as non-root
+        run: bash scripts/qa/test_compiler_sandbox.sh
 
   rust-sbom:
     name: Rust SBOM
@@ -177,7 +243,7 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
       - name: Clippy
-        run: cargo clippy --workspace -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
   fmt:
     name: Format
@@ -203,7 +269,7 @@ jobs:
           toolchain: stable
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
       - name: Build validator tooling
-        run: cargo build --release --bin lichen-validator --bin lichen-genesis --bin lichen
+        run: cargo build --release --locked --bin lichen-validator --bin lichen-genesis --bin lichen
       - name: Install Node.js dependencies
         run: npm ci --ignore-scripts
       - name: Start validator in background
@@ -266,7 +332,7 @@ jobs:
             if [ -f "$dir/Cargo.toml" ]; then
               name=$(basename "$dir")
               echo "Building $name..."
-              if ! (cd "$dir" && cargo build --target wasm32-unknown-unknown --release 2>&1); then
+              if ! (cd "$dir" && cargo build --target wasm32-unknown-unknown --release --locked 2>&1); then
                 echo "❌ FAILED: $name"
                 FAIL=1
               fi

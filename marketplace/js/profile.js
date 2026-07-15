@@ -484,7 +484,10 @@
 
         try {
             var result = await marketTrustedRpcCall('getMarketOffers', [{ include_collection_offers: true, limit: 200 }]);
-            var offerList = result && result.offers ? result.offers : (Array.isArray(result) ? result : []);
+            if (!result || typeof result !== 'object' || Array.isArray(result) || !Array.isArray(result.offers)) {
+                throw new Error('Invalid RPC response: expected offers array');
+            }
+            var offerList = result.offers;
 
             // Split into incoming (to my NFTs) and outgoing (I made)
             var incoming = offerList.filter(function (o) {
@@ -606,7 +609,10 @@
 
         try {
             var sales = await marketTrustedRpcCall('getMarketSales', [{ limit: 200 }]);
-            var saleList = sales && sales.sales ? sales.sales : (Array.isArray(sales) ? sales : []);
+            if (!sales || typeof sales !== 'object' || Array.isArray(sales) || !Array.isArray(sales.sales)) {
+                throw new Error('Invalid RPC response: expected sales array');
+            }
+            var saleList = sales.sales;
 
             var activity = saleList.filter(function (s) {
                 return s.seller === profileAddress || s.buyer === profileAddress;

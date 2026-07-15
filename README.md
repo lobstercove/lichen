@@ -7,7 +7,7 @@ Ultra-low fees · Sub-second BFT block commitment · Agent-native identity · Mu
 [![License: Apache--2.0%20%2B%20MIT](https://img.shields.io/badge/License-Apache--2.0%20%2B%20MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.88+-00C9DB.svg)](https://www.rust-lang.org)
 
-**Current release candidate:** `v0.5.221`. `v0.5.221` is now the signed rollback anchor until a newer signed rollback anchor is explicitly recorded. This candidate preserves the exchange-readiness surface and fixes the live testnet liveness regression by making all validators wait the configured remote-proposer window before nil-voting, while reducing block-range response chunks so catch-up traffic cannot monopolize consensus transport. It keeps the startup-only stale-height WAL round rendezvous from `v0.5.220`, the faucet-funded exchange simulation path from `v0.5.219`, cold storage startup classification, guarded bootstrap recovery, live snapshot rollback behavior, and mixed hot/cold archive verification.
+**Current release candidate:** `0.5.224` (unreleased and under audit). The signed rollback anchor is `v0.5.223` until a newer candidate passes every local, CI, archive-parity, signature, and deployment gate. The candidate consolidates the July liveness fixes, archive parity repair/export coverage, crash-atomic canonical block persistence, historical-power finality and checkpoint proofs, activation-bounded fail-closed post-block recovery, canonical transaction admission, and RustSec dependency remediation while preserving the exchange-readiness surface and guarded hot/cold archive behavior.
 
 **Website:** https://lichen.network  
 **Documentation:** https://developers.lichen.network  
@@ -79,7 +79,7 @@ Four binaries ship from this repo:
 
 - Clean-slate testnet and mainnet deployments never copy RocksDB state. The genesis host creates slot 0; every other validator starts from empty chain state and syncs from seed peers.
 - All public RPC hosts run local custody with `CUSTODY_URL` pointed at `127.0.0.1`. For Neo X to work everywhere, every host must receive the same `/etc/lichen/custody-env` on testnet or `/etc/lichen/custody-env-mainnet` on mainnet, including `CUSTODY_NEOX_RPC_URL`, `CUSTODY_NEOX_CHAIN_ID`, and `CUSTODY_NEOX_NEO_TOKEN_ADDR`.
-- Stablecoin custody routes open only when the source network token is explicitly configured: Solana requires `CUSTODY_SOLANA_USDC_MINT` / `CUSTODY_SOLANA_USDT_MINT`, Ethereum requires `CUSTODY_ETH_CHAIN_ID` plus `CUSTODY_ETH_USDC_TOKEN_ADDR` / `CUSTODY_ETH_USDT_TOKEN_ADDR` (legacy `CUSTODY_EVM_USDC` / `CUSTODY_EVM_USDT` are Ethereum-only aliases), and BSC requires `CUSTODY_BNB_CHAIN_ID` plus `CUSTODY_BSC_USDC_TOKEN_ADDR` / `CUSTODY_BSC_USDT_TOKEN_ADDR`.
+- Stablecoin custody routes open only when the source network token is explicitly configured: Solana requires `CUSTODY_SOLANA_USDC_MINT` / `CUSTODY_SOLANA_USDT_MINT`, Ethereum requires `CUSTODY_ETH_CHAIN_ID` plus `CUSTODY_ETH_USDC_TOKEN_ADDR` / `CUSTODY_ETH_USDT_TOKEN_ADDR`, and BSC requires `CUSTODY_BNB_CHAIN_ID` plus `CUSTODY_BSC_USDC_TOKEN_ADDR` / `CUSTODY_BSC_USDT_TOKEN_ADDR`.
 - Source-chain route profiles, funding requirements, fresh-start verification, and mainnet/testnet templates are documented in `deploy/custody-route-profile.md`.
 - `keypairs/deployer.json` is machine-local and ignored. If an old root-owned copy exists on a VPS, deployment sync must exclude it rather than trying to overwrite it; the canonical deployer material comes from the approved operator secret path.
 - Neo X NEO deposits and withdrawals are enabled only when the configured source token route exists in custody env. GAS and NEO route config must be treated as custody configuration, not wallet-only UI state.
@@ -135,9 +135,9 @@ https://github.com/lobstercove/lichen/releases/download/<tag>/lichen-validator-<
 ```
 
 Examples:
-- `https://github.com/lobstercove/lichen/releases/download/v0.5.221/lichen-validator-linux-x86_64.tar.gz`
-- `https://github.com/lobstercove/lichen/releases/download/v0.5.221/lichen-validator-darwin-aarch64.tar.gz`
-- `https://github.com/lobstercove/lichen/releases/download/v0.5.221/lichen-validator-windows-x86_64.tar.gz`
+- `https://github.com/lobstercove/lichen/releases/download/v0.5.223/lichen-validator-linux-x86_64.tar.gz`
+- `https://github.com/lobstercove/lichen/releases/download/v0.5.223/lichen-validator-darwin-aarch64.tar.gz`
+- `https://github.com/lobstercove/lichen/releases/download/v0.5.223/lichen-validator-windows-x86_64.tar.gz`
 
 Linux x86_64:
 

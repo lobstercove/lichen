@@ -1,0 +1,20 @@
+/*
+  X-Frame-Options: DENY
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: camera=(), microphone=(), geolocation=()
+
+/
+  Content-Security-Policy: default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; frame-src 'none'; form-action 'self'; script-src 'self' https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com; font-src 'self' data: https://fonts.gstatic.com https://cdnjs.cloudflare.com; img-src 'self' data: blob: https:; connect-src 'self' https://rpc.lichen.network https://testnet-api.lichen.network wss://rpc.lichen.network wss://testnet-api.lichen.network https://custody.lichen.network https://testnet-custody.lichen.network https://custody-testnet.lichen.network https://explorer.lichen.network https://wallet.lichen.network https://marketplace.lichen.network https://dex.lichen.network https://lichen.network https://developers.lichen.network https://programs.lichen.network https://faucet.lichen.network https://cloudflareinsights.com https://static.cloudflareinsights.com
+
+/index.html
+  Content-Security-Policy: default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; frame-src 'none'; form-action 'self'; script-src 'self' https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com; font-src 'self' data: https://fonts.gstatic.com https://cdnjs.cloudflare.com; img-src 'self' data: blob: https:; connect-src 'self' https://rpc.lichen.network https://testnet-api.lichen.network wss://rpc.lichen.network wss://testnet-api.lichen.network https://custody.lichen.network https://testnet-custody.lichen.network https://custody-testnet.lichen.network https://explorer.lichen.network https://wallet.lichen.network https://marketplace.lichen.network https://dex.lichen.network https://lichen.network https://developers.lichen.network https://programs.lichen.network https://faucet.lichen.network https://cloudflareinsights.com https://static.cloudflareinsights.com
+
+/js/*
+  Cache-Control: public, max-age=0, must-revalidate
+
+/*.js
+  Cache-Control: public, max-age=0, must-revalidate
+
+/*.css
+  Cache-Control: public, max-age=3600, must-revalidate

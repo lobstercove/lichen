@@ -33,8 +33,8 @@ const LICHEN_SDK_CONFIG = (() => {
                 chainId: 1
             },
             testnet: {
-                rpc: 'https://testnet-rpc.lichen.network',
-                ws: 'wss://testnet-rpc.lichen.network/ws',
+                rpc: 'https://testnet-api.lichen.network',
+                ws: 'wss://testnet-api.lichen.network/ws',
                 explorer: 'https://explorer.lichen.network',
                 compiler: null,
                 faucet: 'https://faucet.lichen.network',
@@ -198,10 +198,6 @@ function encodeMessage(instructions, recentBlockhash) {
         new Uint8Array([0x00]),  // compute_budget: Option<u64> = None
         new Uint8Array([0x00])   // compute_unit_price: Option<u64> = None
     );
-}
-
-function encodeTransaction(signatures, messageBytes) {
-    return textEncoder.encode(JSON.stringify({ signatures, message: messageBytes }));
 }
 
 function base64Encode(bytes) {
@@ -575,8 +571,8 @@ class LichenRPC {
     /**
      * Health check
      */
-    async health() {
-        return await this.call('health');
+    async getHealth() {
+        return await this.call('getHealth');
     }
 
     // ========================================================================
@@ -608,10 +604,6 @@ class LichenRPC {
         return await this.call('getTransactionsByAddress', [pubkey, options]);
     }
 
-    async getTransactionHistory(pubkey, options = {}) {
-        return await this.call('getTransactionHistory', [pubkey, options]);
-    }
-
     // ========================================================================
     // CONTRACT ABI / IDL
     // ========================================================================
@@ -621,13 +613,6 @@ class LichenRPC {
      */
     async getContractAbi(contractId) {
         return await this.call('getContractAbi', [contractId]);
-    }
-
-    /**
-     * Set/update contract ABI (owner only)
-     */
-    async setContractAbi(contractId, abi) {
-        return await this.call('setContractAbi', [contractId, abi]);
     }
 
     // ========================================================================
@@ -766,16 +751,8 @@ class LichenRPC {
     // FEE / RENT CONFIG
     // ========================================================================
 
-    async setFeeConfig(config) {
-        return await this.call('setFeeConfig', [config]);
-    }
-
     async getRentParams() {
         return await this.call('getRentParams');
-    }
-
-    async setRentParams(params) {
-        return await this.call('setRentParams', [params]);
     }
 
     /**
@@ -1053,11 +1030,7 @@ class LichenWS {
 // ============================================================================
 
 class LichenSdkWallet {
-    constructor({ privateKey = null, publicKey = null, publicKeyHex = null, seed = null, address = null } = {}) {
-        this.privateKey = privateKey;
-        this.publicKey = publicKey;
-        this.publicKeyHex = publicKeyHex;
-        this.seed = seed;
+    constructor({ address = null } = {}) {
         this.address = address;
     }
 
@@ -1067,14 +1040,6 @@ class LichenSdkWallet {
 
     static async fromSeed() {
         throw localWalletsDisabledError();
-    }
-
-    async sign(message) {
-        if (!this.privateKey) {
-            throw localWalletsDisabledError();
-        }
-        const payload = message instanceof Uint8Array ? message : new Uint8Array(message || []);
-        return requireLichenPQ().signMessage(this.privateKey, payload);
     }
 
     /**
@@ -1115,7 +1080,6 @@ class TransactionBuilder {
         this.rpc = rpc;
         this.instructions = [];
         this.recentBlockhash = null;
-        this.signatures = [];
         this.extensionWallet = null;
     }
 
@@ -1146,13 +1110,6 @@ class TransactionBuilder {
 
         this.extensionWallet = null;
 
-        if (wallet && typeof wallet.sign === 'function') {
-            const messageBytes = encodeMessage(this.instructions, this.recentBlockhash);
-            const signature = await wallet.sign(messageBytes);
-            this.signatures.push(signature);
-            return this;
-        }
-
         const provider = await resolveInjectedLichenProvider(wallet, 800);
         if (wallet && wallet.address && provider && typeof provider.sendTransaction === 'function') {
             this.extensionWallet = wallet;
@@ -1174,45 +1131,18 @@ class TransactionBuilder {
     }
 
     /**
-     * Serialize transaction to bytes
-     */
-    async serialize() {
-        if (!this.recentBlockhash) {
-            throw new Error('Must set recent blockhash first');
-        }
-
-        return textEncoder.encode(JSON.stringify({
-            signatures: this.signatures,
-            message: this.buildRpcMessage(),
-        }));
-    }
-
-    /**
-     * Encode transaction as base64 for RPC
-     */
-    async toBase64() {
-        const bytes = await this.serialize();
-        return base64Encode(bytes);
-    }
-
-    /**
      * Send transaction
      */
     async send() {
-        if (this.extensionWallet) {
-            const provider = await resolveInjectedLichenProvider(this.extensionWallet, 800);
-            if (!provider || typeof provider.sendTransaction !== 'function') {
-                throw new Error('Lichen wallet provider not available for transaction approval');
-            }
-
-            return unwrapSendTransactionResult(await provider.sendTransaction({
-                signatures: [],
-                message: this.buildRpcMessage(),
-            }));
+        const provider = await resolveInjectedLichenProvider(this.extensionWallet, 800);
+        if (!provider || typeof provider.sendTransaction !== 'function') {
+            throw new Error('Lichen wallet provider not available for transaction approval');
         }
 
-        const base64 = await this.toBase64();
-        return await this.rpc.sendTransaction(base64);
+        return unwrapSendTransactionResult(await provider.sendTransaction({
+            signatures: [],
+            message: this.buildRpcMessage(),
+        }));
     }
 
     // ===== Instruction Builders =====

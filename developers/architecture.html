@@ -180,6 +180,15 @@ contribution_score = (
             <p>A block is considered <strong>finalized</strong> once 2/3+ of validators (by stake weight) submit commit
                 votes. Under normal network conditions, Lichen targets finality on the 400ms slot cadence.</p>
 
+            <h3>Canonical Finality Proofs</h3>
+            <p>Every block after height 1 commits its parent's finality proof in an internal versioned consensus
+                transaction. The proof contains a sorted quorum certificate and the complete sorted voting powers for
+                the parent height. The parent header authenticates that denominator through
+                <code>validators_hash</code>, so a validator-set change in the child cannot reinterpret the parent's
+                two-thirds threshold. The certificate also commits the parent's complete post-effects state root.
+                Proposal validation, peer sync, checkpoint verification, archive startup, and
+                <code>getBlockCommit</code> verify the same parent-scoped proof.</p>
+
             <div class="callout callout-tip">
                 <div class="callout-title"><i class="fas fa-lightbulb"></i> Fast Finality</div>
                 Unlike probabilistic finality chains (Bitcoin, Ethereum PoW), Lichen blocks are deterministically
@@ -398,11 +407,6 @@ contribution_score = (
                         <td><code>storage_read</code></td>
                         <td><code>(key_ptr, key_len, val_ptr, val_len) → u32</code></td>
                         <td>Read storage directly into a caller-provided buffer</td>
-                    </tr>
-                    <tr>
-                        <td><code>storage_read_result</code></td>
-                        <td><code>(buf_ptr, buf_len) → u32</code></td>
-                        <td>Copy the previous storage read result into a buffer</td>
                     </tr>
                     <tr>
                         <td><code>storage_write</code></td>
@@ -826,9 +830,10 @@ bootstrap_peers = [
                 catch up efficiently:</p>
 
             <ol>
-                <li>Download the latest finalized state snapshot (compressed RocksDB checkpoint) from a trusted peer
+                <li>Download the latest finalized state snapshot (compressed RocksDB checkpoint) from an authenticated peer
                 </li>
-                <li>Verify the snapshot against the Merkle state root in the last finalized block header</li>
+                <li>Verify its post-state root against the child-committed certificate, transaction Merkle proof,
+                    signed child header, and historical child finality powers</li>
                 <li>Apply any remaining blocks since the snapshot was created</li>
                 <li>Switch to normal gossip-based block following</li>
             </ol>

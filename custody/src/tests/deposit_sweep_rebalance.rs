@@ -7,7 +7,7 @@ use crate::chain_config::{
 async fn test_create_deposit_uses_dedicated_deposit_seed_and_persists_source() {
     let mut state = test_state();
     state.config.deposit_master_seed = "dedicated_deposit_seed_for_tests_0123456789".to_string();
-    let (user_id, auth) = test_bridge_access_auth_payload(11);
+    let (user_id, auth) = test_bridge_access_auth_payload(11, "ethereum", "eth");
 
     let mut headers = axum::http::HeaderMap::new();
     headers.insert("authorization", "Bearer test_api_token".parse().unwrap());
@@ -43,7 +43,7 @@ async fn test_create_deposit_uses_dedicated_deposit_seed_and_persists_source() {
 #[tokio::test]
 async fn test_create_deposit_rejects_forged_bridge_auth() {
     let state = test_state();
-    let (_, forged_auth) = test_bridge_access_auth_payload(12);
+    let (_, forged_auth) = test_bridge_access_auth_payload(12, "ethereum", "eth");
     let wrong_user_id = Keypair::from_seed(&[13; 32]).pubkey().to_base58();
 
     let err = create_deposit(
@@ -60,13 +60,13 @@ async fn test_create_deposit_rejects_forged_bridge_auth() {
     .expect_err("forged bridge auth must fail");
 
     assert_eq!(err.code, "invalid_request");
-    assert_eq!(err.message, "Invalid bridge auth signature");
+    assert_eq!(err.message, "bridge auth user_id does not match request");
 }
 
 #[tokio::test]
 async fn test_create_deposit_reuses_existing_deposit_for_identical_bridge_auth() {
     let state = test_state();
-    let (user_id, auth) = test_bridge_access_auth_payload(14);
+    let (user_id, auth) = test_bridge_access_auth_payload(14, "ethereum", "eth");
 
     let first = create_deposit(
         State(state.clone()),
@@ -296,7 +296,7 @@ async fn test_create_deposit_allocates_new_route_after_confirmation() {
 async fn test_create_deposit_neox_gas_and_neo_use_chain_id_scoped_path() {
     let mut state = test_state();
     state.config.neox_rpc_url = Some("http://localhost:9545".to_string());
-    let (user_id, auth) = test_bridge_access_auth_payload(31);
+    let (user_id, auth) = test_bridge_access_auth_payload(31, "neox", "gas");
 
     let response = create_deposit(
         State(state.clone()),
@@ -330,7 +330,7 @@ async fn test_create_deposit_neox_gas_and_neo_use_chain_id_scoped_path() {
     .expect("derive Neo X deposit address");
     assert_eq!(stored.address, expected);
 
-    let (neo_user_id, neo_auth) = test_bridge_access_auth_payload(32);
+    let (neo_user_id, neo_auth) = test_bridge_access_auth_payload(32, "neox", "neo");
     let err = create_deposit(
         State(state.clone()),
         test_auth_headers(),
@@ -348,7 +348,7 @@ async fn test_create_deposit_neox_gas_and_neo_use_chain_id_scoped_path() {
 
     state.config.neox_neo_token_contract =
         Some("0x1111111111111111111111111111111111111111".to_string());
-    let (neo_user_id, neo_auth) = test_bridge_access_auth_payload(33);
+    let (neo_user_id, neo_auth) = test_bridge_access_auth_payload(33, "neox", "neo");
     let response = create_deposit(
         State(state.clone()),
         test_auth_headers(),
@@ -378,7 +378,7 @@ async fn test_create_deposit_requires_configured_stablecoin_source_route() {
     let mut state = test_state();
 
     state.config.solana_usdc_mint.clear();
-    let (user_id, auth) = test_bridge_access_auth_payload(34);
+    let (user_id, auth) = test_bridge_access_auth_payload(34, "solana", "usdc");
     let err = create_deposit(
         State(state.clone()),
         test_auth_headers(),
@@ -395,7 +395,7 @@ async fn test_create_deposit_requires_configured_stablecoin_source_route() {
     assert!(err.message.contains("CUSTODY_SOLANA_USDC_MINT"));
 
     state.config.evm_usdt_contract.clear();
-    let (user_id, auth) = test_bridge_access_auth_payload(35);
+    let (user_id, auth) = test_bridge_access_auth_payload(35, "ethereum", "usdt");
     let err = create_deposit(
         State(state.clone()),
         test_auth_headers(),
@@ -411,8 +411,9 @@ async fn test_create_deposit_requires_configured_stablecoin_source_route() {
     assert_eq!(err.code, "invalid_request");
     assert!(err.message.contains("CUSTODY_ETH_USDT_TOKEN_ADDR"));
 
+    state.config.bnb_rpc_url = Some("http://localhost:8546".to_string());
     state.config.bnb_usdt_contract = None;
-    let (user_id, auth) = test_bridge_access_auth_payload(36);
+    let (user_id, auth) = test_bridge_access_auth_payload(36, "bsc", "usdt");
     let err = create_deposit(
         State(state.clone()),
         test_auth_headers(),
@@ -432,7 +433,7 @@ async fn test_create_deposit_requires_configured_stablecoin_source_route() {
 #[tokio::test]
 async fn test_create_deposit_rejects_bridge_auth_reuse_for_different_asset() {
     let state = test_state();
-    let (user_id, auth) = test_bridge_access_auth_payload(15);
+    let (user_id, auth) = test_bridge_access_auth_payload(15, "ethereum", "eth");
 
     let _ = create_deposit(
         State(state.clone()),
@@ -466,17 +467,14 @@ async fn test_create_deposit_rejects_bridge_auth_reuse_for_different_asset() {
     .expect_err("bridge auth replay must not authorize a different deposit request");
 
     assert_eq!(err.code, "invalid_request");
-    assert_eq!(err.status_code(), axum::http::StatusCode::CONFLICT);
-    assert_eq!(
-        err.message,
-        "bridge auth already used for a different deposit request; sign a new bridge authorization"
-    );
+    assert_eq!(err.status_code(), axum::http::StatusCode::BAD_REQUEST);
+    assert_eq!(err.message, "bridge auth route does not match request");
 }
 
 #[tokio::test]
 async fn test_get_deposit_accepts_same_bridge_auth_after_create() {
     let state = test_state();
-    let (user_id, auth) = test_bridge_access_auth_payload(16);
+    let (user_id, auth) = test_bridge_access_auth_payload(16, "ethereum", "eth");
 
     let created = create_deposit(
         State(state.clone()),
@@ -507,7 +505,7 @@ async fn test_get_deposit_accepts_same_bridge_auth_after_create() {
 #[tokio::test]
 async fn test_get_deposit_requires_matching_bridge_auth_user() {
     let state = test_state();
-    let (user_id, auth) = test_bridge_access_auth_payload(21);
+    let (user_id, auth) = test_bridge_access_auth_payload(21, "solana", "sol");
     let deposit = DepositRequest {
         deposit_id: "dep-lookup-1".to_string(),
         user_id: user_id.clone(),
@@ -532,7 +530,7 @@ async fn test_get_deposit_requires_matching_bridge_auth_user() {
 
     assert_eq!(response.0.user_id, user_id);
 
-    let (other_user_id, other_auth) = test_bridge_access_auth_payload(22);
+    let (other_user_id, other_auth) = test_bridge_access_auth_payload(22, "solana", "sol");
     let err = get_deposit(
         State(state),
         test_auth_headers(),
@@ -553,17 +551,33 @@ async fn test_create_deposit_rate_limit_rejection_returns_bad_request_status() {
         .route("/deposits", post(create_deposit))
         .with_state(state);
     let base_url = spawn_mock_server(app).await;
-    let (user_id, auth) = test_bridge_access_auth_payload(23);
-    let keypair = Keypair::from_seed(&[23; 32]);
+    let (user_id, auth) = test_bridge_access_auth_payload(23, "solana", "sol");
     let first_issued_at = auth["issued_at"]
         .as_u64()
         .expect("test bridge auth includes issued_at");
     let second_issued_at = first_issued_at.saturating_sub(1);
     let second_expires_at = second_issued_at + 600;
-    let second_message = bridge_access_message(&user_id, second_issued_at, second_expires_at);
+    let second_nonce = "rate-limit-second-route";
+    let second_message = bridge_access_message_v2_create(
+        &user_id,
+        "ethereum",
+        "eth",
+        second_issued_at,
+        second_expires_at,
+        second_nonce,
+    );
+    let keypair = Keypair::from_seed(&[23; 32]);
     let second_auth = json!({
+        "version": 2,
+        "domain": BRIDGE_ACCESS_DOMAIN_V2,
+        "action": BRIDGE_AUTH_REPLAY_ACTION_CREATE_DEPOSIT,
+        "user_id": user_id,
+        "chain": "ethereum",
+        "asset": "eth",
+        "route": "ethereum:eth",
         "issued_at": second_issued_at,
         "expires_at": second_expires_at,
+        "nonce": second_nonce,
         "signature": serde_json::to_value(keypair.sign(&second_message))
             .expect("encode second bridge auth signature"),
     });
@@ -1549,7 +1563,7 @@ async fn test_create_deposit_rejects_multi_signer_local_sweep_mode_by_default() 
     state.config.signer_endpoints =
         vec!["http://signer-1".to_string(), "http://signer-2".to_string()];
     state.config.signer_threshold = 2;
-    let (user_id, auth) = test_bridge_access_auth_payload(14);
+    let (user_id, auth) = test_bridge_access_auth_payload(14, "ethereum", "eth");
 
     let mut headers = axum::http::HeaderMap::new();
     headers.insert("authorization", "Bearer test_api_token".parse().unwrap());
@@ -2032,7 +2046,6 @@ async fn test_process_sweep_jobs_persists_native_evm_credited_amount_after_gas()
         },
     ))
     .await;
-    state.config.evm_rpc_url = Some(rpc_url.clone());
     state.config.eth_rpc_url = Some(rpc_url);
 
     let deposit = DepositRequest {
@@ -2110,9 +2123,8 @@ async fn test_process_sweep_jobs_multi_signer_without_override_blocks_local_swee
             });
     let rpc_url = spawn_mock_server(rpc_app).await;
 
-    state.config.evm_rpc_url = Some(rpc_url.clone());
     state.config.eth_rpc_url = Some(rpc_url);
-    state.config.treasury_evm_address =
+    state.config.treasury_eth_address =
         Some("0x4444444444444444444444444444444444444444".to_string());
     state.config.signer_endpoints =
         vec!["http://signer-1".to_string(), "http://signer-2".to_string()];
@@ -2137,7 +2149,7 @@ async fn test_process_sweep_jobs_multi_signer_without_override_blocks_local_swee
         chain: "ethereum".to_string(),
         asset: "eth".to_string(),
         from_address: deposit.address.clone(),
-        to_treasury: state.config.treasury_evm_address.clone().unwrap(),
+        to_treasury: state.config.treasury_eth_address.clone().unwrap(),
         tx_hash: "deposit-observed-hash".to_string(),
         amount: Some("1000000000000000000".to_string()),
         credited_amount: None,
@@ -2207,7 +2219,6 @@ async fn test_process_rebalance_jobs_multi_signer_blocks_local_treasury_executio
             });
     let rpc_url = spawn_mock_server(rpc_app).await;
 
-    state.config.evm_rpc_url = Some(rpc_url.clone());
     state.config.eth_rpc_url = Some(rpc_url);
     state.config.uniswap_router = Some("0x1111111111111111111111111111111111111111".to_string());
     state.config.signer_endpoints =
@@ -2289,10 +2300,7 @@ async fn test_ethereum_rebalance_uses_route_treasury_and_rpc() {
     let derived_treasury =
         derive_evm_address("custody/treasury/ethereum", &state.config.master_seed)
             .expect("derive Ethereum treasury");
-    state.config.evm_rpc_url = None;
     state.config.eth_rpc_url = Some(rpc_url);
-    state.config.treasury_evm_address =
-        Some("0x9999999999999999999999999999999999999999".to_string());
     state.config.treasury_eth_address = Some(derived_treasury);
     state.config.uniswap_router = Some("0x1111111111111111111111111111111111111111".to_string());
 
@@ -2352,7 +2360,6 @@ async fn test_ethereum_rebalance_rejects_treasury_signer_mismatch_before_broadca
     ))
     .await;
 
-    state.config.evm_rpc_url = None;
     state.config.eth_rpc_url = Some(rpc_url);
     state.config.treasury_eth_address =
         Some("0x1111111111111111111111111111111111111111".to_string());
@@ -2413,7 +2420,6 @@ async fn test_process_sweep_jobs_confirmed_enqueues_credit_and_updates_status() 
             });
     let rpc_url = spawn_mock_server(rpc_app).await;
 
-    state.config.evm_rpc_url = Some(rpc_url.clone());
     state.config.eth_rpc_url = Some(rpc_url);
     state.config.licn_rpc_url = Some("http://localhost:8899".to_string());
     state.config.treasury_keypair_path = Some("/tmp/test-treasury.json".to_string());
@@ -2669,7 +2675,6 @@ async fn test_process_sweep_jobs_reverted_receipt_marks_failed_without_credit() 
             });
     let rpc_url = spawn_mock_server(rpc_app).await;
 
-    state.config.evm_rpc_url = Some(rpc_url.clone());
     state.config.eth_rpc_url = Some(rpc_url);
     state.config.licn_rpc_url = Some("http://localhost:8899".to_string());
     state.config.treasury_keypair_path = Some("/tmp/test-treasury.json".to_string());

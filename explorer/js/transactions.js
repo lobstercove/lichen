@@ -4,7 +4,7 @@
 const TXS_PER_PAGE = 50;
 let txPolling = null;
 let currentPageData = [];  // transactions for current page
-let cursorStack = [];      // stack of before_slot cursors for prev navigation
+let cursorStack = [];      // stack of exact transaction cursors for prev navigation
 let nextCursor = null;     // cursor for the next page
 let currentFilter = { type: '', status: '' };
 
@@ -29,10 +29,12 @@ function isErrorStatus(statusRaw) {
     return normalized === 'error' || normalized === 'failed' || normalized.includes('fail');
 }
 
-async function fetchPage(beforeSlot) {
+async function fetchPage(beforeCursor) {
     const params = { limit: TXS_PER_PAGE };
-    if (beforeSlot !== undefined && beforeSlot !== null) {
-        params.before_slot = beforeSlot;
+    if (typeof beforeCursor === 'string') {
+        params.before = beforeCursor;
+    } else if (beforeCursor !== undefined && beforeCursor !== null) {
+        params.before_slot = beforeCursor;
     }
 
     const result = await rpc.call('getRecentTransactions', [params]);
@@ -42,7 +44,7 @@ async function fetchPage(beforeSlot) {
 
 let isFirstLoad = true;
 
-async function loadPage(beforeSlot) {
+async function loadPage(beforeCursor) {
     const table = document.getElementById('transactionsTable');
     if (!table) return;
 
@@ -52,9 +54,9 @@ async function loadPage(beforeSlot) {
     }
 
     try {
-        const page = await fetchPage(beforeSlot);
+        const page = await fetchPage(beforeCursor);
         currentPageData = page.transactions || [];
-        nextCursor = page.next_before_slot || null;
+        nextCursor = page.next_before || page.next_before_slot || null;
         isFirstLoad = false;
 
         await renderTransactions();

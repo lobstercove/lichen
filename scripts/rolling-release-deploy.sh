@@ -42,8 +42,12 @@ RELEASE_REPO="${LICHEN_RELEASE_REPO:-lobstercove/lichen}"
 SSH_USER="${LICHEN_SSH_USER:-ubuntu}"
 SSH_PORT="${LICHEN_SSH_PORT:-2222}"
 SSH_CONNECT_TIMEOUT="${LICHEN_SSH_CONNECT_TIMEOUT:-20}"
+SSH_STRICT_HOST_KEY_CHECKING="${LICHEN_SSH_STRICT_HOST_KEY_CHECKING:-yes}"
+SSH_KNOWN_HOSTS_FILE="${LICHEN_SSH_KNOWN_HOSTS_FILE:-$HOME/.ssh/known_hosts}"
 HOSTS="${LICHEN_VPS_HOSTS:-$DEFAULT_HOSTS}"
-DISK_CRITICAL_PCT="${LICHEN_DISK_CRITICAL_PCT:-85}"
+DISK_CRITICAL_PCT="${LICHEN_DISK_CRITICAL_PCT:-90}"
+MIN_ARCHIVE_CAPACITY_GIB="${LICHEN_MIN_ARCHIVE_CAPACITY_GIB:-0}"
+MIN_ARCHIVE_AVAILABLE_GIB="${LICHEN_MIN_ARCHIVE_AVAILABLE_GIB:-20}"
 MAX_BLOCK_AGE_SECS="${LICHEN_MAX_BLOCK_AGE_SECS:-15}"
 ALLOW_UNHEALTHY_PREFLIGHT="${LICHEN_ALLOW_UNHEALTHY_PREFLIGHT:-0}"
 DEX_SMOKE_TIMEOUT_SECS="${LICHEN_DEX_SMOKE_TIMEOUT_SECS:-90}"
@@ -52,10 +56,38 @@ RELEASE_SIGNING_ADDRESS="${LICHEN_RELEASE_SIGNING_ADDRESS:-8HitBNnh8qbhfne5NCv2y
 REMOTE_RELEASE_DOWNLOAD="${LICHEN_REMOTE_RELEASE_DOWNLOAD:-auto}"
 
 is_consensus_critical_release() {
+  if [ "${LICHEN_FORCE_CONSENSUS_CRITICAL:-0}" = "1" ]; then
+    return 0
+  fi
+  if [ "${LICHEN_FORCE_NON_CONSENSUS_RELEASE:-0}" = "1" ]; then
+    return 1
+  fi
+
   case "$RELEASE_TAG" in
-    v0.5.188) return 0 ;;
-    *) return 1 ;;
+    v0.5.188|v0.5.223|v0.5.224) return 0 ;;
   esac
+
+  if ! command -v git >/dev/null 2>&1 ||
+    ! git rev-parse --verify "${RELEASE_TAG}^{commit}" >/dev/null 2>&1; then
+    echo "Could not inspect ${RELEASE_TAG}; treating release as consensus-critical." >&2
+    return 0
+  fi
+
+  local base="${LICHEN_RELEASE_DIFF_BASE:-}"
+  if [ -z "$base" ]; then
+    base="$(git describe --tags --abbrev=0 --match 'v[0-9]*' "${RELEASE_TAG}^" 2>/dev/null || true)"
+  fi
+  if [ -z "$base" ] || ! git rev-parse --verify "${base}^{commit}" >/dev/null 2>&1; then
+    echo "Could not determine previous release base for ${RELEASE_TAG}; treating release as consensus-critical." >&2
+    return 0
+  fi
+
+  if git diff --name-only "${base}..${RELEASE_TAG}" | grep -Eq \
+    '^(core/|validator/|p2p/|genesis/|rpc/|cli/|sdk/|Cargo\.toml|Cargo\.lock|deploy/|scripts/rolling-release-deploy\.sh|tests/local-multi-validator-test\.sh|\.github/workflows/release\.yml)'; then
+    return 0
+  fi
+
+  return 1
 }
 
 expected_validator_pubkey_for_host() {
@@ -83,7 +115,7 @@ if [ -n "${LICHEN_OWNER_APPROVED_RESET:-}" ] || [ -n "${LICHEN_CLEAN_SLATE_REDEP
   exit 2
 fi
 
-for tool in gh node sha256sum tar ssh scp; do
+for tool in gh git node sha256sum tar ssh scp; do
   if ! command -v "$tool" >/dev/null 2>&1; then
     echo "Missing required tool: $tool" >&2
     exit 2
@@ -99,7 +131,8 @@ ssh_run() {
     -o ConnectionAttempts=3 \
     -o ServerAliveInterval=10 \
     -o ServerAliveCountMax=6 \
-    -o StrictHostKeyChecking=no \
+    -o StrictHostKeyChecking="$SSH_STRICT_HOST_KEY_CHECKING" \
+    -o UserKnownHostsFile="$SSH_KNOWN_HOSTS_FILE" \
     "$SSH_USER@$host" "$@"
 }
 
@@ -113,7 +146,8 @@ scp_to() {
     -o ConnectionAttempts=3 \
     -o ServerAliveInterval=10 \
     -o ServerAliveCountMax=6 \
-    -o StrictHostKeyChecking=no \
+    -o StrictHostKeyChecking="$SSH_STRICT_HOST_KEY_CHECKING" \
+    -o UserKnownHostsFile="$SSH_KNOWN_HOSTS_FILE" \
     "$src" "$SSH_USER@$host:$dst"
 }
 
@@ -270,12 +304,24 @@ preflight_host() {
   local expected_pubkey
   expected_pubkey="$(expected_validator_pubkey_for_host "$host")"
   echo "Preflight ${host}"
-  ssh_run "$host" "NETWORK='$NETWORK' RPC_PORT='$RPC_PORT' DISK_CRITICAL_PCT='$DISK_CRITICAL_PCT' MAX_BLOCK_AGE_SECS='$MAX_BLOCK_AGE_SECS' ALLOW_UNHEALTHY_PREFLIGHT='$ALLOW_UNHEALTHY_PREFLIGHT' EXPECTED_PUBKEY='$expected_pubkey' bash -s" <<'REMOTE'
+  ssh_run "$host" "NETWORK='$NETWORK' RPC_PORT='$RPC_PORT' DISK_CRITICAL_PCT='$DISK_CRITICAL_PCT' MIN_ARCHIVE_CAPACITY_GIB='$MIN_ARCHIVE_CAPACITY_GIB' MIN_ARCHIVE_AVAILABLE_GIB='$MIN_ARCHIVE_AVAILABLE_GIB' MAX_BLOCK_AGE_SECS='$MAX_BLOCK_AGE_SECS' ALLOW_UNHEALTHY_PREFLIGHT='$ALLOW_UNHEALTHY_PREFLIGHT' EXPECTED_PUBKEY='$expected_pubkey' bash -s" <<'REMOTE'
 set -euo pipefail
 sudo() { command sudo -n "$@" </dev/null; }
-pct="$(df -P / | awk 'NR==2 { gsub(/%/, "", $5); print $5 }')"
+read -r total_kib available_kib pct <<EOF
+$(df -Pk /var/lib/lichen | awk 'NR==2 { gsub(/%/, "", $5); print $2, $4, $5 }')
+EOF
+min_total_kib=$((MIN_ARCHIVE_CAPACITY_GIB * 1024 * 1024))
+min_available_kib=$((MIN_ARCHIVE_AVAILABLE_GIB * 1024 * 1024))
+if [ "$min_total_kib" -gt 0 ] && [ "$total_kib" -lt "$min_total_kib" ]; then
+  echo "Archive filesystem capacity is $((total_kib / 1024 / 1024)) GiB; at least ${MIN_ARCHIVE_CAPACITY_GIB} GiB is required."
+  exit 1
+fi
+if [ "$available_kib" -lt "$min_available_kib" ]; then
+  echo "Archive filesystem has $((available_kib / 1024 / 1024)) GiB free; at least ${MIN_ARCHIVE_AVAILABLE_GIB} GiB is required."
+  exit 1
+fi
 if [ "$pct" -ge "$DISK_CRITICAL_PCT" ]; then
-  echo "Root filesystem is ${pct}% full; refusing deploy."
+  echo "Archive filesystem is ${pct}% full; refusing deploy."
   exit 1
 fi
 
@@ -817,7 +863,7 @@ REMOTE
 public_smoke() {
   local public_url
   case "$NETWORK" in
-    testnet) public_url="https://testnet-rpc.lichen.network" ;;
+    testnet) public_url="https://testnet-api.lichen.network" ;;
     mainnet) public_url="https://rpc.lichen.network" ;;
   esac
   echo "Public RPC smoke ${public_url}"
@@ -836,7 +882,7 @@ sys.exit(0 if result.get("status") == "ok" else 1)
 public_dex_oracle_smoke() {
   local public_url
   case "$NETWORK" in
-    testnet) public_url="https://testnet-rpc.lichen.network" ;;
+    testnet) public_url="https://testnet-api.lichen.network" ;;
     mainnet) public_url="https://rpc.lichen.network" ;;
   esac
   echo "Public DEX oracle/candle smoke ${public_url}"

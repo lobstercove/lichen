@@ -12,8 +12,6 @@
 //   e.g. test_native_getAccount, test_solana_getBlockHeight, test_evm_eth_call
 
 use axum::body::{to_bytes, Body};
-use axum::extract::ConnectInfo;
-use axum::http::header::AUTHORIZATION;
 use axum::http::Request;
 use lichen_core::{
     contract::ContractAccount, Account, Block, CommitSignature, FeeConfig, FinalityTracker, Hash,
@@ -28,8 +26,6 @@ use tokio::sync::RwLock;
 use tower::util::ServiceExt;
 
 type RpcResult = Result<serde_json::Value, String>;
-const TEST_ADMIN_TOKEN: &str = "test-admin-token";
-const TEST_BEARER_ADMIN_TOKEN: &str = "Bearer test-admin-token";
 
 // ─── Test helpers ────────────────────────────────────────────────────────────
 
@@ -81,39 +77,6 @@ async fn rpc_p(
     serde_json::from_slice(&body).map_err(|e| format!("json error: {e}"))
 }
 
-async fn rpc_p_with_auth_and_connect_info(
-    app: &axum::Router,
-    path: &str,
-    method: &str,
-    params: serde_json::Value,
-    auth_header: Option<&str>,
-    connect_info: Option<std::net::SocketAddr>,
-) -> RpcResult {
-    let payload = json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params });
-    let mut request = Request::post(path)
-        .header("content-type", "application/json")
-        .body(Body::from(payload.to_string()))
-        .map_err(|e| format!("request error: {e}"))?;
-    if let Some(value) = auth_header {
-        request.headers_mut().insert(
-            AUTHORIZATION,
-            value.parse().map_err(|e| format!("header error: {e}"))?,
-        );
-    }
-    if let Some(addr) = connect_info {
-        request.extensions_mut().insert(ConnectInfo(addr));
-    }
-    let response = app
-        .clone()
-        .oneshot(request)
-        .await
-        .map_err(|e| format!("response error: {e}"))?;
-    let body = to_bytes(response.into_body(), usize::MAX)
-        .await
-        .map_err(|e| format!("body error: {e}"))?;
-    serde_json::from_slice(&body).map_err(|e| format!("json error: {e}"))
-}
-
 async fn rest_get(app: &axum::Router, path: &str) -> RpcResult {
     let request = Request::get(path)
         .body(Body::empty())
@@ -145,7 +108,6 @@ fn fresh_app() -> axum::Router {
         None,
         None,
         None,
-        None,
     )
 }
 
@@ -163,7 +125,6 @@ fn fresh_app_with_min_validator_stake(min_validator_stake: u64) -> axum::Router 
         "lichen-test".to_string(),
         "lichen-test".to_string(),
         min_validator_stake,
-        None,
         None,
         None,
         None,
@@ -195,51 +156,6 @@ fn fresh_app_with_runtime_settings(
         None,
         None,
         None,
-        None,
-    )
-}
-
-fn public_network_app_with_admin_token() -> axum::Router {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let state = StateStore::open(dir.path()).expect("state");
-    put_ready_tip(&state, 1);
-    let _ = Box::leak(Box::new(dir));
-    // Test fixture only. Production admin tokens come from runtime config,
-    // never from committed test sources.
-    build_rpc_router(
-        state,
-        None,
-        None,
-        None,
-        "lichen-testnet-1".to_string(),
-        "lichen-testnet-1".to_string(),
-        Some(TEST_ADMIN_TOKEN.to_string()),
-        None,
-        None,
-        None,
-        None,
-    )
-}
-
-fn dev_network_app_with_admin_token() -> axum::Router {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let state = StateStore::open(dir.path()).expect("state");
-    put_ready_tip(&state, 1);
-    let _ = Box::leak(Box::new(dir));
-    // Test fixture only. Production admin tokens come from runtime config,
-    // never from committed test sources.
-    build_rpc_router(
-        state,
-        None,
-        None,
-        None,
-        "lichen-local".to_string(),
-        "lichen-dev".to_string(),
-        Some(TEST_ADMIN_TOKEN.to_string()),
-        None,
-        None,
-        None,
-        None,
     )
 }
 
@@ -263,7 +179,6 @@ fn app_with_consensus_oracle_prices() -> axum::Router {
         None,
         "lichen-test".to_string(),
         "lichen-test".to_string(),
-        None,
         None,
         None,
         None,
@@ -329,7 +244,6 @@ fn app_with_state() -> (axum::Router, String) {
         None,
         None,
         None,
-        None,
     );
     (app, funded_hex)
 }
@@ -388,7 +302,6 @@ fn app_with_anchored_account_proof() -> (axum::Router, String) {
         None,
         "lichen-test".to_string(),
         "lichen-test".to_string(),
-        None,
         Some(FinalityTracker::new(1, 1)),
         None,
         None,
@@ -453,7 +366,6 @@ fn app_with_account_proof_older_matching_anchor() -> (axum::Router, String) {
         None,
         "lichen-test".to_string(),
         "lichen-test".to_string(),
-        None,
         Some(FinalityTracker::new(2, 2)),
         None,
         None,
@@ -514,7 +426,6 @@ fn app_with_post_state_account_proof_anchor() -> (axum::Router, String) {
         None,
         "lichen-test".to_string(),
         "lichen-test".to_string(),
-        None,
         Some(FinalityTracker::new(1, 1)),
         None,
         None,
@@ -575,7 +486,6 @@ fn app_with_post_state_account_proof_anchor_and_lagging_tracker() -> (axum::Rout
         None,
         "lichen-test".to_string(),
         "lichen-test".to_string(),
-        None,
         Some(FinalityTracker::new(1, 1)),
         None,
         None,
@@ -863,7 +773,7 @@ async fn test_native_get_recent_blockhash() {
 #[tokio::test]
 async fn test_native_health() {
     let app = fresh_app();
-    let resp = rpc(&app, "/", "health").await.unwrap();
+    let resp = rpc(&app, "/", "getHealth").await.unwrap();
     assert_valid_rpc(&resp);
     assert_eq!(resp["result"]["status"], "ok");
     assert_eq!(resp["result"]["slot"], 1);
@@ -893,38 +803,10 @@ async fn test_native_get_marketplace_config() {
 }
 
 #[tokio::test]
-async fn test_native_set_fee_config_no_token() {
-    // Without admin token, should reject
-    let app = fresh_app();
-    let resp = rpc_p(&app, "/", "setFeeConfig", json!([{"base_fee": 100}]))
-        .await
-        .unwrap();
-    assert_valid_rpc(&resp);
-    // Should error because no admin token configured
-    assert!(
-        resp.get("error").is_some(),
-        "setFeeConfig without admin token should error"
-    );
-}
-
-#[tokio::test]
 async fn test_native_get_rent_params() {
     let app = fresh_app();
     let resp = rpc(&app, "/", "getRentParams").await.unwrap();
     assert_valid_rpc(&resp);
-}
-
-#[tokio::test]
-async fn test_native_set_rent_params_no_token() {
-    let app = fresh_app();
-    let resp = rpc_p(&app, "/", "setRentParams", json!([{"exempt_minimum": 100}]))
-        .await
-        .unwrap();
-    assert_valid_rpc(&resp);
-    assert!(
-        resp.get("error").is_some(),
-        "setRentParams without admin token should error"
-    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1129,7 +1011,6 @@ async fn test_native_get_unstaking_queue_returns_canonical_claim_state() {
         None,
         None,
         None,
-        None,
     );
 
     let resp = rpc_p(&app, "/", "getUnstakingQueue", json!([user.to_base58()]))
@@ -1204,20 +1085,6 @@ async fn test_native_get_account_info() {
     let resp = rpc_p(&app, "/", "getAccountInfo", json!([addr]))
         .await
         .unwrap();
-    assert_valid_rpc(&resp);
-}
-
-#[tokio::test]
-async fn test_native_get_transaction_history() {
-    let app = fresh_app();
-    let resp = rpc_p(
-        &app,
-        "/",
-        "getTransactionHistory",
-        json!(["11111111111111111111111111111111"]),
-    )
-    .await
-    .unwrap();
     assert_valid_rpc(&resp);
 }
 
@@ -1575,141 +1442,6 @@ async fn test_native_get_contract_abi() {
 }
 
 #[tokio::test]
-async fn test_native_set_contract_abi_no_token() {
-    let app = fresh_app();
-    let resp = rpc_p(
-        &app,
-        "/",
-        "setContractAbi",
-        json!(["11111111111111111111111111111111", []]),
-    )
-    .await
-    .unwrap();
-    assert_valid_rpc(&resp);
-    assert!(
-        resp.get("error").is_some(),
-        "setContractAbi without token should error"
-    );
-}
-
-#[tokio::test]
-async fn test_native_legacy_admin_rpcs_disabled_on_public_networks() {
-    let app = public_network_app_with_admin_token();
-
-    for (method, params) in [
-        ("setFeeConfig", json!([{"base_fee_spores": 100}])),
-        ("setRentParams", json!([{"rent_free_kb": 100}])),
-        (
-            "setContractAbi",
-            json!(["11111111111111111111111111111111", []]),
-        ),
-        ("deployContract", json!([])),
-        ("upgradeContract", json!([])),
-    ] {
-        let resp = rpc_p(&app, "/", method, params).await.unwrap();
-        assert_valid_rpc(&resp);
-        let message = resp["error"]["message"].as_str().unwrap_or("");
-        assert!(
-            message.contains("disabled outside local/dev environments"),
-            "{} should be disabled on public networks, got: {}",
-            method,
-            message
-        );
-    }
-}
-
-#[tokio::test]
-async fn test_native_legacy_admin_rpcs_accept_bearer_header_on_dev_networks() {
-    let app = dev_network_app_with_admin_token();
-
-    let resp = rpc_p_with_auth_and_connect_info(
-        &app,
-        "/",
-        "setFeeConfig",
-        json!({"base_fee_spores": 1000}),
-        Some(TEST_BEARER_ADMIN_TOKEN),
-        Some("127.0.0.1:9000".parse().unwrap()),
-    )
-    .await
-    .unwrap();
-    assert_valid_rpc(&resp);
-    assert_eq!(resp["result"]["status"], "ok");
-}
-
-#[tokio::test]
-async fn test_native_legacy_admin_rpcs_reject_json_body_admin_token_on_dev_networks() {
-    let app = dev_network_app_with_admin_token();
-
-    let resp = rpc_p_with_auth_and_connect_info(
-        &app,
-        "/",
-        "setFeeConfig",
-        json!({
-            "base_fee_spores": 1000,
-            "admin_token": TEST_ADMIN_TOKEN
-        }),
-        None,
-        Some("127.0.0.1:9000".parse().unwrap()),
-    )
-    .await
-    .unwrap();
-    assert_valid_rpc(&resp);
-    let message = resp["error"]["message"].as_str().unwrap_or("");
-    assert!(
-        message.contains("Missing Authorization: Bearer <token> header"),
-        "expected header-only auth rejection, got: {}",
-        message
-    );
-}
-
-#[tokio::test]
-async fn test_native_legacy_admin_rpcs_ignore_json_body_admin_token_when_header_is_valid() {
-    let app = dev_network_app_with_admin_token();
-
-    let resp = rpc_p_with_auth_and_connect_info(
-        &app,
-        "/",
-        "setFeeConfig",
-        json!({
-            "base_fee_spores": 1000,
-            "admin_token": "wrong-body-token"
-        }),
-        Some(TEST_BEARER_ADMIN_TOKEN),
-        Some("127.0.0.1:9000".parse().unwrap()),
-    )
-    .await
-    .unwrap();
-    assert_valid_rpc(&resp);
-    assert_eq!(
-        resp["result"]["status"], "ok",
-        "valid Authorization header should be the only accepted admin credential"
-    );
-}
-
-#[tokio::test]
-async fn test_native_legacy_admin_rpcs_require_loopback_on_dev_networks() {
-    let app = dev_network_app_with_admin_token();
-
-    let resp = rpc_p_with_auth_and_connect_info(
-        &app,
-        "/",
-        "setFeeConfig",
-        json!({"base_fee_spores": 1000, "admin_token": TEST_ADMIN_TOKEN}),
-        None,
-        Some("203.0.113.10:9000".parse().unwrap()),
-    )
-    .await
-    .unwrap();
-    assert_valid_rpc(&resp);
-    let message = resp["error"]["message"].as_str().unwrap_or("");
-    assert!(
-        message.contains("restricted to loopback clients"),
-        "expected loopback restriction error, got: {}",
-        message
-    );
-}
-
-#[tokio::test]
 async fn test_native_get_all_contracts() {
     let (app, _) = app_with_state();
     let resp = rpc(&app, "/", "getAllContracts").await.unwrap();
@@ -1718,33 +1450,6 @@ async fn test_native_get_all_contracts() {
     if let Some(result) = resp.get("result") {
         assert!(!result.is_null(), "getAllContracts should not be null");
     }
-}
-
-#[tokio::test]
-async fn test_native_deploy_contract_missing_tx() {
-    let app = fresh_app();
-    // Should fail without a valid signed transaction
-    let resp = rpc_p(&app, "/", "deployContract", json!(["invalid"]))
-        .await
-        .unwrap();
-    assert_valid_rpc(&resp);
-    assert!(
-        resp.get("error").is_some(),
-        "deployContract with invalid data should error"
-    );
-}
-
-#[tokio::test]
-async fn test_native_upgrade_contract_missing_tx() {
-    let app = fresh_app();
-    let resp = rpc_p(&app, "/", "upgradeContract", json!(["invalid"]))
-        .await
-        .unwrap();
-    assert_valid_rpc(&resp);
-    assert!(
-        resp.get("error").is_some(),
-        "upgradeContract with invalid data should error"
-    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1971,6 +1676,52 @@ async fn test_native_get_nft_activity() {
     .await
     .unwrap();
     assert_valid_rpc(&resp);
+}
+
+#[tokio::test]
+async fn test_native_nft_queries_reject_numeric_options_alias() {
+    let app = fresh_app();
+    for method in ["getNFTsByOwner", "getNFTsByCollection", "getNFTActivity"] {
+        let resp = rpc_p(
+            &app,
+            "/",
+            method,
+            json!(["11111111111111111111111111111111", 25]),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            resp["error"]["code"], -32602,
+            "{method} accepted numeric options"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_native_rpc_rejects_removed_parameter_aliases() {
+    let app = fresh_app();
+    let invalid_cases = [
+        ("getAllContracts", json!({"limit": 1})),
+        ("getAllContracts", json!([1])),
+        ("getPrograms", json!({"limit": 1})),
+        ("getAllSymbolRegistry", json!([100])),
+        (
+            "callContract",
+            json!({
+                "contract": "11111111111111111111111111111111",
+                "function": "read"
+            }),
+        ),
+        ("confirmTransaction", json!({"signature": "00".repeat(32)})),
+    ];
+
+    for (method, params) in invalid_cases {
+        let resp = rpc_p(&app, "/", method, params).await.unwrap();
+        assert_eq!(
+            resp["error"]["code"], -32602,
+            "{method} accepted removed params shape: {resp}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -2204,13 +1955,6 @@ async fn test_native_get_dex_analytics_stats() {
 async fn test_native_get_dex_governance_stats() {
     let app = fresh_app();
     let resp = rpc(&app, "/", "getDexGovernanceStats").await.unwrap();
-    assert_valid_rpc(&resp);
-}
-
-#[tokio::test]
-async fn test_native_get_lichenswap_stats() {
-    let app = fresh_app();
-    let resp = rpc(&app, "/", "getLichenSwapStats").await.unwrap();
     assert_valid_rpc(&resp);
 }
 
@@ -2966,7 +2710,6 @@ async fn test_all_stats_endpoints_return_valid_json() {
         "getDexRouterStats",
         "getDexAnalyticsStats",
         "getDexGovernanceStats",
-        "getLichenSwapStats",
         "getThallLendStats",
         "getSporePayStats",
         "getBountyBoardStats",
@@ -3136,7 +2879,6 @@ fn app_with_rich_state() -> (axum::Router, StateStore, String, String, String, S
         None,
         None,
         None,
-        None,
     );
     (
         app,
@@ -3177,7 +2919,6 @@ fn app_with_bootstrap_staking_rewards() -> (axum::Router, String) {
         None,
         None,
         None,
-        None,
     );
 
     (app, validator_b58)
@@ -3204,7 +2945,6 @@ fn app_with_mossstake_pool(licn_staked: u64) -> (axum::Router, MossStakePool) {
         None,
         "lichen-test".to_string(),
         "lichen-test".to_string(),
-        None,
         None,
         None,
         None,
@@ -3241,7 +2981,6 @@ fn app_with_weighted_mossstake_pool() -> (axum::Router, String, String) {
         None,
         "lichen-test".to_string(),
         "lichen-test".to_string(),
-        None,
         None,
         None,
         None,
@@ -3546,7 +3285,6 @@ async fn test_native_archive_history_rpc_survives_cold_migration_and_reopen() {
         None,
         "lichen-test".to_string(),
         "lichen-test".to_string(),
-        None,
         Some(FinalityTracker::new(new_slot, new_slot)),
         None,
         None,
@@ -3607,7 +3345,7 @@ async fn test_native_archive_history_rpc_survives_cold_migration_and_reopen() {
     let paged_resp = rpc_p(
         &app,
         "/",
-        "getTransactionHistory",
+        "getTransactionsByAddress",
         json!([deposit_address.to_base58(), { "limit": 10, "before_slot": new_slot }]),
     )
     .await
@@ -3615,7 +3353,7 @@ async fn test_native_archive_history_rpc_survives_cold_migration_and_reopen() {
     assert_valid_rpc(&paged_resp);
     assert!(
         paged_resp.get("error").is_none(),
-        "unexpected getTransactionHistory error: {paged_resp}"
+        "unexpected getTransactionsByAddress error: {paged_resp}"
     );
     let paged = paged_resp["result"]["transactions"]
         .as_array()
@@ -3885,7 +3623,7 @@ async fn test_evm_eth_get_balance_funded() {
 #[tokio::test]
 async fn test_native_health_deep_check() {
     let (app, _, _, _, _, _) = app_with_rich_state();
-    let resp = rpc(&app, "/", "health").await.unwrap();
+    let resp = rpc(&app, "/", "getHealth").await.unwrap();
     assert_valid_rpc(&resp);
     assert_eq!(resp["result"]["status"], "ok");
 }
@@ -4338,7 +4076,7 @@ async fn test_batch_native_reads_with_rich_state() {
         "getSlot",
         "getLatestBlock",
         "getRecentBlockhash",
-        "health",
+        "getHealth",
         "getMetrics",
         "getTreasuryInfo",
         "getChainStatus",
@@ -4366,7 +4104,6 @@ async fn test_batch_native_reads_with_rich_state() {
         "getBalance",
         "getAccountInfo",
         "getAccount",
-        "getTransactionHistory",
         "getTransactionsByAddress",
         "getAccountTxCount",
         "getTokenAccounts",
@@ -5066,7 +4803,6 @@ async fn test_native_get_account_at_slot_not_found() {
         None,
         None,
         None,
-        None,
     );
     let resp = rpc_p(
         &app,
@@ -5103,7 +4839,6 @@ async fn test_native_get_account_at_slot_found() {
         None,
         None,
         None,
-        None,
     );
     let resp = rpc_p(&app, "/", "getAccountAtSlot", json!([pk.to_base58(), 100]))
         .await
@@ -5128,7 +4863,6 @@ async fn test_native_get_account_at_slot_missing_params() {
         None,
         "lichen-test".to_string(),
         "lichen-test".to_string(),
-        None,
         None,
         None,
         None,
@@ -5177,7 +4911,6 @@ async fn test_send_transaction_wire_envelope() {
         None,
         None,
         None,
-        None,
     );
 
     // Build a transfer transaction
@@ -5220,9 +4953,9 @@ async fn test_send_transaction_wire_envelope() {
     }
 }
 
-/// sendTransaction still accepts raw bincode (no envelope).
+/// sendTransaction rejects raw bincode without the V1 envelope.
 #[tokio::test]
-async fn test_send_transaction_raw_bincode() {
+async fn test_send_transaction_rejects_raw_bincode() {
     let dir = tempfile::tempdir().expect("tempdir");
     let state = StateStore::open(dir.path()).expect("state");
     let _ = Box::leak(Box::new(dir));
@@ -5241,7 +4974,6 @@ async fn test_send_transaction_raw_bincode() {
         None,
         "lichen-test".to_string(),
         "lichen-test".to_string(),
-        None,
         None,
         None,
         None,
@@ -5274,14 +5006,11 @@ async fn test_send_transaction_raw_bincode() {
         .await
         .unwrap();
     assert_valid_rpc(&resp);
-    if let Some(err) = resp.get("error") {
-        let msg = err.get("message").and_then(|m| m.as_str()).unwrap_or("");
-        assert!(
-            !msg.contains("Invalid transaction"),
-            "Raw bincode decode failed: {}",
-            msg
-        );
-    }
+    let msg = resp["error"]["message"].as_str().unwrap_or("");
+    assert!(
+        msg.contains("Missing transaction V1 wire envelope"),
+        "{msg}"
+    );
 }
 
 /// simulateTransaction accepts wire-envelope.
@@ -5305,7 +5034,6 @@ async fn test_simulate_transaction_wire_envelope() {
         None,
         "lichen-test".to_string(),
         "lichen-test".to_string(),
-        None,
         None,
         None,
         None,

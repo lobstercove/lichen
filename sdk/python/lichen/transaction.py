@@ -5,7 +5,7 @@ import struct
 from dataclasses import dataclass
 from typing import List, Optional
 
-from .bincode import EncodedInstruction, encode_message, encode_transaction
+from .bincode import EncodedInstruction, encode_message, encode_transaction_wire
 from .keypair import Keypair
 from .pq import PqSignature
 from .publickey import PublicKey
@@ -108,10 +108,9 @@ class TransactionBuilder:
             compute_unit_price=self._compute_unit_price,
         )
 
-    def build_and_sign(self, keypair: Keypair) -> Transaction:
-        return self.build_and_sign_for_chain_id(keypair, "")
-
-    def build_and_sign_for_chain_id(self, keypair: Keypair, chain_id: str) -> Transaction:
+    def build_and_sign(self, keypair: Keypair, chain_id: str) -> Transaction:
+        if not chain_id:
+            raise ValueError("Chain id is required")
         message = self.build()
         encoded_instructions = [
             EncodedInstruction(ix.program_id, ix.accounts, ix.data)
@@ -142,9 +141,9 @@ class TransactionBuilder:
         )
 
     @staticmethod
-    def transaction_to_bincode(transaction: Transaction) -> bytes:
+    def transaction_to_wire(transaction: Transaction) -> bytes:
         message_bytes = TransactionBuilder.message_to_bincode(transaction.message)
-        return encode_transaction(transaction.signatures, message_bytes)
+        return encode_transaction_wire(transaction.signatures, message_bytes)
     
     @staticmethod
     def transfer(from_pubkey: PublicKey, to_pubkey: PublicKey, amount: int) -> Instruction:

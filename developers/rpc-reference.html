@@ -65,7 +65,7 @@
                 <a href="#getSlot" class="sidebar-link">getSlot</a>
                 <a href="#getLatestBlock" class="sidebar-link">getLatestBlock</a>
                 <a href="#getRecentBlockhash" class="sidebar-link">getRecentBlockhash</a>
-                <a href="#health" class="sidebar-link">health</a>
+                <a href="#getHealth" class="sidebar-link">getHealth</a>
                 <a href="#getMetrics" class="sidebar-link">getMetrics</a>
                 <a href="#getChainStatus" class="sidebar-link">getChainStatus</a>
             </div>
@@ -88,9 +88,7 @@
                 <a href="#getTransaction" class="sidebar-link">getTransaction</a>
                 <a href="#sendTransaction" class="sidebar-link">sendTransaction</a>
                 <a href="#simulateTransaction" class="sidebar-link">simulateTransaction</a>
-                <a href="#getTransactionsByAddress" class="sidebar-link">getTransactionsByAddress</a>
-                <a href="#getTransactionHistory" class="sidebar-link">getTransactionHistory</a>
-                <a href="#getTransactionProof" class="sidebar-link">getTransactionProof</a>
+                <a href="#getTransactionsByAddress" class="sidebar-link">getTransactionsByAddress</a>                <a href="#getTransactionProof" class="sidebar-link">getTransactionProof</a>
             </div>
             <div class="sidebar-section">
                 <h3 class="sidebar-heading">Validator</h3>
@@ -201,7 +199,7 @@
             <section id="endpoint">
                 <h2>Endpoint &amp; Format</h2>
                 <div class="callout callout-info">
-                    <p><strong>Public testnet endpoint:</strong> <code>https://testnet-rpc.lichen.network</code></p>
+                    <p><strong>Public testnet endpoint:</strong> <code>https://testnet-api.lichen.network</code></p>
                     <p><strong>Mainnet endpoint target:</strong> <code>https://rpc.lichen.network</code></p>
                     <p>The request examples below use public testnet. Swap to the mainnet endpoint only when you are
                         ready to target mainnet.</p>
@@ -211,8 +209,6 @@
                     <p><strong>Security model:</strong> Production TLS terminates at the repo-managed Caddy reverse
                         proxy. Raw RPC and WebSocket listeners on <code>8899/8900</code> or <code>9899/9900</code> are
                         internal-only and direct public exposure is unsupported.</p>
-                    <p><strong>Admin token rotation:</strong> <code>LICHEN_ADMIN_TOKEN</code> hot-reloads every 30
-                        seconds, so operator rotation does not require an RPC restart.</p>
                 </div>
                 <div class="code-block">
                     <div class="code-block-header">
@@ -253,7 +249,7 @@
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
-                    <pre><code>curl -X POST https://testnet-rpc.lichen.network \
+                    <pre><code>curl -X POST https://testnet-api.lichen.network \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getSlot","params":[]}'
 
@@ -278,7 +274,7 @@
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
-                    <pre><code>curl -X POST https://testnet-rpc.lichen.network \
+                    <pre><code>curl -X POST https://testnet-api.lichen.network \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getLatestBlock","params":[]}'
 
@@ -308,7 +304,7 @@
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
-                    <pre><code>curl -X POST https://testnet-rpc.lichen.network \
+                    <pre><code>curl -X POST https://testnet-api.lichen.network \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getRecentBlockhash","params":[]}'
 
@@ -317,9 +313,9 @@
                 </div>
             </div>
 
-            <!-- health -->
-            <div class="method-card" id="health">
-                <h3 class="method-name">health</h3>
+            <!-- getHealth -->
+            <div class="method-card" id="getHealth">
+                <h3 class="method-name">getHealth</h3>
                 <p class="method-desc">Returns node health status. Use this as a liveness probe.</p>
                 <div class="method-section">
                     <h4 class="method-section-title">Parameters</h4>
@@ -334,9 +330,9 @@
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
-                    <pre><code>curl -X POST https://testnet-rpc.lichen.network \
+                    <pre><code>curl -X POST https://testnet-api.lichen.network \
   -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"health","params":[]}'
+  -d '{"jsonrpc":"2.0","id":1,"method":"getHealth","params":[]}'
 
 # Response
 {"jsonrpc":"2.0","id":1,"result":{"status":"ok","reason":"ok","slot":3382206,"block_age_secs":0}}</code></pre>
@@ -361,7 +357,7 @@
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
-                    <pre><code>curl -X POST https://testnet-rpc.lichen.network \
+                    <pre><code>curl -X POST https://testnet-api.lichen.network \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getMetrics","params":[]}'
 
@@ -413,7 +409,7 @@
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
-                    <pre><code>curl -X POST https://testnet-rpc.lichen.network \
+                    <pre><code>curl -X POST https://testnet-api.lichen.network \
   -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","id":1,"method":"getChainStatus","params":[]}'
 
@@ -492,7 +488,7 @@
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
-                    <pre><code>curl -X POST https://testnet-rpc.lichen.network \
+                    <pre><code>curl -X POST https://testnet-api.lichen.network \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getBalance","params":["7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU"]}'
 
@@ -537,7 +533,7 @@
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
-                    <pre><code>curl -X POST https://testnet-rpc.lichen.network \
+                    <pre><code>curl -X POST https://testnet-api.lichen.network \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getAccount","params":["7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU"]}'</code></pre>
                 </div>
@@ -581,8 +577,7 @@
                 <div class="method-section">
                     <h4 class="method-section-title">Returns</h4>
                     <p>Object — <code>{ pubkey, account_data, inclusion_proof, anchor }</code>. The
-                        <code>inclusion_proof.proof_type</code> is <code>sparse_v1</code> on sparse-active chains and
-                        <code>ordered_v0</code> on legacy ordered commitments.
+                        <code>inclusion_proof.proof_type</code> is <code>sparse_v1</code>.
                     </p>
                 </div>
                 <div class="method-section">
@@ -590,8 +585,7 @@
                     <ul>
                         <li>Returns an error if the account does not exist or if the proof cannot be anchored to the
                             requested block context.</li>
-                        <li><code>sparse_v1</code> proofs include <code>sparse_path</code> and <code>steps</code>;
-                            ordered proofs include <code>siblings</code> and <code>path</code>.</li>
+                        <li><code>sparse_v1</code> proofs include <code>sparse_path</code> and <code>steps</code>.</li>
                         <li><code>anchor.root_source</code> is <code>header_state_root</code> when the proof root matches
                             the block header, or <code>post_state_v1</code> when it matches the canonical post-block
                             sidecar anchor for that slot.</li>
@@ -602,7 +596,7 @@
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
-                    <pre><code>curl -X POST https://testnet-rpc.lichen.network \
+                    <pre><code>curl -X POST https://testnet-api.lichen.network \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getAccountProof","params":["7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU", {"commitment":"finalized"}]}'
 
@@ -683,7 +677,7 @@
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
-                    <pre><code>curl -X POST https://testnet-rpc.lichen.network \
+                    <pre><code>curl -X POST https://testnet-api.lichen.network \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getAccountAtSlot","params":["7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU", 1000]}'</code></pre>
                 </div>
@@ -723,7 +717,7 @@
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
-                    <pre><code>curl -X POST https://testnet-rpc.lichen.network \
+                    <pre><code>curl -X POST https://testnet-api.lichen.network \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU"]}'</code></pre>
                 </div>
@@ -799,7 +793,7 @@
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
-                    <pre><code>curl -X POST https://testnet-rpc.lichen.network \
+                    <pre><code>curl -X POST https://testnet-api.lichen.network \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getBlock","params":[42]}'
 
@@ -809,6 +803,35 @@
   "state_root":"abc...","tx_root":"def...","transaction_count":2,
   "transactions":[...],"timestamp":1738800000
 }}</code></pre>
+                </div>
+            </div>
+
+            <!-- getBlockCommit -->
+            <div class="method-card" id="getBlockCommit">
+                <h3 class="method-name">getBlockCommit</h3>
+                <p class="method-desc">Returns the canonical finality certificate for a block. For a non-tip block
+                    produced by the current protocol, the certificate is committed by its child and independently
+                    verified before it is served.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <p><code>[slot]</code>, where <code>slot</code> is an unsigned block height.</p>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Returns</h4>
+                    <p>Object containing <code>slot</code>, <code>block_hash</code>,
+                        <code>certificate_version</code>, <code>validators_hash</code>, exact sorted
+                        <code>validator_powers</code>, <code>parent_post_state_root</code>, <code>commit_round</code>,
+                        <code>commit_signatures</code>, <code>commit_validator_count</code>,
+                        <code>commit_source</code>, and <code>bft_timestamp</code>.</p>
+                    <p><code>commit_source = canonical_child</code> is the archive-stable proof. A
+                        <code>local_pending_child</code> response is tip-local evidence until the next block commits it.</p>
+                </div>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
+                                class="fas fa-copy"></i></button></div>
+                    <pre><code>curl -X POST https://testnet-api.lichen.network \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"getBlockCommit","params":[42]}'</code></pre>
                 </div>
             </div>
 
@@ -870,7 +893,7 @@
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
-                    <pre><code>curl -X POST https://testnet-rpc.lichen.network \
+                    <pre><code>curl -X POST https://testnet-api.lichen.network \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getTransaction","params":["a1b2c3d4..."]}'</code></pre>
                 </div>
@@ -880,7 +903,7 @@
             <div class="method-card" id="sendTransaction">
                 <h3 class="method-name">sendTransaction</h3>
                 <p class="method-desc">Submits a signed, serialized transaction to the mempool. The transaction must be
-                    base64-encoded bincode.</p>
+                    a base64-encoded <code>lichen_tx_v1</code> envelope with chain-ID-domain signatures.</p>
                 <div class="method-section">
                     <h4 class="method-section-title">Parameters</h4>
                     <table class="param-table">
@@ -897,7 +920,7 @@
                                 <td>transaction</td>
                                 <td><span class="param-type">string</span></td>
                                 <td>Yes</td>
-                                <td>Base64-encoded serialized transaction</td>
+                                <td>Base64-encoded <code>lichen_tx_v1</code> envelope</td>
                             </tr>
                         </tbody>
                     </table>
@@ -909,7 +932,7 @@
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
-                    <pre><code>curl -X POST https://testnet-rpc.lichen.network \
+                    <pre><code>curl -X POST https://testnet-api.lichen.network \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"sendTransaction","params":["BASE64_ENCODED_TX"]}'
 
@@ -993,43 +1016,6 @@
                 </div>
             </div>
 
-            <!-- getTransactionHistory -->
-            <div class="method-card" id="getTransactionHistory">
-                <h3 class="method-name">getTransactionHistory</h3>
-                <p class="method-desc">Alias for <code>getTransactionsByAddress</code>. Both methods use the same
-                    handler and return identical responses.</p>
-                <div class="method-section">
-                    <h4 class="method-section-title">Parameters</h4>
-                    <table class="param-table">
-                        <thead>
-                            <tr>
-                                <th>Name</th>
-                                <th>Type</th>
-                                <th>Required</th>
-                                <th>Description</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <tr>
-                                <td>pubkey</td>
-                                <td><span class="param-type">string</span></td>
-                                <td>Yes</td>
-                                <td>Base58-encoded public key</td>
-                            </tr>
-                            <tr>
-                                <td>options</td>
-                                <td><span class="param-type">object</span></td>
-                                <td>No</td>
-                                <td><code>{ limit?: number, before_slot?: number }</code>; newest first, default limit 50</td>
-                            </tr>
-                        </tbody>
-                    </table>
-                </div>
-                <div class="method-section">
-                    <h4 class="method-section-title">Returns</h4>
-                    <p>Object — Paginated transaction history.</p>
-                </div>
-            </div>
 
             <!-- getTransactionProof -->
             <div class="method-card" id="getTransactionProof">
@@ -1101,7 +1087,7 @@
                 </div>
                 <div class="method-section">
                     <h4 class="method-section-title">Example</h4>
-                    <pre><code>curl -s https://testnet-rpc.lichen.network -H 'Content-Type: application/json' \
+                    <pre><code>curl -s https://testnet-api.lichen.network -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"getTransactionProof","params":["a1b2c3d4..."]}'</code></pre>
                     <pre><code>{
   "jsonrpc": "2.0",
@@ -1152,7 +1138,7 @@
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
-                    <pre><code>curl -X POST https://testnet-rpc.lichen.network \
+                    <pre><code>curl -X POST https://testnet-api.lichen.network \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getValidators","params":[]}'</code></pre>
                 </div>
@@ -1507,7 +1493,7 @@
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
-                    <pre><code>curl -X POST https://testnet-rpc.lichen.network \
+                    <pre><code>curl -X POST https://testnet-api.lichen.network \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getNetworkInfo","params":[]}'</code></pre>
                 </div>
@@ -1623,7 +1609,7 @@
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
-                    <pre><code>curl -X POST https://testnet-rpc.lichen.network \
+                    <pre><code>curl -X POST https://testnet-api.lichen.network \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getContractInfo","params":["ContractPubkey..."]}'</code></pre>
                 </div>
@@ -1635,7 +1621,7 @@
                 <p class="method-desc">Returns deployed contracts with pagination metadata.</p>
                 <div class="method-section">
                     <h4 class="method-section-title">Parameters</h4>
-                    <p>Optional: <code>{ limit, cursor }</code> or <code>{ limit, after }</code>.</p>
+                    <p>Optional: <code>[{ limit, cursor }]</code>.</p>
                 </div>
                 <div class="method-section">
                     <h4 class="method-section-title">Returns</h4>
@@ -1748,7 +1734,7 @@
                 <p class="method-desc">Returns a list of all deployed programs.</p>
                 <div class="method-section">
                     <h4 class="method-section-title">Parameters</h4>
-                    <p>Optional object — <code>{ limit, cursor }</code> or <code>{ limit, after }</code>.</p>
+                    <p>Optional: <code>[{ limit, cursor }]</code>.</p>
                 </div>
                 <div class="method-section">
                     <h4 class="method-section-title">Returns</h4>
@@ -2084,12 +2070,44 @@
                                 <td>Yes</td>
                                 <td>Base58-encoded owner public key</td>
                             </tr>
+                            <tr>
+                                <td>options</td>
+                                <td><span class="param-type">object</span></td>
+                                <td>No</td>
+                                <td><code>{ limit?: number }</code></td>
+                            </tr>
                         </tbody>
                     </table>
                 </div>
                 <div class="method-section">
                     <h4 class="method-section-title">Returns</h4>
-                    <p>Array — List of NFT objects.</p>
+                    <p>Object — <code>{ owner, count, nfts }</code>.</p>
+                </div>
+            </div>
+
+            <div class="method-card" id="getNFTsByCollection">
+                <h3 class="method-name">getNFTsByCollection</h3>
+                <p class="method-desc">Returns NFTs in a collection.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <p><code>[collection_pubkey, { limit?: number }?]</code></p>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Returns</h4>
+                    <p>Object — <code>{ collection, count, nfts }</code>.</p>
+                </div>
+            </div>
+
+            <div class="method-card" id="getNFTActivity">
+                <h3 class="method-name">getNFTActivity</h3>
+                <p class="method-desc">Returns recent mint and transfer activity for a collection.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <p><code>[collection_pubkey, { limit?: number }?]</code></p>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Returns</h4>
+                    <p>Object — <code>{ collection, count, activity }</code>.</p>
                 </div>
             </div>
 
@@ -2098,24 +2116,7 @@
                 <p class="method-desc">Returns active marketplace listings with price, seller, and collection info.</p>
                 <div class="method-section">
                     <h4 class="method-section-title">Parameters</h4>
-                    <table class="param-table">
-                        <thead>
-                            <tr>
-                                <th>Name</th>
-                                <th>Type</th>
-                                <th>Required</th>
-                                <th>Description</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <tr>
-                                <td>collectionId</td>
-                                <td><span class="param-type">string</span></td>
-                                <td>No</td>
-                                <td>Filter by collection (optional)</td>
-                            </tr>
-                        </tbody>
-                    </table>
+                    <p>Array containing one options object — <code>[{ collection?, limit?, price_min?, price_max?, seller?, sort_by? }]</code>.</p>
                 </div>
                 <div class="method-section">
                     <h4 class="method-section-title">Returns</h4>
@@ -2129,7 +2130,7 @@
                     token ID, and limit.</p>
                 <div class="method-section">
                     <h4 class="method-section-title">Parameters</h4>
-                    <p>Object or array-wrapped object — <code>{ collection?, token?, token_id?, limit? }</code>.</p>
+                    <p>Array containing one options object — <code>[{ collection?, token?, token_id?, limit? }]</code>.</p>
                 </div>
                 <div class="method-section">
                     <h4 class="method-section-title">Returns</h4>
@@ -2142,24 +2143,7 @@
                 <p class="method-desc">Returns recent marketplace sales history.</p>
                 <div class="method-section">
                     <h4 class="method-section-title">Parameters</h4>
-                    <table class="param-table">
-                        <thead>
-                            <tr>
-                                <th>Name</th>
-                                <th>Type</th>
-                                <th>Required</th>
-                                <th>Description</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <tr>
-                                <td>collectionId</td>
-                                <td><span class="param-type">string</span></td>
-                                <td>No</td>
-                                <td>Filter by collection (optional)</td>
-                            </tr>
-                        </tbody>
-                    </table>
+                    <p>Array containing one options object — <code>[{ collection?, limit? }]</code>.</p>
                 </div>
                 <div class="method-section">
                     <h4 class="method-section-title">Returns</h4>
@@ -2173,30 +2157,8 @@
                     token.</p>
                 <div class="method-section">
                     <h4 class="method-section-title">Parameters</h4>
-                    <table class="param-table">
-                        <thead>
-                            <tr>
-                                <th>Name</th>
-                                <th>Type</th>
-                                <th>Required</th>
-                                <th>Description</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <tr>
-                                <td>collectionId</td>
-                                <td><span class="param-type">string</span></td>
-                                <td>No</td>
-                                <td>Filter by collection public key</td>
-                            </tr>
-                            <tr>
-                                <td>tokenId</td>
-                                <td><span class="param-type">u64</span></td>
-                                <td>No</td>
-                                <td>Filter by specific token ID</td>
-                            </tr>
-                        </tbody>
-                    </table>
+                    <p>Array containing one options object —
+                        <code>[{ collection?, token?, token_id?, include_collection_offers?, limit? }]</code>.</p>
                 </div>
                 <div class="method-section">
                     <h4 class="method-section-title">Returns</h4>
@@ -2209,30 +2171,8 @@
                 <p class="method-desc">Returns active and recent marketplace auctions with current bid state.</p>
                 <div class="method-section">
                     <h4 class="method-section-title">Parameters</h4>
-                    <table class="param-table">
-                        <thead>
-                            <tr>
-                                <th>Name</th>
-                                <th>Type</th>
-                                <th>Required</th>
-                                <th>Description</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <tr>
-                                <td>collectionId</td>
-                                <td><span class="param-type">string</span></td>
-                                <td>No</td>
-                                <td>Filter by collection public key</td>
-                            </tr>
-                            <tr>
-                                <td>status</td>
-                                <td><span class="param-type">string</span></td>
-                                <td>No</td>
-                                <td>Filter by auction status (`active`, `ended`, `cancelled`)</td>
-                            </tr>
-                        </tbody>
-                    </table>
+                    <p>Array containing one options object —
+                        <code>[{ collection?, token?, token_id?, limit? }]</code>.</p>
                 </div>
                 <div class="method-section">
                     <h4 class="method-section-title">Returns</h4>
@@ -2260,7 +2200,7 @@
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
-                    <pre><code>curl -X POST https://testnet-rpc.lichen.network \
+                    <pre><code>curl -X POST https://testnet-api.lichen.network \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getTotalBurned","params":[]}'
 
@@ -2328,7 +2268,7 @@
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
-                    <pre><code>curl -X POST https://testnet-rpc.lichen.network \
+                    <pre><code>curl -X POST https://testnet-api.lichen.network \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getSignedMetadataManifest","params":[]}'
 
@@ -2398,7 +2338,7 @@
                     <div class="code-block">
                         <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
                                     class="fas fa-copy"></i></button></div>
-                        <pre><code>curl -X POST https://testnet-rpc.lichen.network \
+                        <pre><code>curl -X POST https://testnet-api.lichen.network \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getBridgeRouteRestrictionStatus","params":["neox","gas"]}'</code></pre>
                     </div>
@@ -2422,7 +2362,7 @@
                     <div class="code-block">
                         <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
                                     class="fas fa-copy"></i></button></div>
-                        <pre><code>curl -X POST https://testnet-rpc.lichen.network \
+                        <pre><code>curl -X POST https://testnet-api.lichen.network \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getWneoStats","params":[]}'</code></pre>
                     </div>
@@ -2446,7 +2386,7 @@
                     <div class="code-block">
                         <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
                                     class="fas fa-copy"></i></button></div>
-                        <pre><code>curl -X POST https://testnet-rpc.lichen.network \
+                        <pre><code>curl -X POST https://testnet-api.lichen.network \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getWgasStats","params":[]}'</code></pre>
                     </div>
@@ -2548,8 +2488,6 @@
 
                 <h3>Fee / Network / Validator</h3>
                 <ul>
-                    <li><code>setFeeConfig</code></li>
-                    <li><code>setRentParams</code></li>
                     <li><code>getOraclePrices</code> — returns a top-level object
                         <code>{ source, LICN, wSOL, wETH, wBNB, wNEO, wGAS, wBTC, lUSD }</code>.</li>
                     <li><code>getClusterInfo</code></li>
@@ -2565,15 +2503,12 @@
 
                 <h3>Contracts / Registry / Program</h3>
                 <ul>
-                    <li><code>setContractAbi</code></li>
-                    <li><code>deployContract</code></li>
-                    <li><code>upgradeContract</code></li>
                     <li><code>getContractEvents</code></li>
                     <li><code>getGovernanceEvents</code></li>
                     <li><code>getSignedMetadataManifest</code></li>
                     <li><code>getSymbolRegistry</code></li>
                     <li><code>getSymbolRegistryByProgram</code></li>
-                    <li><code>getAllSymbolRegistry</code> (alias: <code>getAllSymbols</code>)</li>
+                    <li><code>getAllSymbolRegistry</code></li>
                 </ul>
 
                 <h3>LichenID / Names / Identity</h3>
@@ -2603,13 +2538,13 @@
                         <code>getDexRewardsStats</code>, <code>getDexRouterStats</code>,
                         <code>getDexAnalyticsStats</code>, <code>getDexGovernanceStats</code>
                     </li>
-                    <li><code>getLichenSwapStats</code>, <code>getThallLendStats</code>, <code>getSporePayStats</code>,
+                    <li><code>getThallLendStats</code>, <code>getSporePayStats</code>,
                         <code>getSporeVaultStats</code>, <code>getBountyBoardStats</code>,
                         <code>getComputeMarketStats</code>, <code>getMossStorageStats</code>,
                         <code>getLichenMarketStats</code>, <code>getLichenAuctionStats</code>,
                         <code>getLichenPunksStats</code>
                     </li>
-                    <li><code>getLusdStats</code> (alias: <code>getMusdStats</code>), <code>getWethStats</code>,
+                    <li><code>getLusdStats</code>, <code>getWethStats</code>,
                         <code>getWsolStats</code>, <code>getWbnbStats</code>, <code>getWneoStats</code>,
                         <code>getWgasStats</code>, <code>getWbtcStats</code>,
                         <code>getLichenBridgeStats</code>, <code>getLichenDaoStats</code>,
@@ -2637,11 +2572,9 @@
                 <ul>
                     <li><code>getShieldedPoolState</code> — query shielded pool state (tree size, root, nullifier count)
                     </li>
-                    <li><code>getShieldedPoolStats</code> — aggregated pool statistics</li>
                     <li><code>getShieldedMerkleRoot</code> — current Merkle tree root</li>
                     <li><code>getShieldedMerklePath</code> — Merkle proof for a leaf index</li>
                     <li><code>isNullifierSpent</code> — check if a nullifier has been spent</li>
-                    <li><code>checkNullifier</code> — alias for <code>isNullifierSpent</code></li>
                     <li><code>getShieldedCommitments</code> — list commitments in the tree, including encrypted
                         wallet note payloads when present</li>
                     <li><code>computeShieldCommitment</code> — compute commitment hash for shield operation</li>
@@ -2655,7 +2588,7 @@
                 <h3>Contract Execution</h3>
                 <ul>
                     <li><code>callContract</code> — execute a read-only contract call (no state change). Accepts
-                        optional <code>from</code>/<code>caller</code> pubkey to set the calling context (defaults to
+                        optional <code>from</code> pubkey to set the calling context (defaults to
                         zero address).</li>
                     <li><code>getNameAuction</code> — query LichenID .lichen name auction by name</li>
                 </ul>

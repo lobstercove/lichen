@@ -34,6 +34,68 @@ enum CanonicalTxSnapshotCategory {
 
 type SnapshotEntry = (Vec<u8>, Vec<u8>);
 
+const CANONICAL_LEDGER_MANIFEST_CATEGORIES: &[&str] = &[
+    "slots",
+    "blocks",
+    "transactions",
+    "tx_by_slot",
+    "tx_to_slot",
+    "tx_meta",
+];
+
+struct PublicHistoryDigestAccumulator {
+    category: String,
+    hasher: Sha256,
+    entry_count: u64,
+    first_key_hex: Option<String>,
+    last_key_hex: Option<String>,
+}
+
+impl PublicHistoryDigestAccumulator {
+    fn new(category: &str) -> Self {
+        let mut hasher = Sha256::new();
+        hasher.update(b"lichen-public-history-category-v1");
+        update_public_history_digest_bytes(&mut hasher, category.as_bytes());
+        Self {
+            category: category.to_string(),
+            hasher,
+            entry_count: 0,
+            first_key_hex: None,
+            last_key_hex: None,
+        }
+    }
+
+    fn push(&mut self, key: &[u8], value: &[u8]) {
+        if self.first_key_hex.is_none() {
+            self.first_key_hex = Some(hex::encode(key));
+        }
+        self.last_key_hex = Some(hex::encode(key));
+        update_public_history_digest_entry(&mut self.hasher, key, value);
+        self.entry_count = self.entry_count.saturating_add(1);
+    }
+
+    fn finish(mut self) -> PublicHistoryCategoryDigest {
+        self.hasher.update(self.entry_count.to_le_bytes());
+        let digest = self.hasher.finalize();
+        let mut sha256 = [0u8; 32];
+        sha256.copy_from_slice(&digest[..32]);
+        PublicHistoryCategoryDigest {
+            category: self.category,
+            entry_count: self.entry_count,
+            sha256,
+            first_key_hex: self.first_key_hex,
+            last_key_hex: self.last_key_hex,
+        }
+    }
+}
+
+#[derive(Default)]
+struct RawBlockHistoryScan {
+    seen_body_slots: std::collections::BTreeMap<u64, [u8; 32]>,
+    repairable: std::collections::BTreeMap<u64, [u8; 32]>,
+    report: RawBlockHistoryRepairReport,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AccountTxsRebuildReport {
     pub source: AccountTxsRebuildSource,
@@ -188,6 +250,28 @@ fn canonical_block_snapshot_value_from_block(mut block: Block) -> Result<Vec<u8>
     Ok(canonical)
 }
 
+fn public_history_manifest_block_value(key: &[u8], value: &[u8]) -> Result<Vec<u8>, String> {
+    let mut block = decode_snapshot_block_value(value)?;
+    let block_hash = block.hash();
+    if key != block_hash.0 {
+        return Err(format!(
+            "Block snapshot key/hash mismatch: key={} block_hash={}",
+            hex::encode(key),
+            block_hash.to_hex()
+        ));
+    }
+
+    // Public-history availability is defined by the canonical block body and
+    // transaction payloads. Commit certificates are local finality proofs and
+    // can legitimately contain different quorum subsets for the same block hash.
+    // Keep those certificates in RocksDB export/import; only normalize them out
+    // of manifest digests so archive parity catches missing history, not local
+    // consensus-proof collection timing.
+    block.commit_round = 0;
+    block.commit_signatures.clear();
+    canonical_block_snapshot_value_from_block(block)
+}
+
 fn canonical_transaction_snapshot_value(
     tx: &crate::transaction::Transaction,
 ) -> Result<Vec<u8>, String> {
@@ -200,6 +284,102 @@ fn canonical_transaction_snapshot_value(
         )
     })?;
     Ok(canonical)
+}
+
+fn decode_snapshot_transaction_value(
+    value: &[u8],
+) -> Result<crate::transaction::Transaction, String> {
+    if value.first() == Some(&0xBC) {
+        deserialize_legacy_bincode(&value[1..], "transaction")
+            .map_err(|err| format!("Failed to deserialize transaction snapshot value: {}", err))
+    } else {
+        serde_json::from_slice(value).map_err(|err| {
+            format!(
+                "Failed to deserialize legacy JSON transaction snapshot value: {}",
+                err
+            )
+        })
+    }
+}
+
+fn canonical_transaction_snapshot_value_from_entry(
+    key: &[u8],
+    value: &[u8],
+) -> Result<Vec<u8>, String> {
+    if key.len() != 32 {
+        return Err(format!(
+            "Transaction snapshot key length mismatch: expected 32 bytes, got {}",
+            key.len()
+        ));
+    }
+    let tx = decode_snapshot_transaction_value(value)?;
+    let tx_hash = tx.signature();
+    if key != tx_hash.0 {
+        return Err(format!(
+            "Transaction snapshot key/signature mismatch: key={} signature={}",
+            hex::encode(key),
+            tx_hash.to_hex()
+        ));
+    }
+    canonical_transaction_snapshot_value(&tx)
+}
+
+fn update_public_history_digest_bytes(hasher: &mut Sha256, bytes: &[u8]) {
+    hasher.update((bytes.len() as u64).to_le_bytes());
+    hasher.update(bytes);
+}
+
+fn update_public_history_digest_entry(hasher: &mut Sha256, key: &[u8], value: &[u8]) {
+    update_public_history_digest_bytes(hasher, key);
+    update_public_history_digest_bytes(hasher, value);
+}
+
+fn append_canonical_tx_manifest_entries(
+    accumulators: &mut std::collections::BTreeMap<String, PublicHistoryDigestAccumulator>,
+    slot: u64,
+    tx_index: u64,
+    tx_hash: Hash,
+    transaction: &crate::transaction::Transaction,
+    tx_meta: Option<&[u8]>,
+) -> Result<(), String> {
+    if let Some(accumulator) = accumulators.get_mut("transactions") {
+        let value = canonical_transaction_snapshot_value(transaction)?;
+        accumulator.push(&tx_hash.0, &value);
+    }
+    if let Some(accumulator) = accumulators.get_mut("tx_by_slot") {
+        accumulator.push(&encode_tx_snapshot_cursor(slot, tx_index), &tx_hash.0);
+    }
+    if let Some(accumulator) = accumulators.get_mut("tx_to_slot") {
+        accumulator.push(&tx_hash.0, &slot.to_be_bytes());
+    }
+    if let (Some(accumulator), Some(value)) = (accumulators.get_mut("tx_meta"), tx_meta) {
+        accumulator.push(&tx_hash.0, value);
+    }
+    Ok(())
+}
+
+fn public_history_manifest_root(categories: &[PublicHistoryCategoryDigest]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"lichen-public-history-manifest-v1");
+    for digest in categories {
+        update_public_history_digest_bytes(&mut hasher, digest.category.as_bytes());
+        hasher.update(digest.entry_count.to_le_bytes());
+        hasher.update(digest.sha256);
+        if let Some(first) = &digest.first_key_hex {
+            update_public_history_digest_bytes(&mut hasher, first.as_bytes());
+        } else {
+            update_public_history_digest_bytes(&mut hasher, b"");
+        }
+        if let Some(last) = &digest.last_key_hex {
+            update_public_history_digest_bytes(&mut hasher, last.as_bytes());
+        } else {
+            update_public_history_digest_bytes(&mut hasher, b"");
+        }
+    }
+    let digest = hasher.finalize();
+    let mut root = [0u8; 32];
+    root.copy_from_slice(&digest[..32]);
+    root
 }
 
 fn parse_slot_snapshot_cursor(after_key: Option<&[u8]>, category: &str) -> Result<u64, String> {
@@ -418,12 +598,12 @@ impl StateStore {
 
     // ── Checkpoint creation (RocksDB native hardlink snapshot) ────────────
 
-    /// Create a point-in-time checkpoint without snapshot metadata.
+    /// Create a point-in-time checkpoint of only the hot database.
     ///
-    /// This is used by short-lived staging databases on hot paths. Persistent
-    /// sync checkpoints should use `create_checkpoint`, which writes metadata
-    /// and records the already-committed checkpoint state root.
-    pub fn create_raw_checkpoint(&self, checkpoint_dir: &str) -> Result<(), String> {
+    /// Snapshot live-apply rollback uses this because the apply path never
+    /// mutates the independently managed cold archive. Pinning cold SSTs in
+    /// that rollback checkpoint would waste capacity and block maintenance.
+    pub fn create_hot_raw_checkpoint(&self, checkpoint_dir: &str) -> Result<(), String> {
         use rocksdb::checkpoint::Checkpoint;
 
         // Persist in-memory counters first so the checkpoint sees a coherent
@@ -444,7 +624,31 @@ impl StateStore {
         let cp = Checkpoint::new(&self.db)
             .map_err(|e| format!("Failed to create checkpoint object: {}", e))?;
         cp.create_checkpoint(checkpoint_dir)
-            .map_err(|e| format!("Failed to create checkpoint: {}", e))
+            .map_err(|e| format!("Failed to create checkpoint: {}", e))?;
+
+        Ok(())
+    }
+
+    /// Create a point-in-time checkpoint without snapshot metadata.
+    ///
+    /// This is used by persistent checkpoint/snapshot paths that must carry
+    /// both hot state and the attached cold archive. Snapshot live-apply
+    /// rollback deliberately calls `create_hot_raw_checkpoint` instead.
+    pub fn create_raw_checkpoint(&self, checkpoint_dir: &str) -> Result<(), String> {
+        use rocksdb::checkpoint::Checkpoint;
+
+        self.create_hot_raw_checkpoint(checkpoint_dir)?;
+
+        if let Some(cold) = self.cold_db.as_ref() {
+            let cold_checkpoint_dir = std::path::Path::new(checkpoint_dir).join("cold");
+            let cold_cp = Checkpoint::new(cold)
+                .map_err(|e| format!("Failed to create cold checkpoint object: {}", e))?;
+            cold_cp
+                .create_checkpoint(&cold_checkpoint_dir)
+                .map_err(|e| format!("Failed to create cold checkpoint: {}", e))?;
+        }
+
+        Ok(())
     }
 
     /// Create a point-in-time checkpoint of the entire database.
@@ -490,7 +694,12 @@ impl StateStore {
 
     /// Open a checkpoint as a read-only StateStore for serving snapshot data.
     pub fn open_checkpoint(checkpoint_dir: &str) -> Result<Self, String> {
-        Self::open_read_only_with_cache_mb(checkpoint_dir, None)
+        let mut store = Self::open_read_only_with_cache_mb(checkpoint_dir, None)?;
+        let cold_checkpoint_dir = std::path::Path::new(checkpoint_dir).join("cold");
+        if cold_checkpoint_dir.is_dir() {
+            store.open_cold_store_read_only(&cold_checkpoint_dir)?;
+        }
+        Ok(store)
     }
 
     /// List available checkpoints in the data directory.
@@ -679,6 +888,414 @@ impl StateStore {
         self.export_cf_page_cursor_uncounted(CF_PROGRAMS, "Programs", after_key, limit)
     }
 
+    /// Export a cursor-paginated page for a public-history category.
+    ///
+    /// This is the archive/parity surface, not the full state snapshot surface.
+    /// In particular, `slots` exports only canonical slot->block-hash rows and
+    /// excludes live cursor metadata such as `last_slot`.
+    pub fn export_public_history_category_cursor_untracked(
+        &self,
+        category: &str,
+        after_key: Option<&[u8]>,
+        limit: u64,
+    ) -> Result<KvPage, String> {
+        self.export_public_history_category_range_cursor_untracked(category, after_key, limit, None)
+    }
+
+    /// Export an inclusive slot-bounded page for range repair.
+    ///
+    /// Only canonical slot-driven categories support an upper bound. Keeping
+    /// the bound inside each iterator prevents a page from leaking later rows
+    /// or truncating transactions when the final slot spans multiple pages.
+    pub fn export_public_history_category_range_cursor_untracked(
+        &self,
+        category: &str,
+        after_key: Option<&[u8]>,
+        limit: u64,
+        to_slot: Option<u64>,
+    ) -> Result<KvPage, String> {
+        if !PUBLIC_HISTORY_SNAPSHOT_CATEGORIES.contains(&category) {
+            return Err(format!("Unsupported public-history category: {}", category));
+        }
+        if category == "slots" {
+            return self.export_public_slots_cursor(after_key, limit, to_slot);
+        }
+        if category == "blocks" {
+            return self.export_blocks_cursor_canonical(after_key, limit, to_slot);
+        }
+        let tx_category = match category {
+            "transactions" => Some(CanonicalTxSnapshotCategory::Transactions),
+            "tx_by_slot" => Some(CanonicalTxSnapshotCategory::TxBySlot),
+            "tx_to_slot" => Some(CanonicalTxSnapshotCategory::TxToSlot),
+            "tx_meta" => Some(CanonicalTxSnapshotCategory::TxMeta),
+            _ => None,
+        };
+        if let Some(tx_category) = tx_category {
+            return self.export_canonical_tx_snapshot_cursor(
+                tx_category,
+                after_key,
+                limit,
+                to_slot,
+            );
+        }
+        if to_slot.is_some() {
+            return Err(format!(
+                "Slot-bounded public-history export is not supported for {category}"
+            ));
+        }
+        self.export_snapshot_category_cursor_untracked(category, after_key, limit)
+    }
+
+    fn export_public_slots_cursor(
+        &self,
+        after_key: Option<&[u8]>,
+        limit: u64,
+        to_slot: Option<u64>,
+    ) -> Result<KvPage, String> {
+        if limit == 0 {
+            return Ok(KvPage {
+                entries: Vec::new(),
+                total: 0,
+                next_cursor: None,
+                has_more: false,
+            });
+        }
+
+        let cf = self
+            .db
+            .cf_handle(CF_SLOTS)
+            .ok_or_else(|| "Slots CF not found".to_string())?;
+        let mut read_opts = rocksdb::ReadOptions::default();
+        read_opts.set_total_order_seek(true);
+        let iter = if let Some(after) = after_key {
+            self.db.iterator_cf_opt(
+                &cf,
+                read_opts,
+                rocksdb::IteratorMode::From(after, rocksdb::Direction::Forward),
+            )
+        } else {
+            self.db
+                .iterator_cf_opt(&cf, read_opts, rocksdb::IteratorMode::Start)
+        };
+
+        let mut entries = Vec::with_capacity(limit.min(10_000) as usize);
+        let mut has_more = false;
+        for item in iter {
+            let (key, value) =
+                item.map_err(|err| format!("Failed iterating public slots: {}", err))?;
+            if let Some(after) = after_key {
+                if key.as_ref() == after {
+                    continue;
+                }
+            }
+            if key.len() != 8 || value.len() != 32 {
+                continue;
+            }
+
+            let mut slot_bytes = [0u8; 8];
+            slot_bytes.copy_from_slice(&key);
+            if to_slot.is_some_and(|upper| u64::from_be_bytes(slot_bytes) > upper) {
+                break;
+            }
+
+            if entries.len() == limit as usize {
+                has_more = true;
+                break;
+            }
+            entries.push((key.to_vec(), value.to_vec()));
+        }
+
+        let next_cursor = if has_more {
+            entries.last().map(|(key, _)| key.clone())
+        } else {
+            None
+        };
+
+        Ok(KvPage {
+            entries,
+            total: 0,
+            next_cursor,
+            has_more,
+        })
+    }
+
+    pub fn compute_public_history_manifest(
+        &self,
+        categories: &[&str],
+        chunk_size: u64,
+    ) -> Result<PublicHistoryManifest, String> {
+        let chunk_size = chunk_size.max(1);
+        let canonical_categories: Vec<_> = categories
+            .iter()
+            .copied()
+            .filter(|category| CANONICAL_LEDGER_MANIFEST_CATEGORIES.contains(category))
+            .collect();
+        let share_canonical_walk = canonical_categories.len() > 1
+            && canonical_categories.iter().any(|category| {
+                matches!(
+                    *category,
+                    "transactions" | "tx_by_slot" | "tx_to_slot" | "tx_meta"
+                )
+            });
+        let canonical_digests = if share_canonical_walk {
+            self.compute_canonical_ledger_manifest_digests(&canonical_categories)?
+        } else {
+            std::collections::BTreeMap::new()
+        };
+        let mut category_digests = Vec::with_capacity(categories.len());
+        for category in categories {
+            if let Some(digest) = canonical_digests.get(*category) {
+                category_digests.push(digest.clone());
+            } else {
+                category_digests
+                    .push(self.compute_public_history_category_digest_paged(category, chunk_size)?);
+            }
+        }
+        let root = public_history_manifest_root(&category_digests);
+        Ok(PublicHistoryManifest {
+            schema_version: 1,
+            categories: category_digests,
+            root,
+        })
+    }
+
+    fn compute_public_history_category_digest_paged(
+        &self,
+        category: &str,
+        chunk_size: u64,
+    ) -> Result<PublicHistoryCategoryDigest, String> {
+        let mut hasher = Sha256::new();
+        hasher.update(b"lichen-public-history-category-v1");
+        update_public_history_digest_bytes(&mut hasher, category.as_bytes());
+
+        let mut entry_count = 0u64;
+        let mut first_key_hex = None;
+        let mut last_key_hex = None;
+        let mut cursor: Option<Vec<u8>> = None;
+        loop {
+            let page = self.export_public_history_category_cursor_untracked(
+                category,
+                cursor.as_deref(),
+                chunk_size,
+            )?;
+            for (key, value) in page.entries {
+                if first_key_hex.is_none() {
+                    first_key_hex = Some(hex::encode(&key));
+                }
+                last_key_hex = Some(hex::encode(&key));
+                let digest_value;
+                let value_for_digest = if category == "blocks" {
+                    digest_value = public_history_manifest_block_value(&key, &value)?;
+                    digest_value.as_slice()
+                } else {
+                    value.as_slice()
+                };
+                update_public_history_digest_entry(&mut hasher, &key, value_for_digest);
+                entry_count = entry_count.saturating_add(1);
+            }
+            if !page.has_more {
+                break;
+            }
+            let Some(next_cursor) = page.next_cursor else {
+                return Err(format!(
+                    "{} public-history export had more entries but no cursor",
+                    category
+                ));
+            };
+            cursor = Some(next_cursor);
+        }
+
+        hasher.update(entry_count.to_le_bytes());
+        let digest = hasher.finalize();
+        let mut sha256 = [0u8; 32];
+        sha256.copy_from_slice(&digest[..32]);
+        Ok(PublicHistoryCategoryDigest {
+            category: category.to_string(),
+            entry_count,
+            sha256,
+            first_key_hex,
+            last_key_hex,
+        })
+    }
+
+    fn compute_canonical_ledger_manifest_digests(
+        &self,
+        categories: &[&str],
+    ) -> Result<std::collections::BTreeMap<String, PublicHistoryCategoryDigest>, String> {
+        if categories.is_empty() {
+            return Ok(std::collections::BTreeMap::new());
+        }
+
+        let mut accumulators = std::collections::BTreeMap::new();
+        for category in categories {
+            accumulators
+                .entry((*category).to_string())
+                .or_insert_with(|| PublicHistoryDigestAccumulator::new(category));
+        }
+
+        let include_blocks = accumulators.contains_key("blocks");
+        let include_tx_meta = accumulators.contains_key("tx_meta");
+        let tx_meta_cf = if include_tx_meta {
+            Some(
+                self.db
+                    .cf_handle(CF_TX_META)
+                    .ok_or_else(|| "Transaction metadata CF not found".to_string())?,
+            )
+        } else {
+            None
+        };
+
+        let slot_cf = self
+            .db
+            .cf_handle(CF_SLOTS)
+            .ok_or_else(|| "Slots CF not found".to_string())?;
+        let tx_by_slot_cf = self
+            .db
+            .cf_handle(CF_TX_BY_SLOT)
+            .ok_or_else(|| "TX by slot CF not found".to_string())?;
+
+        let mut slot_read_opts = rocksdb::ReadOptions::default();
+        slot_read_opts.set_total_order_seek(true);
+        let mut slot_iter =
+            self.db
+                .iterator_cf_opt(&slot_cf, slot_read_opts, rocksdb::IteratorMode::Start);
+        let mut next_slot_row = || -> Result<Option<(u64, [u8; 32])>, String> {
+            loop {
+                let Some(item) = slot_iter.next() else {
+                    return Ok(None);
+                };
+                let (key, value) =
+                    item.map_err(|err| format!("Failed iterating Slots for manifest: {err}"))?;
+                if key.len() != 8 || value.len() != 32 {
+                    continue;
+                }
+                let mut slot_bytes = [0u8; 8];
+                slot_bytes.copy_from_slice(&key);
+                let mut block_hash = [0u8; 32];
+                block_hash.copy_from_slice(&value);
+                return Ok(Some((u64::from_be_bytes(slot_bytes), block_hash)));
+            }
+        };
+
+        let mut tx_read_opts = rocksdb::ReadOptions::default();
+        tx_read_opts.set_total_order_seek(true);
+        let mut tx_iter =
+            self.db
+                .iterator_cf_opt(&tx_by_slot_cf, tx_read_opts, rocksdb::IteratorMode::Start);
+        let mut next_tx_row = || -> Result<Option<(u64, u64, Hash)>, String> {
+            loop {
+                let Some(item) = tx_iter.next() else {
+                    return Ok(None);
+                };
+                let (key, value) =
+                    item.map_err(|err| format!("Failed iterating tx_by_slot for manifest: {err}"))?;
+                if let Some(row) = parse_tx_by_slot_snapshot_row(&key, &value)? {
+                    return Ok(Some(row));
+                }
+            }
+        };
+
+        let mut slot_row = next_slot_row()?;
+        let mut tx_row = next_tx_row()?;
+        while slot_row.is_some() || tx_row.is_some() {
+            let current_slot = match (slot_row.as_ref(), tx_row.as_ref()) {
+                (Some((slot, _)), Some((tx_slot, _, _))) => (*slot).min(*tx_slot),
+                (Some((slot, _)), None) => *slot,
+                (None, Some((slot, _, _))) => *slot,
+                (None, None) => break,
+            };
+
+            if slot_row
+                .as_ref()
+                .is_some_and(|(slot, _)| *slot == current_slot)
+            {
+                let (_, block_hash) = slot_row.take().expect("current slot row exists");
+                if let Some(accumulator) = accumulators.get_mut("slots") {
+                    accumulator.push(&current_slot.to_be_bytes(), &block_hash);
+                }
+
+                let block = self.get_block(&Hash(block_hash))?;
+                match block {
+                    Some(block) => {
+                        if let Some(accumulator) = accumulators.get_mut("blocks") {
+                            let canonical =
+                                canonical_block_snapshot_value_from_block(block.clone())?;
+                            let digest_value =
+                                public_history_manifest_block_value(&block_hash, &canonical)?;
+                            accumulator.push(&block_hash, &digest_value);
+                        }
+
+                        for (tx_index, transaction) in block.transactions.iter().enumerate() {
+                            let tx_hash = transaction.signature();
+                            let tx_meta = if let Some(cf) = tx_meta_cf.as_ref() {
+                                self.db
+                                    .get_cf(cf, tx_hash.0)
+                                    .map_err(|err| format!("Failed reading tx metadata: {err}"))?
+                            } else {
+                                None
+                            };
+                            append_canonical_tx_manifest_entries(
+                                &mut accumulators,
+                                current_slot,
+                                tx_index as u64,
+                                tx_hash,
+                                transaction,
+                                tx_meta.as_deref(),
+                            )?;
+                        }
+
+                        while tx_row
+                            .as_ref()
+                            .is_some_and(|(slot, _, _)| *slot == current_slot)
+                        {
+                            tx_row = next_tx_row()?;
+                        }
+                    }
+                    None if include_blocks => {
+                        return Err(format!(
+                            "Canonical block {current_slot} missing from hot/cold storage"
+                        ));
+                    }
+                    None => {}
+                }
+                slot_row = next_slot_row()?;
+            }
+
+            while tx_row
+                .as_ref()
+                .is_some_and(|(slot, _, _)| *slot == current_slot)
+            {
+                let (slot, tx_index, tx_hash) =
+                    tx_row.take().expect("current transaction row exists");
+                if let Some(transaction) = self.get_transaction(&tx_hash)? {
+                    if transaction.signature() == tx_hash {
+                        let tx_meta = if let Some(cf) = tx_meta_cf.as_ref() {
+                            self.db
+                                .get_cf(cf, tx_hash.0)
+                                .map_err(|err| format!("Failed reading tx metadata: {err}"))?
+                        } else {
+                            None
+                        };
+                        append_canonical_tx_manifest_entries(
+                            &mut accumulators,
+                            slot,
+                            tx_index,
+                            tx_hash,
+                            &transaction,
+                            tx_meta.as_deref(),
+                        )?;
+                    }
+                }
+                tx_row = next_tx_row()?;
+            }
+        }
+
+        Ok(accumulators
+            .into_iter()
+            .map(|(category, accumulator)| (category, accumulator.finish()))
+            .collect())
+    }
+
     /// Export a cursor-paginated page for a whitelisted snapshot category.
     ///
     /// This is intentionally not an arbitrary column-family escape hatch. It is
@@ -691,23 +1308,40 @@ impl StateStore {
         limit: u64,
     ) -> Result<KvPage, String> {
         if category == "blocks" {
-            return self.export_blocks_cursor_canonical(after_key, limit);
+            return self.export_blocks_cursor_canonical(after_key, limit, None);
         }
         if category == "transactions" {
             return self.export_canonical_tx_snapshot_cursor(
                 CanonicalTxSnapshotCategory::Transactions,
                 after_key,
                 limit,
+                None,
             );
         }
         if category == "account_txs" {
-            return self.export_account_txs_index_cursor(after_key, limit);
+            return self.export_public_history_index_cursor(
+                category,
+                CF_ACCOUNT_TXS,
+                Some(COLD_CF_ACCOUNT_TXS),
+                after_key,
+                limit,
+            );
+        }
+        if category == "account_snapshots" {
+            return self.export_public_history_index_cursor(
+                category,
+                CF_ACCOUNT_SNAPSHOTS,
+                Some(COLD_CF_ACCOUNT_SNAPSHOTS),
+                after_key,
+                limit,
+            );
         }
         if category == "tx_by_slot" {
             return self.export_canonical_tx_snapshot_cursor(
                 CanonicalTxSnapshotCategory::TxBySlot,
                 after_key,
                 limit,
+                None,
             );
         }
         if category == "tx_to_slot" {
@@ -715,11 +1349,40 @@ impl StateStore {
                 CanonicalTxSnapshotCategory::TxToSlot,
                 after_key,
                 limit,
+                None,
             );
         }
         if category == "tx_meta" {
             return self.export_canonical_tx_snapshot_cursor(
                 CanonicalTxSnapshotCategory::TxMeta,
+                after_key,
+                limit,
+                None,
+            );
+        }
+        if category == "events" {
+            return self.export_public_history_index_cursor(
+                category,
+                CF_EVENTS,
+                Some(COLD_CF_EVENTS),
+                after_key,
+                limit,
+            );
+        }
+        if category == "token_transfers" {
+            return self.export_public_history_index_cursor(
+                category,
+                CF_TOKEN_TRANSFERS,
+                Some(COLD_CF_TOKEN_TRANSFERS),
+                after_key,
+                limit,
+            );
+        }
+        if category == "program_calls" {
+            return self.export_public_history_index_cursor(
+                category,
+                CF_PROGRAM_CALLS,
+                Some(COLD_CF_PROGRAM_CALLS),
                 after_key,
                 limit,
             );
@@ -728,6 +1391,22 @@ impl StateStore {
             return self.export_stats_cursor_for_snapshot(after_key, limit);
         }
 
+        let (cf_name, display_name) = Self::snapshot_category_cf(category)
+            .ok_or_else(|| format!("Unsupported snapshot category: {}", category))?;
+        self.export_cf_page_cursor_uncounted(cf_name, display_name, after_key, limit)
+    }
+
+    /// Export one whitelisted category directly from the hot database.
+    ///
+    /// Local live-apply rollback uses this to restore the pre-apply hot layout
+    /// without falling through to, filtering, or duplicating the independent
+    /// cold archive. Network snapshots must use the canonical exporter above.
+    pub fn export_hot_snapshot_category_cursor_untracked(
+        &self,
+        category: &str,
+        after_key: Option<&[u8]>,
+        limit: u64,
+    ) -> Result<KvPage, String> {
         let (cf_name, display_name) = Self::snapshot_category_cf(category)
             .ok_or_else(|| format!("Unsupported snapshot category: {}", category))?;
         self.export_cf_page_cursor_uncounted(cf_name, display_name, after_key, limit)
@@ -830,8 +1509,11 @@ impl StateStore {
         }
     }
 
-    fn export_account_txs_index_cursor(
+    fn export_public_history_index_cursor(
         &self,
+        category: &str,
+        hot_cf_name: &str,
+        cold_cf_name: Option<&str>,
         after_key: Option<&[u8]>,
         limit: u64,
     ) -> Result<KvPage, String> {
@@ -845,21 +1527,25 @@ impl StateStore {
         }
 
         let mut merged = std::collections::BTreeMap::<Vec<u8>, Vec<u8>>::new();
-        self.collect_account_txs_snapshot_entries(
+        self.collect_public_history_index_snapshot_entries(
+            category,
             &self.db,
-            CF_ACCOUNT_TXS,
+            hot_cf_name,
             after_key,
             limit,
             &mut merged,
         )?;
-        if let Some(ref cold) = self.cold_db {
-            self.collect_account_txs_snapshot_entries(
-                cold,
-                COLD_CF_ACCOUNT_TXS,
-                after_key,
-                limit,
-                &mut merged,
-            )?;
+        if let (Some(ref cold), Some(cold_cf_name)) = (&self.cold_db, cold_cf_name) {
+            if cold.cf_handle(cold_cf_name).is_some() {
+                self.collect_public_history_index_snapshot_entries(
+                    category,
+                    cold,
+                    cold_cf_name,
+                    after_key,
+                    limit,
+                    &mut merged,
+                )?;
+            }
         }
 
         let mut entries: Vec<_> = merged.into_iter().collect();
@@ -881,8 +1567,9 @@ impl StateStore {
         })
     }
 
-    fn collect_account_txs_snapshot_entries(
+    fn collect_public_history_index_snapshot_entries(
         &self,
+        category: &str,
         db: &DB,
         cf_name: &str,
         after_key: Option<&[u8]>,
@@ -914,13 +1601,26 @@ impl StateStore {
                 }
             }
 
-            if !self.account_tx_snapshot_entry_is_canonical_or_unverifiable(&key)? {
+            if category == "account_txs"
+                && !self.account_tx_snapshot_entry_is_canonical_or_unverifiable(&key)?
+            {
                 continue;
             }
 
-            entries
-                .entry(key.to_vec())
-                .or_insert_with(|| value.to_vec());
+            match entries.entry(key.to_vec()) {
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    entry.insert(value.to_vec());
+                }
+                std::collections::btree_map::Entry::Occupied(existing)
+                    if existing.get().as_slice() == value.as_ref() => {}
+                std::collections::btree_map::Entry::Occupied(_) => {
+                    return Err(format!(
+                        "Conflicting hot/cold {} snapshot row for key {}",
+                        category,
+                        hex::encode(&key)
+                    ));
+                }
+            }
             collected += 1;
             if collected > limit as usize {
                 break;
@@ -934,6 +1634,7 @@ impl StateStore {
         &self,
         after_key: Option<&[u8]>,
         limit: u64,
+        to_slot: Option<u64>,
     ) -> Result<KvPage, String> {
         if limit == 0 {
             return Ok(KvPage {
@@ -975,6 +1676,9 @@ impl StateStore {
             if slot < start_slot {
                 continue;
             }
+            if to_slot.is_some_and(|upper| slot > upper) {
+                break;
+            }
 
             if entries.len() == limit as usize {
                 has_more = true;
@@ -1005,6 +1709,7 @@ impl StateStore {
         category: CanonicalTxSnapshotCategory,
         after_key: Option<&[u8]>,
         limit: u64,
+        to_slot: Option<u64>,
     ) -> Result<KvPage, String> {
         if limit == 0 {
             return Ok(KvPage {
@@ -1096,6 +1801,9 @@ impl StateStore {
             if slot < start_slot {
                 continue;
             }
+            if to_slot.is_some_and(|upper| slot > upper) {
+                break;
+            }
             let Some(block) = self.get_block_by_slot(slot)? else {
                 continue;
             };
@@ -1143,6 +1851,9 @@ impl StateStore {
             };
             if slot < start_slot {
                 continue;
+            }
+            if to_slot.is_some_and(|upper| slot > upper) {
+                break;
             }
             if slot == start_slot && after_index.is_some_and(|index| tx_index <= index) {
                 continue;
@@ -1247,6 +1958,294 @@ impl StateStore {
         }
 
         Ok(indexed)
+    }
+
+    fn raw_block_slot_in_range(slot: u64, from_slot: Option<u64>, to_slot: Option<u64>) -> bool {
+        if from_slot.is_some_and(|from| slot < from) {
+            return false;
+        }
+        if to_slot.is_some_and(|to| slot > to) {
+            return false;
+        }
+        true
+    }
+
+    fn inspect_raw_block_body_cf(
+        &self,
+        db: &DB,
+        cf_name: &str,
+        source_cold: bool,
+        from_slot: Option<u64>,
+        to_slot: Option<u64>,
+        scan: &mut RawBlockHistoryScan,
+    ) -> Result<(), String> {
+        let block_cf = db
+            .cf_handle(cf_name)
+            .ok_or_else(|| format!("{cf_name} CF not found"))?;
+        let slot_cf = self
+            .db
+            .cf_handle(CF_SLOTS)
+            .ok_or_else(|| "Slots CF not found".to_string())?;
+        let mut read_opts = rocksdb::ReadOptions::default();
+        read_opts.set_total_order_seek(true);
+        let iter = db.iterator_cf_opt(&block_cf, read_opts, rocksdb::IteratorMode::Start);
+
+        for item in iter {
+            let (key, value) =
+                item.map_err(|err| format!("Failed iterating raw block CF {cf_name}: {err}"))?;
+            if source_cold {
+                scan.report.cold_rows_scanned = scan.report.cold_rows_scanned.saturating_add(1);
+            } else {
+                scan.report.hot_rows_scanned = scan.report.hot_rows_scanned.saturating_add(1);
+            }
+
+            let block = match decode_snapshot_block_value(&value) {
+                Ok(block) => block,
+                Err(err) => {
+                    scan.report.decode_errors = scan.report.decode_errors.saturating_add(1);
+                    if scan.report.first_decode_error.is_none() {
+                        scan.report.first_decode_error =
+                            Some(format!("{cf_name}:{}:{err}", hex::encode(&key)));
+                    }
+                    continue;
+                }
+            };
+            scan.report.decoded_blocks = scan.report.decoded_blocks.saturating_add(1);
+
+            let slot = block.header.slot;
+            if !Self::raw_block_slot_in_range(slot, from_slot, to_slot) {
+                continue;
+            }
+            scan.report.body_slots_in_range = scan.report.body_slots_in_range.saturating_add(1);
+            scan.report.min_body_slot = Some(
+                scan.report
+                    .min_body_slot
+                    .map_or(slot, |current| current.min(slot)),
+            );
+            scan.report.max_body_slot = Some(
+                scan.report
+                    .max_body_slot
+                    .map_or(slot, |current| current.max(slot)),
+            );
+
+            let block_hash = block.hash();
+            if key.as_ref() != block_hash.0 {
+                scan.report.hash_mismatch_rows = scan.report.hash_mismatch_rows.saturating_add(1);
+                if scan.report.first_hash_mismatch.is_none() {
+                    scan.report.first_hash_mismatch = Some(format!(
+                        "{cf_name}:key={} block_hash={} slot={slot}",
+                        hex::encode(&key),
+                        block_hash.to_hex()
+                    ));
+                }
+                continue;
+            }
+
+            match scan.seen_body_slots.entry(slot) {
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    entry.insert(block_hash.0);
+                }
+                std::collections::btree_map::Entry::Occupied(existing)
+                    if existing.get() == &block_hash.0 =>
+                {
+                    scan.report.duplicate_identical_body_slots =
+                        scan.report.duplicate_identical_body_slots.saturating_add(1);
+                    continue;
+                }
+                std::collections::btree_map::Entry::Occupied(_) => {
+                    scan.report.duplicate_conflicting_body_slots = scan
+                        .report
+                        .duplicate_conflicting_body_slots
+                        .saturating_add(1);
+                    if scan.report.first_duplicate_conflicting_body_slot.is_none() {
+                        scan.report.first_duplicate_conflicting_body_slot = Some(slot);
+                    }
+                    scan.repairable.remove(&slot);
+                    continue;
+                }
+            }
+
+            let slot_key = slot.to_be_bytes();
+            match self
+                .db
+                .get_cf(&slot_cf, slot_key)
+                .map_err(|err| format!("Failed reading slot cursor {slot}: {err}"))?
+            {
+                Some(existing) if existing.as_slice() == block_hash.0.as_slice() => {
+                    scan.report.existing_slot_cursors =
+                        scan.report.existing_slot_cursors.saturating_add(1);
+                }
+                Some(_) => {
+                    scan.report.conflicting_slot_cursors =
+                        scan.report.conflicting_slot_cursors.saturating_add(1);
+                    if scan.report.first_conflicting_slot_cursor.is_none() {
+                        scan.report.first_conflicting_slot_cursor = Some(slot);
+                    }
+                    scan.repairable.remove(&slot);
+                }
+                None => {
+                    scan.report.missing_slot_cursors =
+                        scan.report.missing_slot_cursors.saturating_add(1);
+                    if scan.report.first_missing_slot_cursor.is_none() {
+                        scan.report.first_missing_slot_cursor = Some(slot);
+                    }
+                    scan.repairable.insert(slot, block_hash.0);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn inspect_orphan_slot_cursors(
+        &self,
+        from_slot: Option<u64>,
+        to_slot: Option<u64>,
+        body_hashes_by_slot: &std::collections::BTreeMap<u64, [u8; 32]>,
+        report: &mut RawBlockHistoryRepairReport,
+    ) -> Result<(), String> {
+        let slot_cf = self
+            .db
+            .cf_handle(CF_SLOTS)
+            .ok_or_else(|| "Slots CF not found".to_string())?;
+        let start = from_slot.unwrap_or(0).to_be_bytes();
+        let mut read_opts = rocksdb::ReadOptions::default();
+        read_opts.set_total_order_seek(true);
+        let iter = self.db.iterator_cf_opt(
+            &slot_cf,
+            read_opts,
+            rocksdb::IteratorMode::From(&start, rocksdb::Direction::Forward),
+        );
+
+        for item in iter {
+            let (key, value) =
+                item.map_err(|err| format!("Failed iterating slot cursors: {err}"))?;
+            if key.len() != 8 {
+                continue;
+            }
+            let mut slot_bytes = [0u8; 8];
+            slot_bytes.copy_from_slice(&key);
+            let slot = u64::from_be_bytes(slot_bytes);
+            if !Self::raw_block_slot_in_range(slot, from_slot, to_slot) {
+                if to_slot.is_some_and(|to| slot > to) {
+                    break;
+                }
+                continue;
+            }
+            report.slot_cursors_scanned = report.slot_cursors_scanned.saturating_add(1);
+
+            if value.len() != 32 {
+                report.invalid_slot_cursors = report.invalid_slot_cursors.saturating_add(1);
+                if report.first_invalid_slot_cursor.is_none() {
+                    report.first_invalid_slot_cursor = Some(slot);
+                }
+                continue;
+            }
+            match body_hashes_by_slot.get(&slot) {
+                Some(block_hash) if block_hash.as_slice() == value.as_ref() => {}
+                _ => {
+                    report.orphan_slot_cursors = report.orphan_slot_cursors.saturating_add(1);
+                    if report.first_orphan_slot_cursor.is_none() {
+                        report.first_orphan_slot_cursor = Some(slot);
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn repair_missing_slot_cursors_from_raw_blocks(
+        &self,
+        from_slot: Option<u64>,
+        to_slot: Option<u64>,
+        dry_run: bool,
+    ) -> Result<RawBlockHistoryRepairReport, String> {
+        if let (Some(from), Some(to)) = (from_slot, to_slot) {
+            if to < from {
+                return Err("--to-slot must be >= --from-slot".to_string());
+            }
+        }
+
+        let mut scan = RawBlockHistoryScan {
+            report: RawBlockHistoryRepairReport {
+                dry_run,
+                from_slot,
+                to_slot,
+                ..RawBlockHistoryRepairReport::default()
+            },
+            ..RawBlockHistoryScan::default()
+        };
+
+        self.inspect_raw_block_body_cf(&self.db, CF_BLOCKS, false, from_slot, to_slot, &mut scan)?;
+        if let Some(cold) = self.cold_db.as_ref() {
+            self.inspect_raw_block_body_cf(
+                cold.as_ref(),
+                COLD_CF_BLOCKS,
+                true,
+                from_slot,
+                to_slot,
+                &mut scan,
+            )?;
+        }
+        self.inspect_orphan_slot_cursors(
+            from_slot,
+            to_slot,
+            &scan.seen_body_slots,
+            &mut scan.report,
+        )?;
+
+        scan.report.repairable_slot_cursors = scan.repairable.len() as u64;
+        scan.report.first_repairable_slot_cursor = scan.repairable.keys().next().copied();
+
+        let RawBlockHistoryScan {
+            repairable,
+            mut report,
+            ..
+        } = scan;
+
+        if !dry_run {
+            if report.has_conflicts() {
+                return Err(format!(
+                    "Refusing raw block slot-cursor repair with conflicts: decode_errors={} hash_mismatch_rows={} duplicate_conflicting_body_slots={} conflicting_slot_cursors={} orphan_slot_cursors={} invalid_slot_cursors={}",
+                    report.decode_errors,
+                    report.hash_mismatch_rows,
+                    report.duplicate_conflicting_body_slots,
+                    report.conflicting_slot_cursors,
+                    report.orphan_slot_cursors,
+                    report.invalid_slot_cursors
+                ));
+            }
+
+            let slot_cf = self
+                .db
+                .cf_handle(CF_SLOTS)
+                .ok_or_else(|| "Slots CF not found".to_string())?;
+            let mut batch = WriteBatch::default();
+            let mut pending = 0usize;
+            for (slot, hash) in repairable {
+                batch.put_cf(&slot_cf, slot.to_be_bytes(), hash);
+                pending += 1;
+                report.repaired_slot_cursors = report.repaired_slot_cursors.saturating_add(1);
+                if report.first_repaired_slot_cursor.is_none() {
+                    report.first_repaired_slot_cursor = Some(slot);
+                }
+                if pending >= 10_000 {
+                    self.db.write(batch).map_err(|err| {
+                        format!("Failed writing repaired slot cursor batch: {err}")
+                    })?;
+                    batch = WriteBatch::default();
+                    pending = 0;
+                }
+            }
+            if pending > 0 {
+                self.db
+                    .write(batch)
+                    .map_err(|err| format!("Failed writing repaired slot cursor batch: {err}"))?;
+            }
+        }
+
+        Ok(report)
     }
 
     pub fn clear_account_tx_counters(&self) -> Result<u64, String> {
@@ -2661,6 +3660,228 @@ impl StateStore {
         Ok(entries.len())
     }
 
+    fn public_history_cold_target_cf(category: &str) -> Option<&'static str> {
+        match category {
+            "blocks" => Some(COLD_CF_BLOCKS),
+            "transactions" => Some(COLD_CF_TRANSACTIONS),
+            "tx_to_slot" => Some(COLD_CF_TX_TO_SLOT),
+            "account_txs" => Some(COLD_CF_ACCOUNT_TXS),
+            "account_snapshots" => Some(COLD_CF_ACCOUNT_SNAPSHOTS),
+            "events" => Some(COLD_CF_EVENTS),
+            "token_transfers" => Some(COLD_CF_TOKEN_TRANSFERS),
+            "program_calls" => Some(COLD_CF_PROGRAM_CALLS),
+            _ => None,
+        }
+    }
+
+    fn public_history_hot_cf(category: &str) -> Result<&'static str, String> {
+        match category {
+            "slots" => Ok(CF_SLOTS),
+            "blocks" => Ok(CF_BLOCKS),
+            "transactions" => Ok(CF_TRANSACTIONS),
+            "tx_by_slot" => Ok(CF_TX_BY_SLOT),
+            "tx_to_slot" => Ok(CF_TX_TO_SLOT),
+            "tx_meta" => Ok(CF_TX_META),
+            "account_txs" => Ok(CF_ACCOUNT_TXS),
+            "events_by_slot" => Ok(CF_EVENTS_BY_SLOT),
+            "events" => Ok(CF_EVENTS),
+            "token_transfers" => Ok(CF_TOKEN_TRANSFERS),
+            "program_calls" => Ok(CF_PROGRAM_CALLS),
+            "evm_txs" => Ok(CF_EVM_TXS),
+            "evm_receipts" => Ok(CF_EVM_RECEIPTS),
+            "evm_logs_by_slot" => Ok(CF_EVM_LOGS_BY_SLOT),
+            "shielded_txs" => Ok(CF_SHIELDED_TXS),
+            "nft_activity" => Ok(CF_NFT_ACTIVITY),
+            "market_activity" => Ok(CF_MARKET_ACTIVITY),
+            "dex_trades_by_pair" => Ok(CF_DEX_TRADES_BY_PAIR),
+            "dex_trades_by_taker" => Ok(CF_DEX_TRADES_BY_TAKER),
+            "dex_trades_by_pair_taker" => Ok(CF_DEX_TRADES_BY_PAIR_TAKER),
+            "account_snapshots" => Ok(CF_ACCOUNT_SNAPSHOTS),
+            _ => Err(format!("Unsupported public-history category: {}", category)),
+        }
+    }
+
+    fn canonical_public_history_import_value(
+        category: &str,
+        key: &[u8],
+        value: &[u8],
+    ) -> Result<Vec<u8>, String> {
+        match category {
+            "blocks" => canonical_block_snapshot_value(key, value),
+            "transactions" => canonical_transaction_snapshot_value_from_entry(key, value),
+            "slots" => {
+                if key.len() != 8 || value.len() != 32 {
+                    return Err(format!(
+                        "Invalid public slot row: key_len={} value_len={}",
+                        key.len(),
+                        value.len()
+                    ));
+                }
+                Ok(value.to_vec())
+            }
+            "tx_by_slot" => {
+                if key.len() != 16 || value.len() != 32 {
+                    return Err(format!(
+                        "Invalid tx_by_slot row: key_len={} value_len={}",
+                        key.len(),
+                        value.len()
+                    ));
+                }
+                Ok(value.to_vec())
+            }
+            "tx_to_slot" => {
+                if key.len() != 32 || value.len() != 8 {
+                    return Err(format!(
+                        "Invalid tx_to_slot row: key_len={} value_len={}",
+                        key.len(),
+                        value.len()
+                    ));
+                }
+                Ok(value.to_vec())
+            }
+            _ => Ok(value.to_vec()),
+        }
+    }
+
+    fn public_history_values_match(
+        category: &str,
+        key: &[u8],
+        existing: &[u8],
+        incoming: &[u8],
+    ) -> Result<bool, String> {
+        let existing = Self::canonical_public_history_import_value(category, key, existing)?;
+        Ok(existing == incoming)
+    }
+
+    /// Additively import public-history snapshot entries.
+    ///
+    /// Existing identical rows are skipped. Existing same-key mismatches are
+    /// conflicts; execute mode aborts on the first mismatch. Cold-capable
+    /// categories are written into the attached cold store when present.
+    pub fn import_public_history_category_entries(
+        &self,
+        category: &str,
+        entries: &[(Vec<u8>, Vec<u8>)],
+        dry_run: bool,
+    ) -> Result<PublicHistoryImportReport, String> {
+        if !PUBLIC_HISTORY_SNAPSHOT_CATEGORIES.contains(&category) {
+            return Err(format!("Unsupported public-history category: {}", category));
+        }
+
+        let hot_cf_name = Self::public_history_hot_cf(category)?;
+        let cold_cf_name = Self::public_history_cold_target_cf(category);
+        if cold_cf_name.is_some() && self.cold_db.is_none() && !dry_run {
+            return Err(format!(
+                "Refusing public-history import for {} without an attached cold store",
+                category
+            ));
+        }
+
+        let target_cold = cold_cf_name.is_some() && self.cold_db.is_some();
+        let target_cf_name = if target_cold {
+            cold_cf_name.expect("checked cold target")
+        } else {
+            hot_cf_name
+        };
+        let target_db = if target_cold {
+            self.cold_db
+                .as_ref()
+                .ok_or_else(|| "Cold storage must be attached".to_string())?
+                .as_ref()
+        } else {
+            self.db.as_ref()
+        };
+        let target_cf = target_db
+            .cf_handle(target_cf_name)
+            .ok_or_else(|| format!("Target CF {} not found", target_cf_name))?;
+
+        let hot_cf = if target_cold {
+            self.db.cf_handle(hot_cf_name)
+        } else {
+            None
+        };
+
+        let mut report = PublicHistoryImportReport {
+            category: category.to_string(),
+            target_cf: target_cf_name.to_string(),
+            target_cold,
+            ..PublicHistoryImportReport::default()
+        };
+        let mut batch = WriteBatch::default();
+        let mut pending = 0usize;
+
+        for (key, value) in entries {
+            let canonical = Self::canonical_public_history_import_value(category, key, value)?;
+            report.source_rows = report.source_rows.saturating_add(1);
+            let row_bytes = (key.len() as u64).saturating_add(canonical.len() as u64);
+            report.source_bytes = report.source_bytes.saturating_add(row_bytes);
+
+            if let Some(hot_cf) = hot_cf.as_ref() {
+                if let Some(existing) = self
+                    .db
+                    .get_cf(hot_cf, key)
+                    .map_err(|err| format!("Failed reading hot {}: {}", hot_cf_name, err))?
+                {
+                    if Self::public_history_values_match(category, key, &existing, &canonical)? {
+                        report.identical_rows = report.identical_rows.saturating_add(1);
+                    } else {
+                        report.conflict_rows = report.conflict_rows.saturating_add(1);
+                        if !dry_run {
+                            return Err(format!(
+                                "Refusing public-history import: hot {} key {} differs from source",
+                                hot_cf_name,
+                                hex::encode(key)
+                            ));
+                        }
+                    }
+                    continue;
+                }
+            }
+
+            match target_db
+                .get_cf(&target_cf, key)
+                .map_err(|err| format!("Failed reading {}: {}", target_cf_name, err))?
+            {
+                Some(existing) => {
+                    if Self::public_history_values_match(category, key, &existing, &canonical)? {
+                        report.identical_rows = report.identical_rows.saturating_add(1);
+                    } else {
+                        report.conflict_rows = report.conflict_rows.saturating_add(1);
+                        if !dry_run {
+                            return Err(format!(
+                                "Refusing public-history import: {} key {} differs from source",
+                                target_cf_name,
+                                hex::encode(key)
+                            ));
+                        }
+                    }
+                }
+                None => {
+                    report.inserted_rows = report.inserted_rows.saturating_add(1);
+                    report.inserted_bytes = report.inserted_bytes.saturating_add(row_bytes);
+                    if !dry_run {
+                        batch.put_cf(&target_cf, key, canonical);
+                        pending += 1;
+                        if pending >= 10_000 {
+                            target_db.write(std::mem::take(&mut batch)).map_err(|err| {
+                                format!("Failed writing {} import batch: {}", target_cf_name, err)
+                            })?;
+                            pending = 0;
+                        }
+                    }
+                }
+            }
+        }
+
+        if !dry_run && pending > 0 {
+            target_db.write(batch).map_err(|err| {
+                format!("Failed writing {} import batch: {}", target_cf_name, err)
+            })?;
+        }
+
+        Ok(report)
+    }
+
     /// Import a whitelisted snapshot category.
     pub fn import_snapshot_category(
         &self,
@@ -2761,5 +3982,57 @@ impl StateStore {
         }
 
         Ok(deleted)
+    }
+}
+
+#[cfg(test)]
+mod manifest_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn shared_canonical_ledger_walk_matches_paged_category_digests() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+
+        let tx_a = crate::transaction::Transaction::new(crate::transaction::Message::new(
+            Vec::new(),
+            Hash::hash(b"manifest-shared-walk-a"),
+        ));
+        let tx_b = crate::transaction::Transaction::new(crate::transaction::Message::new(
+            Vec::new(),
+            Hash::hash(b"manifest-shared-walk-b"),
+        ));
+        let block = Block::new(
+            10,
+            Hash::default(),
+            Hash::hash(b"manifest-shared-state"),
+            [0x44; 32],
+            vec![tx_a.clone(), tx_b.clone()],
+        );
+        state.put_block_atomic(&block, Some(10), Some(10)).unwrap();
+        state.put_tx_meta(&tx_a.signature(), 123).unwrap();
+
+        let stale_hash = Hash::hash(b"manifest-stale-index");
+        state.index_tx_by_slot(10, &stale_hash).unwrap();
+
+        let indexed_only = crate::transaction::Transaction::new(crate::transaction::Message::new(
+            Vec::new(),
+            Hash::hash(b"manifest-indexed-only"),
+        ));
+        state.put_transaction(&indexed_only).unwrap();
+        state
+            .index_tx_by_slot(11, &indexed_only.signature())
+            .unwrap();
+
+        let manifest = state
+            .compute_public_history_manifest(CANONICAL_LEDGER_MANIFEST_CATEGORIES, 1)
+            .unwrap();
+        for actual in manifest.categories {
+            let expected = state
+                .compute_public_history_category_digest_paged(&actual.category, 1)
+                .unwrap();
+            assert_eq!(actual, expected, "{} digest changed", expected.category);
+        }
     }
 }

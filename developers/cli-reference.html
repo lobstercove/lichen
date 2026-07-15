@@ -253,7 +253,7 @@
                         <td>string</td>
                         <td><code>configured endpoint</code></td>
                         <td>RPC server URL to connect to. Public docs examples use
-                            <code>https://testnet-rpc.lichen.network</code> or <code>https://rpc.lichen.network</code>.
+                            <code>https://testnet-api.lichen.network</code> or <code>https://rpc.lichen.network</code>.
                         </td>
                     </tr>
                     <tr>
@@ -282,7 +282,7 @@
                     <span class="code-lang">Shell</span>
                     <button class="code-copy-btn">Copy</button>
                 </div>
-                <pre><code>$ lichen --rpc-url https://testnet-rpc.lichen.network balance
+                <pre><code>$ lichen --rpc-url https://testnet-api.lichen.network balance
 $ lichen --output json status
 $ lichen --version
 lichen 0.5.203</code></pre>
@@ -882,30 +882,47 @@ Total: 2 validators, 205000.0 LICN staked</code></pre>
             <div class="cmd-section" id="sparse-state-commitment">
                 <h3><code>lichen-validator</code> sparse state-commitment flags</h3>
                 <p>Sparse state-commitment maintenance is handled by the validator binary, not by the wallet
-                    <code>lichen</code> CLI. These flags open the stopped validator state DB and report, rebuild, or
-                    activate the <code>sparse_v1</code> commitment used by current account proofs.</p>
+                    <code>lichen</code> CLI. The show and digest flags use read-only state-root computation; without a
+                    secondary they open the primary through RocksDB's read-only API. A unique disposable secondary is
+                    required when inspecting a running primary. Rebuild and activation are stopped-validator writes and
+                    reject <code>--secondary-dir</code>.</p>
                 <div class="code-block">
                     <div class="code-block-header">
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code># Verify active schema and sparse readiness
+                    <pre><code># Verify a stopped or mounted primary read-only
 lichen-validator --show-state-commitment-schema \
-  --data-dir /var/lib/lichen/state-testnet
+  --db-path /var/lib/lichen/state-testnet
+
+# Verify a running primary through a disposable RocksDB secondary
+lichen-validator --show-state-commitment-schema \
+  --db-path /var/lib/lichen/state-testnet \
+  --secondary-dir /tmp/lichen-state-commitment-check
+
+# Recovery digests use the same read-only/secondary contract
+lichen-validator --show-stake-pool-digest \
+  --db-path /var/lib/lichen/state-testnet \
+  --secondary-dir /tmp/lichen-stake-pool-check
+
+lichen-validator --show-contract-storage-digest \
+  --db-path /var/lib/lichen/state-testnet \
+  --secondary-dir /tmp/lichen-contract-storage-check
 
 # Rebuild sparse commitment without activation
 lichen-validator --rebuild-sparse-state-commitment \
-  --data-dir /var/lib/lichen/state-testnet
+  --db-path /var/lib/lichen/state-testnet
 
 # Coordinated activation; requires the exact confirmation token
 lichen-validator --activate-sparse-state-commitment \
   --confirm sparse-state-commitment:v1 \
-  --data-dir /var/lib/lichen/state-testnet</code></pre>
+  --db-path /var/lib/lichen/state-testnet</code></pre>
                 </div>
                 <div class="callout callout-warning">
                     <div class="callout-title"><i class="fas fa-triangle-exclamation"></i> Coordination Required</div>
-                    Activation changes produced state roots. Run the rebuild/show commands on stopped validators first,
-                    then activate only as part of a coordinated validator-set upgrade.
+                    Rebuild and activation change produced state roots. Run them only on stopped validators and activate
+                    only as part of a coordinated validator-set upgrade. Remove each disposable secondary after its
+                    command exits; never reuse one across simultaneous inspections.
                 </div>
             </div>
 
@@ -2194,7 +2211,7 @@ Total: 2 peers</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>lichen network info --rpc-url https://testnet-rpc.lichen.network</code></pre>
+                    <pre><code>lichen network info --rpc-url https://testnet-api.lichen.network</code></pre>
                 </div>
 
                 <div class="code-block">
@@ -2202,13 +2219,13 @@ Total: 2 peers</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>$ lichen network info --rpc-url https://testnet-rpc.lichen.network
+                    <pre><code>$ lichen network info --rpc-url https://testnet-api.lichen.network
 
 <i class="fa-solid fa-shrimp"></i> Network Information
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 <i class="fa-solid fa-globe"></i> Network ID:  lichen-testnet-1
 <i class="fa-solid fa-link"></i>  Chain ID:    lichen-testnet-1
-<i class="fa-solid fa-link"></i> RPC Endpoint: https://testnet-rpc.lichen.network
+<i class="fa-solid fa-link"></i> RPC Endpoint: https://testnet-api.lichen.network
 
 <i class="fa-solid fa-chart-bar"></i> Statistics:
    Current slot: 483,201
@@ -3122,19 +3139,19 @@ lichen restriction build resume-bridge-route neox gas \
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">Shell</span><button
                             class="code-copy-btn">Copy</button></div>
-                    <pre><code>curl -s https://testnet-rpc.lichen.network \
+                    <pre><code>curl -s https://testnet-api.lichen.network \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"getWgasStats","params":[]}'
 
-curl -s https://testnet-rpc.lichen.network \
+curl -s https://testnet-api.lichen.network \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"getWneoStats","params":[]}'
 
-curl -s https://testnet-rpc.lichen.network \
+curl -s https://testnet-api.lichen.network \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"getNeoGasRewardsStats","params":[]}'
 
-curl -s https://testnet-rpc.lichen.network \
+curl -s https://testnet-api.lichen.network \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"getNeoGasRewardsPosition","params":["&lt;LICHEN_ADDRESS&gt;"]}'</code></pre>
                 </div>

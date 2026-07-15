@@ -1,0 +1,19 @@
+name = "lichen-testnet-rpc-edge"
+main = "src/index.mjs"
+compatibility_date = "2026-07-15"
+workers_dev = false
+routes = [
+    { pattern = "testnet-rpc.lichen.network/*", zone_name = "lichen.network" },
+    { pattern = "explorer.lichen.network/api/testnet", zone_name = "lichen.network" },
+    { pattern = "explorer.lichen.network/api/testnet*", zone_name = "lichen.network" },
+    { pattern = "testnet-api.lichen.network", custom_domain = true },
+]
+
+[vars]
+RPC_ORIGIN_US = "https://vps-cdb47b12.vps.ovh.us"
+RPC_ORIGIN_EU = "https://vps-210edd4a.vps.ovh.net"
+RPC_ORIGIN_SEA = "https://vps-df7100d5.vps.ovh.ca"
+RPC_ORIGIN_IN = "https://vps-8709ee62.vps.ovh.ca"
+
+[observability]
+enabled = true

@@ -61,89 +61,6 @@ body {
   border-radius: 4px;
 }
 
-/* ── Full-page mode (kept for backward compat but Open Full now uses full.html) ── */
-body.full-page {
-  width: 100%;
-  min-height: 100vh;
-  max-height: none;
-  overflow-y: auto;
-  overflow-x: hidden;
-}
-
-body.full-page .popup-root {
-  width: 100%;
-  max-width: none;
-  height: auto;
-  max-height: none;
-  margin: 0;
-  min-height: 100vh;
-  box-sizing: border-box;
-  padding: 0;
-}
-
-body.full-page .popup-header {
-  display: none;
-}
-
-body:not(.full-page) .web-welcome {
-  display: none;
-}
-
-body.full-page .legacy-welcome {
-  display: none;
-}
-
-body.full-page #welcomeScreen {
-  min-height: 100vh;
-  margin: 0;
-  border: none;
-  border-radius: 0;
-  box-shadow: none;
-  background: transparent;
-}
-
-body.full-page #welcomeScreen.screen.active {
-  display: flex;
-}
-
-body.full-page .web-welcome {
-  width: 100%;
-  max-width: 560px;
-  margin: 0 auto;
-  padding-top: 2rem;
-  padding-bottom: 2rem;
-}
-
-body.full-page .web-welcome .carousel-track {
-  position: relative;
-}
-
-body.full-page .web-welcome .carousel-slide {
-  display: none;
-  opacity: 1;
-  transform: none;
-}
-
-body.full-page .web-welcome .carousel-slide.active {
-  display: block;
-}
-
-body.full-page #createScreen,
-body.full-page #importScreen,
-body.full-page #unlockScreen {
-  max-width: 560px;
-  margin: 0 auto;
-}
-
-body.full-page #dashboardScreen {
-  max-width: 1040px;
-  margin: 1rem auto 0;
-  padding: 0;
-  background: transparent;
-  border: none;
-  box-shadow: none;
-}
-
 /* ── Popup card & Screen state ── */
 .popup-card {
   margin-top: 0.15rem;
@@ -628,41 +545,41 @@ body.full-page #dashboardScreen {
    ──────────────────────────────────────────────────────────── */
 
 /* Override large heading sizes from shared-theme.css */
-body:not(.full-page) h1 {
+body h1 {
   font-size: 1.3rem;
 }
 
-body:not(.full-page) h2 {
+body h2 {
   font-size: 1.1rem;
 }
 
-body:not(.full-page) h3 {
+body h3 {
   font-size: 0.95rem;
 }
 
-body:not(.full-page) h4 {
+body h4 {
   font-size: 0.88rem;
 }
 
 /* Section titles in screens */
-body:not(.full-page) #createScreen>h3,
-body:not(.full-page) #importScreen>h3,
-body:not(.full-page) #unlockScreen>h3,
-body:not(.full-page) #welcomeScreen>h3 {
+body #createScreen>h3,
+body #importScreen>h3,
+body #unlockScreen>h3,
+body #welcomeScreen>h3 {
   font-size: 1rem;
   line-height: 1.2;
   margin-bottom: 0.25rem;
 }
 
-body:not(.full-page) #createScreen .create-step h3,
-body:not(.full-page) #importScreen .import-method h3 {
+body #createScreen .create-step h3,
+body #importScreen .import-method h3 {
   font-size: 0.88rem;
   line-height: 1.2;
   margin-bottom: 0.2rem;
 }
 
 /* ── Welcome screen — compact layout ── */
-body:not(.full-page) .legacy-welcome {
+body .popup-welcome {
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -670,152 +587,152 @@ body:not(.full-page) .legacy-welcome {
   padding: 0.5rem 0;
 }
 
-body:not(.full-page) .legacy-welcome h3 {
+body .popup-welcome h3 {
   font-size: 1.05rem !important;
   font-weight: 700;
   margin-bottom: 0.3rem !important;
 }
 
-body:not(.full-page) .legacy-welcome .step-description {
+body .popup-welcome .step-description {
   font-size: 0.82rem;
   margin-bottom: 0.75rem !important;
   color: var(--text-secondary);
   line-height: 1.4;
 }
 
-body:not(.full-page) .legacy-welcome .btn {
+body .popup-welcome .btn {
   font-size: 0.88rem;
   padding: 0.65rem 1rem;
 }
 
 /* ── Form inputs — tighter in popup ── */
-body:not(.full-page) .form-input,
-body:not(.full-page) .form-textarea {
+body .form-input,
+body .form-textarea {
   padding: 0.55rem 0.75rem;
   font-size: 0.85rem;
   border-radius: 10px;
 }
 
-body:not(.full-page) .form-group {
+body .form-group {
   margin-bottom: 0.75rem;
 }
 
-body:not(.full-page) .form-group label {
+body .form-group label {
   font-size: 0.78rem;
   margin-bottom: 0.3rem;
 }
 
 /* ── Buttons — slightly smaller in popup ── */
-body:not(.full-page) .btn {
+body .btn {
   padding: 0.55rem 1rem;
   font-size: 0.85rem;
   border-radius: 8px;
 }
 
-body:not(.full-page) .btn-large {
+body .btn-large {
   padding: 0.7rem 1.2rem;
   font-size: 0.9rem;
 }
 
-body:not(.full-page) .btn-small {
+body .btn-small {
   padding: 0.3rem 0.7rem;
   font-size: 0.75rem;
 }
 
 /* ── Wizard steps — smaller circles ── */
-body:not(.full-page) .wizard-steps {
+body .wizard-steps {
   margin-bottom: 0.75rem;
 }
 
-body:not(.full-page) .step-circle {
+body .step-circle {
   width: 26px;
   height: 26px;
   font-size: 0.72rem;
   margin-bottom: 0.25rem;
 }
 
-body:not(.full-page) .step-label {
+body .step-label {
   font-size: 0.65rem;
 }
 
-body:not(.full-page) .step-description {
+body .step-description {
   font-size: 0.8rem;
   margin-bottom: 0.75rem;
   line-height: 1.4;
 }
 
 /* ── Import tabs — compact ── */
-body:not(.full-page) .import-tabs {
+body .import-tabs {
   margin-bottom: 0.75rem;
   padding: 0.2rem;
 }
 
-body:not(.full-page) .import-tab {
+body .import-tab {
   padding: 0.4rem;
   font-size: 0.75rem;
 }
 
-body:not(.full-page) .mnemonic-import-grid {
+body .mnemonic-import-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0.3rem;
   margin-bottom: 0.5rem;
 }
 
-body:not(.full-page) .mnemonic-import-grid .form-input {
+body .mnemonic-import-grid .form-input {
   min-height: 30px;
   padding: 0.35rem 0.45rem;
   font-size: 0.72rem;
 }
 
-body:not(.full-page) .mnemonic-import-hint {
+body .mnemonic-import-hint {
   font-size: 0.68rem;
   margin: 0.2rem 0 0.5rem;
   line-height: 1.25;
 }
 
 /* ── Wallet content card — less padding ── */
-body:not(.full-page) .wallet-content {
+body .wallet-content {
   padding: 0.75rem;
   border-radius: 14px;
 }
 
 /* ── Seed phrase grid — 3 columns but smaller ── */
-body:not(.full-page) .confirm-slots-grid {
+body .confirm-slots-grid {
   grid-template-columns: repeat(4, 1fr);
   gap: 0.3rem;
 }
 
-body:not(.full-page) .confirm-slot {
+body .confirm-slot {
   padding: 0.4rem 0.3rem;
   min-height: 32px;
   font-size: 0.75rem;
   border-radius: 8px;
 }
 
-body:not(.full-page) .seed-word-pool {
+body .seed-word-pool {
   grid-template-columns: repeat(4, 1fr);
   gap: 0.3rem;
 }
 
-body:not(.full-page) .confirm-word {
+body .confirm-word {
   padding: 0.35rem 0.6rem;
   font-size: 0.75rem;
 }
 
 /* ── Dashboard in popup — tighter ── */
-body:not(.full-page) .popup-dash-nav .btn-small {
+body .popup-dash-nav .btn-small {
   padding: 0.28rem 0.5rem;
   font-size: 0.72rem;
 }
 
 /* ── Confirm section spacing ── */
-body:not(.full-page) .confirm-section {
+body .confirm-section {
   margin-bottom: 0.4rem !important;
 }
 
 /* ── Slot number sizing ── */
-body:not(.full-page) .slot-number {
+body .slot-number {
   font-size: 0.65rem;
 }
 

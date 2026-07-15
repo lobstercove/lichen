@@ -681,6 +681,10 @@ test('dapp-bridge requires password-gated approval for signing and uses canonica
     assert(walletBridgeSrc.includes('overflow-wrap:anywhere') && walletBridgeSrc.includes('word-break:break-word'), 'Bridge approval and hint UI must wrap long origins and addresses inside the popup');
     assert(walletBridgeSrc.includes('const values = await showPasswordModal({'), 'Bridge signing flow must use the wallet password modal');
     assert(walletBridgeSrc.includes('serializeMessageBincode(txObject.message || {})'), 'Bridge must sign canonical serialized transaction messages');
+    assert(walletBridgeSrc.includes('signingBytesForChainId(messageBytes, chainId)'), 'Bridge must bind native transaction signatures to the RPC chain id');
+    assert(walletBridgeSrc.includes('encodeTransactionV1Base64(signedTransaction)'), 'Bridge must emit canonical V1 transaction envelopes');
+    assert(walletBridgeSrc.includes('decodeTransactionV1Base64(incoming)'), 'Bridge must only decode canonical V1 string transaction inputs');
+    assert(!walletBridgeSrc.includes('decodeBase64Json(') && !walletBridgeSrc.includes('encodeBase64Json('), 'Bridge must not retain JSON transaction compatibility codecs');
     assert(walletBridgeSrc.includes('rpc.sendTransaction(signResult.result.signedTransactionBase64)'), 'Bridge send flow must broadcast through the wallet RPC helper');
     assert(walletBridgeSrc.includes('transactionSignature: txHash') && walletBridgeSrc.includes('signature: txHash'), 'Bridge send result must expose the on-chain tx id as the transaction signature');
     assert(walletBridgeSrc.includes('pqSignatureHex'), 'Bridge signing results must expose PQ bytes under pqSignatureHex, not only signature');
@@ -866,14 +870,35 @@ test('serializeMessageBincode includes optional compute budget fields in signed 
     assert.strictEqual(withBudget[49], 0, 'compute_unit_price should remain None');
 });
 
-console.log('\nW-13: Shielded RPC method wiring');
+test('browser transaction helpers use chain-bound signatures and strict V1 wire envelopes', () => {
+    const helpers = require(path.join(__dirname, '..', '..', 'wallet', 'shared', 'utils.js'));
+    const blockhash = 'c'.repeat(64);
+    const message = { instructions: [], blockhash };
+    const messageBytes = helpers.serializeMessageBincode(message);
+    const signingBytes = helpers.signingBytesForChainId(messageBytes, 'lichen-testnet-1');
+    assert.strictEqual(new TextDecoder().decode(signingBytes.slice(0, 10)), 'LICHEN-SIG', 'Signing envelope must use the canonical magic');
+    assert.throws(() => helpers.signingBytesForChainId(messageBytes, ''), /Chain id is required/);
 
-test('shielded.js prefers isNullifierSpent over legacy checkNullifier', () => {
-    assert(shieldedSrc.includes("rpc.call('isNullifierSpent'"), 'shielded.js should call isNullifierSpent');
+    const transaction = {
+        signatures: [{
+            scheme_version: 1,
+            public_key: { scheme_version: 1, bytes: 'ab'.repeat(32) },
+            sig: 'cd'.repeat(64),
+        }],
+        message,
+    };
+    const wire = helpers.encodeTransactionV1Base64(transaction);
+    const wireBytes = Uint8Array.from(atob(wire), (character) => character.charCodeAt(0));
+    assert.deepStrictEqual(Array.from(wireBytes.slice(0, 4)), [0x4d, 0x54, 1, 0]);
+    assert.deepStrictEqual(helpers.decodeTransactionV1Base64(wire), { ...transaction, tx_type: 'native' });
+    const jsonWire = btoa(JSON.stringify(transaction));
+    assert.throws(() => helpers.decodeTransactionV1Base64(jsonWire), /not a lichen_tx_v1/);
 });
 
-test('shielded.js keeps fallback compatibility to checkNullifier', () => {
-    assert(shieldedSrc.includes("rpc.call('checkNullifier'"), 'shielded.js should keep checkNullifier fallback');
+console.log('\nW-13: Shielded RPC method wiring');
+
+test('shielded.js uses canonical isNullifierSpent', () => {
+    assert(shieldedSrc.includes("rpc.call('isNullifierSpent'"), 'shielded.js should call isNullifierSpent');
 });
 
 console.log('\nW-14: Wallet delete secure wipe wiring');
@@ -889,14 +914,18 @@ test('wallet.js wipes encrypted key material before deletion', () => {
 
 console.log('\nW-15: Activity pagination cursor wiring');
 
-test('wallet.js activity pagination prefers RPC has_more + next_before_slot', () => {
+test('wallet.js activity pagination prefers the exact signature cursor', () => {
     assert(walletSrc.includes('result.has_more'), 'activity pagination should consume RPC has_more');
+    assert(walletSrc.includes('result.next_before'), 'activity pagination should consume RPC next_before');
+    assert(walletSrc.includes('opts.before = requestBeforeSlot'), 'activity pagination should send exact cursors');
     assert(walletSrc.includes('result.next_before_slot'), 'activity pagination should consume RPC next_before_slot');
 });
 
-test('wallet.js activity pagination falls back safely for legacy responses', () => {
-    assert(walletSrc.includes('Legacy fallback: infer pagination from page size + last tx slot'),
-        'activity pagination should retain legacy fallback behavior');
+test('wallet.js activity pagination requires the canonical response object', () => {
+    assert(walletSrc.includes('Invalid getTransactionsByAddress response'),
+        'activity pagination should reject alternate response shapes');
+    assert(!walletSrc.includes('Array.isArray(result) ? result : []'),
+        'activity pagination should not accept the removed bare-array shape');
 });
 
 console.log('\nW-16: Unshield recipient address validation');
@@ -1102,10 +1131,13 @@ test('wallet.js pins bridge control-plane methods to trusted RPC', () => {
         'bridge auth should mark the V2 domain');
     assert(walletSrc.includes('route=${canonicalChain}:${normalizedAsset}'),
         'bridge auth should bind the canonical chain/asset route');
-    assert(walletSrc.includes('activeBridgeAuth.version = 2'),
+    assert(/activeBridgeAuth\s*=\s*\{[\s\S]*?\bversion:\s*2,/.test(walletSrc),
         'bridge deposit creation should emit a V2 auth envelope');
-    assert(walletSrc.includes('activeBridgeAuth.nonce = nonce'),
+    assert(/activeBridgeAuth\s*=\s*\{[\s\S]*?\bnonce\s*\n\s*\};/.test(walletSrc),
         'bridge deposit creation should include a fresh nonce');
+    assert(!walletSrc.includes('LICHEN_BRIDGE_ACCESS_V1')
+        && !walletSrc.includes('buildBridgeAccessMessageV1'),
+        'wallet must not sign unscoped V1 bridge authorization');
     assert(walletSrc.includes('decryptKeypair(wallet.encryptedKey'),
         'bridge authorization should derive wallet identity from decrypted key material before signing');
     assert(walletSrc.includes('keypair.address !== wallet.address'),

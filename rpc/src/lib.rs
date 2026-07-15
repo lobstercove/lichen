@@ -19,7 +19,7 @@
 //   NETWORK ENDPOINTS              — getPeers, getNetworkInfo, getClusterInfo
 //   VALIDATOR ENDPOINTS            — getValidatorInfo, getValidatorPerformance
 //   STAKING ENDPOINTS              — stake, unstake, getStakingStatus
-//   ACCOUNT ENDPOINTS              — getAccountInfo, getTransactionHistory
+//   ACCOUNT ENDPOINTS              — getAccountInfo, getTransactionsByAddress
 //   CONTRACT ENDPOINTS             — getContractInfo, getContractLogs, ABI
 //   PROGRAM ENDPOINTS              — getProgram, getProgramStats, getProgramCalls
 //   NFT ENDPOINTS                  — getCollection, getNFT, getNFTsByOwner
@@ -63,11 +63,11 @@ use lichen_core::zk::{
 };
 use lichen_core::{
     compute_units_for_tx, decode_evm_transaction, simulate_evm_call, spores_to_u256,
-    EffectiveRestrictionRecord, FinalityTracker, Hash, Instruction, MarketActivityKind, Message,
-    PqSignature, ProtocolModuleId, Pubkey, RestrictionLiftReason, RestrictionMode,
-    RestrictionReason, RestrictionRecord, RestrictionTarget, RestrictionTransferDirection,
-    StakePool, StateStore, SymbolRegistryEntry, Transaction, TxProcessor, ValidatorSet,
-    CONTRACT_PROGRAM_ID, EVM_PROGRAM_ID, MAX_CONTRACT_CODE, NATIVE_LICN_ASSET_ID,
+    CanonicalCommitCertificate, EffectiveRestrictionRecord, FinalityTracker, Hash, Instruction,
+    MarketActivityKind, Message, PqSignature, ProtocolModuleId, Pubkey, RestrictionLiftReason,
+    RestrictionMode, RestrictionReason, RestrictionRecord, RestrictionTarget,
+    RestrictionTransferDirection, StakePool, StateStore, SymbolRegistryEntry, Transaction, TxMeta,
+    TxProcessor, ValidatorSet, CONTRACT_PROGRAM_ID, EVM_PROGRAM_ID, NATIVE_LICN_ASSET_ID,
     SYSTEM_PROGRAM_ID,
 };
 use lru::LruCache;
@@ -104,30 +104,17 @@ const RPC_DISK_CRITICAL_MIN_AVAILABLE_BYTES: u64 = 5 * 1024 * 1024 * 1024;
 /// P9-RPC-02: Maximum size for transaction wire deserialization.
 /// Prevents OOM/DoS from maliciously large payloads and matches the core
 /// serialized transaction cap enforced by `validate_structure()`.
-const MAX_TX_BINCODE_SIZE: u64 = lichen_core::transaction::MAX_TRANSACTION_SERIALIZED_SIZE;
+const MAX_TX_WIRE_SIZE: u64 = lichen_core::transaction::MAX_TRANSACTION_WIRE_SIZE;
 /// HTTP request body cap. A max-size raw transaction becomes roughly 4/3 larger
 /// when base64-encoded inside JSON, so keep this above the wire cap.
 const MAX_RPC_BODY_SIZE: usize = 8 * 1024 * 1024;
 
-/// Decode raw bytes into a Transaction using the wire-format envelope (M-6).
-/// Supports V1 envelope, raw bincode, JSON (serde), and wallet JSON format.
+/// Decode the mandatory V1 transaction wire envelope.
 pub(crate) fn decode_transaction_bytes(bytes: &[u8]) -> Result<Transaction, RpcError> {
-    Transaction::from_wire(bytes, MAX_TX_BINCODE_SIZE)
-        .or_else(|_| {
-            // Fall back to wallet-specific JSON (array-of-numbers signatures, multi-key formats)
-            if bytes.len() as u64 > MAX_TX_BINCODE_SIZE {
-                return Err(format!(
-                    "Transaction wire payload too large: {} bytes (max {})",
-                    bytes.len(),
-                    MAX_TX_BINCODE_SIZE
-                ));
-            }
-            parse_json_transaction(bytes).map_err(|e| e.message)
-        })
-        .map_err(|e| RpcError {
-            code: -32602,
-            message: format!("Invalid transaction: {}", e),
-        })
+    Transaction::from_wire(bytes, MAX_TX_WIRE_SIZE).map_err(|e| RpcError {
+        code: -32602,
+        message: format!("Invalid transaction: {}", e),
+    })
 }
 use dashmap::DashMap;
 use lichen_core::consensus::{
@@ -143,7 +130,7 @@ use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{mpsc, oneshot, RwLock};
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tracing::{info, warn};
@@ -1365,6 +1352,7 @@ struct RpcReadiness {
     slot: u64,
     block_age_secs: Option<u64>,
     disk: Option<DiskReadiness>,
+    archive_contiguous_tip: Option<(u64, Hash)>,
 }
 
 impl RpcReadiness {
@@ -1451,6 +1439,7 @@ fn rpc_disk_readiness(state: &RpcState) -> Option<DiskReadiness> {
 
 fn rpc_readiness(state: &RpcState) -> RpcReadiness {
     let slot = state.state.get_last_slot().unwrap_or(0);
+    let archive_contiguous_tip = state.state.get_archive_contiguous_tip().ok().flatten();
     let block_age_secs = state
         .state
         .get_block_by_slot(slot)
@@ -1471,6 +1460,7 @@ fn rpc_readiness(state: &RpcState) -> RpcReadiness {
             slot,
             block_age_secs,
             disk: None,
+            archive_contiguous_tip,
         }
     } else if block_age_secs.is_none() {
         RpcReadiness {
@@ -1479,6 +1469,7 @@ fn rpc_readiness(state: &RpcState) -> RpcReadiness {
             slot,
             block_age_secs,
             disk: None,
+            archive_contiguous_tip,
         }
     } else if block_age_secs.unwrap_or(0) > RPC_STALE_BLOCK_SECS {
         RpcReadiness {
@@ -1487,6 +1478,7 @@ fn rpc_readiness(state: &RpcState) -> RpcReadiness {
             slot,
             block_age_secs,
             disk: None,
+            archive_contiguous_tip,
         }
     } else {
         RpcReadiness {
@@ -1495,9 +1487,17 @@ fn rpc_readiness(state: &RpcState) -> RpcReadiness {
             slot,
             block_age_secs,
             disk: None,
+            archive_contiguous_tip,
         }
     };
 
+    if readiness
+        .archive_contiguous_tip
+        .is_some_and(|(archive_slot, _)| archive_slot != slot)
+    {
+        readiness.status = "degraded";
+        readiness.reason = "archive_incomplete";
+    }
     readiness.disk = rpc_disk_readiness(state);
     if readiness.disk.as_ref().is_some_and(|disk| disk.critical) {
         readiness.status = "degraded";
@@ -1526,13 +1526,17 @@ fn rpc_readiness_json(state: &RpcState) -> serde_json::Value {
             "critical": disk.critical,
         });
     }
+    if let Some((archive_slot, archive_hash)) = readiness.archive_contiguous_tip {
+        payload["archive_contiguous_slot"] = serde_json::json!(archive_slot);
+        payload["archive_contiguous_hash"] = serde_json::json!(archive_hash.to_hex());
+    }
 
     payload
 }
 
 fn rpc_unready_error(state: &RpcState) -> Option<RpcError> {
     let readiness = rpc_readiness(state);
-    if readiness.is_ready() {
+    if readiness.is_ready() || readiness.reason == "archive_incomplete" {
         return None;
     }
 
@@ -1569,7 +1573,7 @@ fn rpc_unready_error(state: &RpcState) -> Option<RpcError> {
 fn method_allowed_when_rpc_unready(method: &str) -> bool {
     matches!(
         method,
-        "health" | "getHealth" | "getIncidentStatus" | "getServiceFleetStatus" | "getVersion"
+        "getHealth" | "getIncidentStatus" | "getServiceFleetStatus" | "getVersion"
     )
 }
 
@@ -2011,7 +2015,6 @@ fn parse_pq_signature_value(value: &serde_json::Value) -> Result<PqSignature, Rp
     })
 }
 
-const BRIDGE_ACCESS_DOMAIN: &str = "LICHEN_BRIDGE_ACCESS_V1";
 const BRIDGE_ACCESS_DOMAIN_V2: &str = "LICHEN_BRIDGE_ACCESS_V2";
 const BRIDGE_ACCESS_MAX_TTL_SECS: u64 = 24 * 60 * 60;
 const BRIDGE_ACCESS_CLOCK_SKEW_SECS: u64 = 300;
@@ -2041,14 +2044,6 @@ struct BridgeAccessAuth {
     issued_at: u64,
     expires_at: u64,
     signature: serde_json::Value,
-}
-
-fn bridge_access_message(user_id: &str, issued_at: u64, expires_at: u64) -> Vec<u8> {
-    format!(
-        "{}\nuser_id={}\nissued_at={}\nexpires_at={}\n",
-        BRIDGE_ACCESS_DOMAIN, user_id, issued_at, expires_at
-    )
-    .into_bytes()
 }
 
 fn bridge_access_message_v2_create(
@@ -2130,10 +2125,6 @@ fn verify_bridge_access_auth_for_create_at(
     auth: &BridgeAccessAuth,
     now: u64,
 ) -> Result<(), RpcError> {
-    if !bridge_auth_is_v2(auth) {
-        return verify_bridge_access_auth_v1_at(user_id, auth, now);
-    }
-
     let chain = chain.trim().to_lowercase();
     let asset = asset.trim().to_lowercase();
     let action = bridge_auth_v2_action(auth)?;
@@ -2178,10 +2169,6 @@ fn verify_bridge_access_auth_for_lookup_at(
     auth: &BridgeAccessAuth,
     now: u64,
 ) -> Result<(), RpcError> {
-    if !bridge_auth_is_v2(auth) {
-        return verify_bridge_access_auth_v1_at(user_id, auth, now);
-    }
-
     match bridge_auth_v2_action(auth)? {
         BRIDGE_AUTH_ACTION_CREATE_DEPOSIT => {
             verify_bridge_access_auth_v2_self_contained_at(user_id, auth, now)
@@ -2216,21 +2203,7 @@ fn verify_bridge_access_auth_at(
     auth: &BridgeAccessAuth,
     now: u64,
 ) -> Result<(), RpcError> {
-    if bridge_auth_is_v2(auth) {
-        return verify_bridge_access_auth_v2_self_contained_at(user_id, auth, now);
-    }
-    verify_bridge_access_auth_v1_at(user_id, auth, now)
-}
-
-fn verify_bridge_access_auth_v1_at(
-    user_id: &str,
-    auth: &BridgeAccessAuth,
-    now: u64,
-) -> Result<(), RpcError> {
-    validate_bridge_auth_time(auth, now)?;
-
-    let message = bridge_access_message(user_id, auth.issued_at, auth.expires_at);
-    verify_bridge_access_signature(user_id, auth, &message)
+    verify_bridge_access_auth_v2_self_contained_at(user_id, auth, now)
 }
 
 fn validate_bridge_auth_time(auth: &BridgeAccessAuth, now: u64) -> Result<(), RpcError> {
@@ -2286,10 +2259,6 @@ fn verify_bridge_access_signature(
     }
 
     Ok(())
-}
-
-fn bridge_auth_is_v2(auth: &BridgeAccessAuth) -> bool {
-    auth.version == Some(2) || auth.domain.as_deref() == Some(BRIDGE_ACCESS_DOMAIN_V2)
 }
 
 fn bridge_auth_v2_action(auth: &BridgeAccessAuth) -> Result<&str, RpcError> {
@@ -2645,6 +2614,11 @@ fn parse_get_block_slot_param(
 }
 
 /// Shared RPC state
+pub struct TransactionSubmission {
+    pub transaction: Transaction,
+    pub admission_response: oneshot::Sender<Result<(), String>>,
+}
+
 #[derive(Clone)]
 struct RpcState {
     state: StateStore,
@@ -2653,7 +2627,7 @@ struct RpcState {
     /// fully post-applied state, never from the middle of block commit effects.
     block_apply_lock: Option<Arc<tokio::sync::Mutex<()>>>,
     /// Channel to send transactions to mempool
-    tx_sender: Option<mpsc::Sender<Transaction>>,
+    tx_sender: Option<mpsc::Sender<TransactionSubmission>>,
     /// Filesystem path for the hot state store, used by readiness checks.
     data_dir_path: Option<PathBuf>,
     /// P2P network (optional, for peer count queries)
@@ -2669,9 +2643,6 @@ struct RpcState {
     version: String,
     evm_chain_id: u64,
     solana_tx_cache: Arc<RwLock<LruCache<Hash, SolanaTxRecord>>>,
-    /// Admin token for state-mutating RPC endpoints (setFeeConfig, setRentParams, setContractAbi)
-    /// Hot-rotatable: a background task re-reads LICHEN_ADMIN_TOKEN env var every 30s.
-    admin_token: Arc<std::sync::RwLock<Option<String>>>,
     /// T2.6: Per-IP rate limiter
     rate_limiter: Arc<RateLimiter>,
     /// Lock-free finality tracker for commitment levels (processed/confirmed/finalized)
@@ -2825,42 +2796,6 @@ impl AirdropCooldowns {
     }
 }
 
-/// H16 fix: Guard state-mutating RPC endpoints in multi-validator mode.
-/// Direct state writes bypass consensus and cause divergence when >1 validator.
-/// In multi-validator mode, callers must submit proper signed transactions
-/// via `sendTransaction` instead.
-pub(crate) async fn require_single_validator(
-    state: &RpcState,
-    endpoint: &str,
-) -> Result<(), RpcError> {
-    let validators = cached_validators(state).await.map_err(|e| RpcError {
-        code: e.code,
-        message: format!(
-            "{} unavailable: failed to load validator set ({})",
-            endpoint, e.message
-        ),
-    })?;
-    if validators.len() > 1 {
-        return Err(RpcError {
-            code: -32003,
-            message: format!(
-                "{} is disabled in multi-validator mode ({} validators active). \
-                 Submit a signed transaction via sendTransaction instead.",
-                endpoint,
-                validators.len()
-            ),
-        });
-    }
-    // AUDIT-FIX RPC-03: Log when single-validator direct-write endpoints are used.
-    // These bypass consensus and should only be used in devnet/testing.
-    warn!(
-        "DEVNET-ONLY: {} called via direct state write (single-validator mode). \
-         This bypasses consensus and must not be used in production.",
-        endpoint
-    );
-    Ok(())
-}
-
 /// Cached validator list — avoids redundant CF_VALIDATORS full-scans within a
 /// single slot (~400ms).  Six RPC handlers previously scanned the same CF
 /// independently; this collapses them into at most one scan per slot.
@@ -2988,7 +2923,6 @@ fn rpc_read_slot_cache_profile(method: &str) -> Option<RpcReadSlotCacheProfile> 
         | "getRecentTransactions"
         | "getRecentShieldedTransactions"
         | "getTransactionsByAddress"
-        | "getTransactionHistory"
         | "getAccountTxCount"
         | "getProgramCalls"
         | "getProgramStorage" => Some(RpcReadSlotCacheProfile::CurrentProcessed),
@@ -3078,122 +3012,6 @@ async fn put_cached_read_slot_response(state: &RpcState, key: String, response: 
     guard.put(key, response);
 }
 
-/// AUDIT-FIX HIGH-03: Exact allowlist instead of substring matching.
-/// Only local/dev fixture IDs enable legacy admin RPCs. Public-style chain IDs
-/// such as `lichen-testnet-1`, `lichen-devnet-1`, and mainnet IDs are
-/// intentionally excluded even when an admin token is configured.
-const LEGACY_ADMIN_ALLOWED_IDS: &[&str] = &[
-    "local",
-    "dev",
-    "localnet",
-    "devnet",
-    "local-testnet",
-    "local-devnet",
-    "lichen-testnet-local",
-    "lichen-devnet-local",
-    "lichen-local",
-    "lichen-dev",
-];
-
-fn allow_legacy_admin_rpc(chain_id: &str, network_id: &str) -> bool {
-    let chain = chain_id.to_ascii_lowercase();
-    let network = network_id.to_ascii_lowercase();
-
-    LEGACY_ADMIN_ALLOWED_IDS.iter().any(|id| network == *id)
-        || LEGACY_ADMIN_ALLOWED_IDS.iter().any(|id| chain == *id)
-}
-
-fn require_legacy_admin_rpc_enabled(state: &RpcState, endpoint: &str) -> Result<(), RpcError> {
-    if allow_legacy_admin_rpc(&state.chain_id, &state.network_id) {
-        return Ok(());
-    }
-
-    Err(RpcError {
-        code: -32003,
-        message: format!(
-            "{} is disabled outside local/dev environments. Use consensus transactions, governance, or deterministic deployment artifacts instead.",
-            endpoint
-        ),
-    })
-}
-
-fn is_legacy_admin_method(method: &str) -> bool {
-    matches!(
-        method,
-        "setFeeConfig" | "setRentParams" | "setContractAbi" | "deployContract" | "upgradeContract"
-    )
-}
-
-fn require_legacy_admin_rpc_local_origin(
-    method: &str,
-    connect_info: Option<&ConnectInfo<SocketAddr>>,
-) -> Result<(), RpcError> {
-    let Some(connect_info) = connect_info else {
-        return Ok(());
-    };
-
-    if connect_info.0.ip().is_loopback() {
-        return Ok(());
-    }
-
-    Err(RpcError {
-        code: -32003,
-        message: format!(
-            "{} is restricted to loopback clients on local/dev networks. Use localhost or an offline maintenance path instead.",
-            method
-        ),
-    })
-}
-
-/// AUDIT-FIX HIGH-02: Strip any admin_token from JSON body params to prevent
-/// clients from embedding secrets in loggable request payloads.
-fn strip_admin_token_from_params(params: Option<serde_json::Value>) -> Option<serde_json::Value> {
-    match params {
-        Some(serde_json::Value::Object(mut obj)) => {
-            obj.remove("admin_token");
-            Some(serde_json::Value::Object(obj))
-        }
-        Some(serde_json::Value::Array(mut arr)) => {
-            for value in &mut arr {
-                if let Some(obj) = value.as_object_mut() {
-                    obj.remove("admin_token");
-                }
-            }
-            Some(serde_json::Value::Array(arr))
-        }
-        other => other,
-    }
-}
-
-/// AUDIT-FIX HIGH-02: Admin auth uses Authorization header only.
-/// The admin_token is never injected into or read from JSON body params.
-fn verify_admin_auth(state: &RpcState, auth_header: Option<&str>) -> Result<(), RpcError> {
-    let guard = state.admin_token.read().map_err(|_| RpcError {
-        code: -32000,
-        message: "Internal error: admin token lock poisoned".to_string(),
-    })?;
-    let required_token = guard.as_ref().ok_or_else(|| RpcError {
-        code: -32003,
-        message: "Admin endpoints disabled: no admin_token configured".to_string(),
-    })?;
-
-    let token = auth_header
-        .and_then(|h| h.strip_prefix("Bearer "))
-        .map(|t| t.trim());
-
-    match token {
-        Some(t) if constant_time_eq(t.as_bytes(), required_token.as_bytes()) => Ok(()),
-        Some(_) => Err(RpcError {
-            code: -32003,
-            message: "Invalid admin token".to_string(),
-        }),
-        None => Err(RpcError {
-            code: -32003,
-            message: "Missing Authorization: Bearer <token> header".to_string(),
-        }),
-    }
-}
-
 fn log_privileged_rpc_mutation(
     method: &str,
     auth_scope: &str,
@@ -3264,18 +3082,6 @@ fn privileged_rpc_mutation_test_output() -> String {
         .join("\n")
 }
 
-/// T8.4: Constant-time byte comparison to prevent timing side-channel attacks
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut diff = 0u8;
-    for (x, y) in a.iter().zip(b.iter()) {
-        diff |= x ^ y;
-    }
-    diff == 0
-}
-
 #[derive(Debug, Clone)]
 struct SolanaTxRecord {
     tx: Transaction,
@@ -3314,14 +3120,9 @@ fn classify_method(method: &str) -> MethodTier {
         "sendTransaction"
         | "simulateTransaction"
         | "estimateTransactionFee"
-        | "deployContract"
-        | "upgradeContract"
         | "stake"
         | "unstake"
         | "requestAirdrop"
-        | "setFeeConfig"
-        | "setRentParams"
-        | "setContractAbi"
         | "callContract"
         | "createBridgeDeposit"
         | "generateShieldProof"
@@ -3331,7 +3132,7 @@ fn classify_method(method: &str) -> MethodTier {
 
         // Moderate reads (iterate indexes, join data)
         "getTransactionsByAddress"
-        | "getTransactionHistory"
+        | "getSignaturesForAddress"
         | "getTransaction"
         | "getTransactionProof"
         | "getRecentTransactions"
@@ -3360,7 +3161,6 @@ fn classify_method(method: &str) -> MethodTier {
         | "getPrograms"
         | "getAllContracts"
         | "getAllSymbolRegistry"
-        | "getAllSymbols"
         | "getGenesisAccounts"
         | "getDexAnalyticsStats"
         | "getDexPairs"
@@ -3404,7 +3204,8 @@ fn classify_method(method: &str) -> MethodTier {
         | "batchReverseLichenNames"
         | "searchLichenNames"
         | "getServiceFleetStatus"
-        | "getUnstakingQueue" => MethodTier::Moderate,
+        | "getUnstakingQueue"
+        | "getSupply" => MethodTier::Moderate,
 
         // Everything else is a cheap point lookup
         _ => MethodTier::Cheap,
@@ -4447,13 +4248,15 @@ const ACCOUNT_PROOF_ANCHOR_LOOKBACK_SLOTS: u64 = 512;
 fn build_anchor_context(
     commitment: &str,
     block: lichen_core::Block,
+    commit: &RpcCommitCertificate,
 ) -> (u64, lichen_core::Block, serde_json::Value) {
     let block_hash = block.hash();
     let context = serde_json::json!({
         "slot": block.header.slot,
         "commitment": commitment,
         "block_hash": block_hash.to_hex(),
-        "commit_round": block.commit_round,
+        "commit_round": commit.round,
+        "commit_source": commit.source,
         "parent_hash": block.header.parent_hash.to_hex(),
         "root_source": "header_state_root",
         "state_root": block.header.state_root.to_hex(),
@@ -4462,14 +4265,14 @@ fn build_anchor_context(
         "timestamp": block.header.timestamp,
         "validator": Pubkey(block.header.validator).to_base58(),
         "block_signature": pq_signature_option_json(block.header.signature.as_ref()),
-        "commit_signatures": block.commit_signatures.iter().map(|cs| {
+        "commit_signatures": commit.signatures.iter().map(|cs| {
             serde_json::json!({
                 "validator": Pubkey(cs.validator).to_base58(),
                 "signature": pq_signature_json(&cs.signature),
                 "timestamp": cs.timestamp,
             })
         }).collect::<Vec<_>>(),
-        "commit_validator_count": block.commit_signatures.len(),
+        "commit_validator_count": commit.signatures.len(),
     });
     (block.header.slot, block, context)
 }
@@ -4478,13 +4281,15 @@ fn build_post_state_anchor_context(
     commitment: &str,
     block: lichen_core::Block,
     post_state_root: Hash,
+    commit: &RpcCommitCertificate,
 ) -> (u64, lichen_core::Block, serde_json::Value) {
     let block_hash = block.hash();
     let context = serde_json::json!({
         "slot": block.header.slot,
         "commitment": commitment,
         "block_hash": block_hash.to_hex(),
-        "commit_round": block.commit_round,
+        "commit_round": commit.round,
+        "commit_source": commit.source,
         "parent_hash": block.header.parent_hash.to_hex(),
         "root_source": "post_state_v1",
         "state_root": post_state_root.to_hex(),
@@ -4494,14 +4299,14 @@ fn build_post_state_anchor_context(
         "timestamp": block.header.timestamp,
         "validator": Pubkey(block.header.validator).to_base58(),
         "block_signature": pq_signature_option_json(block.header.signature.as_ref()),
-        "commit_signatures": block.commit_signatures.iter().map(|cs| {
+        "commit_signatures": commit.signatures.iter().map(|cs| {
             serde_json::json!({
                 "validator": Pubkey(cs.validator).to_base58(),
                 "signature": pq_signature_json(&cs.signature),
                 "timestamp": cs.timestamp,
             })
         }).collect::<Vec<_>>(),
-        "commit_validator_count": block.commit_signatures.len(),
+        "commit_validator_count": commit.signatures.len(),
     });
     (block.header.slot, block, context)
 }
@@ -4520,8 +4325,9 @@ fn anchored_block_context_for_state_root(
             message: format!("Database error: {}", e),
         })?;
         if let Some(block) = block {
+            let commit = rpc_commit_certificate_for_block(&state.state, &block)?;
             if block.header.state_root == *state_root {
-                return Ok(build_anchor_context(commitment, block));
+                return Ok(build_anchor_context(commitment, block, &commit));
             }
             let post_anchor = state
                 .state
@@ -4537,6 +4343,7 @@ fn anchored_block_context_for_state_root(
                         commitment,
                         block,
                         anchor.state_root,
+                        &commit,
                     ));
                 }
             }
@@ -4605,10 +4412,12 @@ fn repair_tip_post_state_anchor_for_state_root(
             return Ok(None);
         }
         if existing.state_root == *state_root {
+            let commit = rpc_commit_certificate_for_block(&state.state, &block)?;
             return Ok(Some(build_post_state_anchor_context(
                 commitment,
                 block,
                 existing.state_root,
+                &commit,
             )));
         }
     }
@@ -4628,10 +4437,12 @@ fn repair_tip_post_state_anchor_for_state_root(
             message: format!("Failed to store post-state commitment anchor: {}", e),
         })?;
 
+    let commit = rpc_commit_certificate_for_block(&state.state, &block)?;
     Ok(Some(build_post_state_anchor_context(
         commitment,
         block,
         *state_root,
+        &commit,
     )))
 }
 
@@ -4715,6 +4526,33 @@ fn account_balances(state: &StateStore, tx: &Transaction) -> Vec<u64> {
         .collect()
 }
 
+fn transaction_receipt_fields(
+    state: &StateStore,
+    tx: &Transaction,
+    fallback_fee: u64,
+) -> (u64, serde_json::Value, Vec<String>, bool) {
+    let meta = state.get_tx_meta_full(&tx.signature()).ok().flatten();
+    let success = meta.as_ref().map(TxMeta::succeeded).unwrap_or(true);
+    let fee = meta
+        .as_ref()
+        .and_then(|receipt| receipt.fee_paid)
+        .unwrap_or(fallback_fee);
+    let error = meta
+        .as_ref()
+        .filter(|receipt| !receipt.succeeded())
+        .map(|receipt| {
+            serde_json::Value::String(
+                receipt
+                    .error
+                    .clone()
+                    .unwrap_or_else(|| "Transaction execution failed".to_string()),
+            )
+        })
+        .unwrap_or(serde_json::Value::Null);
+    let logs = meta.map(|receipt| receipt.logs).unwrap_or_default();
+    (fee, error, logs, success)
+}
+
 fn solana_transaction_json(
     state: &StateStore,
     tx: &Transaction,
@@ -4724,6 +4562,7 @@ fn solana_transaction_json(
 ) -> serde_json::Value {
     let (account_keys, instructions) = solana_message_json(tx);
     let signature = hash_to_base58(&tx.signature());
+    let (fee, error, logs, _success) = transaction_receipt_fields(state, tx, fee);
 
     // F1: Populate balances from current state.
     // postBalances = current on-chain balances for each account key.
@@ -4739,11 +4578,11 @@ fn solana_transaction_json(
         "slot": slot,
         "blockTime": timestamp,
         "meta": {
-            "err": serde_json::Value::Null,
+            "err": error,
             "fee": fee,
             "preBalances": pre_balances,
             "postBalances": post_balances,
-            "logMessages": [],
+            "logMessages": logs,
         },
         "transaction": {
             "signatures": [signature],
@@ -4765,25 +4604,29 @@ fn solana_transaction_encoded_json(
     encoding: &str,
 ) -> serde_json::Value {
     let encoded = encode_solana_transaction(tx, encoding);
+    let (fee, error, logs, success) = transaction_receipt_fields(state, tx, fee);
 
     let post_balances = account_balances(state, tx);
     // AUDIT-FIX F-9: Reconstruct pre-balances from transaction effects.
     // The fee payer (account[0]) had fee added to their balance before deduction.
     // For transfer instructions (opcode 0), we also reconstruct the amount moved.
-    let transfer_amount = tx
-        .message
-        .instructions
-        .first()
-        .and_then(|ix| {
-            if ix.data.first() == Some(&0) && ix.data.len() >= 9 {
-                Some(u64::from_le_bytes(
-                    ix.data[1..9].try_into().unwrap_or([0; 8]),
-                ))
-            } else {
-                None
-            }
-        })
-        .unwrap_or(0);
+    let transfer_amount = if success {
+        tx.message
+            .instructions
+            .first()
+            .and_then(|ix| {
+                if ix.data.first() == Some(&0) && ix.data.len() >= 9 {
+                    Some(u64::from_le_bytes(
+                        ix.data[1..9].try_into().unwrap_or([0; 8]),
+                    ))
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(0)
+    } else {
+        0
+    };
     let pre_balances: Vec<u64> = post_balances
         .iter()
         .enumerate()
@@ -4804,11 +4647,11 @@ fn solana_transaction_encoded_json(
         "slot": slot,
         "blockTime": timestamp,
         "meta": {
-            "err": serde_json::Value::Null,
+            "err": error,
             "fee": fee,
             "preBalances": pre_balances,
             "postBalances": post_balances,
-            "logMessages": [],
+            "logMessages": logs,
         },
         "transaction": [encoded, encoding],
     })
@@ -4821,6 +4664,7 @@ fn solana_block_transaction_json(
 ) -> serde_json::Value {
     let (account_keys, instructions) = solana_message_json(tx);
     let signature = hash_to_base58(&tx.signature());
+    let (fee, error, logs, _success) = transaction_receipt_fields(state, tx, fee);
 
     let post_balances = account_balances(state, tx);
     let pre_balances: Vec<u64> = post_balances
@@ -4831,11 +4675,11 @@ fn solana_block_transaction_json(
 
     serde_json::json!({
         "meta": {
-            "err": serde_json::Value::Null,
+            "err": error,
             "fee": fee,
             "preBalances": pre_balances,
             "postBalances": post_balances,
-            "logMessages": [],
+            "logMessages": logs,
         },
         "transaction": {
             "signatures": [signature],
@@ -4856,6 +4700,7 @@ fn solana_block_transaction_encoded_json(
 ) -> serde_json::Value {
     let encoded = encode_solana_transaction(tx, encoding);
     let signature = hash_to_base58(&tx.signature());
+    let (fee, error, logs, _success) = transaction_receipt_fields(state, tx, fee);
 
     let post_balances = account_balances(state, tx);
     let pre_balances: Vec<u64> = post_balances
@@ -4866,11 +4711,11 @@ fn solana_block_transaction_encoded_json(
 
     serde_json::json!({
         "meta": {
-            "err": serde_json::Value::Null,
+            "err": error,
             "fee": fee,
             "preBalances": pre_balances,
             "postBalances": post_balances,
-            "logMessages": [],
+            "logMessages": logs,
         },
         "transaction": [encoded, encoding],
         "version": serde_json::Value::Null,
@@ -5110,7 +4955,7 @@ fn tx_to_rpc_json(
     slot: u64,
     timestamp: u64,
     fee_config: &lichen_core::FeeConfig,
-    stored_cu: Option<u64>,
+    tx_meta: Option<&TxMeta>,
     store: &StateStore,
 ) -> serde_json::Value {
     let first_ix = tx.message.instructions.first();
@@ -5135,12 +4980,23 @@ fn tx_to_rpc_json(
         .map(|val| val as f64 / 1_000_000_000.0)
         .unwrap_or(0.0);
 
-    let fee = TxProcessor::compute_transaction_fee(tx, fee_config);
+    let computed_fee = TxProcessor::compute_transaction_fee(tx, fee_config);
+    let fee = tx_meta
+        .and_then(|meta| meta.fee_paid)
+        .unwrap_or(computed_fee);
     let base_fee = TxProcessor::compute_base_fee(tx, fee_config);
     let priority_fee = TxProcessor::compute_priority_fee(tx);
-    let compute_units = stored_cu.unwrap_or_else(|| compute_units_for_tx(tx));
+    let compute_units = tx_meta
+        .map(|meta| meta.compute_units_used)
+        .unwrap_or_else(|| compute_units_for_tx(tx));
     let compute_budget = tx.message.effective_compute_budget();
     let compute_unit_price = tx.message.effective_compute_unit_price();
+    let success = tx_meta.map(TxMeta::succeeded).unwrap_or(true);
+    let error = tx_meta
+        .and_then(|meta| meta.error.as_ref())
+        .cloned()
+        .map(serde_json::Value::String)
+        .unwrap_or(serde_json::Value::Null);
 
     let mut obj = serde_json::json!({
         "signature": tx.signature().to_hex(),
@@ -5148,12 +5004,9 @@ fn tx_to_rpc_json(
         "signatures": signatures,
         "slot": slot,
         "block_time": timestamp,
-        // AUDIT-FIX GX-02: Status is "Success" because the block producer only includes
-        // transactions where TxResult.success == true (see validator block production loop).
-        // Failed transactions are dropped from the mempool before block creation.
-        // If/when we add receipt storage, this should use the actual execution result.
-        "status": "Success",
-        "error": serde_json::Value::Null,
+        "status": if success { "Success" } else { "Failed" },
+        "success": success,
+        "error": error,
         "fee": fee,
         "fee_spores": fee,
         "fee_licn": fee as f64 / 1_000_000_000.0,
@@ -5209,7 +5062,7 @@ fn tx_to_rpc_json(
 pub async fn start_rpc_server(
     state: StateStore,
     port: u16,
-    tx_sender: Option<mpsc::Sender<Transaction>>,
+    tx_sender: Option<mpsc::Sender<TransactionSubmission>>,
     stake_pool: Option<Arc<RwLock<StakePool>>>,
     live_validator_set: Option<Arc<RwLock<ValidatorSet>>>,
     block_apply_lock: Option<Arc<tokio::sync::Mutex<()>>>,
@@ -5217,7 +5070,6 @@ pub async fn start_rpc_server(
     chain_id: String,
     network_id: String,
     min_validator_stake: u64,
-    admin_token: Option<String>,
     finality: Option<FinalityTracker>,
     dex_broadcaster: Option<Arc<dex_ws::DexEventBroadcaster>>,
     prediction_broadcaster: Option<Arc<ws::PredictionEventBroadcaster>>,
@@ -5234,7 +5086,6 @@ pub async fn start_rpc_server(
         chain_id,
         network_id,
         min_validator_stake,
-        admin_token,
         finality,
         dex_broadcaster,
         prediction_broadcaster,
@@ -5265,12 +5116,11 @@ pub async fn start_rpc_server(
 #[allow(clippy::too_many_arguments)]
 pub fn build_rpc_router(
     state: StateStore,
-    tx_sender: Option<mpsc::Sender<Transaction>>,
+    tx_sender: Option<mpsc::Sender<TransactionSubmission>>,
     stake_pool: Option<Arc<RwLock<StakePool>>>,
     p2p: Option<Arc<dyn P2PNetworkTrait>>,
     chain_id: String,
     network_id: String,
-    admin_token: Option<String>,
     finality: Option<FinalityTracker>,
     dex_broadcaster: Option<Arc<dex_ws::DexEventBroadcaster>>,
     prediction_broadcaster: Option<Arc<ws::PredictionEventBroadcaster>>,
@@ -5286,7 +5136,6 @@ pub fn build_rpc_router(
         chain_id,
         network_id,
         lichen_core::consensus::MIN_VALIDATOR_STAKE,
-        admin_token,
         finality,
         dex_broadcaster,
         prediction_broadcaster,
@@ -5298,13 +5147,12 @@ pub fn build_rpc_router(
 #[allow(clippy::too_many_arguments)]
 pub fn build_rpc_router_with_min_validator_stake(
     state: StateStore,
-    tx_sender: Option<mpsc::Sender<Transaction>>,
+    tx_sender: Option<mpsc::Sender<TransactionSubmission>>,
     stake_pool: Option<Arc<RwLock<StakePool>>>,
     p2p: Option<Arc<dyn P2PNetworkTrait>>,
     chain_id: String,
     network_id: String,
     min_validator_stake: u64,
-    admin_token: Option<String>,
     finality: Option<FinalityTracker>,
     dex_broadcaster: Option<Arc<dex_ws::DexEventBroadcaster>>,
     prediction_broadcaster: Option<Arc<ws::PredictionEventBroadcaster>>,
@@ -5320,7 +5168,6 @@ pub fn build_rpc_router_with_min_validator_stake(
         chain_id,
         network_id,
         min_validator_stake,
-        admin_token,
         finality,
         dex_broadcaster,
         prediction_broadcaster,
@@ -5332,7 +5179,7 @@ pub fn build_rpc_router_with_min_validator_stake(
 #[allow(clippy::too_many_arguments)]
 fn build_rpc_router_internal(
     state: StateStore,
-    tx_sender: Option<mpsc::Sender<Transaction>>,
+    tx_sender: Option<mpsc::Sender<TransactionSubmission>>,
     stake_pool: Option<Arc<RwLock<StakePool>>>,
     live_validator_set: Option<Arc<RwLock<ValidatorSet>>>,
     block_apply_lock: Option<Arc<tokio::sync::Mutex<()>>>,
@@ -5340,7 +5187,6 @@ fn build_rpc_router_internal(
     chain_id: String,
     network_id: String,
     min_validator_stake: u64,
-    admin_token: Option<String>,
     finality: Option<FinalityTracker>,
     dex_broadcaster: Option<Arc<dex_ws::DexEventBroadcaster>>,
     prediction_broadcaster: Option<Arc<ws::PredictionEventBroadcaster>>,
@@ -5348,58 +5194,9 @@ fn build_rpc_router_internal(
     data_dir_path: Option<PathBuf>,
 ) -> Router {
     let evm_chain_id = evm_chain_id_from_chain_id(&chain_id);
-    let legacy_admin_rpc_enabled = allow_legacy_admin_rpc(&chain_id, &network_id);
     let solana_tx_cache = Arc::new(RwLock::new(LruCache::new(
         NonZeroUsize::new(10_000).unwrap(),
     )));
-    // Filter empty admin token to None, then drop it entirely outside the
-    // exact local/dev allowlist. The request path also checks the network gate;
-    // this prevents later token hot-reload from accidentally arming public RPC.
-    let configured_admin_token = admin_token.filter(|t| !t.is_empty());
-    let admin_token = if legacy_admin_rpc_enabled {
-        configured_admin_token
-    } else {
-        if configured_admin_token.is_some() {
-            warn!(
-                "Ignoring LICHEN_ADMIN_TOKEN on non-local/dev network {} — legacy admin RPCs are disabled",
-                network_id
-            );
-        }
-        None
-    };
-    if legacy_admin_rpc_enabled && admin_token.is_some() {
-        info!("\u{1f512} Legacy dev-only admin RPC token configured");
-    } else {
-        info!(
-            "\u{26a0}\u{fe0f}  Legacy admin RPCs disabled unless running in local/dev mode with an admin token"
-        );
-    }
-    let admin_token = Arc::new(std::sync::RwLock::new(admin_token));
-
-    // Spawn background task to hot-reload admin token from LICHEN_ADMIN_TOKEN env var
-    if legacy_admin_rpc_enabled {
-        let token_ref = Arc::clone(&admin_token);
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
-            loop {
-                interval.tick().await;
-                if let Ok(new_val) = std::env::var("LICHEN_ADMIN_TOKEN") {
-                    let new_token = if new_val.is_empty() {
-                        None
-                    } else {
-                        Some(new_val)
-                    };
-                    if let Ok(mut guard) = token_ref.write() {
-                        if *guard != new_token {
-                            info!("Admin token rotated via LICHEN_ADMIN_TOKEN env var");
-                            *guard = new_token;
-                        }
-                    }
-                }
-            }
-        });
-    }
-
     let rpc_state = RpcState {
         state,
         block_apply_lock,
@@ -5414,7 +5211,6 @@ fn build_rpc_router_internal(
         version: env!("CARGO_PKG_VERSION").to_string(),
         evm_chain_id,
         solana_tx_cache,
-        admin_token,
         rate_limiter: Arc::new(RateLimiter::new(
             std::env::var("RPC_RATE_LIMIT")
                 .ok()
@@ -5496,7 +5292,8 @@ fn build_rpc_router_internal(
                 "programs.lichen.network".to_string(),
                 "developers.lichen.network".to_string(),
                 "monitoring.lichen.network".to_string(),
-                "testnet-rpc.lichen.network".to_string(),
+                "exchanges.lichen.network".to_string(),
+                "testnet-api.lichen.network".to_string(),
             ]
         });
 
@@ -5611,31 +5408,10 @@ async fn handle_rpc(
         }
     }
 
-    let mut req = match parse_rpc_request(body.as_ref(), request_id.clone()) {
+    let req = match parse_rpc_request(body.as_ref(), request_id.clone()) {
         Ok(req) => req,
         Err(response) => return response,
     };
-
-    let auth_header = headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok());
-
-    if is_legacy_admin_method(&req.method) {
-        if let Err(error) =
-            require_legacy_admin_rpc_local_origin(&req.method, connect_info.as_ref())
-        {
-            return jsonrpc_error_response(
-                StatusCode::FORBIDDEN,
-                request_id,
-                error.code,
-                error.message,
-            );
-        }
-        req.params = strip_admin_token_from_params(req.params);
-    }
-
-    // Capture auth header as owned String for admin handlers
-    let auth_header_owned: Option<String> = auth_header.map(String::from);
 
     if !method_allowed_when_rpc_unready(&req.method) {
         if let Some(error) = rpc_unready_error(&state) {
@@ -5669,15 +5445,19 @@ async fn handle_rpc(
         "getAccount" => handle_get_account(&state, req.params).await,
         "getAccountAtSlot" => handle_get_account_at_slot(&state, req.params).await,
         "getBlock" => handle_get_block(&state, req.params).await,
+        "getBlockHeight" => handle_solana_get_block_height(&state).await,
         "getBlockCommit" => handle_get_block_commit(&state, req.params).await,
         "getAccountProof" => handle_get_account_proof(&state, req.params).await,
         "getLatestBlock" => handle_get_latest_block(&state).await,
         "getRecentBlocks" => handle_get_recent_blocks(&state, req.params).await,
         "getSlot" => handle_get_slot(&state, req.params).await,
+        "getEpochInfo" => handle_get_epoch_info(&state).await,
+        "getSupply" => handle_get_supply(&state).await,
         "getTransaction" => handle_get_transaction(&state, req.params).await,
         "getTransactionProof" => handle_get_transaction_proof(&state, req.params).await,
-        "getTransactionsByAddress" | "getTransactionHistory" => {
-            handle_get_transactions_by_address(&state, req.params).await
+        "getTransactionsByAddress" => handle_get_transactions_by_address(&state, req.params).await,
+        "getSignaturesForAddress" => {
+            handle_solana_get_signatures_for_address(&state, req.params).await
         }
         "getAccountTxCount" => handle_get_account_tx_count(&state, req.params).await,
         "getRecentTransactions" => handle_get_recent_transactions(&state, req.params).await,
@@ -5699,19 +5479,13 @@ async fn handle_rpc(
         "getGenesisAccounts" => handle_get_genesis_accounts(&state).await,
         "getGovernedProposal" => handle_get_governed_proposal(&state, req.params).await,
         "getRecentBlockhash" => handle_get_recent_blockhash(&state).await,
-        "health" | "getHealth" => Ok(rpc_readiness_json(&state)),
+        "getHealth" => Ok(rpc_readiness_json(&state)),
 
         // Fee and rent config endpoints
         "getFeeConfig" => handle_get_fee_config(&state).await,
         "getMarketplaceConfig" => handle_get_marketplace_config(&state).await,
-        "setFeeConfig" => {
-            handle_set_fee_config(&state, req.params, auth_header_owned.as_deref()).await
-        }
         "estimateTransactionFee" => handle_estimate_transaction_fee(&state, req.params).await,
         "getRentParams" => handle_get_rent_params(&state).await,
-        "setRentParams" => {
-            handle_set_rent_params(&state, req.params, auth_header_owned.as_deref()).await
-        }
 
         // Network endpoints
         "getPeers" => handle_get_peers(&state).await,
@@ -5792,16 +5566,7 @@ async fn handle_rpc(
         "buildLiftRestrictionTx" => handle_build_lift_restriction_tx(&state, req.params).await,
         "getContractLogs" => handle_get_contract_logs(&state, req.params).await,
         "getContractAbi" => handle_get_contract_abi(&state, req.params).await,
-        "setContractAbi" => {
-            handle_set_contract_abi(&state, req.params, auth_header_owned.as_deref()).await
-        }
         "getAllContracts" => handle_get_all_contracts(&state, req.params).await,
-        "deployContract" => {
-            handle_deploy_contract(&state, req.params, auth_header_owned.as_deref()).await
-        }
-        "upgradeContract" => {
-            handle_upgrade_contract(&state, req.params, auth_header_owned.as_deref()).await
-        }
 
         // Program endpoints (draft)
         "getProgram" => handle_get_program(&state, req.params).await,
@@ -5857,9 +5622,7 @@ async fn handle_rpc(
         "getSymbolRegistryByProgram" => {
             handle_get_symbol_registry_by_program(&state, req.params).await
         }
-        "getAllSymbolRegistry" | "getAllSymbols" => {
-            handle_get_all_symbol_registry(&state, req.params).await
-        }
+        "getAllSymbolRegistry" => handle_get_all_symbol_registry(&state, req.params).await,
 
         // NFT endpoints (draft)
         "getCollection" => handle_get_collection(&state, req.params).await,
@@ -5923,7 +5686,6 @@ async fn handle_rpc(
         "getDexRouterStats" => handle_get_dex_router_stats(&state).await,
         "getDexAnalyticsStats" => handle_get_dex_analytics_stats(&state).await,
         "getDexGovernanceStats" => handle_get_dex_governance_stats(&state).await,
-        "getLichenSwapStats" => handle_get_lichenswap_stats(&state).await,
         "getThallLendStats" => handle_get_thalllend_stats(&state).await,
         "getSporePayStats" => handle_get_sporepay_stats(&state).await,
         "getSporePumpStats" => launchpad::handle_get_sporepump_stats(&state).await,
@@ -5934,7 +5696,7 @@ async fn handle_rpc(
         "getLichenAuctionStats" => handle_get_lichenauction_stats(&state).await,
         "getLichenPunksStats" => handle_get_lichenpunks_stats(&state).await,
         // Token contract stats
-        "getLusdStats" | "getMusdStats" => handle_get_musd_stats(&state).await,
+        "getLusdStats" => handle_get_musd_stats(&state).await,
         "getWethStats" => handle_get_weth_stats(&state).await,
         "getWsolStats" => handle_get_wsol_stats(&state).await,
         "getWbnbStats" => handle_get_wbnb_stats(&state).await,
@@ -5963,9 +5725,6 @@ async fn handle_rpc(
         "getShieldedPoolState" => {
             shielded::handle_get_shielded_pool_state(&state, req.params).await
         }
-        "getShieldedPoolStats" => {
-            shielded::handle_get_shielded_pool_stats(&state, req.params).await
-        }
         "getShieldedMerkleRoot" => {
             shielded::handle_get_shielded_merkle_root(&state, req.params).await
         }
@@ -5973,7 +5732,6 @@ async fn handle_rpc(
             shielded::handle_get_shielded_merkle_path(&state, req.params).await
         }
         "isNullifierSpent" => shielded::handle_is_nullifier_spent(&state, req.params).await,
-        "checkNullifier" => shielded::handle_is_nullifier_spent(&state, req.params).await,
         "getShieldedCommitments" => {
             shielded::handle_get_shielded_commitments(&state, req.params).await
         }
@@ -6368,59 +6126,39 @@ async fn handle_get_all_symbol_registry(
 
     let mut limit = 500u64;
     let mut cursor: Option<String> = None;
-
-    if let Some(val) = params.as_ref() {
-        if let Some(arr) = val.as_array() {
-            if let Some(first) = arr.first() {
-                if let Some(v) = first.as_u64() {
-                    limit = v;
-                } else if let Some(s) = first.as_str() {
-                    cursor = Some(s.to_string());
-                } else if let Some(obj) = first.as_object() {
-                    if let Some(v) = obj.get("limit").and_then(|v| v.as_u64()) {
-                        limit = v;
-                    }
-                    cursor = obj
-                        .get("cursor")
-                        .and_then(|v| v.as_str())
-                        .or_else(|| obj.get("after").and_then(|v| v.as_str()))
-                        .or_else(|| obj.get("after_symbol").and_then(|v| v.as_str()))
-                        .map(|s| s.to_string());
-                }
+    if let Some(value) = params.as_ref() {
+        let array = value.as_array().ok_or_else(|| RpcError {
+            code: -32602,
+            message: "Invalid params: expected [{limit?, cursor?}]".to_string(),
+        })?;
+        if array.len() > 1 {
+            return Err(RpcError {
+                code: -32602,
+                message: "Invalid params: expected at most one options object".to_string(),
+            });
+        }
+        if let Some(value) = array.first() {
+            let object = value.as_object().ok_or_else(|| RpcError {
+                code: -32602,
+                message: "Invalid params: registry options must be an object".to_string(),
+            })?;
+            if let Some(value) = object.get("limit") {
+                limit = value.as_u64().ok_or_else(|| RpcError {
+                    code: -32602,
+                    message: "Invalid params: limit must be an unsigned integer".to_string(),
+                })?;
             }
-            if let Some(second) = arr.get(1) {
-                if let Some(obj) = second.as_object() {
-                    if let Some(v) = obj.get("limit").and_then(|v| v.as_u64()) {
-                        limit = v;
-                    }
-                    if cursor.is_none() {
-                        cursor = obj
-                            .get("cursor")
-                            .and_then(|v| v.as_str())
-                            .or_else(|| obj.get("after").and_then(|v| v.as_str()))
-                            .or_else(|| obj.get("after_symbol").and_then(|v| v.as_str()))
-                            .map(|s| s.to_string());
-                    }
-                } else if cursor.is_none() {
-                    if let Some(s) = second.as_str() {
-                        cursor = Some(s.to_string());
-                    }
-                }
+            if let Some(value) = object.get("cursor") {
+                cursor = Some(
+                    value
+                        .as_str()
+                        .ok_or_else(|| RpcError {
+                            code: -32602,
+                            message: "Invalid params: cursor must be a string".to_string(),
+                        })?
+                        .to_string(),
+                );
             }
-        } else if let Some(obj) = val.as_object() {
-            if let Some(v) = obj.get("limit").and_then(|v| v.as_u64()) {
-                limit = v;
-            }
-            cursor = obj
-                .get("cursor")
-                .and_then(|v| v.as_str())
-                .or_else(|| obj.get("after").and_then(|v| v.as_str()))
-                .or_else(|| obj.get("after_symbol").and_then(|v| v.as_str()))
-                .map(|s| s.to_string());
-        } else if let Some(v) = val.as_u64() {
-            limit = v;
-        } else if let Some(s) = val.as_str() {
-            cursor = Some(s.to_string());
         }
     }
 
@@ -6696,18 +6434,125 @@ async fn handle_get_account_at_slot(
     }
 }
 
-fn block_summary_json(block: &lichen_core::Block) -> serde_json::Value {
+fn block_summary_json(
+    block: &lichen_core::Block,
+    commit: &RpcCommitCertificate,
+) -> serde_json::Value {
     let block_hash = block.hash();
     serde_json::json!({
         "slot": block.header.slot,
         "hash": block_hash.to_hex(),
-        "commit_round": block.commit_round,
+        "commit_round": commit.round,
+        "commit_source": commit.source,
         "parent_hash": block.header.parent_hash.to_hex(),
         "state_root": block.header.state_root.to_hex(),
         "tx_root": block.header.tx_root.to_hex(),
         "timestamp": block.header.timestamp,
         "validator": Pubkey(block.header.validator).to_base58(),
-        "transaction_count": block.transactions.len(),
+        "transaction_count": block.transactions.iter().filter(|tx| !tx.is_consensus()).count(),
+    })
+}
+
+struct RpcCommitCertificate {
+    round: u32,
+    signatures: Vec<lichen_core::CommitSignature>,
+    version: Option<u8>,
+    validators_hash: Option<Hash>,
+    validator_powers: Vec<lichen_core::CanonicalValidatorPower>,
+    parent_post_state_root: Option<Hash>,
+    source: &'static str,
+}
+
+fn rpc_commit_certificate_for_block(
+    state: &StateStore,
+    block: &lichen_core::Block,
+) -> Result<RpcCommitCertificate, RpcError> {
+    let child = state
+        .get_block_by_slot(block.header.slot.saturating_add(1))
+        .map_err(|err| RpcError {
+            code: -32000,
+            message: format!("Database error: {}", err),
+        })?;
+    if let Some(ref child) = child {
+        if let Some(transaction) = child
+            .transactions
+            .iter()
+            .find(|transaction| transaction.is_consensus())
+        {
+            let certificate = CanonicalCommitCertificate::from_transaction(transaction)
+                .map_err(|err| RpcError {
+                    code: -32000,
+                    message: format!("Invalid canonical commit envelope: {}", err),
+                })?
+                .ok_or_else(|| RpcError {
+                    code: -32000,
+                    message: "Canonical commit envelope is missing its certificate".to_string(),
+                })?;
+            certificate
+                .verify_child_metadata(&child.tx_fees_paid, &child.oracle_prices)
+                .map_err(|err| RpcError {
+                    code: -32000,
+                    message: format!("Invalid canonical child metadata commitment: {}", err),
+                })?;
+            if certificate.height != block.header.slot
+                || certificate.block_hash != block.hash()
+                || certificate.validators_hash != block.header.validators_hash
+            {
+                return Err(RpcError {
+                    code: -32000,
+                    message: format!(
+                        "Canonical commit envelope in child {} does not match block {}",
+                        child.header.slot, block.header.slot
+                    ),
+                });
+            }
+            let chain_id = state
+                .get_metadata(lichen_core::CHAIN_ID_METADATA_KEY)
+                .map_err(|err| RpcError {
+                    code: -32000,
+                    message: format!("Failed to load chain ID for commit verification: {}", err),
+                })?
+                .map(String::from_utf8)
+                .transpose()
+                .map_err(|err| RpcError {
+                    code: -32000,
+                    message: format!("Stored chain ID is not valid UTF-8: {}", err),
+                })?
+                .unwrap_or_default();
+            certificate
+                .verify_parent(
+                    block,
+                    &chain_id,
+                    lichen_core::consensus::MIN_VALIDATOR_STAKE,
+                )
+                .map_err(|err| RpcError {
+                    code: -32000,
+                    message: format!("Invalid canonical commit certificate: {}", err),
+                })?;
+            return Ok(RpcCommitCertificate {
+                round: certificate.round,
+                signatures: certificate.signatures,
+                version: Some(certificate.version),
+                validators_hash: Some(certificate.validators_hash),
+                validator_powers: certificate.validator_powers,
+                parent_post_state_root: Some(certificate.parent_post_state_root),
+                source: "canonical_child",
+            });
+        }
+    }
+
+    Ok(RpcCommitCertificate {
+        round: block.commit_round,
+        signatures: block.commit_signatures.clone(),
+        version: None,
+        validators_hash: None,
+        validator_powers: Vec::new(),
+        parent_post_state_root: None,
+        source: if child.is_some() {
+            "legacy_local"
+        } else {
+            "local_pending_child"
+        },
     })
 }
 
@@ -6725,6 +6570,7 @@ async fn handle_get_block(
 
     match block {
         Some(block) => {
+            let commit = rpc_commit_certificate_for_block(&state.state, &block)?;
             let fee_config = state
                 .state
                 .get_fee_config()
@@ -6733,14 +6579,15 @@ async fn handle_get_block(
             let transactions: Vec<serde_json::Value> = block
                 .transactions
                 .iter()
+                .filter(|tx| !tx.is_consensus())
                 .map(|tx| {
-                    let cu = state.state.get_tx_meta_cu(&tx.signature()).ok().flatten();
+                    let tx_meta = state.state.get_tx_meta_full(&tx.signature()).ok().flatten();
                     tx_to_rpc_json(
                         tx,
                         block.header.slot,
                         block.header.timestamp,
                         &fee_config,
-                        cu,
+                        tx_meta.as_ref(),
                         &state.state,
                     )
                 })
@@ -6750,13 +6597,17 @@ async fn handle_get_block(
             // Actual rewards are distributed at epoch boundaries to ALL stakers
             // proportionally, NOT per-block to the producer. The per-slot rate
             // is included as a projection for APY calculations.
-            let has_user_txs = block.transactions.iter().any(|tx| {
-                tx.message
-                    .instructions
-                    .first()
-                    .map(|ix| !matches!(ix.data.first(), Some(2) | Some(3)))
-                    .unwrap_or(true)
-            });
+            let has_user_txs = block
+                .transactions
+                .iter()
+                .filter(|tx| !tx.is_consensus())
+                .any(|tx| {
+                    tx.message
+                        .instructions
+                        .first()
+                        .map(|ix| !matches!(ix.data.first(), Some(2) | Some(3)))
+                        .unwrap_or(true)
+                });
             let projected_per_slot =
                 if block.header.slot == 0 || block.header.validator == [0u8; 32] {
                     0
@@ -6772,13 +6623,13 @@ async fn handle_get_block(
             Ok(serde_json::json!({
                 "slot": block.header.slot,
                 "hash": block_hash.to_hex(),
-                "commit_round": block.commit_round,
+                "commit_round": commit.round,
                 "parent_hash": block.header.parent_hash.to_hex(),
                 "state_root": block.header.state_root.to_hex(),
                 "tx_root": block.header.tx_root.to_hex(),
                 "timestamp": block.header.timestamp,
                 "validator": Pubkey(block.header.validator).to_base58(),
-                "transaction_count": block.transactions.len(),
+                "transaction_count": transactions.len(),
                 "transactions": transactions,
                 "block_reward": {
                     "amount": 0,
@@ -6790,13 +6641,15 @@ async fn handle_get_block(
                     "type": if has_user_txs { "transaction" } else { "liveness" },
                     "recipient": Pubkey(block.header.validator).to_base58(),
                 },
-                "commit_signatures": block.commit_signatures.iter().map(|cs| {
+                "commit_signatures": commit.signatures.iter().map(|cs| {
                     serde_json::json!({
                         "validator": Pubkey(cs.validator).to_base58(),
                         "signature": pq_signature_json(&cs.signature),
+                        "timestamp": cs.timestamp,
                     })
                 }).collect::<Vec<_>>(),
-                "commit_validator_count": block.commit_signatures.len(),
+                "commit_validator_count": commit.signatures.len(),
+                "commit_source": commit.source,
             }))
         }
         None => Err(RpcError {
@@ -6821,8 +6674,9 @@ async fn handle_get_block_commit(
     match block {
         Some(block) => {
             let block_hash = block.hash();
-            let sigs: Vec<serde_json::Value> = block
-                .commit_signatures
+            let commit = rpc_commit_certificate_for_block(&state.state, &block)?;
+            let sigs: Vec<serde_json::Value> = commit
+                .signatures
                 .iter()
                 .map(|cs| {
                     serde_json::json!({
@@ -6836,9 +6690,19 @@ async fn handle_get_block_commit(
             Ok(serde_json::json!({
                 "slot": block.header.slot,
                 "block_hash": block_hash.to_hex(),
-                "commit_round": block.commit_round,
+                "commit_round": commit.round,
                 "commit_signatures": sigs,
                 "commit_validator_count": sigs.len(),
+                "commit_source": commit.source,
+                "certificate_version": commit.version,
+                "validators_hash": commit.validators_hash.map(|hash| hash.to_hex()),
+                "parent_post_state_root": commit.parent_post_state_root.map(|hash| hash.to_hex()),
+                "validator_powers": commit.validator_powers.iter().map(|power| {
+                    serde_json::json!({
+                        "validator": power.validator.to_base58(),
+                        "power": power.power,
+                    })
+                }).collect::<Vec<_>>(),
                 "bft_timestamp": block.header.timestamp,
             }))
         }
@@ -7013,6 +6877,59 @@ async fn handle_get_slot(
     Ok(serde_json::json!(slot))
 }
 
+async fn handle_get_epoch_info(state: &RpcState) -> Result<serde_json::Value, RpcError> {
+    use lichen_core::consensus::{epoch_start_slot, slot_to_epoch, SLOTS_PER_EPOCH};
+
+    let slot = state.state.get_last_slot().map_err(|e| RpcError {
+        code: -32000,
+        message: format!("Database error: {e}"),
+    })?;
+    let epoch = slot_to_epoch(slot);
+    let epoch_start = epoch_start_slot(epoch);
+    let slot_index = slot.saturating_sub(epoch_start);
+
+    Ok(serde_json::json!({
+        "epoch": epoch,
+        "absolute_slot": slot,
+        "slot_index": slot_index,
+        "slots_in_epoch": SLOTS_PER_EPOCH,
+        "epoch_start_slot": epoch_start,
+        "epoch_end_slot": epoch_start.saturating_add(SLOTS_PER_EPOCH).saturating_sub(1),
+        "absoluteSlot": slot,
+        "slotIndex": slot_index,
+        "slotsInEpoch": SLOTS_PER_EPOCH,
+        "blockHeight": slot,
+    }))
+}
+
+async fn handle_get_supply(state: &RpcState) -> Result<serde_json::Value, RpcError> {
+    let metrics = compute_metrics(state).await?;
+    let total = metrics
+        .get("total_supply")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    let circulating = metrics
+        .get("circulating_supply")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    let non_circulating = total.saturating_sub(circulating);
+
+    Ok(serde_json::json!({
+        "total": total,
+        "circulating": circulating,
+        "non_circulating": non_circulating,
+        "nonCirculating": non_circulating,
+        "decimals": 9,
+        "unit": "spores",
+        "value": {
+            "total": total,
+            "circulating": circulating,
+            "nonCirculating": non_circulating,
+            "decimals": 9,
+        },
+    }))
+}
+
 /// Get recent blockhash for transaction building
 async fn handle_get_recent_blockhash(state: &RpcState) -> Result<serde_json::Value, RpcError> {
     let slot = state.state.get_last_slot().map_err(|e| RpcError {
@@ -7104,134 +7021,6 @@ async fn handle_get_marketplace_config(state: &RpcState) -> Result<serde_json::V
     }))
 }
 
-/// AUDIT-FIX 3.24: fee_burn_percent = 0 is valid per governance design.
-/// The sum constraint (burn + producer + voters + treasury == 100) ensures
-/// fees still flow somewhere. A minimum burn floor is a governance decision,
-/// not a technical invariant.
-async fn handle_set_fee_config(
-    state: &RpcState,
-    params: Option<serde_json::Value>,
-    auth_header: Option<&str>,
-) -> Result<serde_json::Value, RpcError> {
-    require_legacy_admin_rpc_enabled(state, "setFeeConfig")?;
-    // L3-01: Block in multi-validator mode — direct state write bypasses consensus
-    require_single_validator(state, "setFeeConfig").await?;
-    verify_admin_auth(state, auth_header)?;
-
-    let params = params.ok_or_else(|| RpcError {
-        code: -32602,
-        message: "Missing params".to_string(),
-    })?;
-
-    let obj = params.as_object().ok_or_else(|| RpcError {
-        code: -32602,
-        message: "Invalid params: expected object".to_string(),
-    })?;
-
-    let mut config = state.state.get_fee_config().map_err(|e| RpcError {
-        code: -32000,
-        message: format!("Database error: {}", e),
-    })?;
-
-    if let Some(value) = obj.get("base_fee_spores").and_then(|v| v.as_u64()) {
-        config.base_fee = value;
-    }
-    if let Some(value) = obj
-        .get("contract_deploy_fee_spores")
-        .and_then(|v| v.as_u64())
-    {
-        config.contract_deploy_fee = value;
-    }
-    if let Some(value) = obj
-        .get("contract_upgrade_fee_spores")
-        .and_then(|v| v.as_u64())
-    {
-        config.contract_upgrade_fee = value;
-    }
-    if let Some(value) = obj.get("nft_mint_fee_spores").and_then(|v| v.as_u64()) {
-        config.nft_mint_fee = value;
-    }
-    if let Some(value) = obj
-        .get("nft_collection_fee_spores")
-        .and_then(|v| v.as_u64())
-    {
-        config.nft_collection_fee = value;
-    }
-    if let Some(value) = obj.get("fee_burn_percent").and_then(|v| v.as_u64()) {
-        if value <= 100 {
-            config.fee_burn_percent = value;
-        }
-    }
-    if let Some(value) = obj.get("fee_producer_percent").and_then(|v| v.as_u64()) {
-        if value <= 100 {
-            config.fee_producer_percent = value;
-        }
-    }
-    if let Some(value) = obj.get("fee_voters_percent").and_then(|v| v.as_u64()) {
-        if value <= 100 {
-            config.fee_voters_percent = value;
-        }
-    }
-    if let Some(value) = obj.get("fee_treasury_percent").and_then(|v| v.as_u64()) {
-        if value <= 100 {
-            config.fee_treasury_percent = value;
-        }
-    }
-    if let Some(value) = obj.get("fee_community_percent").and_then(|v| v.as_u64()) {
-        if value <= 100 {
-            config.fee_community_percent = value;
-        }
-    }
-
-    // Validate that fee distribution percentages sum to 100
-    let pct_sum = config.fee_burn_percent
-        + config.fee_producer_percent
-        + config.fee_voters_percent
-        + config.fee_treasury_percent
-        + config.fee_community_percent;
-    if pct_sum != 100 {
-        return Err(RpcError {
-            code: -32602,
-            message: format!(
-                "Fee percentages must sum to 100, got {} (burn={}, producer={}, voters={}, treasury={}, community={})",
-                pct_sum, config.fee_burn_percent, config.fee_producer_percent,
-                config.fee_voters_percent, config.fee_treasury_percent,
-                config.fee_community_percent,
-            ),
-        });
-    }
-
-    state
-        .state
-        .set_fee_config_full(&config)
-        .map_err(|e| RpcError {
-            code: -32000,
-            message: format!("Database error: {}", e),
-        })?;
-
-    log_privileged_rpc_mutation(
-        "setFeeConfig",
-        "legacy_admin",
-        "admin_token",
-        "fee_config",
-        None,
-        serde_json::json!({
-            "base_fee_spores": config.base_fee,
-            "contract_deploy_fee_spores": config.contract_deploy_fee,
-            "contract_upgrade_fee_spores": config.contract_upgrade_fee,
-            "nft_mint_fee_spores": config.nft_mint_fee,
-            "nft_collection_fee_spores": config.nft_collection_fee,
-            "fee_burn_percent": config.fee_burn_percent,
-            "fee_producer_percent": config.fee_producer_percent,
-            "fee_voters_percent": config.fee_voters_percent,
-            "fee_treasury_percent": config.fee_treasury_percent,
-            "fee_community_percent": config.fee_community_percent,
-        }),
-    );
-
-    Ok(serde_json::json!({"status": "ok"}))
-}
-
 async fn handle_get_rent_params(state: &RpcState) -> Result<serde_json::Value, RpcError> {
     let (rate, free_kb) = state.state.get_rent_params().map_err(|e| RpcError {
         code: -32000,
@@ -7242,64 +7031,6 @@ async fn handle_get_rent_params(state: &RpcState) -> Result<serde_json::Value, R
         "rent_rate_spores_per_kb_month": rate,
         "rent_free_kb": free_kb,
     }))
-}
-
-async fn handle_set_rent_params(
-    state: &RpcState,
-    params: Option<serde_json::Value>,
-    auth_header: Option<&str>,
-) -> Result<serde_json::Value, RpcError> {
-    require_legacy_admin_rpc_enabled(state, "setRentParams")?;
-    // L3-01: Block in multi-validator mode — direct state write bypasses consensus
-    require_single_validator(state, "setRentParams").await?;
-    verify_admin_auth(state, auth_header)?;
-
-    let params = params.ok_or_else(|| RpcError {
-        code: -32602,
-        message: "Missing params".to_string(),
-    })?;
-
-    let obj = params.as_object().ok_or_else(|| RpcError {
-        code: -32602,
-        message: "Invalid params: expected object".to_string(),
-    })?;
-
-    let (mut rate, mut free_kb) = state.state.get_rent_params().map_err(|e| RpcError {
-        code: -32000,
-        message: format!("Database error: {}", e),
-    })?;
-
-    if let Some(value) = obj
-        .get("rent_rate_spores_per_kb_month")
-        .and_then(|v| v.as_u64())
-    {
-        rate = value;
-    }
-    if let Some(value) = obj.get("rent_free_kb").and_then(|v| v.as_u64()) {
-        free_kb = value;
-    }
-
-    state
-        .state
-        .set_rent_params(rate, free_kb)
-        .map_err(|e| RpcError {
-            code: -32000,
-            message: format!("Database error: {}", e),
-        })?;
-
-    log_privileged_rpc_mutation(
-        "setRentParams",
-        "legacy_admin",
-        "admin_token",
-        "rent_params",
-        None,
-        serde_json::json!({
-            "rent_rate_spores_per_kb_month": rate,
-            "rent_free_kb": free_kb,
-        }),
-    );
-
-    Ok(serde_json::json!({"status": "ok"}))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -7450,9 +7181,14 @@ async fn handle_get_transaction(
     match tx {
         Some(tx) => {
             let tx_meta = state.state.get_tx_meta_full(&tx.signature()).ok().flatten();
-            let stored_cu = tx_meta.as_ref().map(|m| m.compute_units_used);
-            let mut json =
-                tx_to_rpc_json(&tx, slot, timestamp, &fee_config, stored_cu, &state.state);
+            let mut json = tx_to_rpc_json(
+                &tx,
+                slot,
+                timestamp,
+                &fee_config,
+                tx_meta.as_ref(),
+                &state.state,
+            );
             // Add commitment status to transaction response
             let (status, confirmations) = if slot_indexed {
                 tx_commitment_status(state, slot)
@@ -7487,9 +7223,9 @@ async fn handle_get_transaction(
             if let Ok(Some(block)) = state.state.get_block_by_slot(slot) {
                 for block_tx in &block.transactions {
                     if block_tx.signature() == sig_hash {
-                        let cu = state
+                        let tx_meta = state
                             .state
-                            .get_tx_meta_cu(&block_tx.signature())
+                            .get_tx_meta_full(&block_tx.signature())
                             .ok()
                             .flatten();
                         return Ok(tx_to_rpc_json(
@@ -7497,7 +7233,7 @@ async fn handle_get_transaction(
                             slot,
                             timestamp,
                             &fee_config,
-                            cu,
+                            tx_meta.as_ref(),
                             &state.state,
                         ));
                     }
@@ -7604,9 +7340,121 @@ async fn handle_get_transaction_proof(
     }))
 }
 
-/// Get transactions involving a specific address
+fn resolve_transaction_list_cursor(
+    state: &StateStore,
+    opts: Option<&serde_json::Value>,
+) -> Result<Option<(u64, u64)>, RpcError> {
+    let before = opts.and_then(|value| value.get("before"));
+    let before_slot = opts
+        .and_then(|value| value.get("before_slot"))
+        .and_then(|value| value.as_u64());
+
+    if before.is_some() && before_slot.is_some() {
+        return Err(RpcError {
+            code: -32602,
+            message: "Invalid pagination cursor: use either before or before_slot, not both"
+                .to_string(),
+        });
+    }
+
+    let Some(before) = before else {
+        return Ok(before_slot.map(|slot| (slot, 0)));
+    };
+    let signature = before.as_str().ok_or_else(|| RpcError {
+        code: -32602,
+        message: "Invalid pagination cursor: before must be a transaction signature".to_string(),
+    })?;
+    let signature = Hash::from_hex(signature).map_err(|error| RpcError {
+        code: -32602,
+        message: format!("Invalid pagination cursor signature: {error}"),
+    })?;
+    let slot = state
+        .get_tx_slot(&signature)
+        .map_err(|error| RpcError {
+            code: -32000,
+            message: format!("Database error resolving pagination cursor: {error}"),
+        })?
+        .ok_or_else(|| RpcError {
+            code: -32001,
+            message: "Pagination cursor transaction not found".to_string(),
+        })?;
+    let block = state
+        .get_block_by_slot(slot)
+        .map_err(|error| RpcError {
+            code: -32000,
+            message: format!("Database error resolving pagination cursor block: {error}"),
+        })?
+        .ok_or_else(|| RpcError {
+            code: -32001,
+            message: "Pagination cursor block not found".to_string(),
+        })?;
+    let transaction_index = block
+        .transactions
+        .iter()
+        .position(|transaction| transaction.signature() == signature)
+        .ok_or_else(|| RpcError {
+            code: -32001,
+            message: "Pagination cursor transaction is absent from its indexed block".to_string(),
+        })?;
+
+    Ok(Some((slot, transaction_index as u64)))
+}
+
+fn encode_indexed_list_cursor(slot: u64, sequence: u64) -> String {
+    format!("v1:{slot:016x}:{sequence:016x}")
+}
+
+fn resolve_indexed_list_cursor(
+    before_slot: Option<u64>,
+    cursor: Option<&serde_json::Value>,
+) -> Result<Option<(u64, u64)>, RpcError> {
+    let cursor = cursor.filter(|value| !value.is_null());
+    if before_slot.is_some() && cursor.is_some() {
+        return Err(RpcError {
+            code: -32602,
+            message: "Invalid pagination cursor: use either before_cursor or before_slot, not both"
+                .to_string(),
+        });
+    }
+    let Some(cursor) = cursor else {
+        return Ok(before_slot.map(|slot| (slot, 0)));
+    };
+    let cursor = cursor.as_str().ok_or_else(|| RpcError {
+        code: -32602,
+        message: "Invalid pagination cursor: expected an opaque cursor string".to_string(),
+    })?;
+    let mut components = cursor.split(':');
+    let version = components.next();
+    let slot = components.next();
+    let sequence = components.next();
+    if version != Some("v1") || components.next().is_some() {
+        return Err(RpcError {
+            code: -32602,
+            message: "Invalid pagination cursor format".to_string(),
+        });
+    }
+    let parse_component = |component: Option<&str>| {
+        let component = component.ok_or_else(|| RpcError {
+            code: -32602,
+            message: "Invalid pagination cursor format".to_string(),
+        })?;
+        if component.len() != 16 || !component.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(RpcError {
+                code: -32602,
+                message: "Invalid pagination cursor format".to_string(),
+            });
+        }
+        u64::from_str_radix(component, 16).map_err(|_| RpcError {
+            code: -32602,
+            message: "Invalid pagination cursor format".to_string(),
+        })
+    };
+
+    Ok(Some((parse_component(slot)?, parse_component(sequence)?)))
+}
+
 /// Get transactions involving a specific address (cursor-paginated, newest first)
-/// params: [address, { limit?, before_slot? }]
+/// params: [address, { limit?, before?, before_slot? }]
 async fn handle_get_transactions_by_address(
     state: &RpcState,
     params: Option<serde_json::Value>,
@@ -7635,11 +7483,25 @@ async fn handle_get_transactions_by_address(
         .and_then(|v| v.as_u64())
         .unwrap_or(50)
         .min(500) as usize;
+    if requested_limit == 0 {
+        return Err(RpcError {
+            code: -32602,
+            message: "Invalid limit: expected an integer greater than zero".to_string(),
+        });
+    }
     let limit = requested_limit.min(TX_LIST_MAX_LIMIT);
-
-    let before_slot = opts
-        .and_then(|v| v.get("before_slot"))
-        .and_then(|v| v.as_u64());
+    let before_cursor = resolve_transaction_list_cursor(&state.state, opts)?;
+    let account_before_cursor = before_cursor
+        .map(|(slot, transaction_index)| {
+            u32::try_from(transaction_index)
+                .map(|transaction_index| (slot, transaction_index))
+                .map_err(|_| RpcError {
+                    code: -32001,
+                    message: "Pagination cursor transaction index exceeds protocol limits"
+                        .to_string(),
+                })
+        })
+        .transpose()?;
 
     let target = Pubkey::from_base58(address_str).map_err(|e| RpcError {
         code: -32602,
@@ -7656,7 +7518,7 @@ async fn handle_get_transactions_by_address(
     let fetch_limit = limit.saturating_add(1);
     let indexed = state
         .state
-        .get_account_tx_signatures_paginated(&target, fetch_limit, before_slot)
+        .get_account_tx_signatures_paginated_exact(&target, fetch_limit, account_before_cursor)
         .map_err(|e| RpcError {
             code: -32000,
             message: format!("Database error: {}", e),
@@ -7670,9 +7532,8 @@ async fn handle_get_transactions_by_address(
 
     let mut results: Vec<serde_json::Value> = Vec::new();
     let mut timestamps: HashMap<u64, u64> = HashMap::new();
-    let mut last_slot: Option<u64> = None;
 
-    for (hash, slot) in page_items {
+    for (hash, slot, transaction_index) in page_items {
         let tx = match state.state.get_transaction(hash) {
             Ok(Some(tx)) => tx,
             _ => {
@@ -7706,12 +7567,15 @@ async fn handle_get_transactions_by_address(
         let to = to.unwrap_or_default();
         let amount = amount.unwrap_or(0);
 
-        let fee = TxProcessor::compute_transaction_fee(&tx, &fee_config);
+        let computed_fee = TxProcessor::compute_transaction_fee(&tx, &fee_config);
+        let (fee, error, _logs, success) =
+            transaction_receipt_fields(&state.state, &tx, computed_fee);
 
         let mut entry = serde_json::json!({
             "hash": tx.signature().to_hex(),
             "signature": tx.signature().to_hex(),
             "slot": slot,
+            "transaction_index": transaction_index,
             "timestamp": timestamp,
             "from": from,
             "to": to,
@@ -7721,7 +7585,9 @@ async fn handle_get_transactions_by_address(
             "fee": fee,
             "fee_spores": fee,
             "fee_licn": fee as f64 / 1_000_000_000.0,
-            "success": true,
+            "status": if success { "Success" } else { "Failed" },
+            "success": success,
+            "error": error,
         });
 
         // Enrich contract-call transactions with token metadata
@@ -7748,20 +7614,23 @@ async fn handle_get_transactions_by_address(
         enrich_governed_transfer_entry(&state.state, hash, tx_type, first_ix, amount, &mut entry);
 
         results.push(entry);
-
-        last_slot = Some(*slot);
     }
+
+    let next_cursor = page_items
+        .last()
+        .map(|(hash, slot, _)| (hash.to_hex(), *slot));
 
     // Return with pagination cursor
     Ok(serde_json::json!({
         "transactions": results,
         "has_more": has_more,
-        "next_before_slot": if has_more { last_slot } else { None::<u64> },
+        "next_before": if has_more { next_cursor.as_ref().map(|(hash, _)| hash) } else { None },
+        "next_before_slot": if has_more { next_cursor.as_ref().map(|(_, slot)| slot) } else { None },
     }))
 }
 
 /// Get recent transactions across all addresses (cursor-paginated via CF_TX_BY_SLOT)
-/// params: [{ limit?, before_slot? }]  or  []
+/// params: [{ limit?, before?, before_slot? }]  or  []
 async fn handle_get_recent_transactions(
     state: &RpcState,
     params: Option<serde_json::Value>,
@@ -7776,22 +7645,26 @@ async fn handle_get_recent_transactions(
         .and_then(|v| v.as_u64())
         .unwrap_or(50)
         .min(500) as usize;
+    if requested_limit == 0 {
+        return Err(RpcError {
+            code: -32602,
+            message: "Invalid limit: expected an integer greater than zero".to_string(),
+        });
+    }
     let limit = requested_limit.min(TX_LIST_MAX_LIMIT);
-
-    let before_slot = opts
-        .and_then(|v| v.get("before_slot"))
-        .and_then(|v| v.as_u64());
+    let before_cursor = resolve_transaction_list_cursor(&state.state, opts)?;
 
     let fee_config = state
         .state
         .get_fee_config()
         .unwrap_or_else(|_| lichen_core::FeeConfig::default_from_constants());
 
-    // Use tx-by-slot reverse index (CF_TX_BY_SLOT), over-fetch by 1 for has_more.
+    // Keep canonical consensus envelopes in the archive, but do not expose them
+    // as user transactions or let them consume pagination slots.
     let fetch_limit = limit.saturating_add(1);
     let indexed = state
         .state
-        .get_recent_txs(fetch_limit, before_slot)
+        .get_recent_user_txs_paginated_exact(fetch_limit, before_cursor)
         .map_err(|e| RpcError {
             code: -32000,
             message: format!("Database error: {}", e),
@@ -7805,9 +7678,8 @@ async fn handle_get_recent_transactions(
 
     let mut results: Vec<serde_json::Value> = Vec::new();
     let mut timestamps: HashMap<u64, u64> = HashMap::new();
-    let mut last_slot: Option<u64> = None;
 
-    for (hash, slot) in page_items {
+    for (hash, slot, transaction_index) in page_items {
         let tx = match state.state.get_transaction(hash) {
             Ok(Some(tx)) => tx,
             _ => continue,
@@ -7832,12 +7704,15 @@ async fn handle_get_recent_transactions(
         let to = to.unwrap_or_default();
         let amount = amount.unwrap_or(0);
 
-        let fee = TxProcessor::compute_transaction_fee(&tx, &fee_config);
+        let computed_fee = TxProcessor::compute_transaction_fee(&tx, &fee_config);
+        let (fee, error, _logs, success) =
+            transaction_receipt_fields(&state.state, &tx, computed_fee);
 
         let mut entry = serde_json::json!({
             "hash": tx.signature().to_hex(),
             "signature": tx.signature().to_hex(),
             "slot": slot,
+            "transaction_index": transaction_index,
             "timestamp": timestamp,
             "from": from,
             "to": to,
@@ -7847,7 +7722,9 @@ async fn handle_get_recent_transactions(
             "fee": fee,
             "fee_spores": fee,
             "fee_licn": fee as f64 / 1_000_000_000.0,
-            "success": true,
+            "status": if success { "Success" } else { "Failed" },
+            "success": success,
+            "error": error,
         });
 
         // Enrich contract-call transactions with token metadata
@@ -7874,14 +7751,17 @@ async fn handle_get_recent_transactions(
         enrich_governed_transfer_entry(&state.state, hash, tx_type, first_ix, amount, &mut entry);
 
         results.push(entry);
-
-        last_slot = Some(*slot);
     }
+
+    let next_cursor = page_items
+        .last()
+        .map(|(hash, slot, _)| (hash.to_hex(), *slot));
 
     Ok(serde_json::json!({
         "transactions": results,
         "has_more": has_more,
-        "next_before_slot": if has_more { last_slot } else { None::<u64> },
+        "next_before": if has_more { next_cursor.as_ref().map(|(hash, _)| hash) } else { None },
+        "next_before_slot": if has_more { next_cursor.as_ref().map(|(_, slot)| slot) } else { None },
     }))
 }
 
@@ -7899,11 +7779,14 @@ async fn handle_get_recent_shielded_transactions(
         .and_then(|v| v.as_u64())
         .unwrap_or(50)
         .min(500) as usize;
+    if requested_limit == 0 {
+        return Err(RpcError {
+            code: -32602,
+            message: "Invalid limit: expected an integer greater than zero".to_string(),
+        });
+    }
     let limit = requested_limit.min(TX_LIST_MAX_LIMIT);
-
-    let before_slot = opts
-        .and_then(|v| v.get("before_slot"))
-        .and_then(|v| v.as_u64());
+    let before_cursor = resolve_transaction_list_cursor(&state.state, opts)?;
 
     let fee_config = state
         .state
@@ -7913,7 +7796,7 @@ async fn handle_get_recent_shielded_transactions(
     let fetch_limit = limit.saturating_add(1);
     let indexed = state
         .state
-        .get_recent_shielded_txs(fetch_limit, before_slot)
+        .get_recent_shielded_txs_paginated_exact(fetch_limit, before_cursor)
         .map_err(|e| RpcError {
             code: -32000,
             message: format!("Database error: {}", e),
@@ -7927,9 +7810,8 @@ async fn handle_get_recent_shielded_transactions(
 
     let mut results: Vec<serde_json::Value> = Vec::new();
     let mut timestamps: HashMap<u64, u64> = HashMap::new();
-    let mut last_slot: Option<u64> = None;
 
-    for (hash, slot) in page_items {
+    for (hash, slot, transaction_index) in page_items {
         let tx = match state.state.get_transaction(hash) {
             Ok(Some(tx)) => tx,
             _ => continue,
@@ -7949,25 +7831,38 @@ async fn handle_get_recent_shielded_transactions(
         };
 
         let tx_meta = state.state.get_tx_meta_full(&tx.signature()).ok().flatten();
-        let stored_cu = tx_meta.as_ref().map(|m| m.compute_units_used);
-        let mut entry = tx_to_rpc_json(&tx, *slot, timestamp, &fee_config, stored_cu, &state.state);
+        let mut entry = tx_to_rpc_json(
+            &tx,
+            *slot,
+            timestamp,
+            &fee_config,
+            tx_meta.as_ref(),
+            &state.state,
+        );
         if let Some(obj) = entry.as_object_mut() {
             obj.insert("timestamp".to_string(), serde_json::json!(timestamp));
             obj.insert(
                 "hash".to_string(),
                 serde_json::json!(tx.signature().to_hex()),
             );
-            obj.insert("success".to_string(), serde_json::json!(true));
+            obj.insert(
+                "transaction_index".to_string(),
+                serde_json::json!(transaction_index),
+            );
         }
 
         results.push(entry);
-        last_slot = Some(*slot);
     }
+
+    let next_cursor = page_items
+        .last()
+        .map(|(hash, slot, _)| (hash.to_hex(), *slot));
 
     Ok(serde_json::json!({
         "transactions": results,
         "has_more": has_more,
-        "next_before_slot": if has_more { last_slot } else { None::<u64> },
+        "next_before": if has_more { next_cursor.as_ref().map(|(hash, _)| hash) } else { None },
+        "next_before_slot": if has_more { next_cursor.as_ref().map(|(_, slot)| slot) } else { None },
     }))
 }
 
@@ -8078,17 +7973,38 @@ async fn handle_get_account_tx_count(
     }))
 }
 
-fn submit_transaction(state: &RpcState, tx: Transaction) -> Result<String, RpcError> {
-    validate_incoming_transaction_limits(&tx)?;
+async fn submit_transaction(state: &RpcState, tx: Transaction) -> Result<String, RpcError> {
+    validate_transaction_for_submission_queue(state, &tx)?;
     let signature_hash = tx.signature();
 
     if let Some(ref sender) = state.tx_sender {
-        sender.try_send(tx).map_err(|e| RpcError {
+        let (admission_sender, admission_receiver) = oneshot::channel();
+        sender
+            .try_send(TransactionSubmission {
+                transaction: tx,
+                admission_response: admission_sender,
+            })
+            .map_err(|e| RpcError {
+                code: -32003,
+                message: format!("Transaction queue full, try again later: {}", e),
+            })?;
+        let admission =
+            tokio::time::timeout(std::time::Duration::from_secs(10), admission_receiver)
+                .await
+                .map_err(|_| RpcError {
+                    code: -32003,
+                    message: "Transaction mempool admission timed out".to_string(),
+                })?
+                .map_err(|_| RpcError {
+                    code: -32000,
+                    message: "Transaction admission worker stopped".to_string(),
+                })?;
+        admission.map_err(|message| RpcError {
             code: -32003,
-            message: format!("Transaction queue full, try again later: {}", e),
+            message: format!("Transaction rejected by mempool: {}", message),
         })?;
         info!(
-            "📮 Transaction submitted to mempool: {}",
+            "📮 Transaction admitted to mempool: {}",
             signature_hash.to_hex()
         );
     } else {
@@ -8102,10 +8018,59 @@ fn submit_transaction(state: &RpcState, tx: Transaction) -> Result<String, RpcEr
 }
 
 fn validate_incoming_transaction_limits(tx: &Transaction) -> Result<(), RpcError> {
+    if tx.is_consensus() {
+        return Err(RpcError {
+            code: -32003,
+            message: "Consensus transactions are generated only by block consensus".to_string(),
+        });
+    }
     tx.validate_structure().map_err(|e| RpcError {
         code: -32003,
         message: format!("Invalid transaction structure: {}", e),
     })
+}
+
+fn validate_transaction_for_submission_queue(
+    state: &RpcState,
+    tx: &Transaction,
+) -> Result<(), RpcError> {
+    validate_incoming_transaction_limits(tx)?;
+
+    let processor = TxProcessor::new(state.state.clone());
+    processor
+        .validate_transaction_freshness(tx)
+        .map_err(|message| RpcError {
+            code: -32003,
+            message,
+        })?;
+
+    if tx.is_evm() {
+        return Ok(());
+    }
+
+    if tx.signatures.is_empty() {
+        return Err(RpcError {
+            code: -32003,
+            message: "Transaction has no signatures".to_string(),
+        });
+    }
+
+    for sig in &tx.signatures {
+        if pq_signature_is_zero(sig) {
+            return Err(RpcError {
+                code: -32003,
+                message: "Transaction contains an invalid zero signature".to_string(),
+            });
+        }
+    }
+
+    tx.verify_required_signatures_with_chain_id(&state.chain_id)
+        .map_err(|message| RpcError {
+            code: -32003,
+            message,
+        })?;
+
+    Ok(())
 }
 
 fn transaction_has_contract_call_preflight(tx: &Transaction) -> bool {
@@ -8320,32 +8285,6 @@ pub(crate) async fn preflight_transaction_submission(
 // COMMITMENT-LEVEL HELPERS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Helper: extract commitment string from params (supports both array and object forms)
-fn parse_commitment(params: &Option<serde_json::Value>) -> &str {
-    params
-        .as_ref()
-        .and_then(|p| {
-            // Array form: ["sig", "confirmed"]  or  ["sig", {"commitment": "confirmed"}]
-            p.as_array()
-                .and_then(|arr| {
-                    arr.get(1).and_then(|v| {
-                        v.as_str().or_else(|| {
-                            v.as_object()
-                                .and_then(|o| o.get("commitment"))
-                                .and_then(|c| c.as_str())
-                        })
-                    })
-                })
-                // Object form: { "signature": "...", "commitment": "confirmed" }
-                .or_else(|| {
-                    p.as_object()
-                        .and_then(|o| o.get("commitment"))
-                        .and_then(|v| v.as_str())
-                })
-        })
-        .unwrap_or("processed")
-}
-
 /// Determine the commitment status of a transaction given its slot.
 /// Returns (confirmation_status, confirmations_or_null).
 fn tx_commitment_status(state: &RpcState, tx_slot: u64) -> (&'static str, serde_json::Value) {
@@ -8373,7 +8312,7 @@ fn tx_commitment_status(state: &RpcState, tx_slot: u64) -> (&'static str, serde_
 
 /// confirmTransaction — check transaction confirmation status
 ///
-/// Params: ["signature"] or ["signature", "commitment"] or ["signature", {"commitment": "..."}]
+/// Params: ["signature"] or ["signature", {"commitment": "..."}]
 ///
 /// Returns:
 /// ```json
@@ -8394,30 +8333,44 @@ async fn handle_confirm_transaction(
     state: &RpcState,
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
-    let params_ref = &params;
-    let sig_str = params_ref
-        .as_ref()
-        .and_then(|p| p.as_array())
-        .and_then(|arr| arr.first())
+    let params = params.ok_or_else(|| RpcError {
+        code: -32602,
+        message: "Invalid params: expected [signature, options?]".to_string(),
+    })?;
+    let array = params.as_array().ok_or_else(|| RpcError {
+        code: -32602,
+        message: "Invalid params: expected [signature, options?]".to_string(),
+    })?;
+    if array.is_empty() || array.len() > 2 {
+        return Err(RpcError {
+            code: -32602,
+            message: "Invalid params: expected [signature, options?]".to_string(),
+        });
+    }
+    let sig_str = array
+        .first()
         .and_then(|v| v.as_str())
-        .or_else(|| {
-            params_ref
-                .as_ref()
-                .and_then(|p| p.as_object())
-                .and_then(|o| o.get("signature"))
-                .and_then(|v| v.as_str())
-        })
         .ok_or_else(|| RpcError {
             code: -32602,
-            message: "Invalid params: expected [signature] or {\"signature\": \"...\"}".to_string(),
+            message: "Invalid params: signature must be a string".to_string(),
         })?;
+
+    let desired_commitment = match array.get(1) {
+        Some(value) => value
+            .as_object()
+            .and_then(|object| object.get("commitment"))
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| RpcError {
+                code: -32602,
+                message: "Invalid params: options must contain a string commitment".to_string(),
+            })?,
+        None => "processed",
+    };
 
     let sig_hash = lichen_core::Hash::from_hex(sig_str).map_err(|e| RpcError {
         code: -32602,
         message: format!("Invalid signature: {}", e),
     })?;
-
-    let desired_commitment = parse_commitment(params_ref);
 
     // Look up which slot the tx was included in
     let tx_slot = match state.state.get_tx_slot(&sig_hash) {
@@ -8442,12 +8395,26 @@ async fn handle_confirm_transaction(
         return Ok(serde_json::json!({"value": null}));
     }
 
+    let error = state
+        .state
+        .get_tx_meta_full(&sig_hash)
+        .ok()
+        .flatten()
+        .filter(|meta| !meta.succeeded())
+        .map(|meta| {
+            serde_json::Value::String(
+                meta.error
+                    .unwrap_or_else(|| "Transaction execution failed".to_string()),
+            )
+        })
+        .unwrap_or(serde_json::Value::Null);
+
     Ok(serde_json::json!({
         "value": {
             "confirmation_status": status,
             "slot": tx_slot,
             "confirmations": confirmations,
-            "err": null,
+            "err": error,
         }
     }))
 }
@@ -8482,156 +8449,6 @@ fn decode_solana_transaction(
     };
 
     decode_transaction_bytes(&tx_bytes)
-}
-
-/// Parse a JSON-format transaction from the wallet into a native Transaction.
-/// Wallet sends: {signatures: [[byte,...]], message: {instructions: [...], blockhash: "hex"}}
-fn parse_json_transaction(tx_bytes: &[u8]) -> Result<Transaction, RpcError> {
-    let json_val: serde_json::Value = serde_json::from_slice(tx_bytes).map_err(|e| RpcError {
-        code: -32602,
-        message: format!("Invalid JSON transaction: {}", e),
-    })?;
-
-    // Parse signatures: wallet sends array-of-arrays of numbers
-    let sigs_raw = json_val
-        .get("signatures")
-        .and_then(|s| s.as_array())
-        .ok_or_else(|| RpcError {
-            code: -32602,
-            message: "Missing signatures array".into(),
-        })?;
-    let mut signatures = Vec::new();
-    for sig_val in sigs_raw {
-        signatures.push(parse_pq_signature_value(sig_val)?);
-    }
-
-    let msg_val = json_val.get("message").ok_or_else(|| RpcError {
-        code: -32602,
-        message: "Missing message".into(),
-    })?;
-
-    // Blockhash — accept multiple naming conventions:
-    // "blockhash" (wallet), "recent_blockhash" (Rust), "recentBlockhash" (SDK camelCase)
-    let blockhash_str = msg_val
-        .get("blockhash")
-        .or_else(|| msg_val.get("recent_blockhash"))
-        .or_else(|| msg_val.get("recentBlockhash"))
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| RpcError {
-            code: -32602,
-            message: "Missing blockhash".into(),
-        })?;
-    let recent_blockhash = lichen_core::Hash::from_hex(blockhash_str).map_err(|e| RpcError {
-        code: -32602,
-        message: format!("Invalid blockhash: {}", e),
-    })?;
-
-    // Instructions
-    let ixs_raw = msg_val
-        .get("instructions")
-        .and_then(|i| i.as_array())
-        .ok_or_else(|| RpcError {
-            code: -32602,
-            message: "Missing instructions array".into(),
-        })?;
-    let mut instructions = Vec::new();
-    for ix_val in ixs_raw {
-        // Accept both snake_case "program_id" and camelCase "programId"
-        let pid_val = ix_val.get("program_id").or_else(|| ix_val.get("programId"));
-        let program_id = if let Some(arr) = pid_val.and_then(|p| p.as_array()) {
-            let bytes: Vec<u8> = arr
-                .iter()
-                .filter_map(|b| b.as_u64().map(|n| n as u8))
-                .collect();
-            if bytes.len() != 32 {
-                return Err(RpcError {
-                    code: -32602,
-                    message: format!("program_id must be 32 bytes, got {}", bytes.len()),
-                });
-            }
-            let mut pk = [0u8; 32];
-            pk.copy_from_slice(&bytes);
-            Pubkey(pk)
-        } else if let Some(s) = pid_val.and_then(|p| p.as_str()) {
-            Pubkey::from_base58(s).map_err(|e| RpcError {
-                code: -32602,
-                message: format!("Invalid program_id: {}", e),
-            })?
-        } else {
-            return Err(RpcError {
-                code: -32602,
-                message: "Invalid program_id format".into(),
-            });
-        };
-
-        let accounts_raw = ix_val
-            .get("accounts")
-            .and_then(|a| a.as_array())
-            .ok_or_else(|| RpcError {
-                code: -32602,
-                message: "Missing accounts in instruction".into(),
-            })?;
-        let mut accounts = Vec::new();
-        for acct in accounts_raw {
-            if let Some(arr) = acct.as_array() {
-                let bytes: Vec<u8> = arr
-                    .iter()
-                    .filter_map(|b| b.as_u64().map(|n| n as u8))
-                    .collect();
-                if bytes.len() != 32 {
-                    return Err(RpcError {
-                        code: -32602,
-                        message: format!("Account pubkey must be 32 bytes, got {}", bytes.len()),
-                    });
-                }
-                let mut pk = [0u8; 32];
-                pk.copy_from_slice(&bytes);
-                accounts.push(Pubkey(pk));
-            } else if let Some(s) = acct.as_str() {
-                accounts.push(Pubkey::from_base58(s).map_err(|e| RpcError {
-                    code: -32602,
-                    message: format!("Invalid account: {}", e),
-                })?);
-            }
-        }
-
-        let data: Vec<u8> = ix_val
-            .get("data")
-            .and_then(|d| d.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|b| b.as_u64().map(|n| n as u8))
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        instructions.push(lichen_core::Instruction {
-            program_id,
-            accounts,
-            data,
-        });
-    }
-
-    // Parse optional compute_budget and compute_unit_price from message
-    let compute_budget = msg_val
-        .get("compute_budget")
-        .or_else(|| msg_val.get("computeBudget"))
-        .and_then(|v| v.as_u64());
-    let compute_unit_price = msg_val
-        .get("compute_unit_price")
-        .or_else(|| msg_val.get("computeUnitPrice"))
-        .and_then(|v| v.as_u64());
-
-    Ok(Transaction {
-        signatures,
-        message: lichen_core::Message {
-            instructions,
-            recent_blockhash,
-            compute_budget,
-            compute_unit_price,
-        },
-        tx_type: lichen_core::TransactionType::Native,
-    })
 }
 
 /// Send transaction
@@ -8671,7 +8488,7 @@ async fn handle_send_transaction(
             message: format!("Invalid base64: {}", e),
         })?;
 
-    // M-6: Decode via wire-format envelope (supports V1 envelope, legacy bincode, JSON)
+    // Decode the mandatory V1 transaction wire envelope.
     let tx: Transaction = decode_transaction_bytes(&tx_bytes)?;
 
     preflight_transaction_submission(state, &tx, skip_preflight).await?;
@@ -8680,7 +8497,7 @@ async fn handle_send_transaction(
     // so clients never receive events for transactions that fail submission.
     // Clone the tx for event emission since submit_transaction consumes it.
     let tx_for_events = tx.clone();
-    let signature = submit_transaction(state, tx)?;
+    let signature = submit_transaction(state, tx).await?;
     emit_prediction_events_from_tx(state, &tx_for_events);
 
     Ok(serde_json::json!(signature))
@@ -8819,8 +8636,7 @@ fn merged_contract_logs(result: &lichen_core::contract::ContractResult) -> Vec<S
 }
 
 /// Execute a read-only contract call without requiring a signed transaction.
-/// Params: { "contract": "<base58_address>", "function": "<fn_name>", "args": [<bytes>] }
-/// or array form: ["<base58_address>", "<fn_name>", "<base64_args_optional>"]
+/// Params: ["<base58_address>", "<fn_name>", "<base64_args_optional>", "<from_optional>"]
 async fn handle_call_contract(
     state: &RpcState,
     params: Option<serde_json::Value>,
@@ -8830,63 +8646,38 @@ async fn handle_call_contract(
         message: "Missing params".to_string(),
     })?;
 
-    // Parse params: either object form or array form
-    let (contract_str, function, args_b64, from_str) = if let Some(obj) = params.as_object() {
-        let contract = obj
-            .get("contract")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| RpcError {
-                code: -32602,
-                message: "Missing 'contract' address".to_string(),
-            })?;
-        let function = obj
-            .get("function")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| RpcError {
-                code: -32602,
-                message: "Missing 'function' name".to_string(),
-            })?;
-        let args = obj.get("args").and_then(|v| v.as_str()).unwrap_or("");
-        let from = obj
-            .get("from")
-            .or_else(|| obj.get("caller"))
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-        (
-            contract.to_string(),
-            function.to_string(),
-            args.to_string(),
-            from,
-        )
-    } else if let Some(arr) = params.as_array() {
-        let contract = arr
-            .first()
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| RpcError {
-                code: -32602,
-                message: "Missing contract address (first param)".to_string(),
-            })?;
-        let function = arr
-            .get(1)
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| RpcError {
-                code: -32602,
-                message: "Missing function name (second param)".to_string(),
-            })?;
-        let args = arr.get(2).and_then(|v| v.as_str()).unwrap_or("");
-        let from = arr.get(3).and_then(|v| v.as_str()).map(|s| s.to_string());
-        (
-            contract.to_string(),
-            function.to_string(),
-            args.to_string(),
-            from,
-        )
-    } else {
+    let arr = params.as_array().ok_or_else(|| RpcError {
+        code: -32602,
+        message: "Invalid params: expected [contract, function, args?, from?]".to_string(),
+    })?;
+    if arr.len() < 2 || arr.len() > 4 {
         return Err(RpcError {
             code: -32602,
-            message: "Invalid params: expected object or array".to_string(),
+            message: "Invalid params: expected [contract, function, args?, from?]".to_string(),
         });
-    };
+    }
+    let contract = arr
+        .first()
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| RpcError {
+            code: -32602,
+            message: "Missing contract address (first param)".to_string(),
+        })?;
+    let function = arr
+        .get(1)
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| RpcError {
+            code: -32602,
+            message: "Missing function name (second param)".to_string(),
+        })?;
+    let args = arr.get(2).and_then(|v| v.as_str()).unwrap_or("");
+    let from = arr.get(3).and_then(|v| v.as_str()).map(|s| s.to_string());
+    let (contract_str, function, args_b64, from_str) = (
+        contract.to_string(),
+        function.to_string(),
+        args.to_string(),
+        from,
+    );
 
     // Decode contract address
     let contract_pubkey = Pubkey::from_base58(&contract_str).map_err(|_| RpcError {
@@ -9104,10 +8895,23 @@ async fn handle_solana_get_signature_statuses(
 
         if found {
             let (status, confirmations) = tx_commitment_status(state, tx_slot);
+            let error = state
+                .state
+                .get_tx_meta_full(&sig_hash)
+                .ok()
+                .flatten()
+                .filter(|meta| !meta.succeeded())
+                .map(|meta| {
+                    serde_json::Value::String(
+                        meta.error
+                            .unwrap_or_else(|| "Transaction execution failed".to_string()),
+                    )
+                })
+                .unwrap_or(serde_json::Value::Null);
             values.push(serde_json::json!({
                 "slot": tx_slot,
                 "confirmations": confirmations,
-                "err": serde_json::Value::Null,
+                "err": error,
                 "confirmation_status": status,
             }));
         } else {
@@ -9201,10 +9005,24 @@ async fn handle_solana_get_signatures_for_address(
             timestamp
         };
 
+        let error = state
+            .state
+            .get_tx_meta_full(&hash)
+            .ok()
+            .flatten()
+            .filter(|meta| !meta.succeeded())
+            .map(|meta| {
+                serde_json::Value::String(
+                    meta.error
+                        .unwrap_or_else(|| "Transaction execution failed".to_string()),
+                )
+            })
+            .unwrap_or(serde_json::Value::Null);
+
         results.push(serde_json::json!({
             "signature": hash_to_base58(&hash),
             "slot": slot,
-            "err": serde_json::Value::Null,
+            "err": error,
             "memo": serde_json::Value::Null,
             "blockTime": block_time,
             "confirmation_status": "finalized",
@@ -9577,7 +9395,7 @@ async fn handle_solana_send_transaction(
         .unwrap_or(0);
 
     // H15 fix: submit first, cache only on success (was caching before submit)
-    submit_transaction(state, tx.clone())?;
+    submit_transaction(state, tx.clone()).await?;
 
     state.solana_tx_cache.write().await.put(
         signature_hash,
@@ -9865,7 +9683,13 @@ async fn handle_get_recent_blocks(
     } else {
         None
     };
-    let blocks: Vec<serde_json::Value> = page_items.iter().map(block_summary_json).collect();
+    let blocks: Vec<serde_json::Value> = page_items
+        .iter()
+        .map(|block| {
+            let commit = rpc_commit_certificate_for_block(&state.state, block)?;
+            Ok(block_summary_json(block, &commit))
+        })
+        .collect::<Result<_, RpcError>>()?;
 
     Ok(serde_json::json!({
         "blocks": blocks,
@@ -9887,7 +9711,10 @@ async fn handle_get_latest_block(state: &RpcState) -> Result<serde_json::Value, 
     })?;
 
     match block {
-        Some(block) => Ok(block_summary_json(&block)),
+        Some(block) => {
+            let commit = rpc_commit_certificate_for_block(&state.state, &block)?;
+            Ok(block_summary_json(&block, &commit))
+        }
         None => Err(RpcError {
             code: -32001,
             message: "Latest block not found".to_string(),
@@ -10713,7 +10540,7 @@ async fn handle_stake(
 
         preflight_transaction_submission(state, &tx, false).await?;
 
-        let signature = submit_transaction(state, tx)?;
+        let signature = submit_transaction(state, tx).await?;
         return Ok(serde_json::json!(signature));
     }
 
@@ -10771,7 +10598,7 @@ async fn handle_unstake(
 
         preflight_transaction_submission(state, &tx, false).await?;
 
-        let signature = submit_transaction(state, tx)?;
+        let signature = submit_transaction(state, tx).await?;
         return Ok(serde_json::json!(signature));
     }
 
@@ -12085,27 +11912,6 @@ async fn handle_get_code_hash_restriction_status(
         slot,
         &active_records,
     ))
-}
-
-fn ensure_rpc_code_hash_not_deploy_blocked(
-    state: &RpcState,
-    code_hash: &Hash,
-    operation: &str,
-) -> Result<(), RpcError> {
-    let (_, active_records) = active_code_hash_deploy_blocks(state, code_hash)?;
-    if let Some(record) = active_records.first() {
-        return Err(RpcError {
-            code: -32000,
-            message: format!(
-                "{} rejected: code hash {} is blocked by active DeployBlocked restriction {}",
-                operation,
-                code_hash.to_hex(),
-                record.id
-            ),
-        });
-    }
-
-    Ok(())
 }
 
 fn parse_bridge_route_object(
@@ -13884,37 +13690,56 @@ async fn handle_get_contract_logs(
         })?;
 
     let limit = arr.get(1).and_then(|v| v.as_u64()).unwrap_or(100).min(1000) as usize; // AUDIT-FIX 2.16
+    if limit == 0 {
+        return Err(RpcError {
+            code: -32602,
+            message: "Invalid limit: expected an integer greater than zero".to_string(),
+        });
+    }
 
     let before_slot = arr.get(2).and_then(|v| v.as_u64());
+    let before_cursor = resolve_indexed_list_cursor(before_slot, arr.get(3))?;
 
     let contract_id = Pubkey::from_base58(contract_id_str).map_err(|e| RpcError {
         code: -32602,
         message: format!("Invalid contract ID: {}", e),
     })?;
 
-    let events = state
+    let indexed = state
         .state
-        .get_contract_logs(&contract_id, limit, before_slot)
+        .get_events_by_program_paginated_exact(&contract_id, limit.saturating_add(1), before_cursor)
         .map_err(|e| RpcError {
             code: -32000,
             message: format!("Database error: {}", e),
         })?;
+    let has_more = indexed.len() > limit;
+    let page_items = if has_more {
+        &indexed[..limit]
+    } else {
+        indexed.as_slice()
+    };
 
-    let logs: Vec<serde_json::Value> = events
+    let logs: Vec<serde_json::Value> = page_items
         .iter()
-        .map(|e| {
+        .map(|(event, sequence)| {
             serde_json::json!({
-                "program": e.program.to_base58(),
-                "name": e.name,
-                "data": e.data,
-                "slot": e.slot,
+                "program": event.program.to_base58(),
+                "name": event.name,
+                "data": event.data,
+                "slot": event.slot,
+                "sequence": sequence,
             })
         })
         .collect();
+    let next_cursor = page_items
+        .last()
+        .map(|(event, sequence)| encode_indexed_list_cursor(event.slot, *sequence));
 
     Ok(serde_json::json!({
         "logs": logs,
         "count": logs.len(),
+        "has_more": has_more,
+        "next_cursor": if has_more { next_cursor } else { None },
     }))
 }
 
@@ -13972,111 +13797,9 @@ async fn handle_get_contract_abi(
         Some(abi) => Ok(serde_json::to_value(&abi).unwrap_or_default()),
         None => Ok(serde_json::json!({
             "error": "No ABI available for this contract",
-            "hint": "Deploy with an ABI in init_data, or use setContractAbi"
+            "hint": "Deploy with an ABI in init_data or submit the owner-authorized SetContractAbi system transaction"
         })),
     }
-}
-
-/// Set/update contract ABI (admin-only — requires admin_token)
-async fn handle_set_contract_abi(
-    state: &RpcState,
-    params: Option<serde_json::Value>,
-    auth_header: Option<&str>,
-) -> Result<serde_json::Value, RpcError> {
-    require_legacy_admin_rpc_enabled(state, "setContractAbi")?;
-    // H16 fix: reject in multi-validator mode (direct state write bypasses consensus)
-    require_single_validator(state, "setContractAbi").await?;
-    verify_admin_auth(state, auth_header)?;
-
-    let params = params.ok_or_else(|| RpcError {
-        code: -32602,
-        message: "Missing params".to_string(),
-    })?;
-
-    let arr = params.as_array().ok_or_else(|| RpcError {
-        code: -32602,
-        message: "Invalid params: expected [contract_id, abi_json]".to_string(),
-    })?;
-
-    let contract_id_str = arr
-        .first()
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| RpcError {
-            code: -32602,
-            message: "Missing contract_id".to_string(),
-        })?;
-
-    let abi_value = arr.get(1).ok_or_else(|| RpcError {
-        code: -32602,
-        message: "Missing ABI JSON".to_string(),
-    })?;
-
-    let contract_id = Pubkey::from_base58(contract_id_str).map_err(|e| RpcError {
-        code: -32602,
-        message: format!("Invalid contract ID: {}", e),
-    })?;
-
-    let abi: lichen_core::ContractAbi =
-        serde_json::from_value(abi_value.clone()).map_err(|e| RpcError {
-            code: -32602,
-            message: format!("Invalid ABI format: {}", e),
-        })?;
-
-    let mut account = state
-        .state
-        .get_account(&contract_id)
-        .map_err(|e| RpcError {
-            code: -32000,
-            message: format!("Database error: {}", e),
-        })?
-        .ok_or_else(|| RpcError {
-            code: -32001,
-            message: "Contract not found".to_string(),
-        })?;
-
-    if !account.executable {
-        return Err(RpcError {
-            code: -32001,
-            message: "Account is not a contract".to_string(),
-        });
-    }
-
-    let mut contract: lichen_core::ContractAccount = serde_json::from_slice(&account.data)
-        .map_err(|e| RpcError {
-            code: -32000,
-            message: format!("Failed to decode contract: {}", e),
-        })?;
-
-    contract.abi = Some(abi);
-    account.data = serde_json::to_vec(&contract).map_err(|e| RpcError {
-        code: -32000,
-        message: format!("Failed to serialize contract: {}", e),
-    })?;
-
-    state
-        .state
-        .put_account(&contract_id, &account)
-        .map_err(|e| RpcError {
-            code: -32000,
-            message: format!("Database error: {}", e),
-        })?;
-
-    log_privileged_rpc_mutation(
-        "setContractAbi",
-        "legacy_admin",
-        "admin_token",
-        "contract_abi",
-        Some(contract_id_str),
-        serde_json::json!({
-            "abi_functions": contract.abi.as_ref().map(|abi| abi.functions.len()).unwrap_or(0),
-        }),
-    );
-
-    Ok(serde_json::json!({
-        "success": true,
-        "contract": contract_id.to_base58(),
-        "abi_functions": contract.abi.as_ref().map(|a| a.functions.len()).unwrap_or(0),
-    }))
 }
 
 /// Get all deployed contracts
@@ -14089,57 +13812,38 @@ fn parse_program_list_pagination(
     let mut cursor_str: Option<String> = None;
 
     if let Some(value) = params {
-        if let Some(obj) = value.as_object() {
-            if let Some(v) = obj.get("limit").and_then(|v| v.as_u64()) {
-                limit = v;
+        let array = value.as_array().ok_or_else(|| RpcError {
+            code: -32602,
+            message: "Invalid params: expected [{limit?, cursor?}]".to_string(),
+        })?;
+        if array.len() > 1 {
+            return Err(RpcError {
+                code: -32602,
+                message: "Invalid params: expected at most one options object".to_string(),
+            });
+        }
+        if let Some(value) = array.first() {
+            let object = value.as_object().ok_or_else(|| RpcError {
+                code: -32602,
+                message: "Invalid params: pagination options must be an object".to_string(),
+            })?;
+            if let Some(value) = object.get("limit") {
+                limit = value.as_u64().ok_or_else(|| RpcError {
+                    code: -32602,
+                    message: "Invalid params: limit must be an unsigned integer".to_string(),
+                })?;
             }
-            cursor_str = obj
-                .get("cursor")
-                .and_then(|v| v.as_str())
-                .or_else(|| obj.get("after").and_then(|v| v.as_str()))
-                .or_else(|| obj.get("after_program").and_then(|v| v.as_str()))
-                .map(|s| s.to_string());
-        } else if let Some(arr) = value.as_array() {
-            if let Some(first) = arr.first() {
-                if let Some(v) = first.as_u64() {
-                    limit = v;
-                } else if let Some(obj) = first.as_object() {
-                    if let Some(v) = obj.get("limit").and_then(|v| v.as_u64()) {
-                        limit = v;
-                    }
-                    cursor_str = obj
-                        .get("cursor")
-                        .and_then(|v| v.as_str())
-                        .or_else(|| obj.get("after").and_then(|v| v.as_str()))
-                        .or_else(|| obj.get("after_program").and_then(|v| v.as_str()))
-                        .map(|s| s.to_string());
-                } else if let Some(s) = first.as_str() {
-                    cursor_str = Some(s.to_string());
-                }
+            if let Some(value) = object.get("cursor") {
+                cursor_str = Some(
+                    value
+                        .as_str()
+                        .ok_or_else(|| RpcError {
+                            code: -32602,
+                            message: "Invalid params: cursor must be a string".to_string(),
+                        })?
+                        .to_string(),
+                );
             }
-            if let Some(second) = arr.get(1) {
-                if let Some(obj) = second.as_object() {
-                    if let Some(v) = obj.get("limit").and_then(|v| v.as_u64()) {
-                        limit = v;
-                    }
-                    if cursor_str.is_none() {
-                        cursor_str = obj
-                            .get("cursor")
-                            .and_then(|v| v.as_str())
-                            .or_else(|| obj.get("after").and_then(|v| v.as_str()))
-                            .or_else(|| obj.get("after_program").and_then(|v| v.as_str()))
-                            .map(|s| s.to_string());
-                    }
-                } else if cursor_str.is_none() {
-                    if let Some(s) = second.as_str() {
-                        cursor_str = Some(s.to_string());
-                    }
-                }
-            }
-        } else if let Some(v) = value.as_u64() {
-            limit = v;
-        } else if let Some(s) = value.as_str() {
-            cursor_str = Some(s.to_string());
         }
     }
 
@@ -14339,560 +14043,6 @@ async fn handle_get_all_contracts(
     put_cached_program_list_response(state, "getAllContracts", &params, response.clone()).await;
 
     Ok(response)
-}
-
-/// Deploy a contract via RPC (bypasses transaction instruction size limit).
-///
-/// Params: [deployer_base58, code_base64, init_data_json_or_null, signature_hex]
-///
-/// The deployer signs SHA-256(code_bytes) with their native PQ key.
-/// Deploy fee (25 LICN) is charged from the deployer's account.
-/// Contract address is derived as SHA-256(deployer_pubkey + optional name/symbol + code_bytes).
-async fn handle_deploy_contract(
-    state: &RpcState,
-    params: Option<serde_json::Value>,
-    auth_header: Option<&str>,
-) -> Result<serde_json::Value, RpcError> {
-    use base64::{engine::general_purpose, Engine as _};
-    use lichen_core::account::Keypair as LichenKeypair;
-    use sha2::{Digest, Sha256};
-
-    require_legacy_admin_rpc_enabled(state, "deployContract")?;
-    // H16 fix: reject in multi-validator mode (direct state write bypasses consensus)
-    require_single_validator(state, "deployContract").await?;
-
-    // Admin-gate: contract deployment requires admin authentication
-    verify_admin_auth(state, auth_header)?;
-
-    let params = params.ok_or_else(|| RpcError {
-        code: -32602,
-        message: "Missing params".to_string(),
-    })?;
-
-    let arr = params.as_array().ok_or_else(|| RpcError {
-        code: -32602,
-        message: "Params must be an array: [deployer, code_base64, init_data, signature]"
-            .to_string(),
-    })?;
-
-    if arr.len() < 4 {
-        return Err(RpcError {
-            code: -32602,
-            message:
-                "Expected [deployer_base58, code_base64, init_data_json_or_null, signature_hex]"
-                    .to_string(),
-        });
-    }
-
-    // Parse deployer pubkey
-    let deployer_str = arr[0].as_str().ok_or_else(|| RpcError {
-        code: -32602,
-        message: "deployer must be a base58 string".to_string(),
-    })?;
-    let deployer_pubkey = Pubkey::from_base58(deployer_str).map_err(|e| RpcError {
-        code: -32602,
-        message: format!("Invalid deployer pubkey: {}", e),
-    })?;
-
-    // Parse WASM code (base64)
-    let code_b64 = arr[1].as_str().ok_or_else(|| RpcError {
-        code: -32602,
-        message: "code must be a base64 string".to_string(),
-    })?;
-    let code_bytes = general_purpose::STANDARD
-        .decode(code_b64)
-        .map_err(|e| RpcError {
-            code: -32602,
-            message: format!("Invalid base64 code: {}", e),
-        })?;
-
-    if code_bytes.is_empty() {
-        return Err(RpcError {
-            code: -32602,
-            message: "Code cannot be empty".to_string(),
-        });
-    }
-
-    // Parse init_data (optional JSON)
-    let init_data_bytes: Vec<u8> = if arr[2].is_null() {
-        vec![]
-    } else if let Some(s) = arr[2].as_str() {
-        s.as_bytes().to_vec()
-    } else {
-        // If it's a JSON object, serialize it
-        serde_json::to_vec(&arr[2]).unwrap_or_default()
-    };
-
-    let signature = parse_pq_signature_value(&arr[3])?;
-
-    // Verify signature: deployer must sign SHA-256(code_bytes)
-    let mut hasher = Sha256::new();
-    hasher.update(&code_bytes);
-    let code_hash = hasher.finalize();
-    if !LichenKeypair::verify(&deployer_pubkey, &code_hash, &signature) {
-        return Err(RpcError {
-            code: -32003,
-            message: "Invalid signature: deployer must sign SHA-256(code)".to_string(),
-        });
-    }
-    let deploy_code_hash = Hash::hash(&code_bytes);
-    ensure_rpc_code_hash_not_deploy_blocked(state, &deploy_code_hash, "deployContract")?;
-
-    // Derive program address: SHA-256(deployer + name + code)
-    // Including the name/symbol ensures identical WASMs (e.g. wrapped token stubs)
-    // get unique addresses — matches genesis derivation in validator/src/main.rs.
-    let contract_name: Option<String> = if !init_data_bytes.is_empty() {
-        serde_json::from_slice::<serde_json::Value>(&init_data_bytes)
-            .ok()
-            .and_then(|v| {
-                v.get("name")
-                    .or_else(|| v.get("symbol"))
-                    .and_then(|n| n.as_str().map(|s| s.to_string()))
-            })
-    } else {
-        None
-    };
-
-    let mut addr_hasher = Sha256::new();
-    addr_hasher.update(deployer_pubkey.0);
-    if let Some(ref name) = contract_name {
-        addr_hasher.update(name.as_bytes());
-    }
-    addr_hasher.update(&code_bytes);
-    let addr_hash = addr_hasher.finalize();
-    let mut addr_bytes = [0u8; 32];
-    addr_bytes.copy_from_slice(&addr_hash[..32]);
-    let program_pubkey = Pubkey(addr_bytes);
-
-    // Check if already deployed
-    if let Ok(Some(_)) = state.state.get_account(&program_pubkey) {
-        return Err(RpcError {
-            code: -32000,
-            message: format!("Contract already exists at {}", program_pubkey.to_base58()),
-        });
-    }
-
-    // Charge deploy fee (25 LICN)
-    let deploy_fee = lichen_core::CONTRACT_DEPLOY_FEE;
-    let deployer_account = state
-        .state
-        .get_account(&deployer_pubkey)
-        .map_err(|e| RpcError {
-            code: -32000,
-            message: format!("Database error: {}", e),
-        })?
-        .ok_or_else(|| RpcError {
-            code: -32000,
-            message: "Deployer account not found".to_string(),
-        })?;
-
-    if deployer_account.spendable < deploy_fee {
-        return Err(RpcError {
-            code: -32000,
-            message: format!(
-                "Insufficient spendable balance: need {} spores ({:.1} LICN), have {} spendable ({:.1} LICN)",
-                deploy_fee,
-                deploy_fee as f64 / 1_000_000_000.0,
-                deployer_account.spendable,
-                deployer_account.spendable as f64 / 1_000_000_000.0,
-            ),
-        });
-    }
-
-    // AUDIT-FIX F-1: Use StateBatch for atomic all-or-nothing commit of
-    // deployer debit + treasury credit + contract account creation.
-    let mut batch = state.state.begin_batch();
-
-    // Debit deployer using deduct_spendable to maintain spores == spendable + staked + locked
-    let mut updated_deployer = deployer_account.clone();
-    updated_deployer
-        .deduct_spendable(deploy_fee)
-        .map_err(|e| RpcError {
-            code: -32000,
-            message: format!("Failed to deduct deploy fee: {}", e),
-        })?;
-    batch
-        .put_account(&deployer_pubkey, &updated_deployer)
-        .map_err(|e| RpcError {
-            code: -32000,
-            message: format!("Failed to update deployer balance: {}", e),
-        })?;
-
-    // Credit deploy fee to treasury (not a vanishing deduction)
-    let treasury_pubkey = state
-        .state
-        .get_treasury_pubkey()
-        .map_err(|e| RpcError {
-            code: -32000,
-            message: format!("Database error: {}", e),
-        })?
-        .ok_or_else(|| RpcError {
-            code: -32000,
-            message: "Treasury pubkey not set".to_string(),
-        })?;
-    let mut treasury_account = state
-        .state
-        .get_account(&treasury_pubkey)
-        .map_err(|e| RpcError {
-            code: -32000,
-            message: format!("Database error: {}", e),
-        })?
-        .unwrap_or_else(|| lichen_core::Account::new(0, treasury_pubkey));
-    treasury_account
-        .add_spendable(deploy_fee)
-        .map_err(|e| RpcError {
-            code: -32000,
-            message: format!("Treasury balance overflow: {}", e),
-        })?;
-    batch
-        .put_account(&treasury_pubkey, &treasury_account)
-        .map_err(|e| RpcError {
-            code: -32000,
-            message: format!("Failed to credit treasury: {}", e),
-        })?;
-
-    // Create ContractAccount
-    let contract = ContractAccount::new(code_bytes, deployer_pubkey);
-    let mut account = lichen_core::Account::new(0, program_pubkey);
-    account.data = serde_json::to_vec(&contract).map_err(|e| RpcError {
-        code: -32000,
-        message: format!("Failed to serialize contract: {}", e),
-    })?;
-    account.executable = true;
-
-    // Store the contract account
-    batch
-        .put_account(&program_pubkey, &account)
-        .map_err(|e| RpcError {
-            code: -32000,
-            message: format!("Failed to store contract: {}", e),
-        })?;
-
-    // Commit all three writes atomically
-    state.state.commit_batch(batch).map_err(|e| RpcError {
-        code: -32000,
-        message: format!("Atomic deploy commit failed: {}", e),
-    })?;
-
-    // Index in programs list
-    if let Err(e) = state.state.index_program(&program_pubkey) {
-        warn!("deployContract: index_program failed: {}", e);
-    }
-
-    // Process init_data for symbol registry
-    if !init_data_bytes.is_empty() {
-        if let Ok(raw) = std::str::from_utf8(&init_data_bytes) {
-            if let Ok(registry_data) = serde_json::from_str::<serde_json::Value>(raw) {
-                if let Some(symbol) = registry_data.get("symbol").and_then(|s| s.as_str()) {
-                    let entry = SymbolRegistryEntry {
-                        symbol: symbol.to_string(),
-                        program: program_pubkey,
-                        owner: deployer_pubkey,
-                        name: registry_data
-                            .get("name")
-                            .and_then(|n| n.as_str())
-                            .map(|s| s.to_string()),
-                        template: registry_data
-                            .get("template")
-                            .and_then(|t| t.as_str())
-                            .map(|s| s.to_string()),
-                        metadata: registry_data.get("metadata").cloned(),
-                        decimals: registry_data
-                            .get("decimals")
-                            .and_then(|d| d.as_u64())
-                            .map(|d| d as u8),
-                    };
-                    if let Err(e) = state.state.register_symbol(symbol, entry) {
-                        warn!("deployContract: register_symbol failed: {}", e);
-                    }
-                }
-            }
-        }
-    }
-
-    log_privileged_rpc_mutation(
-        "deployContract",
-        "legacy_admin",
-        &deployer_pubkey.to_base58(),
-        "contract",
-        Some(&program_pubkey.to_base58()),
-        serde_json::json!({
-            "code_size": account.data.len(),
-            "deploy_fee": deploy_fee,
-            "contract_name": contract_name,
-        }),
-    );
-
-    Ok(serde_json::json!({
-        "program_id": program_pubkey.to_base58(),
-        "deployer": deployer_pubkey.to_base58(),
-        "code_size": account.data.len(),
-        "deploy_fee": deploy_fee,
-        "deploy_fee_licn": deploy_fee as f64 / 1_000_000_000.0,
-    }))
-}
-
-/// Upgrade an existing smart contract (owner-only, charges upgrade fee).
-/// Params: [owner_base58, contract_base58, code_base64, signature_hex]
-async fn handle_upgrade_contract(
-    state: &RpcState,
-    params: Option<serde_json::Value>,
-    auth_header: Option<&str>,
-) -> Result<serde_json::Value, RpcError> {
-    use base64::{engine::general_purpose, Engine as _};
-    use lichen_core::account::Keypair as LichenKeypair;
-    use sha2::{Digest, Sha256};
-
-    require_legacy_admin_rpc_enabled(state, "upgradeContract")?;
-    require_single_validator(state, "upgradeContract").await?;
-    verify_admin_auth(state, auth_header)?;
-
-    let params = params.ok_or_else(|| RpcError {
-        code: -32602,
-        message: "Missing params".to_string(),
-    })?;
-
-    let arr = params.as_array().ok_or_else(|| RpcError {
-        code: -32602,
-        message: "Params must be an array: [owner, contract, code_base64, signature]".to_string(),
-    })?;
-
-    if arr.len() < 4 {
-        return Err(RpcError {
-            code: -32602,
-            message: "Expected [owner_base58, contract_base58, code_base64, signature_hex]"
-                .to_string(),
-        });
-    }
-
-    // Parse owner pubkey
-    let owner_str = arr[0].as_str().ok_or_else(|| RpcError {
-        code: -32602,
-        message: "owner must be a base58 string".to_string(),
-    })?;
-    let owner_pubkey = Pubkey::from_base58(owner_str).map_err(|e| RpcError {
-        code: -32602,
-        message: format!("Invalid owner pubkey: {}", e),
-    })?;
-
-    // Parse contract address
-    let contract_str = arr[1].as_str().ok_or_else(|| RpcError {
-        code: -32602,
-        message: "contract must be a base58 string".to_string(),
-    })?;
-    let contract_pubkey = Pubkey::from_base58(contract_str).map_err(|e| RpcError {
-        code: -32602,
-        message: format!("Invalid contract pubkey: {}", e),
-    })?;
-
-    // Parse new WASM code (base64)
-    let code_b64 = arr[2].as_str().ok_or_else(|| RpcError {
-        code: -32602,
-        message: "code must be a base64 string".to_string(),
-    })?;
-    let code_bytes = general_purpose::STANDARD
-        .decode(code_b64)
-        .map_err(|e| RpcError {
-            code: -32602,
-            message: format!("Invalid base64 code: {}", e),
-        })?;
-
-    if code_bytes.is_empty() {
-        return Err(RpcError {
-            code: -32602,
-            message: "Code cannot be empty".to_string(),
-        });
-    }
-
-    // P10-RPC-05: Reject oversized WASM code to prevent storage abuse
-    if code_bytes.len() > MAX_CONTRACT_CODE {
-        return Err(RpcError {
-            code: -32602,
-            message: format!(
-                "Contract code too large: {} bytes (max {} bytes / 512 KB)",
-                code_bytes.len(),
-                MAX_CONTRACT_CODE,
-            ),
-        });
-    }
-
-    let signature = parse_pq_signature_value(&arr[3])?;
-
-    // Verify signature: owner must sign SHA-256(code_bytes)
-    let mut hasher = Sha256::new();
-    hasher.update(&code_bytes);
-    let code_hash_bytes = hasher.finalize();
-    if !LichenKeypair::verify(&owner_pubkey, &code_hash_bytes, &signature) {
-        return Err(RpcError {
-            code: -32003,
-            message: "Invalid signature: owner must sign SHA-256(code)".to_string(),
-        });
-    }
-    let upgrade_code_hash = Hash::hash(&code_bytes);
-    ensure_rpc_code_hash_not_deploy_blocked(state, &upgrade_code_hash, "upgradeContract")?;
-
-    // Load existing contract
-    let contract_account = state
-        .state
-        .get_account(&contract_pubkey)
-        .map_err(|e| RpcError {
-            code: -32000,
-            message: format!("Database error: {}", e),
-        })?
-        .ok_or_else(|| RpcError {
-            code: -32000,
-            message: format!("Contract not found at {}", contract_pubkey.to_base58()),
-        })?;
-
-    let mut contract: ContractAccount =
-        serde_json::from_slice(&contract_account.data).map_err(|e| RpcError {
-            code: -32000,
-            message: format!("Failed to deserialize contract: {}", e),
-        })?;
-
-    // Verify caller is the contract owner
-    if contract.owner != owner_pubkey {
-        return Err(RpcError {
-            code: -32003,
-            message: "Only the contract owner can upgrade".to_string(),
-        });
-    }
-
-    // Charge upgrade fee (10 LICN)
-    let upgrade_fee = lichen_core::CONTRACT_UPGRADE_FEE;
-    let owner_account = state
-        .state
-        .get_account(&owner_pubkey)
-        .map_err(|e| RpcError {
-            code: -32000,
-            message: format!("Database error: {}", e),
-        })?
-        .ok_or_else(|| RpcError {
-            code: -32000,
-            message: "Owner account not found".to_string(),
-        })?;
-
-    if owner_account.spendable < upgrade_fee {
-        return Err(RpcError {
-            code: -32000,
-            message: format!(
-                "Insufficient spendable balance: need {} spores ({:.1} LICN), have {} spendable ({:.1} LICN)",
-                upgrade_fee,
-                upgrade_fee as f64 / 1_000_000_000.0,
-                owner_account.spendable,
-                owner_account.spendable as f64 / 1_000_000_000.0,
-            ),
-        });
-    }
-
-    // AUDIT-FIX F-2: Use StateBatch for atomic all-or-nothing commit of
-    // owner debit + treasury credit + contract upgrade.
-    let mut batch = state.state.begin_batch();
-
-    let mut updated_owner = owner_account.clone();
-    updated_owner
-        .deduct_spendable(upgrade_fee)
-        .map_err(|e| RpcError {
-            code: -32000,
-            message: format!("Failed to deduct upgrade fee: {}", e),
-        })?;
-    batch
-        .put_account(&owner_pubkey, &updated_owner)
-        .map_err(|e| RpcError {
-            code: -32000,
-            message: format!("Failed to update owner balance: {}", e),
-        })?;
-
-    // Credit fee to treasury
-    let treasury_pubkey = state
-        .state
-        .get_treasury_pubkey()
-        .map_err(|e| RpcError {
-            code: -32000,
-            message: format!("Database error: {}", e),
-        })?
-        .ok_or_else(|| RpcError {
-            code: -32000,
-            message: "Treasury pubkey not set".to_string(),
-        })?;
-    let mut treasury_account = state
-        .state
-        .get_account(&treasury_pubkey)
-        .map_err(|e| RpcError {
-            code: -32000,
-            message: format!("Database error: {}", e),
-        })?
-        .unwrap_or_else(|| lichen_core::Account::new(0, treasury_pubkey));
-    treasury_account
-        .add_spendable(upgrade_fee)
-        .map_err(|e| RpcError {
-            code: -32000,
-            message: format!("Treasury balance overflow: {}", e),
-        })?;
-    batch
-        .put_account(&treasury_pubkey, &treasury_account)
-        .map_err(|e| RpcError {
-            code: -32000,
-            message: format!("Failed to credit treasury: {}", e),
-        })?;
-
-    // Perform the upgrade: bump version, store previous hash, replace code
-    let old_version = contract.version;
-    contract.previous_code_hash = Some(contract.code_hash);
-    contract.version = contract.version.saturating_add(1);
-
-    // Compute new code hash
-    let mut code_hasher = Sha256::new();
-    code_hasher.update(&code_bytes);
-    let new_hash = code_hasher.finalize();
-    let mut hash_bytes = [0u8; 32];
-    hash_bytes.copy_from_slice(&new_hash[..32]);
-    contract.code_hash = lichen_core::Hash(hash_bytes);
-    contract.code = code_bytes;
-
-    // Serialize back
-    let mut updated_account = contract_account.clone();
-    updated_account.data = serde_json::to_vec(&contract).map_err(|e| RpcError {
-        code: -32000,
-        message: format!("Failed to serialize upgraded contract: {}", e),
-    })?;
-
-    batch
-        .put_account(&contract_pubkey, &updated_account)
-        .map_err(|e| RpcError {
-            code: -32000,
-            message: format!("Failed to store upgraded contract: {}", e),
-        })?;
-
-    // Commit all three writes atomically
-    state.state.commit_batch(batch).map_err(|e| RpcError {
-        code: -32000,
-        message: format!("Atomic upgrade commit failed: {}", e),
-    })?;
-
-    log_privileged_rpc_mutation(
-        "upgradeContract",
-        "legacy_admin",
-        &owner_pubkey.to_base58(),
-        "contract",
-        Some(&contract_pubkey.to_base58()),
-        serde_json::json!({
-            "previous_version": old_version,
-            "version": contract.version,
-            "code_size": updated_account.data.len(),
-            "upgrade_fee": upgrade_fee,
-        }),
-    );
-
-    Ok(serde_json::json!({
-        "program_id": contract_pubkey.to_base58(),
-        "owner": owner_pubkey.to_base58(),
-        "version": contract.version,
-        "previous_version": old_version,
-        "code_size": updated_account.data.len(),
-        "upgrade_fee": upgrade_fee,
-        "upgrade_fee_licn": upgrade_fee as f64 / 1_000_000_000.0,
-    }))
 }
 
 // ============================================================================
@@ -15099,36 +14249,61 @@ async fn handle_get_program_calls(
             message: "Invalid params: expected [program_pubkey, options?]".to_string(),
         })?;
 
-    let limit = arr
-        .get(1)
+    let opts = arr.get(1);
+    let limit = opts
         .and_then(|v| v.get("limit"))
         .and_then(|v| v.as_u64())
         .unwrap_or(50)
         .min(500) as usize;
+    if limit == 0 {
+        return Err(RpcError {
+            code: -32602,
+            message: "Invalid limit: expected an integer greater than zero".to_string(),
+        });
+    }
 
-    let before_slot = arr
-        .get(1)
+    let before_slot = opts
         .and_then(|v| v.get("before_slot"))
         .and_then(|v| v.as_u64());
+    let before_cursor = resolve_indexed_list_cursor(
+        before_slot,
+        opts.and_then(|value| value.get("before_cursor")),
+    )?
+    .map(|(slot, sequence)| {
+        u32::try_from(sequence)
+            .map(|sequence| (slot, sequence))
+            .map_err(|_| RpcError {
+                code: -32602,
+                message: "Invalid pagination cursor sequence".to_string(),
+            })
+    })
+    .transpose()?;
 
     let program_pubkey = Pubkey::from_base58(program_str).map_err(|e| RpcError {
         code: -32602,
         message: format!("Invalid program pubkey: {}", e),
     })?;
 
-    let calls = state
+    let indexed = state
         .state
-        .get_program_calls(&program_pubkey, limit, before_slot)
+        .get_program_calls_paginated_exact(&program_pubkey, limit.saturating_add(1), before_cursor)
         .map_err(|e| RpcError {
             code: -32000,
             message: format!("Database error: {}", e),
         })?;
+    let has_more = indexed.len() > limit;
+    let page_items = if has_more {
+        &indexed[..limit]
+    } else {
+        indexed.as_slice()
+    };
 
-    let items: Vec<serde_json::Value> = calls
-        .into_iter()
-        .map(|call| {
+    let items: Vec<serde_json::Value> = page_items
+        .iter()
+        .map(|(call, sequence)| {
             serde_json::json!({
                 "slot": call.slot,
+                "sequence": sequence,
                 "timestamp": call.timestamp,
                 "program": call.program.to_base58(),
                 "caller": call.caller.to_base58(),
@@ -15138,11 +14313,16 @@ async fn handle_get_program_calls(
             })
         })
         .collect();
+    let next_cursor = page_items
+        .last()
+        .map(|(call, sequence)| encode_indexed_list_cursor(call.slot, *sequence as u64));
 
     Ok(serde_json::json!({
         "program": program_pubkey.to_base58(),
         "count": items.len(),
         "calls": items,
+        "has_more": has_more,
+        "next_cursor": if has_more { next_cursor } else { None },
     }))
 }
 
@@ -15174,8 +14354,22 @@ async fn handle_get_program_storage(
             message: "Invalid params: expected [program_pubkey, options?]".to_string(),
         })?;
 
-    let limit = arr
+    if arr.len() > 2 {
+        return Err(RpcError {
+            code: -32602,
+            message: "Invalid params: expected [program_pubkey, options?]".to_string(),
+        });
+    }
+    let options = arr
         .get(1)
+        .map(|value| {
+            value.as_object().ok_or_else(|| RpcError {
+                code: -32602,
+                message: "Invalid params: program storage options must be an object".to_string(),
+            })
+        })
+        .transpose()?;
+    let limit = options
         .and_then(|v| v.get("limit"))
         .and_then(|v| v.as_u64())
         .unwrap_or(50)
@@ -16239,13 +15433,21 @@ async fn handle_get_lichenid_agent_directory(
     let mut offset: usize = 0;
 
     if let Some(value) = params {
-        let options_obj = if let Some(array) = value.as_array() {
-            array.first().and_then(|entry| entry.as_object())
-        } else {
-            value.as_object()
-        };
-
-        if let Some(options) = options_obj {
+        let array = value.as_array().ok_or_else(|| RpcError {
+            code: -32602,
+            message: "Invalid params: expected [{...options}]".to_string(),
+        })?;
+        if array.len() > 1 {
+            return Err(RpcError {
+                code: -32602,
+                message: "Invalid params: expected at most one options object".to_string(),
+            });
+        }
+        if let Some(options) = array.first() {
+            let options = options.as_object().ok_or_else(|| RpcError {
+                code: -32602,
+                message: "Invalid params: options must be an object".to_string(),
+            })?;
             filter_type = options
                 .get("type")
                 .and_then(|v| v.as_u64())
@@ -16626,8 +15828,22 @@ async fn handle_get_nfts_by_owner(
             message: "Invalid params: expected [owner_pubkey, options?]".to_string(),
         })?;
 
-    let limit = arr
+    if arr.len() > 2 {
+        return Err(RpcError {
+            code: -32602,
+            message: "Invalid params: expected [owner_pubkey, options?]".to_string(),
+        });
+    }
+    let options = arr
         .get(1)
+        .map(|value| {
+            value.as_object().ok_or_else(|| RpcError {
+                code: -32602,
+                message: "Invalid params: NFT options must be an object".to_string(),
+            })
+        })
+        .transpose()?;
+    let limit = options
         .and_then(|v| v.get("limit"))
         .and_then(|v| v.as_u64())
         .unwrap_or(50)
@@ -16703,8 +15919,22 @@ async fn handle_get_nfts_by_collection(
             message: "Invalid params: expected [collection_pubkey, options?]".to_string(),
         })?;
 
-    let limit = arr
+    if arr.len() > 2 {
+        return Err(RpcError {
+            code: -32602,
+            message: "Invalid params: expected [collection_pubkey, options?]".to_string(),
+        });
+    }
+    let options = arr
         .get(1)
+        .map(|value| {
+            value.as_object().ok_or_else(|| RpcError {
+                code: -32602,
+                message: "Invalid params: NFT options must be an object".to_string(),
+            })
+        })
+        .transpose()?;
+    let limit = options
         .and_then(|v| v.get("limit"))
         .and_then(|v| v.as_u64())
         .unwrap_or(50)
@@ -16780,15 +16010,24 @@ async fn handle_get_nft_activity(
             message: "Invalid params: expected [collection_pubkey, options?]".to_string(),
         })?;
 
-    let limit = arr
+    if arr.len() > 2 {
+        return Err(RpcError {
+            code: -32602,
+            message: "Invalid params: expected [collection_pubkey, options?]".to_string(),
+        });
+    }
+    let options = arr
         .get(1)
-        .and_then(|v| {
-            if v.is_object() {
-                v.get("limit").and_then(|val| val.as_u64())
-            } else {
-                v.as_u64()
-            }
+        .map(|value| {
+            value.as_object().ok_or_else(|| RpcError {
+                code: -32602,
+                message: "Invalid params: NFT options must be an object".to_string(),
+            })
         })
+        .transpose()?;
+    let limit = options
+        .and_then(|v| v.get("limit"))
+        .and_then(|v| v.as_u64())
         .unwrap_or(50)
         .min(500) as usize;
 
@@ -16950,62 +16189,27 @@ fn parse_market_params_extended(
         return Ok(default_market_filter_params(limit_default));
     };
 
-    // Object-form: { collection, limit, price_min, price_max, seller, sort_by, category, rarity, token_id, token }
-    if let Some(obj) = params.as_object() {
-        return parse_market_params_object(obj, limit_default);
-    }
-
-    // Array-form: [{...}] or [collection_pubkey?, options?].
+    // Canonical JSON-RPC params: [{ collection, limit, price_min, price_max,
+    // seller, sort_by, category, rarity, token_id, token }].
     let arr = params.as_array().ok_or_else(|| RpcError {
         code: -32602,
-        message:
-            "Invalid params: expected [collection_pubkey?, options?] or {collection, limit, ...}"
-                .to_string(),
+        message: "Invalid params: expected [{collection, limit, ...}]".to_string(),
     })?;
 
-    if let Some(first) = arr.first().and_then(|value| value.as_object()) {
-        return parse_market_params_object(first, limit_default);
+    if arr.is_empty() {
+        return Ok(default_market_filter_params(limit_default));
     }
-
-    let mut filters = if let Some(second) = arr.get(1).and_then(|value| value.as_object()) {
-        parse_market_params_object(second, limit_default)?
-    } else {
-        default_market_filter_params(limit_default)
-    };
-
-    if let Some(first) = arr.first() {
-        if let Some(collection_str) = first.as_str().filter(|s| !s.is_empty()) {
-            filters.collection =
-                Some(Pubkey::from_base58(collection_str).map_err(|e| RpcError {
-                    code: -32602,
-                    message: format!("Invalid collection pubkey: {}", e),
-                })?);
-        } else if let Some(limit) = first.as_u64() {
-            filters.limit = limit.min(500) as usize;
-        }
+    if arr.len() != 1 {
+        return Err(RpcError {
+            code: -32602,
+            message: "Invalid params: expected one marketplace filter object".to_string(),
+        });
     }
-
-    if let Some(limit) = arr.get(1).and_then(|value| value.as_u64()) {
-        filters.limit = limit.min(500) as usize;
-    }
-
-    if filters.collection.is_none() {
-        if let Some(collection_str) = arr
-            .get(1)
-            .and_then(|value| value.as_object())
-            .and_then(|obj| obj.get("collection"))
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-        {
-            filters.collection =
-                Some(Pubkey::from_base58(collection_str).map_err(|e| RpcError {
-                    code: -32602,
-                    message: format!("Invalid collection pubkey: {}", e),
-                })?);
-        }
-    }
-
-    Ok(filters)
+    let object = arr[0].as_object().ok_or_else(|| RpcError {
+        code: -32602,
+        message: "Invalid params: marketplace filter must be an object".to_string(),
+    })?;
+    parse_market_params_object(object, limit_default)
 }
 
 /// Shared subset for endpoints that only need collection and limit.
@@ -17473,7 +16677,7 @@ async fn handle_eth_send_raw_transaction(
 
     let tx = Transaction::new_evm(message);
 
-    submit_transaction(state, tx)?;
+    submit_transaction(state, tx).await?;
 
     let evm_hash: [u8; 32] = evm_tx.hash.into();
     Ok(serde_json::json!(format!("0x{}", hex::encode(evm_hash))))
@@ -18854,7 +18058,7 @@ async fn handle_get_token_holders(
     }))
 }
 
-/// Get token transfers: params = [token_program, limit?, before_slot?]
+/// Get token transfers: params = [token_program, limit?, before_slot?, before_cursor?]
 async fn handle_get_token_transfers(
     state: &RpcState,
     params: Option<serde_json::Value>,
@@ -18877,43 +18081,62 @@ async fn handle_get_token_transfers(
             message: "Missing token_program".to_string(),
         })?;
     let limit = arr.get(1).and_then(|v| v.as_u64()).unwrap_or(100).min(1000) as usize; // AUDIT-FIX 2.16
+    if limit == 0 {
+        return Err(RpcError {
+            code: -32602,
+            message: "Invalid limit: expected an integer greater than zero".to_string(),
+        });
+    }
 
     let before_slot = arr.get(2).and_then(|v| v.as_u64());
+    let before_cursor = resolve_indexed_list_cursor(before_slot, arr.get(3))?;
 
     let token_program = Pubkey::from_base58(token_str).map_err(|e| RpcError {
         code: -32602,
         message: format!("Invalid token_program: {}", e),
     })?;
 
-    let transfers = state
+    let indexed = state
         .state
-        .get_token_transfers(&token_program, limit, before_slot)
+        .get_token_transfers_paginated_exact(&token_program, limit.saturating_add(1), before_cursor)
         .map_err(|e| RpcError {
             code: -32000,
             message: format!("Database error: {}", e),
         })?;
+    let has_more = indexed.len() > limit;
+    let page_items = if has_more {
+        &indexed[..limit]
+    } else {
+        indexed.as_slice()
+    };
 
-    let transfer_list: Vec<serde_json::Value> = transfers
+    let transfer_list: Vec<serde_json::Value> = page_items
         .iter()
-        .map(|t| {
+        .map(|(transfer, sequence)| {
             serde_json::json!({
-                "from": t.from,
-                "to": t.to,
-                "amount": t.amount,
-                "slot": t.slot,
-                "tx_hash": t.tx_hash,
+                "from": transfer.from,
+                "to": transfer.to,
+                "amount": transfer.amount,
+                "slot": transfer.slot,
+                "sequence": sequence,
+                "tx_hash": transfer.tx_hash,
             })
         })
         .collect();
+    let next_cursor = page_items
+        .last()
+        .map(|(transfer, sequence)| encode_indexed_list_cursor(transfer.slot, *sequence));
 
     Ok(serde_json::json!({
         "token_program": token_str,
         "transfers": transfer_list,
         "count": transfer_list.len(),
+        "has_more": has_more,
+        "next_cursor": if has_more { next_cursor } else { None },
     }))
 }
 
-/// Get contract events: params = [program_id, limit?, before_slot?]
+/// Get contract events: params = [program_id, limit?, before_slot?, before_cursor?]
 async fn handle_get_contract_events(
     state: &RpcState,
     params: Option<serde_json::Value>,
@@ -18936,38 +18159,57 @@ async fn handle_get_contract_events(
             message: "Missing program_id".to_string(),
         })?;
     let limit = arr.get(1).and_then(|v| v.as_u64()).unwrap_or(100).min(1000) as usize; // AUDIT-FIX 2.16
+    if limit == 0 {
+        return Err(RpcError {
+            code: -32602,
+            message: "Invalid limit: expected an integer greater than zero".to_string(),
+        });
+    }
 
     let before_slot = arr.get(2).and_then(|v| v.as_u64());
+    let before_cursor = resolve_indexed_list_cursor(before_slot, arr.get(3))?;
 
     let program = Pubkey::from_base58(program_str).map_err(|e| RpcError {
         code: -32602,
         message: format!("Invalid program_id: {}", e),
     })?;
 
-    let events = state
+    let indexed = state
         .state
-        .get_events_by_program(&program, limit, before_slot)
+        .get_events_by_program_paginated_exact(&program, limit.saturating_add(1), before_cursor)
         .map_err(|e| RpcError {
             code: -32000,
             message: format!("Database error: {}", e),
         })?;
+    let has_more = indexed.len() > limit;
+    let page_items = if has_more {
+        &indexed[..limit]
+    } else {
+        indexed.as_slice()
+    };
 
-    let event_list: Vec<serde_json::Value> = events
+    let event_list: Vec<serde_json::Value> = page_items
         .iter()
-        .map(|e| {
+        .map(|(event, sequence)| {
             serde_json::json!({
-                "program": e.program.to_base58(),
-                "name": e.name,
-                "data": e.data,
-                "slot": e.slot,
+                "program": event.program.to_base58(),
+                "name": event.name,
+                "data": event.data,
+                "slot": event.slot,
+                "sequence": sequence,
             })
         })
         .collect();
+    let next_cursor = page_items
+        .last()
+        .map(|(event, sequence)| encode_indexed_list_cursor(event.slot, *sequence));
 
     Ok(serde_json::json!({
         "program": program_str,
         "events": event_list,
         "count": event_list.len(),
+        "has_more": has_more,
+        "next_cursor": if has_more { next_cursor } else { None },
     }))
 }
 
@@ -18975,7 +18217,7 @@ async fn handle_get_governance_events(
     state: &RpcState,
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
-    let (limit, before_slot) = match params {
+    let (limit, before_slot, before_cursor_value) = match params {
         Some(params) => {
             let arr = params.as_array().ok_or_else(|| RpcError {
                 code: -32602,
@@ -18987,25 +18229,52 @@ async fn handle_get_governance_events(
                     .unwrap_or(100)
                     .min(1000) as usize,
                 arr.get(1).and_then(|v| v.as_u64()),
+                arr.get(2).cloned(),
             )
         }
-        None => (100usize, None),
+        None => (100usize, None, None),
     };
+    if limit == 0 {
+        return Err(RpcError {
+            code: -32602,
+            message: "Invalid limit: expected an integer greater than zero".to_string(),
+        });
+    }
+    let before_cursor = resolve_indexed_list_cursor(before_slot, before_cursor_value.as_ref())?;
 
     let fetch_limit = limit.saturating_mul(4).clamp(256, 1000);
-    let events = state
+    let indexed = state
         .state
-        .get_events_by_program(&SYSTEM_PROGRAM_ID, fetch_limit, before_slot)
+        .get_events_by_program_paginated_exact(
+            &SYSTEM_PROGRAM_ID,
+            fetch_limit.saturating_add(1),
+            before_cursor,
+        )
         .map_err(|e| RpcError {
             code: -32000,
             message: format!("Database error: {}", e),
         })?;
 
-    let event_list: Vec<serde_json::Value> = events
-        .iter()
-        .filter_map(parse_governance_event)
-        .take(limit)
-        .map(|event| {
+    let mut selected = Vec::with_capacity(limit);
+    let mut consumed = 0usize;
+    for (event, sequence) in &indexed {
+        consumed = consumed.saturating_add(1);
+        if let Some(parsed) = parse_governance_event(event) {
+            selected.push((parsed, *sequence));
+            if selected.len() >= limit {
+                break;
+            }
+        }
+    }
+    let has_more = consumed < indexed.len() || indexed.len() > fetch_limit;
+    let next_cursor = consumed
+        .checked_sub(1)
+        .and_then(|index| indexed.get(index))
+        .map(|(event, sequence)| encode_indexed_list_cursor(event.slot, *sequence));
+
+    let event_list: Vec<serde_json::Value> = selected
+        .into_iter()
+        .map(|(event, sequence)| {
             serde_json::json!({
                 "proposal_id": event.proposal_id,
                 "kind": event.event_kind,
@@ -19041,6 +18310,7 @@ async fn handle_get_governance_events(
                 "restriction_lifted_slot": event.restriction_lifted_slot,
                 "restriction_lift_reason": event.restriction_lift_reason,
                 "slot": event.slot,
+                "sequence": sequence,
             })
         })
         .collect();
@@ -19049,6 +18319,8 @@ async fn handle_get_governance_events(
         "program": SYSTEM_PROGRAM_ID.to_base58(),
         "events": event_list,
         "count": event_list.len(),
+        "has_more": has_more,
+        "next_cursor": if has_more { next_cursor } else { None },
     }))
 }
 
@@ -19234,13 +18506,13 @@ async fn handle_request_airdrop(
     // Build and sign the transaction
     let msg = Message::new(vec![ix], recent_blockhash);
     let mut tx = Transaction::new(msg);
-    let sig = treasury_kp.sign(&tx.message.serialize());
+    let sig = treasury_kp.sign(&tx.message.signing_bytes_for_chain_id(&state.chain_id));
     tx.signatures.push(sig);
 
     let tx_hash = tx.signature().to_hex();
 
     // Submit through mempool for consensus processing
-    submit_transaction(state, tx)?;
+    submit_transaction(state, tx).await?;
 
     info!(
         "💧 Airdrop tx submitted: {} LICN from treasury to {} (tx: {})",
@@ -20069,9 +19341,17 @@ async fn handle_get_dex_analytics_stats(state: &RpcState) -> Result<serde_json::
     for (key, value) in &entries {
         if key.starts_with(b"ana_cc_") {
             if value.len() >= 8 {
-                total_candles += u64::from_le_bytes([
+                let logical_count = u64::from_le_bytes([
                     value[0], value[1], value[2], value[3], value[4], value[5], value[6], value[7],
                 ]);
+                let interval = std::str::from_utf8(key)
+                    .ok()
+                    .and_then(|text| text.rsplit('_').next())
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .unwrap_or(0);
+                total_candles = total_candles.saturating_add(
+                    logical_count.min(lichen_core::dex::analytics_candle_retention(interval)),
+                );
             }
             if let Some(pair_part) = key.get(7..) {
                 if let Some(end) = pair_part.iter().position(|&b| b == b'_') {
@@ -20108,17 +19388,6 @@ async fn handle_get_dex_governance_stats(state: &RpcState) -> Result<serde_json:
         "total_votes": cf_stats_u64(state, "DEXGOV", b"gov_total_votes"),
         "voter_count": cf_stats_u64(state, "DEXGOV", b"gov_voter_count"),
         "paused": cf_stats_bool(state, "DEXGOV", b"gov_paused"),
-    }))
-}
-
-/// getLichenSwapStats — Legacy swap stats
-async fn handle_get_lichenswap_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
-    resolve_symbol_pubkey(state, "LICHENSWAP")?;
-    Ok(serde_json::json!({
-        "swap_count": cf_stats_u64(state, "LICHENSWAP", b"ms_swap_count"),
-        "volume_a": cf_stats_u64(state, "LICHENSWAP", b"ms_volume_a"),
-        "volume_b": cf_stats_u64(state, "LICHENSWAP", b"ms_volume_b"),
-        "paused": cf_stats_bool(state, "LICHENSWAP", b"ms_paused"),
     }))
 }
 
@@ -20451,20 +19720,12 @@ async fn handle_verify_neo_reserve_liability_proof(
         .ok_or_else(|| invalid_params("proof payload must be an object"))?;
 
     if let Some(proof_type) = object.get("proof_type").and_then(|value| value.as_str()) {
-        if proof_type != ProofType::ReserveLiability.as_str() && proof_type != "reserve-liability" {
+        if proof_type != ProofType::ReserveLiability.as_str() {
             return Err(invalid_params(
                 "proof_type must be reserve_liability for Neo reserve/liability verification",
             ));
         }
     }
-    if let Some(legacy_type) = object.get("type").and_then(|value| value.as_str()) {
-        if legacy_type != "reserve_liability" && legacy_type != "reserve-liability" {
-            return Err(invalid_params(
-                "type must be reserve_liability for Neo reserve/liability verification",
-            ));
-        }
-    }
-
     let proof_hex = object
         .get("proof")
         .and_then(|value| value.as_str())
@@ -20568,7 +19829,7 @@ async fn handle_get_lichenbridge_stats(state: &RpcState) -> Result<serde_json::V
 
 /// createBridgeDeposit — Proxy to custody POST /deposits
 /// Params: [{ user_id, chain, asset, auth }]
-/// Auth accepts legacy V1 and route-bound V2 bridge access envelopes.
+/// Auth requires a route/action-bound V2 bridge access envelope.
 async fn handle_create_bridge_deposit(
     state: &RpcState,
     params: Option<serde_json::Value>,
@@ -21046,51 +20307,53 @@ async fn handle_get_oracle_prices(state: &RpcState) -> Result<serde_json::Value,
 #[cfg(test)]
 mod tests {
     use super::{
-        bridge_access_message, bridge_access_message_v2_create, classify_evm_method_tier,
-        classify_method, classify_solana_method_tier, clear_privileged_rpc_mutation_test_sink,
-        constant_time_eq, decode_contract_result_u64, disk_readiness_from_counts,
-        encode_readonly_return_data_b64, encode_rpc_response, filter_signatures_for_address,
-        get_cached_program_list_response, get_cached_read_slot_response,
-        handle_build_ban_code_hash_tx, handle_build_extend_restriction_tx,
-        handle_build_lift_restriction_tx, handle_build_pause_bridge_route_tx,
-        handle_build_quarantine_contract_tx, handle_build_restrict_account_asset_tx,
-        handle_build_restrict_account_tx, handle_build_resume_bridge_route_tx,
-        handle_build_resume_contract_tx, handle_build_set_frozen_asset_amount_tx,
-        handle_build_suspend_contract_tx, handle_build_terminate_contract_tx,
-        handle_build_unban_code_hash_tx, handle_build_unrestrict_account_asset_tx,
-        handle_build_unrestrict_account_tx, handle_can_receive, handle_can_send,
-        handle_can_transfer, handle_create_bridge_deposit,
+        bridge_access_message_v2_create, classify_evm_method_tier, classify_method,
+        classify_solana_method_tier, clear_privileged_rpc_mutation_test_sink,
+        decode_contract_result_u64, disk_readiness_from_counts, encode_readonly_return_data_b64,
+        encode_rpc_response, filter_signatures_for_address, get_cached_program_list_response,
+        get_cached_read_slot_response, handle_build_ban_code_hash_tx,
+        handle_build_extend_restriction_tx, handle_build_lift_restriction_tx,
+        handle_build_pause_bridge_route_tx, handle_build_quarantine_contract_tx,
+        handle_build_restrict_account_asset_tx, handle_build_restrict_account_tx,
+        handle_build_resume_bridge_route_tx, handle_build_resume_contract_tx,
+        handle_build_set_frozen_asset_amount_tx, handle_build_suspend_contract_tx,
+        handle_build_terminate_contract_tx, handle_build_unban_code_hash_tx,
+        handle_build_unrestrict_account_asset_tx, handle_build_unrestrict_account_tx,
+        handle_can_receive, handle_can_send, handle_can_transfer, handle_create_bridge_deposit,
         handle_get_account_asset_restriction_status, handle_get_account_proof,
         handle_get_account_restriction_status, handle_get_all_symbol_registry,
-        handle_get_asset_restriction_status, handle_get_bridge_deposit,
+        handle_get_asset_restriction_status, handle_get_block_commit, handle_get_bridge_deposit,
         handle_get_bridge_route_restriction_status, handle_get_code_hash_restriction_status,
-        handle_get_contract_info, handle_get_contract_lifecycle_status,
-        handle_get_governance_events, handle_get_governed_proposal, handle_get_incident_status,
-        handle_get_lichenoracle_stats, handle_get_neo_gas_rewards_position,
-        handle_get_neo_gas_rewards_stats, handle_get_neo_zk_proof_service_status,
-        handle_get_program, handle_get_program_stats, handle_get_recent_blocks,
+        handle_get_contract_events, handle_get_contract_info, handle_get_contract_lifecycle_status,
+        handle_get_epoch_info, handle_get_governance_events, handle_get_governed_proposal,
+        handle_get_incident_status, handle_get_lichenoracle_stats,
+        handle_get_neo_gas_rewards_position, handle_get_neo_gas_rewards_stats,
+        handle_get_neo_zk_proof_service_status, handle_get_program, handle_get_program_calls,
+        handle_get_program_stats, handle_get_recent_blocks,
         handle_get_recent_shielded_transactions, handle_get_recent_transactions,
         handle_get_restriction, handle_get_restriction_status, handle_get_service_fleet_status,
-        handle_get_signed_metadata_manifest, handle_get_staking_status, handle_get_token_accounts,
-        handle_get_token_balance, handle_get_transactions_by_address, handle_get_validator_info,
-        handle_get_validators, handle_get_wbtc_stats, handle_get_wgas_stats, handle_get_wneo_stats,
-        handle_list_active_restrictions, handle_list_restrictions, handle_set_fee_config,
-        handle_solana_get_account_info, handle_solana_get_token_account_balance,
+        handle_get_signed_metadata_manifest, handle_get_staking_status, handle_get_supply,
+        handle_get_token_accounts, handle_get_token_balance, handle_get_token_transfers,
+        handle_get_transactions_by_address, handle_get_validator_info, handle_get_validators,
+        handle_get_wbtc_stats, handle_get_wgas_stats, handle_get_wneo_stats,
+        handle_list_active_restrictions, handle_list_restrictions, handle_solana_get_account_info,
+        handle_solana_get_block_height, handle_solana_get_token_account_balance,
         handle_solana_get_token_accounts_by_owner, handle_verify_neo_reserve_liability_proof,
         live_signed_metadata_source_rpc, method_allowed_when_rpc_unready, parse_bridge_access_auth,
         parse_get_block_slot_param, parse_governance_event, parse_market_params_extended,
         parse_rpc_request, parse_rpc_tier_probe, parse_topic_hash, pq_signature_json,
         prediction_address_aliases, privileged_rpc_mutation_test_output,
-        put_cached_program_list_response, put_cached_read_slot_response, rpc_read_slot_cache_key,
-        rpc_readiness, rpc_readiness_json, rpc_unready_error,
-        solana_method_allowed_when_rpc_unready, storage_key_with_pubkey_hex,
-        storage_key_with_u64_le, strip_admin_token_from_params,
-        transaction_has_governed_system_preflight, transaction_summary_fields,
-        validate_incoming_transaction_limits, validate_solana_encoding,
-        validate_solana_transaction_details, verify_admin_auth, verify_bridge_access_auth_at,
-        verify_bridge_access_auth_for_create_at, AirdropCooldowns, MethodTier, RateLimiter,
-        RpcError, RpcResponse, RpcState, AIRDROP_COOLDOWN_MAX_ENTRIES, AIRDROP_COOLDOWN_SECS,
-        BRIDGE_ACCESS_DOMAIN_V2, BRIDGE_AUTH_ACTION_CREATE_DEPOSIT, PROGRAM_LIST_CACHE_TTL_MS,
+        put_cached_program_list_response, put_cached_read_slot_response,
+        rpc_commit_certificate_for_block, rpc_read_slot_cache_key, rpc_readiness,
+        rpc_readiness_json, rpc_unready_error, solana_method_allowed_when_rpc_unready,
+        solana_transaction_json, storage_key_with_pubkey_hex, storage_key_with_u64_le,
+        submit_transaction, transaction_has_governed_system_preflight, transaction_summary_fields,
+        tx_to_rpc_json, validate_incoming_transaction_limits, validate_solana_encoding,
+        validate_solana_transaction_details, validate_transaction_for_submission_queue,
+        verify_bridge_access_auth_at, verify_bridge_access_auth_for_create_at, AirdropCooldowns,
+        MethodTier, RateLimiter, RpcError, RpcResponse, RpcState, TransactionSubmission,
+        AIRDROP_COOLDOWN_MAX_ENTRIES, AIRDROP_COOLDOWN_SECS, BRIDGE_ACCESS_DOMAIN_V2,
+        BRIDGE_AUTH_ACTION_CREATE_DEPOSIT, PROGRAM_LIST_CACHE_TTL_MS,
         RPC_DISK_CRITICAL_MIN_AVAILABLE_BYTES, RPC_READ_SLOT_CACHE_MAX_ENTRIES,
         SOLANA_SPL_TOKEN_PROGRAM_ID, SOLANA_TOKEN_ACCOUNT_SPACE,
         SYSTEM_PROPOSE_GOVERNANCE_ACTION_IX,
@@ -21110,9 +20373,10 @@ mod tests {
     use lichen_core::keypair_file::KeypairFile;
     use lichen_core::{
         consensus::{ValidatorInfo, ValidatorSet},
-        Block, Hash, Pubkey, RestrictionMode, RestrictionReason, RestrictionRecord,
-        RestrictionStatus, RestrictionTarget, StakePool, StateStore, SymbolRegistryEntry,
-        Transaction, MIN_VALIDATOR_STAKE, SYSTEM_PROGRAM_ID,
+        Block, CanonicalCommitCertificate, CommitSignature, Hash, Precommit, Pubkey,
+        RestrictionMode, RestrictionReason, RestrictionRecord, RestrictionStatus,
+        RestrictionTarget, StakePool, StateStore, SymbolRegistryEntry, Transaction,
+        MIN_VALIDATOR_STAKE, SYSTEM_PROGRAM_ID,
     };
     use lru::LruCache;
     use std::collections::HashMap;
@@ -21120,7 +20384,7 @@ mod tests {
     use std::sync::Arc;
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
     use tempfile::tempdir;
-    use tokio::sync::{Mutex as TokioMutex, RwLock};
+    use tokio::sync::{mpsc, Mutex as TokioMutex, RwLock};
     use tower::ServiceExt;
 
     fn make_test_rpc_state_with_program_cache_capacity(
@@ -21141,7 +20405,6 @@ mod tests {
             version: "test".to_string(),
             evm_chain_id: 31337,
             solana_tx_cache: Arc::new(RwLock::new(LruCache::new(NonZeroUsize::new(16).unwrap()))),
-            admin_token: Arc::new(std::sync::RwLock::new(None)),
             rate_limiter: Arc::new(RateLimiter::new(1_000)),
             finality: None,
             _dex_broadcaster: Arc::new(super::dex_ws::DexEventBroadcaster::new(16)),
@@ -21174,6 +20437,67 @@ mod tests {
 
     fn make_test_rpc_state(state: StateStore) -> RpcState {
         make_test_rpc_state_with_program_cache_capacity(state, 16)
+    }
+
+    fn signed_test_transfer(
+        signer: &LichenKeypair,
+        recent_blockhash: Hash,
+        chain_id: &str,
+    ) -> Transaction {
+        let mut data = vec![0u8];
+        data.extend_from_slice(&1u64.to_le_bytes());
+        let ix = lichen_core::Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![signer.pubkey(), Pubkey([0x02; 32])],
+            data,
+        };
+        let message = lichen_core::Message::new(vec![ix], recent_blockhash);
+        let mut tx = Transaction::new(message);
+        tx.signatures
+            .push(signer.sign(&tx.message.signing_bytes_for_chain_id(chain_id)));
+        tx
+    }
+
+    #[test]
+    fn submission_queue_validation_enforces_freshness_and_chain_id() {
+        let dir = tempdir().unwrap();
+        let state = StateStore::open(dir.path()).unwrap();
+        let genesis = Block::new_with_timestamp(
+            0,
+            Hash::default(),
+            Hash::default(),
+            [0u8; 32],
+            Vec::new(),
+            0,
+        );
+        let genesis_hash = genesis.hash();
+        state.put_block(&genesis).unwrap();
+        state.set_last_slot(0).unwrap();
+        let rpc_state = make_test_rpc_state(state);
+        let signer = LichenKeypair::generate();
+
+        let valid = signed_test_transfer(&signer, genesis_hash, &rpc_state.chain_id);
+        validate_transaction_for_submission_queue(&rpc_state, &valid)
+            .expect("recent chain-id-signed transaction should enter queue");
+
+        let stale = signed_test_transfer(&signer, Hash::hash(b"missing"), &rpc_state.chain_id);
+        let err = validate_transaction_for_submission_queue(&rpc_state, &stale)
+            .expect_err("stale blockhash must be rejected before queueing");
+        assert!(err.message.contains("Blockhash not found"));
+
+        let wrong_chain = signed_test_transfer(&signer, genesis_hash, "wrong-chain");
+        let err = validate_transaction_for_submission_queue(&rpc_state, &wrong_chain)
+            .expect_err("wrong chain-id signature must be rejected before queueing");
+        assert!(err.message.contains("Missing or invalid signature"));
+
+        let sentinel_native = signed_test_transfer(
+            &signer,
+            lichen_core::EVM_SENTINEL_BLOCKHASH,
+            &rpc_state.chain_id,
+        );
+        let err = validate_transaction_for_submission_queue(&rpc_state, &sentinel_native)
+            .expect_err("native EVM-sentinel transaction must be rejected before queueing");
+        assert!(err.message.contains("EVM sentinel blockhash"));
     }
 
     #[test]
@@ -21475,6 +20799,328 @@ mod tests {
         assert_eq!(txs[0]["governed_transfer"]["metadata_complete"], true);
     }
 
+    #[tokio::test]
+    async fn transaction_lists_use_durable_failure_receipts() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+        let payer = Pubkey([0x41; 32]);
+        let recipient = Pubkey([0x42; 32]);
+        let tx = Transaction::new(lichen_core::Message::new(
+            vec![lichen_core::Instruction {
+                program_id: SYSTEM_PROGRAM_ID,
+                accounts: vec![payer, recipient],
+                data: vec![0; 9],
+            }],
+            Hash::hash(b"failed-list-receipt"),
+        ));
+        let signature = tx.signature();
+        let block = Block::new_with_timestamp(
+            51,
+            Hash::default(),
+            Hash::default(),
+            [0u8; 32],
+            vec![tx],
+            1_700_000_051,
+        );
+        state.put_block(&block).unwrap();
+        state
+            .put_tx_meta_full(
+                &signature,
+                &lichen_core::TxMeta {
+                    success: Some(false),
+                    error: Some("Execution error: insufficient balance".to_string()),
+                    fee_paid: Some(77),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        let rpc_state = make_test_rpc_state(state);
+        let account_history = handle_get_transactions_by_address(
+            &rpc_state,
+            Some(serde_json::json!([payer.to_base58(), { "limit": 5 }])),
+        )
+        .await
+        .unwrap();
+        let recent =
+            handle_get_recent_transactions(&rpc_state, Some(serde_json::json!([{ "limit": 5 }])))
+                .await
+                .unwrap();
+
+        for entry in [
+            &account_history["transactions"][0],
+            &recent["transactions"][0],
+        ] {
+            assert_eq!(entry["status"], "Failed");
+            assert_eq!(entry["success"], false);
+            assert_eq!(entry["error"], "Execution error: insufficient balance");
+            assert_eq!(entry["fee"], 77);
+        }
+    }
+
+    #[tokio::test]
+    async fn transaction_list_signature_cursors_preserve_same_slot_rows() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+        let payer = Pubkey([0x51; 32]);
+        let recipient = Pubkey([0x52; 32]);
+        let make_tx = |marker: u8| {
+            Transaction::new(lichen_core::Message::new(
+                vec![lichen_core::Instruction {
+                    program_id: SYSTEM_PROGRAM_ID,
+                    accounts: vec![payer, recipient],
+                    data: vec![marker],
+                }],
+                Hash::hash(&[marker]),
+            ))
+        };
+
+        let old_tx = make_tx(1);
+        let old_hash = old_tx.signature().to_hex();
+        let old_block = Block::new_with_timestamp(
+            60,
+            Hash::default(),
+            Hash::default(),
+            [0u8; 32],
+            vec![old_tx],
+            1_700_000_060,
+        );
+        state.put_block(&old_block).unwrap();
+
+        let same_slot_txs = vec![make_tx(2), make_tx(3), make_tx(4)];
+        let same_slot_hashes = same_slot_txs
+            .iter()
+            .map(|transaction| transaction.signature().to_hex())
+            .collect::<Vec<_>>();
+        let same_slot_block = Block::new_with_timestamp(
+            61,
+            old_block.hash(),
+            Hash::default(),
+            [0u8; 32],
+            same_slot_txs,
+            1_700_000_061,
+        );
+        state.put_block(&same_slot_block).unwrap();
+
+        let rpc_state = make_test_rpc_state(state);
+        for account_history in [false, true] {
+            let first = if account_history {
+                handle_get_transactions_by_address(
+                    &rpc_state,
+                    Some(serde_json::json!([payer.to_base58(), { "limit": 2 }])),
+                )
+                .await
+                .unwrap()
+            } else {
+                handle_get_recent_transactions(
+                    &rpc_state,
+                    Some(serde_json::json!([{ "limit": 2 }])),
+                )
+                .await
+                .unwrap()
+            };
+            let first_hashes = first["transactions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|transaction| transaction["signature"].as_str().unwrap())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                first_hashes,
+                vec![same_slot_hashes[2].as_str(), same_slot_hashes[1].as_str()]
+            );
+            assert_eq!(first["next_before"], same_slot_hashes[1]);
+            assert_eq!(first["next_before_slot"], 61);
+            assert_eq!(first["has_more"], true);
+
+            let before = first["next_before"].as_str().unwrap();
+            let second = if account_history {
+                handle_get_transactions_by_address(
+                    &rpc_state,
+                    Some(serde_json::json!([
+                        payer.to_base58(),
+                        { "limit": 2, "before": before }
+                    ])),
+                )
+                .await
+                .unwrap()
+            } else {
+                handle_get_recent_transactions(
+                    &rpc_state,
+                    Some(serde_json::json!([{ "limit": 2, "before": before }])),
+                )
+                .await
+                .unwrap()
+            };
+            let second_hashes = second["transactions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|transaction| transaction["signature"].as_str().unwrap())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                second_hashes,
+                vec![same_slot_hashes[0].as_str(), old_hash.as_str()]
+            );
+            assert_eq!(second["has_more"], false);
+            assert!(second["next_before"].is_null());
+        }
+    }
+
+    #[tokio::test]
+    async fn recent_transactions_hide_consensus_envelopes_without_short_pages() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+        let make_tx = |marker: u8| {
+            Transaction::new(lichen_core::Message::new(Vec::new(), Hash::hash(&[marker])))
+        };
+        let older = make_tx(1);
+        let newer = make_tx(2);
+        let older_hash = older.signature().to_hex();
+        let newer_hash = newer.signature().to_hex();
+        let consensus = Transaction {
+            signatures: Vec::new(),
+            message: lichen_core::Message::new(Vec::new(), Hash::hash(b"rpc-consensus-row")),
+            tx_type: lichen_core::TransactionType::Consensus,
+        };
+        let block = Block::new_with_timestamp(
+            62,
+            Hash::default(),
+            Hash::default(),
+            [0u8; 32],
+            vec![older, consensus, newer],
+            1_700_000_062,
+        );
+        state.put_block(&block).unwrap();
+
+        let result = handle_get_recent_transactions(
+            &make_test_rpc_state(state),
+            Some(serde_json::json!([{ "limit": 2 }])),
+        )
+        .await
+        .unwrap();
+        let transactions = result["transactions"].as_array().unwrap();
+        assert_eq!(transactions.len(), 2);
+        assert_eq!(transactions[0]["signature"], newer_hash);
+        assert_eq!(transactions[1]["signature"], older_hash);
+        assert_eq!(result["has_more"], false);
+    }
+
+    #[tokio::test]
+    async fn indexed_activity_rpc_cursors_preserve_same_slot_rows() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+        let program = Pubkey([0x61; 32]);
+
+        for sequence in 0..3u32 {
+            state
+                .put_token_transfer(
+                    &program,
+                    &lichen_core::state::TokenTransfer {
+                        token_program: program.to_base58(),
+                        from: Pubkey([0x62; 32]).to_base58(),
+                        to: Pubkey([0x63; 32]).to_base58(),
+                        amount: sequence as u64 + 1,
+                        slot: 70,
+                        tx_hash: Some(Hash::hash(&sequence.to_be_bytes()).to_hex()),
+                    },
+                )
+                .unwrap();
+            state
+                .record_program_call(
+                    &lichen_core::ProgramCallActivity {
+                        slot: 71,
+                        timestamp: 171,
+                        program,
+                        caller: Pubkey([0x64; 32]),
+                        function: format!("call_{sequence}"),
+                        value: sequence as u64,
+                        tx_signature: Hash::hash(&[sequence as u8]),
+                    },
+                    sequence,
+                )
+                .unwrap();
+        }
+        for name in ["zeta", "alpha", "middle"] {
+            state
+                .put_contract_event(
+                    &program,
+                    &lichen_core::contract::ContractEvent {
+                        program,
+                        name: name.to_string(),
+                        data: HashMap::new(),
+                        slot: 72,
+                    },
+                )
+                .unwrap();
+        }
+        let rpc_state = make_test_rpc_state(state);
+
+        let transfer_first = handle_get_token_transfers(
+            &rpc_state,
+            Some(serde_json::json!([program.to_base58(), 2])),
+        )
+        .await
+        .unwrap();
+        assert_eq!(transfer_first["transfers"][0]["amount"], 3);
+        assert_eq!(transfer_first["transfers"][1]["amount"], 2);
+        let transfer_cursor = transfer_first["next_cursor"].as_str().unwrap();
+        let transfer_second = handle_get_token_transfers(
+            &rpc_state,
+            Some(serde_json::json!([
+                program.to_base58(),
+                2,
+                null,
+                transfer_cursor
+            ])),
+        )
+        .await
+        .unwrap();
+        assert_eq!(transfer_second["transfers"][0]["amount"], 1);
+
+        let call_first = handle_get_program_calls(
+            &rpc_state,
+            Some(serde_json::json!([program.to_base58(), { "limit": 2 }])),
+        )
+        .await
+        .unwrap();
+        assert_eq!(call_first["calls"][0]["function"], "call_2");
+        assert_eq!(call_first["calls"][1]["function"], "call_1");
+        let call_cursor = call_first["next_cursor"].as_str().unwrap();
+        let call_second = handle_get_program_calls(
+            &rpc_state,
+            Some(serde_json::json!([
+                program.to_base58(),
+                { "limit": 2, "before_cursor": call_cursor }
+            ])),
+        )
+        .await
+        .unwrap();
+        assert_eq!(call_second["calls"][0]["function"], "call_0");
+
+        let event_first = handle_get_contract_events(
+            &rpc_state,
+            Some(serde_json::json!([program.to_base58(), 2])),
+        )
+        .await
+        .unwrap();
+        assert_eq!(event_first["events"][0]["name"], "middle");
+        assert_eq!(event_first["events"][1]["name"], "alpha");
+        let event_cursor = event_first["next_cursor"].as_str().unwrap();
+        let event_second = handle_get_contract_events(
+            &rpc_state,
+            Some(serde_json::json!([
+                program.to_base58(),
+                2,
+                null,
+                event_cursor
+            ])),
+        )
+        .await
+        .unwrap();
+        assert_eq!(event_second["events"][0]["name"], "zeta");
+    }
+
     fn put_tip_block_with_timestamp(state: &StateStore, slot: u64, timestamp: u64) {
         let block = Block::new_with_timestamp(
             slot,
@@ -21605,6 +21251,59 @@ mod tests {
         assert_eq!(txs[0]["amount_spores"], 10_000_000_000u64);
     }
 
+    #[tokio::test]
+    async fn rpc_shielded_signature_cursor_preserves_same_slot_rows() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+        let payer = Pubkey([0x29; 32]);
+        let make_shield_tx = |marker: u8| {
+            let mut data = vec![23u8];
+            data.extend_from_slice(&(marker as u64 + 1).to_le_bytes());
+            Transaction::new(lichen_core::Message::new(
+                vec![lichen_core::Instruction {
+                    program_id: SYSTEM_PROGRAM_ID,
+                    accounts: vec![payer],
+                    data,
+                }],
+                Hash::hash(&[marker]),
+            ))
+        };
+        let transactions = vec![make_shield_tx(1), make_shield_tx(2), make_shield_tx(3)];
+        let hashes = transactions
+            .iter()
+            .map(|transaction| transaction.signature().to_hex())
+            .collect::<Vec<_>>();
+        let block = Block::new_with_timestamp(
+            30,
+            Hash::default(),
+            Hash::default(),
+            [0u8; 32],
+            transactions,
+            1_700_000_030,
+        );
+        state.put_block(&block).unwrap();
+        let rpc_state = make_test_rpc_state(state);
+
+        let first = handle_get_recent_shielded_transactions(
+            &rpc_state,
+            Some(serde_json::json!([{ "limit": 2 }])),
+        )
+        .await
+        .unwrap();
+        assert_eq!(first["transactions"][0]["signature"], hashes[2]);
+        assert_eq!(first["transactions"][1]["signature"], hashes[1]);
+        assert_eq!(first["next_before"], hashes[1]);
+
+        let second = handle_get_recent_shielded_transactions(
+            &rpc_state,
+            Some(serde_json::json!([{ "limit": 2, "before": hashes[1] }])),
+        )
+        .await
+        .unwrap();
+        assert_eq!(second["transactions"][0]["signature"], hashes[0]);
+        assert_eq!(second["has_more"], false);
+    }
+
     fn unshield_instruction(
         recipient: Pubkey,
         amount: u64,
@@ -21717,6 +21416,142 @@ mod tests {
         assert!(!healthy.critical);
     }
 
+    #[test]
+    fn rpc_readiness_reports_archive_watermark_behind_tip() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+        let now = current_unix_secs();
+        let genesis = Block::genesis(Hash::hash(b"rpc-archive-genesis"), now, Vec::new());
+        let block_2 = Block::new_with_timestamp(
+            2,
+            Hash::hash(b"rpc-archive-missing-parent"),
+            Hash::default(),
+            [2u8; 32],
+            Vec::new(),
+            now,
+        );
+        state.put_block_atomic(&genesis, Some(0), Some(0)).unwrap();
+        state.put_block_atomic(&block_2, Some(2), Some(2)).unwrap();
+        let rpc_state = make_test_rpc_state(state);
+
+        let readiness = rpc_readiness(&rpc_state);
+        assert_eq!(readiness.status, "degraded");
+        assert_eq!(readiness.reason, "archive_incomplete");
+        assert_eq!(readiness.archive_contiguous_tip, Some((0, genesis.hash())));
+        assert!(rpc_unready_error(&rpc_state).is_none());
+        let json = rpc_readiness_json(&rpc_state);
+        assert_eq!(json["archive_contiguous_slot"], 0);
+        assert_eq!(json["archive_contiguous_hash"], genesis.hash().to_hex());
+    }
+
+    #[tokio::test]
+    async fn rpc_block_commit_prefers_canonical_child_envelope() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+        let local_signer = LichenKeypair::generate();
+        let canonical_signer = LichenKeypair::generate();
+        let validator_powers = vec![lichen_core::CanonicalValidatorPower {
+            validator: canonical_signer.pubkey(),
+            power: MIN_VALIDATOR_STAKE,
+        }];
+        let mut parent = Block::new_with_timestamp(
+            1,
+            Hash::hash(b"genesis"),
+            Hash::hash(b"state-1"),
+            local_signer.pubkey().0,
+            Vec::new(),
+            1,
+        );
+        parent.header.validators_hash =
+            lichen_core::canonical_validator_powers_hash(&validator_powers);
+        parent.sign(&local_signer);
+        let parent_hash = parent.hash();
+        parent.commit_signatures = vec![CommitSignature {
+            validator: local_signer.pubkey().0,
+            signature: local_signer.sign(&Precommit::signable_bytes(1, 0, &Some(parent_hash), 1)),
+            timestamp: 1,
+        }];
+        state.put_block_atomic(&parent, Some(1), Some(1)).unwrap();
+
+        let certificate = CanonicalCommitCertificate {
+            version: lichen_core::CANONICAL_COMMIT_ENVELOPE_VERSION,
+            height: 1,
+            round: 3,
+            block_hash: parent_hash,
+            validators_hash: parent.header.validators_hash,
+            validator_powers,
+            parent_post_state_root: Hash::hash(b"rpc-parent-post-state"),
+            child_metadata_hash: lichen_core::canonical_block_metadata_hash(&[], &[]).unwrap(),
+            signatures: vec![CommitSignature {
+                validator: canonical_signer.pubkey().0,
+                signature: canonical_signer.sign(&Precommit::signable_bytes(
+                    1,
+                    3,
+                    &Some(parent_hash),
+                    2,
+                )),
+                timestamp: 2,
+            }],
+        };
+        let child = Block::new_with_timestamp(
+            2,
+            parent_hash,
+            Hash::hash(b"state-2"),
+            canonical_signer.pubkey().0,
+            vec![certificate.to_transaction().unwrap()],
+            2,
+        );
+        state.put_block_atomic(&child, Some(2), Some(2)).unwrap();
+
+        let resolved = rpc_commit_certificate_for_block(&state, &parent).unwrap();
+        assert_eq!(resolved.source, "canonical_child");
+        assert_eq!(resolved.round, 3);
+        assert_eq!(
+            resolved.version,
+            Some(lichen_core::CANONICAL_COMMIT_ENVELOPE_VERSION)
+        );
+        assert_eq!(
+            resolved.validators_hash,
+            Some(parent.header.validators_hash)
+        );
+        assert_eq!(resolved.validator_powers.len(), 1);
+        assert_eq!(
+            resolved.parent_post_state_root,
+            Some(Hash::hash(b"rpc-parent-post-state"))
+        );
+        assert_eq!(resolved.signatures.len(), 1);
+        assert_eq!(
+            resolved.signatures[0].validator,
+            canonical_signer.pubkey().0
+        );
+
+        let rpc_state = make_test_rpc_state(state);
+        let response =
+            handle_get_block_commit(&rpc_state, Some(serde_json::json!([parent.header.slot])))
+                .await
+                .unwrap();
+        assert_eq!(
+            response["certificate_version"],
+            lichen_core::CANONICAL_COMMIT_ENVELOPE_VERSION
+        );
+        assert_eq!(
+            response["validators_hash"],
+            parent.header.validators_hash.to_hex()
+        );
+        assert_eq!(
+            response["parent_post_state_root"],
+            Hash::hash(b"rpc-parent-post-state").to_hex()
+        );
+        assert_eq!(
+            response["validator_powers"][0]["validator"],
+            canonical_signer.pubkey().to_base58()
+        );
+        assert_eq!(
+            response["validator_powers"][0]["power"],
+            MIN_VALIDATOR_STAKE
+        );
+    }
+
     #[tokio::test]
     async fn rpc_readiness_reports_ok_for_fresh_tip() {
         let tmp = tempdir().unwrap();
@@ -21771,7 +21606,6 @@ mod tests {
             None,
             "lichen-test".to_string(),
             "local-testnet".to_string(),
-            None,
             None,
             None,
             None,
@@ -22299,11 +22133,12 @@ mod tests {
 
         let response = super::handle_call_contract(
             &rpc_state,
-            Some(serde_json::json!({
-                "contract": program.to_base58(),
-                "function": "read_reputation",
-                "from": caller.to_base58(),
-            })),
+            Some(serde_json::json!([
+                program.to_base58(),
+                "read_reputation",
+                "",
+                caller.to_base58()
+            ])),
         )
         .await
         .unwrap();
@@ -22358,11 +22193,12 @@ mod tests {
 
         let response = super::handle_call_contract(
             &rpc_state,
-            Some(serde_json::json!({
-                "contract": program.to_base58(),
-                "function": "read_reputation",
-                "from": caller.to_base58(),
-            })),
+            Some(serde_json::json!([
+                program.to_base58(),
+                "read_reputation",
+                "",
+                caller.to_base58()
+            ])),
         )
         .await
         .unwrap();
@@ -22403,11 +22239,12 @@ mod tests {
 
         let error = super::handle_call_contract(
             &rpc_state,
-            Some(serde_json::json!({
-                "contract": program.to_base58(),
-                "function": "read_reputation",
-                "from": caller.to_base58(),
-            })),
+            Some(serde_json::json!([
+                program.to_base58(),
+                "read_reputation",
+                "",
+                caller.to_base58()
+            ])),
         )
         .await
         .unwrap_err();
@@ -22548,28 +22385,6 @@ mod tests {
     }
 
     fn signed_bridge_deposit_payload(seed: u8, chain: &str, asset: &str) -> serde_json::Value {
-        let keypair = LichenKeypair::from_seed(&[seed; 32]);
-        let user_id = keypair.pubkey().to_base58();
-        let issued_at = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("system clock")
-            .as_secs();
-        let expires_at = issued_at + 600;
-        let message = bridge_access_message(&user_id, issued_at, expires_at);
-
-        serde_json::json!({
-            "user_id": user_id,
-            "chain": chain,
-            "asset": asset,
-            "auth": {
-                "issued_at": issued_at,
-                "expires_at": expires_at,
-                "signature": pq_signature_json(&keypair.sign(&message)),
-            }
-        })
-    }
-
-    fn signed_bridge_deposit_payload_v2(seed: u8, chain: &str, asset: &str) -> serde_json::Value {
         let keypair = LichenKeypair::from_seed(&[seed; 32]);
         let user_id = keypair.pubkey().to_base58();
         let issued_at = std::time::SystemTime::now()
@@ -23054,6 +22869,141 @@ mod tests {
     }
 
     #[test]
+    fn transaction_json_uses_durable_failure_receipt() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+        let payer = Pubkey([1u8; 32]);
+        let tx = Transaction::new(lichen_core::Message::new(
+            vec![lichen_core::Instruction {
+                program_id: SYSTEM_PROGRAM_ID,
+                accounts: vec![payer, Pubkey([2u8; 32])],
+                data: vec![0; 9],
+            }],
+            Hash::hash(b"receipt-rpc-blockhash"),
+        ));
+        let meta = lichen_core::TxMeta {
+            compute_units_used: 123,
+            success: Some(false),
+            error: Some("Execution error: insufficient balance".to_string()),
+            fee_paid: Some(77),
+            ..Default::default()
+        };
+
+        let json = tx_to_rpc_json(
+            &tx,
+            9,
+            10,
+            &lichen_core::FeeConfig::default_from_constants(),
+            Some(&meta),
+            &state,
+        );
+
+        assert_eq!(json["status"], "Failed");
+        assert_eq!(json["success"], false);
+        assert_eq!(json["error"], "Execution error: insufficient balance");
+        assert_eq!(json["fee"], 77);
+        assert_eq!(json["compute_units"], 123);
+
+        state.put_tx_meta_full(&tx.signature(), &meta).unwrap();
+        let solana = solana_transaction_json(&state, &tx, 9, 10, 999);
+        assert_eq!(
+            solana["meta"]["err"],
+            "Execution error: insufficient balance"
+        );
+        assert_eq!(solana["meta"]["fee"], 77);
+    }
+
+    #[test]
+    fn transaction_json_treats_legacy_metadata_as_success() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+        let tx = Transaction::new(lichen_core::Message::new(
+            vec![lichen_core::Instruction {
+                program_id: SYSTEM_PROGRAM_ID,
+                accounts: vec![Pubkey([1u8; 32])],
+                data: vec![1],
+            }],
+            Hash::hash(b"legacy-rpc-blockhash"),
+        ));
+        let meta = lichen_core::TxMeta {
+            compute_units_used: 45,
+            ..Default::default()
+        };
+
+        let json = tx_to_rpc_json(
+            &tx,
+            1,
+            2,
+            &lichen_core::FeeConfig::default_from_constants(),
+            Some(&meta),
+            &state,
+        );
+
+        assert_eq!(json["status"], "Success");
+        assert_eq!(json["success"], true);
+        assert!(json["error"].is_null());
+    }
+
+    fn test_evm_submission_transaction() -> Transaction {
+        Transaction::new_evm(lichen_core::Message {
+            instructions: vec![lichen_core::Instruction {
+                program_id: lichen_core::EVM_PROGRAM_ID,
+                accounts: vec![Pubkey([7u8; 32])],
+                data: vec![1],
+            }],
+            recent_blockhash: lichen_core::EVM_SENTINEL_BLOCKHASH,
+            compute_budget: None,
+            compute_unit_price: None,
+        })
+    }
+
+    #[tokio::test]
+    async fn submit_transaction_waits_for_positive_mempool_admission() {
+        let temp = tempdir().unwrap();
+        let mut rpc_state = make_test_rpc_state(StateStore::open(temp.path()).unwrap());
+        let (sender, mut receiver) = mpsc::channel::<TransactionSubmission>(1);
+        rpc_state.tx_sender = Some(sender);
+        let tx = test_evm_submission_transaction();
+        let expected_signature = tx.signature().to_hex();
+        let worker_signature = expected_signature.clone();
+
+        let worker = tokio::spawn(async move {
+            let submission = receiver.recv().await.unwrap();
+            assert_eq!(
+                submission.transaction.signature().to_hex(),
+                worker_signature
+            );
+            submission.admission_response.send(Ok(())).unwrap();
+        });
+
+        let signature = submit_transaction(&rpc_state, tx).await.unwrap();
+        worker.await.unwrap();
+        assert_eq!(signature, expected_signature);
+    }
+
+    #[tokio::test]
+    async fn submit_transaction_returns_actual_mempool_rejection() {
+        let temp = tempdir().unwrap();
+        let mut rpc_state = make_test_rpc_state(StateStore::open(temp.path()).unwrap());
+        let (sender, mut receiver) = mpsc::channel::<TransactionSubmission>(1);
+        rpc_state.tx_sender = Some(sender);
+        let tx = test_evm_submission_transaction();
+
+        let worker = tokio::spawn(async move {
+            let submission = receiver.recv().await.unwrap();
+            submission
+                .admission_response
+                .send(Err("sender pending limit reached".to_string()))
+                .unwrap();
+        });
+
+        let error = submit_transaction(&rpc_state, tx).await.unwrap_err();
+        worker.await.unwrap();
+        assert_eq!(error.code, -32003);
+        assert!(error.message.contains("sender pending limit reached"));
+    }
+
+    #[test]
     fn test_filter_signatures_for_address() {
         let h1 = make_hash(1);
         let h2 = make_hash(2);
@@ -23076,7 +23026,7 @@ mod tests {
     }
 
     #[test]
-    fn test_market_params_parse_current_and_legacy_shapes() {
+    fn test_market_params_accept_only_current_filter_envelope() {
         let collection = Pubkey([7u8; 32]);
         let seller = Pubkey([8u8; 32]);
         let token = Pubkey([9u8; 32]);
@@ -23084,14 +23034,14 @@ mod tests {
         let seller_b58 = seller.to_base58();
         let token_b58 = token.to_base58();
 
-        let object = parse_market_params_extended(&Some(serde_json::json!({
+        let object = parse_market_params_extended(&Some(serde_json::json!([{
             "collection": collection_b58,
             "limit": 25,
             "seller": seller_b58,
             "token": token_b58,
             "token_id": 42,
             "include_collection_offers": true
-        })))
+        }])))
         .expect("object params should parse");
         assert_eq!(object.collection, Some(collection));
         assert_eq!(object.limit, 25);
@@ -23104,20 +23054,25 @@ mod tests {
             parse_market_params_extended(&Some(serde_json::json!([{ "limit": 33 }]))).unwrap();
         assert_eq!(wrapped_object.limit, 33);
 
-        let collection_options = parse_market_params_extended(&Some(serde_json::json!([
-            collection_b58,
-            { "limit": 44, "token_id": 77 }
-        ])))
-        .expect("collection plus options params should parse");
+        let collection_options = parse_market_params_extended(&Some(serde_json::json!([{
+            "collection": collection_b58,
+            "limit": 44,
+            "token_id": 77
+        }])))
+        .expect("current filter envelope should parse");
         assert_eq!(collection_options.collection, Some(collection));
         assert_eq!(collection_options.limit, 44);
         assert_eq!(collection_options.token_id, Some(77));
 
-        let legacy_collection_limit =
-            parse_market_params_extended(&Some(serde_json::json!([collection.to_base58(), 55])))
-                .expect("legacy collection plus numeric limit params should parse");
-        assert_eq!(legacy_collection_limit.collection, Some(collection));
-        assert_eq!(legacy_collection_limit.limit, 55);
+        assert!(parse_market_params_extended(&Some(serde_json::json!([
+            collection.to_base58(),
+            55
+        ])))
+        .is_err());
+        assert!(parse_market_params_extended(&Some(serde_json::json!({
+            "limit": 55
+        })))
+        .is_err());
     }
 
     #[test]
@@ -23153,35 +23108,6 @@ mod tests {
 
         assert_eq!(decode_contract_result_u64(&from_return_data), Some(42));
         assert_eq!(decode_contract_result_u64(&from_return_code), Some(84));
-    }
-
-    #[test]
-    fn test_set_fee_config_emits_privileged_audit_log() {
-        capture_logs_async(async {
-            clear_privileged_rpc_mutation_test_sink();
-            let dir = tempdir().unwrap();
-            let state = StateStore::open(dir.path()).unwrap();
-            let rpc_state = make_test_rpc_state(state);
-            *rpc_state.admin_token.write().unwrap() = Some("supersecret".to_string());
-
-            let response = handle_set_fee_config(
-                &rpc_state,
-                Some(serde_json::json!({
-                    "base_fee_spores": 42,
-                })),
-                Some("Bearer supersecret"),
-            )
-            .await
-            .expect("setFeeConfig should succeed in local admin mode");
-
-            assert_eq!(response["status"], "ok");
-        });
-
-        let audit = privileged_rpc_mutation_test_output();
-        assert!(audit.contains("Privileged RPC mutation executed"));
-        assert!(audit.contains("setFeeConfig"));
-        assert!(audit.contains("fee_config"));
-        assert!(audit.contains("admin_token"));
     }
 
     #[test]
@@ -23310,134 +23236,6 @@ mod tests {
     }
 
     #[test]
-    fn test_hi13_constant_time_eq_matches_only_identical_tokens() {
-        assert!(constant_time_eq(b"admin-token", b"admin-token"));
-        assert!(!constant_time_eq(b"admin-token", b"admin-tokfn"));
-        assert!(!constant_time_eq(b"admin-token", b"admin-token-extra"));
-    }
-
-    #[test]
-    fn test_rg603_legacy_admin_rpc_allowlist_is_local_dev_only() {
-        for id in [
-            "local",
-            "dev",
-            "localnet",
-            "devnet",
-            "local-testnet",
-            "local-devnet",
-            "lichen-testnet-local",
-            "lichen-devnet-local",
-            "lichen-local",
-            "lichen-dev",
-        ] {
-            assert!(
-                super::allow_legacy_admin_rpc(id, "production"),
-                "{id} should be explicitly allowed as a local/dev chain id"
-            );
-            assert!(
-                super::allow_legacy_admin_rpc("production", id),
-                "{id} should be explicitly allowed as a local/dev network id"
-            );
-        }
-
-        for (chain_id, network_id) in [
-            ("lichen-testnet-1", "lichen-testnet-1"),
-            ("lichen-devnet-1", "lichen-devnet-1"),
-            ("lichen-mainnet-1", "lichen-mainnet-1"),
-            ("lichen-developer-mainnet", "lichen-mainnet-1"),
-            ("production-locality-1", "production"),
-            ("lichen-testnet-local-copy", "lichen-testnet-1"),
-        ] {
-            assert!(
-                !super::allow_legacy_admin_rpc(chain_id, network_id),
-                "{chain_id}/{network_id} must not enable legacy admin RPC"
-            );
-        }
-    }
-
-    #[test]
-    fn test_rg603_admin_token_is_stripped_from_json_params() {
-        let stripped = strip_admin_token_from_params(Some(serde_json::json!({
-            "base_fee_spores": 42,
-            "admin_token": "must-not-reach-handler"
-        })))
-        .expect("object params");
-        assert!(stripped.get("admin_token").is_none());
-        assert_eq!(stripped["base_fee_spores"], serde_json::json!(42));
-
-        let stripped = strip_admin_token_from_params(Some(serde_json::json!([
-            {
-                "rent_free_kb": 64,
-                "admin_token": "must-not-reach-handler"
-            },
-            "unchanged",
-            {
-                "abi": [],
-                "admin_token": "must-not-reach-handler"
-            }
-        ])))
-        .expect("array params");
-        let arr = stripped.as_array().expect("array");
-        assert!(arr[0].get("admin_token").is_none());
-        assert_eq!(arr[0]["rent_free_kb"], serde_json::json!(64));
-        assert_eq!(arr[1], serde_json::json!("unchanged"));
-        assert!(arr[2].get("admin_token").is_none());
-    }
-
-    #[test]
-    fn test_hi13_verify_admin_auth_uses_shared_header_path() {
-        let dir = tempdir().unwrap();
-        let state_store = StateStore::open(dir.path()).unwrap();
-        let mut state = make_test_rpc_state(state_store);
-        state.admin_token = Arc::new(std::sync::RwLock::new(Some("supersecret".to_string())));
-
-        assert!(verify_admin_auth(&state, Some("Bearer supersecret")).is_ok());
-
-        let invalid = verify_admin_auth(&state, Some("Bearer wrong-token")).unwrap_err();
-        assert_eq!(invalid.code, -32003);
-        assert_eq!(invalid.message, "Invalid admin token");
-
-        let missing = verify_admin_auth(&state, Some("supersecret")).unwrap_err();
-        assert_eq!(missing.code, -32003);
-        assert_eq!(
-            missing.message,
-            "Missing Authorization: Bearer <token> header"
-        );
-    }
-
-    #[test]
-    fn test_hi14_verify_admin_auth_observes_live_token_rotation() {
-        let dir = tempdir().unwrap();
-        let state_store = StateStore::open(dir.path()).unwrap();
-        let mut state = make_test_rpc_state(state_store);
-        state.admin_token = Arc::new(std::sync::RwLock::new(Some("old-token".to_string())));
-
-        assert!(verify_admin_auth(&state, Some("Bearer old-token")).is_ok());
-
-        {
-            let mut guard = state.admin_token.write().unwrap();
-            *guard = Some("new-token".to_string());
-        }
-
-        let stale = verify_admin_auth(&state, Some("Bearer old-token")).unwrap_err();
-        assert_eq!(stale.code, -32003);
-        assert_eq!(stale.message, "Invalid admin token");
-        assert!(verify_admin_auth(&state, Some("Bearer new-token")).is_ok());
-
-        {
-            let mut guard = state.admin_token.write().unwrap();
-            *guard = None;
-        }
-
-        let disabled = verify_admin_auth(&state, Some("Bearer new-token")).unwrap_err();
-        assert_eq!(disabled.code, -32003);
-        assert_eq!(
-            disabled.message,
-            "Admin endpoints disabled: no admin_token configured"
-        );
-    }
-
-    #[test]
     fn test_m04_airdrop_cooldown_enforced_and_expires() {
         let mut cooldowns = AirdropCooldowns::default();
         let now = Instant::now();
@@ -23545,7 +23343,7 @@ mod tests {
 
     #[test]
     fn test_l01_rejects_oversized_transaction_wire_payload() {
-        let bytes = vec![b'{'; crate::MAX_TX_BINCODE_SIZE as usize + 1];
+        let bytes = vec![b'{'; crate::MAX_TX_WIRE_SIZE as usize + 1];
 
         let err = crate::decode_transaction_bytes(&bytes)
             .expect_err("oversized payload must be rejected");
@@ -23571,33 +23369,26 @@ mod tests {
     }
 
     #[test]
-    fn test_bridge_access_auth_verifies_valid_signature() {
-        let keypair = LichenKeypair::from_seed(&[7u8; 32]);
-        let user_id = keypair.pubkey().to_base58();
-        let issued_at = 1_700_000_000u64;
-        let expires_at = issued_at + 600;
-        let message = bridge_access_message(&user_id, issued_at, expires_at);
-        let auth = parse_bridge_access_auth(&serde_json::json!({
-            "issued_at": issued_at,
-            "expires_at": expires_at,
-            "signature": pq_signature_json(&keypair.sign(&message)),
-        }))
-        .expect("parse bridge auth");
-
-        verify_bridge_access_auth_at(&user_id, &auth, issued_at + 60)
-            .expect("valid signed bridge auth must verify");
-    }
-
-    #[test]
     fn test_bridge_access_auth_rejects_expired_signature() {
         let keypair = LichenKeypair::from_seed(&[8u8; 32]);
         let user_id = keypair.pubkey().to_base58();
         let issued_at = 1_700_000_000u64;
         let expires_at = issued_at + 600;
-        let message = bridge_access_message(&user_id, issued_at, expires_at);
+        let nonce = "expired-route-auth";
+        let message = bridge_access_message_v2_create(
+            &user_id, "ethereum", "eth", issued_at, expires_at, nonce,
+        );
         let auth = parse_bridge_access_auth(&serde_json::json!({
+            "version": 2,
+            "domain": BRIDGE_ACCESS_DOMAIN_V2,
+            "action": BRIDGE_AUTH_ACTION_CREATE_DEPOSIT,
+            "user_id": user_id,
+            "chain": "ethereum",
+            "asset": "eth",
+            "route": "ethereum:eth",
             "issued_at": issued_at,
             "expires_at": expires_at,
+            "nonce": nonce,
             "signature": pq_signature_json(&keypair.sign(&message)),
         }))
         .expect("parse bridge auth");
@@ -23614,17 +23405,33 @@ mod tests {
         let signer_user = signer.pubkey().to_base58();
         let issued_at = 1_700_000_000u64;
         let expires_at = issued_at + 600;
-        let message = bridge_access_message(&signer_user, issued_at, expires_at);
+        let nonce = "wrong-user-route-auth";
+        let message = bridge_access_message_v2_create(
+            &signer_user,
+            "ethereum",
+            "eth",
+            issued_at,
+            expires_at,
+            nonce,
+        );
         let auth = parse_bridge_access_auth(&serde_json::json!({
+            "version": 2,
+            "domain": BRIDGE_ACCESS_DOMAIN_V2,
+            "action": BRIDGE_AUTH_ACTION_CREATE_DEPOSIT,
+            "user_id": signer_user,
+            "chain": "ethereum",
+            "asset": "eth",
+            "route": "ethereum:eth",
             "issued_at": issued_at,
             "expires_at": expires_at,
+            "nonce": nonce,
             "signature": pq_signature_json(&signer.sign(&message)),
         }))
         .expect("parse bridge auth");
 
         let err = verify_bridge_access_auth_at(&other_user, &auth, issued_at + 60)
             .expect_err("bridge auth must be bound to the requesting user");
-        assert!(err.message.contains("Invalid bridge auth signature"));
+        assert!(err.message.contains("user_id does not match"));
     }
 
     #[test]
@@ -26010,7 +25817,7 @@ mod tests {
         rpc_state.custody_url = Some(custody_url);
         rpc_state.custody_auth_token = Some("test-auth-token".to_string());
 
-        let payload = signed_bridge_deposit_payload_v2(42, "ethereum", "eth");
+        let payload = signed_bridge_deposit_payload(42, "ethereum", "eth");
         let expected_auth = payload
             .get("auth")
             .cloned()
@@ -26047,7 +25854,7 @@ mod tests {
         rpc_state.custody_url = Some(custody_url);
         rpc_state.custody_auth_token = Some("test-auth-token".to_string());
 
-        let mut payload = signed_bridge_deposit_payload_v2(43, "ethereum", "eth");
+        let mut payload = signed_bridge_deposit_payload(43, "ethereum", "eth");
         payload["chain"] = serde_json::Value::String("solana".to_string());
         payload["asset"] = serde_json::Value::String("sol".to_string());
 
@@ -26967,6 +26774,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn canonical_wallet_chain_metadata_handlers_are_populated() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+        state.set_last_slot(432_123).unwrap();
+        let rpc_state = make_test_rpc_state(state);
+
+        let epoch = handle_get_epoch_info(&rpc_state).await.unwrap();
+        assert_eq!(epoch["epoch"], serde_json::json!(1u64));
+        assert_eq!(epoch["absolute_slot"], serde_json::json!(432_123u64));
+        assert_eq!(epoch["slot_index"], serde_json::json!(123u64));
+        assert_eq!(epoch["slots_in_epoch"], serde_json::json!(432_000u64));
+        assert_eq!(epoch["absoluteSlot"], epoch["absolute_slot"]);
+
+        let height = handle_solana_get_block_height(&rpc_state).await.unwrap();
+        assert_eq!(height, serde_json::json!(432_123u64));
+
+        let supply = handle_get_supply(&rpc_state).await.unwrap();
+        assert!(supply["total"].as_u64().unwrap_or(0) > 0);
+        assert_eq!(supply["decimals"], serde_json::json!(9u64));
+        assert_eq!(supply["value"]["total"], supply["total"]);
+    }
+
+    #[tokio::test]
     async fn test_neo_zk_proof_service_status_reports_reserve_liability_verifier() {
         let status = handle_get_neo_zk_proof_service_status()
             .await
@@ -26998,7 +26828,6 @@ mod tests {
             .expect("prove reserve/liability");
 
         let result = handle_verify_neo_reserve_liability_proof(Some(serde_json::json!([{
-            "type": "reserve_liability",
             "proof_type": "reserve_liability",
             "proof": hex::encode(&proof.proof_bytes),
             "stark_public_inputs": proof.stark_public_inputs,
@@ -27016,7 +26845,7 @@ mod tests {
     #[tokio::test]
     async fn test_verify_neo_reserve_liability_proof_rejects_wrong_type() {
         let error = handle_verify_neo_reserve_liability_proof(Some(serde_json::json!([{
-            "type": "shield",
+            "proof_type": "shield",
             "proof": "",
             "stark_public_inputs": [],
         }])))

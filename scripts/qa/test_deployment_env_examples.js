@@ -163,6 +163,20 @@ assert(
     !read('deploy/lichen-validator.service').includes('${LICHEN_EXTRA_ARGS}'),
   'validator unit must expand LICHEN_EXTRA_ARGS with systemd argv splitting',
 );
+assert(
+  read('deploy/lichen-validator.service').includes('--no-watchdog') &&
+    read('deploy/lichen-validator.service').includes('Restart=on-failure') &&
+    read('deploy/lichen-validator.service').includes('RestartPreventExitStatus=78') &&
+    read('deploy/lichen-validator.service').includes('StartLimitBurst=5') &&
+    !read('deploy/lichen-validator.service').includes('Restart=always'),
+  'validator unit must use one bounded supervisor and suppress persistent startup restart loops',
+);
+assert(
+  read('scripts/rolling-release-deploy.sh').includes('MIN_ARCHIVE_CAPACITY_GIB') &&
+    read('scripts/rolling-release-deploy.sh').includes('MIN_ARCHIVE_AVAILABLE_GIB') &&
+    read('scripts/rolling-release-deploy.sh').includes('df -Pk /var/lib/lichen'),
+  'rolling deploy must enforce archive filesystem capacity and free-space headroom',
+);
 
 const setupValidatorKeys = heredocKeys('cat > "$ENV_FILE" <<EOF', 'EOF', [
   'LICHEN_NETWORK',
@@ -258,7 +272,6 @@ const custodyRouteKeys = [
   'CUSTODY_ETH_CHAIN_ID',
   'CUSTODY_BNB_RPC_URL',
   'CUSTODY_BNB_CHAIN_ID',
-  'CUSTODY_EVM_RPC_URL',
   'CUSTODY_NEOX_RPC_URL',
   'CUSTODY_NEOX_CHAIN_ID',
   'CUSTODY_BTC_RPC_URL',
@@ -273,7 +286,6 @@ const custodyRouteKeys = [
   'CUSTODY_TREASURY_SOLANA',
   'CUSTODY_TREASURY_ETH',
   'CUSTODY_TREASURY_BNB',
-  'CUSTODY_TREASURY_EVM',
   'CUSTODY_TREASURY_NEOX',
   'CUSTODY_TREASURY_BTC',
   'CUSTODY_SOLANA_FEE_PAYER',
@@ -304,14 +316,14 @@ const custodyRouteKeys = [
   'CUSTODY_WEBHOOK_ALLOWED_HOSTS',
   'CUSTODY_WEBHOOK_MAX_INFLIGHT',
   'CUSTODY_WITHDRAWAL_PENDING_BURN_TTL_SECS',
-  'CUSTODY_EVM_MULTISIG_ADDRESS',
+  'CUSTODY_ETH_MULTISIG_ADDRESS',
+  'CUSTODY_BNB_MULTISIG_ADDRESS',
   'CUSTODY_NEOX_MULTISIG_ADDRESS',
   'CUSTODY_OPERATOR_CONFIRMATION_TOKENS',
   'CUSTODY_WITHDRAWAL_ELEVATED_DELAY_SECS',
   'CUSTODY_WITHDRAWAL_EXTRAORDINARY_DELAY_SECS',
   'CUSTODY_ALLOW_INSECURE_SEED',
   'CUSTODY_ALLOW_LOCAL_WEBHOOKS',
-  'CUSTODY_WS_EVENTS_ALLOW_QUERY_TOKEN',
   'LICHEN_LOCAL_DEV',
   'DEV_CORS',
 ];
@@ -370,7 +382,6 @@ assert(
   'fresh genesis must fail closed with all 13 launch DEX pairs/pools including WBTC',
 );
 
-const deployDex = read('tools/deploy_dex.py');
 const seedDexLiquidity = read('tools/seed_dex_liquidity.py');
 const checkAmmPools = read('tools/check_amm_pools.py');
 const verifyDex = read('tools/verify_dex.py');
@@ -378,9 +389,7 @@ const verifyOrderbook = read('tools/verify_orderbook.py');
 const checkBalances = read('tools/check_balances.py');
 const verifyBalances = read('tools/verify_balances.py');
 const protocolGovernanceHelper = read('cli/src/bin/protocol_governance_contract_call.rs');
-[
-  deployDex,
-  seedDexLiquidity,
+[seedDexLiquidity,
   checkAmmPools,
   verifyDex,
   verifyOrderbook,
@@ -388,11 +397,9 @@ const protocolGovernanceHelper = read('cli/src/bin/protocol_governance_contract_
   assert(source.includes('wBTC/lUSD') && source.includes('wBTC/LICN'), `DEX tool ${index} missing WBTC launch pairs`);
 });
 assert(
-  deployDex.includes('legacy/manual repair') &&
-    deployDex.includes('mandatory token address unknown') &&
-    seedDexLiquidity.includes('all 13 trading pairs') &&
+  seedDexLiquidity.includes('all 13 trading pairs') &&
     seedDexLiquidity.includes('all 13 AMM pools'),
-  'DEX deployment/liquidity tools must document mandatory genesis and fail closed on missing WBTC state',
+  'DEX liquidity tools must document mandatory genesis state',
 );
 assert(
   checkBalances.includes('"WBTC"') && verifyBalances.includes("'WBTC'"),
@@ -410,8 +417,9 @@ const mainnetRunbook = read('deploy/mainnet-launch-runbook.md');
 const mainnetRunbookDoc = read('docs/deployment/MAINNET_LAUNCH_RUNBOOK.md');
 const productionDeployment = read('docs/deployment/PRODUCTION_DEPLOYMENT.md');
 const productionReleasePair = productionDeployment.match(
-  /Current signed-release target for this runbook is `(v\d+\.\d+\.\d+)`; keep `(v\d+\.\d+\.\d+)` as the signed rollback point/,
+  /Candidate release target for this runbook is `(v\d+\.\d+\.\d+)`;\s+keep `(v\d+\.\d+\.\d+)` as\s+the signed rollback point/,
 );
+const validatorVersion = read('validator/Cargo.toml').match(/^version = "(\d+\.\d+\.\d+)"/m)?.[1];
 const dexLiquidityStrategy = read('docs/strategy/DEX_LIQUIDITY_STRATEGY.md');
 const btcRolloutPlan = read('docs/deployment/BTC_WRAPPED_ASSET_ROLLOUT_PLAN.md');
 const cleanSlateRedeployPath = path.join(root, 'scripts', 'clean-slate-redeploy.sh');
@@ -434,10 +442,10 @@ assert(
   'DEX liquidity strategy must document the 13-market WBTC launch set',
 );
 assert(
-  btcRolloutPlan.includes('sync-custody-wrapped-contracts.sh \\\n  --rpc-url https://testnet-rpc.lichen.network \\\n  --env-file /etc/lichen/custody-env') &&
+  btcRolloutPlan.includes('sync-custody-wrapped-contracts.sh \\\n  --rpc-url https://testnet-api.lichen.network \\\n  --env-file /etc/lichen/custody-env') &&
     btcRolloutPlan.includes('apply-custody-route-profile.sh \\\n  --profile /etc/lichen/custody-routes-testnet.env \\\n  --target /etc/lichen/custody-env') &&
     btcRolloutPlan.includes('verify-custody-routes.sh \\\n  --env-file /etc/lichen/custody-env') &&
-    !btcRolloutPlan.includes('sync-custody-wrapped-contracts.sh https://testnet-rpc.lichen.network /etc/lichen/custody.env') &&
+    !btcRolloutPlan.includes('sync-custody-wrapped-contracts.sh https://testnet-api.lichen.network /etc/lichen/custody.env') &&
     !btcRolloutPlan.includes('apply-custody-route-profile.sh testnet /etc/lichen/custody.env'),
   'BTC rollout plan must use current flag-style custody route scripts',
 );
@@ -450,33 +458,29 @@ assert(
 );
 assert(
   productionReleasePair &&
-    productionDeployment.includes('32 manifest symbols') &&
-    productionDeployment.includes('mandatory 13 DEX CLOB pairs, AMM pools, and router routes') &&
-    productionDeployment.includes('wBTC/lUSD') &&
-    productionDeployment.includes('wBTC/LICN') &&
-    productionDeployment.includes(`${productionReleasePair[1]}\` keeps the configured 800ms propose, 500ms prevote, 500ms precommit, and a 5s max phase timeout`) &&
-    productionDeployment.includes('removes the sub-slot remote-proposer timeout') &&
-    productionDeployment.includes('reduces block-range response chunks') &&
-    productionDeployment.includes('fixes successful LiveSync catch-up cooldown reset') &&
-    productionDeployment.includes('800ms propose, 500ms prevote, 500ms precommit, and a 5s max phase timeout') &&
-    productionDeployment.includes('guarded public-history merge admin path') &&
-    productionDeployment.includes('All validators must end on the same signed release') &&
-    productionDeployment.includes(`export LICHEN_RELEASE_TAG=${productionReleasePair[1]}`) &&
+    productionReleasePair[1] === `v${validatorVersion}` &&
+    productionReleasePair[2] === 'v0.5.223' &&
+    productionDeployment.includes('This destructive checklist does not apply to the current July testnet') &&
+    productionDeployment.includes('in-place archive repair and coordinated resume') &&
+    productionDeployment.includes('LICHEN_RUN_LAUNCHPAD_E2E=1') &&
+    productionDeployment.includes('LICHEN_RUN_VOLUME_E2E=1') &&
+    productionDeployment.includes('bash tests/local-multi-validator-test.sh 4') &&
+    productionDeployment.includes('Every block range is bounded and source-proven') &&
+    productionDeployment.includes('--prepare-post-block-effects-activation') &&
+    productionDeployment.includes('same tip and tip hash') &&
+    productionDeployment.includes('absent preparation exits 78') &&
+    productionDeployment.includes('analytics v2 waits for the same boundary') &&
+    productionDeployment.includes('pre-activation marker absence is never replay') &&
+    productionDeployment.includes('Offline execute refuses a database with') &&
     productionDeployment.includes('The script requires `LICHEN_RELEASE_TAG`') &&
     productionDeployment.includes('install the signed release archive') &&
-    productionDeployment.includes('RocksDB read-only descriptors') &&
-    productionDeployment.includes('cannot cold-rebuild or compact checkpoint Merkle state') &&
     productionDeployment.includes('LICHEN_CHECKPOINT_MAX_BYTES') &&
-    productionDeployment.includes('requests catch-up block ranges from one primary peer per chunk with fallback') &&
-    productionDeployment.includes('authenticated PQ node checkpoint sources') &&
-    productionDeployment.includes('signed checkpoint header verifies') &&
-    productionDeployment.includes('source-pinned snapshot manifest root after the checkpoint state root has active-validator quorum') &&
-    productionDeployment.includes('deterministic archive manifest differs from the verified checkpoint metadata') &&
+    productionDeployment.includes('complete genesis-to-target public-history proof') &&
     !productionDeployment.includes('signed release `v0.5.44`') &&
     !productionDeployment.includes('31 manifest symbols') &&
     !productionDeployment.includes('--repair-stake-pool-production-counters') &&
     !productionDeployment.includes('such as `v0.5.50`'),
-  'production clean-slate checklist must match current release/rollback, 32-symbol, and 13-market expectations',
+  'production deployment docs must match the current candidate, rollback, preserved-state, archive, and activation policy',
 );
 assert(
   productionDeployment.includes('Do not add `faucet.lichen.network` as a Cloudflare Pages custom domain') &&
@@ -485,6 +489,7 @@ assert(
   'deployment docs must keep the faucet Pages portal separate from the faucet API hostname',
 );
 const testnetCaddy = read('deploy/Caddyfile.testnet');
+const setupSource = read('deploy/setup.sh');
 assert(
   productionDeployment.includes('Caddy (`deploy/Caddyfile.testnet`) reverse proxies faucet API traffic to `127.0.0.1:9100`') &&
     productionDeployment.includes('`lichen-network-faucet.pages.dev`** (Cloudflare Pages): Static faucet portal') &&
@@ -494,6 +499,17 @@ assert(
     testnetCaddy.includes('respond "faucet API endpoint not found" 404') &&
     !testnetCaddy.includes('root * /home/ubuntu/lichen/faucet'),
   'faucet API hostname must not serve static portal HTML from the VPS',
+);
+assert(
+  setupSource.includes('append_testnet_edge_origin()') &&
+    setupSource.includes('LICHEN_EDGE_ORIGIN_HOST') &&
+    setupSource.includes('LICHEN_EDGE_ORIGIN_AUTH_FILE') &&
+    setupSource.includes('LICHEN_EDGE_ORIGIN_REQUIRED') &&
+    setupSource.includes('@edge_origin header X-Lichen-Origin-Auth $auth_token') &&
+    setupSource.includes('respond "Forbidden" 403') &&
+    setupSource.includes('install -o root -g caddy -m 640 "$tmp_file" "$CADDY_CONFIG_FILE"') &&
+    !setupSource.includes('EnvironmentFile=/etc/lichen/caddy-edge.env'),
+  'testnet edge origins must use a root-owned token file and authenticated Caddy route',
 );
 for (const expected of [
   '7LFPJ8gqmAtjbhfRg1P4VXmTQJV4AeZxzws3UsA6SVq',

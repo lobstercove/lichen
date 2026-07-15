@@ -4,9 +4,10 @@ This is the operator runbook for launching Lichen mainnet and then enabling
 mainnet custody. It is intentionally step-by-step and gate-based. Do not skip a
 gate because mainnet genesis and custody routes handle real value.
 
-Written for the current mainnet package. Current signed-release target for this runbook is `v0.5.206`; keep `v0.5.204` as the signed rollback point. If a newer
-release is used, replace every example tag with the newer signed release tag
-after CI and release verification pass.
+Written for the current mainnet package. Candidate release target for this
+runbook is `v0.5.224`; keep `v0.5.223` as the signed rollback point. The
+candidate is not deployable until it passes CI, archive parity, signature
+verification, and deployment approval.
 
 ## Operating Rules
 
@@ -18,6 +19,15 @@ after CI and release verification pass.
 - Public mainnet validators must be archive-backed from first boot. `v0.5.190`
   and later refuse non-dev `mainnet` startup unless `--archive-mode` and
   `--cold-store /var/lib/lichen/archive-mainnet` are both present.
+- Every mainnet block after height 1 must contain exactly one version-2
+  canonical parent commit transaction at index 0. Sync and startup must verify
+  its signatures against the complete parent-height powers authenticated by the
+  parent `validators_hash`; a missing power snapshot, envelope, parent body, or
+  two-thirds threshold is fatal and must not be bypassed.
+- `getBlockCommit` on every validator must return the same `canonical_child`
+  certificate version, `validators_hash`, validator powers, round, and
+  signatures at a fixed non-tip slot. Local pending-tip evidence is not archive
+  parity or a mainnet launch proof.
 - Do not expose public custody or wallet routes until that exact route passes a
   dust deposit and dust withdrawal on mainnet.
 - Do not use the mainnet faucet pattern. There is no mainnet faucet.
@@ -34,9 +44,8 @@ after CI and release verification pass.
   preserve replay compatibility for the June 2026 testnet after governed signer
   custody was lost; mainnet must launch from verified custody instead.
 - Do not deploy a release that changes consensus rules with a mixed-version
-  rolling restart. The current rollback point `v0.5.204` includes public history
-  merge and archive-mode public RPC defaults after the BFT leader selection and
-  required a coordinated stop/install/start rollout.
+  rolling restart. The current rollback point `v0.5.223` must remain available
+  until a newer signed rollback point is explicitly recorded.
 - Do not commit provider URLs, auth tokens, keypair passwords, custody seeds,
   funded keypairs, signing keys, or filled production env files.
 - Do not print secrets in shell logs, tickets, chat, or launch notes. Print key
@@ -166,10 +175,10 @@ Clean-slate invariants for the current package:
 - Checkpoint serving uses RocksDB read-only descriptors and cannot cold-rebuild or compact checkpoint Merkle state from the serving path.
 - Keep checkpoint disk retention bounded with `LICHEN_CHECKPOINT_MAX_BYTES`; use the release default unless an operator deliberately documents a larger cap.
 - A resuming validator requests catch-up block ranges from one primary peer per chunk with fallback, avoiding duplicate range floods while preserving replay from peers.
-- Warp and repair snapshots require authenticated PQ node checkpoint sources.
-  Clean far-behind joiners may use a configured reserved seed for the initial signed
-  checkpoint header before local stake replay exists; normal checkpoint state root
-  quorum and source-pinned snapshot manifest verification still apply before import.
+- Warp and repair snapshots require authenticated PQ node sources plus a
+  self-contained canonical proof: parent certificate, transaction-0 Merkle
+  inclusion in the child, signed/finalized child header, historical child powers,
+  and a certificate-bound parent post-state root. No reserved-seed trust bypass is allowed.
 - Abort a snapshot source when the deterministic archive manifest differs from the verified checkpoint metadata.
 - Every validator env must pin the other validator P2P endpoints in
   `LICHEN_P2P_RESERVED_PEERS`, excluding its own endpoint, so reconnect pressure
@@ -225,7 +234,7 @@ credentials, or keypair passwords.
 Use the signed release that passed CI. For the current package:
 
 ```bash
-export LICHEN_RELEASE_TAG=v0.5.206
+export LICHEN_RELEASE_TAG=v0.5.224
 export LICHEN_MAINNET_VPS_HOSTS="15.204.229.189 37.59.97.61 15.235.142.253 148.113.43.247"
 ```
 
@@ -272,7 +281,7 @@ For an emergency rollback to the current signed rollback point, set the tag
 explicitly and run the same signed-release path:
 
 ```bash
-export LICHEN_RELEASE_TAG=v0.5.204
+export LICHEN_RELEASE_TAG=v0.5.223
 LICHEN_VERIFY_RELEASE_ONLY=1 bash scripts/rolling-release-deploy.sh mainnet
 bash scripts/rolling-release-deploy.sh mainnet
 ```
@@ -330,7 +339,7 @@ assert not missing
 '
 ```
 
-For testnet, use `RPC_URL="https://testnet-rpc.lichen.network"` and keep the
+For testnet, use `RPC_URL="https://testnet-api.lichen.network"` and keep the
 same signer unless the release signer has been intentionally rotated in code,
 runbooks, signed metadata, and release assets together.
 
@@ -778,7 +787,7 @@ sudo mkdir -p "$STATE"
 sudo chown lichen:lichen "$STATE"
 if [ ! -f "$STATE/validator-keypair.json" ]; then
   sudo -u lichen env LICHEN_KEYPAIR_PASSWORD="$KP_PASS" \
-    /usr/local/bin/lichen init \
+    /usr/local/bin/lichen identity new \
     --output "$STATE/validator-keypair.json"
 fi
 

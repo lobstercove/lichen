@@ -40,6 +40,7 @@ pub(super) enum CompileBackend {
 pub(super) struct DockerSandbox {
     pub(super) runtime: String,
     pub(super) image: String,
+    pub(super) user: String,
 }
 
 impl CompileBackend {
@@ -48,8 +49,8 @@ impl CompileBackend {
             Self::Host => "host-unsandboxed".to_string(),
             Self::Docker(sandbox) => {
                 format!(
-                    "container-sandbox(runtime={}, image={})",
-                    sandbox.runtime, sandbox.image
+                    "container-sandbox(runtime={}, image={}, user={})",
+                    sandbox.runtime, sandbox.image, sandbox.user
                 )
             }
         }
@@ -141,7 +142,12 @@ pub(super) fn resolve_compile_backend() -> Result<CompileBackend, String> {
             ));
         }
 
-        return Ok(CompileBackend::Docker(DockerSandbox { runtime, image }));
+        let user = resolve_sandbox_user()?;
+        return Ok(CompileBackend::Docker(DockerSandbox {
+            runtime,
+            image,
+            user,
+        }));
     }
 
     if env_var_enabled("LICHEN_LOCAL_DEV") {
@@ -231,6 +237,58 @@ fn command_available(program: &str) -> bool {
         .stderr(Stdio::null())
         .status()
         .is_ok()
+}
+
+pub(super) fn validate_sandbox_user(value: &str) -> Result<String, String> {
+    let Some((uid, gid)) = value.split_once(':') else {
+        return Err("COMPILER_SANDBOX_USER must use numeric UID:GID format".to_string());
+    };
+    if uid.is_empty()
+        || gid.is_empty()
+        || !uid.bytes().all(|byte| byte.is_ascii_digit())
+        || !gid.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return Err("COMPILER_SANDBOX_USER must use numeric UID:GID format".to_string());
+    }
+    if uid == "0" || gid == "0" {
+        return Err("compiler sandbox refuses a root UID or GID".to_string());
+    }
+    Ok(format!("{uid}:{gid}"))
+}
+
+fn resolve_sandbox_user() -> Result<String, String> {
+    if let Some(configured) = std::env::var("COMPILER_SANDBOX_USER")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        return validate_sandbox_user(&configured);
+    }
+
+    #[cfg(unix)]
+    {
+        fn numeric_id(flag: &str) -> Result<String, String> {
+            let output = Command::new("id")
+                .arg(flag)
+                .output()
+                .map_err(|error| format!("failed to resolve compiler sandbox identity: {error}"))?;
+            if !output.status.success() {
+                return Err(format!(
+                    "failed to resolve compiler sandbox identity with `id {flag}`"
+                ));
+            }
+            String::from_utf8(output.stdout)
+                .map(|value| value.trim().to_string())
+                .map_err(|_| "compiler sandbox identity is not UTF-8".to_string())
+        }
+
+        validate_sandbox_user(&format!("{}:{}", numeric_id("-u")?, numeric_id("-g")?))
+    }
+
+    #[cfg(not(unix))]
+    {
+        validate_sandbox_user("10001:10001")
+    }
 }
 
 /// Constant-time byte comparison to prevent timing side-channel attacks.

@@ -1,7 +1,11 @@
 import { decryptPrivateKey, signTransaction, bytesToHex } from './crypto-service.js';
 import { LichenRPC, getConfiguredRpcEndpoint } from './rpc-service.js';
 import { DEFAULT_NETWORK, patchState } from './state-store.js';
-import { serializeMessageForSigning } from './tx-service.js';
+import {
+  encodeTransactionBase64,
+  serializeMessageForSigning,
+  signingBytesForChainId,
+} from './tx-service.js';
 import {
   getTrustedRestrictionRpc,
   preflightTransactionRestrictions,
@@ -590,11 +594,6 @@ function getMessageFromParams(params, rawMethod) {
   return '';
 }
 
-function encodeBase64Object(value) {
-  const bytes = new TextEncoder().encode(JSON.stringify(value));
-  return btoa(String.fromCharCode(...bytes));
-}
-
 function bytesToBase64(bytes) {
   let binary = '';
   for (const byte of bytes) binary += String.fromCharCode(byte);
@@ -610,11 +609,6 @@ function base64ToBytes(value) {
     return Uint8Array.from(raw, (ch) => ch.charCodeAt(0));
   }
   return new Uint8Array(Buffer.from(encoded, 'base64'));
-}
-
-function decodeBase64Object(base64String) {
-  const bytes = base64ToBytes(base64String);
-  return JSON.parse(new TextDecoder().decode(bytes));
 }
 
 class LichenWireReader {
@@ -758,15 +752,7 @@ function decodeTransactionInputForSigning(incomingTx) {
     throw new Error('Unsupported transaction payload');
   }
 
-  try {
-    return { txObject: decodeBase64Object(incomingTx), sourceFormat: 'wallet_json_base64' };
-  } catch (jsonError) {
-    try {
-      return { txObject: decodeLichenWireTransactionBase64(incomingTx), sourceFormat: 'lichen_tx_v1' };
-    } catch (wireError) {
-      throw new Error(`Unsupported transaction payload: ${wireError.message || jsonError.message}`);
-    }
-  }
+  return { txObject: decodeLichenWireTransactionBase64(incomingTx), sourceFormat: 'lichen_tx_v1' };
 }
 
 const BS58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
@@ -1311,7 +1297,9 @@ async function finalizeSignTransaction(request, context, approvalInput) {
   try {
     privateKeyHex = await decryptPrivateKey(activeWallet.encryptedKey, password);
     const messageBytes = messageBytesForSigning(txObject);
-    const signature = await signTransaction(privateKeyHex, messageBytes);
+    const rpc = await getRpcForContext(context);
+    const chainId = await rpc.getChainId();
+    const signature = await signTransaction(privateKeyHex, signingBytesForChainId(messageBytes, chainId));
 
     const signedTx = {
       ...txObject,
@@ -1324,8 +1312,8 @@ async function finalizeSignTransaction(request, context, approvalInput) {
       ok: true,
       result: {
         signedTransaction: signedTx,
-        signedTransactionBase64: encodeBase64Object(signedTx),
-        signedTransactionFormat: 'wallet_json_base64',
+        signedTransactionBase64: encodeTransactionBase64(signedTx),
+        signedTransactionFormat: 'lichen_tx_v1',
         sourceTransactionFormat: sourceFormat,
         signature: signature.sig,
         pqSignature: signature,
@@ -1362,7 +1350,9 @@ async function finalizeSendTransaction(request, context, approvalInput) {
   try {
     privateKeyHex = await decryptPrivateKey(activeWallet.encryptedKey, password);
     const messageBytes = messageBytesForSigning(txObject);
-    const signature = await signTransaction(privateKeyHex, messageBytes);
+    const rpc = await getRpcForContext(context);
+    const chainId = await rpc.getChainId();
+    const signature = await signTransaction(privateKeyHex, signingBytesForChainId(messageBytes, chainId));
 
     const signedTx = {
       ...txObject,
@@ -1371,8 +1361,7 @@ async function finalizeSendTransaction(request, context, approvalInput) {
         : [signature]
     };
 
-    const txBase64 = encodeBase64Object(signedTx);
-    const rpc = await getRpcForContext(context);
+    const txBase64 = encodeTransactionBase64(signedTx);
     const simulation = await rpc.simulateTransaction(txBase64);
     if (!simulation?.success) {
       const error = simulation?.error || 'Transaction simulation failed';
@@ -1393,7 +1382,7 @@ async function finalizeSendTransaction(request, context, approvalInput) {
         pqSignatureHex: signature.sig,
         signedTransaction: signedTx,
         signedTransactionBase64: txBase64,
-        signedTransactionFormat: 'wallet_json_base64',
+        signedTransactionFormat: 'lichen_tx_v1',
         sourceTransactionFormat: sourceFormat
       }
     };

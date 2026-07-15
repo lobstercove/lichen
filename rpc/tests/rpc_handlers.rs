@@ -117,7 +117,6 @@ fn create_test_app() -> axum::Router {
         None,
         None,
         None,
-        None,
     )
 }
 
@@ -338,7 +337,6 @@ fn create_test_app_with_lichenid() -> (axum::Router, String, String) {
         None,
         None,
         None,
-        None,
     );
 
     (app, alice.to_base58(), bob.to_base58())
@@ -425,7 +423,6 @@ async fn test_get_contract_info_includes_registry_profile_metadata() {
         None,
         "lichen-test".to_string(),
         "lichen-test".to_string(),
-        None,
         None,
         None,
         None,

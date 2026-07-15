@@ -79,8 +79,8 @@ print("=" * 70)
 # ── 1. Core RPC Endpoints ───────────────────────────────────────────
 print("\n--- 1. Core RPC Endpoints ---")
 
-res, err = rpc("health")
-test("health", res and res.get("status") == "ok", str(res))
+res, err = rpc("getHealth")
+test("getHealth", res and res.get("status") == "ok", str(res))
 
 slot, err = rpc("getSlot")
 test("getSlot", slot is not None and isinstance(slot, int) and slot > 0, f"slot={slot}")
@@ -172,10 +172,6 @@ txs_res, err = rpc("getTransactionsByAddress", [treasury, {"limit": 5}])
 txs_list = txs_res.get("transactions", []) if isinstance(txs_res, dict) else (txs_res if isinstance(txs_res, list) else [])
 test("getTransactionsByAddress", txs_res is not None and len(txs_list) > 0, f"count={len(txs_list)}")
 
-tx_hist_res, err = rpc("getTransactionHistory", [treasury, {"limit": 5}])
-hist_list = tx_hist_res.get("transactions", []) if isinstance(tx_hist_res, dict) else (tx_hist_res if isinstance(tx_hist_res, list) else [])
-test("getTransactionHistory", tx_hist_res is not None and len(hist_list) > 0, f"count={len(hist_list)}")
-
 token_accts_res, err = rpc("getTokenAccounts", [treasury])
 test("getTokenAccounts", token_accts_res is not None, f"count={token_accts_res.get('count') if isinstance(token_accts_res, dict) else '?'}")
 
@@ -258,7 +254,7 @@ if first_cid:
     events, err = rpc("getContractEvents", [first_cid, {"limit": 5}])
     test("getContractEvents", err is None, "ok", warn_only=True)
 
-ok("deployContract", "covered by e2e_agent_test.py")
+ok("signed contract deployment", "covered by e2e_agent_test.py")
 
 # ── 5. Symbol Registry ──────────────────────────────────────────────
 print("\n--- 5. Symbol Registry (Full Audit) ---")

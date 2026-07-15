@@ -44,14 +44,6 @@ pub struct LichenSwapSwapStats {
     pub total_liquidity: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct LichenSwapStats {
-    pub swap_count: u64,
-    pub volume_a: u64,
-    pub volume_b: u64,
-    pub paused: bool,
-}
-
 #[derive(Debug, Clone)]
 pub struct CreatePoolParams {
     pub token_a: Pubkey,
@@ -328,12 +320,9 @@ impl LichenSwapClient {
     }
 
     pub async fn get_program_id(&self) -> Result<Pubkey> {
-        if let Some(program_id) = self
-            .program_id
-            .lock()
-            .map_err(|_| Error::ConfigError("LichenSwapClient program cache lock poisoned".into()))?
-            .clone()
-        {
+        if let Some(program_id) = *self.program_id.lock().map_err(|_| {
+            Error::ConfigError("LichenSwapClient program cache lock poisoned".into())
+        })? {
             return Ok(program_id);
         }
 
@@ -511,11 +500,6 @@ impl LichenSwapClient {
             )
             .await?;
         decode_swap_stats(&result)
-    }
-
-    pub async fn get_stats(&self) -> Result<LichenSwapStats> {
-        let value = self.client.get_lichenswap_stats().await?;
-        serde_json::from_value(value).map_err(|err| Error::ParseError(err.to_string()))
     }
 
     pub async fn create_pool(&self, owner: &Keypair, params: CreatePoolParams) -> Result<String> {

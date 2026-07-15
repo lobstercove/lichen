@@ -9,7 +9,7 @@
         "pubkey": "",
         "region": "us-east",
         "operator": "Lichen Foundation",
-        "rpc": "https://testnet-rpc.lichen.network",
+        "rpc": "https://testnet-api.lichen.network",
         "role": "seed"
       },
       {
@@ -18,7 +18,7 @@
         "pubkey": "",
         "region": "eu-west",
         "operator": "Lichen Foundation",
-        "rpc": "https://testnet-rpc.lichen.network",
+        "rpc": "https://testnet-api.lichen.network",
         "role": "seed"
       },
       {
@@ -27,7 +27,7 @@
         "pubkey": "",
         "region": "ap-southeast",
         "operator": "Lichen Foundation",
-        "rpc": "https://testnet-rpc.lichen.network",
+        "rpc": "https://testnet-api.lichen.network",
         "role": "seed"
       },
       {
@@ -36,7 +36,7 @@
         "pubkey": "",
         "region": "india",
         "operator": "Lichen Foundation",
-        "rpc": "https://testnet-rpc.lichen.network",
+        "rpc": "https://testnet-api.lichen.network",
         "role": "seed"
       }
     ],
@@ -47,7 +47,7 @@
       "seed-04.lichen.network:7001"
     ],
     "rpc_endpoints": [
-      "https://testnet-rpc.lichen.network"
+      "https://testnet-api.lichen.network"
     ],
     "explorers": [
       "https://explorer.lichen.network"

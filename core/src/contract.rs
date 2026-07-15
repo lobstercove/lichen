@@ -69,7 +69,7 @@ pub enum AbiType {
     String,
     Bytes,
     /// 32-byte public key / address (passed as pointer to 32 bytes)
-    #[serde(alias = "Pubkey")]
+    #[serde(rename = "Pubkey")]
     Pubkey,
     /// Arbitrary-length byte array with an explicit length param
     #[serde(rename = "bytes_with_len")]
@@ -196,7 +196,7 @@ pub struct ContractAbi {
     /// ABI schema version
     pub version: String,
     /// Contract name
-    #[serde(alias = "contract")]
+    #[serde(rename = "contract")]
     pub name: String,
     /// Contract template/standard (e.g., "mt20", "mt721", "custom")
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -293,6 +293,36 @@ fn find_abi_function<'a>(
             .iter()
             .find(|function| function.name == function_name)
     })
+}
+
+/// Resolve the logical ABI function selected by a raw opcode-dispatch call.
+///
+/// Older clients submit the exported `call` function with the opcode as the
+/// first argument byte. Execution must apply the selected function's lifecycle
+/// and result semantics, not the generic dispatcher's runtime-only semantics.
+pub fn resolve_abi_call_function_name<'a>(
+    contract: &'a ContractAccount,
+    function_name: &'a str,
+    args: &[u8],
+) -> &'a str {
+    if function_name != "call" {
+        return function_name;
+    }
+
+    let Some(opcode) = args.first().copied() else {
+        return function_name;
+    };
+
+    contract
+        .abi
+        .as_ref()
+        .and_then(|abi| {
+            abi.functions
+                .iter()
+                .find(|function| function.opcode == Some(opcode))
+        })
+        .map(|function| function.name.as_str())
+        .unwrap_or(function_name)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -706,8 +736,6 @@ pub struct ContractContext {
     pub events: Vec<ContractEvent>,
     /// Tracked storage changes: key → Some(value) for writes, None for deletes
     pub storage_changes: HashMap<Vec<u8>, Option<Vec<u8>>>,
-    /// Last value read by storage_read (retrieved via storage_read_result)
-    pub last_read_value: Vec<u8>,
     /// WASM linear memory handle (set after instantiation)
     pub memory: Option<Memory>,
     /// Function arguments passed by the caller
@@ -770,7 +798,6 @@ impl ContractContext {
             logs: Vec::new(),
             events: Vec::new(),
             storage_changes: HashMap::new(),
-            last_read_value: Vec::new(),
             memory: None,
             args: Vec::new(),
             return_data: Vec::new(),
@@ -808,7 +835,6 @@ impl ContractContext {
             logs: Vec::new(),
             events: Vec::new(),
             storage_changes: HashMap::new(),
-            last_read_value: Vec::new(),
             memory: None,
             args: Vec::new(),
             return_data: Vec::new(),
@@ -847,7 +873,6 @@ impl ContractContext {
             logs: Vec::new(),
             events: Vec::new(),
             storage_changes: HashMap::new(),
-            last_read_value: Vec::new(),
             memory: None,
             args,
             return_data: Vec::new(),
@@ -1219,7 +1244,6 @@ const COMPUTE_EVENT: u64 = 50;
 const COMPUTE_GET_CALLER: u64 = 100;
 const COMPUTE_GET_ARGS: u64 = 50; // + per-byte cost
 const COMPUTE_SET_RETURN_DATA: u64 = 50; // + per-byte cost
-const COMPUTE_READ_RESULT: u64 = 50; // + per-byte cost
 const COMPUTE_BYTE_COST: u64 = 1;
 /// Compute cost for initiating a cross-contract call (base cost before callee's compute)
 const COMPUTE_CROSS_CALL: u64 = 5_000;
@@ -1416,9 +1440,8 @@ impl ContractRuntime {
 
         let imports = imports! {
             "env" => {
-                // Storage (4-param read matches SDK FFI, 2-param kept for backward compat)
+                // Storage
                 "storage_read" => Function::new_typed_with_env(&mut store, &env, host_storage_read),
-                "storage_read_result" => Function::new_typed_with_env(&mut store, &env, host_storage_read_result),
                 "storage_write" => Function::new_typed_with_env(&mut store, &env, host_storage_write),
                 "storage_delete" => Function::new_typed_with_env(&mut store, &env, host_storage_delete),
                 // Logging & events
@@ -1428,6 +1451,7 @@ impl ContractRuntime {
                 "get_timestamp" => Function::new_typed_with_env(&mut store, &env, host_get_timestamp),
                 "get_caller" => Function::new_typed_with_env(&mut store, &env, host_get_caller),
                 "get_contract_address" => Function::new_typed_with_env(&mut store, &env, host_get_contract_address),
+                "get_contract_code_hash" => Function::new_typed_with_env(&mut store, &env, host_get_contract_code_hash),
                 "get_value" => Function::new_typed_with_env(&mut store, &env, host_get_value),
                 "get_slot" => Function::new_typed_with_env(&mut store, &env, host_get_slot),
                 "get_block_entropy" => Function::new_typed_with_env(&mut store, &env, host_get_block_entropy),
@@ -1501,6 +1525,12 @@ impl ContractRuntime {
                 (fallback, build_opcode_dispatch_args(opcode, args))
             }
         };
+
+        // Opcode dispatchers expose `call()` with no WASM parameters and read
+        // their selector/arguments through the host `get_args()` API. Keep the
+        // host context aligned with the ABI-resolved buffer, including the
+        // selector prepended for named-function fallback.
+        env.as_mut(&mut store).args = effective_args.clone();
 
         // Build WASM-level call arguments by introspecting the function's type
         // signature. Contracts use two ABIs:
@@ -1895,14 +1925,8 @@ fn deduct_compute(ctx: &mut ContractContext, cost: u64) -> bool {
 }
 
 /// Read from contract storage.
-/// Supports TWO calling conventions:
-/// - 4-param (SDK-compatible): storage_read(key_ptr, key_len, val_ptr, val_len) -> bytes_written | 0
-///   Reads key, looks up value, writes value directly into val_ptr buffer.
-/// - 2-param (legacy): storage_read(key_ptr, key_len) -> value_len | 0xFFFFFFFF
-///   Stores result internally for retrieval via storage_read_result.
-///
-/// We implement the 4-param version since the SDK uses it. It reads key, looks up,
-/// and writes the value into the output buffer in a single call.
+/// `storage_read(key_ptr, key_len, val_ptr, val_len) -> bytes_written | 0` reads
+/// the key and writes the value directly into the output buffer.
 fn host_storage_read(
     mut env: FunctionEnvMut<ContractContext>,
     key_ptr: u32,
@@ -1933,24 +1957,16 @@ fn host_storage_read(
         buf
     };
 
-    // Phase 2: Lookup value and clone it (mutable borrow for compute + cache)
+    // Phase 2: Lookup value and clone it after charging compute.
     let (found_value, write_len) = {
         let ctx = env.data_mut();
         deduct_compute(ctx, COMPUTE_STORAGE_READ);
         match ctx.storage.get(&key) {
             Some(value) => {
                 let wl = value.len().min(val_len as usize);
-                // PERF-FIX 4: Eliminate double-clone. clone_from reuses the
-                // existing last_read_value buffer when it has sufficient capacity,
-                // saving one allocation on repeated reads of similar-sized values.
-                let v = value.clone();
-                ctx.last_read_value.clone_from(&v);
-                (Some(v), wl)
+                (Some(value.clone()), wl)
             }
-            None => {
-                ctx.last_read_value.clear();
-                (None, 0)
-            }
+            None => (None, 0),
         }
     }; // mutable borrow dropped
 
@@ -1972,40 +1988,6 @@ fn host_storage_read(
         None => 0,
     };
     ret
-}
-
-/// Copy last `storage_read` result into WASM memory at `[out_ptr..out_ptr+out_len]`.
-/// Backward-compat for 2-phase read pattern.
-/// Returns: number of bytes actually written (min of value length and out_len).
-fn host_storage_read_result(
-    mut env: FunctionEnvMut<ContractContext>,
-    out_ptr: u32,
-    out_len: u32,
-) -> u32 {
-    // AUDIT-FIX 2.1: Charge compute for read_result
-    {
-        let ctx = env.data_mut();
-        let cost = COMPUTE_READ_RESULT + (out_len as u64) * COMPUTE_BYTE_COST;
-        if !deduct_compute(ctx, cost) {
-            return 0;
-        }
-    }
-    let ctx = env.data();
-    let value = ctx.last_read_value.clone();
-    let memory = match &ctx.memory {
-        Some(m) => m.clone(),
-        None => return 0,
-    };
-    let view = memory.view(&env);
-
-    let write_len = value.len().min(out_len as usize);
-    if write_len == 0 {
-        return 0;
-    }
-    if view.write(out_ptr as u64, &value[..write_len]).is_err() {
-        return 0;
-    }
-    write_len as u32
 }
 
 /// Write to contract storage.
@@ -2266,6 +2248,48 @@ fn host_get_contract_address(mut env: FunctionEnvMut<ContractContext>, out_ptr: 
     };
     let view = memory.view(&env);
     if view.write(out_ptr as u64, &contract_bytes).is_err() {
+        return 1;
+    }
+    0
+}
+
+/// Write the consensus hash of a deployed contract's WASM code.
+/// Returns 0 on success and 1 for an invalid address, missing account, or
+/// non-contract account.
+fn host_get_contract_code_hash(
+    mut env: FunctionEnvMut<ContractContext>,
+    address_ptr: u32,
+    out_ptr: u32,
+) -> u32 {
+    {
+        let ctx = env.data_mut();
+        if !deduct_compute(ctx, COMPUTE_GET_CALLER) {
+            return 1;
+        }
+    }
+    let ctx = env.data();
+    let memory = match &ctx.memory {
+        Some(memory) => memory.clone(),
+        None => return 1,
+    };
+    let view = memory.view(&env);
+    let mut address = [0u8; 32];
+    if view.read(address_ptr as u64, &mut address).is_err() {
+        return 1;
+    }
+    let Some(state) = ctx.state_store.as_ref() else {
+        return 1;
+    };
+    let account = match state.get_account(&Pubkey(address)) {
+        Ok(Some(account)) if account.executable => account,
+        _ => return 1,
+    };
+    let contract: ContractAccount = match serde_json::from_slice(&account.data) {
+        Ok(contract) => contract,
+        Err(_) => return 1,
+    };
+    let code_hash = Hash::hash(&contract.code);
+    if view.write(out_ptr as u64, &code_hash.0).is_err() {
         return 1;
     }
     0
@@ -2598,6 +2622,62 @@ fn push_contract_log(env: &mut FunctionEnvMut<ContractContext>, message: impl In
     env.data_mut().logs.push(message.into());
 }
 
+#[derive(Clone)]
+struct CrossCallFrameSnapshot {
+    changes: CccChanges,
+    events: Vec<ContractEvent>,
+    logs: Vec<String>,
+    value_deltas: HashMap<Pubkey, i64>,
+    native_ops: Vec<NativeAccountOp>,
+    native_state: HashMap<Pubkey, Account>,
+}
+
+impl CrossCallFrameSnapshot {
+    fn capture(ctx: &ContractContext) -> Self {
+        Self {
+            changes: ctx
+                .pending_ccc_changes
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone(),
+            events: ctx
+                .pending_ccc_events
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone(),
+            logs: ctx
+                .pending_ccc_logs
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone(),
+            value_deltas: ctx
+                .pending_ccc_value_deltas
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone(),
+            native_ops: ctx.pending_native_account_ops.clone(),
+            native_state: ctx.pending_native_account_state.clone(),
+        }
+    }
+
+    fn restore(&self, ctx: &mut ContractContext) {
+        *ctx.pending_ccc_changes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = self.changes.clone();
+        *ctx.pending_ccc_events
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = self.events.clone();
+        *ctx.pending_ccc_logs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = self.logs.clone();
+        *ctx.pending_ccc_value_deltas
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = self.value_deltas.clone();
+        ctx.pending_native_account_ops = self.native_ops.clone();
+        ctx.pending_native_account_state = self.native_state.clone();
+    }
+}
+
 /// Cross-contract call — full re-entrant implementation.
 ///
 /// Reads target address (32 bytes), function name, args, and value from the
@@ -2788,8 +2868,10 @@ fn host_cross_contract_call(
         return 0;
     }
 
+    let logical_function_name =
+        resolve_abi_call_function_name(&target_contract, &function_name, &args_buf);
     if let Err(error) =
-        target_contract.validate_lifecycle_for_execution(&function_name, read_only, value)
+        target_contract.validate_lifecycle_for_execution(logical_function_name, read_only, value)
     {
         push_contract_log(
             &mut env,
@@ -2839,10 +2921,11 @@ fn host_cross_contract_call(
 
     // ── Cap callee compute at caller's remaining budget ──────────────
     let caller_remaining = env.data().compute_remaining;
+    let frame_snapshot = CrossCallFrameSnapshot::capture(env.data());
 
     // ── Build callee context ─────────────────────────────────────────
     let callee_storage_bytes: usize = callee_storage.iter().map(|(k, v)| k.len() + v.len()).sum();
-    let callee_ctx = ContractContext {
+    let mut callee_ctx = ContractContext {
         caller: caller_contract, // The calling contract is the caller
         contract: target,
         value,
@@ -2851,7 +2934,6 @@ fn host_cross_contract_call(
         logs: Vec::new(),
         events: Vec::new(),
         storage_changes: HashMap::new(),
-        last_read_value: Vec::new(),
         memory: None, // Set during execute()
         args: args_buf.clone(),
         return_data: Vec::new(),
@@ -2877,19 +2959,28 @@ fn host_cross_contract_call(
     // causing balance inflation when the batch commits and overwrites the
     // CCC-modified values.  Track all value movements as deltas that the
     // processor applies atomically through the batch after execution.
+    let mut value_account_updates: Vec<(Pubkey, Account)> = Vec::new();
     if value > 0 {
-        let base_balance = match state_store.get_account(&caller_contract) {
-            Ok(Some(a)) => a.spendable,
-            _ => 0u64,
-        };
-        let current_delta = {
-            let deltas = pending_value_deltas
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            *deltas.get(&caller_contract).unwrap_or(&0)
-        };
-        let effective = (base_balance as i128) + (current_delta as i128);
-        if effective < (value as i128) {
+        if value > i64::MAX as u64 {
+            push_contract_log(
+                &mut env,
+                format!(
+                    "[CCC] Call to {}::{} rejected: attached value exceeds delta range",
+                    crate::Pubkey(target.0),
+                    function_name
+                ),
+            );
+            return 0;
+        }
+        let mut projected_caller =
+            match projected_native_account(env.data(), &state_store, &caller_contract, false) {
+                Ok(account) => account,
+                Err(_) => {
+                    push_contract_log(&mut env, "[CCC] rejected: caller account unavailable");
+                    return 0;
+                }
+            };
+        if projected_caller.spendable < value {
             let ctx = env.data_mut();
             ctx.logs.push(format!(
                 "[CCC] Call to {}::{} rejected: caller {} has insufficient balance for value {}",
@@ -2900,13 +2991,81 @@ fn host_cross_contract_call(
             ));
             return 0;
         }
-        // Record escrow delta (deduct from caller)
-        {
-            let mut deltas = pending_value_deltas
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            *deltas.entry(caller_contract).or_default() -= value as i64;
-        }
+
+        // A payable callee must be able to spend or refund the attached value
+        // before the call returns. The database credit remains deferred until
+        // success, but native-operation validation uses this projected balance.
+        let projected_target = if target == caller_contract {
+            projected_caller.clone()
+        } else {
+            let mut projected_target =
+                match projected_native_account(env.data(), &state_store, &target, false) {
+                    Ok(account) => account,
+                    Err(_) => {
+                        push_contract_log(&mut env, "[CCC] rejected: target account unavailable");
+                        return 0;
+                    }
+                };
+            let outgoing_restricted = state_store
+                .is_account_restricted(
+                    &caller_contract,
+                    RestrictionTransferDirection::Outgoing,
+                    Some(&NATIVE_LICN_ASSET_ID),
+                    value,
+                    projected_caller.spendable,
+                    current_slot,
+                )
+                .unwrap_or(true);
+            let incoming_restricted = state_store
+                .is_account_restricted(
+                    &target,
+                    RestrictionTransferDirection::Incoming,
+                    Some(&NATIVE_LICN_ASSET_ID),
+                    value,
+                    projected_target.spendable,
+                    current_slot,
+                )
+                .unwrap_or(true);
+            if outgoing_restricted || incoming_restricted {
+                push_contract_log(
+                    &mut env,
+                    "[CCC] rejected: attached value blocked by account/native asset restriction",
+                );
+                return 0;
+            }
+            if projected_caller.deduct_spendable(value).is_err()
+                || projected_target.add_spendable(value).is_err()
+            {
+                push_contract_log(
+                    &mut env,
+                    format!(
+                        "[CCC] Call to {}::{} rejected: attached value projection overflowed",
+                        crate::Pubkey(target.0),
+                        function_name
+                    ),
+                );
+                return 0;
+            }
+            value_account_updates.push((caller_contract, projected_caller));
+            projected_target
+        };
+        value_account_updates.push((target, projected_target.clone()));
+        callee_ctx
+            .pending_native_account_state
+            .insert(target, projected_target);
+
+        // Record escrow delta only after every validation above succeeds.
+        let mut deltas = pending_value_deltas
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let entry = deltas.entry(caller_contract).or_default();
+        let Some(next) = entry.checked_sub(value as i64) else {
+            drop(deltas);
+            frame_snapshot.restore(env.data_mut());
+            push_contract_log(&mut env, "[CCC] rejected: attached value delta overflowed");
+            return 0;
+        };
+        *entry = next;
     }
 
     // ── Execute callee in a fresh runtime ────────────────────────────
@@ -2915,13 +3074,7 @@ fn host_cross_contract_call(
         Ok(r) => r,
         Err(e) => {
             runtime.return_to_pool();
-            // AUDIT-FIX C-2: Refund escrowed value via delta on execute error
-            if value > 0 {
-                let mut deltas = pending_value_deltas
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner());
-                *deltas.entry(caller_contract).or_default() += value as i64;
-            }
+            frame_snapshot.restore(env.data_mut());
             // Log the error for diagnostics
             let ctx = env.data_mut();
             ctx.logs.push(format!(
@@ -2943,19 +3096,13 @@ fn host_cross_contract_call(
 
     let outcome = evaluate_contract_outcome(
         &target_contract,
-        &function_name,
+        logical_function_name,
         &result,
         ContractOutcomeFallback::RuntimeSuccessOnly,
     );
     if !outcome.success {
         // Callee failed by runtime or declared ABI — return 0, don't apply changes.
-        // AUDIT-FIX C-2: Refund escrowed value via delta on callee failure
-        if value > 0 {
-            let mut deltas = pending_value_deltas
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            *deltas.entry(caller_contract).or_default() += value as i64;
-        }
+        frame_snapshot.restore(env.data_mut());
         let ctx = env.data_mut();
         if let Some(ref err) = outcome.error {
             ctx.logs.push(format!(
@@ -2968,12 +3115,52 @@ fn host_cross_contract_call(
         return 0;
     }
 
-    // ── AUDIT-FIX C-2: Credit value to callee via delta on success ──────
+    // Build the complete value-delta commit before mutating the parent frame.
+    let mut committed_deltas = pending_value_deltas
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    let mut delta_overflow = false;
     if value > 0 {
-        let mut deltas = pending_value_deltas
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        *deltas.entry(target).or_default() += value as i64;
+        let entry = committed_deltas.entry(target).or_default();
+        if let Some(next) = entry.checked_add(value as i64) {
+            *entry = next;
+        } else {
+            delta_overflow = true;
+        }
+    }
+    for (addr, delta) in &result.ccc_value_deltas {
+        let entry = committed_deltas.entry(*addr).or_default();
+        if let Some(next) = entry.checked_add(*delta) {
+            *entry = next;
+        } else {
+            delta_overflow = true;
+            break;
+        }
+    }
+    if delta_overflow {
+        frame_snapshot.restore(env.data_mut());
+        push_contract_log(&mut env, "[CCC] rejected: nested value delta overflowed");
+        return 0;
+    }
+    *pending_value_deltas
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = committed_deltas;
+    for (account, projected) in value_account_updates {
+        env.data_mut()
+            .pending_native_account_state
+            .insert(account, projected);
+    }
+
+    // Validate and stage native operations before merging direct callee state.
+    if !result.native_account_ops.is_empty() {
+        let ctx = env.data_mut();
+        for op in &result.native_account_ops {
+            if queue_native_account_op(ctx, &state_store, op.clone()).is_err() {
+                frame_snapshot.restore(ctx);
+                return 0;
+            }
+        }
     }
 
     // ── Merge callee's direct storage changes into pending ───────────
@@ -2985,46 +3172,15 @@ fn host_cross_contract_call(
         }
     }
 
-    // ── Merge callee's nested cross-call changes (from deeper levels) ─
-    if !result.cross_call_changes.is_empty() {
-        let mut changes = pending_changes.lock().unwrap_or_else(|e| e.into_inner());
-        for (addr, addr_changes) in &result.cross_call_changes {
-            let entry = changes.entry(*addr).or_default();
-            for (k, v) in addr_changes {
-                entry.insert(k.clone(), v.clone());
-            }
-        }
-    }
-
-    // ── Collect events and logs from callee ──────────────────────────
-    if !result.events.is_empty() || !result.cross_call_events.is_empty() {
+    // Nested call effects already live in the shared frame. Merge only this
+    // callee's direct effects, otherwise each depth duplicates prior effects.
+    if !result.events.is_empty() {
         let mut events = pending_events.lock().unwrap_or_else(|e| e.into_inner());
         events.extend(result.events);
-        events.extend(result.cross_call_events);
     }
-    if !result.logs.is_empty() || !result.cross_call_logs.is_empty() {
+    if !result.logs.is_empty() {
         let mut logs = pending_logs.lock().unwrap_or_else(|e| e.into_inner());
         logs.extend(result.logs);
-        logs.extend(result.cross_call_logs);
-    }
-
-    // ── AUDIT-FIX C-2: Merge callee's CCC value deltas on success ───
-    if !result.ccc_value_deltas.is_empty() {
-        let mut deltas = pending_value_deltas
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        for (addr, delta) in &result.ccc_value_deltas {
-            *deltas.entry(*addr).or_default() += delta;
-        }
-    }
-
-    if !result.native_account_ops.is_empty() {
-        let ctx = env.data_mut();
-        for op in &result.native_account_ops {
-            if queue_native_account_op(ctx, &state_store, op.clone()).is_err() {
-                return 0;
-            }
-        }
     }
 
     // ── Determine result data to write back to caller ────────────────
@@ -3047,6 +3203,7 @@ fn host_cross_contract_call(
         let memory = match env.data().memory.clone() {
             Some(m) => m,
             None => {
+                frame_snapshot.restore(env.data_mut());
                 push_contract_log(
                     &mut env,
                     "[CCC] rejected: caller memory unavailable for result write",
@@ -3059,6 +3216,7 @@ fn host_cross_contract_call(
             .write(result_ptr as u64, &effective_result[..write_len])
             .is_err()
         {
+            frame_snapshot.restore(env.data_mut());
             push_contract_log(
                 &mut env,
                 "[CCC] rejected: failed to write cross-contract result",
@@ -3076,6 +3234,42 @@ fn host_cross_contract_call(
     }
 }
 
+fn apply_value_delta_to_account(account: &mut Account, delta: i64) -> Result<(), String> {
+    if delta > 0 {
+        account.add_spendable(delta as u64)
+    } else if delta < 0 {
+        account.deduct_spendable(delta.unsigned_abs())
+    } else {
+        Ok(())
+    }
+}
+
+fn projected_native_account(
+    ctx: &ContractContext,
+    state_store: &StateStore,
+    account: &Pubkey,
+    allow_missing: bool,
+) -> Result<Account, String> {
+    if let Some(projected) = ctx.pending_native_account_state.get(account) {
+        return Ok(projected.clone());
+    }
+
+    let mut projected = match state_store.get_account(account)? {
+        Some(account) => account,
+        None if allow_missing => Account::new(0, *account),
+        None => return Err(format!("Native account {} not found", account)),
+    };
+    let delta = {
+        let deltas = ctx
+            .pending_ccc_value_deltas
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        *deltas.get(account).unwrap_or(&0)
+    };
+    apply_value_delta_to_account(&mut projected, delta)?;
+    Ok(projected)
+}
+
 fn queue_native_account_op(
     ctx: &mut ContractContext,
     state_store: &StateStore,
@@ -3083,14 +3277,7 @@ fn queue_native_account_op(
 ) -> Result<(), String> {
     match &op {
         NativeAccountOp::Lock { account, amount } => {
-            let account_state =
-                if let Some(account_state) = ctx.pending_native_account_state.get(account) {
-                    account_state.clone()
-                } else {
-                    state_store
-                        .get_account(account)?
-                        .ok_or_else(|| format!("Native account {} not found", account))?
-                };
+            let account_state = projected_native_account(ctx, state_store, account, false)?;
             if state_store.is_account_restricted(
                 account,
                 RestrictionTransferDirection::Outgoing,
@@ -3106,14 +3293,7 @@ fn queue_native_account_op(
             }
         }
         NativeAccountOp::Transfer { from, to, amount } => {
-            let from_account =
-                if let Some(account_state) = ctx.pending_native_account_state.get(from) {
-                    account_state.clone()
-                } else {
-                    state_store
-                        .get_account(from)?
-                        .ok_or_else(|| format!("Native account {} not found", from))?
-                };
+            let from_account = projected_native_account(ctx, state_store, from, false)?;
             if state_store.is_account_restricted(
                 from,
                 RestrictionTransferDirection::Outgoing,
@@ -3128,13 +3308,7 @@ fn queue_native_account_op(
                 ));
             }
 
-            let to_account = if let Some(account_state) = ctx.pending_native_account_state.get(to) {
-                account_state.clone()
-            } else {
-                state_store
-                    .get_account(to)?
-                    .unwrap_or_else(|| Account::new(0, *to))
-            };
+            let to_account = projected_native_account(ctx, state_store, to, true)?;
             if state_store.is_account_restricted(
                 to,
                 RestrictionTransferDirection::Incoming,
@@ -3153,13 +3327,7 @@ fn queue_native_account_op(
     }
 
     let account_key = op.account();
-    let mut account = if let Some(account) = ctx.pending_native_account_state.get(&account_key) {
-        account.clone()
-    } else {
-        state_store
-            .get_account(&account_key)?
-            .ok_or_else(|| format!("Native account {} not found", account_key))?
-    };
+    let mut account = projected_native_account(ctx, state_store, &account_key, false)?;
     op.apply(&mut account)?;
     ctx.pending_native_account_state
         .insert(account_key, account);
@@ -3167,13 +3335,7 @@ fn queue_native_account_op(
     // For Transfer ops, also credit the recipient account
     if let Some(to_key) = op.transfer_to() {
         if let NativeAccountOp::Transfer { amount, .. } = &op {
-            let mut to_account = if let Some(acc) = ctx.pending_native_account_state.get(&to_key) {
-                acc.clone()
-            } else {
-                state_store
-                    .get_account(&to_key)?
-                    .unwrap_or_else(|| Account::new(0, to_key))
-            };
+            let mut to_account = projected_native_account(ctx, state_store, &to_key, true)?;
             to_account.spores = to_account.spores.saturating_add(*amount);
             to_account.spendable = to_account.spendable.saturating_add(*amount);
             ctx.pending_native_account_state.insert(to_key, to_account);
@@ -3512,6 +3674,54 @@ mod tests {
                 )
             )
         )"#
+    }
+
+    fn code_hash_probe_wat() -> &'static str {
+        r#"(module
+            (import "env" "get_args" (func $get_args (param i32 i32) (result i32)))
+            (import "env" "get_contract_code_hash" (func $get_code_hash (param i32 i32) (result i32)))
+            (import "env" "set_return_data" (func $set_return_data (param i32 i32) (result i32)))
+            (memory (export "memory") 1)
+            (func (export "probe") (result i32)
+                (local $status i32)
+                (call $get_args (i32.const 0) (i32.const 32))
+                drop
+                (local.set $status (call $get_code_hash (i32.const 0) (i32.const 32)))
+                (if (i32.eqz (local.get $status))
+                    (then
+                        (call $set_return_data (i32.const 32) (i32.const 32))
+                        drop
+                    )
+                )
+                (local.get $status)
+            )
+        )"#
+    }
+
+    #[test]
+    fn test_contract_code_hash_host_reads_deployed_wasm() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+        let target = Pubkey([0xB0; 32]);
+        let caller = Pubkey([0xB1; 32]);
+        let target_contract = ContractAccount::new(b"(module (memory 1))".to_vec(), caller);
+        let expected = Hash::hash(&target_contract.code);
+        let mut target_account = Account::new(0, target);
+        target_account.executable = true;
+        target_account.data = serde_json::to_vec(&target_contract).unwrap();
+        state.put_account(&target, &target_account).unwrap();
+
+        let probe = ContractAccount::new(code_hash_probe_wat().as_bytes().to_vec(), caller);
+        let args = target.0.to_vec();
+        let mut context =
+            ContractContext::with_args(caller, caller, 0, 0, HashMap::new(), args.clone());
+        context.state_store = Some(state);
+        let result = ContractRuntime::new()
+            .execute(&probe, "probe", &args, context)
+            .expect("code hash probe should execute");
+
+        assert_eq!(result.return_code, Some(0));
+        assert_eq!(result.return_data, expected.0);
     }
 
     fn token_compliance_args(asset: Pubkey, from: Pubkey, to: Pubkey) -> Vec<u8> {
@@ -4417,7 +4627,7 @@ mod tests {
         }
 
         assert_eq!(
-            abi_count, 33,
+            abi_count, 34,
             "expected every bundled contract ABI to be checked"
         );
     }
@@ -4564,6 +4774,18 @@ mod tests {
             assert_kind(&sporepump, name, AbiResultKind::ReturnValue);
             assert_failure_codes(&sporepump, name, &[-1, 200]);
         }
+
+        let lichendao = load_abi("lichendao");
+        let vote = lichendao
+            .functions
+            .iter()
+            .find(|function| function.name == "vote")
+            .expect("lichendao vote missing from ABI")
+            .result_semantics
+            .as_ref()
+            .expect("lichendao vote should declare result semantics");
+        assert_eq!(vote.kind, AbiResultKind::ReturnCode);
+        assert_eq!(vote.success_codes, vec![1]);
 
         let lichenswap = load_abi("lichenswap");
         assert_params(
@@ -5090,6 +5312,53 @@ mod tests {
     fn test_build_opcode_dispatch_args_prefixes_selector() {
         let args = vec![1u8, 2, 3, 4];
         assert_eq!(build_opcode_dispatch_args(9, &args), vec![9u8, 1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn test_named_opcode_fallback_exposes_selector_through_get_args() {
+        let wasm = wat::parse_str(
+            r#"(module
+                (import "env" "get_args" (func $get_args (param i32 i32) (result i32)))
+                (memory (export "memory") 1)
+                (func (export "call") (result i32)
+                    (call $get_args (i32.const 0) (i32.const 64))
+                    drop
+                    (i32.load8_u (i32.const 0))
+                )
+            )"#,
+        )
+        .expect("opcode dispatcher WAT should compile");
+        let owner = Pubkey([0x71; 32]);
+        let mut contract = ContractAccount::new(wasm, owner);
+        contract
+            .abi
+            .as_mut()
+            .expect("call export should produce an ABI")
+            .functions
+            .push(AbiFunction {
+                name: "selected".to_string(),
+                description: None,
+                params: Vec::new(),
+                returns: None,
+                opcode: Some(37),
+                readonly: false,
+                result_semantics: None,
+            });
+        let args = vec![0xA1, 0xB2];
+        let context = ContractContext::with_args(
+            owner,
+            Pubkey([0x72; 32]),
+            0,
+            0,
+            HashMap::new(),
+            args.clone(),
+        );
+
+        let result = ContractRuntime::new()
+            .execute(&contract, "selected", &args, context)
+            .expect("named opcode fallback should execute");
+
+        assert_eq!(result.return_code, Some(37));
     }
 
     /// P9-CORE-04: Verify MODULE_CACHE uses LRU with bounded capacity

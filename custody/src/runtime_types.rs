@@ -81,10 +81,9 @@ pub(super) struct WsEventTicket {
 pub(super) struct CustodyConfig {
     pub(super) db_path: String,
     pub(super) solana_rpc_url: Option<String>,
-    pub(super) evm_rpc_url: Option<String>,
-    /// Per-chain EVM RPC: Ethereum-specific (overrides evm_rpc_url for ETH deposits)
+    /// Ethereum-specific EVM RPC.
     pub(super) eth_rpc_url: Option<String>,
-    /// Per-chain EVM RPC: BSC/BNB-specific (overrides evm_rpc_url for BNB deposits)
+    /// BSC/BNB-specific EVM RPC.
     pub(super) bnb_rpc_url: Option<String>,
     /// Ethereum route chain ID. Defaults to Ethereum mainnet, but testnet
     /// deployments can pin Sepolia or another explicitly selected source chain.
@@ -114,10 +113,9 @@ pub(super) struct CustodyConfig {
     pub(super) btc_fee_rate_sats_vb: u64,
     pub(super) poll_interval_secs: u64,
     pub(super) treasury_solana_address: Option<String>,
-    pub(super) treasury_evm_address: Option<String>,
-    /// Per-chain EVM treasury: separate ETH treasury address (overrides treasury_evm_address)
+    /// Ethereum treasury address.
     pub(super) treasury_eth_address: Option<String>,
-    /// Per-chain EVM treasury: separate BNB treasury address (overrides treasury_evm_address)
+    /// BNB treasury address.
     pub(super) treasury_bnb_address: Option<String>,
     /// Per-chain EVM treasury: separate Neo X treasury address.
     pub(super) treasury_neox_address: Option<String>,
@@ -127,11 +125,9 @@ pub(super) struct CustodyConfig {
     pub(super) solana_treasury_owner: Option<String>,
     pub(super) solana_usdc_mint: String,
     pub(super) solana_usdt_mint: String,
-    /// Ethereum USDC source token contract. Loaded from CUSTODY_ETH_USDC_TOKEN_ADDR
-    /// or the legacy CUSTODY_EVM_USDC alias.
+    /// Ethereum USDC source token contract.
     pub(super) evm_usdc_contract: String,
-    /// Ethereum USDT source token contract. Loaded from CUSTODY_ETH_USDT_TOKEN_ADDR
-    /// or the legacy CUSTODY_EVM_USDT alias.
+    /// Ethereum USDT source token contract.
     pub(super) evm_usdt_contract: String,
     /// BSC/BEP-20 USDC source token contract required before BSC USDC routes open.
     pub(super) bnb_usdc_contract: Option<String>,
@@ -181,12 +177,11 @@ pub(super) struct CustodyConfig {
     /// M17 fix: API auth token for withdrawal and other write endpoints
     pub(super) api_auth_token: Option<String>,
     pub(super) withdrawal_velocity_policy: WithdrawalVelocityPolicy,
-    /// EVM multisig contract address (e.g. Gnosis Safe).
-    /// Required for multi-signer EVM withdrawals.
-    /// Set via CUSTODY_EVM_MULTISIG_ADDRESS env var.
-    pub(super) evm_multisig_address: Option<String>,
+    /// Ethereum multisig contract address (e.g. Gnosis Safe).
+    pub(super) eth_multisig_address: Option<String>,
+    /// BNB multisig contract address.
+    pub(super) bnb_multisig_address: Option<String>,
     /// Neo X-specific EVM multisig contract address.
-    /// Falls back to evm_multisig_address only when this route-specific value is unset.
     pub(super) neox_multisig_address: Option<String>,
     /// Optional outbound webhook host allowlist.
     /// When set, webhook URLs must resolve to one of these hosts.

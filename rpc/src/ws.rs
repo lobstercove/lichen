@@ -283,7 +283,11 @@ impl BlockFanoutSummary {
             slot: block.header.slot,
             hash: block.hash().to_hex(),
             parent_hash: block.header.parent_hash.to_hex(),
-            transaction_count: block.transactions.len(),
+            transaction_count: block
+                .transactions
+                .iter()
+                .filter(|transaction| !transaction.is_consensus())
+                .count(),
             timestamp: block.header.timestamp,
         }
     }
@@ -711,11 +715,22 @@ fn signature_status_event_from_state(state: &WsState, signature_hash: &Hash) -> 
         (None, false) => return None,
     };
 
+    let error = state
+        .state
+        .get_tx_meta_full(signature_hash)
+        .ok()
+        .flatten()
+        .filter(|meta| !meta.succeeded())
+        .map(|meta| {
+            meta.error
+                .unwrap_or_else(|| "Transaction execution failed".to_string())
+        });
+
     Some(Event::SignatureStatus {
         signature: signature_hash.to_hex(),
         status: status.to_string(),
         slot,
-        err: None,
+        err: error,
     })
 }
 
@@ -1130,10 +1145,7 @@ async fn handle_socket(socket: WebSocket, state: WsState, ip: IpAddr) {
                     }
                 }
 
-                if matches!(
-                    req.method.as_str(),
-                    "subscribeSignatureStatus" | "signatureSubscribe"
-                ) {
+                if matches!(req.method.as_str(), "subscribeSignatureStatus") {
                     if let (Some(params), Some(sub_id)) = (req.params.as_ref(), sub_id) {
                         if let Ok(signature_hash) = parse_signature_hash_from_params(params) {
                             if let Some(event) =
@@ -1205,11 +1217,11 @@ async fn handle_subscription_request(
     subscription_manager: &SubscriptionManager,
 ) -> SubscriptionResponse {
     let result = match req.method.as_str() {
-        "subscribeSlots" | "slotSubscribe" => subscription_manager
+        "subscribeSlots" => subscription_manager
             .subscribe(SubscriptionType::Slots)
             .await
             .map(|sub_id| serde_json::json!(sub_id)),
-        "unsubscribeSlots" | "slotUnsubscribe" => {
+        "unsubscribeSlots" => {
             if let Some(params) = req.params {
                 if let Some(sub_id) = params.as_u64() {
                     let success = subscription_manager.unsubscribe(sub_id).await;
@@ -1615,7 +1627,7 @@ async fn handle_subscription_request(
         }
 
         // ─── New subscriptions ───
-        "subscribeSignatureStatus" | "signatureSubscribe" => {
+        "subscribeSignatureStatus" => {
             if let Some(params) = req.params {
                 match parse_signature_hash_from_params(&params) {
                     Ok(signature_hash) => subscription_manager
@@ -1631,7 +1643,7 @@ async fn handle_subscription_request(
                 })
             }
         }
-        "unsubscribeSignatureStatus" | "signatureUnsubscribe" => {
+        "unsubscribeSignatureStatus" => {
             if let Some(params) = req.params {
                 if let Some(sub_id) = params
                     .as_u64()
@@ -1660,11 +1672,11 @@ async fn handle_subscription_request(
             }
         }
 
-        "subscribeValidators" | "validatorSubscribe" => subscription_manager
+        "subscribeValidators" => subscription_manager
             .subscribe(SubscriptionType::Validators)
             .await
             .map(|sub_id| serde_json::json!(sub_id)),
-        "unsubscribeValidators" | "validatorUnsubscribe" => {
+        "unsubscribeValidators" => {
             if let Some(params) = req.params {
                 if let Some(sub_id) = params.as_u64() {
                     Ok(serde_json::json!(
@@ -1684,7 +1696,7 @@ async fn handle_subscription_request(
             }
         }
 
-        "subscribeTokenBalance" | "tokenBalanceSubscribe" => {
+        "subscribeTokenBalance" => {
             if let Some(params) = req.params {
                 if let Some(obj) = params.as_object() {
                     let owner_str = obj.get("owner").and_then(|v| v.as_str()).unwrap_or("");
@@ -1715,7 +1727,7 @@ async fn handle_subscription_request(
                 })
             }
         }
-        "unsubscribeTokenBalance" | "tokenBalanceUnsubscribe" => {
+        "unsubscribeTokenBalance" => {
             if let Some(params) = req.params {
                 if let Some(sub_id) = params.as_u64() {
                     Ok(serde_json::json!(
@@ -1735,11 +1747,11 @@ async fn handle_subscription_request(
             }
         }
 
-        "subscribeEpochs" | "epochSubscribe" => subscription_manager
+        "subscribeEpochs" => subscription_manager
             .subscribe(SubscriptionType::Epochs)
             .await
             .map(|sub_id| serde_json::json!(sub_id)),
-        "unsubscribeEpochs" | "epochUnsubscribe" => {
+        "unsubscribeEpochs" => {
             if let Some(params) = req.params {
                 if let Some(sub_id) = params.as_u64() {
                     Ok(serde_json::json!(
@@ -1759,11 +1771,11 @@ async fn handle_subscription_request(
             }
         }
 
-        "subscribeGovernance" | "governanceSubscribe" => subscription_manager
+        "subscribeGovernance" => subscription_manager
             .subscribe(SubscriptionType::Governance)
             .await
             .map(|sub_id| serde_json::json!(sub_id)),
-        "unsubscribeGovernance" | "governanceUnsubscribe" => {
+        "unsubscribeGovernance" => {
             if let Some(params) = req.params {
                 if let Some(sub_id) = params.as_u64() {
                     Ok(serde_json::json!(
@@ -1844,7 +1856,7 @@ async fn handle_subscription_request(
         }
 
         // ─── Prediction market real-time channels ───
-        "subscribePrediction" | "subscribePredictionMarket" => {
+        "subscribePrediction" => {
             if let Some(params) = req.params {
                 let channel_str = params
                     .get("channel")
@@ -1870,7 +1882,7 @@ async fn handle_subscription_request(
                     .map(|sub_id| serde_json::json!(sub_id))
             }
         }
-        "unsubscribePrediction" | "unsubscribePredictionMarket" => {
+        "unsubscribePrediction" => {
             if let Some(params) = req.params {
                 if let Some(sub_id) = params.as_u64() {
                     Ok(serde_json::json!(
@@ -2503,13 +2515,6 @@ mod tests {
         assert!(resp.error.is_some());
     }
 
-    #[tokio::test]
-    async fn handle_slot_subscribe_alias() {
-        let sm = SubscriptionManager::new();
-        let resp = handle_subscription_request(make_req("slotSubscribe", None), &sm).await;
-        assert!(resp.error.is_none());
-    }
-
     // ── create_notification ──
 
     #[test]
@@ -2851,7 +2856,7 @@ mod tests {
             SubscriptionRequest {
                 _jsonrpc: "2.0".to_string(),
                 id: serde_json::json!(1),
-                method: "signatureSubscribe".to_string(),
+                method: "subscribeSignatureStatus".to_string(),
                 params: Some(serde_json::json!([bs58::encode(hash.0).into_string()])),
             },
             &subscription_manager,
@@ -2873,7 +2878,7 @@ mod tests {
             SubscriptionRequest {
                 _jsonrpc: "2.0".to_string(),
                 id: serde_json::json!(1),
-                method: "signatureSubscribe".to_string(),
+                method: "subscribeSignatureStatus".to_string(),
                 params: Some(serde_json::json!(["not-a-signature"])),
             },
             &subscription_manager,

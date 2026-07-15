@@ -29,7 +29,7 @@
     </header>
 
     <section id="welcomeScreen" class="wallet-content popup-card screen active">
-      <div class="legacy-welcome">
+      <div class="popup-welcome">
         <h3 style="margin-bottom: 0.5rem;">Welcome to LichenWallet</h3>
         <p class="step-description" style="margin-bottom: 1rem;">Create a new wallet or import an existing seed phrase.
         </p>
@@ -37,67 +37,6 @@
         <button data-action="goImport" class="btn btn-secondary btn-large popup-btn-block">Import Wallet</button>
       </div>
 
-      <div class="web-welcome wallet-container welcome-container">
-        <div class="welcome-logo">
-          <img src="../../LichenWallet_Logo_256.png" class="logo-icon" alt="LichenWallet" />
-          <h1>LichenWallet</h1>
-        </div>
-        <p class="welcome-subtitle">Your gateway to the Lichen ecosystem</p>
-
-        <div class="welcome-carousel">
-          <div class="carousel-track">
-            <div class="carousel-slide active">
-              <div class="carousel-card">
-                <div class="carousel-icon"><i class="fas fa-shield-alt"></i></div>
-                <h3>Secure &amp; Open Source</h3>
-                <p>AES-256-GCM encrypted keys, ML-DSA-65 signatures, fully auditable code</p>
-              </div>
-            </div>
-            <div class="carousel-slide">
-              <div class="carousel-card">
-                <div class="carousel-icon"><i class="fas fa-bolt"></i></div>
-                <h3>Ultra-Fast Transactions</h3>
-                <p>400ms finality, $0.0001 per transaction, 10,000 tx per block</p>
-              </div>
-            </div>
-            <div class="carousel-slide">
-              <div class="carousel-card">
-                <div class="carousel-icon"><i class="fas fa-robot"></i></div>
-                <h3>Agent-Native</h3>
-                <p>Built for autonomous agents with on-chain identity and reputation</p>
-              </div>
-            </div>
-            <div class="carousel-slide">
-              <div class="carousel-card">
-                <div class="carousel-icon"><i class="fas fa-fingerprint"></i></div>
-                <h3>LichenID Identity</h3>
-                <p>.lichen naming, skill attestations, 0–100K reputation score</p>
-              </div>
-            </div>
-            <div class="carousel-slide">
-              <div class="carousel-card">
-                <div class="carousel-icon"><i class="fas fa-eye-slash"></i></div>
-                <h3>Privacy Layer</h3>
-                <p>Shielded transactions with ZK proofs, Pedersen commitments, nullifiers</p>
-              </div>
-            </div>
-          </div>
-          <div class="carousel-dots">
-            <span class="carousel-dot active" data-slide="0"></span>
-            <span class="carousel-dot" data-slide="1"></span>
-            <span class="carousel-dot" data-slide="2"></span>
-            <span class="carousel-dot" data-slide="3"></span>
-            <span class="carousel-dot" data-slide="4"></span>
-          </div>
-        </div>
-
-        <div class="welcome-actions">
-          <button data-action="goCreate" class="btn btn-primary btn-large"><i class="fas fa-plus"></i> Create New
-            Wallet</button>
-          <button data-action="goImport" class="btn btn-secondary btn-large"><i class="fas fa-download"></i> Import
-            Existing Wallet</button>
-        </div>
-      </div>
     </section>
 
     <section id="createScreen" class="wallet-content popup-card screen">
@@ -512,7 +451,7 @@
           <div class="form-group"><label>Mainnet RPC</label><input id="settingsMainnetRpc" class="form-input"
               placeholder="https://rpc.lichen.network" /></div>
           <div class="form-group"><label>Testnet RPC</label><input id="settingsTestnetRpc" class="form-input"
-              placeholder="https://testnet-rpc.lichen.network" /></div>
+              placeholder="https://testnet-api.lichen.network" /></div>
           <div class="form-group"><label>Local Testnet RPC</label><input id="settingsLocalTestnetRpc" class="form-input"
               placeholder="http://localhost:8899" /></div>
           <div class="form-group"><label>Local Mainnet RPC</label><input id="settingsLocalMainnetRpc" class="form-input"

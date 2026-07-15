@@ -195,8 +195,8 @@
                         </tr>
                         <tr>
                             <td>Testnet RPC / WebSocket</td>
-                            <td><code>https://testnet-rpc.lichen.network</code> /
-                                <code>wss://testnet-rpc.lichen.network/ws</code></td>
+                            <td><code>https://testnet-api.lichen.network</code> /
+                                <code>wss://testnet-api.lichen.network/ws</code></td>
                         </tr>
                         <tr>
                             <td>Mainnet RPC / WebSocket</td>
@@ -328,7 +328,7 @@ valid_native_address(address):
                     <ul>
                         <li>Required methods: <code>getBlock</code>, <code>getLatestBlock</code>,
                             <code>getTransaction</code>, <code>getTransactionsByAddress</code>,
-                            <code>getTransactionHistory</code>, and <code>getAccountTxCount</code>.</li>
+                            and <code>getAccountTxCount</code>.</li>
                         <li>Hot/cold archive behavior is regression-tested after migration and reopen at storage and
                             RPC boundaries.</li>
                         <li>A new validator must be able to sync and serve complete history when configured as an
@@ -345,7 +345,7 @@ valid_native_address(address):
                     <h3>Get Finalized Slot</h3>
                     <div class="code-block">
                         <div class="code-block-header"><span class="code-lang">cURL</span></div>
-                        <pre><code>curl -s https://testnet-rpc.lichen.network \
+                        <pre><code>curl -s https://testnet-api.lichen.network \
   -H 'content-type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"getSlot","params":[{"commitment":"finalized"}]}'</code></pre>
                     </div>
@@ -355,7 +355,7 @@ valid_native_address(address):
                     <h3>Get Runtime Fee Config</h3>
                     <div class="code-block">
                         <div class="code-block-header"><span class="code-lang">cURL</span></div>
-                        <pre><code>curl -s https://testnet-rpc.lichen.network \
+                        <pre><code>curl -s https://testnet-api.lichen.network \
   -H 'content-type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"getFeeConfig","params":[]}'</code></pre>
                     </div>
@@ -366,7 +366,7 @@ valid_native_address(address):
                     <p>Use <code>spores</code> and <code>spendable</code> for accounting.</p>
                     <div class="code-block">
                         <div class="code-block-header"><span class="code-lang">cURL</span></div>
-                        <pre><code>curl -s https://testnet-rpc.lichen.network \
+                        <pre><code>curl -s https://testnet-api.lichen.network \
   -H 'content-type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"getBalance","params":["&lt;native_base58_address&gt;"]}'</code></pre>
                     </div>
@@ -376,7 +376,7 @@ valid_native_address(address):
                     <h3>Get Transaction</h3>
                     <div class="code-block">
                         <div class="code-block-header"><span class="code-lang">cURL</span></div>
-                        <pre><code>curl -s https://testnet-rpc.lichen.network \
+                        <pre><code>curl -s https://testnet-api.lichen.network \
   -H 'content-type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"getTransaction","params":["&lt;tx_hash_hex&gt;"]}'</code></pre>
                     </div>
@@ -387,7 +387,7 @@ valid_native_address(address):
                     <p>Pagination uses <code>next_before_slot</code> with <code>before_slot</code>.</p>
                     <div class="code-block">
                         <div class="code-block-header"><span class="code-lang">cURL</span></div>
-                        <pre><code>curl -s https://testnet-rpc.lichen.network \
+                        <pre><code>curl -s https://testnet-api.lichen.network \
   -H 'content-type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"getTransactionsByAddress","params":["&lt;native_base58_address&gt;",{"limit":100}]}'</code></pre>
                     </div>
@@ -397,7 +397,7 @@ valid_native_address(address):
                     <h3>Broadcast Native Transaction</h3>
                     <div class="code-block">
                         <div class="code-block-header"><span class="code-lang">cURL</span></div>
-                        <pre><code>curl -s https://testnet-rpc.lichen.network \
+                        <pre><code>curl -s https://testnet-api.lichen.network \
   -H 'content-type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"sendTransaction","params":["&lt;base64_signed_native_transaction&gt;"]}'</code></pre>
                     </div>
@@ -416,9 +416,9 @@ valid_native_address(address):
                     <tbody>
                         <tr>
                             <td>Status page</td>
-                            <td><a href="https://monitoring.lichen.network" target="_blank"
-                                    rel="noopener">https://monitoring.lichen.network</a>; operator-approved for the
-                                current testnet-only package.</td>
+                            <td><code>https://exchanges.lichen.network</code>. Dedicated exchange status/operations
+                                page with only exchange-safe health, incidents, maintenance, and contact information.
+                                Internal monitoring is admin-only and must not be published in exchange materials.</td>
                         </tr>
                         <tr>
                             <td>Security incidents</td>

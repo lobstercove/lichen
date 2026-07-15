@@ -103,13 +103,12 @@ class LichenRPC {
     async getValidators() { return this.call('getValidators'); }
     async getMetrics() { return this.call('getMetrics'); }
     async getRewardAdjustmentInfo() { return this.call('getRewardAdjustmentInfo'); }
-    async health() { return this.call('health'); }
+    async getHealth() { return this.call('getHealth'); }
 
     // Address & History
     async getTransactionsByAddress(pubkey, options = {}) { return this.call('getTransactionsByAddress', [pubkey, options]); }
     async getAccountTxCount(pubkey) { return this.call('getAccountTxCount', [pubkey]); }
     async getAccountInfo(pubkey) { return this.call('getAccountInfo', [pubkey]); }
-    async getTransactionHistory(pubkey, options = {}) { return this.call('getTransactionHistory', [pubkey, options]); }
 
     // Contract / Program
     async getContractInfo(contractId) { return this.call('getContractInfo', [contractId]); }
@@ -714,15 +713,15 @@ async function updateShieldedOverview() {
         const stats = await rpc.call('getShieldedPoolState');
         const pick = (...vals) => vals.find(v => v !== undefined && v !== null);
 
-        const totalShielded = pick(stats?.totalShielded, stats?.pool_balance, 0);
-        const balanceLicn = pick(stats?.totalShieldedLicn, stats?.pool_balance_licn, (totalShielded / SPORES_PER_LICN));
-        const commitmentCount = pick(stats?.commitmentCount, stats?.commitment_count, 0);
-        const nullifierCount = pick(stats?.nullifierCount, stats?.nullifier_count, 0);
-        const shieldCount = pick(stats?.shieldCount, stats?.shield_count, 0);
-        const unshieldCount = pick(stats?.unshieldCount, stats?.unshield_count, 0);
-        const transferCount = pick(stats?.transferCount, stats?.transfer_count, 0);
+        const totalShielded = pick(stats?.totalShielded, 0);
+        const balanceLicn = pick(stats?.totalShieldedLicn, (totalShielded / SPORES_PER_LICN));
+        const commitmentCount = pick(stats?.commitmentCount, 0);
+        const nullifierCount = pick(stats?.nullifierCount, 0);
+        const shieldCount = pick(stats?.shieldCount, 0);
+        const unshieldCount = pick(stats?.unshieldCount, 0);
+        const transferCount = pick(stats?.transferCount, 0);
         const txCount = shieldCount + unshieldCount + transferCount;
-        const merkleRoot = pick(stats?.merkleRoot, stats?.merkle_root, '0'.repeat(64));
+        const merkleRoot = pick(stats?.merkleRoot, '0'.repeat(64));
 
         const shieldedBalanceEl = document.getElementById('shieldedBalance');
         const shieldedBalanceSporesEl = document.getElementById('shieldedBalanceSpores');

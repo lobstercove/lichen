@@ -229,6 +229,33 @@ pub fn analytics_candle_key(pair_id: u64, interval: u64, idx: u64) -> String {
     key_with_three_u64("ana_c_", pair_id, interval, idx)
 }
 
+/// Maximum retained candles for each canonical wall-clock interval.
+/// `ana_cc_*` remains the monotonic sequence count; storage and readers map
+/// that sequence through this bounded ring.
+pub fn analytics_candle_retention(interval: u64) -> u64 {
+    match interval {
+        60 => 1_440,
+        300 => 2_016,
+        900 => 2_880,
+        3_600 => 2_160,
+        14_400 => 2_190,
+        86_400 => 1_095,
+        259_200 => 243,
+        604_800 => 260,
+        31_536_000 => u64::MAX,
+        _ => 365,
+    }
+}
+
+pub fn analytics_candle_storage_index(sequence: u64, interval: u64) -> u64 {
+    let retention = analytics_candle_retention(interval);
+    if retention == u64::MAX {
+        sequence
+    } else {
+        sequence % retention
+    }
+}
+
 pub fn analytics_leaderboard_key(rank: u64) -> String {
     key_with_u64("ana_lb_", rank)
 }
@@ -717,6 +744,13 @@ mod tests {
         assert_eq!(trade_key(11), "dex_trade_11");
         assert_eq!(analytics_candle_count_key(3, 300), "ana_cc_3_300");
         assert_eq!(analytics_candle_key(3, 300, 4), "ana_c_3_300_4");
+        assert_eq!(analytics_candle_storage_index(0, 60), 0);
+        assert_eq!(analytics_candle_storage_index(1_439, 60), 1_439);
+        assert_eq!(analytics_candle_storage_index(1_440, 60), 0);
+        assert_eq!(
+            analytics_candle_storage_index(u64::MAX - 1, 31_536_000),
+            u64::MAX - 1
+        );
         assert_eq!(amm_owner_position_key("abcd", 2), "amm_op_abcd_2");
         assert_eq!(margin_user_position_key("abcd", 5), "mrg_up_abcd_5");
         assert_eq!(governance_proposal_key(12), "gov_prop_12");

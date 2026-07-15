@@ -338,7 +338,7 @@ assert(
         && dexJs.includes("prepareTokenPull('lUSD', contracts.prediction_market, tradeAmountRaw)")
         && dexJs.includes("namedCallIx(contracts.sporepump, 'buy'")
         && dexJs.includes("namedCallIx(contracts.sporepump, 'sell'")
-        && dexJs.includes("namedCallIx(contracts.sporepump, 'create_token'"),
+        && dexJs.includes("namedCallIx(contracts.sporepump, 'create_token_with_metadata'"),
     'DEX frontend pulls native/token collateral before signed trade, margin, pool, prediction, and launch actions'
 );
 assert(

@@ -172,7 +172,7 @@
                     <td>SDKs, binary callers — full stride control per param</td>
                 </tr>
                 <tr>
-                    <td>Default (Legacy)</td>
+                    <td>Raw Pointer Layout</td>
                     <td>Neither of above</td>
                     <td>All-pointer functions (pubkeys only, no integers)</td>
                 </tr>
@@ -267,7 +267,7 @@
                 </tr>
             </table>
 
-            <div class="sub-heading">Default Mode (Legacy)</div>
+            <div class="sub-heading">Raw Pointer Layout</div>
             <p>Without JSON or <code>0xAB</code> prefix: every I32 param advances 32 bytes (treated as a pointer). Every
                 I64 param advances 8 bytes. This mode works for all-pointer functions (e.g.,
                 <code>transfer(from, to, amount)</code>) but <strong>silently breaks</strong> functions with mixed
@@ -632,15 +632,13 @@ lichen contract generate-client --address 3f7a...c9d1 --lang python --output ./s
                     <div class="code-block">
                         <div class="code-header"><span>LichenSwap Discovery &amp; Reads</span><button
                                 class="code-copy-btn">Copy</button></div>
-                        <pre><code>lichen --rpc-url https://testnet-rpc.lichen.network --output json symbol lookup LICHENSWAP
+                        <pre><code>lichen --rpc-url https://testnet-api.lichen.network --output json symbol lookup LICHENSWAP
 
 # Replace &lt;LICHENSWAP_ADDRESS&gt; with the program from the lookup result.
-lichen --rpc-url https://testnet-rpc.lichen.network --output json \
+lichen --rpc-url https://testnet-api.lichen.network --output json \
   call &lt;LICHENSWAP_ADDRESS&gt; get_quote --args '[1000000000, true]'
-
-curl -X POST https://testnet-rpc.lichen.network \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"getLichenSwapStats","params":[]}'</code></pre>
+lichen --rpc-url https://testnet-api.lichen.network --output json \
+  call &lt;LICHENSWAP_ADDRESS&gt; get_swap_stats</code></pre>
                     </div>
                     <div class="badge-row"><span class="badge badge-defi">DeFi</span><span
                             class="badge badge-identity">LichenID</span></div>
@@ -2642,9 +2640,8 @@ curl -X POST https://testnet-rpc.lichen.network \
             <p>
                 This matrix is generated from real contract source exports (<code>contracts/*/src/lib.rs</code>,
                 <code>#[no_mangle] pub extern "C" fn ...</code>) and is the authoritative surface.
-                Some per-card function chips above are legacy summaries; use this section for strict agent/runtime
-                compatibility.
-                <code>mt20_token</code> remains in-tree as a standalone MT20 template and compatibility contract, but it
+                The concise cards above are overviews; use this source-derived section for the exact runtime surface.
+                <code>mt20_token</code> remains in-tree as a standalone MT20 template, but it
                 is intentionally not deployed by <code>GENESIS_CONTRACT_CATALOG</code>; the matrix below reflects the
                 genesis contract set.
             </p>

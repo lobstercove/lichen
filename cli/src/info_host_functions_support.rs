@@ -6,7 +6,6 @@ pub(super) fn handle_host_functions(json_output: bool) -> Result<()> {
     let host_functions = serde_json::json!({
         "host_functions": [
             {"name": "storage_read", "signature": "(key_ptr: u32, key_len: u32, val_ptr: u32, val_len: u32) -> u32", "category": "storage", "description": "Read storage directly into val_ptr. Returns bytes written, or 0 when missing/error."},
-            {"name": "storage_read_result", "signature": "(buf_ptr: u32, buf_len: u32) -> u32", "category": "storage", "description": "Copy the last storage_read result into a buffer."},
             {"name": "storage_write", "signature": "(key_ptr: u32, key_len: u32, val_ptr: u32, val_len: u32) -> u32", "category": "storage", "description": "Write a key-value pair to contract storage. Returns 1 on success, 0 on error."},
             {"name": "storage_delete", "signature": "(key_ptr: u32, key_len: u32) -> u32", "category": "storage", "description": "Delete a key from contract storage. Returns 1 when deleted, 0 when missing/error."},
             {"name": "log", "signature": "(msg_ptr: u32, msg_len: u32)", "category": "logging", "description": "Write a log message (visible in transaction logs)."},
@@ -38,9 +37,8 @@ pub(super) fn handle_host_functions(json_output: bool) -> Result<()> {
         println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
         println!("SDK: lichen-contract-sdk | Target: wasm32-unknown-unknown");
         println!();
-        println!("  Storage (4):");
+        println!("  Storage (3):");
         println!("    storage_read(key_ptr, key_len, val_ptr, val_len) -> u32");
-        println!("    storage_read_result(buf_ptr, buf_len) -> u32");
         println!("    storage_write(key_ptr, key_len, val_ptr, val_len) -> u32");
         println!("    storage_delete(key_ptr, key_len) -> u32");
         println!();

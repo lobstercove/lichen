@@ -115,6 +115,12 @@ impl TxProcessor {
         tx: &Transaction,
         fee_config: &FeeConfig,
     ) -> Option<u64> {
+        if let Ok(Some(meta)) = state.get_tx_meta_full(&tx.signature()) {
+            if let Some(fee_paid) = meta.fee_paid {
+                return Some(fee_paid);
+            }
+        }
+
         let fallback_fee = Self::compute_transaction_fee(tx, fee_config);
         let first_ix = tx.message.instructions.first()?;
 

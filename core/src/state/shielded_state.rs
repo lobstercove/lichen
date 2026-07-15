@@ -220,6 +220,7 @@ impl StateStore {
         index: u64,
         commitment: &[u8; 32],
     ) -> Result<(), String> {
+        let _state_commitment_guard = self.lock_state_commitment();
         let cf = self
             .db
             .cf_handle(CF_SHIELDED_COMMITMENTS)
@@ -259,6 +260,7 @@ impl StateStore {
 
     /// Store the encrypted note payload associated with a commitment index.
     pub fn insert_shielded_note_payload(&self, index: u64, payload: &[u8]) -> Result<(), String> {
+        let _state_commitment_guard = self.lock_state_commitment();
         let cf = self
             .db
             .cf_handle(CF_SHIELDED_NOTE_PAYLOADS)
@@ -299,6 +301,7 @@ impl StateStore {
 
     /// Mark a nullifier as spent.
     pub fn mark_nullifier_spent(&self, nullifier: &[u8; 32]) -> Result<(), String> {
+        let _state_commitment_guard = self.lock_state_commitment();
         let cf = self
             .db
             .cf_handle(CF_SHIELDED_NULLIFIERS)
@@ -333,6 +336,7 @@ impl StateStore {
         &self,
         state: &crate::zk::ShieldedPoolState,
     ) -> Result<(), String> {
+        let _state_commitment_guard = self.lock_state_commitment();
         let cf = self
             .db
             .cf_handle(CF_SHIELDED_POOL)
@@ -393,6 +397,7 @@ impl StateStore {
 
     #[cfg(feature = "zk")]
     pub fn clear_shielded_state_categories(&self) -> Result<u64, String> {
+        let _state_commitment_guard = self.lock_state_commitment();
         let mut batch = WriteBatch::default();
         let mut deleted_entries = 0u64;
         for cf_name in [
@@ -417,6 +422,7 @@ impl StateStore {
         &self,
         dry_run: bool,
     ) -> Result<ShieldedStateRebuildReport, String> {
+        let _state_commitment_guard = self.lock_state_commitment();
         let end_slot = self.get_last_slot().unwrap_or(0);
         let start_slot = 0;
 
@@ -464,6 +470,12 @@ impl StateStore {
             self.for_each_canonical_block_in_range(start_slot, end_slot, |slot, block| {
                 for (tx_index, tx) in block.transactions.iter().enumerate() {
                     scanned_transactions = scanned_transactions.saturating_add(1);
+                    if self
+                        .get_tx_meta_full(&tx.signature())?
+                        .is_some_and(|meta| !meta.succeeded())
+                    {
+                        continue;
+                    }
                     if is_shielded_transaction(tx) {
                         shielded_transactions = shielded_transactions.saturating_add(1);
                         let sig = tx.signature();

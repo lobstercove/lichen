@@ -161,7 +161,7 @@ class Connection:
     
     async def send_transaction(self, transaction: Transaction) -> str:
         """Send transaction"""
-        tx_bytes = TransactionBuilder.transaction_to_bincode(transaction)
+        tx_bytes = TransactionBuilder.transaction_to_wire(transaction)
         tx_base64 = base64.b64encode(tx_bytes).decode("ascii")
         result = await self._rpc("sendTransaction", [tx_base64])
         return result
@@ -189,9 +189,9 @@ class Connection:
             return result
         return result.get("blockhash", result)
     
-    async def health(self) -> Dict[str, str]:
+    async def get_health(self) -> Dict[str, str]:
         """Health check"""
-        return await self._rpc("health")
+        return await self._rpc("getHealth")
     
     # ============================================================================
     # NETWORK ENDPOINTS
@@ -206,9 +206,12 @@ class Connection:
         """Get network information"""
         return await self._rpc("getNetworkInfo")
 
-    async def _get_signing_chain_id(self) -> str:
+    async def get_chain_id(self) -> str:
         info = await self.get_network_info()
-        return info.get("chain_id") or info.get("chainId") or ""
+        chain_id = str(info.get("chain_id") or "").strip()
+        if not chain_id:
+            raise ValueError("RPC returned no chain id")
+        return chain_id
     
     # ============================================================================
     # VALIDATOR ENDPOINTS
@@ -233,23 +236,23 @@ class Connection:
     async def stake(self, from_keypair: Keypair, validator: PublicKey, amount: int) -> str:
         """Create and send a stake transaction"""
         blockhash = await self.get_recent_blockhash()
-        chain_id = await self._get_signing_chain_id()
+        chain_id = await self.get_chain_id()
         instruction = TransactionBuilder.stake(from_keypair.pubkey(), validator, amount)
         transaction = (TransactionBuilder()
             .add(instruction)
             .set_recent_blockhash(blockhash)
-            .build_and_sign_for_chain_id(from_keypair, chain_id))
+            .build_and_sign(from_keypair, chain_id))
         return await self.send_transaction(transaction)
     
     async def unstake(self, from_keypair: Keypair, validator: PublicKey, amount: int) -> str:
         """Create and send an unstake request transaction"""
         blockhash = await self.get_recent_blockhash()
-        chain_id = await self._get_signing_chain_id()
+        chain_id = await self.get_chain_id()
         instruction = TransactionBuilder.unstake(from_keypair.pubkey(), validator, amount)
         transaction = (TransactionBuilder()
             .add(instruction)
             .set_recent_blockhash(blockhash)
-            .build_and_sign_for_chain_id(from_keypair, chain_id))
+            .build_and_sign(from_keypair, chain_id))
         return await self.send_transaction(transaction)
     
     async def get_staking_status(self, pubkey: PublicKey) -> Dict[str, Any]:
@@ -277,12 +280,12 @@ class Connection:
             Transaction signature
         """
         blockhash = await self.get_recent_blockhash()
-        chain_id = await self._get_signing_chain_id()
+        chain_id = await self.get_chain_id()
         instruction = TransactionBuilder.transfer(from_keypair.pubkey(), to, amount)
         transaction = (TransactionBuilder()
             .add(instruction)
             .set_recent_blockhash(blockhash)
-            .build_and_sign_for_chain_id(from_keypair, chain_id))
+            .build_and_sign(from_keypair, chain_id))
         return await self.send_transaction(transaction)
 
     async def deploy_contract(
@@ -306,12 +309,12 @@ class Connection:
         """
         address = contract_address or self.derive_contract_address(deployer.pubkey(), code, await self.get_slot())
         blockhash = await self.get_recent_blockhash()
-        chain_id = await self._get_signing_chain_id()
+        chain_id = await self.get_chain_id()
         instruction = TransactionBuilder.deploy_contract(deployer.pubkey(), address, code, init_data)
         transaction = (TransactionBuilder()
             .add(instruction)
             .set_recent_blockhash(blockhash)
-            .build_and_sign_for_chain_id(deployer, chain_id))
+            .build_and_sign(deployer, chain_id))
         signature = await self.send_transaction(transaction)
         return DeployContractResult(signature=signature, contract_address=address)
 
@@ -346,14 +349,14 @@ class Connection:
             Transaction signature
         """
         blockhash = await self.get_recent_blockhash()
-        chain_id = await self._get_signing_chain_id()
+        chain_id = await self.get_chain_id()
         instruction = TransactionBuilder.call_contract(
             caller.pubkey(), contract, function_name, args, value
         )
         transaction = (TransactionBuilder()
             .add(instruction)
             .set_recent_blockhash(blockhash)
-            .build_and_sign_for_chain_id(caller, chain_id))
+            .build_and_sign(caller, chain_id))
         return await self.send_transaction(transaction)
 
     async def upgrade_contract(
@@ -374,12 +377,12 @@ class Connection:
             Transaction signature
         """
         blockhash = await self.get_recent_blockhash()
-        chain_id = await self._get_signing_chain_id()
+        chain_id = await self.get_chain_id()
         instruction = TransactionBuilder.upgrade_contract(owner.pubkey(), contract, code)
         transaction = (TransactionBuilder()
             .add(instruction)
             .set_recent_blockhash(blockhash)
-            .build_and_sign_for_chain_id(owner, chain_id))
+            .build_and_sign(owner, chain_id))
         return await self.send_transaction(transaction)
 
     # ============================================================================
@@ -390,27 +393,20 @@ class Connection:
         """Get enhanced account information"""
         return await self._rpc("getAccountInfo", [str(pubkey)])
     
-    async def get_transaction_history(
-        self,
-        pubkey: PublicKey,
-        limit: int = 10,
-        before_slot: Optional[int] = None,
-    ) -> Dict[str, Any]:
-        """Get transaction history"""
-        options: Dict[str, Any] = {"limit": limit}
-        if before_slot is not None:
-            options["before_slot"] = before_slot
-        return await self._rpc("getTransactionHistory", [str(pubkey), options])
-
     async def get_transactions_by_address(
         self,
         pubkey: PublicKey,
         limit: int = 10,
         before_slot: Optional[int] = None,
+        before: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Get transactions involving an address using the canonical RPC method."""
+        if before is not None and before_slot is not None:
+            raise ValueError("use either before or before_slot, not both")
         options: Dict[str, Any] = {"limit": limit}
-        if before_slot is not None:
+        if before is not None:
+            options["before"] = before
+        elif before_slot is not None:
             options["before_slot"] = before_slot
         return await self._rpc("getTransactionsByAddress", [str(pubkey), options])
 
@@ -511,10 +507,6 @@ class Connection:
     async def get_sporepay_stats(self) -> Dict[str, Any]:
         """Get aggregated SporePay streaming statistics."""
         return await self._rpc("getSporePayStats")
-
-    async def get_lichenswap_stats(self) -> Dict[str, Any]:
-        """Get aggregated LichenSwap AMM statistics."""
-        return await self._rpc("getLichenSwapStats")
 
     async def get_thalllend_stats(self) -> Dict[str, Any]:
         """Get aggregated ThallLend lending statistics."""
@@ -976,7 +968,7 @@ class Connection:
             if not result_future.done():
                 result_future.set_result(data)
 
-        sub_id = await self._subscribe("signatureSubscribe", [signature])
+        sub_id = await self._subscribe("subscribeSignatureStatus", [signature])
         self._subscriptions[sub_id] = _on_status
 
         try:
@@ -994,7 +986,7 @@ class Connection:
             return None
         finally:
             self._subscriptions.pop(sub_id, None)
-            await self._unsubscribe_best_effort("signatureUnsubscribe", sub_id)
+            await self._unsubscribe_best_effort("unsubscribeSignatureStatus", sub_id)
 
     @staticmethod
     def _derive_ws_url(rpc_url: str) -> Optional[str]:

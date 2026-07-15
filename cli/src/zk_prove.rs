@@ -600,7 +600,6 @@ fn cmd_reserve_liability(args: &[String]) {
     }
 
     let out = json!({
-        "type": "reserve_liability",
         "proof_type": proof.proof_type.as_str(),
         "zk_scheme": proof.zk_scheme_version.as_str(),
         "privacy_model": "transparent_aggregate_totals_no_address_list_v1",

@@ -159,7 +159,7 @@ function redactShieldedTransaction(tx) {
 // Get transaction hash from URL
 function getTxHash() {
     const params = new URLSearchParams(window.location.search);
-    return params.get('sig') || params.get('tx') || params.get('hash') || params.get('signature');
+    return params.get('sig');
 }
 
 // Load and display transaction

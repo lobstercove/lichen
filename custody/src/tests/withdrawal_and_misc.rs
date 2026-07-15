@@ -764,7 +764,6 @@ async fn test_process_broadcasting_withdrawals_marks_reverted_evm_tx_failed() {
                 requests: std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new())),
             });
     let rpc_url = spawn_mock_server(rpc_app).await;
-    state.config.evm_rpc_url = Some(rpc_url.clone());
     state.config.eth_rpc_url = Some(rpc_url);
 
     let mut job = test_withdrawal_job();

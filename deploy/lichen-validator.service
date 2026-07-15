@@ -3,6 +3,8 @@ Description=Lichen Validator Node
 Documentation=https://developers.lichen.network/validator.html
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -12,7 +14,7 @@ Group=lichen
 # Network is set via /etc/lichen/env (LICHEN_NETWORK=testnet|mainnet)
 # Port assignments: testnet → RPC=8899 WS=8900 P2P=7001
 #                   mainnet → RPC=9899 WS=9900 P2P=8001
-ExecStart=/usr/local/bin/lichen-validator \
+ExecStart=/usr/local/bin/lichen-validator --no-watchdog \
     --network ${LICHEN_NETWORK} \
     --listen-addr 0.0.0.0 \
     --rpc-port ${LICHEN_RPC_PORT} \
@@ -21,7 +23,8 @@ ExecStart=/usr/local/bin/lichen-validator \
     --db-path /var/lib/lichen/state-${LICHEN_NETWORK} \
     $LICHEN_EXTRA_ARGS
 
-Restart=always
+Restart=on-failure
+RestartPreventExitStatus=78
 RestartSec=10
 LimitNOFILE=65536
 

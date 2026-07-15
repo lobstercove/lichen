@@ -18,12 +18,10 @@
 extern crate alloc;
 use alloc::vec::Vec;
 
-#[cfg(target_arch = "wasm32")]
-use lichen_sdk::get_value;
 use lichen_sdk::{
     bytes_to_u64, call_contract, call_token_transfer, get_caller, get_contract_address, get_slot,
-    is_native_token, log_info, storage_get, storage_set, transfer_native, u64_to_bytes, Address,
-    CrossCall,
+    get_value, is_native_token, log_info, storage_get, storage_set, transfer_native, u64_to_bytes,
+    Address, CrossCall,
 };
 
 // ============================================================================
@@ -86,6 +84,7 @@ const TOTAL_VOLUME_KEY: &[u8] = b"amm_total_volume";
 const TOTAL_FEES_KEY: &[u8] = b"amm_total_fees";
 const POOL_PAIR_INDEX_PREFIX: &[u8] = b"amm_pair_idx_";
 const REWARDS_ADDRESS_KEY: &[u8] = b"amm_rewards_addr";
+const SPOREPUMP_AUTHORITY_KEY: &[u8] = b"amm_sporepump_authority";
 
 // ============================================================================
 // HELPERS
@@ -537,6 +536,11 @@ fn has_configured_address(key: &[u8]) -> bool {
 fn require_admin(caller: &[u8; 32]) -> bool {
     let admin = load_addr(ADMIN_KEY);
     !is_zero(&admin) && *caller == admin
+}
+
+fn require_sporepump(caller: &[u8; 32]) -> bool {
+    let sporepump = load_addr(SPOREPUMP_AUTHORITY_KEY);
+    !is_zero(&sporepump) && *caller == sporepump
 }
 
 // ============================================================================
@@ -1205,6 +1209,31 @@ pub extern "C" fn initialize(admin: *const u8) -> u32 {
     0
 }
 
+/// Bind the only SporePump contract allowed to create graduation pools.
+#[no_mangle]
+pub extern "C" fn set_sporepump_authority(caller: *const u8, sporepump: *const u8) -> u32 {
+    let mut c = [0u8; 32];
+    let mut s = [0u8; 32];
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+        core::ptr::copy_nonoverlapping(sporepump, s.as_mut_ptr(), 32);
+    }
+    if get_caller().0 != c {
+        return 200;
+    }
+    if !require_admin(&c) {
+        return 1;
+    }
+    if is_zero(&s) {
+        return 2;
+    }
+    if has_configured_address(SPOREPUMP_AUTHORITY_KEY) {
+        return 3;
+    }
+    storage_set(SPOREPUMP_AUTHORITY_KEY, &s);
+    0
+}
+
 /// Create a new liquidity pool
 /// Returns: 0=success, 1=not admin, 2=paused, 3=max pools, 4=invalid params, 5=reentrancy, 6=duplicate pair
 pub fn create_pool(
@@ -1231,7 +1260,7 @@ pub fn create_pool(
         reentrancy_exit();
         return 200;
     }
-    if !require_admin(&c) {
+    if !require_admin(&c) && !require_sporepump(&c) {
         reentrancy_exit();
         return 1;
     }
@@ -1270,6 +1299,7 @@ pub fn create_pool(
     storage_set(&pool_key(pool_id), &data);
     storage_set(&pair_key, &u64_to_bytes(pool_id));
     save_u64(POOL_COUNT_KEY, pool_id);
+    lichen_sdk::set_return_data(&u64_to_bytes(pool_id));
     log_info("AMM pool created");
     reentrancy_exit();
     0
@@ -1409,17 +1439,41 @@ pub fn add_liquidity_with_deadline(
         actual_b = amount_b;
     }
 
-    // AUDIT-FIX AMM-1: Pull tokens from provider to the AMM contract
     let token_a = decode_pool_token_a(&pool_data);
     let token_b = decode_pool_token_b(&pool_data);
+    let native_a = is_native_token(&Address(token_a));
+    let native_b = is_native_token(&Address(token_b));
+    let native_required = if native_a {
+        actual_a
+    } else if native_b {
+        actual_b
+    } else {
+        0
+    };
+    let native_supplied = get_value();
+    if native_supplied < native_required {
+        log_info("Add liquidity failed: insufficient native value");
+        reentrancy_exit();
+        return 6;
+    }
+
+    // AUDIT-FIX AMM-1: Pull tokens from provider to the AMM contract
     if actual_a > 0 && !pull_tokens(&token_a, &p, actual_a) {
+        log_info("Add liquidity failed: token A transfer");
         reentrancy_exit();
         return 6; // token transfer failed
     }
     if actual_b > 0 && !pull_tokens(&token_b, &p, actual_b) {
+        log_info("Add liquidity failed: token B transfer");
         if actual_a > 0 {
             let _ = send_tokens(&token_a, &p, actual_a);
         }
+        reentrancy_exit();
+        return 6;
+    }
+    let native_refund = native_supplied - native_required;
+    if native_refund > 0 && !transfer_native(Address(p), native_refund).unwrap_or(false) {
+        log_info("Add liquidity failed: native excess refund");
         reentrancy_exit();
         return 6;
     }
@@ -1452,6 +1506,11 @@ pub fn add_liquidity_with_deadline(
     let new_count = owner_count + 1;
     save_u64(&owner_position_count_key(&p), new_count);
     save_u64(&owner_position_key(&p, new_count), pos_id);
+    let mut deposit_result = Vec::with_capacity(24);
+    deposit_result.extend_from_slice(&u64_to_bytes(pos_id));
+    deposit_result.extend_from_slice(&u64_to_bytes(actual_a));
+    deposit_result.extend_from_slice(&u64_to_bytes(actual_b));
+    lichen_sdk::set_return_data(&deposit_result);
 
     // Update pool liquidity if position is in range
     if current_tick >= lower_tick && current_tick < upper_tick {
@@ -2268,7 +2327,9 @@ pub extern "C" fn call() -> u32 {
                     args[97],
                     bytes_to_u64(&args[98..106]),
                 );
-                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                if r != 0 {
+                    lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                }
                 _rc = r as u32;
                 _rc = r as u32;
             }
@@ -2300,7 +2361,9 @@ pub extern "C" fn call() -> u32 {
                     bytes_to_u64(&args[57..65]),
                     bytes_to_u64(&args[65..73]),
                 );
-                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                if r != 0 {
+                    lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                }
                 _rc = r as u32;
                 _rc = r as u32;
             }
@@ -2658,6 +2721,33 @@ mod tests {
     }
 
     #[test]
+    fn test_sporepump_authority_is_immutable_and_pool_creation_only() {
+        let admin = setup();
+        let sporepump = [9u8; 32];
+        assert_eq!(
+            set_sporepump_authority(admin.as_ptr(), sporepump.as_ptr()),
+            0
+        );
+        assert_eq!(
+            set_sporepump_authority(admin.as_ptr(), [8u8; 32].as_ptr()),
+            3
+        );
+        test_mock::set_caller(sporepump);
+        assert_eq!(
+            create_pool(
+                sporepump.as_ptr(),
+                [10u8; 32].as_ptr(),
+                [20u8; 32].as_ptr(),
+                FEE_TIER_30BPS,
+                1u64 << 32,
+            ),
+            0
+        );
+        assert_eq!(test_mock::get_return_data(), u64_to_bytes(1));
+        assert_eq!(set_pool_protocol_fee(sporepump.as_ptr(), 1, 1), 1);
+    }
+
+    #[test]
     fn test_create_pool_not_admin() {
         let _admin = setup();
         let rando = [99u8; 32];
@@ -2728,6 +2818,43 @@ mod tests {
             0
         );
         assert_eq!(load_u64(POSITION_COUNT_KEY), 1);
+    }
+
+    #[test]
+    fn test_native_liquidity_refunds_rounding_excess_and_reports_actual_deposit() {
+        let admin = setup();
+        let token = [10u8; 32];
+        let native = [0u8; 32];
+        assert_eq!(
+            create_pool(
+                admin.as_ptr(),
+                token.as_ptr(),
+                native.as_ptr(),
+                FEE_TIER_30BPS,
+                1u64 << 32,
+            ),
+            0
+        );
+        let provider = [2u8; 32];
+        let supplied = 100_000;
+        test_mock::set_caller(provider);
+        test_mock::set_value(supplied);
+        test_mock::set_cross_call_responses(std::vec![
+            transfer_success_response(),
+            transfer_success_response(),
+        ]);
+        assert_eq!(
+            add_liquidity(provider.as_ptr(), 1, -60, 60, supplied, supplied),
+            0
+        );
+        let deposit = test_mock::get_return_data();
+        assert_eq!(deposit.len(), 24);
+        let actual_native = bytes_to_u64(&deposit[16..24]);
+        assert!(actual_native > 0 && actual_native < supplied);
+        let refund = test_mock::get_last_cross_call().expect("native refund");
+        assert_eq!(refund.1, "transfer");
+        assert_eq!(&refund.2[0..32], &provider);
+        assert_eq!(bytes_to_u64(&refund.2[32..40]), supplied - actual_native);
     }
 
     #[test]

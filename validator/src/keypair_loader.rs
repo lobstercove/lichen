@@ -5,7 +5,7 @@
 use anyhow::Result;
 use lichen_core::{
     keypair_file::{
-        load_keypair_with_password_policy, plaintext_keypair_compat_allowed,
+        load_keypair_with_password_policy, plaintext_keypair_allowed_for_local_dev,
         require_runtime_keypair_password,
     },
     Keypair, KeypairFile,
@@ -37,7 +37,7 @@ pub fn load_or_generate_keypair(
         data_dir,
         _network,
         password.as_deref(),
-        plaintext_keypair_compat_allowed(),
+        plaintext_keypair_allowed_for_local_dev(),
     )
 }
 

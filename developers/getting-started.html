@@ -319,7 +319,7 @@ command -v lichen</code></pre>
                     <span class="code-lang">Shell</span>
                     <button class="code-copy-btn">Copy</button>
                 </div>
-                <pre><code>$ lichen airdrop 10 --rpc-url https://testnet-rpc.lichen.network
+                <pre><code>$ lichen airdrop 10 --rpc-url https://testnet-api.lichen.network
 
 <i class="fa-solid fa-shrimp"></i> Requesting 10 LICN airdrop...
 
@@ -346,7 +346,7 @@ command -v lichen</code></pre>
                     <button class="code-copy-btn">Copy</button>
                 </div>
                 <pre><code>$ lichen transfer Mo1tRecipientAddress123456789abcdefghijk 1.5 \
-    --rpc-url https://testnet-rpc.lichen.network
+    --rpc-url https://testnet-api.lichen.network
 
 <i class="fa-solid fa-shrimp"></i> Sending 1.5 LICN...
 
@@ -472,7 +472,7 @@ pub extern "C" fn get_greeting() -> u32 {
                     <button class="code-copy-btn">Copy</button>
                 </div>
                 <pre><code>$ lichen deploy target/wasm32-unknown-unknown/release/hello_world.wasm \
-    --rpc-url https://testnet-rpc.lichen.network \
+    --rpc-url https://testnet-api.lichen.network \
     --symbol HELLO --name "Hello World" --template oracle
 
 <i class="fa-solid fa-shrimp"></i> Deploying contract...
@@ -490,7 +490,7 @@ pub extern "C" fn get_greeting() -> u32 {
     Interact via:
         lichen call Mo1tProg1D...xYz789 set_greeting \
             --args '["Hello, Lichen!"]' \
-            --rpc-url https://testnet-rpc.lichen.network</code></pre>
+            --rpc-url https://testnet-api.lichen.network</code></pre>
             </div>
 
             <div class="callout callout-tip">

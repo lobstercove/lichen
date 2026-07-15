@@ -372,8 +372,7 @@ function encodeLichenIdArgs(callerPubkey, functionName, params) {
             return result;
         }
         default:
-            // Fallback: JSON-encode (legacy — will likely fail for ptr-param functions)
-            return new TextEncoder().encode(JSON.stringify(params));
+            throw new Error(`Unsupported LichenID function: ${functionName}`);
     }
 }
 
@@ -437,7 +436,7 @@ async function buildContractCall(functionName, args, password, valueLicn = 0) {
     const lichenidAddr = await getLichenIdProgramAddress();
     if (!lichenidAddr) throw new Error('LichenID contract not found on network');
 
-    const blockhash = await rpc.getRecentBlockhash();
+    const [blockhash, chainId] = await Promise.all([rpc.getRecentBlockhash(), rpc.getChainId()]);
     const fromPubkey = LichenCrypto.addressToBytes(wallet.address);
     const contractProgramId = new Uint8Array(32).fill(0xFF);
     const lichenidPubkey = bs58.decode(lichenidAddr);
@@ -464,11 +463,10 @@ async function buildContractCall(functionName, args, password, valueLicn = 0) {
 
     const privateKey = await LichenCrypto.decryptPrivateKey(wallet.encryptedKey, password);
     const messageBytes = serializeMessageBincode(message);
-    const signature = await LichenCrypto.signTransaction(privateKey, messageBytes);
+    const signature = await LichenCrypto.signTransaction(privateKey, signingBytesForChainId(messageBytes, chainId));
 
     const transaction = { signatures: [signature], message };
-    const txBytes = new TextEncoder().encode(JSON.stringify(transaction));
-    return btoa(String.fromCharCode(...txBytes));
+    return encodeTransactionV1Base64(transaction);
 }
 
 // ── RPC Data Loading ──

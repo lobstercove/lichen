@@ -142,7 +142,11 @@ impl MetricsStore {
 
     /// Track a new block
     pub fn track_block(&self, block: &Block) {
-        let tx_count = block.transactions.len() as u64;
+        let tx_count = block
+            .transactions
+            .iter()
+            .filter(|transaction| !transaction.is_consensus())
+            .count() as u64;
         let timestamp = block.header.timestamp;
         let observed_at_ms = Self::now_unix_ms();
         let live_observation = timestamp > 0

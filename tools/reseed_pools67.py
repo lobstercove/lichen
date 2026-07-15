@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 os.chdir(os.path.join(os.path.dirname(__file__), '..'))
 
 from lichen import Connection, Keypair, PublicKey
-from deploy_dex import call_contract_raw, load_genesis_keypair
+from chain_helpers import call_contract_raw, load_genesis_keypair
 
 SPORES = 1_000_000_000
 

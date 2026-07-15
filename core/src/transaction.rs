@@ -5,7 +5,7 @@ use crate::codec::{
     deserialize_legacy_bincode_strict, serialize_legacy_bincode, serialized_size_legacy_bincode,
 };
 use crate::hash::Hash;
-use crate::signing::{maybe_versioned_signing_bytes, DOMAIN_NATIVE_TX};
+use crate::signing::{versioned_signing_bytes, DOMAIN_NATIVE_TX};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
@@ -100,11 +100,12 @@ impl Message {
     }
 
     /// Serialize into the versioned native transaction signing envelope for a chain.
-    ///
-    /// An empty `chain_id` returns the legacy message bytes for compatibility
-    /// with old tests and local fixtures.
     pub fn signing_bytes_for_chain_id(&self, chain_id: &str) -> Vec<u8> {
-        maybe_versioned_signing_bytes(DOMAIN_NATIVE_TX, chain_id, &self.serialize())
+        assert!(
+            !chain_id.is_empty(),
+            "chain id is required for transaction signing"
+        );
+        versioned_signing_bytes(DOMAIN_NATIVE_TX, chain_id, &self.serialize())
     }
 
     /// Hash for signing
@@ -117,11 +118,13 @@ impl Message {
 ///
 /// - `Native`: Standard Lichen transaction (PQ signed, blockhash replay protection)
 /// - `Evm`: EVM-wrapped transaction (ECDSA signed, EVM nonce replay protection)
+/// - `Consensus`: Protocol-generated block metadata; never accepted from RPC/mempool
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum TransactionType {
     #[default]
     Native,
     Evm,
+    Consensus,
 }
 
 /// Wire-format magic bytes identifying a Lichen transaction envelope.
@@ -132,6 +135,9 @@ pub const TX_WIRE_MAGIC: [u8; 2] = [0x4D, 0x54];
 
 /// Current wire-format version.
 pub const TX_WIRE_VERSION: u8 = 1;
+
+/// Maximum encoded transaction size, including the four-byte V1 envelope.
+pub const MAX_TRANSACTION_WIRE_SIZE: u64 = MAX_TRANSACTION_SERIALIZED_SIZE + 4;
 
 /// Signed transaction
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -191,6 +197,11 @@ impl Transaction {
     pub fn is_evm(&self) -> bool {
         self.tx_type == TransactionType::Evm
             || self.message.recent_blockhash == crate::Hash([0xEE; 32])
+    }
+
+    /// Whether this is protocol-generated consensus metadata carried in a block.
+    pub fn is_consensus(&self) -> bool {
+        self.tx_type == TransactionType::Consensus
     }
 
     /// Get transaction signature (first signature's identifier)
@@ -264,26 +275,15 @@ impl Transaction {
         self.verify_required_signatures_against(&self.message.serialize())
     }
 
-    /// Verify native signatures against the chain-id domain envelope, falling
-    /// back to legacy message bytes during the mixed-client rollout.
+    /// Verify native signatures against the chain-id domain envelope.
     pub fn verify_required_signatures_with_chain_id(
         &self,
         chain_id: &str,
     ) -> Result<HashSet<Pubkey>, String> {
-        let domain_result = self
-            .verify_required_signatures_against(&self.message.signing_bytes_for_chain_id(chain_id));
-        if domain_result.is_ok() || chain_id.is_empty() {
-            return domain_result;
+        if chain_id.is_empty() {
+            return Err("chain id is required for transaction verification".to_string());
         }
-
-        domain_result.or_else(|domain_err| {
-            self.verify_required_signatures().map_err(|legacy_err| {
-                format!(
-                    "{}; legacy verification also failed: {}",
-                    domain_err, legacy_err
-                )
-            })
-        })
+        self.verify_required_signatures_against(&self.message.signing_bytes_for_chain_id(chain_id))
     }
 
     fn verify_required_signatures_against(
@@ -339,6 +339,9 @@ impl Transaction {
 
     /// Validate transaction structure (size limits, T1.7)
     pub fn validate_structure(&self) -> Result<(), String> {
+        if self.is_consensus() && !self.signatures.is_empty() {
+            return Err("Consensus transactions must not carry user signatures".to_string());
+        }
         if self.signatures.len() > MAX_SIGNATURES_PER_TX {
             return Err(format!(
                 "Too many signatures: {} (max {})",
@@ -365,7 +368,7 @@ impl Transaction {
                 && ix.data[0] == 17;
             let is_contract_deploy =
                 ix.program_id == crate::Pubkey([0xFFu8; 32]) && ix.data.starts_with(b"{\"Deploy\"");
-            let data_limit = if is_system_deploy || is_contract_deploy {
+            let data_limit = if is_system_deploy || is_contract_deploy || self.is_consensus() {
                 MAX_DEPLOY_INSTRUCTION_DATA
             } else {
                 MAX_INSTRUCTION_DATA
@@ -418,13 +421,9 @@ impl Transaction {
         buf
     }
 
-    /// Deserialize from wire bytes, supporting three formats:
+    /// Deserialize a transaction from the mandatory V1 wire envelope.
     ///
-    /// 1. **V1 envelope** — starts with `TX_WIRE_MAGIC` (`[0x4D, 0x54]`)
-    /// 2. **Raw legacy bincode** — canonical transaction bytes
-    /// 3. **JSON** — `{ "signatures": [...], "message": {...} }` from browser wallets
-    ///
-    /// The `max_wire_bytes` parameter caps both JSON and bincode payloads before
+    /// The `max_wire_bytes` parameter caps the complete envelope before
     /// deserialization to prevent OOM from adversarial transaction submissions.
     pub fn from_wire(data: &[u8], max_wire_bytes: u64) -> Result<Self, String> {
         if data.len() as u64 > max_wire_bytes {
@@ -435,33 +434,25 @@ impl Transaction {
             ));
         }
 
-        // --- V1 envelope ---
-        if data.len() >= 4 && data[0..2] == TX_WIRE_MAGIC {
-            let version = data[2];
-            if version != TX_WIRE_VERSION {
-                return Err(format!("Unsupported wire version: {}", version));
-            }
-            let type_byte = data[3];
-            let tx_type = match type_byte {
-                0 => TransactionType::Native,
-                1 => TransactionType::Evm,
-                _ => return Err(format!("Unknown transaction type byte: {}", type_byte)),
-            };
-            let payload = &data[4..];
-            let mut tx: Self = bounded_bincode_deser(payload, max_wire_bytes)?;
-            // Envelope type is authoritative
-            tx.tx_type = tx_type;
-            return Ok(tx);
+        if data.len() < 4 || data[0..2] != TX_WIRE_MAGIC {
+            return Err("Missing transaction V1 wire envelope".to_string());
         }
 
-        // --- JSON vs bincode ---
-        if data.first() == Some(&b'{') {
-            // Looks like JSON — try JSON first, fall back to bincode
-            json_deser(data).or_else(|_| bounded_bincode_deser(data, max_wire_bytes))
-        } else {
-            // Try bincode first, fall back to JSON
-            bounded_bincode_deser(data, max_wire_bytes).or_else(|_| json_deser(data))
+        let version = data[2];
+        if version != TX_WIRE_VERSION {
+            return Err(format!("Unsupported wire version: {}", version));
         }
+        let type_byte = data[3];
+        let tx_type = match type_byte {
+            0 => TransactionType::Native,
+            1 => TransactionType::Evm,
+            _ => return Err(format!("Unknown transaction type byte: {}", type_byte)),
+        };
+        let payload = &data[4..];
+        let mut tx: Self = bounded_bincode_deser(payload, max_wire_bytes.saturating_sub(4))?;
+        // The versioned envelope is authoritative.
+        tx.tx_type = tx_type;
+        Ok(tx)
     }
 }
 
@@ -474,11 +465,6 @@ fn bounded_bincode_deser(bytes: &[u8], limit: u64) -> Result<Transaction, String
             format!("bincode: {}", err)
         }
     })
-}
-
-/// Attempt JSON deserialization of a wallet-format transaction.
-fn json_deser(bytes: &[u8]) -> Result<Transaction, String> {
-    serde_json::from_slice(bytes).map_err(|e| format!("JSON: {}", e))
 }
 
 #[cfg(test)]
@@ -502,6 +488,24 @@ mod tests {
 
         println!("Transaction signature: {}", tx.signature());
         assert_eq!(tx.signatures.len(), 0); // Not signed yet
+    }
+
+    #[test]
+    fn consensus_transaction_type_is_not_accepted_from_external_wire() {
+        let mut tx = Transaction::new(Message::new(
+            vec![Instruction {
+                program_id: Pubkey([0u8; 32]),
+                accounts: vec![Pubkey([0u8; 32])],
+                data: vec![crate::CANONICAL_COMMIT_ENVELOPE_OPCODE],
+            }],
+            Hash::hash(b"parent"),
+        ));
+        tx.tx_type = TransactionType::Consensus;
+        let wire = tx.to_wire();
+        assert_eq!(wire[3], TransactionType::Consensus as u8);
+        assert!(Transaction::from_wire(&wire, MAX_TRANSACTION_WIRE_SIZE)
+            .unwrap_err()
+            .contains("Unknown transaction type"));
     }
 
     // ── H16 tests: deploy instruction data limit exemption ──
@@ -685,14 +689,12 @@ mod tests {
     }
 
     #[test]
-    fn test_verify_required_signatures_with_chain_id_falls_back_to_legacy() {
-        let (tx, kp1, kp2) = two_signer_transaction();
-
-        let signers = tx
+    fn test_verify_required_signatures_with_chain_id_rejects_unbound_signature() {
+        let (tx, _, _) = two_signer_transaction();
+        let error = tx
             .verify_required_signatures_with_chain_id("lichen-testnet-1")
-            .expect("legacy message signatures should verify during rollout");
-        assert!(signers.contains(&kp1.pubkey()));
-        assert!(signers.contains(&kp2.pubkey()));
+            .expect_err("unbound signature must be rejected");
+        assert!(error.contains("Missing or invalid signature"));
     }
 
     #[test]
@@ -728,11 +730,34 @@ mod tests {
 
     #[test]
     fn test_from_wire_rejects_oversized_payload_before_deserialization() {
-        let bytes = vec![b'{'; MAX_TRANSACTION_SERIALIZED_SIZE as usize + 1];
+        let bytes = vec![b'{'; MAX_TRANSACTION_WIRE_SIZE as usize + 1];
 
-        let result = Transaction::from_wire(&bytes, MAX_TRANSACTION_SERIALIZED_SIZE);
+        let result = Transaction::from_wire(&bytes, MAX_TRANSACTION_WIRE_SIZE);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("wire payload too large"));
+    }
+
+    #[test]
+    fn test_from_wire_rejects_unenveloped_payloads() {
+        let (tx, _, _) = two_signer_transaction();
+        let raw = serialize_legacy_bincode(&tx, "Transaction").unwrap();
+        assert!(Transaction::from_wire(&raw, MAX_TRANSACTION_WIRE_SIZE)
+            .unwrap_err()
+            .contains("Missing transaction V1 wire envelope"));
+
+        let json = serde_json::to_vec(&tx).unwrap();
+        assert!(Transaction::from_wire(&json, MAX_TRANSACTION_WIRE_SIZE)
+            .unwrap_err()
+            .contains("Missing transaction V1 wire envelope"));
+    }
+
+    #[test]
+    fn test_v1_wire_roundtrip() {
+        let (tx, _, _) = two_signer_transaction();
+        let decoded = Transaction::from_wire(&tx.to_wire(), MAX_TRANSACTION_WIRE_SIZE).unwrap();
+        assert_eq!(decoded.signatures, tx.signatures);
+        assert_eq!(decoded.message.serialize(), tx.message.serialize());
+        assert_eq!(decoded.tx_type, tx.tx_type);
     }
 
     // ── AUDIT-FIX A3-01: Verify data field IS included in signature hash ──

@@ -16,9 +16,10 @@
 extern crate alloc;
 use alloc::vec::Vec;
 use lichen_sdk::{
-    bytes_to_u64, can_receive, can_send, get_caller, get_contract_address, get_timestamp, log_info,
-    receive_token_or_native, set_return_data, storage_get, storage_set, transfer_token_or_native,
-    u64_to_bytes, Address,
+    bytes_to_u64, call_contract, can_receive, can_send, get_caller, get_contract_address,
+    get_contract_code_hash, get_slot, get_timestamp, log_info, receive_token_or_native,
+    set_return_data, storage, storage_get, storage_set, transfer_token_or_native, u64_to_bytes,
+    Address, CrossCall,
 };
 
 // T5.12: Reentrancy guard
@@ -67,6 +68,8 @@ const ADMIN_KEY: &[u8] = b"cp_admin";
 
 // Token counter
 const TOKEN_COUNT_KEY: &[u8] = b"cp_token_count";
+const MAX_TOKEN_NAME_LEN: usize = 64;
+const MAX_TOKEN_SYMBOL_LEN: usize = 12;
 
 // ============================================================================
 // v2 CONSTANTS
@@ -93,10 +96,23 @@ const PAUSE_KEY: &[u8] = b"cp_paused";
 const DEX_CORE_ADDRESS_KEY: &[u8] = b"cp_dex_core_addr";
 /// DEX AMM contract address (for creating liquidity pools on graduation)
 const DEX_AMM_ADDRESS_KEY: &[u8] = b"cp_dex_amm_addr";
+const DEX_ROUTER_ADDRESS_KEY: &[u8] = b"cp_dex_router_addr";
+const GRADUATED_TOKEN_TEMPLATE_HASH_KEY: &[u8] = b"cp_grad_template_hash";
+const GRADUATION_GOVERNANCE_KEY: &[u8] = b"cp_grad_governance";
+const GRADUATION_TICK_SIZE_KEY: &[u8] = b"cp_grad_tick_size";
+const GRADUATION_LOT_SIZE_KEY: &[u8] = b"cp_grad_lot_size";
+const GRADUATION_MIN_ORDER_KEY: &[u8] = b"cp_grad_min_order";
+const GRADUATION_AMM_FEE_TIER_KEY: &[u8] = b"cp_grad_amm_fee";
 /// Percentage of raised LICN seeded as liquidity on graduation (80%)
 const GRADUATION_LIQUIDITY_PERCENT: u64 = 80;
 /// Percentage of raised LICN retained as platform revenue on graduation (20%)
 const GRADUATION_PLATFORM_PERCENT: u64 = 20;
+const MIGRATION_TIMEOUT_SLOTS: u64 = 9_000;
+
+const GRADUATION_ACTIVE: u8 = 0;
+const GRADUATION_ELIGIBLE: u8 = 1;
+const GRADUATION_MIGRATING: u8 = 2;
+const GRADUATION_GRADUATED: u8 = 3;
 
 /// LICN token contract address (for outgoing transfers in sell/withdraw)
 const LICN_TOKEN_KEY: &[u8] = b"cp_licn_token";
@@ -133,6 +149,146 @@ fn make_key(prefix: &[u8], id_hex: &[u8]) -> Vec<u8> {
     key
 }
 
+fn graduation_key(prefix: &[u8], token_id: u64) -> Vec<u8> {
+    make_key(prefix, &u64_to_hex(token_id))
+}
+
+fn graduation_state(token_id: u64) -> u8 {
+    storage_get(&graduation_key(b"cpgs:", token_id))
+        .and_then(|data| data.first().copied())
+        .unwrap_or(GRADUATION_ACTIVE)
+}
+
+fn set_graduation_state(token_id: u64, state: u8) {
+    storage_set(&graduation_key(b"cpgs:", token_id), &[state]);
+}
+
+fn graduation_candidate(token_id: u64) -> Option<[u8; 32]> {
+    storage_get(&graduation_key(b"cpgt:", token_id)).and_then(|data| {
+        if data.len() < 32 {
+            return None;
+        }
+        let mut address = [0u8; 32];
+        address.copy_from_slice(&data[..32]);
+        Some(address)
+    })
+}
+
+fn set_graduation_u64(prefix: &[u8], token_id: u64, value: u64) {
+    store_u64(&graduation_key(prefix, token_id), value);
+}
+
+fn get_graduation_u64(prefix: &[u8], token_id: u64) -> u64 {
+    load_u64(&graduation_key(prefix, token_id))
+}
+
+fn token_record(token_id: u64) -> Option<Vec<u8>> {
+    storage_get(&make_key(b"cpt:", &u64_to_hex(token_id)))
+        .filter(|data| data.len() >= TOKEN_DATA_SIZE)
+}
+
+fn token_name_key(token_id: u64) -> Vec<u8> {
+    graduation_key(b"cpn:", token_id)
+}
+
+fn token_symbol_key(token_id: u64) -> Vec<u8> {
+    graduation_key(b"cpsy:", token_id)
+}
+
+fn token_symbol_index_key(symbol: &[u8]) -> Vec<u8> {
+    let mut key = Vec::with_capacity(6 + symbol.len());
+    key.extend_from_slice(b"cpsym:");
+    key.extend_from_slice(symbol);
+    key
+}
+
+fn valid_token_name(name: &[u8]) -> bool {
+    !name.is_empty()
+        && name.len() <= MAX_TOKEN_NAME_LEN
+        && !name.first().is_some_and(u8::is_ascii_whitespace)
+        && !name.last().is_some_and(u8::is_ascii_whitespace)
+        && core::str::from_utf8(name).is_ok_and(|value| !value.chars().any(char::is_control))
+}
+
+fn normalize_token_symbol(symbol: &[u8]) -> Option<Vec<u8>> {
+    if symbol.len() < 2
+        || symbol.len() > MAX_TOKEN_SYMBOL_LEN
+        || !symbol.first().is_some_and(u8::is_ascii_alphabetic)
+        || !symbol.iter().all(u8::is_ascii_alphanumeric)
+    {
+        return None;
+    }
+    Some(symbol.iter().map(u8::to_ascii_uppercase).collect())
+}
+
+fn read_metadata_bytes(ptr: *const u8, len: u32, max_len: usize) -> Option<Vec<u8>> {
+    let len = len as usize;
+    if ptr.is_null() || len == 0 || len > max_len {
+        return None;
+    }
+    Some(unsafe { core::slice::from_raw_parts(ptr, len) }.to_vec())
+}
+
+fn token_metadata(token_id: u64) -> (Vec<u8>, Vec<u8>) {
+    let name = storage_get(&token_name_key(token_id))
+        .filter(|value| valid_token_name(value))
+        .unwrap_or_else(|| alloc::format!("Spore Token {}", token_id).into_bytes());
+    let symbol = storage_get(&token_symbol_key(token_id))
+        .and_then(|value| normalize_token_symbol(&value))
+        .unwrap_or_else(|| alloc::format!("SPT{}", token_id).into_bytes());
+    (name, symbol)
+}
+
+fn token_market_cap(data: &[u8]) -> u64 {
+    let supply = bytes_to_u64(&data[32..40]);
+    u128_to_u64_saturating(current_price(supply) as u128 * supply as u128 / 1_000_000_000u128)
+}
+
+fn integer_sqrt_u128(value: u128) -> u64 {
+    if value == 0 {
+        return 0;
+    }
+    let mut x = 1u128 << ((128 - value.leading_zeros() as usize + 1) / 2);
+    loop {
+        let next = (x + value / x) / 2;
+        if next >= x {
+            return x.min(u64::MAX as u128) as u64;
+        }
+        x = next;
+    }
+}
+
+fn initial_sqrt_price(price: u64) -> u64 {
+    let ratio_q64 = (price as u128).saturating_mul(1u128 << 64) / 1_000_000_000u128;
+    integer_sqrt_u128(ratio_q64).max(1)
+}
+
+fn cross_call_id(target: [u8; 32], function: &str, args: Vec<u8>) -> Option<u64> {
+    call_contract(CrossCall::new(Address(target), function, args))
+        .ok()
+        .filter(|response| response.len() >= 8)
+        .map(|response| bytes_to_u64(&response[..8]))
+        .filter(|id| *id != 0)
+}
+
+fn cross_call_succeeded(target: [u8; 32], function: &str, args: Vec<u8>) -> bool {
+    call_contract(CrossCall::new(Address(target), function, args)).is_ok()
+}
+
+fn refresh_eligibility(token_id: u64, data: &[u8]) {
+    let state = graduation_state(token_id);
+    let eligible = token_market_cap(data) >= GRADUATION_MARKET_CAP;
+    if eligible && state == GRADUATION_ACTIVE {
+        set_graduation_state(token_id, GRADUATION_ELIGIBLE);
+        set_graduation_u64(b"cpge:", token_id, get_slot());
+        log_info("Launchpad token became graduation eligible");
+    } else if !eligible && state == GRADUATION_ELIGIBLE {
+        set_graduation_state(token_id, GRADUATION_ACTIVE);
+        set_graduation_u64(b"cpge:", token_id, 0);
+        log_info("Launchpad token returned below graduation threshold");
+    }
+}
+
 fn load_u64(key: &[u8]) -> u64 {
     storage_get(key).map(|d| bytes_to_u64(&d)).unwrap_or(0)
 }
@@ -166,6 +322,36 @@ fn has_configured_address(key: &[u8]) -> bool {
     storage_get(key)
         .map(|data| data.len() == 32)
         .unwrap_or(false)
+}
+
+fn configured_address(key: &[u8]) -> Option<[u8; 32]> {
+    storage_get(key).and_then(|data| {
+        if data.len() != 32 || data.iter().all(|byte| *byte == 0) {
+            return None;
+        }
+        let mut address = [0u8; 32];
+        address.copy_from_slice(&data);
+        Some(address)
+    })
+}
+
+fn read_address(ptr: *const u8) -> [u8; 32] {
+    let mut address = [0u8; 32];
+    unsafe {
+        core::ptr::copy_nonoverlapping(ptr, address.as_mut_ptr(), 32);
+    }
+    address
+}
+
+fn graduation_claim_key(token_id: u64, holder: &[u8; 32]) -> Vec<u8> {
+    let token_hex = u64_to_hex(token_id);
+    let holder_hex = hex_encode_addr(holder);
+    let mut key = Vec::with_capacity(5 + token_hex.len() + 1 + holder_hex.len());
+    key.extend_from_slice(b"cpgc:");
+    key.extend_from_slice(&token_hex);
+    key.push(b':');
+    key.extend_from_slice(&holder_hex);
+    key
 }
 
 fn is_token_frozen(token_id: u64) -> bool {
@@ -333,6 +519,43 @@ pub extern "C" fn initialize(admin_ptr: *const u8) -> u32 {
 /// Returns token ID. Validation failures return ERROR_RETURN so the host reverts value transfers.
 #[no_mangle]
 pub extern "C" fn create_token(creator_ptr: *const u8, fee_paid: u64) -> u64 {
+    create_token_internal(creator_ptr, fee_paid, None)
+}
+
+/// Create a named token while preserving the legacy create_token entrypoint.
+/// Symbols are unique, normalized uppercase ASCII identifiers.
+#[no_mangle]
+pub extern "C" fn create_token_with_metadata(
+    creator_ptr: *const u8,
+    name_ptr: *const u8,
+    name_len: u32,
+    symbol_ptr: *const u8,
+    symbol_len: u32,
+    fee_paid: u64,
+) -> u64 {
+    let Some(name) = read_metadata_bytes(name_ptr, name_len, MAX_TOKEN_NAME_LEN) else {
+        return ERROR_RETURN;
+    };
+    let Some(symbol) = read_metadata_bytes(symbol_ptr, symbol_len, MAX_TOKEN_SYMBOL_LEN) else {
+        return ERROR_RETURN;
+    };
+    if !valid_token_name(&name) {
+        return ERROR_RETURN;
+    }
+    let Some(symbol) = normalize_token_symbol(&symbol) else {
+        return ERROR_RETURN;
+    };
+    create_token_internal(creator_ptr, fee_paid, Some((name, symbol)))
+}
+
+fn create_token_internal(
+    creator_ptr: *const u8,
+    fee_paid: u64,
+    requested_metadata: Option<(Vec<u8>, Vec<u8>)>,
+) -> u64 {
+    if creator_ptr.is_null() {
+        return ERROR_RETURN;
+    }
     let mut creator = [0u8; 32];
     unsafe {
         core::ptr::copy_nonoverlapping(creator_ptr, creator.as_mut_ptr(), 32);
@@ -342,20 +565,6 @@ pub extern "C" fn create_token(creator_ptr: *const u8, fee_paid: u64) -> u64 {
     let real_caller = get_caller();
     if real_caller.0 != creator {
         return 200;
-    }
-
-    // G24-01: Verify actual payment instead of trusting the parameter.
-    let payment_token = load_licn_token_or_native();
-    if !receive_token_or_native(
-        payment_token,
-        Address(creator),
-        get_contract_address(),
-        CREATION_FEE,
-    )
-    .unwrap_or(false)
-    {
-        log_info("Insufficient creation fee (need 10 LICN)");
-        return ERROR_RETURN;
     }
 
     if fee_paid < CREATION_FEE {
@@ -371,6 +580,38 @@ pub extern "C" fn create_token(creator_ptr: *const u8, fee_paid: u64) -> u64 {
         }
     };
     let id_hex = u64_to_hex(token_id);
+    let (name, symbol) = requested_metadata.unwrap_or_else(|| {
+        (
+            alloc::format!("Spore Token {}", token_id).into_bytes(),
+            alloc::format!("SPT{}", token_id).into_bytes(),
+        )
+    });
+    let symbol_index_key = token_symbol_index_key(&symbol);
+    if storage_get(&symbol_index_key).is_some() {
+        log_info("Token symbol is already registered");
+        return ERROR_RETURN;
+    }
+    let fees = match load_u64(b"cp_fees_collected").checked_add(CREATION_FEE) {
+        Some(fees) => fees,
+        None => {
+            log_info("Creation fee counter overflow");
+            return ERROR_RETURN;
+        }
+    };
+
+    // G24-01: Verify actual payment instead of trusting the parameter.
+    let payment_token = load_licn_token_or_native();
+    if !receive_token_or_native(
+        payment_token,
+        Address(creator),
+        get_contract_address(),
+        CREATION_FEE,
+    )
+    .unwrap_or(false)
+    {
+        log_info("Insufficient creation fee (need 10 LICN)");
+        return ERROR_RETURN;
+    }
 
     // Store token data
     let mut data = Vec::with_capacity(TOKEN_DATA_SIZE);
@@ -383,14 +624,32 @@ pub extern "C" fn create_token(creator_ptr: *const u8, fee_paid: u64) -> u64 {
 
     let token_key = make_key(b"cpt:", &id_hex);
     storage_set(&token_key, &data);
+    storage_set(&token_name_key(token_id), &name);
+    storage_set(&token_symbol_key(token_id), &symbol);
+    storage_set(&symbol_index_key, &u64_to_bytes(token_id));
     store_u64(TOKEN_COUNT_KEY, token_id);
 
     // Collect creation fee
-    let fees = load_u64(b"cp_fees_collected");
-    store_u64(b"cp_fees_collected", fees.saturating_add(CREATION_FEE));
+    store_u64(b"cp_fees_collected", fees);
 
     log_info("🪙 New token created on bonding curve");
     token_id
+}
+
+/// Return name_len(u16) + name + symbol_len(u16) + symbol for any token ID.
+#[no_mangle]
+pub extern "C" fn get_token_metadata(token_id: u64) -> u32 {
+    if token_record(token_id).is_none() {
+        return 1;
+    }
+    let (name, symbol) = token_metadata(token_id);
+    let mut result = Vec::with_capacity(4 + name.len() + symbol.len());
+    result.extend_from_slice(&(name.len() as u16).to_le_bytes());
+    result.extend_from_slice(&name);
+    result.extend_from_slice(&(symbol.len() as u16).to_le_bytes());
+    result.extend_from_slice(&symbol);
+    set_return_data(&result);
+    0
 }
 
 // ============================================================================
@@ -490,6 +749,12 @@ pub extern "C" fn buy(buyer_ptr: *const u8, token_id: u64, licn_amount: u64) -> 
         return 200;
     }
 
+    if graduation_state(token_id) != GRADUATION_ACTIVE {
+        reentrancy_exit();
+        log_info("Bonding-curve buys are closed for graduation");
+        return ERROR_RETURN;
+    }
+
     // G24-01: Verify actual payment instead of trusting parameter
     let payment_token = load_licn_token_or_native();
     if !receive_token_or_native(
@@ -530,7 +795,6 @@ pub extern "C" fn buy(buyer_ptr: *const u8, token_id: u64, licn_amount: u64) -> 
         }
     };
 
-    // Check not graduated
     if data[64] != 0 {
         log_info("Token graduated to DEX, trade there");
         reentrancy_exit();
@@ -542,15 +806,13 @@ pub extern "C" fn buy(buyer_ptr: *const u8, token_id: u64, licn_amount: u64) -> 
     let max_supply = bytes_to_u64(&data[48..56]);
 
     // Platform fee
-    let fee = u128_to_u64_saturating(licn_amount as u128 * PLATFORM_FEE_PERCENT as u128 / 100);
-    let net_amount = licn_amount - fee;
+    let maximum_fee =
+        u128_to_u64_saturating(licn_amount as u128 * PLATFORM_FEE_PERCENT as u128 / 100);
+    let net_amount = licn_amount - maximum_fee;
 
     // Binary search for how many tokens we can buy with net_amount
     let mut lo: u64 = 0;
     let mut hi: u64 = max_supply.saturating_sub(supply_sold);
-    if hi > 1_000_000_000_000 {
-        hi = 1_000_000_000_000; // Cap search
-    }
 
     while lo < hi {
         let mid = lo + (hi - lo + 1) / 2;
@@ -570,6 +832,31 @@ pub extern "C" fn buy(buyer_ptr: *const u8, token_id: u64, licn_amount: u64) -> 
     }
 
     let actual_cost = calculate_buy_cost(supply_sold, tokens_bought);
+    if actual_cost == 0 {
+        reentrancy_exit();
+        log_info("Calculated launchpad buy cost is zero");
+        return ERROR_RETURN;
+    }
+    let fee_denominator = 100u128.saturating_sub(PLATFORM_FEE_PERCENT as u128);
+    let fee = u128_to_u64_saturating(
+        (actual_cost as u128 * PLATFORM_FEE_PERCENT as u128)
+            .saturating_add(fee_denominator.saturating_sub(1))
+            / fee_denominator,
+    );
+    let charged = match actual_cost.checked_add(fee) {
+        Some(charged) if charged <= licn_amount => charged,
+        _ => {
+            reentrancy_exit();
+            log_info("Launchpad buy charge overflow");
+            return ERROR_RETURN;
+        }
+    };
+    let refund = licn_amount - charged;
+    if refund > 0 && !transfer_licn_out(&buyer, refund) {
+        reentrancy_exit();
+        log_info("Launchpad buy refund failed");
+        return ERROR_RETURN;
+    }
     let new_supply = supply_sold + tokens_bought;
     let new_raised = match licn_raised.checked_add(actual_cost) {
         Some(v) => v,
@@ -627,38 +914,7 @@ pub extern "C" fn buy(buyer_ptr: *const u8, token_id: u64, licn_amount: u64) -> 
 
     // v2: Record last buy timestamp for cooldown
     store_u64(&lbk, now);
-
-    // Check graduation (use u128 to prevent overflow with large supplies)
-    // AUDIT-FIX LOW-04: Graduation is NOT YET IMPLEMENTED.
-    // The threshold check runs but produces no state change — tokens remain on
-    // the bonding curve until a real DEX migration path is built in a future release.
-    let market_cap = u128_to_u64_saturating(
-        current_price(new_supply) as u128 * new_supply as u128 / 1_000_000_000u128,
-    );
-    if market_cap >= GRADUATION_MARKET_CAP {
-        let dex_core_bytes = storage_get(DEX_CORE_ADDRESS_KEY);
-        let dex_amm_bytes = storage_get(DEX_AMM_ADDRESS_KEY);
-
-        let has_core = dex_core_bytes
-            .as_ref()
-            .map(|b| b.len() == 32 && b.iter().any(|&x| x != 0))
-            .unwrap_or(false);
-        let has_amm = dex_amm_bytes
-            .as_ref()
-            .map(|b| b.len() == 32 && b.iter().any(|&x| x != 0))
-            .unwrap_or(false);
-
-        if has_core && has_amm {
-            let _ = (GRADUATION_LIQUIDITY_PERCENT, GRADUATION_PLATFORM_PERCENT);
-            log_info(
-                "Graduation threshold reached, but automatic DEX migration is disabled until SporePump exposes a real ABI-compatible asset and pool migration path",
-            );
-        } else {
-            log_info(
-                "Graduation threshold reached, but no automatic DEX migration path is configured — token remains on bonding curve",
-            );
-        }
-    }
+    refresh_eligibility(token_id, &data);
 
     log_info("Buy successful");
     reentrancy_exit();
@@ -691,6 +947,12 @@ pub extern "C" fn sell(seller_ptr: *const u8, token_id: u64, token_amount: u64) 
     if real_caller.0 != seller {
         reentrancy_exit();
         return 200;
+    }
+
+    if graduation_state(token_id) >= GRADUATION_MIGRATING {
+        reentrancy_exit();
+        log_info("Bonding-curve sells are closed during or after migration");
+        return ERROR_RETURN;
     }
 
     let seller_hex = hex_encode_addr(&seller);
@@ -770,6 +1032,7 @@ pub extern "C" fn sell(seller_ptr: *const u8, token_id: u64, token_amount: u64) 
     data[32..40].copy_from_slice(&u64_to_bytes(new_supply));
     data[40..48].copy_from_slice(&u64_to_bytes(new_raised));
     storage_set(&token_key, &data);
+    refresh_eligibility(token_id, &data);
 
     // Update seller balance
     store_u64(&bal_key, balance - token_amount);
@@ -817,6 +1080,9 @@ pub extern "C" fn get_token_info(token_id: u64) -> u32 {
 /// Get buy quote: how many tokens for given LICN amount
 #[no_mangle]
 pub extern "C" fn get_buy_quote(token_id: u64, licn_amount: u64) -> u64 {
+    if licn_amount == 0 {
+        return 0;
+    }
     let id_hex = u64_to_hex(token_id);
     let token_key = make_key(b"cpt:", &id_hex);
 
@@ -831,9 +1097,7 @@ pub extern "C" fn get_buy_quote(token_id: u64, licn_amount: u64) -> u64 {
         u128_to_u64_saturating(licn_amount as u128 * (100 - PLATFORM_FEE_PERCENT) as u128 / 100);
 
     let mut lo: u64 = 0;
-    let mut hi = max_supply
-        .saturating_sub(supply_sold)
-        .min(1_000_000_000_000);
+    let mut hi = max_supply.saturating_sub(supply_sold);
     while lo < hi {
         let mid = lo + (hi - lo + 1) / 2;
         if calculate_buy_cost(supply_sold, mid) <= net {
@@ -1181,6 +1445,420 @@ pub extern "C" fn set_dex_addresses(
     0
 }
 
+/// Bind the governance program responsible for one-time graduation settings.
+/// This is a bootstrap operation and cannot be changed after it succeeds.
+#[no_mangle]
+pub extern "C" fn set_graduation_governance(
+    caller_ptr: *const u8,
+    governance_ptr: *const u8,
+) -> u32 {
+    let caller = read_address(caller_ptr);
+    if get_caller().0 != caller {
+        return 200;
+    }
+    if !is_admin(&caller) {
+        return 1;
+    }
+    let governance = read_address(governance_ptr);
+    if governance.iter().all(|byte| *byte == 0) {
+        return 2;
+    }
+    if configured_address(GRADUATION_GOVERNANCE_KEY).is_some() {
+        return 3;
+    }
+    storage_set(GRADUATION_GOVERNANCE_KEY, &governance);
+    log_info("Graduation governance configured");
+    0
+}
+
+/// Configure the router and canonical graduated-token template once through
+/// the bound governance program. DEX Core and AMM use their legacy one-time
+/// bootstrap addresses until the deployment scripts are migrated.
+#[no_mangle]
+pub extern "C" fn set_graduation_config(
+    caller_ptr: *const u8,
+    router_ptr: *const u8,
+    template_hash_ptr: *const u8,
+    tick_size: u64,
+    lot_size: u64,
+    min_order: u64,
+    amm_fee_tier: u32,
+) -> u32 {
+    let caller = read_address(caller_ptr);
+    if get_caller().0 != caller {
+        return 200;
+    }
+    if configured_address(GRADUATION_GOVERNANCE_KEY) != Some(caller) {
+        return 1;
+    }
+    if configured_address(DEX_CORE_ADDRESS_KEY).is_none()
+        || configured_address(DEX_AMM_ADDRESS_KEY).is_none()
+    {
+        return 2;
+    }
+    let router = read_address(router_ptr);
+    let template_hash = read_address(template_hash_ptr);
+    if router.iter().all(|byte| *byte == 0)
+        || template_hash.iter().all(|byte| *byte == 0)
+        || tick_size == 0
+        || lot_size == 0
+        || min_order < 1_000
+        || amm_fee_tier > 3
+    {
+        return 3;
+    }
+    if configured_address(DEX_ROUTER_ADDRESS_KEY).is_some()
+        || configured_address(GRADUATED_TOKEN_TEMPLATE_HASH_KEY).is_some()
+    {
+        return 4;
+    }
+    storage_set(DEX_ROUTER_ADDRESS_KEY, &router);
+    storage_set(GRADUATED_TOKEN_TEMPLATE_HASH_KEY, &template_hash);
+    store_u64(GRADUATION_TICK_SIZE_KEY, tick_size);
+    store_u64(GRADUATION_LOT_SIZE_KEY, lot_size);
+    store_u64(GRADUATION_MIN_ORDER_KEY, min_order);
+    store_u64(GRADUATION_AMM_FEE_TIER_KEY, amm_fee_tier as u64);
+    log_info("Graduation router and canonical token template configured");
+    0
+}
+
+/// Validate and freeze a canonical token candidate for permissionless
+/// migration. Candidate deployment remains separate from this transaction.
+#[no_mangle]
+pub extern "C" fn begin_migration(
+    keeper_ptr: *const u8,
+    token_id: u64,
+    candidate_ptr: *const u8,
+) -> u32 {
+    let keeper = read_address(keeper_ptr);
+    if get_caller().0 != keeper {
+        return 200;
+    }
+    let data = match token_record(token_id) {
+        Some(data) => data,
+        None => return 1,
+    };
+    if graduation_state(token_id) != GRADUATION_ELIGIBLE
+        || token_market_cap(&data) < GRADUATION_MARKET_CAP
+    {
+        return 2;
+    }
+    let candidate = read_address(candidate_ptr);
+    if candidate.iter().all(|byte| *byte == 0) {
+        return 3;
+    }
+    let expected_hash = match configured_address(GRADUATED_TOKEN_TEMPLATE_HASH_KEY) {
+        Some(hash) => hash,
+        None => return 4,
+    };
+    if get_contract_code_hash(Address(candidate)) != Some(expected_hash) {
+        log_info("Graduation candidate code hash mismatch");
+        return 5;
+    }
+    let provenance = match call_contract(CrossCall::new(
+        Address(candidate),
+        "get_provenance",
+        Vec::new(),
+    )) {
+        Ok(provenance) if provenance.len() == 88 => provenance,
+        _ => return 6,
+    };
+    let supply_sold = bytes_to_u64(&data[32..40]);
+    let max_supply = bytes_to_u64(&data[48..56]);
+    if provenance[0..32] != get_contract_address().0
+        || bytes_to_u64(&provenance[32..40]) != token_id
+        || provenance[40..72] != data[0..32]
+        || bytes_to_u64(&provenance[72..80]) != max_supply
+        || bytes_to_u64(&provenance[80..88]) != supply_sold
+    {
+        log_info("Graduation candidate provenance mismatch");
+        return 7;
+    }
+
+    storage_set(&graduation_key(b"cpgt:", token_id), &candidate);
+    set_graduation_u64(b"cpgb:", token_id, get_slot());
+    set_graduation_state(token_id, GRADUATION_MIGRATING);
+    log_info("Launchpad migration started");
+    0
+}
+
+/// Release a migration freeze after the deterministic timeout. No holder or
+/// economic state is modified, and eligibility is recalculated from the curve.
+#[no_mangle]
+pub extern "C" fn abort_migration(keeper_ptr: *const u8, token_id: u64) -> u32 {
+    let keeper = read_address(keeper_ptr);
+    if get_caller().0 != keeper {
+        return 200;
+    }
+    if graduation_state(token_id) != GRADUATION_MIGRATING {
+        return 1;
+    }
+    let boundary = get_graduation_u64(b"cpgb:", token_id);
+    if get_slot() < boundary.saturating_add(MIGRATION_TIMEOUT_SLOTS) {
+        return 2;
+    }
+    let data = match token_record(token_id) {
+        Some(data) => data,
+        None => return 3,
+    };
+    storage::remove(&graduation_key(b"cpgt:", token_id));
+    storage::remove(&graduation_key(b"cpgb:", token_id));
+    set_graduation_state(token_id, GRADUATION_ACTIVE);
+    refresh_eligibility(token_id, &data);
+    log_info("Launchpad migration timeout aborted");
+    0
+}
+
+/// Atomically create the canonical DEX market and seed its initial liquidity.
+/// Any non-zero return causes the host to discard every nested contract write.
+#[no_mangle]
+pub extern "C" fn finalize_migration(keeper_ptr: *const u8, token_id: u64) -> u32 {
+    let keeper = read_address(keeper_ptr);
+    if get_caller().0 != keeper {
+        return 200;
+    }
+    if graduation_state(token_id) != GRADUATION_MIGRATING {
+        return 1;
+    }
+    let candidate = match graduation_candidate(token_id) {
+        Some(candidate) => candidate,
+        None => return 2,
+    };
+    let dex_core = match configured_address(DEX_CORE_ADDRESS_KEY) {
+        Some(address) => address,
+        None => return 3,
+    };
+    let dex_amm = match configured_address(DEX_AMM_ADDRESS_KEY) {
+        Some(address) => address,
+        None => return 3,
+    };
+    let dex_router = match configured_address(DEX_ROUTER_ADDRESS_KEY) {
+        Some(address) => address,
+        None => return 3,
+    };
+    let mut data = match token_record(token_id) {
+        Some(data) => data,
+        None => return 4,
+    };
+    let supply_sold = bytes_to_u64(&data[32..40]);
+    let licn_raised = bytes_to_u64(&data[40..48]);
+    let max_supply = bytes_to_u64(&data[48..56]);
+    let price = current_price(supply_sold);
+    let licn_liquidity_limit =
+        u128_to_u64_saturating(licn_raised as u128 * GRADUATION_LIQUIDITY_PERCENT as u128 / 100);
+    let minimum_platform_revenue =
+        u128_to_u64_saturating(licn_raised as u128 * GRADUATION_PLATFORM_PERCENT as u128 / 100);
+    if licn_liquidity_limit == 0
+        || price == 0
+        || licn_liquidity_limit
+            .checked_add(minimum_platform_revenue)
+            .is_none_or(|total| total > licn_raised)
+    {
+        return 5;
+    }
+    let token_liquidity_limit =
+        u128_to_u64_saturating(licn_liquidity_limit as u128 * 1_000_000_000u128 / price as u128);
+    if token_liquidity_limit < 100
+        || supply_sold
+            .checked_add(token_liquidity_limit)
+            .is_none_or(|total| total > max_supply)
+    {
+        return 6;
+    }
+
+    let sporepump = get_contract_address().0;
+    let mut mint_args = Vec::with_capacity(40);
+    mint_args.extend_from_slice(&sporepump);
+    mint_args.extend_from_slice(&u64_to_bytes(token_liquidity_limit));
+    if !cross_call_succeeded(candidate, "mint_migration_inventory", mint_args) {
+        return 7;
+    }
+
+    let mut approve_args = Vec::with_capacity(72);
+    approve_args.extend_from_slice(&sporepump);
+    approve_args.extend_from_slice(&dex_amm);
+    approve_args.extend_from_slice(&u64_to_bytes(token_liquidity_limit));
+    if !cross_call_succeeded(candidate, "approve", approve_args) {
+        return 8;
+    }
+
+    let tick_size = load_u64(GRADUATION_TICK_SIZE_KEY);
+    let lot_size = load_u64(GRADUATION_LOT_SIZE_KEY);
+    let min_order = load_u64(GRADUATION_MIN_ORDER_KEY);
+    let amm_fee_tier = load_u64(GRADUATION_AMM_FEE_TIER_KEY);
+    if tick_size == 0 || lot_size == 0 || min_order < 1_000 || amm_fee_tier > 3 {
+        return 9;
+    }
+    let native_licn = [0u8; 32];
+    let mut pair_args = Vec::with_capacity(120);
+    pair_args.extend_from_slice(&sporepump);
+    pair_args.extend_from_slice(&candidate);
+    pair_args.extend_from_slice(&native_licn);
+    pair_args.extend_from_slice(&u64_to_bytes(tick_size));
+    pair_args.extend_from_slice(&u64_to_bytes(lot_size));
+    pair_args.extend_from_slice(&u64_to_bytes(min_order));
+    let pair_id = match cross_call_id(dex_core, "create_pair", pair_args) {
+        Some(pair_id) => pair_id,
+        None => return 10,
+    };
+
+    let mut pool_args = Vec::with_capacity(105);
+    pool_args.extend_from_slice(&sporepump);
+    pool_args.extend_from_slice(&candidate);
+    pool_args.extend_from_slice(&native_licn);
+    pool_args.push(amm_fee_tier as u8);
+    pool_args.extend_from_slice(&u64_to_bytes(initial_sqrt_price(price)));
+    let pool_id = match cross_call_id(dex_amm, "create_pool", pool_args) {
+        Some(pool_id) => pool_id,
+        None => return 11,
+    };
+
+    const FULL_RANGE_LOWER_TICK: i32 = -443_580;
+    const FULL_RANGE_UPPER_TICK: i32 = 443_580;
+    let mut liquidity_args = Vec::with_capacity(72);
+    liquidity_args.extend_from_slice(&sporepump);
+    liquidity_args.extend_from_slice(&u64_to_bytes(pool_id));
+    liquidity_args.extend_from_slice(&FULL_RANGE_LOWER_TICK.to_le_bytes());
+    liquidity_args.extend_from_slice(&FULL_RANGE_UPPER_TICK.to_le_bytes());
+    liquidity_args.extend_from_slice(&u64_to_bytes(token_liquidity_limit));
+    liquidity_args.extend_from_slice(&u64_to_bytes(licn_liquidity_limit));
+    liquidity_args.extend_from_slice(&u64_to_bytes(0));
+    let liquidity_response = match call_contract(
+        CrossCall::new(Address(dex_amm), "add_liquidity", liquidity_args)
+            .with_value(licn_liquidity_limit),
+    ) {
+        Ok(response) if response.len() >= 24 => response,
+        _ => return 12,
+    };
+    let position_id = bytes_to_u64(&liquidity_response[0..8]);
+    let actual_token_liquidity = bytes_to_u64(&liquidity_response[8..16]);
+    let actual_licn_liquidity = bytes_to_u64(&liquidity_response[16..24]);
+    if position_id == 0
+        || actual_token_liquidity == 0
+        || actual_licn_liquidity == 0
+        || actual_token_liquidity > token_liquidity_limit
+        || actual_licn_liquidity > licn_liquidity_limit
+    {
+        return 13;
+    }
+
+    let mut forward_route_args = Vec::with_capacity(90);
+    forward_route_args.extend_from_slice(&sporepump);
+    forward_route_args.extend_from_slice(&candidate);
+    forward_route_args.extend_from_slice(&native_licn);
+    forward_route_args.push(1);
+    forward_route_args.extend_from_slice(&u64_to_bytes(pool_id));
+    forward_route_args.extend_from_slice(&u64_to_bytes(0));
+    forward_route_args.push(0);
+    let forward_route_id = match cross_call_id(dex_router, "register_route", forward_route_args) {
+        Some(route_id) => route_id,
+        None => return 14,
+    };
+
+    let mut reverse_route_args = Vec::with_capacity(90);
+    reverse_route_args.extend_from_slice(&sporepump);
+    reverse_route_args.extend_from_slice(&native_licn);
+    reverse_route_args.extend_from_slice(&candidate);
+    reverse_route_args.push(1);
+    reverse_route_args.extend_from_slice(&u64_to_bytes(pool_id));
+    reverse_route_args.extend_from_slice(&u64_to_bytes(0));
+    reverse_route_args.push(0);
+    let reverse_route_id = match cross_call_id(dex_router, "register_route", reverse_route_args) {
+        Some(route_id) => route_id,
+        None => return 15,
+    };
+
+    set_graduation_u64(b"cpgp:", token_id, pair_id);
+    set_graduation_u64(b"cpga:", token_id, pool_id);
+    set_graduation_u64(b"cpgr:", token_id, forward_route_id);
+    set_graduation_u64(b"cpgr2:", token_id, reverse_route_id);
+    set_graduation_u64(b"cpgpos:", token_id, position_id);
+    let mut liquidity = Vec::with_capacity(16);
+    liquidity.extend_from_slice(&u64_to_bytes(actual_licn_liquidity));
+    liquidity.extend_from_slice(&u64_to_bytes(actual_token_liquidity));
+    storage_set(&graduation_key(b"cpgl:", token_id), &liquidity);
+    set_graduation_u64(
+        b"cpgx:",
+        token_id,
+        token_liquidity_limit - actual_token_liquidity,
+    );
+    let platform_revenue = licn_raised - actual_licn_liquidity;
+    let Some(graduation_revenue) =
+        load_u64(b"cp_graduation_revenue").checked_add(platform_revenue)
+    else {
+        return 16;
+    };
+    let Some(graduation_revision) = load_u64(b"cp_graduation_revision").checked_add(1) else {
+        return 17;
+    };
+    store_u64(b"cp_graduation_revenue", graduation_revenue);
+    store_u64(b"cp_graduation_revision", graduation_revision);
+    data[64] = 1;
+    storage_set(&graduation_key(b"cpt:", token_id), &data);
+    set_graduation_state(token_id, GRADUATION_GRADUATED);
+
+    let mut result = Vec::with_capacity(40);
+    result.extend_from_slice(&u64_to_bytes(pair_id));
+    result.extend_from_slice(&u64_to_bytes(pool_id));
+    result.extend_from_slice(&u64_to_bytes(forward_route_id));
+    result.extend_from_slice(&u64_to_bytes(reverse_route_id));
+    result.extend_from_slice(&u64_to_bytes(position_id));
+    set_return_data(&result);
+    log_info("Launchpad token graduated atomically to DEX");
+    0
+}
+
+/// Consume one frozen holder balance. The canonical graduated token is the
+/// only authorized caller; its claim transaction mints the returned amount or
+/// atomically rolls this write back.
+#[no_mangle]
+pub extern "C" fn consume_graduation_claim(token_id: u64, holder_ptr: *const u8) -> u64 {
+    if graduation_state(token_id) != GRADUATION_GRADUATED {
+        return 0;
+    }
+    let candidate = match graduation_candidate(token_id) {
+        Some(candidate) => candidate,
+        None => return 0,
+    };
+    if get_caller().0 != candidate {
+        return 0;
+    }
+    let holder = read_address(holder_ptr);
+    let claim_key = graduation_claim_key(token_id, &holder);
+    if storage_get(&claim_key).is_some() {
+        return 0;
+    }
+    let balance_key = launchpad_balance_key(token_id, &holder);
+    let amount = load_u64(&balance_key);
+    if amount == 0 {
+        return 0;
+    }
+    store_u64(&balance_key, 0);
+    storage_set(&claim_key, &[1]);
+    set_return_data(&u64_to_bytes(amount));
+    log_info("Launchpad graduation claim consumed");
+    amount
+}
+
+/// Lifecycle status: state(1), eligibility slot(8), boundary slot(8),
+/// candidate(32), pair id(8), pool id(8), route id(8).
+#[no_mangle]
+pub extern "C" fn get_graduation_status(token_id: u64) -> u32 {
+    if token_record(token_id).is_none() {
+        return 1;
+    }
+    let mut result = Vec::with_capacity(73);
+    result.push(graduation_state(token_id));
+    result.extend_from_slice(&u64_to_bytes(get_graduation_u64(b"cpge:", token_id)));
+    result.extend_from_slice(&u64_to_bytes(get_graduation_u64(b"cpgb:", token_id)));
+    result.extend_from_slice(&graduation_candidate(token_id).unwrap_or([0u8; 32]));
+    result.extend_from_slice(&u64_to_bytes(get_graduation_u64(b"cpgp:", token_id)));
+    result.extend_from_slice(&u64_to_bytes(get_graduation_u64(b"cpga:", token_id)));
+    result.extend_from_slice(&u64_to_bytes(get_graduation_u64(b"cpgr:", token_id)));
+    set_return_data(&result);
+    0
+}
+
 /// Get graduation info: [graduation_revenue(8), dex_core_set(1), dex_amm_set(1)]
 #[no_mangle]
 pub extern "C" fn get_graduation_info() -> u32 {
@@ -1224,6 +1902,37 @@ mod tests {
         test_mock::reset();
     }
 
+    fn create_threshold_token() -> (u64, [u8; 32], [u8; 32]) {
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        assert_eq!(initialize(admin.as_ptr()), 0);
+        assert_eq!(set_max_buy(admin.as_ptr(), u64::MAX), 0);
+
+        let creator = [2u8; 32];
+        test_mock::set_caller(creator);
+        test_mock::set_value(CREATION_FEE);
+        let token_id = create_token(creator.as_ptr(), CREATION_FEE);
+        assert_ne!(token_id, ERROR_RETURN);
+
+        let token_key = graduation_key(b"cpt:", token_id);
+        let mut data = test_mock::get_storage(&token_key).unwrap();
+        data[32..40].copy_from_slice(&u64_to_bytes(400_000_000_000_000));
+        data[40..48].copy_from_slice(&u64_to_bytes(50_000_000_000_000_000));
+        storage_set(&token_key, &data);
+
+        let buyer = [3u8; 32];
+        test_mock::set_timestamp(10_000);
+        test_mock::set_slot(100);
+        test_mock::set_caller(buyer);
+        let buy_amount = 1_000_000_000_000;
+        test_mock::set_value(buy_amount);
+        let bought = buy(buyer.as_ptr(), token_id, buy_amount);
+        assert_ne!(bought, ERROR_RETURN);
+        assert!(bought > 0);
+        assert_eq!(graduation_state(token_id), GRADUATION_ELIGIBLE);
+        (token_id, creator, buyer)
+    }
+
     #[test]
     fn test_initialize() {
         setup();
@@ -1259,6 +1968,66 @@ mod tests {
         assert_eq!(get_token_count(), 1);
         let fees = load_u64(b"cp_fees_collected");
         assert_eq!(fees, CREATION_FEE);
+        assert_eq!(storage_get(&token_name_key(token_id)).unwrap(), b"Spore Token 1");
+        assert_eq!(storage_get(&token_symbol_key(token_id)).unwrap(), b"SPT1");
+        assert_eq!(get_token_metadata(token_id), 0);
+        let metadata = test_mock::get_return_data();
+        assert_eq!(u16::from_le_bytes(metadata[0..2].try_into().unwrap()), 13);
+        assert_eq!(&metadata[2..15], b"Spore Token 1");
+        assert_eq!(u16::from_le_bytes(metadata[15..17].try_into().unwrap()), 4);
+        assert_eq!(&metadata[17..21], b"SPT1");
+    }
+
+    #[test]
+    fn test_create_token_metadata_is_normalized_unique_and_validated() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+        let creator = [2u8; 32];
+        let name = b"Forest Credit";
+        let symbol = b"fern";
+        test_mock::set_caller(creator);
+        test_mock::set_value(CREATION_FEE);
+        let token_id = create_token_with_metadata(
+            creator.as_ptr(),
+            name.as_ptr(),
+            name.len() as u32,
+            symbol.as_ptr(),
+            symbol.len() as u32,
+            CREATION_FEE,
+        );
+        assert_eq!(token_id, 1);
+        assert_eq!(storage_get(&token_name_key(token_id)).unwrap(), name);
+        assert_eq!(storage_get(&token_symbol_key(token_id)).unwrap(), b"FERN");
+
+        test_mock::set_value(CREATION_FEE);
+        assert_eq!(
+            create_token_with_metadata(
+                creator.as_ptr(),
+                b"Other".as_ptr(),
+                5,
+                b"FERN".as_ptr(),
+                4,
+                CREATION_FEE,
+            ),
+            ERROR_RETURN
+        );
+        assert_eq!(get_token_count(), 1);
+
+        test_mock::set_value(CREATION_FEE);
+        assert_eq!(
+            create_token_with_metadata(
+                creator.as_ptr(),
+                b"Bad".as_ptr(),
+                3,
+                b"BAD-SYMBOL".as_ptr(),
+                10,
+                CREATION_FEE,
+            ),
+            ERROR_RETURN
+        );
+        assert_eq!(get_token_count(), 1);
     }
 
     #[test]
@@ -1337,6 +2106,88 @@ mod tests {
         test_mock::set_value(1_000_000_000);
         let tokens = buy(buyer.as_ptr(), token_id, 1_000_000_000);
         assert!(tokens > 0, "Should receive tokens for 1 LICN");
+    }
+
+    #[test]
+    fn test_buy_uses_full_curve_range_and_matches_quote() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+        let creator = [2u8; 32];
+        test_mock::set_caller(creator);
+        test_mock::set_value(CREATION_FEE);
+        let token_id = create_token(creator.as_ptr(), CREATION_FEE);
+
+        let buyer = [3u8; 32];
+        let payment = 5_000_000_000;
+        let quoted = get_buy_quote(token_id, payment);
+        assert!(
+            quoted > 1_000_000_000_000,
+            "5 LICN quote must not be capped at 1,000 tokens"
+        );
+        test_mock::set_caller(buyer);
+        test_mock::set_value(payment);
+        let bought = buy(buyer.as_ptr(), token_id, payment);
+        assert_eq!(bought, quoted, "quote and credited amount must match");
+
+        let net = payment * (100 - PLATFORM_FEE_PERCENT) / 100;
+        assert!(calculate_buy_cost(0, bought) <= net);
+        assert!(calculate_buy_cost(0, bought + 1) > net);
+    }
+
+    #[test]
+    fn test_capped_buy_refunds_every_unused_spore_and_collects_only_actual_fee() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+        assert_eq!(set_licn_token(admin.as_ptr(), [0u8; 32].as_ptr()), 0);
+        let creator = [2u8; 32];
+        test_mock::set_caller(creator);
+        test_mock::set_value(CREATION_FEE);
+        let token_id = create_token(creator.as_ptr(), CREATION_FEE);
+        let token_key = graduation_key(b"cpt:", token_id);
+        let mut data = storage_get(&token_key).unwrap();
+        data[48..56].copy_from_slice(&u64_to_bytes(1_000_000_000));
+        storage_set(&token_key, &data);
+
+        let buyer = [3u8; 32];
+        let payment = 1_000_000_000;
+        let actual_cost = calculate_buy_cost(0, 1_000_000_000);
+        let actual_fee = (actual_cost * PLATFORM_FEE_PERCENT + 98) / 99;
+        test_mock::set_caller(buyer);
+        test_mock::set_value(payment);
+        assert_eq!(buy(buyer.as_ptr(), token_id, payment), 1_000_000_000);
+        assert_eq!(load_u64(b"cp_fees_collected"), CREATION_FEE + actual_fee);
+        let call = test_mock::get_last_cross_call().expect("refund transfer");
+        assert_eq!(call.1, "transfer");
+        assert_eq!(&call.2[0..32], &buyer);
+        assert_eq!(
+            bytes_to_u64(&call.2[32..40]),
+            payment - actual_cost - actual_fee
+        );
+    }
+
+    #[test]
+    fn test_zero_cost_capped_remainder_is_not_credited_for_free() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+        let creator = [2u8; 32];
+        test_mock::set_caller(creator);
+        test_mock::set_value(CREATION_FEE);
+        let token_id = create_token(creator.as_ptr(), CREATION_FEE);
+        let token_key = graduation_key(b"cpt:", token_id);
+        let mut data = storage_get(&token_key).unwrap();
+        data[48..56].copy_from_slice(&u64_to_bytes(1_000));
+        storage_set(&token_key, &data);
+        let buyer = [3u8; 32];
+        test_mock::set_caller(buyer);
+        test_mock::set_value(1);
+        assert_eq!(buy(buyer.as_ptr(), token_id, 1), ERROR_RETURN);
+        assert_eq!(load_u64(&launchpad_balance_key(token_id, &buyer)), 0);
     }
 
     #[test]
@@ -1571,6 +2422,7 @@ mod tests {
         test_mock::set_caller(creator);
         test_mock::set_value(CREATION_FEE);
         let tid = create_token(creator.as_ptr(), CREATION_FEE);
+        assert_eq!(get_buy_quote(tid, 0), 0);
         let quote = get_buy_quote(tid, 1_000_000_000);
         assert!(quote > 0);
     }
@@ -2080,89 +2932,37 @@ mod tests {
     }
 
     #[test]
-    fn test_threshold_crossing_with_dex_addresses_keeps_token_on_curve() {
+    fn test_threshold_crossing_enters_eligible_and_closes_buys() {
         setup();
-        let admin = [1u8; 32];
-        test_mock::set_caller(admin);
-        initialize(admin.as_ptr());
-
-        // Configure DEX addresses
-        let core_addr = [10u8; 32];
-        let amm_addr = [20u8; 32];
-        set_dex_addresses(admin.as_ptr(), core_addr.as_ptr(), amm_addr.as_ptr());
-
-        let creator = [2u8; 32];
-        test_mock::set_caller(creator);
-        test_mock::set_value(CREATION_FEE);
-        let token_id = create_token(creator.as_ptr(), CREATION_FEE);
-        let id_hex = u64_to_hex(token_id);
-        let token_key = make_key(b"cpt:", &id_hex);
-        let mut data = test_mock::get_storage(&token_key).unwrap();
-        let near_supply: u64 = 400_000_000_000_000;
-        data[32..40].copy_from_slice(&u64_to_bytes(near_supply));
-        data[40..48].copy_from_slice(&u64_to_bytes(50_000_000_000_000_000));
-        storage_set(&token_key, &data);
-
-        let buyer = [3u8; 32];
-        test_mock::set_timestamp(10_000);
-        test_mock::set_caller(buyer);
-        let buy_amt: u64 = 1_000_000_000_000;
-        test_mock::set_value(buy_amt);
-        assert!(buy(buyer.as_ptr(), token_id, buy_amt) > 0);
-
-        let data2 = test_mock::get_storage(&token_key).unwrap();
-        assert_eq!(data2[64], 0, "token must not be marked graduated");
-        assert_eq!(
-            load_u64(b"cp_graduation_revenue"),
-            0,
-            "no graduation revenue should be tracked while auto migration is disabled"
-        );
+        let (token_id, _, buyer) = create_threshold_token();
+        test_mock::set_timestamp(20_000);
+        test_mock::set_value(1_000_000_000);
+        assert_eq!(buy(buyer.as_ptr(), token_id, 1_000_000_000), ERROR_RETURN);
+        assert_eq!(get_graduation_status(token_id), 0);
+        let status = test_mock::get_return_data();
+        assert_eq!(status.len(), 73);
+        assert_eq!(status[0], GRADUATION_ELIGIBLE);
+        assert_eq!(bytes_to_u64(&status[1..9]), 100);
     }
 
     #[test]
-    fn test_threshold_crossing_without_dex_addresses_keeps_token_on_curve() {
+    fn test_eligible_sell_below_threshold_returns_to_active() {
         setup();
         let admin = [1u8; 32];
+        let (token_id, _, buyer) = create_threshold_token();
         test_mock::set_caller(admin);
-        initialize(admin.as_ptr());
-
-        let creator = [2u8; 32];
-        test_mock::set_caller(creator);
-        test_mock::set_value(CREATION_FEE);
-        let token_id = create_token(creator.as_ptr(), CREATION_FEE);
-        test_mock::set_caller(admin);
-        set_max_buy(admin.as_ptr(), u64::MAX);
-
-        let id_hex = u64_to_hex(token_id);
-        let token_key = make_key(b"cpt:", &id_hex);
-        let mut data = test_mock::get_storage(&token_key).unwrap();
-        let near_supply: u64 = 400_000_000_000_000;
-        data[32..40].copy_from_slice(&u64_to_bytes(near_supply));
-        data[40..48].copy_from_slice(&u64_to_bytes(50_000_000_000_000_000));
-        storage_set(&token_key, &data);
-
-        let buyer = [3u8; 32];
-        test_mock::set_timestamp(10_000);
+        assert_eq!(set_licn_token(admin.as_ptr(), [42u8; 32].as_ptr()), 0);
+        let token_key = graduation_key(b"cpt:", token_id);
+        let data = test_mock::get_storage(&token_key).unwrap();
+        let supply = bytes_to_u64(&data[32..40]);
+        store_u64(&launchpad_balance_key(token_id, &buyer), supply);
+        test_mock::set_cross_call_response(Some(0u32.to_le_bytes().to_vec()));
+        test_mock::set_timestamp(30_000);
         test_mock::set_caller(buyer);
-        let buy_amt: u64 = 1_000_000_000_000;
-        test_mock::set_value(buy_amt);
-        assert!(buy(buyer.as_ptr(), token_id, buy_amt) > 0);
-
-        let revenue = load_u64(b"cp_graduation_revenue");
-        assert_eq!(revenue, 0, "No graduation revenue without DEX addresses");
-
-        let data2 = test_mock::get_storage(&token_key).unwrap();
-        assert_eq!(
-            data2[64], 0,
-            "Token should stay on the bonding curve without a real migration path"
-        );
-
-        test_mock::set_timestamp(15_000);
-        test_mock::set_value(1_000_000_000);
-        assert!(
-            buy(buyer.as_ptr(), token_id, 1_000_000_000) > 0,
-            "further buys should remain possible"
-        );
+        let refund = sell(buyer.as_ptr(), token_id, supply / 2);
+        assert_ne!(refund, ERROR_RETURN);
+        assert!(refund > 0);
+        assert_eq!(graduation_state(token_id), GRADUATION_ACTIVE);
     }
 
     #[test]
@@ -2201,81 +3001,210 @@ mod tests {
     }
 
     #[test]
-    fn test_threshold_crossing_does_not_block_buys() {
+    fn test_migration_validates_hash_and_provenance_then_timeout_aborts() {
         setup();
         let admin = [1u8; 32];
+        let governance = [4u8; 32];
+        let candidate = [5u8; 32];
+        let template_hash = [6u8; 32];
+        let (token_id, creator, buyer) = create_threshold_token();
         test_mock::set_caller(admin);
-        initialize(admin.as_ptr());
-
         let core_addr = [10u8; 32];
         let amm_addr = [20u8; 32];
-        set_dex_addresses(admin.as_ptr(), core_addr.as_ptr(), amm_addr.as_ptr());
-        set_max_buy(admin.as_ptr(), u64::MAX);
+        assert_eq!(
+            set_dex_addresses(admin.as_ptr(), core_addr.as_ptr(), amm_addr.as_ptr()),
+            0
+        );
+        assert_eq!(
+            set_graduation_governance(admin.as_ptr(), governance.as_ptr()),
+            0
+        );
+        test_mock::set_caller(governance);
+        assert_eq!(
+            set_graduation_config(
+                governance.as_ptr(),
+                [30u8; 32].as_ptr(),
+                template_hash.as_ptr(),
+                1,
+                1,
+                1_000,
+                2,
+            ),
+            0
+        );
 
-        let creator = [2u8; 32];
-        test_mock::set_caller(creator);
-        test_mock::set_value(CREATION_FEE);
-        let token_id = create_token(creator.as_ptr(), CREATION_FEE);
-        let id_hex = u64_to_hex(token_id);
-        let token_key = make_key(b"cpt:", &id_hex);
-        let mut data = test_mock::get_storage(&token_key).unwrap();
-        data[32..40].copy_from_slice(&u64_to_bytes(400_000_000_000_000));
-        data[40..48].copy_from_slice(&u64_to_bytes(50_000_000_000_000_000));
-        storage_set(&token_key, &data);
-
-        let buyer = [3u8; 32];
-        test_mock::set_timestamp(10_000);
+        test_mock::set_contract_address([9u8; 32]);
         test_mock::set_caller(buyer);
-        test_mock::set_value(1_000_000_000_000);
-        assert!(buy(buyer.as_ptr(), token_id, 1_000_000_000_000) > 0);
-
-        let data2 = test_mock::get_storage(&token_key).unwrap();
-        assert_eq!(data2[64], 0);
-
-        test_mock::set_timestamp(15_000);
+        assert_eq!(
+            begin_migration(buyer.as_ptr(), token_id, candidate.as_ptr()),
+            5
+        );
+        test_mock::set_contract_code_hash(candidate, template_hash);
+        let data = token_record(token_id).unwrap();
+        let mut provenance = Vec::with_capacity(88);
+        provenance.extend_from_slice(&[9u8; 32]);
+        provenance.extend_from_slice(&u64_to_bytes(token_id));
+        provenance.extend_from_slice(&creator);
+        provenance.extend_from_slice(&data[48..56]);
+        provenance.extend_from_slice(&data[32..40]);
+        test_mock::set_cross_call_response(Some(provenance));
+        test_mock::set_slot(200);
+        assert_eq!(
+            begin_migration(buyer.as_ptr(), token_id, candidate.as_ptr()),
+            0
+        );
+        assert_eq!(graduation_state(token_id), GRADUATION_MIGRATING);
         test_mock::set_value(1_000_000_000);
-        assert!(buy(buyer.as_ptr(), token_id, 1_000_000_000) > 0);
+        assert_eq!(buy(buyer.as_ptr(), token_id, 1_000_000_000), ERROR_RETURN);
+        assert_eq!(sell(buyer.as_ptr(), token_id, 1), ERROR_RETURN);
+        assert_eq!(abort_migration(buyer.as_ptr(), token_id), 2);
+        test_mock::set_slot(200 + MIGRATION_TIMEOUT_SLOTS);
+        assert_eq!(abort_migration(buyer.as_ptr(), token_id), 0);
+        assert_eq!(graduation_state(token_id), GRADUATION_ELIGIBLE);
+        assert_eq!(graduation_candidate(token_id), None);
+    }
+
+    fn prepare_migrating_token() -> (u64, [u8; 32], [u8; 32]) {
+        let admin = [1u8; 32];
+        let governance = [4u8; 32];
+        let candidate = [5u8; 32];
+        let keeper = [7u8; 32];
+        let (token_id, _, _) = create_threshold_token();
+        test_mock::set_caller(admin);
+        assert_eq!(
+            set_dex_addresses(admin.as_ptr(), [10u8; 32].as_ptr(), [20u8; 32].as_ptr()),
+            0
+        );
+        assert_eq!(
+            set_graduation_governance(admin.as_ptr(), governance.as_ptr()),
+            0
+        );
+        test_mock::set_caller(governance);
+        assert_eq!(
+            set_graduation_config(
+                governance.as_ptr(),
+                [30u8; 32].as_ptr(),
+                [6u8; 32].as_ptr(),
+                1,
+                1,
+                1_000,
+                2,
+            ),
+            0
+        );
+        storage_set(&graduation_key(b"cpgt:", token_id), &candidate);
+        set_graduation_u64(b"cpgb:", token_id, 100);
+        set_graduation_state(token_id, GRADUATION_MIGRATING);
+        test_mock::set_contract_address([9u8; 32]);
+        test_mock::set_caller(keeper);
+        (token_id, candidate, keeper)
+    }
+
+    fn finalization_responses(
+        token_liquidity: u64,
+        licn_liquidity: u64,
+        reverse_route: Vec<u8>,
+    ) -> Vec<Vec<u8>> {
+        let mut deposit = Vec::with_capacity(24);
+        deposit.extend_from_slice(&u64_to_bytes(13));
+        deposit.extend_from_slice(&u64_to_bytes(token_liquidity));
+        deposit.extend_from_slice(&u64_to_bytes(licn_liquidity));
+        vec![
+            0u32.to_le_bytes().to_vec(),
+            0u32.to_le_bytes().to_vec(),
+            u64_to_bytes(11).to_vec(),
+            u64_to_bytes(12).to_vec(),
+            deposit,
+            u64_to_bytes(14).to_vec(),
+            reverse_route,
+        ]
     }
 
     #[test]
-    fn test_threshold_crossing_does_not_block_sells() {
+    fn test_finalize_migration_commits_exact_ids_and_actual_liquidity_last() {
+        setup();
+        let (token_id, _, keeper) = prepare_migrating_token();
+        let data = token_record(token_id).unwrap();
+        let supply = bytes_to_u64(&data[32..40]);
+        let raised = bytes_to_u64(&data[40..48]);
+        let licn_limit = raised * GRADUATION_LIQUIDITY_PERCENT / 100;
+        let token_limit = u128_to_u64_saturating(
+            licn_limit as u128 * 1_000_000_000u128 / current_price(supply) as u128,
+        );
+        let actual_token = token_limit - 9;
+        let actual_licn = licn_limit - 7;
+        test_mock::set_cross_call_responses(finalization_responses(
+            actual_token,
+            actual_licn,
+            u64_to_bytes(15).to_vec(),
+        ));
+
+        assert_eq!(finalize_migration(keeper.as_ptr(), token_id), 0);
+        assert_eq!(graduation_state(token_id), GRADUATION_GRADUATED);
+        assert_eq!(get_graduation_u64(b"cpgp:", token_id), 11);
+        assert_eq!(get_graduation_u64(b"cpga:", token_id), 12);
+        assert_eq!(get_graduation_u64(b"cpgr:", token_id), 14);
+        assert_eq!(get_graduation_u64(b"cpgr2:", token_id), 15);
+        assert_eq!(get_graduation_u64(b"cpgpos:", token_id), 13);
+        let liquidity = storage_get(&graduation_key(b"cpgl:", token_id)).unwrap();
+        assert_eq!(bytes_to_u64(&liquidity[0..8]), actual_licn);
+        assert_eq!(bytes_to_u64(&liquidity[8..16]), actual_token);
+        assert_eq!(load_u64(b"cp_graduation_revenue"), raised - actual_licn);
+        assert_eq!(load_u64(b"cp_graduation_revision"), 1);
+        assert_eq!(token_record(token_id).unwrap()[64], 1);
+        assert_eq!(test_mock::get_return_data().len(), 40);
+    }
+
+    #[test]
+    fn test_finalize_migration_late_failure_writes_no_local_completion_state() {
+        setup();
+        let (token_id, _, keeper) = prepare_migrating_token();
+        let data = token_record(token_id).unwrap();
+        let supply = bytes_to_u64(&data[32..40]);
+        let raised = bytes_to_u64(&data[40..48]);
+        let licn_limit = raised * GRADUATION_LIQUIDITY_PERCENT / 100;
+        let token_limit = u128_to_u64_saturating(
+            licn_limit as u128 * 1_000_000_000u128 / current_price(supply) as u128,
+        );
+        test_mock::set_cross_call_responses(finalization_responses(
+            token_limit,
+            licn_limit,
+            Vec::new(),
+        ));
+
+        assert_eq!(finalize_migration(keeper.as_ptr(), token_id), 15);
+        assert_eq!(graduation_state(token_id), GRADUATION_MIGRATING);
+        assert_eq!(get_graduation_u64(b"cpgp:", token_id), 0);
+        assert_eq!(get_graduation_u64(b"cpga:", token_id), 0);
+        assert_eq!(storage_get(&graduation_key(b"cpgl:", token_id)), None);
+        assert_eq!(load_u64(b"cp_graduation_revenue"), 0);
+        assert_eq!(load_u64(b"cp_graduation_revision"), 0);
+        assert_eq!(token_record(token_id).unwrap()[64], 0);
+    }
+
+    #[test]
+    fn test_graduation_claim_is_candidate_only_and_exactly_once() {
         setup();
         let admin = [1u8; 32];
+        let holder = [3u8; 32];
+        let candidate = [5u8; 32];
         test_mock::set_caller(admin);
-        initialize(admin.as_ptr());
-        let licn = [42u8; 32];
-        set_licn_token(admin.as_ptr(), licn.as_ptr());
-        test_mock::set_cross_call_response(Some(0u32.to_le_bytes().to_vec()));
-        set_max_buy(admin.as_ptr(), u64::MAX);
-
+        assert_eq!(initialize(admin.as_ptr()), 0);
         let creator = [2u8; 32];
         test_mock::set_caller(creator);
         test_mock::set_value(CREATION_FEE);
         let token_id = create_token(creator.as_ptr(), CREATION_FEE);
-        let buyer = [3u8; 32];
-
-        test_mock::set_timestamp(10_000);
-        test_mock::set_caller(buyer);
-        test_mock::set_value(1_000_000_000);
-        let bought = buy(buyer.as_ptr(), token_id, 1_000_000_000);
-        assert!(bought > 0);
-
-        let id_hex = u64_to_hex(token_id);
-        let token_key = make_key(b"cpt:", &id_hex);
-        let mut data = test_mock::get_storage(&token_key).unwrap();
-        data[32..40].copy_from_slice(&u64_to_bytes(400_000_000_000_000));
-        data[40..48].copy_from_slice(&u64_to_bytes(50_000_000_000_000_000));
-        storage_set(&token_key, &data);
-
-        test_mock::set_timestamp(15_000);
-        test_mock::set_value(1_000_000_000_000);
-        assert!(buy(buyer.as_ptr(), token_id, 1_000_000_000_000) > 0);
-
-        let data2 = test_mock::get_storage(&token_key).unwrap();
-        assert_eq!(data2[64], 0);
-
-        test_mock::set_timestamp(25_000);
-        assert!(sell(buyer.as_ptr(), token_id, bought / 2) > 0);
+        set_graduation_state(token_id, GRADUATION_GRADUATED);
+        storage_set(&graduation_key(b"cpgt:", token_id), &candidate);
+        store_u64(&launchpad_balance_key(token_id, &holder), 777);
+        test_mock::set_caller([8u8; 32]);
+        assert_eq!(consume_graduation_claim(token_id, holder.as_ptr()), 0);
+        assert_eq!(load_u64(&launchpad_balance_key(token_id, &holder)), 777);
+        test_mock::set_caller(candidate);
+        assert_eq!(consume_graduation_claim(token_id, holder.as_ptr()), 777);
+        assert_eq!(test_mock::get_return_data(), u64_to_bytes(777));
+        assert_eq!(load_u64(&launchpad_balance_key(token_id, &holder)), 0);
+        assert_eq!(consume_graduation_claim(token_id, holder.as_ptr()), 0);
     }
 
     // ========================================================================

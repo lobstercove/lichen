@@ -88,6 +88,16 @@ impl ReconnectTracker {
     }
 }
 
+fn push_unique_peer(candidates: &mut Vec<SocketAddr>, addr: SocketAddr) {
+    if !candidates.contains(&addr) {
+        candidates.push(addr);
+    }
+}
+
+fn is_connected_peer_endpoint(local_peers: &[SocketAddr], candidate: SocketAddr) -> bool {
+    local_peers.contains(&candidate)
+}
+
 fn is_self_endpoint(peer_addr: SocketAddr, local_addr: SocketAddr) -> bool {
     let same_port = peer_addr.port() == local_addr.port();
     let same_ip = peer_addr.ip() == local_addr.ip();
@@ -288,19 +298,26 @@ impl GossipManager {
     ) {
         let connected = peer_manager.get_peers();
         let connected_count = connected.len();
-        // Build the set of candidate addresses to reconnect.
-        // Always include seed peers; if below MIN_PEER_COUNT also include
-        // all historically-known peers from the durable store.
-        let mut candidates: Vec<SocketAddr> = seed_peers.to_vec();
+        let max_peers = peer_manager.effective_max_peers();
 
-        if connected_count < MIN_PEER_COUNT {
+        // Always keep configured bootstrap peers warm, and use the durable
+        // peer store to fill remaining connection capacity. Consensus gossip
+        // must not depend on a single seed staying up after validators have
+        // already discovered one another.
+        let mut candidates: Vec<SocketAddr> = Vec::new();
+        for addr in seed_peers {
+            push_unique_peer(&mut candidates, *addr);
+        }
+
+        if connected_count < max_peers {
             if let Some(store) = peer_store {
                 for addr in store.peers() {
-                    if !candidates.contains(&addr) {
-                        candidates.push(addr);
-                    }
+                    push_unique_peer(&mut candidates, addr);
                 }
             }
+        }
+
+        if connected_count < MIN_PEER_COUNT {
             debug!(
                 "P2P reconnect: peer count {} < {}, trying all {} known peers",
                 connected_count,
@@ -332,6 +349,10 @@ impl GossipManager {
             // Respect exponential backoff
             if !tracker.should_attempt(addr) {
                 continue;
+            }
+
+            if !seed_peers.contains(addr) && peer_manager.get_peers().len() >= max_peers {
+                break;
             }
 
             // Attempt reconnection
@@ -371,8 +392,10 @@ impl GossipManager {
                 store.record_peer(peer_info.address);
             }
 
-            // Skip if already connected (match by IP, not full addr — ephemeral ports change)
-            if local_peers.iter().any(|p| p.ip() == peer_info.address.ip()) {
+            // The canonical peer endpoint is host:port. Multiple validators
+            // can legitimately share an IP (local testnet, NAT, colocated VPS),
+            // and skipping by IP leaves the mesh dependent on the seed node.
+            if is_connected_peer_endpoint(&local_peers, peer_info.address) {
                 continue;
             }
 
@@ -500,6 +523,28 @@ mod tests {
             before,
             "Fresh entry should NOT be pruned"
         );
+    }
+
+    #[test]
+    fn connected_peer_check_uses_full_endpoint_not_ip_only() {
+        let connected = vec![addr(7001)];
+
+        assert!(is_connected_peer_endpoint(&connected, addr(7001)));
+        assert!(
+            !is_connected_peer_endpoint(&connected, addr(7002)),
+            "same-IP validators on different ports must still be discoverable"
+        );
+    }
+
+    #[test]
+    fn push_unique_peer_preserves_first_occurrence() {
+        let mut peers = Vec::new();
+
+        push_unique_peer(&mut peers, addr(7001));
+        push_unique_peer(&mut peers, addr(7002));
+        push_unique_peer(&mut peers, addr(7001));
+
+        assert_eq!(peers, vec![addr(7001), addr(7002)]);
     }
 
     // ── Constants ──

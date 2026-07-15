@@ -10,7 +10,7 @@ use lichen_core::consensus::{
     StakePool, BOOTSTRAP_GRANT_AMOUNT, FOUNDING_CLIFF_SECONDS, FOUNDING_VEST_TOTAL_SECONDS,
 };
 use lichen_core::keypair_file::{
-    copy_secure_file, load_keypair_with_password_policy, plaintext_keypair_compat_allowed,
+    copy_secure_file, load_keypair_with_password_policy, plaintext_keypair_allowed_for_local_dev,
     require_runtime_keypair_password,
 };
 use lichen_core::mossstake::MOSSSTAKE_SLOT_ONLY_METADATA_KEY;
@@ -25,7 +25,7 @@ use lichen_core::{
     GenesisStateCategory, GenesisStateChunk, GenesisValidator, GenesisWallet, Hash, Instruction,
     Keypair, Message, Pubkey, StateStore, Transaction, CONTRACT_DEPLOY_FEE, CONTRACT_UPGRADE_FEE,
     GENESIS_STATE_BUNDLE_VERSION, GENESIS_STATE_CHUNK_OPCODE, NFT_COLLECTION_FEE, NFT_MINT_FEE,
-    SYSTEM_PROGRAM_ID,
+    STATE_SNAPSHOT_CATEGORIES, SYSTEM_PROGRAM_ID,
 };
 use lichen_genesis::{
     genesis_assign_achievements, genesis_auto_deploy, genesis_bootstrap_bridge_committee,
@@ -42,18 +42,6 @@ use tracing::{error, info, warn};
 const SYSTEM_ACCOUNT_OWNER: Pubkey = Pubkey([0x01; 32]);
 const GENESIS_MINT_PUBKEY: Pubkey = Pubkey([0xFE; 32]);
 const GENESIS_STATE_CHUNK_BYTES: usize = 180 * 1024;
-const GENESIS_STATE_KV_CATEGORIES: &[&str] = &[
-    "accounts",
-    "contract_storage",
-    "programs",
-    "symbol_registry",
-    "symbol_by_program",
-    "restrictions",
-    "restriction_index_target",
-    "restriction_index_code_hash",
-    "stats",
-];
-
 type GenesisStateEntry = (Vec<u8>, Vec<u8>);
 type GenesisStateEntries = Vec<GenesisStateEntry>;
 
@@ -83,7 +71,7 @@ fn build_genesis_state_bundle(
 ) -> Result<GenesisStateBundle, String> {
     let mut categories = Vec::new();
 
-    for category in GENESIS_STATE_KV_CATEGORIES {
+    for category in STATE_SNAPSHOT_CATEGORIES {
         categories.push(GenesisStateCategory {
             name: (*category).to_string(),
             entries: export_all_category_entries(state, category)?,
@@ -228,7 +216,7 @@ fn load_genesis_keypair(path: &std::path::Path) -> Result<Keypair, String> {
     load_genesis_keypair_with_policy(
         path,
         password.as_deref(),
-        plaintext_keypair_compat_allowed(),
+        plaintext_keypair_allowed_for_local_dev(),
     )
 }
 
@@ -1788,6 +1776,55 @@ mod tests {
 
         let prices = load_genesis_prices_file(&path).unwrap();
         assert_eq!(prices.wsol_usd_8dec, 8_678_000_000);
+    }
+
+    #[test]
+    fn genesis_state_bundle_exports_full_state_and_public_history_surface() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = StateStore::open(dir.path()).unwrap();
+        let program = Pubkey([8u8; 32]);
+        let caller = Pubkey([7u8; 32]);
+
+        state.index_program(&program).expect("index program");
+        state
+            .record_program_call(
+                &lichen_core::ProgramCallActivity {
+                    slot: 0,
+                    timestamp: 0,
+                    program,
+                    caller,
+                    function: "initialize".to_string(),
+                    value: 0,
+                    tx_signature: Hash([0u8; 32]),
+                },
+                0,
+            )
+            .expect("record genesis program call");
+
+        let bundle = build_genesis_state_bundle(&state, state.compute_state_root())
+            .expect("build genesis state bundle");
+        let names: std::collections::BTreeSet<&str> =
+            bundle.categories.iter().map(|c| c.name.as_str()).collect();
+
+        for category in STATE_SNAPSHOT_CATEGORIES {
+            assert!(
+                names.contains(category),
+                "genesis bundle missing state category {category}"
+            );
+        }
+        for category in lichen_core::PUBLIC_HISTORY_SNAPSHOT_CATEGORIES {
+            assert!(
+                names.contains(category),
+                "genesis bundle missing public-history category {category}"
+            );
+        }
+
+        let program_calls = bundle
+            .categories
+            .iter()
+            .find(|category| category.name == "program_calls")
+            .expect("program_calls category");
+        assert_eq!(program_calls.entries.len(), 1);
     }
 
     #[test]

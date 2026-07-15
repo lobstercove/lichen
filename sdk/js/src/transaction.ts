@@ -38,7 +38,7 @@ export function signingBytesForChainId(
   chainId: string,
   payload: Uint8Array,
 ): Uint8Array {
-  if (!chainId) return payload;
+  if (!chainId) throw new Error('Chain id is required for transaction signing');
   const domainBytes = textEncoder.encode(domain);
   const chainBytes = textEncoder.encode(chainId);
   if (domainBytes.length > 0xffff) throw new Error('Signing domain is too long');
@@ -120,13 +120,6 @@ export class TransactionBuilder {
       instructions: this.instructions,
       recentBlockhash: this.recentBlockhash,
     };
-  }
-
-  /**
-   * Build and sign the transaction
-   */
-  buildAndSign(keypair: Keypair): Transaction {
-    return this.buildAndSignForChainId(keypair, '');
   }
 
   /**
@@ -307,6 +300,26 @@ export class TransactionBuilder {
 
     return {
       programId: TransactionBuilder.CONTRACT_PROGRAM_ID,
+      accounts: [owner, contract],
+      data,
+    };
+  }
+
+  /**
+   * Create an owner-authorized contract ABI update instruction.
+   */
+  static setContractAbi(owner: PublicKey, contract: PublicKey, abi: unknown): Instruction {
+    const encodedAbi = new TextEncoder().encode(JSON.stringify(abi));
+    if (encodedAbi.length === 0) {
+      throw new Error('Contract ABI cannot be empty');
+    }
+
+    const data = new Uint8Array(1 + encodedAbi.length);
+    data[0] = 18; // System SetContractAbi instruction type
+    data.set(encodedAbi, 1);
+
+    return {
+      programId: new PublicKey('11111111111111111111111111111111'),
       accounts: [owner, contract],
       data,
     };

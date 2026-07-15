@@ -70,8 +70,8 @@ pub use lichenid::{
 };
 pub use lichenswap::{
     AddLiquidityParams, CreatePoolParams, LichenSwapClient, LichenSwapPoolInfo,
-    LichenSwapProtocolFees, LichenSwapStats, LichenSwapSwapStats, LichenSwapTwapCumulatives,
-    LichenSwapVolumeTotals, SwapParams, SwapWithDeadlineParams,
+    LichenSwapProtocolFees, LichenSwapSwapStats, LichenSwapTwapCumulatives, LichenSwapVolumeTotals,
+    SwapParams, SwapWithDeadlineParams,
 };
 pub use restrictions::{
     BridgeAsset, BridgeChain, BridgeRouteRestrictionParams, BridgeRouteRestrictionStatus,

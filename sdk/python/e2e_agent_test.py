@@ -22,7 +22,6 @@ Deploy fee: 25 LICN.
 import asyncio
 import hashlib
 import json
-import os
 import struct
 import sys
 from pathlib import Path
@@ -49,7 +48,6 @@ AGENT_TOKEN_SYMBOL = "TSYMBIONT"
 AGENT_TOKEN_NAME = "TradingLobster Token"
 AGENT_TOKEN_TEMPLATE = "mt20"
 AGENT_TOKEN_DECIMALS = 9
-ADMIN_TOKEN = os.getenv("ADMIN_TOKEN") or os.getenv("LICHEN_ADMIN_TOKEN")
 
 
 # ============================================================================
@@ -115,17 +113,6 @@ def load_treasury_keypair():
     return kp
 
 
-def derive_program_address(deployer_pubkey, wasm_bytes, contract_name=None):
-    """Match RPC derivation: SHA-256(deployer_bytes + name/symbol + wasm_bytes)."""
-    hasher = hashlib.sha256()
-    hasher.update(deployer_pubkey.to_bytes())
-    if contract_name:
-        hasher.update(contract_name.encode("utf-8"))
-    hasher.update(wasm_bytes)
-    h = hasher.digest()
-    return PublicKey(h[:32])
-
-
 def derive_collection_address(creator_pubkey, name):
     """Derive a deterministic collection address from creator + name."""
     h = hashlib.sha256(creator_pubkey.to_bytes() + name.encode("utf-8")).digest()
@@ -175,7 +162,7 @@ async def main():
     # ------------------------------------------------------------------
     print_step(0, "Pre-flight checks")
     try:
-        health = await conn.health()
+        health = await conn.get_health()
         print_ok(f"Chain healthy: {health}")
     except Exception as e:
         print_fail(f"Chain unreachable: {e}")
@@ -241,7 +228,7 @@ async def main():
         TransactionBuilder()
         .add(transfer_ix)
         .set_recent_blockhash(blockhash)
-        .build_and_sign(treasury)
+        .build_and_sign(treasury, await conn.get_chain_id())
     )
     sig = await conn.send_transaction(tx)
     print_ok(f"Transfer tx: {sig[:32] if sig else 'no sig'}...")
@@ -259,36 +246,20 @@ async def main():
         results.append(("Transfer 250 LICN to Agent", False))
 
     # ------------------------------------------------------------------
-    # Step 3: Agent deploys a PROPER MT-20 token via deployContract RPC
+    # Step 3: Agent deploys a proper MT-20 token through a signed transaction
     #
     # Uses mt20_token.wasm as the WASM template.
-    # Sends code as base64 + init_data as JSON via the deployContract
-    # RPC endpoint (bypasses transaction instruction size limit).
-    # Deployer signs SHA-256(code_bytes) to prove ownership.
+    # The SDK builds, signs, and submits the canonical contract instruction.
     # Deploy fee: 25 LICN deducted from agent.
     # ------------------------------------------------------------------
-    print_step(3, "Agent deploys MT-20 token (TSYMBIONT) via deployContract RPC")
+    print_step(3, "Agent deploys MT-20 token (TSYMBIONT) via signed transaction")
 
     if not WASM_PATH.exists():
         print_fail(f"WASM not found: {WASM_PATH}")
         results.append(("Deploy MT-20 Token (TSYMBIONT)", False))
     else:
-        import base64 as b64
-
         wasm_bytes = WASM_PATH.read_bytes()
         print_info(f"WASM loaded: {len(wasm_bytes)} bytes ({WASM_PATH.name})")
-
-        program_pubkey = derive_program_address(
-            agent.pubkey(),
-            wasm_bytes,
-            AGENT_TOKEN_NAME,
-        )
-        print_info(f"Expected program address: {program_pubkey}")
-
-        # Sign SHA-256(code_bytes) with agent's key
-        code_hash = hashlib.sha256(wasm_bytes).digest()
-        signature = agent.sign(code_hash)
-        print_info(f"Code hash signed by agent")
 
         # Build init_data JSON for symbol registry
         init_data = json.dumps({
@@ -301,17 +272,15 @@ async def main():
         })
         print_info(f"init_data: {init_data}")
 
-        # Call deployContract RPC
-        # Params: [deployer_base58, code_base64, init_data_json, signature]
         try:
-            deploy_result = await conn._rpc("deployContract", [
-                agent.pubkey().to_base58(),
-                b64.b64encode(wasm_bytes).decode("ascii"),
-                init_data,
-                signature.to_json(),
-            ], headers={"Authorization": f"Bearer {ADMIN_TOKEN}"} if ADMIN_TOKEN else None)
-            print_ok(f"deployContract result: program_id={deploy_result.get('program_id', '?')}")
-            print_ok(f"  code_size={deploy_result.get('code_size', '?')}, fee={deploy_result.get('deploy_fee_licn', '?')} LICN")
+            deploy_result = await conn.deploy_contract(
+                agent,
+                wasm_bytes,
+                init_data.encode("utf-8"),
+            )
+            program_pubkey = deploy_result.contract_address
+            print_ok(f"Deployment transaction: {deploy_result.signature}")
+            print_ok(f"Program address: {program_pubkey}")
 
             # VERIFY 1: Contract exists on-chain
             deploy_ok = True
@@ -354,7 +323,7 @@ async def main():
             results.append(("Deploy MT-20 Token (TSYMBIONT)", deploy_ok))
 
         except Exception as e:
-            print_fail(f"deployContract RPC failed: {e}")
+            print_fail(f"Signed contract deployment failed: {e}")
             results.append(("Deploy MT-20 Token (TSYMBIONT)", False))
 
     # ------------------------------------------------------------------
@@ -423,7 +392,7 @@ async def main():
         TransactionBuilder()
         .add(collection_ix)
         .set_recent_blockhash(blockhash)
-        .build_and_sign(agent)
+        .build_and_sign(agent, await conn.get_chain_id())
     )
 
     try:
@@ -480,7 +449,7 @@ async def main():
         TransactionBuilder()
         .add(mint_ix)
         .set_recent_blockhash(blockhash)
-        .build_and_sign(agent)
+        .build_and_sign(agent, await conn.get_chain_id())
     )
 
     try:
@@ -526,7 +495,7 @@ async def main():
         TransactionBuilder()
         .add(transfer_ix)
         .set_recent_blockhash(blockhash)
-        .build_and_sign(agent)
+        .build_and_sign(agent, await conn.get_chain_id())
     )
 
     try:

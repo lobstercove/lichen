@@ -14,10 +14,6 @@ function getTrustedBridgeRpc(network) {
   return new LichenRPC(getTrustedRpcEndpoint(network));
 }
 
-function buildBridgeAccessMessage(userId, issuedAt, expiresAt) {
-  return `LICHEN_BRIDGE_ACCESS_V1\nuser_id=${userId}\nissued_at=${issuedAt}\nexpires_at=${expiresAt}\n`;
-}
-
 function bridgeAuthNonce() {
   const bytes = new Uint8Array(16);
   crypto.getRandomValues(bytes);
@@ -89,11 +85,13 @@ async function ensureBridgeAccessAuth(wallet, password, { forceRefresh = false, 
     const expiresAt = issuedAt + BRIDGE_AUTH_TTL_SECS;
     const canonicalChain = canonicalBridgeChain(chain);
     const normalizedAsset = String(asset || '').trim().toLowerCase();
-    const useV2 = Boolean(canonicalChain && normalizedAsset);
-    const nonce = useV2 ? bridgeAuthNonce() : '';
-    const message = useV2
-      ? buildBridgeAccessMessageV2(wallet.address, canonicalChain, normalizedAsset, issuedAt, expiresAt, nonce)
-      : buildBridgeAccessMessage(wallet.address, issuedAt, expiresAt);
+    if (!canonicalChain || !normalizedAsset) {
+      throw new Error('Bridge authorization requires a chain and asset');
+    }
+    const nonce = bridgeAuthNonce();
+    const message = buildBridgeAccessMessageV2(
+      wallet.address, canonicalChain, normalizedAsset, issuedAt, expiresAt, nonce
+    );
     const messageBytes = new TextEncoder().encode(message);
     const signature = await signTransaction(keypair.privateKey, messageBytes);
 
@@ -101,17 +99,15 @@ async function ensureBridgeAccessAuth(wallet, password, { forceRefresh = false, 
       user_id: wallet.address,
       issued_at: issuedAt,
       expires_at: expiresAt,
-      signature
+      signature,
+      version: 2,
+      domain: BRIDGE_AUTH_DOMAIN_V2,
+      action: BRIDGE_AUTH_CREATE_ACTION,
+      chain: canonicalChain,
+      asset: normalizedAsset,
+      route: `${canonicalChain}:${normalizedAsset}`,
+      nonce
     };
-    if (useV2) {
-      activeBridgeAuth.version = 2;
-      activeBridgeAuth.domain = BRIDGE_AUTH_DOMAIN_V2;
-      activeBridgeAuth.action = BRIDGE_AUTH_CREATE_ACTION;
-      activeBridgeAuth.chain = canonicalChain;
-      activeBridgeAuth.asset = normalizedAsset;
-      activeBridgeAuth.route = `${canonicalChain}:${normalizedAsset}`;
-      activeBridgeAuth.nonce = nonce;
-    }
 
     return currentBridgeAuthPayload(wallet);
   } finally {

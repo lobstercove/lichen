@@ -1,8 +1,6 @@
 //! Generate real test transactions for explorer
 
-use base64::Engine;
-use lichen_client_sdk::{Client, Keypair};
-use lichen_core::codec::serialize_legacy_bincode;
+use lichen_client_sdk::{Client, Keypair, TransactionBuilder};
 use lichen_core::{Hash, Instruction, SYSTEM_PROGRAM_ID};
 use std::error::Error;
 
@@ -31,6 +29,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     println!("🔗 Getting recent blockhash...");
     let blockhash_str = client.get_recent_blockhash().await?;
     let blockhash = Hash::from_hex(&blockhash_str)?;
+    let chain_id = client.get_network_info().await?.chain_id;
     println!("   Blockhash: {}...\n", &blockhash_str[..16]);
 
     println!("📝 Creating transactions...\n");
@@ -60,26 +59,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
             data,
         };
 
-        // Build transaction
-        use lichen_core::{Message, Transaction};
-        let message = Message::new(vec![instruction], blockhash);
-
-        // Sign transaction
-        let message_bytes = message.serialize();
-        let signature = sender.sign(&message_bytes);
-
-        let tx = Transaction {
-            signatures: vec![signature],
-            message,
-            tx_type: Default::default(),
-        };
-
-        let tx_bytes = serialize_legacy_bincode(&tx, "generated transaction")
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        let tx_base64 = base64::engine::general_purpose::STANDARD.encode(&tx_bytes);
+        let tx = TransactionBuilder::new()
+            .add_instruction(instruction)
+            .recent_blockhash(blockhash)
+            .build_and_sign(sender, &chain_id)?;
 
         // Send transaction
-        match client.send_raw_transaction(&tx_base64).await {
+        match client.send_transaction(&tx).await {
             Ok(sig) => {
                 println!("  ✅ Submitted! Signature: {}...", &sig[..16]);
             }

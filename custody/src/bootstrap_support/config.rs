@@ -44,32 +44,20 @@ fn log_chain_configuration(config: &CustodyConfig) {
     info!("══════════════════════════════════════════════════════════════");
     info!("  Lichen RPC:   {:?}", config.licn_rpc_url);
     info!("  SOL RPC:         {:?}", config.solana_rpc_url);
-    info!(
-        "  ETH RPC:         {:?}",
-        config.eth_rpc_url.as_ref().or(config.evm_rpc_url.as_ref())
-    );
+    info!("  ETH RPC:         {:?}", config.eth_rpc_url.as_ref());
     info!("  ETH Chain ID:    {}", config.eth_chain_id);
-    info!(
-        "  BNB RPC:         {:?}",
-        config.bnb_rpc_url.as_ref().or(config.evm_rpc_url.as_ref())
-    );
+    info!("  BNB RPC:         {:?}", config.bnb_rpc_url.as_ref());
     info!("  BNB Chain ID:    {}", config.bnb_chain_id);
     info!("  Neo X RPC:       {:?}", config.neox_rpc_url);
     info!("  Neo X Chain ID:  {}", config.neox_chain_id);
     info!("  SOL Treasury:    {:?}", config.treasury_solana_address);
     info!(
         "  ETH Treasury:    {:?}",
-        config
-            .treasury_eth_address
-            .as_ref()
-            .or(config.treasury_evm_address.as_ref())
+        config.treasury_eth_address.as_ref()
     );
     info!(
         "  BNB Treasury:    {:?}",
-        config
-            .treasury_bnb_address
-            .as_ref()
-            .or(config.treasury_evm_address.as_ref())
+        config.treasury_bnb_address.as_ref()
     );
     info!("  Neo X Treasury:  {:?}", config.treasury_neox_address);
     info!(

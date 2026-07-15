@@ -8963,7 +8963,7 @@ lichen-sdk = { package = "lichen-contract-sdk", path = "../../sdk" }
 
     dex_router: {
         name: 'DEX Router (Smart Routing)',
-        description: 'Smart order routing across CLOB, AMM, and legacy LichenSwap with multi-hop splits',
+        description: 'Smart order routing across CLOB and AMM liquidity with multi-hop splits',
         files: {
             'lib.rs': `#![no_std]
 #![cfg_attr(target_arch = "wasm32", no_main)]
@@ -8972,14 +8972,13 @@ use alloc::{vec, vec::Vec, format};
 use lichen_sdk::*;
 
 // ═══════ DEX Router — Smart Order Routing ═══════
-// Routes across: CLOB (dex_core), AMM (dex_amm), Legacy (LichenSwap)
+// Routes across CLOB (dex_core) and AMM (dex_amm) liquidity.
 // Strategies: Direct, Multi-hop, Split, CLOB+AMM Hybrid
 
 const ROUTE_CLOB: u8 = 0;
 const ROUTE_AMM: u8 = 1;
-const ROUTE_LEGACY: u8 = 2;
+const ROUTE_SPLIT: u8 = 2;
 const ROUTE_MULTI_HOP: u8 = 3;
-const ROUTE_SPLIT: u8 = 4;
 const MAX_ROUTES: u64 = 200;
 
 fn require_admin() { let a = storage_get(b"admin"); assert!(&get_caller() == a.as_slice()); }
@@ -9013,8 +9012,9 @@ fn simulate_swap(route_id: u64, amount_in: u64) -> u64 {
     let fee_bps: u64 = match route_type {
         0 => 5,   // CLOB
         1 => 30,  // AMM
-        2 => 30,  // Legacy
-        _ => 50,  // Multi-hop ~50bps
+        2 => 20,  // Split CLOB + AMM
+        3 => 50,  // Multi-hop ~50bps
+        _ => panic!("Invalid route type"),
     };
     let fee = amount_in * fee_bps / 10_000;
     amount_in - fee

@@ -4,9 +4,9 @@ use crate::account::{Account, Pubkey};
 use crate::consensus::{slot_to_epoch, SLOTS_PER_EPOCH};
 use crate::contract::{
     build_top_level_call_context, contract_lifecycle_status_for_restriction_mode,
-    derive_contract_lifecycle_from_state_store, evaluate_contract_outcome, ContractAbi,
-    ContractAccount, ContractContext, ContractEvent, ContractOutcomeFallback, ContractRuntime,
-    NativeAccountOp,
+    derive_contract_lifecycle_from_state_store, evaluate_contract_outcome,
+    resolve_abi_call_function_name, ContractAbi, ContractAccount, ContractContext, ContractEvent,
+    ContractOutcomeFallback, ContractRuntime, NativeAccountOp,
 };
 use crate::contract_instruction::ContractInstruction;
 use crate::evm::{
@@ -50,6 +50,10 @@ pub use trust_tier::get_trust_tier;
 #[derive(Debug, Clone)]
 pub struct TxResult {
     pub success: bool,
+    /// Whether this is a deterministic execution outcome that may be committed
+    /// to a canonical block. Structural, replay-protection, signature, and
+    /// internal storage failures are not receipt-eligible.
+    pub receipt_eligible: bool,
     pub fee_paid: u64,
     pub error: Option<String>,
     /// Compute units consumed by this transaction (native + WASM).
@@ -84,6 +88,30 @@ pub struct TxMeta {
     pub return_code: Option<i64>,
     pub return_data: Vec<u8>,
     pub logs: Vec<String>,
+    /// `None` means a legacy metadata row written before durable receipts.
+    pub success: Option<bool>,
+    pub error: Option<String>,
+    pub fee_paid: Option<u64>,
+}
+
+impl TxMeta {
+    pub fn from_result(result: &TxResult) -> Self {
+        Self {
+            compute_units_used: result.compute_units_used,
+            return_code: result.return_code,
+            return_data: result.return_data.clone(),
+            logs: result.contract_logs.clone(),
+            success: Some(result.success),
+            error: result.error.clone(),
+            fee_paid: Some(result.fee_paid),
+        }
+    }
+
+    /// Rows written before durable receipt status existed represent successful
+    /// transactions because failed transactions were not included in blocks.
+    pub fn succeeded(&self) -> bool {
+        self.success.unwrap_or(true)
+    }
 }
 
 /// Simulation result (dry-run)
@@ -634,6 +662,7 @@ impl TxProcessor {
         let (return_code, contract_logs, _meta_cu, return_data) = self.drain_contract_meta();
         TxResult {
             success,
+            receipt_eligible: true,
             fee_paid,
             error,
             compute_units_used,
@@ -643,8 +672,14 @@ impl TxProcessor {
         }
     }
 
+    fn make_invalid_result(&self, error: impl Into<String>, compute_units_used: u64) -> TxResult {
+        let mut result = self.make_result(false, 0, Some(error.into()), compute_units_used);
+        result.receipt_eligible = false;
+        result
+    }
+
     /// Check if a transaction is a valid durable nonce transaction.
-    fn check_durable_nonce(tx: &Transaction, state: &StateStore) -> bool {
+    pub fn check_durable_nonce(tx: &Transaction, state: &StateStore) -> bool {
         let first_ix = match tx.message.instructions.first() {
             Some(ix) => ix,
             None => return false,
@@ -670,6 +705,38 @@ impl TxProcessor {
         match Self::decode_nonce_state(&nonce_account.data) {
             Ok(nonce_state) => nonce_state.blockhash == tx.message.recent_blockhash,
             Err(_) => false,
+        }
+    }
+
+    /// Validate replay-protection freshness without executing the transaction.
+    ///
+    /// This is used by RPC/P2P/mempool admission so invalid stale transactions
+    /// are rejected before gossip, while keeping durable-nonce behavior identical
+    /// to canonical execution.
+    pub fn validate_transaction_freshness(&self, tx: &Transaction) -> Result<(), String> {
+        if tx.message.recent_blockhash == crate::hash::Hash::default() {
+            return Err("Zero blockhash is not valid for replay protection".to_string());
+        }
+
+        if tx.is_evm() {
+            if is_evm_instruction(tx) {
+                return Ok(());
+            }
+            return Err(
+                "EVM sentinel blockhash is reserved for EVM-wrapped transactions".to_string(),
+            );
+        }
+
+        let recent = self
+            .state
+            .get_recent_blockhashes(MAX_TX_AGE_BLOCKS)
+            .unwrap_or_default();
+        if recent.contains(&tx.message.recent_blockhash)
+            || Self::check_durable_nonce(tx, &self.state)
+        {
+            Ok(())
+        } else {
+            Err("Blockhash not found or too old".to_string())
         }
     }
 }
@@ -856,6 +923,48 @@ mod tests {
             result.success,
             "Tx with genesis blockhash should be accepted"
         );
+    }
+
+    #[test]
+    fn validate_transaction_freshness_matches_replay_rules() {
+        let (processor, _state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let bob = Pubkey([2u8; 32]);
+
+        let valid_tx = make_transfer_tx(&alice_kp, alice, bob, 10, genesis_hash);
+        processor
+            .validate_transaction_freshness(&valid_tx)
+            .expect("recent blockhash should be accepted");
+
+        let stale_tx = make_transfer_tx(&alice_kp, alice, bob, 10, Hash::hash(b"missing"));
+        assert!(processor
+            .validate_transaction_freshness(&stale_tx)
+            .expect_err("stale blockhash must be rejected")
+            .contains("Blockhash not found"));
+
+        let zero_tx = make_transfer_tx(&alice_kp, alice, bob, 10, Hash::default());
+        assert!(processor
+            .validate_transaction_freshness(&zero_tx)
+            .expect_err("zero blockhash must be rejected")
+            .contains("Zero blockhash"));
+
+        let sentinel_native = make_transfer_tx(&alice_kp, alice, bob, 10, EVM_SENTINEL_BLOCKHASH);
+        assert!(processor
+            .validate_transaction_freshness(&sentinel_native)
+            .expect_err("native sentinel transaction must be rejected")
+            .contains("EVM sentinel blockhash"));
+
+        let evm_ix = Instruction {
+            program_id: crate::evm::EVM_PROGRAM_ID,
+            accounts: vec![alice],
+            data: vec![0x01],
+        };
+        let evm_tx = Transaction::new_evm(crate::transaction::Message::new(
+            vec![evm_ix],
+            EVM_SENTINEL_BLOCKHASH,
+        ));
+        processor
+            .validate_transaction_freshness(&evm_tx)
+            .expect("EVM sentinel transaction should use EVM replay protection");
     }
 
     #[test]
@@ -2306,7 +2415,7 @@ mod tests {
         // Now set ABI
         let abi = serde_json::json!({
             "version": "1.0",
-            "name": "TestContract",
+            "contract": "TestContract",
             "functions": []
         });
         let abi_bytes = serde_json::to_vec(&abi).unwrap();
@@ -8975,6 +9084,9 @@ mod tests {
                 (func (export "write_then_code_200") (result i32)
                     (drop (call $storage_write (i32.const 0) (i32.const 7) (i32.const 16) (i32.const 7)))
                     (i32.const 200))
+                (func (export "call") (result i32)
+                    (drop (call $storage_write (i32.const 0) (i32.const 7) (i32.const 16) (i32.const 7)))
+                    (i32.const 7))
                 (func (export "return_value_7") (result i32)
                     (i32.const 7))
             )"#,
@@ -9071,6 +9183,62 @@ mod tests {
         tx
     }
 
+    fn payable_partial_refund_contract_code() -> Vec<u8> {
+        wat::parse_str(
+            r#"(module
+                (import "env" "get_caller" (func $get_caller (param i32) (result i32)))
+                (import "env" "cross_contract_call"
+                    (func $cross_contract_call
+                        (param i32 i32 i32 i32 i32 i64 i32 i32) (result i32)))
+                (memory (export "memory") 1)
+                (data (i32.const 64) "transfer")
+                (func (export "refund_partial") (result i32)
+                    (drop (call $get_caller (i32.const 96)))
+                    (i64.store (i32.const 128) (i64.const 9))
+                    (i32.eqz
+                        (call $cross_contract_call
+                            (i32.const 0)
+                            (i32.const 64)
+                            (i32.const 8)
+                            (i32.const 96)
+                            (i32.const 40)
+                            (i64.const 0)
+                            (i32.const 160)
+                            (i32.const 1))))
+            )"#,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn test_top_level_payable_contract_can_refund_from_inflight_credit() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let contract_addr =
+            install_test_contract_account(&state, alice, payable_partial_refund_contract_code());
+
+        assert_eq!(state.get_balance(&contract_addr).unwrap(), 0);
+        let instruction = Instruction {
+            program_id: CONTRACT_PROGRAM_ID,
+            accounts: vec![alice, contract_addr],
+            data: crate::ContractInstruction::Call {
+                function: "refund_partial".to_string(),
+                args: Vec::new(),
+                value: 10,
+            }
+            .serialize()
+            .unwrap(),
+        };
+        let tx = make_signed_tx(&alice_kp, instruction, genesis_hash);
+
+        let simulation = processor.simulate_transaction(&tx);
+        assert!(simulation.success, "{:?}", simulation.error);
+        let result = processor.process_transaction(&tx, &validator);
+
+        assert!(result.success, "{:?}", result.error);
+        assert_eq!(state.get_balance(&contract_addr).unwrap(), 1);
+    }
+
     #[test]
     fn test_contract_abi_return_code_failure_reverts_state_changes() {
         let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
@@ -9097,6 +9265,57 @@ mod tests {
 
         let result = processor.process_transaction(&tx, &alice);
 
+        assert!(!result.success);
+        assert_eq!(result.return_code, Some(7));
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("ABI failure code 7"));
+        assert_eq!(
+            state
+                .get_contract_storage(&contract_addr, b"abi_key")
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn test_opcode_dispatch_uses_selected_function_result_semantics() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let contract_addr = Pubkey([0xB7; 32]);
+        let mut dispatched = abi_result_function(
+            "dispatched_write",
+            crate::contract::AbiResultKind::ReturnCode,
+            vec![0],
+        );
+        dispatched.opcode = Some(9);
+        install_abi_result_test_contract(&state, contract_addr, alice, vec![dispatched]);
+
+        let ix = Instruction {
+            program_id: CONTRACT_PROGRAM_ID,
+            accounts: vec![alice, contract_addr],
+            data: crate::ContractInstruction::Call {
+                function: "call".to_string(),
+                args: vec![9],
+                value: 0,
+            }
+            .serialize()
+            .unwrap(),
+        };
+        let message = crate::transaction::Message::new(vec![ix], genesis_hash);
+        let mut tx = Transaction::new(message);
+        tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
+
+        let simulation = processor.simulate_transaction(&tx);
+        assert!(!simulation.success);
+        assert!(simulation
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("dispatched_write"));
+
+        let result = processor.process_transaction(&tx, &alice);
         assert!(!result.success);
         assert_eq!(result.return_code, Some(7));
         assert!(result
@@ -14735,7 +14954,7 @@ mod tests {
 
         let abi = serde_json::json!({
             "version": "1.0",
-            "name": "GovernedAbi",
+            "contract": "GovernedAbi",
             "functions": []
         });
         let abi_bytes = serde_json::to_vec(&abi).unwrap();
@@ -15728,6 +15947,97 @@ mod tests {
         state.commit_batch(execution.batch).unwrap();
 
         assert_eq!(state.get_total_burned().unwrap(), expected_burn);
+    }
+
+    #[test]
+    fn test_canonical_speculative_execution_snapshots_declared_block_slot() {
+        let (_processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        state.set_archive_mode(true);
+        state.set_last_slot(40).unwrap();
+
+        let bob = Pubkey([2u8; 32]);
+        let validator = Pubkey([42u8; 32]);
+        let tx = make_transfer_tx(&alice_kp, alice, bob, 10, genesis_hash);
+        let speculative_processor = TxProcessor::new_speculative(state.clone());
+        let execution =
+            speculative_processor.process_transactions_speculative_at_slot(&[tx], &validator, 41);
+
+        assert!(execution.results[0].success);
+        state.commit_batch(execution.batch).unwrap();
+
+        assert!(state.get_account_at_slot(&bob, 40).unwrap().is_none());
+        assert_eq!(
+            state.get_account_at_slot(&bob, 41).unwrap().unwrap().spores,
+            10_000_000_000
+        );
+    }
+
+    #[test]
+    fn test_speculative_failure_commits_fee_and_durable_receipt_only() {
+        let (_processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let speculative_processor = TxProcessor::new_speculative(state.clone());
+        let bob = Pubkey([2u8; 32]);
+        let validator = Pubkey([42u8; 32]);
+        let initial_balance = state.get_balance(&alice).unwrap();
+
+        let tx = make_transfer_tx(&alice_kp, alice, bob, 2_000, genesis_hash);
+        let tx_hash = tx.signature();
+        let expected_fee =
+            TxProcessor::compute_transaction_fee(&tx, &state.get_fee_config().unwrap());
+        let execution = speculative_processor.process_transactions_speculative(&[tx], &validator);
+
+        assert_eq!(execution.results.len(), 1);
+        let result = &execution.results[0];
+        assert!(!result.success);
+        assert!(result.receipt_eligible);
+        assert_eq!(result.fee_paid, expected_fee);
+        assert!(state.get_transaction(&tx_hash).unwrap().is_none());
+        assert_eq!(state.get_balance(&alice).unwrap(), initial_balance);
+
+        state.commit_batch(execution.batch).unwrap();
+
+        assert!(state.get_transaction(&tx_hash).unwrap().is_some());
+        let receipt = state.get_tx_meta_full(&tx_hash).unwrap().unwrap();
+        assert_eq!(receipt.success, Some(false));
+        assert_eq!(receipt.fee_paid, Some(expected_fee));
+        assert!(receipt
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("Execution error"));
+        assert_eq!(
+            state.get_balance(&alice).unwrap(),
+            initial_balance - expected_fee
+        );
+        assert_eq!(state.get_balance(&bob).unwrap_or(0), 0);
+    }
+
+    #[test]
+    fn test_speculative_invalid_signature_is_not_receipt_eligible() {
+        let (_processor, state, _alice_kp, alice, _treasury, genesis_hash) = setup();
+        let speculative_processor = TxProcessor::new_speculative(state.clone());
+        let bob = Pubkey([2u8; 32]);
+        let validator = Pubkey([42u8; 32]);
+        let tx = Transaction::new(crate::transaction::Message::new(
+            vec![Instruction {
+                program_id: SYSTEM_PROGRAM_ID,
+                accounts: vec![alice, bob],
+                data: {
+                    let mut data = vec![0u8];
+                    data.extend_from_slice(&1u64.to_le_bytes());
+                    data
+                },
+            }],
+            genesis_hash,
+        ));
+        let tx_hash = tx.signature();
+
+        let execution = speculative_processor.process_transactions_speculative(&[tx], &validator);
+        assert!(!execution.results[0].success);
+        assert!(!execution.results[0].receipt_eligible);
+        state.commit_batch(execution.batch).unwrap();
+        assert!(state.get_transaction(&tx_hash).unwrap().is_none());
+        assert!(state.get_tx_meta_full(&tx_hash).unwrap().is_none());
     }
 
     #[test]

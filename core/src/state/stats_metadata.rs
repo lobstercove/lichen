@@ -8,6 +8,14 @@ fn governed_proposal_tx_key(tx_hash: &Hash) -> Vec<u8> {
     key
 }
 
+const STAKE_POOL_PRODUCTION_PREFIX: &str = "stake_pool_prod:";
+const POST_BLOCK_EFFECTS_PREFIX: &str = "post_effects:";
+const VALIDATOR_POWER_SNAPSHOT_PREFIX: &str = "validator_power_snapshot_v2:";
+
+fn stake_pool_production_key(slot: u64) -> String {
+    format!("{}{}", STAKE_POOL_PRODUCTION_PREFIX, slot)
+}
+
 impl StateStore {
     /// Store treasury public key
     pub fn set_treasury_pubkey(&self, pubkey: &Pubkey) -> Result<(), String> {
@@ -1065,39 +1073,13 @@ impl StateStore {
     /// and consensus params in state. Called by the validator at epoch boundaries.
     /// Returns the number of parameters changed.
     pub fn apply_pending_governance_changes(&self) -> Result<usize, String> {
-        let changes = self.get_pending_governance_changes()?;
-        if changes.is_empty() {
+        let mut batch = self.begin_batch();
+        let applied = batch.apply_pending_governance_changes()?;
+        if applied == 0 {
             return Ok(0);
         }
-
-        let mut fee_config = self.get_fee_config()?;
-        let mut fee_changed = false;
-        let mut count = 0;
-
-        for (param_id, value) in &changes {
-            if fee_config.apply_governance_param(*param_id, *value) {
-                fee_changed = true;
-            } else {
-                match *param_id {
-                    crate::processor::GOV_PARAM_MIN_VALIDATOR_STAKE => {
-                        self.set_min_validator_stake(*value)?;
-                    }
-                    crate::processor::GOV_PARAM_EPOCH_SLOTS => {
-                        self.set_epoch_slots(*value)?;
-                    }
-                    _ => {}
-                }
-            }
-            count += 1;
-        }
-
-        if fee_changed {
-            self.set_fee_config_full(&fee_config)?;
-        }
-
-        self.clear_pending_governance_changes()?;
-
-        Ok(count)
+        self.commit_batch(batch)?;
+        Ok(applied)
     }
 
     /// Store min_validator_stake in CF_STATS (governance-mutable).
@@ -1167,6 +1149,14 @@ impl StateStore {
             .map_err(|e| format!("put_metadata({}): {}", key, e))
     }
 
+    /// Synchronize the hot-state WAL before a one-way operational boundary is
+    /// treated as durable by the validator.
+    pub fn sync_hot_wal(&self) -> Result<(), String> {
+        self.db
+            .flush_wal(true)
+            .map_err(|e| format!("failed to sync hot-state WAL: {}", e))
+    }
+
     /// Retrieve a generic metadata value.  Returns Ok(None) if the key
     /// does not exist.
     pub fn get_metadata(&self, key: &str) -> Result<Option<Vec<u8>>, String> {
@@ -1177,6 +1167,64 @@ impl StateStore {
         self.db
             .get_cf(&cf, key.as_bytes())
             .map_err(|e| format!("get_metadata({}): {}", key, e))
+    }
+
+    pub fn put_validator_power_snapshot(
+        &self,
+        validators_hash: &Hash,
+        powers: &[crate::consensus::CanonicalValidatorPower],
+    ) -> Result<(), String> {
+        if powers.is_empty()
+            || powers
+                .windows(2)
+                .any(|pair| pair[0].validator >= pair[1].validator)
+        {
+            return Err(
+                "validator power snapshot must be nonempty and strictly validator-ordered"
+                    .to_string(),
+            );
+        }
+        if crate::consensus::canonical_validator_powers_hash(powers) != *validators_hash {
+            return Err("validator power snapshot does not match validators hash".to_string());
+        }
+        let encoded = serialize_legacy_bincode(&powers, "validator power snapshot")?;
+        self.put_metadata(
+            &format!(
+                "{}{}",
+                VALIDATOR_POWER_SNAPSHOT_PREFIX,
+                validators_hash.to_hex()
+            ),
+            &encoded,
+        )
+    }
+
+    pub fn get_validator_power_snapshot(
+        &self,
+        validators_hash: &Hash,
+    ) -> Result<Option<Vec<crate::consensus::CanonicalValidatorPower>>, String> {
+        let Some(encoded) = self.get_metadata(&format!(
+            "{}{}",
+            VALIDATOR_POWER_SNAPSHOT_PREFIX,
+            validators_hash.to_hex()
+        ))?
+        else {
+            return Ok(None);
+        };
+        let powers: Vec<crate::consensus::CanonicalValidatorPower> =
+            deserialize_legacy_bincode(&encoded, "validator power snapshot")?;
+        if powers.is_empty()
+            || powers
+                .windows(2)
+                .any(|pair| pair[0].validator >= pair[1].validator)
+        {
+            return Err("stored validator power snapshot is empty or noncanonical".to_string());
+        }
+        if crate::consensus::canonical_validator_powers_hash(&powers) != *validators_hash {
+            return Err(
+                "stored validator power snapshot does not match validators hash".to_string(),
+            );
+        }
+        Ok(Some(powers))
     }
 
     /// AUDIT-FIX M7: Persist slashing tracker to RocksDB for restart-proof evidence.
@@ -1332,6 +1380,51 @@ impl StateStore {
             .map_err(|e| format!("Failed to store reward distribution hash: {}", e))
     }
 
+    /// Check if stake-pool producer accounting already applied for a slot.
+    pub fn get_stake_pool_production_hash(&self, slot: u64) -> Result<Option<Hash>, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        let key = stake_pool_production_key(slot);
+        match self.db.get_cf(&cf, key.as_bytes()) {
+            Ok(Some(data)) => {
+                if data.len() != 32 {
+                    return Err("Invalid stake pool production hash length".to_string());
+                }
+                let mut bytes = [0u8; 32];
+                bytes.copy_from_slice(&data);
+                Ok(Some(Hash(bytes)))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(format!("Database error: {}", e)),
+        }
+    }
+
+    /// Mark stake-pool producer accounting applied for a slot.
+    pub fn set_stake_pool_production_hash(&self, slot: u64, hash: &Hash) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        let key = stake_pool_production_key(slot);
+        self.db
+            .put_cf(&cf, key.as_bytes(), hash.0)
+            .map_err(|e| format!("Failed to store stake pool production hash: {}", e))
+    }
+
+    /// Clear stake-pool producer accounting record for a slot (used by fork choice).
+    pub fn clear_stake_pool_production_hash(&self, slot: u64) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        let key = stake_pool_production_key(slot);
+        self.db
+            .delete_cf(&cf, key.as_bytes())
+            .map_err(|e| format!("Failed to clear stake pool production hash: {}", e))
+    }
+
     /// Clear reward distribution record for a slot (used by fork choice).
     pub fn clear_reward_distribution_hash(&self, slot: u64) -> Result<(), String> {
         let cf = self
@@ -1356,10 +1449,53 @@ impl StateStore {
             .map_err(|e| format!("Failed to clear fee distribution hash: {}", e))
     }
 
+    pub fn get_post_block_effects_hash(&self, slot: u64) -> Result<Option<Hash>, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        let key = format!("{}{}", POST_BLOCK_EFFECTS_PREFIX, slot);
+        match self.db.get_cf(&cf, key.as_bytes()) {
+            Ok(Some(data)) => {
+                if data.len() != 32 {
+                    return Err("Invalid post-block effects hash length".to_string());
+                }
+                let mut bytes = [0u8; 32];
+                bytes.copy_from_slice(&data);
+                Ok(Some(Hash(bytes)))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(format!("Database error: {}", e)),
+        }
+    }
+
+    pub fn set_post_block_effects_hash(&self, slot: u64, hash: &Hash) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        let key = format!("{}{}", POST_BLOCK_EFFECTS_PREFIX, slot);
+        self.db
+            .put_cf(&cf, key.as_bytes(), hash.0)
+            .map_err(|e| format!("Failed to store post-block effects hash: {}", e))
+    }
+
+    pub fn clear_post_block_effects_hash(&self, slot: u64) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        let key = format!("{}{}", POST_BLOCK_EFFECTS_PREFIX, slot);
+        self.db
+            .delete_cf(&cf, key.as_bytes())
+            .map_err(|e| format!("Failed to clear post-block effects hash: {}", e))
+    }
+
     // ─── Stats Pruning (Bounded Retention) ──────────────────────────────────
 
     /// Prune per-slot stats keys older than `retain_slots` behind `current_slot`.
-    /// Removes: fee_dist:*, reward_dist:*, esq:*, tsq:*, txs:* entries for old slots.
+    /// Removes: fee_dist:*, reward_dist:*, stake_pool_prod:*, post_effects:*,
+    /// esq:*, tsq:*, txs:* entries for old slots.
     /// Call periodically (e.g., every 1000 slots) to bound CF_STATS growth.
     /// At 1M blocks with 10K retention, this prevents ~990K stale sequence keys.
     pub fn prune_slot_stats(&self, current_slot: u64, retain_slots: u64) -> Result<u64, String> {
@@ -1413,7 +1549,48 @@ impl StateStore {
             }
         }
 
-        // 3. Prune esq:{program}{slot} (binary: 4 prefix + 32 pubkey + 8 BE slot = 44 bytes)
+        // 3. Prune stake_pool_prod:{slot} (text-format slot in key)
+        let iter = self.db.iterator_cf(
+            &cf,
+            rocksdb::IteratorMode::From(
+                STAKE_POOL_PRODUCTION_PREFIX.as_bytes(),
+                Direction::Forward,
+            ),
+        );
+        for item in iter.flatten() {
+            if !item.0.starts_with(STAKE_POOL_PRODUCTION_PREFIX.as_bytes()) {
+                break;
+            }
+            if let Ok(s) = std::str::from_utf8(&item.0[STAKE_POOL_PRODUCTION_PREFIX.len()..]) {
+                if let Ok(slot) = s.parse::<u64>() {
+                    if slot < cutoff {
+                        batch.delete_cf(&cf, &item.0);
+                        deleted += 1;
+                    }
+                }
+            }
+        }
+
+        // 4. Prune post_effects:{slot} (text-format slot in key)
+        let iter = self.db.iterator_cf(
+            &cf,
+            rocksdb::IteratorMode::From(POST_BLOCK_EFFECTS_PREFIX.as_bytes(), Direction::Forward),
+        );
+        for item in iter.flatten() {
+            if !item.0.starts_with(POST_BLOCK_EFFECTS_PREFIX.as_bytes()) {
+                break;
+            }
+            if let Ok(s) = std::str::from_utf8(&item.0[POST_BLOCK_EFFECTS_PREFIX.len()..]) {
+                if let Ok(slot) = s.parse::<u64>() {
+                    if slot < cutoff {
+                        batch.delete_cf(&cf, &item.0);
+                        deleted += 1;
+                    }
+                }
+            }
+        }
+
+        // 5. Prune esq:{program}{slot} (binary: 4 prefix + 32 pubkey + 8 BE slot = 44 bytes)
         let iter = self.db.iterator_cf(
             &cf,
             rocksdb::IteratorMode::From(b"esq:", Direction::Forward),
@@ -1431,7 +1608,7 @@ impl StateStore {
             }
         }
 
-        // 4. Prune tsq:{token}{slot} (binary: 4 prefix + 32 pubkey + 8 BE slot = 44 bytes)
+        // 5. Prune tsq:{token}{slot} (binary: 4 prefix + 32 pubkey + 8 BE slot = 44 bytes)
         let iter = self.db.iterator_cf(
             &cf,
             rocksdb::IteratorMode::From(b"tsq:", Direction::Forward),
@@ -1449,7 +1626,7 @@ impl StateStore {
             }
         }
 
-        // 5. Prune txs:{slot} (binary: 4 prefix + 8 BE slot = 12 bytes)
+        // 6. Prune txs:{slot} (binary: 4 prefix + 8 BE slot = 12 bytes)
         let iter = self.db.iterator_cf(
             &cf,
             rocksdb::IteratorMode::From(b"txs:", Direction::Forward),
@@ -1467,7 +1644,7 @@ impl StateStore {
             }
         }
 
-        // 6. Prune dirty_acct:* keys (already processed by compute_state_root)
+        // 7. Prune dirty_acct:* keys (already processed by compute_state_root)
         // AUDIT-FIX C-1: dirty_acct keys have format "dirty_acct:{pubkey}" (43 bytes total)
         // with NO slot component. We prune ALL dirty_acct keys since they are only
         // relevant for the state root computation of the current/recent block, which

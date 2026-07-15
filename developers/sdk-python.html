@@ -148,7 +148,7 @@ from lichen import Connection, Keypair, PublicKey, TransactionBuilder
 
 async def main():
     # Connect to public testnet
-    conn = Connection("https://testnet-rpc.lichen.network", ws_url="wss://testnet-rpc.lichen.network/ws")
+    conn = Connection("https://testnet-api.lichen.network", ws_url="wss://testnet-api.lichen.network/ws")
 
     # Generate a keypair
     kp = Keypair.generate()
@@ -161,11 +161,12 @@ async def main():
     # Build and send a transfer
     recipient = PublicKey("RecipientBase58Address...")
     blockhash = await conn.get_recent_blockhash()
+    chain_id = await conn.get_chain_id()
 
     tx = (TransactionBuilder()
         .add(TransactionBuilder.transfer(kp.pubkey(), recipient, 1_000_000_000))
         .set_recent_blockhash(blockhash)
-        .build_and_sign(kp))
+        .build_and_sign(kp, chain_id))
 
     signature = await conn.send_transaction(tx)
     print(f"TX Signature: {signature}")
@@ -226,7 +227,7 @@ asyncio.run(main())</code></pre>
     ThallLendClient,
 )
 
-conn = Connection("https://testnet-rpc.lichen.network", ws_url="wss://testnet-rpc.lichen.network/ws")
+conn = Connection("https://testnet-api.lichen.network", ws_url="wss://testnet-api.lichen.network/ws")
 lichen_id = LichenIdClient(conn)
 lichenswap = LichenSwapClient(conn)
 sporepay = SporePayClient(conn)
@@ -249,7 +250,7 @@ profile = await lichen_id.get_profile(kp.pubkey())
 delegate = await lichen_id.get_delegate(kp.pubkey(), delegate_kp.pubkey())
 pool_info = await lichenswap.get_pool_info()
 quote = await lichenswap.get_quote(1_000_000_000, True)
-swap_stats = await lichenswap.get_stats()
+swap_stats = await lichenswap.get_swap_stats()
 stream = await sporepay.get_stream_info(0)
 vault_stats = await sporevault.get_vault_stats()
 vault_position = await sporevault.get_user_position(kp.pubkey())
@@ -299,8 +300,8 @@ print(profile, delegate, pool_info, quote, swap_stats, stream, vault_stats, vaul
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">Python</span></div>
                     <pre><code>conn = Connection(
-    "https://testnet-rpc.lichen.network",
-    ws_url="wss://testnet-rpc.lichen.network/ws"
+    "https://testnet-api.lichen.network",
+    ws_url="wss://testnet-api.lichen.network/ws"
 )</code></pre>
                 </div>
             </div>
@@ -344,7 +345,7 @@ print(profile, delegate, pool_info, quote, swap_stats, stream, vault_stats, vaul
             </div>
 
             <div class="method-card">
-                <h3 class="method-name">await health() -&gt; Dict[str, str]</h3>
+                <h3 class="method-name">await get_health() -&gt; Dict[str, str]</h3>
                 <p class="method-desc">Liveness probe. Returns <code>{"status": "ok"}</code>.</p>
             </div>
 
@@ -390,7 +391,7 @@ print(balance["licn"])    # "5.0000"</code></pre>
             </div>
 
             <div class="method-card">
-                <h3 class="method-name">await get_transaction_history(pubkey: PublicKey, limit: int = 10, before_slot: Optional[int] = None) -&gt;
+                <h3 class="method-name">await get_transactions_by_address(pubkey: PublicKey, limit: int = 10, before_slot: Optional[int] = None, before: Optional[str] = None) -&gt;
                     Dict[str, Any]</h3>
                 <p class="method-desc">Get paginated transaction history for an account. Returns
                     <code>{ transactions, has_more, next_before_slot }</code>.</p>
@@ -405,11 +406,12 @@ print(balance["licn"])    # "5.0000"</code></pre>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">Python</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
-                    <pre><code>blockhash = await conn.get_recent_blockhash()
+<pre><code>blockhash = await conn.get_recent_blockhash()
+chain_id = await conn.get_chain_id()
 tx = (TransactionBuilder()
     .add(TransactionBuilder.transfer(kp.pubkey(), recipient, 1_000_000_000))
     .set_recent_blockhash(blockhash)
-    .build_and_sign(kp))
+    .build_and_sign(kp, chain_id))
 
 sig = await conn.send_transaction(tx)
 print(f"Signature: {sig}")</code></pre>
@@ -653,23 +655,20 @@ print(entry["program"])</code></pre>
             </div>
 
             <div class="method-card">
-                <h3 class="method-name">await get_sporepay_stats() -&gt; Dict[str, Any] / await get_lichenswap_stats()
-                    -&gt; Dict[str, Any] / await get_thalllend_stats() -&gt; Dict[str, Any] / await
+                <h3 class="method-name">await get_sporepay_stats() -&gt; Dict[str, Any] / await get_thalllend_stats() -&gt; Dict[str, Any] / await
                     get_sporevault_stats() -&gt; Dict[str, Any] / await get_bountyboard_stats() -&gt; Dict[str, Any]
                 </h3>
-                <p class="method-desc">Fetch aggregated stats from the public SporePay, LichenSwap, ThallLend,
-                    SporeVault, and BountyBoard RPC routes. Helper clients wrap SporeVault, ThallLend, SporePay, and
-                    LichenSwap
-                    for typed access.</p>
+                <p class="method-desc">Fetch aggregated stats from the public SporePay, ThallLend,
+                    SporeVault, and BountyBoard RPC routes. Use <code>LichenSwapClient.get_swap_stats()</code>
+                    for canonical read-only LichenSwap contract stats.</p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">Python</span></div>
                     <pre><code>sporepay_stats = await conn.get_sporepay_stats()
-lichenswap_stats = await conn.get_lichenswap_stats()
 thalllend_stats = await conn.get_thalllend_stats()
 sporevault_stats = await conn.get_sporevault_stats()
 bountyboard_stats = await conn.get_bountyboard_stats()
 
-print(sporepay_stats, lichenswap_stats, thalllend_stats, sporevault_stats, bountyboard_stats)</code></pre>
+print(sporepay_stats, thalllend_stats, sporevault_stats, bountyboard_stats)</code></pre>
                 </div>
             </div>
 
@@ -985,9 +984,9 @@ class Transaction:
                             <td>Build unsigned message</td>
                         </tr>
                         <tr>
-                            <td>build_and_sign(keypair)</td>
+                            <td>build_and_sign(keypair, chain_id)</td>
                             <td><span class="param-type">Transaction</span></td>
-                            <td>Build, sign, and return a Transaction</td>
+                            <td>Build, chain-bind, sign, and return a Transaction</td>
                         </tr>
                     </tbody>
                 </table>
@@ -1028,8 +1027,8 @@ class Transaction:
                 </table>
                 <div class="callout callout-tip">
                     <p><strong>Serialization helpers:</strong> <code>TransactionBuilder.message_to_bincode(msg)</code>
-                        and <code>TransactionBuilder.transaction_to_bincode(tx)</code> are available for custom
-                        serialization workflows.</p>
+                        produces signing bytes and <code>TransactionBuilder.transaction_to_wire(tx)</code> produces
+                        the mandatory <code>lichen_tx_v1</code> submission envelope.</p>
                 </div>
             </div>
 

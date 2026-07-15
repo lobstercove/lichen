@@ -288,7 +288,7 @@ async fn test_create_withdrawal_value_limit_emits_spike_event() {
 async fn test_create_deposit_persists_rate_state_across_restart() {
     let db_path = test_db_path();
     let state = test_state_with_db_path(&db_path, true);
-    let (user_id, auth) = test_bridge_access_auth_payload(41);
+    let (user_id, auth) = test_bridge_access_auth_payload(41, "ethereum", "eth");
 
     let _ = create_deposit(
         State(state.clone()),
@@ -454,7 +454,7 @@ async fn test_create_deposit_blocked_when_deposits_are_paused() {
             }
         }
     })));
-    let (user_id, auth) = test_bridge_access_auth_payload(15);
+    let (user_id, auth) = test_bridge_access_auth_payload(15, "solana", "sol");
 
     let response = create_deposit(
         State(state),
@@ -479,7 +479,7 @@ async fn test_create_deposit_blocked_when_deposits_are_paused() {
 async fn test_create_deposit_blocked_when_consensus_route_is_paused() {
     let mut state = test_state();
     let requests = configure_restriction_rpc(&mut state, true, true, true).await;
-    let (user_id, auth) = test_bridge_access_auth_payload(25);
+    let (user_id, auth) = test_bridge_access_auth_payload(25, "solana", "sol");
 
     let response = create_deposit(
         State(state.clone()),
@@ -512,7 +512,7 @@ async fn test_create_deposit_blocked_when_consensus_route_is_paused() {
 async fn test_create_deposit_blocked_when_consensus_receive_is_restricted() {
     let mut state = test_state();
     let requests = configure_restriction_rpc(&mut state, false, false, true).await;
-    let (user_id, auth) = test_bridge_access_auth_payload(26);
+    let (user_id, auth) = test_bridge_access_auth_payload(26, "ethereum", "eth");
 
     let response = create_deposit(
         State(state.clone()),

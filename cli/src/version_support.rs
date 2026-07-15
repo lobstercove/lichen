@@ -28,7 +28,7 @@ pub(super) fn handle_version(rpc_url: &str, json_output: bool) -> Result<()> {
         "rpc_endpoints": {
             "mainnet": "https://rpc.lichen.network",
             "mainnet_ws": "wss://rpc.lichen.network/ws",
-            "testnet": "https://testnet-rpc.lichen.network"
+            "testnet": "https://testnet-api.lichen.network"
         }
     });
 
@@ -47,7 +47,7 @@ pub(super) fn handle_version(rpc_url: &str, json_output: bool) -> Result<()> {
         println!();
         println!("RPC (current): {}", rpc_url);
         println!("Mainnet RPC:   https://rpc.lichen.network");
-        println!("Testnet RPC:   https://testnet-rpc.lichen.network");
+        println!("Testnet RPC:   https://testnet-api.lichen.network");
         println!("Explorer:      https://explorer.lichen.network");
         println!("Docs:          https://developers.lichen.network");
         println!();

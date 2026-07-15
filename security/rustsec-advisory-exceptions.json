@@ -21,15 +21,6 @@
       "mitigation": "Replace the dependent macro stack or remove the transitive dependency during the next tooling dependency refresh."
     },
     {
-      "id": "RUSTSEC-2024-0384",
-      "crate": "instant",
-      "owner": "Validator Runtime",
-      "tools": ["cargo-audit", "cargo-deny"],
-      "expires": "2026-08-31",
-      "reason": "Unmaintained timing helper retained transitively through parking_lot and reed-solomon-erasure in validator networking dependencies.",
-      "mitigation": "Track upstream dependency updates and keep validator runtime tests covering networking and erasure-code paths."
-    },
-    {
       "id": "RUSTSEC-2024-0388",
       "crate": "derivative",
       "owner": "Core Runtime",

@@ -14,7 +14,6 @@ pub(super) struct DepositRequest {
     pub(super) status: String,
 }
 
-pub(super) const BRIDGE_ACCESS_DOMAIN: &str = "LICHEN_BRIDGE_ACCESS_V1";
 pub(super) const BRIDGE_ACCESS_DOMAIN_V2: &str = "LICHEN_BRIDGE_ACCESS_V2";
 pub(super) const BRIDGE_ACCESS_MAX_TTL_SECS: u64 = 24 * 60 * 60;
 pub(super) const BRIDGE_ACCESS_CLOCK_SKEW_SECS: u64 = 300;

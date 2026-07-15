@@ -5,6 +5,383 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.224] - 2026-07-15
+
+### Known Testnet Limitation
+- The existing `lichen-testnet-1` source set irrecoverably lacks signed block
+  bodies `2,872,006..4,298,999`. This release does not hide or synthesize that
+  legacy interval. The owner accepted it only to upgrade the testnet that found
+  the archive-design defect. Mainnet startup remains fail-closed unless its
+  durable archive proof covers and independently verifies every linked signed
+  block body and required transaction index from genesis through canonical tip.
+
+### Fixed
+- Commits canonical transaction execution, durable receipts, block body,
+  transaction slot indexes, archive watermark, and tip/finality cursors in one
+  RocksDB batch. Validator oracle-attestation projections join the same batch,
+  removing the restart window where a transaction was processed but its block
+  was absent.
+- Makes checkpoint finality independent of the receiver's current validator
+  set. The checkpoint proof uses exact historical parent and child power
+  denominators, commits the parent post-effects root in the child certificate,
+  proves certificate inclusion at child transaction index 0, and verifies the
+  signed/finalized child header before snapshot bytes can be imported.
+- Consolidates the July validator liveness release line with archive parity
+  hardening so stalled sync retries keep accepting delayed block-range
+  responses while still retrying stale requests.
+- Restores the signed `v0.5.223` future-round proposal replay path that was
+  absent from `main`, so a proposal received before its round is reached is
+  processed immediately when that round becomes current.
+- Keeps restarted validators out of BFT voting until their canonical tip has
+  reached the observed network tip and active catch-up/pending parent-gap work
+  has drained. This fixes the four-validator seed-failover stall where a
+  restarted validator was counted in the 4-validator quorum while still syncing,
+  leaving only two effective voters after the seed stopped.
+- Separates local tip initialization from authenticated peer-tip evidence in the
+  resumed-validator startup gate. A configured bootstrap RPC that is offline no
+  longer deadlocks an already connected surviving quorum at equal tip, while a
+  node with no direct or signed on-chain peer observation still waits and an
+  ahead peer still forces canonical catch-up before voting.
+- Tracks the exact canonical slot range represented by the in-memory recent
+  blockhash cache. Re-indexing only a recovered tip after restart can no longer
+  make that one hash masquerade as the complete replay-protection window and
+  reject a valid synced transaction that references an older still-recent hash.
+- Repairs validator mesh maintenance so same-IP/different-port validators are
+  discovered as distinct peers and reconnect pressure fills available peer
+  capacity from the durable peer store instead of depending on the seed.
+- Clears block-range request markers when no connected peer actually received a
+  sync request, so initial catch-up retries immediately once peers connect
+  instead of waiting for a stale in-flight marker TTL.
+- Makes deterministic epoch post-block effects fail-closed and commit the
+  reward marker only after account rewards, stake pool state, MossStake state,
+  governance parameter changes, and mint counters are staged in one atomic
+  batch.
+- Normalizes RPC, P2P, and validator-forwarded transaction admission around the
+  canonical chain-id signature verifier and execution-equivalent recent
+  blockhash / durable-nonce freshness check before mempool or gossip.
+- Requires peer checkpoint snapshots to carry the complete state and hot/cold
+  public-history surface, including historical account snapshots, and rejects
+  checkpoints with missing, header-only, or non-parent-linked blocks between
+  genesis and the checkpoint slot.
+- Separates incomplete-snapshot crash rollback from peer archive sync. Snapshot
+  completion now requires the expected slot/root and complete contiguous public
+  history; rollback restores every exact pre-apply hot category and account
+  history counter while preserving the validator's independent cold archive,
+  persists a recovered checkpoint, and removes the recovery marker last.
+- Upgrades `crossbeam-epoch` in the root, compiler, fuzz, contract SDK, and Rust
+  client SDK locks to clear RUSTSEC-2026-0204 without an advisory exception.
+- Pins the prerelease PKCS#8 API required by the current ML-DSA and SLH-DSA
+  crates. Fresh standalone compiler and SDK lock resolution can no longer select
+  the incompatible `pkcs8 0.11.0` final API, and CI now verifies the manifest
+  compatibility anchor before release.
+- Builds and tests all contracts through one shared Cargo cache in the
+  non-runtime `target/contract-build` namespace, preventing per-contract cache
+  duplication without shadowing the shipped `contracts/` tree. Development
+  genesis discovery now searches working-directory ancestors before executable
+  ancestors, and its global environment test guard restores state after panics.
+- Removes synchronous genesis-to-checkpoint archive rescans from snapshot chunk
+  requests. Requests now use only exact background-verified cache entries, and
+  immutable manifests are reused only for an unchanged primary checkpoint.
+- Enforces a numeric non-root compiler sandbox identity and completes the C
+  toolchain with the WASM linker used by the Rust/C/AssemblyScript smoke gate.
+- Restricts the `lichen-contract-sdk` crate archive to its Rust source instead
+  of implicitly publishing the JavaScript and Python development trees.
+- Removes the duplicate DEX analytics producer that counted every matched trade
+  in both `dex_core` and the validator bridge. Committed `dex_trade_*` rows are
+  now the sole source for an atomic, restart-safe analytics projection.
+- Adds a deterministic analytics v2 migration that rebuilds counters, trader
+  stats, leaderboard and 24-hour activity from canonical history, compacts
+  timestamp candles, rejects missing trade/block history, and advances its
+  cursor in the same batch as the repaired state.
+- Uses committed per-trade block timestamps during bridge catch-up and bounds
+  all candle intervals with a shared zero-based ring, eliminating duplicate
+  periods, sparse indexes and unbounded candle storage growth.
+- Adds block-hash-bound producer and comprehensive post-effects markers covering
+  reward, stake, vesting, oracle, validator activation, analytics, SL/TP,
+  rollover and governed activation. Existing public chains must stop and align
+  every validator at one exact tip, then use the guarded activation command to
+  WAL-sync the same `tip + 1` boundary on each database. Startup exits with
+  persistent status 78 when that boundary is absent instead of choosing a
+  node-local height. Fresh chains initialize slot 1. Missing markers before the
+  boundary are unverifiable and are never replayed; activated missing markers
+  are repaired only from a present canonical block, while a missing block fails
+  closed. Analytics v2 also waits for the shared boundary, so a lagging joiner
+  cannot migrate at an earlier historical slot. Repeated passes are exact
+  no-ops, and offline repair execute refuses a database without the boundary.
+- Commits oracle mirrors, candle metadata, 24-hour rollover, SL/TP order and
+  margin settlement, insurance accounting, trader payout and replay cursors in
+  canonical-slot atomic batches instead of independent fail-open writes.
+- Makes fee configuration and required treasury reads fail closed, uses checked
+  fee allocation/debits, and advances founding vesting from every canonical
+  block timestamp even when the block has no fees.
+- Restores exact candle API limit semantics so a request never returns more
+  items than requested or more than the retained ring contains.
+- Makes public-history range repair exactly inclusive at `--to-slot` inside the
+  canonical slot and transaction iterators. Large pages can no longer import
+  later slots, and a final slot with more transactions than the page size is no
+  longer truncated.
+- Makes contract-storage, stake-pool, and state-commitment inspection strictly
+  read-only and permits them to run through a disposable RocksDB secondary.
+  Diagnostic root reporting no longer invokes the cold-start sparse rebuild,
+  and sparse rebuild/activation commands reject secondary mode so an operator
+  cannot mistake an inspection path for a writable repair.
+- Serializes canonical state writes with sparse commitment mutation at the
+  `StateStore` boundary. A root computation can no longer delete a dirty marker
+  belonging to a newer same-key contract or account write and leave a stale
+  sparse root behind. Startup now verifies every supposedly clean active sparse
+  commitment against canonical accounts and contract storage, rebuilds on any
+  mismatch or untrusted marker state, and verifies the rebuilt result before
+  tip anchoring or BFT startup.
+- Bounds sparse Merkle cache storage by atomically deleting superseded rooted
+  path nodes with each canonical root update. The stopped-node rebuild clears
+  only derived sparse node/leaf caches with a bounded range tombstone and scoped
+  compaction before reconstructing them from canonical accounts and contract
+  storage; repeated-update, current-proof, and checkpoint-root regressions cover
+  both account and contract trees.
+- Makes hot-to-cold migration use total-order RocksDB iteration so point-lookup
+  tuning cannot silently hide old hot rows. Stopped-node audit and both
+  migration paths now fail closed unless every raw block hash, canonical slot
+  cursor, block-referenced transaction body, and exact transaction-to-slot row
+  is valid in hot or cold storage. Migration WAL-syncs before hot deletion and
+  compacts bounded hash ranges to avoid requiring a second full archive's free
+  space.
+- Makes execute-mode fleet history repair run its own complete read-only target
+  dry run before stopping any validator. Import reports include missing
+  key/value bytes; any conflict aborts before writes, and capacity must cover
+  150% of measured missing bytes plus the runtime reserve instead of satisfying
+  an unrelated nominal disk-size threshold.
+- Reuses one multiplexed SSH transport per validator during fleet archive
+  verification. Read-only health and historical probes no longer trip the
+  hosts' intentional six-new-connections-per-30-seconds UFW limit, and a failed
+  initial connection waits through that firewall window before retrying. The
+  verifier logs directly to its evidence file and closes every control master
+  in one explicit exit path, so successful checks leave no local shell/logger
+  processes behind.
+- Removes query-string custody WebSocket credentials and generic cross-chain
+  route configuration in favor of header-only authentication and route-specific
+  RPC, treasury, multisig, token, and confirmation settings.
+- Removes obsolete public command, RPC, response, reserve-proof, explorer,
+  marketplace, and contract-host aliases so clients and operators have one
+  current interface instead of silent compatibility fallbacks.
+- Repairs the clean local release launcher to use `lichen identity new` and to
+  generate the requested validator identity count instead of hard-coding three.
+- Moves every maintained E2E transaction sender to the chain-bound V1 binary
+  envelope and canonical positional `callContract` parameters. A source guard
+  prevents JSON transaction transport from returning to user journeys.
+
+### Changed
+- The local release gate now requires every validator's own RPC tip and
+  consensus `last_active` slot to remain within 20 slots of the final reference
+  tip. Lifetime proposal/vote counters no longer allow a stalled validator to
+  pass the final activity check before archive parity detects the drift.
+- The release workflow now runs the four-validator hot/cold public-history
+  parity gate plus the complete volume/user and launchpad/governance journeys
+  before publishing binaries, and the rolling deploy script treats uninspectable
+  or consensus/sync/archive-touching releases as consensus-critical by default.
+- The tag workflow now verifies the tag against every deployed crate version,
+  runs locked formatter/Clippy/workspace/security gates, and tests all contracts
+  before staging the genesis contract bundle.
+- Local Make, SDK, contract, E2E, and piped QA commands now propagate failures
+  instead of reporting success after a failed child command.
+- Adds `scripts/verify-testnet-archive-parity.sh` for fleet-level archive
+  evidence across US, EU, SEA, and IN, including strict stopped-validator
+  manifest comparison for the release gate.
+- Adds page-level public-history export/import admin commands plus
+  `scripts/stream-public-history-repair.sh`, so live repair can stream verified
+  history from EU/source into targets without copying another validator DB.
+- Adds binary framed public-history page streams for large block-body repairs,
+  avoiding JSON/base64 page overhead while preserving source-backed additive
+  imports and same-key conflict aborts.
+- Runs remote archive-parity and stream-repair admin commands under an explicit
+  high file-descriptor limit so RocksDB-heavy inspections do not fail from a
+  low interactive shell default.
+- Adds read-only contiguous block-range proof with canonical body, header,
+  parent-link, and deterministic digest checks. Live stream repair now refuses
+  unbounded block writes, mixed candidate hashes, missing current backups,
+  incomplete/conflicting target dry runs, or insufficient measured write
+  headroom.
+- Adds an offline fleet repair gate that compares fixed-tip manifests while
+  deliberately leaving every validator stopped; restart is a separate,
+  coordinated action after parity succeeds.
+- Treats a validator-set-wide historical `Block not found` range as a release
+  blocker, not a parity success; the current July chain must be repaired from
+  exact backed bodies and must not be reset or synthesized to hide the gap.
+- Adds locked standalone compiler, contract SDK, Rust client SDK, fuzz, and
+  compiler-container gates to CI and the release workflow, with target cleanup
+  between workspaces to stay within hosted-runner storage limits.
+- Serializes the release container's final LTO build by default through the
+  configurable `CARGO_BUILD_JOBS` build argument, preventing an 8 GiB builder
+  from killing the validator link while other release binaries link in parallel.
+- Advances publish candidates to `lichen-contract-sdk 1.0.3`,
+  `lichen-client-sdk 0.1.6`, and `@lobstercove/lichen-sdk 1.0.6`; publication
+  remains gated with the unreleased `0.5.224` core/CLI release.
+- Treats analytics v2 as a coordinated state-projection upgrade: mixed-version
+  rolling deployment is prohibited and complete canonical DEX trade/block
+  history is a precondition for activation.
+
+### Verified
+- Completed the final July 15 locked workspace all-target/all-feature suite and
+  strict workspace Clippy with `-D warnings`. The final four-validator
+  archive-cold gate passed restart/resume, one-validator outage, proposal/vote,
+  checkpoint parity, 140/140 volume journeys, and 104/104
+  launchpad/governance/graduation journeys; transcript SHA-256
+  `f73e134b...7fce9b`.
+- Rebuilt IN's unbounded v0.5.223 derived sparse cache offline with the audited
+  exact-tag maintenance binary. Typed root verification passed at stopped slot
+  `9,180,291`, protected and cold-archive metadata hashes were unchanged, and
+  checkpoint `9,181,000` raised free space from about 17.2 GB to 70.1 GB. The
+  post-restart four-host verifier passed at a 47-slot spread with identical
+  fixed-block digests and zero service warnings/restarts; no candidate binary
+  was installed.
+- Passed the exact final measured-repair source through the locked full
+  workspace all-target/all-feature suite. Transcript SHA-256:
+  `919514bc0917f063530684262aaac1d69478e6044de1ec203d36c41f58827bbf`.
+  The authoritative four-validator archive-cold gate also passed from the same
+  source: V2/V3/V4 joined from empty stores; V4, V1, and then all validators
+  resumed their own preserved state at spread 0; the chain finalized with V1
+  offline; all four matched canonical certificate
+  `e62465d66e9468ddd32b0f8fe97cea11f3ac1af9a2efdd17195069408231661b`
+  at slot 752; checkpoint-1000 hot/cold manifests matched root
+  `74636686878627a9515433b21b429ef048ad1ba44803104948dce7f564174bae`;
+  volume/user journeys passed 140/140; launchpad/governance/graduation passed
+  104/104; and checkpoint-3000 post-journey manifests matched root
+  `952221eaf8e975987ce93ec9abd3794d5e84faa16b3928dd1c17aac5d34c104e`.
+  Complete four-validator transcript SHA-256:
+  `7de7f95b3999fac9b5792394874fa96305f2a70fa24bcebd23702f1adaa6ad2f`.
+  The exact final Linux artifact and EU repeat audit remain release gates.
+- The previous no-cache Bookworm `linux/amd64` candidate SHA-256
+  `6b5f79d16654c02990c2c9b40e4ca8656a29a5106048e1872b72fcac9ca62325`
+  passed Core 983/983 plus integrations, Validator 396/396, the full locked
+  workspace, strict Clippy, helper guards 12/12, and the authoritative
+  four-validator gate through checkpoint 3000. It is superseded by the
+  total-order migration and measured import-preflight fixes and must not be
+  installed. Final full gates and a clean Linux build are required again.
+- Completed the guarded EU rollback to slot `8,915,275` and root
+  `cbf7770f...03d3a` without changing protected sidecars. Provider-restored
+  file ownership was normalized with content hashes unchanged. A focused-tested
+  full-replay-compatible `v0.5.223` bridge advanced approximately 1,650 slots
+  without a snapshot marker, staging residue, crash, or restart, then was stopped
+  when measured free space approached the 10 GiB floor. A corrected total-order
+  dry run then found 2,453,338 old hot blocks (60,658,298,656 bytes), 1,467,110
+  transaction rows (7,965,048,674 bytes), and 1,467,110 transaction-slot rows
+  (11,736,880 bytes), all missing from cold with zero conflicts. The final
+  bounded execute migrated all 2,453,338 eligible blocks in 246 compaction
+  batches, raised free space from 10.94 GB to 20.79 GB, and passed a zero-row
+  post dry run plus a 6,513,019-row raw integrity audit. This supersedes the
+  fixed 500 GiB conclusion; catch-up then exposed the separate derived sparse
+  cache retention issue fixed above.
+- Built the exact-tag `v0.5.223` sparse-maintenance/full-replay bridge as a
+  stripped Linux x86-64 binary with SHA-256 `9b71e7a9...ccee`; its optimized
+  cache and replay-selection regressions pass. On stopped EU it rebuilt only
+  derived sparse caches at preserved slot `8,953,695`, reduced contract-node
+  SST bytes from 42.02 GB to 246.46 MB, passed computed/stored root verification
+  with protected identity/genesis/key/archive evidence unchanged, and then
+  created checkpoint `8,954,000`. Normal retention pruned the old hard-linked
+  checkpoint and restored 58.72 GB free while preserved-state catch-up continued
+  with zero systemd restarts. The signed installed `v0.5.223` binary remains
+  unchanged and no `0.5.224` candidate has been installed.
+- Before the read-only inspection correction, passed Core 981/981 plus every
+  package integration suite, production readiness 102/102, Validator 393/393,
+  strict workspace Clippy, formatter, shell syntax, helper guards 12/12, the
+  focused snapshot rollback suite 5/5, and all 33 contract WASM builds. That
+  locked Bookworm `linux/amd64` validator (SHA-256
+  `6b4989cdd74ec01b13f366ea89e3d742466b180dc55795e1c30f1d44be57a2f1`)
+  and clean platform image manifest
+  `sha256:21c76ad0300c369365fea800bfe0530b5fbe822234a3599e17413058977eb1bb`
+  are now superseded and must not be installed. Full gates and a clean exact
+  Linux build must be repeated on the read-only inspection source before final
+  multi-platform release archive checksums are recorded by the tag workflow.
+- Built a corrected Linux/amd64 audit-only validator with SHA-256
+  `e82cd6f5b875e47e8e9d8f4542ee2919d94f3e3d81c3e737acb083b900059201`.
+  Through disposable RocksDB secondaries it inspected the pristine, read-only
+  EU July 12 provider rollback at slot `8,915,275`, returned exact current and
+  cached root `cbf7770f...03d3a`, exact four-validator stake-pool digest
+  `3ea8c6c5...37747`, and reported `state_root_recompute=read_only`. It was not
+  installed and is not the final release artifact; complete release reruns and
+  the final no-cache build remain mandatory.
+- Passed the earlier clean 10-validator scale/fault gate through slot 2448: all ten
+  joined without copied state, V10 and V1 resumed from their own state, all ten
+  resumed together, 8-of-10 finality advanced with V9/V10 stopped, both
+  recovered with preserved identities, every final RPC/activity tip was fresh,
+  canonical certificate parity matched, and all ten offline hot/cold manifests
+  matched root `027d802a1c4e6fb2f1682b295e75e75864e8c73cd924d65bb465e9a5d065ef5a`.
+- Passed an earlier authoritative final-source four-validator gate through checkpoint slot 3000:
+  V2/V3/V4 independent joins, V4 own-state restart, 3-of-4 finality with V1
+  offline (22 blocks in 10 seconds), V1 own-state recovery, coordinated restart
+  at spread 0, fresh per-validator activity, canonical certificate parity at
+  slot 757 with child-certificate hash
+  `8f78532332dd188813289056971c5e4c49fe60fba85b3975f1d50a485ee74f7b`,
+  volume/user journeys 140/140, launchpad/governance/graduation 104/104,
+  checkpoint-1000 manifest root
+  `57f0f483988a753b9c6da7afe2a672aba104b64fc4ad40620dc0c2ecaee2a70b`,
+  and matching checkpoint-3000 post-journey manifest root
+  `5b68f9a28917f10460f3578bde7991c84099d7906034fb75d4137cc29ae3e7a4`.
+  The captured transcript SHA-256 is
+  `e976d981f254d42382c46f331558d67de4c3a8cbebdc9a23956f55b10b2e9438`.
+  The complete gate transcript SHA-256 is
+  `6fbbbe90d7ff109b1b81d08f84329067a8b64099bd3ee01870ab0c733d9e2bad`.
+- Reproduced the stalled four-validator state at slot 582 with V1 and its
+  configured bootstrap RPC offline. V2/V3/V4 reconnected solely through their
+  durable peer stores, accepted signed active-validator tip announcements,
+  resumed 3-of-4 finality from slot 583, and reached common slot 677 with the
+  same archive-contiguous hash.
+- Earlier subsystem evidence also passed all 32
+  genesis contract tests and WASM builds plus the separate MT20 test/build,
+  all-target/all-feature workspace Clippy,
+  frontend/RPC/wallet/extension/exchange gates, JS SDK tests and npm audit,
+  Cargo audit/deny, Trivy, and `cargo audit -D warnings` across all 39 Cargo
+  lockfiles.
+- Earlier four-validator archive-cold evidence, now superseded by the final run
+  above, covered:
+  V2/V3/V4 empty-state joins, V4 own-state restart and catch-up, V1 seed
+  stopped while V2/V3/V4 produced 23 blocks in 10 seconds, V1 own-state restart
+  at drift 0, all-validator restart followed by 42 blocks in 10 seconds, all
+  four validators producing through slot 754, and matching offline hot/cold
+  public-history manifest root
+  `f285096ce50ce3422d8cd52a130ea1fe387293d2d790dc4569ea6499502707d5`.
+- Live release remains blocked by current-chain archive evidence
+  `evidence/archive-parity/testnet-20260709T181442Z`: US and IN had local cold
+  block bodies with missing slot cursors for later subranges and those cursors
+  were repaired. The US July 9 provider copy proves and preserves slot
+  `5,275,999`, but no audited current VPS source yet proves
+  `2,872,006..4,298,999`. The EU July 12 provider copy decoded 6,510,346
+  rollback-hot-plus-cold rows without integrity errors and found zero bodies in
+  that range. Its separate `5,275,999` singleton scan also decoded all
+  6,510,346 rows without errors and found zero matching bodies; transcript
+  SHA-256 is
+  `c50c99a0984fdc24e88c6442717d5ac6e655800d3b33f454327c227e4cbffd9e`.
+- Live signed `v0.5.223` reproduced the stale-parent producer-effect fault at
+  canonical tip `9,000,624`: US missed the producer update for parent slot
+  `9,000,623`, while SEA and IN agree. This second occurrence is preserved under
+  `evidence/post-block-effects-recovery/testnet-20260713T-live` and is the live
+  regression anchor for the candidate's startup and pre-BFT parent gates.
+
+## [0.5.222] - 2026-07-04
+
+### Fixed
+- Stops live catch-up and parent-gap recovery from broadcasting overlapping
+  block-range requests to every peer. Validators now claim unrequested slot
+  ranges centrally, request each claimed range from one scored peer with
+  fallback, expire stale request markers, and clear completed or snapshot-jumped
+  ranges.
+- Records peer-advertised tips from signed validator announcements and status
+  responses, then prefers peers that have advertised enough height to serve the
+  requested block range. This prevents restarted validators from repeatedly
+  asking stale peers for the next missing slot after a same-tip fleet restart.
+- Converts recoverable live replay and BFT commit consistency faults into the
+  verified checkpoint repair path instead of exiting the validator process.
+  Startup/configuration/genesis/snapshot/WAL fatal exits remain fail-closed.
+
+### Verified
+- Passed `cargo fmt --check`, `git diff --check`,
+  `cargo check --workspace --release --locked`, locked release binary build,
+  `cargo test -p lichen-validator --locked`, `cargo test -p lichen-p2p --locked`,
+  and `bash tests/local-multi-validator-test.sh 4`.
+- The 4-validator drill covered empty-state V2/V3/V4 joins, single-validator
+  own-state restarts, seed restart, and same-tip all-validator restart from
+  preserved local state; after the all-validator restart the cluster advanced
+  42 blocks in 10 seconds and finished with all four validators active.
+
 ## [0.5.221] - 2026-07-01
 
 ### Fixed
@@ -944,8 +1321,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CLI help text no longer hardcodes fee amounts; directs users to `lichen fees`
 - Deprecated staking methods (`stakeToMossStake`, `unstakeFromMossStake`, `claimUnstakedTokens`) now return error code `-32000` (deprecated) instead of `-32601` (method not found)
 - Solana compatibility layer returns descriptive error with supported method list for unsupported methods
-- `getTransactionsByAddress` and `getTransactionHistory` consolidated to single handler (both names still work)
-- `getAllSymbols` added as alias for `getAllSymbolRegistry`
+- Removed the obsolete `getTransactionHistory` alias; use `getTransactionsByAddress`.
+- `getAllSymbolRegistry` is the only symbol-registry list method.
 - JS SDK `Connection` now supports configurable request timeout (default: 30s)
 - Makefile `build-sdk` no longer suppresses TypeScript stderr
 - **BREAKING**: `compute_tx_root` now uses a binary Merkle tree (domain-separated SHA-256) instead of flat concatenated hash. Blocks produced by v0.4.37+ are not compatible with older validators.

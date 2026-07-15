@@ -49,6 +49,7 @@ const SWAP_COUNT_KEY: &[u8] = b"rtr_swap_count";
 const TOTAL_VOLUME_KEY: &[u8] = b"rtr_total_volume";
 const CORE_ADDRESS_KEY: &[u8] = b"rtr_core_addr";
 const AMM_ADDRESS_KEY: &[u8] = b"rtr_amm_addr";
+const SPOREPUMP_AUTHORITY_KEY: &[u8] = b"rtr_sporepump_authority";
 
 // ============================================================================
 // HELPERS
@@ -159,6 +160,11 @@ fn require_not_paused() -> bool {
 fn require_admin(caller: &[u8; 32]) -> bool {
     let admin = load_addr(ADMIN_KEY);
     !is_zero(&admin) && *caller == admin
+}
+
+fn require_sporepump(caller: &[u8; 32]) -> bool {
+    let sporepump = load_addr(SPOREPUMP_AUTHORITY_KEY);
+    !is_zero(&sporepump) && *caller == sporepump
 }
 
 // ============================================================================
@@ -301,6 +307,31 @@ pub extern "C" fn initialize(admin: *const u8) -> u32 {
     0
 }
 
+/// Bind the only SporePump contract allowed to register graduation routes.
+#[no_mangle]
+pub extern "C" fn set_sporepump_authority(caller: *const u8, sporepump: *const u8) -> u32 {
+    let mut c = [0u8; 32];
+    let mut s = [0u8; 32];
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+        core::ptr::copy_nonoverlapping(sporepump, s.as_mut_ptr(), 32);
+    }
+    if get_caller().0 != c {
+        return 200;
+    }
+    if !require_admin(&c) {
+        return 1;
+    }
+    if is_zero(&s) {
+        return 2;
+    }
+    if has_configured_address(SPOREPUMP_AUTHORITY_KEY) {
+        return 3;
+    }
+    storage_set(SPOREPUMP_AUTHORITY_KEY, &s);
+    0
+}
+
 /// Configure contract addresses (admin only)
 pub fn set_addresses(caller: *const u8, core_addr: *const u8, amm_addr: *const u8) -> u32 {
     let mut c = [0u8; 32];
@@ -365,7 +396,7 @@ pub fn register_route(
         return 200;
     }
 
-    if !require_admin(&c) {
+    if !require_admin(&c) && !require_sporepump(&c) {
         reentrancy_exit();
         return 1;
     }
@@ -382,6 +413,10 @@ pub fn register_route(
     if route_type == ROUTE_SPLIT && (split_percent == 0 || split_percent >= 100) {
         reentrancy_exit();
         return 3;
+    }
+    if load_u64(&pair_route_key(&ti, &to)) != 0 {
+        reentrancy_exit();
+        return 5;
     }
 
     let route_id = count + 1;
@@ -400,6 +435,7 @@ pub fn register_route(
 
     // Index by token pair for fast lookup
     save_u64(&pair_route_key(&ti, &to), route_id);
+    lichen_sdk::set_return_data(&u64_to_bytes(route_id));
 
     log_info("Route registered");
     reentrancy_exit();
@@ -956,7 +992,9 @@ pub extern "C" fn call() -> u32 {
                     sec_id,
                     split_pct,
                 );
-                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                if r != 0 {
+                    lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                }
                 _rc = r as u32;
                 _rc = r as u32;
             }
@@ -1247,6 +1285,47 @@ mod tests {
             ),
             0
         );
+    }
+
+    #[test]
+    fn test_sporepump_authority_is_immutable_and_route_registration_only() {
+        let admin = setup();
+        let sporepump = [9u8; 32];
+        assert_eq!(
+            set_sporepump_authority(admin.as_ptr(), sporepump.as_ptr()),
+            0
+        );
+        assert_eq!(
+            set_sporepump_authority(admin.as_ptr(), [8u8; 32].as_ptr()),
+            3
+        );
+        test_mock::set_caller(sporepump);
+        assert_eq!(
+            register_route(
+                sporepump.as_ptr(),
+                token_a().as_ptr(),
+                token_b().as_ptr(),
+                ROUTE_DIRECT_AMM,
+                1,
+                0,
+                0,
+            ),
+            0
+        );
+        assert_eq!(test_mock::get_return_data(), u64_to_bytes(1));
+        assert_eq!(
+            register_route(
+                sporepump.as_ptr(),
+                token_a().as_ptr(),
+                token_b().as_ptr(),
+                ROUTE_DIRECT_AMM,
+                1,
+                0,
+                0,
+            ),
+            5
+        );
+        assert_eq!(set_route_enabled(sporepump.as_ptr(), 1, false), 1);
     }
 
     #[test]

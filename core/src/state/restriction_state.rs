@@ -190,6 +190,7 @@ impl StateStore {
 
     pub fn put_restriction(&self, record: &RestrictionRecord) -> Result<(), String> {
         record.validate()?;
+        let _state_commitment_guard = self.lock_state_commitment();
         validate_same_target_on_update(self.get_restriction(record.id)?, record)?;
 
         let cf_records = self

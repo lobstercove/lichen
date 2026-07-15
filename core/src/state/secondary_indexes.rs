@@ -36,6 +36,9 @@ pub(crate) fn account_tx_index_entries_for_transaction(
     tx_index: usize,
     tx: &crate::transaction::Transaction,
 ) -> Vec<(Pubkey, Vec<u8>)> {
+    if tx.is_consensus() {
+        return Vec::new();
+    }
     let contract_program_id = crate::processor::CONTRACT_PROGRAM_ID;
     let mut entries = Vec::new();
 
@@ -70,6 +73,9 @@ pub(crate) fn account_tx_index_entries_for_block(block: &Block) -> Vec<(Pubkey, 
     let mut entries = Vec::new();
 
     for (tx_index, tx) in block.transactions.iter().enumerate() {
+        if tx.is_consensus() {
+            continue;
+        }
         entries.extend(account_tx_index_entries_for_transaction(
             block.header.slot,
             tx_index,
@@ -349,6 +355,25 @@ impl StateStore {
         limit: usize,
         before_slot: Option<u64>,
     ) -> Result<Vec<TokenTransfer>, String> {
+        self.get_token_transfers_paginated_exact(
+            token_program,
+            limit,
+            before_slot.map(|slot| (slot, 0)),
+        )
+        .map(|rows| rows.into_iter().map(|(transfer, _)| transfer).collect())
+    }
+
+    /// Paginate token transfers with an exclusive `(slot, sequence)` cursor.
+    pub fn get_token_transfers_paginated_exact(
+        &self,
+        token_program: &Pubkey,
+        limit: usize,
+        before_cursor: Option<(u64, u64)>,
+    ) -> Result<Vec<(TokenTransfer, u64)>, String> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
         let cf = self
             .db
             .cf_handle(CF_TOKEN_TRANSFERS)
@@ -358,8 +383,9 @@ impl StateStore {
         prefix.extend_from_slice(&token_program.0);
 
         let mut end_key = prefix.clone();
-        if let Some(before_slot) = before_slot {
+        if let Some((before_slot, before_seq)) = before_cursor {
             end_key.extend_from_slice(&before_slot.to_be_bytes());
+            end_key.extend_from_slice(&before_seq.to_be_bytes());
         } else {
             end_key.extend_from_slice(&[0xFF; 16]);
         }
@@ -375,13 +401,14 @@ impl StateStore {
                     if !key.starts_with(&prefix) {
                         break;
                     }
-                    if let Some(before_slot) = before_slot {
-                        if key.len() >= 40 {
-                            let slot_bytes: [u8; 8] = key[32..40].try_into().unwrap_or([0xFF; 8]);
-                            let slot = u64::from_be_bytes(slot_bytes);
-                            if slot >= before_slot {
-                                continue;
-                            }
+                    if key.len() < 48 {
+                        continue;
+                    }
+                    let slot = u64::from_be_bytes(key[32..40].try_into().unwrap_or([0xFF; 8]));
+                    let seq = u64::from_be_bytes(key[40..48].try_into().unwrap_or([0xFF; 8]));
+                    if let Some((before_slot, before_seq)) = before_cursor {
+                        if slot > before_slot || (slot == before_slot && seq >= before_seq) {
+                            continue;
                         }
                     }
                     rows.insert(key.to_vec(), value.to_vec());
@@ -397,22 +424,24 @@ impl StateStore {
             if !key.starts_with(&prefix) {
                 break;
             }
-            if let Some(before_slot) = before_slot {
-                if key.len() >= 40 {
-                    let slot_bytes: [u8; 8] = key[32..40].try_into().unwrap_or([0xFF; 8]);
-                    let slot = u64::from_be_bytes(slot_bytes);
-                    if slot >= before_slot {
-                        continue;
-                    }
+            if key.len() < 48 {
+                continue;
+            }
+            let slot = u64::from_be_bytes(key[32..40].try_into().unwrap_or([0xFF; 8]));
+            let seq = u64::from_be_bytes(key[40..48].try_into().unwrap_or([0xFF; 8]));
+            if let Some((before_slot, before_seq)) = before_cursor {
+                if slot > before_slot || (slot == before_slot && seq >= before_seq) {
+                    continue;
                 }
             }
             rows.insert(key.to_vec(), value.to_vec());
         }
 
         let mut transfers = Vec::new();
-        for value in rows.values().rev() {
+        for (key, value) in rows.iter().rev() {
             if let Ok(transfer) = serde_json::from_slice::<TokenTransfer>(value) {
-                transfers.push(transfer);
+                let seq = u64::from_be_bytes(key[40..48].try_into().unwrap_or([0; 8]));
+                transfers.push((transfer, seq));
                 if transfers.len() >= limit {
                     break;
                 }
@@ -707,7 +736,7 @@ impl StateStore {
         cf_name: &str,
         pubkey: &Pubkey,
         limit: usize,
-        before_slot: Option<u64>,
+        before_cursor: Option<(u64, u32)>,
     ) -> Result<Vec<AccountTxIndexRow>, String> {
         if limit == 0 {
             return Ok(Vec::new());
@@ -720,12 +749,13 @@ impl StateStore {
         let prefix = pubkey.0.to_vec();
         let mut seek_key = Vec::with_capacity(76);
         seek_key.extend_from_slice(&pubkey.0);
-        if let Some(slot) = before_slot {
-            if slot == 0 {
+        if let Some((slot, seq)) = before_cursor {
+            if slot == 0 && seq == 0 {
                 return Ok(Vec::new());
             }
-            seek_key.extend_from_slice(&slot.saturating_sub(1).to_be_bytes());
-            seek_key.extend_from_slice(&[0xFF; 36]);
+            seek_key.extend_from_slice(&slot.to_be_bytes());
+            seek_key.extend_from_slice(&seq.to_be_bytes());
+            seek_key.extend_from_slice(&[0; 32]);
         } else {
             seek_key.extend_from_slice(&u64::MAX.to_be_bytes());
             seek_key.extend_from_slice(&[0xFF; 36]);
@@ -748,8 +778,8 @@ impl StateStore {
             let Some(row) = parse_account_tx_index_key(&key)? else {
                 continue;
             };
-            if let Some(bs) = before_slot {
-                if row.slot >= bs {
+            if let Some((before_slot, before_seq)) = before_cursor {
+                if row.slot > before_slot || (row.slot == before_slot && row.seq >= before_seq) {
                     continue;
                 }
             }
@@ -806,6 +836,26 @@ impl StateStore {
         limit: usize,
         before_slot: Option<u64>,
     ) -> Result<Vec<(Hash, u64)>, String> {
+        self.get_account_tx_signatures_paginated_exact(
+            pubkey,
+            limit,
+            before_slot.map(|slot| (slot, 0)),
+        )
+        .map(|rows| {
+            rows.into_iter()
+                .map(|(hash, slot, _)| (hash, slot))
+                .collect()
+        })
+    }
+
+    /// Paginate account transactions by their exact canonical index position.
+    /// The cursor is exclusive and ordered by `(slot, transaction_index)`.
+    pub fn get_account_tx_signatures_paginated_exact(
+        &self,
+        pubkey: &Pubkey,
+        limit: usize,
+        before_cursor: Option<(u64, u32)>,
+    ) -> Result<Vec<(Hash, u64, u32)>, String> {
         if limit == 0 {
             return Ok(Vec::new());
         }
@@ -815,7 +865,7 @@ impl StateStore {
             CF_ACCOUNT_TXS,
             pubkey,
             limit,
-            before_slot,
+            before_cursor,
         )?;
         if let Some(ref cold) = self.cold_db {
             rows.extend(Self::scan_account_tx_signatures_in_db(
@@ -823,7 +873,7 @@ impl StateStore {
                 COLD_CF_ACCOUNT_TXS,
                 pubkey,
                 limit,
-                before_slot,
+                before_cursor,
             )?);
         }
 
@@ -836,7 +886,10 @@ impl StateStore {
         rows.dedup_by(|a, b| a.key == b.key);
         rows.truncate(limit);
 
-        Ok(rows.into_iter().map(|row| (row.hash, row.slot)).collect())
+        Ok(rows
+            .into_iter()
+            .map(|row| (row.hash, row.slot, row.seq))
+            .collect())
     }
 
     /// Get recent transactions across all addresses using CF_TX_BY_SLOT reverse scan.
@@ -846,15 +899,56 @@ impl StateStore {
         limit: usize,
         before_slot: Option<u64>,
     ) -> Result<Vec<(Hash, u64)>, String> {
+        self.get_recent_txs_paginated_exact(limit, before_slot.map(|slot| (slot, 0)))
+            .map(|rows| {
+                rows.into_iter()
+                    .map(|(hash, slot, _)| (hash, slot))
+                    .collect()
+            })
+    }
+
+    /// Paginate the global transaction index using an exclusive canonical
+    /// `(slot, transaction_index)` cursor.
+    pub fn get_recent_txs_paginated_exact(
+        &self,
+        limit: usize,
+        before_cursor: Option<(u64, u64)>,
+    ) -> Result<Vec<(Hash, u64, u64)>, String> {
+        self.get_recent_txs_paginated_exact_filtered(limit, before_cursor, false)
+    }
+
+    /// Paginate user transactions while retaining consensus envelopes in the
+    /// canonical archive indexes used for history verification.
+    pub fn get_recent_user_txs_paginated_exact(
+        &self,
+        limit: usize,
+        before_cursor: Option<(u64, u64)>,
+    ) -> Result<Vec<(Hash, u64, u64)>, String> {
+        self.get_recent_txs_paginated_exact_filtered(limit, before_cursor, true)
+    }
+
+    fn get_recent_txs_paginated_exact_filtered(
+        &self,
+        limit: usize,
+        before_cursor: Option<(u64, u64)>,
+        user_only: bool,
+    ) -> Result<Vec<(Hash, u64, u64)>, String> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
         let cf = self
             .db
             .cf_handle(CF_TX_BY_SLOT)
             .ok_or_else(|| "TX by slot CF not found".to_string())?;
 
-        let seek_key = if let Some(slot) = before_slot {
-            slot.to_be_bytes().to_vec()
+        let seek_key = if let Some((slot, seq)) = before_cursor {
+            let mut key = Vec::with_capacity(16);
+            key.extend_from_slice(&slot.to_be_bytes());
+            key.extend_from_slice(&seq.to_be_bytes());
+            key
         } else {
-            u64::MAX.to_be_bytes().to_vec()
+            vec![0xFF; 16]
         };
 
         let mut read_opts = rocksdb::ReadOptions::default();
@@ -878,16 +972,29 @@ impl StateStore {
                     .try_into()
                     .map_err(|_| "Corrupt slot key in block hashes".to_string())?,
             );
+            let seq = u64::from_be_bytes(
+                key[8..16]
+                    .try_into()
+                    .map_err(|_| "Corrupt sequence key in transaction index".to_string())?,
+            );
 
-            if let Some(bs) = before_slot {
-                if slot >= bs {
+            if let Some((before_slot, before_seq)) = before_cursor {
+                if slot > before_slot || (slot == before_slot && seq >= before_seq) {
                     continue;
                 }
             }
 
             let mut hash_bytes = [0u8; 32];
             hash_bytes.copy_from_slice(&value);
-            results.push((Hash(hash_bytes), slot));
+            let hash = Hash(hash_bytes);
+            if user_only
+                && self
+                    .get_transaction(&hash)?
+                    .is_some_and(|transaction| transaction.is_consensus())
+            {
+                continue;
+            }
+            results.push((hash, slot, seq));
 
             if results.len() >= limit {
                 break;
@@ -900,8 +1007,8 @@ impl StateStore {
     fn read_recent_shielded_tx_index(
         &self,
         limit: usize,
-        before_slot: Option<u64>,
-    ) -> Result<Vec<(Hash, u64)>, String> {
+        before_cursor: Option<(u64, u64)>,
+    ) -> Result<Vec<(Hash, u64, u64)>, String> {
         if limit == 0 {
             return Ok(Vec::new());
         }
@@ -911,10 +1018,14 @@ impl StateStore {
             .cf_handle(CF_SHIELDED_TXS)
             .ok_or_else(|| "Shielded txs CF not found".to_string())?;
 
-        let seek_key = if let Some(slot) = before_slot {
-            slot.to_be_bytes().to_vec()
+        let seek_key = if let Some((slot, seq)) = before_cursor {
+            let mut key = Vec::with_capacity(48);
+            key.extend_from_slice(&slot.to_be_bytes());
+            key.extend_from_slice(&seq.to_be_bytes());
+            key.extend_from_slice(&[0; 32]);
+            key
         } else {
-            u64::MAX.to_be_bytes().to_vec()
+            vec![0xFF; 48]
         };
 
         let mut read_opts = rocksdb::ReadOptions::default();
@@ -938,16 +1049,21 @@ impl StateStore {
                     .try_into()
                     .map_err(|_| "Corrupt slot key in shielded tx index".to_string())?,
             );
+            let seq = u64::from_be_bytes(
+                key[8..16]
+                    .try_into()
+                    .map_err(|_| "Corrupt sequence key in shielded tx index".to_string())?,
+            );
 
-            if let Some(bs) = before_slot {
-                if slot >= bs {
+            if let Some((before_slot, before_seq)) = before_cursor {
+                if slot > before_slot || (slot == before_slot && seq >= before_seq) {
                     continue;
                 }
             }
 
             let mut hash_bytes = [0u8; 32];
             hash_bytes.copy_from_slice(&key[16..48]);
-            results.push((Hash(hash_bytes), slot));
+            results.push((Hash(hash_bytes), slot, seq));
 
             if results.len() >= limit {
                 break;
@@ -960,8 +1076,8 @@ impl StateStore {
     fn backfill_recent_shielded_tx_index(
         &self,
         limit: usize,
-        before_slot: Option<u64>,
-    ) -> Result<Vec<(Hash, u64)>, String> {
+        before_cursor: Option<(u64, u64)>,
+    ) -> Result<Vec<(Hash, u64, u64)>, String> {
         const MAX_BACKFILL_SCAN: usize = 100_000;
         if limit == 0 {
             return Ok(Vec::new());
@@ -976,10 +1092,13 @@ impl StateStore {
             .cf_handle(CF_SHIELDED_TXS)
             .ok_or_else(|| "Shielded txs CF not found".to_string())?;
 
-        let seek_key = if let Some(slot) = before_slot {
-            slot.to_be_bytes().to_vec()
+        let seek_key = if let Some((slot, seq)) = before_cursor {
+            let mut key = Vec::with_capacity(16);
+            key.extend_from_slice(&slot.to_be_bytes());
+            key.extend_from_slice(&seq.to_be_bytes());
+            key
         } else {
-            u64::MAX.to_be_bytes().to_vec()
+            vec![0xFF; 16]
         };
 
         let mut read_opts = rocksdb::ReadOptions::default();
@@ -1007,8 +1126,13 @@ impl StateStore {
                     .try_into()
                     .map_err(|_| "Corrupt slot key in tx-by-slot index".to_string())?,
             );
-            if let Some(bs) = before_slot {
-                if slot >= bs {
+            let seq = u64::from_be_bytes(
+                key[8..16]
+                    .try_into()
+                    .map_err(|_| "Corrupt sequence key in tx-by-slot index".to_string())?,
+            );
+            if let Some((before_slot, before_seq)) = before_cursor {
+                if slot > before_slot || (slot == before_slot && seq >= before_seq) {
                     continue;
                 }
             }
@@ -1034,7 +1158,7 @@ impl StateStore {
             shielded_key.extend_from_slice(&hash.0);
             batch.put_cf(&shielded_txs_cf, &shielded_key, []);
             indexed += 1;
-            results.push((hash, slot));
+            results.push((hash, slot, seq));
 
             if results.len() >= limit {
                 break;
@@ -1058,19 +1182,36 @@ impl StateStore {
         limit: usize,
         before_slot: Option<u64>,
     ) -> Result<Vec<(Hash, u64)>, String> {
-        let mut results = self.read_recent_shielded_tx_index(limit, before_slot)?;
+        self.get_recent_shielded_txs_paginated_exact(limit, before_slot.map(|slot| (slot, 0)))
+            .map(|rows| {
+                rows.into_iter()
+                    .map(|(hash, slot, _)| (hash, slot))
+                    .collect()
+            })
+    }
+
+    /// Paginate shielded transactions using the same exclusive canonical
+    /// `(slot, transaction_index)` cursor as the global transaction index.
+    pub fn get_recent_shielded_txs_paginated_exact(
+        &self,
+        limit: usize,
+        before_cursor: Option<(u64, u64)>,
+    ) -> Result<Vec<(Hash, u64, u64)>, String> {
+        let mut results = self.read_recent_shielded_tx_index(limit, before_cursor)?;
         if results.len() >= limit {
             return Ok(results);
         }
 
-        let backfill_before_slot = results.last().map(|(_, slot)| *slot).or(before_slot);
+        let backfill_cursor = results
+            .last()
+            .map(|(_, slot, seq)| (*slot, *seq))
+            .or(before_cursor);
         let remaining = limit.saturating_sub(results.len());
-        let mut backfilled =
-            self.backfill_recent_shielded_tx_index(remaining, backfill_before_slot)?;
+        let mut backfilled = self.backfill_recent_shielded_tx_index(remaining, backfill_cursor)?;
         for item in backfilled.drain(..) {
             if !results
                 .iter()
-                .any(|(hash, slot)| *hash == item.0 && *slot == item.1)
+                .any(|(hash, slot, seq)| *hash == item.0 && *slot == item.1 && *seq == item.2)
             {
                 results.push(item);
             }

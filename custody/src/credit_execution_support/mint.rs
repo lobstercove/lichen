@@ -1,6 +1,6 @@
 use super::*;
 use lichen_core::keypair_file::{
-    load_keypair_with_password_policy, plaintext_keypair_compat_allowed,
+    load_keypair_with_password_policy, plaintext_keypair_allowed_for_local_dev,
     require_runtime_keypair_password,
 };
 
@@ -47,10 +47,10 @@ fn load_treasury_keypair(path: &Path) -> Result<Keypair, String> {
     match load_keypair_with_password_policy(
         path,
         password.as_deref(),
-        plaintext_keypair_compat_allowed(),
+        plaintext_keypair_allowed_for_local_dev(),
     ) {
         Ok(keypair) => return Ok(keypair),
-        Err(canonical_err) if !plaintext_keypair_compat_allowed() => {
+        Err(canonical_err) if !plaintext_keypair_allowed_for_local_dev() => {
             return Err(format!(
                 "failed to load canonical treasury keypair {}: {}",
                 path.display(),

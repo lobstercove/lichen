@@ -1,5 +1,5 @@
 // Test: Verify encodeTransaction signature format matches Rust bincode Vec<PqSignature>
-const assert = require('assert');
+import assert from 'node:assert';
 
 // Inline minimal helpers (extracted from bincode.ts logic)
 function encodeU64LE(value) {
@@ -29,7 +29,7 @@ function concat(parts) {
   return out;
 }
 
-// This is the FIXED encodeTransaction logic
+// Canonical V1 transaction wire encoder.
 function encodeU32LE(value) {
   const out = new Uint8Array(4);
   const view = new DataView(out.buffer);
@@ -63,12 +63,12 @@ function encodePqSignature(signature) {
   ]);
 }
 
-function encodeTransaction(signatures, messageBytes) {
+function encodeTransactionWire(signatures, messageBytes) {
   const sigBytes = signatures.map(encodePqSignature);
   const encodedSigs = concat([encodeU64LE(sigBytes.length), ...sigBytes]);
   // tx_type: Native=0 (u32 LE)
   const txType = encodeU32LE(0);
-  return concat([encodedSigs, messageBytes, txType]);
+  return concat([new Uint8Array([0x4d, 0x54, 0x01, 0x00]), encodedSigs, messageBytes, txType]);
 }
 
 const testSignature = {
@@ -84,27 +84,27 @@ const testSignature = {
 {
   const message = new Uint8Array(40);
 
-  const result = encodeTransaction([testSignature], message);
+  const result = encodeTransactionWire([testSignature], message);
 
-  // Expected: 8 (vec len) + encoded PqSignature (5279) + 40 (message) + 4 (tx_type) = 5331
-  assert.strictEqual(result.length, 5331, `Expected 5331, got ${result.length}`);
+  assert.strictEqual(result.length, 5335, `Expected 5335, got ${result.length}`);
+  assert.deepStrictEqual(Array.from(result.slice(0, 4)), [0x4d, 0x54, 0x01, 0x00]);
 
   // Vec length = 1 (little-endian u64)
   const view = new DataView(result.buffer);
-  const vecLen = Number(view.getBigUint64(0, true));
+  const vecLen = Number(view.getBigUint64(4, true));
   assert.strictEqual(vecLen, 1, `Expected vec len 1, got ${vecLen}`);
 
-  assert.strictEqual(result[8], 0x01, 'signature scheme mismatch');
-  assert.strictEqual(result[9], 0x01, 'public key scheme mismatch');
-  assert.strictEqual(Number(view.getBigUint64(10, true)), 1952, 'public key length mismatch');
-  assert.strictEqual(Number(view.getBigUint64(1970, true)), 3309, 'signature length mismatch');
+  assert.strictEqual(result[12], 0x01, 'signature scheme mismatch');
+  assert.strictEqual(result[13], 0x01, 'public key scheme mismatch');
+  assert.strictEqual(Number(view.getBigUint64(14, true)), 1952, 'public key length mismatch');
+  assert.strictEqual(Number(view.getBigUint64(1974, true)), 3309, 'signature length mismatch');
   console.log('Test 1 PASSED: signature encoding matches Rust bincode');
 }
 
 // Test 2: Reject wrong signature length
 {
   try {
-    encodeTransaction([
+    encodeTransactionWire([
       {
         scheme_version: 0x01,
         public_key: {
@@ -132,11 +132,10 @@ const testSignature = {
     },
     sig: new Uint8Array(3309).fill(0xaa),
   };
-  const result = encodeTransaction([sig1, sig2], new Uint8Array(10));
-  // 8 + 5279 + 5279 + 10 + 4 = 10580
-  assert.strictEqual(result.length, 10580, `Expected 10580, got ${result.length}`);
+  const result = encodeTransactionWire([sig1, sig2], new Uint8Array(10));
+  assert.strictEqual(result.length, 10584, `Expected 10584, got ${result.length}`);
   const view = new DataView(result.buffer);
-  const vecLen = Number(view.getBigUint64(0, true));
+  const vecLen = Number(view.getBigUint64(4, true));
   assert.strictEqual(vecLen, 2, `Expected vec len 2, got ${vecLen}`);
   console.log('Test 3 PASSED: multiple signatures');
 }

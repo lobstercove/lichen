@@ -23,15 +23,16 @@ const portals = [
     definePortal('marketplace'),
     definePortal('programs'),
     definePortal('developers'),
+    definePortal('exchanges'),
     definePortal('monitoring'),
     definePortal('faucet', ['src']),
 ];
 
 const CSP_CONNECT_ALLOWLIST = [
     'https://rpc.lichen.network',
-    'https://testnet-rpc.lichen.network',
+    'https://testnet-api.lichen.network',
     'wss://rpc.lichen.network',
-    'wss://testnet-rpc.lichen.network',
+    'wss://testnet-api.lichen.network',
     'https://custody.lichen.network',
     'https://testnet-custody.lichen.network',
     'https://custody-testnet.lichen.network',
@@ -285,6 +286,18 @@ function validateProductionHeaders(portal) {
     assert(
         !/frame-ancestors[^\n]*http:\/\/localhost/.test(headers),
         `${portal.name}/_headers production frame-ancestors excludes localhost origins`
+    );
+}
+
+function validateSharedTestnetIngress() {
+    const config = fs.readFileSync(path.join(repoRoot, 'wallet', 'shared-config.js'), 'utf8');
+    assert(
+        config.includes("hostname === 'explorer.lichen.network'") &&
+            config.includes('`${window.location.origin}/api/testnet`') &&
+            config.includes('`wss://${window.location.host}/api/testnet/ws`') &&
+            config.includes("'https://testnet-api.lichen.network'") &&
+            config.includes("'wss://testnet-api.lichen.network/ws'"),
+        'shared network config uses explorer same-origin ingress and canonical testnet ingress elsewhere'
     );
 }
 
@@ -689,6 +702,93 @@ function validateMonitoringRiskConsole() {
             css.includes('.risk-lifecycle-panel') &&
             css.includes('.risk-restriction-card'),
         'monitoring Risk Console has deployable status-panel styling'
+    );
+}
+
+function validateExchangesPublicPortal() {
+    const exchangesRoot = path.join(repoRoot, 'exchanges');
+    const html = fs.readFileSync(path.join(exchangesRoot, 'index.html'), 'utf8');
+    const js = fs.readFileSync(path.join(exchangesRoot, 'js', 'exchanges.js'), 'utf8');
+    const proxy = fs.readFileSync(path.join(exchangesRoot, 'functions', 'api', 'rpc.js'), 'utf8');
+    const headers = fs.readFileSync(path.join(exchangesRoot, '_headers'), 'utf8');
+    const rpcSource = fs.readFileSync(path.join(repoRoot, 'rpc', 'src', 'lib.rs'), 'utf8');
+
+    const requiredHtmlTokens = [
+        'Lichen Exchange Status',
+        'testnet-only',
+        'Exchange Package',
+        'Exchange Contacts',
+        'security@lichen.network',
+        'exchange-ops@lichen.network',
+        'business@lichen.network',
+        'https://developers.lichen.network/exchange-integration',
+        'https://github.com/lobstercove/lichen/releases/tag/exchange-testnet-v0.5.221',
+    ];
+    assert(
+        requiredHtmlTokens.every((token) => html.includes(token)),
+        'exchanges public portal carries status, package, scope, and approved contacts'
+    );
+
+    const forbiddenPublicTokens = [
+        'Mission Control',
+        'Network Monitoring',
+        'admin_token',
+        'LICHEN_ADMIN_TOKEN',
+        'killswitch',
+        'riskConsole',
+        'buildRestrict',
+        'buildUnrestrict',
+        'SSH',
+        'private key',
+    ];
+    assert(
+        forbiddenPublicTokens.every((token) => !html.includes(token) && !js.includes(token)),
+        'exchanges public portal exposes no admin monitoring controls or private-operation wording'
+    );
+
+    const requiredReadOnlyMethods = [
+        "rpc('getHealth')",
+        "rpc('getNetworkInfo')",
+        "rpc('getFeeConfig')",
+        "rpc('getSlot'",
+        "rpc('getLatestBlock')",
+        "rpc('getMetrics')",
+        "rpc('getIncidentStatus')",
+    ];
+    assert(
+        requiredReadOnlyMethods.every((token) => js.includes(token)) &&
+            js.includes("const RPC_URL = '/api/rpc';") &&
+            !/sendTransaction|build[A-Z]|admin_token|LICHEN_ADMIN_TOKEN/.test(js),
+        'exchanges public portal uses read-only public RPC and no transaction/admin mutation path'
+    );
+
+    const requiredProxyMethods = [
+        "'getHealth'",
+        "'getNetworkInfo'",
+        "'getFeeConfig'",
+        "'getSlot'",
+        "'getLatestBlock'",
+        "'getMetrics'",
+        "'getIncidentStatus'",
+    ];
+    assert(
+        requiredProxyMethods.every((token) => proxy.includes(token)) &&
+            proxy.includes("const UPSTREAM_RPC_URL = 'https://testnet-api.lichen.network';") &&
+            !/sendTransaction|build[A-Z]|admin_token|LICHEN_ADMIN_TOKEN/.test(proxy),
+        'exchanges status proxy allows only read-only public RPC methods'
+    );
+
+    assert(
+        rpcSource.includes('"exchanges.lichen.network".to_string()'),
+        'RPC default CORS allowlist includes exchanges.lichen.network'
+    );
+
+    assert(
+        headers.includes('frame-ancestors \'none\'') &&
+            headers.includes('https://testnet-api.lichen.network') &&
+            headers.includes('wss://testnet-api.lichen.network') &&
+            headers.includes('https://explorer.lichen.network'),
+        'exchanges public portal has locked-down production headers for public dependencies'
     );
 }
 
@@ -1307,7 +1407,9 @@ for (const portal of portals) {
 }
 
 validateMonitoringIncidentControls();
+validateSharedTestnetIngress();
 validateMonitoringRiskConsole();
+validateExchangesPublicPortal();
 validateDexChartPricePrecision();
 validateDexCriticalAssetCaching();
 validateDexWalletAndPairState();

@@ -22,9 +22,9 @@ pub mod token;
 // Re-export modules
 pub use crosscall::{
     balance_of_token_or_native, call_contract, call_nft_owner, call_nft_transfer,
-    call_token_balance, call_token_transfer, call_token_transfer_from, encode_layout_args, is_native_token,
-    native_balance_of, receive_token_or_native, transfer_native, transfer_token_or_native,
-    CrossCall, SYSTEM_PROGRAM,
+    call_token_balance, call_token_transfer, call_token_transfer_from, encode_layout_args,
+    is_native_token, native_balance_of, receive_token_or_native, transfer_native,
+    transfer_token_or_native, CrossCall, SYSTEM_PROGRAM,
 };
 pub use dex::Pool;
 pub use nft::NFT;
@@ -41,25 +41,28 @@ pub mod test_mock {
     use std::string::String;
     use std::vec::Vec;
 
+    type CrossCallRecord = ([u8; 32], String, Vec<u8>, u64);
+
     std::thread_local! {
         pub static STORAGE: RefCell<HashMap<Vec<u8>, Vec<u8>>> = RefCell::new(HashMap::new());
-        pub static CALLER: RefCell<[u8; 32]> = RefCell::new([0u8; 32]);
-        pub static CONTRACT_ADDRESS: RefCell<[u8; 32]> = RefCell::new([0u8; 32]);
-        pub static ARGS: RefCell<Vec<u8>> = RefCell::new(Vec::new());
-        pub static RETURN_DATA: RefCell<Vec<u8>> = RefCell::new(Vec::new());
-        pub static EVENTS: RefCell<Vec<Vec<u8>>> = RefCell::new(Vec::new());
-        pub static LOGS: RefCell<Vec<String>> = RefCell::new(Vec::new());
-        pub static TIMESTAMP: RefCell<u64> = RefCell::new(1000);
-        pub static VALUE: RefCell<u64> = RefCell::new(0);
-        pub static SLOT: RefCell<u64> = RefCell::new(1);
+        pub static CALLER: RefCell<[u8; 32]> = const { RefCell::new([0u8; 32]) };
+        pub static CONTRACT_ADDRESS: RefCell<[u8; 32]> = const { RefCell::new([0u8; 32]) };
+        pub static ARGS: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+        pub static RETURN_DATA: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+        pub static EVENTS: RefCell<Vec<Vec<u8>>> = const { RefCell::new(Vec::new()) };
+        pub static LOGS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+        pub static TIMESTAMP: RefCell<u64> = const { RefCell::new(1000) };
+        pub static VALUE: RefCell<u64> = const { RefCell::new(0) };
+        pub static SLOT: RefCell<u64> = const { RefCell::new(1) };
         pub static BLOCK_ENTROPY: RefCell<HashMap<u64, [u8; 32]>> = RefCell::new(HashMap::new());
-        pub static CROSS_CALL_RESPONSE: RefCell<Option<Vec<u8>>> = RefCell::new(None);
-        pub static CROSS_CALL_RESPONSE_QUEUE: RefCell<Vec<Vec<u8>>> = RefCell::new(Vec::new());
-        pub static CROSS_CALL_SHOULD_FAIL: RefCell<bool> = RefCell::new(false);
-        pub static LAST_CROSS_CALL: RefCell<Option<([u8; 32], String, Vec<u8>, u64)>> = RefCell::new(None);
-        pub static CAN_SEND: RefCell<bool> = RefCell::new(true);
-        pub static CAN_RECEIVE: RefCell<bool> = RefCell::new(true);
-        pub static CAN_TRANSFER: RefCell<bool> = RefCell::new(true);
+        pub static CROSS_CALL_RESPONSE: RefCell<Option<Vec<u8>>> = const { RefCell::new(None) };
+        pub static CROSS_CALL_RESPONSE_QUEUE: RefCell<Vec<Vec<u8>>> = const { RefCell::new(Vec::new()) };
+        pub static CROSS_CALL_SHOULD_FAIL: RefCell<bool> = const { RefCell::new(false) };
+        pub static LAST_CROSS_CALL: RefCell<Option<CrossCallRecord>> = const { RefCell::new(None) };
+        pub static CAN_SEND: RefCell<bool> = const { RefCell::new(true) };
+        pub static CAN_RECEIVE: RefCell<bool> = const { RefCell::new(true) };
+        pub static CAN_TRANSFER: RefCell<bool> = const { RefCell::new(true) };
+        pub static CONTRACT_CODE_HASHES: RefCell<HashMap<[u8; 32], [u8; 32]>> = RefCell::new(HashMap::new());
     }
 
     pub fn reset() {
@@ -81,6 +84,7 @@ pub mod test_mock {
         CAN_SEND.with(|c| *c.borrow_mut() = true);
         CAN_RECEIVE.with(|c| *c.borrow_mut() = true);
         CAN_TRANSFER.with(|c| *c.borrow_mut() = true);
+        CONTRACT_CODE_HASHES.with(|hashes| hashes.borrow_mut().clear());
     }
 
     pub fn set_caller(addr: [u8; 32]) {
@@ -141,6 +145,12 @@ pub mod test_mock {
 
     pub fn set_can_transfer(allowed: bool) {
         CAN_TRANSFER.with(|c| *c.borrow_mut() = allowed);
+    }
+
+    pub fn set_contract_code_hash(address: [u8; 32], code_hash: [u8; 32]) {
+        CONTRACT_CODE_HASHES.with(|hashes| {
+            hashes.borrow_mut().insert(address, code_hash);
+        });
     }
 
     pub fn get_return_data() -> Vec<u8> {
@@ -452,6 +462,30 @@ pub fn get_contract_address() -> Address {
     #[cfg(not(target_arch = "wasm32"))]
     {
         Address(test_mock::CONTRACT_ADDRESS.with(|c| *c.borrow()))
+    }
+}
+
+/// Return the consensus code hash for a deployed contract account.
+///
+/// Contracts use this to validate trusted templates without relying on a
+/// self-reported identifier from the target program.
+pub fn get_contract_code_hash(address: Address) -> Option<[u8; 32]> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        extern "C" {
+            fn get_contract_code_hash(address_ptr: *const u8, out_ptr: *mut u8) -> u32;
+        }
+        let mut hash = [0u8; 32];
+        let status = unsafe { get_contract_code_hash(address.0.as_ptr(), hash.as_mut_ptr()) };
+        if status == 0 {
+            Some(hash)
+        } else {
+            None
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        test_mock::CONTRACT_CODE_HASHES.with(|hashes| hashes.borrow().get(&address.0).copied())
     }
 }
 

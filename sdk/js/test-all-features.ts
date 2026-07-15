@@ -139,10 +139,10 @@ async function main() {
     () => connection.getPeers()
   ));
   
-  // Test health
+  // Test getHealth
   results.push(await testMethod(
-    'health',
-    () => connection.health()
+    'getHealth',
+    () => connection.getHealth()
   ));
   
   console.log('\n👥 VALIDATOR ENDPOINTS');
@@ -188,10 +188,10 @@ async function main() {
   console.log('\n📝 TRANSACTION ENDPOINTS');
   console.log('-'.repeat(60));
   
-  // Test getTransactionHistory
+  // Test getTransactionsByAddress
   results.push(await testMethod(
-    'getTransactionHistory',
-    () => connection.getTransactionHistory(systemProgram, 10)
+    'getTransactionsByAddress',
+    () => connection.getTransactionsByAddress(systemProgram, 10)
   ));
   
   console.log('\n📊 CONTRACT ENDPOINTS');
@@ -233,7 +233,7 @@ async function main() {
     'Network Info': ['getNetworkInfo', 'getValidators', 'getChainStatus', 'getMetrics', 'getPeers', 'health'],
     'Validator Info': ['getValidatorInfo', 'getValidatorPerformance'],
     'Staking': ['getStakingStatus', 'getStakingRewards', 'getTotalBurned'],
-    'Transactions': ['getTransactionHistory'],
+    'Transactions': ['getTransactionsByAddress'],
     'Contracts': ['getAllContracts'],
   };
   

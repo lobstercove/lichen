@@ -14,6 +14,10 @@ Use this document as the canonical workflow for:
 
 This runbook intentionally prefers the scripts that are verified in the current tree over older narrative docs.
 
+Candidate release target for this runbook is `v0.5.224`; keep `v0.5.223` as
+the signed rollback point until the candidate is tagged, signed, deployed, and
+verified on all four validators.
+
 Mainnet launch must use the gated checklist in [MAINNET_LAUNCH_RUNBOOK.md](MAINNET_LAUNCH_RUNBOOK.md). That runbook is the owner-facing package for launching the 4-validator mainnet first, then enabling custody only after post-genesis verification and route-specific dust tests pass.
 
 Mandatory state/sync policy: [TESTNET_STATE_AND_SYNC_POLICY.md](TESTNET_STATE_AND_SYNC_POLICY.md). For any shared testnet, staging, or mainnet-like network, do not reset state and do not distribute a copied validator state directory unless the network owner explicitly approves that exact reset. Joining validators must sync from their own state directories.
@@ -31,7 +35,12 @@ Restriction schema activation policy: [RESTRICTION_SCHEMA_ACTIVATION.md](RESTRIC
 | **Local production-parity stack** | `scripts/start-local-stack.sh testnet` |
 | VPS initial provisioning | `deploy/setup.sh` |
 
-`deploy/setup.sh` is now responsible for the public edge as well: it installs the checked-in Caddy config from `deploy/Caddyfile.*`, enables the `caddy` service, uses internal TLS for Cloudflare-origin traffic, and keeps raw RPC, WebSocket, faucet, and custody ports off the public firewall surface.
+`deploy/setup.sh` is responsible for origin ingress as well: it installs the
+checked-in Caddy config from `deploy/Caddyfile.*`, enables `caddy`, and keeps raw
+RPC, WebSocket, faucet, and custody ports off the public firewall surface. On
+testnet, `LICHEN_EDGE_ORIGIN_HOST` and the host-specific root-owned token file
+append an authenticated public-CA origin used only by the four-origin
+Cloudflare Worker. Do not store that token in a systemd environment file.
 
 ## Deployment path selection
 
@@ -44,6 +53,14 @@ Choose the least destructive path that matches the evidence:
 | One node is stale because of local disk/log pressure, bad service state, or a host rebuild | Fix disk/log pressure first, then rejoin only that node from its own preserved validator identity | Do not wipe the whole network. Do not copy RocksDB state from another validator. Delete that node's local `state-<net>` only when the operator explicitly approves that single-node rejoin. |
 | Genesis contents must change, launch rehearsal must start from block 0, or every node has provably inconsistent chain state | Owner-approved `LICHEN_RELEASE_TAG=vX.Y.Z scripts/clean-slate-redeploy.sh <testnet|mainnet>` | Destructive. Stop services, preserve and verify each validator keypair, install the signed release archive, flush chain state, create genesis on the seed, then start joiners from empty chain state so they sync from peers. |
 | Contract metadata, custody, faucet, Caddy, firewall, or secret ownership issue while the chain is healthy | Fix the affected service/run `deploy/setup.sh` or `scripts/first-boot-deploy.sh` as documented | Do not touch validator state. |
+
+Analytics v2 in `v0.5.224` is not a code-only rolling update. It changes the
+deterministic post-block state projection and must use a coordinated
+all-validator stop/install/start after archive and `dex_trade_*` history parity
+is proven. On first post-upgrade block, every validator independently rebuilds
+analytics from its own canonical history and commits the schema marker plus
+bridge cursor atomically. A missing trade or referenced block is a hard blocker,
+not permission to reset, copy another validator DB, or skip migration.
 
 Rolling-release rules:
 
@@ -68,6 +85,12 @@ Rolling-release rules:
 - `scripts/rolling-release-deploy.sh` performs the VPS disk/log preflight, refuses non-live state backup directories under `/var/lib/lichen`, installs release binaries and `seeds.json`, restarts one validator at a time, proves the service PID/start timestamp changed, verifies every running validator process in the service executes the expected release binary hash, waits for local health, then checks the public RPC edge.
 - Rolling release is the default for cadence, WebSocket, RPC indexing, and consensus performance fixes because those fixes do not require a new genesis.
 - Any release that changes replay, block import, post-block effects, fees, staking, oracle, or validator-set handling must include deterministic-state coverage for local-observer differences, including commit-certificate subsets.
+- Any release that changes genesis bootstrap, public-history indexes, archive/cold
+  storage, snapshot export/import, or validator sync must run the four-validator
+  hot+cold public-history gate before VPS rollout:
+  `LICHEN_RUN_LAUNCHPAD_E2E=1 LICHEN_RUN_VOLUME_E2E=1 LICHEN_LOCAL_ARCHIVE_COLD=1 LICHEN_COLD_RETENTION_SLOTS=20 LICHEN_COLD_MIGRATION_INTERVAL_SECS=5 bash tests/local-multi-validator-test.sh 4`.
+  The gate must finish with identical public-history manifest roots across all
+  four local validators.
 - Any release that changes fee charging or block commit batching must prove the public `getTotalBurned` value increases after a finalized fee-bearing transaction or drill. Do not accept explorer fee display alone as proof; it can be derived from the transaction while the consensus burned counter remains stale.
 - For an existing chain, Neo route/rewards/proof/agent code ships as a normal signed rolling release first. Do not set `LICHEN_GENESIS_NEO_GAS_REWARDS_ENABLE=1`, do not inject fresh-genesis Neo env, and do not activate Neo post-genesis payloads until every validator is running the new release and health/WS/DEX smokes pass.
 - If a rolling release exposes a state-root mismatch, split tip, or stalled BFT height, stop every validator service, keep state/logs intact for evidence, fix and tag the code, then use the owner-approved clean-slate path only after the fix is verified. Do not copy RocksDB state between validators to "heal" the split.
@@ -81,6 +104,32 @@ Coordinated signed-release recovery rules for a stalled live height:
 - Download the GitHub Release archives, verify `SHA256SUMS`, attach and verify `SHA256SUMS.sig`, and verify the expected binary hashes before any service stop.
 - Prestage or install the exact signed release binaries on all validators while preserving `/var/lib/lichen/state-<network>`, `/var/lib/lichen/archive-<network>`, `/etc/lichen`, validator keypairs, node identity, peer cache, and consensus WAL.
 - Stop all validator services only after every host has the signed release staged. Start all validator services from preserved state, then verify every running process hash matches the release hash and no process is executing a deleted binary.
+- For a release with an unset post-block activation marker, prove every stopped
+  database has the same tip and tip hash. Let `ACTIVATION_SLOT` be exactly that
+  common tip plus one. Run this command first without `--execute` on all hosts;
+  every output must report the same `last_slot`, `expected_activation_slot`, and
+  `activation_ready=true`. Then run the execute form with the exact confirmation
+  on every host before starting any validator:
+
+  ```bash
+  sudo -u lichen /usr/local/bin/lichen-validator \
+    --network testnet \
+    --db-path /var/lib/lichen/state-testnet \
+    --prepare-post-block-effects-activation \
+    --activation-slot "$ACTIVATION_SLOT"
+
+  sudo -u lichen /usr/local/bin/lichen-validator \
+    --network testnet \
+    --db-path /var/lib/lichen/state-testnet \
+    --prepare-post-block-effects-activation \
+    --activation-slot "$ACTIVATION_SLOT" \
+    --execute \
+    --confirm "post-block-effects-activation:testnet:$ACTIVATION_SLOT"
+  ```
+
+  A mismatched tip, requested slot, existing marker, binary hash, or dry-run
+  result blocks the whole start. Do not prepare a lagging node and do not start
+  any candidate process until all databases have the same durable boundary.
 - The recovery is green only when every validator reports the same release, public RPC returns healthy fresh blocks, block height advances for a sustained window, `getMetrics` is available, WebSocket slot subscriptions advance, and explorer-facing endpoints display current data.
 
 ## Mandatory Local Deployment Drill
@@ -144,6 +193,16 @@ Restart/rejoin invariant:
   cursor, or an attached cold archive that backs historical blocks, recovery must
   preserve that chain progress and clear stale bootstrap markers instead of
   treating the node as a fresh joiner.
+- Post-block repair must be bounded by the release's durable activation slot.
+  Fresh chains initialize slot 1. Existing public validators must first be
+  stopped at one exact tip/hash, then each independent database must dry-run and
+  execute the guarded prepare command for the same `common tip + 1`. It
+  WAL-syncs and reads back the marker. Startup without it exits 78 instead of
+  choosing a local height. Missing markers before that slot are never replay
+  evidence; activated repair requires the exact canonical block and fails
+  closed on a body gap. Offline execute refuses a database with no activation
+  boundary. Never create, backdate, remove, or infer this marker to force a
+  repair.
 - Hot/cold archive split is a storage optimization only. Hot data may serve
   recent reads faster and cold data may serve old history, but together they are
   the validator's local archive. Any release touching this path must prove old
@@ -164,15 +223,30 @@ The supported production shape is:
 Primary public endpoints are:
 
 - mainnet: JSON-RPC `https://rpc.lichen.network`, WebSocket `wss://rpc.lichen.network/ws`
-- testnet: JSON-RPC `https://testnet-rpc.lichen.network`, WebSocket `wss://testnet-rpc.lichen.network/ws`
+- testnet: JSON-RPC `https://testnet-api.lichen.network`, WebSocket `wss://testnet-api.lichen.network/ws`
+- explorer same-origin testnet gateway: JSON-RPC
+  `https://explorer.lichen.network/api/testnet`, WebSocket
+  `wss://explorer.lichen.network/api/testnet/ws`
 
-Current checked-in origin mappings also include dedicated WebSocket aliases:
+The testnet public hostname is a Cloudflare Worker custom domain, not a DNS
+record for one validator. `edge/testnet-rpc` probes and routes across four
+independently authenticated Caddy origins in US, EU, SEA, and IN. Its strict
+`/edge-health` endpoint returns HTTP 503 unless all four origins are healthy and
+within 64 slots of the highest origin. Normal requests fail over on origin
+health, network, and gateway failures. Each origin must use a distinct
+`ORIGIN_AUTH_TOKEN_<REGION>` Wrangler secret and matching
+`/etc/lichen/secrets/edge-origin-auth` value.
+
+The mainnet node-local mapping also includes a dedicated WebSocket alias:
 
 - mainnet: `rpc.lichen.network -> 127.0.0.1:9899`, `/ws -> 127.0.0.1:9900`, `ws.lichen.network -> 127.0.0.1:9900`
-- testnet: `testnet-rpc.lichen.network -> 127.0.0.1:8899`, `/ws -> 127.0.0.1:8900`, `testnet-ws.lichen.network -> 127.0.0.1:8900`
 
-Operational rule: direct exposure of the raw RPC or WebSocket listeners is unsupported for production. If Caddy or the firewall posture is missing, the node is not in a production-ready network shape even if the Rust services are running.
-When the checked-in Caddy configs use `tls internal`, every advertised HTTPS/WSS hostname must be proxied through the trusted edge. Do not publish DNS-only `A` records for `ws.lichen.network` or `testnet-ws.lichen.network` unless Caddy is configured with a public CA certificate for those hostnames and the public WSS smoke test passes.
+Operational rule: direct exposure of the raw RPC or WebSocket listeners is unsupported for production. If Caddy, unique origin authentication, strict edge health, or the firewall posture is missing, the node is not in a production-ready network shape even if the Rust services are running.
+When the checked-in mainnet Caddy config uses `tls internal`, every advertised
+HTTPS/WSS hostname must be proxied through the trusted edge. Do not publish a
+DNS-only `A` record for `ws.lichen.network` unless Caddy is configured with a
+public CA certificate and the public WSS smoke test passes. Testnet uses the
+Worker custom domain for both HTTPS and WSS; it has no separate public WS alias.
 
 ## Supporting scripts
 
@@ -266,9 +340,9 @@ Current implementation note:
 ## Network selection and public ingress
 
 - Local browser workflows default to `local-testnet`.
-- Current pre-mainnet production portals default to `testnet` and call `https://testnet-rpc.lichen.network`.
+- Current pre-mainnet production portals default to `testnet` and call `https://testnet-api.lichen.network`, except the explorer, which uses its same-origin `/api/testnet` Worker route.
 - Mainnet cutover must explicitly flip each portal `shared-config.js` `productionPrimaryNetwork`/visible-network policy to `mainnet` before Cloudflare Pages deployment.
-- Public testnet RPC lives at `https://testnet-rpc.lichen.network`.
+- Public testnet RPC lives at `https://testnet-api.lichen.network`; it must never resolve or route to only one validator.
 - A healthy testnet redeploy does not make mainnet-ready portal checks healthy if `rpc.lichen.network` or its Cloudflare/Caddy/origin path is down.
 - Browser CORS, incident-status, signed-metadata, and symbol-registry errors on the portals can be caused by an ingress failure first. A Cloudflare `502` is surfaced by browsers as a CORS-style failure because the error page is not the RPC app.
 
@@ -324,19 +398,35 @@ Other important outputs:
 
 ## VPS disk and log guardrails
 
-The May 2026 stale-US-node incident was caused by the US VPS root filesystem filling up from old non-live chain-state backups plus unbounded sudo I/O logs. RocksDB then failed writes with `No space left on device`; the US RPC kept serving a stale slot and public RPC intermittently routed users to it.
+The July 11, 2026 EU incident showed that EU's hot/cold layout no longer fit
+safely on its 193 GiB root disk. EU reached 100%
+while writing slot 8,912,000, RocksDB returned `No space left on device`, and
+the nested binary/systemd supervisors attempted more than 2,600 restarts. EU
+held about 106 GiB of hot state and 68 GiB of cold archive; its newest
+checkpoint was mostly hard links and was not the root cause. The July 14 raw
+audit later found 68.64 GB of old history stranded in hot storage because a
+point-optimized iterator had stopped early. The bounded total-order migration
+makes the current disk repairable in place. All public validators still need
+equivalent genesis-to-tip data, so deleting EU history is not a capacity fix.
 
 Operational rules:
 
 - Do not keep copied RocksDB chain-state backups on `/` or under `/var/lib/lichen` after a reset. Keep only the live `/var/lib/lichen/state-<net>` directory on each validator and move any required archive off-host or onto a separately monitored volume.
-- Before a rolling release, testnet reset, audited launch rehearsal, or mainnet launch, every VPS must pass the disk preflight below before any validator service starts.
+- Before a rolling release, audited launch rehearsal, or mainnet launch, every
+  archive filesystem must pass measured headroom checks. Normal rollout
+  requires at least 20 GiB free and less than 90% use by default. History repair
+  first performs a complete dry run and requires free space equal to 150% of
+  the missing key/value bytes plus a 10 GiB reserve. Environment overrides may
+  raise these floors; they must never lower them below the operation's measured
+  write/compaction peak.
 - `deploy/setup.sh` installs persistent journald limits and, when sudo I/O logging already exists, installs compression and two-day tmpfiles retention for `/var/log/sudo-io`. Re-run `deploy/setup.sh` on old hosts before using them for a reset or launch.
-- A node with `getHealth.result.disk.critical=true`, an HTTP 503 `stale_tip`, or a root filesystem above the critical threshold is not eligible for Cloudflare/public RPC routing.
+- A node with `getHealth.result.disk.critical=true`, an HTTP 503 `stale_tip`, or an archive filesystem above the critical threshold is not eligible for Cloudflare/public RPC routing.
+- Below 20 GiB free the validator skips new checkpoints. Below 10 GiB it exits with status 78; the checked-in systemd unit and built-in supervisor both refuse to restart that persistent safety failure.
 
 Required preflight on every VPS, including rolling updates:
 
 ```bash
-df -h /
+df -h /var/lib/lichen
 sudo du -sh /var/lib/lichen /var/log/journal /var/log/sudo-io 2>/dev/null || true
 sudo find /var/lib/lichen/state-<net>/checkpoints -mindepth 1 -maxdepth 1 \
   -type d -name 'slot-*' -printf '%f\n' | sort -V
@@ -346,7 +436,37 @@ curl -s http://127.0.0.1:<rpc-port> -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"getHealth","params":[]}'
 ```
 
-Validators create RocksDB checkpoints every 1,000 slots for state snapshot sync and fork-repair. `LICHEN_CHECKPOINT_KEEP_COUNT` defaults to `2`; raise it only on hosts with enough disk headroom. `LICHEN_CHECKPOINT_MAX_BYTES` defaults to 8 GiB total logical checkpoint size, clamps at 128 GiB, and can be set to `0` only when an operator intentionally disables the size cap. Size pruning preserves the newest checkpoint even when one logical checkpoint exceeds the cap, so peers keep at least one snapshot source. Checkpoints are hard-linked to live RocksDB files, so `du` can attribute live DB bytes to `checkpoints/`; disk cleanup must remove only old `slot-*` checkpoint directories and never active state files.
+Validators create RocksDB checkpoints every 1,000 slots for state snapshot sync and fork-repair. `LICHEN_CHECKPOINT_KEEP_COUNT` defaults to `2`; raise it only on hosts with enough disk headroom. `LICHEN_CHECKPOINT_MAX_BYTES` defaults to 8 GiB total logical checkpoint size, clamps at 128 GiB, and can be set to `0` only when an operator intentionally disables the size cap. Size pruning preserves the newest checkpoint even when one logical checkpoint exceeds the cap, so peers keep at least one snapshot source. Checkpoints are hard-linked to live RocksDB files, so `du` can attribute live DB bytes to `checkpoints/`; disk cleanup must remove only old `slot-*` checkpoint directories and never active state files. Checkpoint creation is fail-closed when filesystem capacity cannot be read or less than 20 GiB remains.
+
+Sparse Merkle node and leaf column families are derived current-state caches.
+They are rebuilt from canonical accounts and contract storage and are not a
+substitute for historical blocks, transactions, or contract-state snapshots.
+Do not delete their SST files or use filesystem cleanup to change them. If
+RocksDB properties show node SST size materially exceeding the current
+reachable tree, stop and boot-disable the validator, record slot/root/identity/
+genesis/archive evidence and free space, then use the typed maintenance command:
+
+```bash
+sudo -u lichen /usr/local/bin/lichen-validator \
+  --network <net> \
+  --db-path /var/lib/lichen/state-<net> \
+  --cache-size-mb 1024 \
+  --rebuild-sparse-state-commitment
+
+sudo -u lichen /usr/local/bin/lichen-validator \
+  --network <net> \
+  --db-path /var/lib/lichen/state-<net> \
+  --cache-size-mb 1024 \
+  --show-state-commitment-schema
+```
+
+The rebuild range-clears and compacts only derived sparse node/leaf caches,
+then reconstructs both trees from canonical state. Require the show command to
+verify computed and stored roots, and require slot, identity, genesis, and
+archive evidence to remain unchanged before restart. Resume through the next
+checkpoint boundary and verify normal retention removes the prior hard-linked
+checkpoint and that sparse-node SST size remains bounded. Any root mismatch,
+RocksDB error, or approach to the runtime floor is a stop condition.
 
 If the backup `find` command returns non-live state backups, remove them only after confirming they are not the active `state-<net>` path and any required archive has been moved off-host. If `/var/log/sudo-io` or `/var/log/journal` is large, run `sudo journalctl --vacuum-size=512M` and `sudo systemd-tmpfiles --clean /etc/tmpfiles.d/sudo-io-retention.conf` after `deploy/setup.sh` has installed the retention files.
 
@@ -357,8 +477,8 @@ Outside explicit local development, set `LICHEN_KEYPAIR_PASSWORD` before the fir
 Operational rules:
 
 - canonical validator, treasury, genesis-primary, faucet, and signer keypair JSON files are encrypted at rest when `LICHEN_KEYPAIR_PASSWORD` is set
-- production loaders now refuse plaintext keypair files unless `LICHEN_LOCAL_DEV=1` or `LICHEN_ALLOW_PLAINTEXT_KEYPAIRS=1` is explicitly set
-- local launchers still allow plaintext compatibility for throwaway development, but the secure local E2E path should export `LICHEN_KEYPAIR_PASSWORD` so the same code path is exercised before redeploy
+- production loaders refuse plaintext keypair files; only `LICHEN_LOCAL_DEV=1` permits plaintext in a disposable local environment
+- the secure local E2E path should export `LICHEN_KEYPAIR_PASSWORD` so the production code path is exercised before redeploy
 - any helper copy of a keypair file must preserve owner-only permissions; use the checked-in scripts rather than ad hoc `cp`
 - on testnet, every enabled `lichen-faucet.service` unit must load the same keypair password used to encrypt `FAUCET_KEYPAIR`; a healthy validator does not make the faucet healthy if this service secret is missing
 
@@ -509,7 +629,7 @@ Keep `LICHEN_KEYPAIR_PASSWORD` exported while running Python or SDK-driven E2Es 
 For production-like validation, the minimum local gate is:
 
 1. Run `scripts/start-local-stack.sh testnet` from a clean reset.
-2. Run `bash tests/local-multi-validator-test.sh 4` and preserve the evidence that a joiner restarts from its own state, keeps its validator keypair, does not reimport genesis, and catches back up without copied RocksDB, WAL, genesis-wallet, or genesis-key artifacts.
+2. Run `LICHEN_RUN_LAUNCHPAD_E2E=1 LICHEN_RUN_VOLUME_E2E=1 LICHEN_LOCAL_ARCHIVE_COLD=1 LICHEN_COLD_RETENTION_SLOTS=20 LICHEN_COLD_MIGRATION_INTERVAL_SECS=5 bash tests/local-multi-validator-test.sh 4` and preserve the evidence that a joiner restarts from its own state, keeps its validator keypair, does not reimport genesis, catches back up without copied RocksDB, WAL, genesis-wallet, or genesis-key artifacts, and matches the public-history manifest root across all local hot/cold stores after the complete user journeys.
 3. Run the intended E2E or matrix workload, including faucet-backed native LICN funding when faucet behavior is part of the release.
 4. Re-run the same workload without resetting state to catch reused-signer, reused-faucet, and long-lived-chain issues.
 5. Stop one local validator, restart it from its existing state, and verify all validators continue producing and converge again before any live rollout.
@@ -1072,7 +1192,7 @@ make `createBridgeDeposit` fail after route restrictions are lifted. Validate
 the bridge route through the public RPC and each direct VPS RPC:
 
 ```bash
-lichen --rpc-url https://testnet-rpc.lichen.network restriction status bridge-route solana sol
+lichen --rpc-url https://testnet-api.lichen.network restriction status bridge-route solana sol
 ```
 
 ### Step 8: external ingress and browser smoke tests
@@ -1082,18 +1202,18 @@ Do not stop after internal `127.0.0.1` health checks. Validate the public path t
 For public testnet:
 
 ```bash
-curl -si -X OPTIONS https://testnet-rpc.lichen.network/ \
+curl -si -X OPTIONS https://testnet-api.lichen.network/ \
   -H 'Origin: https://dex.lichen.network' \
   -H 'Access-Control-Request-Method: POST' \
   -H 'Access-Control-Request-Headers: content-type'
 
-curl -s https://testnet-rpc.lichen.network/ -H 'Content-Type: application/json' \
+curl -s https://testnet-api.lichen.network/ -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"getHealth","params":[]}'
 
-curl -s https://testnet-rpc.lichen.network/ -H 'Content-Type: application/json' \
+curl -s https://testnet-api.lichen.network/ -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"getIncidentStatus","params":[]}'
 
-curl -s https://testnet-rpc.lichen.network/ -H 'Content-Type: application/json' \
+curl -s https://testnet-api.lichen.network/ -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"getSignedMetadataManifest","params":[]}'
 
 python3 - <<'PY'
@@ -1101,7 +1221,7 @@ import subprocess
 payload = '{"jsonrpc":"2.0","id":1,"method":"subscribeSlots","params":null}\n'
 for i in range(1, 11):
     result = subprocess.run(
-        ["websocat", "-n1", "wss://testnet-rpc.lichen.network/ws"],
+        ["websocat", "-n1", "wss://testnet-api.lichen.network/ws"],
         input=payload,
         text=True,
         capture_output=True,
@@ -1117,7 +1237,7 @@ import json
 import time
 import urllib.request
 
-base = "https://testnet-rpc.lichen.network"
+base = "https://testnet-api.lichen.network"
 deadline = time.time() + 90
 last_error = None
 
@@ -1161,12 +1281,12 @@ else:
 PY
 ```
 
-Also confirm any advertised dedicated WS aliases are on the same trusted edge path. With `tls internal`, DNS must resolve to the edge, not directly to validator VPS IPs:
+Confirm the canonical testnet custom domain serves both RPC and WebSocket
+traffic through the same Worker:
 
 ```bash
-dig +short testnet-rpc.lichen.network
-dig +short testnet-ws.lichen.network
-websocat -n1 wss://testnet-ws.lichen.network
+dig +short testnet-api.lichen.network
+websocat -n1 wss://testnet-api.lichen.network/ws
 ```
 
 If `testnet-ws.lichen.network` or `ws.lichen.network` resolves directly to validator IPs and presents an untrusted origin certificate, do not advertise it to clients. Use the RPC-hosted `/ws` endpoint until DNS is proxied through the edge or the origin has a public CA certificate.
@@ -1418,7 +1538,7 @@ The local 3-validator launcher generates this manifest automatically.
 
 On VPS deploys, `first-boot-deploy.sh` must now regenerate the manifest, install it into the configured `/etc/lichen/` target, and verify that the validator serves the expected DEX-related symbol registry entries back through `getSignedMetadataManifest`. If Node.js, the release-signing keypair, or the install step is missing, the deploy fails instead of continuing half-configured.
 
-`first-boot-deploy.sh` no longer assumes a repo-local signing key. Set `LICHEN_SIGNED_METADATA_KEYPAIR_FILE` in `/etc/lichen/env-<net>` via `deploy/setup.sh`, or export `SIGNED_METADATA_KEYPAIR` explicitly for local-only workflows.
+`first-boot-deploy.sh` never reads a signing key from the validator service environment. Mount the key only for the bootstrap command and export `SIGNED_METADATA_KEYPAIR`; remove the mount when the signed artifact is installed.
 
 ## ZK proof generation
 
@@ -1660,7 +1780,11 @@ Do not distribute `genesis-wallet.json` or `genesis-keys/` to validator joiners.
 
 This is the full step-by-step procedure for stopping everything, flushing all state, and redeploying from scratch so VPSes match the live validator set exactly.
 
-Current signed-release target for this runbook is `v0.5.221`; keep `v0.5.221` as the signed rollback point until a newer signed rollback point is explicitly recorded. The GitHub Release archive must be installed on all four VPSes, the seed creates genesis, and `seed-02`, `seed-03`, plus `seed-04` start from empty chain state and join from peers without a state copy. A passing verifier must report all four validators healthy with bridge `4/2`, oracle feeds including BTC, empty faucet history, 32 manifest symbols, and the mandatory 13 DEX CLOB pairs, AMM pools, and router routes including `wBTC/lUSD` and `wBTC/LICN`. `v0.5.221` keeps the configured 800ms propose, 500ms prevote, 500ms precommit, and a 5s max phase timeout, removes the sub-slot remote-proposer timeout that could nil-vote before a delayed valid proposal arrived, reduces block-range response chunks so catch-up traffic cannot monopolize consensus transport, and keeps the startup-only stale-height WAL round rendezvous from `v0.5.220` so restarted validators do not replay hours of obsolete timeout rounds after an already-stale tip. It also fixes successful LiveSync catch-up cooldown reset, keeps the guarded public-history merge admin path, opens checkpoint stores through RocksDB read-only descriptors, verifies checkpoint metadata through non-mutating cached/sparse-root reads so snapshot serving cannot cold-rebuild or compact checkpoint Merkle state, enforces `LICHEN_CHECKPOINT_MAX_BYTES`, requests catch-up block ranges from one primary peer per chunk with fallback, accepts authenticated PQ node checkpoint sources only after the signed checkpoint header verifies, anchors chunks to the source-pinned snapshot manifest root after the checkpoint state root has active-validator quorum, rejects checkpoint sources whose deterministic archive manifest differs from the verified checkpoint metadata, and hardens restart/rejoin recovery so cold-migrated archive rows and stale bootstrap markers cannot cause state loss. All validators must end on the same signed release before the rollout is considered complete. Use `scripts/rolling-release-deploy.sh` only for non-consensus code-only updates; do not flush state for that path.
+This destructive checklist does not apply to the current July testnet or the
+`v0.5.224` candidate. That release must preserve `v0.5.223` as the signed
+rollback anchor and follow the in-place archive repair and coordinated resume
+gate above. Keep this section only for a future, separately approved network
+whose chain identity is intentionally being replaced.
 
 The `testnet_governed_signer_recovery_v1` hook is live-testnet lineage recovery
 only. It must not be copied into a fresh mainnet launch plan or treated as a
@@ -1670,7 +1794,7 @@ backups, and hard-stop if any live signer role is missing.
 
 `v0.5.190` and later refuse to start non-dev `testnet` or `mainnet` validators unless both `--archive-mode` and `--cold-store /var/lib/lichen/archive-<network>` are present. This is intentional: public validators are archive-backed RPC nodes, not state-only snapshot consumers. The exception is explicit local `--dev-mode`, which remains lightweight for disposable developer clusters.
 
-State divergence must be corrected by normal replay or by the full verified checkpoint snapshot path. Verified snapshots use authenticated PQ node checkpoint sources, a signed checkpoint header, active-validator quorum on the checkpoint state root, and a source-pinned snapshot manifest before import. Do not run local-history stake-pool counter rewrites; validator and stake-pool singletons are never imported outside a staged checkpoint whose final root matches the announced checkpoint root.
+State divergence must be corrected by normal replay or by the full verified checkpoint snapshot path. Verified snapshots require authenticated PQ node sources and a self-contained canonical proof: the parent certificate, its transaction-0 Merkle inclusion in a signed and finalized child header, the child's complete historical power denominator, and the parent post-effects root committed by that certificate. Snapshot bytes and the source-pinned archive manifest must match that root before import. Do not run local-history stake-pool counter rewrites; validator and stake-pool singletons are never imported outside this staged verification path.
 
 If a validator was mistakenly registered through the explicit funded path while it should enter bootstrap recovery, first roll a signed release that supports `ReclassifyValidatorBootstrap`, then submit the validator-signed correction:
 
@@ -1686,7 +1810,7 @@ The transaction is only valid for an existing exact 100,000 LICN explicit-funded
 ```bash
 export LICHEN_OWNER_APPROVED_RESET='owner-approved:testnet:15.204.229.189,37.59.97.61,15.235.142.253,148.113.43.247'
 export LICHEN_CLEAN_SLATE_REDEPLOY_CONFIRM='clean-slate:testnet:15.204.229.189,37.59.97.61,15.235.142.253,148.113.43.247'
-export LICHEN_RELEASE_TAG=v0.5.221
+export LICHEN_RELEASE_TAG=vX.Y.Z
 bash scripts/clean-slate-redeploy.sh testnet
 ```
 
@@ -2195,7 +2319,11 @@ command find /var/lib/lichen/contracts -maxdepth 2 -name '*.wasm' | sort | xargs
 
 **Root cause**: A validator signed consensus votes for a block before locally replaying the full proposal against its canonical pre-state. That is not a valid production BFT flow: validators must process the proposal and verify parent hash, validator-set hash, transaction root, fee metadata, and state root before prevoting.
 
-**Fix**: Stop every validator immediately and keep `/var/lib/lichen/state-<net>` plus journals for evidence. Ship a new signed release with the proposal-validation gate fixed. For testnet, recover with the owner-approved clean-slate redeploy so the seed creates genesis and joiners sync from peers. For mainnet, do not reset without a separate governance/incident decision; first evaluate whether a finalized-height rollback procedure exists.
+**Fix**: Stop every validator immediately and keep `/var/lib/lichen/state-<net>`,
+the cold archive, keys, WAL, and journals intact. Ship a new signed release with
+the proposal-validation gate fixed, install it on every validator, and resume
+coordinately from each validator's preserved state. Do not reset the current
+testnet or replace one validator's state with another's.
 
 **Prevention**: Treat proposal execution before prevote as a release-blocking invariant. A rolling deploy health gate must fail on stale block age, split tips, or state-root mismatch, and operators must not heal by copying another validator's RocksDB directory.
 
@@ -2264,6 +2392,100 @@ command find /var/lib/lichen/contracts -maxdepth 2 -name '*.wasm' | sort | xargs
 **Symptom**: `getHealth`, balances, staking state, and consensus all look correct, but wallet/extension activity, explorer account history, `getTransactionsByAddress`, or old `getBlock`/`getTransaction` lookups return empty data for historical accounts.
 
 **Root cause**: Account transaction rows, historical block bodies, transaction-by-slot rows, and archive account snapshots are RPC/archive data. They are not part of the state root. A validator can be consensus-valid from a checkpoint snapshot while still lacking old public-history backing rows if it was started as a state-only node or imported a snapshot without backed archive history.
+
+**Current release gate**: Archive parity is mandatory for public testnet
+readiness. Follow
+[`ARCHIVE_PARITY_REPAIR_PLAN_2026-07-09.md`](ARCHIVE_PARITY_REPAIR_PLAN_2026-07-09.md)
+before any live rollout. The fix is to replicate and verify backed public
+history into every validator, not to delete the richest source until the fleet
+looks uniform.
+
+**Preferred parity commands**: Use the canonical public-history manifest and
+repair commands for new releases. They scan hot plus cold stores, include block,
+transaction, account-history, event, token-transfer, program-call, trade, market,
+NFT, EVM, shielded, and account-snapshot public categories, and emit JSON
+evidence.
+
+Before executing repair, prove that at least one verified source contains each
+historical slot from genesis to tip. If every live validator returns
+`Block not found` for a slot range, that is a backed-source gap, not a parity
+state. Do not "fix" parity by making every validator equally incomplete. Either
+find the real backup/archive source for the missing range and repair from it, or
+keep the release blocked. For the current July testnet incident, reset, new
+genesis, block synthesis, and state replacement are prohibited.
+
+```bash
+# Fleet read-only pass across US, EU, SEA, and IN.
+bash scripts/verify-testnet-archive-parity.sh
+
+# Strict release gate: stop all validators only with exact owner confirmation,
+# compare fixed-tip manifests, then restart only after equality is proven.
+export LICHEN_ARCHIVE_PARITY_STOP_CONFIRM='archive-parity-stop:testnet:15.204.229.189,37.59.97.61,15.235.142.253,148.113.43.247'
+bash scripts/verify-testnet-archive-parity.sh --stop-for-manifest
+
+# Live repair path when the source is a peer VPS, not a locally mounted DB.
+# Every block range is bounded and source-proven. Execute requires recorded
+# provider backups, matching candidate hashes, a complete conflict-free target
+# dry run, and measured missing-byte headroom before any target is stopped.
+bash scripts/stream-public-history-repair.sh \
+  --source SOURCE --targets "TARGETS" \
+  --categories slots,blocks,transactions,tx_by_slot,tx_to_slot,tx_meta \
+  --from-slot FIRST --to-slot LAST
+export LICHEN_PUBLIC_HISTORY_BACKUP_CONFIRM='current-backups-verified:testnet:15.204.229.189,37.59.97.61,15.235.142.253,148.113.43.247'
+export LICHEN_PUBLIC_HISTORY_STREAM_CONFIRM='stream-public-history-repair:testnet:SOURCE:TARGETS_CSV'
+bash scripts/stream-public-history-repair.sh --execute --leave-target-stopped \
+  --source SOURCE --targets "TARGETS" \
+  --categories slots,blocks,transactions,tx_by_slot,tx_to_slot,tx_meta \
+  --from-slot FIRST --to-slot LAST
+
+# Final repair gate. This compares offline fixed-tip manifests and deliberately
+# leaves every validator stopped. A coordinated start is a separate next step.
+export LICHEN_ARCHIVE_PARITY_STOP_CONFIRM='archive-parity-stop:testnet:15.204.229.189,37.59.97.61,15.235.142.253,148.113.43.247'
+bash scripts/verify-testnet-archive-parity.sh --offline-repair-gate
+
+# Read-only manifest on a live validator.
+sudo -u lichen /usr/local/bin/lichen-validator \
+  --network testnet \
+  --db-path /var/lib/lichen/state-testnet \
+  --cold-store /var/lib/lichen/archive-testnet \
+  --secondary-dir /tmp/lichen-public-history-manifest \
+  --cache-size-mb 256 \
+  --public-history-manifest
+
+# Compare the target to a verified backed source.
+sudo -u lichen /usr/local/bin/lichen-validator \
+  --network testnet \
+  --db-path /var/lib/lichen/state-testnet \
+  --cold-store /var/lib/lichen/archive-testnet \
+  --secondary-dir /tmp/lichen-public-history-parity-check \
+  --cache-size-mb 256 \
+  --verify-public-history-parity-with-source /mnt/verified-source/state-testnet \
+  --source-cold-store /mnt/verified-source/archive-testnet
+
+# Dry-run repair from that source.
+sudo -u lichen /usr/local/bin/lichen-validator \
+  --network testnet \
+  --db-path /var/lib/lichen/state-testnet \
+  --cold-store /var/lib/lichen/archive-testnet \
+  --secondary-dir /tmp/lichen-public-history-repair-check \
+  --cache-size-mb 256 \
+  --repair-public-history-from-source /mnt/verified-source/state-testnet \
+  --source-cold-store /mnt/verified-source/archive-testnet \
+  --dry-run
+
+# Execute only after dry-run reports conflict_rows=0 and the validator is stopped.
+sudo systemctl stop lichen-validator-testnet
+sudo -u lichen /usr/local/bin/lichen-validator \
+  --network testnet \
+  --db-path /var/lib/lichen/state-testnet \
+  --cold-store /var/lib/lichen/archive-testnet \
+  --cache-size-mb 256 \
+  --repair-public-history-from-source /mnt/verified-source/state-testnet \
+  --source-cold-store /mnt/verified-source/archive-testnet \
+  --execute \
+  --confirm public-history-repair:v1
+sudo systemctl start lichen-validator-testnet
+```
 
 **Fix**: Restore only from a real backed source. First prove the source before rebuilding:
 
@@ -2421,7 +2643,33 @@ wallet/explorer activity green.
 
 Also, the wiped validator's new pubkey registers as a separate entry in the validator set. With N+1 validators and only N-1 online (original minus the ghost), BFT quorum (2/3+) may be unreachable.
 
-**Current release behavior**: `v0.5.221` is the current signed-release target and signed rollback anchor for this runbook until a newer signed rollback point is explicitly recorded. State-repair snapshots are consensus-state-only: they carry accounts, contracts, validator/stake/MossStake state, DEX order state, shielded state, and other root-relevant data, but they do not require or import public block/transaction/account-history archives before a validator can rejoin consensus. Public history restoration is handled by the guarded public-history merge admin path, which opens the source read-only and restores real historical block/transaction/account-history rows from an archive or backup source without replacing balances, validator state, contract storage, tip cursors, or other consensus state. This preserves backed history; it does not infer or synthesize old account activity if no real block, transaction, archive, or backup source contains it. Startup recovery must preserve validators with a non-zero tip, stored genesis block, slot cursor, or attached cold archive, live snapshot rollback must not require public block or transaction rows to still be present in hot RocksDB after cold migration, and a stale restarted BFT height must resume at a round consistent with the stale wall-clock age without signing skipped intermediate rounds.
+**Current release behavior**: `v0.5.223` is the signed rollback anchor;
+`0.5.224` remains an unreleased candidate until all release gates pass.
+State-repair snapshots carry consensus state and complete public-history
+categories, while public-history repair remains additive, source-backed,
+conflict-checked, and never replaces validator identity, consensus WAL, or
+mutable chain state. Snapshot completion requires the target slot/root and a
+complete genesis-to-target public-history proof. Interrupted apply restores
+every exact pre-apply hot category from the local rollback profile, preserves
+the independent cold archive, persists the recovered checkpoint, and removes
+the marker last. Startup preserves any validator with real chain progress or an
+attached cold archive. BFT restart rounds come only from durable signed WAL or
+authenticated peer votes, never stale wall-clock age. Existing public chains
+must be stopped at an exact common tip and prepared with one guarded, WAL-synced
+`tip + 1` activation slot; absent preparation exits 78. Block-hash-bound
+producer and comprehensive markers are audited only inside the
+activated bounded recent window; pre-activation marker absence is never replay
+evidence, and analytics v2 waits for the same boundary. The pre-BFT parent gate
+completes an activated stale canonical parent before the next height reads
+state. Candidate blocks after height 1 commit the parent
+finality certificate, complete sorted parent-height voting powers, parent
+post-effects state root, and exact child fee/oracle metadata in a version-2
+consensus transaction. Canonical execution state, receipts, block anchor,
+transaction slot indexes, and tip/finality cursors commit in one RocksDB batch.
+Proposal validation, sync ingestion, checkpoint verification, mainnet startup,
+and RPC serving verify the parent proof independently; mainnet fails closed if
+any envelope, body, inclusion proof, authenticated powers, state root, or
+two-thirds threshold is missing.
 
 **Fix for local dev**: Remove the wiped validator's entry from all other validators' TOFU stores, then restart all validators from scratch:
 
@@ -2439,7 +2687,12 @@ for v in ['state-7001', 'state-7003']:
             json.dump(d, f, indent=2)
 ```
 
-**Prevention**: If you must wipe a single validator, preserve its `validator-keypair.json` and `home/.lichen/node_identity.json` first and restore them after the wipe. Or wipe all validators and create a fresh genesis.
+**Prevention**: The wipe example is permitted only for a disposable local
+development chain. Never apply it to testnet, staging, or mainnet. Public
+validator recovery must preserve that validator's own keypair, node identity,
+state, hot/cold history, and consensus WAL and use verified network sync or the
+documented snapshot rollback path. A public-chain reset or fresh genesis is not
+an incident-recovery command.
 
 ---
 

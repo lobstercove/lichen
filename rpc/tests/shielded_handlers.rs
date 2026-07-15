@@ -16,12 +16,13 @@ use lichen_core::zk::{
 use lichen_core::{
     Account, Block, Hash, Instruction, Keypair, Message, StateStore, Transaction, SYSTEM_PROGRAM_ID,
 };
-use lichen_rpc::build_rpc_router;
+use lichen_rpc::{build_rpc_router, TransactionSubmission};
 use serde_json::json;
 use tokio::sync::mpsc::{self, error::TryRecvError};
 use tower::util::ServiceExt;
 
 type RpcResult = Result<serde_json::Value, String>;
+const TEST_CHAIN_ID: &str = "lichen-test";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -139,7 +140,6 @@ fn create_empty_app() -> axum::Router {
         None,
         None,
         None,
-        None,
     )
 }
 
@@ -194,7 +194,6 @@ fn create_populated_app(n_commitments: u64, spent_nullifiers: &[[u8; 32]]) -> ax
         None,
         None,
         None,
-        None,
     )
 }
 
@@ -217,7 +216,18 @@ fn create_submission_harness() -> ShieldedSubmissionHarness {
 
     let recent_blockhash = put_ready_tip(&state, 1);
 
-    let (tx_sender, mempool_rx) = mpsc::channel(4);
+    let (tx_sender, mut submission_rx) = mpsc::channel::<TransactionSubmission>(4);
+    let (captured_tx_sender, mempool_rx) = mpsc::channel(4);
+    tokio::spawn(async move {
+        while let Some(submission) = submission_rx.recv().await {
+            let transaction = submission.transaction;
+            captured_tx_sender
+                .send(transaction)
+                .await
+                .expect("capture admitted transaction");
+            let _ = submission.admission_response.send(Ok(()));
+        }
+    });
 
     let _ = Box::leak(Box::new(dir));
     let app = build_rpc_router(
@@ -227,7 +237,6 @@ fn create_submission_harness() -> ShieldedSubmissionHarness {
         None,
         "lichen-test".to_string(),
         "lichen-test".to_string(),
-        None,
         None,
         None,
         None,
@@ -295,7 +304,7 @@ fn build_valid_shield_transaction(
     let message = Message::new(vec![instruction], recent_blockhash);
     let mut tx = Transaction::new(message);
     tx.signatures
-        .push(sender_keypair.sign(&tx.message.serialize()));
+        .push(sender_keypair.sign(&tx.message.signing_bytes_for_chain_id(TEST_CHAIN_ID)));
     tx
 }
 
@@ -411,32 +420,6 @@ async fn test_rpc_get_shielded_pool_state_populated() {
     assert_eq!(result["zkScheme"], "plonky3-fri-poseidon2");
 }
 
-#[tokio::test]
-async fn test_rpc_get_shielded_pool_stats_alias_matches_state() {
-    let app = create_populated_app(4, &[]);
-
-    let state_resp = rpc_call(&app, "getShieldedPoolState").await.unwrap();
-    let stats_resp = rpc_call(&app, "getShieldedPoolStats").await.unwrap();
-
-    let state_result = &state_resp["result"];
-    let stats_result = &stats_resp["result"];
-
-    assert_eq!(
-        stats_result["commitmentCount"],
-        state_result["commitmentCount"]
-    );
-    assert_eq!(stats_result["totalShielded"], state_result["totalShielded"]);
-    assert_eq!(stats_result["merkleRoot"], state_result["merkleRoot"]);
-
-    // Wallet compatibility keys
-    assert_eq!(
-        stats_result["commitment_count"],
-        state_result["commitmentCount"]
-    );
-    assert_eq!(stats_result["pool_balance"], state_result["totalShielded"]);
-    assert_eq!(stats_result["merkle_root"], state_result["merkleRoot"]);
-}
-
 // ── getShieldedMerkleRoot ────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -543,22 +526,6 @@ async fn test_rpc_is_nullifier_spent_is_spent() {
 }
 
 #[tokio::test]
-async fn test_rpc_check_nullifier_alias_matches_is_nullifier_spent() {
-    let null0 = test_nullifier(0);
-    let app = create_populated_app(1, &[null0]);
-    let null_hex = hex::encode(null0);
-
-    let canonical = rpc_call_with_params(&app, "isNullifierSpent", json!([null_hex.clone()]))
-        .await
-        .unwrap();
-    let alias = rpc_call_with_params(&app, "checkNullifier", json!([null_hex]))
-        .await
-        .unwrap();
-
-    assert_eq!(alias["result"], canonical["result"]);
-}
-
-#[tokio::test]
 async fn test_rpc_is_nullifier_spent_invalid_hex() {
     let app = create_empty_app();
     let resp = rpc_call_with_params(&app, "isNullifierSpent", json!(["zzzzzz"]))
@@ -654,7 +621,6 @@ async fn test_rpc_get_shielded_commitments_returns_encrypted_note_payload() {
         None,
         "lichen-test".to_string(),
         "lichen-test".to_string(),
-        None,
         None,
         None,
         None,
@@ -971,7 +937,9 @@ async fn test_rest_submit_shield_rejects_invalid_proof_before_mempool() {
     let proof_start = 1 + 8 + 32;
     tx.message.instructions[0].data.truncate(proof_start + 1);
     tx.message.instructions[0].data[proof_start] = 0;
-    tx.signatures[0] = harness.sender_keypair.sign(&tx.message.serialize());
+    tx.signatures[0] = harness
+        .sender_keypair
+        .sign(&tx.message.signing_bytes_for_chain_id(TEST_CHAIN_ID));
 
     let resp = rest_post(
         &harness.app,
@@ -1028,7 +996,9 @@ async fn test_rpc_send_transaction_skip_preflight_still_rejects_invalid_shield_p
     let proof_start = 1 + 8 + 32;
     tx.message.instructions[0].data.truncate(proof_start + 1);
     tx.message.instructions[0].data[proof_start] = 0;
-    tx.signatures[0] = harness.sender_keypair.sign(&tx.message.serialize());
+    tx.signatures[0] = harness
+        .sender_keypair
+        .sign(&tx.message.signing_bytes_for_chain_id(TEST_CHAIN_ID));
 
     let resp = rpc_call_with_params(
         &harness.app,
@@ -1227,7 +1197,6 @@ fn create_app_from_state(state: StateStore) -> axum::Router {
         None,
         "lichen-test".to_string(),
         "lichen-test".to_string(),
-        None,
         None,
         None,
         None,

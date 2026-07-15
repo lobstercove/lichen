@@ -65,9 +65,10 @@ const MAX_FEE_BPS: u64 = 100; // 1% max
                               // AUDIT-FIX CLOB-1: 100% of taker fee goes to protocol treasury on settlement.
                               // LP/staker incentives are handled by the separate dex_rewards contract via token emissions.
 const MIN_FEE_PER_TRADE: u64 = 1; // 1 spore minimum
-const MAX_TICK_SCAN: u64 = 50_000; // AUDIT-FIX CLOB-3: max ticks to scan for next price level
+const ORDERBOOK_INDEX_VERSION: u8 = 1;
 const ORDER_EXPIRY_MAX: u64 = 2_592_000; // ~30 days in slots
-                                         // F18.2: Analytics cross-contract call — record trades after settlement
+                                         // Legacy address binding retained for ABI/state compatibility. Canonical
+                                         // analytics is projected from dex_trade_* by the post-block bridge.
 const ANALYTICS_ADDRESS_KEY: &str = "dex_analytics_addr";
 // G2-04: Margin contract address for reduce-only cross-contract validation
 const MARGIN_ADDRESS_KEY: &str = "dex_margin_addr";
@@ -114,6 +115,7 @@ const FEE_TREASURY_KEY: &[u8] = b"dex_fee_treasury";
 const FEE_TREASURY_ADDR_KEY: &[u8] = b"dex_fee_treasury_addr";
 const FEE_TREASURY_EXPLICIT_KEY: &[u8] = b"dex_fee_treasury_explicit";
 const GOVERNANCE_ADDRESS_KEY: &[u8] = b"dex_governance_addr";
+const SPOREPUMP_AUTHORITY_KEY: &[u8] = b"dex_sporepump_authority";
 const PREFERRED_QUOTE_KEY: &[u8] = b"dex_preferred_quote";
 const ALLOWED_QUOTE_COUNT_KEY: &[u8] = b"dex_aq_count";
 const MAX_ALLOWED_QUOTES: u64 = 8;
@@ -305,6 +307,24 @@ fn ask_count_key(pair_id: u64, price: u64) -> Vec<u8> {
     k
 }
 
+fn orderbook_index_version_key(pair_id: u64, side: u8) -> Vec<u8> {
+    let mut k = Vec::from(&b"dex_obv_"[..]);
+    k.extend_from_slice(&u64_to_decimal(pair_id));
+    k.push(b'_');
+    k.push(b'0' + side);
+    k
+}
+
+fn price_level_next_key(pair_id: u64, side: u8, price: u64) -> Vec<u8> {
+    let mut k = Vec::from(&b"dex_obn_"[..]);
+    k.extend_from_slice(&u64_to_decimal(pair_id));
+    k.push(b'_');
+    k.push(b'0' + side);
+    k.push(b'_');
+    k.extend_from_slice(&u64_to_decimal(price));
+    k
+}
+
 // ============================================================================
 // DEEP SECURITY: Reentrancy + Pause
 // ============================================================================
@@ -345,6 +365,11 @@ fn require_admin_or_governance(caller: &[u8; 32]) -> bool {
     }
     let governance = load_addr(GOVERNANCE_ADDRESS_KEY);
     !is_zero(&governance) && *caller == governance
+}
+
+fn require_sporepump(caller: &[u8; 32]) -> bool {
+    let sporepump = load_addr(SPOREPUMP_AUTHORITY_KEY);
+    !is_zero(&sporepump) && *caller == sporepump
 }
 
 // ============================================================================
@@ -787,20 +812,8 @@ fn quote_exact_input(
                 break;
             }
 
-            let mut next = best_bid.saturating_sub(1);
-            let mut found = false;
-            for _ in 0..MAX_TICK_SCAN {
-                if next == 0 {
-                    break;
-                }
-                if load_u64(&bid_count_key(pair_id, next)) > 0 {
-                    best_bid = next;
-                    found = true;
-                    break;
-                }
-                next = next.saturating_sub(1);
-            }
-            if !found {
+            best_bid = next_price_level(pair_id, SIDE_BUY, best_bid);
+            if best_bid == 0 {
                 break;
             }
         }
@@ -858,7 +871,10 @@ fn quote_exact_input(
             let mut affordable =
                 ((quote_budget as u128 * 1_000_000_000u128) / best_ask as u128) as u64;
             if lot_size > 0 {
-                affordable = affordable / lot_size * lot_size;
+                affordable = affordable
+                    .checked_div(lot_size)
+                    .unwrap_or(0)
+                    .saturating_mul(lot_size);
             }
             if affordable == 0 {
                 return ExactInputQuote {
@@ -883,17 +899,8 @@ fn quote_exact_input(
             break;
         }
 
-        let mut next = best_ask.saturating_add(1);
-        let mut found = false;
-        for _ in 0..MAX_TICK_SCAN {
-            if load_u64(&ask_count_key(pair_id, next)) > 0 {
-                best_ask = next;
-                found = true;
-                break;
-            }
-            next = next.saturating_add(1);
-        }
-        if !found {
+        best_ask = next_price_level(pair_id, SIDE_SELL, best_ask);
+        if best_ask == u64::MAX {
             break;
         }
     }
@@ -1069,6 +1076,31 @@ pub fn set_governance_address(caller: *const u8, governance: *const u8) -> u32 {
         return 3;
     }
     storage_set(GOVERNANCE_ADDRESS_KEY, &g);
+    0
+}
+
+/// Bind the only SporePump contract allowed to create graduation pairs.
+#[no_mangle]
+pub extern "C" fn set_sporepump_authority(caller: *const u8, sporepump: *const u8) -> u32 {
+    let mut c = [0u8; 32];
+    let mut s = [0u8; 32];
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+        core::ptr::copy_nonoverlapping(sporepump, s.as_mut_ptr(), 32);
+    }
+    if get_caller().0 != c {
+        return 200;
+    }
+    if !require_admin(&c) {
+        return 1;
+    }
+    if is_zero(&s) {
+        return 2;
+    }
+    if has_configured_address(SPOREPUMP_AUTHORITY_KEY) {
+        return 3;
+    }
+    storage_set(SPOREPUMP_AUTHORITY_KEY, &s);
     0
 }
 
@@ -1410,7 +1442,7 @@ pub fn create_pair(
         reentrancy_exit();
         return 200;
     }
-    if !require_admin_or_governance(&c) {
+    if !require_admin_or_governance(&c) && !require_sporepump(&c) {
         reentrancy_exit();
         return 1;
     }
@@ -1476,6 +1508,9 @@ pub fn create_pair(
     // Initialize best bid/ask to sentinel values
     save_u64(&best_bid_key(pair_id), 0);
     save_u64(&best_ask_key(pair_id), u64::MAX);
+    mark_orderbook_index_current(pair_id, SIDE_BUY);
+    mark_orderbook_index_current(pair_id, SIDE_SELL);
+    lichen_sdk::set_return_data(&u64_to_bytes(pair_id));
     log_info("Trading pair created");
     reentrancy_exit();
     0
@@ -2436,27 +2471,10 @@ fn fill_at_price_level(
             }
         }
 
-        // F18.2: Cross-contract call to analytics — record trade for candles/stats
-        {
-            let analytics_addr = load_addr(ANALYTICS_ADDRESS_KEY.as_bytes());
-            if !is_zero(&analytics_addr) {
-                let mut ana_args = Vec::with_capacity(57);
-                ana_args.push(1u8);
-                ana_args.extend_from_slice(&u64_to_bytes(pair_id));
-                ana_args.extend_from_slice(&u64_to_bytes(price));
-                ana_args.extend_from_slice(&u64_to_bytes(notional));
-                ana_args.extend_from_slice(taker);
-                let call = CrossCall::new(Address(analytics_addr), "call", ana_args).with_value(0);
-                // Analytics recording is non-critical: detect dispatcher errors
-                // but do not block the matched trade after settlement.
-                match call_contract(call) {
-                    Ok(result) if decode_dispatcher_return_code(&result) == Some(0) => {}
-                    Ok(_) | Err(_) => {
-                        log_info("Analytics record_trade call failed — trade still valid");
-                    }
-                }
-            }
-        }
+        // Analytics is derived exactly once from this canonical trade record by
+        // the deterministic post-block bridge. Keeping the ledger write here and
+        // the projection there makes analytics replayable after interruption and
+        // avoids a contract write plus bridge write counting every trade twice.
 
         // Fee mining rewards are attributed to the fee-paying taker only.
         {
@@ -2505,36 +2523,188 @@ fn fill_at_price_level(
     remaining
 }
 
-fn next_nonempty_bid(pair_id: u64, current_best: u64) -> u64 {
-    let mut next = current_best.saturating_sub(1);
-    for _ in 0..MAX_TICK_SCAN {
-        if next == 0 {
-            break;
-        }
-        if load_u64(&bid_count_key(pair_id, next)) > 0 {
-            return next;
-        }
-        next = next.saturating_sub(1);
+fn empty_price_level(side: u8) -> u64 {
+    if side == SIDE_BUY {
+        0
+    } else {
+        u64::MAX
     }
-    0
+}
+
+fn best_price_level(pair_id: u64, side: u8) -> u64 {
+    if side == SIDE_BUY {
+        load_u64(&best_bid_key(pair_id))
+    } else {
+        load_u64(&best_ask_key(pair_id))
+    }
+}
+
+fn save_best_price_level(pair_id: u64, side: u8, price: u64) {
+    if side == SIDE_BUY {
+        save_u64(&best_bid_key(pair_id), price);
+    } else {
+        save_u64(&best_ask_key(pair_id), price);
+    }
+}
+
+fn price_level_count(pair_id: u64, side: u8, price: u64) -> u64 {
+    if side == SIDE_BUY {
+        load_u64(&bid_count_key(pair_id, price))
+    } else {
+        load_u64(&ask_count_key(pair_id, price))
+    }
+}
+
+fn next_price_level(pair_id: u64, side: u8, price: u64) -> u64 {
+    storage_get(&price_level_next_key(pair_id, side, price))
+        .filter(|data| data.len() >= 8)
+        .map(|data| bytes_to_u64(&data))
+        .unwrap_or_else(|| empty_price_level(side))
+}
+
+fn save_next_price_level(pair_id: u64, side: u8, price: u64, next: u64) {
+    save_u64(&price_level_next_key(pair_id, side, price), next);
+}
+
+fn price_is_better(side: u8, candidate: u64, reference: u64) -> bool {
+    if side == SIDE_BUY {
+        candidate > reference
+    } else {
+        candidate < reference
+    }
+}
+
+fn mark_orderbook_index_current(pair_id: u64, side: u8) {
+    storage_set(
+        &orderbook_index_version_key(pair_id, side),
+        &[ORDERBOOK_INDEX_VERSION],
+    );
+}
+
+fn orderbook_index_is_current(pair_id: u64, side: u8) -> bool {
+    storage_get(&orderbook_index_version_key(pair_id, side)).and_then(|data| data.first().copied())
+        == Some(ORDERBOOK_INDEX_VERSION)
+}
+
+/// Reconstruct the active price-level chain once when upgrading pre-index state.
+fn ensure_orderbook_index(pair_id: u64, side: u8) {
+    if orderbook_index_is_current(pair_id, side) {
+        return;
+    }
+
+    let order_count = load_u64(ORDER_COUNT_KEY);
+    let mut prices = Vec::new();
+    for order_id in 1..=order_count {
+        let Some(order) = storage_get(&order_key(order_id)) else {
+            continue;
+        };
+        if order.len() < ORDER_SIZE
+            || decode_order_pair_id(&order) != pair_id
+            || decode_order_side(&order) != side
+            || !matches!(decode_order_status(&order), STATUS_OPEN | STATUS_PARTIAL)
+        {
+            continue;
+        }
+        let price = decode_order_price(&order);
+        if price_level_count(pair_id, side, price) > 0 {
+            prices.push(price);
+        }
+    }
+
+    prices.sort_unstable();
+    prices.dedup();
+    if side == SIDE_BUY {
+        prices.reverse();
+    }
+
+    let empty = empty_price_level(side);
+    save_best_price_level(pair_id, side, prices.first().copied().unwrap_or(empty));
+    for (index, price) in prices.iter().copied().enumerate() {
+        save_next_price_level(
+            pair_id,
+            side,
+            price,
+            prices.get(index + 1).copied().unwrap_or(empty),
+        );
+    }
+    mark_orderbook_index_current(pair_id, side);
+}
+
+fn insert_price_level(pair_id: u64, side: u8, price: u64) {
+    let empty = empty_price_level(side);
+    let best = best_price_level(pair_id, side);
+    if best == empty {
+        save_next_price_level(pair_id, side, price, empty);
+        save_best_price_level(pair_id, side, price);
+        return;
+    }
+    if best == price {
+        return;
+    }
+    if price_is_better(side, price, best) {
+        save_next_price_level(pair_id, side, price, best);
+        save_best_price_level(pair_id, side, price);
+        return;
+    }
+
+    let mut current = best;
+    let traversal_limit = load_u64(ORDER_COUNT_KEY).saturating_add(1);
+    for _ in 0..traversal_limit {
+        let next = next_price_level(pair_id, side, current);
+        if next == price {
+            return;
+        }
+        if next == empty || price_is_better(side, price, next) {
+            save_next_price_level(pair_id, side, price, next);
+            save_next_price_level(pair_id, side, current, price);
+            return;
+        }
+        current = next;
+    }
+}
+
+fn remove_price_level(pair_id: u64, side: u8, price: u64) {
+    let empty = empty_price_level(side);
+    let best = best_price_level(pair_id, side);
+    if best == empty {
+        return;
+    }
+    if best == price {
+        let next = next_price_level(pair_id, side, price);
+        save_best_price_level(pair_id, side, next);
+        save_next_price_level(pair_id, side, price, empty);
+        return;
+    }
+
+    let mut current = best;
+    let traversal_limit = load_u64(ORDER_COUNT_KEY).saturating_add(1);
+    for _ in 0..traversal_limit {
+        let next = next_price_level(pair_id, side, current);
+        if next == empty {
+            return;
+        }
+        if next == price {
+            let after = next_price_level(pair_id, side, price);
+            save_next_price_level(pair_id, side, current, after);
+            save_next_price_level(pair_id, side, price, empty);
+            return;
+        }
+        current = next;
+    }
+}
+
+fn next_nonempty_bid(pair_id: u64, current_best: u64) -> u64 {
+    remove_price_level(pair_id, SIDE_BUY, current_best);
+    best_price_level(pair_id, SIDE_BUY)
 }
 
 fn next_nonempty_ask(pair_id: u64, current_best: u64) -> u64 {
-    if current_best == u64::MAX {
-        return u64::MAX;
-    }
-
-    let mut next = current_best.saturating_add(1);
-    for _ in 0..MAX_TICK_SCAN {
-        if load_u64(&ask_count_key(pair_id, next)) > 0 {
-            return next;
-        }
-        next = next.saturating_add(1);
-    }
-    u64::MAX
+    remove_price_level(pair_id, SIDE_SELL, current_best);
+    best_price_level(pair_id, SIDE_SELL)
 }
 
 fn refresh_best_bid_level(pair_id: u64) -> u64 {
+    ensure_orderbook_index(pair_id, SIDE_BUY);
     let best = load_u64(&best_bid_key(pair_id));
     if best == 0 {
         return 0;
@@ -2549,6 +2719,7 @@ fn refresh_best_bid_level(pair_id: u64) -> u64 {
 }
 
 fn refresh_best_ask_level(pair_id: u64) -> u64 {
+    ensure_orderbook_index(pair_id, SIDE_SELL);
     let best = load_u64(&best_ask_key(pair_id));
     if best == u64::MAX {
         return u64::MAX;
@@ -2564,8 +2735,12 @@ fn refresh_best_ask_level(pair_id: u64) -> u64 {
 
 /// Add resting order to book
 fn add_to_book(pair_id: u64, side: u8, price: u64, order_id: u64) {
+    ensure_orderbook_index(pair_id, side);
     if side == SIDE_BUY {
         let count = load_u64(&bid_count_key(pair_id, price));
+        if count == 0 {
+            insert_price_level(pair_id, side, price);
+        }
         let new_count = count + 1;
         save_u64(&bid_level_key(pair_id, price, new_count), order_id);
         save_u64(&bid_count_key(pair_id, price), new_count);
@@ -2576,6 +2751,9 @@ fn add_to_book(pair_id: u64, side: u8, price: u64, order_id: u64) {
         }
     } else {
         let count = load_u64(&ask_count_key(pair_id, price));
+        if count == 0 {
+            insert_price_level(pair_id, side, price);
+        }
         let new_count = count + 1;
         save_u64(&ask_level_key(pair_id, price, new_count), order_id);
         save_u64(&ask_count_key(pair_id, price), new_count);
@@ -2589,6 +2767,7 @@ fn add_to_book(pair_id: u64, side: u8, price: u64, order_id: u64) {
 
 /// Remove a resting order id from its price level, then compact the level.
 fn remove_from_book_level(pair_id: u64, side: u8, price: u64, order_id: u64) {
+    ensure_orderbook_index(pair_id, side);
     let count_key = if side == SIDE_BUY {
         bid_count_key(pair_id, price)
     } else {
@@ -2606,11 +2785,7 @@ fn remove_from_book_level(pair_id: u64, side: u8, price: u64, order_id: u64) {
             compact_price_level(pair_id, side, price);
             let remaining = load_u64(&count_key);
             if remaining == 0 {
-                if side == SIDE_BUY && load_u64(&best_bid_key(pair_id)) == price {
-                    save_u64(&best_bid_key(pair_id), 0);
-                } else if side == SIDE_SELL && load_u64(&best_ask_key(pair_id)) == price {
-                    save_u64(&best_ask_key(pair_id), u64::MAX);
-                }
+                remove_price_level(pair_id, side, price);
             }
             break;
         }
@@ -3248,7 +3423,9 @@ pub extern "C" fn call() -> u32 {
                     bytes_to_u64(&args[105..113]),
                     bytes_to_u64(&args[113..121]),
                 );
-                lichen_sdk::set_return_data(&u64_to_bytes(result as u64));
+                if result != 0 {
+                    lichen_sdk::set_return_data(&u64_to_bytes(result as u64));
+                }
                 _rc = result as u32;
                 _rc = result as u32;
             }
@@ -3745,6 +3922,35 @@ mod tests {
             0
         );
         assert_eq!(load_u64(PAIR_COUNT_KEY), 1);
+    }
+
+    #[test]
+    fn test_sporepump_authority_is_immutable_and_pair_creation_only() {
+        let admin = setup();
+        let sporepump = [9u8; 32];
+        assert_eq!(
+            set_sporepump_authority(admin.as_ptr(), sporepump.as_ptr()),
+            0
+        );
+        assert_eq!(
+            set_sporepump_authority(admin.as_ptr(), [8u8; 32].as_ptr()),
+            3
+        );
+        test_mock::set_caller(sporepump);
+        assert_eq!(
+            create_pair(
+                sporepump.as_ptr(),
+                [10u8; 32].as_ptr(),
+                [20u8; 32].as_ptr(),
+                1,
+                1,
+                MIN_ORDER_VALUE,
+            ),
+            0
+        );
+        assert_eq!(test_mock::get_return_data(), u64_to_bytes(1));
+        assert_eq!(update_pair_fees(sporepump.as_ptr(), 1, 0, 5), 1);
+        assert_eq!(pause_pair(sporepump.as_ptr(), 1), 1);
     }
 
     #[test]
@@ -4976,6 +5182,74 @@ mod tests {
         );
 
         assert_eq!(get_best_bid(pair_id), 999_999_000);
+    }
+
+    #[test]
+    fn test_best_levels_survive_wide_price_gap_cancellation() {
+        let (_admin, pair_id) = setup_with_pair();
+        let buyer = [2u8; 32];
+        let seller = [3u8; 32];
+        test_mock::set_slot(100);
+
+        test_mock::set_caller(buyer);
+        assert_eq!(
+            place_order(
+                buyer.as_ptr(),
+                pair_id,
+                SIDE_BUY,
+                ORDER_LIMIT,
+                1_000_000_000,
+                1000,
+                0,
+                0,
+            ),
+            0
+        );
+        assert_eq!(
+            place_order(
+                buyer.as_ptr(),
+                pair_id,
+                SIDE_BUY,
+                ORDER_LIMIT,
+                900_000_000,
+                2000,
+                0,
+                0,
+            ),
+            0
+        );
+        assert_eq!(cancel_order(buyer.as_ptr(), 1), 0);
+        assert_eq!(get_best_bid(pair_id), 900_000_000);
+
+        test_mock::set_caller(seller);
+        assert_eq!(
+            place_order(
+                seller.as_ptr(),
+                pair_id,
+                SIDE_SELL,
+                ORDER_LIMIT,
+                2_000_000_000,
+                1000,
+                0,
+                0,
+            ),
+            0
+        );
+        assert_eq!(
+            place_order(
+                seller.as_ptr(),
+                pair_id,
+                SIDE_SELL,
+                ORDER_LIMIT,
+                2_100_000_000,
+                1000,
+                0,
+                0,
+            ),
+            0
+        );
+        assert_eq!(cancel_order(seller.as_ptr(), 3), 0);
+        assert_eq!(get_best_ask(pair_id), 2_100_000_000);
     }
 
     #[test]

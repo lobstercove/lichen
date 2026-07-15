@@ -300,7 +300,7 @@ impl Pool {
         }
 
         let mut z = x;
-        let mut y = (x + 1) / 2;
+        let mut y = x.div_ceil(2);
 
         while y < z {
             z = y;

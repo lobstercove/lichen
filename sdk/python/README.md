@@ -2,7 +2,7 @@
 
 Official Python SDK for interacting with Lichen blockchain.
 
-Current source package version: `1.0.0`.
+Current source package version: `1.0.1`.
 
 ## Installation
 
@@ -59,7 +59,6 @@ Archive lookup helpers:
 - `get_transaction(signature)`
 - `get_block(slot)`
 - `get_transactions_by_address(pubkey, limit=10, before_slot=None)`
-- `get_transaction_history(pubkey, limit=10, before_slot=None)`
 - `get_account_tx_count(pubkey)`
 
 ## Documentation

@@ -23,6 +23,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="${SCRIPT_DIR}/.."
 CONTRACTS_DIR="${REPO_ROOT}/contracts"
+CONTRACT_TARGET_DIR="${LICHEN_CONTRACT_TARGET_DIR:-${REPO_ROOT}/target/contract-build}"
 
 # Colors
 RED='\033[0;31m'
@@ -44,6 +45,7 @@ CORE_CONTRACTS=(
     thalllend
     sporepay
     sporepump
+    launchpad_token
     sporevault
     bountyboard
     compute_market
@@ -143,11 +145,11 @@ for contract in "${CONTRACTS[@]}"; do
     echo -e "\n${CYAN}[$((BUILT + FAILED + SKIPPED + 1))/${TOTAL}]${NC} Building ${contract}..."
     
     # Build WASM
-    if (cd "$CONTRACT_DIR" && cargo build --target wasm32-unknown-unknown --release 2>&1); then
+    if (cd "$CONTRACT_DIR" && cargo build --target wasm32-unknown-unknown --release --locked --target-dir "$CONTRACT_TARGET_DIR" 2>&1); then
         # Find the output .wasm file
         # The crate name in Cargo.toml uses hyphens, but the .wasm file uses underscores
         CRATE_NAME=$(grep '^name' "$CONTRACT_DIR/Cargo.toml" | head -1 | sed 's/.*= *"//;s/".*//' | tr '-' '_')
-        WASM_SOURCE="${CONTRACT_DIR}/target/wasm32-unknown-unknown/release/${CRATE_NAME}.wasm"
+        WASM_SOURCE="${CONTRACT_TARGET_DIR}/wasm32-unknown-unknown/release/${CRATE_NAME}.wasm"
         WASM_DEST="${CONTRACT_DIR}/${contract}.wasm"
         
         if [ -f "$WASM_SOURCE" ]; then
@@ -157,7 +159,7 @@ for contract in "${CONTRACTS[@]}"; do
             ((BUILT++)) || true
         else
             # Try with the directory name directly
-            ALT_SOURCE="${CONTRACT_DIR}/target/wasm32-unknown-unknown/release/${contract}.wasm"
+            ALT_SOURCE="${CONTRACT_TARGET_DIR}/wasm32-unknown-unknown/release/${contract}.wasm"
             if [ -f "$ALT_SOURCE" ]; then
                 cp "$ALT_SOURCE" "$WASM_DEST"
                 SIZE=$(wc -c < "$WASM_DEST" | tr -d ' ')
@@ -190,7 +192,7 @@ if $RUN_TESTS; then
         [ ! -d "$CONTRACT_DIR" ] && continue
         
         echo -e "\n  Testing ${contract}..."
-        if (cd "$CONTRACT_DIR" && cargo test 2>&1); then
+        if (cd "$CONTRACT_DIR" && cargo test --locked --target-dir "$CONTRACT_TARGET_DIR" 2>&1); then
             echo -e "  ${GREEN}✅ ${contract} tests passed${NC}"
             ((TEST_PASSED++)) || true
         else

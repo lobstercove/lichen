@@ -1,12 +1,18 @@
 import { LichenRPC, getConfiguredRpcEndpoint } from './rpc-service.js';
 
+function requireNftEnvelope(response) {
+  if (!response || typeof response !== 'object' || Array.isArray(response) || !Array.isArray(response.nfts)) {
+    throw new Error('Invalid RPC response: expected nfts array');
+  }
+  return response.nfts;
+}
+
 export async function loadNftSnapshot(address, network) {
   if (!address) return null;
 
   const rpc = new LichenRPC(await getConfiguredRpcEndpoint(network));
-  const response = await rpc.call('getNFTsByOwner', [address, { limit: 20 }]).catch(() => null);
-
-  const items = response?.nfts || response?.items || (Array.isArray(response) ? response : []);
+  const response = await rpc.call('getNFTsByOwner', [address, { limit: 20 }]);
+  const items = requireNftEnvelope(response);
 
   return {
     count: items.length,
@@ -22,8 +28,8 @@ export async function loadNftDetails(address, network, limit = 50) {
   if (!address) return [];
 
   const rpc = new LichenRPC(await getConfiguredRpcEndpoint(network));
-  const response = await rpc.call('getNFTsByOwner', [address, { limit }]).catch(() => null);
-  const items = response?.nfts || response?.items || (Array.isArray(response) ? response : []);
+  const response = await rpc.call('getNFTsByOwner', [address, { limit }]);
+  const items = requireNftEnvelope(response);
 
   return items.map((item, idx) => ({
     mint: item.mint || item.id || `nft-${idx}`,

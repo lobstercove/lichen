@@ -20,7 +20,7 @@ else:
         '-X', 'POST', '-H', 'Content-Type: application/json',
         '-d', json.dumps({
             'jsonrpc': '2.0', 'id': 1,
-            'method': 'getAllSymbolRegistry', 'params': [100]
+            'method': 'getAllSymbolRegistry', 'params': [{'limit': 100}]
         })
     ])
     d = json.loads(raw)

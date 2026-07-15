@@ -1,5 +1,6 @@
 use super::evm_state;
 use super::*;
+use crate::block::Block;
 use crate::codec::{append_legacy_bincode, deserialize_legacy_bincode, serialize_legacy_bincode};
 use crate::restrictions::{
     restriction_mode_blocks_transfer, RestrictionTarget, RestrictionTransferDirection,
@@ -12,8 +13,17 @@ impl StateStore {
     /// Begin an atomic write batch. All mutations go into the batch's in-memory
     /// `WriteBatch` and account overlay. Nothing touches disk until `commit_batch()`.
     pub fn begin_batch(&self) -> StateBatch {
+        let archive_slot = self.get_last_slot().unwrap_or(0);
+        self.begin_batch_at_slot(archive_slot)
+    }
+
+    /// Begin an atomic write batch whose account snapshots are keyed by an
+    /// explicit canonical slot. Block execution must use this constructor so
+    /// snapshot history cannot depend on whether the block body or its state
+    /// changes reached local RocksDB first.
+    pub fn begin_batch_at_slot(&self, archive_slot: u64) -> StateBatch {
         let archive_slot = if self.is_archive_mode() {
-            self.get_last_slot().unwrap_or(0)
+            archive_slot
         } else {
             0
         };
@@ -54,15 +64,54 @@ impl StateStore {
         }
     }
 
+    pub fn commit_batch(&self, batch: StateBatch) -> Result<(), String> {
+        self.commit_batch_inner(batch, None)
+    }
+
+    /// Commit canonical execution state and its block anchor in one RocksDB
+    /// write. Secondary explorer indexes are completed idempotently by
+    /// `put_block_atomic` after this durable consensus boundary.
+    pub fn commit_batch_with_block(
+        &self,
+        batch: StateBatch,
+        block: &Block,
+        confirmed_slot: Option<u64>,
+        finalized_slot: Option<u64>,
+    ) -> Result<(), String> {
+        self.commit_batch_inner(batch, Some((block, confirmed_slot, finalized_slot)))
+    }
+
     /// Commit a batch atomically. All puts in the `WriteBatch` are flushed to
     /// RocksDB in a single atomic write. Metric deltas are applied after the
     /// write succeeds.
-    pub fn commit_batch(&self, batch: StateBatch) -> Result<(), String> {
+    fn commit_batch_inner(
+        &self,
+        batch: StateBatch,
+        canonical_block: Option<(&Block, Option<u64>, Option<u64>)>,
+    ) -> Result<(), String> {
+        let state_commitment_guard = self.lock_state_commitment();
         let dirty_pubkeys: Vec<Pubkey> = batch.account_overlay.keys().cloned().collect();
         let dirty_contract_keys: Vec<Vec<u8>> = batch.dirty_contract_keys.clone();
         let dex_orderbook_level_deltas = batch.dex_orderbook_level_deltas.clone();
 
         let mut wb = batch.batch;
+        let _block_write_guard =
+            if let Some((block, confirmed_slot, finalized_slot)) = canonical_block {
+                let guard = self
+                    .block_write_lock
+                    .lock()
+                    .map_err(|_| "Block write lock poisoned".to_string())?;
+                self.stage_canonical_block_anchor(
+                    block,
+                    Some(block.header.slot),
+                    confirmed_slot,
+                    finalized_slot,
+                    &mut wb,
+                )?;
+                Some(guard)
+            } else {
+                None
+            };
         let _dex_index_guard = if dex_orderbook_level_deltas.is_empty() {
             None
         } else {
@@ -125,6 +174,7 @@ impl StateStore {
         self.db
             .write(wb)
             .map_err(|e| format!("Atomic batch commit failed: {}", e))?;
+        drop(state_commitment_guard);
 
         if batch.new_accounts != 0 {
             for _ in 0..batch.new_accounts {
@@ -147,6 +197,10 @@ impl StateStore {
         }
         self.metrics.save(&self.db)?;
 
+        if let Some((block, _, _)) = canonical_block {
+            self.push_blockhash_cache(block.hash(), block.header.slot);
+        }
+
         Ok(())
     }
 
@@ -162,12 +216,6 @@ impl StateStore {
     /// stats before reconciliation mutates any derived counts.
     pub fn reload_metrics_from_stats(&self) -> Result<(), String> {
         self.metrics.load(&self.db)
-    }
-
-    /// Backward-compatible alias for save_metrics_counters.
-    #[deprecated(note = "Use save_metrics_counters() instead")]
-    pub fn flush_metrics(&self) -> Result<(), String> {
-        self.save_metrics_counters()
     }
 }
 
@@ -551,6 +599,41 @@ impl StateBatch {
         Ok(())
     }
 
+    pub fn put_oracle_attestation(
+        &mut self,
+        asset: &str,
+        attestation: &crate::processor::OracleAttestation,
+    ) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        let key = format!(
+            "oracle_att_{}_{}",
+            asset,
+            hex::encode(attestation.validator.0)
+        );
+        let data = serde_json::to_vec(attestation)
+            .map_err(|e| format!("Failed to serialize oracle attestation: {}", e))?;
+        self.batch.put_cf(&cf, key.as_bytes(), data);
+        Ok(())
+    }
+
+    pub fn put_oracle_consensus_price(
+        &mut self,
+        consensus_price: &crate::processor::OracleConsensusPrice,
+    ) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        let key = format!("oracle_price_{}", consensus_price.asset);
+        let data = serde_json::to_vec(consensus_price)
+            .map_err(|e| format!("Failed to serialize consensus price: {}", e))?;
+        self.batch.put_cf(&cf, key.as_bytes(), data);
+        Ok(())
+    }
+
     pub fn put_stake_pool(&mut self, pool: &crate::consensus::StakePool) -> Result<(), String> {
         let cf = self
             .db
@@ -664,6 +747,36 @@ impl StateBatch {
             .cf_handle(CF_STATS)
             .ok_or_else(|| "Stats CF not found".to_string())?;
         let key = format!("fee_dist:{}", slot);
+        self.batch.put_cf(&cf, key.as_bytes(), hash.0);
+        Ok(())
+    }
+
+    pub fn set_reward_distribution_hash(&mut self, slot: u64, hash: &Hash) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        let key = format!("reward_dist:{}", slot);
+        self.batch.put_cf(&cf, key.as_bytes(), hash.0);
+        Ok(())
+    }
+
+    pub fn set_stake_pool_production_hash(&mut self, slot: u64, hash: &Hash) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        let key = format!("stake_pool_prod:{}", slot);
+        self.batch.put_cf(&cf, key.as_bytes(), hash.0);
+        Ok(())
+    }
+
+    pub fn set_post_block_effects_hash(&mut self, slot: u64, hash: &Hash) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        let key = format!("post_effects:{}", slot);
         self.batch.put_cf(&cf, key.as_bytes(), hash.0);
         Ok(())
     }
@@ -1287,6 +1400,192 @@ impl StateBatch {
             }
         }
         Ok(changes)
+    }
+
+    fn get_fee_exempt_contracts(&self) -> Vec<Pubkey> {
+        let Some(cf) = self.db.cf_handle(CF_STATS) else {
+            return Vec::new();
+        };
+        match self.db.get_cf(&cf, b"fee_exempt_contracts") {
+            Ok(Some(data)) => data
+                .chunks_exact(32)
+                .map(|chunk| {
+                    let mut bytes = [0u8; 32];
+                    bytes.copy_from_slice(chunk);
+                    Pubkey(bytes)
+                })
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    fn get_fee_config(&self) -> Result<crate::FeeConfig, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+
+        let read_u64 = |key: &[u8]| -> Result<Option<u64>, String> {
+            match self.db.get_cf(&cf, key) {
+                Ok(Some(data)) => {
+                    let bytes: [u8; 8] = data
+                        .as_slice()
+                        .try_into()
+                        .map_err(|_| "Invalid fee config data".to_string())?;
+                    Ok(Some(u64::from_le_bytes(bytes)))
+                }
+                Ok(None) => Ok(None),
+                Err(e) => Err(format!("Database error: {}", e)),
+            }
+        };
+
+        let defaults = crate::FeeConfig::default_from_constants();
+        Ok(crate::FeeConfig {
+            base_fee: read_u64(b"fee_base_spores")?.unwrap_or(defaults.base_fee),
+            contract_deploy_fee: read_u64(b"fee_contract_deploy_spores")?
+                .unwrap_or(defaults.contract_deploy_fee),
+            contract_upgrade_fee: read_u64(b"fee_contract_upgrade_spores")?
+                .unwrap_or(defaults.contract_upgrade_fee),
+            nft_mint_fee: read_u64(b"fee_nft_mint_spores")?.unwrap_or(defaults.nft_mint_fee),
+            nft_collection_fee: read_u64(b"fee_nft_collection_spores")?
+                .unwrap_or(defaults.nft_collection_fee),
+            fee_burn_percent: read_u64(b"fee_burn_percent")?.unwrap_or(defaults.fee_burn_percent),
+            fee_producer_percent: read_u64(b"fee_producer_percent")?
+                .unwrap_or(defaults.fee_producer_percent),
+            fee_voters_percent: read_u64(b"fee_voters_percent")?
+                .unwrap_or(defaults.fee_voters_percent),
+            fee_treasury_percent: read_u64(b"fee_treasury_percent")?
+                .unwrap_or(defaults.fee_treasury_percent),
+            fee_community_percent: read_u64(b"fee_community_percent")?
+                .unwrap_or(defaults.fee_community_percent),
+            fee_exempt_contracts: self.get_fee_exempt_contracts(),
+        })
+    }
+
+    fn put_fee_config_full(&mut self, config: &crate::FeeConfig) -> Result<(), String> {
+        config.validate_distribution()?;
+
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+
+        self.batch
+            .put_cf(&cf, b"fee_base_spores", config.base_fee.to_le_bytes());
+        self.batch.put_cf(
+            &cf,
+            b"fee_contract_deploy_spores",
+            config.contract_deploy_fee.to_le_bytes(),
+        );
+        self.batch.put_cf(
+            &cf,
+            b"fee_contract_upgrade_spores",
+            config.contract_upgrade_fee.to_le_bytes(),
+        );
+        self.batch.put_cf(
+            &cf,
+            b"fee_nft_mint_spores",
+            config.nft_mint_fee.to_le_bytes(),
+        );
+        self.batch.put_cf(
+            &cf,
+            b"fee_nft_collection_spores",
+            config.nft_collection_fee.to_le_bytes(),
+        );
+        self.batch.put_cf(
+            &cf,
+            b"fee_burn_percent",
+            config.fee_burn_percent.to_le_bytes(),
+        );
+        self.batch.put_cf(
+            &cf,
+            b"fee_producer_percent",
+            config.fee_producer_percent.to_le_bytes(),
+        );
+        self.batch.put_cf(
+            &cf,
+            b"fee_voters_percent",
+            config.fee_voters_percent.to_le_bytes(),
+        );
+        self.batch.put_cf(
+            &cf,
+            b"fee_treasury_percent",
+            config.fee_treasury_percent.to_le_bytes(),
+        );
+        self.batch.put_cf(
+            &cf,
+            b"fee_community_percent",
+            config.fee_community_percent.to_le_bytes(),
+        );
+        Ok(())
+    }
+
+    fn set_min_validator_stake(&mut self, stake: u64) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        self.batch
+            .put_cf(&cf, b"min_validator_stake", stake.to_le_bytes());
+        Ok(())
+    }
+
+    fn set_epoch_slots(&mut self, slots: u64) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        self.batch.put_cf(&cf, b"epoch_slots", slots.to_le_bytes());
+        Ok(())
+    }
+
+    fn clear_pending_governance_changes(&mut self) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        for param_id in 0..=7u8 {
+            let key = format!("pending_gov_{}", param_id);
+            self.batch.delete_cf(&cf, key.as_bytes());
+        }
+        self.pending_governance_change_overlay.clear();
+        Ok(())
+    }
+
+    pub fn apply_pending_governance_changes(&mut self) -> Result<usize, String> {
+        let changes = self.get_pending_governance_changes()?;
+        if changes.is_empty() {
+            return Ok(0);
+        }
+
+        let mut fee_config = self.get_fee_config()?;
+        let mut fee_changed = false;
+        let mut count = 0;
+
+        for (param_id, value) in &changes {
+            if fee_config.apply_governance_param(*param_id, *value) {
+                fee_changed = true;
+            } else {
+                match *param_id {
+                    crate::processor::GOV_PARAM_MIN_VALIDATOR_STAKE => {
+                        self.set_min_validator_stake(*value)?;
+                    }
+                    crate::processor::GOV_PARAM_EPOCH_SLOTS => {
+                        self.set_epoch_slots(*value)?;
+                    }
+                    _ => {}
+                }
+            }
+            count += 1;
+        }
+
+        if fee_changed {
+            self.put_fee_config_full(&fee_config)?;
+        }
+
+        self.clear_pending_governance_changes()?;
+
+        Ok(count)
     }
 
     pub fn queue_pending_validator_change(

@@ -65,6 +65,13 @@
         return '0.00';
     }
 
+    function requireRpcArrayEnvelope(response, field) {
+        if (!response || typeof response !== 'object' || Array.isArray(response) || !Array.isArray(response[field])) {
+            throw new Error('Invalid RPC response: expected ' + field + ' array');
+        }
+        return response[field];
+    }
+
     // ===== Collection Name Lookup =====
     async function getCollectionName(contractId) {
         if (!contractId) return 'Unknown';
@@ -83,9 +90,7 @@
     // ===== Data Source Methods =====
 
     function unwrapContractsResult(result) {
-        if (Array.isArray(result)) return result;
-        if (result && Array.isArray(result.contracts)) return result.contracts;
-        return [];
+        return requireRpcArrayEnvelope(result, 'contracts');
     }
 
     async function getFeaturedCollections(limit) {
@@ -117,7 +122,7 @@
         try {
             var maxItems = Math.max(1, Number(limit) || 12);
             var listings = await marketTrustedRpcCall('getMarketListings', [{ limit: maxItems }]);
-            var items = listings && listings.listings ? listings.listings : (Array.isArray(listings) ? listings : []);
+            var items = requireRpcArrayEnvelope(listings, 'listings');
             if (items.length === 0) return [];
             var results = [];
             for (var i = 0; i < items.length; i++) {
@@ -148,7 +153,7 @@
         try {
             var maxItems = Math.max(1, Number(limit) || 8);
             var sales = await marketTrustedRpcCall('getMarketSales', [{ limit: 200 }]);
-            var saleList = sales && sales.sales ? sales.sales : (Array.isArray(sales) ? sales : []);
+            var saleList = requireRpcArrayEnvelope(sales, 'sales');
             if (saleList.length === 0) return [];
             var creatorMap = {};
             saleList.forEach(function (s) {
@@ -180,7 +185,7 @@
         try {
             var maxItems = Math.max(1, Number(limit) || 10);
             var sales = await marketTrustedRpcCall('getMarketSales', [{ limit: maxItems }]);
-            var saleList = sales && sales.sales ? sales.sales : (Array.isArray(sales) ? sales : []);
+            var saleList = requireRpcArrayEnvelope(sales, 'sales');
             if (saleList.length === 0) return [];
             var results = [];
             for (var i = 0; i < saleList.length; i++) {
@@ -266,7 +271,7 @@
         if (!address) return [];
         try {
             var result = await marketTrustedRpcCall('getNFTsByOwner', [address, { limit: 200 }]);
-            return result && result.nfts ? result.nfts : (Array.isArray(result) ? result : []);
+            return requireRpcArrayEnvelope(result, 'nfts');
         } catch (err) {
             console.warn("marketplace-data:", err.message || err);
             return [];
@@ -287,7 +292,7 @@
         if (!collectionId) return [];
         try {
             var result = await marketTrustedRpcCall('getNFTsByCollection', [collectionId, { limit: limit || 20 }]);
-            return result && result.nfts ? result.nfts : (Array.isArray(result) ? result : []);
+            return requireRpcArrayEnvelope(result, 'nfts');
         } catch (err) {
             console.warn("marketplace-data:", err.message || err);
             return [];
@@ -298,7 +303,7 @@
         if (!collectionId) return [];
         try {
             var result = await marketTrustedRpcCall('getNFTActivity', [collectionId, { limit: limit || 20 }]);
-            return result && result.activity ? result.activity : (Array.isArray(result) ? result : []);
+            return requireRpcArrayEnvelope(result, 'activity');
         } catch (err) {
             console.warn("marketplace-data:", err.message || err);
             return [];
@@ -315,7 +320,7 @@
                 params.limit = limitOrOpts || 500;
             }
             var result = await marketTrustedRpcCall('getMarketListings', [params]);
-            return (result && result.listings) ? result.listings : (Array.isArray(result) ? result : []);
+            return requireRpcArrayEnvelope(result, 'listings');
         } catch (err) {
             console.warn("marketplace-data:", err.message || err);
             return [];

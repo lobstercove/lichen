@@ -3198,6 +3198,20 @@
     margin-bottom: 12px;
 }
 
+.launch-create-fields {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 10px;
+}
+
+.launch-create-fields .form-group {
+    min-width: 0;
+}
+
+.launch-create-fields .form-input {
+    width: 100%;
+}
+
 #launchCreateBtn {
     margin: 0 12px 12px;
     width: calc(100% - 24px);

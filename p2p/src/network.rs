@@ -117,6 +117,9 @@ fn validate_block_for_p2p_admission(block: &Block) -> Result<(), String> {
 }
 
 fn validate_transaction_for_p2p_admission(tx: &Transaction) -> Result<(), String> {
+    if tx.is_consensus() {
+        return Err("standalone consensus transactions are not accepted".to_string());
+    }
     tx.validate_structure()
         .map_err(|err| format!("invalid transaction structure: {}", err))
 }
@@ -124,6 +127,19 @@ fn validate_transaction_for_p2p_admission(tx: &Transaction) -> Result<(), String
 fn validate_compact_block_for_p2p_admission(
     compact_block: &crate::message::CompactBlock,
 ) -> Result<(), String> {
+    if compact_block.consensus_transactions.len() > 1 {
+        return Err("compact block carries more than one consensus transaction".to_string());
+    }
+    for transaction in &compact_block.consensus_transactions {
+        if !transaction.is_consensus() {
+            return Err(
+                "compact block consensus prefill has the wrong transaction type".to_string(),
+            );
+        }
+        transaction
+            .validate_structure()
+            .map_err(|err| format!("invalid consensus prefill structure: {}", err))?;
+    }
     if compact_block.short_ids.len() > MAX_COMPACT_BLOCK_TX_IDS {
         return Err(format!(
             "compact block has {} short tx ids (max {})",
@@ -131,11 +147,19 @@ fn validate_compact_block_for_p2p_admission(
             MAX_COMPACT_BLOCK_TX_IDS
         ));
     }
-    if compact_block.tx_fees_paid.len() > MAX_COMPACT_BLOCK_TX_IDS {
+    if compact_block.tx_fees_paid.len()
+        > compact_block
+            .short_ids
+            .len()
+            .saturating_add(compact_block.consensus_transactions.len())
+    {
         return Err(format!(
-            "compact block has {} fee entries (max {})",
+            "compact block has {} fee entries for {} transactions",
             compact_block.tx_fees_paid.len(),
-            MAX_COMPACT_BLOCK_TX_IDS
+            compact_block
+                .short_ids
+                .len()
+                .saturating_add(compact_block.consensus_transactions.len())
         ));
     }
     let serialized_size = serialized_size_legacy_bincode(compact_block, "compact block")
@@ -886,11 +910,16 @@ impl P2PNetwork {
                     sender: relay_sender,
                     timestamp: relay_timestamp,
                 });
-                if let Err(e) = self.proposal_tx.try_send(proposal) {
-                    warn!(
+                match self.proposal_tx.try_send(proposal) {
+                    Ok(()) => debug!(
+                        "P2P: Queued BFT proposal from {} (remaining_capacity={})",
+                        peer_addr,
+                        self.proposal_tx.capacity()
+                    ),
+                    Err(e) => warn!(
                         "P2P: Proposal channel full, dropping proposal from {} ({})",
                         peer_addr, e
-                    );
+                    ),
                 }
                 if let Some(relay_message) = relay_message {
                     self.relay_bft_except(relay_message, peer_addr).await;
@@ -930,11 +959,16 @@ impl P2PNetwork {
                     sender: relay_sender,
                     timestamp: relay_timestamp,
                 });
-                if let Err(e) = self.prevote_tx.try_send(prevote) {
-                    warn!(
+                match self.prevote_tx.try_send(prevote) {
+                    Ok(()) => debug!(
+                        "P2P: Queued BFT prevote from {} (remaining_capacity={})",
+                        peer_addr,
+                        self.prevote_tx.capacity()
+                    ),
+                    Err(e) => warn!(
                         "P2P: Prevote channel full, dropping prevote from {} ({})",
                         peer_addr, e
-                    );
+                    ),
                 }
                 if let Some(relay_message) = relay_message {
                     self.relay_bft_except(relay_message, peer_addr).await;
@@ -974,11 +1008,16 @@ impl P2PNetwork {
                     sender: relay_sender,
                     timestamp: relay_timestamp,
                 });
-                if let Err(e) = self.precommit_tx.try_send(precommit) {
-                    warn!(
+                match self.precommit_tx.try_send(precommit) {
+                    Ok(()) => debug!(
+                        "P2P: Queued BFT precommit from {} (remaining_capacity={})",
+                        peer_addr,
+                        self.precommit_tx.capacity()
+                    ),
+                    Err(e) => warn!(
                         "P2P: Precommit channel full, dropping precommit from {} ({})",
                         peer_addr, e
-                    );
+                    ),
                 }
                 if let Some(relay_message) = relay_message {
                     self.relay_bft_except(relay_message, peer_addr).await;
@@ -1222,6 +1261,8 @@ impl P2PNetwork {
                     "P2P: Peer {} is at slot {} ({} blocks)",
                     peer_addr, current_slot, total_blocks
                 );
+                self.peer_manager
+                    .record_peer_advertised_slot(&peer_addr, current_slot);
                 let response = StatusResponseMsg {
                     requester: peer_addr,
                     current_slot,
@@ -1358,21 +1399,31 @@ impl P2PNetwork {
                 state_root,
                 total_accounts,
                 checkpoint_header,
-                commit_round,
-                commit_signatures,
+                commit_certificate,
+                canonical_proof,
                 snapshot_manifest,
                 recent_checkpoints,
             } => {
                 let mut checkpoint_anchors =
                     Vec::with_capacity(recent_checkpoints.len().saturating_add(1));
-                if slot > 0 {
+                if let (
+                    true,
+                    Some(checkpoint_header),
+                    Some(commit_certificate),
+                    Some(canonical_proof),
+                ) = (
+                    slot > 0,
+                    checkpoint_header,
+                    commit_certificate,
+                    canonical_proof,
+                ) {
                     checkpoint_anchors.push(CheckpointMetaAnchor {
                         slot,
                         state_root,
                         total_accounts,
                         checkpoint_header,
-                        commit_round,
-                        commit_signatures,
+                        commit_certificate,
+                        canonical_proof: *canonical_proof,
                         snapshot_manifest,
                     });
                 }
@@ -1406,23 +1457,11 @@ impl P2PNetwork {
                     stake,
                     current_slot,
                     &machine_fingerprint,
-                    Some(version.as_str()),
+                    version.as_str(),
                 )
                 .ok()
                 .map(|message| lichen_core::account::Keypair::verify(&pubkey, &message, &signature))
-                .unwrap_or(false)
-                    || validator_announcement_signing_message(
-                        &pubkey,
-                        stake,
-                        current_slot,
-                        &machine_fingerprint,
-                        None,
-                    )
-                    .ok()
-                    .map(|message| {
-                        lichen_core::account::Keypair::verify(&pubkey, &message, &signature)
-                    })
-                    .unwrap_or(false);
+                .unwrap_or(false);
 
                 if !signature_valid {
                     warn!(
@@ -1462,6 +1501,8 @@ impl P2PNetwork {
                 // Validator pubkeys remain metadata only until the validator binary
                 // verifies local stake/validator-set membership. A self-signed P2P
                 // announcement alone must not grant validator-route status.
+                self.peer_manager
+                    .record_peer_advertised_slot(&peer_addr, current_slot);
                 let announcement = ValidatorAnnouncement {
                     peer_addr,
                     pubkey,

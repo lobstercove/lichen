@@ -941,6 +941,12 @@ class LichenRPC {
         }
         return blockhash;
     }
+    async getChainId() {
+        const info = await this.call('getNetworkInfo');
+        const chainId = String(info?.chain_id || '').trim();
+        if (!chainId) throw new Error('RPC returned no chain id');
+        return chainId;
+    }
     async getLatestBlock() { return this.call('getLatestBlock'); }
     async getTokenBalance(tokenProgram, holder) { return this.call('getTokenBalance', [tokenProgram, holder]); }
     async getContractInfo(contractId) { return this.call('getContractInfo', [contractId]); }
@@ -3186,11 +3192,17 @@ async function loadActivity(reset = true, options = {}) {
         let activityFetchError = null;
         try {
             const opts = { limit: ACTIVITY_PAGE_SIZE };
-            if (requestBeforeSlot) opts.before_slot = requestBeforeSlot;
+            if (typeof requestBeforeSlot === 'string') opts.before = requestBeforeSlot;
+            else if (requestBeforeSlot) opts.before_slot = requestBeforeSlot;
             const result = await rpc.call('getTransactionsByAddress', [wallet.address, opts]);
-            transactions = result?.transactions || (Array.isArray(result) ? result : []);
-            if (result && !Array.isArray(result)) {
-                if (typeof result.has_more === 'boolean') rpcHasMore = result.has_more;
+            if (!result || !Array.isArray(result.transactions) || typeof result.has_more !== 'boolean') {
+                throw new Error('Invalid getTransactionsByAddress response');
+            }
+            transactions = result.transactions;
+            rpcHasMore = result.has_more;
+            if (typeof result.next_before === 'string' && result.next_before) {
+                rpcNextBeforeSlot = result.next_before;
+            } else {
                 const nextBeforeSlot = Number(result.next_before_slot);
                 if (Number.isFinite(nextBeforeSlot) && nextBeforeSlot > 0) rpcNextBeforeSlot = nextBeforeSlot;
             }
@@ -3227,31 +3239,21 @@ async function loadActivity(reset = true, options = {}) {
 
         if (!isActiveWalletView(wallet)) return;
 
-        if (typeof rpcHasMore === 'boolean') {
-            _activityHasMore = rpcHasMore;
-            if (_activityHasMore) {
-                if (rpcNextBeforeSlot && rpcNextBeforeSlot !== requestBeforeSlot) {
-                    _activityBeforeSlot = rpcNextBeforeSlot;
-                } else {
-                    const lastTx = transactions[transactions.length - 1];
-                    const lastSlot = Number(lastTx?.slot ?? lastTx?.block_slot ?? 0);
-                    if (Number.isFinite(lastSlot) && lastSlot > 0 && lastSlot !== requestBeforeSlot) {
-                        _activityBeforeSlot = lastSlot;
-                    } else {
-                        _activityHasMore = false;
-                    }
-                }
+        _activityHasMore = rpcHasMore === true;
+        if (_activityHasMore) {
+            if (rpcNextBeforeSlot && rpcNextBeforeSlot !== requestBeforeSlot) {
+                _activityBeforeSlot = rpcNextBeforeSlot;
             } else {
-                _activityBeforeSlot = null;
-            }
-        } else {
-            // Legacy fallback: infer pagination from page size + last tx slot
-            if (transactions.length > 0) {
                 const lastTx = transactions[transactions.length - 1];
                 const lastSlot = Number(lastTx?.slot ?? lastTx?.block_slot ?? 0);
-                if (Number.isFinite(lastSlot) && lastSlot > 0) _activityBeforeSlot = lastSlot;
+                if (Number.isFinite(lastSlot) && lastSlot > 0 && lastSlot !== requestBeforeSlot) {
+                    _activityBeforeSlot = lastSlot;
+                } else {
+                    _activityHasMore = false;
+                }
             }
-            _activityHasMore = transactions.length >= ACTIVITY_PAGE_SIZE;
+        } else {
+            _activityBeforeSlot = null;
         }
 
         // Merge new page into accumulated items
@@ -3992,7 +3994,7 @@ async function showMossStakeModal() {
 
     try {
         const tierByte = activeTier ? activeTier.tier : parseInt(values.lockTier || '0');
-        const blockhash = await rpc.getRecentBlockhash();
+        const [blockhash, chainId] = await Promise.all([rpc.getRecentBlockhash(), rpc.getChainId()]);
         const fromPubkey = LichenCrypto.addressToBytes(wallet.address);
 
         // Instruction type 13 = MossStake deposit, then amount(8), then tier(1)
@@ -4013,11 +4015,10 @@ async function showMossStakeModal() {
 
         const privateKey = await LichenCrypto.decryptPrivateKey(wallet.encryptedKey, values.password);
         const messageBytes = serializeMessageBincode(message);
-        const signature = await LichenCrypto.signTransaction(privateKey, messageBytes);
+        const signature = await LichenCrypto.signTransaction(privateKey, signingBytesForChainId(messageBytes, chainId));
 
         const transaction = { signatures: [signature], message };
-        const txBytes = new TextEncoder().encode(JSON.stringify(transaction));
-        const txBase64 = btoa(String.fromCharCode(...txBytes));
+        const txBase64 = encodeTransactionV1Base64(transaction);
 
         showToast('Submitting liquid staking transaction...');
         const txSig = await rpc.sendTransaction(txBase64);
@@ -4093,7 +4094,7 @@ async function showMossUnstakeModal() {
     } catch (e) { /* let RPC reject */ }
 
     try {
-        const blockhash = await rpc.getRecentBlockhash();
+        const [blockhash, chainId] = await Promise.all([rpc.getRecentBlockhash(), rpc.getChainId()]);
         const fromPubkey = LichenCrypto.addressToBytes(wallet.address);
 
         // Instruction type 14 = MossStake unstake
@@ -4113,11 +4114,10 @@ async function showMossUnstakeModal() {
 
         const privateKey = await LichenCrypto.decryptPrivateKey(wallet.encryptedKey, values.password);
         const messageBytes = serializeMessageBincode(message);
-        const signature = await LichenCrypto.signTransaction(privateKey, messageBytes);
+        const signature = await LichenCrypto.signTransaction(privateKey, signingBytesForChainId(messageBytes, chainId));
 
         const transaction = { signatures: [signature], message };
-        const txBytes = new TextEncoder().encode(JSON.stringify(transaction));
-        const txBase64 = btoa(String.fromCharCode(...txBytes));
+        const txBase64 = encodeTransactionV1Base64(transaction);
 
         showToast('Submitting liquid unstake transaction...');
         const txSig = await rpc.sendTransaction(txBase64);
@@ -4176,7 +4176,7 @@ async function claimMossStake(triggerEl) {
 
         if (!values || !values.password) return;
 
-        const blockhash = await rpc.getRecentBlockhash();
+        const [blockhash, chainId] = await Promise.all([rpc.getRecentBlockhash(), rpc.getChainId()]);
         const fromPubkey = LichenCrypto.addressToBytes(wallet.address);
 
         // Instruction type 15 = MossStake claim (data: [15], accounts: [user])
@@ -4193,11 +4193,10 @@ async function claimMossStake(triggerEl) {
 
         const privateKey = await LichenCrypto.decryptPrivateKey(wallet.encryptedKey, values.password);
         const messageBytes = serializeMessageBincode(message);
-        const signature = await LichenCrypto.signTransaction(privateKey, messageBytes);
+        const signature = await LichenCrypto.signTransaction(privateKey, signingBytesForChainId(messageBytes, chainId));
 
         const transaction = { signatures: [signature], message };
-        const txBytes = new TextEncoder().encode(JSON.stringify(transaction));
-        const txBase64 = btoa(String.fromCharCode(...txBytes));
+        const txBase64 = encodeTransactionV1Base64(transaction);
 
         if (triggerEl) triggerEl.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Claiming';
         showToast('Claiming unstaked LICN...');
@@ -4408,10 +4407,6 @@ const BRIDGE_AUTH_DOMAIN_V2 = 'LICHEN_BRIDGE_ACCESS_V2';
 const BRIDGE_AUTH_CREATE_ACTION = 'createBridgeDeposit';
 let activeBridgeAuth = null;
 
-function buildBridgeAccessMessage(userId, issuedAt, expiresAt) {
-    return `LICHEN_BRIDGE_ACCESS_V1\nuser_id=${userId}\nissued_at=${issuedAt}\nexpires_at=${expiresAt}\n`;
-}
-
 function bridgeAuthNonce() {
     const bytes = new Uint8Array(16);
     crypto.getRandomValues(bytes);
@@ -4484,11 +4479,13 @@ async function ensureBridgeAccessAuth(wallet, { forceRefresh = false, chain = ''
     const expiresAt = issuedAt + BRIDGE_AUTH_TTL_SECS;
     const canonicalChain = String(chain || '').trim().toLowerCase();
     const normalizedAsset = String(asset || '').trim().toLowerCase();
-    const useV2 = Boolean(canonicalChain && normalizedAsset);
-    const nonce = useV2 ? bridgeAuthNonce() : '';
-    const message = useV2
-        ? buildBridgeAccessMessageV2(wallet.address, canonicalChain, normalizedAsset, issuedAt, expiresAt, nonce)
-        : buildBridgeAccessMessage(wallet.address, issuedAt, expiresAt);
+    if (!canonicalChain || !normalizedAsset) {
+        throw new Error('Bridge authorization requires a chain and asset');
+    }
+    const nonce = bridgeAuthNonce();
+    const message = buildBridgeAccessMessageV2(
+        wallet.address, canonicalChain, normalizedAsset, issuedAt, expiresAt, nonce
+    );
     const messageBytes = new TextEncoder().encode(message);
     const signature = await LichenCrypto.signTransaction(keypair.privateKey, messageBytes);
 
@@ -4496,17 +4493,15 @@ async function ensureBridgeAccessAuth(wallet, { forceRefresh = false, chain = ''
         user_id: wallet.address,
         issued_at: issuedAt,
         expires_at: expiresAt,
-        signature
+        signature,
+        version: 2,
+        domain: BRIDGE_AUTH_DOMAIN_V2,
+        action: BRIDGE_AUTH_CREATE_ACTION,
+        chain: canonicalChain,
+        asset: normalizedAsset,
+        route: `${canonicalChain}:${normalizedAsset}`,
+        nonce
     };
-    if (useV2) {
-        activeBridgeAuth.version = 2;
-        activeBridgeAuth.domain = BRIDGE_AUTH_DOMAIN_V2;
-        activeBridgeAuth.action = BRIDGE_AUTH_CREATE_ACTION;
-        activeBridgeAuth.chain = canonicalChain;
-        activeBridgeAuth.asset = normalizedAsset;
-        activeBridgeAuth.route = `${canonicalChain}:${normalizedAsset}`;
-        activeBridgeAuth.nonce = nonce;
-    }
 
     return activeBridgeAuth;
 }
@@ -4909,11 +4904,10 @@ async function refreshNFTs(options = {}) {
         let nfts = [];
         try {
             const nftResult = await rpc.call('getNFTsByOwner', [wallet.address]);
-            nfts = Array.isArray(nftResult)
-                ? nftResult
-                : Array.isArray(nftResult?.nfts)
-                    ? nftResult.nfts
-                    : [];
+            if (!nftResult || typeof nftResult !== 'object' || Array.isArray(nftResult) || !Array.isArray(nftResult.nfts)) {
+                throw new Error('Invalid RPC response: expected nfts array');
+            }
+            nfts = nftResult.nfts;
         } catch (e) {
             // RPC method may not exist yet - that's OK
         }
@@ -5152,7 +5146,7 @@ async function registerEvmAddress(wallet, password) {
 
         const systemProgram = new Uint8Array(32); // SYSTEM_PROGRAM_ID = [0; 32]
         const fromPubkey = LichenCrypto.addressToBytes(wallet.address);
-        const blockhash = await rpc.getRecentBlockhash();
+        const [blockhash, chainId] = await Promise.all([rpc.getRecentBlockhash(), rpc.getChainId()]);
 
         const message = {
             instructions: [{
@@ -5165,11 +5159,10 @@ async function registerEvmAddress(wallet, password) {
 
         const privateKey = await LichenCrypto.decryptPrivateKey(wallet.encryptedKey, password);
         const messageBytes = serializeMessageBincode(message);
-        const signature = await LichenCrypto.signTransaction(privateKey, messageBytes);
+        const signature = await LichenCrypto.signTransaction(privateKey, signingBytesForChainId(messageBytes, chainId));
 
         const transaction = { signatures: [signature], message };
-        const txBytes = new TextEncoder().encode(JSON.stringify(transaction));
-        const txBase64 = btoa(String.fromCharCode(...txBytes));
+        const txBase64 = encodeTransactionV1Base64(transaction);
 
         await rpc.sendTransaction(txBase64);
 
@@ -5338,7 +5331,7 @@ async function confirmSend() {
     try {
         showToast('Building transaction...');
 
-        const blockhash = await rpc.getRecentBlockhash();
+        const [blockhash, chainId] = await Promise.all([rpc.getRecentBlockhash(), rpc.getChainId()]);
 
         const fromPubkey = LichenCrypto.addressToBytes(wallet.address);
         const toPubkey = LichenCrypto.addressToBytes(to);
@@ -5429,7 +5422,7 @@ async function confirmSend() {
 
         const privateKey = await LichenCrypto.decryptPrivateKey(wallet.encryptedKey, passwordValues.password);
         const messageBytes = serializeMessageBincode(message);
-        const signature = await LichenCrypto.signTransaction(privateKey, messageBytes);
+        const signature = await LichenCrypto.signTransaction(privateKey, signingBytesForChainId(messageBytes, chainId));
 
         // AUDIT-FIX W-5: Zero sensitive key material after signing
         // (privateKey is a hex string — overwrite not possible; signTransaction zeros seed internally)
@@ -5441,8 +5434,7 @@ async function confirmSend() {
         };
 
         // Serialize and encode
-        const txBytes = new TextEncoder().encode(JSON.stringify(transaction));
-        const txBase64 = btoa(String.fromCharCode(...txBytes));
+        const txBase64 = encodeTransactionV1Base64(transaction);
 
         // Send transaction
         showToast('Sending transaction...');

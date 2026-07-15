@@ -18,8 +18,8 @@ use super::{
     CF_SHIELDED_TXS, CF_SLOTS, CF_SOLANA_HOLDER_TOKEN_ACCOUNTS, CF_SOLANA_TOKEN_ACCOUNTS,
     CF_STAKE_POOL, CF_STATS, CF_SYMBOL_BY_PROGRAM, CF_SYMBOL_REGISTRY, CF_TOKEN_BALANCES,
     CF_TOKEN_TRANSFERS, CF_TRANSACTIONS, CF_TX_BY_SLOT, CF_TX_META, CF_TX_TO_SLOT, CF_VALIDATORS,
-    COLD_CF_ACCOUNT_TXS, COLD_CF_BLOCKS, COLD_CF_EVENTS, COLD_CF_PROGRAM_CALLS,
-    COLD_CF_TOKEN_TRANSFERS, COLD_CF_TRANSACTIONS, COLD_CF_TX_TO_SLOT,
+    COLD_CF_ACCOUNT_SNAPSHOTS, COLD_CF_ACCOUNT_TXS, COLD_CF_BLOCKS, COLD_CF_EVENTS,
+    COLD_CF_PROGRAM_CALLS, COLD_CF_TOKEN_TRANSFERS, COLD_CF_TRANSACTIONS, COLD_CF_TX_TO_SLOT,
 };
 
 impl StateStore {
@@ -81,6 +81,7 @@ impl StateStore {
             minted_lock: Arc::new(std::sync::Mutex::new(())),
             treasury_lock: Arc::new(std::sync::Mutex::new(())),
             dex_index_lock: Arc::new(std::sync::Mutex::new(())),
+            state_commitment_lock: Arc::new(std::sync::Mutex::new(())),
             blockhash_cache: Arc::new(Mutex::new(None)),
             archive_mode: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })
@@ -103,6 +104,7 @@ impl StateStore {
             minted_lock: Arc::new(std::sync::Mutex::new(())),
             treasury_lock: Arc::new(std::sync::Mutex::new(())),
             dex_index_lock: Arc::new(std::sync::Mutex::new(())),
+            state_commitment_lock: Arc::new(std::sync::Mutex::new(())),
             blockhash_cache: Arc::new(Mutex::new(None)),
             archive_mode: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })
@@ -506,6 +508,7 @@ fn build_cold_cf_descriptors() -> Vec<ColumnFamilyDescriptor> {
         ColumnFamilyDescriptor::new(COLD_CF_TRANSACTIONS, cold_archival_cf_options()),
         ColumnFamilyDescriptor::new(COLD_CF_TX_TO_SLOT, cold_archival_cf_options()),
         ColumnFamilyDescriptor::new(COLD_CF_ACCOUNT_TXS, cold_archival_cf_options()),
+        ColumnFamilyDescriptor::new(COLD_CF_ACCOUNT_SNAPSHOTS, cold_archival_cf_options()),
         ColumnFamilyDescriptor::new(COLD_CF_EVENTS, cold_archival_cf_options()),
         ColumnFamilyDescriptor::new(COLD_CF_TOKEN_TRANSFERS, cold_archival_cf_options()),
         ColumnFamilyDescriptor::new(COLD_CF_PROGRAM_CALLS, cold_archival_cf_options()),
@@ -598,13 +601,15 @@ pub(super) fn open_cold_db_read_only<P: AsRef<Path>>(cold_path: P) -> Result<DB,
     db_opts.increase_parallelism(2);
     db_opts.set_max_background_jobs(2);
 
-    DB::open_cf_descriptors_read_only(
-        &db_opts,
-        cold_path.as_ref(),
-        build_cold_cf_descriptors(),
-        false,
-    )
-    .map_err(|e| format!("Failed to open cold DB read-only: {}", e))
+    let existing = DB::list_cf(&db_opts, cold_path.as_ref())
+        .map_err(|e| format!("Failed to list cold DB column families: {}", e))?;
+    let descriptors: Vec<_> = build_cold_cf_descriptors()
+        .into_iter()
+        .filter(|descriptor| existing.iter().any(|name| name == descriptor.name()))
+        .collect();
+
+    DB::open_cf_descriptors_read_only(&db_opts, cold_path.as_ref(), descriptors, false)
+        .map_err(|e| format!("Failed to open cold DB read-only: {}", e))
 }
 
 #[cfg(test)]
@@ -654,6 +659,34 @@ mod tests {
         assert_eq!(
             actual, decided,
             "every hot RocksDB column family must be snapshot-transferred, special-imported, or explicitly excluded"
+        );
+    }
+
+    #[test]
+    fn cold_store_upgrade_and_legacy_read_only_open_are_compatible() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut db_opts = Options::default();
+        db_opts.create_if_missing(true);
+        db_opts.create_missing_column_families(true);
+        let legacy_descriptors: Vec<_> = build_cold_cf_descriptors()
+            .into_iter()
+            .filter(|descriptor| descriptor.name() != COLD_CF_ACCOUNT_SNAPSHOTS)
+            .collect();
+        drop(DB::open_cf_descriptors(&db_opts, temp.path(), legacy_descriptors).unwrap());
+
+        let legacy_read_only = open_cold_db_read_only(temp.path()).unwrap();
+        assert!(
+            legacy_read_only
+                .cf_handle(COLD_CF_ACCOUNT_SNAPSHOTS)
+                .is_none(),
+            "read-only repair sources must open without inventing a new CF"
+        );
+        drop(legacy_read_only);
+
+        let upgraded = open_cold_db(temp.path()).unwrap();
+        assert!(
+            upgraded.cf_handle(COLD_CF_ACCOUNT_SNAPSHOTS).is_some(),
+            "normal validator startup must create the new archival CF"
         );
     }
 }

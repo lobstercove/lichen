@@ -1,8 +1,11 @@
 // Chain Synchronization Manager
 
 use lichen_core::{Block, Hash};
-use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
@@ -77,6 +80,9 @@ pub const INITIAL_SYNC_FORWARD_WINDOW: u64 = INITIAL_SYNC_BLOCK_RANGE_LIMIT;
 /// Maximum blocks to hold in pending state (memory limit).
 /// Sized to hold one full pipeline: SYNC_BATCH_SIZE * SYNC_PIPELINE_DEPTH.
 const MAX_PENDING_BLOCKS: usize = (SYNC_BATCH_SIZE * SYNC_PIPELINE_DEPTH) as usize;
+const MAX_REQUESTED_SLOTS: usize = 10_000;
+const REQUESTED_SLOT_RETRY_TTL: Duration = Duration::from_secs(15);
+const REQUESTED_SLOT_ACCEPT_TTL: Duration = Duration::from_secs(300);
 
 /// Checkpoint interval - only need to sync from last checkpoint
 /// Set to 0 to disable checkpointing
@@ -103,6 +109,15 @@ fn sync_cooldown_ms(phase: SyncPhase, failures: u32) -> u64 {
     }
 }
 
+fn prune_requested_slots_older_than(requested: &mut HashMap<u64, Instant>, ttl: Duration) {
+    let now = Instant::now();
+    requested.retain(|_, requested_at| now.duration_since(*requested_at) < ttl);
+}
+
+fn requested_slot_retry_due(requested_at: Instant, now: Instant) -> bool {
+    now.duration_since(requested_at) >= REQUESTED_SLOT_RETRY_TTL
+}
+
 /// Tracks chain synchronization state
 pub struct SyncManager {
     /// Blocks we're waiting for (slot -> received candidates that can't apply yet).
@@ -113,7 +128,7 @@ pub struct SyncManager {
     pending_blocks: Arc<Mutex<HashMap<u64, Vec<Block>>>>,
 
     /// Slots we've requested (to avoid duplicate requests)
-    requested_slots: Arc<Mutex<HashSet<u64>>>,
+    requested_slots: Arc<Mutex<HashMap<u64, Instant>>>,
 
     /// Are we currently syncing?
     is_syncing: Arc<Mutex<bool>>,
@@ -123,6 +138,11 @@ pub struct SyncManager {
 
     /// When highest_seen_slot was last updated (for decay)
     highest_seen_updated_at: Arc<Mutex<Instant>>,
+
+    /// Whether an authenticated, on-chain validator has advertised a tip.
+    /// Local tip initialization and unauthenticated status responses must not
+    /// satisfy the resumed-validator startup observation gate.
+    authenticated_peer_tip_observed: Arc<AtomicBool>,
 
     /// Current sync batch being processed
     current_sync_batch: Arc<Mutex<Option<(u64, u64)>>>,
@@ -150,10 +170,11 @@ impl SyncManager {
     pub fn new() -> Self {
         SyncManager {
             pending_blocks: Arc::new(Mutex::new(HashMap::new())),
-            requested_slots: Arc::new(Mutex::new(HashSet::new())),
+            requested_slots: Arc::new(Mutex::new(HashMap::new())),
             is_syncing: Arc::new(Mutex::new(false)),
             highest_seen_slot: Arc::new(Mutex::new(0)),
             highest_seen_updated_at: Arc::new(Mutex::new(Instant::now())),
+            authenticated_peer_tip_observed: Arc::new(AtomicBool::new(false)),
             current_sync_batch: Arc::new(Mutex::new(None)),
             last_checkpoint: Arc::new(Mutex::new(0)),
             last_sync_triggered_at: Arc::new(Mutex::new(
@@ -264,6 +285,18 @@ impl SyncManager {
             let mut ts = self.highest_seen_updated_at.lock().await;
             *ts = Instant::now();
         }
+    }
+
+    /// Record a bounded tip advertised by a signed announcement from a
+    /// validator that is already present in the canonical validator set.
+    pub async fn note_authenticated_peer_tip_bounded(&self, slot: u64, max_ahead: u64) {
+        self.note_seen_bounded(slot, max_ahead).await;
+        self.authenticated_peer_tip_observed
+            .store(true, Ordering::Release);
+    }
+
+    pub fn has_authenticated_peer_tip_observation(&self) -> bool {
+        self.authenticated_peer_tip_observed.load(Ordering::Acquire)
     }
 
     /// Decay `highest_seen_slot` toward the given tip if no new blocks have
@@ -446,7 +479,14 @@ impl SyncManager {
         *is_syncing = false;
 
         let mut batch = self.current_sync_batch.lock().await;
+        let completed_batch = *batch;
         *batch = None;
+        drop(batch);
+        drop(is_syncing);
+
+        if let Some((start, end)) = completed_batch {
+            self.clear_requested_range(start, end).await;
+        }
 
         info!("✅ Sync batch completed");
     }
@@ -461,6 +501,8 @@ impl SyncManager {
         if *batch == Some((start, end)) {
             *is_syncing = false;
             *batch = None;
+            drop(batch);
+            drop(is_syncing);
             info!("✅ Sync batch completed");
             true
         } else {
@@ -497,6 +539,9 @@ impl SyncManager {
         };
 
         if self.complete_sync_if_current(start, end).await {
+            if outcome == SyncBatchOutcome::ReachedTarget {
+                self.clear_requested_range(start, end).await;
+            }
             outcome
         } else {
             SyncBatchOutcome::StaleTimeout
@@ -587,6 +632,7 @@ impl SyncManager {
             info!("✅ Sync batch reached requested target at slot {}", slot);
             self.record_sync_success().await;
             if self.complete_sync_if_current(start, end).await {
+                self.clear_requested_range(start, end).await;
                 let phase = *self.sync_phase.lock().await;
                 let failures = *self.consecutive_failures.lock().await;
                 let cooldown_ms = sync_cooldown_ms(phase, failures);
@@ -609,11 +655,13 @@ impl SyncManager {
         true
     }
 
-    /// Check if we're caught up with the network (within 2 slots)
+    /// Check if the local canonical tip has reached the highest observed
+    /// network slot. Validators must not enter voting while still behind,
+    /// because a 4-validator set loses liveness if a restarted validator is
+    /// counted in the quorum but is only syncing pending blocks.
     pub async fn is_caught_up(&self, current_slot: u64) -> bool {
         let highest = *self.highest_seen_slot.lock().await;
-        // Considered caught up if within 2 slots of network
-        current_slot + 2 >= highest
+        current_slot >= highest
     }
 
     /// Get the highest slot seen on the network
@@ -627,16 +675,6 @@ impl SyncManager {
         pending_total_count(&pending)
     }
 
-    /// Drop pending blocks at or below a finalized checkpoint/snapshot slot.
-    /// They cannot apply after the local tip has jumped to that slot and should
-    /// not keep initial-sync overlap or watchdog logic alive.
-    pub async fn prune_pending_through_slot(&self, slot: u64) -> usize {
-        let mut pending = self.pending_blocks.lock().await;
-        let before = pending_total_count(&pending);
-        pending.retain(|pending_slot, _| *pending_slot > slot);
-        before.saturating_sub(pending_total_count(&pending))
-    }
-
     /// Check if any pending block has `parent_hash` matching the given hash.
     /// Used by fork choice: if pending blocks chain from the incoming block,
     /// the incoming block leads to a provably longer chain (Nakamoto rule).
@@ -647,20 +685,33 @@ impl SyncManager {
             .any(|candidates| candidates.iter().any(|b| b.header.parent_hash == *parent))
     }
 
-    /// Check if a slot has been requested
-    #[cfg(test)]
+    /// Check if a slot has been requested by the current sync generation.
     pub async fn is_requested(&self, slot: u64) -> bool {
-        let requested = self.requested_slots.lock().await;
-        requested.contains(&slot)
+        let mut requested = self.requested_slots.lock().await;
+        prune_requested_slots_older_than(&mut requested, REQUESTED_SLOT_ACCEPT_TTL);
+        requested.contains_key(&slot)
     }
 
-    /// Mark a slot as requested
+    /// Clear in-flight request markers after a checkpoint/snapshot jump.
+    ///
+    /// BlockRangeResponse messages do not carry the request generation that
+    /// produced them. After a verified snapshot advances the local tip, stale
+    /// responses from the pre-snapshot window must not be promoted into pending
+    /// or canonical state.
+    pub async fn clear_requested_slots(&self) -> usize {
+        let mut requested = self.requested_slots.lock().await;
+        let cleared = requested.len();
+        requested.clear();
+        cleared
+    }
+
+    /// Mark a slot as requested.
     pub async fn mark_requested(&self, slot: u64) {
         let mut requested = self.requested_slots.lock().await;
+        prune_requested_slots_older_than(&mut requested, REQUESTED_SLOT_ACCEPT_TTL);
         // P10-VAL-03: Cap requested_slots to prevent unbounded growth during long syncs.
         // 10K entries ≈ 80 KB, well within reason. If exceeded, clear old entries
         // (slots already synced will be re-requested if still needed).
-        const MAX_REQUESTED_SLOTS: usize = 10_000;
         if requested.len() >= MAX_REQUESTED_SLOTS {
             warn!(
                 "⚠️  requested_slots exceeded {} entries, clearing to reclaim memory",
@@ -668,7 +719,81 @@ impl SyncManager {
             );
             requested.clear();
         }
-        requested.insert(slot);
+        requested.insert(slot, Instant::now());
+    }
+
+    /// Atomically mark the unrequested part of a block range and return the
+    /// minimal contiguous subranges that still need a network request.
+    pub async fn claim_unrequested_ranges(&self, start: u64, end: u64) -> Vec<(u64, u64)> {
+        if start > end {
+            return Vec::new();
+        }
+
+        let mut requested = self.requested_slots.lock().await;
+        prune_requested_slots_older_than(&mut requested, REQUESTED_SLOT_ACCEPT_TTL);
+        let span = end.saturating_sub(start).saturating_add(1) as usize;
+        if requested.len().saturating_add(span) > MAX_REQUESTED_SLOTS {
+            warn!(
+                "⚠️  requested_slots would exceed {} entries, clearing to reclaim memory",
+                MAX_REQUESTED_SLOTS
+            );
+            requested.clear();
+        }
+
+        let mut ranges = Vec::new();
+        let mut range_start: Option<u64> = None;
+        let now = Instant::now();
+
+        for slot in start..=end {
+            match requested.entry(slot) {
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(now);
+                    if range_start.is_none() {
+                        range_start = Some(slot);
+                    }
+                }
+                std::collections::hash_map::Entry::Occupied(mut entry)
+                    if requested_slot_retry_due(*entry.get(), now) =>
+                {
+                    entry.insert(now);
+                    if range_start.is_none() {
+                        range_start = Some(slot);
+                    }
+                }
+                std::collections::hash_map::Entry::Occupied(_) => {
+                    if let Some(range_start_slot) = range_start.take() {
+                        ranges.push((range_start_slot, slot.saturating_sub(1)));
+                    }
+                }
+            }
+        }
+
+        if let Some(range_start_slot) = range_start {
+            ranges.push((range_start_slot, end));
+        }
+
+        ranges
+    }
+
+    /// Clear in-flight request markers for a range once the range completed,
+    /// failed, or is being replaced by a higher-integrity repair path.
+    pub async fn clear_requested_range(&self, start: u64, end: u64) -> usize {
+        if start > end {
+            return 0;
+        }
+
+        let mut requested = self.requested_slots.lock().await;
+        let before = requested.len();
+        requested.retain(|slot, _| *slot < start || *slot > end);
+        before.saturating_sub(requested.len())
+    }
+
+    /// Drop every pending block candidate after a verified checkpoint/snapshot jump.
+    pub async fn clear_pending_blocks(&self) -> usize {
+        let mut pending = self.pending_blocks.lock().await;
+        let cleared = pending_total_count(&pending);
+        pending.clear();
+        cleared
     }
 
     /// Try to apply pending blocks now that we have more of the chain.
@@ -776,6 +901,11 @@ pub struct SyncStats {
 mod tests {
     use super::*;
 
+    async fn age_requested_slot(sm: &SyncManager, slot: u64, age: Duration) {
+        let mut requested = sm.requested_slots.lock().await;
+        requested.insert(slot, Instant::now() - age);
+    }
+
     #[tokio::test]
     async fn test_sync_manager_new() {
         let sm = SyncManager::new();
@@ -858,7 +988,7 @@ mod tests {
         let sm = SyncManager::new();
         sm.note_seen(100).await;
         assert!(!sm.is_caught_up(90).await);
-        assert!(sm.is_caught_up(98).await);
+        assert!(!sm.is_caught_up(98).await);
         assert!(sm.is_caught_up(100).await);
     }
 
@@ -1075,6 +1205,11 @@ mod tests {
     async fn test_record_progress_completes_batch_at_target() {
         let sm = SyncManager::new();
         sm.start_sync(100, 150).await;
+        assert_eq!(
+            sm.claim_unrequested_ranges(100, 150).await,
+            vec![(100, 150)]
+        );
+        assert!(sm.is_requested(100).await);
         assert!(*sm.is_syncing.lock().await);
 
         let completed = sm.record_progress(149).await;
@@ -1086,6 +1221,7 @@ mod tests {
             *sm.is_syncing.lock().await,
             "batch should stay active until the requested target is reached"
         );
+        assert!(sm.is_requested(100).await);
 
         let completed = sm.record_progress(150).await;
         assert!(
@@ -1096,6 +1232,7 @@ mod tests {
             !*sm.is_syncing.lock().await,
             "batch should complete once progress reaches the requested end"
         );
+        assert!(!sm.is_requested(100).await);
     }
 
     #[tokio::test]
@@ -1324,19 +1461,90 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_prune_pending_through_slot_after_snapshot_import() {
+    async fn test_clear_pending_blocks_after_snapshot_jump() {
         let sm = SyncManager::new();
-        sm.add_pending_block(test_block_with_parent(99, Hash([8u8; 32]), 1))
+        sm.add_pending_block(test_block_with_parent(101, Hash([8u8; 32]), 1))
             .await;
-        sm.add_pending_block(test_block_with_parent(100, Hash([8u8; 32]), 2))
-            .await;
-        sm.add_pending_block(test_block_with_parent(101, Hash([8u8; 32]), 3))
+        sm.add_pending_block(test_block_with_parent(500, Hash([8u8; 32]), 2))
             .await;
 
-        assert_eq!(sm.prune_pending_through_slot(100).await, 2);
-        assert_eq!(sm.pending_count().await, 1);
-        assert_eq!(sm.prune_pending_through_slot(101).await, 1);
+        assert_eq!(sm.clear_pending_blocks().await, 2);
         assert_eq!(sm.pending_count().await, 0);
+        assert_eq!(sm.clear_pending_blocks().await, 0);
+    }
+
+    #[tokio::test]
+    async fn test_clear_requested_slots_after_snapshot_jump() {
+        let sm = SyncManager::new();
+        sm.mark_requested(101).await;
+        sm.mark_requested(102).await;
+
+        assert!(sm.is_requested(101).await);
+        assert_eq!(sm.clear_requested_slots().await, 2);
+        assert!(!sm.is_requested(101).await);
+        assert_eq!(sm.clear_requested_slots().await, 0);
+    }
+
+    #[tokio::test]
+    async fn test_claim_unrequested_ranges_suppresses_overlap_until_cleared() {
+        let sm = SyncManager::new();
+
+        assert_eq!(
+            sm.claim_unrequested_ranges(101, 110).await,
+            vec![(101, 110)]
+        );
+        assert_eq!(sm.claim_unrequested_ranges(101, 110).await, Vec::new());
+        assert_eq!(
+            sm.claim_unrequested_ranges(105, 115).await,
+            vec![(111, 115)]
+        );
+        assert_eq!(sm.clear_requested_range(101, 115).await, 15);
+        assert_eq!(
+            sm.claim_unrequested_ranges(101, 103).await,
+            vec![(101, 103)]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_claim_unrequested_ranges_retries_without_rejecting_late_response() {
+        let sm = SyncManager::new();
+
+        assert_eq!(
+            sm.claim_unrequested_ranges(101, 103).await,
+            vec![(101, 103)]
+        );
+
+        for slot in 101..=103 {
+            age_requested_slot(&sm, slot, REQUESTED_SLOT_RETRY_TTL + Duration::from_secs(1)).await;
+        }
+
+        assert_eq!(
+            sm.claim_unrequested_ranges(101, 103).await,
+            vec![(101, 103)]
+        );
+        assert!(
+            sm.is_requested(101).await,
+            "late response from the first request must still be accepted after retry"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_no_progress_batch_check_preserves_response_acceptance_markers() {
+        let sm = SyncManager::new();
+        sm.start_sync(101, 103).await;
+
+        assert_eq!(
+            sm.claim_unrequested_ranges(101, 103).await,
+            vec![(101, 103)]
+        );
+
+        let outcome = sm.finish_sync_batch_check(101, 103, 100, 100).await;
+        assert_eq!(outcome, SyncBatchOutcome::NoProgress);
+        assert!(!*sm.is_syncing.lock().await);
+        assert!(
+            sm.is_requested(101).await,
+            "delayed responses remain acceptable after the batch guard releases"
+        );
     }
 
     /// STABILITY-FIX: force_decay should reset highest_seen regardless of timestamp
@@ -1580,6 +1788,17 @@ mod tests {
         // InitialSync: start = current_slot + 1 = 11 (no overlap)
         assert_eq!(start, 11);
         assert_eq!(end, 90);
+    }
+
+    #[tokio::test]
+    async fn authenticated_peer_tip_provenance_is_distinct_from_local_tip_initialization() {
+        let sm = SyncManager::new();
+        sm.note_seen(582).await;
+        assert!(!sm.has_authenticated_peer_tip_observation());
+
+        sm.note_authenticated_peer_tip_bounded(582, 500).await;
+        assert!(sm.has_authenticated_peer_tip_observation());
+        assert_eq!(sm.get_highest_seen().await, 582);
     }
 
     /// P3-1: Warp sync mode threshold constant

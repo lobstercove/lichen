@@ -52,7 +52,6 @@ async fn test_solana_health_route() {
         None,
         None,
         None,
-        None,
     );
 
     let response = rpc_call(&app, "/solana-compat", "getHealth").await.unwrap();
@@ -72,7 +71,6 @@ async fn test_evm_chain_id_route() {
         None,
         "lichen-test".to_string(),
         "lichen-test".to_string(),
-        None,
         None,
         None,
         None,

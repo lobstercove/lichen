@@ -82,6 +82,7 @@ impl TxProcessor {
                 return_code: meta.0,
                 return_data: meta.3.clone(),
                 logs: meta.1.clone(),
+                ..Default::default()
             }
         };
         self.state.put_tx_meta_full(sig, &tx_meta)
@@ -95,8 +96,19 @@ impl TxProcessor {
                 return_code: meta.0,
                 return_data: meta.3.clone(),
                 logs: meta.1.clone(),
+                ..Default::default()
             }
         };
+        let mut guard = self.batch.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(batch) = guard.as_mut() {
+            batch.put_tx_meta_full(sig, &tx_meta)
+        } else {
+            self.state.put_tx_meta_full(sig, &tx_meta)
+        }
+    }
+
+    pub(super) fn b_put_tx_result_meta(&self, sig: &Hash, result: &TxResult) -> Result<(), String> {
+        let tx_meta = TxMeta::from_result(result);
         let mut guard = self.batch.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(batch) = guard.as_mut() {
             batch.put_tx_meta_full(sig, &tx_meta)

@@ -208,6 +208,57 @@ body {
     grid-template-columns: 1fr 1fr 1fr;
 }
 
+.exchange-ops-panel {
+    min-height: auto;
+}
+
+.exchange-ops-grid {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 0.85rem;
+}
+
+.exchange-ops-card {
+    min-width: 0;
+    display: grid;
+    gap: 0.35rem;
+    padding: 0.9rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: rgba(255, 255, 255, 0.03);
+}
+
+.exchange-ops-card a {
+    color: var(--accent);
+    font-weight: 700;
+    text-decoration: none;
+    overflow-wrap: anywhere;
+}
+
+.exchange-ops-card a:hover {
+    color: var(--text-primary);
+}
+
+.exchange-ops-card code {
+    color: var(--text-secondary);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.72rem;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+}
+
+.exchange-ops-card small {
+    color: var(--text-muted);
+    line-height: 1.45;
+}
+
+.exchange-ops-label {
+    color: var(--text-muted);
+    font-size: 0.72rem;
+    font-weight: 800;
+    text-transform: uppercase;
+}
+
 .mission-board-stack {
     grid-template-columns: 1fr;
 }
@@ -2420,6 +2471,10 @@ body {
         grid-template-columns: 1fr;
     }
 
+    .exchange-ops-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
     .mission-card-grid-4,
     .inline-mission-card-grid {
         grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2484,6 +2539,10 @@ body {
     .risk-lifecycle-form,
     .risk-lifecycle-event,
     .risk-preview-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .exchange-ops-grid {
         grid-template-columns: 1fr;
     }
 }

@@ -5,7 +5,6 @@ use crate::cli_args::Commands;
 use crate::client::RpcClient;
 use crate::contract_command_support::handle_contract_command;
 use crate::identity_support::handle_identity_command;
-use crate::init_support::handle_init_command;
 use crate::keypair_manager::KeypairManager;
 use crate::stake_support::handle_stake_command;
 use crate::wallet_support::handle_wallet_command;
@@ -23,7 +22,6 @@ pub(super) async fn handle_operational_command(
             handle_identity_command(keypair_mgr, id_cmd, json_output).await?
         }
         Commands::Wallet(wallet_cmd) => handle_wallet_command(client, wallet_cmd).await?,
-        Commands::Init { output } => handle_init_command(output)?,
         Commands::Balance { address, keypair } => {
             handle_balance(client, keypair_mgr, address, keypair).await?
         }

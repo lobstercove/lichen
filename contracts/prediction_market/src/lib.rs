@@ -2297,6 +2297,7 @@ pub fn buy_shares(trader_ptr: *const u8, market_id: u64, outcome: u8, amount_lus
     // Check temporary market pause (from a previous trade's circuit breaker)
     let pause_until = load_u64(&market_pause_key(market_id));
     if pause_until > 0 && current_slot < pause_until {
+        log_info("Market temporarily paused by price circuit breaker");
         reentrancy_exit();
         return 0;
     }
@@ -2326,6 +2327,7 @@ pub fn buy_shares(trader_ptr: *const u8, market_id: u64, outcome: u8, amount_lus
                 &market_pause_key(market_id),
                 current_slot.saturating_add(PRICE_MOVE_PAUSE_SLOTS),
             );
+            log_info("Price circuit breaker armed for 150 slots");
         }
     }
 
@@ -2458,6 +2460,7 @@ pub fn sell_shares(trader_ptr: *const u8, market_id: u64, outcome: u8, shares_am
     // Check temporary market pause
     let pause_until = load_u64(&market_pause_key(market_id));
     if pause_until > 0 && current_slot < pause_until {
+        log_info("Market temporarily paused by price circuit breaker");
         reentrancy_exit();
         return 0;
     }

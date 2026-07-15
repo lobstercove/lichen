@@ -29,14 +29,6 @@ pub(super) fn verify_api_auth(
     Ok(())
 }
 
-pub(super) fn bridge_access_message(user_id: &str, issued_at: u64, expires_at: u64) -> Vec<u8> {
-    format!(
-        "{}\nuser_id={}\nissued_at={}\nexpires_at={}\n",
-        BRIDGE_ACCESS_DOMAIN, user_id, issued_at, expires_at
-    )
-    .into_bytes()
-}
-
 pub(super) fn bridge_access_message_v2_create(
     user_id: &str,
     chain: &str,
@@ -150,10 +142,6 @@ pub(super) fn verify_bridge_access_auth_for_create_at(
     auth: &BridgeAccessAuth,
     now: u64,
 ) -> Result<(), Json<ErrorResponse>> {
-    if !bridge_auth_is_v2(auth) {
-        return verify_bridge_access_auth_v1_at(user_id, auth, now);
-    }
-
     let chain = chain.trim().to_lowercase();
     let asset = asset.trim().to_lowercase();
     let action = bridge_auth_v2_action(auth)?;
@@ -187,10 +175,6 @@ pub(super) fn verify_bridge_access_auth_for_lookup_at(
     auth: &BridgeAccessAuth,
     now: u64,
 ) -> Result<(), Json<ErrorResponse>> {
-    if !bridge_auth_is_v2(auth) {
-        return verify_bridge_access_auth_v1_at(user_id, auth, now);
-    }
-
     match bridge_auth_v2_action(auth)? {
         BRIDGE_AUTH_REPLAY_ACTION_CREATE_DEPOSIT => {
             verify_bridge_access_auth_v2_self_contained_at(user_id, auth, now)
@@ -214,17 +198,6 @@ pub(super) fn verify_bridge_access_auth_for_lookup_at(
             "unsupported bridge auth action",
         ))),
     }
-}
-
-fn verify_bridge_access_auth_v1_at(
-    user_id: &str,
-    auth: &BridgeAccessAuth,
-    now: u64,
-) -> Result<(), Json<ErrorResponse>> {
-    validate_bridge_auth_time(auth, now)?;
-
-    let message = bridge_access_message(user_id, auth.issued_at, auth.expires_at);
-    verify_bridge_access_signature(user_id, auth, &message)
 }
 
 fn validate_bridge_auth_time(auth: &BridgeAccessAuth, now: u64) -> Result<(), Json<ErrorResponse>> {
@@ -272,10 +245,6 @@ fn verify_bridge_access_signature(
     }
 
     Ok(())
-}
-
-fn bridge_auth_is_v2(auth: &BridgeAccessAuth) -> bool {
-    auth.version == Some(2) || auth.domain.as_deref() == Some(BRIDGE_ACCESS_DOMAIN_V2)
 }
 
 fn bridge_auth_v2_action(auth: &BridgeAccessAuth) -> Result<&str, Json<ErrorResponse>> {
@@ -421,13 +390,11 @@ pub(super) fn bridge_access_replay_digest(
     hasher.update([0]);
     hasher.update(user_id.as_bytes());
     hasher.update([0]);
-    if bridge_auth_is_v2(auth) {
-        let signed_message = bridge_auth_v2_signed_message(user_id, auth)?;
-        hasher.update(BRIDGE_ACCESS_DOMAIN_V2.as_bytes());
-        hasher.update([0]);
-        hasher.update(signed_message);
-        hasher.update([0]);
-    }
+    let signed_message = bridge_auth_v2_signed_message(user_id, auth)?;
+    hasher.update(BRIDGE_ACCESS_DOMAIN_V2.as_bytes());
+    hasher.update([0]);
+    hasher.update(signed_message);
+    hasher.update([0]);
     hasher.update(auth.issued_at.to_be_bytes());
     hasher.update(auth.expires_at.to_be_bytes());
     hasher.update([signature.scheme_version]);

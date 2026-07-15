@@ -28,6 +28,7 @@ const SPORES_PER_LICN: f64 = 1_000_000_000.0;
 const BASE_PRICE: u64 = 1_000;
 const SLOPE: u64 = 1;
 const SLOPE_SCALE: u64 = 1_000_000;
+const TOKEN_UNIT: u128 = 1_000_000_000;
 const CREATION_FEE_LICN: f64 = 10.0;
 const PLATFORM_FEE_PCT: u64 = 1;
 
@@ -97,6 +98,31 @@ fn u64_le(data: &[u8], offset: usize) -> u64 {
         return 0;
     }
     u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap_or([0; 8]))
+}
+
+fn graduation_key(prefix: &str, id: u64) -> String {
+    format!("{}{:016x}", prefix, id)
+}
+
+fn graduation_state_name(state: u8) -> &'static str {
+    match state {
+        1 => "eligible",
+        2 => "migrating",
+        3 => "graduated",
+        _ => "active",
+    }
+}
+
+fn optional_id(state: &RpcState, prefix: &str, id: u64) -> Option<u64> {
+    let value = read_u64_key(state, graduation_key(prefix, id).as_bytes());
+    (value != 0).then_some(value)
+}
+
+fn optional_address(state: &RpcState, prefix: &str, id: u64) -> Option<String> {
+    read_bytes(state, graduation_key(prefix, id).as_bytes()).and_then(|data| {
+        (data.len() >= 32 && data[..32].iter().any(|byte| *byte != 0))
+            .then(|| hex::encode(&data[..32]))
+    })
 }
 
 /// Compute bonding curve spot price at given supply
@@ -177,12 +203,37 @@ struct LaunchpadConfigJson {
 #[derive(Serialize)]
 struct TokenJson {
     id: u64,
+    name: String,
+    symbol: String,
     creator: String,
+    supply_sold_raw: u64,
     supply_sold: f64,
+    licn_raised_raw: u64,
     licn_raised: f64,
+    max_supply_raw: u64,
     current_price: f64,
     market_cap: f64,
     graduated: bool,
+    graduation_state: &'static str,
+    graduation_state_code: u8,
+    eligibility_slot: u64,
+    migration_boundary_slot: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    migrated_token_program: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pair_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pool_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    route_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reverse_route_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    position_id: Option<u64>,
+    quote_symbol: &'static str,
+    licn_liquidity_raw: u64,
+    token_liquidity_raw: u64,
+    protocol_token_inventory_raw: u64,
     created_at: u64,
     graduation_pct: f64,
 }
@@ -216,22 +267,58 @@ fn decode_token(state: &RpcState, id: u64) -> Option<TokenJson> {
     let creator = hex::encode(&data[0..32]);
     let supply_sold = u64_le(&data, 32);
     let licn_raised = u64_le(&data, 40);
-    // max_supply at offset 48 — we compute price from supply_sold
+    let max_supply = u64_le(&data, 48);
     let created_at = u64_le(&data, 56);
-    let graduated = data[64] != 0;
+    let stored_state = read_bytes(state, graduation_key("cpgs:", id).as_bytes())
+        .and_then(|value| value.first().copied())
+        .unwrap_or(0);
+    let graduation_state = if data[64] != 0 {
+        3
+    } else {
+        stored_state.min(3)
+    };
+    let graduated = graduation_state == 3;
+    let liquidity = read_bytes(state, graduation_key("cpgl:", id).as_bytes()).unwrap_or_default();
 
     let price = spot_price(supply_sold);
     let mcap = market_cap(supply_sold);
     let grad_pct = (mcap / GRADUATION_MCAP_LICN * 100.0).min(100.0);
+    let name = read_bytes(state, graduation_key("cpn:", id).as_bytes())
+        .and_then(|value| String::from_utf8(value).ok())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| format!("Spore Token {}", id));
+    let symbol = read_bytes(state, graduation_key("cpsy:", id).as_bytes())
+        .and_then(|value| String::from_utf8(value).ok())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| format!("SPT{}", id));
 
     Some(TokenJson {
         id,
+        name,
+        symbol,
         creator,
+        supply_sold_raw: supply_sold,
         supply_sold: supply_sold as f64 / SPORES_PER_LICN,
+        licn_raised_raw: licn_raised,
         licn_raised: licn_raised as f64 / SPORES_PER_LICN,
+        max_supply_raw: max_supply,
         current_price: price,
         market_cap: mcap,
         graduated,
+        graduation_state: graduation_state_name(graduation_state),
+        graduation_state_code: graduation_state,
+        eligibility_slot: read_u64_key(state, graduation_key("cpge:", id).as_bytes()),
+        migration_boundary_slot: read_u64_key(state, graduation_key("cpgb:", id).as_bytes()),
+        migrated_token_program: optional_address(state, "cpgt:", id),
+        pair_id: optional_id(state, "cpgp:", id),
+        pool_id: optional_id(state, "cpga:", id),
+        route_id: optional_id(state, "cpgr:", id),
+        reverse_route_id: optional_id(state, "cpgr2:", id),
+        position_id: optional_id(state, "cpgpos:", id),
+        quote_symbol: "LICN",
+        licn_liquidity_raw: u64_le(&liquidity, 0),
+        token_liquidity_raw: u64_le(&liquidity, 8),
+        protocol_token_inventory_raw: read_u64_key(state, graduation_key("cpgx:", id).as_bytes()),
         created_at,
         graduation_pct: grad_pct,
     })
@@ -379,19 +466,27 @@ async fn get_buy_quote(
         _ => return api_404(&format!("Token {} not found", id)),
     };
 
-    if data[64] != 0 {
-        return api_err("Token has graduated — trade on DEX");
+    let graduation_state = read_bytes(&state, graduation_key("cpgs:", id).as_bytes())
+        .and_then(|value| value.first().copied())
+        .unwrap_or_else(|| if data[64] != 0 { 3 } else { 0 });
+    if graduation_state != 0 {
+        return api_err("Bonding-curve buys are closed for graduation");
     }
 
     let supply = u64_le(&data, 32);
     let licn_amount_f = q.amount.unwrap_or(1.0);
+    if !licn_amount_f.is_finite() || licn_amount_f <= 0.0 {
+        return api_err("amount must be a positive finite LICN value");
+    }
     let licn_spores = (licn_amount_f * SPORES_PER_LICN) as u128;
 
     // Deduct 1% platform fee
     let after_fee = licn_spores * 99 / 100;
 
     // Binary search for tokens received (matching contract logic)
-    let tokens_out = match compute_buy_tokens(supply, after_fee) {
+    let max_supply = u64_le(&data, 48);
+    let max_available = max_supply.saturating_sub(supply);
+    let tokens_out = match compute_buy_tokens(supply, after_fee, max_available) {
         Ok(t) => t,
         Err(e) => return api_err(e),
     };
@@ -434,54 +529,44 @@ struct QuoteQuery {
 
 /// Compute how many tokens you get for `after_fee_spores` spores at current supply
 ///
-/// AUDIT-FIX F-8: Use u128 fixed-point arithmetic instead of f64 to avoid
-/// precision loss above ~9M LICN.
-/// AUDIT-FIX C8: Return Result instead of silently capping on overflow.
-fn compute_buy_tokens(supply: u64, after_fee_spores: u128) -> Result<u64, &'static str> {
-    let s = supply as u128;
-    let a_coeff = SLOPE as u128;
-    let b_coeff = 2u128 * SLOPE_SCALE as u128 * BASE_PRICE as u128 + 2u128 * SLOPE as u128 * s;
-    let c_val = 2u128 * SLOPE_SCALE as u128 * after_fee_spores;
-
-    // discriminant = B^2 + 4*A*C
-    let discriminant = b_coeff.checked_mul(b_coeff).and_then(|b2| {
-        let four_ac = 4u128.checked_mul(a_coeff)?.checked_mul(c_val)?;
-        b2.checked_add(four_ac)
-    });
-
-    let discriminant = match discriminant {
-        Some(d) => d,
-        None => return Err("Amount too large for bonding curve calculation"),
-    };
-
-    let sqrt_d = isqrt_u128(discriminant);
-
-    if sqrt_d <= b_coeff {
+/// Mirror the contract's fixed-point integral and bounded binary search exactly.
+/// Keeping this deliberately mechanical prevents public quotes from drifting from
+/// the amount the WASM contract credits.
+fn compute_buy_tokens(
+    supply: u64,
+    after_fee_spores: u128,
+    max_available: u64,
+) -> Result<u64, &'static str> {
+    if after_fee_spores == 0 {
         return Ok(0);
     }
-    let numerator = sqrt_d - b_coeff;
-    let denominator = 2u128 * a_coeff;
-    let tokens = numerator / denominator;
-
-    if tokens > u64::MAX as u128 {
-        Err("Token amount exceeds maximum representable value")
-    } else {
-        Ok(tokens as u64)
+    if after_fee_spores > u64::MAX as u128 {
+        return Err("Amount exceeds maximum representable value");
     }
+
+    let mut lo = 0u64;
+    let mut hi = max_available;
+    while lo < hi {
+        let mid = lo + (hi - lo).div_ceil(2);
+        if launchpad_buy_cost(supply, mid) as u128 <= after_fee_spores {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    Ok(lo)
 }
 
-/// Integer square root for u128 using Newton's method
-fn isqrt_u128(n: u128) -> u128 {
-    if n == 0 {
-        return 0;
-    }
-    let mut x = n;
-    let mut y = x.div_ceil(2);
-    while y < x {
-        x = y;
-        y = (x + n / x) / 2;
-    }
-    x
+fn launchpad_buy_cost(supply: u64, amount: u64) -> u64 {
+    let s = supply as u128;
+    let a = amount as u128;
+    let linear = (BASE_PRICE as u128).saturating_mul(a);
+    let quadratic = (SLOPE as u128)
+        .saturating_mul(a)
+        .saturating_mul(s.saturating_mul(2).saturating_add(a))
+        / (2 * SLOPE_SCALE as u128);
+    let raw = linear.saturating_add(quadratic) / TOKEN_UNIT;
+    raw.min(u64::MAX as u128) as u64
 }
 
 /// GET /tokens/:id/holders — Get user balance for a token
@@ -515,7 +600,20 @@ async fn get_holder_balance(
         address: String,
         balance: f64,
         balance_raw: u64,
+        claimable_raw: u64,
+        claimed: bool,
     }
+
+    let claim_key = format!("cpgc:{:016x}:{}", id, account_hex);
+    let claimed = read_bytes(&state, claim_key.as_bytes()).is_some();
+    let graduation_state = read_bytes(&state, graduation_key("cpgs:", id).as_bytes())
+        .and_then(|value| value.first().copied())
+        .unwrap_or(0);
+    let claimable_raw = if graduation_state == 3 && !claimed {
+        balance
+    } else {
+        0
+    };
 
     ApiResponse::ok(
         HolderBalance {
@@ -523,6 +621,8 @@ async fn get_holder_balance(
             address: addr,
             balance: balance as f64 / SPORES_PER_LICN,
             balance_raw: balance,
+            claimable_raw,
+            claimed,
         },
         slot,
     )
@@ -559,6 +659,15 @@ mod tests {
         assert!(SPORES_PER_LICN > 0.0);
         assert!(CREATION_FEE_LICN > 0.0);
         assert!(GRADUATION_MCAP_LICN > 0.0);
+    }
+
+    #[test]
+    fn graduation_state_names_cover_the_complete_lifecycle() {
+        assert_eq!(graduation_state_name(0), "active");
+        assert_eq!(graduation_state_name(1), "eligible");
+        assert_eq!(graduation_state_name(2), "migrating");
+        assert_eq!(graduation_state_name(3), "graduated");
+        assert_eq!(graduation_state_name(u8::MAX), "active");
     }
 
     // ── spot_price ──
@@ -611,75 +720,48 @@ mod tests {
         assert!(m2 > m1);
     }
 
-    // ── isqrt_u128 ──
-
-    #[test]
-    fn isqrt_zero() {
-        assert_eq!(isqrt_u128(0), 0);
-    }
-
-    #[test]
-    fn isqrt_one() {
-        assert_eq!(isqrt_u128(1), 1);
-    }
-
-    #[test]
-    fn isqrt_perfect_squares() {
-        assert_eq!(isqrt_u128(4), 2);
-        assert_eq!(isqrt_u128(9), 3);
-        assert_eq!(isqrt_u128(16), 4);
-        assert_eq!(isqrt_u128(100), 10);
-        assert_eq!(isqrt_u128(10000), 100);
-        assert_eq!(isqrt_u128(1_000_000), 1000);
-    }
-
-    #[test]
-    fn isqrt_non_perfect_squares() {
-        // isqrt should floor
-        assert_eq!(isqrt_u128(2), 1);
-        assert_eq!(isqrt_u128(3), 1);
-        assert_eq!(isqrt_u128(5), 2);
-        assert_eq!(isqrt_u128(8), 2);
-        assert_eq!(isqrt_u128(99), 9);
-    }
-
-    #[test]
-    fn isqrt_large_values() {
-        let n = 1u128 << 64; // 2^64
-        let s = isqrt_u128(n);
-        assert_eq!(s, 1u128 << 32); // 2^32
-    }
-
     // ── compute_buy_tokens ──
 
     #[test]
     fn buy_tokens_zero_input_returns_zero() {
-        assert_eq!(compute_buy_tokens(0, 0).unwrap(), 0);
+        assert_eq!(compute_buy_tokens(0, 0, u64::MAX).unwrap(), 0);
     }
 
     #[test]
     fn buy_tokens_positive_input() {
         // With some spores, we should get tokens
-        let tokens = compute_buy_tokens(0, 1_000_000_000).unwrap(); // 1 LICN worth
+        let tokens = compute_buy_tokens(0, 1_000_000_000, u64::MAX).unwrap(); // 1 LICN worth
         assert!(tokens > 0, "Should receive >0 tokens for 1 LICN");
     }
 
     #[test]
     fn buy_tokens_more_input_more_output() {
-        let t1 = compute_buy_tokens(0, 1_000_000_000).unwrap();
-        let t2 = compute_buy_tokens(0, 10_000_000_000).unwrap();
+        let t1 = compute_buy_tokens(0, 1_000_000_000, u64::MAX).unwrap();
+        let t2 = compute_buy_tokens(0, 10_000_000_000, u64::MAX).unwrap();
         assert!(t2 > t1, "More LICN in should yield more tokens");
     }
 
     #[test]
     fn buy_tokens_higher_supply_fewer_tokens() {
         // At higher supply, same input yields fewer tokens (bonding curve)
-        let t_low = compute_buy_tokens(0, 1_000_000_000).unwrap();
-        let t_high = compute_buy_tokens(100_000_000_000, 1_000_000_000).unwrap();
+        let t_low = compute_buy_tokens(0, 1_000_000_000, u64::MAX).unwrap();
+        let t_high = compute_buy_tokens(100_000_000_000, 1_000_000_000, u64::MAX).unwrap();
         assert!(
             t_low > t_high,
             "Higher supply should yield fewer tokens per LICN"
         );
+    }
+
+    #[test]
+    fn buy_quote_is_maximal_under_contract_cost_function() {
+        let net = 4_950_000_000u128;
+        let tokens = compute_buy_tokens(0, net, 1_000_000_000_000_000_000).unwrap();
+        assert!(
+            tokens > 1_000_000_000_000,
+            "5 LICN must not be capped at 1,000 tokens"
+        );
+        assert!(launchpad_buy_cost(0, tokens) as u128 <= net);
+        assert!(launchpad_buy_cost(0, tokens + 1) as u128 > net);
     }
 
     // ── u64_le helper ──

@@ -2242,7 +2242,7 @@ async function computeExtensionShieldedNullifier(client, note) {
 async function syncExtensionShieldedNotesFromChain(wallet, client) {
   if (!_shieldedState.initialized || !_shieldedState.viewingKey) return false;
   const pool = await client.call('getShieldedPoolState', []).catch(() => _shieldedState.poolStats || null);
-  const total = Number(pool?.commitment_count ?? pool?.commitmentCount ?? 0);
+  const total = Number(pool?.commitmentCount ?? 0);
   if (!Number.isFinite(total) || total <= 0) return false;
 
   const pageSize = 1000;
@@ -2318,7 +2318,7 @@ async function resolveExtensionShieldedCommitmentIndex(client, commitmentHex, pr
   }
 
   const pool = await client.call('getShieldedPoolState', []).catch(() => _shieldedState.poolStats || null);
-  const total = Number(pool?.commitment_count ?? pool?.commitmentCount ?? 0);
+  const total = Number(pool?.commitmentCount ?? 0);
   if (!Number.isFinite(total) || total <= 0) return null;
 
   const pageSize = 1000;
@@ -2482,7 +2482,7 @@ async function submitExtensionShield({ wallet, amountLicn, password, statusEl })
   }]);
   const commitmentIndex = Number(
     _shieldedState.poolStats?.commitmentCount
-    ?? _shieldedState.poolStats?.commitment_count
+    ?? _shieldedState.poolStats?.commitmentCount
     ?? _shieldedState.notes.length
     ?? 0
   );
@@ -2561,7 +2561,7 @@ async function submitExtensionUnshield({ wallet, amountLicn, password, recipient
     statusEl.textContent = `Generating unshield proof ${index + 1}/${notes.length}...`;
     const noteIndex = await resolveExtensionNoteCommitmentIndex(client, note);
     const merklePath = await client.call('getShieldedMerklePath', [noteIndex]);
-    const merkleRoot = merklePath?.root || merklePath?.merkleRoot || merklePath?.merkle_root || pool?.merkleRoot || pool?.merkle_root;
+    const merkleRoot = merklePath?.root || merklePath?.merkleRoot || merklePath?.merkle_root || pool?.merkleRoot;
     if (!merkleRoot) throw new Error('Shielded Merkle root unavailable');
     _shieldedState.poolStats = { ...(_shieldedState.poolStats || {}), ...(pool || {}), merkleRoot };
     const proof = await client.call('generateUnshieldProof', [{
@@ -2646,7 +2646,7 @@ async function submitExtensionPrivateTransfer({ wallet, amountLicn, password, re
     || merkleWitnesses[0]?.merkleRoot
     || merkleWitnesses[0]?.merkle_root
     || pool?.merkleRoot
-    || pool?.merkle_root;
+    || pool?.merkleRoot;
   if (!merkleRoot) throw new Error('Shielded Merkle root unavailable');
 
   const recipientBlinding = crypto.getRandomValues(new Uint8Array(32));
@@ -2830,7 +2830,7 @@ async function loadShieldTab() {
   // Fetch pool stats + shielded balance
   let poolStats = null;
   try {
-    const res = await rpcClient.call('getShieldedPoolState', []).catch(() => rpcClient.call('getShieldedPoolStats', []));
+    const res = await rpcClient.call('getShieldedPoolState', []);
     poolStats = res || null;
   } catch (_) { }
 
@@ -2865,8 +2865,8 @@ async function loadShieldTab() {
   void refreshBalance();
 
   const balLicn = formatLicnBaseUnitsFixedExt(shieldedBalance);
-  const poolLicn = poolStats ? formatLicnBaseUnitsFixedExt(poolStats.pool_balance ?? 0, 2) : '—';
-  const commitCount = poolStats ? (poolStats.commitment_count ?? poolStats.commitmentCount ?? 0).toLocaleString() : '—';
+  const poolLicn = poolStats ? formatLicnBaseUnitsFixedExt(poolStats.totalShielded ?? 0, 2) : '—';
+  const commitCount = poolStats ? (poolStats.commitmentCount ?? 0).toLocaleString() : '—';
   const unspent = sortExtensionShieldedNotesDesc(ownedNotes.filter(n => !n.spent));
   const transferPrereq = extensionPrivateTransferPrereqMessage();
   const notesTotalPages = Math.max(1, Math.ceil(unspent.length / EXT_SHIELDED_NOTES_PAGE_SIZE));
@@ -3720,6 +3720,7 @@ let _activityHasMore = true;
 const ACTIVITY_PER_PAGE = 20;
 
 function getActivityCursor(result, txs, previousCursor) {
+  if (typeof result?.next_before === 'string' && result.next_before) return result.next_before;
   const rpcNextBeforeSlot = Number(result?.next_before_slot);
   if (Number.isFinite(rpcNextBeforeSlot) && rpcNextBeforeSlot > 0) return rpcNextBeforeSlot;
   const last = txs[txs.length - 1] || {};
@@ -3745,9 +3746,13 @@ async function loadActivity(reset = true) {
   try {
     const requestBeforeSlot = _activityBeforeSlot;
     const opts = { limit: ACTIVITY_PER_PAGE };
-    if (requestBeforeSlot) opts.before_slot = requestBeforeSlot;
+    if (typeof requestBeforeSlot === 'string') opts.before = requestBeforeSlot;
+    else if (requestBeforeSlot) opts.before_slot = requestBeforeSlot;
     const result = await rpc().getTransactionsByAddress(wallet.address, opts);
-    const txs = result?.transactions || (Array.isArray(result) ? result : []);
+    if (!result || typeof result !== 'object' || Array.isArray(result) || !Array.isArray(result.transactions)) {
+      throw new Error('Invalid RPC response: expected transactions array');
+    }
+    const txs = result.transactions;
     const rpcHasMore = typeof result?.has_more === 'boolean' ? result.has_more : txs.length >= ACTIVITY_PER_PAGE;
     if (rpcHasMore) {
       const nextCursor = getActivityCursor(result, txs, requestBeforeSlot);
@@ -4011,18 +4016,20 @@ async function handleSend() {
     assertRestrictionPreflightAllowed(restrictionPreflight);
 
     const privKey = await decryptPrivateKey(wallet.encryptedKey, pw);
-    const blockhash = await rpc().getRecentBlockhash();
+    const client = rpc();
+    const [blockhash, chainId] = await Promise.all([client.getRecentBlockhash(), client.getChainId()]);
 
     const tx = await buildSignedNativeTransferTransaction({
       privateKeyHex: privKey,
       fromAddress: wallet.address,
       toAddress: to,
       amountLicn: amountText,
-      blockhash
+      blockhash,
+      chainId,
     });
 
     const encoded = encodeTransactionBase64(tx);
-    await rpc().sendTransactionWithPreflight(encoded);
+    await client.sendTransactionWithPreflight(encoded);
 
     showToast('Transaction sent!', 'success');
     closeModal('sendModal');

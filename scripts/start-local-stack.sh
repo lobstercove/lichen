@@ -16,7 +16,7 @@ export PATH
 NETWORK=${1:-testnet}
 NETWORK=$(echo "$NETWORK" | tr '[:upper:]' '[:lower:]')
 SOLANA_RPC_URL=${2:-${CUSTODY_SOLANA_RPC_URL:-}}
-EVM_RPC_URL=${3:-${CUSTODY_ETH_RPC_URL:-${CUSTODY_EVM_RPC_URL:-}}}
+EVM_RPC_URL=${3:-${CUSTODY_ETH_RPC_URL:-}}
 NEOX_RPC_URL=${4:-${CUSTODY_NEOX_RPC_URL:-}}
 BNB_RPC_URL="${CUSTODY_BNB_RPC_URL:-}"
 LOCAL_SOLANA_RPC_PORT="${LICHEN_LOCAL_SOLANA_RPC_PORT:-18899}"
@@ -28,26 +28,29 @@ case $NETWORK in
   testnet)
     BASE_P2P=7001
     BASE_RPC=8899
-    CUSTODY_PORT=9105
+    CUSTODY_PORT="${LICHEN_LOCAL_CUSTODY_PORT:-9105}"
     ;;
   mainnet)
     BASE_P2P=8001
     BASE_RPC=9899
-    CUSTODY_PORT=9106
+    CUSTODY_PORT="${LICHEN_LOCAL_CUSTODY_PORT:-9106}"
     ;;
   *)
     echo "Usage: $0 [testnet|mainnet]"
     exit 1
     ;;
 esac
+FAUCET_PORT="${LICHEN_LOCAL_FAUCET_PORT:-9100}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "$REPO_ROOT" || exit 1
 LOCAL_CLUSTER_SCRIPT="$REPO_ROOT/scripts/start-local-3validators.sh"
 LOCAL_CLUSTER_RESET="${LICHEN_LOCAL_RESET_CLUSTER:-1}"
+LOCAL_CLUSTER_REUSE="${LICHEN_LOCAL_REUSE_CLUSTER:-0}"
 LOCAL_CLUSTER_ARTIFACT_DIR="${LICHEN_LOCAL_CLUSTER_ARTIFACT_DIR:-$REPO_ROOT/data/local-cluster}"
 LOCAL_KEYPAIR_PASSWORD_FILE="$LOCAL_CLUSTER_ARTIFACT_DIR/keypair-password"
+LOCAL_STACK_PID_FILE="$LOCAL_CLUSTER_ARTIFACT_DIR/stack-${NETWORK}-pids.tsv"
 
 LOCAL_SIGNED_METADATA_KEYPAIR_DEFAULT="$REPO_ROOT/keypairs/release-signing-key.json"
 
@@ -186,6 +189,7 @@ LOCAL_HEALTH_TIMEOUT_SECS="${LICHEN_LOCAL_HEALTH_TIMEOUT_SECS:-900}"
 LOG_DIR="/tmp/lichen-local-${NETWORK}"
 mkdir -p "$LOG_DIR"
 CUSTODY_PID=""
+FAUCET_PID=""
 LOCAL_SOLANA_RPC_PID=""
 LOCAL_EVM_RPC_PID=""
 LOCAL_BNB_RPC_PID=""
@@ -199,6 +203,157 @@ SERVICE_FLEET_CONFIG_FILE="${LOG_DIR}/service-fleet-config.json"
 SERVICE_FLEET_STATUS_FILE="${LOG_DIR}/service-fleet-status.json"
 export LICHEN_SERVICE_FLEET_CONFIG_FILE="$SERVICE_FLEET_CONFIG_FILE"
 export LICHEN_SERVICE_FLEET_STATUS_FILE="$SERVICE_FLEET_STATUS_FILE"
+
+process_command() {
+  ps -p "$1" -o command= 2>/dev/null || true
+}
+
+process_working_directory() {
+  local pid=$1
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 1
+  elif [ -e "/proc/${pid}/cwd" ]; then
+    readlink "/proc/${pid}/cwd" 2>/dev/null || true
+  fi
+}
+
+is_repo_owned_process() {
+  local pid=$1
+  local kind=$2
+  local command cwd
+  command=$(process_command "$pid")
+  cwd=$(process_working_directory "$pid")
+  [ -n "$command" ] || return 1
+
+  case "$kind" in
+    custody)
+      [[ "$command" == *"${REPO_ROOT}/"*"target/release/lichen-custody"* ]] \
+        || { [ "$cwd" = "$REPO_ROOT" ] && [[ "$command" == *"target/release/lichen-custody"* ]]; }
+      ;;
+    faucet)
+      [[ "$command" == *"${REPO_ROOT}/"*"target/release/lichen-faucet"* ]] \
+        || { [ "$cwd" = "$REPO_ROOT" ] && [[ "$command" == *"target/release/lichen-faucet"* ]]; }
+      ;;
+    solana-rpc)
+      [[ "$command" == *"${REPO_ROOT}/scripts/local-solana-rpc-mock.py"* ]]
+      ;;
+    evm-rpc|bnb-rpc|neox-rpc)
+      [[ "$command" == *"${REPO_ROOT}/scripts/local-evm-rpc-mock.py"* ]]
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+terminate_repo_owned_process() {
+  local pid=$1
+  local kind=$2
+  local reason=$3
+
+  if ! kill -0 "$pid" 2>/dev/null; then
+    return 0
+  fi
+  if ! is_repo_owned_process "$pid" "$kind"; then
+    echo "❌ Refusing to stop PID ${pid} for ${reason}; it is not an owned ${kind} process" >&2
+    echo "   Command: $(process_command "$pid")" >&2
+    return 1
+  fi
+
+  echo "🧹 Stopping stale ${kind} PID ${pid} (${reason})..."
+  kill "$pid" 2>/dev/null || true
+  for _ in $(seq 1 50); do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      return 0
+    fi
+    sleep 0.1
+  done
+  kill -9 "$pid" 2>/dev/null || true
+  for _ in $(seq 1 20); do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      return 0
+    fi
+    sleep 0.1
+  done
+
+  echo "❌ Failed to stop stale ${kind} PID ${pid}" >&2
+  return 1
+}
+
+reclaim_recorded_stack_processes() {
+  [ -f "$LOCAL_STACK_PID_FILE" ] || return 0
+
+  local kind pid
+  while IFS=$'\t' read -r kind pid; do
+    [ -n "$kind" ] && [[ "$pid" =~ ^[0-9]+$ ]] || continue
+    terminate_repo_owned_process "$pid" "$kind" "recorded local stack" || return 1
+  done <"$LOCAL_STACK_PID_FILE"
+  rm -f "$LOCAL_STACK_PID_FILE"
+}
+
+reclaim_local_listener() {
+  local kind=$1
+  local port=$2
+  local listeners
+
+  if ! command -v lsof >/dev/null 2>&1; then
+    if python3 - "$port" <<'PY'
+import socket
+import sys
+
+port = int(sys.argv[1])
+with socket.socket() as sock:
+    try:
+        sock.bind(("127.0.0.1", port))
+    except OSError:
+        raise SystemExit(0)
+raise SystemExit(1)
+PY
+    then
+      echo "❌ Port ${port} is occupied and lsof is required to verify process ownership" >&2
+      return 1
+    fi
+    return 0
+  fi
+
+  listeners=$(lsof -nP -tiTCP:"${port}" -sTCP:LISTEN 2>/dev/null || true)
+  local pid
+  for pid in $listeners; do
+    terminate_repo_owned_process "$pid" "$kind" "listener on port ${port}" || return 1
+  done
+
+  if lsof -nP -tiTCP:"${port}" -sTCP:LISTEN >/dev/null 2>&1; then
+    echo "❌ Port ${port} is still occupied after ${kind} cleanup" >&2
+    return 1
+  fi
+}
+
+assert_process_alive() {
+  local pid=$1
+  local label=$2
+  local log_file=$3
+
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+    return 0
+  fi
+
+  echo "❌ ${label} exited before readiness completed; see ${log_file}" >&2
+  return 1
+}
+
+persist_stack_processes() {
+  mkdir -p "$LOCAL_CLUSTER_ARTIFACT_DIR"
+  local temporary_file="${LOCAL_STACK_PID_FILE}.$$"
+  : >"$temporary_file"
+  [ -z "$CUSTODY_PID" ] || printf 'custody\t%s\n' "$CUSTODY_PID" >>"$temporary_file"
+  [ -z "$FAUCET_PID" ] || printf 'faucet\t%s\n' "$FAUCET_PID" >>"$temporary_file"
+  [ -z "$LOCAL_SOLANA_RPC_PID" ] || printf 'solana-rpc\t%s\n' "$LOCAL_SOLANA_RPC_PID" >>"$temporary_file"
+  [ -z "$LOCAL_EVM_RPC_PID" ] || printf 'evm-rpc\t%s\n' "$LOCAL_EVM_RPC_PID" >>"$temporary_file"
+  [ -z "$LOCAL_BNB_RPC_PID" ] || printf 'bnb-rpc\t%s\n' "$LOCAL_BNB_RPC_PID" >>"$temporary_file"
+  [ -z "$LOCAL_NEOX_RPC_PID" ] || printf 'neox-rpc\t%s\n' "$LOCAL_NEOX_RPC_PID" >>"$temporary_file"
+  chmod 600 "$temporary_file"
+  mv "$temporary_file" "$LOCAL_STACK_PID_FILE"
+}
 
 write_local_service_fleet_config() {
   local expected_faucet=true
@@ -234,7 +389,7 @@ write_local_service_fleet_config() {
           "intentionally_absent_message": "The faucet only runs on local testnet.",
           "probe": {
             "kind": "http",
-            "url": "http://127.0.0.1:9100/health",
+            "url": "http://127.0.0.1:${FAUCET_PORT}/health",
             "body_contains_any": ["OK", "\"status\":\"ok\"", "\"status\": \"ok\""]
           }
         }
@@ -250,7 +405,11 @@ GENESIS_KEYS_DIR="./data/state-${BASE_P2P}/genesis-keys"
 GENESIS_PRIMARY_KEYPAIR="${GENESIS_KEYS_DIR}/genesis-primary-${CHAIN_ID}.json"
 GENESIS_TREASURY_KEYPAIR="${GENESIS_KEYS_DIR}/treasury-${CHAIN_ID}.json"
 LOCAL_DEPLOYER_KEYPAIR="./keypairs/deployer.json"
-RPC_CANDIDATES=("${BASE_RPC}" "$((BASE_RPC + 2))" "$((BASE_RPC + 4))")
+if [ "$LOCAL_CLUSTER_REUSE" = "1" ]; then
+  RPC_CANDIDATES=("${BASE_RPC}" "$((BASE_RPC + 2))" "$((BASE_RPC + 4))" "$((BASE_RPC + 6))")
+else
+  RPC_CANDIDATES=("${BASE_RPC}" "$((BASE_RPC + 2))" "$((BASE_RPC + 4))")
+fi
 if [ -n "$SOLANA_RPC_URL" ]; then
   export CUSTODY_SOLANA_RPC_URL="$SOLANA_RPC_URL"
 fi
@@ -266,13 +425,35 @@ fi
 
 write_local_service_fleet_config
 
+reclaim_recorded_stack_processes
+reclaim_local_listener custody "$CUSTODY_PORT"
+if [ "$NETWORK" = "testnet" ]; then
+  reclaim_local_listener faucet "$FAUCET_PORT"
+fi
+if [ -z "$SOLANA_RPC_URL" ]; then
+  reclaim_local_listener solana-rpc "$LOCAL_SOLANA_RPC_PORT"
+fi
+if [ -z "$EVM_RPC_URL" ]; then
+  reclaim_local_listener evm-rpc "$LOCAL_EVM_RPC_PORT"
+fi
+if [ -z "$BNB_RPC_URL" ]; then
+  reclaim_local_listener bnb-rpc "$LOCAL_BNB_RPC_PORT"
+fi
+if [ -z "$NEOX_RPC_URL" ]; then
+  reclaim_local_listener neox-rpc "$LOCAL_NEOX_RPC_PORT"
+fi
+
 ensure_runtime_binaries
 refresh_changed_contract_wasm
 
-clear_local_peer_trust_state
+if [ "$LOCAL_CLUSTER_REUSE" != "1" ]; then
+  clear_local_peer_trust_state
+fi
 
 cleanup_started_processes() {
-  "$LOCAL_CLUSTER_SCRIPT" stop >/dev/null 2>&1 || true
+  if [ "$LOCAL_CLUSTER_REUSE" != "1" ]; then
+    "$LOCAL_CLUSTER_SCRIPT" stop >/dev/null 2>&1 || true
+  fi
   if [ -n "${LOCAL_SOLANA_RPC_PID:-}" ]; then
     kill "$LOCAL_SOLANA_RPC_PID" 2>/dev/null || true
   fi
@@ -291,6 +472,7 @@ cleanup_started_processes() {
   if [ -n "${FAUCET_PID:-}" ]; then
     kill "$FAUCET_PID" 2>/dev/null || true
   fi
+  rm -f "$LOCAL_STACK_PID_FILE"
 }
 
 wait_for_file() {
@@ -529,16 +711,20 @@ wait_for_validator_cluster_ready() {
   return 1
 }
 
-if [ "$LOCAL_CLUSTER_RESET" = "1" ]; then
+if [ "$LOCAL_CLUSTER_REUSE" != "1" ] && [ "$LOCAL_CLUSTER_RESET" = "1" ]; then
   LOCAL_CLUSTER_BOOTSTRAP_CMD="start-reset-seed"
 else
   LOCAL_CLUSTER_BOOTSTRAP_CMD="start-seed"
 fi
 
-echo "🦞 Starting seed validator for local production-parity stack..."
-if ! LICN_LOCAL_NETWORK="$NETWORK" "$LOCAL_CLUSTER_SCRIPT" "$LOCAL_CLUSTER_BOOTSTRAP_CMD"; then
-  cleanup_started_processes
-  exit 1
+if [ "$LOCAL_CLUSTER_REUSE" = "1" ]; then
+  echo "🦞 Reusing verified four-validator local cluster..."
+else
+  echo "🦞 Starting seed validator for local production-parity stack..."
+  if ! LICN_LOCAL_NETWORK="$NETWORK" "$LOCAL_CLUSTER_SCRIPT" "$LOCAL_CLUSTER_BOOTSTRAP_CMD"; then
+    cleanup_started_processes
+    exit 1
+  fi
 fi
 
 if ! wait_for_file "$GENESIS_TREASURY_KEYPAIR" "genesis treasury keypair"; then
@@ -573,6 +759,11 @@ if [ -z "$SOLANA_RPC_URL" ]; then
   LOCAL_SOLANA_RPC_PID="$(start_detached_process "${LOG_DIR}/solana-rpc.log" \
     env LICHEN_LOCAL_SOLANA_PORT="$LOCAL_SOLANA_RPC_PORT" \
     python3 "${SCRIPT_DIR}/local-solana-rpc-mock.py")"
+  sleep 0.2
+  if ! assert_process_alive "$LOCAL_SOLANA_RPC_PID" "Local Solana-compatible RPC" "${LOG_DIR}/solana-rpc.log"; then
+    cleanup_started_processes
+    exit 1
+  fi
 fi
 export CUSTODY_SOLANA_RPC_URL="$SOLANA_RPC_URL"
 export CUSTODY_SOLANA_USDC_MINT="${CUSTODY_SOLANA_USDC_MINT:-EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v}"
@@ -589,6 +780,11 @@ if [ -z "$EVM_RPC_URL" ]; then
     env LICHEN_LOCAL_EVM_PORT="$LOCAL_EVM_RPC_PORT" \
       LICHEN_LOCAL_EVM_CHAIN_ID="${CUSTODY_ETH_CHAIN_ID:-1}" \
     python3 "${SCRIPT_DIR}/local-evm-rpc-mock.py")"
+  sleep 0.2
+  if ! assert_process_alive "$LOCAL_EVM_RPC_PID" "Local Ethereum RPC" "${LOG_DIR}/evm-rpc.log"; then
+    cleanup_started_processes
+    exit 1
+  fi
 fi
 export CUSTODY_ETH_RPC_URL="$EVM_RPC_URL"
 export CUSTODY_ETH_CHAIN_ID="${CUSTODY_ETH_CHAIN_ID:-1}"
@@ -601,6 +797,11 @@ if [ -z "$BNB_RPC_URL" ]; then
     env LICHEN_LOCAL_EVM_PORT="$LOCAL_BNB_RPC_PORT" \
       LICHEN_LOCAL_EVM_CHAIN_ID="${CUSTODY_BNB_CHAIN_ID:-56}" \
     python3 "${SCRIPT_DIR}/local-evm-rpc-mock.py")"
+  sleep 0.2
+  if ! assert_process_alive "$LOCAL_BNB_RPC_PID" "Local BNB RPC" "${LOG_DIR}/bnb-rpc.log"; then
+    cleanup_started_processes
+    exit 1
+  fi
 fi
 export CUSTODY_BNB_RPC_URL="$BNB_RPC_URL"
 export CUSTODY_BNB_CHAIN_ID="${CUSTODY_BNB_CHAIN_ID:-56}"
@@ -623,6 +824,11 @@ if [ -z "$NEOX_RPC_URL" ]; then
     env LICHEN_LOCAL_EVM_PORT="$LOCAL_NEOX_RPC_PORT" \
       LICHEN_LOCAL_EVM_CHAIN_ID="${CUSTODY_NEOX_CHAIN_ID:-12227332}" \
     python3 "${SCRIPT_DIR}/local-evm-rpc-mock.py")"
+  sleep 0.2
+  if ! assert_process_alive "$LOCAL_NEOX_RPC_PID" "Local Neo X RPC" "${LOG_DIR}/neox-rpc.log"; then
+    cleanup_started_processes
+    exit 1
+  fi
 fi
 export CUSTODY_NEOX_RPC_URL="$NEOX_RPC_URL"
 export CUSTODY_NEOX_CHAIN_ID="${CUSTODY_NEOX_CHAIN_ID:-12227332}"
@@ -634,9 +840,12 @@ if ! wait_for_evm_rpc "$NEOX_RPC_URL" "local Neo X RPC" "$LOCAL_HEALTH_TIMEOUT_S
 fi
 
 CUSTODY_PID="$(start_detached_process "${LOG_DIR}/custody.log" ./scripts/run-custody.sh "$NETWORK")"
+sleep 0.2
+if ! assert_process_alive "$CUSTODY_PID" "Custody" "${LOG_DIR}/custody.log"; then
+  cleanup_started_processes
+  exit 1
+fi
 
-FAUCET_PID=""
-FAUCET_PORT=9100
 if [ "$NETWORK" = "testnet" ]; then
   # The faucet currently serves from the genesis treasury on local networks.
   FAUCET_PID="$(start_detached_process "${LOG_DIR}/faucet.log" \
@@ -646,25 +855,34 @@ if [ "$NETWORK" = "testnet" ]; then
     FAUCET_KEYPAIR="$GENESIS_TREASURY_KEYPAIR" \
     AIRDROPS_FILE="$LOCAL_AIRDROPS_FILE" \
     ./target/release/lichen-faucet)"
+  sleep 0.2
+  if ! assert_process_alive "$FAUCET_PID" "Faucet" "${LOG_DIR}/faucet.log"; then
+    cleanup_started_processes
+    exit 1
+  fi
 fi
 
 # ── First-boot contract deployment ──
 # Wait 5s for validators to stabilize, then rebuild manifest + signed metadata.
 # The local stack is not DEX-ready until this completes.
-echo "🔧 Running post-genesis bootstrap..."
-sleep 5
-if "${SCRIPT_DIR}/first-boot-deploy.sh" --rpc "$CLUSTER_RPC_URL" --skip-build >"${LOG_DIR}/first-boot-deploy.log" 2>&1; then
-  echo "✅ Post-genesis bootstrap complete"
+if [ "$LOCAL_CLUSTER_REUSE" = "1" ]; then
+  echo "✅ Existing cluster retained; post-genesis bootstrap and joiner launch skipped"
 else
-  echo "❌ Post-genesis bootstrap failed; see ${LOG_DIR}/first-boot-deploy.log" >&2
-  cleanup_started_processes
-  exit 1
-fi
+  echo "🔧 Running post-genesis bootstrap..."
+  sleep 5
+  if "${SCRIPT_DIR}/first-boot-deploy.sh" --rpc "$CLUSTER_RPC_URL" --skip-build >"${LOG_DIR}/first-boot-deploy.log" 2>&1; then
+    echo "✅ Post-genesis bootstrap complete"
+  else
+    echo "❌ Post-genesis bootstrap failed; see ${LOG_DIR}/first-boot-deploy.log" >&2
+    cleanup_started_processes
+    exit 1
+  fi
 
-echo "🦞 Starting joiner validators from empty state via network sync..."
-if ! LICN_LOCAL_NETWORK="$NETWORK" "$LOCAL_CLUSTER_SCRIPT" start-joiners-from-seed-sync; then
-  cleanup_started_processes
-  exit 1
+  echo "🦞 Starting joiner validators from empty state via network sync..."
+  if ! LICN_LOCAL_NETWORK="$NETWORK" "$LOCAL_CLUSTER_SCRIPT" start-joiners-from-seed-sync; then
+    cleanup_started_processes
+    exit 1
+  fi
 fi
 
 if ! wait_for_validator_cluster_ready "$LOCAL_HEALTH_TIMEOUT_SECS"; then
@@ -683,6 +901,38 @@ if [ -n "$FAUCET_PID" ]; then
     exit 1
   fi
 fi
+
+if ! assert_process_alive "$CUSTODY_PID" "Custody" "${LOG_DIR}/custody.log"; then
+  cleanup_started_processes
+  exit 1
+fi
+if [ -n "$FAUCET_PID" ] \
+  && ! assert_process_alive "$FAUCET_PID" "Faucet" "${LOG_DIR}/faucet.log"; then
+  cleanup_started_processes
+  exit 1
+fi
+if [ -n "$LOCAL_SOLANA_RPC_PID" ] \
+  && ! assert_process_alive "$LOCAL_SOLANA_RPC_PID" "Local Solana-compatible RPC" "${LOG_DIR}/solana-rpc.log"; then
+  cleanup_started_processes
+  exit 1
+fi
+if [ -n "$LOCAL_EVM_RPC_PID" ] \
+  && ! assert_process_alive "$LOCAL_EVM_RPC_PID" "Local Ethereum RPC" "${LOG_DIR}/evm-rpc.log"; then
+  cleanup_started_processes
+  exit 1
+fi
+if [ -n "$LOCAL_BNB_RPC_PID" ] \
+  && ! assert_process_alive "$LOCAL_BNB_RPC_PID" "Local BNB RPC" "${LOG_DIR}/bnb-rpc.log"; then
+  cleanup_started_processes
+  exit 1
+fi
+if [ -n "$LOCAL_NEOX_RPC_PID" ] \
+  && ! assert_process_alive "$LOCAL_NEOX_RPC_PID" "Local Neo X RPC" "${LOG_DIR}/neox-rpc.log"; then
+  cleanup_started_processes
+  exit 1
+fi
+
+persist_stack_processes
 
 echo "🦞 Lichen local stack started"
 echo "Network: $NETWORK"

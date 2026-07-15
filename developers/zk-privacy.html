@@ -475,7 +475,7 @@ ix = shield_instruction(
     proof=bytes.fromhex(shield_json["proof"]),
 )
 bh = await conn.get_recent_blockhash()
-tx = TransactionBuilder().add(ix).set_recent_blockhash(bh).build_and_sign(kp)
+tx = TransactionBuilder().add(ix).set_recent_blockhash(bh).build_and_sign(kp, await conn.get_chain_id())
 sig = await conn.send_transaction(tx)
 
 # ── Unshield ──
@@ -640,7 +640,7 @@ ix = unshield_instruction(recipient, 500000000, nullifier, root, hash, proof)
             <!-- ── REST Endpoints ── -->
             <section id="rest-endpoints">
                 <h2>REST Endpoints</h2>
-                <p>Base URLs: <code>https://testnet-rpc.lichen.network/api/v1/shielded</code> (testnet) ·
+                <p>Base URLs: <code>https://testnet-api.lichen.network/api/v1/shielded</code> (testnet) ·
                     <code>https://rpc.lichen.network/api/v1/shielded</code> (mainnet)
                 </p>
                 <table class="reference-table">

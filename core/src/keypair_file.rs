@@ -11,7 +11,6 @@ use std::io::{self, Write};
 use std::path::Path;
 
 pub const KEYPAIR_PASSWORD_ENV: &str = "LICHEN_KEYPAIR_PASSWORD";
-pub const ALLOW_PLAINTEXT_KEYPAIR_ENV: &str = "LICHEN_ALLOW_PLAINTEXT_KEYPAIRS";
 const LOCAL_DEV_ENV: &str = "LICHEN_LOCAL_DEV";
 const KEYPAIR_ENCRYPTION_VERSION_AES_GCM: u8 = 2;
 
@@ -38,22 +37,19 @@ pub fn keypair_password_from_env() -> Option<String> {
     }
 }
 
-pub fn plaintext_keypair_compat_allowed() -> bool {
-    matches!(
-        std::env::var(ALLOW_PLAINTEXT_KEYPAIR_ENV),
-        Ok(value) if is_truthy(&value)
-    ) || matches!(std::env::var(LOCAL_DEV_ENV), Ok(value) if is_truthy(&value))
+pub fn plaintext_keypair_allowed_for_local_dev() -> bool {
+    matches!(std::env::var(LOCAL_DEV_ENV), Ok(value) if is_truthy(&value))
 }
 
 pub fn require_runtime_keypair_password(context: &str) -> Result<Option<String>, String> {
     let password = keypair_password_from_env();
-    if password.is_some() || plaintext_keypair_compat_allowed() {
+    if password.is_some() || plaintext_keypair_allowed_for_local_dev() {
         return Ok(password);
     }
 
     Err(format!(
-        "{} requires {} to be set. Plaintext keypairs are only allowed with {}=1 or {}=1.",
-        context, KEYPAIR_PASSWORD_ENV, ALLOW_PLAINTEXT_KEYPAIR_ENV, LOCAL_DEV_ENV
+        "{} requires {} to be set. Plaintext keypairs are only allowed with {}=1.",
+        context, KEYPAIR_PASSWORD_ENV, LOCAL_DEV_ENV
     ))
 }
 
@@ -434,10 +430,9 @@ impl KeypairFile {
 
         if !allow_plaintext {
             return Err(format!(
-                "Plaintext keypair file {} is not allowed outside explicit local development. Set {} or use {}=1 / {}=1 for compatibility.",
+                "Plaintext keypair file {} is not allowed outside explicit local development. Set {} or use {}=1 for a disposable local environment.",
                 path.display(),
                 KEYPAIR_PASSWORD_ENV,
-                ALLOW_PLAINTEXT_KEYPAIR_ENV,
                 LOCAL_DEV_ENV
             ));
         }
@@ -552,7 +547,7 @@ mod tests {
     }
 
     #[test]
-    fn test_plaintext_keypair_load_requires_explicit_compat() {
+    fn test_plaintext_keypair_load_requires_explicit_local_policy() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("plaintext.json");
         let keypair = Keypair::new();
@@ -563,7 +558,7 @@ mod tests {
 
         let err = KeypairFile::load_with_password_policy(&path, None, false).unwrap_err();
         assert!(err.contains("Plaintext keypair file"));
-        assert!(err.contains(ALLOW_PLAINTEXT_KEYPAIR_ENV));
+        assert!(err.contains(LOCAL_DEV_ENV));
 
         let loaded = KeypairFile::load_with_password_policy(&path, None, true).unwrap();
         assert_eq!(loaded.to_keypair().unwrap().pubkey(), keypair.pubkey());

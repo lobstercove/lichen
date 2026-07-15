@@ -5,7 +5,7 @@
 
 const NETWORKS = {
     'mainnet': 'https://rpc.lichen.network',
-    'testnet': 'https://testnet-rpc.lichen.network',
+    'testnet': 'https://testnet-api.lichen.network',
     'local-testnet': 'http://localhost:8899',
     'local-mainnet': 'http://localhost:9899'
 };
@@ -91,7 +91,6 @@ const wsProbe = {
     lastSlot: null,
     url: '',
 };
-const LEGACY_ADMIN_TOKEN_STORAGE_KEY = 'lichen_admin_token';
 
 // ── RPC Client ──────────────────────────────────────────────
 
@@ -2925,14 +2924,6 @@ async function updateRiskConsoleStatus(fromUserAction = false) {
     }
 }
 
-function purgeLegacyAdminToken() {
-    try {
-        sessionStorage.removeItem(LEGACY_ADMIN_TOKEN_STORAGE_KEY);
-    } catch (e) {
-        // Ignore storage access failures.
-    }
-}
-
 // ── Threat Detection ────────────────────────────────────────
 
 function shortHash(hash) {
@@ -3174,15 +3165,6 @@ async function updateDexMonitor() {
                     metricsData = {
                         candles: metricNumber(stats.total_candles), pairs: metricNumber(stats.tracked_pairs),
                         records: metricNumber(stats.record_count), traders: metricNumber(stats.trader_count)
-                    };
-                    deployed = true;
-                }
-            } else if (sub.id === 'lichenswap') {
-                const stats = await rpc('getLichenSwapStats');
-                if (stats) {
-                    metricsData = {
-                        swaps: metricNumber(stats.swap_count), volume_a: metricNumber(stats.volume_a),
-                        volume_b: metricNumber(stats.volume_b), status: stats.paused ? 'PAUSED' : 'LIVE'
                     };
                     deployed = true;
                 }
@@ -3467,13 +3449,12 @@ async function updateTradingMetrics() {
     const el = id => document.getElementById(id);
 
     // Fetch all trading data in parallel
-    const [dexCore, amm, margin, router, analytics, lichenswap, rewards, governance, metrics] = await Promise.all([
+    const [dexCore, amm, margin, router, analytics, rewards, governance, metrics] = await Promise.all([
         rpc('getDexCoreStats').catch(() => null),
         rpc('getDexAmmStats').catch(() => null),
         rpc('getDexMarginStats').catch(() => null),
         rpc('getDexRouterStats').catch(() => null),
         rpc('getDexAnalyticsStats').catch(() => null),
-        rpc('getLichenSwapStats').catch(() => null),
         rpc('getDexRewardsStats').catch(() => null),
         rpc('getDexGovernanceStats').catch(() => null),
         rpc('getMetrics').catch(() => null),
@@ -3498,6 +3479,7 @@ async function updateTradingMetrics() {
         if (el('tradeAmmSwaps')) el('tradeAmmSwaps').textContent = formatNum(metricNumber(amm.swap_count));
         if (el('tradeAmmTVL')) el('tradeAmmTVL').textContent = formatLicn(metricNumber(amm.total_volume));
         if (el('tradeAmmFees')) el('tradeAmmFees').textContent = formatLicn(metricNumber(amm.total_fees));
+        if (el('tradeAmmSwaps')) el('tradeAmmSwaps').textContent = formatNum(metricNumber(amm.swap_count));
     }
 
     // Margin
@@ -3522,12 +3504,6 @@ async function updateTradingMetrics() {
         if (el('tradeTrackedPairs')) el('tradeTrackedPairs').textContent = formatNum(metricNumber(analytics.tracked_pairs));
     }
 
-    // LichenSwap
-    if (lichenswap) {
-        activeFeeds++;
-        if (el('tradeLichenSwaps')) el('tradeLichenSwaps').textContent = formatNum(metricNumber(lichenswap.swap_count));
-    }
-
     // Rewards
     if (rewards) {
         activeFeeds++;
@@ -3549,8 +3525,8 @@ async function updateTradingMetrics() {
     }
 
     if (badge) {
-        badge.textContent = `${activeFeeds}/9 Feeds`;
-        badge.className = 'panel-badge ' + (activeFeeds >= 8 ? 'success' : activeFeeds > 0 ? 'info' : 'warning');
+        badge.textContent = `${activeFeeds}/8 Feeds`;
+        badge.className = 'panel-badge ' + (activeFeeds >= 7 ? 'success' : activeFeeds > 0 ? 'info' : 'warning');
     }
 
     tradingMetricsLoaded = true;
@@ -4872,7 +4848,6 @@ function updateClock() {
 // ── Init ────────────────────────────────────────────────────
 
 async function init() {
-    purgeLegacyAdminToken();
     bindStaticControls();
     initRiskSignerConnection();
     updateRiskConsoleInputs();

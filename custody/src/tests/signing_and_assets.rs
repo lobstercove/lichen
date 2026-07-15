@@ -93,7 +93,7 @@ fn test_determine_withdrawal_signing_mode_routes_threshold_evm_to_safe() {
         test_pq_signer(8).0,
         test_pq_signer(9).0,
     ];
-    state.config.evm_multisig_address =
+    state.config.eth_multisig_address =
         Some("0x2222222222222222222222222222222222222222".to_string());
     let mut job = test_withdrawal_job();
     job.dest_chain = "ethereum".to_string();
@@ -251,12 +251,11 @@ async fn test_collect_and_assemble_threshold_evm_safe_flow() {
         });
     let signer_two = spawn_mock_server(signer_two_app).await;
 
-    state.config.evm_rpc_url = Some(rpc_url.clone());
     state.config.eth_rpc_url = Some(rpc_url);
     state.config.signer_endpoints = vec![signer_one, signer_two];
     state.config.signer_threshold = 2;
     state.config.signer_pq_addresses = vec![test_pq_signer(21).0, test_pq_signer(22).0];
-    state.config.evm_multisig_address =
+    state.config.eth_multisig_address =
         Some("0x9999999999999999999999999999999999999999".to_string());
 
     let mut job = test_withdrawal_job();
@@ -335,12 +334,11 @@ async fn test_assemble_signed_evm_tx_rejects_mismatched_safe_hash() {
             });
     let rpc_url = spawn_mock_server(rpc_app).await;
 
-    state.config.evm_rpc_url = Some(rpc_url.clone());
     state.config.eth_rpc_url = Some(rpc_url);
     state.config.signer_threshold = 2;
     state.config.signer_endpoints =
         vec!["http://signer-1".to_string(), "http://signer-2".to_string()];
-    state.config.evm_multisig_address =
+    state.config.eth_multisig_address =
         Some("0x9999999999999999999999999999999999999999".to_string());
 
     let mut job = test_withdrawal_job();
@@ -383,7 +381,7 @@ async fn test_assemble_signed_evm_tx_enforces_job_required_threshold() {
         "http://signer-2".to_string(),
         "http://signer-3".to_string(),
     ];
-    state.config.evm_multisig_address =
+    state.config.eth_multisig_address =
         Some("0x9999999999999999999999999999999999999999".to_string());
 
     let mut job = test_withdrawal_job();
@@ -435,13 +433,12 @@ async fn test_assemble_signed_evm_tx_rejects_duplicate_signers() {
             });
     let rpc_url = spawn_mock_server(rpc_app).await;
 
-    state.config.evm_rpc_url = Some(rpc_url.clone());
     state.config.eth_rpc_url = Some(rpc_url);
     state.config.signer_threshold = 2;
     state.config.signer_endpoints =
         vec!["http://signer-1".to_string(), "http://signer-2".to_string()];
     state.config.signer_pq_addresses = vec![test_pq_signer(23).0, test_pq_signer(24).0];
-    state.config.evm_multisig_address =
+    state.config.eth_multisig_address =
         Some("0x9999999999999999999999999999999999999999".to_string());
 
     let mut job = test_withdrawal_job();

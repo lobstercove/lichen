@@ -308,15 +308,6 @@ class LichenSwapClient:
     async def get_swap_stats(self) -> Dict[str, int]:
         return _decode_swap_stats(await self._call_readonly("get_swap_stats"))
 
-    async def get_stats(self) -> Dict[str, Any]:
-        stats = await self.connection.get_lichenswap_stats()
-        return {
-            "swap_count": stats.get("swap_count", 0),
-            "volume_a": stats.get("volume_a", 0),
-            "volume_b": stats.get("volume_b", 0),
-            "paused": bool(stats.get("paused")),
-        }
-
     async def create_pool(self, owner: Keypair, params: CreatePoolParams) -> str:
         program_id = await self.get_program_id()
         args = _encode_create_pool_args(params.token_a, params.token_b)

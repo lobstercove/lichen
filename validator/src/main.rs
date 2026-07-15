@@ -22,13 +22,15 @@ mod threshold_signer;
 pub mod updater;
 pub mod wal;
 
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use flate2::read::GzDecoder;
 use futures_util::{SinkExt, StreamExt};
 use lichen_core::codec::{
-    deserialize_legacy_bincode_strict, serialize_legacy_bincode, serialize_legacy_bincode_limited,
+    deserialize_legacy_bincode_from, deserialize_legacy_bincode_strict, serialize_legacy_bincode,
+    serialize_legacy_bincode_into, serialize_legacy_bincode_limited,
 };
 use lichen_core::keypair_file::{
-    load_keypair_with_password_policy, plaintext_keypair_compat_allowed,
+    load_keypair_with_password_policy, plaintext_keypair_allowed_for_local_dev,
     require_runtime_keypair_password,
 };
 use lichen_core::mossstake::{MossStakeReplayMode, MOSSSTAKE_SLOT_ONLY_METADATA_KEY};
@@ -42,21 +44,23 @@ use lichen_core::nft::decode_token_state;
 #[cfg(test)]
 use lichen_core::STATE_SNAPSHOT_CATEGORIES;
 use lichen_core::{
-    compute_bft_timestamp, compute_stake_weighted_median, compute_validators_hash, evm_tx_hash,
-    Account, AccountTxsRebuildReport, AccountTxsSourceInspection, Block, ContractAbi,
-    ContractAccount, ContractInstruction, FeeConfig, FinalityTracker, ForkChoice, GenesisConfig,
-    GenesisPrices, GenesisStateBundle, GenesisStateChunk, GenesisWallet,
-    GovernedProposalTxBackfillReport, Hash, Keypair, MarketActivity, MarketActivityKind, Mempool,
-    NftActivity, NftActivityKind, PqSignature, Precommit, Prevote, ProgramCallActivity, Proposal,
-    Pubkey, RoundStep, SlashingEvidence, SlashingOffense, SparseStateCommitmentReport, StakePool,
+    canonical_validator_powers, compute_bft_timestamp, compute_stake_weighted_median,
+    compute_validators_hash, evm_tx_hash, Account, AccountTxsRebuildReport,
+    AccountTxsSourceInspection, Block, CanonicalCommitCertificate, ContractAbi, ContractAccount,
+    ContractInstruction, FeeConfig, FinalityTracker, ForkChoice, GenesisConfig, GenesisPrices,
+    GenesisStateBundle, GenesisStateChunk, GenesisWallet, GovernedProposalTxBackfillReport, Hash,
+    Keypair, MarketActivity, MarketActivityKind, Mempool, PqSignature, Precommit, Prevote,
+    Proposal, Pubkey, PublicHistoryImportReport, PublicHistoryManifest, RoundStep,
+    SlashingEvidence, SlashingOffense, SparseStateCommitmentReport, StakePool, StateBatch,
     StateRootComponentReport, StateStore, Transaction, TxProcessor, ValidatorInfo, ValidatorSet,
     Vote, VoteAggregator, VoteAuthority, BASE_FEE, BOOTSTRAP_GRANT_AMOUNT, CHAIN_ID_METADATA_KEY,
     CONTRACT_DEPLOY_FEE, CONTRACT_UPGRADE_FEE, EVM_PROGRAM_ID, GENESIS_DISTRIBUTION,
     GENESIS_STATE_BUNDLE_VERSION, GENESIS_STATE_CHUNK_OPCODE, GENESIS_SUPPLY_SPORES,
     MAX_TX_AGE_BLOCKS, MIN_VALIDATOR_STAKE, NFT_COLLECTION_FEE, NFT_MINT_FEE, ORACLE_ASSET_MAX_LEN,
-    ORACLE_ASSET_MIN_LEN, ORACLE_STALENESS_SLOTS, SLASHING_EVIDENCE_CODEC_LIMIT_BYTES,
-    STATE_SNAPSHOT_SPECIAL_CATEGORIES, SYSTEM_PROGRAM_ID as CORE_SYSTEM_PROGRAM_ID,
-    VALIDATOR_BOOTSTRAP_GRANTS_ENABLED_METADATA_KEY, VALIDATOR_BOOTSTRAP_GRANTS_ENABLED_VALUE,
+    ORACLE_ASSET_MIN_LEN, ORACLE_STALENESS_SLOTS, PUBLIC_HISTORY_SNAPSHOT_CATEGORIES,
+    SLASHING_EVIDENCE_CODEC_LIMIT_BYTES, STATE_SNAPSHOT_SPECIAL_CATEGORIES,
+    SYSTEM_PROGRAM_ID as CORE_SYSTEM_PROGRAM_ID, VALIDATOR_BOOTSTRAP_GRANTS_ENABLED_METADATA_KEY,
+    VALIDATOR_BOOTSTRAP_GRANTS_ENABLED_VALUE,
 };
 use lichen_genesis::{
     genesis_assign_achievements, genesis_auto_deploy, genesis_bootstrap_bridge_committee,
@@ -65,12 +69,12 @@ use lichen_genesis::{
     genesis_seed_margin_prices, genesis_seed_oracle, genesis_set_fee_exempt_contracts,
 };
 use lichen_p2p::{
-    validator_announcement_signing_message, CheckpointMetaAnchor, ConsistencyReportMsg,
-    MessageType, NodeRole, P2PConfig, P2PMessage, P2PNetwork, SnapshotCategoryDigest, SnapshotKind,
-    SnapshotRequestMsg, SnapshotResponseMsg, StatusRequestMsg, StatusResponseMsg,
-    STATE_SNAPSHOT_ENTRIES_CODEC_LIMIT_BYTES,
+    validator_announcement_signing_message, CheckpointCanonicalProof, CheckpointMetaAnchor,
+    ConsistencyReportMsg, MessageType, NodeRole, P2PConfig, P2PMessage, P2PNetwork,
+    SnapshotCategoryDigest, SnapshotKind, SnapshotRequestMsg, SnapshotResponseMsg,
+    StatusRequestMsg, StatusResponseMsg, STATE_SNAPSHOT_ENTRIES_CODEC_LIMIT_BYTES,
 };
-use lichen_rpc::start_rpc_server;
+use lichen_rpc::{start_rpc_server, TransactionSubmission};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -78,7 +82,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{BufRead, Read, Write};
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -100,6 +104,12 @@ const SYSTEM_ACCOUNT_OWNER: Pubkey = Pubkey([0x01; 32]);
 /// Exit code used by the internal health watchdog to signal the supervisor
 /// that the validator should be restarted (deadlock/stall detected).
 const EXIT_CODE_RESTART: i32 = 75;
+const EXIT_CODE_FATAL_STARTUP: i32 = 78;
+const TESTNET_CHAIN_DOMAIN_ACTIVATION_SLOT: u64 = 800_000;
+const MIN_RUNTIME_AVAILABLE_BYTES: u64 = 10 * 1024 * 1024 * 1024;
+const MIN_CHECKPOINT_AVAILABLE_BYTES: u64 = 20 * 1024 * 1024 * 1024;
+const SNAPSHOT_APPLY_COMPACTION_COPIES: u64 = 2;
+const DISK_CAPACITY_CHECK_INTERVAL_SECS: u64 = 30;
 fn validator_log_filter_from_env_value(value: Option<&str>) -> EnvFilter {
     value
         .and_then(|value| EnvFilter::builder().parse(value).ok())
@@ -126,6 +136,10 @@ const GOVERNED_TX_BACKFILL_THROTTLE_SLEEP_MS: u64 = 10;
 const GENESIS_SYNC_INCOMPLETE_MARKER: &str = "genesis_sync_incomplete";
 const TX_BY_SLOT_CANONICAL_INDEX_MARKER: &str = "tx_by_slot_canonical_index_v1";
 const RECENT_POST_BLOCK_EFFECTS_RECOVERY_WINDOW: u64 = 4096;
+const POST_BLOCK_EFFECTS_MARKER_RETENTION_SLOTS: u64 = 10_000;
+const POST_BLOCK_EFFECTS_ACTIVATION_SLOT_KEY: &str = "post_block_effects_activation_slot_v1";
+const _: () =
+    assert!(POST_BLOCK_EFFECTS_MARKER_RETENTION_SLOTS > RECENT_POST_BLOCK_EFFECTS_RECOVERY_WINDOW);
 const ACTIVATE_RESTRICTION_SCHEMA_FLAG: &str = "--activate-restriction-schema";
 const SHOW_RESTRICTION_SCHEMA_FLAG: &str = "--show-restriction-schema";
 const REBUILD_SPARSE_STATE_COMMITMENT_FLAG: &str = "--rebuild-sparse-state-commitment";
@@ -138,6 +152,9 @@ const REPAIR_TESTNET_DEX_CONTRACTS_FLAG: &str = "--repair-testnet-dex-contracts"
 const DEX_REPAIR_CONFIRMATION: &str = "repair-dex-contracts:testnet:v0.5.77";
 const SHOW_CONTRACT_STORAGE_DIGEST_FLAG: &str = "--show-contract-storage-digest";
 const SHOW_STAKE_POOL_DIGEST_FLAG: &str = "--show-stake-pool-digest";
+const PREPARE_POST_BLOCK_EFFECTS_ACTIVATION_FLAG: &str = "--prepare-post-block-effects-activation";
+const REPAIR_RECENT_POST_BLOCK_EFFECTS_FLAG: &str = "--repair-recent-post-block-effects";
+const RECENT_POST_BLOCK_EFFECTS_REPAIR_CONFIRMATION: &str = "recent-post-block-effects-repair:v1";
 const DIAGNOSE_BLOCK_REPLAY_FLAG: &str = "--diagnose-block-replay";
 const DIAGNOSE_CHAIN_REPLAY_FLAG: &str = "--diagnose-chain-replay";
 const DUMP_BLOCK_JSON_FLAG: &str = "--dump-block-json";
@@ -148,6 +165,17 @@ const INSPECT_ACCOUNT_HISTORY_FLAG: &str = "--inspect-account-history";
 const MERGE_PUBLIC_HISTORY_FROM_SOURCE_FLAG: &str = "--merge-public-history-from-source";
 const MERGE_PUBLIC_HISTORY_INDEXES_FROM_SOURCE_FLAG: &str =
     "--merge-public-history-indexes-from-source";
+const PUBLIC_HISTORY_MANIFEST_FLAG: &str = "--public-history-manifest";
+const VERIFY_PUBLIC_HISTORY_PARITY_WITH_SOURCE_FLAG: &str =
+    "--verify-public-history-parity-with-source";
+const REPAIR_PUBLIC_HISTORY_FROM_SOURCE_FLAG: &str = "--repair-public-history-from-source";
+const EXPORT_PUBLIC_HISTORY_CATEGORY_FLAG: &str = "--export-public-history-category";
+const IMPORT_PUBLIC_HISTORY_CATEGORY_FLAG: &str = "--import-public-history-category";
+const PUBLIC_HISTORY_PAGE_FORMAT_FLAG: &str = "--public-history-page-format";
+const VERIFY_CONTIGUOUS_BLOCK_RANGE_FLAG: &str = "--verify-contiguous-block-range";
+const MIGRATE_PUBLIC_HISTORY_TO_COLD_FLAG: &str = "--migrate-public-history-to-cold";
+const REPAIR_MISSING_SLOT_CURSORS_FROM_BLOCKS_FLAG: &str =
+    "--repair-missing-slot-cursors-from-blocks";
 const SOURCE_COLD_STORE_FLAG: &str = "--source-cold-store";
 const VERIFY_WARP_SNAPSHOT_ROUNDTRIP_FLAG: &str = "--verify-warp-snapshot-roundtrip";
 const REBUILD_SHIELDED_STATE_FROM_BLOCKS_FLAG: &str = "--rebuild-shielded-state-from-blocks";
@@ -159,6 +187,10 @@ const ACCOUNT_TXS_REBUILD_CONFIRMATION: &str = "rebuild-account-txs:v1";
 const GOVERNED_PROPOSAL_TX_BACKFILL_CONFIRMATION: &str = "backfill-governed-proposal-tx-index:v1";
 const PUBLIC_HISTORY_MERGE_CONFIRMATION: &str = "public-history-merge:v1";
 const PUBLIC_HISTORY_INDEX_MERGE_CONFIRMATION: &str = "public-history-index-merge:v1";
+const PUBLIC_HISTORY_REPAIR_CONFIRMATION: &str = "public-history-repair:v1";
+const PUBLIC_HISTORY_COLD_MIGRATION_CONFIRMATION: &str = "public-history-cold-migration:v1";
+const PUBLIC_HISTORY_BINARY_PAGE_MAGIC: &[u8] = b"lichen-public-history-page-binary-v1\n";
+const RAW_BLOCK_HISTORY_REPAIR_CONFIRMATION: &str = "raw-block-history-repair:v1";
 const REPAIR_ANALYTICS_24H_WINDOW_FLAG: &str = "--repair-analytics-24h-window";
 const ANALYTICS_24H_REPAIR_CONFIRMATION: &str = "repair-analytics-24h:v1";
 const TESTNET_GOVERNED_SIGNER_RECOVERY_V1_METADATA_KEY: &str =
@@ -525,11 +557,10 @@ const LIVE_SYNC_PROGRESS_CHECK_SECS: u64 = 5;
 /// the peer tip is several heights ahead this node must let sync catch up
 /// instead of proposing or committing from stale canonical state.
 const LIVE_BFT_CATCH_UP_GAP: u64 = 3;
-/// Pre-consensus gating should keep clearly stale restarted/joining validators
-/// out of BFT, but must not require exact equality with a moving live tip.
-/// At 400ms slots, exact-tip gating can chase the head forever and leave a
-/// validator syncing one block at a time without re-entering proposer rotation.
-const PRE_CONSENSUS_CATCH_UP_TOLERANCE: u64 = 5;
+/// Pre-consensus gating is stricter than live BFT catch-up. A validator that
+/// has restarted must not vote until its canonical tip has reached the highest
+/// observed network slot and all in-flight catch-up work is drained.
+const PRE_CONSENSUS_CATCH_UP_TOLERANCE: u64 = 0;
 const FUTURE_CONSENSUS_PROPOSAL_BUFFER_HEIGHTS: u64 = 10;
 
 /// QoS: per-peer block-range serving token bucket, measured in blocks.
@@ -541,8 +572,11 @@ const BLOCK_RANGE_RESPONSE_BATCH_BLOCKS: usize = sync::INITIAL_SYNC_BLOCK_RANGE_
 const SNAPSHOT_SERVE_BURST_UNITS: u64 = 32;
 const SNAPSHOT_SERVE_REFILL_UNITS_PER_SEC: u64 = 8;
 const MAX_SNAPSHOT_CHUNK_SIZE: u64 = 2000;
+const MAX_PUBLIC_HISTORY_CHUNK_SIZE: u64 = 20_000;
+const MAX_PUBLIC_HISTORY_BINARY_PAGE_BYTES: u64 = 512 * 1024 * 1024;
 const SNAPSHOT_PROGRESS_RETRY_SECS: u64 = 15;
 const SNAPSHOT_PROGRESS_MAX_STALLED_RETRIES: u32 = 3;
+#[cfg(test)]
 const FRESH_JOIN_BOOTSTRAP_REPLAY_SLOTS: u64 = sync::P2P_BLOCK_RANGE_LIMIT;
 
 type SnapshotEntry = (Vec<u8>, Vec<u8>);
@@ -555,6 +589,28 @@ fn sync_range_peer_order(peers: &[SocketAddr], chunk_index: usize) -> Vec<Socket
     }
     (0..peers.len())
         .map(|offset| peers[(chunk_index + offset) % peers.len()])
+        .collect()
+}
+
+fn sync_range_peer_candidates(
+    peer_infos: &[(SocketAddr, i64, u64)],
+    required_slot: u64,
+    fanout: usize,
+) -> Vec<SocketAddr> {
+    let mut candidates = peer_infos.to_vec();
+    candidates.sort_by(|a, b| {
+        let a_fresh = a.2 >= required_slot;
+        let b_fresh = b.2 >= required_slot;
+        b_fresh
+            .cmp(&a_fresh)
+            .then_with(|| b.2.cmp(&a.2))
+            .then_with(|| b.1.cmp(&a.1))
+            .then_with(|| a.0.to_string().cmp(&b.0.to_string()))
+    });
+    candidates
+        .into_iter()
+        .take(fanout)
+        .map(|(addr, _, _)| addr)
         .collect()
 }
 
@@ -1084,34 +1140,36 @@ fn read_snapshot_live_rollback_marker(
     Ok(marker)
 }
 
-fn cleanup_snapshot_live_rollback(data_dir: &str) {
-    let marker_path = snapshot_live_rollback_marker_path(data_dir);
-    if let Err(err) = fs::remove_file(&marker_path) {
-        if err.kind() != std::io::ErrorKind::NotFound {
-            warn!(
-                "⚠️  Failed to remove snapshot rollback marker {}: {}",
-                marker_path.display(),
-                err
-            );
-        }
-    } else if let Err(err) = fsync_parent_dir(&marker_path) {
-        warn!(
-            "⚠️  Failed to fsync snapshot rollback marker removal {}: {}",
-            marker_path.display(),
-            err
-        );
-    }
-
+fn cleanup_snapshot_live_rollback(data_dir: &str) -> Result<(), String> {
     let rollback_dir = snapshot_live_rollback_checkpoint_dir(data_dir);
-    if let Err(err) = fs::remove_dir_all(&rollback_dir) {
-        if err.kind() != std::io::ErrorKind::NotFound {
-            warn!(
-                "⚠️  Failed to remove snapshot rollback checkpoint {}: {}",
+    match fs::remove_dir_all(&rollback_dir) {
+        Ok(()) => fsync_parent_dir(&rollback_dir)?,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => {
+            return Err(format!(
+                "failed to remove snapshot rollback checkpoint {}: {}",
                 rollback_dir.display(),
                 err
-            );
+            ));
         }
     }
+
+    // The durable marker is the transaction indicator and must be removed
+    // last. If checkpoint cleanup fails or the host crashes, startup must see
+    // the marker and retry instead of silently leaving hard-linked SSTs behind.
+    let marker_path = snapshot_live_rollback_marker_path(data_dir);
+    match fs::remove_file(&marker_path) {
+        Ok(()) => fsync_parent_dir(&marker_path)?,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => {
+            return Err(format!(
+                "failed to remove snapshot rollback marker {}: {}",
+                marker_path.display(),
+                err
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn prepare_snapshot_live_rollback(
@@ -1139,8 +1197,8 @@ fn prepare_snapshot_live_rollback(
         }
     }
     let rollback_dir_str = rollback_dir.to_string_lossy().to_string();
-    state.create_raw_checkpoint(&rollback_dir_str)?;
-    let rollback_state = StateStore::open_checkpoint(&rollback_dir_str)?;
+    state.create_hot_raw_checkpoint(&rollback_dir_str)?;
+    let rollback_state = StateStore::open_read_only_with_cache_mb(&rollback_dir_str, None)?;
     let rollback_slot = rollback_state.get_last_slot().unwrap_or(0);
     let rollback_root = rollback_state
         .compute_state_root_cached_read_only()
@@ -1171,15 +1229,25 @@ fn stream_snapshot_category_between_stores(
     target: &StateStore,
     category: &str,
     chunk_size: u64,
+    export_mode: SnapshotCategoryExportMode,
 ) -> Result<u64, String> {
     let mut imported = 0u64;
     let mut cursor: Option<Vec<u8>> = None;
     loop {
-        let page = source.export_snapshot_category_cursor_untracked(
-            category,
-            cursor.as_deref(),
-            chunk_size,
-        )?;
+        let page = match export_mode {
+            SnapshotCategoryExportMode::Canonical => source
+                .export_snapshot_category_cursor_untracked(
+                    category,
+                    cursor.as_deref(),
+                    chunk_size,
+                )?,
+            SnapshotCategoryExportMode::HotRollback => source
+                .export_hot_snapshot_category_cursor_untracked(
+                    category,
+                    cursor.as_deref(),
+                    chunk_size,
+                )?,
+        };
         if !page.entries.is_empty() {
             imported = imported
                 .saturating_add(target.import_snapshot_category(category, &page.entries)? as u64);
@@ -1198,10 +1266,17 @@ fn stream_snapshot_category_between_stores(
     Ok(imported)
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SnapshotCategoryExportMode {
+    Canonical,
+    HotRollback,
+}
+
 fn commit_snapshot_categories_from_store(
     source: &StateStore,
     target: &StateStore,
     categories: &[&str],
+    export_mode: SnapshotCategoryExportMode,
 ) -> Result<SnapshotCategoryCommitReport, String> {
     let mut validator_set_snapshot = if categories.contains(&"validator_set") {
         Some(canonical_validator_set_snapshot(
@@ -1223,21 +1298,10 @@ fn commit_snapshot_categories_from_store(
     if let (Some(set), Some(pool)) = (&mut validator_set_snapshot, &stake_pool_snapshot) {
         reconcile_validator_set_production_counters(set, pool);
     }
-    let merge_categories: &[&str] = if categories != WARP_SNAPSHOT_CATEGORIES
-        && categories
-            .iter()
-            .all(|category| STATE_REPAIR_SNAPSHOT_CATEGORIES.contains(category))
-    {
-        SNAPSHOT_MERGE_CATEGORIES
-    } else {
-        &[]
-    };
-
     for category_name in categories
         .iter()
         .copied()
         .filter(|category| !STATE_SNAPSHOT_SPECIAL_CATEGORIES.contains(category))
-        .filter(|category| !merge_categories.contains(category))
     {
         target.clear_snapshot_category(category_name)?;
     }
@@ -1279,12 +1343,13 @@ fn commit_snapshot_categories_from_store(
                 target,
                 category,
                 snapshot_request_chunk_size(category),
+                export_mode,
             )?,
         };
         report.imported.push((category_name.to_string(), count));
     }
 
-    if categories.contains(&"account_txs") {
+    if categories.contains(&"account_txs") && export_mode == SnapshotCategoryExportMode::Canonical {
         target.clear_account_tx_counters()?;
     }
 
@@ -1298,23 +1363,24 @@ fn restore_snapshot_live_rollback(
 ) -> Result<(), String> {
     let rollback_root =
         parse_snapshot_hash_hex(&marker.rollback_state_root, "rollback_state_root")?;
-    let checkpoint_state = StateStore::open_checkpoint(&marker.rollback_checkpoint_dir)?;
+    let checkpoint_state =
+        StateStore::open_read_only_with_cache_mb(&marker.rollback_checkpoint_dir, None)?;
     validate_checkpoint_state_root_read_only(
         &checkpoint_state,
         marker.rollback_slot,
         rollback_root,
     )?;
-    // RocksDB checkpoints cover only the hot state database. Public archive
-    // block/transaction rows may already be migrated to cold storage, so
-    // rollback recovery must not require full history categories from the
-    // checkpoint. Restore state-root-bearing categories plus the canonical slot
-    // cursor/index that lets the validator resume from its own tip; archive
-    // block/transaction reconciliation remains a separate guarded operator path.
-    let mut rollback_categories = Vec::with_capacity(STATE_REPAIR_SNAPSHOT_CATEGORIES.len() + 1);
-    rollback_categories.extend_from_slice(STATE_REPAIR_SNAPSHOT_CATEGORIES);
-    rollback_categories.push("slots");
-    let report =
-        commit_snapshot_categories_from_store(&checkpoint_state, state, &rollback_categories)?;
+    // The rollback checkpoint is hot-only. Restore every hot category exactly
+    // as it existed before live apply; the independently attached cold archive
+    // is neither read from nor modified here. Restoring only state-rooted rows
+    // can silently retain a partial snapshot's history/index deletions because
+    // those deletions do not affect the consensus state root.
+    let report = commit_snapshot_categories_from_store(
+        &checkpoint_state,
+        state,
+        CHECKPOINT_SNAPSHOT_CATEGORIES,
+        SnapshotCategoryExportMode::HotRollback,
+    )?;
     for (category, count) in report.imported {
         info!(
             "🛟 Restored {} {} entries from pre-snapshot rollback checkpoint",
@@ -1338,13 +1404,14 @@ fn restore_snapshot_live_rollback(
         true,
     )?;
     state.save_metrics_counters()?;
-    cleanup_snapshot_live_rollback(data_dir);
+    cleanup_snapshot_live_rollback(data_dir)?;
     Ok(())
 }
 
 fn recover_incomplete_snapshot_live_apply(
     data_dir: &str,
     cache_size_mb: Option<usize>,
+    cold_store_path: Option<&str>,
 ) -> Result<(), String> {
     let marker_path = snapshot_live_rollback_marker_path(data_dir);
     if !marker_path.exists() {
@@ -1358,12 +1425,16 @@ fn recover_incomplete_snapshot_live_apply(
         marker.rollback_slot,
         marker_path.display()
     );
-    let state = StateStore::open_with_cache_mb(data_dir, cache_size_mb)?;
+    let mut state = StateStore::open_with_cache_mb(data_dir, cache_size_mb)?;
+    if let Some(cold_path) = cold_store_path {
+        state.open_cold_store_read_only(cold_path)?;
+    }
     let target_root = parse_snapshot_hash_hex(
         &marker.target_snapshot_state_root,
         "target_snapshot_state_root",
     )?;
-    if state.get_last_slot().unwrap_or(0) == marker.target_snapshot_slot
+    let target_slot_matches = state.get_last_slot().unwrap_or(0) == marker.target_snapshot_slot;
+    let target_root_valid = target_slot_matches
         && validate_state_root_with_schema(
             &state,
             marker.target_snapshot_slot,
@@ -1371,13 +1442,28 @@ fn recover_incomplete_snapshot_live_apply(
             "completed snapshot live apply",
             true,
         )
-        .is_ok()
-    {
+        .is_ok();
+    let target_archive_complete = if target_root_valid {
+        match validate_snapshot_archive_completeness(&state, marker.target_snapshot_slot) {
+            Ok(()) => true,
+            Err(err) => {
+                warn!(
+                    "🛡️  Snapshot live apply reached slot {} and the expected state root, but its public archive is incomplete: {}. Restoring the exact pre-apply hot database.",
+                    marker.target_snapshot_slot,
+                    err
+                );
+                false
+            }
+        }
+    } else {
+        false
+    };
+    if target_root_valid && target_archive_complete {
         info!(
             "🛟 Snapshot live apply already completed at slot {}; cleaning rollback marker",
             marker.target_snapshot_slot
         );
-        cleanup_snapshot_live_rollback(data_dir);
+        cleanup_snapshot_live_rollback(data_dir)?;
         return Ok(());
     }
 
@@ -1514,11 +1600,11 @@ fn compute_snapshot_manifest_for_categories(
         .collect()
 }
 
-fn compute_state_repair_snapshot_manifest(
+fn compute_checkpoint_snapshot_manifest(
     state: &StateStore,
     chunk_size: u64,
 ) -> Result<Vec<SnapshotCategoryDigest>, String> {
-    compute_snapshot_manifest_for_categories(state, chunk_size, STATE_REPAIR_SNAPSHOT_CATEGORIES)
+    compute_snapshot_manifest_for_categories(state, chunk_size, CHECKPOINT_SNAPSHOT_CATEGORIES)
 }
 
 fn snapshot_manifest_root(manifest: &[SnapshotCategoryDigest]) -> [u8; 32] {
@@ -1574,13 +1660,8 @@ fn validate_snapshot_manifest_shape(manifest: &[SnapshotCategoryDigest]) -> Resu
 fn advertised_snapshot_manifest_categories(
     manifest: &[SnapshotCategoryDigest],
 ) -> Result<&'static [&'static str], String> {
-    if validate_snapshot_manifest_shape_for(manifest, STATE_REPAIR_SNAPSHOT_CATEGORIES, "repair")
-        .is_ok()
-    {
-        return Ok(STATE_REPAIR_SNAPSHOT_CATEGORIES);
-    }
-    validate_snapshot_manifest_shape_for(manifest, WARP_SNAPSHOT_CATEGORIES, "full")?;
-    Ok(WARP_SNAPSHOT_CATEGORIES)
+    validate_snapshot_manifest_shape_for(manifest, CHECKPOINT_SNAPSHOT_CATEGORIES, "checkpoint")?;
+    Ok(CHECKPOINT_SNAPSHOT_CATEGORIES)
 }
 
 fn validate_advertised_snapshot_manifest_shape(
@@ -1643,6 +1724,7 @@ fn validate_snapshot_archive_completeness(
         ));
     }
 
+    let mut parent_hash = None;
     for slot in 0..=snapshot_slot {
         let Some(block) = state.get_block_by_slot(slot)? else {
             return Err(format!(
@@ -1656,6 +1738,71 @@ fn validate_snapshot_archive_completeness(
                 slot, block.header.slot
             ));
         }
+        validate_block_payload_commitments(&block).map_err(|err| {
+            format!("snapshot archive payload commitment failed at slot {slot}: {err}")
+        })?;
+        if let Some(expected_parent) = parent_hash {
+            if block.header.parent_hash != expected_parent {
+                return Err(format!(
+                    "snapshot archive parent mismatch at slot {}: expected {}, got {}",
+                    slot,
+                    expected_parent.to_hex(),
+                    block.header.parent_hash.to_hex()
+                ));
+            }
+        }
+        if block.transactions.is_empty() && block.header.tx_root != Hash::default() {
+            return Err(format!(
+                "snapshot archive contains a header-only block at slot {}",
+                slot
+            ));
+        }
+        let expected_tx_signatures: Vec<Hash> = block
+            .transactions
+            .iter()
+            .map(Transaction::signature)
+            .collect();
+        let indexed_tx_signatures =
+            state.get_txs_by_slot(slot, expected_tx_signatures.len().saturating_add(1))?;
+        if indexed_tx_signatures != expected_tx_signatures {
+            return Err(format!(
+                "snapshot archive tx_by_slot mismatch at slot {}: expected {} ordered transaction(s), found {}",
+                slot,
+                expected_tx_signatures.len(),
+                indexed_tx_signatures.len()
+            ));
+        }
+        for (tx_index, (tx, signature)) in block
+            .transactions
+            .iter()
+            .zip(expected_tx_signatures.iter())
+            .enumerate()
+        {
+            let Some(stored_tx) = state.get_transaction(signature)? else {
+                return Err(format!(
+                    "snapshot archive is missing transaction {} at slot {} index {}",
+                    signature.to_hex(),
+                    slot,
+                    tx_index
+                ));
+            };
+            if stored_tx.hash() != tx.hash() || stored_tx.signature() != *signature {
+                return Err(format!(
+                    "snapshot archive transaction body mismatch for {} at slot {} index {}",
+                    signature.to_hex(),
+                    slot,
+                    tx_index
+                ));
+            }
+            if state.get_tx_slot(signature)? != Some(slot) {
+                return Err(format!(
+                    "snapshot archive tx_to_slot mismatch for {}: expected slot {}",
+                    signature.to_hex(),
+                    slot
+                ));
+            }
+        }
+        parent_hash = Some(block.hash());
     }
 
     Ok(())
@@ -1901,31 +2048,17 @@ fn verify_validator_announcement_signature(
     version: &str,
     signature: &PqSignature,
     machine_fingerprint: &[u8; 32],
-    require_version_binding: bool,
 ) -> bool {
-    let version_bound_valid = validator_announcement_signing_message(
+    validator_announcement_signing_message(
         pubkey,
         stake,
         current_slot,
         machine_fingerprint,
-        Some(version),
+        version,
     )
     .ok()
     .map(|message| Keypair::verify(pubkey, &message, signature))
-    .unwrap_or(false);
-
-    if version_bound_valid {
-        return true;
-    }
-
-    if require_version_binding {
-        return false;
-    }
-
-    validator_announcement_signing_message(pubkey, stake, current_slot, machine_fingerprint, None)
-        .ok()
-        .map(|message| Keypair::verify(pubkey, &message, signature))
-        .unwrap_or(false)
+    .unwrap_or(false)
 }
 
 #[derive(Debug, Clone)]
@@ -1978,6 +2111,8 @@ struct VerifiedCheckpointData {
     meta: lichen_core::CheckpointMeta,
     checkpoint_path: String,
     block: Block,
+    commit_certificate: CanonicalCommitCertificate,
+    canonical_proof: CheckpointCanonicalProof,
     snapshot_manifest: Vec<SnapshotCategoryDigest>,
 }
 
@@ -2019,9 +2154,9 @@ impl VerifiedCheckpointData {
             slot: self.meta.slot,
             state_root: self.meta.state_root,
             total_accounts: self.meta.total_accounts,
-            checkpoint_header: Some(self.block.header.clone()),
-            commit_round: self.block.commit_round,
-            commit_signatures: self.block.commit_signatures.clone(),
+            checkpoint_header: self.block.header.clone(),
+            commit_certificate: self.commit_certificate.clone(),
+            canonical_proof: self.canonical_proof.clone(),
             snapshot_manifest: self.snapshot_manifest.clone(),
         }
     }
@@ -2034,8 +2169,27 @@ impl VerifiedCheckpointCacheEntry {
 
     fn has_snapshot_manifest(&self) -> bool {
         self.checkpoints
-            .iter()
-            .any(VerifiedCheckpointData::has_snapshot_manifest)
+            .first()
+            .is_some_and(VerifiedCheckpointData::has_snapshot_manifest)
+    }
+
+    fn reuse_snapshot_manifests_from(&mut self, previous: &Self) {
+        for checkpoint in &mut self.checkpoints {
+            let Some(previous_checkpoint) = previous.checkpoints.iter().find(|candidate| {
+                candidate.meta.slot == checkpoint.meta.slot
+                    && candidate.meta.state_root == checkpoint.meta.state_root
+                    && candidate.checkpoint_path == checkpoint.checkpoint_path
+                    && candidate.has_snapshot_manifest()
+                    && candidate.is_still_available()
+            }) else {
+                continue;
+            };
+            if validate_advertised_snapshot_manifest_shape(&previous_checkpoint.snapshot_manifest)
+                .is_ok()
+            {
+                checkpoint.snapshot_manifest = previous_checkpoint.snapshot_manifest.clone();
+            }
+        }
     }
 
     fn prune_unavailable_checkpoints(&mut self) -> usize {
@@ -2064,6 +2218,28 @@ impl VerifiedCheckpointCacheEntry {
             .iter()
             .map(VerifiedCheckpointData::meta_anchor)
             .collect()
+    }
+
+    fn snapshot_export_session_for_anchor(
+        &self,
+        anchor: CheckpointSnapshotRequestAnchor,
+    ) -> Option<SnapshotExportSessionState> {
+        let checkpoint = self.checkpoints.iter().find(|checkpoint| {
+            checkpoint.meta.slot == anchor.slot
+                && checkpoint.meta.state_root == anchor.state_root
+                && checkpoint.has_snapshot_manifest()
+                && checkpoint.is_still_available()
+                && advertised_snapshot_manifest_root(&checkpoint.snapshot_manifest)
+                    == anchor.snapshot_manifest_root
+        })?;
+        let categories =
+            advertised_snapshot_manifest_categories(&checkpoint.snapshot_manifest).ok()?;
+
+        Some(SnapshotExportSessionState {
+            checkpoint_path: checkpoint.checkpoint_path.clone(),
+            meta: checkpoint.meta.clone(),
+            categories,
+        })
     }
 
     fn remove_checkpoint_anchor(
@@ -2498,7 +2674,7 @@ fn is_shared_bootstrap_rpc(rpc_url: &str) -> bool {
         .is_some_and(|host| {
             matches!(
                 host.as_str(),
-                "testnet-rpc.lichen.network" | "rpc.lichen.network"
+                "testnet-api.lichen.network" | "rpc.lichen.network"
             )
         })
 }
@@ -2533,6 +2709,29 @@ fn has_enough_direct_bootstrap_observations(
 ) -> bool {
     let required = usize::from(direct_endpoints > 0);
     direct_successes >= required
+}
+
+fn should_wait_for_pre_consensus_tip_observation(
+    is_joining_network: bool,
+    current_slot: u64,
+    network_slot: u64,
+    direct_bootstrap_successes: usize,
+    direct_bootstrap_endpoints: usize,
+    has_authenticated_peer_tip: bool,
+    observation_grace_elapsed: bool,
+) -> bool {
+    let has_direct_bootstrap_tip = direct_bootstrap_endpoints > 0
+        && has_enough_direct_bootstrap_observations(
+            direct_bootstrap_successes,
+            direct_bootstrap_endpoints,
+        );
+
+    !is_joining_network
+        && current_slot > 0
+        && !has_direct_bootstrap_tip
+        && !has_authenticated_peer_tip
+        && network_slot <= current_slot
+        && (direct_bootstrap_endpoints > 0 || !observation_grace_elapsed)
 }
 
 /// Discover companion binaries installed alongside the validator. Only returns
@@ -2693,6 +2892,23 @@ fn collect_validator_downtime_observations(
         .collect()
 }
 
+fn apply_canonical_commit_activity(
+    validator_set: &mut ValidatorSet,
+    certificate: &CanonicalCommitCertificate,
+) -> usize {
+    let mut updated = 0usize;
+    for signature in &certificate.signatures {
+        if let Some(validator) = validator_set.get_validator_mut(&Pubkey(signature.validator)) {
+            validator.last_active_slot = validator.last_active_slot.max(certificate.height);
+            validator.votes_cast = validator.votes_cast.saturating_add(1);
+            validator.correct_votes = validator.correct_votes.saturating_add(1);
+            updated += 1;
+        }
+    }
+    updated
+}
+
+#[cfg(test)]
 fn now_unix_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -2700,6 +2916,7 @@ fn now_unix_ms() -> u64 {
         .as_millis() as u64
 }
 
+#[cfg(test)]
 fn note_validator_activity(
     validator_set: &mut ValidatorSet,
     pubkey: &Pubkey,
@@ -2714,6 +2931,7 @@ fn note_validator_activity(
     }
 }
 
+#[cfg(test)]
 fn note_validator_activity_best_effort(
     validator_set: &Arc<RwLock<ValidatorSet>>,
     pubkey: &Pubkey,
@@ -2762,8 +2980,8 @@ fn instruction_may_mutate_stake_pool(ix: &lichen_core::Instruction) -> bool {
     }
 
     match ix.data.first().copied() {
-        Some(9 | 10 | 11 | 26 | 27 | 31) => true,
-        Some(0..=8 | 12..=25 | 28..=30 | 32..=37) => false,
+        Some(9 | 10 | 11 | 26 | 27 | 31 | 38) => true,
+        Some(0..=8 | 12..=25 | 28..=30 | 32..=37 | 41) => false,
         _ => true,
     }
 }
@@ -2835,7 +3053,7 @@ fn load_treasury_keypair(
     match load_keypair_with_password_policy(
         &path,
         password.as_deref(),
-        plaintext_keypair_compat_allowed(),
+        plaintext_keypair_allowed_for_local_dev(),
     ) {
         Ok(keypair) => {
             info!("🔐 Loaded treasury keypair from {}", path.display());
@@ -2865,6 +3083,56 @@ fn extract_genesis_config(block: &Block) -> Option<GenesisConfig> {
         }
     }
     None
+}
+
+fn canonicalize_startup_genesis_config(
+    state: &StateStore,
+    loaded_config: GenesisConfig,
+    explicit_genesis_path: Option<&str>,
+    data_dir_genesis: &Path,
+    dev_mode: bool,
+) -> Result<GenesisConfig, String> {
+    let Some(genesis_block) = state.get_block_by_slot(0)? else {
+        return Ok(loaded_config);
+    };
+    let Some(embedded_config) = extract_genesis_config(&genesis_block) else {
+        if dev_mode {
+            return Ok(loaded_config);
+        }
+        return Err(
+            "stored genesis block has no embedded GenesisConfig; refusing to start a public validator with locally supplied consensus parameters"
+                .to_string(),
+        );
+    };
+    embedded_config
+        .validate()
+        .map_err(|err| format!("embedded GenesisConfig is invalid: {err}"))?;
+
+    let loaded_bytes = serde_json::to_vec(&loaded_config)
+        .map_err(|err| format!("failed to serialize loaded GenesisConfig: {err}"))?;
+    let embedded_bytes = serde_json::to_vec(&embedded_config)
+        .map_err(|err| format!("failed to serialize embedded GenesisConfig: {err}"))?;
+    if loaded_bytes == embedded_bytes {
+        return Ok(embedded_config);
+    }
+
+    if let Some(path) = explicit_genesis_path {
+        return Err(format!(
+            "explicit genesis config {} conflicts with the authoritative GenesisConfig embedded in slot 0",
+            path
+        ));
+    }
+
+    persist_genesis_config_durable(data_dir_genesis, &embedded_config).map_err(|err| {
+        format!(
+            "local genesis config conflicts with slot 0 and could not be repaired from the authoritative embedded config: {err}"
+        )
+    })?;
+    warn!(
+        "Replaced drifted local genesis config {} with the authoritative config embedded in slot 0",
+        data_dir_genesis.display()
+    );
+    Ok(embedded_config)
 }
 
 fn extract_genesis_state_bundle(block: &Block) -> Result<Option<GenesisStateBundle>, String> {
@@ -3236,26 +3504,7 @@ fn parse_genesis_pubkeys(values: &[String], label: &str) -> Vec<Pubkey> {
 
 fn persist_effective_genesis_config(data_dir: &str, config: &GenesisConfig) {
     let path = Path::new(data_dir).join("genesis.json");
-    let json = match serde_json::to_string_pretty(config) {
-        Ok(json) => json,
-        Err(err) => {
-            warn!(
-                "⚠️  Failed to serialize synced genesis config for {}: {}",
-                path.display(),
-                err
-            );
-            return;
-        }
-    };
-
-    let already_current = fs::read_to_string(&path)
-        .map(|existing| existing == json)
-        .unwrap_or(false);
-    if already_current {
-        return;
-    }
-
-    if let Err(err) = fs::write(&path, json) {
+    if let Err(err) = persist_genesis_config_durable(&path, config) {
         warn!(
             "⚠️  Failed to persist synced genesis config {}: {}",
             path.display(),
@@ -3270,189 +3519,21 @@ fn persist_effective_genesis_config(data_dir: &str, config: &GenesisConfig) {
     );
 }
 
-fn validate_p2p_transaction_signatures(tx: &Transaction) -> bool {
-    if tx.signatures.is_empty() || tx.message.instructions.is_empty() {
-        return false;
+fn validate_transaction_for_mempool_admission(
+    state: &StateStore,
+    tx: &Transaction,
+    chain_id: &str,
+) -> Result<(), String> {
+    tx.validate_structure()?;
+
+    TxProcessor::new(state.clone()).validate_transaction_freshness(tx)?;
+
+    if tx.is_evm() {
+        return Ok(());
     }
 
-    let mut required_signers: HashSet<Pubkey> = HashSet::new();
-    for ix in &tx.message.instructions {
-        let Some(first_acc) = ix.accounts.first() else {
-            return false;
-        };
-        required_signers.insert(*first_acc);
-    }
-
-    let message_bytes = tx.message.serialize();
-    let mut verified_signers: HashSet<Pubkey> = HashSet::new();
-    for sig in &tx.signatures {
-        for signer in &required_signers {
-            if !verified_signers.contains(signer) && Keypair::verify(signer, &message_bytes, sig) {
-                verified_signers.insert(*signer);
-                break;
-            }
-        }
-    }
-
-    verified_signers.len() == required_signers.len()
-}
-
-/// AUDIT-FIX 3.14: Returns count of indexing errors so callers can track failure rate.
-fn record_block_activity(state: &StateStore, block: &Block) -> u32 {
-    let mut activity_seq: u32 = 0;
-    let mut error_count: u32 = 0;
-
-    for tx in &block.transactions {
-        let tx_signature = tx.signature();
-        for ix in &tx.message.instructions {
-            if ix.program_id == CORE_SYSTEM_PROGRAM_ID {
-                match ix.data.first() {
-                    Some(7) => {
-                        if ix.accounts.len() < 4 {
-                            continue;
-                        }
-
-                        let collection = ix.accounts[1];
-                        let token = ix.accounts[2];
-                        let owner = ix.accounts[3];
-
-                        let activity = NftActivity {
-                            slot: block.header.slot,
-                            timestamp: block.header.timestamp,
-                            kind: NftActivityKind::Mint,
-                            collection,
-                            token,
-                            from: None,
-                            to: owner,
-                            tx_signature,
-                        };
-
-                        if let Err(e) = state.record_nft_activity(&activity, activity_seq) {
-                            warn!("⚠️  Failed to record NFT mint activity: {}", e);
-                            error_count += 1;
-                        }
-
-                        activity_seq = activity_seq.saturating_add(1);
-                    }
-                    Some(8) => {
-                        if ix.accounts.len() < 3 {
-                            continue;
-                        }
-
-                        let from = ix.accounts[0];
-                        let token = ix.accounts[1];
-                        let to = ix.accounts[2];
-
-                        let token_account = match state.get_account(&token) {
-                            Ok(Some(account)) => account,
-                            _ => continue,
-                        };
-
-                        let token_state = match decode_token_state(&token_account.data) {
-                            Ok(state) => state,
-                            Err(_) => continue,
-                        };
-
-                        let activity = NftActivity {
-                            slot: block.header.slot,
-                            timestamp: block.header.timestamp,
-                            kind: NftActivityKind::Transfer,
-                            collection: token_state.collection,
-                            token,
-                            from: Some(from),
-                            to,
-                            tx_signature,
-                        };
-
-                        if let Err(e) = state.record_nft_activity(&activity, activity_seq) {
-                            warn!("⚠️  Failed to record NFT transfer activity: {}", e);
-                            error_count += 1;
-                        }
-
-                        activity_seq = activity_seq.saturating_add(1);
-                    }
-                    _ => {}
-                }
-            } else if ix.program_id == lichen_core::CONTRACT_PROGRAM_ID {
-                if let Ok(ContractInstruction::Call {
-                    function,
-                    args,
-                    value,
-                }) = ContractInstruction::deserialize(&ix.data)
-                {
-                    if ix.accounts.len() < 2 {
-                        continue;
-                    }
-
-                    let caller = ix.accounts[0];
-                    let program = ix.accounts[1];
-
-                    let activity = ProgramCallActivity {
-                        slot: block.header.slot,
-                        timestamp: block.header.timestamp,
-                        program,
-                        caller,
-                        function: function.clone(),
-                        value,
-                        tx_signature,
-                    };
-
-                    if let Err(e) = state.record_program_call(&activity, activity_seq) {
-                        warn!("⚠️  Failed to record program call: {}", e);
-                        error_count += 1;
-                    }
-                    // AUDIT-FIX E-8: Increment activity_seq after each record to prevent
-                    // duplicate keys when both program_call and market_activity are recorded
-                    activity_seq = activity_seq.saturating_add(1);
-
-                    let market_kind = match function.as_str() {
-                        "list_nft" | "list_nft_with_royalty" => Some(MarketActivityKind::Listing),
-                        "buy_nft" => Some(MarketActivityKind::Sale),
-                        "cancel_listing" => Some(MarketActivityKind::Cancel),
-                        "make_offer" | "make_offer_with_expiry" => Some(MarketActivityKind::Offer),
-                        "accept_offer" => Some(MarketActivityKind::OfferAccepted),
-                        "cancel_offer" => Some(MarketActivityKind::OfferCancelled),
-                        "update_listing_price" => Some(MarketActivityKind::PriceUpdate),
-                        "create_auction" => Some(MarketActivityKind::AuctionCreated),
-                        "place_bid" => Some(MarketActivityKind::AuctionBid),
-                        "settle_auction" => Some(MarketActivityKind::AuctionSettled),
-                        "cancel_auction" => Some(MarketActivityKind::AuctionCancelled),
-                        "make_collection_offer" => Some(MarketActivityKind::CollectionOffer),
-                        "accept_collection_offer" => {
-                            Some(MarketActivityKind::CollectionOfferAccepted)
-                        }
-                        "cancel_collection_offer" => Some(MarketActivityKind::OfferCancelled),
-                        _ => None,
-                    };
-
-                    if let Some(kind) = market_kind {
-                        let market_activity = build_market_activity(
-                            kind,
-                            function,
-                            program,
-                            caller,
-                            &args,
-                            value,
-                            block.header.slot,
-                            block.header.timestamp,
-                            tx_signature,
-                        );
-
-                        if let Err(e) = state.record_market_activity(&market_activity, activity_seq)
-                        {
-                            warn!("⚠️  Failed to record market activity: {}", e);
-                            error_count += 1;
-                        }
-
-                        activity_seq = activity_seq.saturating_add(1);
-                    } else {
-                        activity_seq = activity_seq.saturating_add(1);
-                    }
-                }
-            }
-        }
-    }
-    error_count
+    tx.verify_required_signatures_with_chain_id(chain_id)
+        .map(|_| ())
 }
 
 struct ParsedMarketArgs {
@@ -3887,43 +3968,65 @@ fn sync_tx_by_slot_index_for_startup(state: &StateStore, context: &str) {
 // levels. If conditions are met, activate orders and close positions by directly
 // modifying contract storage (deterministic, all validators produce same result).
 
-fn run_sltp_trigger_engine(state: &StateStore, from_trade: u64, to_trade: u64) {
+fn run_sltp_trigger_engine(
+    batch: &mut StateBatch,
+    dex_pk: &Pubkey,
+    margin_pk: Option<&Pubkey>,
+    from_trade: u64,
+    to_trade: u64,
+) -> Result<(u64, u64), String> {
     if from_trade >= to_trade {
-        return;
+        return Ok((0, 0));
     }
-
-    let dex_pk = match state.get_symbol_registry("DEX") {
-        Ok(Some(entry)) => entry.program,
-        _ => return,
-    };
 
     // Collect latest trade price per pair from new trades
     let mut pair_last_prices: std::collections::HashMap<u64, u64> =
         std::collections::HashMap::new();
     for trade_id in (from_trade + 1)..=to_trade {
         let key = format!("dex_trade_{}", trade_id);
-        if let Some(data) = state.get_program_storage("DEX", key.as_bytes()) {
-            if data.len() >= 32 {
-                let pair_id = u64::from_le_bytes(data[8..16].try_into().unwrap_or([0; 8]));
-                let price = u64::from_le_bytes(data[16..24].try_into().unwrap_or([0; 8]));
-                if price > 0 {
-                    pair_last_prices.insert(pair_id, price);
-                }
-            }
+        let data = batch
+            .get_contract_storage(dex_pk, key.as_bytes())?
+            .ok_or_else(|| {
+                format!(
+                    "missing canonical DEX trade {} during SL/TP replay",
+                    trade_id
+                )
+            })?;
+        if data.len() < 24 {
+            return Err(format!(
+                "truncated canonical DEX trade {} during SL/TP replay",
+                trade_id
+            ));
         }
+        let stored_trade_id = u64::from_le_bytes(data[0..8].try_into().unwrap_or([0; 8]));
+        if stored_trade_id != trade_id {
+            return Err(format!(
+                "canonical DEX trade key {} contains trade id {} during SL/TP replay",
+                trade_id, stored_trade_id
+            ));
+        }
+        let pair_id = u64::from_le_bytes(data[8..16].try_into().unwrap_or([0; 8]));
+        let price = u64::from_le_bytes(data[16..24].try_into().unwrap_or([0; 8]));
+        if price == 0 {
+            return Err(format!(
+                "canonical DEX trade {} has zero price during SL/TP replay",
+                trade_id
+            ));
+        }
+        pair_last_prices.insert(pair_id, price);
     }
 
     if pair_last_prices.is_empty() {
-        return;
+        return Ok((0, 0));
     }
 
     // --- Part 1: Activate dormant stop-limit orders ---
-    let order_count = state.get_program_storage_u64("DEX", b"dex_order_count");
+    let order_count = analytics_batch_u64(batch, dex_pk, b"dex_order_count")?;
     let mut triggered_count: u64 = 0;
 
     for oid in 1..=order_count {
         let ok = format!("dex_order_{}", oid);
-        let data = match state.get_program_storage("DEX", ok.as_bytes()) {
+        let data = match batch.get_contract_storage(dex_pk, ok.as_bytes())? {
             Some(d) if d.len() >= 128 => d,
             _ => continue,
         };
@@ -3965,9 +4068,7 @@ fn run_sltp_trigger_engine(state: &StateStore, from_trade: u64, to_trade: u64) {
         new_data[66] = 0; // STATUS_OPEN
 
         // Write activated order back
-        if let Err(e) = state.put_contract_storage(&dex_pk, ok.as_bytes(), &new_data) {
-            tracing::error!("Failed to write contract storage: {e}");
-        }
+        batch.put_contract_storage(dex_pk, ok.as_bytes(), &new_data)?;
 
         // Add to order book level (the matching engine will process it on next trade)
         let price = u64::from_le_bytes(new_data[42..50].try_into().unwrap_or([0; 8]));
@@ -3978,72 +4079,65 @@ fn run_sltp_trigger_engine(state: &StateStore, from_trade: u64, to_trade: u64) {
         };
 
         // Append order ID to the price level's order queue
-        if let Ok(Some(existing)) = state.get_contract_storage(&dex_pk, book_side_key.as_bytes()) {
+        if let Some(existing) = batch.get_contract_storage(dex_pk, book_side_key.as_bytes())? {
             let mut updated = existing;
-            updated.extend_from_slice(&oid.to_le_bytes());
-            if let Err(e) = state.put_contract_storage(&dex_pk, book_side_key.as_bytes(), &updated)
-            {
-                tracing::error!("Failed to write contract storage: {e}");
+            let already_indexed = updated
+                .chunks_exact(8)
+                .any(|chunk| chunk == oid.to_le_bytes());
+            if !already_indexed {
+                updated.extend_from_slice(&oid.to_le_bytes());
             }
+            batch.put_contract_storage(dex_pk, book_side_key.as_bytes(), &updated)?;
         } else {
-            if let Err(e) =
-                state.put_contract_storage(&dex_pk, book_side_key.as_bytes(), &oid.to_le_bytes())
-            {
-                tracing::error!("Failed to write contract storage: {e}");
-            }
+            batch.put_contract_storage(dex_pk, book_side_key.as_bytes(), &oid.to_le_bytes())?;
         }
 
         // Update best bid/ask if needed
         if side == 0 {
             // Buy order: update best bid if higher
-            let best_bid = state
-                .get_program_storage_u64("DEX", format!("dex_best_bid_{}", pair_id).as_bytes());
+            let best_bid = analytics_batch_u64(
+                batch,
+                dex_pk,
+                format!("dex_best_bid_{}", pair_id).as_bytes(),
+            )?;
             if price > best_bid {
-                if let Err(e) = state.put_contract_storage(
-                    &dex_pk,
+                batch.put_contract_storage(
+                    dex_pk,
                     format!("dex_best_bid_{}", pair_id).as_bytes(),
                     &price.to_le_bytes(),
-                ) {
-                    tracing::error!("Failed to write contract storage: {e}");
-                }
+                )?;
             }
         } else {
             // Sell order: update best ask if lower
-            let best_ask = state
-                .get_program_storage_u64("DEX", format!("dex_best_ask_{}", pair_id).as_bytes());
+            let best_ask = analytics_batch_u64(
+                batch,
+                dex_pk,
+                format!("dex_best_ask_{}", pair_id).as_bytes(),
+            )?;
             if best_ask == 0 || best_ask == u64::MAX || price < best_ask {
-                if let Err(e) = state.put_contract_storage(
-                    &dex_pk,
+                batch.put_contract_storage(
+                    dex_pk,
                     format!("dex_best_ask_{}", pair_id).as_bytes(),
                     &price.to_le_bytes(),
-                ) {
-                    tracing::error!("Failed to write contract storage: {e}");
-                }
+                )?;
             }
         }
 
         triggered_count += 1;
     }
 
-    if triggered_count > 0 {
-        info!(
-            "🎯 Trigger engine: activated {} dormant stop-limit order(s)",
-            triggered_count
-        );
-    }
-
     // --- Part 2: Check margin position SL/TP ---
-    let margin_pk = match state.get_symbol_registry("DEXMARGIN") {
-        Ok(Some(entry)) => entry.program,
-        _ => return,
+    let margin_pk = match margin_pk {
+        Some(program) => program,
+        None => return Ok((triggered_count, 0)),
     };
 
-    let pos_count = state.get_program_storage_u64("DEXMARGIN", b"mrg_pos_count");
+    let pos_count = analytics_batch_u64(batch, margin_pk, b"mrg_pos_count")?;
     let mut sltp_closed: u64 = 0;
 
     for pid in 1..=pos_count {
         let pk = format!("mrg_pos_{}", pid);
-        let data = match state.get_program_storage("DEXMARGIN", pk.as_bytes()) {
+        let data = match batch.get_contract_storage(margin_pk, pk.as_bytes())? {
             Some(d) if d.len() >= 114 => d,
             _ => continue,
         };
@@ -4107,7 +4201,7 @@ fn run_sltp_trigger_engine(state: &StateStore, from_trade: u64, to_trade: u64) {
         // P9-VAL-08: Re-read position status to prevent double-close race.
         // A user transaction processed in the same block may have already closed
         // this position between our initial read and this write.
-        let fresh_data = match state.get_program_storage("DEXMARGIN", pk.as_bytes()) {
+        let fresh_data = match batch.get_contract_storage(margin_pk, pk.as_bytes())? {
             Some(d) if d.len() >= 114 => d,
             _ => continue,
         };
@@ -4129,19 +4223,20 @@ fn run_sltp_trigger_engine(state: &StateStore, from_trade: u64, to_trade: u64) {
         // PnL = (entry_price - exit_price) * size / 1e9 for shorts
         // Stored as biased: actual_pnl + BIAS where BIAS = 1 << 63 (matches dex_margin contract)
         const BIAS: u64 = 1u64 << 63;
-        let pnl_raw: i64 = if side == 0 {
+        let pnl_i128 = if side == 0 {
             // Long
-            ((last_price as i128 - entry_price as i128) * size as i128 / 1_000_000_000i128) as i64
+            (last_price as i128 - entry_price as i128) * size as i128 / 1_000_000_000i128
         } else {
             // Short
-            ((entry_price as i128 - last_price as i128) * size as i128 / 1_000_000_000i128) as i64
+            (entry_price as i128 - last_price as i128) * size as i128 / 1_000_000_000i128
         };
-        let biased_pnl = (pnl_raw as i128 + BIAS as i128) as u64;
+        let pnl_raw = i64::try_from(pnl_i128)
+            .map_err(|_| format!("margin position {} PnL exceeds i64 storage range", pid))?;
+        let biased_pnl = u64::try_from(pnl_i128 + BIAS as i128)
+            .map_err(|_| format!("margin position {} biased PnL exceeds u64 range", pid))?;
         new_data[90..98].copy_from_slice(&biased_pnl.to_le_bytes()); // realized_pnl
 
-        if let Err(e) = state.put_contract_storage(&margin_pk, pk.as_bytes(), &new_data) {
-            tracing::error!("Failed to write contract storage: {e}");
-        }
+        batch.put_contract_storage(margin_pk, pk.as_bytes(), &new_data)?;
 
         // P9-VAL-02 FIX: Settle PnL through the insurance fund instead of
         // creating money from nothing.  Losses are credited to the fund;
@@ -4150,123 +4245,330 @@ fn run_sltp_trigger_engine(state: &StateStore, from_trade: u64, to_trade: u64) {
         let abs_pnl = pnl_raw.unsigned_abs();
 
         // Read current insurance fund balance
-        let insurance_fund = state.get_program_storage_u64("DEXMARGIN", b"mrg_insurance");
+        let insurance_fund = analytics_batch_u64(batch, margin_pk, b"mrg_insurance")?;
 
         let return_amount = if pnl_raw >= 0 {
             // Profitable close: pay profit from insurance fund (cap at fund balance)
             let capped_profit = abs_pnl.min(insurance_fund);
             // Debit insurance fund
-            if let Err(e) = state.put_contract_storage(
-                &margin_pk,
+            batch.put_contract_storage(
+                margin_pk,
                 b"mrg_insurance",
                 &insurance_fund.saturating_sub(capped_profit).to_le_bytes(),
-            ) {
-                tracing::error!("Failed to write contract storage: {e}");
-            }
+            )?;
             // Track cumulative profit
-            let prev_profit = state.get_program_storage_u64("DEXMARGIN", b"mrg_pnl_profit");
-            if let Err(e) = state.put_contract_storage(
-                &margin_pk,
+            let prev_profit = analytics_batch_u64(batch, margin_pk, b"mrg_pnl_profit")?;
+            let total_profit = prev_profit
+                .checked_add(capped_profit)
+                .ok_or_else(|| "margin cumulative profit overflow".to_string())?;
+            batch.put_contract_storage(
+                margin_pk,
                 b"mrg_pnl_profit",
-                &prev_profit.saturating_add(capped_profit).to_le_bytes(),
-            ) {
-                tracing::error!("Failed to write contract storage: {e}");
-            }
-            margin.saturating_add(capped_profit)
+                &total_profit.to_le_bytes(),
+            )?;
+            margin
+                .checked_add(capped_profit)
+                .ok_or_else(|| format!("margin position {} payout overflow", pid))?
         } else {
             // Loss close: credit insurance fund with the loss
             let loss = abs_pnl.min(margin); // can't lose more than margin
-            if let Err(e) = state.put_contract_storage(
-                &margin_pk,
+            let new_insurance = insurance_fund
+                .checked_add(loss)
+                .ok_or_else(|| "margin insurance fund overflow".to_string())?;
+            batch.put_contract_storage(
+                margin_pk,
                 b"mrg_insurance",
-                &insurance_fund.saturating_add(loss).to_le_bytes(),
-            ) {
-                tracing::error!("Failed to write contract storage: {e}");
-            }
+                &new_insurance.to_le_bytes(),
+            )?;
             // Track cumulative loss
-            let prev_loss = state.get_program_storage_u64("DEXMARGIN", b"mrg_pnl_loss");
-            if let Err(e) = state.put_contract_storage(
-                &margin_pk,
-                b"mrg_pnl_loss",
-                &prev_loss.saturating_add(loss).to_le_bytes(),
-            ) {
-                tracing::error!("Failed to write contract storage: {e}");
-            }
+            let prev_loss = analytics_batch_u64(batch, margin_pk, b"mrg_pnl_loss")?;
+            let total_loss = prev_loss
+                .checked_add(loss)
+                .ok_or_else(|| "margin cumulative loss overflow".to_string())?;
+            batch.put_contract_storage(margin_pk, b"mrg_pnl_loss", &total_loss.to_le_bytes())?;
             margin.saturating_sub(loss)
         };
 
         // P9-VAL-03 FIX: Credit trader's native LICN balance (not contract token)
         let trader_pk = lichen_core::Pubkey(trader);
-        if let Ok(Some(mut acc)) = state.get_account(&trader_pk) {
-            acc.spores = acc.spores.saturating_add(return_amount);
-            acc.spendable = acc.spendable.saturating_add(return_amount);
-            if let Err(e) = state.put_account(&trader_pk, &acc) {
-                tracing::error!("Failed to write account: {e}");
-            }
-        }
+        let mut acc = batch
+            .get_account(&trader_pk)?
+            .ok_or_else(|| format!("margin position {} trader account is missing", pid))?;
+        acc.spores = acc
+            .spores
+            .checked_add(return_amount)
+            .ok_or_else(|| format!("margin position {} total balance overflow", pid))?;
+        acc.spendable = acc
+            .spendable
+            .checked_add(return_amount)
+            .ok_or_else(|| format!("margin position {} spendable balance overflow", pid))?;
+        batch.put_account(&trader_pk, &acc)?;
 
-        let trigger_type = if sl_price > 0
-            && ((side == 0 && last_price <= sl_price) || (side == 1 && last_price >= sl_price))
-        {
-            "SL"
-        } else {
-            "TP"
-        };
-        info!(
-            "🎯 Margin {} triggered: position {} closed at price {} (entry {})",
-            trigger_type, pid, last_price, entry_price
-        );
         sltp_closed += 1;
     }
 
-    if sltp_closed > 0 {
-        info!(
-            "🎯 Trigger engine: closed {} margin position(s) via SL/TP",
-            sltp_closed
-        );
-    }
+    Ok((triggered_count, sltp_closed))
 }
 
 /// State-driven SL/TP trigger wrapper — reads a persistent cursor from state so that
 /// both block producers AND block receivers execute triggers deterministically.
 /// Previously, `run_sltp_trigger_engine` was only called in the block-production loop,
 /// causing state divergence across validators (P9-VAL-01 fix).
-fn run_sltp_triggers_from_state(state: &StateStore) {
-    let cursor = state.get_program_storage_u64("DEX", b"dex_sltp_trigger_cursor");
-    let current = state.get_program_storage_u64("DEX", b"dex_trade_count");
-    if current > cursor {
-        run_sltp_trigger_engine(state, cursor, current);
-        // Persist the new cursor so subsequent blocks pick up from here
-        if let Ok(Some(dex_entry)) = state.get_symbol_registry("DEX") {
-            if let Err(e) = state.put_contract_storage(
-                &dex_entry.program,
-                b"dex_sltp_trigger_cursor",
-                &current.to_le_bytes(),
-            ) {
-                tracing::error!("Failed to write contract storage: {e}");
-            }
+fn run_sltp_triggers_from_state(state: &StateStore, block_slot: u64) -> Result<(), String> {
+    let Some(dex_entry) = state.get_symbol_registry("DEX")? else {
+        return Ok(());
+    };
+    let margin_pk = state
+        .get_symbol_registry("DEXMARGIN")?
+        .map(|entry| entry.program);
+    let mut batch = state.begin_batch_at_slot(block_slot);
+    let cursor = analytics_batch_u64(&batch, &dex_entry.program, b"dex_sltp_trigger_cursor")?;
+    let current = analytics_batch_u64(&batch, &dex_entry.program, b"dex_trade_count")?;
+    if current <= cursor {
+        return Ok(());
+    }
+
+    let (triggered_orders, closed_positions) = run_sltp_trigger_engine(
+        &mut batch,
+        &dex_entry.program,
+        margin_pk.as_ref(),
+        cursor,
+        current,
+    )?;
+    batch.put_contract_storage(
+        &dex_entry.program,
+        b"dex_sltp_trigger_cursor",
+        &current.to_le_bytes(),
+    )?;
+    state.commit_batch(batch)?;
+    if triggered_orders > 0 || closed_positions > 0 {
+        info!(
+            "🎯 Atomic trigger projection: activated {} stop-limit order(s), closed {} margin position(s)",
+            triggered_orders, closed_positions
+        );
+    }
+    Ok(())
+}
+
+const ANALYTICS_CANDLE_INTERVALS: [u64; 9] =
+    [60, 300, 900, 3600, 14400, 86400, 259200, 604800, 31536000];
+const ANALYTICS_MAX_LEADERBOARD: usize = 100;
+const ANALYTICS_CANONICAL_V2_MARKER: &[u8] = b"ana_canonical_bridge_v2";
+
+fn analytics_candle_retention(interval: u64) -> u64 {
+    lichen_core::dex::analytics_candle_retention(interval)
+}
+
+fn analytics_candle_storage_index(sequence: u64, interval: u64) -> u64 {
+    lichen_core::dex::analytics_candle_storage_index(sequence, interval)
+}
+
+fn analytics_batch_u64(batch: &StateBatch, program: &Pubkey, key: &[u8]) -> Result<u64, String> {
+    Ok(match batch.get_contract_storage(program, key)? {
+        Some(data) if data.len() >= 8 => {
+            u64::from_le_bytes(data[0..8].try_into().map_err(|_| "invalid u64 storage")?)
         }
+        _ => 0,
+    })
+}
+
+#[derive(Clone)]
+struct CanonicalDexTrade {
+    pair_id: u64,
+    price: u64,
+    notional: u64,
+    taker: [u8; 32],
+    slot: u64,
+    timestamp: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct CanonicalPairAnalytics {
+    last_price: u64,
+    last_timestamp: u64,
+    window_open: u64,
+    window_high: u64,
+    window_low: u64,
+    window_close: u64,
+    window_volume: u64,
+    window_trade_count: u64,
+}
+
+impl CanonicalPairAnalytics {
+    fn observe(&mut self, trade: &CanonicalDexTrade, reset_at: u64) {
+        self.last_price = trade.price;
+        self.last_timestamp = trade.timestamp;
+        if trade.timestamp < reset_at {
+            return;
+        }
+
+        if self.window_trade_count == 0 {
+            self.window_open = trade.price;
+            self.window_high = trade.price;
+            self.window_low = trade.price;
+        } else {
+            self.window_high = self.window_high.max(trade.price);
+            self.window_low = self.window_low.min(trade.price);
+        }
+        self.window_close = trade.price;
+        self.window_volume = self.window_volume.saturating_add(trade.notional);
+        self.window_trade_count = self.window_trade_count.saturating_add(1);
     }
 }
 
-/// P9-VAL-04: Deterministic analytics bridge — uses state-persisted cursor
-/// so both producers and receivers execute the same analytics writes.
-fn run_analytics_bridge_from_state(state: &StateStore, slot: u64, block_timestamp: u64) {
-    let cursor = state.get_program_storage_u64("DEX", b"dex_analytics_bridge_cursor");
-    let current = state.get_program_storage_u64("DEX", b"dex_trade_count");
-    if current > cursor {
-        bridge_dex_trades_to_analytics(state, cursor, current, slot, block_timestamp);
-        // Persist the new cursor so subsequent blocks pick up from here
-        if let Ok(Some(dex_entry)) = state.get_symbol_registry("DEX") {
-            if let Err(e) = state.put_contract_storage(
-                &dex_entry.program,
-                b"dex_analytics_bridge_cursor",
-                &current.to_le_bytes(),
-            ) {
-                tracing::error!("Failed to write contract storage: {e}");
+fn load_canonical_dex_trade(
+    state: &StateStore,
+    dex_pk: &Pubkey,
+    trade_id: u64,
+) -> Result<CanonicalDexTrade, String> {
+    let key = format!("dex_trade_{trade_id}");
+    let data = state
+        .get_contract_storage(dex_pk, key.as_bytes())?
+        .ok_or_else(|| format!("canonical DEX trade {trade_id} is missing"))?;
+    if data.len() < 80 {
+        return Err(format!(
+            "canonical DEX trade {trade_id} has invalid length {}",
+            data.len()
+        ));
+    }
+    let stored_id = u64::from_le_bytes(data[0..8].try_into().map_err(|_| "invalid trade id")?);
+    if stored_id != trade_id {
+        return Err(format!(
+            "canonical DEX trade key {trade_id} contains id {stored_id}"
+        ));
+    }
+    let pair_id = u64::from_le_bytes(data[8..16].try_into().map_err(|_| "invalid pair id")?);
+    let price = u64::from_le_bytes(data[16..24].try_into().map_err(|_| "invalid trade price")?);
+    let quantity = u64::from_le_bytes(
+        data[24..32]
+            .try_into()
+            .map_err(|_| "invalid trade quantity")?,
+    );
+    let mut taker = [0u8; 32];
+    taker.copy_from_slice(&data[32..64]);
+    let trade_slot = u64::from_le_bytes(data[72..80].try_into().map_err(|_| "invalid trade slot")?);
+    let timestamp = state
+        .get_block_by_slot(trade_slot)?
+        .ok_or_else(|| format!("block {trade_slot} for DEX trade {trade_id} is missing"))?
+        .header
+        .timestamp;
+    let notional = (price as u128 * quantity as u128 / 1_000_000_000) as u64;
+    Ok(CanonicalDexTrade {
+        pair_id,
+        price,
+        notional,
+        taker,
+        slot: trade_slot,
+        timestamp,
+    })
+}
+
+fn analytics_trader_key(trader: &[u8; 32]) -> String {
+    format!("ana_ts_{}", hex::encode(trader))
+}
+
+fn update_analytics_trader(
+    batch: &mut StateBatch,
+    analytics_pk: &Pubkey,
+    trade: &CanonicalDexTrade,
+) -> Result<(), String> {
+    let key = analytics_trader_key(&trade.taker);
+    let existing = batch.get_contract_storage(analytics_pk, key.as_bytes())?;
+    let (volume, trades, pnl) = match existing.as_deref() {
+        Some(data) if data.len() >= 24 => (
+            u64::from_le_bytes(data[0..8].try_into().map_err(|_| "invalid trader volume")?),
+            u64::from_le_bytes(
+                data[8..16]
+                    .try_into()
+                    .map_err(|_| "invalid trader trades")?,
+            ),
+            u64::from_le_bytes(data[16..24].try_into().map_err(|_| "invalid trader pnl")?),
+        ),
+        _ => {
+            let count = analytics_batch_u64(batch, analytics_pk, b"ana_trader_count")?;
+            batch.put_contract_storage(
+                analytics_pk,
+                b"ana_trader_count",
+                &count.saturating_add(1).to_le_bytes(),
+            )?;
+            (0, 0, 1u64 << 63)
+        }
+    };
+    let mut encoded = Vec::with_capacity(32);
+    encoded.extend_from_slice(&volume.saturating_add(trade.notional).to_le_bytes());
+    encoded.extend_from_slice(&trades.saturating_add(1).to_le_bytes());
+    encoded.extend_from_slice(&pnl.to_le_bytes());
+    encoded.extend_from_slice(&trade.slot.to_le_bytes());
+    batch.put_contract_storage(analytics_pk, key.as_bytes(), &encoded)
+}
+
+fn rebuild_analytics_leaderboard(
+    batch: &mut StateBatch,
+    analytics_pk: &Pubkey,
+    touched: &HashSet<[u8; 32]>,
+) -> Result<(), String> {
+    let old_count = analytics_batch_u64(batch, analytics_pk, b"ana_lb_count")?
+        .min(ANALYTICS_MAX_LEADERBOARD as u64);
+    let mut candidates = touched.iter().copied().collect::<HashSet<_>>();
+    for rank in 0..old_count {
+        let key = format!("ana_lb_{rank}");
+        if let Some(data) = batch.get_contract_storage(analytics_pk, key.as_bytes())? {
+            if data.len() >= 32 {
+                let mut trader = [0u8; 32];
+                trader.copy_from_slice(&data[..32]);
+                candidates.insert(trader);
             }
         }
     }
+    let mut ranked = Vec::with_capacity(candidates.len());
+    for trader in candidates {
+        let key = analytics_trader_key(&trader);
+        let volume = analytics_batch_u64(batch, analytics_pk, key.as_bytes())?;
+        ranked.push((trader, volume));
+    }
+    ranked.sort_by(|(left_trader, left_volume), (right_trader, right_volume)| {
+        right_volume
+            .cmp(left_volume)
+            .then_with(|| left_trader.cmp(right_trader))
+    });
+    ranked.truncate(ANALYTICS_MAX_LEADERBOARD);
+
+    for rank in 0..old_count {
+        batch.delete_contract_storage(analytics_pk, format!("ana_lb_{rank}").as_bytes())?;
+    }
+    for (rank, (trader, _)) in ranked.iter().enumerate() {
+        batch.put_contract_storage(analytics_pk, format!("ana_lb_{rank}").as_bytes(), trader)?;
+    }
+    batch.put_contract_storage(
+        analytics_pk,
+        b"ana_lb_count",
+        &(ranked.len() as u64).to_le_bytes(),
+    )?;
+    let min_volume = ranked.last().map(|(_, volume)| *volume).unwrap_or(0);
+    batch.put_contract_storage(analytics_pk, b"ana_lb_min_vol", &min_volume.to_le_bytes())
+}
+
+/// Deterministically project committed DEX trades into analytics. The cursor is
+/// committed in the same RocksDB batch as every derived write, so a crash can
+/// never acknowledge only half of a projection or skip it on restart.
+fn run_analytics_bridge_from_state(
+    state: &StateStore,
+    slot: u64,
+    block_timestamp: u64,
+) -> Result<(), String> {
+    let cursor = state.get_program_storage_u64("DEX", b"dex_analytics_bridge_cursor");
+    let current = state.get_program_storage_u64("DEX", b"dex_trade_count");
+    if current <= cursor {
+        return Ok(());
+    }
+    bridge_dex_trades_to_analytics(state, cursor, current, slot, block_timestamp).map_err(|err| {
+        format!(
+            "canonical analytics projection failed for trades {}..={}: {}",
+            cursor.saturating_add(1),
+            current,
+            err
+        )
+    })
 }
 
 fn bridge_dex_trades_to_analytics(
@@ -4274,192 +4576,118 @@ fn bridge_dex_trades_to_analytics(
     from_trade: u64,
     to_trade: u64,
     slot: u64,
-    block_timestamp: u64,
-) {
-    const PRICE_SCALE: f64 = 1_000_000_000.0;
+    _block_timestamp: u64,
+) -> Result<(), String> {
+    let dex_pk = state
+        .get_symbol_registry("DEX")?
+        .ok_or_else(|| "DEX contract is not registered".to_string())?
+        .program;
+    let analytics_pk = state
+        .get_symbol_registry("ANALYTICS")?
+        .ok_or_else(|| "ANALYTICS contract is not registered".to_string())?
+        .program;
 
-    // Resolve ANALYTICS pubkey via symbol registry
-    let analytics_pk = match state.get_symbol_registry("ANALYTICS") {
-        Ok(Some(entry)) => entry.program,
-        _ => return, // no analytics contract deployed
-    };
-
-    // Use the committed block timestamp. It is part of canonical block data,
-    // unlike any local runtime cadence setting used by a given validator.
-    let now_ts = block_timestamp;
-
-    // Candle intervals matching dex_analytics: 1m, 5m, 15m, 1h, 4h, 1d, 3d, 1w, 1y
-    const CANDLE_INTERVALS: [u64; 9] = [60, 300, 900, 3600, 14400, 86400, 259200, 604800, 31536000];
-
-    // Collect per-pair trade summaries for this block
-    // (pair_id → (last_price, total_volume, trade_count, high, low))
-    let mut pair_trades: std::collections::HashMap<u64, (u64, u64, u64, u64, u64)> =
-        std::collections::HashMap::new();
-
-    for trade_id in (from_trade + 1)..=to_trade {
-        let key = format!("dex_trade_{}", trade_id);
-        if let Some(data) = state.get_program_storage("DEX", key.as_bytes()) {
-            if data.len() >= 80 {
-                // Trade layout: trade_id[0:8], pair_id[8:16], price[16:24], qty[24:32],
-                //               taker[32:64], maker_order_id[64:72], slot[72:80]
-                let pair_id = u64::from_le_bytes(data[8..16].try_into().unwrap_or([0; 8]));
-                let price = u64::from_le_bytes(data[16..24].try_into().unwrap_or([0; 8]));
-                let quantity = u64::from_le_bytes(data[24..32].try_into().unwrap_or([0; 8]));
-
-                // Notional value = price * quantity / 1e9 (scaled)
-                let notional = (price as u128 * quantity as u128 / 1_000_000_000) as u64;
-
-                let entry = pair_trades.entry(pair_id).or_insert((0, 0, 0, 0, u64::MAX));
-                entry.0 = price; // last price
-                entry.1 = entry.1.saturating_add(notional); // cumulative volume
-                entry.2 += 1; // trade count
-                if price > entry.3 {
-                    entry.3 = price;
-                } // high
-                if price < entry.4 {
-                    entry.4 = price;
-                } // low
-            }
-        }
+    let mut trades = Vec::new();
+    for trade_id in from_trade.saturating_add(1)..=to_trade {
+        trades.push(load_canonical_dex_trade(state, &dex_pk, trade_id)?);
     }
 
-    // Write analytics for each pair that had trades
-    //
-    // ANALYTICS-FIX: Also update the global counters (ana_rec_count,
-    // ana_total_volume, ana_pairs_tracked) that the RPC endpoint reads.
-    // Without this, getDexAnalyticsStats always shows the initial values
-    // because the bridge bypassed the contract's record_trade() function.
-    let total_new_trades: u64 = pair_trades.values().map(|(_, _, tc, _, _)| tc).sum();
-    let total_new_volume: u64 = pair_trades.values().map(|(_, vol, _, _, _)| vol).sum();
-    let pairs_count = pair_trades.len() as u64;
-
-    if total_new_trades > 0 {
-        // Read current counters and increment
-        let prev_rec = match state.get_contract_storage(&analytics_pk, b"ana_rec_count") {
-            Ok(Some(d)) if d.len() >= 8 => u64::from_le_bytes(d[0..8].try_into().unwrap_or([0; 8])),
-            _ => 0,
-        };
-        let prev_vol = match state.get_contract_storage(&analytics_pk, b"ana_total_volume") {
-            Ok(Some(d)) if d.len() >= 8 => u64::from_le_bytes(d[0..8].try_into().unwrap_or([0; 8])),
-            _ => 0,
-        };
-        let prev_pairs = match state.get_contract_storage(&analytics_pk, b"ana_trader_count") {
-            Ok(Some(d)) if d.len() >= 8 => u64::from_le_bytes(d[0..8].try_into().unwrap_or([0; 8])),
-            _ => 0,
-        };
-
-        if let Err(e) = state.put_contract_storage(
-            &analytics_pk,
-            b"ana_rec_count",
-            &prev_rec.saturating_add(total_new_trades).to_le_bytes(),
-        ) {
-            tracing::error!("Failed to write contract storage: {e}");
-        }
-        if let Err(e) = state.put_contract_storage(
-            &analytics_pk,
-            b"ana_total_volume",
-            &prev_vol.saturating_add(total_new_volume).to_le_bytes(),
-        ) {
-            tracing::error!("Failed to write contract storage: {e}");
-        }
-        // Use max of pairs_count vs prev — tracks unique pairs seen over time
-        if let Err(e) = state.put_contract_storage(
-            &analytics_pk,
-            b"ana_trader_count",
-            &prev_pairs.max(pairs_count).to_le_bytes(),
-        ) {
-            tracing::error!("Failed to write contract storage: {e}");
-        }
+    let mut batch = state.begin_batch_at_slot(slot);
+    let mut touched = HashSet::new();
+    let new_volume = trades.iter().try_fold(0u64, |total, trade| {
+        total
+            .checked_add(trade.notional)
+            .ok_or_else(|| "canonical analytics bridge volume overflow".to_string())
+    })?;
+    for trade in &trades {
+        update_analytics_trader(&mut batch, &analytics_pk, trade)?;
+        touched.insert(trade.taker);
     }
+    rebuild_analytics_leaderboard(&mut batch, &analytics_pk, &touched)?;
 
-    for (pair_id, (last_price, volume, new_trades, high, low)) in &pair_trades {
-        // ── ana_lp_{pair_id}: last trade price ──
-        let lp_key = format!("ana_lp_{}", pair_id);
-        if let Err(e) =
-            state.put_contract_storage(&analytics_pk, lp_key.as_bytes(), &last_price.to_le_bytes())
-        {
-            tracing::error!("Failed to write contract storage: {e}");
-        }
+    batch.put_contract_storage(&analytics_pk, b"ana_rec_count", &to_trade.to_le_bytes())?;
+    let previous_volume = analytics_batch_u64(&batch, &analytics_pk, b"ana_total_volume")?;
+    batch.put_contract_storage(
+        &analytics_pk,
+        b"ana_total_volume",
+        &previous_volume
+            .checked_add(new_volume)
+            .ok_or_else(|| "canonical analytics total volume overflow".to_string())?
+            .to_le_bytes(),
+    )?;
 
-        // ── ana_last_trade_ts_{pair_id}: unix timestamp for oracle fallback ──
-        let ts_key = format!("ana_last_trade_ts_{}", pair_id);
-        if let Err(e) =
-            state.put_contract_storage(&analytics_pk, ts_key.as_bytes(), &now_ts.to_le_bytes())
-        {
-            tracing::error!("Failed to write contract storage: {e}");
-        }
+    for trade in &trades {
+        let pair_id = trade.pair_id;
+        batch.put_contract_storage(
+            &analytics_pk,
+            format!("ana_lp_{pair_id}").as_bytes(),
+            &trade.price.to_le_bytes(),
+        )?;
+        batch.put_contract_storage(
+            &analytics_pk,
+            format!("ana_last_trade_ts_{pair_id}").as_bytes(),
+            &trade.timestamp.to_le_bytes(),
+        )?;
 
-        // ── ana_24h_{pair_id}: read-modify-write 24h stats ──
-        // Layout: volume(8) + high(8) + low(8) + open(8) + close(8) + trades(8) = 48
-        let stats_key = format!("ana_24h_{}", pair_id);
-        let (prev_vol, mut prev_high, mut prev_low, prev_open, _prev_close, prev_trades) =
-            match state.get_contract_storage(&analytics_pk, stats_key.as_bytes()) {
-                Ok(Some(d)) if d.len() >= 48 => (
-                    u64::from_le_bytes(d[0..8].try_into().unwrap_or([0; 8])),
-                    u64::from_le_bytes(d[8..16].try_into().unwrap_or([0; 8])),
-                    u64::from_le_bytes(d[16..24].try_into().unwrap_or([0; 8])),
-                    u64::from_le_bytes(d[24..32].try_into().unwrap_or([0; 8])),
-                    u64::from_le_bytes(d[32..40].try_into().unwrap_or([0; 8])),
-                    u64::from_le_bytes(d[40..48].try_into().unwrap_or([0; 8])),
+        let reset_at = analytics_batch_u64(
+            &batch,
+            &analytics_pk,
+            format!("ana_24h_ts_{pair_id}").as_bytes(),
+        )?;
+        let stats_key = format!("ana_24h_{pair_id}");
+        if reset_at == 0 || trade.timestamp >= reset_at {
+            let existing = batch.get_contract_storage(&analytics_pk, stats_key.as_bytes())?;
+            let (previous_volume, mut high, mut low, open, previous_trades) = match existing
+                .as_deref()
+            {
+                Some(data) if data.len() >= 48 => (
+                    u64::from_le_bytes(data[0..8].try_into().map_err(|_| "invalid 24h volume")?),
+                    u64::from_le_bytes(data[8..16].try_into().map_err(|_| "invalid 24h high")?),
+                    u64::from_le_bytes(data[16..24].try_into().map_err(|_| "invalid 24h low")?),
+                    u64::from_le_bytes(data[24..32].try_into().map_err(|_| "invalid 24h open")?),
+                    u64::from_le_bytes(data[40..48].try_into().map_err(|_| "invalid 24h trades")?),
                 ),
-                _ => (0, 0, u64::MAX, *last_price, *last_price, 0),
+                _ => (0, 0, u64::MAX, trade.price, 0),
             };
-
-        if *high > prev_high {
-            prev_high = *high;
-        }
-        if *low < prev_low {
-            prev_low = *low;
-        }
-
-        // If open was zero (fresh 24h window), set it from first trade
-        let open = if prev_open == 0 {
-            *last_price
-        } else {
-            prev_open
-        };
-
-        let mut stats = Vec::with_capacity(48);
-        stats.extend_from_slice(&prev_vol.saturating_add(*volume).to_le_bytes()); // volume
-        stats.extend_from_slice(&prev_high.to_le_bytes()); // high
-        stats.extend_from_slice(&prev_low.to_le_bytes()); // low
-        stats.extend_from_slice(&open.to_le_bytes()); // open
-        stats.extend_from_slice(&last_price.to_le_bytes()); // close = last trade
-        stats.extend_from_slice(&prev_trades.saturating_add(*new_trades).to_le_bytes()); // trades
-        if let Err(e) = state.put_contract_storage(&analytics_pk, stats_key.as_bytes(), &stats) {
-            tracing::error!("Failed to write contract storage: {e}");
+            high = high.max(trade.price);
+            low = low.min(trade.price);
+            let mut stats = Vec::with_capacity(48);
+            stats.extend_from_slice(&previous_volume.saturating_add(trade.notional).to_le_bytes());
+            stats.extend_from_slice(&high.to_le_bytes());
+            stats.extend_from_slice(&low.to_le_bytes());
+            stats.extend_from_slice(&open.to_le_bytes());
+            stats.extend_from_slice(&trade.price.to_le_bytes());
+            stats.extend_from_slice(&previous_trades.saturating_add(1).to_le_bytes());
+            batch.put_contract_storage(&analytics_pk, stats_key.as_bytes(), &stats)?;
         }
 
-        // ── Candles: update all 9 intervals with real trade data ──
-        for &interval in &CANDLE_INTERVALS {
+        for &interval in &ANALYTICS_CANDLE_INTERVALS {
             bridge_update_candle(
-                state,
+                &mut batch,
                 &analytics_pk,
-                *pair_id,
+                pair_id,
                 interval,
-                *last_price,
-                *high,
-                *low,
-                *volume,
-                slot,
-                now_ts,
-            );
+                trade.price,
+                trade.price,
+                trade.price,
+                trade.notional,
+                trade.timestamp,
+            )?;
         }
-
-        let display_price = *last_price as f64 / PRICE_SCALE;
-        info!(
-            "📊 Trade bridge: pair {} → price {:.4}, vol {}, trades {}",
-            pair_id, display_price, volume, new_trades
-        );
     }
+
+    batch.put_contract_storage(
+        &dex_pk,
+        b"dex_analytics_bridge_cursor",
+        &to_trade.to_le_bytes(),
+    )?;
+    state.commit_batch(batch)?;
+    Ok(())
 }
 
-/// Update a candle for trade-bridged data.
-/// Unlike oracle_update_candle which has volume=0, this writes real volume
-/// and properly updates OHLC from actual trade price ranges.
 #[allow(clippy::too_many_arguments)]
 fn bridge_update_candle(
-    state: &StateStore,
+    batch: &mut StateBatch,
     analytics_pk: &Pubkey,
     pair_id: u64,
     interval: u64,
@@ -4467,104 +4695,349 @@ fn bridge_update_candle(
     high_price: u64,
     low_price: u64,
     volume: u64,
-    _current_slot: u64,
     unix_ts: u64,
-) {
-    // Use unix timestamp (not slot) for period grouping so candle boundaries
-    // align with wall-clock seconds (60s, 300s, 3600s, etc.).
+) -> Result<(), String> {
     let candle_start = (unix_ts / interval) * interval;
-
-    // Read current candle's start slot
-    let cur_key = format!("ana_cur_{}_{}", pair_id, interval);
-    let stored_start = match state.get_contract_storage(analytics_pk, cur_key.as_bytes()) {
-        Ok(Some(d)) if d.len() >= 8 => {
-            Some(u64::from_le_bytes(d[0..8].try_into().unwrap_or([0; 8])))
-        }
-        _ => None,
-    };
-
-    let count_key = format!("ana_cc_{}_{}", pair_id, interval);
+    let current_key = format!("ana_cur_{pair_id}_{interval}");
+    let count_key = format!("ana_cc_{pair_id}_{interval}");
+    let stored_start = batch
+        .get_contract_storage(analytics_pk, current_key.as_bytes())?
+        .filter(|data| data.len() >= 8)
+        .map(|data| u64::from_le_bytes(data[0..8].try_into().unwrap_or([0; 8])));
+    let count = analytics_batch_u64(batch, analytics_pk, count_key.as_bytes())?;
 
     if stored_start == Some(candle_start) {
-        // Same candle period — update OHLC in-place
-        let candle_count = match state.get_contract_storage(analytics_pk, count_key.as_bytes()) {
-            Ok(Some(d)) if d.len() >= 8 => u64::from_le_bytes(d[0..8].try_into().unwrap_or([0; 8])),
-            _ => 0,
-        };
-        if candle_count == 0 {
-            return;
+        if count == 0 {
+            return Err(format!(
+                "analytics candle {pair_id}/{interval} has a current period but zero count"
+            ));
         }
-        let idx = candle_count - 1;
-        let candle_key = format!("ana_c_{}_{}_{}", pair_id, interval, idx);
+        let sequence = count - 1;
+        let index = analytics_candle_storage_index(sequence, interval);
+        let candle_key = format!("ana_c_{pair_id}_{interval}_{index}");
+        let mut data = batch
+            .get_contract_storage(analytics_pk, candle_key.as_bytes())?
+            .ok_or_else(|| format!("latest analytics candle {candle_key} is missing"))?;
+        if data.len() < 48 {
+            return Err(format!("analytics candle {candle_key} has invalid length"));
+        }
+        let existing_high = u64::from_le_bytes(data[8..16].try_into().unwrap_or([0; 8]));
+        let existing_low = u64::from_le_bytes(data[16..24].try_into().unwrap_or([0; 8]));
+        let existing_volume = u64::from_le_bytes(data[32..40].try_into().unwrap_or([0; 8]));
+        data[8..16].copy_from_slice(&existing_high.max(high_price).to_le_bytes());
+        data[16..24].copy_from_slice(&existing_low.min(low_price).to_le_bytes());
+        data[24..32].copy_from_slice(&close_price.to_le_bytes());
+        data[32..40].copy_from_slice(&existing_volume.saturating_add(volume).to_le_bytes());
+        batch.put_contract_storage(analytics_pk, candle_key.as_bytes(), &data)?;
+    } else {
+        let index = analytics_candle_storage_index(count, interval);
+        let mut candle = Vec::with_capacity(48);
+        candle.extend_from_slice(&close_price.to_le_bytes());
+        candle.extend_from_slice(&high_price.to_le_bytes());
+        candle.extend_from_slice(&low_price.to_le_bytes());
+        candle.extend_from_slice(&close_price.to_le_bytes());
+        candle.extend_from_slice(&volume.to_le_bytes());
+        candle.extend_from_slice(&candle_start.to_le_bytes());
+        batch.put_contract_storage(
+            analytics_pk,
+            format!("ana_c_{pair_id}_{interval}_{index}").as_bytes(),
+            &candle,
+        )?;
+        batch.put_contract_storage(
+            analytics_pk,
+            count_key.as_bytes(),
+            &count.saturating_add(1).to_le_bytes(),
+        )?;
+        batch.put_contract_storage(
+            analytics_pk,
+            current_key.as_bytes(),
+            &candle_start.to_le_bytes(),
+        )?;
+    }
+    Ok(())
+}
 
-        if let Ok(Some(mut data)) = state.get_contract_storage(analytics_pk, candle_key.as_bytes())
+fn parse_analytics_candle_key(key: &[u8]) -> Option<(u64, u64, u64)> {
+    let text = std::str::from_utf8(key).ok()?.strip_prefix("ana_c_")?;
+    let mut parts = text.split('_');
+    let pair_id = parts.next()?.parse().ok()?;
+    let interval = parts.next()?.parse().ok()?;
+    let index = parts.next()?.parse().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((pair_id, interval, index))
+}
+
+fn parse_analytics_pair_key(key: &[u8], prefix: &str) -> Option<u64> {
+    std::str::from_utf8(key)
+        .ok()?
+        .strip_prefix(prefix)?
+        .parse()
+        .ok()
+}
+
+fn merge_analytics_candle_group(mut records: Vec<(u64, Vec<u8>)>) -> Result<Vec<u8>, String> {
+    records.sort_by_key(|(index, _)| *index);
+    let first = records
+        .first()
+        .map(|(_, data)| data)
+        .ok_or_else(|| "empty analytics candle group".to_string())?;
+    let last = records.last().map(|(_, data)| data).unwrap_or(first);
+    if records.iter().any(|(_, data)| data.len() < 48) {
+        return Err("analytics candle group contains an invalid record".to_string());
+    }
+    let open = u64::from_le_bytes(first[0..8].try_into().unwrap_or([0; 8]));
+    let close = u64::from_le_bytes(last[24..32].try_into().unwrap_or([0; 8]));
+    let timestamp = u64::from_le_bytes(first[40..48].try_into().unwrap_or([0; 8]));
+    let mut high = 0u64;
+    let mut low = u64::MAX;
+    let mut volume = 0u64;
+    for (_, data) in records {
+        high = high.max(u64::from_le_bytes(data[8..16].try_into().unwrap_or([0; 8])));
+        low = low.min(u64::from_le_bytes(
+            data[16..24].try_into().unwrap_or([0; 8]),
+        ));
+        volume = volume.saturating_add(u64::from_le_bytes(
+            data[32..40].try_into().unwrap_or([0; 8]),
+        ));
+    }
+    let mut merged = Vec::with_capacity(48);
+    merged.extend_from_slice(&open.to_le_bytes());
+    merged.extend_from_slice(&high.to_le_bytes());
+    merged.extend_from_slice(&low.to_le_bytes());
+    merged.extend_from_slice(&close.to_le_bytes());
+    merged.extend_from_slice(&volume.to_le_bytes());
+    merged.extend_from_slice(&timestamp.to_le_bytes());
+    Ok(merged)
+}
+
+/// Upgrade mixed pre-v2 analytics state once, using canonical trade records and
+/// committed block timestamps. Slot-based contract candles are discarded,
+/// timestamp candles are merged by period, and all counters/trader projections
+/// are rebuilt from genesis. The marker and bridge cursor commit atomically.
+fn ensure_canonical_analytics_v2(state: &StateStore, slot: u64, now_ts: u64) -> Result<(), String> {
+    let dex_entry = state.get_symbol_registry("DEX")?;
+    let analytics_entry = state.get_symbol_registry("ANALYTICS")?;
+    let (dex_pk, analytics_pk) = match (dex_entry, analytics_entry) {
+        (None, None) => return Ok(()),
+        (Some(dex), Some(analytics)) => (dex.program, analytics.program),
+        (Some(_), None) => {
+            return Err("DEX is registered but ANALYTICS is missing".to_string());
+        }
+        (None, Some(_)) => {
+            return Err("ANALYTICS is registered but DEX is missing".to_string());
+        }
+    };
+    if state
+        .get_contract_storage(&analytics_pk, ANALYTICS_CANONICAL_V2_MARKER)?
+        .as_deref()
+        == Some(&b"1"[..])
+    {
+        return Ok(());
+    }
+    let activation_slot = post_block_effects_activation_slot(state)?.ok_or_else(|| {
+        format!(
+            "canonical analytics v2 requires durable {} metadata",
+            POST_BLOCK_EFFECTS_ACTIVATION_SLOT_KEY
+        )
+    })?;
+    if slot < activation_slot {
+        return Ok(());
+    }
+
+    let old_entries = state.load_contract_storage_map(&analytics_pk)?;
+    let mut old_pnl = HashMap::<[u8; 32], u64>::new();
+    let mut candle_groups = BTreeMap::<(u64, u64, u64), Vec<(u64, Vec<u8>)>>::new();
+    let mut reset_timestamps = HashMap::<u64, u64>::new();
+    for (key, value) in &old_entries {
+        if let Some(encoded) = std::str::from_utf8(key)
+            .ok()
+            .and_then(|text| text.strip_prefix("ana_ts_"))
         {
-            if data.len() >= 48 {
-                // Candle layout: open(8)+high(8)+low(8)+close(8)+volume(8)+slot(8)
-                let existing_high = u64::from_le_bytes(data[8..16].try_into().unwrap_or([0; 8]));
-                let existing_low = u64::from_le_bytes(data[16..24].try_into().unwrap_or([0; 8]));
-                let existing_vol = u64::from_le_bytes(data[32..40].try_into().unwrap_or([0; 8]));
-
-                if high_price > existing_high {
-                    data[8..16].copy_from_slice(&high_price.to_le_bytes());
-                }
-                if low_price < existing_low {
-                    data[16..24].copy_from_slice(&low_price.to_le_bytes());
-                }
-                // Close = last trade price
-                data[24..32].copy_from_slice(&close_price.to_le_bytes());
-                // Accumulate real volume
-                let new_vol = existing_vol.saturating_add(volume);
-                data[32..40].copy_from_slice(&new_vol.to_le_bytes());
-                // Keep timestamp as the period-start (don't overwrite with current time)
-
-                if let Err(e) =
-                    state.put_contract_storage(analytics_pk, candle_key.as_bytes(), &data)
-                {
-                    tracing::error!("Failed to write contract storage: {e}");
+            if let Ok(bytes) = hex::decode(encoded) {
+                if bytes.len() == 32 && value.len() >= 24 {
+                    let mut trader = [0u8; 32];
+                    trader.copy_from_slice(&bytes);
+                    old_pnl.insert(
+                        trader,
+                        u64::from_le_bytes(value[16..24].try_into().unwrap_or([0; 8])),
+                    );
                 }
             }
         }
-    } else {
-        // New candle period — create a new candle with real trade data
-        let candle_count = match state.get_contract_storage(analytics_pk, count_key.as_bytes()) {
-            Ok(Some(d)) if d.len() >= 8 => u64::from_le_bytes(d[0..8].try_into().unwrap_or([0; 8])),
-            _ => 0,
-        };
-
-        // open = close_price (first trade of new period)
-        let mut candle = Vec::with_capacity(48);
-        candle.extend_from_slice(&close_price.to_le_bytes()); // open = first trade price in period
-        candle.extend_from_slice(&high_price.to_le_bytes()); // high
-        candle.extend_from_slice(&low_price.to_le_bytes()); // low
-        candle.extend_from_slice(&close_price.to_le_bytes()); // close
-        candle.extend_from_slice(&volume.to_le_bytes()); // real trade volume
-        candle.extend_from_slice(&candle_start.to_le_bytes()); // period-start time (aligned)
-
-        let new_idx = candle_count;
-        let candle_key = format!("ana_c_{}_{}_{}", pair_id, interval, new_idx);
-        if let Err(e) = state.put_contract_storage(analytics_pk, candle_key.as_bytes(), &candle) {
-            tracing::error!("Failed to write contract storage: {e}");
+        if let Some(pair_id) = parse_analytics_pair_key(key, "ana_24h_ts_") {
+            if value.len() >= 8 {
+                reset_timestamps.insert(
+                    pair_id,
+                    u64::from_le_bytes(value[0..8].try_into().unwrap_or([0; 8])),
+                );
+            }
         }
-
-        // Update count
-        if let Err(e) = state.put_contract_storage(
-            analytics_pk,
-            count_key.as_bytes(),
-            &(new_idx + 1).to_le_bytes(),
-        ) {
-            tracing::error!("Failed to write contract storage: {e}");
-        }
-
-        // Store current candle start slot
-        if let Err(e) = state.put_contract_storage(
-            analytics_pk,
-            cur_key.as_bytes(),
-            &candle_start.to_le_bytes(),
-        ) {
-            tracing::error!("Failed to write contract storage: {e}");
+        if let Some((pair_id, interval, index)) = parse_analytics_candle_key(key) {
+            if value.len() >= 48 {
+                let timestamp = u64::from_le_bytes(value[40..48].try_into().unwrap_or([0; 8]));
+                if timestamp >= 1_000_000_000 {
+                    candle_groups
+                        .entry((pair_id, interval, timestamp))
+                        .or_default()
+                        .push((index, value.clone()));
+                }
+            }
         }
     }
+
+    let mut merged_candles = BTreeMap::<(u64, u64), Vec<Vec<u8>>>::new();
+    for ((pair_id, interval, _timestamp), records) in candle_groups {
+        merged_candles
+            .entry((pair_id, interval))
+            .or_default()
+            .push(merge_analytics_candle_group(records)?);
+    }
+    for candles in merged_candles.values_mut() {
+        candles.sort_by_key(|data| u64::from_le_bytes(data[40..48].try_into().unwrap_or([0; 8])));
+    }
+
+    let mut batch = state.begin_batch_at_slot(slot);
+    for (key, _) in &old_entries {
+        if key.starts_with(b"ana_c_")
+            || key.starts_with(b"ana_cc_")
+            || key.starts_with(b"ana_cur_")
+            || key.starts_with(b"ana_ts_")
+            || key.starts_with(b"ana_lb_")
+            || key.starts_with(b"ana_last_trade_ts_")
+            || key == b"ana_rec_count"
+            || key == b"ana_total_volume"
+            || key == b"ana_trader_count"
+        {
+            batch.delete_contract_storage(&analytics_pk, key)?;
+        }
+    }
+
+    for ((pair_id, interval), candles) in &merged_candles {
+        let retention = analytics_candle_retention(*interval);
+        let retained = if retention == u64::MAX {
+            candles.as_slice()
+        } else {
+            let start = candles.len().saturating_sub(retention as usize);
+            &candles[start..]
+        };
+        for (index, candle) in retained.iter().enumerate() {
+            batch.put_contract_storage(
+                &analytics_pk,
+                format!("ana_c_{pair_id}_{interval}_{index}").as_bytes(),
+                candle,
+            )?;
+        }
+        batch.put_contract_storage(
+            &analytics_pk,
+            format!("ana_cc_{pair_id}_{interval}").as_bytes(),
+            &(retained.len() as u64).to_le_bytes(),
+        )?;
+        if let Some(last) = retained.last() {
+            batch.put_contract_storage(
+                &analytics_pk,
+                format!("ana_cur_{pair_id}_{interval}").as_bytes(),
+                &last[40..48],
+            )?;
+        }
+    }
+
+    let trade_count = state.get_program_storage_u64("DEX", b"dex_trade_count");
+    let mut trader_totals = HashMap::<[u8; 32], (u64, u64, u64)>::new();
+    let mut pair_analytics = HashMap::<u64, CanonicalPairAnalytics>::new();
+    let mut total_volume = 0u64;
+    for trade_id in 1..=trade_count {
+        let trade = load_canonical_dex_trade(state, &dex_pk, trade_id)?;
+        total_volume = total_volume.saturating_add(trade.notional);
+        let totals = trader_totals.entry(trade.taker).or_default();
+        totals.0 = totals.0.saturating_add(trade.notional);
+        totals.1 = totals.1.saturating_add(1);
+        totals.2 = totals.2.max(trade.slot);
+        pair_analytics.entry(trade.pair_id).or_default().observe(
+            &trade,
+            reset_timestamps.get(&trade.pair_id).copied().unwrap_or(0),
+        );
+    }
+
+    batch.put_contract_storage(&analytics_pk, b"ana_rec_count", &trade_count.to_le_bytes())?;
+    batch.put_contract_storage(
+        &analytics_pk,
+        b"ana_total_volume",
+        &total_volume.to_le_bytes(),
+    )?;
+    batch.put_contract_storage(
+        &analytics_pk,
+        b"ana_trader_count",
+        &(trader_totals.len() as u64).to_le_bytes(),
+    )?;
+    let mut all_traders = HashSet::new();
+    for (trader, (volume, count, last_slot)) in &trader_totals {
+        let mut data = Vec::with_capacity(32);
+        data.extend_from_slice(&volume.to_le_bytes());
+        data.extend_from_slice(&count.to_le_bytes());
+        data.extend_from_slice(
+            &old_pnl
+                .get(trader)
+                .copied()
+                .unwrap_or(1u64 << 63)
+                .to_le_bytes(),
+        );
+        data.extend_from_slice(&last_slot.to_le_bytes());
+        batch.put_contract_storage(
+            &analytics_pk,
+            analytics_trader_key(trader).as_bytes(),
+            &data,
+        )?;
+        all_traders.insert(*trader);
+    }
+    rebuild_analytics_leaderboard(&mut batch, &analytics_pk, &all_traders)?;
+
+    for (pair_id, analytics) in &pair_analytics {
+        batch.put_contract_storage(
+            &analytics_pk,
+            format!("ana_last_trade_ts_{pair_id}").as_bytes(),
+            &analytics.last_timestamp.to_le_bytes(),
+        )?;
+        if now_ts.saturating_sub(analytics.last_timestamp) < 60 {
+            batch.put_contract_storage(
+                &analytics_pk,
+                format!("ana_lp_{pair_id}").as_bytes(),
+                &analytics.last_price.to_le_bytes(),
+            )?;
+        }
+
+        if analytics.window_trade_count == 0 {
+            continue;
+        }
+        let mut stats = Vec::with_capacity(48);
+        stats.extend_from_slice(&analytics.window_volume.to_le_bytes());
+        stats.extend_from_slice(&analytics.window_high.to_le_bytes());
+        stats.extend_from_slice(&analytics.window_low.to_le_bytes());
+        stats.extend_from_slice(&analytics.window_open.to_le_bytes());
+        stats.extend_from_slice(&analytics.window_close.to_le_bytes());
+        stats.extend_from_slice(&analytics.window_trade_count.to_le_bytes());
+        batch.put_contract_storage(
+            &analytics_pk,
+            format!("ana_24h_{pair_id}").as_bytes(),
+            &stats,
+        )?;
+    }
+
+    batch.put_contract_storage(
+        &dex_pk,
+        b"dex_analytics_bridge_cursor",
+        &trade_count.to_le_bytes(),
+    )?;
+    batch.put_contract_storage(&analytics_pk, ANALYTICS_CANONICAL_V2_MARKER, b"1")?;
+    state.commit_batch(batch)?;
+    info!(
+        "Canonical analytics v2 migration complete: trades={}, traders={}, candle_series={}",
+        trade_count,
+        trader_totals.len(),
+        merged_candles.len()
+    );
+    Ok(())
 }
 
 fn emit_program_and_nft_events(
@@ -4572,20 +5045,20 @@ fn emit_program_and_nft_events(
     ws_event_tx: &tokio::sync::broadcast::Sender<lichen_rpc::ws::Event>,
     block: &Block,
 ) {
-    // AUDIT-FIX 3.14: Track indexing errors for monitoring
-    let activity_errors = record_block_activity(state, block);
-    if activity_errors > 0 {
-        warn!(
-            "⚠️  Block {} had {} activity indexing errors",
-            block.header.slot, activity_errors
-        );
-    }
-
     for tx in &block.transactions {
         // Emit Transaction event for every tx in the block
         drop(ws_event_tx.send(lichen_rpc::ws::Event::Transaction(
             lichen_rpc::ws::TransactionFanoutSummary::from_transaction(tx),
         )));
+
+        if state
+            .get_tx_meta_full(&tx.signature())
+            .ok()
+            .flatten()
+            .is_some_and(|meta| !meta.succeeded())
+        {
+            continue;
+        }
 
         // Emit AccountChange events for all accounts touched by this tx
         let mut seen_accounts = std::collections::HashSet::new();
@@ -4846,6 +5319,7 @@ fn emit_program_and_nft_events(
 }
 
 fn emit_signature_status_events(
+    state: &StateStore,
     ws_event_tx: &tokio::sync::broadcast::Sender<lichen_rpc::ws::Event>,
     finality_tracker: &FinalityTracker,
     block: &Block,
@@ -4855,11 +5329,20 @@ fn emit_signature_status_events(
         .to_string();
 
     for tx in &block.transactions {
+        let error = state
+            .get_tx_meta_full(&tx.signature())
+            .ok()
+            .flatten()
+            .filter(|meta| !meta.succeeded())
+            .map(|meta| {
+                meta.error
+                    .unwrap_or_else(|| "Transaction execution failed".to_string())
+            });
         drop(ws_event_tx.send(lichen_rpc::ws::Event::SignatureStatus {
             signature: tx.signature().to_hex(),
             status: status.clone(),
             slot: block.header.slot,
-            err: None,
+            err: error,
         }));
     }
 }
@@ -5007,59 +5490,10 @@ const WARP_SNAPSHOT_CATEGORIES: &[&str] = &[
     "mossstake_pool",
 ];
 
-const SNAPSHOT_MERGE_CATEGORIES: &[&str] = &[
-    "blocks",
-    "transactions",
-    "account_txs",
-    "slots",
-    "program_calls",
-    "market_activity",
-    "evm_txs",
-    "evm_receipts",
-    "evm_logs_by_slot",
-    "nft_activity",
-    "token_transfers",
-    "events",
-    "events_by_slot",
-    "dex_trades_by_pair",
-    "dex_trades_by_taker",
-    "dex_trades_by_pair_taker",
-    "tx_by_slot",
-    "tx_to_slot",
-    "tx_meta",
-    "shielded_txs",
-];
-
-const STATE_REPAIR_SNAPSHOT_CATEGORIES: &[&str] = &[
-    "accounts",
-    "contract_storage",
-    "programs",
-    "symbol_registry",
-    "symbol_by_program",
-    "evm_map",
-    "evm_accounts",
-    "evm_storage",
-    "nft_by_owner",
-    "nft_by_collection",
-    "token_balances",
-    "holder_tokens",
-    "solana_token_accounts",
-    "solana_holder_token_accounts",
-    "dex_orders_by_pair",
-    "dex_orderbook_levels",
-    "pending_validator_changes",
-    "restrictions",
-    "restriction_index_target",
-    "restriction_index_code_hash",
-    "shielded_commitments",
-    "shielded_note_payloads",
-    "shielded_nullifiers",
-    "shielded_pool",
-    "stats",
-    "validator_set",
-    "stake_pool",
-    "mossstake_pool",
-];
+// Network checkpoints are complete archive snapshots. A validator must never
+// advertise a checkpoint that can restore current state but leave historical
+// RPC data missing.
+const CHECKPOINT_SNAPSHOT_CATEGORIES: &[&str] = WARP_SNAPSHOT_CATEGORIES;
 
 fn snapshot_request_chunk_size(category: &str) -> u64 {
     match category {
@@ -5125,6 +5559,9 @@ fn block_fee_at_index(
     let Some(tx) = block.transactions.get(tx_index) else {
         return 0;
     };
+    if tx.is_consensus() {
+        return 0;
+    }
 
     if let Some(exact_fee) = TxProcessor::exact_transaction_fee_from_state(state, tx, fee_config) {
         return exact_fee;
@@ -5148,6 +5585,7 @@ fn block_total_fees_paid(state: &StateStore, block: &Block, fee_config: &FeeConf
     block
         .transactions
         .iter()
+        .filter(|tx| !tx.is_consensus())
         .map(|tx| {
             TxProcessor::exact_transaction_fee_from_state(state, tx, fee_config)
                 .unwrap_or_else(|| TxProcessor::compute_transaction_fee(tx, fee_config))
@@ -5176,9 +5614,9 @@ fn deterministic_fee_recipient_validators(stake_pool: &StakePool) -> Vec<Pubkey>
 /// not trust proposer-carried oracle payloads. Instead, it reads the native
 /// consensus oracle state finalized by the block's transactions and mirrors
 /// that data into legacy contract storage layouts.
-fn apply_oracle_from_block(state: &StateStore, block: &Block) {
+fn apply_oracle_from_block(state: &StateStore, block: &Block) -> Result<(), String> {
     if block.header.slot == 0 {
-        return;
+        return Ok(());
     }
 
     let slot = block.header.slot;
@@ -5187,11 +5625,11 @@ fn apply_oracle_from_block(state: &StateStore, block: &Block) {
     // Resolve contract pubkeys via symbol registry
     let oracle_pk = match state.get_symbol_registry("ORACLE") {
         Ok(Some(entry)) => entry.program,
-        _ => return,
+        _ => return Ok(()),
     };
     let analytics_pk = match state.get_symbol_registry("ANALYTICS") {
         Ok(Some(entry)) => entry.program,
-        _ => return,
+        _ => return Ok(()),
     };
     let dex_pk = match state.get_symbol_registry("DEX") {
         Ok(Some(entry)) => entry.program,
@@ -5199,7 +5637,7 @@ fn apply_oracle_from_block(state: &StateStore, block: &Block) {
     };
     let feeder = match state.get_genesis_pubkey() {
         Ok(Some(gpk)) => gpk.0,
-        _ => return,
+        _ => return Ok(()),
     };
 
     const PRICE_SCALE: u64 = 1_000_000_000; // 1e9 for DEX price scaling
@@ -5225,10 +5663,11 @@ fn apply_oracle_from_block(state: &StateStore, block: &Block) {
         && (!wgas_enabled || wgas_usd <= 0.0)
         && (!wbtc_enabled || wbtc_usd <= 0.0)
     {
-        return;
+        return Ok(());
     }
 
     let licn_usd = lichen_core::consensus::licn_price_from_state(state);
+    let mut batch = state.begin_batch_at_slot(slot);
 
     // ── Phase A: Mirror consensus prices into ORACLE compatibility storage ──
     for asset in oracle_asset_symbols(state) {
@@ -5247,15 +5686,11 @@ fn apply_oracle_from_block(state: &StateStore, block: &Block) {
         feed.extend_from_slice(&feeder);
 
         let price_key = format!("price_{}", asset);
-        if let Err(e) = state.put_contract_storage(&oracle_pk, price_key.as_bytes(), &feed) {
-            tracing::error!("Failed to write contract storage: {e}");
-        }
+        batch.put_contract_storage(&oracle_pk, price_key.as_bytes(), &feed)?;
 
         // Also write indexed key for aggregation
         let indexed_key = format!("{}_0", price_key);
-        if let Err(e) = state.put_contract_storage(&oracle_pk, indexed_key.as_bytes(), &feed) {
-            tracing::error!("Failed to write contract storage: {e}");
-        }
+        batch.put_contract_storage(&oracle_pk, indexed_key.as_bytes(), &feed)?;
     }
 
     // ── Phase B: Write DEX price bands to DEX contract ──
@@ -5287,9 +5722,7 @@ fn apply_oracle_from_block(state: &StateStore, block: &Block) {
             let mut band_data = Vec::with_capacity(16);
             band_data.extend_from_slice(&price_scaled.to_le_bytes());
             band_data.extend_from_slice(&slot.to_le_bytes());
-            if let Err(e) = state.put_contract_storage(&dex_pk, band_key.as_bytes(), &band_data) {
-                tracing::error!("Failed to write contract storage: {e}");
-            }
+            batch.put_contract_storage(&dex_pk, band_key.as_bytes(), &band_data)?;
         }
     }
 
@@ -5307,11 +5740,11 @@ fn apply_oracle_from_block(state: &StateStore, block: &Block) {
 
         // Check if a real trade occurred within 60 seconds
         let ts_key = format!("ana_last_trade_ts_{}", pair_id);
-        let last_trade_ts: u64 = match state.get_contract_storage(&analytics_pk, ts_key.as_bytes())
-        {
-            Ok(Some(d)) if d.len() >= 8 => u64::from_le_bytes(d[0..8].try_into().unwrap_or([0; 8])),
-            _ => 0,
-        };
+        let last_trade_ts: u64 =
+            match batch.get_contract_storage(&analytics_pk, ts_key.as_bytes())? {
+                Some(d) if d.len() >= 8 => u64::from_le_bytes(d[0..8].try_into().unwrap_or([0; 8])),
+                _ => 0,
+            };
         let trade_active = last_trade_ts > 0 && now_ts.saturating_sub(last_trade_ts) < 60;
 
         if trade_active {
@@ -5320,19 +5753,17 @@ fn apply_oracle_from_block(state: &StateStore, block: &Block) {
 
         // Inactive market: write indicative price from oracle
         let lp_key = format!("ana_lp_{}", pair_id);
-        if let Err(e) = state.put_contract_storage(
+        batch.put_contract_storage(
             &analytics_pk,
             lp_key.as_bytes(),
             &price_scaled.to_le_bytes(),
-        ) {
-            tracing::error!("Failed to write contract storage: {e}");
-        }
+        )?;
 
         // Update 24h stats (read-modify-write)
         let stats_key = format!("ana_24h_{}", pair_id);
         let (vol, mut high, mut low, open, _close, trades) =
-            match state.get_contract_storage(&analytics_pk, stats_key.as_bytes()) {
-                Ok(Some(d)) if d.len() >= 48 => (
+            match batch.get_contract_storage(&analytics_pk, stats_key.as_bytes())? {
+                Some(d) if d.len() >= 48 => (
                     u64::from_le_bytes(d[0..8].try_into().unwrap_or([0; 8])),
                     u64::from_le_bytes(d[8..16].try_into().unwrap_or([0; 8])),
                     u64::from_le_bytes(d[16..24].try_into().unwrap_or([0; 8])),
@@ -5357,25 +5788,23 @@ fn apply_oracle_from_block(state: &StateStore, block: &Block) {
         stats.extend_from_slice(&open.to_le_bytes());
         stats.extend_from_slice(&price_scaled.to_le_bytes()); // close = current
         stats.extend_from_slice(&trades.to_le_bytes());
-        if let Err(e) = state.put_contract_storage(&analytics_pk, stats_key.as_bytes(), &stats) {
-            tracing::error!("Failed to write contract storage: {e}");
-        }
+        batch.put_contract_storage(&analytics_pk, stats_key.as_bytes(), &stats)?;
 
         // ── Candles: update all 9 intervals with oracle price ──
         // This is consensus-deterministic: every validator processing this block
         // writes the same candle data from the same oracle prices.
         for &interval in &CANDLE_INTERVALS {
             oracle_update_candle(
-                state,
+                &mut batch,
                 &analytics_pk,
                 *pair_id,
                 interval,
                 price_scaled,
-                slot,
                 now_ts,
-            );
+            )?;
         }
     }
+    state.commit_batch(batch)
 }
 
 struct CommittedOracleAttestation {
@@ -5442,15 +5871,15 @@ fn parse_committed_oracle_attestation(
     }))
 }
 
-fn apply_committed_oracle_attestation_effects(
+fn stage_committed_oracle_attestation_effects(
     state: &StateStore,
+    batch: &mut StateBatch,
     block: &Block,
     height_start_stake_pool: &StakePool,
+    execution_results: &[lichen_core::TxResult],
 ) -> Result<(), String> {
-    // Speculative replay validates opcode 30 without writing oracle records,
-    // because those records are post-root derived state. Persist them exactly
-    // once after the canonical transaction batch has committed, using the
-    // active stake at height start rather than later same-block stake changes.
+    // Oracle records are derived state excluded from the transaction state
+    // root, but they still belong to the canonical crash-consistency boundary.
     if block.header.slot == 0 || block.transactions.is_empty() {
         return Ok(());
     }
@@ -5463,7 +5892,13 @@ fn apply_committed_oracle_attestation_effects(
     let min_attestors = if active_validators <= 1 { 1 } else { 2 };
     let threshold = (total_active_stake as u128) * 2 / 3;
 
-    for tx in &block.transactions {
+    let executable = block.transactions.iter().filter(|tx| !tx.is_consensus());
+    let mut staged = BTreeMap::<String, BTreeMap<Pubkey, lichen_core::OracleAttestation>>::new();
+    let mut asset_decimals = BTreeMap::<String, u8>::new();
+    for (tx, result) in executable.zip(execution_results) {
+        if !result.success {
+            continue;
+        }
         for ix in &tx.message.instructions {
             let Some(attestation) = parse_committed_oracle_attestation(ix)? else {
                 continue;
@@ -5475,32 +5910,43 @@ fn apply_committed_oracle_attestation_effects(
             if !stake_info.is_active || !stake_info.meets_minimum() {
                 return Err("OracleAttestation: signer is not an active validator".to_string());
             }
+            asset_decimals.insert(attestation.asset.clone(), attestation.decimals);
+            staged.entry(attestation.asset).or_default().insert(
+                attestation.signer,
+                lichen_core::OracleAttestation {
+                    validator: attestation.signer,
+                    price: attestation.price,
+                    decimals: attestation.decimals,
+                    stake: stake_info.total_stake(),
+                    slot: block.header.slot,
+                },
+            );
+        }
+    }
 
-            state.put_oracle_attestation(
-                &attestation.asset,
-                &attestation.signer,
-                attestation.price,
-                attestation.decimals,
-                stake_info.total_stake(),
-                block.header.slot,
-            )?;
-
-            let attestations = state.get_oracle_attestations(
-                &attestation.asset,
-                block.header.slot,
-                ORACLE_STALENESS_SLOTS,
-            )?;
-            let attested_stake: u128 = attestations.iter().map(|a| a.stake as u128).sum();
-            if attested_stake >= threshold && attestations.len() >= min_attestors {
-                let consensus_price = compute_stake_weighted_median(&attestations);
-                state.put_oracle_consensus_price(
-                    &attestation.asset,
-                    consensus_price,
-                    attestation.decimals,
-                    block.header.slot,
-                    attestations.len() as u32,
-                )?;
-            }
+    for (asset, pending) in staged {
+        let mut attestations: BTreeMap<Pubkey, lichen_core::OracleAttestation> = state
+            .get_oracle_attestations(&asset, block.header.slot, ORACLE_STALENESS_SLOTS)?
+            .into_iter()
+            .map(|attestation| (attestation.validator, attestation))
+            .collect();
+        for (validator, attestation) in pending {
+            batch.put_oracle_attestation(&asset, &attestation)?;
+            attestations.insert(validator, attestation);
+        }
+        let attestations: Vec<_> = attestations.into_values().collect();
+        let attested_stake: u128 = attestations
+            .iter()
+            .map(|attestation| attestation.stake as u128)
+            .sum();
+        if attested_stake >= threshold && attestations.len() >= min_attestors {
+            batch.put_oracle_consensus_price(&lichen_core::OracleConsensusPrice {
+                asset: asset.clone(),
+                price: compute_stake_weighted_median(&attestations),
+                decimals: asset_decimals[&asset],
+                slot: block.header.slot,
+                attestation_count: attestations.len() as u32,
+            })?;
         }
     }
 
@@ -5616,25 +6062,6 @@ fn propose_timeout_delay_for_role(
     propose_timeout_delay(slot_boundary_delay_ms, configured_timeout)
 }
 
-const STALE_BFT_RESTART_RENDEZVOUS_AFTER_SECS: u64 = 120;
-const STALE_BFT_RESTART_RENDEZVOUS_ROUND_SECS: u64 = 5;
-
-fn stale_bft_restart_rendezvous_round(
-    current_tip: u64,
-    start_height: u64,
-    last_block_age_secs: u64,
-) -> Option<u32> {
-    if current_tip == 0 || start_height != current_tip.saturating_add(1) {
-        return None;
-    }
-    if last_block_age_secs < STALE_BFT_RESTART_RENDEZVOUS_AFTER_SECS {
-        return None;
-    }
-
-    let target_round = last_block_age_secs.saturating_div(STALE_BFT_RESTART_RENDEZVOUS_ROUND_SECS);
-    Some(target_round.min(u64::from(u32::MAX)) as u32)
-}
-
 /// Validate a received or committed block by deterministically executing its
 /// transactions into an in-memory batch, checking the advertised pre-effects
 /// state root, then committing that batch exactly once to canonical state.
@@ -5669,7 +6096,36 @@ fn validate_block_transactions_against_state(
             block.header.slot, context
         ));
     }
-    if block.transactions.is_empty() {
+    let executable: Vec<(usize, Transaction)> = block
+        .transactions
+        .iter()
+        .enumerate()
+        .filter(|(_, transaction)| !transaction.is_consensus())
+        .map(|(index, transaction)| (index, transaction.clone()))
+        .collect();
+    if !block.tx_fees_paid.is_empty() && block.tx_fees_paid.len() != block.transactions.len() {
+        return Err(format!(
+            "slot {} {} fee metadata length mismatch: block has {} entries for {} transactions",
+            block.header.slot,
+            context,
+            block.tx_fees_paid.len(),
+            block.transactions.len(),
+        ));
+    }
+    for (tx_index, transaction) in block.transactions.iter().enumerate() {
+        if transaction.is_consensus()
+            && block
+                .tx_fees_paid
+                .get(tx_index)
+                .is_some_and(|fee| *fee != 0)
+        {
+            return Err(format!(
+                "slot {} {} canonical commit transaction has nonzero fee metadata",
+                block.header.slot, context
+            ));
+        }
+    }
+    if executable.is_empty() {
         return validate_state_root_with_schema(
             state,
             block.header.slot,
@@ -5681,8 +6137,15 @@ fn validate_block_transactions_against_state(
 
     let producer = Pubkey(block.header.validator);
     let speculative_processor = TxProcessor::new_speculative(state.clone());
-    let speculative =
-        speculative_processor.process_transactions_speculative(&block.transactions, &producer);
+    let executable_transactions: Vec<Transaction> = executable
+        .iter()
+        .map(|(_, transaction)| transaction.clone())
+        .collect();
+    let mut speculative = speculative_processor.process_transactions_speculative_at_slot(
+        &executable_transactions,
+        &producer,
+        block.header.slot,
+    );
 
     let computed_root = state.compute_state_root_for_batch(&speculative.batch);
     if computed_root != block.header.state_root {
@@ -5695,10 +6158,10 @@ fn validate_block_transactions_against_state(
         ));
     }
 
-    for (tx_index, result) in speculative.results.iter().enumerate() {
-        if !result.success {
+    for ((tx_index, _), result) in executable.iter().zip(&speculative.results) {
+        if !result.receipt_eligible {
             return Err(format!(
-                "slot {} {} tx {} replay failed before canonical commit: {}",
+                "slot {} {} tx {} is not eligible for a canonical receipt: {}",
                 block.header.slot,
                 context,
                 tx_index,
@@ -5707,17 +6170,8 @@ fn validate_block_transactions_against_state(
         }
     }
 
-    if !block.tx_fees_paid.is_empty() && block.tx_fees_paid.len() != block.transactions.len() {
-        return Err(format!(
-            "slot {} {} fee metadata length mismatch: block has {} entries for {} transactions",
-            block.header.slot,
-            context,
-            block.tx_fees_paid.len(),
-            block.transactions.len(),
-        ));
-    }
-    for (tx_index, result) in speculative.results.iter().enumerate() {
-        if let Some(block_fee) = block.tx_fees_paid.get(tx_index) {
+    for ((tx_index, _), result) in executable.iter().zip(&speculative.results) {
+        if let Some(block_fee) = block.tx_fees_paid.get(*tx_index) {
             if *block_fee != result.fee_paid {
                 return Err(format!(
                     "slot {} {} tx {} fee metadata mismatch: block={} local={}",
@@ -5729,27 +6183,42 @@ fn validate_block_transactions_against_state(
 
     if commit {
         let height_start_stake_pool = state.get_stake_pool()?;
-        state.commit_batch(speculative.batch)?;
-        apply_committed_oracle_attestation_effects(state, block, &height_start_stake_pool).map_err(
-            |err| {
-                format!(
-                    "slot {} {} committed oracle side effects failed: {}",
-                    block.header.slot, context, err
-                )
-            },
+        stage_committed_oracle_attestation_effects(
+            state,
+            &mut speculative.batch,
+            block,
+            &height_start_stake_pool,
+            &speculative.results,
+        )?;
+        state.commit_batch_with_block(
+            speculative.batch,
+            block,
+            Some(block.header.slot),
+            Some(block.header.slot),
         )
     } else {
         Ok(())
     }
 }
 
+struct ConsensusProposalValidationContext<'a> {
+    expected_parent_hash: Hash,
+    expected_validators_hash: Hash,
+    min_validator_stake: u64,
+    chain_id: &'a str,
+}
+
 fn validate_consensus_proposal_before_prevote(
     state: &StateStore,
     proposal: &Proposal,
-    expected_parent_hash: Hash,
-    expected_validators_hash: Hash,
-    chain_id: &str,
+    context: ConsensusProposalValidationContext<'_>,
 ) -> Result<(), String> {
+    let ConsensusProposalValidationContext {
+        expected_parent_hash,
+        expected_validators_hash,
+        min_validator_stake,
+        chain_id,
+    } = context;
     let block = &proposal.block;
     if block.header.slot != proposal.height {
         return Err(format!(
@@ -5782,17 +6251,47 @@ fn validate_consensus_proposal_before_prevote(
         ));
     }
 
-    let tx_hashes: Vec<Hash> = block.transactions.iter().map(|tx| tx.hash()).collect();
-    let tx_root = lichen_core::merkle_tx_root_from_hashes(&tx_hashes);
-    if block.header.tx_root != tx_root {
-        return Err(format!(
-            "proposal h={} r={} rejected: tx_root {} does not match reconstructed {}",
-            proposal.height,
-            proposal.round,
-            block.header.tx_root.to_hex(),
-            tx_root.to_hex(),
-        ));
+    let consensus_transactions: Vec<_> = block
+        .transactions
+        .iter()
+        .enumerate()
+        .filter(|(_, transaction)| transaction.is_consensus())
+        .collect();
+    if proposal.height <= 1 {
+        if !consensus_transactions.is_empty() {
+            return Err(format!(
+                "proposal h={} r={} rejected: genesis child must not carry a parent commit certificate",
+                proposal.height, proposal.round
+            ));
+        }
+    } else {
+        if consensus_transactions.len() != 1 || consensus_transactions[0].0 != 0 {
+            return Err(format!(
+                "proposal h={} r={} rejected: exactly one canonical parent commit transaction is required at index 0",
+                proposal.height, proposal.round
+            ));
+        }
+        let certificate =
+            CanonicalCommitCertificate::from_transaction(consensus_transactions[0].1)?
+                .ok_or_else(|| "canonical parent commit transaction is missing".to_string())?;
+        certificate.verify_child_metadata(&block.tx_fees_paid, &block.oracle_prices)?;
+        let parent = state
+            .get_block(&expected_parent_hash)?
+            .ok_or_else(|| "canonical parent block is unavailable".to_string())?;
+        certificate.verify_parent(&parent, chain_id, min_validator_stake)?;
+        let local_parent_post_state_root = state.compute_state_root();
+        if certificate.parent_post_state_root != local_parent_post_state_root {
+            return Err(format!(
+                "proposal h={} r={} rejected: parent post-state root {} does not match local {}",
+                proposal.height,
+                proposal.round,
+                certificate.parent_post_state_root.to_hex(),
+                local_parent_post_state_root.to_hex(),
+            ));
+        }
     }
+
+    validate_block_payload_commitments(block)?;
 
     validate_block_transactions_against_state(state, block, "consensus proposal", false, false)
 }
@@ -5801,6 +6300,8 @@ fn canonical_tip_at_or_past_height(state: &StateStore, height: u64) -> Option<u6
     let tip = state.get_last_slot().unwrap_or(0);
     (tip >= height).then_some(tip)
 }
+
+type EpochRewardDistributionLog = (u64, u64, usize, Vec<(Pubkey, u64, u64, u64)>);
 
 /// Reverse the financial effects of a replaced block during fork choice.
 /// Attempts to debit the old producer's reward and credit treasury back.
@@ -5888,6 +6389,18 @@ async fn revert_block_effects(
             slot, e
         );
     }
+    if let Err(e) = state.clear_stake_pool_production_hash(slot) {
+        warn!(
+            "revert_block_effects: failed to clear stake pool production hash for slot {}: {}",
+            slot, e
+        );
+    }
+    if let Err(e) = state.clear_post_block_effects_hash(slot) {
+        warn!(
+            "revert_block_effects: failed to clear post-block effects hash for slot {}: {}",
+            slot, e
+        );
+    }
 
     // Keep validator production counters aligned with canonical chain.
     {
@@ -5952,17 +6465,24 @@ fn revert_block_transactions(state: &StateStore, old_block: &Block, data_dir: &s
     let mut non_revertible_accounts: Vec<lichen_core::Pubkey> = Vec::new();
 
     for (tx_index, tx) in old_block.transactions.iter().enumerate().rev() {
+        let succeeded = state
+            .get_tx_meta_full(&tx.signature())
+            .ok()
+            .flatten()
+            .map(|meta| meta.succeeded())
+            .unwrap_or(true);
         // AUDIT-FIX 0.5: Detect non-system-transfer instructions that can't be reverted
-        let has_non_revertible = tx.message.instructions.iter().any(|ix| {
-            if ix.program_id != SYSTEM_PROGRAM_ID {
-                return true; // Contract call — can't revert
-            }
-            if ix.data.is_empty() {
-                return false;
-            }
-            // Only types 0,2,3,4,5 (transfers) are revertible
-            !matches!(ix.data[0], 0 | 2 | 3 | 4 | 5)
-        });
+        let has_non_revertible = succeeded
+            && tx.message.instructions.iter().any(|ix| {
+                if ix.program_id != SYSTEM_PROGRAM_ID {
+                    return true; // Contract call — can't revert
+                }
+                if ix.data.is_empty() {
+                    return false;
+                }
+                // Only types 0,2,3,4,5 (transfers) are revertible
+                !matches!(ix.data[0], 0 | 2 | 3 | 4 | 5)
+            });
         if has_non_revertible {
             // AUDIT-FIX C7: Collect all accounts from non-revertible instructions
             // for checkpoint-based restoration instead of best-effort field reversal.
@@ -5990,7 +6510,7 @@ fn revert_block_transactions(state: &StateStore, old_block: &Block, data_dir: &s
         let mut overlay: HashMap<lichen_core::Pubkey, Account> = HashMap::new();
 
         for ix in &tx.message.instructions {
-            if ix.program_id == SYSTEM_PROGRAM_ID && !ix.data.is_empty() {
+            if succeeded && ix.program_id == SYSTEM_PROGRAM_ID && !ix.data.is_empty() {
                 let ix_type = ix.data[0];
                 // Types 0,2,3,4,5 are all transfers
                 if matches!(ix_type, 0 | 2 | 3 | 4 | 5)
@@ -6181,30 +6701,101 @@ async fn apply_block_effects(
     // Empty, transfer-only, DEX, contract, oracle, and governance-readiness blocks
     // keep the in-memory pool authoritative and avoid a full pool deserialize per slot.
     if block_may_mutate_stake_pool(block) {
-        if let Ok(fresh_pool) = state.get_stake_pool() {
-            let entry_count = fresh_pool.stake_entries().len();
-            let mut pool = stake_pool.write().await;
-            *pool = fresh_pool;
-            drop(pool);
-            info!(
-                "📊 apply_block_effects slot {}: reloaded pool with {} entries after stake-pool transaction",
-                block.header.slot, entry_count
-            );
+        match state.get_stake_pool() {
+            Ok(fresh_pool) => {
+                let entry_count = fresh_pool.stake_entries().len();
+                let mut pool = stake_pool.write().await;
+                *pool = fresh_pool;
+                drop(pool);
+                info!(
+                    "📊 apply_block_effects slot {}: reloaded pool with {} entries after stake-pool transaction",
+                    block.header.slot, entry_count
+                );
+            }
+            Err(err) => {
+                error!(
+                    "❌ CRITICAL: failed to reload stake pool after a mutating block at slot {}: {}",
+                    block.header.slot, err
+                );
+                std::process::exit(1);
+            }
         }
     }
 
     let producer = Pubkey(block.header.validator);
     let slot = block.header.slot;
+    let block_hash = block.hash();
+    let canonical_parent_commit = block
+        .transactions
+        .iter()
+        .find(|transaction| transaction.is_consensus())
+        .map(|transaction| {
+            CanonicalCommitCertificate::from_transaction(transaction).and_then(|certificate| {
+                certificate.ok_or_else(|| {
+                    "consensus transaction did not contain a canonical commit certificate"
+                        .to_string()
+                })
+            })
+        })
+        .transpose()
+        .unwrap_or_else(|err| {
+            error!(
+                "FATAL: malformed canonical parent commit in applied block {}: {}",
+                slot, err
+            );
+            std::process::exit(1);
+        });
 
-    let has_user_transactions = !block.transactions.is_empty();
+    let user_transaction_count = block
+        .transactions
+        .iter()
+        .filter(|transaction| !transaction.is_consensus())
+        .count();
+    let has_user_transactions = user_transaction_count > 0;
     let is_liveness_only = !has_user_transactions;
     let reward_already = if !skip_rewards {
         match state.get_reward_distribution_hash(slot) {
-            Ok(Some(_)) => true, // per-slot guard: any reward for this slot = skip
+            Ok(Some(hash)) if hash == block_hash => true,
+            Ok(Some(hash)) => {
+                error!(
+                    "❌ CRITICAL: reward marker for slot {} has hash {}, expected {}; refusing to mask post-block state drift",
+                    slot,
+                    hash.to_hex(),
+                    block_hash.to_hex()
+                );
+                std::process::exit(1);
+            }
             Ok(None) => false,
             Err(e) => {
-                warn!("⚠️  Failed to read reward distribution hash: {}", e);
-                false
+                error!(
+                    "❌ CRITICAL: failed to read reward distribution marker for slot {}: {}",
+                    slot, e
+                );
+                std::process::exit(1);
+            }
+        }
+    } else {
+        false
+    };
+    let stake_pool_production_already = if !skip_rewards {
+        match state.get_stake_pool_production_hash(slot) {
+            Ok(Some(hash)) if hash == block_hash => true,
+            Ok(Some(hash)) => {
+                error!(
+                    "❌ CRITICAL: stake pool production marker for slot {} has hash {}, expected {}; refusing to mask post-block state drift",
+                    slot,
+                    hash.to_hex(),
+                    block_hash.to_hex()
+                );
+                std::process::exit(1);
+            }
+            Ok(None) => false,
+            Err(e) => {
+                error!(
+                    "❌ CRITICAL: failed to read stake pool production marker for slot {}: {}",
+                    slot, e
+                );
+                std::process::exit(1);
             }
         }
     } else {
@@ -6220,12 +6811,17 @@ async fn apply_block_effects(
 
     {
         let mut vs = validator_set.write().await;
-        let observed_at_ms = now_unix_ms();
+        let observed_at_ms = block.header.timestamp.saturating_mul(1_000);
         let mut validator_set_changed = false;
+        if !reward_already {
+            if let Some(certificate) = canonical_parent_commit.as_ref() {
+                validator_set_changed |= apply_canonical_commit_activity(&mut vs, certificate) > 0;
+            }
+        }
         if let Some(val_info) = vs.get_validator_mut(&producer) {
             if !reward_already {
                 val_info.blocks_proposed += 1;
-                val_info.transactions_processed += block.transactions.len() as u64;
+                val_info.transactions_processed += user_transaction_count as u64;
                 // F-05 audit fix: reputation update moved inside the guard
                 // to prevent double-counting on duplicate apply_block_effects calls
                 val_info.update_reputation(true);
@@ -6252,7 +6848,11 @@ async fn apply_block_effects(
             let vs_snapshot = vs.clone();
             drop(vs);
             if let Err(e) = state.save_validator_set(&vs_snapshot) {
-                warn!("⚠️  Failed to persist validator set update: {}", e);
+                error!(
+                    "❌ CRITICAL: failed to persist validator set update at slot {}: {}",
+                    slot, e
+                );
+                std::process::exit(1);
             }
         } else {
             drop(vs);
@@ -6264,54 +6864,81 @@ async fn apply_block_effects(
     // the total epoch mint is computed and distributed to ALL active stakers
     // proportionally by stake weight. Block producers still earn tx fees per-block.
     // Every validator deterministically applies the same rewards.
-    let block_hash = block.hash();
     if !skip_rewards {
         // Compute total supply for inflation curve: genesis + minted - burned
+        let total_minted = state.get_total_minted().unwrap_or_else(|err| {
+            error!(
+                "❌ CRITICAL: failed to read total minted supply at slot {}: {}",
+                slot, err
+            );
+            std::process::exit(1);
+        });
+        let total_burned = state.get_total_burned().unwrap_or_else(|err| {
+            error!(
+                "❌ CRITICAL: failed to read total burned supply at slot {}: {}",
+                slot, err
+            );
+            std::process::exit(1);
+        });
         let total_supply = GENESIS_SUPPLY_SPORES
-            .saturating_add(state.get_total_minted().unwrap_or(0))
-            .saturating_sub(state.get_total_burned().unwrap_or(0));
+            .saturating_add(total_minted)
+            .saturating_sub(total_burned);
 
         // ── Per-block: record block production (no per-slot inflation) ──
         // Inflation is distributed at epoch boundaries to ALL stakers proportionally.
         // Block producers still earn transaction fees per-block (below).
-        {
+        if !stake_pool_production_already {
             let mut pool = stake_pool.write().await;
-            let already_counted = pool
+            let legacy_high_watermark_counted = pool
                 .get_stake(&producer)
                 .map(|stake_info| stake_info.last_reward_slot >= slot)
                 .unwrap_or(false);
-            if !already_counted {
+            if !legacy_high_watermark_counted {
                 // distribute_block_reward now only updates last_reward_slot (returns 0)
                 pool.distribute_block_reward(&producer, slot, is_liveness_only, total_supply);
                 pool.record_block_produced(&producer);
             } else {
                 debug!(
-                    "Stake pool block-production effects for slot {} already counted; preserving idempotency",
+                    "Stake pool block-production effects for slot {} already satisfy the legacy high-water mark; backfilling marker",
                     slot
                 );
             }
             let pool_snapshot = pool.clone();
             drop(pool);
-            if let Err(e) = state.put_stake_pool(&pool_snapshot) {
+            let mut production_batch = state.begin_batch_at_slot(slot);
+            if let Err(e) = production_batch.put_stake_pool(&pool_snapshot) {
                 error!(
-                    "❌ CRITICAL: failed to persist stake pool block-production update for slot {}: {}",
+                    "❌ CRITICAL: failed to stage stake pool block-production update for slot {}: {}",
                     slot, e
                 );
                 std::process::exit(1);
             }
+            if let Err(e) = production_batch.set_stake_pool_production_hash(slot, &block_hash) {
+                error!(
+                    "❌ CRITICAL: failed to stage stake pool production marker for slot {}: {}",
+                    slot, e
+                );
+                std::process::exit(1);
+            }
+            if let Err(e) = state.commit_batch(production_batch) {
+                error!(
+                    "❌ CRITICAL: failed to persist stake pool block-production batch for slot {}: {}",
+                    slot, e
+                );
+                std::process::exit(1);
+            }
+        } else {
+            debug!(
+                "Stake pool block-production effects for slot {} already marked complete",
+                slot
+            );
         }
 
         if !reward_already {
-            // Write the reward distribution guard before epoch/account reward
-            // writes. Per-block stake-pool counters above are independently
-            // idempotent via last_reward_slot, so a stale or missing guard cannot
-            // cause double-counting there.
-            if let Err(e) = state.set_reward_distribution_hash(slot, &block_hash) {
-                warn!(
-                    "⚠️  Failed to record reward distribution for slot {}: {}",
-                    slot, e
-                );
-            }
+            let mut reward_batch = state.begin_batch_at_slot(slot);
+            let mut epoch_reward_log: Option<EpochRewardDistributionLog> = None;
+            let mut mossstake_reward_log: Option<(u64, usize)> = None;
+            let mut governance_changes_applied = 0usize;
 
             // ── Epoch boundary: distribute inflation to ALL stakers proportionally ──
             // At the start of each new epoch, mint the previous epoch's inflation
@@ -6333,11 +6960,11 @@ async fn apply_block_effects(
                     }
                     Ok(_) => 0,
                     Err(e) => {
-                        warn!(
-                            "⚠️  Failed to load MossStake pool before epoch distribution: {}",
-                            e
+                        error!(
+                            "❌ CRITICAL: failed to load MossStake pool before epoch distribution at slot {}: {}",
+                            slot, e
                         );
-                        0
+                        std::process::exit(1);
                     }
                 };
                 let staker_reward_pool = if moss_reward_pool > 0 {
@@ -6354,9 +6981,9 @@ async fn apply_block_effects(
                     );
                     let pool_snapshot = pool.clone();
                     drop(pool);
-                    if let Err(e) = state.put_stake_pool(&pool_snapshot) {
+                    if let Err(e) = reward_batch.put_stake_pool(&pool_snapshot) {
                         error!(
-                            "❌ CRITICAL: failed to persist stake pool epoch reward update at slot {}: {}",
+                            "❌ CRITICAL: failed to stage stake pool epoch reward update at slot {}: {}",
                             slot, e
                         );
                         std::process::exit(1);
@@ -6366,142 +6993,226 @@ async fn apply_block_effects(
 
                 if total_minted > 0 {
                     // Credit each validator's liquid reward to their on-chain account
-                    let mut mint_pairs: Vec<(Pubkey, Account)> = Vec::new();
                     for (validator_pk, _reward, liquid, _debt_payment) in &distributions {
                         if *liquid > 0 {
-                            let mut account = state
-                                .get_account(validator_pk)
-                                .ok()
-                                .flatten()
-                                .unwrap_or_else(|| Account::new(0, SYSTEM_ACCOUNT_OWNER));
-                            account.add_spendable(*liquid).unwrap_or_else(|e| {
-                                warn!(
-                                    "⚠️  Overflow crediting epoch reward to {}: {}",
-                                    validator_pk, e
+                            let mut account = match reward_batch.get_account(validator_pk) {
+                                Ok(Some(account)) => account,
+                                Ok(None) => Account::new(0, SYSTEM_ACCOUNT_OWNER),
+                                Err(e) => {
+                                    error!(
+                                        "❌ CRITICAL: failed to load epoch reward account {} at slot {}: {}",
+                                        validator_pk, slot, e
+                                    );
+                                    std::process::exit(1);
+                                }
+                            };
+                            if let Err(e) = account.add_spendable(*liquid) {
+                                error!(
+                                    "❌ CRITICAL: overflow crediting epoch reward to {} at slot {}: {}",
+                                    validator_pk, slot, e
                                 );
-                            });
-                            mint_pairs.push((*validator_pk, account));
+                                std::process::exit(1);
+                            }
+                            if let Err(e) = reward_batch.put_account(validator_pk, &account) {
+                                error!(
+                                    "❌ CRITICAL: failed to stage epoch reward account {} at slot {}: {}",
+                                    validator_pk, slot, e
+                                );
+                                std::process::exit(1);
+                            }
                         }
                     }
-
-                    // Build reference slice for atomic_mint_accounts
-                    let refs: Vec<(&Pubkey, &Account)> =
-                        mint_pairs.iter().map(|(pk, acc)| (pk, acc)).collect();
-                    if let Err(e) = state.atomic_mint_accounts(&refs, total_minted) {
-                        warn!("⚠️  Failed to persist epoch staker rewards: {}", e);
-                    }
-
-                    let epoch = lichen_core::consensus::slot_to_epoch(slot);
-                    info!(
-                        "🏛️  Epoch {} rewards: minted {:.3} LICN to {} stakers",
-                        epoch.saturating_sub(1),
-                        total_minted as f64 / 1_000_000_000.0,
+                    reward_batch.add_minted(total_minted);
+                    epoch_reward_log = Some((
+                        lichen_core::consensus::slot_to_epoch(slot).saturating_sub(1),
+                        total_minted,
                         distributions.len(),
-                    );
-                    for (pk, reward, liquid, debt) in &distributions {
-                        debug!(
-                            "  └─ {} : reward {:.6}, liquid {:.6}, debt {:.6}",
-                            pk,
-                            *reward as f64 / 1_000_000_000.0,
-                            *liquid as f64 / 1_000_000_000.0,
-                            *debt as f64 / 1_000_000_000.0,
-                        );
-                    }
+                        distributions.clone(),
+                    ));
+                }
 
-                    // ── MossStake liquid staking reward distribution ──
-                    // Allocate MOSSSTAKE_BLOCK_SHARE_BPS (10%) of epoch inflation
-                    // to the MossStake pool, funding stLICN yield.
-                    if moss_reward_pool > 0 {
-                        match state.get_mossstake_pool() {
-                            Ok(mut moss_pool) => {
-                                if moss_pool.st_licn_token.total_supply > 0 {
-                                    moss_pool.distribute_rewards(moss_reward_pool);
-                                    if let Err(e) =
-                                        state.atomic_mint_mossstake(&moss_pool, moss_reward_pool)
-                                    {
-                                        warn!(
-                                        "⚠️  Failed to persist MossStake epoch distribution: {}",
-                                        e
+                // ── MossStake liquid staking reward distribution ──
+                // Allocate MOSSSTAKE_BLOCK_SHARE_BPS (10%) of epoch inflation
+                // to the MossStake pool, funding stLICN yield.
+                if moss_reward_pool > 0 {
+                    match state.get_mossstake_pool() {
+                        Ok(mut moss_pool) => {
+                            if moss_pool.st_licn_token.total_supply > 0 {
+                                moss_pool.distribute_rewards(moss_reward_pool);
+                                let position_count = moss_pool.positions.len();
+                                if let Err(e) = reward_batch.put_mossstake_pool(&moss_pool) {
+                                    error!(
+                                        "❌ CRITICAL: failed to stage MossStake epoch distribution at slot {}: {}",
+                                        slot, e
                                     );
-                                    } else {
-                                        debug!(
-                                            "🌊 MossStake: minted {:.6} LICN to {} stakers (epoch)",
-                                            moss_reward_pool as f64 / 1_000_000_000.0,
-                                            moss_pool.positions.len(),
-                                        );
-                                    }
+                                    std::process::exit(1);
                                 }
+                                reward_batch.add_minted(moss_reward_pool);
+                                mossstake_reward_log = Some((moss_reward_pool, position_count));
                             }
-                            Err(e) => {
-                                warn!("⚠️  Failed to load MossStake pool: {}", e);
-                            }
+                        }
+                        Err(e) => {
+                            error!(
+                                "❌ CRITICAL: failed to load MossStake pool for epoch distribution at slot {}: {}",
+                                slot, e
+                            );
+                            std::process::exit(1);
                         }
                     }
                 }
 
                 // ── Apply pending governance parameter changes at epoch boundary ──
-                match state.apply_pending_governance_changes() {
-                    Ok(0) => {} // No pending changes
-                    Ok(n) => {
-                        let epoch = lichen_core::consensus::slot_to_epoch(slot);
-                        info!(
-                            "🏛️  Epoch {} governance: applied {} parameter change(s)",
-                            epoch, n,
-                        );
-                    }
+                governance_changes_applied = match reward_batch.apply_pending_governance_changes() {
+                    Ok(n) => n,
                     Err(e) => {
-                        warn!("⚠️  Failed to apply governance parameter changes: {}", e);
+                        error!(
+                            "❌ CRITICAL: failed to stage governance parameter changes at slot {}: {}",
+                            slot, e
+                        );
+                        std::process::exit(1);
                     }
+                };
+            }
+
+            if let Err(e) = reward_batch.set_reward_distribution_hash(slot, &block_hash) {
+                error!(
+                    "❌ CRITICAL: failed to stage reward distribution marker for slot {}: {}",
+                    slot, e
+                );
+                std::process::exit(1);
+            }
+            if let Err(e) = state.commit_batch(reward_batch) {
+                error!(
+                    "❌ CRITICAL: failed to commit reward/governance effects for slot {}: {}",
+                    slot, e
+                );
+                std::process::exit(1);
+            }
+
+            if let Some((epoch, total_minted, staker_count, distributions)) = epoch_reward_log {
+                info!(
+                    "🏛️  Epoch {} rewards: minted {:.3} LICN to {} stakers",
+                    epoch,
+                    total_minted as f64 / 1_000_000_000.0,
+                    staker_count,
+                );
+                for (pk, reward, liquid, debt) in &distributions {
+                    debug!(
+                        "  └─ {} : reward {:.6}, liquid {:.6}, debt {:.6}",
+                        pk,
+                        *reward as f64 / 1_000_000_000.0,
+                        *liquid as f64 / 1_000_000_000.0,
+                        *debt as f64 / 1_000_000_000.0,
+                    );
                 }
+            }
+            if let Some((moss_reward_pool, position_count)) = mossstake_reward_log {
+                debug!(
+                    "🌊 MossStake: minted {:.6} LICN to {} stakers (epoch)",
+                    moss_reward_pool as f64 / 1_000_000_000.0,
+                    position_count,
+                );
+            }
+            if governance_changes_applied > 0 {
+                let epoch = lichen_core::consensus::slot_to_epoch(slot);
+                info!(
+                    "🏛️  Epoch {} governance: applied {} parameter change(s)",
+                    epoch, governance_changes_applied,
+                );
             }
         }
     }
 
-    let fee_config = state
-        .get_fee_config()
-        .unwrap_or_else(|_| lichen_core::FeeConfig::default_from_constants());
+    match state.get_fee_distribution_hash(slot) {
+        Ok(Some(existing)) if existing == block_hash => return,
+        Ok(Some(existing)) => {
+            error!(
+                "❌ CRITICAL: fee distribution marker for slot {} has hash {}, expected {}; refusing to mask post-block state drift",
+                slot,
+                existing.to_hex(),
+                block_hash.to_hex()
+            );
+            std::process::exit(1);
+        }
+        Ok(None) => {}
+        Err(e) => {
+            error!(
+                "❌ CRITICAL: failed to read fee distribution marker for slot {}: {}",
+                slot, e
+            );
+            std::process::exit(1);
+        }
+    }
+
+    let fee_config = state.get_fee_config().unwrap_or_else(|err| {
+        error!(
+            "❌ CRITICAL: failed to read fee configuration at slot {}: {}",
+            slot, err
+        );
+        std::process::exit(1);
+    });
+    if let Err(err) = fee_config.validate_distribution() {
+        error!(
+            "❌ CRITICAL: invalid fee distribution at slot {}: {}",
+            slot, err
+        );
+        std::process::exit(1);
+    }
     let total_fee = block_total_fees_paid(state, block, &fee_config);
 
     if total_fee == 0 {
-        return;
-    }
-
-    if let Ok(Some(existing)) = state.get_fee_distribution_hash(slot) {
-        if existing == block_hash {
-            return;
+        if let Err(e) = state.set_fee_distribution_hash(slot, &block_hash) {
+            error!(
+                "❌ CRITICAL: failed to store zero-fee distribution marker for slot {}: {}",
+                slot, e
+            );
+            std::process::exit(1);
         }
-        warn!(
-            "⚠️  Fee distribution already recorded for slot {} with different hash",
-            slot
-        );
         return;
     }
 
     let treasury_pubkey = match state.get_treasury_pubkey() {
         Ok(Some(pubkey)) => pubkey,
-        _ => {
-            warn!("⚠️  Treasury pubkey missing; skipping fee distribution");
-            return;
+        Ok(None) => {
+            error!(
+                "❌ CRITICAL: treasury pubkey missing at fee-bearing slot {}",
+                slot
+            );
+            std::process::exit(1);
+        }
+        Err(err) => {
+            error!(
+                "❌ CRITICAL: failed to read treasury pubkey at slot {}: {}",
+                slot, err
+            );
+            std::process::exit(1);
         }
     };
 
     let mut treasury_account = match state.get_account(&treasury_pubkey) {
         Ok(Some(account)) => account,
-        _ => Account::new(0, treasury_pubkey),
+        Ok(None) => {
+            error!(
+                "❌ CRITICAL: treasury account {} missing at fee-bearing slot {}",
+                treasury_pubkey, slot
+            );
+            std::process::exit(1);
+        }
+        Err(err) => {
+            error!(
+                "❌ CRITICAL: failed to read treasury account at slot {}: {}",
+                slot, err
+            );
+            std::process::exit(1);
+        }
     };
 
-    if treasury_account.spores < total_fee {
-        warn!(
-            "⚠️  Treasury balance {} < total fees {}, skipping distribution",
-            treasury_account.spores, total_fee
-        );
-        return;
-    }
-
-    let burn = total_fee * fee_config.fee_burn_percent / 100;
-    let producer_share = total_fee * fee_config.fee_producer_percent / 100;
-    let voters_share = total_fee * fee_config.fee_voters_percent / 100;
-    let community_share = total_fee * fee_config.fee_community_percent / 100;
+    let fee_share =
+        |percent: u64| -> u64 { (total_fee as u128 * percent as u128 / 100u128) as u64 };
+    let burn = fee_share(fee_config.fee_burn_percent);
+    let producer_share = fee_share(fee_config.fee_producer_percent);
+    let voters_share = fee_share(fee_config.fee_voters_percent);
+    let community_share = fee_share(fee_config.fee_community_percent);
     let mut voters_paid: u64 = 0;
     let mut fee_liquid: u64 = 0; // actual liquid amount after vesting split
 
@@ -6512,7 +7223,7 @@ async fn apply_block_effects(
     // AUDIT-FIX 0.6: All fee distribution writes go through an atomic
     // WriteBatch. Nothing hits disk until commit_batch() succeeds, so a
     // crash mid-distribution cannot leave state half-credited.
-    let mut batch = state.begin_batch();
+    let mut batch = state.begin_batch_at_slot(slot);
 
     if producer_share > 0 {
         // Route producer fee share through vesting pipeline (same as block rewards).
@@ -6529,9 +7240,9 @@ async fn apply_block_effects(
                 let result = pool.claim_rewards(&producer, slot);
                 let pool_snapshot = pool.clone();
                 drop(pool);
-                if let Err(e) = state.put_stake_pool(&pool_snapshot) {
+                if let Err(e) = batch.put_stake_pool(&pool_snapshot) {
                     error!(
-                        "❌ CRITICAL: failed to persist stake pool fee update at slot {}: {}",
+                        "❌ CRITICAL: failed to stage stake pool fee update at slot {}: {}",
                         slot, e
                     );
                     std::process::exit(1);
@@ -6549,17 +7260,21 @@ async fn apply_block_effects(
                 Ok(Some(account)) => account,
                 _ => Account::new(0, SYSTEM_ACCOUNT_OWNER),
             };
-            producer_account
-                .add_spendable(fee_liquid)
-                .unwrap_or_else(|e| {
-                    warn!("\u{26a0}\u{fe0f}  Overflow crediting producer fees: {}", e);
-                });
+            if let Err(e) = producer_account.add_spendable(fee_liquid) {
+                error!(
+                    "❌ CRITICAL: overflow crediting producer fees for slot {}: {}",
+                    slot, e
+                );
+                std::process::exit(1);
+            }
             if let Err(e) = batch.put_account(&producer, &producer_account) {
-                warn!(
-                    "⚠️  Failed to credit producer fees for {}: {}",
+                error!(
+                    "❌ CRITICAL: failed to stage producer fee credit for {} at slot {}: {}",
                     producer.to_base58(),
+                    slot,
                     e
                 );
+                std::process::exit(1);
             }
         }
     }
@@ -6572,10 +7287,10 @@ async fn apply_block_effects(
             // Commit signatures are finality evidence, not canonical state input:
             // different validators can commit after seeing different supermajority
             // subsets. Fee state must derive only from block data and active stake.
-            let total_voter_stake: u64 = voter_pubkeys
+            let total_voter_stake: u128 = voter_pubkeys
                 .iter()
                 .filter_map(|validator| pool.get_stake(validator))
-                .map(|stake_info| stake_info.total_stake())
+                .map(|stake_info| stake_info.total_stake() as u128)
                 .sum();
 
             let mut remaining = voters_share;
@@ -6594,10 +7309,10 @@ async fn apply_block_effects(
                         .get_stake(validator)
                         .map(|stake_info| stake_info.total_stake())
                         .unwrap_or(0);
-                    (voters_share * stake)
+                    (voters_share as u128 * stake as u128)
                         .checked_div(total_voter_stake)
                         .unwrap_or(0)
-                        .min(remaining)
+                        .min(remaining as u128) as u64
                 } else {
                     let remaining_validators = (voter_pubkeys.len() - idx) as u64;
                     (remaining / remaining_validators).min(remaining)
@@ -6614,15 +7329,23 @@ async fn apply_block_effects(
                         _ => Account::new(0, SYSTEM_ACCOUNT_OWNER),
                     },
                 };
-                voter_account.add_spendable(share).unwrap_or_else(|e| {
-                    warn!("\u{26a0}\u{fe0f}  Overflow crediting voter fees: {}", e);
-                });
-                if let Err(e) = batch.put_account(validator, &voter_account) {
-                    warn!(
-                        "⚠️  Failed to credit voter fees for {}: {}",
+                if let Err(e) = voter_account.add_spendable(share) {
+                    error!(
+                        "❌ CRITICAL: overflow crediting voter fees for {} at slot {}: {}",
                         validator.to_base58(),
+                        slot,
                         e
                     );
+                    std::process::exit(1);
+                }
+                if let Err(e) = batch.put_account(validator, &voter_account) {
+                    error!(
+                        "❌ CRITICAL: failed to stage voter fee credit for {} at slot {}: {}",
+                        validator.to_base58(),
+                        slot,
+                        e
+                    );
+                    std::process::exit(1);
                 }
                 remaining = remaining.saturating_sub(share);
                 voters_paid = voters_paid.saturating_add(share);
@@ -6631,29 +7354,59 @@ async fn apply_block_effects(
         drop(pool);
     }
 
-    let treasury_share =
-        total_fee.saturating_sub(burn + fee_liquid + voters_paid + community_share);
+    let external_allocation = burn
+        .checked_add(fee_liquid)
+        .and_then(|value| value.checked_add(voters_paid))
+        .and_then(|value| value.checked_add(community_share))
+        .unwrap_or_else(|| {
+            error!("❌ CRITICAL: fee allocation overflow at slot {}", slot);
+            std::process::exit(1);
+        });
+    let treasury_share = total_fee.saturating_sub(external_allocation);
 
     // Credit community treasury wallet
     if community_share > 0 {
-        if let Ok(Some(community_pubkey)) = state.get_community_treasury_pubkey() {
-            let mut community_account = match batch.get_account(&community_pubkey) {
-                Ok(Some(account)) => account,
-                _ => match state.get_account(&community_pubkey) {
-                    Ok(Some(account)) => account,
-                    _ => Account::new(0, SYSTEM_ACCOUNT_OWNER),
-                },
-            };
-            community_account
-                .add_spendable(community_share)
-                .unwrap_or_else(|e| {
-                    warn!("⚠️  Overflow crediting community treasury fees: {}", e);
-                });
-            if let Err(e) = batch.put_account(&community_pubkey, &community_account) {
-                warn!("⚠️  Failed to credit community treasury fees: {}", e);
+        let community_pubkey = match state.get_community_treasury_pubkey() {
+            Ok(Some(pubkey)) => pubkey,
+            Ok(None) => {
+                error!(
+                    "❌ CRITICAL: community treasury pubkey missing at fee-bearing slot {}",
+                    slot
+                );
+                std::process::exit(1);
             }
-        } else {
-            warn!("⚠️  Community treasury pubkey not found — community share stays in validator_rewards");
+            Err(err) => {
+                error!(
+                    "❌ CRITICAL: failed to read community treasury pubkey at slot {}: {}",
+                    slot, err
+                );
+                std::process::exit(1);
+            }
+        };
+        let mut community_account = match batch.get_account(&community_pubkey) {
+            Ok(Some(account)) => account,
+            Ok(None) => Account::new(0, SYSTEM_ACCOUNT_OWNER),
+            Err(err) => {
+                error!(
+                    "❌ CRITICAL: failed to read community treasury account at slot {}: {}",
+                    slot, err
+                );
+                std::process::exit(1);
+            }
+        };
+        if let Err(e) = community_account.add_spendable(community_share) {
+            error!(
+                "❌ CRITICAL: overflow crediting community treasury fees at slot {}: {}",
+                slot, e
+            );
+            std::process::exit(1);
+        }
+        if let Err(e) = batch.put_account(&community_pubkey, &community_account) {
+            error!(
+                "❌ CRITICAL: failed to stage community treasury fee credit at slot {}: {}",
+                slot, e
+            );
+            std::process::exit(1);
         }
     }
 
@@ -6662,32 +7415,59 @@ async fn apply_block_effects(
     // fee_liquid is the vesting-adjusted producer share (≤ producer_share).
     // The debt repayment portion stays in treasury as internal bookkeeping.
     // Treasury retains its own share (≈10%) automatically.
-    treasury_account.spores = treasury_account
-        .spores
-        .saturating_sub(fee_liquid + voters_paid + community_share);
-    treasury_account.spendable = treasury_account
-        .spendable
-        .saturating_sub(fee_liquid + voters_paid + community_share);
+    let distributed_debit = fee_liquid
+        .checked_add(voters_paid)
+        .and_then(|value| value.checked_add(community_share))
+        .unwrap_or_else(|| {
+            error!(
+                "❌ CRITICAL: fee distribution debit overflow at slot {}",
+                slot
+            );
+            std::process::exit(1);
+        });
+    let treasury_spores_before = treasury_account.spores;
+    treasury_account.spores = treasury_spores_before
+        .checked_sub(distributed_debit)
+        .unwrap_or_else(|| {
+            error!(
+                "❌ CRITICAL: treasury total balance {} is below distribution debit {} at slot {}",
+                treasury_spores_before, distributed_debit, slot
+            );
+            std::process::exit(1);
+        });
+    let treasury_spendable_before = treasury_account.spendable;
+    treasury_account.spendable = treasury_spendable_before
+        .checked_sub(distributed_debit)
+        .unwrap_or_else(|| {
+            error!(
+                "❌ CRITICAL: treasury spendable balance {} is below distribution debit {} at slot {}",
+                treasury_spendable_before, distributed_debit, slot
+            );
+            std::process::exit(1);
+        });
     if let Err(e) = batch.put_account(&treasury_pubkey, &treasury_account) {
-        warn!("⚠️  Failed to update treasury account: {}", e);
-        return;
+        error!(
+            "❌ CRITICAL: failed to stage treasury fee debit at slot {}: {}",
+            slot, e
+        );
+        std::process::exit(1);
     }
 
     if let Err(e) = batch.set_fee_distribution_hash(slot, &block_hash) {
-        warn!(
-            "⚠️  Failed to record fee distribution hash in batch for slot {}: {}",
+        error!(
+            "❌ CRITICAL: failed to stage fee distribution marker for slot {}: {}",
             slot, e
         );
-        return;
+        std::process::exit(1);
     }
 
     // Commit all fee distribution writes atomically
     if let Err(e) = state.commit_batch(batch) {
-        warn!(
-            "⚠️  CRITICAL: Failed to commit fee distribution batch for slot {}: {}",
+        error!(
+            "❌ CRITICAL: failed to commit fee distribution batch for slot {}: {}",
             slot, e
         );
-        return;
+        std::process::exit(1);
     }
 
     if treasury_share > 0 {
@@ -6696,44 +7476,58 @@ async fn apply_block_effects(
             treasury_share as f64 / 1_000_000_000.0
         );
     }
+}
 
-    // ── Founding symbionts periodic vesting unlock ──
-    // Check if any locked founding symbionts should be unlocked based on block timestamp.
-    // Schedule: 6-month cliff, then 18-month linear vest to month 24.
-    if let Ok(Some((cliff_end, vest_end, total_amount))) = state.get_founding_vesting_params() {
-        let block_time = block.header.timestamp;
-        if block_time >= cliff_end {
-            if let Ok(Some(fm_pubkey)) = state.get_founding_symbionts_pubkey() {
-                if let Ok(Some(mut fm_acct)) = state.get_account(&fm_pubkey) {
-                    let target_unlocked = lichen_core::consensus::founding_vesting_unlocked(
-                        total_amount,
-                        cliff_end,
-                        vest_end,
-                        block_time,
-                    );
-                    let already_unlocked = total_amount.saturating_sub(fm_acct.locked);
-                    if target_unlocked > already_unlocked {
-                        let new_unlock = target_unlocked - already_unlocked;
-                        fm_acct.spendable = fm_acct.spendable.saturating_add(new_unlock);
-                        fm_acct.locked = fm_acct.locked.saturating_sub(new_unlock);
-                        if let Err(e) = state.put_account(&fm_pubkey, &fm_acct) {
-                            warn!("⚠️  Failed to update founding symbionts vesting: {}", e);
-                        } else if new_unlock > 1_000_000_000 {
-                            // Only log for significant unlocks (> 1 LICN)
-                            info!(
-                                "🔓 Founding symbionts vest: unlocked {:.2} LICN (total {:.2}M / {:.2}M)",
-                                new_unlock as f64 / 1_000_000_000.0,
-                                target_unlocked as f64 / 1_000_000_000_000_000_000.0,
-                                total_amount as f64 / 1_000_000_000_000_000_000.0,
-                            );
-                        }
-                    }
-                }
-            }
-        }
+fn apply_founding_vesting_from_block(
+    state: &StateStore,
+    block_slot: u64,
+    block_time: u64,
+) -> Result<(), String> {
+    let Some((cliff_end, vest_end, total_amount)) = state.get_founding_vesting_params()? else {
+        return Ok(());
+    };
+    if block_time < cliff_end {
+        return Ok(());
+    }
+    let Some(founding_pubkey) = state.get_founding_symbionts_pubkey()? else {
+        return Ok(());
+    };
+    let mut batch = state.begin_batch_at_slot(block_slot);
+    let Some(mut account) = batch.get_account(&founding_pubkey)? else {
+        return Err("founding symbionts vesting account is missing".to_string());
+    };
+    let target_unlocked = lichen_core::consensus::founding_vesting_unlocked(
+        total_amount,
+        cliff_end,
+        vest_end,
+        block_time,
+    );
+    let already_unlocked = total_amount.saturating_sub(account.locked);
+    if target_unlocked <= already_unlocked {
+        return Ok(());
     }
 
-    // record_block_activity is called in emit_program_and_nft_events, not here
+    let new_unlock = target_unlocked - already_unlocked;
+    account.spendable = account
+        .spendable
+        .checked_add(new_unlock)
+        .ok_or_else(|| "founding symbionts spendable balance overflow".to_string())?;
+    account.locked = account
+        .locked
+        .checked_sub(new_unlock)
+        .ok_or_else(|| "founding symbionts locked balance underflow".to_string())?;
+    batch.put_account(&founding_pubkey, &account)?;
+    state.commit_batch(batch)?;
+
+    if new_unlock > 1_000_000_000 {
+        info!(
+            "🔓 Founding symbionts vest: unlocked {:.2} LICN (total {:.2}M / {:.2}M)",
+            new_unlock as f64 / 1_000_000_000.0,
+            target_unlocked as f64 / 1_000_000_000_000_000_000.0,
+            total_amount as f64 / 1_000_000_000_000_000_000.0,
+        );
+    }
+    Ok(())
 }
 
 async fn apply_post_block_effects_after_store(
@@ -6753,7 +7547,16 @@ async fn apply_post_block_effects_after_store(
         min_validator_stake,
     )
     .await;
-    apply_oracle_from_block(state, block);
+    if let Err(err) =
+        apply_founding_vesting_from_block(state, block.header.slot, block.header.timestamp)
+    {
+        error!("Atomic founding vesting projection failed: {}", err);
+        std::process::exit(1);
+    }
+    if let Err(err) = apply_oracle_from_block(state, block) {
+        error!("Consensus oracle mirror failed: {}", err);
+        std::process::exit(1);
+    }
 
     // Height-boundary validator activation is deterministic post-block state.
     // Keep it after the canonical block write, matching BFT commit ordering.
@@ -6769,9 +7572,26 @@ async fn apply_post_block_effects_after_store(
         .await;
     }
 
-    run_analytics_bridge_from_state(state, block.header.slot, block.header.timestamp);
-    run_sltp_triggers_from_state(state);
-    reset_24h_stats_if_expired(state, block.header.timestamp);
+    if let Err(err) =
+        ensure_canonical_analytics_v2(state, block.header.slot, block.header.timestamp)
+    {
+        error!("Canonical analytics migration failed: {}", err);
+        std::process::exit(1);
+    }
+    if let Err(err) =
+        run_analytics_bridge_from_state(state, block.header.slot, block.header.timestamp)
+    {
+        error!("Canonical analytics projection failed: {}", err);
+        std::process::exit(1);
+    }
+    if let Err(err) = run_sltp_triggers_from_state(state, block.header.slot) {
+        error!("Atomic SL/TP trigger projection failed: {}", err);
+        std::process::exit(1);
+    }
+    if let Err(err) = reset_24h_stats_if_expired(state, block.header.slot, block.header.timestamp) {
+        error!("Atomic 24-hour analytics rollover failed: {}", err);
+        std::process::exit(1);
+    }
     if let Err(e) = maybe_activate_legacy_testnet_mossstake_slot_only(
         state,
         block.header.slot,
@@ -6791,7 +7611,17 @@ async fn apply_post_block_effects_after_store(
         );
         std::process::exit(1);
     }
+    if let Err(err) = mark_post_block_effects_complete(state, block) {
+        error!("Failed to commit comprehensive post-block marker: {}", err);
+        std::process::exit(1);
+    }
     record_post_block_state_commitment_anchor(state, block, "post-block effects");
+}
+
+fn mark_post_block_effects_complete(state: &StateStore, block: &Block) -> Result<(), String> {
+    let mut batch = state.begin_batch_at_slot(block.header.slot);
+    batch.set_post_block_effects_hash(block.header.slot, &block.hash())?;
+    state.commit_batch(batch)
 }
 
 fn record_post_block_state_commitment_anchor(state: &StateStore, block: &Block, context: &str) {
@@ -7179,24 +8009,30 @@ fn repair_active_sparse_state_commitment_before_tip_anchor(
         return Ok(());
     }
 
-    if state.can_skip_active_sparse_startup_rebuild() {
-        let last_slot = state.get_last_slot().unwrap_or(0);
-        let current_root = state.compute_state_root_cached();
+    let startup_report = state.audit_and_repair_active_sparse_state_commitment()?;
+    if !startup_report.rebuilt {
         info!(
-            "🧾 Startup: active sparse state commitment is clean; skipped full sparse rebuild: slot={} root={}",
-            last_slot,
-            current_root.to_hex(),
+            "🧾 Startup: active sparse state commitment matches canonical state; skipped rebuild: slot={} root={} accounts={} contracts={}",
+            startup_report.commitment.last_slot,
+            startup_report.commitment.current_state_root.to_hex(),
+            startup_report.commitment.accounts_leaf_count,
+            startup_report.commitment.contract_leaf_count,
         );
         return Ok(());
     }
 
-    let report = state.rebuild_sparse_state_commitment(false)?;
+    if let Some(err) = startup_report.prior_verification_error.as_deref() {
+        warn!(
+            "⚠️  Startup: active sparse state commitment did not match canonical state; rebuilt it before tip anchoring: {}",
+            err
+        );
+    }
     info!(
         "🧾 Startup: repaired active sparse state commitment before tip anchoring: slot={} root={} accounts={} contracts={}",
-        report.last_slot,
-        report.current_state_root.to_hex(),
-        report.accounts_leaf_count,
-        report.contract_leaf_count,
+        startup_report.commitment.last_slot,
+        startup_report.commitment.current_state_root.to_hex(),
+        startup_report.commitment.accounts_leaf_count,
+        startup_report.commitment.contract_leaf_count,
     );
     Ok(())
 }
@@ -7208,61 +8044,341 @@ fn tip_post_block_effects_complete(state: &StateStore, block: &Block) -> Result<
     }
 
     let block_hash = block.hash();
-    match state.get_reward_distribution_hash(slot)? {
-        Some(hash) if hash == block_hash => {}
-        Some(hash) => {
-            warn!(
-                "⚠️  Slot {} reward marker hash {} differs from stored block hash {}; leaving state unchanged",
+    match state.get_post_block_effects_hash(slot)? {
+        Some(hash) if hash == block_hash => canonical_economic_block_effects_complete(state, block),
+        Some(hash) => Err(format!(
+            "slot {} post-block effects marker hash {} differs from stored block hash {}",
+            slot,
+            hash.to_hex(),
+            block_hash.to_hex(),
+        )),
+        None => Ok(false),
+    }
+}
+
+fn validate_optional_post_block_effects_marker(
+    state: &StateStore,
+    block: &Block,
+) -> Result<(), String> {
+    let slot = block.header.slot;
+    let block_hash = block.hash();
+    if let Some(hash) = state.get_post_block_effects_hash(slot)? {
+        if hash != block_hash {
+            return Err(format!(
+                "slot {} post-block effects marker hash {} differs from stored block hash {}",
                 slot,
                 hash.to_hex(),
                 block_hash.to_hex(),
-            );
-            return Ok(true);
+            ));
         }
-        None => return Ok(false),
+    }
+    Ok(())
+}
+
+fn post_block_effects_activation_slot(state: &StateStore) -> Result<Option<u64>, String> {
+    let Some(encoded) = state.get_metadata(POST_BLOCK_EFFECTS_ACTIVATION_SLOT_KEY)? else {
+        return Ok(None);
+    };
+    let bytes: [u8; 8] = encoded.try_into().map_err(|value: Vec<u8>| {
+        format!(
+            "invalid {} metadata length: expected 8 bytes, found {}",
+            POST_BLOCK_EFFECTS_ACTIVATION_SLOT_KEY,
+            value.len()
+        )
+    })?;
+    let slot = u64::from_le_bytes(bytes);
+    if slot == 0 {
+        return Err(format!(
+            "{} must be at least slot 1",
+            POST_BLOCK_EFFECTS_ACTIVATION_SLOT_KEY
+        ));
+    }
+    Ok(Some(slot))
+}
+
+fn persist_post_block_effects_activation_slot(
+    state: &StateStore,
+    requested_slot: u64,
+) -> Result<u64, String> {
+    if requested_slot == 0 {
+        return Err(format!(
+            "{} must be at least slot 1",
+            POST_BLOCK_EFFECTS_ACTIVATION_SLOT_KEY
+        ));
+    }
+    if let Some(existing_slot) = post_block_effects_activation_slot(state)? {
+        if existing_slot == requested_slot {
+            return Ok(existing_slot);
+        }
+        return Err(format!(
+            "{} is already {} and cannot be changed to {}",
+            POST_BLOCK_EFFECTS_ACTIVATION_SLOT_KEY, existing_slot, requested_slot
+        ));
     }
 
-    let producer = Pubkey(block.header.validator);
-    let pool = state.get_stake_pool().unwrap_or_else(|_| StakePool::new());
-    if pool
-        .get_stake(&producer)
-        .map(|stake_info| stake_info.last_reward_slot < slot)
-        .unwrap_or(false)
+    state.put_metadata(
+        POST_BLOCK_EFFECTS_ACTIVATION_SLOT_KEY,
+        &requested_slot.to_le_bytes(),
+    )?;
+    state.sync_hot_wal()?;
+
+    let persisted = post_block_effects_activation_slot(state)?;
+    if persisted != Some(requested_slot) {
+        return Err(format!(
+            "failed to durably verify {} at slot {}",
+            POST_BLOCK_EFFECTS_ACTIVATION_SLOT_KEY, requested_slot
+        ));
+    }
+    Ok(requested_slot)
+}
+
+fn initialize_post_block_effects_activation_slot(
+    state: &StateStore,
+    allow_existing_chain_initialization: bool,
+) -> Result<u64, String> {
+    if let Some(slot) = post_block_effects_activation_slot(state)? {
+        return Ok(slot);
+    }
+
+    let tip = state.get_last_slot()?;
+    if tip > 0 && !allow_existing_chain_initialization {
+        return Err(format!(
+            "existing public chain at slot {} has no {}; stop and align every validator at one exact tip, then run {} with that common next slot before starting this release",
+            tip,
+            POST_BLOCK_EFFECTS_ACTIVATION_SLOT_KEY,
+            PREPARE_POST_BLOCK_EFFECTS_ACTIVATION_FLAG
+        ));
+    }
+    let slot = tip
+        .checked_add(1)
+        .ok_or_else(|| "cannot activate post-block effects after u64::MAX".to_string())?
+        .max(1);
+    persist_post_block_effects_activation_slot(state, slot)
+}
+
+fn maybe_run_post_block_effects_activation_admin(args: &[String]) -> Option<i32> {
+    if !has_flag(args, PREPARE_POST_BLOCK_EFFECTS_ACTIVATION_FLAG) {
+        return None;
+    }
+
+    let network = get_flag_value(args, &["--network"])
+        .map(|value| value.to_ascii_lowercase())
+        .unwrap_or_else(|| "testnet".to_string());
+    if network != "testnet" && network != "mainnet" {
+        eprintln!("Refusing post-block activation preparation on unsupported network '{network}'");
+        return Some(1);
+    }
+    let requested_slot = match get_flag_value(args, &["--activation-slot"])
+        .and_then(|value| value.parse::<u64>().ok())
     {
-        return Ok(false);
+        Some(slot) if slot > 0 => slot,
+        _ => {
+            eprintln!("Missing or invalid --activation-slot; expected a positive integer");
+            return Some(2);
+        }
+    };
+    let execute = has_flag(args, "--execute");
+    let expected_confirmation = format!("post-block-effects-activation:{network}:{requested_slot}");
+    if execute && get_flag_value(args, &["--confirm"]) != Some(expected_confirmation.as_str()) {
+        eprintln!("Refusing write without --confirm {expected_confirmation}");
+        return Some(1);
     }
 
-    let fee_config = state
-        .get_fee_config()
-        .unwrap_or_else(|_| lichen_core::FeeConfig::default_from_constants());
-    if block_total_fees_paid(state, block, &fee_config) == 0 {
+    let data_dir = restriction_schema_data_dir(args);
+    let cache_size_mb = get_flag_value(args, &["--cache-size-mb"]).and_then(|s| s.parse().ok());
+    let state = match StateStore::open_with_cache_mb(&data_dir, cache_size_mb) {
+        Ok(state) => state,
+        Err(err) => {
+            eprintln!("Failed to open state DB at {}: {err}", data_dir.display());
+            return Some(1);
+        }
+    };
+    let tip = match state.get_last_slot() {
+        Ok(slot) => slot,
+        Err(err) => {
+            eprintln!("Failed to read local tip: {err}");
+            return Some(1);
+        }
+    };
+    let expected_slot = match tip.checked_add(1) {
+        Some(slot) => slot.max(1),
+        None => {
+            eprintln!("Cannot activate after u64::MAX");
+            return Some(1);
+        }
+    };
+    let existing_slot = match post_block_effects_activation_slot(&state) {
+        Ok(slot) => slot,
+        Err(err) => {
+            eprintln!("Failed to read post-block activation boundary: {err}");
+            return Some(1);
+        }
+    };
+
+    println!("data_dir={}", data_dir.display());
+    println!("network={network}");
+    println!("last_slot={tip}");
+    println!("expected_activation_slot={expected_slot}");
+    println!("requested_activation_slot={requested_slot}");
+    println!(
+        "existing_activation_slot={}",
+        existing_slot
+            .map(|slot| slot.to_string())
+            .unwrap_or_else(|| "unset".to_string())
+    );
+    println!("execute={execute}");
+
+    if let Some(existing_slot) = existing_slot {
+        if existing_slot != requested_slot {
+            eprintln!(
+                "Refusing activation change: durable slot is {existing_slot}, requested {requested_slot}"
+            );
+            return Some(1);
+        }
+        println!("activation_ready=true");
+        println!("activation_already_persisted=true");
+        return Some(0);
+    }
+    if requested_slot != expected_slot {
+        eprintln!(
+            "Refusing activation at slot {requested_slot}: stopped local tip is {tip}, so the only valid boundary is {expected_slot}"
+        );
+        return Some(1);
+    }
+    println!("activation_ready=true");
+    println!("activation_already_persisted=false");
+    if !execute {
+        return Some(0);
+    }
+
+    match persist_post_block_effects_activation_slot(&state, requested_slot) {
+        Ok(slot) => {
+            println!("persisted_activation_slot={slot}");
+            Some(0)
+        }
+        Err(err) => {
+            eprintln!("Failed to persist post-block activation boundary: {err}");
+            Some(1)
+        }
+    }
+}
+
+fn require_post_block_effects_repairable_slot(
+    block: &Block,
+    activation_slot: u64,
+) -> Result<(), String> {
+    if block.header.slot < activation_slot {
+        return Err(format!(
+            "refusing post-block repair for pre-activation slot {} (activation_slot={}): missing historical markers do not prove missing effects",
+            block.header.slot, activation_slot
+        ));
+    }
+    Ok(())
+}
+
+fn canonical_economic_block_effects_complete(
+    state: &StateStore,
+    block: &Block,
+) -> Result<bool, String> {
+    let slot = block.header.slot;
+    if slot == 0 || block.header.validator == [0u8; 32] {
         return Ok(true);
     }
 
-    match state.get_fee_distribution_hash(slot)? {
-        Some(hash) if hash == block_hash => Ok(true),
+    let block_hash = block.hash();
+    let stake_complete = match state.get_stake_pool_production_hash(slot)? {
+        Some(hash) if hash == block_hash => true,
         Some(hash) => {
-            warn!(
-                "⚠️  Slot {} fee marker hash {} differs from stored block hash {}; leaving state unchanged",
+            return Err(format!(
+                "slot {} stake-pool production marker hash {} differs from stored block hash {}",
                 slot,
                 hash.to_hex(),
                 block_hash.to_hex(),
-            );
-            Ok(true)
+            ));
         }
-        None => Ok(false),
+        None => false,
+    };
+    let rewards_complete = match state.get_reward_distribution_hash(slot)? {
+        Some(hash) if hash == block_hash => true,
+        Some(hash) => {
+            return Err(format!(
+                "slot {} reward distribution marker hash {} differs from stored block hash {}",
+                slot,
+                hash.to_hex(),
+                block_hash.to_hex(),
+            ));
+        }
+        None => false,
+    };
+    let fees_complete = match state.get_fee_distribution_hash(slot)? {
+        Some(hash) if hash == block_hash => true,
+        Some(hash) => {
+            return Err(format!(
+                "slot {} fee distribution marker hash {} differs from stored block hash {}",
+                slot,
+                hash.to_hex(),
+                block_hash.to_hex(),
+            ));
+        }
+        None => false,
+    };
+    Ok(stake_complete && rewards_complete && fees_complete)
+}
+
+async fn recover_stored_block_economic_effects_if_needed(
+    state: &StateStore,
+    validator_set: &Arc<RwLock<ValidatorSet>>,
+    stake_pool: &Arc<RwLock<StakePool>>,
+    block: &Block,
+    activation_slot: u64,
+    min_validator_stake: u64,
+    context: &str,
+) -> Result<bool, String> {
+    require_post_block_effects_repairable_slot(block, activation_slot)?;
+    validate_optional_post_block_effects_marker(state, block)?;
+    if canonical_economic_block_effects_complete(state, block)? {
+        return Ok(false);
     }
+
+    warn!(
+        "🔧 {}: completing deterministic economic post-block effects for stored slot {}",
+        context, block.header.slot
+    );
+    apply_block_effects(
+        state,
+        validator_set,
+        stake_pool,
+        block,
+        false,
+        min_validator_stake,
+    )
+    .await;
+    if !canonical_economic_block_effects_complete(state, block)? {
+        return Err(format!(
+            "economic post-block effects for stored slot {} are still incomplete after recovery",
+            block.header.slot
+        ));
+    }
+    Ok(true)
+}
+
+#[derive(Clone, Copy)]
+struct PostBlockEffectsRuntime {
+    activation_slot: u64,
+    min_validator_stake: u64,
+    slot_duration_ms: u64,
 }
 
 async fn recover_tip_post_block_effects_if_needed(
     state: &StateStore,
     validator_set: &Arc<RwLock<ValidatorSet>>,
     stake_pool: &Arc<RwLock<StakePool>>,
+    activation_slot: u64,
     min_validator_stake: u64,
     slot_duration_ms: u64,
 ) -> Result<(), String> {
-    let tip = state.get_last_slot().unwrap_or(0);
-    if tip == 0 {
+    let tip = state.get_last_slot()?;
+    if tip == 0 || tip < activation_slot {
         return Ok(());
     }
 
@@ -7278,8 +8394,11 @@ async fn recover_tip_post_block_effects_if_needed(
         validator_set,
         stake_pool,
         &block,
-        min_validator_stake,
-        slot_duration_ms,
+        PostBlockEffectsRuntime {
+            activation_slot,
+            min_validator_stake,
+            slot_duration_ms,
+        },
         "Startup recovery",
     )
     .await?;
@@ -7291,62 +8410,68 @@ async fn recover_recent_stored_block_post_effects_if_needed(
     state: &StateStore,
     validator_set: &Arc<RwLock<ValidatorSet>>,
     stake_pool: &Arc<RwLock<StakePool>>,
+    activation_slot: u64,
     min_validator_stake: u64,
     window: u64,
     context: &str,
 ) -> Result<u64, String> {
-    let tip = state.get_last_slot().unwrap_or(0);
-    if tip <= 1 || window == 0 {
+    let tip = state.get_last_slot()?;
+    if tip <= 1 || window == 0 || tip <= activation_slot {
         return Ok(0);
     }
 
     let last_historical_slot = tip.saturating_sub(1);
     let first_slot = last_historical_slot
         .saturating_sub(window.saturating_sub(1))
-        .max(1);
+        .max(activation_slot);
+    if first_slot > last_historical_slot {
+        return Ok(0);
+    }
     let mut repaired = 0u64;
+    let total_slots = last_historical_slot
+        .saturating_sub(first_slot)
+        .saturating_add(1);
+    let mut scanned = 0u64;
 
     for slot in first_slot..=last_historical_slot {
-        let Some(block) = state.get_block_by_slot(slot)? else {
-            continue;
-        };
-        if tip_post_block_effects_complete(state, &block)? {
-            continue;
-        }
-
-        warn!(
-            "🔧 {}: completing deterministic historical post-block effects for stored slot {}",
-            context, slot
-        );
-        apply_block_effects(
+        let block = state.get_block_by_slot(slot)?.ok_or_else(|| {
+            format!(
+                "{}: activated canonical slot {} is missing its stored block while recovering through tip {}",
+                context, slot, tip
+            )
+        })?;
+        scanned = scanned.saturating_add(1);
+        if recover_stored_block_economic_effects_if_needed(
             state,
             validator_set,
             stake_pool,
             &block,
-            false,
+            activation_slot,
             min_validator_stake,
+            context,
         )
-        .await;
-
-        if !tip_post_block_effects_complete(state, &block)? {
-            return Err(format!(
-                "post-block effects for stored slot {} are still incomplete after recovery",
-                slot
-            ));
+        .await?
+        {
+            repaired = repaired.saturating_add(1);
         }
-
-        repaired = repaired.saturating_add(1);
+        if scanned.is_multiple_of(256) || slot == last_historical_slot {
+            info!(
+                "🔎 {} progress: scanned {}/{} historical slots, repaired {}",
+                context, scanned, total_slots, repaired
+            );
+        }
     }
 
     if repaired > 0 {
-        if let Ok(fresh_pool) = state.get_stake_pool() {
-            let mut live_pool = stake_pool.write().await;
-            *live_pool = fresh_pool;
-        }
+        let fresh_pool = state.get_stake_pool()?;
+        let mut live_pool = stake_pool.write().await;
+        *live_pool = fresh_pool;
+        drop(live_pool);
         info!(
-            "✅ {} completed deterministic post-block effects for {} stored historical block(s) in slots {}..{}",
+            "✅ {} completed deterministic economic post-block effects for {} stored historical block(s) in slots {}..{}",
             context, repaired, first_slot, last_historical_slot
         );
+        ensure_tip_post_state_commitment_anchor(state)?;
     }
 
     Ok(repaired)
@@ -7357,13 +8482,18 @@ async fn recover_stored_block_post_effects_if_needed(
     validator_set: &Arc<RwLock<ValidatorSet>>,
     stake_pool: &Arc<RwLock<StakePool>>,
     block: &Block,
-    min_validator_stake: u64,
-    slot_duration_ms: u64,
+    runtime: PostBlockEffectsRuntime,
     context: &str,
 ) -> Result<(), String> {
+    require_post_block_effects_repairable_slot(block, runtime.activation_slot)?;
     if tip_post_block_effects_complete(state, block)? {
         return Ok(());
     }
+
+    // Canonical execution state and the block anchor commit together. If the
+    // process stopped before the normal post-commit index pass, replay that
+    // idempotent pass before deterministic post-block recovery.
+    state.put_block_atomic(block, Some(block.header.slot), Some(block.header.slot))?;
 
     warn!(
         "🔧 {}: completing deterministic post-block effects for stored slot {} before continuing",
@@ -7374,8 +8504,8 @@ async fn recover_stored_block_post_effects_if_needed(
         validator_set,
         stake_pool,
         block,
-        min_validator_stake,
-        slot_duration_ms,
+        runtime.min_validator_stake,
+        runtime.slot_duration_ms,
     )
     .await;
 
@@ -7391,6 +8521,101 @@ async fn recover_stored_block_post_effects_if_needed(
         context, block.header.slot
     );
     Ok(())
+}
+
+async fn ensure_recent_stored_post_block_effects_before_bft(
+    state: &StateStore,
+    validator_set: &Arc<RwLock<ValidatorSet>>,
+    stake_pool: &Arc<RwLock<StakePool>>,
+    runtime: PostBlockEffectsRuntime,
+    verified_tip: &mut u64,
+    window: u64,
+    context: &str,
+) -> Result<u64, String> {
+    let tip = state.get_last_slot()?;
+    if tip == 0 || tip < runtime.activation_slot {
+        *verified_tip = 0;
+        if tip > 0 {
+            *verified_tip = tip;
+        }
+        return Ok(0);
+    }
+    if tip <= *verified_tip {
+        return Ok(0);
+    }
+
+    let initial_scan = *verified_tip < runtime.activation_slot.saturating_sub(1);
+    let first_slot = if initial_scan {
+        tip.saturating_sub(window.saturating_sub(1))
+            .max(runtime.activation_slot)
+    } else {
+        (*verified_tip)
+            .saturating_add(1)
+            .max(runtime.activation_slot)
+    };
+    let mut repaired = 0u64;
+
+    for slot in first_slot..=tip {
+        let Some(block) = state.get_block_by_slot(slot)? else {
+            if initial_scan {
+                continue;
+            }
+            return Err(format!(
+                "{}: canonical slot {} is missing its stored block while verifying post-block effects through tip {}",
+                context, slot, tip
+            ));
+        };
+        let repaired_block = if slot < tip {
+            // For an activated non-tip block, replay only independently
+            // idempotent economic effects. Replaying historical oracle hooks
+            // could apply current prices at old timestamps; the tip path
+            // reconciles cumulative non-economic state without claiming a
+            // comprehensive marker for this earlier block.
+            recover_stored_block_economic_effects_if_needed(
+                state,
+                validator_set,
+                stake_pool,
+                &block,
+                runtime.activation_slot,
+                runtime.min_validator_stake,
+                context,
+            )
+            .await?
+        } else {
+            let was_complete = tip_post_block_effects_complete(state, &block)?;
+            if !was_complete {
+                recover_stored_block_post_effects_if_needed(
+                    state,
+                    validator_set,
+                    stake_pool,
+                    &block,
+                    runtime,
+                    context,
+                )
+                .await?;
+            }
+            !was_complete
+        };
+        if repaired_block {
+            repaired = repaired.saturating_add(1);
+        }
+    }
+
+    let fresh_pool = state.get_stake_pool()?;
+    let mut live_pool = stake_pool.write().await;
+    *live_pool = fresh_pool;
+    drop(live_pool);
+    *verified_tip = tip;
+
+    if repaired > 0 {
+        ensure_tip_post_state_commitment_anchor(state)?;
+        info!(
+            "✅ {} completed deterministic post-block effects for {} stored block(s) before BFT continued (slots {}..{})",
+            context, repaired, first_slot, tip
+        );
+    }
+
+    Ok(repaired)
 }
 
 async fn activate_pending_validators_before_replay_height(
@@ -7505,17 +8730,21 @@ async fn activate_pending_validators_for_height(
         // The pool may not have the validator yet (P2P announcement arrives
         // before RegisterValidator tx is processed), so fall back to the
         // on-chain staked balance which is authoritative.
-        let resolved_stake = height_pool
-            .get_stake(&pubkey)
-            .map(|stake| stake.total_stake())
-            .or_else(|| {
-                state
-                    .get_account(&pubkey)
-                    .ok()
-                    .flatten()
-                    .map(|account| account.staked)
-            })
-            .unwrap_or(current_stake);
+        let resolved_stake = if let Some(stake) = height_pool.get_stake(&pubkey) {
+            stake.total_stake()
+        } else {
+            match state.get_account(&pubkey) {
+                Ok(Some(account)) => account.staked,
+                Ok(None) => current_stake,
+                Err(err) => {
+                    error!(
+                        "❌ CRITICAL: failed to read validator account {} at height {}: {}",
+                        pubkey, new_height, err
+                    );
+                    std::process::exit(1);
+                }
+            }
+        };
 
         // Always include pending validators so they get checked for activation
         // every height, even if their stake hasn't changed yet.
@@ -7575,11 +8804,11 @@ async fn activate_pending_validators_for_height(
     drop(vs);
 
     if let Err(e) = state.save_validator_set(&snapshot) {
-        warn!(
-            "⚠️  Failed to persist validator set after height-boundary activation: {}",
-            e
+        error!(
+            "❌ CRITICAL: failed to persist validator set after height-boundary activation at height {}: {}",
+            new_height, e
         );
-        return;
+        std::process::exit(1);
     }
 
     for pubkey in activated {
@@ -7659,6 +8888,7 @@ async fn freeze_consensus_snapshot_for_height(
             frozen.validators().len(),
             pending_count,
         );
+        persist_validator_power_snapshot_or_exit(state, &frozen, &height_pool, height);
         return (frozen, height_pool);
     }
 
@@ -7671,13 +8901,180 @@ async fn freeze_consensus_snapshot_for_height(
     )
     .await;
 
-    (validator_set.read().await.consensus_set(), height_pool)
+    let frozen = validator_set.read().await.consensus_set();
+    persist_validator_power_snapshot_or_exit(state, &frozen, &height_pool, height);
+    (frozen, height_pool)
+}
+
+fn persist_validator_power_snapshot_or_exit(
+    state: &StateStore,
+    validator_set: &ValidatorSet,
+    stake_pool: &StakePool,
+    height: u64,
+) {
+    let powers = canonical_validator_powers(validator_set, stake_pool);
+    let validators_hash = compute_validators_hash(validator_set, stake_pool);
+    if let Err(err) = state.put_validator_power_snapshot(&validators_hash, &powers) {
+        error!(
+            "FATAL: failed to persist validator power snapshot for height {} hash {}: {}",
+            height, validators_hash, err
+        );
+        std::process::exit(1);
+    }
 }
 
 const DEFAULT_CHECKPOINT_KEEP_COUNT: usize = 2;
 const MAX_CHECKPOINT_KEEP_COUNT: usize = 16;
 const DEFAULT_CHECKPOINT_MAX_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 const MAX_CHECKPOINT_MAX_BYTES: u64 = 128 * 1024 * 1024 * 1024;
+
+#[cfg(all(unix, target_os = "linux"))]
+fn statvfs_block_count(value: libc::fsblkcnt_t) -> u64 {
+    value
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn statvfs_block_count(value: libc::fsblkcnt_t) -> u64 {
+    value as u64
+}
+
+#[cfg(unix)]
+fn filesystem_available_bytes(path: &Path) -> Result<u64, String> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let path_bytes = CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| format!("filesystem path contains a NUL byte: {}", path.display()))?;
+    let mut stat = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+    let rc = unsafe { libc::statvfs(path_bytes.as_ptr(), stat.as_mut_ptr()) };
+    if rc != 0 {
+        return Err(format!(
+            "failed to inspect filesystem capacity for {}: {}",
+            path.display(),
+            std::io::Error::last_os_error()
+        ));
+    }
+    let stat = unsafe { stat.assume_init() };
+    let block_size = if stat.f_frsize > 0 {
+        stat.f_frsize
+    } else {
+        stat.f_bsize
+    };
+    Ok(statvfs_block_count(stat.f_bavail).saturating_mul(block_size))
+}
+
+#[cfg(not(unix))]
+fn filesystem_available_bytes(_path: &Path) -> Result<u64, String> {
+    Err("filesystem capacity inspection is unsupported on this platform".to_string())
+}
+
+fn has_required_disk_headroom(available_bytes: u64, minimum_bytes: u64) -> bool {
+    available_bytes >= minimum_bytes
+}
+
+fn require_runtime_disk_headroom(path: &Path) -> Result<u64, String> {
+    let available = filesystem_available_bytes(path)?;
+    if !has_required_disk_headroom(available, MIN_RUNTIME_AVAILABLE_BYTES) {
+        return Err(format!(
+            "{} has {} available bytes; at least {} are required to open a validator safely",
+            path.display(),
+            available,
+            MIN_RUNTIME_AVAILABLE_BYTES
+        ));
+    }
+    Ok(available)
+}
+
+fn directory_allocated_bytes(path: &Path) -> Result<u64, String> {
+    let mut total = 0u64;
+    let mut stack = vec![path.to_path_buf()];
+    #[cfg(unix)]
+    let mut seen_files = std::collections::HashSet::new();
+
+    while let Some(current) = stack.pop() {
+        let metadata = fs::symlink_metadata(&current)
+            .map_err(|err| format!("failed to stat {}: {}", current.display(), err))?;
+        if metadata.file_type().is_symlink() {
+            continue;
+        }
+        if metadata.is_dir() {
+            for entry in fs::read_dir(&current)
+                .map_err(|err| format!("failed to read {}: {}", current.display(), err))?
+            {
+                let entry = entry.map_err(|err| {
+                    format!("failed to read entry in {}: {}", current.display(), err)
+                })?;
+                stack.push(entry.path());
+            }
+            continue;
+        }
+        if !metadata.is_file() {
+            continue;
+        }
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if seen_files.insert((metadata.dev(), metadata.ino())) {
+                total = total.saturating_add(metadata.blocks().saturating_mul(512));
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            total = total.saturating_add(metadata.len());
+        }
+    }
+
+    Ok(total)
+}
+
+fn snapshot_apply_required_available_bytes(staging_allocated_bytes: u64) -> u64 {
+    staging_allocated_bytes
+        .saturating_mul(SNAPSHOT_APPLY_COMPACTION_COPIES)
+        .saturating_add(MIN_RUNTIME_AVAILABLE_BYTES)
+}
+
+fn require_snapshot_apply_disk_headroom(
+    filesystem_path: &Path,
+    staging_path: &Path,
+) -> Result<(u64, u64, u64), String> {
+    let available_bytes = filesystem_available_bytes(filesystem_path)?;
+    let staging_allocated_bytes = directory_allocated_bytes(staging_path)?;
+    let required_bytes = snapshot_apply_required_available_bytes(staging_allocated_bytes);
+    if available_bytes < required_bytes {
+        return Err(format!(
+            "{} has {} available bytes, but applying verified staging DB {} ({} allocated bytes) requires at least {} available bytes: one replacement copy, one compaction copy, and the {} byte runtime reserve",
+            filesystem_path.display(),
+            available_bytes,
+            staging_path.display(),
+            staging_allocated_bytes,
+            required_bytes,
+            MIN_RUNTIME_AVAILABLE_BYTES,
+        ));
+    }
+    Ok((available_bytes, staging_allocated_bytes, required_bytes))
+}
+
+fn spawn_runtime_disk_guard(path: PathBuf) {
+    tokio::spawn(async move {
+        let mut interval =
+            tokio::time::interval(Duration::from_secs(DISK_CAPACITY_CHECK_INTERVAL_SECS));
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            match require_runtime_disk_headroom(&path) {
+                Ok(_) => {}
+                Err(err) => {
+                    error!(
+                        "FATAL: validator disk headroom exhausted: {}. Stopping without restart to protect RocksDB.",
+                        err
+                    );
+                    std::process::exit(EXIT_CODE_FATAL_STARTUP);
+                }
+            }
+        }
+    });
+}
 
 fn parse_checkpoint_keep_count(raw: Option<&str>) -> usize {
     raw.and_then(|value| value.trim().parse::<usize>().ok())
@@ -7739,6 +9136,24 @@ async fn maybe_create_checkpoint(
     if !SyncManager::should_checkpoint(slot) {
         return;
     }
+    let checkpoint_root = Path::new(data_dir);
+    match filesystem_available_bytes(checkpoint_root) {
+        Ok(available) if !has_required_disk_headroom(available, MIN_CHECKPOINT_AVAILABLE_BYTES) => {
+            warn!(
+                "Skipping checkpoint at slot {}: {} available bytes is below the {} byte checkpoint safety floor",
+                slot, available, MIN_CHECKPOINT_AVAILABLE_BYTES
+            );
+            return;
+        }
+        Ok(_) => {}
+        Err(err) => {
+            warn!(
+                "Skipping checkpoint at slot {} because disk capacity cannot be verified: {}",
+                slot, err
+            );
+            return;
+        }
+    }
     let checkpoint_path = format!("{}/checkpoints/slot-{}", data_dir, slot);
     match state.create_checkpoint(&checkpoint_path, slot) {
         Ok(meta) => {
@@ -7762,8 +9177,6 @@ async fn maybe_create_checkpoint(
 fn latest_verified_checkpoint(
     data_dir: &str,
     state: &StateStore,
-    validator_set: &ValidatorSet,
-    stake_pool: &StakePool,
     chain_id: &str,
     min_validator_stake: u64,
 ) -> Option<(
@@ -7775,8 +9188,6 @@ fn latest_verified_checkpoint(
     let ctx = CheckpointVerificationContext {
         data_dir,
         state,
-        validator_set,
-        stake_pool,
         chain_id,
         min_validator_stake,
     };
@@ -7790,10 +9201,128 @@ fn latest_verified_checkpoint(
 struct CheckpointVerificationContext<'a> {
     data_dir: &'a str,
     state: &'a StateStore,
-    validator_set: &'a ValidatorSet,
-    stake_pool: &'a StakePool,
     chain_id: &'a str,
     min_validator_stake: u64,
+}
+
+fn canonical_checkpoint_certificate(
+    state: &StateStore,
+    checkpoint_block: &Block,
+    chain_id: &str,
+    min_validator_stake: u64,
+) -> Result<(CanonicalCommitCertificate, CheckpointCanonicalProof), String> {
+    let child_slot = checkpoint_block
+        .header
+        .slot
+        .checked_add(1)
+        .ok_or_else(|| "checkpoint slot overflow".to_string())?;
+    let child = state.get_block_by_slot(child_slot)?.ok_or_else(|| {
+        format!(
+            "checkpoint block {} has no canonical child",
+            checkpoint_block.header.slot
+        )
+    })?;
+    if child.header.parent_hash != checkpoint_block.hash() {
+        return Err(format!(
+            "checkpoint child {} does not extend checkpoint block {}",
+            child_slot, checkpoint_block.header.slot
+        ));
+    }
+    validate_block_payload_commitments(&child)?;
+    let consensus_transactions: Vec<_> = child
+        .transactions
+        .iter()
+        .enumerate()
+        .filter(|(_, transaction)| transaction.is_consensus())
+        .collect();
+    if consensus_transactions.len() != 1 || consensus_transactions[0].0 != 0 {
+        return Err(format!(
+            "checkpoint child {} does not contain exactly one canonical certificate at index 0",
+            child_slot
+        ));
+    }
+    let certificate = CanonicalCommitCertificate::from_transaction(consensus_transactions[0].1)?
+        .ok_or_else(|| format!("checkpoint child {} certificate is missing", child_slot))?;
+    certificate.verify_child_metadata(&child.tx_fees_paid, &child.oracle_prices)?;
+    let child_validator_powers = state
+        .get_validator_power_snapshot(&child.header.validators_hash)?
+        .ok_or_else(|| {
+            format!(
+                "checkpoint child {} validator power snapshot {} is unavailable",
+                child_slot, child.header.validators_hash
+            )
+        })?;
+    let canonical_proof = CheckpointCanonicalProof {
+        child_header: child.header.clone(),
+        certificate_merkle_proof: lichen_core::merkle_tx_proof(&child.transactions, 0).ok_or_else(
+            || {
+                format!(
+                    "checkpoint child {} certificate proof is unavailable",
+                    child_slot
+                )
+            },
+        )?,
+        child_commit_round: child.commit_round,
+        child_commit_signatures: child.commit_signatures.clone(),
+        child_validator_powers,
+    };
+    verify_checkpoint_canonical_proof(
+        checkpoint_block,
+        &certificate,
+        &canonical_proof,
+        chain_id,
+        min_validator_stake,
+    )?;
+    Ok((certificate, canonical_proof))
+}
+
+fn verify_checkpoint_canonical_proof(
+    checkpoint_block: &Block,
+    certificate: &CanonicalCommitCertificate,
+    proof: &CheckpointCanonicalProof,
+    chain_id: &str,
+    min_validator_stake: u64,
+) -> Result<(), String> {
+    let child_slot = checkpoint_block
+        .header
+        .slot
+        .checked_add(1)
+        .ok_or_else(|| "checkpoint slot overflow".to_string())?;
+    if proof.child_header.slot != child_slot
+        || proof.child_header.parent_hash != checkpoint_block.hash()
+    {
+        return Err(
+            "checkpoint canonical proof child does not extend checkpoint block".to_string(),
+        );
+    }
+    let certificate_transaction = certificate.to_transaction()?;
+    if !lichen_core::verify_merkle_tx_proof(
+        &proof.child_header.tx_root,
+        &certificate_transaction.hash(),
+        &proof.certificate_merkle_proof,
+    ) {
+        return Err(
+            "checkpoint certificate is not included in canonical child tx root".to_string(),
+        );
+    }
+    let child = Block {
+        header: proof.child_header.clone(),
+        transactions: Vec::new(),
+        tx_fees_paid: Vec::new(),
+        oracle_prices: Vec::new(),
+        commit_round: proof.child_commit_round,
+        commit_signatures: proof.child_commit_signatures.clone(),
+    };
+    if !child.verify_signature_with_chain_id(chain_id) {
+        return Err("checkpoint canonical child producer signature is invalid".to_string());
+    }
+    CanonicalCommitCertificate::from_committed_block(
+        &child,
+        proof.child_validator_powers.clone(),
+        Hash::hash(b"LICHEN_CHECKPOINT_CHILD_COMMIT_VERIFICATION"),
+    )?
+    .verify_parent(&child, chain_id, min_validator_stake)?;
+    certificate.verify_parent(checkpoint_block, chain_id, min_validator_stake)
 }
 
 fn recent_verified_checkpoints(
@@ -7845,28 +9374,42 @@ fn recent_verified_checkpoints(
             warn!("⚠️  Rejecting checkpoint at slot {}: {}", meta.slot, err);
             continue;
         }
-        if let Err(err) = verify_committed_block_authenticity_with_chain_id(
+        let (commit_certificate, canonical_proof) = match canonical_checkpoint_certificate(
+            ctx.state,
             &block,
-            ctx.validator_set,
-            ctx.stake_pool,
             ctx.chain_id,
             ctx.min_validator_stake,
         ) {
+            Ok(certificate) => certificate,
+            Err(err) => {
+                warn!(
+                    "⚠️  Rejecting checkpoint at slot {}: commit verification failed: {}",
+                    meta.slot, err
+                );
+                continue;
+            }
+        };
+        if commit_certificate.parent_post_state_root != Hash(meta.state_root) {
             warn!(
-                "⚠️  Rejecting checkpoint at slot {}: commit verification failed: {}",
-                meta.slot, err
+                "⚠️  Rejecting checkpoint at slot {}: checkpoint root {} does not match canonical post-state root {}",
+                meta.slot,
+                hex::encode(meta.state_root),
+                commit_certificate.parent_post_state_root.to_hex(),
             );
             continue;
         }
         let snapshot_manifest = if verified.len() < manifest_limit {
-            match compute_state_repair_snapshot_manifest(&checkpoint_store, MAX_SNAPSHOT_CHUNK_SIZE)
-            {
+            if let Err(err) = validate_snapshot_archive_completeness(&checkpoint_store, meta.slot) {
+                warn!("⚠️  Rejecting checkpoint at slot {}: {}", meta.slot, err);
+                continue;
+            }
+            match compute_checkpoint_snapshot_manifest(&checkpoint_store, MAX_SNAPSHOT_CHUNK_SIZE) {
                 Ok(manifest) => manifest,
                 Err(err) => {
                     warn!(
-                    "⚠️  Rejecting checkpoint at slot {}: failed to compute state-repair snapshot manifest: {}",
-                    meta.slot, err
-                );
+                        "⚠️  Rejecting checkpoint at slot {}: failed to compute complete checkpoint snapshot manifest: {}",
+                        meta.slot, err
+                    );
                     continue;
                 }
             }
@@ -7884,6 +9427,8 @@ fn recent_verified_checkpoints(
             meta,
             checkpoint_path: path,
             block,
+            commit_certificate,
+            canonical_proof,
             snapshot_manifest,
         });
 
@@ -7902,11 +9447,10 @@ struct CheckpointSnapshotRequestAnchor {
     snapshot_manifest_root: [u8; 32],
 }
 
+#[cfg(test)]
 fn verified_checkpoint_for_anchor(
     data_dir: &str,
     state: &StateStore,
-    validator_set: &ValidatorSet,
-    stake_pool: &StakePool,
     chain_id: &str,
     min_validator_stake: u64,
     anchor: CheckpointSnapshotRequestAnchor,
@@ -7971,28 +9515,40 @@ fn verified_checkpoint_for_anchor(
             );
             continue;
         }
-        if let Err(err) = verify_committed_block_authenticity_with_chain_id(
-            &block,
-            validator_set,
-            stake_pool,
-            chain_id,
-            min_validator_stake,
-        ) {
+        let (certificate, _) =
+            match canonical_checkpoint_certificate(state, &block, chain_id, min_validator_stake) {
+                Ok(proof) => proof,
+                Err(err) => {
+                    warn!(
+                    "⚠️  Rejecting requested checkpoint at slot {}: commit verification failed: {}",
+                    meta.slot, err
+                );
+                    continue;
+                }
+            };
+        if certificate.parent_post_state_root != Hash(meta.state_root) {
             warn!(
-                "⚠️  Rejecting requested checkpoint at slot {}: commit verification failed: {}",
-                meta.slot, err
+                "⚠️  Rejecting requested checkpoint at slot {}: root is not consensus-committed",
+                meta.slot
             );
             continue;
         }
         let manifest_started = Instant::now();
-        let snapshot_manifest = match compute_state_repair_snapshot_manifest(
+        if let Err(err) = validate_snapshot_archive_completeness(&checkpoint_store, meta.slot) {
+            warn!(
+                "⚠️  Rejecting requested checkpoint at slot {}: {}",
+                meta.slot, err
+            );
+            continue;
+        }
+        let snapshot_manifest = match compute_checkpoint_snapshot_manifest(
             &checkpoint_store,
             MAX_SNAPSHOT_CHUNK_SIZE,
         ) {
             Ok(manifest) => manifest,
             Err(err) => {
                 warn!(
-                        "⚠️  Rejecting requested checkpoint at slot {}: failed to compute state-repair snapshot manifest: {}",
+                        "⚠️  Rejecting requested checkpoint at slot {}: failed to compute complete checkpoint snapshot manifest: {}",
                         meta.slot, err
                     );
                 continue;
@@ -8103,10 +9659,9 @@ async fn latest_verified_checkpoint_cached(
     if refresh.is_none() {
         let data_dir = ctx.data_dir.to_string();
         let state = ctx.state.clone();
-        let validator_set = ctx.validator_set.clone();
-        let stake_pool = ctx.stake_pool.clone();
         let chain_id = ctx.chain_id.to_string();
         let min_validator_stake = ctx.min_validator_stake;
+        let reusable_cache = cache.clone();
         let manifest_limit = if cache
             .as_ref()
             .is_some_and(|entry| !entry.has_snapshot_manifest())
@@ -8121,8 +9676,6 @@ async fn latest_verified_checkpoint_cached(
             let ctx = CheckpointVerificationContext {
                 data_dir: &data_dir,
                 state: &state,
-                validator_set: &validator_set,
-                stake_pool: &stake_pool,
                 chain_id: &chain_id,
                 min_validator_stake,
             };
@@ -8140,10 +9693,14 @@ async fn latest_verified_checkpoint_cached(
             if verified.is_empty() {
                 None
             } else {
-                Some(VerifiedCheckpointCacheEntry {
+                let mut entry = VerifiedCheckpointCacheEntry {
                     checkpoints: verified,
                     verified_at: Instant::now(),
-                })
+                };
+                if let Some(previous) = reusable_cache.as_ref() {
+                    entry.reuse_snapshot_manifests_from(previous);
+                }
+                Some(entry)
             }
         }));
     }
@@ -8164,15 +9721,6 @@ async fn verified_checkpoint_meta_anchors_cached(
         .unwrap_or_default()
 }
 
-async fn checkpoint_auth_snapshot(
-    validator_set: &Arc<RwLock<ValidatorSet>>,
-    stake_pool: &Arc<RwLock<StakePool>>,
-) -> (ValidatorSet, StakePool) {
-    let validator_snapshot = validator_set.read().await.clone();
-    let stake_snapshot = stake_pool.read().await.clone();
-    (validator_snapshot, stake_snapshot)
-}
-
 #[cfg(test)]
 fn verify_committed_block_authenticity(
     block: &Block,
@@ -8188,6 +9736,7 @@ fn verify_committed_block_authenticity(
     )
 }
 
+#[cfg(test)]
 fn verify_committed_block_authenticity_with_chain_id(
     block: &Block,
     validator_set: &ValidatorSet,
@@ -8214,21 +9763,120 @@ fn verify_committed_block_authenticity_with_chain_id(
     )
 }
 
+fn validate_block_payload_commitments(block: &Block) -> Result<(), String> {
+    let tx_hashes: Vec<Hash> = block.transactions.iter().map(Transaction::hash).collect();
+    let reconstructed_tx_root = lichen_core::merkle_tx_root_from_hashes(&tx_hashes);
+    if block.header.tx_root != reconstructed_tx_root {
+        return Err(format!(
+            "block {} transaction root mismatch: header={} reconstructed={}",
+            block.header.slot,
+            block.header.tx_root.to_hex(),
+            reconstructed_tx_root.to_hex()
+        ));
+    }
+
+    let consensus_transactions: Vec<_> = block
+        .transactions
+        .iter()
+        .enumerate()
+        .filter(|(_, transaction)| transaction.is_consensus())
+        .collect();
+    if consensus_transactions.len() > 1
+        || consensus_transactions
+            .first()
+            .is_some_and(|(index, _)| *index != 0)
+    {
+        return Err(format!(
+            "block {} has a noncanonical consensus transaction layout",
+            block.header.slot
+        ));
+    }
+    if let Some((_, transaction)) = consensus_transactions.first() {
+        let certificate = CanonicalCommitCertificate::from_transaction(transaction)?
+            .ok_or_else(|| "canonical commit certificate is missing".to_string())?;
+        certificate.verify_child_metadata(&block.tx_fees_paid, &block.oracle_prices)?;
+    }
+    Ok(())
+}
+
+fn verify_synced_block_parent_certificate(
+    state: &StateStore,
+    block: &Block,
+    chain_id: &str,
+) -> Result<(), String> {
+    if block.header.slot <= 1 {
+        return Ok(());
+    }
+
+    let consensus_transaction = block
+        .transactions
+        .first()
+        .filter(|transaction| transaction.is_consensus());
+    let Some(consensus_transaction) = consensus_transaction else {
+        if chain_id.to_ascii_lowercase().contains("mainnet") {
+            return Err(format!(
+                "mainnet block {} has no canonical parent commit transaction",
+                block.header.slot
+            ));
+        }
+        return Ok(());
+    };
+
+    let parent = state.get_block(&block.header.parent_hash)?.ok_or_else(|| {
+        format!(
+            "block {} canonical parent {} is unavailable",
+            block.header.slot,
+            block.header.parent_hash.to_hex()
+        )
+    })?;
+    if parent.header.slot + 1 != block.header.slot {
+        return Err(format!(
+            "block {} canonical parent has noncontiguous slot {}",
+            block.header.slot, parent.header.slot
+        ));
+    }
+
+    let certificate = CanonicalCommitCertificate::from_transaction(consensus_transaction)?
+        .ok_or_else(|| "canonical parent commit transaction is missing".to_string())?;
+    certificate.verify_child_metadata(&block.tx_fees_paid, &block.oracle_prices)?;
+    certificate.verify_parent(&parent, chain_id, MIN_VALIDATOR_STAKE)?;
+    let local_parent_post_state_root = state.compute_state_root();
+    if certificate.parent_post_state_root != local_parent_post_state_root {
+        return Err(format!(
+            "block {} parent post-state root {} does not match local {}",
+            block.header.slot,
+            certificate.parent_post_state_root.to_hex(),
+            local_parent_post_state_root.to_hex(),
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 fn verify_synced_block_consensus_authenticity(
     block: &Block,
     validator_set: &ValidatorSet,
     stake_pool: &StakePool,
 ) -> Result<(), String> {
-    verify_synced_block_consensus_authenticity_with_chain_id(block, validator_set, stake_pool, "")
+    let temp_dir = tempfile::tempdir().map_err(|err| err.to_string())?;
+    let state = StateStore::open(temp_dir.path())?;
+    verify_synced_block_consensus_authenticity_with_chain_id(
+        &state,
+        block,
+        validator_set,
+        stake_pool,
+        "",
+    )
 }
 
 fn verify_synced_block_consensus_authenticity_with_chain_id(
+    state: &StateStore,
     block: &Block,
     validator_set: &ValidatorSet,
     stake_pool: &StakePool,
     chain_id: &str,
 ) -> Result<(), String> {
+    validate_block_payload_commitments(block)?;
     if block.header.slot == 0 {
         return Ok(());
     }
@@ -8252,38 +9900,50 @@ fn verify_synced_block_consensus_authenticity_with_chain_id(
         }
     }
 
-    verify_committed_block_authenticity_with_chain_id(
-        block,
+    let activation_slot = if chain_id == "lichen-testnet-1" {
+        TESTNET_CHAIN_DOMAIN_ACTIVATION_SLOT
+    } else {
+        0
+    };
+    if !block.verify_historical_signature_with_chain_id(chain_id, activation_slot) {
+        return Err(format!(
+            "block {} producer signature is invalid for chain {}",
+            block.header.slot, chain_id
+        ));
+    }
+
+    if block.commit_signatures.is_empty() {
+        return Err(format!(
+            "block {} has no commit certificate",
+            block.header.slot
+        ));
+    }
+    block.verify_commit_with_chain_id_and_min_stake_for_history(
+        chain_id,
+        activation_slot,
         validator_set,
         stake_pool,
-        chain_id,
         MIN_VALIDATOR_STAKE,
-    )
+    )?;
+    verify_synced_block_parent_certificate(state, block, chain_id)
 }
 
 struct CheckpointAnchor<'a> {
     slot: u64,
     state_root: [u8; 32],
-    checkpoint_header: Option<&'a lichen_core::BlockHeader>,
-    commit_round: u32,
-    commit_signatures: &'a [lichen_core::CommitSignature],
+    checkpoint_header: &'a lichen_core::BlockHeader,
+    commit_certificate: &'a CanonicalCommitCertificate,
+    canonical_proof: &'a CheckpointCanonicalProof,
     chain_id: &'a str,
 }
 
 fn verify_checkpoint_anchor(
     anchor: CheckpointAnchor<'_>,
-    validator_set: &ValidatorSet,
-    stake_pool: &StakePool,
     min_validator_stake: u64,
 ) -> Result<(), String> {
-    // The signed committed header authenticates the finalized slot. The
-    // checkpoint state_root is corroborated across checkpoint anchors, then
-    // verified against the downloaded checkpoint contents on a staging DB
-    // before any live state is replaced.
-    let _checkpoint_state_root = anchor.state_root;
-    let header = anchor
-        .checkpoint_header
-        .ok_or_else(|| "missing checkpoint header".to_string())?;
+    // The child certificate authenticates both finality and the checkpoint's
+    // complete post-effects state root before downloaded bytes reach live state.
+    let header = anchor.checkpoint_header;
     if header.slot != anchor.slot {
         return Err(format!(
             "checkpoint header slot mismatch: expected {}, got {}",
@@ -8295,53 +9955,27 @@ fn verify_checkpoint_anchor(
         transactions: Vec::new(),
         tx_fees_paid: Vec::new(),
         oracle_prices: Vec::new(),
-        commit_round: anchor.commit_round,
-        commit_signatures: anchor.commit_signatures.to_vec(),
+        commit_round: 0,
+        commit_signatures: Vec::new(),
     };
     if !block.verify_signature_with_chain_id(anchor.chain_id) {
         return Err("checkpoint header signature verification failed".to_string());
     }
-    verify_committed_block_authenticity_with_chain_id(
+    verify_checkpoint_canonical_proof(
         &block,
-        validator_set,
-        stake_pool,
+        anchor.commit_certificate,
+        anchor.canonical_proof,
         anchor.chain_id,
         min_validator_stake,
-    )
-}
-
-fn verify_reserved_seed_checkpoint_anchor(anchor: CheckpointAnchor<'_>) -> Result<(), String> {
-    let header = anchor
-        .checkpoint_header
-        .ok_or_else(|| "missing checkpoint header".to_string())?;
-    if header.slot != anchor.slot {
+    )?;
+    if anchor.commit_certificate.parent_post_state_root != Hash(anchor.state_root) {
         return Err(format!(
-            "checkpoint header slot mismatch: expected {}, got {}",
-            anchor.slot, header.slot
+            "checkpoint state root {} does not match canonical parent post-state root {}",
+            hex::encode(anchor.state_root),
+            anchor.commit_certificate.parent_post_state_root.to_hex(),
         ));
     }
-    if anchor.commit_signatures.is_empty() {
-        return Err("checkpoint header has no commit certificate".to_string());
-    }
-    let block = Block {
-        header: header.clone(),
-        transactions: Vec::new(),
-        tx_fees_paid: Vec::new(),
-        oracle_prices: Vec::new(),
-        commit_round: anchor.commit_round,
-        commit_signatures: anchor.commit_signatures.to_vec(),
-    };
-    if !block.verify_signature_with_chain_id(anchor.chain_id) {
-        return Err("checkpoint header signature verification failed".to_string());
-    }
     Ok(())
-}
-
-fn should_accept_reserved_seed_checkpoint_anchor(
-    local_slot: u64,
-    source_is_reserved_seed: bool,
-) -> bool {
-    local_slot < FRESH_JOIN_BOOTSTRAP_REPLAY_SLOTS && source_is_reserved_seed
 }
 
 #[cfg(test)]
@@ -8613,72 +10247,73 @@ const DEFAULT_BINANCE_WS_URL: &str =
 const DEFAULT_BINANCE_REST_URL: &str =
     "https://api.binance.com/api/v3/ticker/price?symbols=[%22SOLUSDT%22,%22ETHUSDT%22,%22BNBUSDT%22,%22NEOUSDT%22,%22GASUSDT%22,%22BTCUSDT%22]";
 
-fn reset_24h_stats_if_expired(state: &StateStore, block_ts: u64) {
-    let analytics_pk = match state.get_symbol_registry("ANALYTICS") {
-        Ok(Some(entry)) => entry.program,
-        _ => return,
-    };
+fn reset_24h_stats_if_expired(
+    state: &StateStore,
+    block_slot: u64,
+    block_ts: u64,
+) -> Result<(), String> {
+    let mut batch = state.begin_batch_at_slot(block_slot);
+    let analytics_entry = state.get_symbol_registry("ANALYTICS")?;
+    let dex_entry = state.get_symbol_registry("DEX")?;
 
-    let now_ts = block_ts;
-
-    let pair_count = state.get_program_storage_u64("DEX", b"dex_pair_count");
-    for pair_id in 1..=pair_count {
-        let ts_key = format!("ana_24h_ts_{}", pair_id);
-        let last_reset = match state.get_contract_storage(&analytics_pk, ts_key.as_bytes()) {
-            Ok(Some(data)) if data.len() >= 8 => {
-                u64::from_le_bytes(data[0..8].try_into().unwrap_or([0; 8]))
-            }
-            _ => 0,
-        };
-
-        if last_reset == 0 {
-            if let Err(e) =
-                state.put_contract_storage(&analytics_pk, ts_key.as_bytes(), &now_ts.to_le_bytes())
-            {
-                tracing::error!("Failed to write contract storage: {e}");
-            }
-            continue;
-        }
-
-        if now_ts.saturating_sub(last_reset) < 86400 {
-            continue;
-        }
-
-        let stats_key = format!("ana_24h_{}", pair_id);
-        let current_close = match state.get_contract_storage(&analytics_pk, stats_key.as_bytes()) {
-            Ok(Some(data)) if data.len() >= 48 => {
-                u64::from_le_bytes(data[32..40].try_into().unwrap_or([0; 8]))
-            }
-            _ => {
-                let lp_key = format!("ana_lp_{}", pair_id);
-                match state.get_contract_storage(&analytics_pk, lp_key.as_bytes()) {
-                    Ok(Some(data)) if data.len() >= 8 => {
-                        u64::from_le_bytes(data[0..8].try_into().unwrap_or([0; 8]))
-                    }
-                    _ => 0,
+    if let (Some(analytics_entry), Some(dex_entry)) = (analytics_entry, dex_entry) {
+        let analytics_pk = analytics_entry.program;
+        let now_ts = block_ts;
+        let pair_count = analytics_batch_u64(&batch, &dex_entry.program, b"dex_pair_count")?;
+        for pair_id in 1..=pair_count {
+            let ts_key = format!("ana_24h_ts_{}", pair_id);
+            let last_reset = match batch.get_contract_storage(&analytics_pk, ts_key.as_bytes())? {
+                Some(data) if data.len() >= 8 => {
+                    u64::from_le_bytes(data[0..8].try_into().unwrap_or([0; 8]))
                 }
+                _ => 0,
+            };
+
+            if last_reset == 0 {
+                batch.put_contract_storage(
+                    &analytics_pk,
+                    ts_key.as_bytes(),
+                    &now_ts.to_le_bytes(),
+                )?;
+                continue;
             }
-        };
 
-        let mut stats = Vec::with_capacity(48);
-        stats.extend_from_slice(&0u64.to_le_bytes());
-        stats.extend_from_slice(&current_close.to_le_bytes());
-        stats.extend_from_slice(&current_close.to_le_bytes());
-        stats.extend_from_slice(&current_close.to_le_bytes());
-        stats.extend_from_slice(&current_close.to_le_bytes());
-        stats.extend_from_slice(&0u64.to_le_bytes());
-        if let Err(e) = state.put_contract_storage(&analytics_pk, stats_key.as_bytes(), &stats) {
-            tracing::error!("Failed to write contract storage: {e}");
+            if now_ts.saturating_sub(last_reset) < 86400 {
+                continue;
+            }
+
+            let stats_key = format!("ana_24h_{}", pair_id);
+            let current_close =
+                match batch.get_contract_storage(&analytics_pk, stats_key.as_bytes())? {
+                    Some(data) if data.len() >= 48 => {
+                        u64::from_le_bytes(data[32..40].try_into().unwrap_or([0; 8]))
+                    }
+                    _ => {
+                        let lp_key = format!("ana_lp_{}", pair_id);
+                        match batch.get_contract_storage(&analytics_pk, lp_key.as_bytes())? {
+                            Some(data) if data.len() >= 8 => {
+                                u64::from_le_bytes(data[0..8].try_into().unwrap_or([0; 8]))
+                            }
+                            _ => 0,
+                        }
+                    }
+                };
+
+            let mut stats = Vec::with_capacity(48);
+            stats.extend_from_slice(&0u64.to_le_bytes());
+            stats.extend_from_slice(&current_close.to_le_bytes());
+            stats.extend_from_slice(&current_close.to_le_bytes());
+            stats.extend_from_slice(&current_close.to_le_bytes());
+            stats.extend_from_slice(&current_close.to_le_bytes());
+            stats.extend_from_slice(&0u64.to_le_bytes());
+            batch.put_contract_storage(&analytics_pk, stats_key.as_bytes(), &stats)?;
+
+            batch.put_contract_storage(&analytics_pk, ts_key.as_bytes(), &now_ts.to_le_bytes())?;
+
+            debug!("📊 24h stats reset for pair {} (window expired)", pair_id);
         }
-
-        if let Err(e) =
-            state.put_contract_storage(&analytics_pk, ts_key.as_bytes(), &now_ts.to_le_bytes())
-        {
-            tracing::error!("Failed to write contract storage: {e}");
-        }
-
-        debug!("📊 24h stats reset for pair {} (window expired)", pair_id);
     }
+    state.commit_batch(batch)
 }
 /// REST ticker response
 #[derive(Deserialize)]
@@ -8731,6 +10366,7 @@ fn should_submit_oracle_attestation(
 
 fn build_oracle_attestation_tx(
     state: &StateStore,
+    chain_id: &str,
     validator_seed: &[u8; 32],
     validator_pubkey: Pubkey,
     asset: &str,
@@ -8774,7 +10410,8 @@ fn build_oracle_attestation_tx(
     let msg = lichen_core::Message::new(vec![ix], recent_blockhash);
     let mut tx = Transaction::new(msg);
     let kp = Keypair::from_seed(validator_seed);
-    tx.signatures.push(kp.sign(&tx.message.serialize()));
+    tx.signatures
+        .push(kp.sign(&tx.message.signing_bytes_for_chain_id(chain_id)));
     Ok(tx)
 }
 
@@ -8807,6 +10444,7 @@ struct OracleFeedTxContext {
     p2p_config: P2PConfig,
     validator_seed: [u8; 32],
     validator_pubkey: Pubkey,
+    chain_id: String,
 }
 
 async fn submit_oracle_attestation_tx(
@@ -8818,6 +10456,7 @@ async fn submit_oracle_attestation_tx(
 ) -> bool {
     let tx = match build_oracle_attestation_tx(
         state,
+        &tx_context.chain_id,
         &tx_context.validator_seed,
         tx_context.validator_pubkey,
         asset,
@@ -9163,7 +10802,8 @@ fn spawn_oracle_price_feeder(
                             _ => 0,
                         };
                     if candle_count_c > 0 {
-                        let idx_c = candle_count_c - 1;
+                        let sequence = candle_count_c - 1;
+                        let idx_c = analytics_candle_storage_index(sequence, ci);
                         let ck = format!("ana_c_{}_{}_{}", pair_id, ci, idx_c);
                         if let Ok(Some(cd)) =
                             state.get_contract_storage(&analytics_pk, ck.as_bytes())
@@ -9324,27 +10964,24 @@ async fn binance_ws_loop(prices: SharedOraclePrices, ws_url: String) {
 }
 
 /// Update a single candle for an oracle-priced pair.
-/// Mirrors the logic in dex_analytics `update_candle` but runs directly
-/// against the state store from the validator background task.
+/// Mirrors the logic in dex_analytics `update_candle` inside the caller's
+/// atomic post-block batch.
 fn oracle_update_candle(
-    state: &StateStore,
+    batch: &mut StateBatch,
     analytics_pk: &Pubkey,
     pair_id: u64,
     interval: u64,
     price: u64,
-    _current_slot: u64,
     unix_ts: u64,
-) {
+) -> Result<(), String> {
     // Use unix timestamp (not slot) for period grouping so candle boundaries
     // align with wall-clock seconds (60s, 300s, 3600s, etc.).
     let candle_start = (unix_ts / interval) * interval;
 
-    // Read current candle's start slot (use Option to distinguish missing from 0)
+    // Read current candle's start timestamp (use Option to distinguish missing from 0).
     let cur_key = format!("ana_cur_{}_{}", pair_id, interval);
-    let stored_start = match state.get_contract_storage(analytics_pk, cur_key.as_bytes()) {
-        Ok(Some(d)) if d.len() >= 8 => {
-            Some(u64::from_le_bytes(d[0..8].try_into().unwrap_or([0; 8])))
-        }
+    let stored_start = match batch.get_contract_storage(analytics_pk, cur_key.as_bytes())? {
+        Some(d) if d.len() >= 8 => Some(u64::from_le_bytes(d[0..8].try_into().unwrap_or([0; 8]))),
         _ => None,
     };
 
@@ -9352,43 +10989,44 @@ fn oracle_update_candle(
 
     if stored_start == Some(candle_start) {
         // Same candle period — update OHLC in-place
-        let candle_count = match state.get_contract_storage(analytics_pk, count_key.as_bytes()) {
-            Ok(Some(d)) if d.len() >= 8 => u64::from_le_bytes(d[0..8].try_into().unwrap_or([0; 8])),
-            _ => 0,
-        };
+        let candle_count = analytics_batch_u64(batch, analytics_pk, count_key.as_bytes())?;
         if candle_count == 0 {
-            return;
+            return Err(format!(
+                "oracle candle current-period marker exists without a candle count for pair {} interval {}",
+                pair_id, interval
+            ));
         }
-        let idx = candle_count - 1;
+        let sequence = candle_count - 1;
+        let idx = analytics_candle_storage_index(sequence, interval);
         let candle_key = format!("ana_c_{}_{}_{}", pair_id, interval, idx);
 
-        if let Ok(Some(mut data)) = state.get_contract_storage(analytics_pk, candle_key.as_bytes())
-        {
-            if data.len() >= 48 {
-                let high = u64::from_le_bytes(data[8..16].try_into().unwrap_or([0; 8]));
-                let low = u64::from_le_bytes(data[16..24].try_into().unwrap_or([0; 8]));
-                if price > high {
-                    data[8..16].copy_from_slice(&price.to_le_bytes());
-                }
-                if price < low {
-                    data[16..24].copy_from_slice(&price.to_le_bytes());
-                }
-                // Update close price
-                data[24..32].copy_from_slice(&price.to_le_bytes());
-                // Keep timestamp as the period-start (don't overwrite with current time)
-                if let Err(e) =
-                    state.put_contract_storage(analytics_pk, candle_key.as_bytes(), &data)
-                {
-                    tracing::error!("Failed to write contract storage: {e}");
-                }
-            }
+        let mut data = batch
+            .get_contract_storage(analytics_pk, candle_key.as_bytes())?
+            .ok_or_else(|| {
+                format!(
+                    "oracle candle count references missing candle for pair {} interval {} sequence {}",
+                    pair_id, interval, sequence
+                )
+            })?;
+        if data.len() < 48 {
+            return Err(format!(
+                "oracle candle is truncated for pair {} interval {} sequence {}",
+                pair_id, interval, sequence
+            ));
         }
+        let high = u64::from_le_bytes(data[8..16].try_into().unwrap_or([0; 8]));
+        let low = u64::from_le_bytes(data[16..24].try_into().unwrap_or([0; 8]));
+        if price > high {
+            data[8..16].copy_from_slice(&price.to_le_bytes());
+        }
+        if price < low {
+            data[16..24].copy_from_slice(&price.to_le_bytes());
+        }
+        data[24..32].copy_from_slice(&price.to_le_bytes());
+        batch.put_contract_storage(analytics_pk, candle_key.as_bytes(), &data)?;
     } else {
         // New candle period — create a new candle
-        let candle_count = match state.get_contract_storage(analytics_pk, count_key.as_bytes()) {
-            Ok(Some(d)) if d.len() >= 8 => u64::from_le_bytes(d[0..8].try_into().unwrap_or([0; 8])),
-            _ => 0,
-        };
+        let candle_count = analytics_batch_u64(batch, analytics_pk, count_key.as_bytes())?;
 
         // Build new candle: open(8)+high(8)+low(8)+close(8)+volume(8)+timestamp(8) = 48
         let mut candle = Vec::with_capacity(48);
@@ -9399,30 +11037,25 @@ fn oracle_update_candle(
         candle.extend_from_slice(&0u64.to_le_bytes()); // volume (oracle updates have 0 volume)
         candle.extend_from_slice(&candle_start.to_le_bytes()); // period-start time (aligned)
 
-        let new_idx = candle_count;
+        let new_idx = analytics_candle_storage_index(candle_count, interval);
         let candle_key = format!("ana_c_{}_{}_{}", pair_id, interval, new_idx);
-        if let Err(e) = state.put_contract_storage(analytics_pk, candle_key.as_bytes(), &candle) {
-            tracing::error!("Failed to write contract storage: {e}");
-        }
+        batch.put_contract_storage(analytics_pk, candle_key.as_bytes(), &candle)?;
 
         // Update count
-        if let Err(e) = state.put_contract_storage(
+        batch.put_contract_storage(
             analytics_pk,
             count_key.as_bytes(),
-            &(new_idx + 1).to_le_bytes(),
-        ) {
-            tracing::error!("Failed to write contract storage: {e}");
-        }
+            &candle_count.saturating_add(1).to_le_bytes(),
+        )?;
 
-        // Store current candle start slot
-        if let Err(e) = state.put_contract_storage(
+        // Store current candle start timestamp.
+        batch.put_contract_storage(
             analytics_pk,
             cur_key.as_bytes(),
             &candle_start.to_le_bytes(),
-        ) {
-            tracing::error!("Failed to write contract storage: {e}");
-        }
+        )?;
     }
+    Ok(())
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -9531,7 +11164,7 @@ fn spawn_governed_proposal_tx_index_backfill_task(state: StateStore) {
 // ═══════════════════════════════════════════════════════════════════════
 
 /// Find the value for a CLI flag, supporting both `--flag value` and `--flag=value`.
-/// For flags with aliases, pass all names (e.g. `&["--db-path", "--db", "--data-dir"]`).
+/// Pass the canonical spelling for each accepted flag.
 fn get_flag_value<'a>(args: &'a [String], names: &[&str]) -> Option<&'a str> {
     for (i, arg) in args.iter().enumerate() {
         for name in names {
@@ -9586,7 +11219,7 @@ fn restriction_schema_data_dir(args: &[String]) -> PathBuf {
         .and_then(|s| s.parse::<u16>().ok())
         .unwrap_or(7001);
     let network_arg = get_flag_value(args, &["--network"]).map(|s| s.to_lowercase());
-    let data_dir = get_flag_value(args, &["--db-path", "--db", "--data-dir"])
+    let data_dir = get_flag_value(args, &["--db-path"])
         .map(|s| s.to_string())
         .unwrap_or_else(|| {
             if let Some(net) = network_arg {
@@ -9774,6 +11407,21 @@ fn print_sparse_state_commitment_report(
     println!("contract_node_count={}", report.contract_node_count);
 }
 
+fn print_read_only_state_root_report(state: &StateStore) {
+    println!(
+        "current_state_root={}",
+        state.compute_state_root_read_only().to_hex()
+    );
+    println!(
+        "cached_state_root={}",
+        state
+            .compute_state_root_cached_read_only()
+            .map(|value| value.to_hex())
+            .unwrap_or_else(|| "none".to_string())
+    );
+    println!("state_root_recompute=read_only");
+}
+
 fn maybe_run_sparse_state_commitment_admin(args: &[String]) -> Option<i32> {
     let rebuild = has_flag(args, REBUILD_SPARSE_STATE_COMMITMENT_FLAG);
     let activate = has_flag(args, ACTIVATE_SPARSE_STATE_COMMITMENT_FLAG);
@@ -9819,14 +11467,30 @@ fn maybe_run_sparse_state_commitment_admin(args: &[String]) -> Option<i32> {
     }
 
     let data_dir = restriction_schema_data_dir(args);
+    let secondary_dir = get_flag_value(args, &["--secondary-dir"]).map(PathBuf::from);
+    if secondary_dir.is_some() && !show {
+        eprintln!("--secondary-dir is allowed only with {SHOW_STATE_COMMITMENT_SCHEMA_FLAG}");
+        return Some(2);
+    }
     let cache_size_mb = get_flag_value(args, &["--cache-size-mb"]).and_then(|s| s.parse().ok());
-    let state = match StateStore::open_with_cache_mb(&data_dir, cache_size_mb) {
+    let state = match secondary_dir.as_ref() {
+        Some(path) => StateStore::open_secondary_with_cache_mb(&data_dir, path, cache_size_mb),
+        None if show => StateStore::open_read_only_with_cache_mb(&data_dir, cache_size_mb),
+        None => StateStore::open_with_cache_mb(&data_dir, cache_size_mb),
+    };
+    let state = match state {
         Ok(state) => state,
         Err(err) => {
             eprintln!("Failed to open state DB at {}: {}", data_dir.display(), err);
             return Some(1);
         }
     };
+    if secondary_dir.is_some() {
+        if let Err(err) = state.try_catch_up_with_primary() {
+            eprintln!("{err}");
+            return Some(1);
+        }
+    }
 
     let result = if show {
         state.verify_sparse_state_commitment()
@@ -9838,6 +11502,9 @@ fn maybe_run_sparse_state_commitment_admin(args: &[String]) -> Option<i32> {
 
     match result {
         Ok(report) => {
+            if let Some(path) = &secondary_dir {
+                println!("secondary_dir={}", path.display());
+            }
             print_sparse_state_commitment_report(
                 &data_dir,
                 &report,
@@ -10100,7 +11767,7 @@ fn maybe_run_contract_storage_digest_admin(args: &[String]) -> Option<i32> {
     let cache_size_mb = get_flag_value(args, &["--cache-size-mb"]).and_then(|s| s.parse().ok());
     let state = match secondary_dir.as_ref() {
         Some(path) => StateStore::open_secondary_with_cache_mb(&data_dir, path, cache_size_mb),
-        None => StateStore::open_with_cache_mb(&data_dir, cache_size_mb),
+        None => StateStore::open_read_only_with_cache_mb(&data_dir, cache_size_mb),
     };
     let state = match state {
         Ok(state) => state,
@@ -10178,15 +11845,7 @@ fn maybe_run_contract_storage_digest_admin(args: &[String]) -> Option<i32> {
             }
         }
     }
-    if secondary_dir.is_none() {
-        println!("current_state_root={}", state.compute_state_root().to_hex());
-        println!(
-            "current_state_root_cold={}",
-            state.compute_state_root_cold_start().to_hex()
-        );
-    } else {
-        println!("state_root_recompute=skipped_secondary");
-    }
+    print_read_only_state_root_report(&state);
     println!(
         "mossstake_slot_only_marker={}",
         state
@@ -10436,12 +12095,9 @@ fn maybe_run_mossstake_block_scan_admin(args: &[String]) -> Option<i32> {
         return Some(2);
     }
 
-    let data_dir = get_flag_value(
-        args,
-        &["--block-db-path", "--db-path", "--db", "--data-dir"],
-    )
-    .map(PathBuf::from)
-    .unwrap_or_else(|| restriction_schema_data_dir(args));
+    let data_dir = get_flag_value(args, &["--block-db-path", "--db-path"])
+        .map(PathBuf::from)
+        .unwrap_or_else(|| restriction_schema_data_dir(args));
     let secondary_dir =
         get_flag_value(args, &["--block-secondary-dir", "--secondary-dir"]).map(PathBuf::from);
     let cache_size_mb = get_flag_value(args, &["--cache-size-mb"]).and_then(|s| s.parse().ok());
@@ -10554,8 +12210,11 @@ fn print_forced_mossstake_replay_diagnostic(
     let producer = Pubkey(block.header.validator);
     let speculative_processor =
         TxProcessor::new_speculative_with_mossstake_replay_mode(state.clone(), replay_mode);
-    let speculative =
-        speculative_processor.process_transactions_speculative(&block.transactions, &producer);
+    let speculative = speculative_processor.process_transactions_speculative_at_slot(
+        &block.transactions,
+        &producer,
+        block.header.slot,
+    );
     let after = state.state_root_component_report_for_batch(&speculative.batch);
     let candidate_root = match replay_mode {
         MossStakeReplayMode::SlotOnly => after.root_with_mossstake_slot_only,
@@ -10612,6 +12271,7 @@ fn maybe_run_block_replay_diagnostic_admin(args: &[String]) -> Option<i32> {
     let block_secondary_dir = get_flag_value(args, &["--block-secondary-dir"]).map(PathBuf::from);
     let cache_size_mb = get_flag_value(args, &["--cache-size-mb"]).and_then(|s| s.parse().ok());
     let block_json = get_flag_value(args, &["--block-json"]).map(PathBuf::from);
+    let cold_store_path = get_flag_value(args, &["--cold-store"]).map(PathBuf::from);
 
     if dump_block_json.is_some() && block_json.is_some() {
         eprintln!(
@@ -10622,7 +12282,7 @@ fn maybe_run_block_replay_diagnostic_admin(args: &[String]) -> Option<i32> {
     }
 
     if let Some(path) = dump_block_json {
-        let block_source = match open_admin_state_for_diagnostics(
+        let mut block_source = match open_admin_state_for_diagnostics(
             &block_data_dir,
             block_secondary_dir.as_deref().or(secondary_dir.as_deref()),
             cache_size_mb,
@@ -10633,6 +12293,16 @@ fn maybe_run_block_replay_diagnostic_admin(args: &[String]) -> Option<i32> {
                 return Some(1);
             }
         };
+        if let Some(cold_path) = cold_store_path.as_deref() {
+            if let Err(err) = block_source.open_cold_store_read_only(cold_path) {
+                eprintln!(
+                    "Failed to open cold store at {}: {}",
+                    cold_path.display(),
+                    err
+                );
+                return Some(1);
+            }
+        }
         let block = match block_source.get_block_by_slot(slot) {
             Ok(Some(block)) => block,
             Ok(None) => {
@@ -10754,8 +12424,11 @@ fn maybe_run_block_replay_diagnostic_admin(args: &[String]) -> Option<i32> {
 
     let producer = Pubkey(block.header.validator);
     let speculative_processor = TxProcessor::new_speculative(state.clone());
-    let speculative =
-        speculative_processor.process_transactions_speculative(&block.transactions, &producer);
+    let speculative = speculative_processor.process_transactions_speculative_at_slot(
+        &block.transactions,
+        &producer,
+        block.header.slot,
+    );
     for (index, result) in speculative.results.iter().enumerate() {
         println!(
             "tx_result index={} success={} fee_paid={} compute_units={} return_code={} error={}",
@@ -10846,6 +12519,9 @@ async fn run_chain_replay_diagnostic(
             genesis.header.state_root.to_hex()
         );
     }
+
+    let diagnostic_activation = initialize_post_block_effects_activation_slot(&target, true)?;
+    println!("diagnostic_chain_replay post_block_effects_activation_slot={diagnostic_activation}");
 
     let validator_set = Arc::new(RwLock::new(
         target
@@ -11084,7 +12760,7 @@ fn maybe_run_stake_pool_digest_admin(args: &[String]) -> Option<i32> {
     let cache_size_mb = get_flag_value(args, &["--cache-size-mb"]).and_then(|s| s.parse().ok());
     let state = match secondary_dir.as_ref() {
         Some(path) => StateStore::open_secondary_with_cache_mb(&data_dir, path, cache_size_mb),
-        None => StateStore::open_with_cache_mb(&data_dir, cache_size_mb),
+        None => StateStore::open_read_only_with_cache_mb(&data_dir, cache_size_mb),
     };
     let state = match state {
         Ok(state) => state,
@@ -11152,15 +12828,7 @@ fn maybe_run_stake_pool_digest_admin(args: &[String]) -> Option<i32> {
             }
         }
     }
-    if secondary_dir.is_none() {
-        println!("current_state_root={}", state.compute_state_root().to_hex());
-        println!(
-            "current_state_root_cold={}",
-            state.compute_state_root_cold_start().to_hex()
-        );
-    } else {
-        println!("state_root_recompute=skipped_secondary");
-    }
+    print_read_only_state_root_report(&state);
 
     let pool = match state.get_stake_pool() {
         Ok(pool) => pool,
@@ -11206,6 +12874,353 @@ fn maybe_run_stake_pool_digest_admin(args: &[String]) -> Option<i32> {
         );
     }
 
+    Some(0)
+}
+
+#[derive(Debug, Default)]
+struct RecentPostBlockEffectsAudit {
+    first_slot: u64,
+    tip: u64,
+    blocks_checked: u64,
+    missing_block_slots: Vec<u64>,
+    comprehensive_missing_slots: Vec<u64>,
+    stake_pool_missing_slots: Vec<u64>,
+    reward_missing_slots: Vec<u64>,
+    fee_missing_slots: Vec<u64>,
+    marker_conflicts: Vec<String>,
+}
+
+impl RecentPostBlockEffectsAudit {
+    fn is_repairable(&self) -> bool {
+        self.missing_block_slots.is_empty() && self.marker_conflicts.is_empty()
+    }
+
+    fn is_complete(&self) -> bool {
+        self.is_economically_complete() && self.comprehensive_missing_slots.is_empty()
+    }
+
+    fn is_economically_complete(&self) -> bool {
+        self.is_repairable()
+            && self.stake_pool_missing_slots.is_empty()
+            && self.reward_missing_slots.is_empty()
+            && self.fee_missing_slots.is_empty()
+    }
+}
+
+fn audit_recent_post_block_effects(
+    state: &StateStore,
+    historical_window: u64,
+    activation_slot: u64,
+) -> Result<RecentPostBlockEffectsAudit, String> {
+    let tip = state.get_last_slot()?;
+    let first_slot = if tip == 0 {
+        activation_slot
+    } else {
+        tip.saturating_sub(historical_window).max(activation_slot)
+    };
+    let mut report = RecentPostBlockEffectsAudit {
+        first_slot,
+        tip,
+        ..RecentPostBlockEffectsAudit::default()
+    };
+    if tip == 0 || first_slot > tip {
+        return Ok(report);
+    }
+
+    for slot in first_slot..=tip {
+        let Some(block) = state.get_block_by_slot(slot)? else {
+            report.missing_block_slots.push(slot);
+            continue;
+        };
+        report.blocks_checked = report.blocks_checked.saturating_add(1);
+        let block_hash = block.hash();
+
+        match state.get_post_block_effects_hash(slot)? {
+            Some(hash) if hash == block_hash => {}
+            Some(hash) => report.marker_conflicts.push(format!(
+                "post_block_effects slot={} stored={} canonical={}",
+                slot,
+                hash.to_hex(),
+                block_hash.to_hex()
+            )),
+            None => report.comprehensive_missing_slots.push(slot),
+        }
+        match state.get_stake_pool_production_hash(slot)? {
+            Some(hash) if hash == block_hash => {}
+            Some(hash) => report.marker_conflicts.push(format!(
+                "stake_pool_production slot={} stored={} canonical={}",
+                slot,
+                hash.to_hex(),
+                block_hash.to_hex()
+            )),
+            None => report.stake_pool_missing_slots.push(slot),
+        }
+        match state.get_reward_distribution_hash(slot)? {
+            Some(hash) if hash == block_hash => {}
+            Some(hash) => report.marker_conflicts.push(format!(
+                "reward_distribution slot={} stored={} canonical={}",
+                slot,
+                hash.to_hex(),
+                block_hash.to_hex()
+            )),
+            None => report.reward_missing_slots.push(slot),
+        }
+        match state.get_fee_distribution_hash(slot)? {
+            Some(hash) if hash == block_hash => {}
+            Some(hash) => report.marker_conflicts.push(format!(
+                "fee_distribution slot={} stored={} canonical={}",
+                slot,
+                hash.to_hex(),
+                block_hash.to_hex()
+            )),
+            None => report.fee_missing_slots.push(slot),
+        }
+    }
+
+    Ok(report)
+}
+
+fn sampled_slots(slots: &[u64]) -> String {
+    const LIMIT: usize = 16;
+    let mut values = slots
+        .iter()
+        .take(LIMIT)
+        .map(u64::to_string)
+        .collect::<Vec<_>>();
+    if slots.len() > LIMIT {
+        values.push(format!("...+{}", slots.len() - LIMIT));
+    }
+    if values.is_empty() {
+        "none".to_string()
+    } else {
+        values.join(",")
+    }
+}
+
+fn print_recent_post_block_effects_audit(label: &str, report: &RecentPostBlockEffectsAudit) {
+    println!(
+        "post_block_effects_audit label={} first_slot={} tip={} blocks_checked={} missing_blocks={} comprehensive_missing={} stake_pool_missing={} reward_missing={} fee_missing={} conflicts={} repairable={} economic_complete={} comprehensive_complete={}",
+        label,
+        report.first_slot,
+        report.tip,
+        report.blocks_checked,
+        report.missing_block_slots.len(),
+        report.comprehensive_missing_slots.len(),
+        report.stake_pool_missing_slots.len(),
+        report.reward_missing_slots.len(),
+        report.fee_missing_slots.len(),
+        report.marker_conflicts.len(),
+        report.is_repairable(),
+        report.is_economically_complete(),
+        report.is_complete(),
+    );
+    println!(
+        "post_block_effects_slots label={} missing_blocks={} comprehensive_missing={} stake_pool_missing={} reward_missing={} fee_missing={}",
+        label,
+        sampled_slots(&report.missing_block_slots),
+        sampled_slots(&report.comprehensive_missing_slots),
+        sampled_slots(&report.stake_pool_missing_slots),
+        sampled_slots(&report.reward_missing_slots),
+        sampled_slots(&report.fee_missing_slots),
+    );
+    for conflict in &report.marker_conflicts {
+        println!("post_block_effects_conflict label={} {}", label, conflict);
+    }
+}
+
+fn maybe_run_recent_post_block_effects_repair_admin(args: &[String]) -> Option<i32> {
+    if !has_flag(args, REPAIR_RECENT_POST_BLOCK_EFFECTS_FLAG) {
+        return None;
+    }
+
+    let historical_window = get_flag_value(args, &["--window"])
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(RECENT_POST_BLOCK_EFFECTS_RECOVERY_WINDOW);
+    if historical_window == 0 || historical_window > 65_536 {
+        eprintln!("--window must be between 1 and 65536 historical slots");
+        return Some(2);
+    }
+
+    let execute = has_flag(args, "--execute");
+    if execute
+        && get_flag_value(args, &["--confirm"])
+            != Some(RECENT_POST_BLOCK_EFFECTS_REPAIR_CONFIRMATION)
+    {
+        eprintln!(
+            "--execute requires --confirm {}",
+            RECENT_POST_BLOCK_EFFECTS_REPAIR_CONFIRMATION
+        );
+        return Some(2);
+    }
+
+    let data_dir = restriction_schema_data_dir(args);
+    let secondary_dir = get_flag_value(args, &["--secondary-dir"]).map(PathBuf::from);
+    if execute && secondary_dir.is_some() {
+        eprintln!("--secondary-dir is read-only and cannot be used with --execute");
+        return Some(2);
+    }
+    let cache_size_mb = get_flag_value(args, &["--cache-size-mb"]).and_then(|s| s.parse().ok());
+    let state = match open_admin_state_for_diagnostics(
+        &data_dir,
+        secondary_dir.as_deref(),
+        cache_size_mb,
+    ) {
+        Ok(state) => state,
+        Err(err) => {
+            eprintln!("{err}");
+            return Some(1);
+        }
+    };
+
+    println!("data_dir={}", data_dir.display());
+    if let Some(path) = &secondary_dir {
+        println!("secondary_dir={}", path.display());
+    }
+    let activation_slot = match post_block_effects_activation_slot(&state) {
+        Ok(Some(slot)) => slot,
+        Ok(None) => {
+            println!("post_block_effects_activation_slot=unset");
+            if execute {
+                eprintln!(
+                    "Refusing repair without {}: align pre-activation state from a quorum-verified snapshot before starting this release",
+                    POST_BLOCK_EFFECTS_ACTIVATION_SLOT_KEY
+                );
+                return Some(1);
+            }
+            println!("execute=false repair_required=false pre_activation_alignment_required=true");
+            return Some(0);
+        }
+        Err(err) => {
+            eprintln!("Failed to read post-block activation boundary: {err}");
+            return Some(1);
+        }
+    };
+    println!("post_block_effects_activation_slot={activation_slot}");
+    let before = match audit_recent_post_block_effects(&state, historical_window, activation_slot) {
+        Ok(report) => report,
+        Err(err) => {
+            eprintln!("Failed to audit recent post-block effects: {err}");
+            return Some(1);
+        }
+    };
+    print_recent_post_block_effects_audit("before", &before);
+    let before_pool_hash = match state.get_stake_pool() {
+        Ok(pool) => pool.canonical_hash(),
+        Err(err) => {
+            eprintln!("Failed to read stake pool: {err}");
+            return Some(1);
+        }
+    };
+    println!("stake_pool_hash_before={}", before_pool_hash.to_hex());
+
+    if !before.is_repairable() {
+        eprintln!(
+            "Refusing repair: recent canonical blocks are missing or completion markers conflict"
+        );
+        return Some(1);
+    }
+    if !execute {
+        println!(
+            "execute=false repair_required={}",
+            !before.is_economically_complete()
+        );
+        return Some(0);
+    }
+
+    let validator_set = match state.load_validator_set() {
+        Ok(set) => Arc::new(RwLock::new(set)),
+        Err(err) => {
+            eprintln!("Failed to load validator set: {err}");
+            return Some(1);
+        }
+    };
+    let stake_pool = match state.get_stake_pool() {
+        Ok(pool) => Arc::new(RwLock::new(pool)),
+        Err(err) => {
+            eprintln!("Failed to load stake pool: {err}");
+            return Some(1);
+        }
+    };
+    let min_validator_stake = get_flag_value(args, &["--min-validator-stake"])
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(MIN_VALIDATOR_STAKE);
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(err) => {
+            eprintln!("Failed to create repair runtime: {err}");
+            return Some(1);
+        }
+    };
+    let repair_result = runtime.block_on(async {
+        let mut repaired = recover_recent_stored_block_post_effects_if_needed(
+            &state,
+            &validator_set,
+            &stake_pool,
+            activation_slot,
+            min_validator_stake,
+            historical_window,
+            "Offline recent post-block repair",
+        )
+        .await?;
+        let tip = state.get_last_slot()?;
+        if tip > 0 {
+            let block = state
+                .get_block_by_slot(tip)?
+                .ok_or_else(|| format!("stored tip slot {} is missing its canonical block", tip))?;
+            if recover_stored_block_economic_effects_if_needed(
+                &state,
+                &validator_set,
+                &stake_pool,
+                &block,
+                activation_slot,
+                min_validator_stake,
+                "Offline recent post-block repair",
+            )
+            .await?
+            {
+                repaired = repaired.saturating_add(1);
+            }
+        }
+        if repaired > 0 {
+            ensure_tip_post_state_commitment_anchor(&state)?;
+        }
+        Ok::<u64, String>(repaired)
+    });
+    let repaired = match repair_result {
+        Ok(repaired) => repaired,
+        Err(err) => {
+            eprintln!("Recent post-block repair failed: {err}");
+            return Some(1);
+        }
+    };
+    println!("economically_repaired_blocks={repaired}");
+
+    let after = match audit_recent_post_block_effects(&state, historical_window, activation_slot) {
+        Ok(report) => report,
+        Err(err) => {
+            eprintln!("Failed post-repair audit: {err}");
+            return Some(1);
+        }
+    };
+    print_recent_post_block_effects_audit("after", &after);
+    let after_pool_hash = match state.get_stake_pool() {
+        Ok(pool) => pool.canonical_hash(),
+        Err(err) => {
+            eprintln!("Failed to read repaired stake pool: {err}");
+            return Some(1);
+        }
+    };
+    println!("stake_pool_hash_after={}", after_pool_hash.to_hex());
+    if !after.is_economically_complete() {
+        eprintln!(
+            "Recent post-block repair did not produce an economically complete audited window"
+        );
+        return Some(1);
+    }
+    println!("execute=true economic_repair_complete=true");
     Some(0)
 }
 
@@ -12197,6 +14212,1792 @@ fn maybe_run_governed_proposal_tx_backfill_admin(args: &[String]) -> Option<i32>
     }
 }
 
+#[derive(Debug, Serialize)]
+struct PublicHistoryManifestCliReport {
+    data_dir: String,
+    cold_store: Option<String>,
+    secondary_dir: Option<String>,
+    chunk_size: u64,
+    last_slot: Option<u64>,
+    state_root: Option<String>,
+    manifest_root: String,
+    manifest: PublicHistoryManifest,
+}
+
+#[derive(Debug, Serialize)]
+struct ContiguousBlockRangeCliReport {
+    data_dir: String,
+    cold_store: Option<String>,
+    secondary_dir: Option<String>,
+    from_slot: u64,
+    to_slot: u64,
+    block_count: u64,
+    first_parent_hash: String,
+    first_block_hash: String,
+    last_block_hash: String,
+    range_digest: String,
+}
+
+#[derive(Debug, Serialize)]
+struct PublicHistoryParityCategoryDiff {
+    category: String,
+    source_count: u64,
+    target_count: u64,
+    source_sha256: String,
+    target_sha256: String,
+    source_first_key_hex: Option<String>,
+    target_first_key_hex: Option<String>,
+    source_last_key_hex: Option<String>,
+    target_last_key_hex: Option<String>,
+    matches: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct PublicHistoryParityCliReport {
+    source_dir: String,
+    target_dir: String,
+    source_cold_store: Option<String>,
+    target_cold_store: Option<String>,
+    chunk_size: u64,
+    matches: bool,
+    source_manifest_root: String,
+    target_manifest_root: String,
+    categories: Vec<PublicHistoryParityCategoryDiff>,
+}
+
+#[derive(Debug, Default, Serialize)]
+struct PublicHistoryRepairCategoryCliReport {
+    category: String,
+    pages: u64,
+    source_rows: u64,
+    source_bytes: u64,
+    inserted_rows: u64,
+    inserted_bytes: u64,
+    identical_rows: u64,
+    conflict_rows: u64,
+    targets: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct PublicHistoryRepairCliReport {
+    source_dir: String,
+    target_dir: String,
+    source_cold_store: Option<String>,
+    target_cold_store: Option<String>,
+    mode: String,
+    chunk_size: u64,
+    source_manifest_root: String,
+    target_before_manifest_root: String,
+    target_after_manifest_root: Option<String>,
+    source_rows: u64,
+    source_bytes: u64,
+    inserted_rows: u64,
+    inserted_bytes: u64,
+    identical_rows: u64,
+    conflict_rows: u64,
+    cleared_account_tx_counters: u64,
+    categories: Vec<PublicHistoryRepairCategoryCliReport>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct PublicHistoryPageEntryCli {
+    key_hex: String,
+    value_b64: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct PublicHistoryPageCliReport {
+    schema_version: u32,
+    category: String,
+    chunk_size: u64,
+    after_key_hex: Option<String>,
+    next_cursor_hex: Option<String>,
+    has_more: bool,
+    row_count: u64,
+    entries: Vec<PublicHistoryPageEntryCli>,
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+struct PublicHistoryPageHeaderCli {
+    schema_version: u32,
+    format: String,
+    category: String,
+    chunk_size: u64,
+    after_key_hex: Option<String>,
+    next_cursor_hex: Option<String>,
+    has_more: bool,
+    row_count: u64,
+}
+
+type PublicHistoryPageRow = (Vec<u8>, Vec<u8>);
+type PublicHistoryBinaryPage = (PublicHistoryPageHeaderCli, Vec<PublicHistoryPageRow>);
+
+#[derive(Debug, Serialize)]
+struct PublicHistoryPageImportCliReport {
+    target_dir: String,
+    target_cold_store: Option<String>,
+    mode: String,
+    category: String,
+    page_rows: u64,
+    cleared_account_tx_counters: u64,
+    report: PublicHistoryImportReport,
+}
+
+#[derive(Debug, Serialize)]
+struct PublicHistoryPageStreamImportCliReport {
+    target_dir: String,
+    target_cold_store: Option<String>,
+    mode: String,
+    category: String,
+    pages: u64,
+    cleared_account_tx_counters: u64,
+    report: PublicHistoryImportReport,
+}
+
+fn parse_public_history_categories(args: &[String]) -> Result<Vec<&'static str>, String> {
+    let Some(raw) = get_flag_value(args, &["--categories"]) else {
+        return Ok(PUBLIC_HISTORY_SNAPSHOT_CATEGORIES.to_vec());
+    };
+
+    let mut categories = Vec::new();
+    for part in raw.split(',') {
+        let category = part.trim();
+        if category.is_empty() {
+            continue;
+        }
+        let Some(canonical) = PUBLIC_HISTORY_SNAPSHOT_CATEGORIES
+            .iter()
+            .copied()
+            .find(|candidate| *candidate == category)
+        else {
+            return Err(format!(
+                "Unsupported public-history category {category}; supported: {}",
+                PUBLIC_HISTORY_SNAPSHOT_CATEGORIES.join(",")
+            ));
+        };
+        if !categories.contains(&canonical) {
+            categories.push(canonical);
+        }
+    }
+    if categories.is_empty() {
+        return Err("--categories did not contain any public-history categories".to_string());
+    }
+    Ok(categories)
+}
+
+fn public_history_chunk_size(args: &[String]) -> u64 {
+    get_flag_value(args, &["--chunk-size"])
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(1000)
+        .clamp(1, MAX_PUBLIC_HISTORY_CHUNK_SIZE)
+}
+
+fn parse_public_history_category_arg(category: &str) -> Result<&'static str, String> {
+    let category = category.trim();
+    PUBLIC_HISTORY_SNAPSHOT_CATEGORIES
+        .iter()
+        .copied()
+        .find(|candidate| *candidate == category)
+        .ok_or_else(|| {
+            format!(
+                "Unsupported public-history category {category}; supported: {}",
+                PUBLIC_HISTORY_SNAPSHOT_CATEGORIES.join(",")
+            )
+        })
+}
+
+fn parse_optional_hex_flag(args: &[String], names: &[&str]) -> Result<Option<Vec<u8>>, String> {
+    let Some(value) = get_flag_value(args, names) else {
+        return Ok(None);
+    };
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    hex::decode(value)
+        .map(Some)
+        .map_err(|err| format!("Invalid hex value for {}: {}", names[0], err))
+}
+
+fn encode_public_history_page_entries(
+    entries: Vec<PublicHistoryPageRow>,
+) -> Vec<PublicHistoryPageEntryCli> {
+    entries
+        .into_iter()
+        .map(|(key, value)| PublicHistoryPageEntryCli {
+            key_hex: hex::encode(key),
+            value_b64: BASE64_STANDARD.encode(value),
+        })
+        .collect()
+}
+
+fn decode_public_history_page_entries(
+    entries: &[PublicHistoryPageEntryCli],
+) -> Result<Vec<PublicHistoryPageRow>, String> {
+    entries
+        .iter()
+        .map(|entry| {
+            let key = hex::decode(entry.key_hex.trim()).map_err(|err| {
+                format!(
+                    "Invalid public-history page key hex {}: {}",
+                    entry.key_hex, err
+                )
+            })?;
+            let value = BASE64_STANDARD
+                .decode(entry.value_b64.trim())
+                .map_err(|err| {
+                    format!(
+                        "Invalid public-history page value base64 for {}: {}",
+                        entry.key_hex, err
+                    )
+                })?;
+            Ok((key, value))
+        })
+        .collect()
+}
+
+fn public_history_page_format(args: &[String]) -> Result<&'static str, String> {
+    match get_flag_value(args, &[PUBLIC_HISTORY_PAGE_FORMAT_FLAG]).unwrap_or("json") {
+        "json" => Ok("json"),
+        "binary" => Ok("binary"),
+        other => Err(format!(
+            "Unsupported {PUBLIC_HISTORY_PAGE_FORMAT_FLAG} {other}; supported: json,binary"
+        )),
+    }
+}
+
+fn public_history_page_header(
+    format: &str,
+    category: &str,
+    chunk_size: u64,
+    after_key_hex: Option<String>,
+    next_cursor_hex: Option<String>,
+    has_more: bool,
+    row_count: u64,
+) -> PublicHistoryPageHeaderCli {
+    PublicHistoryPageHeaderCli {
+        schema_version: 1,
+        format: format.to_string(),
+        category: category.to_string(),
+        chunk_size,
+        after_key_hex,
+        next_cursor_hex,
+        has_more,
+        row_count,
+    }
+}
+
+fn encode_public_history_binary_page(
+    header: &PublicHistoryPageHeaderCli,
+    entries: &[PublicHistoryPageRow],
+) -> Result<Vec<u8>, String> {
+    let mut encoded = Vec::new();
+    encoded.extend_from_slice(PUBLIC_HISTORY_BINARY_PAGE_MAGIC);
+    serde_json::to_writer(&mut encoded, header)
+        .map_err(|err| format!("Failed to encode public-history binary page header: {err}"))?;
+    encoded.push(b'\n');
+    serialize_legacy_bincode_into(
+        &mut encoded,
+        entries,
+        MAX_PUBLIC_HISTORY_BINARY_PAGE_BYTES,
+        "public-history binary page body",
+    )?;
+    Ok(encoded)
+}
+
+fn decode_public_history_binary_page(bytes: &[u8]) -> Result<PublicHistoryBinaryPage, String> {
+    let mut reader = std::io::BufReader::new(std::io::Cursor::new(bytes));
+    let Some(decoded) = read_public_history_binary_page_frame(&mut reader)? else {
+        return Err("Empty public-history binary page".to_string());
+    };
+    Ok(decoded)
+}
+
+fn validate_public_history_binary_page_header(
+    header: PublicHistoryPageHeaderCli,
+    entries: Vec<PublicHistoryPageRow>,
+) -> Result<PublicHistoryBinaryPage, String> {
+    if header.schema_version != 1 {
+        return Err(format!(
+            "Unsupported public-history binary page schema version {}",
+            header.schema_version
+        ));
+    }
+    if header.format != "binary" {
+        return Err(format!(
+            "Public-history binary page header has unsupported format {}",
+            header.format
+        ));
+    }
+    if entries.len() as u64 != header.row_count {
+        return Err(format!(
+            "Public-history binary page row_count {} does not match decoded entries {}",
+            header.row_count,
+            entries.len()
+        ));
+    }
+    Ok((header, entries))
+}
+
+fn read_public_history_binary_page_frame<R: BufRead>(
+    reader: &mut R,
+) -> Result<Option<PublicHistoryBinaryPage>, String> {
+    let mut magic = Vec::with_capacity(PUBLIC_HISTORY_BINARY_PAGE_MAGIC.len());
+    let read = reader
+        .read_until(b'\n', &mut magic)
+        .map_err(|err| format!("Failed to read public-history binary page magic: {err}"))?;
+    if read == 0 {
+        return Ok(None);
+    }
+    if magic != PUBLIC_HISTORY_BINARY_PAGE_MAGIC {
+        return Err("Invalid public-history binary page magic".to_string());
+    }
+
+    let mut header_line = Vec::new();
+    reader
+        .read_until(b'\n', &mut header_line)
+        .map_err(|err| format!("Failed to read public-history binary page header: {err}"))?;
+    if header_line.is_empty() {
+        return Err("Invalid public-history binary page: missing header".to_string());
+    }
+    if header_line.ends_with(b"\n") {
+        header_line.pop();
+    }
+    let header: PublicHistoryPageHeaderCli = serde_json::from_slice(&header_line)
+        .map_err(|err| format!("Failed to decode public-history binary page header: {err}"))?;
+    let entries: Vec<PublicHistoryPageRow> = deserialize_legacy_bincode_from(
+        reader,
+        MAX_PUBLIC_HISTORY_BINARY_PAGE_BYTES,
+        "public-history binary page body",
+    )?;
+    validate_public_history_binary_page_header(header, entries).map(Some)
+}
+
+fn open_public_history_reader(
+    data_dir: &Path,
+    cold_store_path: Option<&Path>,
+    secondary_dir: Option<&Path>,
+    cache_size_mb: Option<usize>,
+) -> Result<StateStore, String> {
+    let mut state = if let Some(secondary_dir) = secondary_dir {
+        fs::create_dir_all(secondary_dir)
+            .map_err(|err| format!("Failed to create {}: {}", secondary_dir.display(), err))?;
+        let state =
+            StateStore::open_secondary_with_cache_mb(data_dir, secondary_dir, cache_size_mb)?;
+        state.try_catch_up_with_primary()?;
+        state
+    } else {
+        StateStore::open_read_only_with_cache_mb(data_dir, cache_size_mb)?
+    };
+
+    if let Some(cold_path) = cold_store_path {
+        state.open_cold_store_read_only(cold_path)?;
+    }
+    Ok(state)
+}
+
+fn manifest_cli_report(
+    state: &StateStore,
+    data_dir: &Path,
+    cold_store: Option<&Path>,
+    secondary_dir: Option<&Path>,
+    categories: &[&str],
+    chunk_size: u64,
+) -> Result<PublicHistoryManifestCliReport, String> {
+    let manifest = state.compute_public_history_manifest(categories, chunk_size)?;
+    Ok(PublicHistoryManifestCliReport {
+        data_dir: data_dir.display().to_string(),
+        cold_store: cold_store.map(|path| path.display().to_string()),
+        secondary_dir: secondary_dir.map(|path| path.display().to_string()),
+        chunk_size,
+        last_slot: state.get_last_slot().ok(),
+        state_root: Some(state.compute_state_root_read_only().to_hex()),
+        manifest_root: hex::encode(manifest.root),
+        manifest,
+    })
+}
+
+fn print_json_report<T: Serialize>(report: &T) -> Result<(), String> {
+    let json = serde_json::to_string_pretty(report)
+        .map_err(|err| format!("Failed to serialize JSON report: {}", err))?;
+    println!("{json}");
+    Ok(())
+}
+
+fn compare_public_history_manifests(
+    source: &PublicHistoryManifest,
+    target: &PublicHistoryManifest,
+) -> Vec<PublicHistoryParityCategoryDiff> {
+    source
+        .categories
+        .iter()
+        .zip(target.categories.iter())
+        .map(|(source, target)| {
+            let matches = source == target;
+            PublicHistoryParityCategoryDiff {
+                category: source.category.clone(),
+                source_count: source.entry_count,
+                target_count: target.entry_count,
+                source_sha256: hex::encode(source.sha256),
+                target_sha256: hex::encode(target.sha256),
+                source_first_key_hex: source.first_key_hex.clone(),
+                target_first_key_hex: target.first_key_hex.clone(),
+                source_last_key_hex: source.last_key_hex.clone(),
+                target_last_key_hex: target.last_key_hex.clone(),
+                matches,
+            }
+        })
+        .collect()
+}
+
+fn merge_public_history_import_report(
+    aggregate: &mut PublicHistoryRepairCategoryCliReport,
+    report: PublicHistoryImportReport,
+) {
+    aggregate.source_rows = aggregate.source_rows.saturating_add(report.source_rows);
+    aggregate.source_bytes = aggregate.source_bytes.saturating_add(report.source_bytes);
+    aggregate.inserted_rows = aggregate.inserted_rows.saturating_add(report.inserted_rows);
+    aggregate.inserted_bytes = aggregate
+        .inserted_bytes
+        .saturating_add(report.inserted_bytes);
+    aggregate.identical_rows = aggregate
+        .identical_rows
+        .saturating_add(report.identical_rows);
+    aggregate.conflict_rows = aggregate.conflict_rows.saturating_add(report.conflict_rows);
+    let target = format!(
+        "{}{}",
+        if report.target_cold { "cold:" } else { "hot:" },
+        report.target_cf
+    );
+    if !aggregate.targets.contains(&target) {
+        aggregate.targets.push(target);
+    }
+}
+
+fn repair_public_history_from_source(
+    source: &StateStore,
+    target: &StateStore,
+    categories: &[&str],
+    chunk_size: u64,
+    dry_run: bool,
+) -> Result<(Vec<PublicHistoryRepairCategoryCliReport>, u64), String> {
+    let mut category_reports = Vec::with_capacity(categories.len());
+    let mut cleared_account_tx_counters = 0u64;
+
+    for category in categories {
+        let mut aggregate = PublicHistoryRepairCategoryCliReport {
+            category: (*category).to_string(),
+            ..PublicHistoryRepairCategoryCliReport::default()
+        };
+        let mut cursor: Option<Vec<u8>> = None;
+        loop {
+            let page = source.export_public_history_category_cursor_untracked(
+                category,
+                cursor.as_deref(),
+                chunk_size,
+            )?;
+            if !page.entries.is_empty() {
+                aggregate.pages = aggregate.pages.saturating_add(1);
+                let report = target.import_public_history_category_entries(
+                    category,
+                    &page.entries,
+                    dry_run,
+                )?;
+                merge_public_history_import_report(&mut aggregate, report);
+            }
+            if !page.has_more {
+                break;
+            }
+            let Some(next_cursor) = page.next_cursor else {
+                return Err(format!(
+                    "{} public-history export had more entries but no cursor",
+                    category
+                ));
+            };
+            cursor = Some(next_cursor);
+        }
+        if !dry_run && *category == "account_txs" {
+            cleared_account_tx_counters =
+                cleared_account_tx_counters.saturating_add(target.clear_account_tx_counters()?);
+        }
+        category_reports.push(aggregate);
+    }
+
+    Ok((category_reports, cleared_account_tx_counters))
+}
+
+fn verify_contiguous_block_range(
+    state: &StateStore,
+    from_slot: u64,
+    to_slot: u64,
+) -> Result<(Hash, Hash, Hash, String), String> {
+    if to_slot < from_slot {
+        return Err("--to-slot must be >= --from-slot".to_string());
+    }
+
+    let mut first_parent_hash = None;
+    let mut first_block_hash = None;
+    let mut previous_hash = None;
+    let mut digest = Sha256::new();
+    digest.update(b"lichen-contiguous-block-range-v1");
+    digest.update(from_slot.to_be_bytes());
+    digest.update(to_slot.to_be_bytes());
+
+    for slot in from_slot..=to_slot {
+        let block = state
+            .get_block_by_slot(slot)?
+            .ok_or_else(|| format!("missing canonical block body at slot {slot}"))?;
+        if block.header.slot != slot {
+            return Err(format!(
+                "canonical slot index mismatch at slot {slot}: block header reports {}",
+                block.header.slot
+            ));
+        }
+        if block.transactions.is_empty() && block.header.tx_root != Hash::default() {
+            return Err(format!("header-only canonical block at slot {slot}"));
+        }
+        if let Some(expected_parent) = previous_hash {
+            if block.header.parent_hash != expected_parent {
+                return Err(format!(
+                    "canonical parent mismatch at slot {slot}: expected {}, got {}",
+                    expected_parent.to_hex(),
+                    block.header.parent_hash.to_hex()
+                ));
+            }
+        }
+
+        let block_hash = block.hash();
+        first_parent_hash.get_or_insert(block.header.parent_hash);
+        first_block_hash.get_or_insert(block_hash);
+        digest.update(slot.to_be_bytes());
+        digest.update(block_hash.0);
+        digest.update(block.header.parent_hash.0);
+        previous_hash = Some(block_hash);
+    }
+
+    Ok((
+        first_parent_hash.expect("non-empty inclusive block range"),
+        first_block_hash.expect("non-empty inclusive block range"),
+        previous_hash.expect("non-empty inclusive block range"),
+        hex::encode(digest.finalize()),
+    ))
+}
+
+fn maybe_run_contiguous_block_range_admin(args: &[String]) -> Option<i32> {
+    if !has_flag(args, VERIFY_CONTIGUOUS_BLOCK_RANGE_FLAG) {
+        return None;
+    }
+
+    let parse_slot = |flag: &'static str| -> Result<u64, String> {
+        get_flag_value(args, &[flag])
+            .ok_or_else(|| format!("{VERIFY_CONTIGUOUS_BLOCK_RANGE_FLAG} requires {flag} <slot>"))?
+            .parse::<u64>()
+            .map_err(|_| format!("{flag} must be an unsigned integer"))
+    };
+    let from_slot = match parse_slot("--from-slot") {
+        Ok(slot) => slot,
+        Err(err) => {
+            eprintln!("{err}");
+            return Some(2);
+        }
+    };
+    let to_slot = match parse_slot("--to-slot") {
+        Ok(slot) => slot,
+        Err(err) => {
+            eprintln!("{err}");
+            return Some(2);
+        }
+    };
+    if to_slot < from_slot {
+        eprintln!("--to-slot must be >= --from-slot");
+        return Some(2);
+    }
+
+    let cache_size_mb = get_flag_value(args, &["--cache-size-mb"]).and_then(|s| s.parse().ok());
+    let data_dir = restriction_schema_data_dir(args);
+    let cold_store = get_flag_value(args, &["--cold-store"]).map(PathBuf::from);
+    let secondary_dir = get_flag_value(args, &["--secondary-dir"]).map(PathBuf::from);
+    let state = match open_public_history_reader(
+        &data_dir,
+        cold_store.as_deref(),
+        secondary_dir.as_deref(),
+        cache_size_mb,
+    ) {
+        Ok(state) => state,
+        Err(err) => {
+            eprintln!(
+                "Failed to open contiguous block-range source at {}: {}",
+                data_dir.display(),
+                err
+            );
+            return Some(1);
+        }
+    };
+
+    match verify_contiguous_block_range(&state, from_slot, to_slot) {
+        Ok((first_parent_hash, first_block_hash, last_block_hash, range_digest)) => {
+            let report = ContiguousBlockRangeCliReport {
+                data_dir: data_dir.display().to_string(),
+                cold_store: cold_store.map(|path| path.display().to_string()),
+                secondary_dir: secondary_dir.map(|path| path.display().to_string()),
+                from_slot,
+                to_slot,
+                block_count: to_slot.saturating_sub(from_slot).saturating_add(1),
+                first_parent_hash: first_parent_hash.to_hex(),
+                first_block_hash: first_block_hash.to_hex(),
+                last_block_hash: last_block_hash.to_hex(),
+                range_digest,
+            };
+            match print_json_report(&report) {
+                Ok(()) => Some(0),
+                Err(err) => {
+                    eprintln!("{err}");
+                    Some(1)
+                }
+            }
+        }
+        Err(err) => {
+            eprintln!(
+                "Contiguous block-range verification failed for {from_slot}..{to_slot}: {err}"
+            );
+            Some(1)
+        }
+    }
+}
+
+fn maybe_run_raw_block_history_repair_admin(args: &[String]) -> Option<i32> {
+    if !has_flag(args, REPAIR_MISSING_SLOT_CURSORS_FROM_BLOCKS_FLAG) {
+        return None;
+    }
+
+    let from_slot = get_flag_value(args, &["--from-slot"]).and_then(|value| value.parse().ok());
+    let to_slot = get_flag_value(args, &["--to-slot"]).and_then(|value| value.parse().ok());
+    if let (Some(from), Some(to)) = (from_slot, to_slot) {
+        if to < from {
+            eprintln!("--to-slot must be >= --from-slot");
+            return Some(2);
+        }
+    }
+
+    let execute = has_flag(args, "--execute");
+    let dry_run = has_flag(args, "--dry-run") || !execute;
+    if execute && has_flag(args, "--dry-run") {
+        eprintln!("--execute and --dry-run are mutually exclusive");
+        return Some(2);
+    }
+    if execute {
+        let confirm = get_flag_value(args, &["--confirm"]);
+        if confirm != Some(RAW_BLOCK_HISTORY_REPAIR_CONFIRMATION) {
+            eprintln!("Refusing write without --confirm {RAW_BLOCK_HISTORY_REPAIR_CONFIRMATION}");
+            return Some(1);
+        }
+    }
+
+    let cache_size_mb = get_flag_value(args, &["--cache-size-mb"]).and_then(|s| s.parse().ok());
+    let target_dir = restriction_schema_data_dir(args);
+    let cold_store = get_flag_value(args, &["--cold-store"]).map(PathBuf::from);
+    let secondary_dir = get_flag_value(args, &["--secondary-dir"]).map(PathBuf::from);
+    if execute && secondary_dir.is_some() {
+        eprintln!("--secondary-dir is only valid with dry-run or diagnostics");
+        return Some(2);
+    }
+
+    let mut state = if dry_run {
+        match open_public_history_reader(
+            &target_dir,
+            cold_store.as_deref(),
+            secondary_dir.as_deref(),
+            cache_size_mb,
+        ) {
+            Ok(state) => state,
+            Err(err) => {
+                eprintln!(
+                    "Failed to open raw block-history target at {}: {}",
+                    target_dir.display(),
+                    err
+                );
+                return Some(1);
+            }
+        }
+    } else {
+        match StateStore::open_with_cache_mb(&target_dir, cache_size_mb) {
+            Ok(state) => state,
+            Err(err) => {
+                eprintln!(
+                    "Failed to open raw block-history target DB at {}: {}",
+                    target_dir.display(),
+                    err
+                );
+                return Some(1);
+            }
+        }
+    };
+
+    if let Some(cold_path) = cold_store.as_deref() {
+        if let Err(err) = state.open_cold_store_read_only(cold_path) {
+            eprintln!(
+                "Failed to open cold store at {}: {}",
+                cold_path.display(),
+                err
+            );
+            return Some(1);
+        }
+    }
+
+    match state.repair_missing_slot_cursors_from_raw_blocks(from_slot, to_slot, dry_run) {
+        Ok(report) => match print_json_report(&report) {
+            Ok(()) if !report.has_conflicts() => Some(0),
+            Ok(()) => Some(1),
+            Err(err) => {
+                eprintln!("{err}");
+                Some(1)
+            }
+        },
+        Err(err) => {
+            eprintln!("Failed to inspect raw block history: {err}");
+            Some(1)
+        }
+    }
+}
+
+fn stream_public_history_binary_pages(
+    state: &StateStore,
+    category: &str,
+    chunk_size: u64,
+    after_key: Option<Vec<u8>>,
+    to_slot: Option<u64>,
+) -> Result<u64, String> {
+    let mut cursor = after_key;
+    let mut pages = 0u64;
+    let mut stdout = std::io::BufWriter::new(std::io::stdout().lock());
+    loop {
+        let page = state.export_public_history_category_range_cursor_untracked(
+            category,
+            cursor.as_deref(),
+            chunk_size,
+            to_slot,
+        )?;
+        let row_count = page.entries.len() as u64;
+        let next_cursor_hex = page.next_cursor.as_ref().map(hex::encode);
+        let header = public_history_page_header(
+            "binary",
+            category,
+            chunk_size,
+            cursor.as_ref().map(hex::encode),
+            next_cursor_hex,
+            page.has_more,
+            row_count,
+        );
+        let encoded = encode_public_history_binary_page(&header, &page.entries)?;
+        stdout
+            .write_all(&encoded)
+            .map_err(|err| format!("Failed to write public-history binary stream page: {err}"))?;
+        pages = pages.saturating_add(1);
+
+        if !page.has_more {
+            break;
+        }
+        let Some(next_cursor) = page.next_cursor else {
+            return Err(format!(
+                "{category} public-history stream export had more entries but no cursor"
+            ));
+        };
+        cursor = Some(next_cursor);
+    }
+    stdout
+        .flush()
+        .map_err(|err| format!("Failed to flush public-history binary stream: {err}"))?;
+    Ok(pages)
+}
+
+fn import_public_history_binary_page_stream(
+    target: &StateStore,
+    category: &str,
+    dry_run: bool,
+) -> Result<(u64, PublicHistoryImportReport), String> {
+    let stdin = std::io::stdin();
+    let mut reader = std::io::BufReader::new(stdin.lock());
+    let mut pages = 0u64;
+    let mut aggregate = PublicHistoryImportReport {
+        category: category.to_string(),
+        ..PublicHistoryImportReport::default()
+    };
+
+    while let Some((header, entries)) = read_public_history_binary_page_frame(&mut reader)? {
+        if header.category != category {
+            return Err(format!(
+                "Public-history binary stream page category {} does not match import category {}",
+                header.category, category
+            ));
+        }
+        let report = target.import_public_history_category_entries(category, &entries, dry_run)?;
+        merge_public_history_import_report_fields(&mut aggregate, report);
+        pages = pages.saturating_add(1);
+    }
+
+    Ok((pages, aggregate))
+}
+
+fn merge_public_history_import_report_fields(
+    aggregate: &mut PublicHistoryImportReport,
+    report: PublicHistoryImportReport,
+) {
+    if aggregate.target_cf.is_empty() {
+        aggregate.target_cf = report.target_cf.clone();
+        aggregate.target_cold = report.target_cold;
+    }
+    aggregate.source_rows = aggregate.source_rows.saturating_add(report.source_rows);
+    aggregate.source_bytes = aggregate.source_bytes.saturating_add(report.source_bytes);
+    aggregate.inserted_rows = aggregate.inserted_rows.saturating_add(report.inserted_rows);
+    aggregate.inserted_bytes = aggregate
+        .inserted_bytes
+        .saturating_add(report.inserted_bytes);
+    aggregate.identical_rows = aggregate
+        .identical_rows
+        .saturating_add(report.identical_rows);
+    aggregate.conflict_rows = aggregate.conflict_rows.saturating_add(report.conflict_rows);
+}
+
+fn maybe_run_public_history_page_admin(args: &[String]) -> Option<i32> {
+    let export_category = get_flag_value(args, &[EXPORT_PUBLIC_HISTORY_CATEGORY_FLAG]);
+    let import_category = get_flag_value(args, &[IMPORT_PUBLIC_HISTORY_CATEGORY_FLAG]);
+    if export_category.is_none() && import_category.is_none() {
+        return None;
+    }
+    if export_category.is_some() && import_category.is_some() {
+        eprintln!(
+            "{} and {} are mutually exclusive",
+            EXPORT_PUBLIC_HISTORY_CATEGORY_FLAG, IMPORT_PUBLIC_HISTORY_CATEGORY_FLAG
+        );
+        return Some(2);
+    }
+
+    let chunk_size = public_history_chunk_size(args);
+    let page_format = match public_history_page_format(args) {
+        Ok(format) => format,
+        Err(err) => {
+            eprintln!("{err}");
+            return Some(2);
+        }
+    };
+    let stream_pages = has_flag(args, "--stream-pages");
+    if stream_pages && page_format != "binary" {
+        eprintln!("--stream-pages requires --public-history-page-format binary");
+        return Some(2);
+    }
+    let cache_size_mb = get_flag_value(args, &["--cache-size-mb"]).and_then(|s| s.parse().ok());
+    let target_dir = restriction_schema_data_dir(args);
+    let target_cold_store = get_flag_value(args, &["--cold-store"]).map(PathBuf::from);
+    let secondary_dir = get_flag_value(args, &["--secondary-dir"]).map(PathBuf::from);
+
+    if let Some(category) = export_category {
+        let category = match parse_public_history_category_arg(category) {
+            Ok(category) => category,
+            Err(err) => {
+                eprintln!("{err}");
+                return Some(2);
+            }
+        };
+        let after_key = match parse_optional_hex_flag(args, &["--after-key-hex", "--after-key"]) {
+            Ok(after_key) => after_key,
+            Err(err) => {
+                eprintln!("{err}");
+                return Some(2);
+            }
+        };
+        let to_slot = match get_flag_value(args, &["--to-slot"]) {
+            Some(value) => match value.parse::<u64>() {
+                Ok(slot) => Some(slot),
+                Err(_) => {
+                    eprintln!("--to-slot must be an unsigned integer");
+                    return Some(2);
+                }
+            },
+            None => None,
+        };
+        let state = match open_public_history_reader(
+            &target_dir,
+            target_cold_store.as_deref(),
+            secondary_dir.as_deref(),
+            cache_size_mb,
+        ) {
+            Ok(state) => state,
+            Err(err) => {
+                eprintln!(
+                    "Failed to open public-history state at {}: {}",
+                    target_dir.display(),
+                    err
+                );
+                return Some(1);
+            }
+        };
+        if stream_pages {
+            return match stream_public_history_binary_pages(
+                &state, category, chunk_size, after_key, to_slot,
+            ) {
+                Ok(_) => Some(0),
+                Err(err) => {
+                    eprintln!("Failed to stream public-history pages: {err}");
+                    Some(1)
+                }
+            };
+        }
+        let page = match state.export_public_history_category_range_cursor_untracked(
+            category,
+            after_key.as_deref(),
+            chunk_size,
+            to_slot,
+        ) {
+            Ok(page) => page,
+            Err(err) => {
+                eprintln!("Failed to export public-history page: {err}");
+                return Some(1);
+            }
+        };
+        let after_key_hex = after_key.as_ref().map(hex::encode);
+        let next_cursor_hex = page.next_cursor.as_ref().map(hex::encode);
+        let row_count = page.entries.len() as u64;
+        if page_format == "binary" {
+            let header = public_history_page_header(
+                "binary",
+                category,
+                chunk_size,
+                after_key_hex,
+                next_cursor_hex,
+                page.has_more,
+                row_count,
+            );
+            let encoded = match encode_public_history_binary_page(&header, &page.entries) {
+                Ok(encoded) => encoded,
+                Err(err) => {
+                    eprintln!("{err}");
+                    return Some(1);
+                }
+            };
+            return match std::io::stdout().write_all(&encoded) {
+                Ok(()) => Some(0),
+                Err(err) => {
+                    eprintln!("Failed to write public-history binary page: {err}");
+                    Some(1)
+                }
+            };
+        }
+        let report = PublicHistoryPageCliReport {
+            schema_version: 1,
+            category: category.to_string(),
+            chunk_size,
+            after_key_hex,
+            next_cursor_hex,
+            has_more: page.has_more,
+            row_count,
+            entries: encode_public_history_page_entries(page.entries),
+        };
+        return match print_json_report(&report) {
+            Ok(()) => Some(0),
+            Err(err) => {
+                eprintln!("{err}");
+                Some(1)
+            }
+        };
+    }
+
+    let category = match import_category.and_then(|category| {
+        parse_public_history_category_arg(category)
+            .map(Some)
+            .unwrap_or_else(|err| {
+                eprintln!("{err}");
+                None
+            })
+    }) {
+        Some(category) => category,
+        None => return Some(2),
+    };
+    let execute = has_flag(args, "--execute");
+    let dry_run = has_flag(args, "--dry-run") || !execute;
+    if execute && has_flag(args, "--dry-run") {
+        eprintln!("--execute and --dry-run are mutually exclusive");
+        return Some(2);
+    }
+    if execute {
+        let confirm = get_flag_value(args, &["--confirm"]);
+        if confirm != Some(PUBLIC_HISTORY_REPAIR_CONFIRMATION) {
+            eprintln!("Refusing write without --confirm {PUBLIC_HISTORY_REPAIR_CONFIRMATION}");
+            return Some(1);
+        }
+        if target_cold_store.is_none() {
+            eprintln!("Refusing public-history page import execution without --cold-store");
+            return Some(1);
+        }
+        if secondary_dir.is_some() {
+            eprintln!("--secondary-dir is only valid with dry-run or diagnostics");
+            return Some(2);
+        }
+    }
+
+    if stream_pages {
+        let mut target = if dry_run {
+            match open_public_history_reader(
+                &target_dir,
+                target_cold_store.as_deref(),
+                secondary_dir.as_deref(),
+                cache_size_mb,
+            ) {
+                Ok(state) => state,
+                Err(err) => {
+                    eprintln!(
+                        "Failed to open public-history target at {}: {}",
+                        target_dir.display(),
+                        err
+                    );
+                    return Some(1);
+                }
+            }
+        } else {
+            match StateStore::open_with_cache_mb(&target_dir, cache_size_mb) {
+                Ok(state) => state,
+                Err(err) => {
+                    eprintln!(
+                        "Failed to open public-history target DB at {}: {}",
+                        target_dir.display(),
+                        err
+                    );
+                    return Some(1);
+                }
+            }
+        };
+        if !dry_run {
+            if let Some(cold_path) = target_cold_store.as_deref() {
+                if let Err(err) = target.open_cold_store(cold_path) {
+                    eprintln!(
+                        "Failed to open target cold store at {}: {}",
+                        cold_path.display(),
+                        err
+                    );
+                    return Some(1);
+                }
+            }
+        }
+
+        let (pages, report) =
+            match import_public_history_binary_page_stream(&target, category, dry_run) {
+                Ok(report) => report,
+                Err(err) => {
+                    eprintln!("Failed to import public-history stream: {err}");
+                    return Some(1);
+                }
+            };
+        let cleared_account_tx_counters = if !dry_run && category == "account_txs" {
+            match target.clear_account_tx_counters() {
+                Ok(cleared) => cleared,
+                Err(err) => {
+                    eprintln!("Failed to clear account transaction counters: {err}");
+                    return Some(1);
+                }
+            }
+        } else {
+            0
+        };
+        let cli_report = PublicHistoryPageStreamImportCliReport {
+            target_dir: target_dir.display().to_string(),
+            target_cold_store: target_cold_store
+                .as_ref()
+                .map(|path| path.display().to_string()),
+            mode: if dry_run {
+                "dry-run".to_string()
+            } else {
+                "execute".to_string()
+            },
+            category: category.to_string(),
+            pages,
+            cleared_account_tx_counters,
+            report,
+        };
+        return match print_json_report(&cli_report) {
+            Ok(()) if !cli_report.report.has_conflicts() => Some(0),
+            Ok(()) => Some(1),
+            Err(err) => {
+                eprintln!("{err}");
+                Some(1)
+            }
+        };
+    }
+
+    let (page_rows, entries) = if page_format == "binary" {
+        let mut stdin_bytes = Vec::new();
+        if let Err(err) = std::io::stdin().read_to_end(&mut stdin_bytes) {
+            eprintln!("Failed to read public-history binary page from stdin: {err}");
+            return Some(1);
+        }
+        let (header, entries) = match decode_public_history_binary_page(&stdin_bytes) {
+            Ok(decoded) => decoded,
+            Err(err) => {
+                eprintln!("{err}");
+                return Some(1);
+            }
+        };
+        if header.category != category {
+            eprintln!(
+                "Public-history binary page category {} does not match import category {}",
+                header.category, category
+            );
+            return Some(1);
+        }
+        (header.row_count, entries)
+    } else {
+        let mut stdin_json = String::new();
+        if let Err(err) = std::io::stdin().read_to_string(&mut stdin_json) {
+            eprintln!("Failed to read public-history page from stdin: {err}");
+            return Some(1);
+        }
+        let page: PublicHistoryPageCliReport = match serde_json::from_str(&stdin_json) {
+            Ok(page) => page,
+            Err(err) => {
+                eprintln!("Failed to parse public-history page JSON: {err}");
+                return Some(1);
+            }
+        };
+        if page.schema_version != 1 {
+            eprintln!(
+                "Unsupported public-history page schema version {}",
+                page.schema_version
+            );
+            return Some(1);
+        }
+        if page.category != category {
+            eprintln!(
+                "Public-history page category {} does not match import category {}",
+                page.category, category
+            );
+            return Some(1);
+        }
+        let entries = match decode_public_history_page_entries(&page.entries) {
+            Ok(entries) => entries,
+            Err(err) => {
+                eprintln!("{err}");
+                return Some(1);
+            }
+        };
+        (page.row_count, entries)
+    };
+
+    let mut target = if dry_run {
+        match open_public_history_reader(
+            &target_dir,
+            target_cold_store.as_deref(),
+            secondary_dir.as_deref(),
+            cache_size_mb,
+        ) {
+            Ok(state) => state,
+            Err(err) => {
+                eprintln!(
+                    "Failed to open public-history target at {}: {}",
+                    target_dir.display(),
+                    err
+                );
+                return Some(1);
+            }
+        }
+    } else {
+        match StateStore::open_with_cache_mb(&target_dir, cache_size_mb) {
+            Ok(state) => state,
+            Err(err) => {
+                eprintln!(
+                    "Failed to open public-history target DB at {}: {}",
+                    target_dir.display(),
+                    err
+                );
+                return Some(1);
+            }
+        }
+    };
+    if !dry_run {
+        if let Some(cold_path) = target_cold_store.as_deref() {
+            if let Err(err) = target.open_cold_store(cold_path) {
+                eprintln!(
+                    "Failed to open target cold store at {}: {}",
+                    cold_path.display(),
+                    err
+                );
+                return Some(1);
+            }
+        }
+    }
+
+    let report = match target.import_public_history_category_entries(category, &entries, dry_run) {
+        Ok(report) => report,
+        Err(err) => {
+            eprintln!("Failed to import public-history page: {err}");
+            return Some(1);
+        }
+    };
+    let cleared_account_tx_counters = if !dry_run && category == "account_txs" {
+        match target.clear_account_tx_counters() {
+            Ok(cleared) => cleared,
+            Err(err) => {
+                eprintln!("Failed to clear account transaction counters: {err}");
+                return Some(1);
+            }
+        }
+    } else {
+        0
+    };
+    let cli_report = PublicHistoryPageImportCliReport {
+        target_dir: target_dir.display().to_string(),
+        target_cold_store: target_cold_store
+            .as_ref()
+            .map(|path| path.display().to_string()),
+        mode: if dry_run {
+            "dry-run".to_string()
+        } else {
+            "execute".to_string()
+        },
+        category: category.to_string(),
+        page_rows,
+        cleared_account_tx_counters,
+        report,
+    };
+    match print_json_report(&cli_report) {
+        Ok(()) if !cli_report.report.has_conflicts() => Some(0),
+        Ok(()) => Some(1),
+        Err(err) => {
+            eprintln!("{err}");
+            Some(1)
+        }
+    }
+}
+
+fn print_cold_migration_rows(category: &str, rows: &lichen_core::state::ColdMigrationAuditRows) {
+    println!("{category}_hot_rows={}", rows.hot_rows);
+    println!("{category}_hot_bytes={}", rows.hot_bytes);
+    println!(
+        "{category}_identical_cold_rows={}",
+        rows.identical_cold_rows
+    );
+    println!("{category}_missing_cold_rows={}", rows.missing_cold_rows);
+    println!(
+        "{category}_conflicting_cold_rows={}",
+        rows.conflicting_cold_rows
+    );
+}
+
+#[cfg(unix)]
+fn multiply_linked_sst_summary(path: &Path) -> Result<(u64, u64), String> {
+    use std::os::unix::fs::MetadataExt;
+
+    let mut files = 0u64;
+    let mut allocated_bytes = 0u64;
+    for entry in
+        fs::read_dir(path).map_err(|err| format!("failed to read {}: {}", path.display(), err))?
+    {
+        let entry = entry
+            .map_err(|err| format!("failed to read an entry in {}: {}", path.display(), err))?;
+        if entry.path().extension().and_then(|value| value.to_str()) != Some("sst") {
+            continue;
+        }
+        let metadata = entry
+            .metadata()
+            .map_err(|err| format!("failed to stat {}: {}", entry.path().display(), err))?;
+        if metadata.nlink() > 1 {
+            files = files.saturating_add(1);
+            allocated_bytes = allocated_bytes.saturating_add(metadata.blocks().saturating_mul(512));
+        }
+    }
+    Ok((files, allocated_bytes))
+}
+
+#[cfg(not(unix))]
+fn multiply_linked_sst_summary(_path: &Path) -> Result<(u64, u64), String> {
+    Ok((0, 0))
+}
+
+fn maybe_run_cold_migration_admin(args: &[String]) -> Option<i32> {
+    if !has_flag(args, MIGRATE_PUBLIC_HISTORY_TO_COLD_FLAG) {
+        return None;
+    }
+    let data_dir = restriction_schema_data_dir(args);
+    let Some(cold_store) = get_flag_value(args, &["--cold-store"]).map(PathBuf::from) else {
+        eprintln!("{MIGRATE_PUBLIC_HISTORY_TO_COLD_FLAG} requires --cold-store <path>");
+        return Some(2);
+    };
+    let Some(cutoff_slot) =
+        get_flag_value(args, &["--to-slot"]).and_then(|value| value.parse::<u64>().ok())
+    else {
+        eprintln!("{MIGRATE_PUBLIC_HISTORY_TO_COLD_FLAG} requires --to-slot <slot>");
+        return Some(2);
+    };
+    if get_flag_value(args, &["--secondary-dir"]).is_some() {
+        eprintln!("{MIGRATE_PUBLIC_HISTORY_TO_COLD_FLAG} does not accept --secondary-dir");
+        return Some(2);
+    }
+    let execute = has_flag(args, "--execute");
+    if execute
+        && get_flag_value(args, &["--confirm"]) != Some(PUBLIC_HISTORY_COLD_MIGRATION_CONFIRMATION)
+    {
+        eprintln!("execute mode requires --confirm {PUBLIC_HISTORY_COLD_MIGRATION_CONFIRMATION}");
+        return Some(2);
+    }
+    let cache_size_mb = get_flag_value(args, &["--cache-size-mb"]).and_then(|s| s.parse().ok());
+
+    let audit = {
+        let mut state = match StateStore::open_read_only_with_cache_mb(&data_dir, cache_size_mb) {
+            Ok(state) => state,
+            Err(err) => {
+                eprintln!(
+                    "Failed to open hot state at {} read-only: {}",
+                    data_dir.display(),
+                    err
+                );
+                return Some(1);
+            }
+        };
+        if let Err(err) = state.open_cold_store_read_only(&cold_store) {
+            eprintln!(
+                "Failed to open cold state at {} read-only: {}",
+                cold_store.display(),
+                err
+            );
+            return Some(1);
+        }
+        match state.audit_cold_migration(cutoff_slot) {
+            Ok(report) => report,
+            Err(err) => {
+                eprintln!("Cold migration audit failed: {err}");
+                return Some(1);
+            }
+        }
+    };
+
+    println!("mode={}", if execute { "execute" } else { "dry-run" });
+    println!("data_dir={}", data_dir.display());
+    println!("cold_store={}", cold_store.display());
+    println!("cutoff_slot={}", audit.cutoff_slot);
+    println!("scanned_slots={}", audit.scanned_slots);
+    println!("decode_errors={}", audit.decode_errors);
+    println!("hash_mismatch_rows={}", audit.hash_mismatch_rows);
+    println!("missing_slot_cursors={}", audit.missing_slot_cursors);
+    println!(
+        "conflicting_slot_cursors={}",
+        audit.conflicting_slot_cursors
+    );
+    println!(
+        "missing_transaction_rows={}",
+        audit.missing_transaction_rows
+    );
+    println!(
+        "mismatched_transaction_rows={}",
+        audit.mismatched_transaction_rows
+    );
+    println!("missing_tx_to_slot_rows={}", audit.missing_tx_to_slot_rows);
+    println!("invalid_tx_to_slot_rows={}", audit.invalid_tx_to_slot_rows);
+    println!("integrity_errors={}", audit.integrity_errors());
+    print_cold_migration_rows("blocks", &audit.blocks);
+    print_cold_migration_rows("transactions", &audit.transactions);
+    print_cold_migration_rows("tx_to_slot", &audit.tx_to_slot);
+    println!("conflict_rows={}", audit.conflict_rows());
+    if audit.conflict_rows() > 0 {
+        eprintln!("Refusing cold migration because the audit found conflicting cold rows");
+        return Some(1);
+    }
+    if !execute {
+        return Some(0);
+    }
+
+    let (linked_sst_files, linked_sst_bytes) = match multiply_linked_sst_summary(&data_dir) {
+        Ok(summary) => summary,
+        Err(err) => {
+            eprintln!("Failed to inspect hot SST hard links: {err}");
+            return Some(1);
+        }
+    };
+    println!("multiply_linked_sst_files={linked_sst_files}");
+    println!("multiply_linked_sst_bytes={linked_sst_bytes}");
+    if linked_sst_files > 0 {
+        eprintln!(
+            "Refusing execute mode while hot SST files have multiple links; preserve and remove the stopped-node checkpoint first so compaction can reclaim space"
+        );
+        return Some(1);
+    }
+
+    let available_before = filesystem_available_bytes(&data_dir).unwrap_or(0);
+    let mut state = match StateStore::open_with_cache_mb(&data_dir, cache_size_mb) {
+        Ok(state) => state,
+        Err(err) => {
+            eprintln!(
+                "Failed to open stopped hot state at {}: {}",
+                data_dir.display(),
+                err
+            );
+            return Some(1);
+        }
+    };
+    if let Err(err) = state.open_cold_store(&cold_store) {
+        eprintln!(
+            "Failed to open cold state at {}: {}",
+            cold_store.display(),
+            err
+        );
+        return Some(1);
+    }
+    let (migrated_blocks, compaction_batches) = match state.migrate_to_cold_with_bounded_compaction(
+        cutoff_slot,
+        lichen_core::state::COLD_BLOCK_MIGRATION_COMPACTION_BATCH_SIZE,
+    ) {
+        Ok(value) => value,
+        Err(err) => {
+            eprintln!("Cold migration failed: {err}");
+            return Some(1);
+        }
+    };
+    if let Err(err) = state.compact_migrated_hot_transaction_indexes() {
+        eprintln!("Hot transaction-index compaction failed: {err}");
+        return Some(1);
+    }
+    drop(state);
+    let available_after = filesystem_available_bytes(&data_dir).unwrap_or(0);
+    println!("migrated_blocks={migrated_blocks}");
+    println!("compaction_batches={compaction_batches}");
+    println!("available_bytes_before={available_before}");
+    println!("available_bytes_after={available_after}");
+    Some(0)
+}
+
+fn maybe_run_public_history_archive_admin(args: &[String]) -> Option<i32> {
+    let manifest_requested = has_flag(args, PUBLIC_HISTORY_MANIFEST_FLAG);
+    let parity_source =
+        get_flag_value(args, &[VERIFY_PUBLIC_HISTORY_PARITY_WITH_SOURCE_FLAG]).map(PathBuf::from);
+    let repair_source =
+        get_flag_value(args, &[REPAIR_PUBLIC_HISTORY_FROM_SOURCE_FLAG]).map(PathBuf::from);
+
+    let requested =
+        manifest_requested as u8 + parity_source.is_some() as u8 + repair_source.is_some() as u8;
+    if requested == 0 {
+        return None;
+    }
+    if requested > 1 {
+        eprintln!(
+            "{PUBLIC_HISTORY_MANIFEST_FLAG}, {VERIFY_PUBLIC_HISTORY_PARITY_WITH_SOURCE_FLAG}, and {REPAIR_PUBLIC_HISTORY_FROM_SOURCE_FLAG} are mutually exclusive"
+        );
+        return Some(2);
+    }
+
+    let categories = match parse_public_history_categories(args) {
+        Ok(categories) => categories,
+        Err(err) => {
+            eprintln!("{err}");
+            return Some(2);
+        }
+    };
+    let chunk_size = public_history_chunk_size(args);
+    let cache_size_mb = get_flag_value(args, &["--cache-size-mb"]).and_then(|s| s.parse().ok());
+    let target_dir = restriction_schema_data_dir(args);
+    let target_cold_store = get_flag_value(args, &["--cold-store"]).map(PathBuf::from);
+    let source_cold_store = get_flag_value(args, &[SOURCE_COLD_STORE_FLAG]).map(PathBuf::from);
+    let secondary_dir = get_flag_value(args, &["--secondary-dir"]).map(PathBuf::from);
+
+    if manifest_requested {
+        let state = match open_public_history_reader(
+            &target_dir,
+            target_cold_store.as_deref(),
+            secondary_dir.as_deref(),
+            cache_size_mb,
+        ) {
+            Ok(state) => state,
+            Err(err) => {
+                eprintln!(
+                    "Failed to open public-history state at {}: {}",
+                    target_dir.display(),
+                    err
+                );
+                return Some(1);
+            }
+        };
+        match manifest_cli_report(
+            &state,
+            &target_dir,
+            target_cold_store.as_deref(),
+            secondary_dir.as_deref(),
+            &categories,
+            chunk_size,
+        )
+        .and_then(|report| print_json_report(&report))
+        {
+            Ok(()) => Some(0),
+            Err(err) => {
+                eprintln!("{err}");
+                Some(1)
+            }
+        }
+    } else if let Some(source_dir) = parity_source {
+        let source = match open_public_history_reader(
+            &source_dir,
+            source_cold_store.as_deref(),
+            None,
+            cache_size_mb,
+        ) {
+            Ok(state) => state,
+            Err(err) => {
+                eprintln!(
+                    "Failed to open public-history source at {}: {}",
+                    source_dir.display(),
+                    err
+                );
+                return Some(1);
+            }
+        };
+        let target = match open_public_history_reader(
+            &target_dir,
+            target_cold_store.as_deref(),
+            secondary_dir.as_deref(),
+            cache_size_mb,
+        ) {
+            Ok(state) => state,
+            Err(err) => {
+                eprintln!(
+                    "Failed to open public-history target at {}: {}",
+                    target_dir.display(),
+                    err
+                );
+                return Some(1);
+            }
+        };
+        let source_manifest = match source.compute_public_history_manifest(&categories, chunk_size)
+        {
+            Ok(manifest) => manifest,
+            Err(err) => {
+                eprintln!("Failed to compute source public-history manifest: {err}");
+                return Some(1);
+            }
+        };
+        let target_manifest = match target.compute_public_history_manifest(&categories, chunk_size)
+        {
+            Ok(manifest) => manifest,
+            Err(err) => {
+                eprintln!("Failed to compute target public-history manifest: {err}");
+                return Some(1);
+            }
+        };
+        let matches = source_manifest == target_manifest;
+        let report = PublicHistoryParityCliReport {
+            source_dir: source_dir.display().to_string(),
+            target_dir: target_dir.display().to_string(),
+            source_cold_store: source_cold_store
+                .as_ref()
+                .map(|path| path.display().to_string()),
+            target_cold_store: target_cold_store
+                .as_ref()
+                .map(|path| path.display().to_string()),
+            chunk_size,
+            matches,
+            source_manifest_root: hex::encode(source_manifest.root),
+            target_manifest_root: hex::encode(target_manifest.root),
+            categories: compare_public_history_manifests(&source_manifest, &target_manifest),
+        };
+        match print_json_report(&report) {
+            Ok(()) if matches => Some(0),
+            Ok(()) => Some(1),
+            Err(err) => {
+                eprintln!("{err}");
+                Some(1)
+            }
+        }
+    } else if let Some(source_dir) = repair_source {
+        let execute = has_flag(args, "--execute");
+        let dry_run = has_flag(args, "--dry-run") || !execute;
+        if execute && has_flag(args, "--dry-run") {
+            eprintln!("--execute and --dry-run are mutually exclusive");
+            return Some(2);
+        }
+        if execute {
+            let confirm = get_flag_value(args, &["--confirm"]);
+            if confirm != Some(PUBLIC_HISTORY_REPAIR_CONFIRMATION) {
+                eprintln!("Refusing write without --confirm {PUBLIC_HISTORY_REPAIR_CONFIRMATION}");
+                return Some(1);
+            }
+            if target_cold_store.is_none() {
+                eprintln!("Refusing public-history repair execution without --cold-store");
+                return Some(1);
+            }
+            if secondary_dir.is_some() {
+                eprintln!("--secondary-dir is only valid with dry-run or manifest diagnostics");
+                return Some(2);
+            }
+        }
+
+        let mut source = match StateStore::open_read_only_with_cache_mb(&source_dir, cache_size_mb)
+        {
+            Ok(state) => state,
+            Err(err) => {
+                eprintln!(
+                    "Failed to open public-history source DB read-only at {}: {}",
+                    source_dir.display(),
+                    err
+                );
+                return Some(1);
+            }
+        };
+        if let Some(source_cold_path) = source_cold_store.as_deref() {
+            if let Err(err) = source.open_cold_store_read_only(source_cold_path) {
+                eprintln!(
+                    "Failed to open source cold store read-only at {}: {}",
+                    source_cold_path.display(),
+                    err
+                );
+                return Some(1);
+            }
+        }
+
+        let mut target = if dry_run {
+            match open_public_history_reader(
+                &target_dir,
+                target_cold_store.as_deref(),
+                secondary_dir.as_deref(),
+                cache_size_mb,
+            ) {
+                Ok(state) => state,
+                Err(err) => {
+                    eprintln!(
+                        "Failed to open public-history target at {}: {}",
+                        target_dir.display(),
+                        err
+                    );
+                    return Some(1);
+                }
+            }
+        } else {
+            match StateStore::open_with_cache_mb(&target_dir, cache_size_mb) {
+                Ok(state) => state,
+                Err(err) => {
+                    eprintln!(
+                        "Failed to open public-history target DB at {}: {}",
+                        target_dir.display(),
+                        err
+                    );
+                    return Some(1);
+                }
+            }
+        };
+        if !dry_run {
+            if let Some(cold_path) = target_cold_store.as_deref() {
+                if let Err(err) = target.open_cold_store(cold_path) {
+                    eprintln!(
+                        "Failed to open target cold store at {}: {}",
+                        cold_path.display(),
+                        err
+                    );
+                    return Some(1);
+                }
+            }
+        }
+
+        let source_manifest = match source.compute_public_history_manifest(&categories, chunk_size)
+        {
+            Ok(manifest) => manifest,
+            Err(err) => {
+                eprintln!("Failed to compute source public-history manifest: {err}");
+                return Some(1);
+            }
+        };
+        let target_before_manifest =
+            match target.compute_public_history_manifest(&categories, chunk_size) {
+                Ok(manifest) => manifest,
+                Err(err) => {
+                    eprintln!("Failed to compute target public-history manifest: {err}");
+                    return Some(1);
+                }
+            };
+
+        let (category_reports, cleared_account_tx_counters) =
+            match repair_public_history_from_source(
+                &source,
+                &target,
+                &categories,
+                chunk_size,
+                dry_run,
+            ) {
+                Ok(report) => report,
+                Err(err) => {
+                    eprintln!("Failed to repair public history: {err}");
+                    return Some(1);
+                }
+            };
+
+        let source_rows = category_reports
+            .iter()
+            .map(|report| report.source_rows)
+            .sum();
+        let source_bytes = category_reports
+            .iter()
+            .map(|report| report.source_bytes)
+            .sum();
+        let inserted_rows = category_reports
+            .iter()
+            .map(|report| report.inserted_rows)
+            .sum();
+        let inserted_bytes = category_reports
+            .iter()
+            .map(|report| report.inserted_bytes)
+            .sum();
+        let identical_rows = category_reports
+            .iter()
+            .map(|report| report.identical_rows)
+            .sum();
+        let conflict_rows = category_reports
+            .iter()
+            .map(|report| report.conflict_rows)
+            .sum();
+
+        let target_after_manifest = if dry_run {
+            None
+        } else {
+            match target.compute_public_history_manifest(&categories, chunk_size) {
+                Ok(manifest) => Some(hex::encode(manifest.root)),
+                Err(err) => {
+                    eprintln!("Failed to compute post-repair target manifest: {err}");
+                    return Some(1);
+                }
+            }
+        };
+
+        let report = PublicHistoryRepairCliReport {
+            source_dir: source_dir.display().to_string(),
+            target_dir: target_dir.display().to_string(),
+            source_cold_store: source_cold_store
+                .as_ref()
+                .map(|path| path.display().to_string()),
+            target_cold_store: target_cold_store
+                .as_ref()
+                .map(|path| path.display().to_string()),
+            mode: if dry_run {
+                "dry-run".to_string()
+            } else {
+                "execute".to_string()
+            },
+            chunk_size,
+            source_manifest_root: hex::encode(source_manifest.root),
+            target_before_manifest_root: hex::encode(target_before_manifest.root),
+            target_after_manifest_root: target_after_manifest,
+            source_rows,
+            source_bytes,
+            inserted_rows,
+            inserted_bytes,
+            identical_rows,
+            conflict_rows,
+            cleared_account_tx_counters,
+            categories: category_reports,
+        };
+        match print_json_report(&report) {
+            Ok(()) if conflict_rows == 0 => Some(0),
+            Ok(()) => Some(1),
+            Err(err) => {
+                eprintln!("{err}");
+                Some(1)
+            }
+        }
+    } else {
+        None
+    }
+}
+
 fn print_public_history_merge_report(report: &lichen_core::state::PublicHistoryMergeReport) {
     println!("dry_run={}", report.dry_run);
     println!("used_cold_store={}", report.used_cold_store);
@@ -12634,7 +16435,7 @@ fn genesis_bootstrap_rpc_allowed(network: &str, rpc_url: &str) -> bool {
     }
 }
 
-fn persist_bootstrapped_genesis_config(
+fn persist_genesis_config_durable(
     data_dir_genesis: &Path,
     config: &GenesisConfig,
 ) -> Result<(), String> {
@@ -12652,22 +16453,55 @@ fn persist_bootstrapped_genesis_config(
         )
     })?;
 
-    let json = serde_json::to_string_pretty(config)
-        .map_err(|e| format!("Failed to serialize bootstrapped genesis config: {}", e))?;
-    if fs::read_to_string(data_dir_genesis)
+    let json = serde_json::to_vec_pretty(config)
+        .map_err(|e| format!("Failed to serialize genesis config: {}", e))?;
+    if fs::read(data_dir_genesis)
         .map(|existing| existing == json)
         .unwrap_or(false)
     {
         return Ok(());
     }
-    fs::write(data_dir_genesis, json).map_err(|e| {
-        format!(
-            "Failed to persist bootstrapped genesis config {}: {}",
-            data_dir_genesis.display(),
-            e
-        )
-    })?;
-    Ok(())
+
+    let file_name = data_dir_genesis
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("genesis.json");
+    let tmp_path = data_dir_genesis.with_file_name(format!(".{file_name}.tmp"));
+    let result = (|| {
+        let mut file = fs::File::create(&tmp_path).map_err(|e| {
+            format!(
+                "Failed to create temporary genesis config {}: {}",
+                tmp_path.display(),
+                e
+            )
+        })?;
+        file.write_all(&json).map_err(|e| {
+            format!(
+                "Failed to write temporary genesis config {}: {}",
+                tmp_path.display(),
+                e
+            )
+        })?;
+        file.sync_all().map_err(|e| {
+            format!(
+                "Failed to fsync temporary genesis config {}: {}",
+                tmp_path.display(),
+                e
+            )
+        })?;
+        fs::rename(&tmp_path, data_dir_genesis).map_err(|e| {
+            format!(
+                "Failed to publish genesis config {}: {}",
+                data_dir_genesis.display(),
+                e
+            )
+        })?;
+        fsync_parent_dir(data_dir_genesis)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp_path);
+    }
+    result
 }
 
 fn instruction_data_bytes(data: &JsonValue) -> Option<Vec<u8>> {
@@ -12865,7 +16699,7 @@ async fn load_startup_genesis_config_or_bootstrap(
                         seeds_path.display()
                     ));
                 }
-                persist_bootstrapped_genesis_config(data_dir_genesis, &config)?;
+                persist_genesis_config_durable(data_dir_genesis, &config)?;
                 info!(
                     "✓ Bootstrapped authoritative genesis config for {} from {}",
                     config.chain_id, rpc_url
@@ -12933,6 +16767,85 @@ fn production_archive_requirement_error(args: &[String]) -> Option<String> {
     ))
 }
 
+fn validate_mainnet_archive_contiguous_tip(
+    state: &StateStore,
+    chain_id: &str,
+) -> Result<(), String> {
+    if !chain_id.to_ascii_lowercase().contains("mainnet") {
+        return Ok(());
+    }
+
+    let tip = state.get_last_slot()?;
+    let genesis = state.get_block_by_slot(0)?;
+    if tip == 0 && genesis.is_none() {
+        return Ok(());
+    }
+    let (contiguous_slot, contiguous_hash) =
+        state.get_archive_contiguous_tip()?.ok_or_else(|| {
+            "mainnet archive has no durable genesis-to-tip contiguity proof".to_string()
+        })?;
+    if contiguous_slot != tip {
+        return Err(format!(
+            "mainnet archive contiguity proof stops at slot {}, but canonical tip is {}",
+            contiguous_slot, tip
+        ));
+    }
+    let tip_block = state
+        .get_block_by_slot(tip)?
+        .ok_or_else(|| format!("mainnet canonical tip block {} is missing", tip))?;
+    let tip_hash = tip_block.hash();
+    if contiguous_hash != tip_hash {
+        return Err(format!(
+            "mainnet archive contiguity hash mismatch at slot {}: marker={} block={}",
+            tip,
+            contiguous_hash.to_hex(),
+            tip_hash.to_hex()
+        ));
+    }
+    validate_snapshot_archive_completeness(state, tip).map_err(|err| {
+        format!("mainnet genesis-to-tip archive verification failed at startup: {err}")
+    })?;
+    for child_slot in 2..=tip {
+        let parent = state
+            .get_block_by_slot(child_slot - 1)?
+            .ok_or_else(|| format!("mainnet parent block {} is missing", child_slot - 1))?;
+        let child = state
+            .get_block_by_slot(child_slot)?
+            .ok_or_else(|| format!("mainnet child block {} is missing", child_slot))?;
+        let consensus_transactions: Vec<_> = child
+            .transactions
+            .iter()
+            .enumerate()
+            .filter(|(_, transaction)| transaction.is_consensus())
+            .collect();
+        if consensus_transactions.len() != 1 || consensus_transactions[0].0 != 0 {
+            return Err(format!(
+                "mainnet block {} does not contain exactly one canonical parent commit transaction at index 0",
+                child_slot
+            ));
+        }
+        let certificate = CanonicalCommitCertificate::from_transaction(
+            consensus_transactions[0].1,
+        )?
+        .ok_or_else(|| {
+            format!(
+                "mainnet block {} canonical parent commit is missing",
+                child_slot
+            )
+        })?;
+        certificate.verify_child_metadata(&child.tx_fees_paid, &child.oracle_prices)?;
+        certificate
+            .verify_parent(&parent, chain_id, MIN_VALIDATOR_STAKE)
+            .map_err(|err| {
+                format!(
+                    "mainnet block {} canonical parent commit verification failed: {}",
+                    child_slot, err
+                )
+            })?;
+    }
+    Ok(())
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 //  SUPERVISOR — wraps the validator in a restart loop.
 //  When the internal watchdog detects a stall it exits with EXIT_CODE_RESTART;
@@ -12973,6 +16886,12 @@ fn main() {
     if let Some(exit_code) = maybe_run_stake_pool_digest_admin(&args) {
         std::process::exit(exit_code);
     }
+    if let Some(exit_code) = maybe_run_post_block_effects_activation_admin(&args) {
+        std::process::exit(exit_code);
+    }
+    if let Some(exit_code) = maybe_run_recent_post_block_effects_repair_admin(&args) {
+        std::process::exit(exit_code);
+    }
     if let Some(exit_code) = maybe_run_warp_snapshot_roundtrip_admin(&args) {
         std::process::exit(exit_code);
     }
@@ -12989,6 +16908,21 @@ fn main() {
         std::process::exit(exit_code);
     }
     if let Some(exit_code) = maybe_run_governed_proposal_tx_backfill_admin(&args) {
+        std::process::exit(exit_code);
+    }
+    if let Some(exit_code) = maybe_run_contiguous_block_range_admin(&args) {
+        std::process::exit(exit_code);
+    }
+    if let Some(exit_code) = maybe_run_raw_block_history_repair_admin(&args) {
+        std::process::exit(exit_code);
+    }
+    if let Some(exit_code) = maybe_run_cold_migration_admin(&args) {
+        std::process::exit(exit_code);
+    }
+    if let Some(exit_code) = maybe_run_public_history_page_admin(&args) {
+        std::process::exit(exit_code);
+    }
+    if let Some(exit_code) = maybe_run_public_history_archive_admin(&args) {
         std::process::exit(exit_code);
     }
     if let Some(exit_code) = maybe_run_public_history_merge_admin(&args) {
@@ -13151,6 +17085,13 @@ fn main() {
                 // Exponential backoff capped at 30s, reset after 3 successful minutes
                 backoff_secs = (backoff_secs * 2).min(30);
             }
+            Some(EXIT_CODE_FATAL_STARTUP) => {
+                error!(
+                    "Validator reported a persistent startup/runtime safety failure (exit {}) — refusing supervisor restart",
+                    EXIT_CODE_FATAL_STARTUP
+                );
+                std::process::exit(EXIT_CODE_FATAL_STARTUP);
+            }
             Some(code) => {
                 restart_count += 1;
                 if restart_count >= max_restarts {
@@ -13212,7 +17153,7 @@ fn run_validator_sync() {
         Ok(runtime) => runtime,
         Err(err) => {
             eprintln!("Failed to build tokio runtime: {}", err);
-            return;
+            std::process::exit(EXIT_CODE_FATAL_STARTUP);
         }
     };
     eprintln!("Tokio runtime: {} worker threads", worker_threads);
@@ -13224,7 +17165,7 @@ async fn run_validator() {
     // ── Logging ──
     // Parse data-dir early so we can place log files inside it.
     let pre_args: Vec<String> = env::args().collect();
-    let pre_data_dir = get_flag_value(&pre_args, &["--db-path", "--db", "--data-dir"])
+    let pre_data_dir = get_flag_value(&pre_args, &["--db-path"])
         .map(|s| s.to_string())
         .unwrap_or_else(|| {
             let port = get_flag_value(&pre_args, &["--p2p-port"])
@@ -13302,10 +17243,10 @@ async fn run_validator() {
         .and_then(|s| s.parse::<u16>().ok())
         .unwrap_or(7001);
 
-    // Parse --db-path / --db / --data-dir flag or use default based on network
+    // Parse the canonical --db-path flag or use the network-based default.
     // F-12 audit fix: Use network name (testnet/mainnet) for default path
     // instead of port number, matching lichen-start.sh convention.
-    let data_dir = get_flag_value(&args, &["--db-path", "--db", "--data-dir"])
+    let data_dir = get_flag_value(&args, &["--db-path"])
         .map(|s| s.to_string())
         .unwrap_or_else(|| {
             if let Some(ref net) = network_arg {
@@ -13328,6 +17269,20 @@ async fn run_validator() {
     });
     let data_dir = data_dir_path.to_string_lossy().to_string();
     info!("📂 Data directory: {}", data_dir);
+
+    if !dev_mode {
+        match require_runtime_disk_headroom(&data_dir_path) {
+            Ok(available) => info!(
+                "Disk headroom preflight passed: {} available bytes",
+                available
+            ),
+            Err(err) => {
+                error!("FATAL: validator disk headroom preflight failed: {}", err);
+                std::process::exit(EXIT_CODE_FATAL_STARTUP);
+            }
+        }
+        spawn_runtime_disk_guard(data_dir_path.clone());
+    }
 
     let signer_bind = match env::var("LICHEN_SIGNER_BIND") {
         Ok(value) if value.eq_ignore_ascii_case("off") => None,
@@ -13397,7 +17352,7 @@ async fn run_validator() {
         Ok(keypair) => keypair,
         Err(err) => {
             error!("Failed to load or generate validator keypair: {}", err);
-            std::process::exit(1);
+            std::process::exit(EXIT_CODE_FATAL_STARTUP);
         }
     };
 
@@ -13405,10 +17360,8 @@ async fn run_validator() {
     let cache_size_mb: Option<usize> =
         get_flag_value(&args, &["--cache-size-mb"]).and_then(|s| s.parse().ok());
 
-    if let Err(e) = recover_incomplete_snapshot_live_apply(&data_dir, cache_size_mb) {
-        error!("FATAL: snapshot live-apply recovery failed: {}", e);
-        return;
-    }
+    let cold_store_path: Option<String> =
+        get_flag_value(&args, &["--cold-store"]).map(|s| s.to_string());
     match cleanup_stale_snapshot_staging_dirs(&data_dir) {
         Ok(removed) if removed > 0 => {
             info!(
@@ -13419,7 +17372,16 @@ async fn run_validator() {
             );
         }
         Ok(_) => {}
-        Err(err) => warn!("⚠️  Failed stale snapshot staging cleanup: {}", err),
+        Err(err) => {
+            error!("FATAL: failed stale snapshot staging cleanup: {}", err);
+            std::process::exit(EXIT_CODE_FATAL_STARTUP);
+        }
+    }
+    if let Err(e) =
+        recover_incomplete_snapshot_live_apply(&data_dir, cache_size_mb, cold_store_path.as_deref())
+    {
+        error!("FATAL: snapshot live-apply recovery failed: {}", e);
+        std::process::exit(EXIT_CODE_FATAL_STARTUP);
     }
 
     // Open state database
@@ -13427,16 +17389,14 @@ async fn run_validator() {
         Ok(s) => s,
         Err(e) => {
             error!("Failed to open state: {}", e);
-            return;
+            std::process::exit(EXIT_CODE_FATAL_STARTUP);
         }
     };
 
-    let cold_store_path: Option<String> =
-        get_flag_value(&args, &["--cold-store"]).map(|s| s.to_string());
     if let Some(ref cold_path) = cold_store_path {
         if let Err(e) = state.open_cold_store(cold_path) {
             error!("Failed to open cold store at {}: {}", cold_path, e);
-            return;
+            std::process::exit(EXIT_CODE_FATAL_STARTUP);
         }
     }
 
@@ -13451,7 +17411,7 @@ async fn run_validator() {
         Ok(value) => value,
         Err(err) => {
             error!("Failed to evaluate partial genesis recovery: {}", err);
-            return;
+            std::process::exit(EXIT_CODE_FATAL_STARTUP);
         }
     };
 
@@ -13463,20 +17423,20 @@ async fn run_validator() {
 
         if let Err(e) = scrub_partial_genesis_state(&data_dir_path) {
             error!("Failed to scrub partial genesis state: {}", e);
-            return;
+            std::process::exit(EXIT_CODE_FATAL_STARTUP);
         }
 
         state = match StateStore::open_with_cache_mb(&data_dir, cache_size_mb) {
             Ok(s) => s,
             Err(e) => {
                 error!("Failed to reopen state after partial genesis scrub: {}", e);
-                return;
+                std::process::exit(EXIT_CODE_FATAL_STARTUP);
             }
         };
         if let Some(ref cold_path) = cold_store_path {
             if let Err(e) = state.open_cold_store(cold_path) {
                 error!("Failed to reopen cold store at {}: {}", cold_path, e);
-                return;
+                std::process::exit(EXIT_CODE_FATAL_STARTUP);
             }
         }
     } else {
@@ -13540,7 +17500,7 @@ async fn run_validator() {
     // canonical genesis config from trusted seed RPC metadata, then replay the
     // chain state from P2P blocks instead of receiving a copied database.
     let startup_seed_candidates = startup_seed_candidates(&data_dir_path);
-    let genesis_config = match load_startup_genesis_config_or_bootstrap(
+    let loaded_genesis_config = match load_startup_genesis_config_or_bootstrap(
         genesis_path.as_deref(),
         &data_dir_genesis,
         network_arg.as_deref(),
@@ -13555,6 +17515,23 @@ async fn run_validator() {
             return;
         }
     };
+    let genesis_config = match canonicalize_startup_genesis_config(
+        &state,
+        loaded_genesis_config,
+        genesis_path.as_deref(),
+        &data_dir_genesis,
+        dev_mode,
+    ) {
+        Ok(config) => config,
+        Err(err) => {
+            error!("FATAL: genesis config parity check failed: {}", err);
+            return;
+        }
+    };
+    if let Err(err) = validate_mainnet_archive_contiguous_tip(&state, &genesis_config.chain_id) {
+        error!("FATAL: archive contiguity gate failed: {}", err);
+        return;
+    }
 
     let runtime_genesis_config = Arc::new(RwLock::new(genesis_config.clone()));
     if let Err(err) = state.put_metadata(CHAIN_ID_METADATA_KEY, genesis_config.chain_id.as_bytes())
@@ -14343,7 +18320,6 @@ async fn run_validator() {
             }
         }
     }
-
     // ============================================================================
     // VALIDATOR REGISTRATION CHECK
     // ============================================================================
@@ -14623,10 +18599,27 @@ async fn run_validator() {
         }
     };
 
+    let post_block_effects_activation_slot = match initialize_post_block_effects_activation_slot(
+        &state, dev_mode,
+    ) {
+        Ok(slot) => {
+            info!(
+                    "Post-block effects recovery activation starts at slot {}; earlier slots require quorum-verified state alignment and will never be inferred from absent markers",
+                    slot
+                );
+            slot
+        }
+        Err(e) => {
+            error!("Failed to initialize post-block recovery activation: {}", e);
+            std::process::exit(EXIT_CODE_FATAL_STARTUP);
+        }
+    };
+
     if let Err(e) = recover_tip_post_block_effects_if_needed(
         &state,
         &validator_set,
         &stake_pool,
+        post_block_effects_activation_slot,
         min_validator_stake,
         genesis_config.consensus.slot_duration_ms.max(1),
     )
@@ -14639,6 +18632,7 @@ async fn run_validator() {
         &state,
         &validator_set,
         &stake_pool,
+        post_block_effects_activation_slot,
         min_validator_stake,
         RECENT_POST_BLOCK_EFFECTS_RECOVERY_WINDOW,
         "Startup recent-window recovery",
@@ -14784,20 +18778,14 @@ async fn run_validator() {
         }
     };
 
-    {
-        let validator_set_for_consensus_activity = validator_set.clone();
-        tokio::spawn(async move {
-            while let Some(activity) = consensus_activity_rx.recv().await {
-                let mut live_vs = validator_set_for_consensus_activity.write().await;
-                let _ = note_validator_activity(
-                    &mut live_vs,
-                    &activity.validator,
-                    activity.slot,
-                    false,
-                );
-            }
-        });
-    }
+    tokio::spawn(async move {
+        while let Some(activity) = consensus_activity_rx.recv().await {
+            debug!(
+                "Observed peer-local consensus activity validator={} slot={}",
+                activity.validator, activity.slot
+            );
+        }
+    });
 
     // Create sync manager
     let sync_manager = Arc::new(SyncManager::new());
@@ -14968,6 +18956,7 @@ async fn run_validator() {
     if needs_genesis {
         if let Some(ref pm) = p2p_peer_manager {
             info!("📡 Requesting genesis block (slot 0) from network");
+            sync_manager.mark_requested(0).await;
             let request_msg = P2PMessage::new(
                 MessageType::BlockRangeRequest {
                     start_slot: 0,
@@ -14976,7 +18965,6 @@ async fn run_validator() {
                 p2p_config.listen_addr,
             );
             pm.broadcast(request_msg).await;
-            sync_manager.mark_requested(0).await;
         }
     }
 
@@ -14984,6 +18972,7 @@ async fn run_validator() {
         if let Some(ref pm) = p2p_peer_manager {
             let state_for_genesis_retry = state.clone();
             let peer_mgr_for_genesis_retry = pm.clone();
+            let sync_manager_for_genesis_retry = sync_manager.clone();
             let local_addr_for_genesis_retry = p2p_config.listen_addr;
             tokio::spawn(async move {
                 let mut interval = time::interval(Duration::from_secs(5));
@@ -14996,6 +18985,7 @@ async fn run_validator() {
                     // Always re-request genesis block — the initial broadcast
                     // may have fired before P2P connections were established,
                     // so we must retry unconditionally until it arrives.
+                    sync_manager_for_genesis_retry.mark_requested(0).await;
                     let request = P2PMessage::new(
                         MessageType::BlockRangeRequest {
                             start_slot: 0,
@@ -15039,7 +19029,6 @@ async fn run_validator() {
     // Start incoming block handler with voting
     if let Some(ref p2p_pm) = p2p_peer_manager {
         let state_for_blocks = state.clone();
-        let validator_pubkey_for_blocks = validator_pubkey;
         // VOTE-AUTHORITY: Signing key is now owned by VoteAuthority — no need
         // for validator_seed in the block receiver task.
         let sync_mgr = sync_manager.clone();
@@ -15130,6 +19119,7 @@ async fn run_validator() {
                             let pool = stake_pool_for_blocks.read().await;
                             if let Err(err) =
                                 verify_synced_block_consensus_authenticity_with_chain_id(
+                                    &state_for_blocks,
                                     &pending_block,
                                     &vs,
                                     &pool,
@@ -15155,11 +19145,26 @@ async fn run_validator() {
                                 false,
                             ) {
                                 warn!("{}", err);
-                                error!(
-                                    "FATAL: refusing to replay pending block {} into canonical state after staging state-root mismatch",
+                                warn!(
+                                    "⚠️  Rejecting pending block {} after staged state-root mismatch; switching to verified checkpoint repair",
                                     pending_slot
                                 );
-                                std::process::exit(1);
+                                sync_mgr.set_sync_mode(sync::SyncMode::Warp).await;
+                                sync_mgr.complete_sync().await;
+                                sync_mgr.record_sync_failure().await;
+                                sync_mgr.clear_requested_slots().await;
+                                sync_mgr.clear_pending_blocks().await;
+                                snapshot_sync_for_blocks
+                                    .lock()
+                                    .await
+                                    .mark_checkpoint_repair_pending();
+                                request_checkpoint_metadata_from_peers(
+                                    &peer_mgr_for_sync,
+                                    local_addr,
+                                    "pending state-root mismatch",
+                                )
+                                .await;
+                                continue;
                             }
                         }
                         if state_for_blocks
@@ -15220,6 +19225,7 @@ async fn run_validator() {
                         if !genesis_ready {
                             if !genesis_sync_in_progress_for_blocks.load(Ordering::Acquire) {
                                 info!("📡 Periodic sync: requesting genesis block (slot 0)");
+                                sync_mgr.mark_requested(0).await;
                                 let request_msg = P2PMessage::new(
                                     MessageType::BlockRangeRequest {
                                         start_slot: 0,
@@ -15282,7 +19288,8 @@ async fn run_validator() {
                                 continue;
                             }
                             let sync_peer_manager = Some(peer_mgr_for_sync.clone());
-                            request_block_range_from_peers(
+                            request_unrequested_block_range_from_peers(
+                                &sync_mgr,
                                 &sync_peer_manager,
                                 local_addr,
                                 start,
@@ -15290,9 +19297,6 @@ async fn run_validator() {
                                 "periodic",
                             )
                             .await;
-                            for slot in start..=end {
-                                sync_mgr.mark_requested(slot).await;
-                            }
 
                             // Spawn completion handler (same pattern as main sync path).
                             // Without this, is_syncing stays true forever and blocks
@@ -15329,7 +19333,17 @@ async fn run_validator() {
                     else => break,
                 };
                 let block_slot = block.header.slot;
-                let block_has_user_transactions = !block.transactions.is_empty();
+                let block_has_user_transactions = block
+                    .transactions
+                    .iter()
+                    .any(|transaction| !transaction.is_consensus());
+                if is_sync_block && !sync_mgr.is_requested(block_slot).await {
+                    debug!(
+                        "⏭️  Ignoring unrequested sync block {} from stale range response",
+                        block_slot
+                    );
+                    continue;
+                }
 
                 // ── Block validation (T2.2) ──────────────────────────
                 // Verify producer signature and structural limits BEFORE
@@ -15471,7 +19485,14 @@ async fn run_validator() {
                                             lichen_core::Message::new(vec![ix], tip_block.hash());
                                         let mut tx = Transaction::new(msg);
                                         let kp = Keypair::from_seed(&slash_keypair_seed_for_blocks);
-                                        let sig = kp.sign(&tx.message.serialize());
+                                        let chain_id = runtime_genesis_config_for_blocks
+                                            .read()
+                                            .await
+                                            .chain_id
+                                            .clone();
+                                        let sig = kp.sign(
+                                            &tx.message.signing_bytes_for_chain_id(&chain_id),
+                                        );
                                         tx.signatures.push(sig);
                                         {
                                             let mut pool = mempool_for_slash_blocks.lock().await;
@@ -16506,6 +20527,7 @@ async fn run_validator() {
                                 let pool = stake_pool_for_blocks.read().await;
                                 if let Err(err) =
                                     verify_synced_block_consensus_authenticity_with_chain_id(
+                                        &state_for_blocks,
                                         &pending_block,
                                         &vs,
                                         &pool,
@@ -16532,11 +20554,26 @@ async fn run_validator() {
                                     false,
                                 ) {
                                     warn!("{}", err);
-                                    error!(
-                                        "FATAL: refusing to replay pending block {} into canonical state after staging state-root mismatch",
+                                    warn!(
+                                        "⚠️  Rejecting pending block {} after staged state-root mismatch; switching to verified checkpoint repair",
                                         pending_slot
                                     );
-                                    std::process::exit(1);
+                                    sync_mgr.set_sync_mode(sync::SyncMode::Warp).await;
+                                    sync_mgr.complete_sync().await;
+                                    sync_mgr.record_sync_failure().await;
+                                    sync_mgr.clear_requested_slots().await;
+                                    sync_mgr.clear_pending_blocks().await;
+                                    snapshot_sync_for_blocks
+                                        .lock()
+                                        .await
+                                        .mark_checkpoint_repair_pending();
+                                    request_checkpoint_metadata_from_peers(
+                                        &peer_mgr_for_sync,
+                                        local_addr,
+                                        "pending state-root mismatch",
+                                    )
+                                    .await;
+                                    continue;
                                 }
                             }
                             if state_for_blocks
@@ -16659,7 +20696,8 @@ async fn run_validator() {
                         }
 
                         let sync_peer_manager = Some(peer_mgr_for_sync.clone());
-                        request_block_range_from_peers(
+                        request_unrequested_block_range_from_peers(
+                            &sync_mgr,
                             &sync_peer_manager,
                             local_addr,
                             start,
@@ -16788,7 +20826,11 @@ async fn run_validator() {
                             let pool = stake_pool_for_blocks.read().await;
                             if let Err(err) =
                                 verify_synced_block_consensus_authenticity_with_chain_id(
-                                    &block, &vs, &pool, &chain_id,
+                                    &state_for_blocks,
+                                    &block,
+                                    &vs,
+                                    &pool,
+                                    &chain_id,
                                 )
                             {
                                 warn!(
@@ -16810,31 +20852,27 @@ async fn run_validator() {
                                 false,
                             ) {
                                 warn!("{}", err);
-                                if is_sync_block {
-                                    warn!(
-                                        "⚠️  Rejecting synced block {} after staged state-root mismatch; switching to verified checkpoint repair",
-                                        block_slot
-                                    );
-                                    sync_mgr.set_sync_mode(sync::SyncMode::Warp).await;
-                                    sync_mgr.complete_sync().await;
-                                    sync_mgr.record_sync_failure().await;
-                                    snapshot_sync_for_blocks
-                                        .lock()
-                                        .await
-                                        .mark_checkpoint_repair_pending();
-                                    request_checkpoint_metadata_from_peers(
-                                        &peer_mgr_for_sync,
-                                        local_addr,
-                                        "sync state-root mismatch",
-                                    )
-                                    .await;
-                                    continue;
-                                }
-                                error!(
-                                    "FATAL: refusing to replay synced block {} into canonical state after staging state-root mismatch",
+                                warn!(
+                                    "⚠️  Rejecting {} block {} after staged state-root mismatch; switching to verified checkpoint repair",
+                                    if is_sync_block { "synced" } else { "gossip" },
                                     block_slot
                                 );
-                                std::process::exit(1);
+                                sync_mgr.set_sync_mode(sync::SyncMode::Warp).await;
+                                sync_mgr.complete_sync().await;
+                                sync_mgr.record_sync_failure().await;
+                                sync_mgr.clear_requested_slots().await;
+                                sync_mgr.clear_pending_blocks().await;
+                                snapshot_sync_for_blocks
+                                    .lock()
+                                    .await
+                                    .mark_checkpoint_repair_pending();
+                                request_checkpoint_metadata_from_peers(
+                                    &peer_mgr_for_sync,
+                                    local_addr,
+                                    "block state-root mismatch",
+                                )
+                                .await;
+                                continue;
                             }
                         }
                         if state_for_blocks
@@ -16929,16 +20967,6 @@ async fn run_validator() {
                                         drop(pool);
                                     }
                                     // Drop agg + vs before broadcast
-                                }
-
-                                {
-                                    let mut vs = validator_set_for_blocks.write().await;
-                                    let _ = note_validator_activity(
-                                        &mut vs,
-                                        &validator_pubkey_for_blocks,
-                                        block_slot,
-                                        true,
-                                    );
                                 }
 
                                 // PERF-OPT 3: Fire-and-forget vote broadcast.
@@ -17080,33 +21108,29 @@ async fn run_validator() {
                         sync_mgr.add_pending_block(block).await;
 
                         if request_alternative_tip {
-                            let request_msg = P2PMessage::new(
-                                MessageType::BlockRangeRequest {
-                                    start_slot: current_slot,
-                                    end_slot: current_slot,
-                                },
+                            let sync_peer_manager = Some(peer_mgr_for_sync.clone());
+                            request_unrequested_block_range_from_peers(
+                                &sync_mgr,
+                                &sync_peer_manager,
                                 local_addr,
-                            );
-                            peer_mgr_for_sync.broadcast(request_msg).await;
+                                current_slot,
+                                current_slot,
+                                "alternative-tip",
+                            )
+                            .await;
                         }
 
                         if let Some((gap_start, gap_end)) = missing_gap {
-                            let mut chunk_start = gap_start;
-                            while chunk_start <= gap_end {
-                                let chunk_end = std::cmp::min(
-                                    chunk_start + sync::P2P_BLOCK_RANGE_LIMIT - 1,
-                                    gap_end,
-                                );
-                                let request_msg = P2PMessage::new(
-                                    MessageType::BlockRangeRequest {
-                                        start_slot: chunk_start,
-                                        end_slot: chunk_end,
-                                    },
-                                    local_addr,
-                                );
-                                peer_mgr_for_sync.broadcast(request_msg).await;
-                                chunk_start = chunk_end + 1;
-                            }
+                            let sync_peer_manager = Some(peer_mgr_for_sync.clone());
+                            request_unrequested_block_range_from_peers(
+                                &sync_mgr,
+                                &sync_peer_manager,
+                                local_addr,
+                                gap_start,
+                                gap_end,
+                                "parent-gap",
+                            )
+                            .await;
                         }
                     }
 
@@ -17122,6 +21146,7 @@ async fn run_validator() {
                             .is_some();
                     if !genesis_ready_for_sync {
                         if !genesis_sync_in_progress_for_blocks.load(Ordering::Acquire) {
+                            sync_mgr.mark_requested(0).await;
                             let request_msg = P2PMessage::new(
                                 MessageType::BlockRangeRequest {
                                     start_slot: 0,
@@ -17200,7 +21225,8 @@ async fn run_validator() {
                         // range requests.
                         //
                         let sync_peer_manager = Some(peer_mgr_for_sync.clone());
-                        request_block_range_from_peers(
+                        request_unrequested_block_range_from_peers(
+                            &sync_mgr,
                             &sync_peer_manager,
                             local_addr,
                             start,
@@ -17208,11 +21234,6 @@ async fn run_validator() {
                             "catch-up",
                         )
                         .await;
-
-                        // Mark slots as requested in sync manager
-                        for slot in start..=end {
-                            sync_mgr.mark_requested(slot).await;
-                        }
 
                         // Progress-based sync completion.
                         // Record the slot when sync started.  After a delay, check
@@ -17421,7 +21442,11 @@ async fn run_validator() {
                                     let pool = stake_pool_for_blocks.read().await;
                                     if let Err(err) =
                                         verify_synced_block_consensus_authenticity_with_chain_id(
-                                            &block, &vs, &pool, &chain_id,
+                                            &state_for_blocks,
+                                            &block,
+                                            &vs,
+                                            &pool,
+                                            &chain_id,
                                         )
                                     {
                                         warn!(
@@ -17455,11 +21480,56 @@ async fn run_validator() {
                                         false,
                                     ) {
                                         warn!("{}", err);
-                                        error!(
-                                            "FATAL: refusing to replay replacement block {} into canonical state after staging state-root mismatch",
+                                        warn!(
+                                            "⚠️  Rejecting replacement block {} after staged state-root mismatch; restoring canonical block and switching to verified checkpoint repair",
                                             block_slot
                                         );
-                                        std::process::exit(1);
+                                        if let Err(restore_err) =
+                                            validate_then_replay_block_transactions(
+                                                &state_for_blocks,
+                                                &existing,
+                                                "fork replacement rollback",
+                                                false,
+                                            )
+                                        {
+                                            warn!(
+                                                "⚠️  Failed to restore canonical block {} after rejected replacement: {}",
+                                                block_slot, restore_err
+                                            );
+                                        } else {
+                                            let slot_duration_ms =
+                                                runtime_genesis_config_for_blocks
+                                                    .read()
+                                                    .await
+                                                    .consensus
+                                                    .slot_duration_ms
+                                                    .max(1);
+                                            apply_post_block_effects_after_store(
+                                                &state_for_blocks,
+                                                &validator_set_for_blocks,
+                                                &stake_pool_for_blocks,
+                                                &existing,
+                                                min_validator_stake,
+                                                slot_duration_ms,
+                                            )
+                                            .await;
+                                        }
+                                        sync_mgr.set_sync_mode(sync::SyncMode::Warp).await;
+                                        sync_mgr.complete_sync().await;
+                                        sync_mgr.record_sync_failure().await;
+                                        sync_mgr.clear_requested_slots().await;
+                                        sync_mgr.clear_pending_blocks().await;
+                                        snapshot_sync_for_blocks
+                                            .lock()
+                                            .await
+                                            .mark_checkpoint_repair_pending();
+                                        request_checkpoint_metadata_from_peers(
+                                            &peer_mgr_for_sync,
+                                            local_addr,
+                                            "fork replacement state-root mismatch",
+                                        )
+                                        .await;
+                                        continue;
                                     }
                                 }
 
@@ -17568,6 +21638,7 @@ async fn run_validator() {
         // Start incoming transaction handler
         let mempool_for_txs = mempool.clone();
         let state_for_txs = state.clone();
+        let runtime_genesis_config_for_txs = runtime_genesis_config.clone();
         tokio::spawn(async move {
             info!("🔄 Transaction receiver started");
             while let Some(tx) = transaction_rx.recv().await {
@@ -17585,14 +21656,10 @@ async fn run_validator() {
                     );
                     continue;
                 }
-                // AUDIT-FIX 1.6: Validate transaction before adding to mempool
-                // 1. Verify all required signatures (first account of each instruction)
-                if !validate_p2p_transaction_signatures(&tx) {
-                    info!("❌ P2P transaction rejected: invalid or missing signature");
-                    continue;
-                }
-                // 2. Validate transaction structure (size limits, instruction count)
-                if let Err(e) = tx.validate_structure() {
+                let chain_id = runtime_genesis_config_for_txs.read().await.chain_id.clone();
+                if let Err(e) =
+                    validate_transaction_for_mempool_admission(&state_for_txs, &tx, &chain_id)
+                {
                     info!("❌ P2P transaction rejected: {}", e);
                     continue;
                 }
@@ -17623,6 +21690,7 @@ async fn run_validator() {
         let mempool_for_slash_votes = mempool.clone();
         let slash_keypair_seed_for_votes = validator_keypair.to_seed();
         let p2p_config_for_slash_votes = p2p_config.clone();
+        let runtime_genesis_config_for_votes = runtime_genesis_config.clone();
 
         tokio::spawn(async move {
             info!("🔄 Vote receiver started");
@@ -17710,7 +21778,13 @@ async fn run_validator() {
                                     let msg = lichen_core::Message::new(vec![ix], tip_block.hash());
                                     let mut tx = Transaction::new(msg);
                                     let kp = Keypair::from_seed(&slash_keypair_seed_for_votes);
-                                    let sig = kp.sign(&tx.message.serialize());
+                                    let chain_id = runtime_genesis_config_for_votes
+                                        .read()
+                                        .await
+                                        .chain_id
+                                        .clone();
+                                    let sig =
+                                        kp.sign(&tx.message.signing_bytes_for_chain_id(&chain_id));
                                     tx.signatures.push(sig);
                                     {
                                         let mut pool = mempool_for_slash_votes.lock().await;
@@ -17748,7 +21822,7 @@ async fn run_validator() {
                 }
 
                 let mut agg = vote_agg_for_handler.write().await;
-                let mut vs = validator_set_for_votes.write().await;
+                let vs = validator_set_for_votes.read().await;
                 let pool = stake_pool_for_votes.read().await;
                 if agg.add_vote_validated_with_min_stake(
                     vote.clone(),
@@ -17756,12 +21830,6 @@ async fn run_validator() {
                     &pool,
                     min_validator_stake,
                 ) {
-                    // STABILITY-FIX: A validated vote proves the validator is online
-                    // and actively processing blocks. Update last_active_slot so the
-                    // downtime detector doesn't falsely flag voting validators that
-                    // simply aren't the current block leader.
-                    let _ = note_validator_activity(&mut vs, &vote.validator, vote.slot, true);
-
                     // Vote added successfully, check if block reached finality
                     let vote_count = agg.vote_count(vote.slot, &vote.block_hash);
 
@@ -17849,9 +21917,8 @@ async fn run_validator() {
                     announcement.pubkey.to_base58()
                 );
 
-                let mut vs = validator_set_for_announce.write().await;
+                let vs = validator_set_for_announce.read().await;
                 let is_existing_validator = vs.get_validator(&announcement.pubkey).is_some();
-                let mut persist_validator_set = false;
 
                 if !is_existing_validator {
                     if let Err(error) = validate_new_validator_version(&announcement.version) {
@@ -17871,22 +21938,13 @@ async fn run_validator() {
                 // node's highest_seen_slot stays 0 after genesis and
                 // should_sync never fires.
                 sync_mgr_for_announce
-                    .note_seen_bounded(announcement.current_slot, 500)
+                    .note_authenticated_peer_tip_bounded(announcement.current_slot, 500)
                     .await;
 
                 // Check if validator already exists
                 if is_existing_validator {
                     peer_mgr_for_announce
                         .mark_validator(&announcement.peer_addr, announcement.pubkey);
-                    // Update existing validator's activity
-                    let _ = note_validator_activity(
-                        &mut vs,
-                        &announcement.pubkey,
-                        announcement.current_slot,
-                        false,
-                    );
-                    persist_validator_set = true;
-
                     // Announcements are peer-discovery metadata. Do not mutate
                     // the consensus StakePool from them: fingerprint registration
                     // and migration must be committed through canonical state so
@@ -17963,7 +22021,6 @@ async fn run_validator() {
                         &announcement.version,
                         &announcement.signature,
                         &announcement.machine_fingerprint,
-                        true,
                     ) {
                         warn!(
                             "⚠️  Rejecting announcement from {} — invalid version-bound signature",
@@ -18007,22 +22064,6 @@ async fn run_validator() {
                     }
                 }
 
-                if persist_validator_set {
-                    if let Err(e) = state_for_validators.save_validator_set(&vs) {
-                        warn!("⚠️  Failed to save validator set: {}", e);
-                    } else {
-                        let active = vs
-                            .validators()
-                            .iter()
-                            .filter(|v| !v.pending_activation)
-                            .count();
-                        let pending = vs.pending_count();
-                        info!(
-                            "✅ Updated validator set ({} active, {} pending)",
-                            active, pending
-                        );
-                    }
-                }
                 drop(vs);
             }
         });
@@ -18318,8 +22359,6 @@ async fn run_validator() {
         });
 
         // Start snapshot request handler
-        let validator_set_for_snapshot = validator_set.clone();
-        let stake_pool_for_snapshot = stake_pool.clone();
         let state_for_snapshot_serve = state.clone();
         let peer_mgr_for_snapshot = p2p_pm.clone();
         let local_addr_for_snapshot = p2p_config.listen_addr;
@@ -18427,26 +22466,17 @@ async fn run_validator() {
 
                 // Handle CheckpointMetaRequest
                 if request.is_meta_request {
-                    let recent_checkpoints = {
-                        let (vs, pool) = checkpoint_auth_snapshot(
-                            &validator_set_for_snapshot,
-                            &stake_pool_for_snapshot,
-                        )
-                        .await;
-                        verified_checkpoint_meta_anchors_cached(
-                            &mut verified_checkpoint_cache,
-                            &mut verified_checkpoint_refresh,
-                            CheckpointVerificationContext {
-                                data_dir: &data_dir_for_snapshot,
-                                state: &state_for_snapshot_serve,
-                                validator_set: &vs,
-                                stake_pool: &pool,
-                                chain_id: &chain_id_for_snapshot_serve,
-                                min_validator_stake,
-                            },
-                        )
-                        .await
-                    };
+                    let recent_checkpoints = verified_checkpoint_meta_anchors_cached(
+                        &mut verified_checkpoint_cache,
+                        &mut verified_checkpoint_refresh,
+                        CheckpointVerificationContext {
+                            data_dir: &data_dir_for_snapshot,
+                            state: &state_for_snapshot_serve,
+                            chain_id: &chain_id_for_snapshot_serve,
+                            min_validator_stake,
+                        },
+                    )
+                    .await;
                     let primary = recent_checkpoints.first();
                     let msg = P2PMessage::new(
                         MessageType::CheckpointMetaResponse {
@@ -18458,11 +22488,11 @@ async fn run_validator() {
                                 .map(|anchor| anchor.total_accounts)
                                 .unwrap_or(0),
                             checkpoint_header: primary
-                                .and_then(|anchor| anchor.checkpoint_header.clone()),
-                            commit_round: primary.map(|anchor| anchor.commit_round).unwrap_or(0),
-                            commit_signatures: primary
-                                .map(|anchor| anchor.commit_signatures.clone())
-                                .unwrap_or_default(),
+                                .map(|anchor| anchor.checkpoint_header.clone()),
+                            commit_certificate: primary
+                                .map(|anchor| anchor.commit_certificate.clone()),
+                            canonical_proof: primary
+                                .map(|anchor| Box::new(anchor.canonical_proof.clone())),
                             snapshot_manifest: primary
                                 .map(|anchor| anchor.snapshot_manifest.clone())
                                 .unwrap_or_default(),
@@ -18530,30 +22560,16 @@ async fn run_validator() {
                     let session = match snapshot_export_sessions.get(&session_key).cloned() {
                         Some(session) => session,
                         None => {
-                            let (vs, pool) = checkpoint_auth_snapshot(
-                                &validator_set_for_snapshot,
-                                &stake_pool_for_snapshot,
-                            )
-                            .await;
-                            match verified_checkpoint_for_anchor(
-                                &data_dir_for_snapshot,
-                                &state_for_snapshot_serve,
-                                &vs,
-                                &pool,
-                                &chain_id_for_snapshot_serve,
-                                min_validator_stake,
-                                CheckpointSnapshotRequestAnchor {
-                                    slot: requested_slot,
-                                    state_root: requested_state_root,
-                                    snapshot_manifest_root: requested_snapshot_manifest_root,
-                                },
-                            ) {
-                                Some((meta, checkpoint_path, _block, categories)) => {
-                                    let session = SnapshotExportSessionState {
-                                        checkpoint_path,
-                                        meta,
-                                        categories,
-                                    };
+                            match verified_checkpoint_cache.as_ref().and_then(|cache| {
+                                cache.snapshot_export_session_for_anchor(
+                                    CheckpointSnapshotRequestAnchor {
+                                        slot: requested_slot,
+                                        state_root: requested_state_root,
+                                        snapshot_manifest_root: requested_snapshot_manifest_root,
+                                    },
+                                )
+                            }) {
+                                Some(session) => {
                                     snapshot_export_sessions.insert(session_key, session.clone());
                                     session
                                 }
@@ -18837,26 +22853,17 @@ async fn run_validator() {
                     }
                     SnapshotKind::StateCheckpoint => {
                         // Generic StateCheckpoint request — respond with meta
-                        let recent_checkpoints = {
-                            let (vs, pool) = checkpoint_auth_snapshot(
-                                &validator_set_for_snapshot,
-                                &stake_pool_for_snapshot,
-                            )
-                            .await;
-                            verified_checkpoint_meta_anchors_cached(
-                                &mut verified_checkpoint_cache,
-                                &mut verified_checkpoint_refresh,
-                                CheckpointVerificationContext {
-                                    data_dir: &data_dir_for_snapshot,
-                                    state: &state_for_snapshot_serve,
-                                    validator_set: &vs,
-                                    stake_pool: &pool,
-                                    chain_id: &chain_id_for_snapshot_serve,
-                                    min_validator_stake,
-                                },
-                            )
-                            .await
-                        };
+                        let recent_checkpoints = verified_checkpoint_meta_anchors_cached(
+                            &mut verified_checkpoint_cache,
+                            &mut verified_checkpoint_refresh,
+                            CheckpointVerificationContext {
+                                data_dir: &data_dir_for_snapshot,
+                                state: &state_for_snapshot_serve,
+                                chain_id: &chain_id_for_snapshot_serve,
+                                min_validator_stake,
+                            },
+                        )
+                        .await;
                         let primary = recent_checkpoints.first();
                         P2PMessage::new(
                             MessageType::CheckpointMetaResponse {
@@ -18868,13 +22875,11 @@ async fn run_validator() {
                                     .map(|anchor| anchor.total_accounts)
                                     .unwrap_or(0),
                                 checkpoint_header: primary
-                                    .and_then(|anchor| anchor.checkpoint_header.clone()),
-                                commit_round: primary
-                                    .map(|anchor| anchor.commit_round)
-                                    .unwrap_or(0),
-                                commit_signatures: primary
-                                    .map(|anchor| anchor.commit_signatures.clone())
-                                    .unwrap_or_default(),
+                                    .map(|anchor| anchor.checkpoint_header.clone()),
+                                commit_certificate: primary
+                                    .map(|anchor| anchor.commit_certificate.clone()),
+                                canonical_proof: primary
+                                    .map(|anchor| Box::new(anchor.canonical_proof.clone())),
                                 snapshot_manifest: primary
                                     .map(|anchor| anchor.snapshot_manifest.clone())
                                     .unwrap_or_default(),
@@ -19088,8 +23093,8 @@ async fn run_validator() {
                             state_root,
                             total_accounts,
                             checkpoint_header,
-                            commit_round,
-                            commit_signatures,
+                            commit_certificate,
+                            canonical_proof,
                             snapshot_manifest,
                         } = checkpoint_meta;
                         if slot > 0 && total_accounts > 0 {
@@ -19107,11 +23112,7 @@ async fn run_validator() {
                                 }
                             }
                             let anchor_source = response_anchor_source;
-                            let local_slot_for_checkpoint =
-                                state_for_snapshot_apply.get_last_slot().unwrap_or(0);
-                            let source_is_reserved_seed =
-                                peer_mgr_for_snapshot_apply.is_reserved(&response.requester);
-                            let anchor_verified_full = {
+                            let anchor_verified = {
                                 let vs = validator_set_for_snapshot_apply.read().await;
                                 let validator_source_error = anchor_source
                                     .validator_pubkey()
@@ -19131,52 +23132,18 @@ async fn run_validator() {
                                 if let Some(err) = validator_source_error {
                                     Err(err)
                                 } else {
-                                    let pool = stake_pool_for_snapshot_apply.read().await;
                                     verify_checkpoint_anchor(
                                         CheckpointAnchor {
                                             slot,
                                             state_root,
-                                            checkpoint_header: checkpoint_header.as_ref(),
-                                            commit_round,
-                                            commit_signatures: &commit_signatures,
+                                            checkpoint_header: &checkpoint_header,
+                                            commit_certificate: &commit_certificate,
+                                            canonical_proof: &canonical_proof,
                                             chain_id: &chain_id_for_snapshot_apply,
                                         },
-                                        &vs,
-                                        &pool,
                                         min_validator_stake,
                                     )
                                 }
-                            };
-                            let anchor_verified = match anchor_verified_full {
-                                Ok(()) => Ok(()),
-                                Err(full_err)
-                                    if should_accept_reserved_seed_checkpoint_anchor(
-                                        local_slot_for_checkpoint,
-                                        source_is_reserved_seed,
-                                    ) =>
-                                {
-                                    match verify_reserved_seed_checkpoint_anchor(CheckpointAnchor {
-                                        slot,
-                                        state_root,
-                                        checkpoint_header: checkpoint_header.as_ref(),
-                                        commit_round,
-                                        commit_signatures: &commit_signatures,
-                                        chain_id: &chain_id_for_snapshot_apply,
-                                    }) {
-                                        Ok(()) => {
-                                            info!(
-                                                "🔒 Accepted checkpoint metadata from reserved seed {} for fresh join before local stake replay (full stake verification deferred: {})",
-                                                response.requester, full_err
-                                            );
-                                            Ok(())
-                                        }
-                                        Err(seed_err) => Err(format!(
-                                            "{}; reserved seed checkpoint verification failed: {}",
-                                            full_err, seed_err
-                                        )),
-                                    }
-                                }
-                                Err(err) => Err(err),
                             };
                             if let Err(err) = anchor_verified {
                                 warn!(
@@ -19186,14 +23153,6 @@ async fn run_validator() {
                                 peer_mgr_for_snapshot_apply.record_violation(&response.requester);
                                 continue;
                             }
-                            let Some(header) = checkpoint_header.clone() else {
-                                warn!(
-                                "⚠️  Rejecting checkpoint metadata from {}: missing checkpoint header",
-                                response.requester
-                            );
-                                peer_mgr_for_snapshot_apply.record_violation(&response.requester);
-                                continue;
-                            };
                             let anchor = VerifiedCheckpointAnchor {
                                 slot,
                                 state_root,
@@ -19202,12 +23161,12 @@ async fn run_validator() {
                                 ),
                                 snapshot_manifest,
                                 block: Block {
-                                    header,
+                                    header: checkpoint_header,
                                     transactions: Vec::new(),
                                     tx_fees_paid: Vec::new(),
                                     oracle_prices: Vec::new(),
-                                    commit_round,
-                                    commit_signatures: commit_signatures.clone(),
+                                    commit_round: commit_certificate.round,
+                                    commit_signatures: commit_certificate.signatures.clone(),
                                 },
                             };
                             let anchor_key =
@@ -19922,19 +23881,12 @@ async fn run_validator() {
                                 hex::encode(snapshot_manifest_root(&received_manifest))
                             );
 
-                            if active_snapshot_categories == WARP_SNAPSHOT_CATEGORIES {
-                                if let Err(e) = validate_snapshot_archive_completeness(
-                                    &staging_state,
-                                    snapshot_slot,
-                                ) {
-                                    warn!("⚠️  Staging archive completeness failed: {}", e);
-                                    break 'staging false;
-                                }
-                            } else {
-                                info!(
-                                    "📚 Skipping full archive completeness check for {}-category state-repair snapshot",
-                                    active_snapshot_categories.len()
-                                );
+                            if let Err(e) = validate_snapshot_archive_completeness(
+                                &staging_state,
+                                snapshot_slot,
+                            ) {
+                                warn!("⚠️  Staging archive completeness failed: {}", e);
+                                break 'staging false;
                             }
 
                             if staging_state.uses_sparse_state_commitment() {
@@ -20116,6 +24068,33 @@ async fn run_validator() {
                         // RocksDB checkpoint + durable marker. If the process or
                         // host crashes after any live category is cleared, startup
                         // restores the pre-import checkpoint before resuming.
+                        match require_snapshot_apply_disk_headroom(
+                            Path::new(&data_dir_for_snapshot_apply),
+                            Path::new(&staging_dir),
+                        ) {
+                            Ok((available, staging_allocated, required)) => info!(
+                                "Snapshot live-apply capacity preflight passed: available_bytes={} staging_allocated_bytes={} required_bytes={}",
+                                available, staging_allocated, required
+                            ),
+                            Err(e) => {
+                                error!(
+                                    "Refusing verified snapshot live apply at slot {} before touching live state: {}",
+                                    snapshot_slot, e
+                                );
+                                drop(staging_state);
+                                cleanup_snapshot_staging(&mut active_snapshot_staging);
+                                state_snap_progress.clear();
+                                state_snap_digests.clear();
+                                active_snapshot_anchor = None;
+                                active_snapshot_source_peer = None;
+                                active_snapshot_source = None;
+                                snapshot_sync_for_apply
+                                    .lock()
+                                    .await
+                                    .mark_warp_snapshot_idle();
+                                continue;
+                            }
+                        }
                         let _rollback_marker = match prepare_snapshot_live_rollback(
                             &state_for_snapshot_apply,
                             &data_dir_for_snapshot_apply,
@@ -20135,6 +24114,7 @@ async fn run_validator() {
                             &staging_state,
                             &state_for_snapshot_apply,
                             active_snapshot_categories,
+                            SnapshotCategoryExportMode::Canonical,
                         ) {
                             Ok(report) => report,
                             Err(e) => {
@@ -20256,6 +24236,15 @@ async fn run_validator() {
                             );
                             std::process::exit(1);
                         }
+                        if let Err(e) = state_for_snapshot_apply
+                            .set_archive_contiguous_tip(snapshot_slot, snapshot_anchor.block.hash())
+                        {
+                            error!(
+                                "FATAL: failed to persist verified archive contiguity proof at slot {}: {}",
+                                snapshot_slot, e
+                            );
+                            std::process::exit(1);
+                        }
                         {
                             let pool = stake_pool_for_snapshot_apply.read().await.clone();
                             activate_pending_validators_for_height(
@@ -20288,13 +24277,18 @@ async fn run_validator() {
                             Err(e) => warn!("⚠️  Failed to create local checkpoint: {}", e),
                         }
                         sync_mgr_for_snapshot.set_checkpoint(snapshot_slot).await;
-                        let pruned_pending = sync_mgr_for_snapshot
-                            .prune_pending_through_slot(snapshot_slot)
-                            .await;
-                        if pruned_pending > 0 {
+                        let cleared_requested = sync_mgr_for_snapshot.clear_requested_slots().await;
+                        if cleared_requested > 0 {
                             info!(
-                                "🧹 Pruned {} stale pending block(s) through imported snapshot slot {}",
-                                pruned_pending, snapshot_slot
+                                "🧹 Cleared {} in-flight sync request marker(s) after imported snapshot slot {}",
+                                cleared_requested, snapshot_slot
+                            );
+                        }
+                        let cleared_pending = sync_mgr_for_snapshot.clear_pending_blocks().await;
+                        if cleared_pending > 0 {
+                            info!(
+                                "🧹 Cleared {} stale pending block candidate(s) after imported snapshot slot {}",
+                                cleared_pending, snapshot_slot
                             );
                         }
                         sync_mgr_for_snapshot.record_progress(snapshot_slot).await;
@@ -20306,7 +24300,15 @@ async fn run_validator() {
                             "✅ Snapshot checkpoint slot {} activated for sync catch-up bookkeeping",
                             snapshot_slot
                         );
-                        cleanup_snapshot_live_rollback(&data_dir_for_snapshot_apply);
+                        if let Err(err) =
+                            cleanup_snapshot_live_rollback(&data_dir_for_snapshot_apply)
+                        {
+                            error!(
+                                "FATAL: verified snapshot activation could not durably clean its rollback transaction: {}",
+                                err
+                            );
+                            std::process::exit(1);
+                        }
                         active_snapshot_anchor = None;
                         active_snapshot_source_peer = None;
                         active_snapshot_source = None;
@@ -20376,20 +24378,6 @@ async fn run_validator() {
             base_ws.saturating_add(offset.saturating_mul(2))
         });
 
-    // Parse --admin-token from CLI or LICHEN_ADMIN_TOKEN env var
-    let admin_token: Option<String> = get_flag_value(&args, &["--admin-token"])
-        .map(|s| s.to_string())
-        .or_else(|| env::var("LICHEN_ADMIN_TOKEN").ok())
-        .filter(|t| !t.is_empty());
-    if admin_token.is_some() {
-        info!("🔒 Admin token configured for state-mutating RPC endpoints");
-    } else {
-        warn!(
-            "⚠️  No admin_token configured — all admin RPC endpoints are disabled. \
-               Set LICHEN_ADMIN_TOKEN env var or --admin-token flag for production."
-        );
-    }
-
     let state_for_rpc = state.clone();
     let state_for_ws = state.clone();
     let stake_pool_for_rpc = Some(stake_pool.clone());
@@ -20397,16 +24385,21 @@ async fn run_validator() {
     let network_id_for_rpc = genesis_config.chain_id.clone();
 
     // Create transaction submission channel for RPC -> mempool (bounded: backpressure returns HTTP 503)
-    let (rpc_tx_sender, mut rpc_tx_receiver) = mpsc::channel::<Transaction>(50_000);
+    let (rpc_tx_sender, mut rpc_tx_receiver) = mpsc::channel::<TransactionSubmission>(50_000);
 
     // Forward RPC transactions to P2P network and mempool
     let mempool_for_rpc_txs = mempool.clone();
     let state_for_rpc_txs = state.clone();
     let p2p_peer_manager_for_txs = p2p_peer_manager.clone();
     let p2p_config_for_txs = p2p_config.clone();
+    let chain_id_for_rpc_txs = genesis_config.chain_id.clone();
     tokio::spawn(async move {
-        while let Some(tx) = rpc_tx_receiver.recv().await {
+        while let Some(submission) = rpc_tx_receiver.recv().await {
             info!("📨 RPC transaction received, adding to mempool");
+            let TransactionSubmission {
+                transaction: tx,
+                admission_response,
+            } = submission;
             let tx_hash = tx.hash();
             if state_for_rpc_txs
                 .get_transaction(&tx_hash)
@@ -20414,10 +24407,8 @@ async fn run_validator() {
                 .flatten()
                 .is_some()
             {
-                debug!(
-                    "Dropping already-committed transaction from RPC: {}",
-                    tx_hash.to_hex()
-                );
+                debug!("RPC transaction is already committed: {}", tx_hash.to_hex());
+                let _ = admission_response.send(Ok(()));
                 continue;
             }
 
@@ -20433,13 +24424,20 @@ async fn run_validator() {
                     .unwrap_or(false);
                 if !is_evm {
                     info!("❌ RPC transaction rejected: non-EVM TX with EVM sentinel blockhash");
+                    let _ = admission_response.send(Err(
+                        "non-EVM transaction uses the reserved EVM sentinel blockhash".to_string(),
+                    ));
                     continue;
                 }
             }
 
-            // Validate structure before adding to mempool
-            if let Err(e) = tx.validate_structure() {
+            if let Err(e) = validate_transaction_for_mempool_admission(
+                &state_for_rpc_txs,
+                &tx,
+                &chain_id_for_rpc_txs,
+            ) {
                 info!("❌ RPC transaction rejected: {}", e);
+                let _ = admission_response.send(Err(e));
                 continue;
             }
 
@@ -20447,14 +24445,22 @@ async fn run_validator() {
             let reputation = 0u64;
 
             // Add to mempool
-            {
+            let admission_result = {
                 let fee_config = FeeConfig::default_from_constants();
                 let computed_fee = TxProcessor::compute_transaction_fee(&tx, &fee_config);
                 let mut pool = mempool_for_rpc_txs.lock().await;
-                if let Err(e) = pool.add_transaction(tx.clone(), computed_fee, reputation) {
-                    info!("Mempool add failed: {}", e);
+                if pool.contains(&tx_hash) {
+                    Ok(())
+                } else {
+                    pool.add_transaction(tx.clone(), computed_fee, reputation)
                 }
+            };
+            if let Err(error) = admission_result {
+                info!("Mempool add failed: {}", error);
+                let _ = admission_response.send(Err(error));
+                continue;
             }
+            let _ = admission_response.send(Ok(()));
 
             // Broadcast to P2P network
             if let Some(ref peer_mgr) = p2p_peer_manager_for_txs {
@@ -20542,7 +24548,6 @@ async fn run_validator() {
             chain_id_for_rpc,
             network_id_for_rpc,
             min_validator_stake,
-            admin_token,
             finality_for_rpc,
             Some(dex_bc_for_rpc),
             Some(pred_bc_for_rpc),
@@ -20583,6 +24588,7 @@ async fn run_validator() {
                 p2p_config: p2p_config.clone(),
                 validator_seed: validator_keypair.to_seed(),
                 validator_pubkey,
+                chain_id: genesis_config.chain_id.clone(),
             },
         );
     }
@@ -20629,7 +24635,6 @@ async fn run_validator() {
             let validator_pubkey_for_announce = validator_pubkey;
             let stake_pool_for_announce = stake_pool.clone();
             let state_for_announce = state.clone();
-            let validator_set_for_self_announce = validator_set.clone();
             let validator_seed_for_announce = validator_keypair.to_seed();
             let machine_fingerprint_for_announce = machine_fingerprint;
             tokio::spawn(async move {
@@ -20646,16 +24651,6 @@ async fn run_validator() {
                             .unwrap_or(0)
                     };
                     let current_slot = state_for_announce.get_last_slot().unwrap_or(0);
-                    {
-                        let mut vs = validator_set_for_self_announce.write().await;
-                        let _ = note_validator_activity(
-                            &mut vs,
-                            &validator_pubkey_for_announce,
-                            current_slot,
-                            false,
-                        );
-                    }
-
                     // T2.3 fix: Sign announcement with validator keypair
                     let announce_keypair = Keypair::from_seed(&validator_seed_for_announce);
                     let sign_message = validator_announcement_signing_message(
@@ -20663,7 +24658,7 @@ async fn run_validator() {
                         validator_stake,
                         current_slot,
                         &machine_fingerprint_for_announce,
-                        Some(updater::VERSION),
+                        updater::VERSION,
                     )
                     .expect("validator version should always produce a valid announcement payload");
                     let signature = announce_keypair.sign(&sign_message);
@@ -20789,15 +24784,26 @@ async fn run_validator() {
     // validator changes (DeregisterValidator opcode 31).
 
     // ── P2-3: Periodic cold storage migration ──
-    // Every 5 minutes, migrate blocks older than COLD_RETENTION_SLOTS to cold DB.
+    // By default, every 5 minutes, migrate blocks older than
+    // COLD_RETENTION_SLOTS to cold DB. Local/rehearsal gates may shorten this
+    // through env vars so hot/cold archive parity can be tested quickly.
     if state.has_cold_storage() {
         let state_for_cold = state.clone();
+        let cold_migration_interval_secs = std::env::var("LICHEN_COLD_MIGRATION_INTERVAL_SECS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(300);
+        let cold_retention_slots = std::env::var("LICHEN_COLD_RETENTION_SLOTS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(lichen_core::state::COLD_RETENTION_SLOTS);
         tokio::spawn(async move {
-            let mut interval = time::interval(Duration::from_secs(300));
+            let mut interval = time::interval(Duration::from_secs(cold_migration_interval_secs));
             loop {
                 interval.tick().await;
                 let current_slot = state_for_cold.get_last_slot().unwrap_or(0);
-                let retain = lichen_core::state::COLD_RETENTION_SLOTS;
+                let retain = cold_retention_slots;
                 if current_slot > retain {
                     let cutoff = current_slot - retain;
                     match state_for_cold.migrate_to_cold(cutoff) {
@@ -20812,9 +24818,8 @@ async fn run_validator() {
                             warn!("🗄️  Cold migration error: {}", e);
                         }
                     }
-                    // Prune archive snapshots alongside cold migration
-                    state_for_cold.prune_archive_snapshots(current_slot, retain);
-                    // Migrate per-slot index CFs to cold storage
+                    // Migrate all per-slot public history, including account
+                    // snapshots. No archive category may be deleted by retention.
                     if let Err(e) = state_for_cold.migrate_indexes_to_cold(cutoff) {
                         warn!("🗄️  Index cold migration error: {}", e);
                     }
@@ -21047,7 +25052,7 @@ async fn run_validator() {
                     // Full reconstruction succeeded
                     // AUDIT-FIX C-8: Avoid unwrap() crash — gracefully skip
                     // block if any tx is unexpectedly None.
-                    let transactions: Vec<Transaction> =
+                    let user_transactions: Vec<Transaction> =
                         match reconstructed_txs.into_iter().collect::<Option<Vec<_>>>() {
                             Some(txs) => txs,
                             None => {
@@ -21058,6 +25063,8 @@ async fn run_validator() {
                                 continue;
                             }
                         };
+                    let mut transactions = cb.consensus_transactions;
+                    transactions.extend(user_transactions);
 
                     // AUDIT-FIX H1: Verify tx_root to guard against short-ID collision.
                     // Recompute Merkle tx_root from reconstructed transactions and compare
@@ -21994,21 +26001,35 @@ async fn run_validator() {
                     direct_bootstrap_endpoints = direct_endpoints;
                 }
             }
-            if !is_joining_network
-                && current_slot > 0
-                && !has_enough_direct_bootstrap_observations(
-                    direct_bootstrap_successes,
-                    direct_bootstrap_endpoints,
-                )
-                && network_slot <= current_slot
-                && (direct_bootstrap_endpoints > 0
-                    || pre_consensus_sync_started.elapsed() < Duration::from_secs(10))
-            {
+            if should_wait_for_pre_consensus_tip_observation(
+                is_joining_network,
+                current_slot,
+                network_slot,
+                direct_bootstrap_successes,
+                direct_bootstrap_endpoints,
+                sync_manager_join.has_authenticated_peer_tip_observation(),
+                pre_consensus_sync_started.elapsed() >= Duration::from_secs(10),
+            ) {
                 info!(
                     "⏳ Waiting for peer tip observation before consensus (current: {}, observed: {})",
                     current_slot, network_slot
                 );
                 time::sleep(Duration::from_millis(500)).await;
+                continue;
+            }
+            if sync_manager_join.is_actively_receiving().await {
+                let pending = sync_manager_join.pending_count().await;
+                info!(
+                    "⏳ Waiting for catch-up batch to drain before consensus (current: {}, observed: {}, pending: {})",
+                    current_slot, network_slot, pending
+                );
+                drain_and_log_pre_consensus_bft_queues(
+                    &mut proposal_rx,
+                    &mut prevote_rx,
+                    &mut precommit_rx,
+                    "pre-consensus active sync",
+                );
+                time::sleep(Duration::from_millis(200)).await;
                 continue;
             }
             if needs_pre_consensus_tip_catch_up(current_slot, network_slot) {
@@ -22085,6 +26106,22 @@ async fn run_validator() {
                         sync_manager.note_seen(bootstrap_slot).await;
                         network_slot = network_slot.max(bootstrap_slot);
                     }
+                }
+
+                if sync_manager.is_actively_receiving().await {
+                    let pending = sync_manager.pending_count().await;
+                    info!(
+                        "⏳ Registration confirmed; waiting for catch-up batch to drain before voting (current: {}, observed: {}, pending: {})",
+                        current_slot, network_slot, pending
+                    );
+                    drain_and_log_pre_consensus_bft_queues(
+                        &mut proposal_rx,
+                        &mut prevote_rx,
+                        &mut precommit_rx,
+                        "post-registration active sync",
+                    );
+                    time::sleep(Duration::from_millis(200)).await;
+                    continue;
                 }
 
                 if needs_pre_consensus_tip_catch_up(current_slot, network_slot) {
@@ -22258,19 +26295,6 @@ async fn run_validator() {
     }
     let recovered_bft_round =
         wal_recovery.max_recovered_round_for_height(start_height, &validator_pubkey);
-    let stale_restart_rendezvous = {
-        let current_tip = start_height.saturating_sub(1);
-        state
-            .get_block_by_slot(current_tip)
-            .ok()
-            .flatten()
-            .and_then(|last_block| {
-                let now_secs = current_unix_timestamp_secs();
-                let age_secs = now_secs.saturating_sub(last_block.header.timestamp);
-                stale_bft_restart_rendezvous_round(current_tip, start_height, age_secs)
-                    .map(|round| (round, age_secs))
-            })
-    };
     bft.start_height(start_height);
     // Signal block receiver: BFT owns this height and above.
     bft_committing_slot.store(start_height, Ordering::Release);
@@ -22339,28 +26363,33 @@ async fn run_validator() {
             last_wal_lock = None;
         }
     }
-    let wal_resume_round = recovered_bft_round.map(|round| {
-        (
-            round.saturating_add(1),
-            format!("after recovered round {}", round),
-        )
-    });
-    let stale_resume_round = stale_restart_rendezvous.map(|(round, age_secs)| {
-        (
-            round,
-            format!(
-                "stale restart rendezvous: tip={}, block_age_secs={}",
-                start_height.saturating_sub(1),
-                age_secs
-            ),
-        )
-    });
-    if let Some((target_round, reason)) = wal_resume_round
-        .into_iter()
-        .chain(stale_resume_round)
-        .max_by_key(|(round, _)| *round)
+    if let Some(recovered_round) = recovered_bft_round {
+        bft.resume_at_round_if_higher(
+            recovered_round.saturating_add(1),
+            &format!("after recovered round {}", recovered_round),
+        );
+    }
+    let mut bft_post_effects_verified_tip = post_block_effects_activation_slot.saturating_sub(1);
     {
-        bft.resume_at_round_if_higher(target_round, &reason);
+        let _canonical_apply_guard = block_apply_lock.lock().await;
+        if let Err(e) = ensure_recent_stored_post_block_effects_before_bft(
+            &state,
+            &validator_set,
+            &stake_pool,
+            PostBlockEffectsRuntime {
+                activation_slot: post_block_effects_activation_slot,
+                min_validator_stake,
+                slot_duration_ms,
+            },
+            &mut bft_post_effects_verified_tip,
+            RECENT_POST_BLOCK_EFFECTS_RECOVERY_WINDOW,
+            "BFT startup post-effect gate",
+        )
+        .await
+        {
+            error!("FATAL: failed BFT startup post-effect gate: {}", e);
+            std::process::exit(1);
+        }
     }
     parent_hash = get_parent_hash(&state);
 
@@ -22408,9 +26437,12 @@ async fn run_validator() {
                     Some(validate_consensus_proposal_before_prevote(
                         &state,
                         &proposal,
-                        parent_hash,
-                        expected_validators_hash,
-                        &genesis_config.chain_id,
+                        ConsensusProposalValidationContext {
+                            expected_parent_hash: parent_hash,
+                            expected_validators_hash,
+                            min_validator_stake,
+                            chain_id: &genesis_config.chain_id,
+                        },
                     ))
                 }
             };
@@ -22596,16 +26628,35 @@ async fn run_validator() {
     //
     // ── Main BFT event loop ──
     loop {
-        // Canonical apply barrier: block receiver/sync stores the block before
-        // deterministic post-block effects so duplicate guards can see it. BFT
-        // must not read parent state for the next height until those effects
-        // finish, otherwise contract/stake roots can diverge on slower nodes.
-        {
+        // Canonical post-effect gate: block receiver/sync stores the block
+        // before deterministic post-block effects so duplicate guards can see
+        // it. BFT must not read parent state for the next height until every
+        // newly observed stored block has complete post-effects, otherwise
+        // contract/stake roots can diverge on slower nodes.
+        let tip_slot = {
             let _canonical_apply_guard = block_apply_lock.lock().await;
-        }
+            if let Err(e) = ensure_recent_stored_post_block_effects_before_bft(
+                &state,
+                &validator_set,
+                &stake_pool,
+                PostBlockEffectsRuntime {
+                    activation_slot: post_block_effects_activation_slot,
+                    min_validator_stake,
+                    slot_duration_ms,
+                },
+                &mut bft_post_effects_verified_tip,
+                RECENT_POST_BLOCK_EFFECTS_RECOVERY_WINDOW,
+                "BFT pre-height post-effect gate",
+            )
+            .await
+            {
+                error!("FATAL: failed BFT pre-height post-effect gate: {}", e);
+                std::process::exit(1);
+            }
+            state.get_last_slot().unwrap_or(0)
+        };
 
         // Check if chain tip advanced (block received via sync/P2P outside of BFT)
-        let tip_slot = state.get_last_slot().unwrap_or(0);
         let observed_tip = sync_manager.get_highest_seen().await;
         if should_yield_live_bft_for_catch_up(tip_slot, bft.height, observed_tip) {
             bft_committing_slot.store(0, Ordering::Release);
@@ -22636,10 +26687,8 @@ async fn run_validator() {
                     tip_slot, bft.height, observed_tip, start, end
                 );
                 sync_manager.start_sync(start, end).await;
-                for slot in start..=end {
-                    sync_manager.mark_requested(slot).await;
-                }
-                request_block_range_from_peers(
+                request_unrequested_block_range_from_peers(
+                    &sync_manager,
                     &p2p_peer_manager,
                     p2p_config.listen_addr,
                     start,
@@ -22712,9 +26761,12 @@ async fn run_validator() {
                             Some(validate_consensus_proposal_before_prevote(
                                 &state,
                                 &proposal,
-                                parent_hash,
-                                expected_validators_hash,
-                                &genesis_config.chain_id,
+                                ConsensusProposalValidationContext {
+                                    expected_parent_hash: parent_hash,
+                                    expected_validators_hash,
+                                    min_validator_stake,
+                                    chain_id: &genesis_config.chain_id,
+                                },
                             ))
                         }
                     };
@@ -22885,6 +26937,10 @@ async fn run_validator() {
         tokio::select! {
             // ── Incoming proposal ──
             Some(proposal) = proposal_rx.recv() => {
+                debug!(
+                    "BFT loop dequeued proposal h={} r={} while at h={} r={} step={:?}",
+                    proposal.height, proposal.round, bft.height, bft.round, bft.step
+                );
                 let live_tip = state.get_last_slot().unwrap_or(0);
                 let network_highest = sync_manager.get_highest_seen().await;
                 if should_yield_live_bft_for_catch_up(live_tip, bft.height, network_highest) {
@@ -22921,9 +26977,12 @@ async fn run_validator() {
                             Some(validate_consensus_proposal_before_prevote(
                                 &state,
                                 &proposal,
-                                parent_hash,
-                                expected_validators_hash,
-                                &genesis_config.chain_id,
+                                ConsensusProposalValidationContext {
+                                    expected_parent_hash: parent_hash,
+                                    expected_validators_hash,
+                                    min_validator_stake,
+                                    chain_id: &genesis_config.chain_id,
+                                },
                             ))
                         }
                     };
@@ -22980,6 +27039,10 @@ async fn run_validator() {
 
             // ── Incoming prevote ──
             Some(prevote) = prevote_rx.recv() => {
+                debug!(
+                    "BFT loop dequeued prevote h={} r={} while at h={} r={} step={:?}",
+                    prevote.height, prevote.round, bft.height, bft.round, bft.step
+                );
                 let live_tip = state.get_last_slot().unwrap_or(0);
                 let network_highest = sync_manager.get_highest_seen().await;
                 if should_yield_live_bft_for_catch_up(live_tip, bft.height, network_highest) {
@@ -23022,6 +27085,10 @@ async fn run_validator() {
 
             // ── Incoming precommit ──
             Some(precommit) = precommit_rx.recv() => {
+                debug!(
+                    "BFT loop dequeued precommit h={} r={} while at h={} r={} step={:?}",
+                    precommit.height, precommit.round, bft.height, bft.round, bft.step
+                );
                 let live_tip = state.get_last_slot().unwrap_or(0);
                 let network_highest = sync_manager.get_highest_seen().await;
                 if should_yield_live_bft_for_catch_up(live_tip, bft.height, network_highest) {
@@ -23103,7 +27170,7 @@ async fn run_validator() {
                                 &height_vs,
                                 &height_pool,
                             );
-                            Some(block_producer::build_block(
+                            match block_producer::build_block(
                                 &state,
                                 &mut mp,
                                 &processor,
@@ -23114,7 +27181,16 @@ async fn run_validator() {
                                 Vec::new(),
                                 2000,
                                 bft_ts,
-                            ))
+                            ) {
+                                Ok(built) => Some(built),
+                                Err(err) => {
+                                    warn!(
+                                        "Refusing proposal h={} r={}: {}",
+                                        bft.height, bft.round, err
+                                    );
+                                    None
+                                }
+                            }
                         }
                     };
                     if let Some((mut block, _)) = maybe_block {
@@ -23235,7 +27311,7 @@ async fn run_validator() {
                                         &height_vs,
                                         &height_pool,
                                     );
-                                    Some(block_producer::build_block(
+                                    match block_producer::build_block(
                                         &state,
                                         &mut mp,
                                         &processor,
@@ -23246,7 +27322,16 @@ async fn run_validator() {
                                         Vec::new(),
                                         2000,
                                         bft_ts,
-                                    ))
+                                    ) {
+                                        Ok(built) => Some(built),
+                                        Err(err) => {
+                                            warn!(
+                                                "Refusing timeout proposal h={} r={}: {}",
+                                                bft.height, bft.round, err
+                                            );
+                                            None
+                                        }
+                                    }
                                 }
                             };
                             if let Some((mut block, _)) = maybe_block {
@@ -23326,8 +27411,51 @@ async fn run_validator() {
                     // propose timeout.  Without this, a late-joining validator
                     // that round-skips to r=8 would wait ~51s before proposing,
                     // causing all validators to nil-vote that round.
-                    let local_proposer = bft.is_proposer(&height_vs, &height_pool, &parent_hash);
-                    if local_proposer {
+                    let stored_proposal_action =
+                        bft.process_current_round_proposal_if_present(&height_vs, &height_pool);
+                    if !matches!(stored_proposal_action, ConsensusAction::None) {
+                        execute_consensus_actions(
+                            stored_proposal_action,
+                            &bft,
+                            &mut consensus_wal,
+                            &state,
+                            &validator_set,
+                            &stake_pool,
+                            &vote_aggregator,
+                            &mempool,
+                            &processor,
+                            &finality_tracker,
+                            &p2p_peer_manager,
+                            &p2p_config,
+                            &ws_event_tx,
+                            &ws_dex_broadcaster,
+                            &shared_oracle_prices,
+                            &last_block_time_for_local,
+                            &mut last_dex_trade_count,
+                            &data_dir,
+                            &sync_manager,
+                            &mut parent_hash,
+                            slot_duration_ms,
+                            &validator_keypair,
+                            min_validator_stake,
+                            &block_apply_lock,
+                            &bft_committing_slot,
+                        )
+                        .await;
+                        timeout_handle = match bft.step {
+                            RoundStep::Prevote => Some((
+                                RoundStep::Prevote,
+                                bft.round,
+                                Box::pin(tokio::time::sleep(bft.prevote_timeout())),
+                            )),
+                            RoundStep::Precommit => Some((
+                                RoundStep::Precommit,
+                                bft.round,
+                                Box::pin(tokio::time::sleep(bft.precommit_timeout())),
+                            )),
+                            _ => None,
+                        };
+                    } else if bft.is_proposer(&height_vs, &height_pool, &parent_hash) {
                         debug!(
                             "👑 BFT: We are proposer for height={} round={} (post-skip)",
                             bft.height, bft.round
@@ -23350,7 +27478,7 @@ async fn run_validator() {
                                     &height_vs,
                                     &height_pool,
                                 );
-                                Some(block_producer::build_block(
+                                match block_producer::build_block(
                                     &state,
                                     &mut mp,
                                     &processor,
@@ -23361,7 +27489,16 @@ async fn run_validator() {
                                     Vec::new(),
                                     2000,
                                     bft_ts,
-                                ))
+                                ) {
+                                    Ok(built) => Some(built),
+                                    Err(err) => {
+                                        warn!(
+                                            "Refusing post-skip proposal h={} r={}: {}",
+                                            bft.height, bft.round, err
+                                        );
+                                        None
+                                    }
+                                }
                             }
                         };
                         if let Some((mut block, _)) = maybe_block {
@@ -23422,7 +27559,7 @@ async fn run_validator() {
                                 0,
                                 bft.initial_propose_timeout(),
                                 slot_duration_ms,
-                                local_proposer,
+                                false,
                             ))),
                         ));
                     }
@@ -23480,6 +27617,27 @@ async fn run_validator() {
                         );
                         std::process::exit(1);
                     }
+                    {
+                        let _canonical_apply_guard = block_apply_lock.lock().await;
+                        if let Err(e) = ensure_recent_stored_post_block_effects_before_bft(
+                            &state,
+                            &validator_set,
+                            &stake_pool,
+                            PostBlockEffectsRuntime {
+                                activation_slot: post_block_effects_activation_slot,
+                                min_validator_stake,
+                                slot_duration_ms,
+                            },
+                            &mut bft_post_effects_verified_tip,
+                            RECENT_POST_BLOCK_EFFECTS_RECOVERY_WINDOW,
+                            "BFT post-commit post-effect gate",
+                        )
+                        .await
+                        {
+                            error!("FATAL: failed BFT post-commit post-effect gate: {}", e);
+                            std::process::exit(1);
+                        }
+                    }
                     parent_hash = get_parent_hash(&state);
 
                     // Re-snapshot for the new height.
@@ -23514,9 +27672,12 @@ async fn run_validator() {
                                     Some(validate_consensus_proposal_before_prevote(
                                         &state,
                                         &proposal,
-                                        parent_hash,
-                                        expected_validators_hash,
-                                        &genesis_config.chain_id,
+                                        ConsensusProposalValidationContext {
+                                            expected_parent_hash: parent_hash,
+                                            expected_validators_hash,
+                                            min_validator_stake,
+                                            chain_id: &genesis_config.chain_id,
+                                        },
                                     ))
                                 }
                             };
@@ -23729,6 +27890,25 @@ fn classify_bft_commit_storage(
     }
 }
 
+async fn enter_bft_commit_repair_mode(
+    sync_manager: &Arc<SyncManager>,
+    bft_committing_slot: &Arc<AtomicU64>,
+    height: u64,
+    reason: &str,
+) {
+    warn!(
+        "🔧 BFT: entering verified repair mode at height {} ({})",
+        height, reason
+    );
+    bft_committing_slot.store(0, Ordering::Release);
+    sync_manager.note_seen(height).await;
+    sync_manager.set_sync_mode(sync::SyncMode::Warp).await;
+    sync_manager.complete_sync().await;
+    sync_manager.record_sync_failure().await;
+    sync_manager.clear_requested_slots().await;
+    sync_manager.clear_pending_blocks().await;
+}
+
 fn should_pause_live_bft_for_sync(current_tip: u64, bft_height: u64, _observed_tip: u64) -> bool {
     bft_height > current_tip.saturating_add(1)
 }
@@ -23748,9 +27928,9 @@ async fn request_block_range_from_peers(
     start_slot: u64,
     end_slot: u64,
     reason: &str,
-) {
+) -> Vec<(u64, u64)> {
     if start_slot > end_slot {
-        return;
+        return Vec::new();
     }
 
     let Some(pm) = p2p_peer_manager else {
@@ -23758,26 +27938,29 @@ async fn request_block_range_from_peers(
             "📡 {} sync request skipped — no P2P peer manager ({}..{})",
             reason, start_slot, end_slot
         );
-        return;
+        return Vec::new();
     };
 
-    let mut peer_infos = pm.get_peer_infos();
-    peer_infos.sort_by(|a, b| {
-        b.1.cmp(&a.1)
-            .then_with(|| a.0.to_string().cmp(&b.0.to_string()))
-    });
-    let all_peers: Vec<SocketAddr> = peer_infos
-        .into_iter()
-        .take(SYNC_REQUEST_FANOUT.max(1))
-        .map(|(addr, _)| addr)
-        .collect();
+    let peer_infos = pm.get_peer_tip_infos();
 
     let mut chunk_start = start_slot;
     let mut chunk_index = 0usize;
+    let mut sent_ranges = Vec::new();
     while chunk_start <= end_slot {
         let chunk_end = std::cmp::min(chunk_start + sync::P2P_BLOCK_RANGE_LIMIT - 1, end_slot);
+        let all_peers =
+            sync_range_peer_candidates(&peer_infos, chunk_end, SYNC_REQUEST_FANOUT.max(1));
 
         if all_peers.is_empty() {
+            if pm.get_peers().is_empty() {
+                warn!(
+                    "⚠️  {} sync request {}-{} has no connected peers yet",
+                    reason, chunk_start, chunk_end
+                );
+                chunk_start = chunk_end + 1;
+                chunk_index += 1;
+                continue;
+            }
             let request_msg = P2PMessage::new(
                 MessageType::BlockRangeRequest {
                     start_slot: chunk_start,
@@ -23794,6 +27977,7 @@ async fn request_block_range_from_peers(
                 chunk_end - chunk_start + 1,
                 "broadcast",
             );
+            sent_ranges.push((chunk_start, chunk_end));
         } else {
             let mut sent = false;
             for peer_addr in sync_range_peer_order(&all_peers, chunk_index) {
@@ -23821,6 +28005,7 @@ async fn request_block_range_from_peers(
                         peer_addr,
                     );
                     sent = true;
+                    sent_ranges.push((chunk_start, chunk_end));
                     break;
                 }
             }
@@ -23835,6 +28020,77 @@ async fn request_block_range_from_peers(
         chunk_start = chunk_end + 1;
         chunk_index += 1;
     }
+
+    sent_ranges
+}
+
+async fn clear_unsent_requested_subranges(
+    sync_manager: &Arc<SyncManager>,
+    range_start: u64,
+    range_end: u64,
+    sent_ranges: &[(u64, u64)],
+) {
+    if range_start > range_end {
+        return;
+    }
+    let mut cursor = range_start;
+    for &(sent_start, sent_end) in sent_ranges {
+        if cursor < sent_start {
+            sync_manager
+                .clear_requested_range(cursor, sent_start.saturating_sub(1))
+                .await;
+        }
+        cursor = cursor.max(sent_end.saturating_add(1));
+    }
+    if cursor <= range_end {
+        sync_manager.clear_requested_range(cursor, range_end).await;
+    }
+}
+
+async fn request_unrequested_block_range_from_peers(
+    sync_manager: &Arc<SyncManager>,
+    p2p_peer_manager: &Option<Arc<lichen_p2p::PeerManager>>,
+    local_addr: SocketAddr,
+    start_slot: u64,
+    end_slot: u64,
+    reason: &str,
+) -> usize {
+    if p2p_peer_manager.is_none() {
+        request_block_range_from_peers(p2p_peer_manager, local_addr, start_slot, end_slot, reason)
+            .await;
+        return 0;
+    }
+
+    let ranges = sync_manager
+        .claim_unrequested_ranges(start_slot, end_slot)
+        .await;
+    if ranges.is_empty() {
+        debug!(
+            "📡 {} sync request skipped — range already in flight ({}..{})",
+            reason, start_slot, end_slot
+        );
+        return 0;
+    }
+
+    let mut requested = 0usize;
+    for (range_start, range_end) in ranges {
+        let sent_ranges = request_block_range_from_peers(
+            p2p_peer_manager,
+            local_addr,
+            range_start,
+            range_end,
+            reason,
+        )
+        .await;
+        requested = requested.saturating_add(
+            sent_ranges
+                .iter()
+                .map(|(start, end)| end.saturating_sub(*start) as usize + 1)
+                .sum::<usize>(),
+        );
+        clear_unsent_requested_subranges(sync_manager, range_start, range_end, &sent_ranges).await;
+    }
+    requested
 }
 
 async fn request_checkpoint_metadata_from_peers(
@@ -23962,8 +28218,6 @@ async fn execute_consensus_actions(
         }
 
         ConsensusAction::BroadcastProposal(proposal) => {
-            let activity_pubkey = proposal.proposer;
-            let activity_height = proposal.height;
             if proposal.proposer == bft.validator_pubkey {
                 if let Err(e) = consensus_wal.log_proposal_block_result(
                     proposal.height,
@@ -23986,7 +28240,7 @@ async fn execute_consensus_actions(
             if let Some(ref pm) = p2p_peer_manager {
                 let peers_count = pm.validator_peers().len();
                 debug!(
-                    "📡 BFT SEND: Broadcasting proposal to {} validator peers",
+                    "📡 BFT SEND: Broadcasting proposal; {} connected peers are validator-marked",
                     peers_count
                 );
                 let msg = P2PMessage::new(MessageType::Proposal(proposal), p2p_config.listen_addr);
@@ -23997,17 +28251,9 @@ async fn execute_consensus_actions(
             } else {
                 warn!("📡 BFT SEND: No P2P peer manager — proposal NOT sent!");
             }
-            note_validator_activity_best_effort(
-                validator_set,
-                &activity_pubkey,
-                activity_height,
-                false,
-            );
         }
 
         ConsensusAction::BroadcastPrevote(prevote) => {
-            let activity_pubkey = prevote.validator;
-            let activity_height = prevote.height;
             if prevote.validator == bft.validator_pubkey {
                 if let Some(block_hash) = prevote.block_hash {
                     if !consensus_wal.has_proposal_block(prevote.height, block_hash) {
@@ -24039,7 +28285,7 @@ async fn execute_consensus_actions(
             if let Some(ref pm) = p2p_peer_manager {
                 let peers_count = pm.validator_peers().len();
                 debug!(
-                    "📡 BFT SEND: Broadcasting prevote to {} validator peers",
+                    "📡 BFT SEND: Broadcasting prevote; {} connected peers are validator-marked",
                     peers_count
                 );
                 let msg = P2PMessage::new(MessageType::Prevote(prevote), p2p_config.listen_addr);
@@ -24050,17 +28296,9 @@ async fn execute_consensus_actions(
             } else {
                 warn!("📡 BFT SEND: No P2P peer manager — prevote NOT sent!");
             }
-            note_validator_activity_best_effort(
-                validator_set,
-                &activity_pubkey,
-                activity_height,
-                false,
-            );
         }
 
         ConsensusAction::BroadcastPrecommit(precommit) => {
-            let activity_pubkey = precommit.validator;
-            let activity_height = precommit.height;
             if precommit.validator == bft.validator_pubkey {
                 if let Some(block_hash) = precommit.block_hash {
                     if !consensus_wal.has_proposal_block(precommit.height, block_hash) {
@@ -24103,7 +28341,7 @@ async fn execute_consensus_actions(
             if let Some(ref pm) = p2p_peer_manager {
                 let peers_count = pm.validator_peers().len();
                 debug!(
-                    "📡 BFT SEND: Broadcasting precommit to {} validator peers",
+                    "📡 BFT SEND: Broadcasting precommit; {} connected peers are validator-marked",
                     peers_count
                 );
                 let msg =
@@ -24115,12 +28353,6 @@ async fn execute_consensus_actions(
             } else {
                 warn!("📡 BFT SEND: No P2P peer manager — precommit NOT sent!");
             }
-            note_validator_activity_best_effort(
-                validator_set,
-                &activity_pubkey,
-                activity_height,
-                false,
-            );
         }
 
         ConsensusAction::CommitBlock {
@@ -24137,33 +28369,81 @@ async fn execute_consensus_actions(
             let final_hash = block.hash();
             if final_hash != block_hash {
                 error!(
-                    "FATAL: BFT commit block hash mismatch at height {}: action={} block={}",
+                    "BFT commit block hash mismatch at height {}: action={} block={}",
                     height,
                     hex::encode(&block_hash.0[..8]),
                     hex::encode(&final_hash.0[..8]),
                 );
-                std::process::exit(1);
+                enter_bft_commit_repair_mode(
+                    sync_manager,
+                    bft_committing_slot,
+                    height,
+                    "commit action block hash mismatch",
+                )
+                .await;
+                return;
             }
 
             match classify_bft_commit_storage(height, current_tip, stored_hash, block_hash) {
                 BftCommitStorageDecision::FreshNextBlock => {}
                 BftCommitStorageDecision::DuplicateAtTip => {
+                    let activation_slot = match post_block_effects_activation_slot(state) {
+                        Ok(Some(slot)) => slot,
+                        Ok(None) => {
+                            warn!(
+                                "⚠️  Refusing duplicate-tip recovery at height {} without a post-block activation boundary; switching to verified repair",
+                                height
+                            );
+                            enter_bft_commit_repair_mode(
+                                sync_manager,
+                                bft_committing_slot,
+                                height,
+                                "post-block activation boundary is absent",
+                            )
+                            .await;
+                            return;
+                        }
+                        Err(err) => {
+                            warn!(
+                                "⚠️  Failed to read post-block activation boundary at height {}: {}; switching to verified repair",
+                                height, err
+                            );
+                            enter_bft_commit_repair_mode(
+                                sync_manager,
+                                bft_committing_slot,
+                                height,
+                                "post-block activation boundary is invalid",
+                            )
+                            .await;
+                            return;
+                        }
+                    };
                     if let Err(err) = recover_stored_block_post_effects_if_needed(
                         state,
                         validator_set,
                         stake_pool,
                         &block,
-                        min_validator_stake,
-                        slot_duration_ms,
+                        PostBlockEffectsRuntime {
+                            activation_slot,
+                            min_validator_stake,
+                            slot_duration_ms,
+                        },
                         "BFT duplicate-tip recovery",
                     )
                     .await
                     {
-                        error!(
-                            "FATAL: failed to complete duplicate-tip post-block effects at height {}: {}",
+                        warn!(
+                            "⚠️  Failed to complete duplicate-tip post-block effects at height {}: {}; switching to verified repair",
                             height, err
                         );
-                        std::process::exit(1);
+                        enter_bft_commit_repair_mode(
+                            sync_manager,
+                            bft_committing_slot,
+                            height,
+                            "duplicate-tip post-block recovery failed",
+                        )
+                        .await;
+                        return;
                     }
                     info!(
                         "🔐 BFT: Block {} already applied at tip — duplicate canonical side effects complete",
@@ -24181,18 +28461,32 @@ async fn execute_consensus_actions(
                     return;
                 }
                 BftCommitStorageDecision::StoredAheadOfTip => {
-                    error!(
-                        "FATAL: block {} is stored but local tip is only {}; refusing inconsistent BFT commit",
+                    warn!(
+                        "⚠️  Block {} is stored but local tip is only {}; switching to verified repair",
                         height, current_tip
                     );
-                    std::process::exit(1);
+                    enter_bft_commit_repair_mode(
+                        sync_manager,
+                        bft_committing_slot,
+                        height,
+                        "stored-ahead-of-tip BFT commit",
+                    )
+                    .await;
+                    return;
                 }
                 BftCommitStorageDecision::StaleMissingBlock => {
-                    error!(
-                        "FATAL: BFT commit for height {} is below/equal local tip {} but block is missing from storage",
+                    warn!(
+                        "⚠️  BFT commit for height {} is below/equal local tip {} but block is missing from storage; switching to verified repair",
                         height, current_tip
                     );
-                    std::process::exit(1);
+                    enter_bft_commit_repair_mode(
+                        sync_manager,
+                        bft_committing_slot,
+                        height,
+                        "stale missing BFT commit block",
+                    )
+                    .await;
+                    return;
                 }
                 BftCommitStorageDecision::MissingParentGap => {
                     warn!(
@@ -24204,10 +28498,8 @@ async fn execute_consensus_actions(
                     let sync_start = current_tip.saturating_add(1);
                     if sync_start <= height {
                         sync_manager.start_sync(sync_start, height).await;
-                        for slot in sync_start..=height {
-                            sync_manager.mark_requested(slot).await;
-                        }
-                        request_block_range_from_peers(
+                        request_unrequested_block_range_from_peers(
+                            sync_manager,
                             p2p_peer_manager,
                             p2p_config.listen_addr,
                             sync_start,
@@ -24220,13 +28512,20 @@ async fn execute_consensus_actions(
                 }
                 BftCommitStorageDecision::ConflictingStoredHash => {
                     let stored = stored_hash.expect("stored hash exists for conflict");
-                    error!(
-                        "FATAL: stored block conflict at height {}: stored={} committed={}",
+                    warn!(
+                        "⚠️  Stored block conflict at height {}: stored={} committed={}; switching to verified repair",
                         height,
                         hex::encode(&stored.0[..8]),
                         hex::encode(&block_hash.0[..8]),
                     );
-                    std::process::exit(1);
+                    enter_bft_commit_repair_mode(
+                        sync_manager,
+                        bft_committing_slot,
+                        height,
+                        "stored block conflicts with BFT commit",
+                    )
+                    .await;
+                    return;
                 }
             }
 
@@ -24237,11 +28536,18 @@ async fn execute_consensus_actions(
                 validate_then_replay_block_transactions(state, &block, "committed block", false)
             {
                 warn!("{}", err);
-                error!(
-                    "FATAL: refusing to replay committed block {} into canonical state after state-root mismatch",
+                warn!(
+                    "⚠️  Rejecting committed block {} after state-root mismatch; switching to verified repair",
                     height
                 );
-                std::process::exit(1);
+                enter_bft_commit_repair_mode(
+                    sync_manager,
+                    bft_committing_slot,
+                    height,
+                    "committed block state-root mismatch",
+                )
+                .await;
+                return;
             }
 
             // Apply block effects (rewards, staking, oracle) — these
@@ -24345,7 +28651,7 @@ async fn execute_consensus_actions(
             {
                 let finality = finality_tracker.clone();
                 finality.mark_confirmed(height);
-                emit_signature_status_events(ws_event_tx, &finality, &block);
+                emit_signature_status_events(state, ws_event_tx, &finality, &block);
             }
 
             // Remove included transactions from mempool
@@ -24361,7 +28667,7 @@ async fn execute_consensus_actions(
 
             // Periodic stats pruning
             if height.is_multiple_of(1000) {
-                match state.prune_slot_stats(height, 10_000) {
+                match state.prune_slot_stats(height, POST_BLOCK_EFFECTS_MARKER_RETENTION_SLOTS) {
                     Ok(0) => {}
                     Ok(n) => info!("🧹 Pruned {} stale stats keys (retain last 10K slots)", n),
                     Err(e) => warn!("⚠️  Stats pruning failed at height {}: {}", height, e),
@@ -24421,23 +28727,15 @@ async fn execute_consensus_actions(
                 hex::encode(&block_hash.0[..4])
             );
             sync_manager.note_seen(end_slot).await;
-            if start_slot <= end_slot {
-                for slot in start_slot..=end_slot {
-                    sync_manager.mark_requested(slot).await;
-                }
-            }
-            if let Some(ref pm) = p2p_peer_manager {
-                let msg = P2PMessage::new(
-                    MessageType::BlockRangeRequest {
-                        start_slot,
-                        end_slot,
-                    },
-                    p2p_config.listen_addr,
-                );
-                pm.broadcast(msg).await;
-            } else {
-                warn!("📡 BFT: missing-block request skipped — no P2P peer manager");
-            }
+            request_unrequested_block_range_from_peers(
+                sync_manager,
+                p2p_peer_manager,
+                p2p_config.listen_addr,
+                start_slot,
+                end_slot,
+                "bft-missing-block",
+            )
+            .await;
         }
 
         ConsensusAction::EquivocationDetected {
@@ -24514,6 +28812,146 @@ mod tests {
     use lichen_core::{Instruction, Message, MIN_VALIDATOR_STAKE};
 
     // ── Helper builders ─────────────────────────────────────────────
+
+    fn test_checkpoint_block_and_certificate(
+        slot: u64,
+        state_root: Hash,
+        parent_post_state_root: Hash,
+    ) -> (Block, CanonicalCommitCertificate, CheckpointCanonicalProof) {
+        let validator = Keypair::generate();
+        let powers = vec![lichen_core::CanonicalValidatorPower {
+            validator: validator.pubkey(),
+            power: MIN_VALIDATOR_STAKE,
+        }];
+        let mut block = Block::new_with_timestamp(
+            slot,
+            Hash::default(),
+            state_root,
+            validator.pubkey().0,
+            Vec::new(),
+            slot.max(1),
+        );
+        block.header.validators_hash = lichen_core::canonical_validator_powers_hash(&powers);
+        block.sign(&validator);
+        let block_hash = block.hash();
+        let timestamp = slot.max(1);
+        let signable = Precommit::signable_bytes(slot, 0, &Some(block_hash), timestamp);
+        block.commit_signatures = vec![lichen_core::CommitSignature {
+            validator: validator.pubkey().0,
+            signature: validator.sign(&signable),
+            timestamp,
+        }];
+        let certificate = CanonicalCommitCertificate::from_committed_block(
+            &block,
+            powers.clone(),
+            parent_post_state_root,
+        )
+        .expect("build checkpoint certificate");
+        let child_timestamp = timestamp + 1;
+        let mut child = Block::new_with_timestamp(
+            slot + 1,
+            block.hash(),
+            parent_post_state_root,
+            validator.pubkey().0,
+            vec![certificate
+                .to_transaction()
+                .expect("encode checkpoint certificate")],
+            child_timestamp,
+        );
+        child.header.validators_hash = lichen_core::canonical_validator_powers_hash(&powers);
+        child.sign(&validator);
+        let child_hash = child.hash();
+        child.commit_signatures = vec![lichen_core::CommitSignature {
+            validator: validator.pubkey().0,
+            signature: validator.sign(&Precommit::signable_bytes(
+                slot + 1,
+                0,
+                &Some(child_hash),
+                child_timestamp,
+            )),
+            timestamp: child_timestamp,
+        }];
+        let canonical_proof = CheckpointCanonicalProof {
+            child_header: child.header,
+            certificate_merkle_proof: lichen_core::merkle_tx_proof(&child.transactions, 0)
+                .expect("build certificate proof"),
+            child_commit_round: child.commit_round,
+            child_commit_signatures: child.commit_signatures,
+            child_validator_powers: powers,
+        };
+        (block, certificate, canonical_proof)
+    }
+
+    fn test_verified_checkpoint_data(
+        slot: u64,
+        state_root: [u8; 32],
+        checkpoint_path: String,
+        snapshot_manifest: Vec<SnapshotCategoryDigest>,
+    ) -> VerifiedCheckpointData {
+        let (block, commit_certificate, canonical_proof) =
+            test_checkpoint_block_and_certificate(slot, Hash(state_root), Hash(state_root));
+        VerifiedCheckpointData {
+            meta: lichen_core::CheckpointMeta {
+                slot,
+                state_root,
+                created_at: slot,
+                total_accounts: 1,
+            },
+            checkpoint_path,
+            block,
+            commit_certificate,
+            canonical_proof,
+            snapshot_manifest,
+        }
+    }
+
+    fn test_next_committed_block(
+        state: &StateStore,
+        parent: &Block,
+        validator: &Keypair,
+        state_root: Hash,
+        parent_post_state_root: Hash,
+        timestamp: u64,
+    ) -> Block {
+        let powers = vec![lichen_core::CanonicalValidatorPower {
+            validator: validator.pubkey(),
+            power: MIN_VALIDATOR_STAKE,
+        }];
+        let transactions = if parent.header.slot == 0 {
+            Vec::new()
+        } else {
+            vec![CanonicalCommitCertificate::from_committed_block(
+                parent,
+                powers.clone(),
+                parent_post_state_root,
+            )
+            .expect("build parent certificate")
+            .to_transaction()
+            .expect("encode parent certificate")]
+        };
+        let slot = parent.header.slot + 1;
+        let mut block = Block::new_with_timestamp(
+            slot,
+            parent.hash(),
+            state_root,
+            validator.pubkey().0,
+            transactions,
+            timestamp,
+        );
+        block.header.validators_hash = lichen_core::canonical_validator_powers_hash(&powers);
+        block.sign(validator);
+        let block_hash = block.hash();
+        let signable = Precommit::signable_bytes(slot, 0, &Some(block_hash), timestamp);
+        block.commit_signatures = vec![lichen_core::CommitSignature {
+            validator: validator.pubkey().0,
+            signature: validator.sign(&signable),
+            timestamp,
+        }];
+        state
+            .put_validator_power_snapshot(&block.header.validators_hash, &powers)
+            .expect("store test validator power snapshot");
+        block
+    }
 
     fn directory_fingerprint(root: &std::path::Path) -> Vec<(String, u64)> {
         fn collect(root: &std::path::Path, dir: &std::path::Path, files: &mut Vec<(String, u64)>) {
@@ -24661,6 +29099,7 @@ mod tests {
             &source,
             &target,
             &["validator_set", "stake_pool"],
+            SnapshotCategoryExportMode::Canonical,
         )
         .expect("commit snapshot categories");
 
@@ -25200,6 +29639,372 @@ mod tests {
             .expect("register symbol");
     }
 
+    fn set_test_post_block_activation(state: &StateStore, slot: u64) {
+        persist_post_block_effects_activation_slot(state, slot)
+            .expect("persist test post-block activation");
+    }
+
+    fn put_analytics_test_block(state: &StateStore, slot: u64, timestamp: u64) {
+        let block = Block::new_with_timestamp(
+            slot,
+            Hash::hash(&slot.saturating_sub(1).to_le_bytes()),
+            Hash::hash(&slot.to_le_bytes()),
+            [7u8; 32],
+            Vec::new(),
+            timestamp,
+        );
+        state.put_block(&block).expect("put analytics test block");
+        state.set_last_slot(slot).expect("set analytics test tip");
+    }
+
+    fn put_analytics_test_trade(
+        state: &StateStore,
+        dex: &Pubkey,
+        trade_id: u64,
+        price: u64,
+        quantity: u64,
+        taker: [u8; 32],
+        slot: u64,
+    ) {
+        let mut data = Vec::with_capacity(80);
+        data.extend_from_slice(&trade_id.to_le_bytes());
+        data.extend_from_slice(&1u64.to_le_bytes());
+        data.extend_from_slice(&price.to_le_bytes());
+        data.extend_from_slice(&quantity.to_le_bytes());
+        data.extend_from_slice(&taker);
+        data.extend_from_slice(&0u64.to_le_bytes());
+        data.extend_from_slice(&slot.to_le_bytes());
+        state
+            .put_contract_storage(dex, format!("dex_trade_{trade_id}").as_bytes(), &data)
+            .expect("put analytics test trade");
+        state
+            .put_contract_storage(dex, b"dex_trade_count", &trade_id.to_le_bytes())
+            .expect("put analytics test trade count");
+    }
+
+    fn analytics_test_u64(state: &StateStore, program: &Pubkey, key: &[u8]) -> u64 {
+        let data = state
+            .get_contract_storage(program, key)
+            .expect("read analytics test storage")
+            .expect("analytics test storage exists");
+        u64::from_le_bytes(data[0..8].try_into().expect("analytics test u64"))
+    }
+
+    #[test]
+    fn analytics_bridge_projects_committed_trades_exactly_once() {
+        let temp_dir = tempfile::tempdir().expect("analytics temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open analytics state");
+        let dex = Pubkey([21u8; 32]);
+        let analytics = Pubkey([22u8; 32]);
+        let trader = [23u8; 32];
+        register_test_symbol(&state, "DEX", dex);
+        register_test_symbol(&state, "ANALYTICS", analytics);
+        set_test_post_block_activation(&state, 1);
+        ensure_canonical_analytics_v2(&state, 1, 1_700_000_000)
+            .expect("initialize canonical analytics schema");
+
+        put_analytics_test_block(&state, 1, 1_700_000_020);
+        put_analytics_test_trade(&state, &dex, 1, 1_000_000_000, 10_000_000_000, trader, 1);
+        run_analytics_bridge_from_state(&state, 1, 1_700_000_020)
+            .expect("project first canonical trade");
+
+        assert_eq!(analytics_test_u64(&state, &analytics, b"ana_rec_count"), 1);
+        assert_eq!(
+            analytics_test_u64(&state, &analytics, b"ana_total_volume"),
+            10_000_000_000
+        );
+        assert_eq!(
+            analytics_test_u64(&state, &analytics, b"ana_trader_count"),
+            1
+        );
+        assert_eq!(analytics_test_u64(&state, &analytics, b"ana_cc_1_60"), 1);
+
+        let root_after_first_projection = state.compute_state_root();
+        run_analytics_bridge_from_state(&state, 1, 1_700_000_020)
+            .expect("re-run canonical trade projection");
+        assert_eq!(state.compute_state_root(), root_after_first_projection);
+
+        put_analytics_test_block(&state, 2, 1_700_000_030);
+        put_analytics_test_trade(&state, &dex, 2, 2_000_000_000, 5_000_000_000, trader, 2);
+        run_analytics_bridge_from_state(&state, 2, 1_700_000_030)
+            .expect("project second canonical trade");
+
+        assert_eq!(analytics_test_u64(&state, &analytics, b"ana_rec_count"), 2);
+        assert_eq!(
+            analytics_test_u64(&state, &analytics, b"ana_total_volume"),
+            20_000_000_000
+        );
+        assert_eq!(
+            analytics_test_u64(&state, &analytics, b"ana_trader_count"),
+            1
+        );
+        assert_eq!(analytics_test_u64(&state, &analytics, b"ana_cc_1_60"), 1);
+        let candle = state
+            .get_contract_storage(&analytics, b"ana_c_1_60_0")
+            .expect("read canonical candle")
+            .expect("canonical candle exists");
+        assert_eq!(
+            u64::from_le_bytes(candle[32..40].try_into().expect("candle volume")),
+            20_000_000_000
+        );
+        let trader_stats = state
+            .get_contract_storage(&analytics, analytics_trader_key(&trader).as_bytes())
+            .expect("read canonical trader stats")
+            .expect("canonical trader stats exist");
+        assert_eq!(
+            u64::from_le_bytes(trader_stats[0..8].try_into().expect("trader volume")),
+            20_000_000_000
+        );
+        assert_eq!(
+            u64::from_le_bytes(trader_stats[8..16].try_into().expect("trader count")),
+            2
+        );
+    }
+
+    #[test]
+    fn analytics_bridge_replays_lagged_trades_at_committed_timestamps() {
+        let temp_dir = tempfile::tempdir().expect("analytics replay temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open analytics replay state");
+        let dex = Pubkey([24u8; 32]);
+        let analytics = Pubkey([25u8; 32]);
+        let trader = [26u8; 32];
+        register_test_symbol(&state, "DEX", dex);
+        register_test_symbol(&state, "ANALYTICS", analytics);
+        set_test_post_block_activation(&state, 1);
+        ensure_canonical_analytics_v2(&state, 1, 1_700_000_000).expect("initialize replay schema");
+
+        put_analytics_test_block(&state, 1, 1_700_000_020);
+        put_analytics_test_trade(&state, &dex, 1, 1_000_000_000, 10_000_000_000, trader, 1);
+        put_analytics_test_block(&state, 2, 1_700_000_090);
+        put_analytics_test_trade(&state, &dex, 2, 2_000_000_000, 5_000_000_000, trader, 2);
+        state
+            .put_contract_storage(&analytics, b"ana_24h_ts_1", &1_700_000_090u64.to_le_bytes())
+            .expect("seed current 24h window");
+
+        run_analytics_bridge_from_state(&state, 2, 1_700_000_090)
+            .expect("replay lagged canonical trades");
+
+        assert_eq!(analytics_test_u64(&state, &analytics, b"ana_cc_1_60"), 2);
+        let first = state
+            .get_contract_storage(&analytics, b"ana_c_1_60_0")
+            .expect("read first replay candle")
+            .expect("first replay candle exists");
+        let second = state
+            .get_contract_storage(&analytics, b"ana_c_1_60_1")
+            .expect("read second replay candle")
+            .expect("second replay candle exists");
+        assert_eq!(
+            u64::from_le_bytes(first[40..48].try_into().expect("first replay timestamp")),
+            (1_700_000_020u64 / 60) * 60
+        );
+        assert_eq!(
+            u64::from_le_bytes(second[40..48].try_into().expect("second replay timestamp")),
+            (1_700_000_090u64 / 60) * 60
+        );
+        let stats = state
+            .get_contract_storage(&analytics, b"ana_24h_1")
+            .expect("read replay 24h stats")
+            .expect("replay 24h stats exist");
+        assert_eq!(
+            u64::from_le_bytes(stats[0..8].try_into().expect("24h replay volume")),
+            10_000_000_000,
+            "the trade before the active 24h reset must not re-enter the window"
+        );
+        assert_eq!(
+            u64::from_le_bytes(stats[40..48].try_into().expect("24h replay trades")),
+            1
+        );
+    }
+
+    #[test]
+    fn analytics_24h_rollover_commits_stats_and_marker_together() {
+        let temp_dir = tempfile::tempdir().expect("analytics rollover temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open analytics rollover state");
+        let dex = Pubkey([27u8; 32]);
+        let analytics = Pubkey([28u8; 32]);
+        register_test_symbol(&state, "DEX", dex);
+        register_test_symbol(&state, "ANALYTICS", analytics);
+        state
+            .put_contract_storage(&dex, b"dex_pair_count", &1u64.to_le_bytes())
+            .expect("seed pair count");
+        state
+            .put_contract_storage(&analytics, b"ana_24h_ts_1", &1_700_000_000u64.to_le_bytes())
+            .expect("seed old rollover marker");
+        let mut old_stats = Vec::with_capacity(48);
+        for value in [99u64, 120, 80, 100, 110, 7] {
+            old_stats.extend_from_slice(&value.to_le_bytes());
+        }
+        state
+            .put_contract_storage(&analytics, b"ana_24h_1", &old_stats)
+            .expect("seed old 24h stats");
+
+        let next_window = 1_700_086_400;
+        reset_24h_stats_if_expired(&state, 42, next_window)
+            .expect("commit atomic analytics rollover");
+
+        let stats = state
+            .get_contract_storage(&analytics, b"ana_24h_1")
+            .expect("read rolled stats")
+            .expect("rolled stats exist");
+        assert_eq!(u64::from_le_bytes(stats[0..8].try_into().unwrap()), 0);
+        for offset in [8usize, 16, 24, 32] {
+            assert_eq!(
+                u64::from_le_bytes(stats[offset..offset + 8].try_into().unwrap()),
+                110
+            );
+        }
+        assert_eq!(u64::from_le_bytes(stats[40..48].try_into().unwrap()), 0);
+        assert_eq!(
+            analytics_test_u64(&state, &analytics, b"ana_24h_ts_1"),
+            next_window
+        );
+    }
+
+    #[test]
+    fn canonical_pair_analytics_streams_reset_window_exactly() {
+        let trader = [30u8; 32];
+        let mut analytics = CanonicalPairAnalytics::default();
+        for trade in [
+            CanonicalDexTrade {
+                pair_id: 7,
+                price: 90,
+                notional: 11,
+                taker: trader,
+                slot: 1,
+                timestamp: 99,
+            },
+            CanonicalDexTrade {
+                pair_id: 7,
+                price: 100,
+                notional: 12,
+                taker: trader,
+                slot: 2,
+                timestamp: 100,
+            },
+            CanonicalDexTrade {
+                pair_id: 7,
+                price: 130,
+                notional: u64::MAX,
+                taker: trader,
+                slot: 3,
+                timestamp: 101,
+            },
+            CanonicalDexTrade {
+                pair_id: 7,
+                price: 80,
+                notional: 9,
+                taker: trader,
+                slot: 4,
+                timestamp: 102,
+            },
+        ] {
+            analytics.observe(&trade, 100);
+        }
+
+        assert_eq!(analytics.last_price, 80);
+        assert_eq!(analytics.last_timestamp, 102);
+        assert_eq!(analytics.window_open, 100);
+        assert_eq!(analytics.window_high, 130);
+        assert_eq!(analytics.window_low, 80);
+        assert_eq!(analytics.window_close, 80);
+        assert_eq!(analytics.window_volume, u64::MAX);
+        assert_eq!(analytics.window_trade_count, 3);
+    }
+
+    #[test]
+    fn analytics_v2_migration_repairs_doubled_counts_and_mixed_candles() {
+        let temp_dir = tempfile::tempdir().expect("analytics migration temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open analytics migration state");
+        let dex = Pubkey([31u8; 32]);
+        let analytics = Pubkey([32u8; 32]);
+        let trader = [33u8; 32];
+        register_test_symbol(&state, "DEX", dex);
+        register_test_symbol(&state, "ANALYTICS", analytics);
+        set_test_post_block_activation(&state, 3);
+        put_analytics_test_block(&state, 1, 1_700_000_020);
+        put_analytics_test_trade(&state, &dex, 1, 1_000_000_000, 10_000_000_000, trader, 1);
+        put_analytics_test_block(&state, 2, 1_700_000_030);
+        put_analytics_test_trade(&state, &dex, 2, 2_000_000_000, 5_000_000_000, trader, 2);
+
+        state
+            .put_contract_storage(&analytics, b"ana_rec_count", &4u64.to_le_bytes())
+            .expect("seed doubled count");
+        state
+            .put_contract_storage(
+                &analytics,
+                b"ana_total_volume",
+                &40_000_000_000u64.to_le_bytes(),
+            )
+            .expect("seed doubled volume");
+        state
+            .put_contract_storage(&analytics, b"ana_trader_count", &7u64.to_le_bytes())
+            .expect("seed corrupt trader count");
+        let candle_start = (1_700_000_020u64 / 60) * 60;
+        for (index, price, volume, timestamp) in [
+            (1, 1_000_000_000u64, 10_000_000_000u64, 1u64),
+            (2, 1_000_000_000, 10_000_000_000, candle_start),
+            (3, 2_000_000_000, 10_000_000_000, 2),
+            (4, 2_000_000_000, 10_000_000_000, candle_start),
+        ] {
+            let mut candle = Vec::with_capacity(48);
+            for value in [price, price, price, price, volume, timestamp] {
+                candle.extend_from_slice(&value.to_le_bytes());
+            }
+            state
+                .put_contract_storage(
+                    &analytics,
+                    format!("ana_c_1_60_{index}").as_bytes(),
+                    &candle,
+                )
+                .expect("seed mixed candle");
+        }
+        state
+            .put_contract_storage(&analytics, b"ana_cc_1_60", &5u64.to_le_bytes())
+            .expect("seed mixed candle count");
+
+        ensure_canonical_analytics_v2(&state, 2, 1_700_000_030)
+            .expect("pre-activation analytics migration is a no-op");
+        assert!(state
+            .get_contract_storage(&analytics, ANALYTICS_CANONICAL_V2_MARKER)
+            .expect("read pre-activation marker")
+            .is_none());
+        assert_eq!(analytics_test_u64(&state, &analytics, b"ana_rec_count"), 4);
+
+        ensure_canonical_analytics_v2(&state, 3, 1_700_000_030)
+            .expect("migrate canonical analytics");
+        assert_eq!(analytics_test_u64(&state, &analytics, b"ana_rec_count"), 2);
+        assert_eq!(
+            analytics_test_u64(&state, &analytics, b"ana_total_volume"),
+            20_000_000_000
+        );
+        assert_eq!(
+            analytics_test_u64(&state, &analytics, b"ana_trader_count"),
+            1
+        );
+        assert_eq!(analytics_test_u64(&state, &analytics, b"ana_cc_1_60"), 1);
+        assert_eq!(
+            analytics_test_u64(&state, &dex, b"dex_analytics_bridge_cursor"),
+            2
+        );
+        let candle = state
+            .get_contract_storage(&analytics, b"ana_c_1_60_0")
+            .expect("read migrated candle")
+            .expect("migrated candle exists");
+        assert_eq!(
+            u64::from_le_bytes(candle[32..40].try_into().expect("migrated volume")),
+            20_000_000_000
+        );
+        assert!(state
+            .get_contract_storage(&analytics, b"ana_c_1_60_1")
+            .expect("read removed mixed candle")
+            .is_none());
+
+        let migrated_root = state.compute_state_root();
+        ensure_canonical_analytics_v2(&state, 3, 1_700_000_030)
+            .expect("canonical migration is idempotent");
+        assert_eq!(state.compute_state_root(), migrated_root);
+    }
+
     fn export_test_category(state: &StateStore, category: &str) -> Vec<(Vec<u8>, Vec<u8>)> {
         state
             .export_snapshot_category_cursor_untracked(category, None, 1000)
@@ -25285,28 +30090,8 @@ mod tests {
             BLOCK_RANGE_RESPONSE_BATCH_BLOCKS,
             sync::INITIAL_SYNC_BLOCK_RANGE_LIMIT as usize
         );
-        assert!(BLOCK_RANGE_RESPONSE_BATCH_BLOCKS > 0);
+        const { assert!(BLOCK_RANGE_RESPONSE_BATCH_BLOCKS > 0) };
         assert!(BLOCK_RANGE_RESPONSE_BATCH_BLOCKS as u64 <= sync::P2P_BLOCK_RANGE_LIMIT);
-    }
-
-    #[test]
-    fn stale_bft_restart_rendezvous_round_only_for_stale_resumed_tip() {
-        assert_eq!(stale_bft_restart_rendezvous_round(0, 1, 10_000), None);
-        assert_eq!(stale_bft_restart_rendezvous_round(50, 52, 10_000), None);
-        assert_eq!(stale_bft_restart_rendezvous_round(50, 51, 119), None);
-        assert_eq!(stale_bft_restart_rendezvous_round(50, 51, 120), Some(24));
-        assert_eq!(
-            stale_bft_restart_rendezvous_round(6_818_621, 6_818_622, 28_600),
-            Some(5_720)
-        );
-    }
-
-    #[test]
-    fn stale_bft_restart_rendezvous_round_saturates_at_u32_max() {
-        assert_eq!(
-            stale_bft_restart_rendezvous_round(1, 2, u64::MAX),
-            Some(u32::MAX)
-        );
     }
 
     #[test]
@@ -25408,6 +30193,73 @@ mod tests {
         assert_eq!(alice_after.spendable, alice_before.spendable);
         assert!(state.get_account(&bob).expect("read bob").is_none());
         assert!(state.get_transaction(&tx_hash).expect("read tx").is_none());
+    }
+
+    #[test]
+    fn validate_then_replay_commits_failed_transaction_receipt() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let alice_kp = Keypair::generate();
+        let alice = alice_kp.pubkey();
+        let bob = Pubkey([2u8; 32]);
+        let treasury = Pubkey([3u8; 32]);
+        let validator = Pubkey([42u8; 32]);
+
+        state.set_treasury_pubkey(&treasury).expect("set treasury");
+        state
+            .put_account(&treasury, &Account::new(0, treasury))
+            .expect("put treasury");
+        state
+            .put_account(&alice, &Account::new(1_000, alice))
+            .expect("fund alice");
+
+        let genesis_root = state.compute_state_root_cold_start();
+        let genesis =
+            Block::new_with_timestamp(0, Hash::default(), genesis_root, validator.0, Vec::new(), 0);
+        let genesis_hash = genesis.hash();
+        state.put_block(&genesis).expect("put genesis");
+        state.set_last_slot(0).expect("set last slot");
+
+        let tx = make_signed_transfer_tx(&alice_kp, alice, bob, 2_000, genesis_hash);
+        let tx_hash = tx.hash();
+        let speculative = TxProcessor::new_speculative(state.clone())
+            .process_transactions_speculative(std::slice::from_ref(&tx), &validator);
+        assert!(!speculative.results[0].success);
+        assert!(speculative.results[0].receipt_eligible);
+        let fee_paid = speculative.results[0].fee_paid;
+        let initial_balance = state.get_balance(&alice).expect("alice balance");
+
+        let mut block = Block::new_with_timestamp(
+            1,
+            genesis_hash,
+            state.compute_state_root_for_batch(&speculative.batch),
+            validator.0,
+            vec![tx],
+            1,
+        );
+        block.tx_fees_paid = vec![fee_paid];
+
+        validate_then_replay_block_transactions(&state, &block, "failed receipt replay", false)
+            .expect("deterministic failure should be replayable");
+
+        assert!(state.get_transaction(&tx_hash).unwrap().is_some());
+        assert_eq!(
+            state.get_block_by_slot(1).unwrap().unwrap().hash(),
+            block.hash()
+        );
+        let receipt = state.get_tx_meta_full(&tx_hash).unwrap().unwrap();
+        assert_eq!(receipt.success, Some(false));
+        assert_eq!(receipt.fee_paid, Some(fee_paid));
+        assert!(receipt
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("Execution error"));
+        assert_eq!(
+            state.get_balance(&alice).unwrap(),
+            initial_balance - fee_paid
+        );
+        assert_eq!(state.get_balance(&bob).unwrap_or(0), 0);
     }
 
     #[test]
@@ -25537,6 +30389,7 @@ mod tests {
             .iter()
             .map(|result| result.fee_paid)
             .collect();
+        drop(speculative);
 
         let staging_root = temp_dir.path().join("replay-staging");
         validate_then_replay_block_transactions(&state, &block, "test replay", false)
@@ -25555,6 +30408,24 @@ mod tests {
                 > 0
         );
         assert!(state.get_transaction(&tx_hash).expect("read tx").is_some());
+        assert_eq!(
+            state.get_block_by_slot(1).unwrap().unwrap().hash(),
+            block.hash()
+        );
+        assert_eq!(state.get_last_slot().unwrap(), 1);
+        assert_eq!(state.get_last_confirmed_slot().unwrap(), 1);
+        assert_eq!(state.get_last_finalized_slot().unwrap(), 1);
+
+        drop(state);
+        let reopened = StateStore::open(temp_dir.path()).expect("reopen canonical state");
+        assert!(reopened.get_transaction(&tx_hash).unwrap().is_some());
+        assert_eq!(
+            reopened.get_block_by_slot(1).unwrap().unwrap().hash(),
+            block.hash()
+        );
+        assert_eq!(reopened.get_tx_slot(&tx_hash).unwrap(), Some(1));
+        assert_eq!(reopened.get_last_slot().unwrap(), 1);
+        assert_eq!(reopened.get_last_finalized_slot().unwrap(), 1);
     }
 
     #[test]
@@ -25604,9 +30475,12 @@ mod tests {
         let err = validate_consensus_proposal_before_prevote(
             &state,
             &proposal,
-            genesis_hash,
-            validators_hash,
-            "",
+            ConsensusProposalValidationContext {
+                expected_parent_hash: genesis_hash,
+                expected_validators_hash: validators_hash,
+                min_validator_stake: MIN_VALIDATOR_STAKE,
+                chain_id: "",
+            },
         )
         .expect_err("bad proposal root must be rejected before voting");
 
@@ -25673,9 +30547,12 @@ mod tests {
         validate_consensus_proposal_before_prevote(
             &state,
             &proposal,
-            genesis_hash,
-            validators_hash,
-            "",
+            ConsensusProposalValidationContext {
+                expected_parent_hash: genesis_hash,
+                expected_validators_hash: validators_hash,
+                min_validator_stake: MIN_VALIDATOR_STAKE,
+                chain_id: "",
+            },
         )
         .expect("valid proposal should pass before prevote");
 
@@ -25754,11 +30631,156 @@ mod tests {
         validate_consensus_proposal_before_prevote(
             &state,
             &proposal,
-            genesis_hash,
-            validators_hash,
-            "",
+            ConsensusProposalValidationContext {
+                expected_parent_hash: genesis_hash,
+                expected_validators_hash: validators_hash,
+                min_validator_stake: MIN_VALIDATOR_STAKE,
+                chain_id: "",
+            },
         )
         .expect("valid locked-value reproposal should pass before prevote");
+    }
+
+    #[test]
+    fn consensus_proposal_validation_requires_valid_canonical_parent_commit() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let validator_kp = Keypair::generate();
+        let validator = validator_kp.pubkey();
+        let mut validator_set = ValidatorSet::new();
+        validator_set.add_validator(test_validator_info(validator));
+        let mut stake_pool = StakePool::new();
+        stake_pool
+            .stake(validator, MIN_VALIDATOR_STAKE, 0)
+            .expect("stake validator");
+        let validators_hash = compute_validators_hash(&validator_set, &stake_pool);
+
+        let genesis = Block::genesis(state.compute_state_root_cold_start(), 1, Vec::new());
+        state.put_block(&genesis).expect("store genesis");
+        let mut parent = Block::new_with_timestamp(
+            1,
+            genesis.hash(),
+            state.compute_state_root_cold_start(),
+            validator.0,
+            Vec::new(),
+            2,
+        );
+        parent.header.validators_hash = validators_hash;
+        parent.sign(&validator_kp);
+        let parent_hash = parent.hash();
+        let precommit = Precommit::signable_bytes(1, 0, &Some(parent_hash), 2);
+        parent.commit_signatures = vec![lichen_core::CommitSignature {
+            validator: validator.0,
+            signature: validator_kp.sign(&precommit),
+            timestamp: 2,
+        }];
+        state.put_block(&parent).expect("store parent");
+        state.set_last_slot(1).expect("set parent tip");
+
+        let certificate = CanonicalCommitCertificate::from_committed_block(
+            &parent,
+            canonical_validator_powers(&validator_set, &stake_pool),
+            state.compute_state_root(),
+        )
+        .unwrap()
+        .bind_child_metadata(&[0], &[])
+        .unwrap();
+        let mut block = Block::new_with_timestamp(
+            2,
+            parent_hash,
+            state.compute_state_root_cold_start(),
+            validator.0,
+            vec![certificate.to_transaction().unwrap()],
+            3,
+        );
+        block.header.validators_hash = validators_hash;
+        block.tx_fees_paid = vec![0];
+        block.sign(&validator_kp);
+        let block_hash = block.hash();
+        let proposal = Proposal {
+            height: 2,
+            round: 0,
+            block,
+            valid_round: -1,
+            proposer: validator,
+            signature: validator_kp.sign(&Proposal::signable_bytes_static(2, 0, &block_hash, -1)),
+        };
+
+        validate_consensus_proposal_before_prevote(
+            &state,
+            &proposal,
+            ConsensusProposalValidationContext {
+                expected_parent_hash: parent_hash,
+                expected_validators_hash: validators_hash,
+                min_validator_stake: MIN_VALIDATOR_STAKE,
+                chain_id: "",
+            },
+        )
+        .expect("valid canonical parent commit should pass before prevote");
+        validate_block_payload_commitments(&proposal.block)
+            .expect("valid synced payload commitments should pass");
+
+        let mut metadata_mutated = proposal.clone();
+        metadata_mutated.block.tx_fees_paid[0] = 1;
+        assert!(validate_block_payload_commitments(&metadata_mutated.block)
+            .unwrap_err()
+            .contains("child metadata mismatch"));
+        assert!(validate_consensus_proposal_before_prevote(
+            &state,
+            &metadata_mutated,
+            ConsensusProposalValidationContext {
+                expected_parent_hash: parent_hash,
+                expected_validators_hash: validators_hash,
+                min_validator_stake: MIN_VALIDATOR_STAKE,
+                chain_id: "",
+            },
+        )
+        .unwrap_err()
+        .contains("child metadata mismatch"));
+
+        let mut oracle_mutated = proposal.clone();
+        oracle_mutated
+            .block
+            .oracle_prices
+            .push(("wSOL".to_string(), 123));
+        assert!(validate_block_payload_commitments(&oracle_mutated.block)
+            .unwrap_err()
+            .contains("child metadata mismatch"));
+
+        let mut wrong_certificate = certificate;
+        wrong_certificate.block_hash = Hash::hash(b"wrong-parent");
+        let mut wrong_block = Block::new_with_timestamp(
+            2,
+            parent_hash,
+            state.compute_state_root_cold_start(),
+            validator.0,
+            vec![wrong_certificate.to_transaction().unwrap()],
+            3,
+        );
+        wrong_block.header.validators_hash = validators_hash;
+        wrong_block.tx_fees_paid = vec![0];
+        wrong_block.sign(&validator_kp);
+        let wrong_hash = wrong_block.hash();
+        let wrong_proposal = Proposal {
+            height: 2,
+            round: 0,
+            block: wrong_block,
+            valid_round: -1,
+            proposer: validator,
+            signature: validator_kp.sign(&Proposal::signable_bytes_static(2, 0, &wrong_hash, -1)),
+        };
+        assert!(validate_consensus_proposal_before_prevote(
+            &state,
+            &wrong_proposal,
+            ConsensusProposalValidationContext {
+                expected_parent_hash: parent_hash,
+                expected_validators_hash: validators_hash,
+                min_validator_stake: MIN_VALIDATOR_STAKE,
+                chain_id: "",
+            },
+        )
+        .unwrap_err()
+        .contains("does not match parent"));
     }
 
     #[test]
@@ -25794,13 +30816,55 @@ mod tests {
         let err = validate_consensus_proposal_before_prevote(
             &state,
             &proposal,
-            genesis_hash,
-            validators_hash,
-            "",
+            ConsensusProposalValidationContext {
+                expected_parent_hash: genesis_hash,
+                expected_validators_hash: validators_hash,
+                min_validator_stake: MIN_VALIDATOR_STAKE,
+                chain_id: "",
+            },
         )
         .expect_err("invalid block signature must be rejected");
 
         assert!(err.contains("block signature is invalid"));
+    }
+
+    #[test]
+    fn completed_fee_distribution_short_circuits_before_receipt_replay() {
+        let source = include_str!("main.rs");
+        let start = source
+            .find("async fn apply_block_effects(")
+            .expect("apply block effects function");
+        let relative_end = source[start..]
+            .find("fn apply_founding_vesting_from_block(")
+            .expect("next function after block effects");
+        let section = &source[start..start + relative_end];
+        let marker_pos = section
+            .find("state.get_fee_distribution_hash(slot)")
+            .expect("fee completion marker read");
+        let receipt_replay_pos = section
+            .find("block_total_fees_paid(state, block, &fee_config)")
+            .expect("canonical fee receipt replay");
+
+        assert!(
+            marker_pos < receipt_replay_pos,
+            "completed fee distributions must return before historical receipt reads"
+        );
+    }
+
+    #[test]
+    fn canonical_analytics_v2_does_not_retain_lifetime_trade_history() {
+        let source = include_str!("main.rs");
+        let start = source
+            .find("fn ensure_canonical_analytics_v2(")
+            .expect("analytics v2 migration");
+        let relative_end = source[start..]
+            .find("fn emit_program_and_nft_events(")
+            .expect("next function after analytics migration");
+        let section = &source[start..start + relative_end];
+
+        assert!(section.contains("for trade_id in 1..=trade_count"));
+        assert!(!section.contains("Vec<CanonicalDexTrade>"));
+        assert!(!section.contains("Vec<&CanonicalDexTrade>"));
     }
 
     #[test]
@@ -25964,8 +31028,18 @@ mod tests {
         let section = &source[start..start + end];
 
         assert!(
-            section.contains("Canonical apply barrier"),
-            "BFT loop must wait for canonical block application before observing tip state"
+            section.contains("Canonical post-effect gate"),
+            "BFT loop must verify canonical post-block effects before observing tip state"
+        );
+        let gate_pos = section
+            .find("ensure_recent_stored_post_block_effects_before_bft(")
+            .expect("BFT loop must call the post-effect completion gate");
+        let observed_tip_pos = section
+            .find("let observed_tip = sync_manager.get_highest_seen().await;")
+            .expect("BFT observed-tip read");
+        assert!(
+            gate_pos < observed_tip_pos,
+            "BFT must complete stored block post-effects before observing live consensus state"
         );
         let validation_guard = "let _canonical_apply_guard = block_apply_lock.lock().await;";
         let build_call = "block_producer::build_block(";
@@ -26188,6 +31262,18 @@ mod tests {
         source
             .put_contract_storage(&program, b"key", b"value")
             .expect("put contract storage");
+        let genesis_call = lichen_core::ProgramCallActivity {
+            slot: 0,
+            timestamp: 0,
+            program,
+            caller: owner,
+            function: "initialize".to_string(),
+            value: 0,
+            tx_signature: Hash([0u8; 32]),
+        };
+        source
+            .record_program_call(&genesis_call, 0)
+            .expect("record genesis program call");
         let restriction = lichen_core::RestrictionRecord {
             id: source.next_restriction_id().expect("next restriction id"),
             target: lichen_core::RestrictionTarget::Account(owner),
@@ -26236,6 +31322,10 @@ mod tests {
                 lichen_core::GenesisStateCategory {
                     name: "programs".to_string(),
                     entries: export_test_category(&source, "programs"),
+                },
+                lichen_core::GenesisStateCategory {
+                    name: "program_calls".to_string(),
+                    entries: export_test_category(&source, "program_calls"),
                 },
                 lichen_core::GenesisStateCategory {
                     name: "symbol_registry".to_string(),
@@ -26299,6 +31389,14 @@ mod tests {
             dest.get_restriction(restriction.id).unwrap(),
             Some(restriction)
         );
+        let calls = dest
+            .get_program_calls(&program, 10, None)
+            .expect("read imported program calls");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].slot, genesis_call.slot);
+        assert_eq!(calls[0].program, genesis_call.program);
+        assert_eq!(calls[0].caller, genesis_call.caller);
+        assert_eq!(calls[0].function, genesis_call.function);
         assert_eq!(dest.get_program_count(), 1);
     }
 
@@ -26505,55 +31603,31 @@ mod tests {
         let state = StateStore::open(temp_dir.path()).expect("open state");
 
         let validator_kp = Keypair::generate();
-        let validator_pk = validator_kp.pubkey();
 
-        let mut validator_set = ValidatorSet::new();
-        validator_set.add_validator(ValidatorInfo {
-            pubkey: validator_pk,
-            reputation: 100,
-            blocks_proposed: 0,
-            votes_cast: 0,
-            correct_votes: 0,
-            stake: 100_000_000_000_000,
-            joined_slot: 0,
-            last_active_slot: 0,
-            last_observed_at_ms: 0,
-            last_observed_block_at_ms: 0,
-            last_observed_block_slot: 0,
-            commission_rate: 500,
-            transactions_processed: 0,
-            pending_activation: false,
-        });
-
-        let mut stake_pool = StakePool::new();
-        stake_pool
-            .stake(validator_pk, 100_000_000_000_000, 0)
-            .expect("stake validator");
-
+        let genesis = Block::genesis(Hash::hash(b"checkpoint-completeness-genesis"), 1, vec![]);
         let committed_state_root = state.compute_state_root();
-        let mut block = Block::new_with_timestamp(
-            1,
-            Hash::default(),
+        let block = test_next_committed_block(
+            &state,
+            &genesis,
+            &validator_kp,
             committed_state_root,
-            validator_pk.0,
-            Vec::new(),
+            committed_state_root,
             1_000,
         );
-        block.sign(&validator_kp);
-        block.commit_round = 0;
-
-        let block_hash = block.hash();
-        let signable = Precommit::signable_bytes(1, 0, &Some(block_hash), 1_000);
-        block.commit_signatures = vec![lichen_core::CommitSignature {
-            validator: validator_pk.0,
-            signature: validator_kp.sign(&signable),
-            timestamp: 1_000,
-        }];
+        let child = test_next_committed_block(
+            &state,
+            &block,
+            &validator_kp,
+            committed_state_root,
+            committed_state_root,
+            1_001,
+        );
 
         state.put_block(&block).expect("put block");
+        state.put_block(&child).expect("put canonical child");
         assert!(
             state.get_block_by_slot(0).expect("read slot 0").is_none(),
-            "test must cover legacy checkpoints whose hot state has no canonical slot-0 block"
+            "test must reject checkpoints whose archive has no canonical slot-0 block"
         );
 
         let checkpoint_path = temp_dir.path().join("checkpoints/slot-1");
@@ -26571,8 +31645,6 @@ mod tests {
             latest_verified_checkpoint(
                 temp_dir.path().to_str().expect("data dir"),
                 &state,
-                &validator_set,
-                &stake_pool,
                 "",
                 MIN_VALIDATOR_STAKE,
             )
@@ -26584,12 +31656,26 @@ mod tests {
             .set_last_finalized_slot(1)
             .expect("set finalized slot");
 
+        assert!(
+            latest_verified_checkpoint(
+                temp_dir.path().to_str().expect("data dir"),
+                &state,
+                "",
+                MIN_VALIDATOR_STAKE,
+            )
+            .is_none(),
+            "a finalized checkpoint with no canonical genesis block must not be advertised"
+        );
+
+        state.put_block(&genesis).expect("put canonical genesis");
+        state
+            .create_checkpoint(checkpoint_path.to_str().expect("checkpoint path"), 1)
+            .expect("recreate complete checkpoint");
+
         let checkpoint_fingerprint = directory_fingerprint(&checkpoint_path);
         let (meta, _, _, manifest) = latest_verified_checkpoint(
             temp_dir.path().to_str().expect("data dir"),
             &state,
-            &validator_set,
-            &stake_pool,
             "",
             MIN_VALIDATOR_STAKE,
         )
@@ -26599,15 +31685,16 @@ mod tests {
         assert_eq!(meta.state_root, block.header.state_root.0);
         validate_advertised_snapshot_manifest_shape(&manifest).expect("manifest shape");
         assert!(
-            !manifest.iter().any(|digest| digest.category == "blocks"),
-            "state-repair checkpoint manifests must not require public block archive rows"
+            manifest.iter().any(|digest| digest.category == "blocks")
+                && manifest
+                    .iter()
+                    .any(|digest| digest.category == "account_snapshots"),
+            "network checkpoints must carry block and historical account archives"
         );
         let manifest_root = snapshot_manifest_root(&manifest);
         let (anchored_meta, _, _, anchored_categories) = verified_checkpoint_for_anchor(
             temp_dir.path().to_str().expect("data dir"),
             &state,
-            &validator_set,
-            &stake_pool,
             "",
             MIN_VALIDATOR_STAKE,
             CheckpointSnapshotRequestAnchor {
@@ -26618,7 +31705,7 @@ mod tests {
         )
         .expect("exact slot/root/manifest checkpoint anchor should be served");
         assert_eq!(anchored_meta.slot, meta.slot);
-        assert_eq!(anchored_categories, STATE_REPAIR_SNAPSHOT_CATEGORIES);
+        assert_eq!(anchored_categories, CHECKPOINT_SNAPSHOT_CATEGORIES);
 
         let mut wrong_manifest_root = manifest_root;
         wrong_manifest_root[0] ^= 0x80;
@@ -26626,8 +31713,6 @@ mod tests {
             verified_checkpoint_for_anchor(
                 temp_dir.path().to_str().expect("data dir"),
                 &state,
-                &validator_set,
-                &stake_pool,
                 "",
                 MIN_VALIDATOR_STAKE,
                 CheckpointSnapshotRequestAnchor {
@@ -26649,7 +31734,11 @@ mod tests {
     #[test]
     fn latest_verified_checkpoint_accepts_post_effects_checkpoint_root() {
         let temp_dir = tempfile::tempdir().expect("create temp dir");
-        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let cold_dir = tempfile::tempdir().expect("create cold dir");
+        let mut state = StateStore::open(temp_dir.path()).expect("open state");
+        state
+            .open_cold_store(cold_dir.path())
+            .expect("open cold archive");
 
         let validator_kp = Keypair::generate();
         let validator_pk = validator_kp.pubkey();
@@ -26677,27 +31766,23 @@ mod tests {
             .stake(validator_pk, 100_000_000_000_000, 0)
             .expect("stake validator");
 
+        let genesis = Block::genesis(Hash::hash(b"checkpoint-post-effects-genesis"), 1, vec![]);
+        state.put_block(&genesis).expect("put canonical genesis");
         let committed_state_root = state.compute_state_root();
-        let mut block = Block::new_with_timestamp(
-            1,
-            Hash::default(),
+        let block = test_next_committed_block(
+            &state,
+            &genesis,
+            &validator_kp,
             committed_state_root,
-            validator_pk.0,
-            Vec::new(),
+            committed_state_root,
             1_000,
         );
-        block.sign(&validator_kp);
-        block.commit_round = 0;
-
-        let block_hash = block.hash();
-        let signable = Precommit::signable_bytes(1, 0, &Some(block_hash), 1_000);
-        block.commit_signatures = vec![lichen_core::CommitSignature {
-            validator: validator_pk.0,
-            signature: validator_kp.sign(&signable),
-            timestamp: 1_000,
-        }];
 
         state.put_block(&block).expect("put block");
+        assert_eq!(
+            state.migrate_to_cold(1).expect("migrate genesis to cold"),
+            1
+        );
         state
             .put_stake_pool(&stake_pool)
             .expect("put post-effects stake pool");
@@ -26712,6 +31797,15 @@ mod tests {
         let meta = state
             .create_checkpoint(checkpoint_path.to_str().expect("checkpoint path"), 1)
             .expect("create checkpoint");
+        let child = test_next_committed_block(
+            &state,
+            &block,
+            &validator_kp,
+            Hash(meta.state_root),
+            Hash(meta.state_root),
+            1_001,
+        );
+        state.put_block(&child).expect("put canonical child");
         state
             .set_last_finalized_slot(1)
             .expect("set finalized slot");
@@ -26721,8 +31815,6 @@ mod tests {
         let (verified_meta, _, verified_block, manifest) = latest_verified_checkpoint(
             temp_dir.path().to_str().expect("data dir"),
             &state,
-            &validator_set,
-            &stake_pool,
             "",
             MIN_VALIDATOR_STAKE,
         )
@@ -26732,6 +31824,15 @@ mod tests {
         assert_eq!(verified_meta.state_root, meta.state_root);
         assert_eq!(verified_block.header.state_root, block.header.state_root);
         validate_advertised_snapshot_manifest_shape(&manifest).expect("manifest shape");
+        assert_eq!(
+            manifest
+                .iter()
+                .find(|digest| digest.category == "blocks")
+                .expect("blocks digest")
+                .entry_count,
+            2,
+            "checkpoint manifest must include hot tip and cold genesis block"
+        );
     }
 
     #[test]
@@ -26740,64 +31841,36 @@ mod tests {
         let state = StateStore::open(temp_dir.path()).expect("open state");
 
         let validator_kp = Keypair::generate();
-        let validator_pk = validator_kp.pubkey();
 
-        let mut validator_set = ValidatorSet::new();
-        validator_set.add_validator(ValidatorInfo {
-            pubkey: validator_pk,
-            reputation: 100,
-            blocks_proposed: 0,
-            votes_cast: 0,
-            correct_votes: 0,
-            stake: 100_000_000_000_000,
-            joined_slot: 0,
-            last_active_slot: 0,
-            last_observed_at_ms: 0,
-            last_observed_block_at_ms: 0,
-            last_observed_block_slot: 0,
-            commission_rate: 500,
-            transactions_processed: 0,
-            pending_activation: false,
-        });
-
-        let mut stake_pool = StakePool::new();
-        stake_pool
-            .stake(validator_pk, 100_000_000_000_000, 0)
-            .expect("stake validator");
-
-        for slot in 1..=2 {
+        let genesis = Block::genesis(Hash::hash(b"checkpoint-fallback-genesis"), 1, vec![]);
+        state.put_block(&genesis).expect("put canonical genesis");
+        let mut parent = genesis;
+        for slot in 1..=3 {
             let committed_state_root = state.compute_state_root();
-            let mut block = Block::new_with_timestamp(
-                slot,
-                Hash::default(),
+            let block = test_next_committed_block(
+                &state,
+                &parent,
+                &validator_kp,
                 committed_state_root,
-                validator_pk.0,
-                Vec::new(),
+                committed_state_root,
                 1_000 + slot,
             );
-            block.sign(&validator_kp);
-            block.commit_round = 0;
-
-            let block_hash = block.hash();
-            let signable = Precommit::signable_bytes(slot, 0, &Some(block_hash), 1_000 + slot);
-            block.commit_signatures = vec![lichen_core::CommitSignature {
-                validator: validator_pk.0,
-                signature: validator_kp.sign(&signable),
-                timestamp: 1_000 + slot,
-            }];
 
             state.put_block(&block).expect("put block");
+            parent = block;
 
-            let checkpoint_path = temp_dir.path().join(format!("checkpoints/slot-{slot}"));
-            std::fs::create_dir_all(
-                checkpoint_path
-                    .parent()
-                    .expect("checkpoint parent directory exists"),
-            )
-            .expect("create checkpoints dir");
-            state
-                .create_checkpoint(checkpoint_path.to_str().expect("checkpoint path"), slot)
-                .expect("create checkpoint");
+            if slot <= 2 {
+                let checkpoint_path = temp_dir.path().join(format!("checkpoints/slot-{slot}"));
+                std::fs::create_dir_all(
+                    checkpoint_path
+                        .parent()
+                        .expect("checkpoint parent directory exists"),
+                )
+                .expect("create checkpoints dir");
+                state
+                    .create_checkpoint(checkpoint_path.to_str().expect("checkpoint path"), slot)
+                    .expect("create checkpoint");
+            }
         }
 
         state
@@ -26821,8 +31894,6 @@ mod tests {
         let (meta, _, _, manifest) = latest_verified_checkpoint(
             temp_dir.path().to_str().expect("data dir"),
             &state,
-            &validator_set,
-            &stake_pool,
             "",
             MIN_VALIDATOR_STAKE,
         )
@@ -26838,63 +31909,35 @@ mod tests {
         let state = StateStore::open(temp_dir.path()).expect("open state");
 
         let validator_kp = Keypair::generate();
-        let validator_pk = validator_kp.pubkey();
 
-        let mut validator_set = ValidatorSet::new();
-        validator_set.add_validator(ValidatorInfo {
-            pubkey: validator_pk,
-            reputation: 100,
-            blocks_proposed: 0,
-            votes_cast: 0,
-            correct_votes: 0,
-            stake: 100_000_000_000_000,
-            joined_slot: 0,
-            last_active_slot: 0,
-            last_observed_at_ms: 0,
-            last_observed_block_at_ms: 0,
-            last_observed_block_slot: 0,
-            commission_rate: 500,
-            transactions_processed: 0,
-            pending_activation: false,
-        });
-
-        let mut stake_pool = StakePool::new();
-        stake_pool
-            .stake(validator_pk, 100_000_000_000_000, 0)
-            .expect("stake validator");
-
-        for slot in 1..=3 {
+        let genesis = Block::genesis(Hash::hash(b"checkpoint-recent-genesis"), 1, vec![]);
+        state.put_block(&genesis).expect("put canonical genesis");
+        let mut parent = genesis;
+        for slot in 1..=4 {
             let committed_state_root = state.compute_state_root();
-            let mut block = Block::new_with_timestamp(
-                slot,
-                Hash::default(),
+            let block = test_next_committed_block(
+                &state,
+                &parent,
+                &validator_kp,
                 committed_state_root,
-                validator_pk.0,
-                Vec::new(),
+                committed_state_root,
                 2_000 + slot,
             );
-            block.sign(&validator_kp);
-            block.commit_round = 0;
-
-            let block_hash = block.hash();
-            let signable = Precommit::signable_bytes(slot, 0, &Some(block_hash), 2_000 + slot);
-            block.commit_signatures = vec![lichen_core::CommitSignature {
-                validator: validator_pk.0,
-                signature: validator_kp.sign(&signable),
-                timestamp: 2_000 + slot,
-            }];
 
             state.put_block(&block).expect("put block");
-            let checkpoint_path = temp_dir.path().join(format!("checkpoints/slot-{slot}"));
-            std::fs::create_dir_all(
-                checkpoint_path
-                    .parent()
-                    .expect("checkpoint parent directory exists"),
-            )
-            .expect("create checkpoints dir");
-            state
-                .create_checkpoint(checkpoint_path.to_str().expect("checkpoint path"), slot)
-                .expect("create checkpoint");
+            parent = block;
+            if slot <= 3 {
+                let checkpoint_path = temp_dir.path().join(format!("checkpoints/slot-{slot}"));
+                std::fs::create_dir_all(
+                    checkpoint_path
+                        .parent()
+                        .expect("checkpoint parent directory exists"),
+                )
+                .expect("create checkpoints dir");
+                state
+                    .create_checkpoint(checkpoint_path.to_str().expect("checkpoint path"), slot)
+                    .expect("create checkpoint");
+            }
         }
 
         state
@@ -26905,8 +31948,6 @@ mod tests {
             CheckpointVerificationContext {
                 data_dir: temp_dir.path().to_str().expect("data dir"),
                 state: &state,
-                validator_set: &validator_set,
-                stake_pool: &stake_pool,
                 chain_id: "",
                 min_validator_stake: MIN_VALIDATOR_STAKE,
             },
@@ -26927,50 +31968,18 @@ mod tests {
         let state = StateStore::open(temp_dir.path()).expect("open state");
 
         let validator_kp = Keypair::generate();
-        let validator_pk = validator_kp.pubkey();
 
-        let mut validator_set = ValidatorSet::new();
-        validator_set.add_validator(ValidatorInfo {
-            pubkey: validator_pk,
-            reputation: 100,
-            blocks_proposed: 0,
-            votes_cast: 0,
-            correct_votes: 0,
-            stake: 100_000_000_000_000,
-            joined_slot: 0,
-            last_active_slot: 0,
-            last_observed_at_ms: 0,
-            last_observed_block_at_ms: 0,
-            last_observed_block_slot: 0,
-            commission_rate: 500,
-            transactions_processed: 0,
-            pending_activation: false,
-        });
-
-        let mut stake_pool = StakePool::new();
-        stake_pool
-            .stake(validator_pk, 100_000_000_000_000, 0)
-            .expect("stake validator");
-
+        let genesis = Block::genesis(Hash::hash(b"checkpoint-cache-genesis"), 1, vec![]);
+        state.put_block(&genesis).expect("put canonical genesis");
         let committed_state_root = state.compute_state_root();
-        let mut block = Block::new_with_timestamp(
-            1,
-            Hash::default(),
+        let block = test_next_committed_block(
+            &state,
+            &genesis,
+            &validator_kp,
             committed_state_root,
-            validator_pk.0,
-            Vec::new(),
+            committed_state_root,
             1_000,
         );
-        block.sign(&validator_kp);
-        block.commit_round = 0;
-
-        let block_hash = block.hash();
-        let signable = Precommit::signable_bytes(1, 0, &Some(block_hash), 1_000);
-        block.commit_signatures = vec![lichen_core::CommitSignature {
-            validator: validator_pk.0,
-            signature: validator_kp.sign(&signable),
-            timestamp: 1_000,
-        }];
 
         state.put_block(&block).expect("put block");
         state
@@ -26987,6 +31996,15 @@ mod tests {
         state
             .create_checkpoint(checkpoint_path.to_str().expect("checkpoint path"), 1)
             .expect("create checkpoint");
+        let child = test_next_committed_block(
+            &state,
+            &block,
+            &validator_kp,
+            committed_state_root,
+            committed_state_root,
+            1_001,
+        );
+        state.put_block(&child).expect("put canonical child");
 
         let runtime = tokio::runtime::Runtime::new().expect("create tokio runtime");
         let mut cache = None;
@@ -26998,8 +32016,6 @@ mod tests {
             CheckpointVerificationContext {
                 data_dir: temp_dir.path().to_str().expect("data dir"),
                 state: &state,
-                validator_set: &validator_set,
-                stake_pool: &stake_pool,
                 chain_id: "",
                 min_validator_stake: MIN_VALIDATOR_STAKE,
             },
@@ -27022,8 +32038,6 @@ mod tests {
                         CheckpointVerificationContext {
                             data_dir: temp_dir.path().to_str().expect("data dir"),
                             state: &state,
-                            validator_set: &validator_set,
-                            stake_pool: &stake_pool,
                             chain_id: "",
                             min_validator_stake: MIN_VALIDATOR_STAKE,
                         },
@@ -27056,8 +32070,6 @@ mod tests {
                         CheckpointVerificationContext {
                             data_dir: temp_dir.path().to_str().expect("data dir"),
                             state: &state,
-                            validator_set: &validator_set,
-                            stake_pool: &stake_pool,
                             chain_id: "",
                             min_validator_stake: MIN_VALIDATOR_STAKE,
                         },
@@ -27081,191 +32093,111 @@ mod tests {
     }
 
     #[test]
-    fn verify_checkpoint_anchor_requires_signed_committed_header() {
-        let validator_kp = Keypair::generate();
-        let validator_pk = validator_kp.pubkey();
-
-        let mut validator_set = ValidatorSet::new();
-        validator_set.add_validator(ValidatorInfo {
-            pubkey: validator_pk,
-            reputation: 100,
-            blocks_proposed: 0,
-            votes_cast: 0,
-            correct_votes: 0,
-            stake: 100_000_000_000_000,
-            joined_slot: 0,
-            last_active_slot: 0,
-            last_observed_at_ms: 0,
-            last_observed_block_at_ms: 0,
-            last_observed_block_slot: 0,
-            commission_rate: 500,
-            transactions_processed: 0,
-            pending_activation: false,
-        });
-
-        let mut stake_pool = StakePool::new();
-        stake_pool
-            .stake(validator_pk, 100_000_000_000_000, 0)
-            .expect("stake validator");
-
-        let mut block = Block::new_with_timestamp(
+    fn verify_checkpoint_anchor_requires_historical_canonical_certificate() {
+        let (block, certificate, canonical_proof) = test_checkpoint_block_and_certificate(
             1,
-            Hash::default(),
             Hash::hash(b"checkpoint-anchor-root"),
-            validator_pk.0,
-            Vec::new(),
-            1_000,
+            Hash::hash(b"checkpoint-anchor-root"),
         );
-        block.sign(&validator_kp);
-        block.commit_round = 0;
-
-        let block_hash = block.hash();
-        let signable = Precommit::signable_bytes(1, 0, &Some(block_hash), 1_000);
-        let commit_signatures = vec![lichen_core::CommitSignature {
-            validator: validator_pk.0,
-            signature: validator_kp.sign(&signable),
-            timestamp: 1_000,
-        }];
 
         assert!(verify_checkpoint_anchor(
             CheckpointAnchor {
                 slot: 1,
                 state_root: block.header.state_root.0,
-                checkpoint_header: Some(&block.header),
-                commit_round: 0,
-                commit_signatures: &commit_signatures,
+                checkpoint_header: &block.header,
+                commit_certificate: &certificate,
+                canonical_proof: &canonical_proof,
                 chain_id: "",
             },
-            &validator_set,
-            &stake_pool,
             MIN_VALIDATOR_STAKE,
         )
         .is_ok());
 
+        let mut wrong_certificate = certificate.clone();
+        wrong_certificate.height = 2;
         assert!(verify_checkpoint_anchor(
             CheckpointAnchor {
                 slot: 1,
                 state_root: block.header.state_root.0,
-                checkpoint_header: None,
-                commit_round: 0,
-                commit_signatures: &commit_signatures,
+                checkpoint_header: &block.header,
+                commit_certificate: &wrong_certificate,
+                canonical_proof: &canonical_proof,
                 chain_id: "",
             },
-            &validator_set,
-            &stake_pool,
+            MIN_VALIDATOR_STAKE,
+        )
+        .is_err());
+
+        let mut detached_root = certificate.clone();
+        detached_root.parent_post_state_root = Hash::hash(b"detached-root-tamper");
+        assert!(verify_checkpoint_anchor(
+            CheckpointAnchor {
+                slot: 1,
+                state_root: detached_root.parent_post_state_root.0,
+                checkpoint_header: &block.header,
+                commit_certificate: &detached_root,
+                canonical_proof: &canonical_proof,
+                chain_id: "",
+            },
+            MIN_VALIDATOR_STAKE,
+        )
+        .unwrap_err()
+        .contains("not included"));
+
+        let mut wrong_child_powers = canonical_proof.clone();
+        wrong_child_powers.child_validator_powers[0].power += 1;
+        assert!(verify_checkpoint_anchor(
+            CheckpointAnchor {
+                slot: 1,
+                state_root: block.header.state_root.0,
+                checkpoint_header: &block.header,
+                commit_certificate: &certificate,
+                canonical_proof: &wrong_child_powers,
+                chain_id: "",
+            },
             MIN_VALIDATOR_STAKE,
         )
         .is_err());
     }
 
     #[test]
-    fn reserved_seed_checkpoint_anchor_requires_signed_header_and_clean_state() {
-        let validator_kp = Keypair::generate();
-        let validator_pk = validator_kp.pubkey();
-        let mut block = Block::new_with_timestamp(
+    fn checkpoint_anchor_does_not_depend_on_receivers_expanded_validator_set() {
+        let (block, certificate, canonical_proof) = test_checkpoint_block_and_certificate(
             42,
-            Hash::default(),
             Hash::hash(b"reserved-seed-checkpoint-root"),
-            validator_pk.0,
-            Vec::new(),
-            1_000,
+            Hash([7u8; 32]),
         );
-        block.sign(&validator_kp);
-        block.commit_round = 0;
-
-        let block_hash = block.hash();
-        let signable = Precommit::signable_bytes(42, 0, &Some(block_hash), 1_000);
-        let commit_signatures = vec![lichen_core::CommitSignature {
-            validator: validator_pk.0,
-            signature: validator_kp.sign(&signable),
-            timestamp: 1_000,
-        }];
-
-        verify_reserved_seed_checkpoint_anchor(CheckpointAnchor {
-            slot: 42,
-            state_root: [7u8; 32],
-            checkpoint_header: Some(&block.header),
-            commit_round: 0,
-            commit_signatures: &commit_signatures,
-            chain_id: "",
-        })
-        .expect("signed reserved-seed checkpoint header should be accepted before stake replay");
-
-        assert!(verify_reserved_seed_checkpoint_anchor(CheckpointAnchor {
-            slot: 42,
-            state_root: [7u8; 32],
-            checkpoint_header: None,
-            commit_round: 0,
-            commit_signatures: &commit_signatures,
-            chain_id: "",
-        })
-        .is_err());
-        assert!(should_accept_reserved_seed_checkpoint_anchor(0, true));
-        assert!(!should_accept_reserved_seed_checkpoint_anchor(
-            FRESH_JOIN_BOOTSTRAP_REPLAY_SLOTS,
-            true
-        ));
-        assert!(!should_accept_reserved_seed_checkpoint_anchor(0, false));
+        verify_checkpoint_anchor(
+            CheckpointAnchor {
+                slot: 42,
+                state_root: [7u8; 32],
+                checkpoint_header: &block.header,
+                commit_certificate: &certificate,
+                canonical_proof: &canonical_proof,
+                chain_id: "",
+            },
+            MIN_VALIDATOR_STAKE,
+        )
+        .expect("checkpoint verification must use its embedded historical denominator");
     }
 
     #[test]
     fn verify_checkpoint_anchor_accepts_post_effects_checkpoint_root() {
-        let validator_kp = Keypair::generate();
-        let validator_pk = validator_kp.pubkey();
-
-        let mut validator_set = ValidatorSet::new();
-        validator_set.add_validator(ValidatorInfo {
-            pubkey: validator_pk,
-            reputation: 100,
-            blocks_proposed: 0,
-            votes_cast: 0,
-            correct_votes: 0,
-            stake: 100_000_000_000_000,
-            joined_slot: 0,
-            last_active_slot: 0,
-            last_observed_at_ms: 0,
-            last_observed_block_at_ms: 0,
-            last_observed_block_slot: 0,
-            commission_rate: 500,
-            transactions_processed: 0,
-            pending_activation: false,
-        });
-
-        let mut stake_pool = StakePool::new();
-        stake_pool
-            .stake(validator_pk, 100_000_000_000_000, 0)
-            .expect("stake validator");
-
-        let mut block = Block::new_with_timestamp(
+        let (block, certificate, canonical_proof) = test_checkpoint_block_and_certificate(
             1,
-            Hash::default(),
             Hash::hash(b"committed-block-root"),
-            validator_pk.0,
-            Vec::new(),
-            1_000,
+            Hash([0xAB; 32]),
         );
-        block.sign(&validator_kp);
-        block.commit_round = 0;
-
-        let block_hash = block.hash();
-        let signable = Precommit::signable_bytes(1, 0, &Some(block_hash), 1_000);
-        let commit_signatures = vec![lichen_core::CommitSignature {
-            validator: validator_pk.0,
-            signature: validator_kp.sign(&signable),
-            timestamp: 1_000,
-        }];
 
         verify_checkpoint_anchor(
             CheckpointAnchor {
                 slot: 1,
                 state_root: [0xAB; 32],
-                checkpoint_header: Some(&block.header),
-                commit_round: 0,
-                commit_signatures: &commit_signatures,
+                checkpoint_header: &block.header,
+                commit_certificate: &certificate,
+                canonical_proof: &canonical_proof,
                 chain_id: "",
             },
-            &validator_set,
-            &stake_pool,
             MIN_VALIDATOR_STAKE,
         )
         .expect("checkpoint root can differ from the pre-effects block header root");
@@ -27456,6 +32388,93 @@ mod tests {
         let err = verify_synced_block_consensus_authenticity(&block, &validator_set, &stake_pool)
             .expect_err("non-member proposer must be rejected");
         assert!(err.contains("not in the active validator set"));
+    }
+
+    fn parent_certificate_sync_fixture() -> (tempfile::TempDir, StateStore, Block, Keypair) {
+        let temp_dir = tempfile::tempdir().expect("create state directory");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let validator = Keypair::generate();
+        let powers = vec![lichen_core::CanonicalValidatorPower {
+            validator: validator.pubkey(),
+            power: MIN_VALIDATOR_STAKE,
+        }];
+
+        let mut parent = Block::new_with_timestamp(
+            1,
+            Hash::default(),
+            Hash::hash(b"sync-parent-state"),
+            validator.pubkey().0,
+            Vec::new(),
+            1_000,
+        );
+        parent.header.validators_hash = lichen_core::canonical_validator_powers_hash(&powers);
+        parent.sign(&validator);
+        let parent_hash = parent.hash();
+        parent.commit_signatures = vec![lichen_core::CommitSignature {
+            validator: validator.pubkey().0,
+            signature: validator.sign(&Precommit::signing_bytes_for_chain_id(
+                "lichen-mainnet-1",
+                1,
+                0,
+                &Some(parent_hash),
+                parent.header.timestamp,
+            )),
+            timestamp: parent.header.timestamp,
+        }];
+        state.put_block(&parent).expect("store parent");
+
+        let certificate = CanonicalCommitCertificate::from_committed_block(
+            &parent,
+            powers,
+            state.compute_state_root(),
+        )
+        .and_then(|certificate| certificate.bind_child_metadata(&[0], &[]))
+        .expect("build canonical parent certificate");
+        let mut child = Block::new_with_timestamp(
+            2,
+            parent_hash,
+            Hash::hash(b"sync-child-state"),
+            validator.pubkey().0,
+            vec![certificate.to_transaction().expect("encode certificate")],
+            1_001,
+        );
+        child.tx_fees_paid = vec![0];
+        (temp_dir, state, child, validator)
+    }
+
+    #[test]
+    fn synced_block_verifies_embedded_parent_power_snapshot() {
+        let (_temp_dir, state, child, _validator) = parent_certificate_sync_fixture();
+        verify_synced_block_parent_certificate(&state, &child, "lichen-mainnet-1")
+            .expect("authenticated parent-height powers and commit must verify");
+    }
+
+    #[test]
+    fn synced_mainnet_block_rejects_missing_parent_certificate() {
+        let (_temp_dir, state, mut child, _validator) = parent_certificate_sync_fixture();
+        child.transactions.clear();
+        child.header.tx_root = lichen_core::merkle_tx_root_from_hashes(&[]);
+
+        let err = verify_synced_block_parent_certificate(&state, &child, "lichen-mainnet-1")
+            .expect_err("mainnet sync must fail closed without parent finality evidence");
+        assert!(err.contains("no canonical parent commit transaction"));
+
+        verify_synced_block_parent_certificate(&state, &child, "lichen-testnet-1")
+            .expect("preserved pre-upgrade testnet history remains readable");
+    }
+
+    #[test]
+    fn synced_block_rejects_invalid_embedded_parent_commit() {
+        let (_temp_dir, state, mut child, _validator) = parent_certificate_sync_fixture();
+        let mut certificate = CanonicalCommitCertificate::from_transaction(&child.transactions[0])
+            .unwrap()
+            .unwrap();
+        certificate.signatures[0].signature.sig[0] ^= 1;
+        child.transactions[0] = certificate.to_transaction().unwrap();
+
+        let err = verify_synced_block_parent_certificate(&state, &child, "lichen-mainnet-1")
+            .expect_err("invalid parent commit must be rejected");
+        assert!(err.contains("Insufficient canonical commit power"));
     }
 
     #[test]
@@ -28143,7 +33162,7 @@ mod tests {
         assert!(!actions.request_checkpoint_metadata);
         assert!(
             !actions.request_block_ranges,
-            "state-repair checkpoint downloads below the warp threshold must not be starved by block ranges"
+            "complete checkpoint downloads below the warp threshold must not be starved by block ranges"
         );
     }
 
@@ -28212,6 +33231,40 @@ mod tests {
             !should_request_parent_gap_immediately(sync::SyncPhase::LiveSync, 100, 101),
             "the next expected block is not a parent gap"
         );
+    }
+
+    #[test]
+    fn live_parent_gap_repair_uses_claimed_range_requester() {
+        let source = include_str!("main.rs");
+        let start = source
+            .find("if let Some((gap_start, gap_end)) = missing_gap {")
+            .expect("parent-gap repair block exists");
+        let end = start
+            + source[start..]
+                .find("// Check if we should start sync.")
+                .expect("parent-gap repair block end exists");
+        let body = &source[start..end];
+
+        assert!(body.contains("request_unrequested_block_range_from_peers"));
+        assert!(!body.contains("MessageType::BlockRangeRequest"));
+        assert!(!body.contains(".broadcast("));
+    }
+
+    #[test]
+    fn bft_missing_block_recovery_uses_claimed_range_requester() {
+        let source = include_str!("main.rs");
+        let start = source
+            .find("ConsensusAction::RequestBlockRange {")
+            .expect("BFT missing-block action exists");
+        let end = start
+            + source[start..]
+                .find("ConsensusAction::EquivocationDetected {")
+                .expect("BFT missing-block action end exists");
+        let body = &source[start..end];
+
+        assert!(body.contains("request_unrequested_block_range_from_peers"));
+        assert!(!body.contains("MessageType::BlockRangeRequest"));
+        assert!(!body.contains(".broadcast("));
     }
 
     #[test]
@@ -28428,7 +33481,7 @@ mod tests {
         block.header.timestamp = 1_700_000_000;
         block.oracle_prices = vec![("wSOL".to_string(), 123), ("wETH".to_string(), 456)];
 
-        apply_oracle_from_block(&state, &block);
+        apply_oracle_from_block(&state, &block).expect("apply consensus oracle mirror");
 
         let oracle_program = state
             .get_symbol_registry("ORACLE")
@@ -28477,6 +33530,65 @@ mod tests {
     }
 
     #[test]
+    fn oracle_candle_projection_is_invisible_until_atomic_commit() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let analytics_program = Pubkey([2u8; 32]);
+        let mut batch = state.begin_batch_at_slot(8);
+
+        oracle_update_candle(
+            &mut batch,
+            &analytics_program,
+            2,
+            60,
+            82_500_000_000,
+            1_700_000_000,
+        )
+        .expect("stage first oracle candle update");
+        oracle_update_candle(
+            &mut batch,
+            &analytics_program,
+            2,
+            60,
+            83_000_000_000,
+            1_700_000_030,
+        )
+        .expect("stage same-period oracle candle update");
+
+        for key in [b"ana_c_2_60_0".as_slice(), b"ana_cc_2_60", b"ana_cur_2_60"] {
+            assert!(state
+                .get_contract_storage(&analytics_program, key)
+                .expect("read committed analytics storage")
+                .is_none());
+        }
+
+        state
+            .commit_batch(batch)
+            .expect("commit oracle candle batch");
+
+        let candle = state
+            .get_contract_storage(&analytics_program, b"ana_c_2_60_0")
+            .expect("read committed candle")
+            .expect("committed candle present");
+        assert_eq!(
+            u64::from_le_bytes(candle[0..8].try_into().expect("candle open")),
+            82_500_000_000
+        );
+        assert_eq!(
+            u64::from_le_bytes(candle[8..16].try_into().expect("candle high")),
+            83_000_000_000
+        );
+        assert_eq!(
+            u64::from_le_bytes(candle[24..32].try_into().expect("candle close")),
+            83_000_000_000
+        );
+        assert_eq!(
+            state.get_contract_storage_u64(&analytics_program, b"ana_cc_2_60"),
+            1
+        );
+    }
+
+    #[test]
     fn apply_oracle_from_block_skips_optional_wrapped_pairs_until_symbols_exist() {
         let temp_dir = tempfile::tempdir().expect("create temp dir");
         let state = StateStore::open(temp_dir.path()).expect("open state");
@@ -28510,7 +33622,7 @@ mod tests {
         block.header.slot = 8;
         block.header.timestamp = 1_700_000_000;
 
-        apply_oracle_from_block(&state, &block);
+        apply_oracle_from_block(&state, &block).expect("apply consensus oracle mirror");
 
         let oracle_program = state
             .get_symbol_registry("ORACLE")
@@ -28549,7 +33661,7 @@ mod tests {
             .is_none());
 
         register_test_symbol(&state, "WNEO", Pubkey([4u8; 32]));
-        apply_oracle_from_block(&state, &block);
+        apply_oracle_from_block(&state, &block).expect("apply wNEO oracle mirror");
 
         assert!(state
             .get_contract_storage(&oracle_program, b"price_wNEO")
@@ -28569,7 +33681,7 @@ mod tests {
             .is_none());
 
         register_test_symbol(&state, "WBTC", Pubkey([6u8; 32]));
-        apply_oracle_from_block(&state, &block);
+        apply_oracle_from_block(&state, &block).expect("apply wBTC oracle mirror");
 
         assert!(state
             .get_contract_storage(&oracle_program, b"price_wBTC")
@@ -28593,6 +33705,9 @@ mod tests {
             .stake(validator, lichen_core::consensus::MIN_VALIDATOR_STAKE, 0)
             .expect("stake validator");
         state.put_stake_pool(&stake_pool).expect("put stake pool");
+        state
+            .put_metadata(CHAIN_ID_METADATA_KEY, b"lichen-testnet-1")
+            .expect("put transaction signing chain id");
 
         let mut tip = Block::new_with_timestamp(
             1,
@@ -28608,6 +33723,7 @@ mod tests {
 
         let tx = build_oracle_attestation_tx(
             &state,
+            "lichen-testnet-1",
             &validator_kp.to_seed(),
             validator,
             "wSOL",
@@ -28636,6 +33752,9 @@ mod tests {
     fn committed_replay_persists_oracle_attestations_and_updates_dex_candles() {
         let temp_dir = tempfile::tempdir().expect("create temp dir");
         let state = StateStore::open(temp_dir.path()).expect("open state");
+        state
+            .put_metadata(CHAIN_ID_METADATA_KEY, b"lichen-testnet-1")
+            .expect("put transaction signing chain id");
 
         register_test_symbol(&state, "ORACLE", Pubkey([11u8; 32]));
         register_test_symbol(&state, "ANALYTICS", Pubkey([12u8; 32]));
@@ -28681,8 +33800,16 @@ mod tests {
             .zip([9_500_000_000, 9_520_000_000, 9_540_000_000])
         {
             txs.push(
-                build_oracle_attestation_tx(&state, &kp.to_seed(), kp.pubkey(), "wSOL", price, 8)
-                    .expect("build oracle attestation"),
+                build_oracle_attestation_tx(
+                    &state,
+                    "lichen-testnet-1",
+                    &kp.to_seed(),
+                    kp.pubkey(),
+                    "wSOL",
+                    price,
+                    8,
+                )
+                .expect("build oracle attestation"),
             );
         }
         let block = make_oracle_replay_block(&state, &parent, &producer_kp, txs, 2, 1_778_494_080);
@@ -28700,7 +33827,7 @@ mod tests {
         state
             .put_block_atomic(&block, Some(2), Some(2))
             .expect("store committed block");
-        apply_oracle_from_block(&state, &block);
+        apply_oracle_from_block(&state, &block).expect("apply committed oracle mirror");
 
         let analytics_program = state
             .get_symbol_registry("ANALYTICS")
@@ -28903,6 +34030,13 @@ mod tests {
                 .is_none(),
             "test setup must mimic a crash before the completion marker was written"
         );
+        assert!(
+            state
+                .get_stake_pool_production_hash(7)
+                .expect("read production marker")
+                .is_none(),
+            "test setup must mimic a crash before the production marker was written"
+        );
 
         let stake_pool = Arc::new(RwLock::new(pool));
         let validator_set = Arc::new(RwLock::new(validator_set));
@@ -28925,6 +34059,307 @@ mod tests {
             .get_reward_distribution_hash(7)
             .expect("read reward marker")
             .is_some());
+        assert_eq!(
+            state
+                .get_stake_pool_production_hash(7)
+                .expect("read production marker"),
+            Some(block.hash())
+        );
+    }
+
+    #[test]
+    fn existing_public_chain_requires_coordinated_activation_at_the_next_slot() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let producer = Keypair::generate().pubkey();
+        let old_tip = Block::new(7, Hash::default(), Hash::default(), producer.0, vec![]);
+        state
+            .put_block_atomic(&old_tip, None, None)
+            .expect("store pre-activation tip");
+
+        assert_eq!(
+            post_block_effects_activation_slot(&state).expect("read absent activation"),
+            None
+        );
+        let error = initialize_post_block_effects_activation_slot(&state, false)
+            .expect_err("existing public chain must not auto-activate");
+        assert!(error.contains(PREPARE_POST_BLOCK_EFFECTS_ACTIVATION_FLAG));
+        assert_eq!(
+            persist_post_block_effects_activation_slot(&state, 8)
+                .expect("prepare coordinated activation"),
+            8
+        );
+        assert_eq!(
+            post_block_effects_activation_slot(&state).expect("read activation"),
+            Some(8)
+        );
+
+        let new_tip = Block::new(8, old_tip.hash(), Hash::default(), producer.0, vec![]);
+        state
+            .put_block_atomic(&new_tip, None, None)
+            .expect("advance tip after activation");
+        assert_eq!(
+            initialize_post_block_effects_activation_slot(&state, false)
+                .expect("activation must remain stable"),
+            8
+        );
+    }
+
+    #[test]
+    fn fresh_chain_initializes_post_block_activation_at_slot_one() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        assert_eq!(
+            initialize_post_block_effects_activation_slot(&state, false)
+                .expect("initialize fresh-chain activation"),
+            1
+        );
+        assert_eq!(
+            post_block_effects_activation_slot(&state).expect("read activation"),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn activation_admin_dry_runs_and_persists_only_the_exact_next_slot() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        {
+            let state = StateStore::open(temp_dir.path()).expect("open state");
+            let producer = Keypair::generate().pubkey();
+            let tip = Block::new(7, Hash::default(), Hash::default(), producer.0, vec![]);
+            state
+                .put_block_atomic(&tip, None, None)
+                .expect("store stopped tip");
+        }
+        let path = temp_dir.path().to_string_lossy().into_owned();
+        let args = |slot: u64, execute: bool| {
+            let mut args = vec![
+                "lichen-validator".to_string(),
+                PREPARE_POST_BLOCK_EFFECTS_ACTIVATION_FLAG.to_string(),
+                "--network".to_string(),
+                "testnet".to_string(),
+                "--db-path".to_string(),
+                path.clone(),
+                "--activation-slot".to_string(),
+                slot.to_string(),
+            ];
+            if execute {
+                args.extend([
+                    "--execute".to_string(),
+                    "--confirm".to_string(),
+                    format!("post-block-effects-activation:testnet:{slot}"),
+                ]);
+            }
+            args
+        };
+
+        assert_eq!(
+            maybe_run_post_block_effects_activation_admin(&args(9, false)),
+            Some(1)
+        );
+        assert_eq!(
+            maybe_run_post_block_effects_activation_admin(&args(8, false)),
+            Some(0)
+        );
+        {
+            let state = StateStore::open(temp_dir.path()).expect("reopen after dry-run");
+            assert_eq!(
+                post_block_effects_activation_slot(&state).expect("read dry-run state"),
+                None
+            );
+        }
+        assert_eq!(
+            maybe_run_post_block_effects_activation_admin(&args(8, true)),
+            Some(0)
+        );
+        let state = StateStore::open(temp_dir.path()).expect("reopen activated state");
+        assert_eq!(
+            post_block_effects_activation_slot(&state).expect("read activated state"),
+            Some(8)
+        );
+    }
+
+    #[test]
+    fn inspection_admins_use_read_only_primary_or_rocksdb_secondaries() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let data_dir = temp_dir.path().join("primary");
+        {
+            let state = StateStore::open(&data_dir).expect("open primary");
+            state
+                .put_stake_pool(&StakePool::new())
+                .expect("persist empty stake pool");
+            state
+                .rebuild_sparse_state_commitment(true)
+                .expect("activate sparse commitment");
+        }
+        let data_path = data_dir.to_string_lossy().into_owned();
+        let args = |flag: &str, secondary: &str| {
+            vec![
+                "lichen-validator".to_string(),
+                flag.to_string(),
+                "--db-path".to_string(),
+                data_path.clone(),
+                "--secondary-dir".to_string(),
+                temp_dir
+                    .path()
+                    .join(secondary)
+                    .to_string_lossy()
+                    .into_owned(),
+            ]
+        };
+
+        assert_eq!(
+            maybe_run_sparse_state_commitment_admin(&args(
+                SHOW_STATE_COMMITMENT_SCHEMA_FLAG,
+                "sparse-secondary",
+            )),
+            Some(0)
+        );
+        assert_eq!(
+            maybe_run_stake_pool_digest_admin(&args(
+                SHOW_STAKE_POOL_DIGEST_FLAG,
+                "stake-secondary",
+            )),
+            Some(0)
+        );
+        assert_eq!(
+            maybe_run_contract_storage_digest_admin(&args(
+                SHOW_CONTRACT_STORAGE_DIGEST_FLAG,
+                "contract-secondary",
+            )),
+            Some(0)
+        );
+
+        let primary_args = |flag: &str| {
+            vec![
+                "lichen-validator".to_string(),
+                flag.to_string(),
+                "--db-path".to_string(),
+                data_path.clone(),
+            ]
+        };
+        assert_eq!(
+            maybe_run_sparse_state_commitment_admin(&primary_args(
+                SHOW_STATE_COMMITMENT_SCHEMA_FLAG,
+            )),
+            Some(0)
+        );
+        assert_eq!(
+            maybe_run_stake_pool_digest_admin(&primary_args(SHOW_STAKE_POOL_DIGEST_FLAG)),
+            Some(0)
+        );
+        assert_eq!(
+            maybe_run_contract_storage_digest_admin(&primary_args(
+                SHOW_CONTRACT_STORAGE_DIGEST_FLAG,
+            )),
+            Some(0)
+        );
+
+        let state = StateStore::open(&data_dir).expect("reopen primary");
+        state
+            .verify_sparse_state_commitment()
+            .expect("inspection must not alter sparse state");
+    }
+
+    #[test]
+    fn startup_sparse_repair_rebuilds_dirty_active_commitment() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let program = Pubkey([0x5A; 32]);
+        state
+            .put_contract_storage(&program, b"hot-key", b"old")
+            .expect("seed contract state");
+        state
+            .rebuild_sparse_state_commitment(true)
+            .expect("activate sparse commitment");
+        state
+            .put_contract_storage(&program, b"hot-key", b"new")
+            .expect("dirty contract state");
+        assert!(!state.can_skip_active_sparse_startup_rebuild());
+
+        repair_active_sparse_state_commitment_before_tip_anchor(&state)
+            .expect("startup sparse repair");
+
+        assert!(state.can_skip_active_sparse_startup_rebuild());
+        state
+            .verify_sparse_state_commitment()
+            .expect("startup repair must leave a verified sparse commitment");
+    }
+
+    #[test]
+    fn sparse_state_mutations_refuse_secondary_mode() {
+        let args = vec![
+            "lichen-validator".to_string(),
+            REBUILD_SPARSE_STATE_COMMITMENT_FLAG.to_string(),
+            "--db-path".to_string(),
+            "/unused-primary".to_string(),
+            "--secondary-dir".to_string(),
+            "/unused-secondary".to_string(),
+        ];
+        assert_eq!(maybe_run_sparse_state_commitment_admin(&args), Some(2));
+    }
+
+    #[test]
+    fn pre_activation_marker_absence_never_triggers_effect_replay() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let producer = Keypair::generate().pubkey();
+        let block = Block::new(7, Hash::default(), Hash::default(), producer.0, vec![]);
+        let mut validator_set = ValidatorSet::new();
+        validator_set.add_validator(test_validator_info(producer));
+        let mut pool = StakePool::new();
+        pool.stake(producer, MIN_VALIDATOR_STAKE, 0)
+            .expect("stake producer");
+        state.put_stake_pool(&pool).expect("put stake pool");
+        state
+            .put_block_atomic(&block, None, None)
+            .expect("store pre-activation block");
+
+        let stake_pool = Arc::new(RwLock::new(pool));
+        let validator_set = Arc::new(RwLock::new(validator_set));
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let repaired = runtime
+            .block_on(recover_recent_stored_block_post_effects_if_needed(
+                &state,
+                &validator_set,
+                &stake_pool,
+                8,
+                MIN_VALIDATOR_STAKE,
+                16,
+                "pre-activation regression",
+            ))
+            .expect("pre-activation window is a no-op");
+        assert_eq!(repaired, 0);
+        assert_eq!(
+            state
+                .get_stake_pool_production_hash(7)
+                .expect("read production marker"),
+            None
+        );
+        assert_eq!(
+            state
+                .get_reward_distribution_hash(7)
+                .expect("read reward marker"),
+            None
+        );
+
+        let err = runtime
+            .block_on(recover_stored_block_economic_effects_if_needed(
+                &state,
+                &validator_set,
+                &stake_pool,
+                &block,
+                8,
+                MIN_VALIDATOR_STAKE,
+                "pre-activation direct repair regression",
+            ))
+            .expect_err("direct pre-activation repair must fail closed");
+        assert!(err.contains("pre-activation slot 7"));
+
+        let persisted = state.get_stake_pool().expect("read unchanged pool");
+        let entry = persisted.get_stake(&producer).expect("producer stake");
+        assert_eq!(entry.last_reward_slot, 0);
+        assert_eq!(entry.blocks_produced, 0);
     }
 
     #[test]
@@ -28959,6 +34394,7 @@ mod tests {
                 &state,
                 &validator_set,
                 &stake_pool,
+                1,
                 MIN_VALIDATOR_STAKE,
                 400,
             ))
@@ -28974,6 +34410,12 @@ mod tests {
                 .expect("read reward marker"),
             Some(block.hash())
         );
+        assert_eq!(
+            state
+                .get_stake_pool_production_hash(7)
+                .expect("read production marker"),
+            Some(block.hash())
+        );
 
         let persisted = state.get_stake_pool().expect("read stake pool");
         let entry = persisted.get_stake(&producer).expect("producer stake");
@@ -28985,6 +34427,7 @@ mod tests {
                 &state,
                 &validator_set,
                 &stake_pool,
+                1,
                 MIN_VALIDATOR_STAKE,
                 400,
             ))
@@ -28993,6 +34436,48 @@ mod tests {
         let persisted = state.get_stake_pool().expect("read stake pool after no-op");
         let entry = persisted.get_stake(&producer).expect("producer stake");
         assert_eq!(entry.blocks_produced, 1);
+    }
+
+    #[test]
+    fn tip_post_block_effects_rejects_mismatched_completion_markers() {
+        let producer = Keypair::generate().pubkey();
+        let wrong_hash = Block::new(7, Hash([1u8; 32]), Hash::default(), producer.0, vec![]).hash();
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let block = Block::new(7, Hash::default(), Hash::default(), producer.0, vec![]);
+        state
+            .set_post_block_effects_hash(7, &wrong_hash)
+            .expect("write wrong comprehensive marker");
+
+        let err = tip_post_block_effects_complete(&state, &block)
+            .expect_err("comprehensive marker mismatch must fail closed");
+        assert!(err.contains("post-block effects marker hash"));
+    }
+
+    #[test]
+    fn comprehensive_post_block_marker_requires_all_economic_submarkers() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let producer = Keypair::generate().pubkey();
+        let block = Block::new(7, Hash::default(), Hash::default(), producer.0, vec![]);
+        state
+            .set_post_block_effects_hash(7, &block.hash())
+            .expect("write comprehensive marker");
+
+        assert!(
+            !tip_post_block_effects_complete(&state, &block).expect("check missing submarkers"),
+            "the comprehensive marker cannot hide missing economic effects"
+        );
+        state
+            .set_stake_pool_production_hash(7, &block.hash())
+            .expect("write stake marker");
+        state
+            .set_reward_distribution_hash(7, &block.hash())
+            .expect("write reward marker");
+        state
+            .set_fee_distribution_hash(7, &block.hash())
+            .expect("write fee marker");
+        assert!(tip_post_block_effects_complete(&state, &block).expect("check complete submarkers"));
     }
 
     #[test]
@@ -29045,6 +34530,22 @@ mod tests {
         state
             .set_reward_distribution_hash(8, &tip_block.hash())
             .expect("mark tip reward distribution");
+        state
+            .set_fee_distribution_hash(7, &parent_block.hash())
+            .expect("mark parent fee distribution");
+        state
+            .set_fee_distribution_hash(8, &tip_block.hash())
+            .expect("mark tip fee distribution");
+        state
+            .set_stake_pool_production_hash(8, &tip_block.hash())
+            .expect("mark tip stake-pool production");
+        state
+            .set_post_block_effects_hash(8, &tip_block.hash())
+            .expect("mark tip comprehensive post effects");
+        let stale_tip_root = state.compute_state_root();
+        state
+            .put_post_state_commitment_anchor(8, &tip_block.hash(), &stale_tip_root)
+            .expect("anchor stale tip state before parent repair");
 
         assert!(
             tip_post_block_effects_complete(&state, &tip_block).expect("tip complete"),
@@ -29064,6 +34565,7 @@ mod tests {
                 &state,
                 &validator_set,
                 &stake_pool,
+                1,
                 MIN_VALIDATOR_STAKE,
                 400,
             ))
@@ -29079,6 +34581,7 @@ mod tests {
                 &state,
                 &validator_set,
                 &stake_pool,
+                7,
                 MIN_VALIDATOR_STAKE,
                 16,
                 "test recent-window recovery",
@@ -29086,8 +34589,20 @@ mod tests {
             .expect("recent recovery");
         assert_eq!(repaired, 1);
         assert!(
-            tip_post_block_effects_complete(&state, &parent_block).expect("parent complete"),
-            "recent recovery must complete the stale parent block"
+            canonical_economic_block_effects_complete(&state, &parent_block)
+                .expect("parent economic effects complete"),
+            "recent recovery must complete the stale parent economic effects"
+        );
+        assert!(
+            !tip_post_block_effects_complete(&state, &parent_block)
+                .expect("legacy parent comprehensive marker remains absent"),
+            "economic repair must not claim unrelated comprehensive effects"
+        );
+        assert_eq!(
+            state
+                .get_stake_pool_production_hash(7)
+                .expect("read parent production marker"),
+            Some(parent_block.hash())
         );
 
         let persisted = state.get_stake_pool().expect("read stake pool");
@@ -29101,6 +34616,185 @@ mod tests {
             .expect("tip producer stake");
         assert_eq!(tip_entry.last_reward_slot, 8);
         assert_eq!(tip_entry.blocks_produced, 1);
+        let repaired_root = state.compute_state_root();
+        let repaired_anchor = state
+            .get_post_state_commitment_anchor(8)
+            .expect("read repaired tip anchor")
+            .expect("repaired tip anchor exists");
+        assert_ne!(repaired_root, stale_tip_root);
+        assert_eq!(repaired_anchor.block_hash, tip_block.hash());
+        assert_eq!(repaired_anchor.state_root, repaired_root);
+    }
+
+    #[test]
+    fn bft_post_effect_gate_repairs_stale_parent_before_next_height() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let parent_producer = Keypair::generate().pubkey();
+        let tip_producer = Keypair::generate().pubkey();
+        let parent_block = Block::new(
+            7,
+            Hash::default(),
+            Hash::default(),
+            parent_producer.0,
+            vec![],
+        );
+        let tip_block = Block::new(
+            8,
+            parent_block.hash(),
+            Hash::default(),
+            tip_producer.0,
+            vec![],
+        );
+
+        let mut validator_set = ValidatorSet::new();
+        validator_set.add_validator(test_validator_info(parent_producer));
+        validator_set.add_validator(test_validator_info(tip_producer));
+
+        let mut pool = StakePool::new();
+        pool.stake(parent_producer, MIN_VALIDATOR_STAKE, 0)
+            .expect("stake parent producer");
+        pool.stake(tip_producer, MIN_VALIDATOR_STAKE, 0)
+            .expect("stake tip producer");
+        {
+            let tip_entry = pool
+                .get_stake_mut(&tip_producer)
+                .expect("tip producer stake");
+            tip_entry.last_reward_slot = 8;
+            tip_entry.blocks_produced = 1;
+        }
+        state.put_stake_pool(&pool).expect("put stale stake pool");
+        state
+            .put_block_atomic(&parent_block, None, None)
+            .expect("store parent block");
+        state
+            .put_block_atomic(&tip_block, None, None)
+            .expect("store tip block");
+        state
+            .set_reward_distribution_hash(7, &parent_block.hash())
+            .expect("mark parent reward distribution");
+        state
+            .set_reward_distribution_hash(8, &tip_block.hash())
+            .expect("mark tip reward distribution");
+        state
+            .set_fee_distribution_hash(7, &parent_block.hash())
+            .expect("mark parent fee distribution");
+        state
+            .set_fee_distribution_hash(8, &tip_block.hash())
+            .expect("mark tip fee distribution");
+        state
+            .set_stake_pool_production_hash(8, &tip_block.hash())
+            .expect("mark tip stake-pool production");
+        state
+            .set_post_block_effects_hash(8, &tip_block.hash())
+            .expect("mark tip comprehensive post effects");
+
+        assert!(
+            !tip_post_block_effects_complete(&state, &parent_block).expect("parent incomplete"),
+            "parent stake-pool production effects are stale"
+        );
+        assert!(
+            tip_post_block_effects_complete(&state, &tip_block).expect("tip complete"),
+            "tip alone looks complete, matching the live wedge"
+        );
+        let before_audit = audit_recent_post_block_effects(&state, 1, 7).expect("pre-repair audit");
+        assert!(before_audit.is_repairable());
+        assert!(!before_audit.is_complete());
+        assert_eq!(before_audit.first_slot, 7);
+        assert_eq!(before_audit.tip, 8);
+        assert_eq!(before_audit.blocks_checked, 2);
+        assert_eq!(before_audit.comprehensive_missing_slots, vec![7]);
+        assert_eq!(before_audit.stake_pool_missing_slots, vec![7]);
+        assert!(before_audit.reward_missing_slots.is_empty());
+
+        let stake_pool = Arc::new(RwLock::new(pool));
+        let validator_set = Arc::new(RwLock::new(validator_set));
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let mut verified_tip = 6;
+
+        let repaired = runtime
+            .block_on(ensure_recent_stored_post_block_effects_before_bft(
+                &state,
+                &validator_set,
+                &stake_pool,
+                PostBlockEffectsRuntime {
+                    activation_slot: 7,
+                    min_validator_stake: MIN_VALIDATOR_STAKE,
+                    slot_duration_ms: 400,
+                },
+                &mut verified_tip,
+                16,
+                "test BFT gate",
+            ))
+            .expect("BFT gate recovery");
+
+        assert_eq!(repaired, 1);
+        assert_eq!(verified_tip, 8);
+        assert!(
+            canonical_economic_block_effects_complete(&state, &parent_block)
+                .expect("parent economic effects complete"),
+            "BFT gate must repair stale parent economic effects before the next height"
+        );
+        assert!(
+            !tip_post_block_effects_complete(&state, &parent_block)
+                .expect("legacy comprehensive marker remains absent"),
+            "BFT economic repair must not claim unrelated comprehensive effects"
+        );
+        assert_eq!(
+            state
+                .get_stake_pool_production_hash(7)
+                .expect("read parent production marker"),
+            Some(parent_block.hash())
+        );
+
+        let persisted = state.get_stake_pool().expect("read stake pool");
+        let parent_entry = persisted
+            .get_stake(&parent_producer)
+            .expect("parent producer stake");
+        assert_eq!(parent_entry.last_reward_slot, 7);
+        assert_eq!(parent_entry.blocks_produced, 1);
+        let tip_entry = persisted
+            .get_stake(&tip_producer)
+            .expect("tip producer stake");
+        assert_eq!(tip_entry.last_reward_slot, 8);
+        assert_eq!(tip_entry.blocks_produced, 1);
+        let after_audit = audit_recent_post_block_effects(&state, 1, 7).expect("post-repair audit");
+        assert!(after_audit.is_economically_complete());
+        assert!(!after_audit.is_complete());
+        assert_eq!(after_audit.comprehensive_missing_slots, vec![7]);
+        assert!(after_audit.stake_pool_missing_slots.is_empty());
+        assert!(after_audit.fee_missing_slots.is_empty());
+    }
+
+    #[test]
+    fn recent_post_effect_audit_fails_closed_on_gap_and_marker_conflict() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let producer = Keypair::generate().pubkey();
+        let block = Block::new(2, Hash::default(), Hash::default(), producer.0, vec![]);
+        state
+            .put_block_atomic(&block, None, None)
+            .expect("store block with missing parent");
+        state
+            .set_post_block_effects_hash(2, &Hash::hash(b"conflicting marker"))
+            .expect("store conflicting marker");
+        state
+            .set_stake_pool_production_hash(2, &block.hash())
+            .expect("mark stake production");
+        state
+            .set_reward_distribution_hash(2, &block.hash())
+            .expect("mark reward distribution");
+        state
+            .set_fee_distribution_hash(2, &block.hash())
+            .expect("mark fee distribution");
+
+        let report = audit_recent_post_block_effects(&state, 1, 1).expect("audit");
+        assert_eq!(report.first_slot, 1);
+        assert_eq!(report.tip, 2);
+        assert_eq!(report.missing_block_slots, vec![1]);
+        assert_eq!(report.marker_conflicts.len(), 1);
+        assert!(!report.is_repairable());
+        assert!(!report.is_complete());
     }
 
     #[test]
@@ -29650,30 +35344,19 @@ mod tests {
     }
 
     #[test]
-    fn advertised_snapshot_manifest_shape_accepts_repair_profile() {
-        let repair_manifest = test_snapshot_manifest_for(19, STATE_REPAIR_SNAPSHOT_CATEGORIES);
-        validate_advertised_snapshot_manifest_shape(&repair_manifest)
-            .expect("state-repair manifest shape");
+    fn advertised_snapshot_manifest_shape_requires_complete_checkpoint_profile() {
+        let checkpoint_manifest = test_snapshot_manifest_for(19, CHECKPOINT_SNAPSHOT_CATEGORIES);
+        validate_advertised_snapshot_manifest_shape(&checkpoint_manifest)
+            .expect("complete checkpoint manifest shape");
         assert_eq!(
-            advertised_snapshot_manifest_categories(&repair_manifest)
-                .expect("repair manifest categories"),
-            STATE_REPAIR_SNAPSHOT_CATEGORIES
-        );
-        assert!(
-            validate_snapshot_manifest_shape(&repair_manifest).is_err(),
-            "state-repair manifests must not masquerade as full archive manifests"
+            advertised_snapshot_manifest_categories(&checkpoint_manifest)
+                .expect("checkpoint manifest categories"),
+            CHECKPOINT_SNAPSHOT_CATEGORIES
         );
     }
 
     #[test]
-    fn state_repair_snapshot_categories_exclude_public_transaction_history() {
-        for category in SNAPSHOT_MERGE_CATEGORIES {
-            assert!(
-                !STATE_REPAIR_SNAPSHOT_CATEGORIES.contains(category),
-                "state-repair snapshots must not depend on archive/history category {category}"
-            );
-        }
-
+    fn checkpoint_snapshot_categories_cover_full_state_and_public_history() {
         for category in [
             "blocks",
             "transactions",
@@ -29695,10 +35378,11 @@ mod tests {
             "dex_trades_by_pair",
             "dex_trades_by_taker",
             "dex_trades_by_pair_taker",
+            "account_snapshots",
         ] {
             assert!(
-                !STATE_REPAIR_SNAPSHOT_CATEGORIES.contains(&category),
-                "state-repair snapshots must not preserve public history category {category}"
+                CHECKPOINT_SNAPSHOT_CATEGORIES.contains(&category),
+                "checkpoint snapshots must preserve public history category {category}"
             );
         }
 
@@ -29715,19 +35399,90 @@ mod tests {
             "mossstake_pool",
         ] {
             assert!(
-                STATE_REPAIR_SNAPSHOT_CATEGORIES.contains(&category),
-                "state-repair snapshots must carry state category {category}"
+                CHECKPOINT_SNAPSHOT_CATEGORIES.contains(&category),
+                "checkpoint snapshots must carry state category {category}"
             );
         }
 
-        assert!(
-            !STATE_REPAIR_SNAPSHOT_CATEGORIES.contains(&"account_snapshots"),
-            "repair snapshots must not claim full per-slot account archive coverage"
+        assert_eq!(
+            CHECKPOINT_SNAPSHOT_CATEGORIES, WARP_SNAPSHOT_CATEGORIES,
+            "every network checkpoint must carry the complete WARP archive profile"
         );
-        assert_ne!(
-            STATE_REPAIR_SNAPSHOT_CATEGORIES, WARP_SNAPSHOT_CATEGORIES,
-            "repair snapshots remain a state-repair profile, not a full WARP archive"
+    }
+
+    #[test]
+    fn public_history_page_cli_entries_roundtrip_binary_values() {
+        assert_eq!(
+            parse_public_history_category_arg("blocks").expect("blocks category"),
+            "blocks"
         );
+        assert!(parse_public_history_category_arg("accounts").is_err());
+
+        let entries = vec![
+            (vec![0x00, 0x01, 0xff], vec![0x10, 0x00, 0xfe]),
+            (b"slot-key".to_vec(), b"json-or-bincode-value".to_vec()),
+        ];
+        let encoded = encode_public_history_page_entries(entries.clone());
+        assert_eq!(encoded[0].key_hex, "0001ff");
+        assert_eq!(
+            decode_public_history_page_entries(&encoded).expect("decode page entries"),
+            entries
+        );
+
+        let header = public_history_page_header(
+            "binary",
+            "blocks",
+            1000,
+            Some("0000000000000008".to_string()),
+            Some("0000000000000009".to_string()),
+            true,
+            entries.len() as u64,
+        );
+        let binary =
+            encode_public_history_binary_page(&header, &entries).expect("encode binary page");
+        let (decoded_header, decoded_entries) =
+            decode_public_history_binary_page(&binary).expect("decode binary page");
+        assert_eq!(decoded_header, header);
+        assert_eq!(decoded_entries, entries);
+
+        let mut stream = binary.clone();
+        stream.extend_from_slice(&binary);
+        let mut reader = std::io::BufReader::new(std::io::Cursor::new(stream));
+        assert!(read_public_history_binary_page_frame(&mut reader)
+            .expect("read first frame")
+            .is_some());
+        assert!(read_public_history_binary_page_frame(&mut reader)
+            .expect("read second frame")
+            .is_some());
+        assert!(read_public_history_binary_page_frame(&mut reader)
+            .expect("read eof")
+            .is_none());
+    }
+
+    #[test]
+    fn public_history_admin_chunk_size_has_separate_repair_cap() {
+        let args = vec![
+            "validator".to_string(),
+            "--chunk-size".to_string(),
+            "50000".to_string(),
+        ];
+        assert_eq!(
+            public_history_chunk_size(&args),
+            MAX_PUBLIC_HISTORY_CHUNK_SIZE
+        );
+        const {
+            assert!(
+                MAX_PUBLIC_HISTORY_CHUNK_SIZE > MAX_SNAPSHOT_CHUNK_SIZE,
+                "public-history admin repair can use larger pages without changing live snapshot sync"
+            )
+        };
+
+        let zero_args = vec![
+            "validator".to_string(),
+            "--chunk-size".to_string(),
+            "0".to_string(),
+        ];
+        assert_eq!(public_history_chunk_size(&zero_args), 1);
     }
 
     #[test]
@@ -29828,6 +35583,9 @@ mod tests {
         let tracked = Pubkey([0x44; 32]);
         let (_source_block_hash, source_tx_hash) =
             put_history_block(&source_writer, 9, Hash::default(), tracked, 9);
+        source_writer
+            .put_account_snapshot(&tracked, &Account::new(44, tracked), 9)
+            .expect("write source account snapshot");
         assert_eq!(source_writer.migrate_to_cold(10).unwrap(), 1);
         assert!(
             source_writer.migrate_indexes_to_cold(10).unwrap() > 0,
@@ -29853,6 +35611,12 @@ mod tests {
                 .any(|cf| cf.source_cold && cf.source_cf == "account_txs" && cf.inserted_rows > 0),
             "source cold account_txs rows must be imported"
         );
+        assert!(
+            report.cf_reports.iter().any(|cf| {
+                cf.source_cold && cf.source_cf == "account_snapshots" && cf.inserted_rows > 0
+            }),
+            "source cold account snapshot rows must be imported"
+        );
 
         assert_eq!(
             target
@@ -29863,10 +35627,18 @@ mod tests {
         assert!(target.get_transaction(&source_tx_hash).unwrap().is_some());
         assert_eq!(target.get_tx_slot(&source_tx_hash).unwrap(), Some(9));
         assert_eq!(target.get_txs_by_slot(9, 10).unwrap(), vec![source_tx_hash]);
+        assert_eq!(
+            target
+                .get_account_at_slot(&tracked, 9)
+                .unwrap()
+                .unwrap()
+                .spores,
+            44_000_000_000
+        );
     }
 
     #[test]
-    fn snapshot_commit_replaces_public_history_for_non_repair_profiles() {
+    fn complete_checkpoint_commit_replaces_public_history() {
         let source_dir = tempfile::tempdir().expect("create source dir");
         let source = StateStore::open(source_dir.path()).expect("open source state");
         let target_dir = tempfile::tempdir().expect("create target dir");
@@ -29886,6 +35658,7 @@ mod tests {
             &source,
             &target,
             &["account_txs", "account_snapshots"],
+            SnapshotCategoryExportMode::Canonical,
         )
         .expect("commit non-repair profile");
 
@@ -30015,24 +35788,12 @@ mod tests {
         let root_b = [10u8; 32];
         let make_checkpoint =
             |slot: u64, state_root: [u8; 32], manifest: Vec<SnapshotCategoryDigest>| {
-                VerifiedCheckpointData {
-                    meta: lichen_core::CheckpointMeta {
-                        slot,
-                        state_root,
-                        created_at: slot,
-                        total_accounts: 1,
-                    },
-                    checkpoint_path: format!("/tmp/slot-{slot}"),
-                    block: Block::new_with_timestamp(
-                        slot,
-                        Hash::default(),
-                        Hash(state_root),
-                        [7u8; 32],
-                        Vec::new(),
-                        slot,
-                    ),
-                    snapshot_manifest: manifest,
-                }
+                test_verified_checkpoint_data(
+                    slot,
+                    state_root,
+                    format!("/tmp/slot-{slot}"),
+                    manifest,
+                )
             };
         let mut cache = VerifiedCheckpointCacheEntry {
             checkpoints: vec![
@@ -30068,6 +35829,125 @@ mod tests {
     }
 
     #[test]
+    fn verified_checkpoint_cache_authorizes_only_exact_available_complete_archive() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let checkpoint_path = temp.path().join("checkpoints/slot-100");
+        std::fs::create_dir_all(&checkpoint_path).expect("create checkpoint dir");
+
+        let state_root = [9u8; 32];
+        let meta = lichen_core::CheckpointMeta {
+            slot: 100,
+            state_root,
+            created_at: 100,
+            total_accounts: 1,
+        };
+        std::fs::write(
+            checkpoint_path.join("checkpoint_meta.json"),
+            serde_json::to_vec(&meta).expect("serialize checkpoint metadata"),
+        )
+        .expect("write checkpoint metadata");
+
+        let manifest = test_snapshot_manifest_for(31, CHECKPOINT_SNAPSHOT_CATEGORIES);
+        let manifest_root = snapshot_manifest_root(&manifest);
+        let cache = VerifiedCheckpointCacheEntry {
+            checkpoints: vec![test_verified_checkpoint_data(
+                meta.slot,
+                state_root,
+                checkpoint_path.display().to_string(),
+                manifest,
+            )],
+            verified_at: Instant::now(),
+        };
+
+        let exact_anchor = CheckpointSnapshotRequestAnchor {
+            slot: meta.slot,
+            state_root,
+            snapshot_manifest_root: manifest_root,
+        };
+        let session = cache
+            .snapshot_export_session_for_anchor(exact_anchor)
+            .expect("exact cached complete archive should authorize");
+        assert_eq!(session.meta.slot, meta.slot);
+        assert_eq!(session.categories, CHECKPOINT_SNAPSHOT_CATEGORIES);
+
+        let mut wrong_manifest_root = manifest_root;
+        wrong_manifest_root[0] ^= 1;
+        assert!(
+            cache
+                .snapshot_export_session_for_anchor(CheckpointSnapshotRequestAnchor {
+                    snapshot_manifest_root: wrong_manifest_root,
+                    ..exact_anchor
+                })
+                .is_none(),
+            "a different archive manifest must not authorize"
+        );
+
+        std::fs::remove_file(checkpoint_path.join("checkpoint_meta.json"))
+            .expect("remove checkpoint metadata");
+        assert!(
+            cache
+                .snapshot_export_session_for_anchor(exact_anchor)
+                .is_none(),
+            "a pruned checkpoint path must not authorize"
+        );
+    }
+
+    #[test]
+    fn verified_checkpoint_cache_reuses_only_unchanged_primary_manifests() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let checkpoint_path = temp.path().join("checkpoints/slot-100");
+        std::fs::create_dir_all(&checkpoint_path).expect("create checkpoint dir");
+        std::fs::write(checkpoint_path.join("checkpoint_meta.json"), b"{}")
+            .expect("write checkpoint marker");
+
+        let state_root = [9u8; 32];
+        let make_checkpoint = |slot, path: String, manifest| {
+            test_verified_checkpoint_data(slot, state_root, path, manifest)
+        };
+        let manifest = test_snapshot_manifest_for(41, CHECKPOINT_SNAPSHOT_CATEGORIES);
+        let previous = VerifiedCheckpointCacheEntry {
+            checkpoints: vec![make_checkpoint(
+                100,
+                checkpoint_path.display().to_string(),
+                manifest.clone(),
+            )],
+            verified_at: Instant::now(),
+        };
+        let mut refreshed = VerifiedCheckpointCacheEntry {
+            checkpoints: vec![make_checkpoint(
+                100,
+                checkpoint_path.display().to_string(),
+                Vec::new(),
+            )],
+            verified_at: Instant::now(),
+        };
+
+        refreshed.reuse_snapshot_manifests_from(&previous);
+        assert_eq!(refreshed.checkpoints[0].snapshot_manifest, manifest);
+        assert!(refreshed.has_snapshot_manifest());
+
+        let new_checkpoint_path = temp.path().join("checkpoints/slot-101");
+        std::fs::create_dir_all(&new_checkpoint_path).expect("create new checkpoint dir");
+        std::fs::write(new_checkpoint_path.join("checkpoint_meta.json"), b"{}")
+            .expect("write new checkpoint marker");
+        let mut advanced = VerifiedCheckpointCacheEntry {
+            checkpoints: vec![
+                make_checkpoint(101, new_checkpoint_path.display().to_string(), Vec::new()),
+                make_checkpoint(100, checkpoint_path.display().to_string(), Vec::new()),
+            ],
+            verified_at: Instant::now(),
+        };
+
+        advanced.reuse_snapshot_manifests_from(&previous);
+        assert!(advanced.checkpoints[0].snapshot_manifest.is_empty());
+        assert_eq!(advanced.checkpoints[1].snapshot_manifest, manifest);
+        assert!(
+            !advanced.has_snapshot_manifest(),
+            "a reused older manifest must not suppress scanning the new primary checkpoint"
+        );
+    }
+
+    #[test]
     fn verified_checkpoint_cache_prunes_unavailable_paths_before_advertising() {
         let temp = tempfile::tempdir().expect("create temp dir");
         let manifest = vec![SnapshotCategoryDigest {
@@ -30077,25 +35957,9 @@ mod tests {
         }];
         let root_a = [9u8; 32];
         let root_b = [10u8; 32];
-        let make_checkpoint =
-            |slot: u64, state_root: [u8; 32], checkpoint_path: String| VerifiedCheckpointData {
-                meta: lichen_core::CheckpointMeta {
-                    slot,
-                    state_root,
-                    created_at: slot,
-                    total_accounts: 1,
-                },
-                checkpoint_path,
-                block: Block::new_with_timestamp(
-                    slot,
-                    Hash::default(),
-                    Hash(state_root),
-                    [7u8; 32],
-                    Vec::new(),
-                    slot,
-                ),
-                snapshot_manifest: manifest.clone(),
-            };
+        let make_checkpoint = |slot: u64, state_root: [u8; 32], checkpoint_path: String| {
+            test_verified_checkpoint_data(slot, state_root, checkpoint_path, manifest.clone())
+        };
 
         let available_path = temp.path().join("checkpoints/slot-101");
         std::fs::create_dir_all(&available_path).expect("create checkpoint dir");
@@ -30130,26 +35994,7 @@ mod tests {
     }
 
     #[test]
-    fn checkpoint_auth_snapshot_drops_live_locks_before_checkpoint_verification() {
-        let validator_set = Arc::new(RwLock::new(ValidatorSet::new()));
-        let stake_pool = Arc::new(RwLock::new(StakePool::new()));
-        let runtime = tokio::runtime::Runtime::new().expect("create tokio runtime");
-
-        let (_validator_snapshot, _stake_snapshot) =
-            runtime.block_on(checkpoint_auth_snapshot(&validator_set, &stake_pool));
-
-        assert!(
-            validator_set.try_write().is_ok(),
-            "checkpoint auth snapshot must not retain the live validator-set lock"
-        );
-        assert!(
-            stake_pool.try_write().is_ok(),
-            "checkpoint auth snapshot must not retain the live stake-pool lock"
-        );
-    }
-
-    #[test]
-    fn snapshot_checkpoint_lookup_uses_auth_snapshots_not_live_lock_guards() {
+    fn snapshot_checkpoint_lookup_uses_background_verified_cache() {
         let source = include_str!("main.rs");
         let start = source
             .find("Snapshot request handler started")
@@ -30178,8 +36023,20 @@ mod tests {
         );
         assert_eq!(
             section.matches("checkpoint_auth_snapshot(").count(),
-            3,
-            "every snapshot checkpoint lookup must use owned auth snapshots"
+            0,
+            "checkpoint verification must not depend on the receiver's current auth state"
+        );
+        assert_eq!(
+            section
+                .matches("snapshot_export_session_for_anchor(")
+                .count(),
+            1,
+            "chunk serving must authorize against the verified checkpoint cache"
+        );
+        assert_eq!(
+            section.matches("verified_checkpoint_for_anchor(").count(),
+            0,
+            "chunk serving must not synchronously rescan and hash a checkpoint archive"
         );
         assert_eq!(
             section
@@ -30229,8 +36086,14 @@ mod tests {
             .put_metadata("stream-test-b", b"beta")
             .expect("put source metadata b");
 
-        let imported = stream_snapshot_category_between_stores(&source, &target, "stats", 1)
-            .expect("stream stats category");
+        let imported = stream_snapshot_category_between_stores(
+            &source,
+            &target,
+            "stats",
+            1,
+            SnapshotCategoryExportMode::Canonical,
+        )
+        .expect("stream stats category");
         assert_eq!(imported, 2);
         assert_eq!(
             target
@@ -30272,8 +36135,14 @@ mod tests {
             .put_metadata("snapshot-durable-marker", b"keep")
             .expect("put durable stats key");
 
-        let imported = stream_snapshot_category_between_stores(&source, &target, "stats", 1)
-            .expect("stream filtered stats category");
+        let imported = stream_snapshot_category_between_stores(
+            &source,
+            &target,
+            "stats",
+            1,
+            SnapshotCategoryExportMode::Canonical,
+        )
+        .expect("stream filtered stats category");
         assert_eq!(imported, 1);
         assert_eq!(
             target
@@ -30292,7 +36161,7 @@ mod tests {
     }
 
     #[test]
-    fn state_repair_manifest_survives_volatile_stats_cache_invalidation() {
+    fn checkpoint_manifest_survives_volatile_stats_cache_invalidation() {
         let source_dir = tempfile::tempdir().expect("create source dir");
         let source = StateStore::open(source_dir.path()).expect("open source state");
         let target_dir = tempfile::tempdir().expect("create target dir");
@@ -30338,8 +36207,8 @@ mod tests {
         );
 
         let expected_manifest =
-            compute_state_repair_snapshot_manifest(&source, 1000).expect("source manifest");
-        for category in STATE_REPAIR_SNAPSHOT_CATEGORIES {
+            compute_checkpoint_snapshot_manifest(&source, 1000).expect("source manifest");
+        for category in CHECKPOINT_SNAPSHOT_CATEGORIES {
             let entries = export_roundtrip_snapshot_entries(&source, category, 1000)
                 .unwrap_or_else(|err| panic!("export {category}: {err}"));
             import_ordered_snapshot_category(&target, category, &entries)
@@ -30368,13 +36237,13 @@ mod tests {
             "stake and mossstake imports clear derived composite root caches"
         );
         let actual_manifest =
-            compute_state_repair_snapshot_manifest(&target, 1000).expect("target manifest");
+            compute_checkpoint_snapshot_manifest(&target, 1000).expect("target manifest");
         validate_snapshot_manifest_matches(&expected_manifest, &actual_manifest)
-            .expect("repair manifest should ignore volatile cache entries");
+            .expect("checkpoint manifest should ignore volatile cache entries");
     }
 
     #[test]
-    fn state_repair_manifest_uses_received_mossstake_bytes_before_slot_only_normalization() {
+    fn checkpoint_manifest_uses_received_mossstake_bytes_before_slot_only_normalization() {
         let source_dir = tempfile::tempdir().expect("create source dir");
         let source = StateStore::open(source_dir.path()).expect("open source state");
         let target_dir = tempfile::tempdir().expect("create target dir");
@@ -30401,11 +36270,11 @@ mod tests {
             .expect("put source slot-only marker after legacy pool");
 
         let expected_manifest =
-            compute_state_repair_snapshot_manifest(&source, 1000).expect("source manifest");
+            compute_checkpoint_snapshot_manifest(&source, 1000).expect("source manifest");
         let mut received_digests: HashMap<String, SnapshotCategoryDigestAccumulator> =
             HashMap::new();
 
-        for category in STATE_REPAIR_SNAPSHOT_CATEGORIES {
+        for category in CHECKPOINT_SNAPSHOT_CATEGORIES {
             let entries = export_roundtrip_snapshot_entries(&source, category, 1000)
                 .unwrap_or_else(|err| panic!("export {category}: {err}"));
             import_ordered_snapshot_category(&target, category, &entries)
@@ -30442,14 +36311,14 @@ mod tests {
 
         let received_manifest = received_snapshot_manifest_from_accumulators(
             &received_digests,
-            STATE_REPAIR_SNAPSHOT_CATEGORIES,
+            CHECKPOINT_SNAPSHOT_CATEGORIES,
         )
         .expect("received manifest");
         validate_snapshot_manifest_matches(&expected_manifest, &received_manifest)
             .expect("received snapshot bytes must match the advertised manifest");
 
         let post_import_manifest =
-            compute_state_repair_snapshot_manifest(&target, 1000).expect("target manifest");
+            compute_checkpoint_snapshot_manifest(&target, 1000).expect("target manifest");
         let expected_mossstake = expected_manifest
             .iter()
             .find(|digest| digest.category == "mossstake_pool")
@@ -30488,6 +36357,156 @@ mod tests {
     }
 
     #[test]
+    fn archive_contiguous_tip_advances_only_across_linked_block_bodies() {
+        let temp_dir = tempfile::tempdir().expect("create archive marker state");
+        let state = StateStore::open(temp_dir.path()).expect("open archive marker state");
+        let genesis = Block::genesis(Hash::hash(b"archive-marker-genesis"), 1, Vec::new());
+        let block_1 = Block::new_with_timestamp(
+            1,
+            genesis.hash(),
+            Hash::hash(b"archive-marker-state-1"),
+            [1u8; 32],
+            Vec::new(),
+            2,
+        );
+        let block_2 = Block::new_with_timestamp(
+            2,
+            block_1.hash(),
+            Hash::hash(b"archive-marker-state-2"),
+            [2u8; 32],
+            Vec::new(),
+            3,
+        );
+
+        state
+            .put_block_atomic(&genesis, Some(0), Some(0))
+            .expect("store genesis");
+        assert_eq!(
+            state.get_archive_contiguous_tip().expect("read marker"),
+            Some((0, genesis.hash()))
+        );
+
+        state
+            .put_block_atomic(&block_2, Some(2), Some(2))
+            .expect("store block beyond gap");
+        assert_eq!(
+            state.get_archive_contiguous_tip().expect("read gap marker"),
+            Some((0, genesis.hash())),
+            "a slot cursor beyond a missing body must not advance archive proof"
+        );
+
+        state
+            .put_block_atomic(&block_1, Some(1), Some(1))
+            .expect("fill block gap");
+        assert_eq!(
+            state
+                .get_archive_contiguous_tip()
+                .expect("read repaired marker"),
+            Some((2, block_2.hash())),
+            "filling a gap must advance through already stored linked descendants"
+        );
+    }
+
+    #[test]
+    fn mainnet_archive_gate_rejects_tip_beyond_contiguous_history() {
+        let temp_dir = tempfile::tempdir().expect("create mainnet archive state");
+        let state = StateStore::open(temp_dir.path()).expect("open mainnet archive state");
+        assert!(validate_mainnet_archive_contiguous_tip(&state, "lichen-mainnet-1").is_ok());
+
+        let genesis = Block::genesis(Hash::hash(b"mainnet-archive-genesis"), 1, Vec::new());
+        let block_2 = Block::new_with_timestamp(
+            2,
+            Hash::hash(b"missing-parent"),
+            Hash::hash(b"mainnet-archive-state-2"),
+            [2u8; 32],
+            Vec::new(),
+            3,
+        );
+        state
+            .put_block_atomic(&genesis, Some(0), Some(0))
+            .expect("store genesis");
+        state
+            .put_block_atomic(&block_2, Some(2), Some(2))
+            .expect("store block beyond gap");
+
+        let err = validate_mainnet_archive_contiguous_tip(&state, "lichen-mainnet-1")
+            .expect_err("mainnet must reject incomplete archive");
+        assert!(err.contains("stops at slot 0"), "unexpected error: {err}");
+        state
+            .set_archive_contiguous_tip(2, block_2.hash())
+            .expect("simulate stale or forged marker");
+        let err = validate_mainnet_archive_contiguous_tip(&state, "lichen-mainnet-1")
+            .expect_err("mainnet must verify bodies behind the marker");
+        assert!(
+            err.contains("genesis-to-tip archive verification failed"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            validate_mainnet_archive_contiguous_tip(&state, "lichen-testnet-1").is_ok(),
+            "the current preserved testnet needs an explicit repair exception"
+        );
+    }
+
+    #[test]
+    fn contiguous_block_range_verifier_reports_linked_body_backed_range() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let genesis = Block::genesis(Hash::hash(b"range-genesis"), 1, vec![]);
+        let block_1 = Block::new(
+            1,
+            genesis.hash(),
+            Hash::hash(b"range-state-1"),
+            [2u8; 32],
+            vec![],
+        );
+        let block_2 = Block::new(
+            2,
+            block_1.hash(),
+            Hash::hash(b"range-state-2"),
+            [3u8; 32],
+            vec![],
+        );
+        for block in [&genesis, &block_1, &block_2] {
+            state
+                .put_block_atomic(block, Some(block.header.slot), Some(block.header.slot))
+                .expect("put range block");
+        }
+
+        let (first_parent, first_hash, last_hash, digest) =
+            verify_contiguous_block_range(&state, 1, 2).expect("verify block range");
+        assert_eq!(first_parent, genesis.hash());
+        assert_eq!(first_hash, block_1.hash());
+        assert_eq!(last_hash, block_2.hash());
+        assert_eq!(digest.len(), 64);
+    }
+
+    #[test]
+    fn contiguous_block_range_verifier_rejects_missing_body() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let genesis = Block::genesis(Hash::hash(b"range-gap-genesis"), 1, vec![]);
+        let block_2 = Block::new(
+            2,
+            genesis.hash(),
+            Hash::hash(b"range-gap-state-2"),
+            [3u8; 32],
+            vec![],
+        );
+        for block in [&genesis, &block_2] {
+            state
+                .put_block_atomic(block, Some(block.header.slot), Some(block.header.slot))
+                .expect("put sparse range block");
+        }
+
+        let err = verify_contiguous_block_range(&state, 0, 2)
+            .expect_err("missing block body must fail range verification");
+        assert!(
+            err.contains("missing canonical block body at slot 1"),
+            "{err}"
+        );
+    }
+
+    #[test]
     fn snapshot_archive_completeness_rejects_partial_history() {
         let temp_dir = tempfile::tempdir().expect("create temp dir");
         let state = StateStore::open(temp_dir.path()).expect("open state");
@@ -30502,6 +36521,31 @@ mod tests {
         assert!(
             err.contains("snapshot archive is incomplete")
                 || err.contains("missing required contiguous block"),
+            "unexpected archive error: {err}"
+        );
+    }
+
+    #[test]
+    fn snapshot_archive_completeness_rejects_missing_transaction_record() {
+        let temp_dir = tempfile::tempdir().expect("create archive tx state");
+        let state = StateStore::open(temp_dir.path()).expect("open archive tx state");
+        let transaction = Transaction::new(lichen_core::Message::new(
+            Vec::new(),
+            Hash::hash(b"archive-tx-blockhash"),
+        ));
+        let signature = transaction.signature();
+        let genesis = Block::genesis(Hash::hash(b"archive-tx-genesis"), 1, vec![transaction]);
+        state
+            .put_block_atomic(&genesis, Some(0), Some(0))
+            .expect("store archive tx genesis");
+        state
+            .delete_transaction(&signature)
+            .expect("delete standalone tx record");
+
+        let err = validate_snapshot_archive_completeness(&state, 0)
+            .expect_err("missing standalone transaction must fail archive proof");
+        assert!(
+            err.contains("missing transaction"),
             "unexpected archive error: {err}"
         );
     }
@@ -30572,7 +36616,7 @@ mod tests {
             .expect("simulate partial import");
         drop(live);
 
-        recover_incomplete_snapshot_live_apply(&live_path, None).expect("recover rollback");
+        recover_incomplete_snapshot_live_apply(&live_path, None, None).expect("recover rollback");
         let restored = StateStore::open(live_dir.path()).expect("reopen restored state");
         assert!(restored
             .get_account(&old_account)
@@ -30585,6 +36629,89 @@ mod tests {
         assert_eq!(restored.compute_state_root_cold_start(), rollback_root);
         assert!(!snapshot_live_rollback_marker_path(&live_path).exists());
         assert!(!snapshot_live_rollback_checkpoint_dir(&live_path).exists());
+    }
+
+    #[test]
+    fn snapshot_live_rollback_rejects_root_only_completion_with_missing_history() {
+        let live_dir = tempfile::tempdir().expect("create live dir");
+        let live_path = live_dir.path().to_string_lossy().to_string();
+        let live = StateStore::open(live_dir.path()).expect("open live state");
+        let genesis = Block::genesis(Hash::hash(b"rollback-root-only-genesis"), 1, vec![]);
+        live.put_block_atomic(&genesis, Some(0), Some(0))
+            .expect("put canonical genesis block");
+        let rollback_root = live.compute_state_root_cold_start();
+
+        prepare_snapshot_live_rollback(&live, &live_path, 0, rollback_root)
+            .expect("prepare rollback marker");
+        live.clear_snapshot_category("blocks")
+            .expect("simulate partial history clear");
+        assert_eq!(live.get_last_slot().expect("read retained slot"), 0);
+        assert_eq!(live.compute_state_root_cold_start(), rollback_root);
+        assert!(live
+            .get_block_by_slot(0)
+            .expect("read cleared block")
+            .is_none());
+        drop(live);
+
+        recover_incomplete_snapshot_live_apply(&live_path, None, None)
+            .expect("recover root-only partial apply");
+        let restored = StateStore::open(live_dir.path()).expect("reopen restored state");
+        assert_eq!(
+            restored
+                .get_block_by_slot(0)
+                .expect("read restored genesis")
+                .expect("restored genesis block")
+                .hash(),
+            genesis.hash()
+        );
+        assert!(!snapshot_live_rollback_marker_path(&live_path).exists());
+        assert!(!snapshot_live_rollback_checkpoint_dir(&live_path).exists());
+    }
+
+    #[test]
+    fn snapshot_live_rollback_checkpoint_does_not_pin_cold_archive() {
+        let live_dir = tempfile::tempdir().expect("create live dir");
+        let cold_dir = tempfile::tempdir().expect("create cold dir");
+        let live_path = live_dir.path().to_string_lossy().to_string();
+        let mut live = StateStore::open(live_dir.path()).expect("open live state");
+        live.open_cold_store(cold_dir.path())
+            .expect("attach cold archive");
+        let rollback_root = live.compute_state_root_cold_start();
+
+        prepare_snapshot_live_rollback(&live, &live_path, 1, rollback_root)
+            .expect("prepare rollback marker");
+        let rollback_dir = snapshot_live_rollback_checkpoint_dir(&live_path);
+        assert!(rollback_dir.is_dir());
+        assert!(
+            !rollback_dir.join("cold").exists(),
+            "live-apply rollback must not hard-link the independent cold archive"
+        );
+
+        cleanup_snapshot_live_rollback(&live_path).expect("cleanup rollback checkpoint");
+    }
+
+    #[test]
+    fn snapshot_live_rollback_cleanup_keeps_marker_until_checkpoint_is_removed() {
+        let live_dir = tempfile::tempdir().expect("create live dir");
+        let live_path = live_dir.path().to_string_lossy().to_string();
+        let live = StateStore::open(live_dir.path()).expect("open live state");
+        let rollback_root = live.compute_state_root_cold_start();
+        prepare_snapshot_live_rollback(&live, &live_path, 1, rollback_root)
+            .expect("prepare rollback marker");
+
+        let rollback_dir = snapshot_live_rollback_checkpoint_dir(&live_path);
+        fs::remove_dir_all(&rollback_dir).expect("remove checkpoint fixture");
+        fs::write(&rollback_dir, b"not-a-directory").expect("replace checkpoint with file");
+        cleanup_snapshot_live_rollback(&live_path)
+            .expect_err("checkpoint cleanup failure must remain visible");
+        assert!(
+            snapshot_live_rollback_marker_path(&live_path).exists(),
+            "durable marker must remain until checkpoint cleanup succeeds"
+        );
+
+        fs::remove_file(&rollback_dir).expect("remove blocking checkpoint file");
+        cleanup_snapshot_live_rollback(&live_path).expect("finish rollback cleanup");
+        assert!(!snapshot_live_rollback_marker_path(&live_path).exists());
     }
 
     #[test]
@@ -30628,7 +36755,7 @@ mod tests {
             .expect("simulate partial import");
         drop(live);
 
-        recover_incomplete_snapshot_live_apply(&live_path, None)
+        recover_incomplete_snapshot_live_apply(&live_path, None, None)
             .expect("recover rollback without hot archive blocks");
         let restored = StateStore::open(live_dir.path()).expect("reopen restored state");
         assert!(restored
@@ -30743,6 +36870,7 @@ mod tests {
         ];
         let producer = validators[0];
         let treasury = Keypair::generate().pubkey();
+        let community = Keypair::generate().pubkey();
         let mut block = make_block_with_txs(vec![make_tx_with_opcode(CORE_SYSTEM_PROGRAM_ID, 0)]);
         block.header.slot = 11;
         block.header.validator = producer.0;
@@ -30756,11 +36884,17 @@ mod tests {
             let state = StateStore::open(temp_dir.path()).expect("open state");
             state.set_treasury_pubkey(&treasury).expect("set treasury");
             state
+                .set_genesis_accounts(&[("community_treasury".to_string(), community, 0, 0)])
+                .expect("set community treasury");
+            state
                 .put_account(
                     &treasury,
                     &Account::new(10_000_000_000, SYSTEM_ACCOUNT_OWNER),
                 )
                 .expect("fund treasury");
+            state
+                .put_account(&community, &Account::new(0, SYSTEM_ACCOUNT_OWNER))
+                .expect("create community treasury account");
 
             let mut validator_set = ValidatorSet::new();
             let mut pool = StakePool::new();
@@ -30861,6 +36995,65 @@ mod tests {
         assert_eq!(peer.last_observed_at_ms, 123);
         assert_eq!(peer.last_observed_block_at_ms, 456);
         assert_eq!(peer.last_observed_block_slot, 7);
+    }
+
+    #[test]
+    fn canonical_commit_activity_is_identical_across_validator_sets() {
+        let first = Keypair::generate();
+        let second = Keypair::generate();
+        let third = Keypair::generate();
+        let mut left = ValidatorSet::new();
+        let mut right = ValidatorSet::new();
+        for pubkey in [first.pubkey(), second.pubkey(), third.pubkey()] {
+            left.add_validator(test_validator_info(pubkey));
+            right.add_validator(test_validator_info(pubkey));
+        }
+        let mut validator_powers = [first.pubkey(), second.pubkey(), third.pubkey()]
+            .into_iter()
+            .map(|validator| lichen_core::CanonicalValidatorPower {
+                validator,
+                power: MIN_VALIDATOR_STAKE,
+            })
+            .collect::<Vec<_>>();
+        validator_powers.sort_by_key(|power| power.validator.0);
+        let certificate = CanonicalCommitCertificate {
+            version: lichen_core::CANONICAL_COMMIT_ENVELOPE_VERSION,
+            height: 50,
+            round: 1,
+            block_hash: Hash::hash(b"canonical-activity-block"),
+            validators_hash: lichen_core::canonical_validator_powers_hash(&validator_powers),
+            validator_powers,
+            parent_post_state_root: Hash::hash(b"activity-parent-post-state"),
+            child_metadata_hash: lichen_core::canonical_block_metadata_hash(&[0], &[]).unwrap(),
+            signatures: vec![
+                lichen_core::CommitSignature {
+                    validator: first.pubkey().0,
+                    signature: first.sign(b"first"),
+                    timestamp: 50,
+                },
+                lichen_core::CommitSignature {
+                    validator: second.pubkey().0,
+                    signature: second.sign(b"second"),
+                    timestamp: 50,
+                },
+            ],
+        };
+
+        assert_eq!(apply_canonical_commit_activity(&mut left, &certificate), 2);
+        assert_eq!(apply_canonical_commit_activity(&mut right, &certificate), 2);
+        for pubkey in [first.pubkey(), second.pubkey(), third.pubkey()] {
+            let left_validator = left.get_validator(&pubkey).unwrap();
+            let right_validator = right.get_validator(&pubkey).unwrap();
+            assert_eq!(left_validator.votes_cast, right_validator.votes_cast);
+            assert_eq!(left_validator.correct_votes, right_validator.correct_votes);
+            assert_eq!(
+                left_validator.last_active_slot,
+                right_validator.last_active_slot
+            );
+        }
+        assert_eq!(left.get_validator(&first.pubkey()).unwrap().votes_cast, 1);
+        assert_eq!(left.get_validator(&second.pubkey()).unwrap().votes_cast, 1);
+        assert_eq!(left.get_validator(&third.pubkey()).unwrap().votes_cast, 0);
     }
 
     #[test]
@@ -31436,11 +37629,11 @@ mod tests {
                 "testnet": {
                     "chain_id": "lichen-testnet-1",
                     "bootstrap_peers": ["seed-01.lichen.network:7001"],
-                    "rpc_endpoints": ["https://testnet-rpc.lichen.network"],
+                    "rpc_endpoints": ["https://testnet-api.lichen.network"],
                     "seeds": [
                         {
                             "address": "seed-02.lichen.network:7001",
-                            "rpc": "https://testnet-rpc.lichen.network"
+                            "rpc": "https://testnet-api.lichen.network"
                         }
                     ]
                 }
@@ -31463,13 +37656,13 @@ mod tests {
         );
         assert_eq!(
             config.rpc_urls[0],
-            "https://testnet-rpc.lichen.network".to_string()
+            "https://testnet-api.lichen.network".to_string()
         );
         assert_eq!(
             config
                 .rpc_urls
                 .iter()
-                .filter(|url| *url == "https://testnet-rpc.lichen.network")
+                .filter(|url| *url == "https://testnet-api.lichen.network")
                 .count(),
             1,
             "duplicate seed RPC endpoints should be deduplicated"
@@ -31480,7 +37673,7 @@ mod tests {
     fn genesis_bootstrap_rpc_policy_allows_https_and_official_seed_http() {
         assert!(genesis_bootstrap_rpc_allowed(
             "testnet",
-            "https://testnet-rpc.lichen.network"
+            "https://testnet-api.lichen.network"
         ));
         assert!(genesis_bootstrap_rpc_allowed(
             "testnet",
@@ -31572,15 +37765,15 @@ mod tests {
     }
 
     #[test]
-    fn pre_consensus_tip_catch_up_allows_live_next_height() {
+    fn pre_consensus_tip_catch_up_requires_tip_parity_before_voting() {
         let network_slot: u64 = 306_994;
-        assert!(!needs_pre_consensus_tip_catch_up(
+        assert!(needs_pre_consensus_tip_catch_up(
             network_slot.saturating_sub(1),
             network_slot
         ));
-        assert!(!needs_pre_consensus_tip_catch_up(
+        assert!(needs_pre_consensus_tip_catch_up(
             network_slot.saturating_sub(PRE_CONSENSUS_CATCH_UP_TOLERANCE),
-            network_slot
+            network_slot + 1
         ));
         assert!(needs_pre_consensus_tip_catch_up(
             network_slot.saturating_sub(PRE_CONSENSUS_CATCH_UP_TOLERANCE + 1),
@@ -31594,6 +37787,29 @@ mod tests {
             network_slot + 1,
             network_slot
         ));
+    }
+
+    #[tokio::test]
+    async fn unsent_sync_request_cleanup_preserves_sent_chunks() {
+        let sync_manager = Arc::new(SyncManager::new());
+        for slot in 10..=20 {
+            sync_manager.mark_requested(slot).await;
+        }
+
+        clear_unsent_requested_subranges(&sync_manager, 10, 20, &[(10, 12), (16, 18)]).await;
+
+        for slot in [10, 11, 12, 16, 17, 18] {
+            assert!(
+                sync_manager.is_requested(slot).await,
+                "sent slot {slot} should remain marked"
+            );
+        }
+        for slot in [13, 14, 15, 19, 20] {
+            assert!(
+                !sync_manager.is_requested(slot).await,
+                "unsent slot {slot} should be retryable immediately"
+            );
+        }
     }
 
     #[test]
@@ -31674,7 +37890,7 @@ mod tests {
     #[test]
     fn shared_bootstrap_rpc_is_not_a_direct_peer_observation() {
         assert!(is_shared_bootstrap_rpc(
-            "https://testnet-rpc.lichen.network"
+            "https://testnet-api.lichen.network"
         ));
         assert!(is_shared_bootstrap_rpc("https://rpc.lichen.network"));
         assert!(!is_shared_bootstrap_rpc(
@@ -31688,6 +37904,34 @@ mod tests {
         assert!(has_enough_direct_bootstrap_observations(0, 0));
         assert!(!has_enough_direct_bootstrap_observations(0, 2));
         assert!(has_enough_direct_bootstrap_observations(1, 2));
+    }
+
+    #[test]
+    fn authenticated_peer_at_same_tip_unblocks_resume_when_seed_rpc_is_offline() {
+        assert!(!should_wait_for_pre_consensus_tip_observation(
+            false, 582, 582, 0, 1, true, false,
+        ));
+    }
+
+    #[test]
+    fn resumed_validator_waits_without_direct_or_authenticated_peer_observation() {
+        assert!(should_wait_for_pre_consensus_tip_observation(
+            false, 582, 582, 0, 1, false, true,
+        ));
+        assert!(should_wait_for_pre_consensus_tip_observation(
+            false, 582, 582, 0, 0, false, false,
+        ));
+        assert!(!should_wait_for_pre_consensus_tip_observation(
+            false, 582, 582, 0, 0, false, true,
+        ));
+    }
+
+    #[test]
+    fn ahead_peer_still_routes_resume_through_tip_catch_up() {
+        assert!(!should_wait_for_pre_consensus_tip_observation(
+            false, 582, 583, 0, 1, true, false,
+        ));
+        assert!(needs_pre_consensus_tip_catch_up(582, 583));
     }
 
     #[test]
@@ -31961,6 +38205,30 @@ mod tests {
         assert!(sync_range_peer_order(&[], 0).is_empty());
     }
 
+    #[test]
+    fn sync_range_peer_candidates_prefer_peers_that_advertise_requested_tip() {
+        let stale_high_score: SocketAddr = "127.0.0.1:7001".parse().unwrap();
+        let stale_low_score: SocketAddr = "127.0.0.1:7002".parse().unwrap();
+        let fresh_peer: SocketAddr = "127.0.0.1:7003".parse().unwrap();
+        let fresher_peer: SocketAddr = "127.0.0.1:7004".parse().unwrap();
+        let peer_infos = vec![
+            (stale_high_score, 20, 641),
+            (fresh_peer, 0, 642),
+            (stale_low_score, -5, 641),
+            (fresher_peer, 0, 643),
+        ];
+
+        assert_eq!(
+            sync_range_peer_candidates(&peer_infos, 642, 4),
+            vec![fresher_peer, fresh_peer, stale_high_score, stale_low_score]
+        );
+        assert_eq!(
+            sync_range_peer_candidates(&peer_infos, 642, 1),
+            vec![fresher_peer],
+            "single-peer catch-up must not choose a stale peer when fresh peers are known"
+        );
+    }
+
     // ── constants sanity ────────────────────────────────────────────
 
     #[test]
@@ -31968,6 +38236,52 @@ mod tests {
     fn watchdog_timeout_reasonable() {
         assert!(DEFAULT_WATCHDOG_TIMEOUT_SECS >= 30);
         assert!(DEFAULT_WATCHDOG_TIMEOUT_SECS <= 600);
+    }
+
+    #[test]
+    fn disk_headroom_threshold_is_inclusive() {
+        assert!(!has_required_disk_headroom(
+            MIN_RUNTIME_AVAILABLE_BYTES - 1,
+            MIN_RUNTIME_AVAILABLE_BYTES
+        ));
+        assert!(has_required_disk_headroom(
+            MIN_RUNTIME_AVAILABLE_BYTES,
+            MIN_RUNTIME_AVAILABLE_BYTES
+        ));
+    }
+
+    #[test]
+    fn snapshot_apply_capacity_includes_replacement_compaction_and_runtime_reserve() {
+        let staging_bytes = 37u64;
+        assert_eq!(
+            snapshot_apply_required_available_bytes(staging_bytes),
+            staging_bytes * SNAPSHOT_APPLY_COMPACTION_COPIES + MIN_RUNTIME_AVAILABLE_BYTES
+        );
+        assert_eq!(
+            snapshot_apply_required_available_bytes(u64::MAX),
+            u64::MAX,
+            "capacity arithmetic must fail closed on overflow"
+        );
+    }
+
+    #[test]
+    fn directory_allocation_measurement_counts_files_without_following_symlinks() {
+        let dir = tempfile::tempdir().expect("create allocation test dir");
+        let file_path = dir.path().join("state.sst");
+        fs::write(&file_path, vec![7u8; 8192]).expect("write allocation test file");
+        let allocated = directory_allocated_bytes(dir.path()).expect("measure allocation");
+        assert!(allocated >= 8192, "allocated bytes: {allocated}");
+
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&file_path, dir.path().join("state-link.sst"))
+                .expect("create allocation test symlink");
+            assert_eq!(
+                directory_allocated_bytes(dir.path()).expect("remeasure allocation"),
+                allocated,
+                "symlinks must not inflate or escape the measured staging tree"
+            );
+        }
     }
 
     #[test]
@@ -31979,6 +38293,12 @@ mod tests {
     #[test]
     fn exit_code_restart_is_75() {
         assert_eq!(EXIT_CODE_RESTART, 75);
+    }
+
+    #[test]
+    fn fatal_startup_exit_code_is_not_restartable_watchdog_status() {
+        assert_eq!(EXIT_CODE_FATAL_STARTUP, 78);
+        assert_ne!(EXIT_CODE_FATAL_STARTUP, EXIT_CODE_RESTART);
     }
 
     // ── existing P9 tests ───────────────────────────────────────────
@@ -32009,30 +38329,56 @@ mod tests {
             .unwrap();
 
         // Initially: trade_count=0, cursor=0 → no-op
-        run_sltp_triggers_from_state(&state);
+        run_sltp_triggers_from_state(&state, 1).expect("run empty SL/TP projection");
         let cursor_after_noop = state.get_program_storage_u64("DEX", b"dex_sltp_trigger_cursor");
         assert_eq!(cursor_after_noop, 0, "cursor should stay 0 when no trades");
 
-        // Simulate new trades: set trade_count=5
+        // Simulate five contiguous canonical trades.
+        for trade_id in 1..=5u64 {
+            let mut trade = vec![0u8; 24];
+            trade[0..8].copy_from_slice(&trade_id.to_le_bytes());
+            trade[8..16].copy_from_slice(&1u64.to_le_bytes());
+            trade[16..24].copy_from_slice(&100u64.to_le_bytes());
+            state
+                .put_contract_storage(
+                    &dex_pk,
+                    format!("dex_trade_{}", trade_id).as_bytes(),
+                    &trade,
+                )
+                .expect("seed canonical DEX trade");
+        }
         state
             .put_contract_storage(&dex_pk, b"dex_trade_count", &5u64.to_le_bytes())
             .unwrap();
 
         // Now run triggers — should update cursor to 5
-        run_sltp_triggers_from_state(&state);
+        run_sltp_triggers_from_state(&state, 2).expect("run first SL/TP projection");
         let cursor_after_trades = state.get_program_storage_u64("DEX", b"dex_sltp_trigger_cursor");
         assert_eq!(cursor_after_trades, 5, "cursor should advance to 5");
 
         // Calling again with same trade_count → no-op (idempotent)
-        run_sltp_triggers_from_state(&state);
+        run_sltp_triggers_from_state(&state, 3).expect("re-run idempotent SL/TP projection");
         let cursor_idempotent = state.get_program_storage_u64("DEX", b"dex_sltp_trigger_cursor");
         assert_eq!(cursor_idempotent, 5, "cursor should stay 5 (idempotent)");
 
-        // More trades: set trade_count=10
+        // More contiguous canonical trades: set trade_count=10.
+        for trade_id in 6..=10u64 {
+            let mut trade = vec![0u8; 24];
+            trade[0..8].copy_from_slice(&trade_id.to_le_bytes());
+            trade[8..16].copy_from_slice(&1u64.to_le_bytes());
+            trade[16..24].copy_from_slice(&101u64.to_le_bytes());
+            state
+                .put_contract_storage(
+                    &dex_pk,
+                    format!("dex_trade_{}", trade_id).as_bytes(),
+                    &trade,
+                )
+                .expect("seed additional canonical DEX trade");
+        }
         state
             .put_contract_storage(&dex_pk, b"dex_trade_count", &10u64.to_le_bytes())
             .unwrap();
-        run_sltp_triggers_from_state(&state);
+        run_sltp_triggers_from_state(&state, 4).expect("run second SL/TP projection");
         let cursor_final = state.get_program_storage_u64("DEX", b"dex_sltp_trigger_cursor");
         assert_eq!(cursor_final, 10, "cursor should advance to 10");
     }
@@ -32089,23 +38435,6 @@ mod tests {
         //   + size[8] + margin[8] + entry_price[8] + ...
         //   + sl@106[8] + tp@114[8]
         let trader = [1u8; 32];
-        // Create trader account so native LICN credit works
-        let _ = state.put_account(
-            &Pubkey(trader),
-            &Account {
-                spores: 0,
-                spendable: 0,
-                staked: 0,
-                locked: 0,
-                data: vec![],
-                public_key: None,
-                owner: Pubkey([0u8; 32]),
-                executable: false,
-                rent_epoch: 0,
-                dormant: false,
-                missed_rent_epochs: 0,
-            },
-        );
         let mut pos_data = vec![0u8; 122];
         pos_data[0..32].copy_from_slice(&trader);
         // pair_id = 1 at [40..48]
@@ -32135,6 +38464,7 @@ mod tests {
         // Set up a trade at price=200 (above TP=150, triggers TP)
         // dex_trade_1: pair_id=1, price=200
         let mut trade_data = vec![0u8; 32];
+        trade_data[0..8].copy_from_slice(&1u64.to_le_bytes()); // trade_id
         trade_data[8..16].copy_from_slice(&1u64.to_le_bytes()); // pair_id
         trade_data[16..24].copy_from_slice(&200u64.to_le_bytes()); // price
         state
@@ -32144,8 +38474,47 @@ mod tests {
             .put_contract_storage(&dex_pk, b"dex_trade_count", &1u64.to_le_bytes())
             .unwrap();
 
-        // Run the trigger engine
-        run_sltp_triggers_from_state(&state);
+        // A missing payout account must discard every staged financial write,
+        // including the position close, insurance debit, and replay cursor.
+        let err = run_sltp_triggers_from_state(&state, 1)
+            .expect_err("missing trader account must fail the atomic projection");
+        assert!(err.contains("trader account is missing"));
+        let still_open = state
+            .get_contract_storage(&margin_pk, b"mrg_pos_1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(still_open[49], 0, "failed batch must not close position");
+        assert_eq!(
+            state.get_program_storage_u64("DEXMARGIN", b"mrg_insurance"),
+            1000,
+            "failed batch must not debit insurance"
+        );
+        assert_eq!(
+            state.get_program_storage_u64("DEX", b"dex_sltp_trigger_cursor"),
+            0,
+            "failed batch must not advance cursor"
+        );
+
+        state
+            .put_account(
+                &Pubkey(trader),
+                &Account {
+                    spores: 0,
+                    spendable: 0,
+                    staked: 0,
+                    locked: 0,
+                    data: vec![],
+                    public_key: None,
+                    owner: Pubkey([0u8; 32]),
+                    executable: false,
+                    rent_epoch: 0,
+                    dormant: false,
+                    missed_rent_epochs: 0,
+                },
+            )
+            .expect("create margin trader account");
+
+        run_sltp_triggers_from_state(&state, 2).expect("run margin SL/TP projection");
 
         // Verify: position should be closed (status=1)
         let closed_data = state
@@ -32173,6 +38542,55 @@ mod tests {
             trader_acc.spores, 600,
             "user should receive margin + capped profit as native LICN"
         );
+    }
+
+    #[test]
+    fn founding_vesting_advances_on_fee_free_blocks_and_is_idempotent() {
+        let temp_dir = tempfile::tempdir().expect("create vesting temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open vesting state");
+        let founding = Pubkey([61u8; 32]);
+        state
+            .set_genesis_accounts(&[("founding_symbionts".to_string(), founding, 1_000, 15)])
+            .expect("set founding wallet");
+        state
+            .set_founding_vesting_params(100, 200, 1_000)
+            .expect("set founding vesting schedule");
+        state
+            .put_account(
+                &founding,
+                &Account {
+                    spores: 1_000,
+                    spendable: 0,
+                    staked: 0,
+                    locked: 1_000,
+                    data: vec![],
+                    public_key: None,
+                    owner: Pubkey([0u8; 32]),
+                    executable: false,
+                    rent_epoch: 0,
+                    dormant: false,
+                    missed_rent_epochs: 0,
+                },
+            )
+            .expect("seed founding account");
+
+        apply_founding_vesting_from_block(&state, 10, 150).expect("apply fee-independent vesting");
+        let halfway = state
+            .get_account(&founding)
+            .expect("read founding account")
+            .expect("founding account exists");
+        assert_eq!(halfway.spores, 1_000);
+        assert_eq!(halfway.spendable, 500);
+        assert_eq!(halfway.locked, 500);
+
+        apply_founding_vesting_from_block(&state, 11, 150).expect("reapply same vesting boundary");
+        let idempotent = state
+            .get_account(&founding)
+            .expect("read idempotent founding account")
+            .expect("founding account exists");
+        assert_eq!(idempotent.spores, halfway.spores);
+        assert_eq!(idempotent.spendable, halfway.spendable);
+        assert_eq!(idempotent.locked, halfway.locked);
     }
 
     #[test]
@@ -32224,6 +38642,93 @@ mod tests {
             .expect("data-dir genesis should override network defaults");
 
         assert_eq!(loaded.chain_id, "lichen-testnet-custom");
+    }
+
+    fn genesis_block_with_embedded_config(config: &GenesisConfig) -> Block {
+        let mut data = vec![40u8];
+        data.extend_from_slice(&serde_json::to_vec(config).expect("serialize genesis config"));
+        let instruction = lichen_core::Instruction {
+            program_id: CORE_SYSTEM_PROGRAM_ID,
+            accounts: Vec::new(),
+            data,
+        };
+        let message = lichen_core::Message::new(vec![instruction], Hash::default());
+        Block::genesis(
+            Hash::hash(b"canonical-genesis-config-test"),
+            1,
+            vec![Transaction::new(message)],
+        )
+    }
+
+    #[test]
+    fn startup_repairs_cached_genesis_config_from_slot_zero() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let data_dir_genesis = temp_dir.path().join("genesis.json");
+        let mut canonical = GenesisConfig::default_testnet();
+        canonical.consensus.propose_timeout_base_ms = 2_000;
+        let mut drifted = canonical.clone();
+        drifted.consensus.propose_timeout_base_ms = 800;
+        fs::write(
+            &data_dir_genesis,
+            serde_json::to_vec_pretty(&drifted).expect("serialize drifted config"),
+        )
+        .expect("write drifted config");
+        state
+            .put_block(&genesis_block_with_embedded_config(&canonical))
+            .expect("store genesis block");
+
+        let resolved =
+            canonicalize_startup_genesis_config(&state, drifted, None, &data_dir_genesis, false)
+                .expect("repair cached config");
+        assert_eq!(resolved.consensus.propose_timeout_base_ms, 2_000);
+        let persisted = GenesisConfig::from_file(&data_dir_genesis).expect("read repaired config");
+        assert_eq!(persisted.consensus.propose_timeout_base_ms, 2_000);
+    }
+
+    #[test]
+    fn startup_rejects_explicit_genesis_config_that_conflicts_with_slot_zero() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let mut canonical = GenesisConfig::default_testnet();
+        canonical.consensus.propose_timeout_base_ms = 2_000;
+        let mut drifted = canonical.clone();
+        drifted.consensus.propose_timeout_base_ms = 800;
+        state
+            .put_block(&genesis_block_with_embedded_config(&canonical))
+            .expect("store genesis block");
+
+        let err = canonicalize_startup_genesis_config(
+            &state,
+            drifted,
+            Some("/etc/lichen/genesis.json"),
+            &temp_dir.path().join("genesis.json"),
+            false,
+        )
+        .expect_err("explicit drift must fail closed");
+        assert!(err.contains("conflicts"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn public_startup_rejects_genesis_without_embedded_config() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        state
+            .put_block(&Block::genesis(Hash::default(), 1, Vec::new()))
+            .expect("store incomplete genesis block");
+
+        let err = canonicalize_startup_genesis_config(
+            &state,
+            GenesisConfig::default_testnet(),
+            None,
+            &temp_dir.path().join("genesis.json"),
+            false,
+        )
+        .expect_err("public startup must require embedded config");
+        assert!(
+            err.contains("no embedded GenesisConfig"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -32481,7 +38986,7 @@ mod tests {
         fs::write(contract_dir.join("dex_core.wasm"), [3, 4, 5, 6]).expect("write wasm");
         fs::write(
             contract_dir.join("abi.json"),
-            br#"{"version":"1","name":"fixture","functions":[]}"#,
+            br#"{"version":"1","contract":"fixture","functions":[]}"#,
         )
         .expect("write abi");
 

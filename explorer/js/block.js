@@ -7,7 +7,7 @@
 // Get block number from URL
 function getBlockNumber() {
     const params = new URLSearchParams(window.location.search);
-    return params.get('slot') || params.get('block');
+    return params.get('slot');
 }
 
 function isShieldedType(typeRaw) {

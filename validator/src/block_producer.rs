@@ -4,7 +4,9 @@
 // a signed Block ready for inclusion in a BFT proposal. The block is NOT
 // yet stored or broadcast — that's the consensus engine's responsibility.
 
-use lichen_core::{Block, Hash, Mempool, Pubkey, StateBatch, StateStore, TxProcessor};
+use lichen_core::{
+    Block, CanonicalCommitCertificate, Hash, Mempool, Pubkey, StateBatch, StateStore, TxProcessor,
+};
 use std::path::Path;
 use std::time::Instant;
 use tracing::{debug, info};
@@ -75,7 +77,7 @@ pub fn build_block(
     oracle_prices: Vec<(String, u64)>,
     max_transactions: usize,
     bft_timestamp: Option<u64>,
-) -> (Block, Vec<Hash>) {
+) -> Result<(Block, Vec<Hash>), String> {
     let build_started = Instant::now();
 
     // Collect pending transactions (up to 2000).  Drop transactions that the
@@ -124,61 +126,75 @@ pub fn build_block(
         let spec_started = Instant::now();
         let staging_processor = TxProcessor::new_speculative(state.clone());
         let execution_started = Instant::now();
-        let speculative =
-            staging_processor.process_transactions_speculative(&pending, validator_pubkey);
+        let speculative = staging_processor.process_transactions_speculative_at_slot(
+            &pending,
+            validator_pubkey,
+            height,
+        );
         execution_ms = execution_started.elapsed().as_millis();
         results = speculative.results;
         proposal_batch = Some(speculative.batch);
         spec_ms = spec_started.elapsed().as_millis();
     }
 
-    // Keep only successful TXs; track ALL processed hashes (success + fail)
-    // so we can remove failed TXs from mempool immediately.
+    // Deterministic execution failures are canonical transactions with durable
+    // receipts. Only structurally/cryptographically invalid transactions are
+    // excluded and removed before proposal construction.
     let mut transactions = Vec::with_capacity(pending_count);
     let mut tx_fees_paid = Vec::with_capacity(pending_count);
     let mut processed_hashes = Vec::with_capacity(pending_count);
-    let mut failed_hashes = Vec::new();
+    let mut invalid_hashes = Vec::new();
 
     for (tx, result) in pending.into_iter().zip(results) {
         let tx_hash = tx.hash();
-        if result.success {
+        if result.receipt_eligible {
             tx_fees_paid.push(result.fee_paid);
             transactions.push(tx);
-        } else {
+        }
+        if !result.success {
             let error_detail = result.error.as_deref().unwrap_or("unknown error");
             if result.contract_logs.is_empty() {
                 info!(
-                    "❌ TX {} failed at height {}: error={}, return_code={:?}",
+                    "❌ TX {} {} at height {}: error={}, return_code={:?}",
                     tx_hash.to_hex(),
+                    if result.receipt_eligible {
+                        "recorded a failed receipt"
+                    } else {
+                        "was rejected"
+                    },
                     height,
                     error_detail,
                     result.return_code
                 );
             } else {
                 info!(
-                    "❌ TX {} failed at height {}: error={}, return_code={:?}, logs={:?}",
+                    "❌ TX {} {} at height {}: error={}, return_code={:?}, logs={:?}",
                     tx_hash.to_hex(),
+                    if result.receipt_eligible {
+                        "recorded a failed receipt"
+                    } else {
+                        "was rejected"
+                    },
                     height,
                     error_detail,
                     result.return_code,
                     result.contract_logs
                 );
             }
-            failed_hashes.push(tx_hash);
+            if !result.receipt_eligible {
+                invalid_hashes.push(tx_hash);
+            }
         }
         processed_hashes.push(tx_hash);
     }
 
-    // Immediately remove failed TXs from mempool so they aren't
-    // reprocessed in subsequent blocks. Speculative failed-tx side effects are
-    // discarded with their per-transaction batch savepoint.
-    if !failed_hashes.is_empty() {
+    if !invalid_hashes.is_empty() {
         info!(
-            "🧹 Removing {} failed tx(s) from mempool at height {}",
-            failed_hashes.len(),
+            "🧹 Removing {} invalid tx(s) from mempool at height {}",
+            invalid_hashes.len(),
             height
         );
-        mempool.remove_transactions_bulk(&failed_hashes);
+        mempool.remove_transactions_bulk(&invalid_hashes);
     }
 
     let wall_clock_timestamp = std::time::SystemTime::now()
@@ -194,11 +210,41 @@ pub fn build_block(
         .max(min_block_timestamp);
 
     let root_started = Instant::now();
+    let parent_post_state_root = state.compute_state_root();
     let proposal_state_root = match proposal_batch.as_ref() {
         Some(batch) if !transactions.is_empty() => state.compute_state_root_for_batch(batch),
         _ => state.compute_state_root(),
     };
     let root_ms = root_started.elapsed().as_millis();
+
+    let user_transaction_count = transactions.len();
+    if height > 1 {
+        let parent = state
+            .get_block(&parent_hash)?
+            .ok_or_else(|| format!("parent block {} is unavailable", parent_hash))?;
+        if parent.header.slot + 1 != height {
+            return Err(format!(
+                "parent slot {} does not precede proposal height {}",
+                parent.header.slot, height
+            ));
+        }
+        tx_fees_paid.insert(0, 0);
+        let parent_powers = state
+            .get_validator_power_snapshot(&parent.header.validators_hash)?
+            .ok_or_else(|| {
+                format!(
+                    "validator power snapshot {} for parent block {} is unavailable",
+                    parent.header.validators_hash, parent.header.slot
+                )
+            })?;
+        let canonical_commit = CanonicalCommitCertificate::from_committed_block(
+            &parent,
+            parent_powers,
+            parent_post_state_root,
+        )?
+        .bind_child_metadata(&tx_fees_paid, &oracle_prices)?;
+        transactions.insert(0, canonical_commit.to_transaction()?);
+    }
 
     let mut block = Block::new_with_timestamp(
         height,
@@ -211,13 +257,13 @@ pub fn build_block(
     block.tx_fees_paid = tx_fees_paid;
     block.oracle_prices = oracle_prices;
 
-    if block.transactions.is_empty() {
+    if user_transaction_count == 0 {
         debug!("📦 Built empty liveness block at height {}", height);
     } else {
         info!(
             "📦 Built block at height {} with {} txs (total_ms={} collect_ms={} spec_ms={} exec_ms={} root_ms={})",
             height,
-            block.transactions.len(),
+            user_transaction_count,
             build_started.elapsed().as_millis(),
             collect_ms,
             spec_ms,
@@ -226,7 +272,7 @@ pub fn build_block(
         );
     }
 
-    (block, processed_hashes)
+    Ok((block, processed_hashes))
 }
 
 #[cfg(test)]
@@ -283,7 +329,8 @@ mod tests {
             Vec::new(),
             2000,
             None,
-        );
+        )
+        .unwrap();
 
         assert!(processed.is_empty());
         assert_eq!(block.header.timestamp, parent_timestamp);
@@ -382,7 +429,8 @@ mod tests {
             Vec::new(),
             2000,
             None,
-        );
+        )
+        .unwrap();
 
         assert!(block.transactions.is_empty());
         assert!(processed.is_empty());
@@ -429,7 +477,8 @@ mod tests {
             Vec::new(),
             0,
             None,
-        );
+        )
+        .unwrap();
 
         assert!(block.transactions.is_empty());
         assert!(processed.is_empty());
@@ -478,7 +527,8 @@ mod tests {
             Vec::new(),
             2000,
             None,
-        );
+        )
+        .unwrap();
 
         assert_eq!(block.transactions.len(), 1);
         assert_eq!(processed, vec![tx_hash]);
@@ -536,7 +586,8 @@ mod tests {
             Vec::new(),
             2000,
             None,
-        );
+        )
+        .unwrap();
 
         assert_eq!(block.transactions.len(), 2);
         assert_eq!(processed, vec![tx1.hash(), tx2.hash()]);
@@ -548,5 +599,138 @@ mod tests {
         assert!(replay_results.iter().all(|result| result.success));
         assert_eq!(state.compute_state_root(), block.header.state_root);
         assert!(state.get_balance(&carol).unwrap_or(0) > 0);
+    }
+
+    #[test]
+    fn build_block_includes_failed_execution_with_replayable_receipt() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+        let validator = Pubkey([7u8; 32]);
+        let processor = TxProcessor::new(state.clone());
+        let mut mempool = Mempool::new(100, 300);
+
+        let alice_kp = Keypair::generate();
+        let alice = alice_kp.pubkey();
+        let bob = Pubkey([9u8; 32]);
+        let treasury = Pubkey([3u8; 32]);
+        state.set_treasury_pubkey(&treasury).unwrap();
+        state
+            .put_account(&treasury, &Account::new(0, treasury))
+            .unwrap();
+        state
+            .put_account(&alice, &Account::new(1_000, alice))
+            .unwrap();
+
+        let parent = Block::genesis(state.compute_state_root_cold_start(), 1, Vec::new());
+        let parent_hash = parent.hash();
+        state.put_block(&parent).unwrap();
+        state.set_last_slot(0).unwrap();
+
+        let tx = signed_transfer(&alice_kp, alice, bob, 2_000, parent_hash);
+        let tx_hash = tx.hash();
+        mempool.add_transaction(tx, 1, 0).unwrap();
+
+        let (block, processed) = build_block(
+            &state,
+            &mut mempool,
+            &processor,
+            temp.path(),
+            1,
+            parent_hash,
+            &validator,
+            Vec::new(),
+            2000,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(block.transactions.len(), 1);
+        assert_eq!(block.transactions[0].hash(), tx_hash);
+        assert_eq!(block.tx_fees_paid.len(), 1);
+        assert_eq!(processed, vec![tx_hash]);
+        assert!(mempool.contains(&tx_hash));
+        assert!(state.get_transaction(&tx_hash).unwrap().is_none());
+
+        let replay = TxProcessor::new_speculative(state.clone())
+            .process_transactions_speculative(&block.transactions, &validator);
+        assert!(!replay.results[0].success);
+        assert!(replay.results[0].receipt_eligible);
+        assert_eq!(replay.results[0].fee_paid, block.tx_fees_paid[0]);
+        assert_eq!(
+            state.compute_state_root_for_batch(&replay.batch),
+            block.header.state_root
+        );
+        state.commit_batch(replay.batch).unwrap();
+
+        let receipt = state.get_tx_meta_full(&tx_hash).unwrap().unwrap();
+        assert_eq!(receipt.success, Some(false));
+        assert_eq!(receipt.fee_paid, Some(block.tx_fees_paid[0]));
+        assert_eq!(state.get_balance(&bob).unwrap_or(0), 0);
+    }
+
+    #[test]
+    fn build_block_commits_parent_certificate_at_height_two() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+        let validator = Keypair::generate();
+        let processor = TxProcessor::new(state.clone());
+        let mut mempool = Mempool::new(100, 300);
+
+        let genesis = Block::genesis(Hash::hash(b"genesis-state"), 1, Vec::new());
+        state.put_block(&genesis).unwrap();
+        let mut parent = Block::new_with_timestamp(
+            1,
+            genesis.hash(),
+            Hash::hash(b"parent-state"),
+            validator.pubkey().0,
+            Vec::new(),
+            2,
+        );
+        let powers = vec![lichen_core::CanonicalValidatorPower {
+            validator: validator.pubkey(),
+            power: lichen_core::MIN_VALIDATOR_STAKE,
+        }];
+        parent.header.validators_hash = lichen_core::canonical_validator_powers_hash(&powers);
+        parent.sign(&validator);
+        let parent_hash = parent.hash();
+        let precommit = lichen_core::Precommit::signable_bytes(
+            1,
+            0,
+            &Some(parent_hash),
+            parent.header.timestamp,
+        );
+        parent.commit_signatures = vec![lichen_core::CommitSignature {
+            validator: validator.pubkey().0,
+            signature: validator.sign(&precommit),
+            timestamp: parent.header.timestamp,
+        }];
+        state.put_block(&parent).unwrap();
+        state.set_last_slot(1).unwrap();
+        state
+            .put_validator_power_snapshot(&parent.header.validators_hash, &powers)
+            .unwrap();
+
+        let (block, processed) = build_block(
+            &state,
+            &mut mempool,
+            &processor,
+            temp.path(),
+            2,
+            parent_hash,
+            &validator.pubkey(),
+            Vec::new(),
+            2000,
+            None,
+        )
+        .unwrap();
+
+        assert!(processed.is_empty());
+        assert_eq!(block.transactions.len(), 1);
+        let certificate = CanonicalCommitCertificate::from_transaction(&block.transactions[0])
+            .unwrap()
+            .unwrap();
+        assert_eq!(certificate.height, 1);
+        assert_eq!(certificate.block_hash, parent_hash);
+        assert_eq!(block.tx_fees_paid, vec![0]);
     }
 }

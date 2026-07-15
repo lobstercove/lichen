@@ -50,9 +50,9 @@ SKIP_BUILD=false
 MAX_RETRIES=30
 RETRY_DELAY=2
 SIGNED_METADATA_MANIFEST="${SIGNED_METADATA_MANIFEST:-${LICHEN_SIGNED_METADATA_MANIFEST_FILE:-}}"
-# Legacy fallback keeps older operator flows working, but the preferred path is
-# a transient SIGNED_METADATA_KEYPAIR exported only for bootstrap.
-SIGNED_METADATA_KEYPAIR="${SIGNED_METADATA_KEYPAIR:-${LICHEN_SIGNED_METADATA_KEYPAIR_FILE:-}}"
+# The signing key is transient bootstrap input and is never read from the
+# validator service environment.
+SIGNED_METADATA_KEYPAIR="${SIGNED_METADATA_KEYPAIR:-}"
 SIGNED_METADATA_NETWORK="${SIGNED_METADATA_NETWORK:-}"
 SIGNED_METADATA_TARGET_HINT=""
 SIGNED_METADATA_REQUIRED=false
@@ -137,7 +137,7 @@ manifest_matches_live_chain() {
 
     response=$(curl -s -X POST "${RPC_URL}" \
         -H "Content-Type: application/json" \
-        -d '{"jsonrpc":"2.0","id":1,"method":"getAllSymbolRegistry","params":[100]}' 2>/dev/null || echo "")
+        -d '{"jsonrpc":"2.0","id":1,"method":"getAllSymbolRegistry","params":[{"limit":100}]}' 2>/dev/null || echo "")
 
     if [ -z "$response" ]; then
         return 1
@@ -414,7 +414,7 @@ write_manifest_from_chain() {
 
     response=$(curl -s -X POST "${RPC_URL}" \
         -H "Content-Type: application/json" \
-        -d '{"jsonrpc":"2.0","id":1,"method":"getAllSymbolRegistry","params":[100]}' 2>/dev/null || echo "")
+        -d '{"jsonrpc":"2.0","id":1,"method":"getAllSymbolRegistry","params":[{"limit":100}]}' 2>/dev/null || echo "")
 
     if [[ -z "$response" ]]; then
         return 1

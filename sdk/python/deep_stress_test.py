@@ -91,7 +91,7 @@ async def main():
     for w in wallets:
         blockhash = await conn.get_recent_blockhash()
         ix = TransactionBuilder.transfer(treasury.pubkey(), w.pubkey(), amount)
-        tx = TransactionBuilder().add(ix).set_recent_blockhash(blockhash).build_and_sign(treasury)
+        tx = TransactionBuilder().add(ix).set_recent_blockhash(blockhash).build_and_sign(treasury, await conn.get_chain_id())
         sig = await conn.send_transaction(tx)
         sigs.append(sig)
     elapsed = time.time() - t0
@@ -113,7 +113,7 @@ async def main():
     print("\n--- 2. Concurrent RPC burst (100 parallel requests) ---")
 
     def rpc_burst_one(i):
-        methods = ["getSlot", "health", "getMetrics", "getValidators", "getRecentBlockhash"]
+        methods = ["getSlot", "getHealth", "getMetrics", "getValidators", "getRecentBlockhash"]
         m = methods[i % len(methods)]
         try:
             r, e = rpc_sync(m)
@@ -181,7 +181,7 @@ async def main():
         try:
             blockhash = await conn.get_recent_blockhash()
             ix = TransactionBuilder.transfer(w.pubkey(), treasury.pubkey(), send_amount)
-            tx = TransactionBuilder().add(ix).set_recent_blockhash(blockhash).build_and_sign(w)
+            tx = TransactionBuilder().add(ix).set_recent_blockhash(blockhash).build_and_sign(w, await conn.get_chain_id())
             sig = await conn.send_transaction(tx)
             return_sigs.append(sig)
         except Exception as e:
@@ -294,7 +294,7 @@ async def main():
     double_wallet = Keypair.generate()
     blockhash = await conn.get_recent_blockhash()
     ix = TransactionBuilder.transfer(treasury.pubkey(), double_wallet.pubkey(), 1 * SPORES_PER_LICN)
-    tx = TransactionBuilder().add(ix).set_recent_blockhash(blockhash).build_and_sign(treasury)
+    tx = TransactionBuilder().add(ix).set_recent_blockhash(blockhash).build_and_sign(treasury, await conn.get_chain_id())
     await conn.send_transaction(tx)
     await asyncio.sleep(2)
 
@@ -305,10 +305,10 @@ async def main():
 
     blockhash = await conn.get_recent_blockhash()
     ix1 = TransactionBuilder.transfer(double_wallet.pubkey(), target1.pubkey(), spend_amount)
-    tx1 = TransactionBuilder().add(ix1).set_recent_blockhash(blockhash).build_and_sign(double_wallet)
+    tx1 = TransactionBuilder().add(ix1).set_recent_blockhash(blockhash).build_and_sign(double_wallet, await conn.get_chain_id())
 
     ix2 = TransactionBuilder.transfer(double_wallet.pubkey(), target2.pubkey(), spend_amount)
-    tx2 = TransactionBuilder().add(ix2).set_recent_blockhash(blockhash).build_and_sign(double_wallet)
+    tx2 = TransactionBuilder().add(ix2).set_recent_blockhash(blockhash).build_and_sign(double_wallet, await conn.get_chain_id())
 
     # Send both as fast as possible
     sig1 = None

@@ -26,7 +26,6 @@ async fn main() -> Result<()> {
     match cli.command {
         command @ (Commands::Identity(_)
         | Commands::Wallet(_)
-        | Commands::Init { .. }
         | Commands::Balance { .. }
         | Commands::Stake(_)
         | Commands::Account(_)

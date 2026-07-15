@@ -71,9 +71,6 @@ Options:
   --genesis-prices-file <path>     Optional audited price snapshot for genesis market seeds
   --help                           Show this message
 
-Removed legacy options:
-  --output, --validators, --treasury, and --chain-id are intentionally rejected.
-  The canonical PQ launch path stores the genesis block in a DB path, not in a handcrafted genesis.json file.
 EOF
 }
 
@@ -177,10 +174,6 @@ while [[ $# -gt 0 ]]; do
             require_value "$1" "${2:-}"
             GENESIS_PRICES_FILE="$2"
             shift 2
-            ;;
-        --output|--validators|--treasury|--chain-id)
-            print_error "$1 is a removed legacy option. Use --prepare-wallet/--output-dir or --db-path/--wallet-file instead."
-            exit 2
             ;;
         --help|-h)
             usage

@@ -77,7 +77,7 @@ async def main():
             TransactionBuilder()
             .add(instruction)
             .set_recent_blockhash(recent_blockhash)
-            .build_and_sign(keypair)
+            .build_and_sign(keypair, await connection.get_chain_id())
         )
         
         print(f"\n🔏 Signing transaction...")

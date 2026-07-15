@@ -379,7 +379,7 @@ test('E-7A.3 signTransaction accepts builder transaction_base64 without submissi
   const fnMatch = providerRouterSrc.match(/async function finalizeSignTransaction[\s\S]*?\n\}/m);
   assert.ok(fnMatch, 'finalizeSignTransaction not found');
   assert.ok(fnMatch[0].includes('decodeTransactionInputForSigning(incomingTx)'), 'sign flow does not use unified transaction decoder');
-  assert.ok(fnMatch[0].includes("signedTransactionFormat: 'wallet_json_base64'"), 'signed transaction format marker missing');
+  assert.ok(fnMatch[0].includes("signedTransactionFormat: 'lichen_tx_v1'"), 'signed transaction format marker missing');
   assert.ok(fnMatch[0].includes('sourceTransactionFormat: sourceFormat'), 'source transaction format marker missing');
   assert.ok(fnMatch[0].includes('pqSignatureHex: signature.sig'), 'PQ signature hex field missing from signTransaction result');
 });
@@ -442,7 +442,9 @@ test('E-9.3 full.js creates Load More button via DOM API', () => {
     'createElement not used for Load More button');
 });
 
-test('E-9.4 full.js activity pagination uses RPC cursor instead of unsupported offset', () => {
+test('E-9.4 full.js activity pagination prefers exact RPC cursors', () => {
+  assert.ok(fullSrc.includes('opts.before = requestBeforeSlot'), 'full page should request older activity with exact cursor');
+  assert.ok(fullSrc.includes('result?.next_before'), 'full page should consume RPC next_before');
   assert.ok(fullSrc.includes('opts.before_slot = requestBeforeSlot'), 'full page should request older activity with before_slot');
   assert.ok(fullSrc.includes('result?.next_before_slot'), 'full page should consume RPC next_before_slot');
   assert.ok(fullSrc.includes('result?.has_more'), 'full page should consume RPC has_more');
@@ -451,6 +453,8 @@ test('E-9.4 full.js activity pagination uses RPC cursor instead of unsupported o
 
 test('E-9.5 popup activity exposes cursor pagination', () => {
   assert.ok(popupSrc.includes('POPUP_ACTIVITY_LIMIT'), 'popup should define an activity page size');
+  assert.ok(popupSrc.includes('opts.before = requestBeforeSlot'), 'popup should request older activity with exact cursor');
+  assert.ok(popupSrc.includes('result?.next_before'), 'popup should consume RPC next_before');
   assert.ok(popupSrc.includes('opts.before_slot = requestBeforeSlot'), 'popup should request older activity with before_slot');
   assert.ok(popupSrc.includes('popupActivityHasMore'), 'popup should track whether more activity exists');
   assert.ok(popupSrc.includes("loadMore.addEventListener('click'"), 'popup Load More should use addEventListener');
@@ -468,12 +472,13 @@ test('E-10.2 bridge-service pins bridge control-plane RPC to trusted endpoints',
   assert.ok(bridgeServiceSrc.includes('function getTrustedBridgeRpc(network)'), 'bridge-service should define getTrustedBridgeRpc');
   assert.ok(bridgeServiceSrc.includes("new LichenRPC(getTrustedRpcEndpoint(network))"), 'bridge-service should build bridge RPC from trusted endpoint');
   assert.ok(!bridgeServiceSrc.includes('await getConfiguredRpcEndpoint(network)'), 'bridge-service should not use configured custom RPC for bridge control-plane calls');
-  assert.ok(bridgeServiceSrc.includes('buildBridgeAccessMessage('), 'bridge-service should build a signed bridge access message');
+  assert.ok(bridgeServiceSrc.includes('buildBridgeAccessMessageV2('), 'bridge-service should build a route-bound bridge access message');
+  assert.ok(!bridgeServiceSrc.includes('LICHEN_BRIDGE_ACCESS_V1'), 'bridge-service must not sign unscoped bridge authorization');
   assert.ok(bridgeServiceSrc.includes('buildBridgeAccessMessageV2('), 'bridge-service should build route-bound V2 bridge auth messages');
   assert.ok(bridgeServiceSrc.includes("BRIDGE_AUTH_DOMAIN_V2 = 'LICHEN_BRIDGE_ACCESS_V2'"), 'bridge-service should mark V2 bridge auth domain');
   assert.ok(bridgeServiceSrc.includes('route=${canonicalChain}:${normalizedAsset}'), 'bridge-service should sign the canonical bridge route');
-  assert.ok(bridgeServiceSrc.includes('activeBridgeAuth.version = 2'), 'bridge-service should emit V2 auth envelopes for deposit creation');
-  assert.ok(bridgeServiceSrc.includes('activeBridgeAuth.nonce = nonce'), 'bridge-service should include a fresh nonce in bridge auth');
+  assert.ok(/activeBridgeAuth\s*=\s*\{[\s\S]*?\bversion:\s*2,/.test(bridgeServiceSrc), 'bridge-service should emit V2 auth envelopes for deposit creation');
+  assert.ok(/activeBridgeAuth\s*=\s*\{[\s\S]*?\bnonce\s*\n\s*\};/.test(bridgeServiceSrc), 'bridge-service should include a fresh nonce in bridge auth');
   assert.ok(bridgeServiceSrc.includes('Wallet password required for bridge authorization'), 'bridge-service should require a wallet password before signing bridge access');
   assert.ok(bridgeServiceSrc.includes('BRIDGE_CACHE_KEY'), 'bridge-service should maintain a local bridge deposit cache');
   assert.ok(!bridgeServiceSrc.includes("getBridgeDepositsByRecipient"), 'bridge-service should not rely on public recipient-history bridge RPC');
@@ -505,9 +510,9 @@ test('E-10.5 extension settings surfaces explain the trusted RPC split', () => {
 
 test('E-10.6 wallet extension uses RPC-hosted production WebSocket ingress', () => {
   assert.ok(rpcServiceSrc.includes("mainnet: 'wss://rpc.lichen.network/ws'"), 'mainnet WS should use rpc-hosted ingress');
-  assert.ok(rpcServiceSrc.includes("testnet: 'wss://testnet-rpc.lichen.network/ws'"), 'testnet WS should use rpc-hosted ingress');
+  assert.ok(rpcServiceSrc.includes("testnet: 'wss://testnet-api.lichen.network/ws'"), 'testnet WS should use rpc-hosted ingress');
   assert.ok(extensionManifestSrc.includes('wss://rpc.lichen.network'), 'manifest should allow mainnet rpc-hosted WSS');
-  assert.ok(extensionManifestSrc.includes('wss://testnet-rpc.lichen.network'), 'manifest should allow testnet rpc-hosted WSS');
+  assert.ok(extensionManifestSrc.includes('wss://testnet-api.lichen.network'), 'manifest should allow testnet rpc-hosted WSS');
   assert.ok(!rpcServiceSrc.includes('wss://ws.lichen.network'), 'mainnet legacy WS hostname should not be a default');
   assert.ok(!rpcServiceSrc.includes('wss://testnet-ws.lichen.network'), 'testnet legacy WS hostname should not be a default');
 });
@@ -843,9 +848,9 @@ test('CC-8 safeImageUrl allows ipfs protocol', () => {
   assert.ok(result.startsWith('ipfs://'), 'ipfs URL should be allowed');
 });
 
-test('CC-9 popup shield panel uses canonical getShieldedPoolState with fallback', () => {
+test('CC-9 popup shield panel uses only canonical getShieldedPoolState', () => {
   assert.ok(popupSrc.includes("rpc.call('getShieldedPoolState'"), 'popup shield panel must call getShieldedPoolState');
-  assert.ok(popupSrc.includes("rpc.call('getShieldedPoolStats'"), 'popup shield panel should keep getShieldedPoolStats fallback');
+  assert.ok(!popupSrc.includes("rpc.call('getShieldedPoolStats'"), 'popup shield panel must not call removed getShieldedPoolStats');
 });
 
 test('CC-9b extension shield panel uses signed native shielded submission', () => {
@@ -994,7 +999,7 @@ test('CC-17.7 extension transaction approvals decode semantic signing intent', (
 });
 
 test('CC-18 provider router reuses shared tx-service message serializer', () => {
-  assert.ok(providerRouterSrc.includes("import { serializeMessageForSigning } from './tx-service.js';"),
+  assert.ok(providerRouterSrc.includes('serializeMessageForSigning,') && providerRouterSrc.includes("from './tx-service.js';"),
     'provider router should import serializeMessageForSigning from tx-service');
   assert.ok(providerRouterSrc.includes('return serializeMessageForSigning(normalizedMessage);'),
     'provider router should serialize message bytes via tx-service helper');

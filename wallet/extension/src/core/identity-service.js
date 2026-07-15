@@ -310,7 +310,7 @@ async function sendIdentityContractCall({ wallet, password, network, functionNam
 
   const rpc = new LichenRPC(await getConfiguredRpcEndpoint(network));
   const lichenidAddr = await getLichenIdProgramAddress(network);
-  const blockhash = await rpc.getRecentBlockhash();
+  const [blockhash, chainId] = await Promise.all([rpc.getRecentBlockhash(), rpc.getChainId()]);
 
   try {
     const balanceResult = await rpc.getBalance(wallet.address);
@@ -345,6 +345,7 @@ async function sendIdentityContractCall({ wallet, password, network, functionNam
     privateKeyHex,
     fromAddress: wallet.address,
     blockhash,
+    chainId,
     programIdBytes: contractProgramId,
     accountPubkeys: [lichenIdPubkey],
     instructionDataBytes: new TextEncoder().encode(callPayload)

@@ -68,38 +68,28 @@ pub(crate) fn evm_route_for_chain(config: &CustodyConfig, chain: &str) -> Option
     let canonical = canonical_evm_chain(chain)?;
     let aliases = evm_chain_aliases(canonical)?;
     let native_asset = evm_native_asset_for_chain(canonical)?;
-    let generic_rpc = || config.evm_rpc_url.clone();
-    let generic_treasury = || config.treasury_evm_address.clone();
-    let generic_safe = || config.evm_multisig_address.clone();
-
     match canonical {
         "ethereum" => Some(EvmRouteConfig {
             canonical_chain: "ethereum",
             aliases,
             native_asset,
             chain_id: config.eth_chain_id,
-            rpc_url: config.eth_rpc_url.clone().or_else(generic_rpc),
+            rpc_url: config.eth_rpc_url.clone(),
             confirmations: config.evm_confirmations,
-            treasury_address: config
-                .treasury_eth_address
-                .clone()
-                .or_else(generic_treasury),
+            treasury_address: config.treasury_eth_address.clone(),
             treasury_derivation_path: "custody/treasury/ethereum",
-            multisig_address: generic_safe(),
+            multisig_address: config.eth_multisig_address.clone(),
         }),
         "bsc" => Some(EvmRouteConfig {
             canonical_chain: "bsc",
             aliases,
             native_asset,
             chain_id: config.bnb_chain_id,
-            rpc_url: config.bnb_rpc_url.clone().or_else(generic_rpc),
+            rpc_url: config.bnb_rpc_url.clone(),
             confirmations: config.evm_confirmations,
-            treasury_address: config
-                .treasury_bnb_address
-                .clone()
-                .or_else(generic_treasury),
+            treasury_address: config.treasury_bnb_address.clone(),
             treasury_derivation_path: "custody/treasury/bnb",
-            multisig_address: generic_safe(),
+            multisig_address: config.bnb_multisig_address.clone(),
         }),
         "neox" => Some(EvmRouteConfig {
             canonical_chain: "neox",
@@ -110,10 +100,7 @@ pub(crate) fn evm_route_for_chain(config: &CustodyConfig, chain: &str) -> Option
             confirmations: config.neox_confirmations,
             treasury_address: config.treasury_neox_address.clone(),
             treasury_derivation_path: "custody/treasury/neox",
-            multisig_address: config
-                .neox_multisig_address
-                .clone()
-                .or_else(|| config.evm_multisig_address.clone()),
+            multisig_address: config.neox_multisig_address.clone(),
         }),
         _ => None,
     }

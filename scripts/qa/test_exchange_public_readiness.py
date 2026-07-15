@@ -8,6 +8,7 @@ These tests intentionally avoid network calls; the live gate itself remains
 from __future__ import annotations
 
 import importlib.util
+import os
 import struct
 import unittest
 from pathlib import Path
@@ -102,6 +103,117 @@ class ExchangePublicReadinessTests(unittest.TestCase):
         finally:
             readiness.request_bytes = original_request_bytes
 
+    def test_developer_exchange_page_check_rejects_admin_monitoring_host(self) -> None:
+        original_request_bytes = readiness.request_bytes
+        body = (
+            "\n".join(readiness.DEVELOPER_EXCHANGE_REQUIRED_SNIPPETS)
+            + f"\nhttps://{readiness.ADMIN_MONITORING_HOST}"
+        ).encode("utf-8")
+
+        def fake_exchange_page(_url: str):
+            return 200, {"content-type": "text/html"}, body
+
+        readiness.request_bytes = fake_exchange_page
+        try:
+            gate = readiness.Gate()
+            readiness.check_http(
+                gate,
+                "developer exchange page",
+                readiness.DEVELOPER_EXCHANGE_URL,
+                contains_all=readiness.DEVELOPER_EXCHANGE_REQUIRED_SNIPPETS,
+                forbidden_all=readiness.DEVELOPER_EXCHANGE_FORBIDDEN_SNIPPETS,
+            )
+            self.assertFalse(gate.checks[0]["ok"])
+            self.assertIn(readiness.ADMIN_MONITORING_HOST, gate.checks[0]["detail"]["forbidden"])
+        finally:
+            readiness.request_bytes = original_request_bytes
+
+    def test_exchange_status_page_rejects_missing_url(self) -> None:
+        gate = readiness.Gate()
+        readiness.check_exchange_status_page(gate, "")
+        self.assertFalse(gate.checks[0]["ok"])
+        self.assertIn("missing public exchange status URL", gate.checks[0]["detail"])
+        self.assertEqual(len(gate.checks), 1)
+
+    def test_exchange_status_page_rejects_admin_monitoring_url(self) -> None:
+        gate = readiness.Gate()
+        readiness.check_exchange_status_page(gate, f"https://{readiness.ADMIN_MONITORING_HOST}")
+        self.assertFalse(gate.checks[0]["ok"])
+        self.assertIn("admin-only", gate.checks[0]["detail"])
+        self.assertEqual(len(gate.checks), 1)
+
+    def test_exchange_status_page_accepts_public_status_page(self) -> None:
+        original_request_bytes = readiness.request_bytes
+        body = "\n".join(readiness.STATUS_REQUIRED_SNIPPETS).encode("utf-8")
+
+        def fake_status_page(_url: str):
+            return 200, {"content-type": "text/html"}, body
+
+        readiness.request_bytes = fake_status_page
+        try:
+            gate = readiness.Gate()
+            readiness.check_exchange_status_page(gate, "https://status.lichen.network/exchange")
+            self.assertTrue(gate.checks[0]["ok"])
+            self.assertTrue(gate.checks[1]["ok"])
+            self.assertTrue(gate.checks[2]["ok"])
+        finally:
+            readiness.request_bytes = original_request_bytes
+
+    def test_exchange_status_page_accepts_cloudflare_protected_contact_email(self) -> None:
+        original_request_bytes = readiness.request_bytes
+
+        def cfemail(value: str, key: int = 0x2A) -> str:
+            encoded = bytes([key]) + bytes(byte ^ key for byte in value.encode("utf-8"))
+            return encoded.hex()
+
+        snippets = [
+            snippet
+            for snippet in readiness.STATUS_REQUIRED_SNIPPETS
+            if snippet != "exchange-ops@lichen.network"
+        ]
+        body = (
+            "\n".join(snippets)
+            + f'\n<span class="__cf_email__" data-cfemail="{cfemail("exchange-ops@lichen.network")}">[email&#160;protected]</span>'
+        ).encode("utf-8")
+
+        def fake_status_page(_url: str):
+            return 200, {"content-type": "text/html"}, body
+
+        readiness.request_bytes = fake_status_page
+        try:
+            gate = readiness.Gate()
+            readiness.check_exchange_status_page(gate, "https://exchanges.lichen.network")
+            self.assertTrue(gate.checks[0]["ok"])
+            self.assertTrue(gate.checks[1]["ok"])
+            self.assertTrue(gate.checks[2]["ok"])
+        finally:
+            readiness.request_bytes = original_request_bytes
+
+    def test_exchange_status_page_rejects_admin_monitoring_content(self) -> None:
+        original_request_bytes = readiness.request_bytes
+
+        def fake_admin_page(_url: str):
+            return (
+                200,
+                {"content-type": "text/html"},
+                (
+                    "\n".join(readiness.STATUS_REQUIRED_SNIPPETS)
+                    + "\nLichen Mission Control - Network Monitoring"
+                ).encode("utf-8"),
+            )
+
+        readiness.request_bytes = fake_admin_page
+        try:
+            gate = readiness.Gate()
+            readiness.check_exchange_status_page(gate, "https://status.lichen.network/exchange")
+            self.assertTrue(gate.checks[0]["ok"])
+            self.assertTrue(gate.checks[1]["ok"])
+            self.assertFalse(gate.checks[2]["ok"])
+            self.assertIn("Lichen Mission Control", gate.checks[2]["detail"]["forbidden_snippets"])
+            self.assertIn("Network Monitoring", gate.checks[2]["detail"]["forbidden_snippets"])
+        finally:
+            readiness.request_bytes = original_request_bytes
+
     def test_png_dimensions_rejects_non_png_and_reads_ihdr(self) -> None:
         png = b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\rIHDR" + struct.pack(">II", 256, 256)
         self.assertEqual(readiness.png_dimensions(png), (256, 256))
@@ -111,6 +223,11 @@ class ExchangePublicReadinessTests(unittest.TestCase):
         self.assertFalse(readiness.package_includes_mainnet("testnet"))
         self.assertTrue(readiness.package_includes_mainnet("full"))
         self.assertIn(readiness.default_package_scope(), readiness.PACKAGE_SCOPES)
+
+    def test_default_exchange_status_url_uses_exchange_subdomain(self) -> None:
+        self.assertEqual("https://exchanges.lichen.network", readiness.EXCHANGE_STATUS_URL)
+        expected = os.environ.get("LICHEN_EXCHANGE_STATUS_URL", readiness.EXCHANGE_STATUS_URL)
+        self.assertEqual(expected, readiness.DEFAULT_STATUS_URL)
 
     def test_exchange_package_release_requires_published_assets(self) -> None:
         original_request_json = readiness.request_json

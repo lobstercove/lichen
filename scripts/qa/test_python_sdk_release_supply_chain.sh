@@ -132,7 +132,7 @@ from importlib.metadata import version
 import lichen
 
 assert lichen is not None
-assert version("lichen-sdk") == "1.0.0"
+assert version("lichen-sdk") == lichen.__version__
 PY
 
 printf 'Python SDK release supply-chain checks passed\n'

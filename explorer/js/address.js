@@ -4,7 +4,7 @@
 //       safeCopy, getLichenRpcUrl are provided by shared/utils.js
 
 let currentAddress = null;
-let txNextCursor = null;    // before_slot for next page
+let txNextCursor = null;    // exact signature cursor for next page
 let txCursorStack = [];     // stack for previous pages
 let txCurrentBeforeSlot = undefined;
 const TX_PAGE_SIZE = 50;
@@ -222,7 +222,7 @@ async function rpcCall(method, params = []) {
 // ===== Initialize =====
 document.addEventListener('DOMContentLoaded', () => {
     const urlParams = new URLSearchParams(window.location.search);
-    currentAddress = urlParams.get('address') || urlParams.get('addr');
+    currentAddress = urlParams.get('address');
     const initialTab = (urlParams.get('tab') || '').toLowerCase();
     if (!currentAddress) { showError('No address provided'); return; }
     bindStaticControls();
@@ -1957,7 +1957,10 @@ async function loadTreasuryStats(address) {
         const TREASURY_SCAN_LIMIT = 400;
         // Fetch treasury's transaction history to count airdrops
         const result = await rpcCall('getTransactionsByAddress', [address, { limit: TREASURY_SCAN_LIMIT }]);
-        const rawTransactions = result?.transactions || (Array.isArray(result) ? result : []);
+        if (!result || typeof result !== 'object' || Array.isArray(result) || !Array.isArray(result.transactions)) {
+            throw new Error('Invalid RPC response: expected transactions array');
+        }
+        const rawTransactions = result.transactions;
         const transactions = rawTransactions.slice(0, TREASURY_SCAN_LIMIT);
 
         let airdropCount = 0;
@@ -2244,17 +2247,22 @@ function displayTokenBalances(tokens, oraclePrices) {
 }
 
 // ===== Transaction History with Cursor Pagination =====
-async function loadTransactionHistory(address, beforeSlot) {
+async function loadTransactionHistory(address, beforeCursor) {
     try {
         const opts = { limit: TX_PAGE_SIZE };
-        if (beforeSlot !== undefined && beforeSlot !== null) {
-            opts.before_slot = beforeSlot;
+        if (typeof beforeCursor === 'string') {
+            opts.before = beforeCursor;
+        } else if (beforeCursor !== undefined && beforeCursor !== null) {
+            opts.before_slot = beforeCursor;
         }
-        txCurrentBeforeSlot = beforeSlot;
+        txCurrentBeforeSlot = beforeCursor;
 
         const result = await rpcCall('getTransactionsByAddress', [address, opts]);
-        const transactions = result?.transactions || result?.items || result?.data || (Array.isArray(result) ? result : []);
-        txNextCursor = result?.next_before_slot || null;
+        if (!result || typeof result !== 'object' || Array.isArray(result) || !Array.isArray(result.transactions)) {
+            throw new Error('Invalid RPC response: expected transactions array');
+        }
+        const transactions = result.transactions;
+        txNextCursor = result?.next_before || result?.next_before_slot || null;
 
         displayTransactions(transactions);
 

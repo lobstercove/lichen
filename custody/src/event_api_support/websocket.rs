@@ -6,7 +6,6 @@ const WS_EVENTS_TICKET_MAX_FILTERS: usize = 64;
 const WS_EVENTS_TICKET_MAX_FILTER_LEN: usize = 128;
 const WS_EVENTS_TICKET_COOKIE: &str = "lichen_ws_ticket";
 const WS_EVENTS_TICKET_DOMAIN: &[u8] = b"LICHEN_CUSTODY_WS_EVENTS_TICKET_V1";
-const WS_EVENTS_LEGACY_QUERY_TOKEN_ENV: &str = "CUSTODY_WS_EVENTS_ALLOW_QUERY_TOKEN";
 
 pub(crate) async fn create_ws_events_ticket(
     State(state): State<CustodyState>,
@@ -96,14 +95,10 @@ async fn authorize_ws_events(
         return consume_ws_event_ticket(state, &ticket, requested_filter).await;
     }
 
-    if legacy_query_token_allowed() && verify_legacy_query_token(&state.config, params) {
-        return Ok(requested_filter);
-    }
-
     if params.contains_key("token") {
         return Err((
             StatusCode::UNAUTHORIZED,
-            "Unauthorized: mint a short-lived ticket with POST /ws/events/tickets; legacy token query auth is disabled"
+            "Unauthorized: mint a short-lived ticket with POST /ws/events/tickets; API tokens are not accepted in WebSocket URLs"
                 .to_string(),
         ));
     }
@@ -251,30 +246,6 @@ async fn consume_ws_event_ticket(
     } else {
         Ok(requested_filter)
     }
-}
-
-fn legacy_query_token_allowed() -> bool {
-    std::env::var(WS_EVENTS_LEGACY_QUERY_TOKEN_ENV)
-        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
-        .unwrap_or(false)
-}
-
-fn verify_legacy_query_token(
-    config: &CustodyConfig,
-    params: &std::collections::HashMap<String, String>,
-) -> bool {
-    let Some(token) = params.get("token") else {
-        return false;
-    };
-    let Some(expected) = config
-        .api_auth_token
-        .as_deref()
-        .filter(|token| !token.is_empty())
-    else {
-        return false;
-    };
-    use subtle::ConstantTimeEq;
-    token.as_bytes().ct_eq(expected.as_bytes()).into()
 }
 
 async fn handle_ws_events(
@@ -468,5 +439,22 @@ mod tests {
             .expect_err("expired ticket should fail");
         assert_eq!(expired.0, StatusCode::UNAUTHORIZED);
         assert!(state.ws_event_tickets.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_ws_events_rejects_api_token_query_auth() {
+        let state = test_state();
+        let params = std::collections::HashMap::from([(
+            "token".to_string(),
+            state.config.api_auth_token.clone().unwrap(),
+        )]);
+
+        let rejected =
+            authorize_ws_events(&state, &axum::http::HeaderMap::new(), &params, Vec::new())
+                .await
+                .expect_err("API tokens in WebSocket URLs must never authenticate");
+
+        assert_eq!(rejected.0, StatusCode::UNAUTHORIZED);
+        assert!(rejected.1.contains("not accepted in WebSocket URLs"));
     }
 }

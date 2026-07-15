@@ -357,6 +357,21 @@ impl StateStore {
         limit: usize,
         before_slot: Option<u64>,
     ) -> Result<Vec<crate::ProgramCallActivity>, String> {
+        self.get_program_calls_paginated_exact(program, limit, before_slot.map(|slot| (slot, 0)))
+            .map(|rows| rows.into_iter().map(|(activity, _)| activity).collect())
+    }
+
+    /// Paginate program calls with an exclusive `(slot, sequence)` cursor.
+    pub fn get_program_calls_paginated_exact(
+        &self,
+        program: &Pubkey,
+        limit: usize,
+        before_cursor: Option<(u64, u32)>,
+    ) -> Result<Vec<(crate::ProgramCallActivity, u32)>, String> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
         let cf = self
             .db
             .cf_handle(CF_PROGRAM_CALLS)
@@ -366,8 +381,10 @@ impl StateStore {
         prefix.extend_from_slice(&program.0);
 
         let mut end_key = prefix.clone();
-        if let Some(bs) = before_slot {
-            end_key.extend_from_slice(&bs.to_be_bytes());
+        if let Some((before_slot, before_seq)) = before_cursor {
+            end_key.extend_from_slice(&before_slot.to_be_bytes());
+            end_key.extend_from_slice(&before_seq.to_be_bytes());
+            end_key.extend_from_slice(&[0; 32]);
         } else {
             end_key.extend_from_slice(&[0xFF; 44]);
         }
@@ -384,17 +401,16 @@ impl StateStore {
                     if !key.starts_with(&prefix) {
                         break;
                     }
-
-                    if let Some(bs) = before_slot {
-                        if key.len() >= 40 {
-                            let slot_bytes: [u8; 8] = key[32..40].try_into().unwrap_or([0xFF; 8]);
-                            let slot = u64::from_be_bytes(slot_bytes);
-                            if slot >= bs {
-                                continue;
-                            }
+                    if key.len() < 44 {
+                        continue;
+                    }
+                    let slot = u64::from_be_bytes(key[32..40].try_into().unwrap_or([0xFF; 8]));
+                    let seq = u32::from_be_bytes(key[40..44].try_into().unwrap_or([0xFF; 4]));
+                    if let Some((before_slot, before_seq)) = before_cursor {
+                        if slot > before_slot || (slot == before_slot && seq >= before_seq) {
+                            continue;
                         }
                     }
-
                     rows.insert(key.to_vec(), value.to_vec());
                 }
             }
@@ -409,24 +425,24 @@ impl StateStore {
             if !key.starts_with(&prefix) {
                 break;
             }
-
-            if let Some(bs) = before_slot {
-                if key.len() >= 40 {
-                    let slot_bytes: [u8; 8] = key[32..40].try_into().unwrap_or([0xFF; 8]);
-                    let slot = u64::from_be_bytes(slot_bytes);
-                    if slot >= bs {
-                        continue;
-                    }
+            if key.len() < 44 {
+                continue;
+            }
+            let slot = u64::from_be_bytes(key[32..40].try_into().unwrap_or([0xFF; 8]));
+            let seq = u32::from_be_bytes(key[40..44].try_into().unwrap_or([0xFF; 4]));
+            if let Some((before_slot, before_seq)) = before_cursor {
+                if slot > before_slot || (slot == before_slot && seq >= before_seq) {
+                    continue;
                 }
             }
-
             rows.insert(key.to_vec(), value.to_vec());
         }
 
         let mut items = Vec::with_capacity(limit);
-        for value in rows.values().rev() {
+        for (key, value) in rows.iter().rev() {
             let activity = crate::decode_program_call_activity(value)?;
-            items.push(activity);
+            let seq = u32::from_be_bytes(key[40..44].try_into().unwrap_or([0; 4]));
+            items.push((activity, seq));
             if items.len() >= limit {
                 break;
             }

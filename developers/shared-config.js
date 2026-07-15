@@ -15,6 +15,13 @@ const LICHEN_CONFIG = (() => {
     const isLocalhost = hostname === 'localhost' || hostname === '127.0.0.1';
     const env = window.LICHEN_ENV || (isLocalhost ? 'development' : 'production');
     const isProduction = env === 'production';
+    const explorerSameOrigin = hostname === 'explorer.lichen.network';
+    const testnetRpc = explorerSameOrigin
+        ? `${window.location.origin}/api/testnet`
+        : 'https://testnet-api.lichen.network';
+    const testnetWs = explorerSameOrigin
+        ? `wss://${window.location.host}/api/testnet/ws`
+        : 'wss://testnet-api.lichen.network/ws';
 
     // ── Network Definitions ─────────────────────────────────────────────
     const networks = {
@@ -27,8 +34,8 @@ const LICHEN_CONFIG = (() => {
         },
         testnet: {
             label: 'Testnet',
-            rpc: 'https://testnet-rpc.lichen.network',
-            ws: 'wss://testnet-rpc.lichen.network/ws',
+            rpc: testnetRpc,
+            ws: testnetWs,
             slotDurationMs: 400,
             local: false,
         },

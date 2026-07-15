@@ -78,6 +78,7 @@ impl StateStore {
 
     /// Store MossStake pool.
     pub fn put_mossstake_pool(&self, pool: &MossStakePool) -> Result<(), String> {
+        let _state_commitment_guard = self.lock_state_commitment();
         let cf = self
             .db
             .cf_handle(CF_MOSSSTAKE)

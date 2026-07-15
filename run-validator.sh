@@ -13,11 +13,13 @@
 #   V1: p2p=7001  rpc=8899  ws=8900
 #   V2: p2p=7002  rpc=8901  ws=8902
 #   V3: p2p=7003  rpc=8903  ws=8904
+#   V4: p2p=7004  rpc=8905  ws=8906
 #
 # Port Assignments (mainnet):
 #   V1: p2p=8001  rpc=9899  ws=9900
 #   V2: p2p=8002  rpc=9901  ws=9902
 #   V3: p2p=8003  rpc=9903  ws=9904
+#   V4: p2p=8004  rpc=9905  ws=9906
 #
 # DB paths are always absolute: $REPO_ROOT/data/state-{p2p_port}
 # ============================================================================
@@ -35,6 +37,7 @@ export PATH
 
 NETWORK=${1:-testnet}
 VALIDATOR_NUM=${2:-1}
+LOCAL_VALIDATOR_COUNT=${LICHEN_LOCAL_VALIDATOR_COUNT:-4}
 ORIG_ARGS=("$@")
 
 if [[ "$NETWORK" =~ ^[0-9]+$ ]]; then
@@ -57,13 +60,21 @@ case $NETWORK in
 		BASE_WS=9900
 		;;
 	*)
-		echo "Usage: $0 [testnet|mainnet] <1|2|3>"
+		echo "Usage: $0 [testnet|mainnet] <validator_number>"
 		exit 1
 		;;
 esac
 
 if ! [[ "$VALIDATOR_NUM" =~ ^[1-9][0-9]*$ ]]; then
 	echo "Usage: $0 [testnet|mainnet] <validator_number>"
+	exit 1
+fi
+if ! [[ "$LOCAL_VALIDATOR_COUNT" =~ ^[1-9][0-9]*$ ]] || (( LOCAL_VALIDATOR_COUNT > 16 )); then
+	echo "LICHEN_LOCAL_VALIDATOR_COUNT must be an integer between 1 and 16"
+	exit 1
+fi
+if (( VALIDATOR_NUM > LOCAL_VALIDATOR_COUNT )); then
+	echo "Validator $VALIDATOR_NUM exceeds LICHEN_LOCAL_VALIDATOR_COUNT=$LOCAL_VALIDATOR_COUNT"
 	exit 1
 fi
 
@@ -104,6 +115,16 @@ GENESIS_WRAPPER="${REPO_ROOT}/scripts/generate-genesis.sh"
 SIGNED_METADATA_MANIFEST_FILE_DEFAULT="${REPO_ROOT}/signed-metadata-manifest-${NETWORK}.json"
 SERVICE_FLEET_CONFIG_FILE_DEFAULT="${REPO_ROOT}/service-fleet-${NETWORK}.json"
 SERVICE_FLEET_STATUS_FILE_DEFAULT="${REPO_ROOT}/service-fleet-status-${NETWORK}.json"
+LOCAL_CUSTODY_TOKEN_FILE="${REPO_ROOT}/data/local-cluster/custody-api-auth-token"
+
+case "$NETWORK" in
+	testnet) LOCAL_CUSTODY_PORT=9105 ;;
+	mainnet) LOCAL_CUSTODY_PORT=9106 ;;
+esac
+export CUSTODY_URL="${CUSTODY_URL:-http://127.0.0.1:${LOCAL_CUSTODY_PORT}}"
+if [[ -z "${CUSTODY_API_AUTH_TOKEN:-}" && -f "$LOCAL_CUSTODY_TOKEN_FILE" ]]; then
+	export CUSTODY_API_AUTH_TOKEN="$(cat "$LOCAL_CUSTODY_TOKEN_FILE")"
+fi
 
 # Save real user home BEFORE overriding.
 REAL_USER_HOME="${HOME}"
@@ -223,13 +244,14 @@ except Exception:
 	fi
 
 	LOCAL_VALIDATOR_PUBKEYS=()
-	for local_p2p_port in "$BASE_P2P" "$((BASE_P2P + 1))" "$((BASE_P2P + 2))"; do
+	for local_validator_num in $(seq 1 "$LOCAL_VALIDATOR_COUNT"); do
+		local_p2p_port=$((BASE_P2P + local_validator_num - 1))
 		local_state_dir="${REPO_ROOT}/data/state-${local_p2p_port}"
 		local_home_dir="${local_state_dir}/home"
 		local_keypair_file="${local_state_dir}/validator-keypair.json"
 		mkdir -p "$local_home_dir"
 		if [[ ! -f "$local_keypair_file" ]]; then
-			"$CLI_BIN" init --output "$local_keypair_file" >/dev/null || exit 1
+			"$CLI_BIN" identity new --output "$local_keypair_file" >/dev/null || exit 1
 		fi
 		local_pubkey="$(read_keypair_pubkey "$local_keypair_file")"
 		if [[ -z "$local_pubkey" ]]; then
@@ -279,6 +301,7 @@ echo "P2P:     ${LOCAL_LISTEN_ADDR}:$P2P_PORT"
 echo "Signer:  http://localhost:$SIGNER_PORT"
 echo "DB:      $DB_PATH"
 echo "HOME:    $HOME"
+LOCAL_COLD_STORE="${LICHEN_LOCAL_COLD_STORE_DIR:-${REPO_ROOT}/data/archive-${P2P_PORT}}"
 echo ""
 
 if [ "$VALIDATOR_NUM" = "1" ]; then
@@ -301,6 +324,12 @@ if [ "$NETWORK" = "testnet" ]; then
 	EXTRA_FLAGS="--dev-mode"
 else
 	EXTRA_FLAGS=""
+fi
+
+if [[ "${LICHEN_LOCAL_ARCHIVE_COLD:-0}" == "1" || -f "$LOCAL_COLD_STORE/CURRENT" ]]; then
+	mkdir -p "$LOCAL_COLD_STORE"
+	EXTRA_FLAGS="$EXTRA_FLAGS --archive-mode --cold-store $LOCAL_COLD_STORE"
+	echo "Archive: $LOCAL_COLD_STORE"
 fi
 
 for arg in "$@"; do

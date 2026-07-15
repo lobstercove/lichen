@@ -30,11 +30,11 @@ pub(super) fn evm_contract_for_asset(
     match asset {
         "usdc" => require_evm_contract(
             Some(&config.evm_usdc_contract),
-            "CUSTODY_ETH_USDC_TOKEN_ADDR/CUSTODY_EVM_USDC",
+            "CUSTODY_ETH_USDC_TOKEN_ADDR",
         ),
         "usdt" => require_evm_contract(
             Some(&config.evm_usdt_contract),
-            "CUSTODY_ETH_USDT_TOKEN_ADDR/CUSTODY_EVM_USDT",
+            "CUSTODY_ETH_USDT_TOKEN_ADDR",
         ),
         _ => Err("unsupported evm token".to_string()),
     }

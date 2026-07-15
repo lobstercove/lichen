@@ -57,6 +57,7 @@ impl StateStore {
         storage_key: &[u8],
         value: &[u8],
     ) -> Result<(), String> {
+        let _state_commitment_guard = self.lock_state_commitment();
         let cf = self
             .db
             .cf_handle(CF_CONTRACT_STORAGE)
@@ -107,6 +108,7 @@ impl StateStore {
         program: &Pubkey,
         storage_key: &[u8],
     ) -> Result<(), String> {
+        let _state_commitment_guard = self.lock_state_commitment();
         let cf = self
             .db
             .cf_handle(CF_CONTRACT_STORAGE)
@@ -281,6 +283,27 @@ impl StateStore {
         limit: usize,
         before_slot: Option<u64>,
     ) -> Result<Vec<ContractEvent>, String> {
+        self.get_events_by_program_paginated_exact(
+            program,
+            limit,
+            before_slot.map(|slot| (slot, 0)),
+        )
+        .map(|rows| rows.into_iter().map(|(event, _)| event).collect())
+    }
+
+    /// Paginate program events by emission order with an exclusive
+    /// `(slot, sequence)` cursor. The stored key also contains a name hash, so
+    /// rows are explicitly sorted by sequence within each slot.
+    pub fn get_events_by_program_paginated_exact(
+        &self,
+        program: &Pubkey,
+        limit: usize,
+        before_cursor: Option<(u64, u64)>,
+    ) -> Result<Vec<(ContractEvent, u64)>, String> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
         let cf = self
             .db
             .cf_handle(CF_EVENTS)
@@ -290,8 +313,9 @@ impl StateStore {
         prefix.extend_from_slice(&program.0);
 
         let mut end_key = prefix.clone();
-        if let Some(before_slot) = before_slot {
+        if let Some((before_slot, _)) = before_cursor {
             end_key.extend_from_slice(&before_slot.to_be_bytes());
+            end_key.extend_from_slice(&[0xFF; 16]);
         } else {
             end_key.extend_from_slice(&[0xFF; 16]);
         }
@@ -307,13 +331,14 @@ impl StateStore {
                     if !key.starts_with(&prefix) {
                         break;
                     }
-                    if let Some(before_slot) = before_slot {
-                        if key.len() >= 40 {
-                            let slot_bytes: [u8; 8] = key[32..40].try_into().unwrap_or([0xFF; 8]);
-                            let slot = u64::from_be_bytes(slot_bytes);
-                            if slot >= before_slot {
-                                continue;
-                            }
+                    if key.len() < 56 {
+                        continue;
+                    }
+                    let slot = u64::from_be_bytes(key[32..40].try_into().unwrap_or([0xFF; 8]));
+                    let seq = u64::from_be_bytes(key[48..56].try_into().unwrap_or([0xFF; 8]));
+                    if let Some((before_slot, before_seq)) = before_cursor {
+                        if slot > before_slot || (slot == before_slot && seq >= before_seq) {
+                            continue;
                         }
                     }
                     rows.insert(key.to_vec(), value.to_vec());
@@ -329,22 +354,39 @@ impl StateStore {
             if !key.starts_with(&prefix) {
                 break;
             }
-            if let Some(before_slot) = before_slot {
-                if key.len() >= 40 {
-                    let slot_bytes: [u8; 8] = key[32..40].try_into().unwrap_or([0xFF; 8]);
-                    let slot = u64::from_be_bytes(slot_bytes);
-                    if slot >= before_slot {
-                        continue;
-                    }
+            if key.len() < 56 {
+                continue;
+            }
+            let slot = u64::from_be_bytes(key[32..40].try_into().unwrap_or([0xFF; 8]));
+            let seq = u64::from_be_bytes(key[48..56].try_into().unwrap_or([0xFF; 8]));
+            if let Some((before_slot, before_seq)) = before_cursor {
+                if slot > before_slot || (slot == before_slot && seq >= before_seq) {
+                    continue;
                 }
             }
             rows.insert(key.to_vec(), value.to_vec());
         }
 
+        let mut ordered_rows = rows
+            .into_iter()
+            .filter_map(|(key, value)| {
+                let slot = u64::from_be_bytes(key.get(32..40)?.try_into().ok()?);
+                let seq = u64::from_be_bytes(key.get(48..56)?.try_into().ok()?);
+                Some((slot, seq, key, value))
+            })
+            .collect::<Vec<_>>();
+        ordered_rows.sort_by(|left, right| {
+            right
+                .0
+                .cmp(&left.0)
+                .then_with(|| right.1.cmp(&left.1))
+                .then_with(|| right.2.cmp(&left.2))
+        });
+
         let mut events = Vec::new();
-        for value in rows.values().rev() {
-            if let Ok(event) = serde_json::from_slice::<ContractEvent>(value) {
-                events.push(event);
+        for (_, seq, _, value) in ordered_rows {
+            if let Ok(event) = serde_json::from_slice::<ContractEvent>(&value) {
+                events.push((event, seq));
                 if events.len() >= limit {
                     break;
                 }

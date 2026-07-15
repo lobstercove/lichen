@@ -2,7 +2,7 @@
 
 Official Rust SDK for building on Lichen blockchain.
 
-Current source crate version: `0.1.5`.
+Current source crate version: `0.1.6`.
 
 ## Features
 
@@ -18,7 +18,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-lichen-client-sdk = "0.1.5"
+lichen-client-sdk = "0.1.6"
 tokio = { version = "1.35", features = ["full"] }
 ```
 
@@ -109,18 +109,15 @@ assert!(Keypair::verify(&pubkey, message, &signature));
 
 ```rust
 use lichen_client_sdk::{Hash, Instruction, TransactionBuilder};
-use lichen_core::codec::serialize_legacy_bincode;
 
 // Build transaction
 let tx = TransactionBuilder::new()
     .add_instruction(transfer_instruction)
     .recent_blockhash(blockhash)
-    .build_and_sign(&keypair)?;
+    .build_and_sign(&keypair, &client.get_network_info().await?.chain_id)?;
 
-// Serialize and send
-let tx_bytes = serialize_legacy_bincode(&tx, "SDK transaction")?;
-let tx_base64 = base64::encode(&tx_bytes);
-client.send_raw_transaction(&tx_base64).await?;
+// Client emits the mandatory V1 wire envelope.
+client.send_transaction(&tx).await?;
 ```
 
 ### File Format

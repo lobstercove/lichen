@@ -282,6 +282,7 @@ impl StateStore {
 
     /// Store stake pool
     pub fn put_stake_pool(&self, pool: &crate::consensus::StakePool) -> Result<(), String> {
+        let _state_commitment_guard = self.lock_state_commitment();
         let cf = self
             .db
             .cf_handle(CF_STAKE_POOL)

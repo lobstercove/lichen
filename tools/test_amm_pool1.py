@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 os.chdir(os.path.join(os.path.dirname(__file__), '..'))
 
 from lichen import Connection, Keypair, PublicKey
-from deploy_dex import call_contract_raw, find_genesis_keypair_path
+from chain_helpers import call_contract_raw, find_genesis_keypair_path
 
 RPC = os.environ.get('LICHEN_RPC_URL', 'http://127.0.0.1:8899')
 NETWORK = os.environ.get('LICHEN_NETWORK', 'testnet')

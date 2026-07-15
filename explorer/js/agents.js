@@ -72,7 +72,10 @@ async function loadAgents() {
         if (typeVal !== 'all') options.type = Number(typeVal);
 
         const result = await rpc.call('getLichenIdAgentDirectory', [options]);
-        allAgents = result?.agents || (Array.isArray(result) ? result : []);
+        if (!result || typeof result !== 'object' || Array.isArray(result) || !Array.isArray(result.agents)) {
+            throw new Error('Invalid RPC response: expected agents array');
+        }
+        allAgents = result.agents;
 
         // Resolve .lichen names for agents that don't have one
         const needNames = allAgents.filter(a => !a.licn_name && a.address).map(a => a.address);

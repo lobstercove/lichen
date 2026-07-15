@@ -160,6 +160,18 @@ async function main(): Promise<void> {
     deployer.toBase58(),
     contract.toBase58(),
   ]);
+
+  const abi = { functions: [{ name: 'balance_of', readonly: true }] };
+  const abiIx = TransactionBuilder.setContractAbi(deployer, contract, abi);
+  assert.equal(abiIx.data[0], 18);
+  assert.deepEqual(abiIx.accounts.map((account) => account.toBase58()), [
+    deployer.toBase58(),
+    contract.toBase58(),
+  ]);
+  assert.deepEqual(
+    JSON.parse(new TextDecoder().decode(abiIx.data.slice(1))),
+    abi,
+  );
 }
 
 await main();

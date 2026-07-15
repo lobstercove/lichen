@@ -256,23 +256,31 @@ impl Block {
         }
     }
 
-    /// Verify the block producer signature against a chain-id domain, with
-    /// legacy fallback for historical blocks and mixed-version rollout.
+    /// Verify the block producer signature against a chain-id domain.
     pub fn verify_signature_with_chain_id(&self, chain_id: &str) -> bool {
         let validator_pubkey = crate::account::Pubkey(self.header.validator);
         let hash = self.signable_hash();
         match &self.header.signature {
             Some(signature) => {
-                if !chain_id.is_empty() {
-                    let signable = maybe_versioned_signing_bytes(DOMAIN_BLOCK, chain_id, &hash.0);
-                    if crate::account::Keypair::verify(&validator_pubkey, &signable, signature) {
-                        return true;
-                    }
-                }
-                crate::account::Keypair::verify(&validator_pubkey, &hash.0, signature)
+                let signable = maybe_versioned_signing_bytes(DOMAIN_BLOCK, chain_id, &hash.0);
+                crate::account::Keypair::verify(&validator_pubkey, &signable, signature)
             }
             None => self.header.slot == 0,
         }
+    }
+
+    /// Verify an archived block across a known chain-domain activation.
+    ///
+    /// Chain-bound signatures are always preferred. The unbound format is
+    /// accepted only for immutable slots before the caller-supplied activation
+    /// boundary; live consensus must use `verify_signature_with_chain_id`.
+    pub fn verify_historical_signature_with_chain_id(
+        &self,
+        chain_id: &str,
+        activation_slot: u64,
+    ) -> bool {
+        self.verify_signature_with_chain_id(chain_id)
+            || (self.header.slot < activation_slot && self.verify_signature())
     }
 
     /// Get block hash — uses signable_hash so the hash is stable before/after signing.
@@ -302,8 +310,7 @@ impl Block {
         )
     }
 
-    /// Verify the block's commit certificate with chain-id domain separation,
-    /// falling back to legacy precommit bytes for historical blocks.
+    /// Verify the block's commit certificate with chain-id domain separation.
     pub fn verify_commit_with_chain_id(
         &self,
         chain_id: &str,
@@ -321,6 +328,26 @@ impl Block {
     pub fn verify_commit_with_chain_id_and_min_stake(
         &self,
         chain_id: &str,
+        validator_set: &crate::consensus::ValidatorSet,
+        stake_pool: &crate::consensus::StakePool,
+        min_validator_stake: u64,
+    ) -> Result<(), String> {
+        self.verify_commit_with_chain_id_and_min_stake_for_history(
+            chain_id,
+            0,
+            validator_set,
+            stake_pool,
+            min_validator_stake,
+        )
+    }
+
+    /// Verify an archived commit certificate across a known chain-domain
+    /// activation. Unbound precommits are eligible only before
+    /// `activation_slot`; live consensus passes zero through the strict method.
+    pub fn verify_commit_with_chain_id_and_min_stake_for_history(
+        &self,
+        chain_id: &str,
+        activation_slot: u64,
         validator_set: &crate::consensus::ValidatorSet,
         stake_pool: &crate::consensus::StakePool,
         min_validator_stake: u64,
@@ -369,12 +396,6 @@ impl Block {
             };
 
             // Verify signature — each precommit includes its own timestamp
-            let signable = crate::consensus::Precommit::signable_bytes(
-                self.header.slot,
-                self.commit_round,
-                &Some(block_hash),
-                cs.timestamp,
-            );
             let domain_signable = crate::consensus::Precommit::signing_bytes_for_chain_id(
                 chain_id,
                 self.header.slot,
@@ -382,9 +403,19 @@ impl Block {
                 &Some(block_hash),
                 cs.timestamp,
             );
-            if !crate::Keypair::verify(&pubkey, &domain_signable, &cs.signature)
-                && !crate::Keypair::verify(&pubkey, &signable, &cs.signature)
-            {
+            let domain_valid = crate::Keypair::verify(&pubkey, &domain_signable, &cs.signature);
+            let historical_valid = if !domain_valid && self.header.slot < activation_slot {
+                let raw_signable = crate::consensus::Precommit::signable_bytes(
+                    self.header.slot,
+                    self.commit_round,
+                    &Some(block_hash),
+                    cs.timestamp,
+                );
+                crate::Keypair::verify(&pubkey, &raw_signable, &cs.signature)
+            } else {
+                false
+            };
+            if !domain_valid && !historical_valid {
                 continue;
             }
 
@@ -489,26 +520,9 @@ pub fn compute_validators_hash(
     validator_set: &crate::consensus::ValidatorSet,
     stake_pool: &crate::consensus::StakePool,
 ) -> Hash {
-    let mut sorted: Vec<_> = validator_set
-        .sorted_validators()
-        .iter()
-        .map(|vi| {
-            let stake = stake_pool
-                .get_stake(&vi.pubkey)
-                .map(|s| s.total_stake())
-                .unwrap_or(0);
-            (vi.pubkey, stake)
-        })
-        .collect();
-    // Sort by pubkey bytes for determinism
-    sorted.sort_by_key(|a| a.0 .0);
-
-    let mut data = Vec::with_capacity(sorted.len() * 40);
-    for (pk, stake) in &sorted {
-        data.extend_from_slice(&pk.0);
-        data.extend_from_slice(&stake.to_le_bytes());
-    }
-    Hash::hash(&data)
+    crate::consensus::canonical_validator_powers_hash(
+        &crate::consensus::canonical_validator_powers(validator_set, stake_pool),
+    )
 }
 
 /// Domain-separated leaf hash: SHA256(0x00 || tx_hash)
@@ -807,7 +821,29 @@ mod tests {
     }
 
     #[test]
-    fn test_block_chain_id_verification_falls_back_to_legacy() {
+    fn historical_block_signature_is_bounded_by_activation_slot() {
+        let kp = crate::Keypair::generate();
+        let mut block = Block::new_with_timestamp(
+            799_999,
+            Hash::default(),
+            Hash::hash(b"historical-state"),
+            kp.pubkey().0,
+            Vec::new(),
+            1_000,
+        );
+        block.sign(&kp);
+
+        assert!(block.verify_historical_signature_with_chain_id("lichen-testnet-1", 800_000));
+        block.header.slot = 800_000;
+        block.sign(&kp);
+        assert!(!block.verify_historical_signature_with_chain_id("lichen-testnet-1", 800_000));
+
+        block.sign_with_chain_id(&kp, "lichen-testnet-1");
+        assert!(block.verify_historical_signature_with_chain_id("lichen-testnet-1", 800_000));
+    }
+
+    #[test]
+    fn test_block_chain_id_verification_rejects_unbound_signature() {
         use crate::Keypair;
 
         let kp = Keypair::generate();
@@ -822,7 +858,8 @@ mod tests {
 
         block.sign(&kp);
 
-        assert!(block.verify_signature_with_chain_id("lichen-testnet-1"));
+        assert!(!block.verify_signature_with_chain_id("lichen-testnet-1"));
+        assert!(block.verify_signature_with_chain_id(""));
     }
 
     #[test]

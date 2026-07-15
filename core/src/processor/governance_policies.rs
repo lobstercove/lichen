@@ -27,10 +27,32 @@ fn incident_guardian_pause_targets() -> &'static [IncidentGuardianPauseTarget] {
         .as_slice()
 }
 
-fn is_allowlisted_incident_guardian_pause(symbol: &str, function: &str) -> bool {
-    incident_guardian_pause_targets()
-        .iter()
-        .any(|target| target.symbol == symbol && target.pause_function == function)
+fn is_allowlisted_incident_guardian_pause(
+    symbol: &str,
+    function: &str,
+    args: &[u8],
+    abi: Option<&ContractAbi>,
+) -> bool {
+    incident_guardian_pause_targets().iter().any(|target| {
+        if target.symbol != symbol {
+            return false;
+        }
+        if target.pause_function == function {
+            return true;
+        }
+        if function != "call" {
+            return false;
+        }
+
+        let Some(opcode) = args.first().copied() else {
+            return false;
+        };
+        abi.is_some_and(|contract_abi| {
+            contract_abi.functions.iter().any(|abi_function| {
+                abi_function.name == target.pause_function && abi_function.opcode == Some(opcode)
+            })
+        })
+    })
 }
 
 fn is_bridge_committee_admin_contract_call(symbol: &str, function: &str) -> bool {
@@ -172,14 +194,36 @@ impl TxProcessor {
             return Ok(false);
         };
 
-        Ok(
-            is_allowlisted_incident_guardian_pause(entry.symbol.as_str(), function.as_str())
-                || is_immediate_oracle_committee_contract_call(
-                    entry.symbol.as_str(),
-                    function.as_str(),
-                    args.as_slice(),
-                ),
-        )
+        if is_immediate_oracle_committee_contract_call(
+            entry.symbol.as_str(),
+            function.as_str(),
+            args.as_slice(),
+        ) {
+            return Ok(true);
+        }
+
+        let dispatcher_abi = if function == "call"
+            && incident_guardian_pause_targets()
+                .iter()
+                .any(|target| target.symbol == entry.symbol)
+        {
+            let account = self
+                .state
+                .get_account(contract)?
+                .ok_or_else(|| format!("Governance target contract {} not found", contract))?;
+            let contract_account: ContractAccount = serde_json::from_slice(&account.data)
+                .map_err(|error| format!("Failed to decode governance target contract: {error}"))?;
+            contract_account.abi
+        } else {
+            None
+        };
+
+        Ok(is_allowlisted_incident_guardian_pause(
+            entry.symbol.as_str(),
+            function.as_str(),
+            args.as_slice(),
+            dispatcher_abi.as_ref(),
+        ))
     }
 
     pub(super) fn governance_action_requires_treasury_executor_policy(
@@ -467,5 +511,50 @@ impl TxProcessor {
             )?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn incident_guardian_matches_dispatcher_pause_through_abi_opcode() {
+        let abi: ContractAbi = serde_json::from_value(serde_json::json!({
+            "version": "1.0",
+            "contract": "prediction_market",
+            "functions": [
+                {
+                    "name": "emergency_pause",
+                    "opcode": 16,
+                    "params": []
+                },
+                {
+                    "name": "emergency_unpause",
+                    "opcode": 17,
+                    "params": []
+                }
+            ]
+        }))
+        .unwrap();
+
+        assert!(is_allowlisted_incident_guardian_pause(
+            "PREDICT",
+            "call",
+            &[16],
+            Some(&abi),
+        ));
+        assert!(!is_allowlisted_incident_guardian_pause(
+            "PREDICT",
+            "call",
+            &[17],
+            Some(&abi),
+        ));
+        assert!(!is_allowlisted_incident_guardian_pause(
+            "PREDICT",
+            "call",
+            &[16],
+            None,
+        ));
     }
 }

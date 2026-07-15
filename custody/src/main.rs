@@ -142,7 +142,7 @@ use deposit_event_support::{
     update_deposit_status, DepositObservationMarker, DepositObservationWrite,
 };
 use deposit_monitor_support::{
-    bitcoin_watcher_loop, evm_watcher_loop, evm_watcher_loop_for_chains, solana_watcher_loop,
+    bitcoin_watcher_loop, evm_watcher_loop_for_chains, solana_watcher_loop,
 };
 use deposit_persistence::{fetch_deposit, store_deposit};
 use deposit_reservation_support::{
@@ -184,7 +184,7 @@ use rebalance_execution_support::process_rebalance_jobs;
 use rebalance_execution_support::rebalance_worker_loop;
 use rebalance_output_support::decode_transfer_log;
 #[cfg(test)]
-use request_auth_support::{bridge_access_message, bridge_access_message_v2_create};
+use request_auth_support::bridge_access_message_v2_create;
 use request_auth_support::{
     bridge_access_replay_digest, current_unix_secs, parse_bridge_access_auth_json,
     parse_bridge_access_auth_value, parse_bridge_access_signature, verify_api_auth,
@@ -193,10 +193,10 @@ use request_auth_support::{
 use request_models::{
     BridgeAccessAuth, BridgeAuthReplayRecord, DepositEvent, DepositRequest, WithdrawalAccessAuth,
     WithdrawalAuthReplayRecord, WithdrawalRequest, BRIDGE_ACCESS_CLOCK_SKEW_SECS,
-    BRIDGE_ACCESS_DOMAIN, BRIDGE_ACCESS_DOMAIN_V2, BRIDGE_ACCESS_MAX_TTL_SECS,
-    BRIDGE_AUTH_ACTION_GET_DEPOSIT, BRIDGE_AUTH_REPLAY_ACTION_CREATE_DEPOSIT,
-    BRIDGE_AUTH_REPLAY_ACTION_CREATE_WITHDRAWAL, BRIDGE_AUTH_REPLAY_PRUNE_BATCH,
-    WITHDRAWAL_ACCESS_CLOCK_SKEW_SECS, WITHDRAWAL_ACCESS_DOMAIN, WITHDRAWAL_ACCESS_MAX_TTL_SECS,
+    BRIDGE_ACCESS_DOMAIN_V2, BRIDGE_ACCESS_MAX_TTL_SECS, BRIDGE_AUTH_ACTION_GET_DEPOSIT,
+    BRIDGE_AUTH_REPLAY_ACTION_CREATE_DEPOSIT, BRIDGE_AUTH_REPLAY_ACTION_CREATE_WITHDRAWAL,
+    BRIDGE_AUTH_REPLAY_PRUNE_BATCH, WITHDRAWAL_ACCESS_CLOCK_SKEW_SECS, WITHDRAWAL_ACCESS_DOMAIN,
+    WITHDRAWAL_ACCESS_MAX_TTL_SECS,
 };
 use reserve_ledger_support::{
     adjust_reserve_balance, adjust_reserve_balance_once, build_reserve_ledger_response,

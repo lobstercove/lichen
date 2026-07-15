@@ -103,14 +103,20 @@ async function deriveReleaseSignerAddress() {
     );
 
     const runbook = readText('deploy/mainnet-launch-runbook.md');
+    const workspaceVersion = readText('validator/Cargo.toml').match(
+        /^version = "(\d+\.\d+\.\d+)"/m
+    )?.[1];
     const releasePair = runbook.match(
-        /Current signed-release target for this runbook is `(v\d+\.\d+\.\d+)`; keep `(v\d+\.\d+\.\d+)` as the signed rollback point/
+        /Candidate release target for this\s+runbook is `(v\d+\.\d+\.\d+)`; keep `(v\d+\.\d+\.\d+)` as the signed rollback point/
     );
     assert(
         runbook.includes(releaseSigner),
         'mainnet launch runbook records the release signer trust anchor'
     );
-    assert(Boolean(releasePair), 'mainnet launch runbook declares current release and rollback tags');
+    assert(
+        Boolean(releasePair) && releasePair[1] === `v${workspaceVersion}`,
+        'mainnet launch runbook candidate matches the workspace version and declares a rollback tag'
+    );
     assert(
         runbook.includes('node "$REPO_ROOT/scripts/verify-release-checksums.mjs" .') &&
             releasePair &&

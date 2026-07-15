@@ -69,7 +69,7 @@ async def run_sdk():
         
         # Test 7: Health check
         print('\n✅ Test 7: Health Check')
-        health = await connection.health()
+        health = await connection.get_health()
         print(f'   Status: {health["status"]}')
         
         # Test 8: Get metrics

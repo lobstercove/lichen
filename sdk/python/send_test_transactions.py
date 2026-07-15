@@ -48,7 +48,7 @@ async def send_test_txs():
                         TransactionBuilder()
                         .add(instruction)
                         .set_recent_blockhash(recent_blockhash)
-                        .build_and_sign(sender_keypair)
+                        .build_and_sign(sender_keypair, await connection.get_chain_id())
                     )
                     
                     result = await connection.send_transaction(tx)

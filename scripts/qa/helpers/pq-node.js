@@ -110,7 +110,7 @@ function verify(messageBytes, pqSig, publicKey) {
     return _mlDsa65.verify(sigBytes, messageBytes, pkBytes);
 }
 
-/** Build the PqSignature JSON wire format. */
+/** Build the PqSignature object consumed by the binary transaction encoder. */
 function buildPqSignature(publicKey, sigBytes) {
     return {
         scheme_version: PQ_SCHEME_ML_DSA_65,

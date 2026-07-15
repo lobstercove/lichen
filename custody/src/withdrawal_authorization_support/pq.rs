@@ -5,7 +5,6 @@ use super::*;
 #[derive(Debug, Deserialize)]
 struct PqSignerResponse {
     status: String,
-    #[serde(alias = "signature")]
     pq_signature: PqSignature,
 }
 

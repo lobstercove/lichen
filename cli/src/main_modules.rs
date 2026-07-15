@@ -98,7 +98,6 @@ mod identity_support;
 mod info_fees_support;
 mod info_host_functions_support;
 mod info_support;
-mod init_support;
 mod keypair_manager;
 mod network_support;
 mod nft_collection_output_support;

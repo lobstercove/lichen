@@ -4,7 +4,7 @@ pub(super) fn print_contract_info(info: &ContractInfo) {
     println!("🦞 Contract Information");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     println!();
-    println!("📍 Address: {}", info.address);
+    println!("📍 Address: {}", info.contract_id);
     println!("👤 Owner:    {}", info.owner);
     println!("🚦 Lifecycle: {}", info.lifecycle_status);
     if let Some(restriction_id) = info.lifecycle_restriction_id {

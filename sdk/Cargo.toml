@@ -1,6 +1,6 @@
 [package]
 name = "lichen-contract-sdk"
-version = "1.0.2"
+version = "1.0.3"
 edition = "2021"
 authors = ["Lichen Labs <hello@lichen.network>"]
 description = "Lichen Smart Contract SDK"
@@ -8,6 +8,7 @@ license = "Apache-2.0"
 repository = "https://github.com/lobstercove/lichen"
 homepage = "https://lichen.network"
 documentation = "https://developers.lichen.network"
+include = ["src/**", "Cargo.toml"]
 
 [lib]
 crate-type = ["cdylib", "rlib"]
@@ -18,12 +19,12 @@ serde_json = { version = "1.0", default-features = false, optional = true }
 dlmalloc = { version = "0.2", features = ["global"] }  # Sound WASM allocator (replaces abandoned wee_alloc)
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-p3-field = "0.5.2"
-p3-goldilocks = "0.5.3"
-p3-symmetric = "0.5.2"
+p3-field = "0.6.1"
+p3-goldilocks = "0.6.1"
+p3-symmetric = "0.6.1"
 
 [dev-dependencies]
-lichen-core = { package = "lobstercove-lichen-core", version = "=0.5.221", path = "../core" }
+lichen-core = { package = "lobstercove-lichen-core", version = "=0.5.224", path = "../core" }
 
 [features]
 default = []

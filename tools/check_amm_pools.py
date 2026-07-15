@@ -4,7 +4,7 @@ import sys, os, json, urllib.parse, urllib.request
 from pathlib import Path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'sdk', 'python'))
 from lichen import Keypair
-from deploy_dex import load_genesis_keypair
+from chain_helpers import load_genesis_keypair
 
 RPC = os.environ.get('LICHEN_RPC_URL', 'http://127.0.0.1:8899')
 NETWORK = os.environ.get('LICHEN_NETWORK', 'testnet')

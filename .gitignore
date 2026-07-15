@@ -83,9 +83,11 @@ yarn-debug.log*
 yarn-error.log*
 
 # ── Test artifacts / output ─────────────────────────────────
-/tests/
+/tests/*
+!/tests/local-multi-validator-test.sh
 tests/artifacts/
 tests/dev_playground/
+evidence/
 *_test_output.txt
 
 # ── Python ─────────────────────────────────────────────────
@@ -149,7 +151,14 @@ contracts/*/target/debug/
 contracts/*/target/rls/
 
 # ── Internal-only dev docs ─────────────────────────────────
-docs/
+docs/*
+!docs/audits/
+docs/audits/*
+!docs/audits/MAINNET_READINESS_DEEP_AUDIT_2026-07-10.md
+!docs/deployment/
+docs/deployment/*
+!docs/deployment/ARCHIVE_PARITY_REPAIR_PLAN_2026-07-09.md
+!docs/deployment/TESTNET_STATE_AND_SYNC_POLICY.md
 infra/
 internal-docs/
 FIX_PLAN.md

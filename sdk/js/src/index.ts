@@ -104,7 +104,6 @@ export type {
   CreatePoolParams,
   LichenSwapPoolInfo,
   LichenSwapProtocolFees,
-  LichenSwapStats,
   LichenSwapSwapStats,
   LichenSwapTwapCumulatives,
   LichenSwapVolumeTotals,
@@ -196,7 +195,7 @@ export {
 /**
  * SDK version
  */
-export const VERSION = '1.0.5';
+export const VERSION = '1.0.6';
 
 /**
  * Default RPC URL (override with LICHEN_RPC_URL env var)

@@ -2,7 +2,7 @@
 
 Official SDK for interacting with Lichen blockchain.
 
-Current source package version: `1.0.5`.
+Current source package version: `1.0.6`.
 
 ## Installation
 
@@ -51,7 +51,6 @@ The SDK does expose archive lookup helpers:
 - `getTransaction(signature)`
 - `getBlock(slot)`
 - `getTransactionsByAddress(pubkey, limit, beforeSlot)`
-- `getTransactionHistory(pubkey, limit, beforeSlot)`
 - `getAccountTxCount(pubkey)`
 
 ## Features

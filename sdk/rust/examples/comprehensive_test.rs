@@ -2,7 +2,6 @@
 //! Tests every RPC method and SDK capability
 
 use lichen_client_sdk::{Client, Keypair, TransactionBuilder};
-use lichen_core::codec::serialize_legacy_bincode;
 use lichen_core::{Hash, Instruction, Pubkey};
 
 #[tokio::main]
@@ -15,7 +14,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Test health check
     print!("Health check... ");
-    match client.health().await {
+    match client.get_health().await {
         Ok(true) => println!("✅ OK"),
         Ok(false) => println!("❌ FAILED"),
         Err(e) => println!("❌ ERROR: {}", e),
@@ -76,10 +75,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Err(e) => println!("❌ ERROR: {}", e),
     }
 
-    // Test getTransactionHistory
-    print!("getTransactionHistory... ");
+    // Test getTransactionsByAddress
+    print!("getTransactionsByAddress... ");
     match client
-        .get_transaction_history(&keypair.pubkey(), Some(10), None)
+        .get_transactions_by_address(&keypair.pubkey(), Some(10), None)
         .await
     {
         Ok(history) => println!("✅ History: {}", history),
@@ -197,21 +196,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut hash_array = [0u8; 32];
             hash_array.copy_from_slice(&hash_bytes[..32]);
             let recent_blockhash = Hash::new(hash_array);
+            let chain_id = client.get_network_info().await?.chain_id;
 
             match TransactionBuilder::new()
                 .add_instruction(instruction)
                 .recent_blockhash(recent_blockhash)
-                .build_and_sign(&keypair)
+                .build_and_sign(&keypair, &chain_id)
             {
                 Ok(tx) => {
                     println!("✅ Built with {} signatures", tx.signatures.len());
 
                     // Test serialization (don't send - we don't have tokens)
                     print!("Serialize transaction... ");
-                    match serialize_legacy_bincode(&tx, "SDK example transaction") {
-                        Ok(bytes) => println!("✅ Size: {} bytes", bytes.len()),
-                        Err(e) => println!("❌ ERROR: {}", e),
-                    }
+                    println!("✅ V1 wire size: {} bytes", tx.to_wire().len());
 
                     println!("sendTransaction() - Skipped (test account has no tokens)");
                 }

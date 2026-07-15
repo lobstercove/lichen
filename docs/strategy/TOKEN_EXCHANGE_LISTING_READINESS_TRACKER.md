@@ -34,9 +34,9 @@
 | T6-02 | Wrapped token decimal drift resolved | Open | Yes | `docs/defi/WRAPPED_ASSETS.md` differs from inspected contract constants |
 | T6-03 | Reserve/liability simulation designed | Open | Yes | Required for wrapped token listing claims |
 | T7-01 | Launchpad token maturity policy documented | Open | Yes | Launchpad tokens need separate maturity and abuse review |
-| T7-02 | DEX liquidity and market-integrity policy documented | Open | Yes | DEX presence alone is not exchange readiness |
+| T7-02 | DEX liquidity and market-integrity policy documented | Open | Yes | DEX presence alone is not exchange readiness; see `docs/strategy/LAUNCHPAD_DEX_GRADUATION_PLAN_2026-07-02.md` |
 | T8-01 | Local token exchange simulation implemented | Open | Yes | Planned `scripts/qa/token_exchange_simulation.py` |
-| T8-02 | Local three-validator token simulation green | Open | Yes | Must pass before public testnet token validation |
+| T8-02 | Local four-validator token simulation green | Open | Yes | Must pass before public testnet token validation |
 | T8-03 | Local restart/rejoin token simulation green | Open | Yes | Required deployment discipline |
 | T8-04 | Local cleanup verified | Open | Yes | Required before public testnet |
 | T9-01 | Public testnet token simulation green | Open | Yes | No token public readiness until this passes |
@@ -64,7 +64,7 @@
 | Standard token example | `mt20_token` has initialize, mint, burn, transfer, approve, allowance, transfer_from, and total_supply. | `contracts/mt20_token/src/lib.rs` | Source mapped |
 | Wrapped token contracts | Inspected wrapped token contract constants use 9 decimals for lUSD, wSOL, wETH, wBNB, wNEO, wGAS, and wBTC. | `contracts/lusd_token/src/lib.rs`, `contracts/w*_token/src/lib.rs` | Source mapped |
 | Wrapped asset docs | Top token map in wrapped-assets docs still shows lUSD as 6 and wETH as 18 while later rows and contract constants show 9. | `docs/defi/WRAPPED_ASSETS.md`, wrapped token contracts | Release blocker |
-| Launchpad REST | Launchpad REST exposes stats, config, token list, token detail, quote, and holder-balance endpoints. Graduated tokens are directed to DEX. | `rpc/src/launchpad.rs` | Source mapped |
+| Launchpad REST | Launchpad REST exposes stats, config, token list, token detail, quote, and holder-balance endpoints. Current source does not yet implement real DEX graduation; see the dedicated graduation plan. | `rpc/src/launchpad.rs`, `docs/strategy/LAUNCHPAD_DEX_GRADUATION_PLAN_2026-07-02.md` | Source mapped |
 | DEX surface | DEX routes and pair data exist, but they are trading context and not a substitute for token custody/accounting readiness. | `rpc/src/dex.rs`, `contracts/dex_*` | Needs listing policy |
 
 ## Initial Blockers
@@ -80,7 +80,7 @@
 | TB-07 | Token transaction construction is not packaged for exchanges | Withdrawals cannot be safely implemented from docs alone | Document and test token transfer builders in CLI/SDKs |
 | TB-08 | Contract admin and pause powers are not packaged per token | Exchanges lack listing risk controls | Create contract risk sheet template and per-token gate |
 | TB-09 | Wrapped-asset reserve and redemption package is not exchange-ready | Reserve-backed token listings would be unsupported | Create reserve/custody operations pack and simulation |
-| TB-10 | Launchpad and DEX token maturity policy does not exist | Speculative tokens could be presented as listing-ready too early | Define maturity, liquidity, holder, and abuse-review gates |
+| TB-10 | Launchpad and DEX token maturity policy is not implemented | Speculative tokens could be presented as listing-ready too early | Execute the dedicated launchpad-to-DEX graduation plan, then define maturity, liquidity, holder, and abuse-review gates |
 | TB-11 | No token exchange simulation exists | No proof of deposit, credit, withdrawal, archive, restart, and cleanup | Implement after docs are approved |
 | TB-12 | No public token readiness gate exists | Final publication cannot fail closed | Implement `token_exchange_public_readiness.py` later |
 | TB-13 | Mainnet token package is not in scope yet | Mainnet claims would be premature | Keep all token package docs testnet-only until mainnet launch handoff |
@@ -243,7 +243,7 @@ Status: open.
 | Task | Status | Evidence |
 | --- | --- | --- |
 | Implement standard token simulation | Open | Planned `scripts/qa/token_exchange_simulation.py` |
-| Run clean local three-validator simulation | Open | Future evidence artifact |
+| Run clean local four-validator simulation | Open | Future evidence artifact |
 | Run restart/rejoin drill | Open | Future evidence artifact |
 | Run archive migration/reopen drill | Open | Future evidence artifact |
 | Add wrapped token variant | Open | Future evidence artifact |
@@ -326,7 +326,7 @@ Future Lichen token listings are not fully packaged. Before claiming readiness, 
 2. Define the per-token metadata manifest and source-of-truth policy.
 3. Write the token exchange integration guide and developer portal page.
 4. Add token RPC/index/archive tests and exact token transaction examples.
-5. Build and run the local token exchange simulation on three validators, with restart/rejoin and cleanup.
+5. Build and run the local token exchange simulation on four validators, with restart/rejoin and cleanup.
 6. Run public testnet token simulation and public readiness gate.
 7. Publish a signed per-token external package.
 

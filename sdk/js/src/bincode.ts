@@ -11,6 +11,9 @@ import {
 import type { Instruction, Message, Transaction } from './transaction.js';
 
 const textEncoder = new TextEncoder();
+const TX_WIRE_MAGIC = Uint8Array.of(0x4d, 0x54);
+const TX_WIRE_VERSION = 1;
+const TX_TYPE_NATIVE = 0;
 
 function encodeU64LE(value: number | bigint): Uint8Array {
   const out = new Uint8Array(8);
@@ -107,11 +110,16 @@ export function encodeMessage(message: Message): Uint8Array {
   return concat([instructions, blockhash, computeBudget, computeUnitPrice]);
 }
 
-export function encodeTransaction(transaction: Transaction): Uint8Array {
+export function encodeTransactionWire(transaction: Transaction): Uint8Array {
   const sigBytes = transaction.signatures.map((signature) => encodePqSignature(toPqSignature(signature)));
   const encodedSigs = concat([encodeU64LE(sigBytes.length), ...sigBytes]);
   const messageBytes = encodeMessage(transaction.message);
   // tx_type: Native=0 (u32 LE)
-  const txType = encodeU32LE(0);
-  return concat([encodedSigs, messageBytes, txType]);
+  const payloadTxType = encodeU32LE(TX_TYPE_NATIVE);
+  const payload = concat([encodedSigs, messageBytes, payloadTxType]);
+  return concat([
+    TX_WIRE_MAGIC,
+    Uint8Array.of(TX_WIRE_VERSION, TX_TYPE_NATIVE),
+    payload,
+  ]);
 }

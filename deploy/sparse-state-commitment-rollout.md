@@ -76,18 +76,9 @@ genesis configs default to `sparse_v1` before creating slot 0:
 }
 ```
 
-Use `ordered_v0` only when intentionally recreating a legacy compatibility chain:
-
-```json
-{
-  "state_commitment_schema": "ordered_v0"
-}
-```
-
 ## Account Proofs
 
-`getAccountProof` returns `proof_type=ordered_v0` before activation and
-`proof_type=sparse_v1` after activation. Sparse proofs verify against the
+`getAccountProof` returns `proof_type=sparse_v1`. Sparse proofs verify against the
 account sparse root inside the active composite state commitment.
 
 On an existing signed chain, block headers keep their original header state root.

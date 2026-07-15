@@ -1136,7 +1136,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Task 8.1: Opcode 9: challenge_resolution(challenger, market_id, evidence_hash, bond)
     // Layout: op[0]=9, challenger[1:33], market_id[33:41], evidence_hash[41:73], bond[73:81] = 81 bytes
-    function buildChallengeResolutionArgs(challenger, marketId, evidenceHash) {
+    async function buildChallengeResolutionArgs(challenger, marketId, evidenceHash) {
         const buf = new ArrayBuffer(81);
         const view = new DataView(buf);
         const arr = new Uint8Array(buf);
@@ -1144,14 +1144,14 @@ document.addEventListener('DOMContentLoaded', () => {
         writePubkey(arr, 1, challenger);
         writeU64LE(view, 33, marketId);
         // evidence_hash: 32 bytes — hash of challenge evidence
-        if (evidenceHash && evidenceHash.length === 32) {
+        if (evidenceHash instanceof Uint8Array && evidenceHash.length === 32) {
             arr.set(evidenceHash, 41);
         } else {
-            // If string evidence provided, hash it into 32 bytes
+            // Commit to arbitrary evidence with the same cryptographic primitive used on-chain.
             const encoder = new TextEncoder();
             const evBytes = encoder.encode(evidenceHash || '');
-            const hashBytes = new Uint8Array(32);
-            for (let i = 0; i < evBytes.length; i++) hashBytes[i % 32] ^= evBytes[i];
+            const digest = await crypto.subtle.digest('SHA-256', evBytes);
+            const hashBytes = new Uint8Array(digest);
             arr.set(hashBytes, 41);
         }
         // bond: DISPUTE_BOND = 100 lUSD
@@ -1224,6 +1224,34 @@ document.addEventListener('DOMContentLoaded', () => {
         writeU64LE(view, 32, 10_000_000_000); // 10 LICN creation fee
         return arr;
     }
+    // Layout ABI: creator, name bytes, name length, symbol bytes, symbol length, fee.
+    function buildCPCreateTokenWithMetadataArgs(creator, name, symbol) {
+        const encoder = new TextEncoder();
+        const nameBytes = encoder.encode(String(name || '').trim());
+        const symbolBytes = encoder.encode(String(symbol || '').trim().toUpperCase());
+        if (nameBytes.length < 1 || nameBytes.length > 64) throw new Error('Token name must be 1-64 bytes');
+        if (symbolBytes.length < 2 || symbolBytes.length > 12) throw new Error('Token symbol must be 2-12 bytes');
+        const nameStride = Math.max(32, nameBytes.length);
+        const symbolStride = Math.max(32, symbolBytes.length);
+        const layoutSize = 7;
+        const buf = new ArrayBuffer(layoutSize + 32 + nameStride + 4 + symbolStride + 4 + 8);
+        const view = new DataView(buf);
+        const arr = new Uint8Array(buf);
+        arr.set([0xAB, 32, nameStride, 4, symbolStride, 4, 8], 0);
+        let offset = layoutSize;
+        writePubkey(arr, offset, creator);
+        offset += 32;
+        arr.set(nameBytes, offset);
+        offset += nameStride;
+        view.setUint32(offset, nameBytes.length, true);
+        offset += 4;
+        arr.set(symbolBytes, offset);
+        offset += symbolStride;
+        view.setUint32(offset, symbolBytes.length, true);
+        offset += 4;
+        writeU64LE(view, offset, 10_000_000_000);
+        return arr;
+    }
     // buy(buyer_ptr[32], token_id[8], licn_amount[8]) = 48 bytes
     function buildCPBuyArgs(buyer, tokenId, licnSpores) {
         const buf = new ArrayBuffer(48);
@@ -1289,8 +1317,8 @@ document.addEventListener('DOMContentLoaded', () => {
         const match = String(raw).match(/\d+/);
         return match ? parseInt(match[0], 10) : 30;
     }
-    // AUDIT-FIX F10.9: Bincode-compatible message serialization for signing.
-    // Must match Rust's legacy bincode message codec
+    // Canonical bincode message serialization for signing.
+    // Must match Rust's native message payload codec
     // where Message/Instruction use Vec (u64 LE length prefix) and fixed [u8; 32] arrays.
     function encodeTransactionMessage(instructions, blockhash, signer, computeBudget, computeUnitPrice) {
         const parts = [];
@@ -1594,7 +1622,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     async function loadContractAddresses() {
         try {
-            const result = await trustedMetadataRpcCall('getAllSymbolRegistry', [100]);
+            const result = await trustedMetadataRpcCall('getAllSymbolRegistry', [{ limit: 100 }]);
             if (result?.entries?.length) {
                 const map = {};
                 for (const e of result.entries) {
@@ -8153,9 +8181,10 @@ document.addEventListener('DOMContentLoaded', () => {
             btn.disabled = true; btn.textContent = 'Challenging...';
             try {
                 const bondPull = prepareTokenPull('lUSD', contracts.prediction_market, PREDICT_DISPUTE_BOND);
+                const challengeArgs = await buildChallengeResolutionArgs(wallet.address, mid, evidence);
                 await wallet.sendTransaction([
                     ...bondPull.instructions,
-                    contractIx(contracts.prediction_market, buildChallengeResolutionArgs(wallet.address, mid, evidence), 0)
+                    contractIx(contracts.prediction_market, challengeArgs, 0)
                 ]);
                 showNotification('Resolution challenged! Awaiting DAO review.', 'success');
                 await loadPredictionMarkets();
@@ -8886,6 +8915,11 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!walletIsConnected()) return { ok: false, message: 'Connect wallet to launch', gate: true };
         if (!walletCanSign()) return { ok: false, message: 'Reconnect wallet to sign', gate: true };
         if (!contracts.sporepump) return { ok: false, message: 'Launchpad contract not loaded' };
+        const name = String(document.getElementById('launchTokenName')?.value || '').trim();
+        const symbol = String(document.getElementById('launchTokenSymbol')?.value || '').trim().toUpperCase();
+        const nameBytes = new TextEncoder().encode(name);
+        if (nameBytes.length < 1 || nameBytes.length > 64) return { ok: false, message: 'Enter a token name (1-64 bytes)' };
+        if (!/^[A-Z][A-Z0-9]{1,11}$/.test(symbol)) return { ok: false, message: 'Symbol must be 2-12 letters or numbers and start with a letter' };
         const licnBal = getAvailableBalance('LICN');
         if (licnBal < 10) return { ok: false, message: `Need 10 LICN to launch, available ${formatAmount(licnBal)}` };
         return { ok: true, message: 'Ready to launch token' };
@@ -8956,10 +8990,12 @@ document.addEventListener('DOMContentLoaded', () => {
             const raisedStr = formatAmount(t.licn_raised || 0);
             const mcapStr = formatAmount(t.market_cap || 0);
             const creatorShort = t.creator ? (t.creator.slice(0, 6) + '...' + t.creator.slice(-4)) : '—';
+            const tokenName = String(t.name || `Token #${t.id}`);
+            const tokenSymbol = String(t.symbol || `SPT${t.id}`);
             const selectedClass = launchState.selectedToken === t.id ? 'selected' : '';
             return `<div class="launch-token-card ${selectedClass}" data-token-id="${t.id}">
                 <div class="ltc-header">
-                    <span class="ltc-name"><i class="fas fa-coins"></i> Token #${t.id}</span>
+                    <span class="ltc-name"><i class="fas fa-coins"></i> ${escapeHtml(tokenName)} <small>${escapeHtml(tokenSymbol)}</small></span>
                     <span class="ltc-badge ${isGrad ? 'graduated' : 'active'}">${isGrad ? 'Graduated' : 'Active'}</span>
                 </div>
                 <div class="ltc-creator"><i class="fas fa-user"></i> ${escapeHtml(creatorShort)}</div>
@@ -9013,9 +9049,10 @@ document.addEventListener('DOMContentLoaded', () => {
         document.querySelectorAll('.launch-token-card').forEach(c => c.classList.toggle('selected', parseInt(c.dataset.tokenId) === id));
         // Update sidebar
         const titleEl = document.getElementById('launchChartTitle');
-        if (titleEl) titleEl.textContent = t ? `Token #${t.id} — Bonding Curve` : 'Bonding Curve';
+        const tokenLabel = t ? `${t.name || `Token #${t.id}`} (${t.symbol || `SPT${t.id}`})` : '';
+        if (titleEl) titleEl.textContent = t ? `${tokenLabel} — Bonding Curve` : 'Bonding Curve';
         const labelEl = document.getElementById('launchSelectedLabel');
-        if (labelEl) labelEl.innerHTML = t ? `<i class="fas fa-coins"></i> Token #${t.id} selected` : '<i class="fas fa-info-circle"></i> Select a token from the list';
+        if (labelEl) labelEl.innerHTML = t ? `<i class="fas fa-coins"></i> ${escapeHtml(tokenLabel)} selected` : '<i class="fas fa-info-circle"></i> Select a token from the list';
         updateLaunchSidebar(t);
         if (t) drawBondingCurve(t);
         updateLaunchQuote();
@@ -9312,6 +9349,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Create token button
     const launchCreateBtn = document.getElementById('launchCreateBtn');
+    ['launchTokenName', 'launchTokenSymbol'].forEach(id => {
+        document.getElementById(id)?.addEventListener('input', event => {
+            if (id === 'launchTokenSymbol') event.target.value = event.target.value.toUpperCase();
+            updateLaunchCreateButton();
+        });
+    });
     if (launchCreateBtn) launchCreateBtn.addEventListener('click', async () => {
         const validation = getLaunchCreateValidation();
         if (!validation.ok) { showNotification(validation.message, 'warning'); return; }
@@ -9320,8 +9363,15 @@ document.addEventListener('DOMContentLoaded', () => {
         launchCreateBtn.textContent = 'Launching...';
         try {
             const creationFee = 10_000_000_000; // 10 LICN in spores
-            await wallet.sendTransaction([namedCallIx(contracts.sporepump, 'create_token', buildCPCreateTokenArgs(wallet.address), creationFee)]);
-            showNotification('Token launched! 🚀', 'success');
+            const tokenNameInput = document.getElementById('launchTokenName');
+            const tokenSymbolInput = document.getElementById('launchTokenSymbol');
+            const tokenName = String(tokenNameInput?.value || '').trim();
+            const tokenSymbol = String(tokenSymbolInput?.value || '').trim().toUpperCase();
+            const args = buildCPCreateTokenWithMetadataArgs(wallet.address, tokenName, tokenSymbol);
+            await wallet.sendTransaction([namedCallIx(contracts.sporepump, 'create_token_with_metadata', args, creationFee)]);
+            showNotification(`${tokenSymbol} launched`, 'success');
+            if (tokenNameInput) tokenNameInput.value = '';
+            if (tokenSymbolInput) tokenSymbolInput.value = '';
             // Refresh
             await loadLaunchpadStats();
             await loadLaunchpadTokens();

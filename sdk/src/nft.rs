@@ -184,9 +184,7 @@ impl NFT {
 
         // Check authorization
         let is_owner = caller.0 == from.0;
-        let is_approved = self
-            .get_approved(token_id)
-            .map_or(false, |a| a.0 == caller.0);
+        let is_approved = self.get_approved(token_id).is_some_and(|a| a.0 == caller.0);
         let is_operator = self.is_approved_for_all(from, caller);
 
         if !is_owner && !is_approved && !is_operator {

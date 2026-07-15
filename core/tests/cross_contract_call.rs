@@ -8,6 +8,7 @@
 //
 // Uses WAT (WebAssembly Text) for minimal, self-contained test contracts.
 
+use lichen_core::contract::NativeAccountOp;
 use lichen_core::restrictions::{
     RestrictionMode, RestrictionReason, RestrictionRecord, RestrictionStatus, RestrictionTarget,
 };
@@ -122,6 +123,30 @@ fn put_active_contract_restriction(
     id
 }
 
+fn put_active_account_restriction(state: &StateStore, target: Pubkey, mode: RestrictionMode) {
+    state
+        .put_restriction(&RestrictionRecord {
+            id: 2,
+            target: RestrictionTarget::Account(target),
+            mode,
+            status: RestrictionStatus::Active,
+            reason: RestrictionReason::TestnetDrill,
+            evidence_hash: None,
+            evidence_uri_hash: None,
+            proposer: Pubkey([0xA1; 32]),
+            authority: Pubkey([0xA2; 32]),
+            approval_authority: None,
+            created_slot: 0,
+            created_epoch: slot_to_epoch(0),
+            expires_at_slot: None,
+            supersedes: None,
+            lifted_by: None,
+            lifted_slot: None,
+            lift_reason: None,
+        })
+        .unwrap();
+}
+
 fn submit_proxy_call_transaction(
     state: &StateStore,
     processor: &TxProcessor,
@@ -163,7 +188,6 @@ fn target_ping_wat() -> &'static str {
     r#"(module
         (import "env" "storage_write" (func $storage_write (param i32 i32 i32 i32) (result i32)))
         (import "env" "storage_read" (func $storage_read (param i32 i32 i32 i32) (result i32)))
-        (import "env" "storage_read_result" (func $storage_read_result (param i32 i32) (result i32)))
         (import "env" "storage_delete" (func $storage_delete (param i32 i32) (result i32)))
         (import "env" "log" (func $log (param i32 i32)))
         (import "env" "emit_event" (func $emit_event (param i32 i32) (result i32)))
@@ -243,7 +267,6 @@ fn caller_ccc_wat() -> &'static str {
     r#"(module
         (import "env" "storage_write" (func $storage_write (param i32 i32 i32 i32) (result i32)))
         (import "env" "storage_read" (func $storage_read (param i32 i32 i32 i32) (result i32)))
-        (import "env" "storage_read_result" (func $storage_read_result (param i32 i32) (result i32)))
         (import "env" "storage_delete" (func $storage_delete (param i32 i32) (result i32)))
         (import "env" "log" (func $log (param i32 i32)))
         (import "env" "emit_event" (func $emit_event (param i32 i32) (result i32)))
@@ -278,6 +301,141 @@ fn caller_ccc_wat() -> &'static str {
             ;; We return that as our own return code.
         )
     )"#
+}
+
+/// Payable target that refunds 40 spores from the 100 spores attached by its
+/// caller. The target starts with a zero native balance.
+fn target_partial_refund_wat() -> &'static str {
+    r#"(module
+        (import "env" "get_args" (func $get_args (param i32 i32) (result i32)))
+        (import "env" "cross_contract_call" (func $cross_contract_call (param i32 i32 i32 i32 i32 i64 i32 i32) (result i32)))
+        (memory (export "memory") 1)
+        (data (i32.const 100) "transfer")
+        (data (i32.const 140) "\28\00\00\00\00\00\00\00")
+        (func (export "refund") (result i32)
+            ;; Recipient occupies args[0..32]; append amount=40 at args[32..40].
+            (drop (call $get_args (i32.const 0) (i32.const 32)))
+            (memory.copy (i32.const 32) (i32.const 140) (i32.const 8))
+            ;; Zeroed memory at offset 64 is the native LICN system program.
+            (call $cross_contract_call
+                (i32.const 64)
+                (i32.const 100)
+                (i32.const 8)
+                (i32.const 0)
+                (i32.const 40)
+                (i64.const 0)
+                (i32.const 200)
+                (i32.const 8)))
+    )"#
+}
+
+fn caller_ccc_with_value_wat() -> &'static str {
+    r#"(module
+        (import "env" "get_args" (func $get_args (param i32 i32) (result i32)))
+        (import "env" "cross_contract_call" (func $cross_contract_call (param i32 i32 i32 i32 i32 i64 i32 i32) (result i32)))
+        (memory (export "memory") 1)
+        (data (i32.const 100) "refund")
+        (func (export "call") (result i32)
+            ;; args = target[32] || refund_recipient[32]
+            (drop (call $get_args (i32.const 0) (i32.const 64)))
+            (call $cross_contract_call
+                (i32.const 0)
+                (i32.const 100)
+                (i32.const 6)
+                (i32.const 32)
+                (i32.const 32)
+                (i64.const 100)
+                (i32.const 200)
+                (i32.const 8)))
+    )"#
+}
+
+fn caller_two_payable_calls_wat() -> &'static str {
+    r#"(module
+        (import "env" "get_args" (func $get_args (param i32 i32) (result i32)))
+        (import "env" "cross_contract_call" (func $cross_contract_call (param i32 i32 i32 i32 i32 i64 i32 i32) (result i32)))
+        (memory (export "memory") 1)
+        (data (i32.const 100) "refund")
+        (func (export "call") (result i32)
+            ;; args = target[32] || refund_recipient[32]
+            (drop (call $get_args (i32.const 0) (i32.const 64)))
+            (drop (call $cross_contract_call
+                (i32.const 0) (i32.const 100) (i32.const 6)
+                (i32.const 32) (i32.const 32) (i64.const 40)
+                (i32.const 200) (i32.const 8)))
+            (call $cross_contract_call
+                (i32.const 0) (i32.const 100) (i32.const 6)
+                (i32.const 32) (i32.const 32) (i64.const 40)
+                (i32.const 200) (i32.const 8)))
+    )"#
+}
+
+fn nested_call_then_fail_wat() -> &'static str {
+    r#"(module
+        (import "env" "get_args" (func $get_args (param i32 i32) (result i32)))
+        (import "env" "cross_contract_call" (func $cross_contract_call (param i32 i32 i32 i32 i32 i64 i32 i32) (result i32)))
+        (memory (export "memory") 1)
+        (data (i32.const 100) "ping")
+        (func (export "ping") (result i32)
+            (drop (call $get_args (i32.const 0) (i32.const 32)))
+            ;; The leaf succeeds and mutates storage, then this frame fails.
+            (drop (call $cross_contract_call
+                (i32.const 0)
+                (i32.const 100)
+                (i32.const 4)
+                (i32.const 200)
+                (i32.const 0)
+                (i64.const 0)
+                (i32.const 300)
+                (i32.const 8)))
+            (i32.const 2))
+    )"#
+}
+
+fn caller_forwarding_ccc_wat() -> &'static str {
+    r#"(module
+        (import "env" "get_args" (func $get_args (param i32 i32) (result i32)))
+        (import "env" "cross_contract_call" (func $cross_contract_call (param i32 i32 i32 i32 i32 i64 i32 i32) (result i32)))
+        (memory (export "memory") 1)
+        (data (i32.const 100) "ping")
+        (func (export "call") (result i32)
+            ;; args = failing_middle[32] || leaf[32]
+            (drop (call $get_args (i32.const 0) (i32.const 64)))
+            (call $cross_contract_call
+                (i32.const 0)
+                (i32.const 100)
+                (i32.const 4)
+                (i32.const 32)
+                (i32.const 32)
+                (i64.const 0)
+                (i32.const 200)
+                (i32.const 8)))
+    )"#
+}
+
+fn refund_success_abi() -> ContractAbi {
+    ContractAbi {
+        version: "1.0".to_string(),
+        name: "payable_refund".to_string(),
+        template: None,
+        description: None,
+        functions: vec![AbiFunction {
+            name: "refund".to_string(),
+            description: None,
+            params: Vec::new(),
+            returns: None,
+            opcode: None,
+            readonly: false,
+            result_semantics: Some(AbiResultSemantics {
+                kind: AbiResultKind::ReturnCode,
+                success_codes: vec![1],
+                failure_codes: Vec::new(),
+                description: None,
+            }),
+        }],
+        events: Vec::new(),
+        errors: Vec::new(),
+    }
 }
 
 // ─── Unit Tests: ContractContext & ContractResult fields ──────────────────────
@@ -396,6 +554,210 @@ fn test_cross_contract_call_executes_target() {
     assert!(
         result.return_code.unwrap_or(0) > 0,
         "Return code should indicate success (>0 bytes from CCC)"
+    );
+}
+
+#[test]
+fn test_payable_cross_contract_call_can_refund_attached_value_atomically() {
+    let (state, _tmp) = create_test_state();
+    let owner = Pubkey::new([1u8; 32]);
+    let caller_addr = Pubkey::new([30u8; 32]);
+    let target_addr = Pubkey::new([31u8; 32]);
+    let recipient = Pubkey::new([32u8; 32]);
+
+    deploy_wasm_contract_with_abi(
+        &state,
+        &target_addr,
+        &owner,
+        target_partial_refund_wat().as_bytes(),
+        refund_success_abi(),
+    );
+    deploy_wasm_contract(
+        &state,
+        &caller_addr,
+        &owner,
+        caller_ccc_with_value_wat().as_bytes(),
+    );
+    let mut caller_account = state.get_account(&caller_addr).unwrap().unwrap();
+    caller_account.add_spendable(1_000).unwrap();
+    state.put_account(&caller_addr, &caller_account).unwrap();
+
+    let caller_contract: ContractAccount = serde_json::from_slice(&caller_account.data).unwrap();
+    let mut args = target_addr.0.to_vec();
+    args.extend_from_slice(&recipient.0);
+    let mut ctx = ContractContext::with_args(
+        owner,
+        caller_addr,
+        0,
+        1,
+        caller_contract.storage.clone(),
+        args.clone(),
+    );
+    ctx.state_store = Some(state);
+
+    let result = ContractRuntime::new()
+        .execute(&caller_contract, "call", &args, ctx)
+        .expect("payable cross-contract refund should execute");
+
+    assert!(result.success, "runtime failed: {:?}", result.error);
+    assert_eq!(result.ccc_value_deltas.get(&caller_addr), Some(&-100));
+    assert_eq!(result.ccc_value_deltas.get(&target_addr), Some(&100));
+    assert_eq!(
+        result.native_account_ops,
+        vec![NativeAccountOp::Transfer {
+            from: target_addr,
+            to: recipient,
+            amount: 40,
+        }]
+    );
+}
+
+#[test]
+fn test_sequential_payable_calls_use_updated_projected_balances() {
+    let (state, _tmp) = create_test_state();
+    let owner = Pubkey::new([1u8; 32]);
+    let caller_addr = Pubkey::new([33u8; 32]);
+    let target_addr = Pubkey::new([34u8; 32]);
+    let recipient = Pubkey::new([35u8; 32]);
+
+    deploy_wasm_contract_with_abi(
+        &state,
+        &target_addr,
+        &owner,
+        target_partial_refund_wat().as_bytes(),
+        refund_success_abi(),
+    );
+    deploy_wasm_contract(
+        &state,
+        &caller_addr,
+        &owner,
+        caller_two_payable_calls_wat().as_bytes(),
+    );
+    let mut caller_account = state.get_account(&caller_addr).unwrap().unwrap();
+    caller_account.add_spendable(1_000).unwrap();
+    state.put_account(&caller_addr, &caller_account).unwrap();
+    let caller_contract: ContractAccount = serde_json::from_slice(&caller_account.data).unwrap();
+    let mut args = target_addr.0.to_vec();
+    args.extend_from_slice(&recipient.0);
+    let mut ctx = ContractContext::with_args(
+        owner,
+        caller_addr,
+        0,
+        1,
+        caller_contract.storage.clone(),
+        args.clone(),
+    );
+    ctx.state_store = Some(state);
+
+    let result = ContractRuntime::new()
+        .execute(&caller_contract, "call", &args, ctx)
+        .expect("both payable calls should execute");
+
+    assert!(result.return_code.unwrap_or(0) > 0);
+    assert_eq!(result.ccc_value_deltas.get(&caller_addr), Some(&-80));
+    assert_eq!(result.ccc_value_deltas.get(&target_addr), Some(&80));
+    assert_eq!(result.native_account_ops.len(), 2);
+}
+
+#[test]
+fn test_payable_cross_contract_call_respects_incoming_account_restriction() {
+    let (state, _tmp) = create_test_state();
+    let owner = Pubkey::new([1u8; 32]);
+    let caller_addr = Pubkey::new([36u8; 32]);
+    let target_addr = Pubkey::new([37u8; 32]);
+    let recipient = Pubkey::new([38u8; 32]);
+
+    deploy_wasm_contract_with_abi(
+        &state,
+        &target_addr,
+        &owner,
+        target_partial_refund_wat().as_bytes(),
+        refund_success_abi(),
+    );
+    deploy_wasm_contract(
+        &state,
+        &caller_addr,
+        &owner,
+        caller_ccc_with_value_wat().as_bytes(),
+    );
+    let mut caller_account = state.get_account(&caller_addr).unwrap().unwrap();
+    caller_account.add_spendable(1_000).unwrap();
+    state.put_account(&caller_addr, &caller_account).unwrap();
+    put_active_account_restriction(&state, target_addr, RestrictionMode::IncomingOnly);
+
+    let caller_contract: ContractAccount = serde_json::from_slice(&caller_account.data).unwrap();
+    let mut args = target_addr.0.to_vec();
+    args.extend_from_slice(&recipient.0);
+    let mut ctx = ContractContext::with_args(
+        owner,
+        caller_addr,
+        0,
+        1,
+        caller_contract.storage.clone(),
+        args.clone(),
+    );
+    ctx.state_store = Some(state);
+
+    let result = ContractRuntime::new()
+        .execute(&caller_contract, "call", &args, ctx)
+        .expect("outer call should handle the restriction rejection");
+
+    assert_eq!(result.return_code, Some(0));
+    assert!(result.ccc_value_deltas.is_empty());
+    assert!(result.native_account_ops.is_empty());
+}
+
+#[test]
+fn test_caught_failed_nested_call_discards_successful_descendant_changes() {
+    let (state, _tmp) = create_test_state();
+    let owner = Pubkey::new([1u8; 32]);
+    let caller_addr = Pubkey::new([40u8; 32]);
+    let middle_addr = Pubkey::new([41u8; 32]);
+    let leaf_addr = Pubkey::new([42u8; 32]);
+
+    deploy_wasm_contract(&state, &leaf_addr, &owner, target_ping_wat().as_bytes());
+    deploy_wasm_contract_with_abi(
+        &state,
+        &middle_addr,
+        &owner,
+        nested_call_then_fail_wat().as_bytes(),
+        ping_return_code_success_zero_abi(),
+    );
+    deploy_wasm_contract(
+        &state,
+        &caller_addr,
+        &owner,
+        caller_forwarding_ccc_wat().as_bytes(),
+    );
+
+    let caller_account = state.get_account(&caller_addr).unwrap().unwrap();
+    let caller_contract: ContractAccount = serde_json::from_slice(&caller_account.data).unwrap();
+    let mut args = middle_addr.0.to_vec();
+    args.extend_from_slice(&leaf_addr.0);
+    let mut ctx = ContractContext::with_args(
+        owner,
+        caller_addr,
+        0,
+        1,
+        caller_contract.storage.clone(),
+        args.clone(),
+    );
+    ctx.state_store = Some(state.clone());
+
+    let result = ContractRuntime::new()
+        .execute(&caller_contract, "call", &args, ctx)
+        .expect("outer caller should catch the nested ABI failure");
+
+    assert!(result.success);
+    assert_eq!(result.return_code, Some(0));
+    assert!(
+        result.cross_call_changes.is_empty(),
+        "successful descendant writes leaked from failed parent frame: {:?}",
+        result.cross_call_changes
+    );
+    assert_eq!(
+        state.get_contract_storage(&leaf_addr, b"ping_key").unwrap(),
+        None
     );
 }
 

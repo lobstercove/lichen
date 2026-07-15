@@ -35,13 +35,6 @@ export interface LichenSwapSwapStats {
     totalLiquidity: bigint;
 }
 
-export interface LichenSwapStats {
-    swapCount: number;
-    volumeA: number;
-    volumeB: number;
-    paused: boolean;
-}
-
 export interface CreatePoolParams {
     tokenA: PublicKey | string;
     tokenB: PublicKey | string;
@@ -371,16 +364,6 @@ export class LichenSwapClient {
 
     async getSwapStats(): Promise<LichenSwapSwapStats> {
         return decodeSwapStats(await this.callReadonly('get_swap_stats'));
-    }
-
-    async getStats(): Promise<LichenSwapStats> {
-        const stats = await this.connection.getLichenSwapStats();
-        return {
-            swapCount: stats.swap_count ?? 0,
-            volumeA: stats.volume_a ?? 0,
-            volumeB: stats.volume_b ?? 0,
-            paused: Boolean(stats.paused),
-        };
     }
 
     async createPool(owner: Keypair, params: CreatePoolParams): Promise<string> {

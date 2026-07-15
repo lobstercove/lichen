@@ -268,4 +268,20 @@ mod tests {
         assert_eq!(decoded.index, 0);
         assert_eq!(decoded.data, shard.data);
     }
+
+    #[test]
+    fn shard_encoding_remains_wire_compatible_with_v0_5_223() {
+        let data: Vec<u8> = (0u16..32)
+            .map(|value| ((value * value * 17 + value * 3 + 11) % 256) as u8)
+            .collect();
+        let shards = encode_shards(42, &data).unwrap();
+        assert_eq!(
+            shards[DATA_SHARDS].data,
+            [119, 44, 117, 141, 51, 23, 51, 123]
+        );
+        assert_eq!(
+            shards[DATA_SHARDS + 1].data,
+            [165, 116, 176, 72, 107, 191, 241, 51]
+        );
+    }
 }

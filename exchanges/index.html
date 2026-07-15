@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Lichen Exchange Operations — Status</title>
+    <meta name="description"
+        content="Exchange-facing Lichen status and operations page for public testnet integration, incidents, maintenance, and exchange contacts.">
+    <meta property="og:title" content="Lichen Exchange Operations — Status">
+    <meta property="og:description"
+        content="Exchange-facing status, incidents, maintenance, and contacts for Lichen integration.">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://exchanges.lichen.network">
+    <link rel="icon" type="image/x-icon" href="favicon.ico">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600&display=swap"
+        rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css"
+        integrity="sha512-DTOQO9RWCH3ppGqcWaEA1BIZOC6xxalwEsw9c2QQeAIftl+Vegovlnee1c9QX4TctnWMn13TZye+giMm8e2LwA=="
+        crossorigin="anonymous" referrerpolicy="no-referrer">
+    <link rel="stylesheet" href="css/exchanges.css?v=20260705">
+</head>
+
+<body>
+    <nav class="topbar">
+        <a class="brand" href="/">
+            <span class="brand-mark"><i class="fas fa-building-columns"></i></span>
+            <span>Lichen <strong>Exchange Operations</strong></span>
+        </a>
+        <div class="topbar-actions">
+            <span class="scope-pill">testnet-only</span>
+            <span class="last-updated" id="lastUpdated">Waiting for first sample</span>
+        </div>
+    </nav>
+
+    <main class="shell">
+        <section class="summary">
+            <div>
+                <p class="eyebrow">Public exchange operations</p>
+                <h1>Lichen Exchange Status</h1>
+                <p class="summary-copy">
+                    Exchange-facing health, incidents, maintenance, and contact information for native LICN testnet
+                    integration. Mainnet is not live and is excluded until the mainnet launch handoff passes.
+                </p>
+            </div>
+            <div class="overall" id="overallCard">
+                <span class="overall-label">Current public status</span>
+                <strong id="overallStatus">Checking</strong>
+                <span id="overallDetail">Collecting public RPC, WebSocket, explorer, and incident samples.</span>
+            </div>
+        </section>
+
+        <section class="status-grid" aria-label="Exchange service status">
+            <article class="status-card" data-status-card="rpc">
+                <div class="card-title">
+                    <i class="fas fa-plug"></i>
+                    <span>Testnet RPC</span>
+                </div>
+                <strong id="rpcStatus">Checking</strong>
+                <span id="rpcDetail">https://testnet-api.lichen.network</span>
+            </article>
+            <article class="status-card" data-status-card="ws">
+                <div class="card-title">
+                    <i class="fas fa-wave-square"></i>
+                    <span>WebSocket Feed</span>
+                </div>
+                <strong id="wsStatus">Connecting</strong>
+                <span id="wsDetail">wss://testnet-api.lichen.network/ws</span>
+            </article>
+            <article class="status-card" data-status-card="explorer">
+                <div class="card-title">
+                    <i class="fas fa-compass"></i>
+                    <span>Explorer</span>
+                </div>
+                <strong id="explorerStatus">Checking</strong>
+                <span id="explorerDetail">https://explorer.lichen.network</span>
+            </article>
+            <article class="status-card" data-status-card="archive">
+                <div class="card-title">
+                    <i class="fas fa-box-archive"></i>
+                    <span>Archive Lookups</span>
+                </div>
+                <strong id="archiveStatus">Checking</strong>
+                <span id="archiveDetail">Latest and historical lookup readiness</span>
+            </article>
+        </section>
+
+        <section class="panel-grid">
+            <article class="panel">
+                <div class="panel-header">
+                    <h2>Network Readiness</h2>
+                    <span id="networkBadge" class="badge">testnet</span>
+                </div>
+                <div class="metric-table">
+                    <div>
+                        <span>Chain ID</span>
+                        <strong id="chainId">--</strong>
+                    </div>
+                    <div>
+                        <span>Finalized Slot</span>
+                        <strong id="finalizedSlot">--</strong>
+                    </div>
+                    <div>
+                        <span>Latest Block</span>
+                        <strong id="latestBlock">--</strong>
+                    </div>
+                    <div>
+                        <span>Block Age</span>
+                        <strong id="blockAge">--</strong>
+                    </div>
+                    <div>
+                        <span>Observed Cadence</span>
+                        <strong id="blockCadence">--</strong>
+                    </div>
+                    <div>
+                        <span>Base Fee</span>
+                        <strong id="baseFee">--</strong>
+                    </div>
+                </div>
+            </article>
+
+            <article class="panel">
+                <div class="panel-header">
+                    <h2>Incident And Maintenance</h2>
+                    <span id="incidentBadge" class="badge">checking</span>
+                </div>
+                <div class="incident-box" id="incidentBox">
+                    <strong>No exchange-impacting incident sample yet.</strong>
+                    <span>Waiting for public incident status RPC.</span>
+                </div>
+                <div class="maintenance-list">
+                    <div>
+                        <span>Maintenance notice target</span>
+                        <strong>72 hours planned, 24 hours minimum where operationally possible</strong>
+                    </div>
+                    <div>
+                        <span>Critical acknowledgement target</span>
+                        <strong>Within 1 hour for deposit, withdrawal, RPC, WebSocket, archive, finality, signing,
+                            custody, or fund-safety impact</strong>
+                    </div>
+                    <div>
+                        <span>Active incident updates</span>
+                        <strong>At acknowledgement and at least every 2 hours until mitigation or resolution</strong>
+                    </div>
+                </div>
+            </article>
+        </section>
+
+        <section class="panel-grid">
+            <article class="panel">
+                <div class="panel-header">
+                    <h2>Exchange Package</h2>
+                    <span class="badge">current</span>
+                </div>
+                <div class="link-list">
+                    <a href="https://developers.lichen.network/exchange-integration">Exchange Integration Guide</a>
+                    <a href="https://github.com/lobstercove/lichen/releases/tag/exchange-testnet-v0.5.221">Exchange
+                        Package Release</a>
+                    <a href="https://github.com/lobstercove/lichen/releases/tag/v0.5.221">Rollback Anchor
+                        v0.5.221</a>
+                    <a href="https://explorer.lichen.network">Lichen Explorer</a>
+                </div>
+            </article>
+
+            <article class="panel">
+                <div class="panel-header">
+                    <h2>Exchange Contacts</h2>
+                    <span class="badge">approved</span>
+                </div>
+                <div class="contacts">
+                    <div>
+                        <span>Security incidents</span>
+                        <a href="mailto:security@lichen.network">security@lichen.network</a>
+                    </div>
+                    <div>
+                        <span>Exchange operations</span>
+                        <a href="mailto:exchange-ops@lichen.network">exchange-ops@lichen.network</a>
+                    </div>
+                    <div>
+                        <span>Business/listing</span>
+                        <a href="mailto:business@lichen.network">business@lichen.network</a>
+                    </div>
+                </div>
+            </article>
+        </section>
+    </main>
+
+    <script type="application/json" id="exchangeContactMetadata">
+        {
+            "security": "security@lichen.network",
+            "operations": "exchange-ops@lichen.network",
+            "business": "business@lichen.network"
+        }
+    </script>
+    <script src="js/exchanges.js?v=20260705-2"></script>
+</body>
+
+</html>

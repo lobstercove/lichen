@@ -155,7 +155,7 @@ tokio = { version = "1", features = ["full"] }
 
 #[tokio::main]
 async fn main() -> Result&lt;()&gt; {
-    let client = Client::new("https://testnet-rpc.lichen.network");
+    let client = Client::new("https://testnet-api.lichen.network");
 
     let kp = Keypair::new();
     println!("Address: {}", kp.pubkey());
@@ -215,7 +215,7 @@ async fn main() -> Result&lt;()&gt; {
 
 #[tokio::main]
 async fn main() -> Result&lt;()&gt; {
-    let client = Client::new("https://testnet-rpc.lichen.network");
+    let client = Client::new("https://testnet-api.lichen.network");
     let lichen_id = LichenIdClient::new(client.clone());
     let lichenswap = LichenSwapClient::new(client.clone());
     let spore_pay = SporePayClient::new(client.clone());
@@ -252,7 +252,7 @@ async fn main() -> Result&lt;()&gt; {
     let delegation = lichen_id.get_delegate(&keypair.pubkey(), &delegate.pubkey()).await?;
     let pool = lichenswap.get_pool_info().await?;
     let quote = lichenswap.get_quote(1_000_000_000, true).await?;
-    let swap_stats = lichenswap.get_stats().await?;
+    let swap_stats = lichenswap.get_swap_stats().await?;
     let stream = spore_pay.get_stream_info(0).await?;
     let vault_stats = spore_vault.get_vault_stats().await?;
     let vault_position = spore_vault.get_user_position(&keypair.pubkey()).await?;
@@ -275,7 +275,7 @@ async fn main() -> Result&lt;()&gt; {
                 <p class="method-desc">Create a client pointing at the given JSON-RPC endpoint.</p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">Rust</span></div>
-                    <pre><code>let client = Client::new("https://testnet-rpc.lichen.network");</code></pre>
+                    <pre><code>let client = Client::new("https://testnet-api.lichen.network");</code></pre>
                 </div>
             </div>
 
@@ -286,7 +286,7 @@ async fn main() -> Result&lt;()&gt; {
                     <div class="code-block-header"><span class="code-lang">Rust</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
                     <pre><code>let client = Client::builder()
-    .rpc_url("https://testnet-rpc.lichen.network")
+    .rpc_url("https://testnet-api.lichen.network")
     .timeout(std::time::Duration::from_secs(30))
     .build()?;</code></pre>
                 </div>
@@ -358,7 +358,7 @@ println!("Slot: {slot}");</code></pre>
             </div>
 
             <div class="method-card">
-                <h3 class="method-name">async health(&amp;self) -&gt; Result&lt;bool&gt;</h3>
+                <h3 class="method-name">async get_health(&amp;self) -&gt; Result&lt;bool&gt;</h3>
                 <p class="method-desc">Liveness probe. Returns <code>true</code> when the RPC server reports
                     <code>{"status": "ok"}</code>.
                 </p>
@@ -407,7 +407,7 @@ println!("{} spores  ({} LICN)", bal.spores(), bal.licn());</code></pre>
             </div>
 
             <div class="method-card">
-                <h3 class="method-name">async get_transaction_history(&amp;self, pubkey: &amp;Pubkey, limit:
+                <h3 class="method-name">async get_transactions_by_address(&amp;self, pubkey: &amp;Pubkey, limit:
                     Option&lt;u64&gt;, before_slot: Option&lt;u64&gt;) -&gt;
                     Result&lt;Value&gt;</h3>
                 <p class="method-desc">Get paginated transaction history for an account. Returns
@@ -443,16 +443,16 @@ let instruction = Instruction {
 let tx = TransactionBuilder::new()
     .add_instruction(instruction)
     .recent_blockhash(blockhash)
-    .build_and_sign(&kp)?;
+    .build_and_sign(&kp, &client.get_network_info().await?.chain_id)?;
 
 let sig = client.send_transaction(&tx).await?;</code></pre>
                 </div>
             </div>
 
             <div class="method-card">
-                <h3 class="method-name">async send_raw_transaction(&amp;self, raw_tx: &amp;str) -&gt;
+                <h3 class="method-name">async submit_transaction_wire(&amp;self, tx_base64: &amp;str) -&gt;
                     Result&lt;String&gt;</h3>
-                <p class="method-desc">Submit a pre-serialized base64-encoded bincode transaction string.</p>
+                <p class="method-desc">Submit a base64-encoded <code>lichen_tx_v1</code> envelope.</p>
             </div>
 
             <div class="method-card">
@@ -693,23 +693,20 @@ println!("{}", entry["program"]);</code></pre>
             </div>
 
             <div class="method-card">
-                <h3 class="method-name">async get_sporepay_stats(&amp;self) -&gt; Result&lt;Value&gt; / async
-                    get_lichenswap_stats(&amp;self) -&gt; Result&lt;Value&gt; / async get_thalllend_stats(&amp;self)
+                <h3 class="method-name">async get_sporepay_stats(&amp;self) -&gt; Result&lt;Value&gt; / async get_thalllend_stats(&amp;self)
                     -&gt; Result&lt;Value&gt; / async get_sporevault_stats(&amp;self) -&gt; Result&lt;Value&gt; / async
                     get_bountyboard_stats(&amp;self) -&gt; Result&lt;Value&gt;</h3>
-                <p class="method-desc">Fetch aggregated stats from the public SporePay, LichenSwap, ThallLend,
-                    SporeVault, and BountyBoard RPC routes. Helper clients wrap SporeVault, ThallLend, SporePay, and
-                    LichenSwap
-                    for typed access.</p>
+                <p class="method-desc">Fetch aggregated stats from the public SporePay, ThallLend,
+                    SporeVault, and BountyBoard RPC routes. Use <code>LichenSwapClient::get_swap_stats()</code>
+                    for canonical read-only LichenSwap contract stats.</p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">Rust</span></div>
                     <pre><code>let sporepay_stats = client.get_sporepay_stats().await?;
-let lichenswap_stats = client.get_lichenswap_stats().await?;
 let thalllend_stats = client.get_thalllend_stats().await?;
 let sporevault_stats = client.get_sporevault_stats().await?;
 let bountyboard_stats = client.get_bountyboard_stats().await?;
 
-println!("{:?} {:?} {:?} {:?} {:?}", sporepay_stats, lichenswap_stats, thalllend_stats, sporevault_stats, bountyboard_stats);</code></pre>
+println!("{:?} {:?} {:?} {:?}", sporepay_stats, thalllend_stats, sporevault_stats, bountyboard_stats);</code></pre>
                 </div>
             </div>
 
@@ -821,8 +818,8 @@ let kp = Keypair::from_seed(&seed);</code></pre>
             </div>
 
             <div class="method-card">
-                <h3 class="method-name">.build_and_sign(keypair: &amp;Keypair) -&gt; Result&lt;Transaction&gt;</h3>
-                <p class="method-desc">Sign the instructions and return a typed transaction ready to submit.</p>
+                <h3 class="method-name">.build_and_sign(keypair: &amp;Keypair, chain_id: &amp;str) -&gt; Result&lt;Transaction&gt;</h3>
+                <p class="method-desc">Chain-bind and sign the instructions, returning a typed transaction ready to submit.</p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">Rust</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
@@ -843,7 +840,7 @@ let instruction = Instruction {
 let tx = TransactionBuilder::new()
     .add_instruction(instruction)
     .recent_blockhash(blockhash)
-    .build_and_sign(&kp)?;
+    .build_and_sign(&kp, &client.get_network_info().await?.chain_id)?;
 
 let sig = client.send_transaction(&tx).await?;
 println!("Transfer complete: {sig}");</code></pre>
@@ -981,7 +978,7 @@ match client.get_balance(&pubkey).await {
 
             <div class="callout callout-info">
                 <p>For real-time subscriptions, connect directly to
-                    <code>wss://testnet-rpc.lichen.network/ws</code> or <code>wss://rpc.lichen.network/ws</code>, or
+                    <code>wss://testnet-api.lichen.network/ws</code> or <code>wss://rpc.lichen.network/ws</code>, or
                     use the JavaScript and Python SDKs, which already expose high-level subscription helpers.
                 </p>
             </div>

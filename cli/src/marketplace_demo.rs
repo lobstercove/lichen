@@ -298,7 +298,13 @@ async fn send_tx(
         compute_unit_price: None,
     };
 
-    let signature = signer.sign(&message.serialize());
+    let network_info = rpc_call(client, rpc_url, "getNetworkInfo", json!([])).await?;
+    let chain_id = network_info
+        .get("chain_id")
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("getNetworkInfo response missing chain_id"))?;
+    let signature = signer.sign(&message.signing_bytes_for_chain_id(chain_id));
     let tx = Transaction {
         signatures: vec![signature],
         message,

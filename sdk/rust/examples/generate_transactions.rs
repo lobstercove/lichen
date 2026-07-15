@@ -21,6 +21,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Get recent blockhash
     let blockhash_str = client.get_recent_blockhash().await?;
     let blockhash = Hash::from_hex(&blockhash_str)?;
+    let chain_id = client.get_network_info().await?.chain_id;
     println!("🔗 Blockhash: {}...\n", &blockhash_str[..16]);
 
     // Generate transactions
@@ -44,7 +45,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let tx = TransactionBuilder::new()
             .add_instruction(instruction)
             .recent_blockhash(blockhash)
-            .build_and_sign(sender)?;
+            .build_and_sign(sender, &chain_id)?;
 
         transactions.push(tx);
         println!("   ✅ Transaction {} built", i + 1);

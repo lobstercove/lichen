@@ -7,7 +7,10 @@ use crate::mossstake::MOSSSTAKE_BLOCK_SHARE_BPS;
 use crate::signing::{
     maybe_versioned_signing_bytes, DOMAIN_PRECOMMIT, DOMAIN_PREVOTE, DOMAIN_PROPOSAL,
 };
-use crate::{Block, Hash, PqSignature, Pubkey};
+use crate::{
+    Block, CommitSignature, Hash, Instruction, Message, PqSignature, Pubkey, Transaction,
+    TransactionType,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -50,6 +53,300 @@ pub const BOOTSTRAP_GRANT_AMOUNT: u64 = 100_000 * 1_000_000_000; // 100k LICN in
 pub const VALIDATOR_BOOTSTRAP_GRANTS_ENABLED_METADATA_KEY: &str =
     "validator_bootstrap_grants_enabled";
 pub const VALIDATOR_BOOTSTRAP_GRANTS_ENABLED_VALUE: &[u8] = b"1";
+
+/// System instruction carrying the canonical certificate for the parent block.
+pub const CANONICAL_COMMIT_ENVELOPE_OPCODE: u8 = 41;
+pub const CANONICAL_COMMIT_ENVELOPE_VERSION: u8 = 2;
+pub const MAX_CANONICAL_COMMIT_ENVELOPE_BYTES: u64 = 4 * 1024 * 1024;
+
+/// A validator and its exact voting power in one height-frozen consensus set.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CanonicalValidatorPower {
+    pub validator: Pubkey,
+    pub power: u64,
+}
+
+pub fn canonical_validator_powers(
+    validator_set: &ValidatorSet,
+    stake_pool: &StakePool,
+) -> Vec<CanonicalValidatorPower> {
+    validator_set
+        .sorted_validators()
+        .into_iter()
+        .map(|validator| CanonicalValidatorPower {
+            validator: validator.pubkey,
+            power: stake_pool
+                .get_stake(&validator.pubkey)
+                .map(StakeInfo::total_stake)
+                .unwrap_or(0),
+        })
+        .collect()
+}
+
+pub fn canonical_validator_powers_hash(powers: &[CanonicalValidatorPower]) -> Hash {
+    let mut sorted = powers.to_vec();
+    sorted.sort_by_key(|power| power.validator.0);
+    let mut data = Vec::with_capacity(sorted.len() * 40);
+    for power in sorted {
+        data.extend_from_slice(&power.validator.0);
+        data.extend_from_slice(&power.power.to_le_bytes());
+    }
+    Hash::hash(&data)
+}
+
+/// Parent-height finality evidence committed by the next block's transaction root.
+///
+/// The child commits one canonical quorum subset plus the complete parent power
+/// denominator authenticated by the parent header's validator-set hash.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CanonicalCommitCertificate {
+    pub version: u8,
+    pub height: u64,
+    pub round: u32,
+    pub block_hash: Hash,
+    pub validators_hash: Hash,
+    /// Complete parent-height voting-power denominator, authenticated by
+    /// `validators_hash` in the parent block header.
+    pub validator_powers: Vec<CanonicalValidatorPower>,
+    /// Complete post-effects state root of the parent height. The child
+    /// transaction root consensus-commits this value for checkpoint and state
+    /// sync verification.
+    pub parent_post_state_root: Hash,
+    /// Commits the exact ordered fee and oracle metadata of the child block
+    /// carrying this certificate.
+    pub child_metadata_hash: Hash,
+    pub signatures: Vec<CommitSignature>,
+}
+
+pub fn canonical_block_metadata_hash(
+    tx_fees_paid: &[u64],
+    oracle_prices: &[(String, u64)],
+) -> Result<Hash, String> {
+    let encoded =
+        serialize_legacy_bincode(&(tx_fees_paid, oracle_prices), "canonical block metadata")?;
+    let mut input = Vec::with_capacity(32 + encoded.len());
+    input.extend_from_slice(b"LICHEN_BLOCK_METADATA_V1");
+    input.extend_from_slice(&encoded);
+    Ok(Hash::hash(&input))
+}
+
+impl CanonicalCommitCertificate {
+    pub fn from_committed_block(
+        block: &Block,
+        validator_powers: Vec<CanonicalValidatorPower>,
+        parent_post_state_root: Hash,
+    ) -> Result<Self, String> {
+        if block.header.slot == 0 {
+            return Err("genesis has no commit certificate".to_string());
+        }
+        if block.commit_signatures.is_empty() {
+            return Err(format!(
+                "block {} has no local commit certificate",
+                block.header.slot
+            ));
+        }
+
+        let mut signatures = block.commit_signatures.clone();
+        signatures.sort_by_key(|signature| signature.validator);
+        let certificate = Self {
+            version: CANONICAL_COMMIT_ENVELOPE_VERSION,
+            height: block.header.slot,
+            round: block.commit_round,
+            block_hash: block.hash(),
+            validators_hash: block.header.validators_hash,
+            validator_powers,
+            parent_post_state_root,
+            child_metadata_hash: canonical_block_metadata_hash(&[], &[])?,
+            signatures,
+        };
+        certificate.validate_canonical_shape()?;
+        Ok(certificate)
+    }
+
+    pub fn validate_canonical_shape(&self) -> Result<(), String> {
+        if self.version != CANONICAL_COMMIT_ENVELOPE_VERSION {
+            return Err(format!(
+                "unsupported canonical commit certificate version {}",
+                self.version
+            ));
+        }
+        if self.height == 0 {
+            return Err("canonical commit certificate cannot target genesis".to_string());
+        }
+        if self.signatures.is_empty() {
+            return Err("canonical commit certificate has no signatures".to_string());
+        }
+        if self.child_metadata_hash == Hash::default() {
+            return Err(
+                "canonical commit certificate has no child metadata commitment".to_string(),
+            );
+        }
+        if self.parent_post_state_root == Hash::default() {
+            return Err("canonical commit certificate has no parent post-state root".to_string());
+        }
+        if self.validator_powers.is_empty() {
+            return Err("canonical commit certificate has no validator powers".to_string());
+        }
+        for powers in self.validator_powers.windows(2) {
+            if powers[0].validator >= powers[1].validator {
+                return Err(
+                    "canonical validator powers must be strictly ordered by validator".to_string(),
+                );
+            }
+        }
+        if canonical_validator_powers_hash(&self.validator_powers) != self.validators_hash {
+            return Err(
+                "canonical validator powers do not match the parent validators hash".to_string(),
+            );
+        }
+        for signatures in self.signatures.windows(2) {
+            if signatures[0].validator >= signatures[1].validator {
+                return Err(
+                    "canonical commit signatures must be strictly ordered by validator".to_string(),
+                );
+            }
+        }
+        Ok(())
+    }
+
+    pub fn bind_child_metadata(
+        mut self,
+        tx_fees_paid: &[u64],
+        oracle_prices: &[(String, u64)],
+    ) -> Result<Self, String> {
+        self.child_metadata_hash = canonical_block_metadata_hash(tx_fees_paid, oracle_prices)?;
+        self.validate_canonical_shape()?;
+        Ok(self)
+    }
+
+    pub fn verify_child_metadata(
+        &self,
+        tx_fees_paid: &[u64],
+        oracle_prices: &[(String, u64)],
+    ) -> Result<(), String> {
+        let expected = canonical_block_metadata_hash(tx_fees_paid, oracle_prices)?;
+        if self.child_metadata_hash != expected {
+            return Err(format!(
+                "canonical child metadata mismatch: certificate={} block={}",
+                self.child_metadata_hash.to_hex(),
+                expected.to_hex()
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn to_transaction(&self) -> Result<Transaction, String> {
+        self.validate_canonical_shape()?;
+        let payload = serialize_legacy_bincode(self, "canonical commit certificate")?;
+        if payload.len() as u64 > MAX_CANONICAL_COMMIT_ENVELOPE_BYTES {
+            return Err(format!(
+                "canonical commit certificate is too large: {} bytes (max {})",
+                payload.len(),
+                MAX_CANONICAL_COMMIT_ENVELOPE_BYTES
+            ));
+        }
+        let mut data = Vec::with_capacity(payload.len() + 1);
+        data.push(CANONICAL_COMMIT_ENVELOPE_OPCODE);
+        data.extend_from_slice(&payload);
+        Ok(Transaction {
+            signatures: Vec::new(),
+            message: Message::new(
+                vec![Instruction {
+                    program_id: crate::processor::SYSTEM_PROGRAM_ID,
+                    accounts: vec![crate::processor::SYSTEM_PROGRAM_ID],
+                    data,
+                }],
+                self.block_hash,
+            ),
+            tx_type: TransactionType::Consensus,
+        })
+    }
+
+    pub fn from_transaction(transaction: &Transaction) -> Result<Option<Self>, String> {
+        if !transaction.is_consensus() {
+            return Ok(None);
+        }
+        if !transaction.signatures.is_empty()
+            || transaction.message.instructions.len() != 1
+            || transaction.message.compute_budget.is_some()
+            || transaction.message.compute_unit_price.is_some()
+        {
+            return Err("invalid canonical commit transaction shape".to_string());
+        }
+        let instruction = &transaction.message.instructions[0];
+        if instruction.program_id != crate::processor::SYSTEM_PROGRAM_ID
+            || instruction.accounts.as_slice() != [crate::processor::SYSTEM_PROGRAM_ID]
+            || instruction.data.first().copied() != Some(CANONICAL_COMMIT_ENVELOPE_OPCODE)
+        {
+            return Err("invalid canonical commit instruction shape".to_string());
+        }
+        let payload = &instruction.data[1..];
+        let certificate: Self = deserialize_legacy_bincode_strict(
+            payload,
+            MAX_CANONICAL_COMMIT_ENVELOPE_BYTES,
+            "canonical commit certificate",
+        )?;
+        certificate.validate_canonical_shape()?;
+        if transaction.message.recent_blockhash != certificate.block_hash {
+            return Err(
+                "canonical commit transaction blockhash does not match its certificate".to_string(),
+            );
+        }
+        Ok(Some(certificate))
+    }
+
+    pub fn verify_parent(
+        &self,
+        parent: &Block,
+        chain_id: &str,
+        min_validator_stake: u64,
+    ) -> Result<(), String> {
+        self.validate_canonical_shape()?;
+        if self.height != parent.header.slot
+            || self.block_hash != parent.hash()
+            || self.validators_hash != parent.header.validators_hash
+        {
+            return Err("canonical commit certificate does not match parent block".to_string());
+        }
+        let eligible_powers: BTreeMap<Pubkey, u64> = self
+            .validator_powers
+            .iter()
+            .filter(|power| power.power >= min_validator_stake)
+            .map(|power| (power.validator, power.power))
+            .collect();
+        let total_power: u128 = eligible_powers.values().map(|power| *power as u128).sum();
+        if total_power == 0 {
+            return Err("canonical commit certificate has no eligible validator power".to_string());
+        }
+
+        let mut committed_power = 0u128;
+        for signature in &self.signatures {
+            let validator = Pubkey(signature.validator);
+            let Some(power) = eligible_powers.get(&validator) else {
+                continue;
+            };
+            let precommit = Precommit {
+                height: self.height,
+                round: self.round,
+                block_hash: Some(self.block_hash),
+                validator,
+                signature: signature.signature.clone(),
+                timestamp: signature.timestamp,
+            };
+            if precommit.verify_signature_with_chain_id(chain_id) {
+                committed_power = committed_power.saturating_add(*power as u128);
+            }
+        }
+        if committed_power.saturating_mul(3) >= total_power.saturating_mul(2) {
+            Ok(())
+        } else {
+            Err(format!(
+                "Insufficient canonical commit power: {} / {} (need 2/3+)",
+                committed_power, total_power
+            ))
+        }
+    }
+}
 
 // ============================================================================
 // INFLATIONARY SUPPLY MODEL
@@ -2326,16 +2623,10 @@ impl Proposal {
         crate::Keypair::verify(&self.proposer, &msg, &self.signature)
     }
 
-    /// Verify a proposal signature against a chain-id domain, with legacy
-    /// fallback for mixed-version rollout and historical WAL/network messages.
+    /// Verify a proposal signature against its chain-id domain.
     pub fn verify_signature_with_chain_id(&self, chain_id: &str) -> bool {
-        if !chain_id.is_empty() {
-            let msg = self.signing_bytes_for_chain_id(chain_id);
-            if crate::Keypair::verify(&self.proposer, &msg, &self.signature) {
-                return true;
-            }
-        }
-        self.verify_signature()
+        let msg = self.signing_bytes_for_chain_id(chain_id);
+        crate::Keypair::verify(&self.proposer, &msg, &self.signature)
     }
 
     /// Static helper to compute proposal signable bytes from components,
@@ -2421,18 +2712,9 @@ impl Prevote {
     }
 
     pub fn verify_signature_with_chain_id(&self, chain_id: &str) -> bool {
-        if !chain_id.is_empty() {
-            let msg = Self::signing_bytes_for_chain_id(
-                chain_id,
-                self.height,
-                self.round,
-                &self.block_hash,
-            );
-            if crate::Keypair::verify(&self.validator, &msg, &self.signature) {
-                return true;
-            }
-        }
-        self.verify_signature()
+        let msg =
+            Self::signing_bytes_for_chain_id(chain_id, self.height, self.round, &self.block_hash);
+        crate::Keypair::verify(&self.validator, &msg, &self.signature)
     }
 }
 
@@ -2505,19 +2787,14 @@ impl Precommit {
     }
 
     pub fn verify_signature_with_chain_id(&self, chain_id: &str) -> bool {
-        if !chain_id.is_empty() {
-            let msg = Self::signing_bytes_for_chain_id(
-                chain_id,
-                self.height,
-                self.round,
-                &self.block_hash,
-                self.timestamp,
-            );
-            if crate::Keypair::verify(&self.validator, &msg, &self.signature) {
-                return true;
-            }
-        }
-        self.verify_signature()
+        let msg = Self::signing_bytes_for_chain_id(
+            chain_id,
+            self.height,
+            self.round,
+            &self.block_hash,
+            self.timestamp,
+        );
+        crate::Keypair::verify(&self.validator, &msg, &self.signature)
     }
 }
 
@@ -3307,13 +3584,6 @@ impl ForkChoice {
         self.heads.clear();
     }
 
-    // ---- backward-compat convenience wrappers ----
-
-    /// Add block weight (from votes) — legacy API, delegates to add_head with slot 0
-    pub fn add_weight(&mut self, block_hash: Hash, weight: u64) {
-        self.add_head(0, block_hash, weight);
-    }
-
     /// Get weight of block
     pub fn get_weight(&self, block_hash: &Hash) -> u64 {
         self.heads
@@ -3321,25 +3591,6 @@ impl ForkChoice {
             .find(|h| h.1 == *block_hash)
             .map(|h| h.2)
             .unwrap_or(0)
-    }
-
-    /// Select best block from competing fork candidates (legacy API)
-    pub fn select_best(&self, candidates: &[Hash]) -> Option<Hash> {
-        candidates
-            .iter()
-            .filter_map(|hash| {
-                self.heads
-                    .iter()
-                    .find(|h| h.1 == *hash)
-                    .map(|h| (hash, h.2))
-            })
-            .max_by_key(|(_, w)| *w)
-            .map(|(hash, _)| *hash)
-    }
-
-    /// Prune heads not in the keep list (legacy API)
-    pub fn prune(&mut self, keep_hashes: &[Hash]) {
-        self.heads.retain(|h| keep_hashes.contains(&h.1));
     }
 }
 
@@ -3988,6 +4239,161 @@ mod tests {
     }
 
     #[test]
+    fn canonical_commit_envelope_roundtrip_commits_exact_certificate() {
+        let mut parent = Block::new_with_timestamp(
+            7,
+            Hash::hash(b"parent-6"),
+            Hash::hash(b"state-7"),
+            [9u8; 32],
+            Vec::new(),
+            10,
+        );
+        let powers = vec![
+            CanonicalValidatorPower {
+                validator: Pubkey([1u8; 32]),
+                power: MIN_VALIDATOR_STAKE,
+            },
+            CanonicalValidatorPower {
+                validator: Pubkey([2u8; 32]),
+                power: MIN_VALIDATOR_STAKE,
+            },
+        ];
+        parent.header.validators_hash = canonical_validator_powers_hash(&powers);
+        parent.commit_round = 2;
+        parent.commit_signatures = vec![
+            CommitSignature {
+                validator: [2u8; 32],
+                signature: test_signature(2),
+                timestamp: 12,
+            },
+            CommitSignature {
+                validator: [1u8; 32],
+                signature: test_signature(1),
+                timestamp: 11,
+            },
+        ];
+
+        let certificate = CanonicalCommitCertificate::from_committed_block(
+            &parent,
+            powers,
+            Hash::hash(b"post-state-7"),
+        )
+        .unwrap();
+        assert_eq!(certificate.signatures[0].validator, [1u8; 32]);
+        assert_eq!(certificate.signatures[1].validator, [2u8; 32]);
+        let transaction = certificate.to_transaction().unwrap();
+        assert!(transaction.is_consensus());
+        assert!(transaction.validate_structure().is_ok());
+        assert_eq!(
+            CanonicalCommitCertificate::from_transaction(&transaction).unwrap(),
+            Some(certificate.clone())
+        );
+
+        let child = Block::new_with_timestamp(
+            8,
+            parent.hash(),
+            Hash::hash(b"state-8"),
+            [8u8; 32],
+            vec![transaction],
+            11,
+        );
+        let mut changed = certificate;
+        changed.signatures[0].timestamp += 1;
+        let changed_child = Block::new_with_timestamp(
+            8,
+            parent.hash(),
+            Hash::hash(b"state-8"),
+            [8u8; 32],
+            vec![changed.to_transaction().unwrap()],
+            11,
+        );
+        assert_ne!(child.header.tx_root, changed_child.header.tx_root);
+        assert_ne!(child.hash(), changed_child.hash());
+    }
+
+    #[test]
+    fn canonical_commit_envelope_rejects_noncanonical_signature_order() {
+        let validator_powers = vec![CanonicalValidatorPower {
+            validator: Pubkey([1u8; 32]),
+            power: MIN_VALIDATOR_STAKE,
+        }];
+        let certificate = CanonicalCommitCertificate {
+            version: CANONICAL_COMMIT_ENVELOPE_VERSION,
+            height: 9,
+            round: 0,
+            block_hash: Hash::hash(b"block-9"),
+            validators_hash: canonical_validator_powers_hash(&validator_powers),
+            validator_powers,
+            parent_post_state_root: Hash::hash(b"post-state-9"),
+            child_metadata_hash: Hash::hash(b"child-metadata-9"),
+            signatures: vec![
+                CommitSignature {
+                    validator: [2u8; 32],
+                    signature: test_signature(2),
+                    timestamp: 12,
+                },
+                CommitSignature {
+                    validator: [1u8; 32],
+                    signature: test_signature(1),
+                    timestamp: 11,
+                },
+            ],
+        };
+        assert!(certificate
+            .validate_canonical_shape()
+            .unwrap_err()
+            .contains("strictly ordered"));
+    }
+
+    #[test]
+    fn canonical_commit_uses_parent_power_snapshot_across_child_activation() {
+        let parent_validator = crate::Keypair::generate();
+        let child_validator = crate::Keypair::generate();
+        let powers = vec![CanonicalValidatorPower {
+            validator: parent_validator.pubkey(),
+            power: MIN_VALIDATOR_STAKE,
+        }];
+        let mut parent = Block::new_with_timestamp(
+            10,
+            Hash::hash(b"parent-9"),
+            Hash::hash(b"state-10"),
+            parent_validator.pubkey().0,
+            Vec::new(),
+            10,
+        );
+        parent.header.validators_hash = canonical_validator_powers_hash(&powers);
+        parent.sign(&parent_validator);
+        let parent_hash = parent.hash();
+        let timestamp = 10;
+        parent.commit_signatures = vec![CommitSignature {
+            validator: parent_validator.pubkey().0,
+            signature: parent_validator.sign(&Precommit::signable_bytes(
+                10,
+                0,
+                &Some(parent_hash),
+                timestamp,
+            )),
+            timestamp,
+        }];
+
+        let certificate = CanonicalCommitCertificate::from_committed_block(
+            &parent,
+            powers,
+            Hash::hash(b"post-state-10"),
+        )
+        .unwrap()
+        .bind_child_metadata(&[0], &[])
+        .unwrap();
+        certificate
+            .verify_parent(&parent, "", MIN_VALIDATOR_STAKE)
+            .expect("parent quorum remains valid when a new validator activates in the child");
+        assert!(!certificate
+            .validator_powers
+            .iter()
+            .any(|power| power.validator == child_validator.pubkey()));
+    }
+
+    #[test]
     fn test_validator_set() {
         let mut set = ValidatorSet::new();
         let pubkey1 = Pubkey::new([1u8; 32]);
@@ -4379,20 +4785,6 @@ mod tests {
         fc.add_head(5, Hash::new([1u8; 32]), 10);
         fc.clear();
         assert!(fc.select_head().is_none());
-    }
-
-    #[test]
-    fn test_fork_choice_legacy_select_best() {
-        let mut fc = ForkChoice::new();
-        let h1 = Hash::new([1u8; 32]);
-        let h2 = Hash::new([2u8; 32]);
-        let h3 = Hash::new([3u8; 32]);
-
-        fc.add_weight(h1, 10);
-        fc.add_weight(h2, 30);
-
-        let best = fc.select_best(&[h1, h2, h3]);
-        assert_eq!(best, Some(h2));
     }
 
     /// A5-02: Fork choice prefers block with higher cumulative stake weight

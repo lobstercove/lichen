@@ -324,7 +324,6 @@ async function runTests() {
     // ══════════════════════════════════════════════════════════════════════
     section('C11: Platform Contract Stats RPCs');
 
-    await tryRpc('getLichenSwapStats', [], 'getLichenSwapStats');
     await tryRpc('getThallLendStats', [], 'getThallLendStats');
     await tryRpc('getSporePayStats', [], 'getSporePayStats');
     await tryRpc('getBountyBoardStats', [], 'getBountyBoardStats');
@@ -339,7 +338,6 @@ async function runTests() {
     // ══════════════════════════════════════════════════════════════════════
     section('C12: Token Contract Stats RPCs');
 
-    await tryRpc('getMusdStats', [], 'getMusdStats');
     await tryRpc('getWethStats', [], 'getWethStats');
     await tryRpc('getWsolStats', [], 'getWsolStats');
     await tryRpc('getWbnbStats', [], 'getWbnbStats');
@@ -380,11 +378,9 @@ async function runTests() {
     section('C15: Shielded Pool RPCs');
 
     await tryRpc('getShieldedPoolState', [], 'getShieldedPoolState');
-    await tryRpc('getShieldedPoolStats', [], 'getShieldedPoolStats');
     await tryRpc('getShieldedMerkleRoot', [], 'getShieldedMerkleRoot');
     await tryRpc('getShieldedCommitments', [{ from: 0, limit: 10 }], 'getShieldedCommitments');
     await tryRpc('isNullifierSpent', ['0000000000000000000000000000000000000000000000000000000000000000'], 'isNullifierSpent');
-    await tryRpc('checkNullifier', ['0000000000000000000000000000000000000000000000000000000000000000'], 'checkNullifier');
 
     // ══════════════════════════════════════════════════════════════════════
     // C16: DEX REST API Coverage

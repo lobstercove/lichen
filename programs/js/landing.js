@@ -16,7 +16,7 @@ function resolveNetwork(name) {
 let currentNetwork = resolveNetwork(localStorage.getItem(NETWORK_STORAGE_KEY) || 'testnet');
 let RPC_URL = typeof LICHEN_CONFIG !== 'undefined'
     ? LICHEN_CONFIG.rpc(currentNetwork)
-    : 'https://testnet-rpc.lichen.network';
+    : 'https://testnet-api.lichen.network';
 
 function setProgramsNetwork(network, { reload = false } = {}) {
     currentNetwork = resolveNetwork(network);

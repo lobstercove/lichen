@@ -4,10 +4,10 @@ This is the operator runbook for launching Lichen mainnet and then enabling
 mainnet custody. It is intentionally step-by-step and gate-based. Do not skip a
 gate because mainnet genesis and custody routes handle real value.
 
-Written for the current mainnet package. Current signed-release target for this
-runbook is `v0.5.221`; keep `v0.5.221` as the signed rollback point until a newer
-release is used, replace every example tag with the newer signed release tag
-after CI and release verification pass.
+Written for the current mainnet package. Candidate release target for this
+runbook is `v0.5.224`; keep `v0.5.223` as the signed rollback point. The
+candidate is not deployable until it passes CI, archive parity, signature
+verification, and deployment approval.
 
 ## Operating Rules
 
@@ -19,6 +19,15 @@ after CI and release verification pass.
 - Public mainnet validators must be archive-backed from first boot. `v0.5.190`
   and later refuse non-dev `mainnet` startup unless `--archive-mode` and
   `--cold-store /var/lib/lichen/archive-mainnet` are both present.
+- Every mainnet block after height 1 must contain exactly one version-2
+  canonical parent commit transaction at index 0. Sync and startup must verify
+  its signatures against the complete parent-height powers authenticated by the
+  parent `validators_hash`; a missing power snapshot, envelope, parent body, or
+  two-thirds threshold is fatal and must not be bypassed.
+- `getBlockCommit` on every validator must return the same `canonical_child`
+  certificate version, `validators_hash`, validator powers, round, and
+  signatures at a fixed non-tip slot. Local pending-tip evidence is not archive
+  parity or a mainnet launch proof.
 - Do not expose public custody or wallet routes until that exact route passes a
   dust deposit and dust withdrawal on mainnet.
 - Do not use the mainnet faucet pattern. There is no mainnet faucet.
@@ -38,8 +47,14 @@ after CI and release verification pass.
   preserve replay compatibility for the June 2026 testnet after governed signer
   custody was lost; mainnet must launch from verified custody instead.
 - Do not deploy a release that changes consensus rules with a mixed-version
-  rolling restart. The current rollback point `v0.5.221` must remain available
+  rolling restart. The current rollback point `v0.5.223` must remain available
   until a newer signed rollback point is explicitly recorded.
+- `v0.5.224` introduces the canonical analytics v2 state projection. Deploy it
+  only as a coordinated all-validator upgrade after proving every validator can
+  read every `dex_trade_*` row and its referenced block from genesis through
+  tip. The migration intentionally exits on partial DEX/ANALYTICS registration
+  or missing canonical history; do not bypass that failure or delete analytics
+  state. Fresh mainnet genesis marks the schema before any trade exists.
 - Do not commit provider URLs, auth tokens, keypair passwords, custody seeds,
   funded keypairs, signing keys, or filled production env files.
 - Do not print secrets in shell logs, tickets, chat, or launch notes. Print key
@@ -157,6 +172,7 @@ command summary, and result.
 | Key gate | validator keys, custody seeds, signer tokens, signing keys, Solana fee payer, treasury keys installed with correct ownership |
 | Funding gate | Solana fee payer has SOL; source-chain treasuries have enough native gas for dust tests |
 | Genesis gate | genesis hash recorded; seed produces blocks; joiners sync from peers |
+| State proof gate | checkpoint root is certificate-bound; transaction-0 inclusion and historical child finality verify after validator-set expansion |
 | Post-genesis gate | wrapped contract pins synced; signed metadata installed; route verifier passes |
 | Custody health gate | custody `/health`, `/status`, logs, and route readiness pass |
 | Route smoke gate | every public route passes dust deposit and dust withdrawal |
@@ -210,7 +226,7 @@ credentials, or keypair passwords.
 Use the signed release that passed CI. For the current package:
 
 ```bash
-export LICHEN_RELEASE_TAG=v0.5.221
+export LICHEN_RELEASE_TAG=v0.5.224
 export LICHEN_MAINNET_VPS_HOSTS="15.204.229.189 37.59.97.61 15.235.142.253 148.113.43.247"
 ```
 
@@ -254,7 +270,7 @@ For an emergency rollback to the current signed rollback point, set the tag
 explicitly and run the same signed-release path:
 
 ```bash
-export LICHEN_RELEASE_TAG=v0.5.221
+export LICHEN_RELEASE_TAG=v0.5.223
 LICHEN_VERIFY_RELEASE_ONLY=1 bash scripts/rolling-release-deploy.sh mainnet
 bash scripts/rolling-release-deploy.sh mainnet
 ```
@@ -312,7 +328,7 @@ assert not missing
 '
 ```
 
-For testnet, use `RPC_URL="https://testnet-rpc.lichen.network"` and keep the
+For testnet, use `RPC_URL="https://testnet-api.lichen.network"` and keep the
 same signer unless the release signer has been intentionally rotated in code,
 runbooks, signed metadata, and release assets together.
 
@@ -760,7 +776,7 @@ sudo mkdir -p "$STATE"
 sudo chown lichen:lichen "$STATE"
 if [ ! -f "$STATE/validator-keypair.json" ]; then
   sudo -u lichen env LICHEN_KEYPAIR_PASSWORD="$KP_PASS" \
-    /usr/local/bin/lichen init \
+    /usr/local/bin/lichen identity new \
     --output "$STATE/validator-keypair.json"
 fi
 
@@ -1180,7 +1196,7 @@ Required evidence:
 - Public RPC and WebSocket checks pass from outside the operator network:
   `getHealth`, `getFeeConfig`, finalized `getSlot`, `getLatestBlock`,
   `getBlock`, `getTransaction`, `getTransactionsByAddress`,
-  `getTransactionHistory`, `getAccountTxCount`, and `subscribeSlots`.
+  `getAccountTxCount`, and `subscribeSlots`.
 - Archive/history queries prove old and recent transactions remain queryable
   after validator restart/rejoin. Mainnet public RPC must be archive-backed from
   first boot.

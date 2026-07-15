@@ -25,7 +25,7 @@ build: build-node build-contracts-wasm build-cli build-sdk
 
 build-node:
 	@echo "🔨 Building Lichen node (validator + RPC + P2P)..."
-	cargo build --release --workspace
+	cargo build --release --workspace --locked
 
 build-contracts:
 	@echo "🔨 Building contracts (native, for testing)..."
@@ -33,7 +33,7 @@ build-contracts:
 	for d in contracts/*/; do \
 		if [ -f "$$d/Cargo.toml" ]; then \
 			echo "  Building $$(basename $$d)..."; \
-			if ! (cd "$$d" && cargo build --release 2>&1); then \
+			if ! (cd "$$d" && cargo build --release --locked 2>&1); then \
 				echo "  ❌ FAILED: $$(basename $$d)"; FAIL=1; \
 			fi; \
 		fi; \
@@ -48,7 +48,7 @@ build-contracts-wasm:
 		for d in contracts/*/; do \
 			if [ -f "$$d/Cargo.toml" ] && grep -q 'cdylib' "$$d/Cargo.toml" 2>/dev/null; then \
 				echo "  Building $$(basename $$d) → WASM..."; \
-				if ! (cd "$$d" && cargo build --target wasm32-unknown-unknown --release 2>&1); then \
+				if ! (cd "$$d" && cargo build --target wasm32-unknown-unknown --release --locked 2>&1); then \
 					echo "  ❌ FAILED: $$(basename $$d)"; exit 1; \
 				fi; \
 			fi; \
@@ -57,12 +57,12 @@ build-contracts-wasm:
 
 build-cli:
 	@echo "🔨 Building CLI..."
-	cargo build --release -p lichen-cli 2>/dev/null || cargo build --release -p cli 2>/dev/null || echo "⚠️  CLI package not found"
+	cargo build --release --locked -p lichen-cli
 
 build-sdk:
 	@echo "🔨 Building TypeScript SDKs..."
-	@if [ -d sdk/js ] && [ -f sdk/js/package.json ]; then (cd sdk/js && npm run build || npx tsc || (echo "❌ SDK js build failed" && exit 1)); fi
-	@if [ -d dex/sdk ] && [ -f dex/sdk/package.json ]; then (cd dex/sdk && npm run build || npx tsc || (echo "❌ DEX SDK build failed" && exit 1)); fi
+	@if [ -d sdk/js ] && [ -f sdk/js/package.json ]; then (cd sdk/js && npm run build); fi
+	@if [ -d dex/sdk ] && [ -f dex/sdk/package.json ]; then (cd dex/sdk && npm run build); fi
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Test
@@ -75,7 +75,7 @@ test: test-node test-contracts test-prediction-market
 
 test-node:
 	@echo "🧪 Running node tests..."
-	cargo test --workspace --release
+	cargo test --workspace --release --locked
 
 test-contracts:
 	@echo "🧪 Running contract tests..."
@@ -83,23 +83,24 @@ test-contracts:
 	for d in contracts/*/; do \
 		if [ -f "$$d/Cargo.toml" ]; then \
 			name=$$(basename "$$d"); \
-			if (cd "$$d" && cargo test --release >/dev/null 2>&1); then \
+			if (cd "$$d" && cargo test --release --locked >/dev/null 2>&1); then \
 				PASS=$$((PASS + 1)); \
 			else \
 				echo "  ❌ $$name"; FAIL=$$((FAIL + 1)); \
 			fi; \
 		fi; \
-	done; \
-	echo "  Contracts: $$PASS passed, $$FAIL failed"
+		done; \
+	echo "  Contracts: $$PASS passed, $$FAIL failed"; \
+	if [ $$FAIL -ne 0 ]; then exit 1; fi
 
 test-e2e:
 	@echo "🧪 Running E2E cross-contract tests..."
-	@FAIL=0; \
+	@set -o pipefail; FAIL=0; \
 	for d in contracts/*/; do \
 		if [ -d "$$d/tests" ] && ls "$$d/tests/"*.rs >/dev/null 2>&1; then \
 			name=$$(basename "$$d"); \
 			echo "  E2E: $$name"; \
-			if ! (cd "$$d" && cargo test --release -- --test-threads=1 2>&1 | tail -3); then \
+			if ! (cd "$$d" && cargo test --release --locked -- --test-threads=1 2>&1 | tail -3); then \
 				FAIL=1; \
 			fi; \
 		fi; \
@@ -108,10 +109,10 @@ test-e2e:
 
 test-dex:
 	@echo "🧪 Running DEX-specific tests..."
-	@FAIL=0; \
+	@set -o pipefail; FAIL=0; \
 	for c in dex_core dex_amm dex_router dex_margin dex_rewards dex_governance dex_analytics; do \
 		echo "  Testing $$c..."; \
-		if ! (cd contracts/$$c && cargo test --release 2>&1 | tail -1); then \
+		if ! (cd contracts/$$c && cargo test --release --locked 2>&1 | tail -1); then \
 			FAIL=1; \
 		fi; \
 	done; \
@@ -119,7 +120,7 @@ test-dex:
 
 test-prediction-market:
 	@echo "🧪 Running prediction market contract tests..."
-	@cd contracts/prediction_market && cargo test --release
+	@cd contracts/prediction_market && cargo test --release --locked
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Deploy
@@ -207,10 +208,10 @@ clean:
 	@echo "✅ Clean"
 
 lint:
-	cargo clippy --workspace -- -D warnings
+	cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 	@FAIL=0; \
 	for d in contracts/*/; do \
-		if ! (cd "$$d" && cargo clippy -- -D warnings 2>/dev/null); then \
+		if ! (cd "$$d" && cargo clippy --locked -- -D warnings 2>/dev/null); then \
 			FAIL=1; \
 		fi; \
 	done; \
@@ -228,18 +229,18 @@ fmt:
 
 health:
 	@echo "Checking node health at $(RPC_URL)..."
-	@curl -s -X POST $(RPC_URL) -H "Content-Type: application/json" \
-		-d '{"jsonrpc":"2.0","id":1,"method":"health"}' | python3 -m json.tool 2>/dev/null || echo "❌ Node unreachable"
+	@set -o pipefail; curl -fsS -X POST $(RPC_URL) -H "Content-Type: application/json" \
+		-d '{"jsonrpc":"2.0","id":1,"method":"health"}' | python3 -m json.tool
 
 check:
 	@echo "🔍 Checking workspace..."
-	cargo check --workspace
+	cargo check --workspace --locked
 	@echo "🔍 Checking contracts..."
-	@FAIL=0; \
+	@set -o pipefail; FAIL=0; \
 	for d in contracts/*/; do \
 		if [ -f "$$d/Cargo.toml" ]; then \
 			echo "  Checking $$(basename $$d)..."; \
-			if ! (cd "$$d" && cargo check 2>&1 | tail -1); then \
+			if ! (cd "$$d" && cargo check --locked 2>&1 | tail -1); then \
 				FAIL=1; \
 			fi; \
 		fi; \

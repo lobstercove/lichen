@@ -258,7 +258,7 @@ Concrete additive command skeleton, to run only after a clean release is present
 ./scripts/build-all-contracts.sh --tokens
 
 # Deploy/register WBTC once against the live testnet RPC using the governed deployer key.
-LICHEN_RPC_URL=https://testnet-rpc.lichen.network \
+LICHEN_RPC_URL=https://testnet-api.lichen.network \
   ./target/release/lichen deploy contracts/wbtc_token/wbtc_token.wasm \
   --keypair /path/to/governed-deployer.json \
   --symbol WBTC \
@@ -268,29 +268,29 @@ LICHEN_RPC_URL=https://testnet-rpc.lichen.network \
   --metadata '{"description":"Wrapped Bitcoin (BTC) on Lichen - bridged 1:1 from the Bitcoin network.","mintable":"true","burnable":"true","logo_url":"https://s2.coinmarketcap.com/static/img/coins/128x128/1.png","icon_class":"fab fa-bitcoin","total_supply":"0"}'
 
 # Confirm the live registry entry before touching custody/frontends.
-LICHEN_RPC_URL=https://testnet-rpc.lichen.network \
+LICHEN_RPC_URL=https://testnet-api.lichen.network \
   ./target/release/lichen symbol lookup WBTC --output json
 
 # Initialize WBTC exactly once with the operational token admin/deployer key.
 # This creates wbtc_admin, wbtc_attester, wbtc_minter, wbtc_supply,
 # wbtc_minted, wbtc_burned, wbtc_epoch_start, and wbtc_epoch_mint storage.
-LICHEN_RPC_URL=https://testnet-rpc.lichen.network \
+LICHEN_RPC_URL=https://testnet-api.lichen.network \
   ./target/release/lichen token initialize WBTC \
   --keypair /path/to/governed-deployer.json
 
 # Confirm WBTC is initialized before wiring custody or public UI surfaces.
-curl -fsS https://testnet-rpc.lichen.network \
+curl -fsS https://testnet-api.lichen.network \
   -H 'content-type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"getProgramStorage","params":["<live WBTC program>",{"limit":50}]}' \
   | jq -e '.result.entries | map(.key_decoded // .key) | any(. == "wbtc_admin")'
 
 # Refresh operator manifests from the live symbol registry.
-LICHEN_RPC_URL=https://testnet-rpc.lichen.network \
+LICHEN_RPC_URL=https://testnet-api.lichen.network \
   python3 scripts/update-manifest.py
 
 # On every custody host, fetch wrapped-token addresses and enforce the BTC route config.
 sudo bash scripts/sync-custody-wrapped-contracts.sh \
-  --rpc-url https://testnet-rpc.lichen.network \
+  --rpc-url https://testnet-api.lichen.network \
   --env-file /etc/lichen/custody-env
 sudo bash scripts/apply-custody-route-profile.sh \
   --profile /etc/lichen/custody-routes-testnet.env \

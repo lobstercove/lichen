@@ -136,7 +136,7 @@
             <section id="connection">
                 <h2>Connection</h2>
                 <div class="callout callout-info">
-                    <p><strong>Public testnet WebSocket:</strong> <code>wss://testnet-rpc.lichen.network/ws</code></p>
+                    <p><strong>Public testnet WebSocket:</strong> <code>wss://testnet-api.lichen.network/ws</code></p>
                     <p><strong>Mainnet WebSocket target:</strong> <code>wss://rpc.lichen.network/ws</code></p>
                     <p>The WebSocket server accepts standard WebSocket connections. All messages use JSON-RPC 2.0
                         format.</p>
@@ -155,8 +155,8 @@
                         <pre><code>import { Connection } from '@lobstercove/lichen-sdk';
 
 const conn = new Connection(
-    'https://testnet-rpc.lichen.network',
-    'wss://testnet-rpc.lichen.network/ws'
+    'https://testnet-api.lichen.network',
+    'wss://testnet-api.lichen.network/ws'
 );
 
 // Switch to https://rpc.lichen.network and wss://rpc.lichen.network/ws only when targeting mainnet.
@@ -180,8 +180,8 @@ from lichen import Connection
 
 async def main():
     conn = Connection(
-        'https://testnet-rpc.lichen.network',
-        ws_url='wss://testnet-rpc.lichen.network/ws'
+        'https://testnet-api.lichen.network',
+        ws_url='wss://testnet-api.lichen.network/ws'
     )
 
     # Switch to https://rpc.lichen.network and wss://rpc.lichen.network/ws only when targeting mainnet.
@@ -203,7 +203,7 @@ asyncio.run(main())</code></pre>
                         <div class="code-block-header"><span class="code-lang">wscat</span><button
                                 class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
                         <pre><code># Install: npm install -g wscat
-wscat -c wss://testnet-rpc.lichen.network/ws
+wscat -c wss://testnet-api.lichen.network/ws
 
 # Subscribe to slots
 &gt; {"jsonrpc":"2.0","id":1,"method":"subscribeSlots","params":null}
@@ -720,7 +720,7 @@ await conn.offMarketSales(subId);</code></pre>
 
             <!-- subscribeSignatureStatus -->
             <div class="method-card" id="subscribeSignatureStatus">
-                <h3 class="method-name">subscribeSignatureStatus / signatureSubscribe</h3>
+                <h3 class="method-name">subscribeSignatureStatus</h3>
                 <p class="method-desc">Track the confirmation status of a specific transaction signature through
                     processed → confirmed → finalized. <code>finalized</code> means the transaction's block is covered
                     by the node's BFT finality tracker after commit supermajority.</p>
@@ -766,7 +766,7 @@ await conn.offSignatureStatus(subId);</code></pre>
 
             <!-- subscribeValidators -->
             <div class="method-card" id="subscribeValidators">
-                <h3 class="method-name">subscribeValidators / validatorSubscribe</h3>
+                <h3 class="method-name">subscribeValidators</h3>
                 <p class="method-desc">Receive notifications when the validator set changes — new validators joining,
                     leaving, becoming delinquent, or stake changes.</p>
                 <div class="method-section">
@@ -791,7 +791,7 @@ await conn.offSignatureStatus(subId);</code></pre>
 
             <!-- subscribeTokenBalance -->
             <div class="method-card" id="subscribeTokenBalance">
-                <h3 class="method-name">subscribeTokenBalance / tokenBalanceSubscribe</h3>
+                <h3 class="method-name">subscribeTokenBalance</h3>
                 <p class="method-desc">Track token balance changes for a specific owner, optionally filtered by mint
                     address.</p>
                 <div class="method-section">
@@ -833,7 +833,7 @@ await conn.offSignatureStatus(subId);</code></pre>
 
             <!-- subscribeEpochs -->
             <div class="method-card" id="subscribeEpochs">
-                <h3 class="method-name">subscribeEpochs / epochSubscribe</h3>
+                <h3 class="method-name">subscribeEpochs</h3>
                 <p class="method-desc">Receive a notification at each epoch boundary with epoch statistics.</p>
                 <div class="method-section">
                     <h4 class="method-section-title">Parameters</h4>
@@ -857,7 +857,7 @@ await conn.offSignatureStatus(subId);</code></pre>
 
             <!-- subscribeGovernance -->
             <div class="method-card" id="subscribeGovernance">
-                <h3 class="method-name">subscribeGovernance / governanceSubscribe</h3>
+                <h3 class="method-name">subscribeGovernance</h3>
                 <p class="method-desc">Receive notifications for on-chain governance events: proposal creation,
                     approval, execution, and cancellation.</p>
                 <div class="method-section">
@@ -1023,7 +1023,7 @@ await conn.offSignatureStatus(subId);</code></pre>
 
                 <h3>Prediction Multiplexed Channels</h3>
                 <p><code>subscribePrediction</code> / <code>unsubscribePrediction</code><br>
-                    Aliases: <code>subscribePredictionMarket</code> / <code>unsubscribePredictionMarket</code></p>
+                    Unsubscribe with <code>unsubscribePrediction</code>.</p>
                 <div class="method-section">
                     <h4 class="method-section-title">Channel Param Format</h4>
                     <ul>

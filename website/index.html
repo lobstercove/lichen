@@ -1566,7 +1566,7 @@
                     <div class="contract-card animate-on-scroll" data-category="defi">
                         <div class="contract-icon"><i class="fas fa-route"></i></div>
                         <h3>DEX Router</h3>
-                        <p>Smart order routing across CLOB, AMM, and legacy LichenSwap. Multi-hop and split routes.</p>
+                        <p>Smart order routing across CLOB and AMM liquidity with multi-hop and split routes.</p>
                         <span class="contract-size">520 lines · 27 tests</span>
                     </div>
                     <div class="contract-card animate-on-scroll" data-category="defi">
@@ -1795,7 +1795,7 @@ rustc --target wasm32-unknown-unknown \
   src/lib.rs -o counter.wasm
 
 # Deploy
-lichen deploy counter.wasm --rpc-url https://testnet-rpc.lichen.network
+lichen deploy counter.wasm --rpc-url https://testnet-api.lichen.network
 
 # Output:
 # <i class="fa-solid fa-cube"></i> Deploying contract...
@@ -1815,7 +1815,7 @@ lichen deploy counter.wasm --rpc-url https://testnet-rpc.lichen.network
                                 <span class="code-title">JavaScript</span>
                             </div>
                             <div class="code-content">
-                                <pre><code>const RPC_URL = 'https://testnet-rpc.lichen.network';
+                                <pre><code>const RPC_URL = 'https://testnet-api.lichen.network';
 // Switch to https://rpc.lichen.network only when targeting mainnet.
 
 const response = await fetch(RPC_URL, {
@@ -1988,11 +1988,11 @@ console.log(`Balance: ${result.licn} LICN`);
                 </div>
 
                 <div class="api-footer">
-                    <p><strong>Base URLs:</strong> <code>https://testnet-rpc.lichen.network</code> (testnet) ·
+                    <p><strong>Base URLs:</strong> <code>https://testnet-api.lichen.network</code> (testnet) ·
                         <code>https://rpc.lichen.network</code> (mainnet)
                     </p>
                     <p><strong>Protocol:</strong> JSON-RPC 2.0 · <strong>WebSocket:</strong>
-                        <code>wss://testnet-rpc.lichen.network/ws</code> · <code>wss://rpc.lichen.network/ws</code>
+                        <code>wss://testnet-api.lichen.network/ws</code> · <code>wss://rpc.lichen.network/ws</code>
                     </p>
                     <a href="#" data-lichen-app="developers" data-lichen-path="/rpc-reference.html"
                         class="btn btn-secondary btn-large" target="_blank" style="margin-top: 1rem;">

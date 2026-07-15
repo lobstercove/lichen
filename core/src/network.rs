@@ -130,7 +130,7 @@ impl SeedsConfig {
                         pubkey: String::new(),
                         region: "us-east".to_string(),
                         operator: "Lichen Foundation".to_string(),
-                        rpc: "https://testnet-rpc.lichen.network".to_string(),
+                        rpc: "https://testnet-api.lichen.network".to_string(),
                     },
                     SeedNode {
                         id: "seed-02".to_string(),
@@ -138,7 +138,7 @@ impl SeedsConfig {
                         pubkey: String::new(),
                         region: "eu-west".to_string(),
                         operator: "Lichen Foundation".to_string(),
-                        rpc: "https://testnet-rpc.lichen.network".to_string(),
+                        rpc: "https://testnet-api.lichen.network".to_string(),
                     },
                     SeedNode {
                         id: "seed-03".to_string(),
@@ -146,7 +146,7 @@ impl SeedsConfig {
                         pubkey: String::new(),
                         region: "ap-southeast".to_string(),
                         operator: "Lichen Foundation".to_string(),
-                        rpc: "https://testnet-rpc.lichen.network".to_string(),
+                        rpc: "https://testnet-api.lichen.network".to_string(),
                     },
                     SeedNode {
                         id: "seed-04".to_string(),
@@ -154,7 +154,7 @@ impl SeedsConfig {
                         pubkey: String::new(),
                         region: "india".to_string(),
                         operator: "Lichen Foundation".to_string(),
-                        rpc: "https://testnet-rpc.lichen.network".to_string(),
+                        rpc: "https://testnet-api.lichen.network".to_string(),
                     },
                 ],
                 bootstrap_peers: vec![
@@ -163,7 +163,7 @@ impl SeedsConfig {
                     "seed-03.lichen.network:7001".to_string(),
                     "seed-04.lichen.network:7001".to_string(),
                 ],
-                rpc_endpoints: vec!["https://testnet-rpc.lichen.network".to_string()],
+                rpc_endpoints: vec!["https://testnet-api.lichen.network".to_string()],
                 explorers: vec!["https://explorer.lichen.network".to_string()],
                 faucets: vec!["https://faucet.lichen.network".to_string()],
             },

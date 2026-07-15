@@ -112,7 +112,7 @@
                             <li>Storage: Key-value byte store per contract</li>
                             <li>Entry points: <code>#[no_mangle] pub extern "C" fn</code> (named exports, recommended)
                             </li>
-                            <li>Legacy DEX contracts use opcode dispatch via <code>call()</code> — see <a
+                            <li>DEX protocol contracts use opcode dispatch via <code>call()</code> — see <a
                                     href="contract-reference.html">Contract Reference</a> for details</li>
                             <li>Return semantics are ABI-declared; status-code functions commonly use
                                 <code>0</code> for success and nonzero error codes</li>
@@ -860,15 +860,13 @@ match call_contract(call) {
                 <div class="code-block">
                     <div class="code-header"><span>Real CLI / RPC Commands</span><button
                             class="code-copy-btn">Copy</button></div>
-                    <pre><code>lichen --rpc-url https://testnet-rpc.lichen.network --output json symbol lookup LICHENSWAP
+                    <pre><code>lichen --rpc-url https://testnet-api.lichen.network --output json symbol lookup LICHENSWAP
 
 # Replace &lt;LICHENSWAP_ADDRESS&gt; with the program from the lookup result.
-lichen --rpc-url https://testnet-rpc.lichen.network --output json \
+lichen --rpc-url https://testnet-api.lichen.network --output json \
   call &lt;LICHENSWAP_ADDRESS&gt; get_quote --args '[1000000000, true]'
-
-curl -X POST https://testnet-rpc.lichen.network \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"getLichenSwapStats","params":[]}'</code></pre>
+lichen --rpc-url https://testnet-api.lichen.network --output json \
+  call &lt;LICHENSWAP_ADDRESS&gt; get_swap_stats</code></pre>
                 </div>
 
                 <h3>ThallLend Off-Chain Example</h3>
@@ -878,16 +876,16 @@ curl -X POST https://testnet-rpc.lichen.network \
                 <div class="code-block">
                     <div class="code-header"><span>Real CLI / RPC Commands</span><button
                             class="code-copy-btn">Copy</button></div>
-                    <pre><code>lichen --rpc-url https://testnet-rpc.lichen.network --output json symbol lookup LEND
+                    <pre><code>lichen --rpc-url https://testnet-api.lichen.network --output json symbol lookup LEND
 
 # Replace &lt;LEND_ADDRESS&gt; with the program from the lookup result.
-lichen --rpc-url https://testnet-rpc.lichen.network --output json \
+lichen --rpc-url https://testnet-api.lichen.network --output json \
     call &lt;LEND_ADDRESS&gt; get_protocol_stats
 
-lichen --rpc-url https://testnet-rpc.lichen.network --output json \
+lichen --rpc-url https://testnet-api.lichen.network --output json \
     call &lt;LEND_ADDRESS&gt; get_interest_rate
 
-curl -X POST https://testnet-rpc.lichen.network \
+curl -X POST https://testnet-api.lichen.network \
     -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","id":1,"method":"getThallLendStats","params":[]}'</code></pre>
                 </div>
@@ -899,16 +897,16 @@ curl -X POST https://testnet-rpc.lichen.network \
                 <div class="code-block">
                     <div class="code-header"><span>Real CLI / RPC Commands</span><button
                             class="code-copy-btn">Copy</button></div>
-                    <pre><code>lichen --rpc-url https://testnet-rpc.lichen.network --output json symbol lookup SPOREVAULT
+                    <pre><code>lichen --rpc-url https://testnet-api.lichen.network --output json symbol lookup SPOREVAULT
 
 # Replace &lt;SPOREVAULT_ADDRESS&gt; with the program from the lookup result.
-lichen --rpc-url https://testnet-rpc.lichen.network --output json \
+lichen --rpc-url https://testnet-api.lichen.network --output json \
     call &lt;SPOREVAULT_ADDRESS&gt; get_vault_stats
 
-lichen --rpc-url https://testnet-rpc.lichen.network --output json \
+lichen --rpc-url https://testnet-api.lichen.network --output json \
     call &lt;SPOREVAULT_ADDRESS&gt; get_strategy_info --args '[0]'
 
-curl -X POST https://testnet-rpc.lichen.network \
+curl -X POST https://testnet-api.lichen.network \
     -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","id":1,"method":"getSporeVaultStats","params":[]}'</code></pre>
                 </div>
@@ -921,16 +919,16 @@ curl -X POST https://testnet-rpc.lichen.network \
                 <div class="code-block">
                     <div class="code-header"><span>Real CLI / RPC Commands</span><button
                             class="code-copy-btn">Copy</button></div>
-                    <pre><code>lichen --rpc-url https://testnet-rpc.lichen.network --output json symbol lookup BOUNTY
+                    <pre><code>lichen --rpc-url https://testnet-api.lichen.network --output json symbol lookup BOUNTY
 
 # Replace &lt;BOUNTY_ADDRESS&gt; with the program from the lookup result.
-lichen --rpc-url https://testnet-rpc.lichen.network --output json \
+lichen --rpc-url https://testnet-api.lichen.network --output json \
     call &lt;BOUNTY_ADDRESS&gt; get_bounty_count
 
-lichen --rpc-url https://testnet-rpc.lichen.network --output json \
+lichen --rpc-url https://testnet-api.lichen.network --output json \
     call &lt;BOUNTY_ADDRESS&gt; get_platform_stats
 
-curl -X POST https://testnet-rpc.lichen.network \
+curl -X POST https://testnet-api.lichen.network \
     -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","id":1,"method":"getBountyBoardStats","params":[]}'</code></pre>
                 </div>

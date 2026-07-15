@@ -34,19 +34,6 @@ pub(crate) fn spawn_background_workers(state: &CustodyState) {
             evm_watcher_loop_for_chains(watcher_state, url, chains).await;
         });
     }
-    if state.config.evm_rpc_url.is_some()
-        && state.config.eth_rpc_url.is_none()
-        && state.config.bnb_rpc_url.is_none()
-        && state.config.neox_rpc_url.is_none()
-    {
-        // Legacy fallback: single EVM watcher for all chains
-        let url = state.config.evm_rpc_url.clone().unwrap();
-        let watcher_state = state.clone();
-        tokio::spawn(async move {
-            evm_watcher_loop(watcher_state, url).await;
-        });
-    }
-
     let sweep_state = state.clone();
     tokio::spawn(async move {
         sweep_worker_loop(sweep_state).await;

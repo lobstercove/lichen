@@ -199,7 +199,10 @@ impl TxProcessor {
         let contract =
             self.refresh_contract_lifecycle_from_restrictions(contract_address, current_slot)?;
 
-        contract.validate_lifecycle_for_execution(function, false, value)?;
+        let logical_function_name =
+            resolve_abi_call_function_name(&contract, function, &args).to_string();
+
+        contract.validate_lifecycle_for_execution(&logical_function_name, false, value)?;
 
         if value > 0 {
             self.b_transfer(caller, contract_address, value)?;
@@ -214,7 +217,7 @@ impl TxProcessor {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .2;
-        let context = build_top_level_call_context(
+        let mut context = build_top_level_call_context(
             ContractContext::with_args(
                 *caller,
                 *contract_address,
@@ -226,6 +229,19 @@ impl TxProcessor {
             self.state.clone(),
             tx_budget.saturating_sub(cu_used_so_far),
         );
+        if value > 0 {
+            // `b_transfer` has already moved the payable value in the batch
+            // overlay. Native host calls execute against StateStore, so seed
+            // their projection with the exact in-flight account states.
+            for address in [*caller, *contract_address] {
+                let account = self
+                    .b_get_account(&address)?
+                    .ok_or_else(|| format!("Payable account {} not found", address))?;
+                context
+                    .pending_native_account_state
+                    .insert(address, account);
+            }
+        }
 
         let mut runtime = ContractRuntime::get_pooled();
         let result = runtime.execute(&contract, function, &context.args.clone(), context)?;
@@ -242,7 +258,7 @@ impl TxProcessor {
 
         let outcome = evaluate_contract_outcome(
             &contract,
-            function,
+            &logical_function_name,
             &result,
             ContractOutcomeFallback::LegacyNonzeroNoChangeFailure,
         );

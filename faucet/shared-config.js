@@ -27,8 +27,8 @@ const LICHEN_CONFIG = (() => {
         },
         testnet: {
             label: 'Testnet',
-            rpc: 'https://testnet-rpc.lichen.network',
-            ws: 'wss://testnet-rpc.lichen.network/ws',
+            rpc: 'https://testnet-api.lichen.network',
+            ws: 'wss://testnet-api.lichen.network/ws',
             slotDurationMs: 400,
             local: false,
         },

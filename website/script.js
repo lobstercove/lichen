@@ -154,7 +154,7 @@ class LichenRPC {
         }
         return this.submitTransaction(txData);
     }
-    async health() { return this.call('health'); }
+    async getHealth() { return this.call('getHealth'); }
 }
 
 function resolveValidatorCount(validatorsResult, currentSlot) {
@@ -275,7 +275,7 @@ function connectWebsiteWS() {
             // Subscribe to slot updates
             websiteWs.send(JSON.stringify({
                 jsonrpc: '2.0', id: 1,
-                method: 'slotSubscribe', params: []
+                method: 'subscribeSlots', params: []
             }));
         };
 

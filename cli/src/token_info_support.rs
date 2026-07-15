@@ -26,7 +26,7 @@ pub(super) async fn handle_token_info(client: &RpcClient, token: String) -> Resu
 
     match info {
         Ok(info) => {
-            println!("📍 Address: {}", info.address);
+            println!("📍 Address: {}", info.contract_id);
             println!("👤 Owner:   {}", info.owner);
             println!("📏 Code size: {} bytes", info.code_size);
             let mut total_supply = info

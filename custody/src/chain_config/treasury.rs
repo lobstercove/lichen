@@ -19,7 +19,7 @@ pub(crate) fn derive_treasury_addresses_from_seed(config: &mut CustodyConfig) {
         }
     }
 
-    if config.treasury_eth_address.is_none() && config.treasury_evm_address.is_none() {
+    if config.treasury_eth_address.is_none() {
         match derive_evm_address("custody/treasury/ethereum", seed) {
             Ok(addr) => {
                 info!("derived ETH treasury from master seed: {}", addr);
@@ -29,7 +29,7 @@ pub(crate) fn derive_treasury_addresses_from_seed(config: &mut CustodyConfig) {
         }
     }
 
-    if config.treasury_bnb_address.is_none() && config.treasury_evm_address.is_none() {
+    if config.treasury_bnb_address.is_none() {
         match derive_evm_address("custody/treasury/bnb", seed) {
             Ok(addr) => {
                 info!("derived BNB treasury from master seed: {}", addr);

@@ -295,6 +295,16 @@ lichen-validator \
                 </li>
                 <li>It imports the canonical opcode-41 genesis state bundle from block 0, verifies it against the
                     block state root, then syncs and replays later blocks from peers.</li>
+                <li>For blocks after height 1, it verifies the canonical parent certificate against the exact
+                    parent-height powers authenticated by the parent header. Mainnet refuses missing or invalid
+                    certificates instead of trusting the joiner's current validator set. The certificate also binds
+                    the parent post-effects state root used by checkpoint sync.</li>
+                <li>Canonical execution state, receipts, block body, transaction slot indexes, and finality cursors
+                    commit in one RocksDB write, so restart cannot expose a processed transaction without its block.</li>
+                <li>Fresh chains persist post-effects activation at slot 1. An existing public chain must stop every
+                    validator at the same tip and prepare the same next-slot boundary on each database before startup;
+                    a missing boundary exits with status 78. Missing pre-activation markers are never replayed, and
+                    activated recovery requires the exact canonical block.</li>
                 <li>It does not copy RocksDB state, genesis wallet files, genesis keys, peer cache, consensus WAL,
                     custody keys, or faucet keys from existing validators.</li>
                 <li>It submits validator registration once synced, then starts validating after registration lands and
@@ -473,7 +483,7 @@ export LICHEN_KEYPAIR_PASSWORD='set-a-long-random-secret-before-first-start'
                     <span class="code-lang">Shell</span>
                     <button class="code-copy-btn">Copy</button>
                 </div>
-                <pre><code>lichen init --output ~/.lichen/validator-keypair.json
+                <pre><code>lichen identity new --output ~/.lichen/validator-keypair.json
 
 <i class="fa-solid fa-shrimp"></i> New validator keypair generated
   Identity: Mo1tVa1idAtoR...xYz789
@@ -500,9 +510,9 @@ export LICHEN_KEYPAIR_PASSWORD='set-a-long-random-secret-before-first-start'
                 <div class="callout-title"><i class="fas fa-exclamation-triangle"></i> Note</div>
                 These settings map to command-line flags: <code>--network</code>, <code>--p2p-port</code>,
                 <code>--rpc-port</code>, <code>--ws-port</code>, <code>--db-path</code>, <code>--keypair</code>,
-                <code>--cold-store</code>, <code>--archive-mode</code>, <code>--admin-token</code>,
+                <code>--cold-store</code>, <code>--archive-mode</code>,
                 <code>--no-watchdog</code>, <code>--watchdog-timeout</code>, <code>--max-restarts</code>,
-                <code>--dev-mode</code>, <code>--import-key</code>. They are documentation aliases, not direct TOML keys
+                <code>--dev-mode</code>, <code>--import-key</code>. These are the canonical CLI spellings, not TOML keys
                 parsed by the current binary.
             </div>
 
@@ -524,7 +534,7 @@ export LICHEN_KEYPAIR_PASSWORD='set-a-long-random-secret-before-first-start'
                         <td><code>keypair_path</code></td>
                         <td>String</td>
                         <td><code>~/.lichen/validator-keypair.json</code></td>
-                        <td>Path to the validator native PQ keypair JSON file. Generate with <code>lichen init</code>.
+                        <td>Path to the validator native PQ keypair JSON file. Generate with <code>lichen identity new</code>.
                         </td>
                     </tr>
                     <tr>
@@ -544,7 +554,7 @@ export LICHEN_KEYPAIR_PASSWORD='set-a-long-random-secret-before-first-start'
 
             <!-- [history] -->
             <h3><span class="config-section-label">[history]</span></h3>
-            <p>Optional archival settings for cold block retention and historical account lookups.</p>
+            <p>Required public-validator archival settings for complete genesis-to-tip history.</p>
 
             <table class="config-table">
                 <thead>
@@ -568,9 +578,9 @@ export LICHEN_KEYPAIR_PASSWORD='set-a-long-random-secret-before-first-start'
                         <td><code>--archive-mode</code></td>
                         <td>Boolean</td>
                         <td><code>false</code></td>
-                        <td>Persist historical account snapshots so <code>getAccountAtSlot</code> can answer archive
-                            queries. Pair with <code>--cold-store</code> on archival nodes to keep hot-state growth
-                            bounded.</td>
+                        <td>Require archive-backed public history, including blocks, transactions, indexes, events,
+                            and account snapshots. Non-development testnet and mainnet validators must pair this with
+                            <code>--cold-store</code>.</td>
                     </tr>
                 </tbody>
             </table>
@@ -932,13 +942,6 @@ export LICHEN_KEYPAIR_PASSWORD='set-a-long-random-secret-before-first-start'
                         <td><code>100</code></td>
                         <td>Maximum RPC requests per second per client.</td>
                     </tr>
-                    <tr>
-                        <td><code>admin_token</code></td>
-                        <td>String</td>
-                        <td><code>""</code></td>
-                        <td>Bearer token for admin RPC endpoints. Generate with <code>openssl rand -hex 32</code>. Empty
-                            = admin endpoints disabled.</td>
-                    </tr>
                 </tbody>
             </table>
 
@@ -1013,7 +1016,7 @@ export LICHEN_KEYPAIR_PASSWORD='set-a-long-random-secret-before-first-start'
                     <span class="code-lang">Shell</span>
                     <button class="code-copy-btn">Copy</button>
                 </div>
-                <pre><code>$ lichen stake add 75000000000 --rpc-url https://testnet-rpc.lichen.network
+                <pre><code>$ lichen stake add 75000000000 --rpc-url https://testnet-api.lichen.network
 
 <i class="fa-solid fa-shrimp"></i> Staking 75 LICN for validator Mo1tVa1idAtoR...xYz789
 
@@ -1132,7 +1135,7 @@ uptime_bps      = min(10000, blocks_produced × 10000 / expected_blocks)</code><
                     <span class="code-lang">Shell</span>
                     <button class="code-copy-btn">Copy</button>
                 </div>
-                <pre><code>$ lichen stake status --rpc-url https://testnet-rpc.lichen.network
+                <pre><code>$ lichen stake status --rpc-url https://testnet-api.lichen.network
 
   Identity:    Mo1tVa1idAtoR...xYz789
   Stake:       75,000.000000000 LICN
@@ -1225,7 +1228,7 @@ lichen_mempool_size 127</code></pre>
                     <span class="code-lang">Shell</span>
                     <button class="code-copy-btn">Copy</button>
                 </div>
-                <pre><code>curl -s https://testnet-rpc.lichen.network \
+                <pre><code>curl -s https://testnet-api.lichen.network \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getHealth"}'
 
@@ -1286,7 +1289,6 @@ services:
       - LICHEN_WS_PORT=8900
       - LICHEN_P2P_PORT=7001
             - LICHEN_SIGNER_BIND=127.0.0.1:9201
-      - LICHEN_ADMIN_TOKEN=${LICHEN_ADMIN_TOKEN:-}
     networks:
       - lichen
     healthcheck:
@@ -1355,8 +1357,8 @@ docker-compose down</code></pre>
             <!-- ========== 7. SYSTEMD DEPLOYMENT ========== -->
             <h2 id="systemd-deployment">Systemd Deployment</h2>
 
-            <p>For bare-metal Linux servers, install the release binary under a systemd service. Managed-host
-                provisioning automation is intentionally outside the public repo.</p>
+            <p>For bare-metal Linux servers, install the release binary under the checked-in systemd service.
+                <code>deploy/setup.sh</code> provisions the supported host layout.</p>
 
             <h3>Systemd Unit</h3>
 
@@ -1403,6 +1405,8 @@ Description=Lichen Validator Node
 Documentation=https://developers.lichen.network/validator.html
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -1417,6 +1421,7 @@ ExecStart=/usr/local/bin/lichen-validator --no-watchdog \
     --db-path /var/lib/lichen/state-${LICHEN_NETWORK}
 
 Restart=on-failure
+RestartPreventExitStatus=78
 RestartSec=10
 LimitNOFILE=65536
 
@@ -1819,8 +1824,8 @@ sudo lsof -i :8899   # RPC
                     <span class="code-lang">Shell</span>
                     <button class="code-copy-btn">Copy</button>
                 </div>
-                <pre><code>lichen balance --rpc-url https://testnet-rpc.lichen.network
-lichen stake status --rpc-url https://testnet-rpc.lichen.network</code></pre>
+                <pre><code>lichen balance --rpc-url https://testnet-api.lichen.network
+lichen stake status --rpc-url https://testnet-api.lichen.network</code></pre>
             </div>
 
             <h3>Sync Failures</h3>
@@ -1842,13 +1847,18 @@ lichen stake status --rpc-url https://testnet-rpc.lichen.network</code></pre>
 nc -zv seed-01.lichen.network 7001
 
 # Check current slot via native RPC (testnet port 8899)
-curl -s https://testnet-rpc.lichen.network \
+curl -s https://testnet-api.lichen.network \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getSlot"}' | jq .result</code></pre>
             </div>
 
             <h3>Disk Full</h3>
-            <p>The ledger grows over time. Monitor disk usage and plan for growth:</p>
+            <p>Every public validator retains the complete hot plus cold archive. Size storage from measured retained
+                data, the next operation's bounded write and compaction peak, and the runtime reserve. Normal rollout
+                requires at least 20 GiB free and less than 90% use by default. History repair requires 150% of the
+                dry-run's missing key/value bytes plus 10 GiB free. The validator skips checkpoint creation below 20
+                GiB and exits with status 78 below 10 GiB so systemd leaves it stopped instead of repeatedly reopening
+                RocksDB.</p>
 
             <div class="code-block">
                 <div class="code-block-header">
@@ -1861,8 +1871,8 @@ du -sh /var/lib/lichen/
 # Check available disk
 df -h /var/lib/lichen/
 
-# Set up monitoring alert (example with Prometheus Alertmanager)
-# Alert when disk usage > 80%</code></pre>
+# Rolling release preflight enforces measured free-space and use thresholds
+LICHEN_RELEASE_TAG=vX.Y.Z bash scripts/rolling-release-deploy.sh testnet</code></pre>
             </div>
 
             <h3>Debug Commands</h3>
@@ -1873,17 +1883,17 @@ df -h /var/lib/lichen/
                     <button class="code-copy-btn">Copy</button>
                 </div>
                 <pre><code># Full node status dump (testnet RPC port)
-curl -s https://testnet-rpc.lichen.network \
+curl -s https://testnet-api.lichen.network \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getHealth"}' | jq
 
 # Peer list
-curl -s https://testnet-rpc.lichen.network \
+curl -s https://testnet-api.lichen.network \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getClusterInfo"}' | jq
 
 # Validator set
-curl -s https://testnet-rpc.lichen.network \
+curl -s https://testnet-api.lichen.network \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getValidators"}' | jq
 
@@ -1898,7 +1908,7 @@ RUST_LOG=trace lichen-validator --network testnet --rpc-port 8899 --ws-port 8900
                 <div class="callout-title"><i class="fas fa-lightbulb"></i> Need Help?</div>
                 Join the Lichen Discord <code>#validators</code> channel or open an issue on <a
                     href="https://github.com/lobstercove/lichen/issues">GitHub</a> with your logs and config (redact
-                your keypair and admin token).
+                validator key material and service credentials).
             </div>
 
         </main>

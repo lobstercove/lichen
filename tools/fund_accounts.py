@@ -4,7 +4,7 @@ import sys, os, asyncio
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'sdk', 'python'))
 sys.path.insert(0, os.path.dirname(__file__))
 from lichen import Connection
-from deploy_dex import load_genesis_keypair
+from chain_helpers import load_genesis_keypair
 
 SPORES = 1_000_000_000
 RPC = os.environ.get('LICHEN_RPC_URL', 'http://127.0.0.1:8899')

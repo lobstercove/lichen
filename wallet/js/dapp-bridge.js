@@ -461,21 +461,6 @@
         return INTERACTIVE_METHODS.has(normalizeMethod(request?.payload?.method));
     }
 
-    function decodeBase64Json(value) {
-        const raw = atob(String(value || ''));
-        const bytes = Uint8Array.from(raw, (char) => char.charCodeAt(0));
-        return JSON.parse(new TextDecoder().decode(bytes));
-    }
-
-    function encodeBase64Json(value) {
-        const bytes = new TextEncoder().encode(JSON.stringify(value));
-        let binary = '';
-        for (const byte of bytes) {
-            binary += String.fromCharCode(byte);
-        }
-        return btoa(binary);
-    }
-
     function getParams(payload) {
         if (Array.isArray(payload?.params)) {
             return payload.params;
@@ -549,7 +534,7 @@
             throw new Error('Missing transaction payload');
         }
         if (typeof incoming === 'string') {
-            return decodeBase64Json(incoming);
+            return decodeTransactionV1Base64(incoming);
         }
         if (typeof incoming === 'object') {
             return incoming;
@@ -1045,7 +1030,11 @@
             privateKeyHex = await LichenCrypto.decryptPrivateKey(wallet.encryptedKey, password);
             const txObject = normalizeTransactionObject(request.payload);
             const messageBytes = serializeMessageBincode(txObject.message || {});
-            const signature = await LichenCrypto.signTransaction(privateKeyHex, messageBytes);
+            const chainId = await rpc.getChainId();
+            const signature = await LichenCrypto.signTransaction(
+                privateKeyHex,
+                signingBytesForChainId(messageBytes, chainId)
+            );
             const signedTransaction = {
                 ...txObject,
                 signatures: Array.isArray(txObject.signatures)
@@ -1060,7 +1049,7 @@
                     pqSignature: signature,
                     pqSignatureHex: signature.sig,
                     signedTransaction,
-                    signedTransactionBase64: encodeBase64Json(signedTransaction),
+                    signedTransactionBase64: encodeTransactionV1Base64(signedTransaction),
                 },
             };
         } finally {

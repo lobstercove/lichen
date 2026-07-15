@@ -71,7 +71,7 @@ const PAUSED_KEY: &[u8] = b"ana_paused";
 const TRADE_RECORD_COUNT_KEY: &[u8] = b"ana_rec_count";
 const TRADER_COUNT_KEY: &[u8] = b"ana_trader_count";
 const TOTAL_VOLUME_KEY: &[u8] = b"ana_total_volume";
-// F18.2: Authorized caller key — allows dex_core to call record_trade on behalf of traders
+// Legacy authorized caller binding retained for ABI/state compatibility.
 const AUTHORIZED_CALLER_KEY: &[u8] = b"ana_auth_caller";
 // F18.9: Minimum volume for leaderboard entry (updated when board is full)
 const LEADERBOARD_MIN_VOL_KEY: &[u8] = b"ana_lb_min_vol";
@@ -402,7 +402,8 @@ pub extern "C" fn initialize(admin: *const u8) -> u32 {
     0
 }
 
-/// Record a trade (called by dex_core after settlement)
+/// Legacy authorized trade projection entry point. Normal DEX analytics is
+/// derived from canonical trade records by the validator post-block bridge.
 /// Returns: 0=success, 1=invalid input, 2=paused, 3=reentrancy, 200=unauthorized
 pub fn record_trade(pair_id: u64, price: u64, volume: u64, trader: *const u8) -> u32 {
     // SECURITY-FIX: Check pause state before recording
@@ -441,11 +442,6 @@ pub fn record_trade(pair_id: u64, price: u64, volume: u64, trader: *const u8) ->
 
     // Update 24h stats
     update_24h_stats(pair_id, price, volume);
-
-    // Update candles for all intervals
-    for &interval in &INTERVALS {
-        update_candle(pair_id, interval, price, volume, current_slot);
-    }
 
     // Update trader stats
     update_trader_stats(&t, volume, current_slot);
@@ -543,54 +539,6 @@ fn update_24h_stats(pair_id: u64, price: u64, volume: u64) {
 
     let stats = encode_stats(vol, high, low, open, price, trades);
     storage_set(&sk, &stats);
-}
-
-fn update_candle(pair_id: u64, interval: u64, price: u64, volume: u64, current_slot: u64) {
-    let cur_key = candle_current_key(pair_id, interval);
-    let candle_start_slot = (current_slot / interval) * interval;
-
-    // Check if we're in a new candle period
-    let stored_start = load_u64(&cur_key);
-    if stored_start == candle_start_slot {
-        // Update existing candle
-        let count = load_u64(&candle_count_key(pair_id, interval));
-        if count == 0 {
-            return;
-        }
-        let ck = candle_key(pair_id, interval, count);
-        if let Some(mut data) = storage_get(&ck) {
-            if data.len() >= CANDLE_SIZE {
-                let high = decode_candle_high(&data);
-                let low = decode_candle_low(&data);
-                let vol = decode_candle_volume(&data);
-
-                if price > high {
-                    data[8..16].copy_from_slice(&u64_to_bytes(price));
-                }
-                if price < low {
-                    data[16..24].copy_from_slice(&u64_to_bytes(price));
-                }
-                data[24..32].copy_from_slice(&u64_to_bytes(price)); // close
-                data[32..40].copy_from_slice(&u64_to_bytes(vol.saturating_add(volume)));
-                storage_set(&ck, &data);
-            }
-        }
-    } else {
-        // New candle
-        save_u64(&cur_key, candle_start_slot);
-        let count = load_u64(&candle_count_key(pair_id, interval));
-        let new_count = count.saturating_add(1);
-        // F18.3: Enforce candle retention via modular indexing
-        let max_candles = get_retention(interval);
-        let write_idx = if max_candles > 0 && max_candles != u64::MAX {
-            ((new_count - 1) % max_candles) + 1
-        } else {
-            new_count
-        };
-        let candle = encode_candle(price, price, price, price, volume, current_slot);
-        storage_set(&candle_key(pair_id, interval, write_idx), &candle);
-        save_u64(&candle_count_key(pair_id, interval), new_count);
-    }
 }
 
 fn update_trader_stats(trader: &[u8; 32], volume: u64, slot: u64) {
@@ -738,10 +686,18 @@ pub fn get_ohlcv(pair_id: u64, interval: u64, count: u64) -> u64 {
         return 0;
     }
 
-    let start = if count >= total { 1 } else { total - count + 1 };
+    let retention = get_retention(interval);
+    let retained = total.min(retention);
+    let requested = count.min(retained);
+    let start = total.saturating_sub(requested);
     let mut result = Vec::new();
-    for i in start..=total {
-        let ck = candle_key(pair_id, interval, i);
+    for sequence in start..total {
+        let index = if retention == u64::MAX {
+            sequence
+        } else {
+            sequence % retention
+        };
+        let ck = candle_key(pair_id, interval, index);
         if let Some(d) = storage_get(&ck) {
             result.extend_from_slice(&d);
         }
@@ -749,7 +705,7 @@ pub fn get_ohlcv(pair_id: u64, interval: u64, count: u64) -> u64 {
     if !result.is_empty() {
         lichen_sdk::set_return_data(&result);
     }
-    total.min(count)
+    requested
 }
 
 /// Get 24h stats for a pair
@@ -1178,56 +1134,14 @@ mod tests {
     }
 
     #[test]
-    fn test_candle_creation() {
+    fn test_record_trade_leaves_candles_to_canonical_bridge() {
         let _admin = setup();
         let trader = [2u8; 32];
         test_mock::set_caller(trader);
-        test_mock::set_slot(60); // Start of a 1-min candle
+        test_mock::set_slot(60);
         record_trade(1, 1_000_000_000, 5_000, trader.as_ptr());
-
-        let count = load_u64(&candle_count_key(1, INTERVAL_1M));
-        assert_eq!(count, 1);
-
-        let ck = candle_key(1, INTERVAL_1M, 1);
-        let data = storage_get(&ck).unwrap();
-        assert_eq!(decode_candle_open(&data), 1_000_000_000);
-        assert_eq!(decode_candle_close(&data), 1_000_000_000);
-        assert_eq!(decode_candle_volume(&data), 5_000);
-    }
-
-    #[test]
-    fn test_candle_update_same_period() {
-        let _admin = setup();
-        let trader = [2u8; 32];
-        test_mock::set_caller(trader);
-        test_mock::set_slot(60);
-        record_trade(1, 1_000_000_000, 3_000, trader.as_ptr());
-        test_mock::set_slot(90); // Same 1-min candle
-        record_trade(1, 1_200_000_000, 2_000, trader.as_ptr());
-
-        let count = load_u64(&candle_count_key(1, INTERVAL_1M));
-        assert_eq!(count, 1); // Still one candle
-
-        let ck = candle_key(1, INTERVAL_1M, 1);
-        let data = storage_get(&ck).unwrap();
-        assert_eq!(decode_candle_open(&data), 1_000_000_000);
-        assert_eq!(decode_candle_high(&data), 1_200_000_000);
-        assert_eq!(decode_candle_close(&data), 1_200_000_000);
-        assert_eq!(decode_candle_volume(&data), 5_000);
-    }
-
-    #[test]
-    fn test_candle_new_period() {
-        let _admin = setup();
-        let trader = [2u8; 32];
-        test_mock::set_caller(trader);
-        test_mock::set_slot(60);
-        record_trade(1, 1_000_000_000, 3_000, trader.as_ptr());
-        test_mock::set_slot(120); // New 1-min candle
-        record_trade(1, 1_100_000_000, 4_000, trader.as_ptr());
-
-        let count = load_u64(&candle_count_key(1, INTERVAL_1M));
-        assert_eq!(count, 2); // Two candles now
+        assert_eq!(load_u64(&candle_count_key(1, INTERVAL_1M)), 0);
+        assert!(storage_get(&candle_key(1, INTERVAL_1M, 0)).is_none());
     }
 
     #[test]
@@ -1248,15 +1162,22 @@ mod tests {
     #[test]
     fn test_get_ohlcv() {
         let _admin = setup();
-        let trader = [2u8; 32];
-        test_mock::set_caller(trader);
-        test_mock::set_slot(60);
-        record_trade(1, 1_000_000_000, 5_000, trader.as_ptr());
-        test_mock::set_slot(120);
-        record_trade(1, 1_100_000_000, 3_000, trader.as_ptr());
+        storage_set(
+            &candle_key(1, INTERVAL_1M, 0),
+            &encode_candle(1, 2, 1, 2, 5, 1_700_000_020),
+        );
+        storage_set(
+            &candle_key(1, INTERVAL_1M, 1),
+            &encode_candle(2, 3, 2, 3, 7, 1_700_000_080),
+        );
+        save_u64(&candle_count_key(1, INTERVAL_1M), 2);
 
         let count = get_ohlcv(1, INTERVAL_1M, 10);
         assert_eq!(count, 2);
+        let returned = test_mock::get_return_data();
+        assert_eq!(returned.len(), CANDLE_SIZE * 2);
+        assert_eq!(decode_candle_open(&returned[..CANDLE_SIZE]), 1);
+        assert_eq!(decode_candle_close(&returned[CANDLE_SIZE..]), 3);
     }
 
     #[test]
@@ -1339,122 +1260,24 @@ mod tests {
     }
 
     #[test]
-    fn test_candle_3d_creation() {
+    fn test_get_ohlcv_reads_wrapped_ring_in_sequence_order() {
         let _admin = setup();
-        let trader = [2u8; 32];
-        test_mock::set_caller(trader);
-        // 3d = 259_200 slots; place trade at start of a 3d bucket
-        test_mock::set_slot(259_200);
-        record_trade(1, 2_000_000_000, 10_000, trader.as_ptr());
-
-        let count = load_u64(&candle_count_key(1, INTERVAL_3D));
-        assert_eq!(count, 1);
-
-        let ck = candle_key(1, INTERVAL_3D, 1);
-        let data = storage_get(&ck).unwrap();
-        assert_eq!(decode_candle_open(&data), 2_000_000_000);
-        assert_eq!(decode_candle_close(&data), 2_000_000_000);
-        assert_eq!(decode_candle_volume(&data), 10_000);
-    }
-
-    #[test]
-    fn test_candle_1w_creation() {
-        let _admin = setup();
-        let trader = [2u8; 32];
-        test_mock::set_caller(trader);
-        // 1w = 604_800 slots
-        test_mock::set_slot(604_800);
-        record_trade(1, 3_000_000_000, 7_500, trader.as_ptr());
-
-        let count = load_u64(&candle_count_key(1, INTERVAL_1W));
-        assert_eq!(count, 1);
-
-        let ck = candle_key(1, INTERVAL_1W, 1);
-        let data = storage_get(&ck).unwrap();
-        assert_eq!(decode_candle_open(&data), 3_000_000_000);
-        assert_eq!(decode_candle_volume(&data), 7_500);
-    }
-
-    #[test]
-    fn test_candle_1y_creation() {
-        let _admin = setup();
-        let trader = [2u8; 32];
-        test_mock::set_caller(trader);
-        // 1y = 31_536_000 slots
-        test_mock::set_slot(31_536_000);
-        record_trade(1, 5_000_000_000, 50_000, trader.as_ptr());
-
-        let count = load_u64(&candle_count_key(1, INTERVAL_1Y));
-        assert_eq!(count, 1);
-
-        let ck = candle_key(1, INTERVAL_1Y, 1);
-        let data = storage_get(&ck).unwrap();
-        assert_eq!(decode_candle_open(&data), 5_000_000_000);
-        assert_eq!(decode_candle_volume(&data), 50_000);
-    }
-
-    #[test]
-    fn test_candle_3d_update_same_period() {
-        let _admin = setup();
-        let trader = [2u8; 32];
-        test_mock::set_caller(trader);
-        test_mock::set_slot(259_200);
-        record_trade(1, 1_000_000_000, 5_000, trader.as_ptr());
-        test_mock::set_slot(259_200 + 100_000); // still in same 3d bucket
-        record_trade(1, 1_500_000_000, 3_000, trader.as_ptr());
-
-        let count = load_u64(&candle_count_key(1, INTERVAL_3D));
-        assert_eq!(count, 1); // still one candle
-
-        let ck = candle_key(1, INTERVAL_3D, 1);
-        let data = storage_get(&ck).unwrap();
-        assert_eq!(decode_candle_open(&data), 1_000_000_000);
-        assert_eq!(decode_candle_high(&data), 1_500_000_000);
-        assert_eq!(decode_candle_close(&data), 1_500_000_000);
-        assert_eq!(decode_candle_volume(&data), 8_000);
-    }
-
-    #[test]
-    fn test_candle_1w_new_period() {
-        let _admin = setup();
-        let trader = [2u8; 32];
-        test_mock::set_caller(trader);
-        test_mock::set_slot(604_800);
-        record_trade(1, 1_000_000_000, 5_000, trader.as_ptr());
-        test_mock::set_slot(604_800 * 2); // next week
-        record_trade(1, 1_100_000_000, 4_000, trader.as_ptr());
-
-        let count = load_u64(&candle_count_key(1, INTERVAL_1W));
-        assert_eq!(count, 2); // two candles
-    }
-
-    #[test]
-    fn test_get_ohlcv_3d() {
-        let _admin = setup();
-        let trader = [2u8; 32];
-        test_mock::set_caller(trader);
-        test_mock::set_slot(259_200);
-        record_trade(1, 1_000_000_000, 5_000, trader.as_ptr());
-        test_mock::set_slot(259_200 * 2);
-        record_trade(1, 1_100_000_000, 3_000, trader.as_ptr());
-
-        let count = get_ohlcv(1, INTERVAL_3D, 10);
-        assert_eq!(count, 2);
-    }
-
-    #[test]
-    fn test_all_intervals_get_candles_on_trade() {
-        let _admin = setup();
-        let trader = [2u8; 32];
-        test_mock::set_caller(trader);
-        // Use slot that's a multiple of all intervals (lcm-like)
-        test_mock::set_slot(31_536_000); // multiple of all intervals
-        record_trade(1, 1_000_000_000, 5_000, trader.as_ptr());
-
-        // Every interval should have at least 1 candle
-        for &interval in &INTERVALS {
-            let count = load_u64(&candle_count_key(1, interval));
-            assert!(count >= 1, "Interval {} should have candles", interval);
+        let interval = 999; // test retention = 365
+        let total = 367u64;
+        for sequence in 2..total {
+            let index = sequence % get_retention(interval);
+            storage_set(
+                &candle_key(1, interval, index),
+                &encode_candle(sequence, sequence, sequence, sequence, 1, sequence),
+            );
         }
+        save_u64(&candle_count_key(1, interval), total);
+
+        assert_eq!(get_ohlcv(1, interval, 3), 3);
+        let returned = test_mock::get_return_data();
+        assert_eq!(returned.len(), CANDLE_SIZE * 3);
+        assert_eq!(decode_candle_open(&returned[0..CANDLE_SIZE]), 364);
+        assert_eq!(decode_candle_open(&returned[CANDLE_SIZE..CANDLE_SIZE * 2]), 365);
+        assert_eq!(decode_candle_open(&returned[CANDLE_SIZE * 2..]), 366);
     }
 }

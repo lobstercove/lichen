@@ -4,7 +4,7 @@ Lichen Python SDK
 Official Python SDK for interacting with Lichen blockchain.
 """
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 
 from .publickey import PublicKey
 from .keypair import Keypair

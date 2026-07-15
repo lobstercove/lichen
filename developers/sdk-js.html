@@ -143,7 +143,7 @@
                     <pre><code>import { Connection, Keypair, PublicKey, TransactionBuilder } from '@lobstercove/lichen-sdk';
 
 // Connect to public testnet
-const conn = new Connection('https://testnet-rpc.lichen.network', 'wss://testnet-rpc.lichen.network/ws');
+const conn = new Connection('https://testnet-api.lichen.network', 'wss://testnet-api.lichen.network/ws');
 
 // Switch to https://rpc.lichen.network and wss://rpc.lichen.network/ws only when targeting mainnet.
 
@@ -162,7 +162,7 @@ const blockhash = await conn.getRecentBlockhash();
 const tx = new TransactionBuilder()
   .add(TransactionBuilder.transfer(keypair.pubkey(), recipient, 1_000_000_000))
   .setRecentBlockhash(blockhash)
-  .buildAndSign(keypair);
+  .buildAndSignForChainId(keypair, (await conn.getNetworkInfo()).chain_id);
 
 const signature = await conn.sendTransaction(tx);
 console.log('TX Signature:', signature);</code></pre>
@@ -205,7 +205,7 @@ console.log('TX Signature:', signature);</code></pre>
                             class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
                     <pre><code>import { Connection, Keypair, LichenIdClient, LichenSwapClient, SporePayClient, SporeVaultClient, ThallLendClient } from '@lobstercove/lichen-sdk';
 
-const conn = new Connection('https://testnet-rpc.lichen.network', 'wss://testnet-rpc.lichen.network/ws');
+const conn = new Connection('https://testnet-api.lichen.network', 'wss://testnet-api.lichen.network/ws');
 const lichenId = new LichenIdClient(conn);
 const lichenSwap = new LichenSwapClient(conn);
 const sporePay = new SporePayClient(conn);
@@ -228,7 +228,7 @@ const profile = await lichenId.getProfile(keypair.pubkey());
 const delegation = await lichenId.getDelegate(keypair.pubkey(), delegateKey.pubkey());
 const poolInfo = await lichenSwap.getPoolInfo();
 const quote = await lichenSwap.getQuote(1_000_000_000n, true);
-const swapStats = await lichenSwap.getStats();
+const swapStats = await lichenSwap.getSwapStats();
 const stream = await sporePay.getStreamInfo(0n);
 const vaultStats = await sporeVault.getVaultStats();
 const vaultPosition = await sporeVault.getUserPosition(keypair.pubkey());
@@ -285,8 +285,8 @@ console.log({ profile, delegation, poolInfo, quote, swapStats, stream, vaultStat
                     <div class="code-block-header"><span class="code-lang">TypeScript</span><button
                             class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
                     <pre><code>const conn = new Connection(
-  'https://testnet-rpc.lichen.network',
-  'wss://testnet-rpc.lichen.network/ws'
+  'https://testnet-api.lichen.network',
+  'wss://testnet-api.lichen.network/ws'
 );</code></pre>
                 </div>
             </div>
@@ -349,7 +349,7 @@ console.log(`Slot ${block.slot}, ${block.transaction_count} txs`);</code></pre>
             </div>
 
             <div class="method-card">
-                <h3 class="method-name">health(): Promise&lt;{ status: string }&gt;</h3>
+                <h3 class="method-name">getHealth(): Promise&lt;{ status: string }&gt;</h3>
                 <p class="method-desc">Liveness probe. Returns <code>{ status, reason, slot, block_age_secs?, disk? }</code>.</p>
             </div>
 
@@ -417,7 +417,7 @@ console.log(balance.licn);   // "5.0000"</code></pre>
             </div>
 
             <div class="method-card">
-                <h3 class="method-name">getTransactionHistory(pubkey: PublicKey, limit?: number, beforeSlot?: number): Promise&lt;TransactionHistoryResponse&gt;
+                <h3 class="method-name">getTransactionsByAddress(pubkey: PublicKey, limit?: number, before?: string | number): Promise&lt;TransactionHistoryResponse&gt;
                 </h3>
                 <p class="method-desc">Get paginated transaction history for an account. Returns
                     <code>{ transactions, has_more, next_before_slot }</code>. Default limit is 10.</p>
@@ -458,7 +458,7 @@ console.log(balance.licn);   // "5.0000"</code></pre>
 const tx = new TransactionBuilder()
   .add(TransactionBuilder.transfer(from.pubkey(), to, 1_000_000_000))
   .setRecentBlockhash(blockhash)
-  .buildAndSign(from);
+  .buildAndSignForChainId(from, (await conn.getNetworkInfo()).chain_id);
 
 const sig = await conn.sendTransaction(tx);
 console.log('Signature:', sig);</code></pre>
@@ -697,8 +697,8 @@ console.log(result.returnCode, result.returnData);</code></pre>
             </div>
 
             <div class="method-card">
-                <h3 class="method-name">setContractAbi(contractId: PublicKey, abi: any): Promise&lt;any&gt;</h3>
-                <p class="method-desc">Set or update a contract's ABI (owner only).</p>
+                <h3 class="method-name">setContractAbi(owner: Keypair, contractId: PublicKey, abi: unknown): Promise&lt;string&gt;</h3>
+                <p class="method-desc">Submit an owner-signed system transaction that sets or updates a contract ABI.</p>
             </div>
 
             <div class="method-card">
@@ -749,23 +749,20 @@ console.log(entry.program);</code></pre>
             </div>
 
             <div class="method-card">
-                <h3 class="method-name">getSporePayStats(): Promise&lt;any&gt; / getLichenSwapStats():
-                    Promise&lt;any&gt; / getThallLendStats(): Promise&lt;any&gt; / getSporeVaultStats():
+                <h3 class="method-name">getSporePayStats(): Promise&lt;any&gt; / getThallLendStats(): Promise&lt;any&gt; / getSporeVaultStats():
                     Promise&lt;any&gt; /
                     getBountyBoardStats(): Promise&lt;any&gt;</h3>
-                <p class="method-desc">Fetch aggregated stats from the public SporePay, LichenSwap, ThallLend,
-                    SporeVault, and BountyBoard RPC routes. Helper clients wrap SporeVault, ThallLend, SporePay, and
-                    LichenSwap
-                    for typed access.</p>
+                <p class="method-desc">Fetch aggregated stats from the public SporePay, ThallLend,
+                    SporeVault, and BountyBoard RPC routes. Use <code>LichenSwapClient.getSwapStats()</code>
+                    for canonical read-only LichenSwap contract stats.</p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">TypeScript</span></div>
                     <pre><code>const sporePayStats = await conn.getSporePayStats();
-const lichenSwapStats = await conn.getLichenSwapStats();
 const thallLendStats = await conn.getThallLendStats();
 const sporeVaultStats = await conn.getSporeVaultStats();
 const bountyBoardStats = await conn.getBountyBoardStats();
 
-console.log({ sporePayStats, lichenSwapStats, thallLendStats, sporeVaultStats, bountyBoardStats });</code></pre>
+console.log({ sporePayStats, thallLendStats, sporeVaultStats, bountyBoardStats });</code></pre>
                 </div>
             </div>
 
@@ -793,7 +790,7 @@ console.log({ sporePayStats, lichenSwapStats, thallLendStats, sporeVaultStats, b
             </div>
 
             <div class="method-card">
-                <h3 class="method-name">getNFTActivity(collectionId: PublicKey, options?: { limit?: number } | number): Promise&lt;any&gt;
+                <h3 class="method-name">getNFTActivity(collectionId: PublicKey, options?: { limit?: number }): Promise&lt;any&gt;
                 </h3>
                 <p class="method-desc">Get recent activity history for an NFT collection.</p>
             </div>
@@ -1058,7 +1055,7 @@ interface Transaction {
                             <td>Build unsigned message</td>
                         </tr>
                         <tr>
-                            <td>buildAndSign(keypair)</td>
+                            <td>buildAndSignForChainId(keypair, chainId)</td>
                             <td><span class="param-type">Transaction</span></td>
                             <td>Build, sign, and return a Transaction</td>
                         </tr>
@@ -1111,7 +1108,7 @@ const tx = new TransactionBuilder()
     5_000_000_000  // 5 LICN
   ))
   .setRecentBlockhash(blockhash)
-  .buildAndSign(keypair);
+  .buildAndSignForChainId(keypair, (await conn.getNetworkInfo()).chain_id);
 
 const sig = await conn.sendTransaction(tx);</code></pre>
                 </div>

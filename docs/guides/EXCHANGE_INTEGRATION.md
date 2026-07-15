@@ -74,8 +74,8 @@ metadata sheet. The source-backed facts needed by integrators are:
 | EVM compatibility chain ID | Query `eth_chainId` on `/evm`; live testnet currently returns `0xca3f1595a6c25e9f`. Do not use `8001` for native LICN deposits. |
 | Mainnet RPC | `https://rpc.lichen.network` - launch placeholder, excluded from the current testnet-only package |
 | Mainnet WebSocket | `wss://rpc.lichen.network/ws` - launch placeholder, excluded from the current testnet-only package |
-| Testnet RPC | `https://testnet-rpc.lichen.network` |
-| Testnet WebSocket | `wss://testnet-rpc.lichen.network/ws` |
+| Testnet RPC | `https://testnet-api.lichen.network` |
+| Testnet WebSocket | `wss://testnet-api.lichen.network/ws` |
 | Explorer | `https://explorer.lichen.network` |
 
 Source files: `core/src/account.rs`, `core/src/network.rs`, `core/src/evm.rs`,
@@ -268,12 +268,11 @@ Required methods for archive validation:
 - `getLatestBlock`
 - `getTransaction(signature)`
 - `getTransactionsByAddress(address, options)`
-- `getTransactionHistory(address, options)` alias
 - `getAccountTxCount(address)`
 
 Archive behavior is regression-tested for hot/cold migration and reopen at both
 the storage and RPC boundary. The tests verify cold-backed `getBlock`,
-`getTransaction`, `getTransactionsByAddress`, `getTransactionHistory`, and
+`getTransaction`, `getTransactionsByAddress`, and
 `getAccountTxCount` after older block bodies, transaction bodies, tx-to-slot
 entries, and account history rows move out of hot storage.
 
@@ -292,7 +291,7 @@ Current SDK boundary:
 - Rust SDK: core dependency is pinned to `=0.5.221`; `cargo check` passed.
 - Python SDK: acceptable exact-integer SDK path because Python preserves JSON
   integer precision. Archive helpers are available for `get_transaction`,
-  `get_block`, `get_transactions_by_address`, `get_transaction_history`, and
+  `get_block`, `get_transactions_by_address`, and
   `get_account_tx_count`.
 - JavaScript SDK: not approved for exchange accounting yet. It uses native JSON
   parsing, so u64 spore values can exceed JavaScript's safe integer range. It
@@ -308,7 +307,7 @@ network.
 ### Get Processed Slot
 
 ```bash
-curl -s https://testnet-rpc.lichen.network \
+curl -s https://testnet-api.lichen.network \
   -H 'content-type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"getSlot","params":[]}'
 ```
@@ -316,7 +315,7 @@ curl -s https://testnet-rpc.lichen.network \
 ### Get Finalized Slot
 
 ```bash
-curl -s https://testnet-rpc.lichen.network \
+curl -s https://testnet-api.lichen.network \
   -H 'content-type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"getSlot","params":[{"commitment":"finalized"}]}'
 ```
@@ -327,7 +326,7 @@ integrators.
 ### Get Runtime Fee Config
 
 ```bash
-curl -s https://testnet-rpc.lichen.network \
+curl -s https://testnet-api.lichen.network \
   -H 'content-type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"getFeeConfig","params":[]}'
 ```
@@ -338,7 +337,7 @@ hard-code fee values in exchange accounting.
 ### Get Balance
 
 ```bash
-curl -s https://testnet-rpc.lichen.network \
+curl -s https://testnet-api.lichen.network \
   -H 'content-type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"getBalance","params":["<native_base58_address>"]}'
 ```
@@ -349,7 +348,7 @@ fields as display-only.
 ### Get Latest Block
 
 ```bash
-curl -s https://testnet-rpc.lichen.network \
+curl -s https://testnet-api.lichen.network \
   -H 'content-type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"getLatestBlock","params":[]}'
 ```
@@ -357,7 +356,7 @@ curl -s https://testnet-rpc.lichen.network \
 ### Get Block By Slot
 
 ```bash
-curl -s https://testnet-rpc.lichen.network \
+curl -s https://testnet-api.lichen.network \
   -H 'content-type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"getBlock","params":[12345]}'
 ```
@@ -368,7 +367,7 @@ supported.
 ### Get Transaction
 
 ```bash
-curl -s https://testnet-rpc.lichen.network \
+curl -s https://testnet-api.lichen.network \
   -H 'content-type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"getTransaction","params":["<tx_hash_hex>"]}'
 ```
@@ -381,7 +380,7 @@ return `null`; archive/index behavior must be validated before publication.
 ### Get Address History
 
 ```bash
-curl -s https://testnet-rpc.lichen.network \
+curl -s https://testnet-api.lichen.network \
   -H 'content-type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"getTransactionsByAddress","params":["<native_base58_address>",{"limit":100}]}'
 ```
@@ -389,17 +388,15 @@ curl -s https://testnet-rpc.lichen.network \
 Pagination uses `next_before_slot`:
 
 ```bash
-curl -s https://testnet-rpc.lichen.network \
+curl -s https://testnet-api.lichen.network \
   -H 'content-type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"getTransactionsByAddress","params":["<native_base58_address>",{"limit":100,"before_slot":12345}]}'
 ```
 
-The alias `getTransactionHistory` currently routes to the same handler.
-
 ### Broadcast Native Transaction
 
 ```bash
-curl -s https://testnet-rpc.lichen.network \
+curl -s https://testnet-api.lichen.network \
   -H 'content-type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"sendTransaction","params":["<base64_signed_native_transaction>"]}'
 ```
@@ -407,7 +404,7 @@ curl -s https://testnet-rpc.lichen.network \
 Optional preflight skip:
 
 ```bash
-curl -s https://testnet-rpc.lichen.network \
+curl -s https://testnet-api.lichen.network \
   -H 'content-type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"sendTransaction","params":["<base64_signed_native_transaction>",{"skipPreflight":true}]}'
 ```
@@ -420,10 +417,10 @@ preflight rejects EVM transactions on `sendTransaction`.
 WebSocket endpoints are configured in `developers/shared-config.js`:
 
 - Mainnet: `wss://rpc.lichen.network/ws`
-- Testnet: `wss://testnet-rpc.lichen.network/ws`
+- Testnet: `wss://testnet-api.lichen.network/ws`
 
 Public testnet `subscribeSlots` validation passed against
-`wss://testnet-rpc.lichen.network/ws` after the signed `v0.5.221` recovery rollout on
+`wss://testnet-api.lichen.network/ws` after the signed `v0.5.221` recovery rollout on
 2026-07-01. WebSocket notifications are acceptable as a wake-up/freshness signal,
 but polling archive-backed JSON-RPC remains the canonical exchange credit path
 because it provides idempotent transaction, account-history, and reconciliation

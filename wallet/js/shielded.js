@@ -282,7 +282,7 @@ async function signAndSubmitShieldedInstructions({ wallet, password, instruction
         throw new Error('No shielded instructions to submit');
     }
 
-    const blockhash = await rpc.getRecentBlockhash();
+    const [blockhash, chainId] = await Promise.all([rpc.getRecentBlockhash(), rpc.getChainId()]);
     const message = {
         instructions: instructions.map(({ accounts, instructionData }) => ({
             program_id: Array.from(new Uint8Array(32)),
@@ -300,10 +300,9 @@ async function signAndSubmitShieldedInstructions({ wallet, password, instruction
 
     const privateKey = await LichenCrypto.decryptPrivateKey(wallet.encryptedKey, password);
     const messageBytes = serializeMessageBincode(message);
-    const signature = await LichenCrypto.signTransaction(privateKey, messageBytes);
+    const signature = await LichenCrypto.signTransaction(privateKey, signingBytesForChainId(messageBytes, chainId));
     const transaction = { signatures: [signature], message };
-    const txBytes = new TextEncoder().encode(JSON.stringify(transaction));
-    const txBase64 = bytesToBase64(txBytes);
+    const txBase64 = encodeTransactionV1Base64(transaction);
     const txSignature = await rpc.sendTransaction(txBase64);
     if (typeof onSubmitted === 'function') {
         await onSubmitted(txSignature);
@@ -491,18 +490,17 @@ async function syncShieldedState() {
 
     try {
         // Fetch pool stats
-        const statsResp = await rpc.call('getShieldedPoolState').catch(() => rpc.call('getShieldedPoolStats').catch(() => null));
+        const statsResp = await rpc.call('getShieldedPoolState').catch(() => null);
         if (statsResp) {
             shieldedState.poolStats = statsResp;
-            shieldedState.merkleRoot = statsResp.merkle_root || statsResp.merkleRoot || null;
+            shieldedState.merkleRoot = statsResp.merkleRoot || null;
         }
 
         // Fetch all commitment pages needed for recovery. A wallet with no
         // local notes must rescan the pool so encrypted payloads can restore
         // notes after a browser restart or storage loss.
         const totalCommitments = Number(
-            shieldedState.poolStats?.commitment_count
-            ?? shieldedState.poolStats?.commitmentCount
+            shieldedState.poolStats?.commitmentCount
             ?? 0
         );
         const pageSize = 1000;
@@ -568,7 +566,7 @@ async function syncShieldedState() {
             if (note.spent) continue;
             const nullifier = note.nullifier || await computeNullifier(note.serial);
             if (!nullifier) continue;
-            const isSpent = await rpc.call('isNullifierSpent', [nullifier]).catch(() => rpc.call('checkNullifier', [nullifier]).catch(() => null));
+            const isSpent = await rpc.call('isNullifierSpent', [nullifier]).catch(() => null);
             if (isSpent && isSpent.spent) {
                 note.spent = true;
             }
@@ -661,7 +659,7 @@ async function resolveShieldedCommitmentIndex(commitmentHex, preferredIndex = nu
     }
 
     const pool = await rpc.call('getShieldedPoolState').catch(() => shieldedState.poolStats || null);
-    const total = Number(pool?.commitment_count ?? pool?.commitmentCount ?? 0);
+    const total = Number(pool?.commitmentCount ?? 0);
     if (!Number.isFinite(total) || total <= 0) return null;
 
     const pageSize = 1000;
@@ -810,7 +808,7 @@ async function shieldLicn(amountLicn) {
 
         const proof = hexToBytes(shieldProof.proof);
         const poolBefore = await rpc.call('getShieldedPoolState').catch(() => shieldedState.poolStats || null);
-        const expectedCommitmentIndex = Number(poolBefore?.commitmentCount ?? poolBefore?.commitment_count ?? shieldedState.commitments.length ?? 0);
+        const expectedCommitmentIndex = Number(poolBefore?.commitmentCount ?? shieldedState.commitments.length ?? 0);
 
         showShieldedStatus('Submitting transaction...', 'pending');
 
@@ -1516,10 +1514,10 @@ function updateShieldedUI() {
     if (shieldedState.poolStats) {
         const poolBalEl = el('poolTotalShielded');
         if (poolBalEl) {
-            poolBalEl.textContent = formatShieldedSporesFixed(shieldedState.poolStats.pool_balance ?? 0, 2) + ' LICN';
+            poolBalEl.textContent = formatShieldedSporesFixed(shieldedState.poolStats.totalShielded ?? 0, 2) + ' LICN';
         }
         const poolCommitsEl = el('poolCommitmentCount');
-        if (poolCommitsEl) poolCommitsEl.textContent = (shieldedState.poolStats.commitment_count ?? 0).toLocaleString();
+        if (poolCommitsEl) poolCommitsEl.textContent = (shieldedState.poolStats.commitmentCount ?? 0).toLocaleString();
     }
 
     const transferBtn = el('shieldedTransferOpenBtn');

@@ -24,7 +24,7 @@ use bootstrap::{
     SANDBOX_WORKSPACE,
 };
 #[cfg(test)]
-use bootstrap::{resolve_compile_backend, API_KEY_HEADER};
+use bootstrap::{resolve_compile_backend, validate_sandbox_user, API_KEY_HEADER};
 #[cfg(test)]
 use error_support::{
     parse_asc_errors, parse_cargo_errors_with_locations, parse_cargo_warnings, parse_clang_errors,

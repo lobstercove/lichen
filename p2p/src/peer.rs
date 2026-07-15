@@ -57,6 +57,9 @@ pub struct PeerInfo {
     pub node_id: [u8; 32],
     /// P3-5: Validator pubkey (set when we receive a verified ValidatorAnnounce from this peer)
     pub validator_pubkey: Option<Pubkey>,
+    /// Highest slot this peer has advertised through a signed validator
+    /// announcement or status response.
+    pub advertised_slot: u64,
     /// Peer scoring: rolling average response latency in milliseconds.
     /// Updated on each successful block/status response from this peer.
     pub avg_response_ms: Option<f64>,
@@ -88,6 +91,7 @@ impl PeerInfo {
             score: 0,
             node_id: [0u8; 32],
             validator_pubkey: None,
+            advertised_slot: 0,
             avg_response_ms: None,
             bytes_received: 0,
             bytes_sent: 0,
@@ -1184,6 +1188,28 @@ impl PeerManager {
             .iter()
             .map(|entry| (*entry.key(), entry.value().score))
             .collect()
+    }
+
+    /// Get peer info with the latest advertised chain tip.
+    pub fn get_peer_tip_infos(&self) -> Vec<(SocketAddr, i64, u64)> {
+        self.peers
+            .iter()
+            .map(|entry| {
+                (
+                    *entry.key(),
+                    entry.value().score,
+                    entry.value().advertised_slot,
+                )
+            })
+            .collect()
+    }
+
+    /// Record the latest chain slot advertised by a peer.
+    pub fn record_peer_advertised_slot(&self, peer_addr: &SocketAddr, slot: u64) {
+        if let Some(mut peer) = self.peers.get_mut(peer_addr) {
+            peer.advertised_slot = peer.advertised_slot.max(slot);
+            peer.update_last_seen();
+        }
     }
 
     /// Return the authenticated node ID learned during the PQ transport
@@ -2506,6 +2532,7 @@ mod tests {
         assert_eq!(peer.reputation, 500);
         assert!(!peer.is_validator);
         assert_eq!(peer.score, 0);
+        assert_eq!(peer.advertised_slot, 0);
         assert!(peer.connection.is_none());
         // last_seen should be within the last second
         let now = SystemTime::now()
@@ -2514,6 +2541,36 @@ mod tests {
             .as_secs();
         assert!(peer.last_seen <= now);
         assert!(peer.last_seen >= now.saturating_sub(2));
+    }
+
+    #[tokio::test]
+    async fn peer_manager_records_advertised_slot_monotonically() {
+        let tmp = std::env::temp_dir().join(format!(
+            "lichen-test-peer-advertised-slot-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let (tx, _rx) = mpsc::channel(8);
+        let mgr = PeerManager::new(
+            "127.0.0.1:0".parse().unwrap(),
+            tx,
+            Some(tmp.clone()),
+            None,
+            16,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+        let peer_addr: SocketAddr = "127.0.0.1:7002".parse().unwrap();
+        mgr.peers.insert(peer_addr, PeerInfo::new(peer_addr));
+
+        mgr.record_peer_advertised_slot(&peer_addr, 641);
+        mgr.record_peer_advertised_slot(&peer_addr, 640);
+
+        assert_eq!(mgr.get_peer_tip_infos(), vec![(peer_addr, 0, 641)]);
+        let _ = fs::remove_dir_all(&tmp);
     }
 
     #[test]

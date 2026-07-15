@@ -16,9 +16,130 @@ env:
   CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
 
 jobs:
-  contract-bundle:
-    name: Build genesis contract bundle
+  release-quality-gate:
+    name: Release quality and security gate
     runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Verify tag matches runtime crate versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected="${GITHUB_REF_NAME#v}"
+          for manifest in \
+            core/Cargo.toml \
+            validator/Cargo.toml \
+            p2p/Cargo.toml \
+            rpc/Cargo.toml \
+            cli/Cargo.toml \
+            custody/Cargo.toml \
+            faucet-service/Cargo.toml \
+            genesis/Cargo.toml; do
+            actual="$(awk -F'"' '/^version = "/ { print $2; exit }' "$manifest")"
+            if [ "$actual" != "$expected" ]; then
+              echo "$manifest version $actual does not match tag $GITHUB_REF_NAME" >&2
+              exit 1
+            fi
+          done
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: stable
+          components: clippy,rustfmt
+
+      - name: Install Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "22"
+
+      - name: Install Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12"
+
+      - name: Cache Rust build outputs
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run workspace Clippy
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+      - name: Run workspace tests
+        run: cargo test --workspace --all-features --locked
+
+      - name: Reclaim workspace test artifacts
+        run: cargo clean
+
+      - name: Verify standalone Rust workspaces
+        run: |
+          set -euo pipefail
+          cargo test --manifest-path compiler/Cargo.toml --locked
+          cargo clippy --manifest-path compiler/Cargo.toml --all-targets --locked -- -D warnings
+          cargo clean --manifest-path compiler/Cargo.toml
+          cargo test --manifest-path sdk/Cargo.toml --locked
+          cargo clippy --manifest-path sdk/Cargo.toml --all-targets --locked -- -D warnings
+          cargo clean --manifest-path sdk/Cargo.toml
+          cargo test --manifest-path sdk/rust/Cargo.toml --locked
+          cargo clippy --manifest-path sdk/rust/Cargo.toml --all-targets --locked -- -D warnings
+          cargo clean --manifest-path sdk/rust/Cargo.toml
+          cargo check --manifest-path fuzz/Cargo.toml --locked --bins
+          cargo clean --manifest-path fuzz/Cargo.toml
+
+      - name: Install dependency policy tools
+        run: |
+          cargo install cargo-audit --locked
+          cargo install cargo-deny --locked
+
+      - name: Verify dependency policy
+        run: |
+          set -euo pipefail
+          first_lock=1
+          while IFS= read -r lockfile; do
+            echo "Auditing ${lockfile}"
+            manifest="${lockfile%Cargo.lock}Cargo.toml"
+            cargo metadata --locked --no-deps --format-version 1 \
+              --manifest-path "$manifest" >/dev/null
+            if [ "$first_lock" -eq 1 ]; then
+              cargo audit -q -D warnings --file "$lockfile"
+              first_lock=0
+            else
+              cargo audit --no-fetch -q -D warnings --file "$lockfile"
+            fi
+          done < <(find . -path '*/target' -prune -o -name Cargo.lock -print | sort)
+          cargo deny check --config deny.toml advisories licenses sources
+
+      - name: Verify JS and Python dependency policy
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts
+          npm audit
+          npm --prefix sdk/js ci --ignore-scripts
+          npm --prefix sdk/js audit
+          bash scripts/qa/test_python_sdk_release_supply_chain.sh
+
+      - name: Verify release policy assets
+        run: |
+          set -euo pipefail
+          node scripts/qa/test_github_actions_supply_chain.js
+          node scripts/qa/test_rustsec_advisory_policy.js
+          node scripts/qa/test_legacy_bincode_codec_policy.js
+          node scripts/qa/test_release_audit_summaries.js
+          node scripts/qa/test_release_signer_trust_anchor.js
+          node scripts/qa/test_deployment_env_examples.js
+          node scripts/qa/test_rust_dependency_policy.js
+          python3 scripts/qa/update-expected-contracts.py --check
+
+  contract-bundle:
+    name: Test and build genesis contract bundle
+    needs: release-quality-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
@@ -29,8 +150,8 @@ jobs:
           toolchain: stable
           targets: wasm32-unknown-unknown
 
-      - name: Build genesis contracts
-        run: ./scripts/build-all-contracts.sh
+      - name: Test and build genesis contracts
+        run: ./scripts/build-all-contracts.sh --test
 
       - name: Stage contract artifacts
         run: |
@@ -48,9 +169,57 @@ jobs:
           name: genesis-contracts
           path: genesis-contracts/contracts
 
+  archive-parity-local-gate:
+    name: Four-validator hot/cold archive parity gate
+    needs: release-quality-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Rust build outputs
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+
+      - name: Build genesis contracts
+        run: ./scripts/build-all-contracts.sh
+
+      - name: Build local release validator binaries
+        run: cargo build --release --locked -p lichen-validator -p lichen-genesis -p lichen-cli
+
+      - name: Run four-validator hot/cold public-history parity
+        run: |
+          LICHEN_RUN_LAUNCHPAD_E2E=1 \
+          LICHEN_RUN_VOLUME_E2E=1 \
+          LICHEN_LOCAL_ARCHIVE_COLD=1 \
+          LICHEN_COLD_RETENTION_SLOTS=20 \
+          LICHEN_COLD_MIGRATION_INTERVAL_SECS=5 \
+          bash tests/local-multi-validator-test.sh 4
+
+  compiler-sandbox-gate:
+    name: Compiler sandbox non-root language gate
+    needs: release-quality-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Build compiler sandbox image
+        run: docker build -f compiler/Dockerfile.sandbox -t lichen-compiler-sandbox:audit .
+
+      - name: Compile Rust, C, and AssemblyScript as non-root
+        run: bash scripts/qa/test_compiler_sandbox.sh
+
   build:
     name: Build ${{ matrix.target }}
-    needs: contract-bundle
+    needs: [contract-bundle, archive-parity-local-gate, compiler-sandbox-gate]
     runs-on: ${{ matrix.os }}
     permissions:
       contents: read
@@ -91,14 +260,14 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
-          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
 
       - name: Build release binary
-        run: cargo build --release --target ${{ matrix.target }} --bin lichen-validator --bin lichen-genesis --bin lichen --bin zk-prove
+        run: cargo build --release --locked --target ${{ matrix.target }} --bin lichen-validator --bin lichen-genesis --bin lichen --bin zk-prove
 
       - name: Build Linux service binaries
         if: startsWith(matrix.os, 'ubuntu')
-        run: cargo build --release --target ${{ matrix.target }} --bin lichen-custody --bin lichen-faucet
+        run: cargo build --release --locked --target ${{ matrix.target }} --bin lichen-custody --bin lichen-faucet
 
       - name: Download genesis contract bundle
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093

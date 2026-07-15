@@ -65,7 +65,7 @@ async def resolve_predict_program(conn: Connection) -> PublicKey:
     except Exception:
         pass
 
-    entries = await conn._rpc("getAllSymbolRegistry", [512])
+    entries = await conn._rpc("getAllSymbolRegistry", [{"limit": 512}])
     rows = entries.get("entries", []) if isinstance(entries, dict) else []
     for row in rows:
         if not isinstance(row, dict):
@@ -118,7 +118,7 @@ async def send_contract_call(
         TransactionBuilder()
         .add(ix)
         .set_recent_blockhash(recent_blockhash)
-        .build_and_sign(signer)
+        .build_and_sign(signer, await conn.get_chain_id())
     )
     return await conn.send_transaction(tx)
 

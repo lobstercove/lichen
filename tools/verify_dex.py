@@ -19,7 +19,7 @@ PAIR_NAMES = {
 
 async def main():
     conn = Connection(RPC)
-    from deploy_dex import load_genesis_keypair
+    from chain_helpers import load_genesis_keypair
 
     reserve = load_genesis_keypair('reserve_pool', NETWORK)
     reserve_str = str(reserve.address())

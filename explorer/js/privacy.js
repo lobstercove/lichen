@@ -78,7 +78,7 @@ async function loadPoolStats() {
             merkleRoot: '0'.repeat(64),
             commitmentCount: 0,
             totalShielded: 0,
-            pool_balance_licn: 0,
+            totalShieldedLicn: "0.000000000",
             nullifierCount: 0,
             nullifier_count: 0,
             shieldCount: 0,
@@ -108,13 +108,15 @@ async function loadShieldedTransactions() {
     }
 
     const txs = [];
-    let beforeSlot = null;
+    let beforeCursor = null;
     let pageCount = 0;
 
     while (txs.length < SHIELDED_TX_TARGET && pageCount < SHIELDED_TX_MAX_PAGES) {
         const params = { limit: SHIELDED_TX_RPC_LIMIT };
-        if (beforeSlot !== null) {
-            params.before_slot = beforeSlot;
+        if (typeof beforeCursor === 'string') {
+            params.before = beforeCursor;
+        } else if (beforeCursor !== null) {
+            params.before_slot = beforeCursor;
         }
 
         const resp = await rpc.call('getRecentTransactions', [params]);
@@ -129,8 +131,9 @@ async function loadShieldedTransactions() {
         }
 
         pageCount += 1;
-        if (!resp?.has_more || !resp?.next_before_slot) break;
-        beforeSlot = resp.next_before_slot;
+        const nextCursor = resp?.next_before || resp?.next_before_slot || null;
+        if (!resp?.has_more || !nextCursor) break;
+        beforeCursor = nextCursor;
     }
 
     shieldedTxs = txs;
@@ -143,10 +146,9 @@ function updatePoolStatsUI(stats) {
     const pick = (...vals) => vals.find(v => v !== undefined && v !== null);
 
     // Shielded balance
-    const totalShielded = pick(stats.totalShielded, stats.pool_balance, 0);
+    const totalShielded = pick(stats.totalShielded, 0);
     const balanceLicn = pick(
         stats.totalShieldedLicn,
-        stats.pool_balance_licn,
         (totalShielded / SPORES_PER_LICN)
     );
     const el = (id) => document.getElementById(id);
@@ -160,7 +162,7 @@ function updatePoolStatsUI(stats) {
     if (shieldedSporesEl) shieldedSporesEl.textContent = formatNumber(totalShielded) + ' spores';
 
     // Commitment count
-    const commitmentCount = pick(stats.commitmentCount, stats.commitment_count, 0);
+    const commitmentCount = pick(stats.commitmentCount, 0);
     const commitmentCountEl = el('commitmentCount');
     if (commitmentCountEl) commitmentCountEl.textContent = formatNumber(commitmentCount);
 
@@ -168,14 +170,14 @@ function updatePoolStatsUI(stats) {
     const nullifierCountEl = el('nullifierCount');
     if (nullifierCountEl) {
         nullifierCountEl.textContent = formatNumber(
-            pick(stats.nullifierCount, stats.nullifier_count, 0)
+            pick(stats.nullifierCount, 0)
         );
     }
 
     // Shielded tx count
-    const shieldCount = pick(stats.shieldCount, stats.shield_count, 0);
-    const unshieldCount = pick(stats.unshieldCount, stats.unshield_count, 0);
-    const transferCount = pick(stats.transferCount, stats.transfer_count, 0);
+    const shieldCount = pick(stats.shieldCount, 0);
+    const unshieldCount = pick(stats.unshieldCount, 0);
+    const transferCount = pick(stats.transferCount, 0);
     const totalTxs = shieldCount + unshieldCount + transferCount || commitmentCount;
     const txCountEl = el('shieldedTxCount');
     const txBreakdownEl = el('shieldedTxBreakdown');
@@ -186,7 +188,7 @@ function updatePoolStatsUI(stats) {
         `Transfer: ${formatNumber(transferCount)}`;
 
     // Merkle root
-    const merkleRoot = pick(stats.merkleRoot, stats.merkle_root, '0'.repeat(64));
+    const merkleRoot = pick(stats.merkleRoot, '0'.repeat(64));
     const merkleRootEl = el('merkleRoot');
     if (merkleRootEl) merkleRootEl.textContent = '0x' + merkleRoot;
 

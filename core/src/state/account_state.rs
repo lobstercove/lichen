@@ -79,6 +79,7 @@ impl StateStore {
         is_new_hint: Option<bool>,
         old_balance_hint: Option<u64>,
     ) -> Result<(), String> {
+        let _state_commitment_guard = self.lock_state_commitment();
         let cf = self
             .db
             .cf_handle(CF_ACCOUNTS)
@@ -150,7 +151,7 @@ impl StateStore {
         Ok(())
     }
 
-    /// Count total number of accounts (DEPRECATED - use metrics counter instead).
+    /// Scan the account column family for metrics reconciliation and diagnostics.
     pub fn count_accounts(&self) -> Result<u64, String> {
         let cf = self
             .db
@@ -191,6 +192,7 @@ impl StateStore {
         if from == to {
             return Ok(());
         }
+        let _state_commitment_guard = self.lock_state_commitment();
 
         let mut from_account = self
             .get_account(from)?
@@ -302,6 +304,7 @@ impl StateStore {
         if accounts.is_empty() && burn_delta == 0 {
             return Ok(());
         }
+        let _state_commitment_guard = self.lock_state_commitment();
 
         let cf = self
             .db
@@ -384,6 +387,7 @@ impl StateStore {
         if accounts.is_empty() && mint_delta == 0 {
             return Ok(());
         }
+        let _state_commitment_guard = self.lock_state_commitment();
 
         let cf = self
             .db
@@ -464,6 +468,7 @@ impl StateStore {
         acct: &Account,
         pool: &MossStakePool,
     ) -> Result<(), String> {
+        let _state_commitment_guard = self.lock_state_commitment();
         let cf_accounts = self
             .db
             .cf_handle(CF_ACCOUNTS)
@@ -531,6 +536,7 @@ impl StateStore {
         pool: &MossStakePool,
         mint_delta: u64,
     ) -> Result<(), String> {
+        let _state_commitment_guard = self.lock_state_commitment();
         let cf_moss = self
             .db
             .cf_handle(CF_MOSSSTAKE)

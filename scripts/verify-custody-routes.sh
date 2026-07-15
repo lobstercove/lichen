@@ -160,10 +160,10 @@ verify_solana() {
 }
 
 verify_ethereum() {
-  require_one ethereum ethereum_rpc CUSTODY_ETH_RPC_URL CUSTODY_EVM_RPC_URL
+  require_key ethereum CUSTODY_ETH_RPC_URL
   require_uint_key ethereum CUSTODY_ETH_CHAIN_ID
-  require_one ethereum ethereum_usdc CUSTODY_ETH_USDC_TOKEN_ADDR CUSTODY_ETH_USDC CUSTODY_EVM_USDC
-  require_one ethereum ethereum_usdt CUSTODY_ETH_USDT_TOKEN_ADDR CUSTODY_ETH_USDT CUSTODY_EVM_USDT
+  require_key ethereum CUSTODY_ETH_USDC_TOKEN_ADDR
+  require_key ethereum CUSTODY_ETH_USDT_TOKEN_ADDR
   require_wrapped_key ethereum CUSTODY_LUSD_TOKEN_ADDR
   require_wrapped_key ethereum CUSTODY_WETH_TOKEN_ADDR
 }

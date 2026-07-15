@@ -90,11 +90,17 @@ function encodePqSignature(signature) {
   ]);
 }
 
-function encodeTransaction(sigs, messageBytes) {
+function encodeTransactionWire(sigs, messageBytes) {
   const sigParts = sigs.map(encodePqSignature);
   // tx_type: Native = 0 (u32 LE)
   const txType = encodeU32LE(0);
-  return concat([encodeU64LE(sigParts.length), ...sigParts, messageBytes, txType]);
+  return concat([
+    new Uint8Array([0x4d, 0x54, 0x01, 0x00]),
+    encodeU64LE(sigParts.length),
+    ...sigParts,
+    messageBytes,
+    txType,
+  ]);
 }
 
 // --- Deterministic test data (same as Rust golden vector tests) ---
@@ -140,15 +146,15 @@ const message = {
 // --- Test 2: Transaction golden vector ---
 {
   const msgBytes = encodeMessage(message);
-  const txBytes = encodeTransaction([sig], msgBytes);
+  const txBytes = encodeTransactionWire([sig], msgBytes);
   const hex = bytesToHex(txBytes);
 
   const hash = crypto.createHash('sha256').update(Buffer.from(txBytes)).digest('hex');
 
-  assert.strictEqual(txBytes.length, 5417,
-    `K4-02 JS TX LENGTH MISMATCH!\nGot:      ${txBytes.length}\nExpected: 5417`);
-  assert.strictEqual(hash, '9d0eec7b657276b828c265995ce78b41a3e19b17ab354b11f37254bbc4ee2a91',
-    `K4-02 JS TX HASH MISMATCH!\nGot:      ${hash}\nExpected: 9d0eec7b657276b828c265995ce78b41a3e19b17ab354b11f37254bbc4ee2a91`);
+  assert.strictEqual(txBytes.length, 5421,
+    `K4-02 JS TX LENGTH MISMATCH!\nGot:      ${txBytes.length}\nExpected: 5421`);
+  assert.strictEqual(hash, '6cbbbe1071b48945540193d679c5ef2a42e7edc4dfa5652bfb715d93c8965ad1',
+    `K4-02 JS TX HASH MISMATCH!\nGot:      ${hash}\nExpected: 6cbbbe1071b48945540193d679c5ef2a42e7edc4dfa5652bfb715d93c8965ad1`);
   console.log('  ✓ Transaction golden vector matches Rust length + hash');
 }
 

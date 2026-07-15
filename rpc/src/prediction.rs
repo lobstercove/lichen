@@ -20,7 +20,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::RpcState;
-use lichen_core::{Instruction, Pubkey, CONTRACT_PROGRAM_ID};
+use lichen_core::{processor::TxMeta, Instruction, Pubkey, CONTRACT_PROGRAM_ID};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
@@ -326,6 +326,10 @@ struct PredictionTradeJson {
     #[serde(skip_serializing_if = "Option::is_none")]
     outcome: Option<u8>,
     amount: f64,
+}
+
+fn receipt_allows_prediction_activity(receipt: Option<&TxMeta>) -> bool {
+    receipt.map(TxMeta::succeeded).unwrap_or(true)
 }
 
 #[derive(Deserialize)]
@@ -1230,6 +1234,12 @@ async fn get_trades(
     let mut slot_ts_cache: HashMap<u64, u64> = HashMap::new();
 
     for (sig, sig_slot) in indexed {
+        match state.state.get_tx_meta_full(&sig) {
+            Ok(receipt) if !receipt_allows_prediction_activity(receipt.as_ref()) => continue,
+            Ok(_) => {}
+            Err(_) => continue,
+        }
+
         let tx = match state.state.get_transaction(&sig) {
             Ok(Some(tx)) => tx,
             _ => {
@@ -1495,6 +1505,31 @@ pub(crate) fn build_prediction_router() -> Router<Arc<RpcState>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prediction_activity_requires_successful_durable_receipt() {
+        let successful = TxMeta {
+            success: Some(true),
+            ..TxMeta::default()
+        };
+        let failed = TxMeta {
+            success: Some(false),
+            ..TxMeta::default()
+        };
+        let legacy = TxMeta::default();
+
+        assert!(receipt_allows_prediction_activity(Some(&successful)));
+        assert!(!receipt_allows_prediction_activity(Some(&failed)));
+        assert!(receipt_allows_prediction_activity(Some(&legacy)));
+        assert!(receipt_allows_prediction_activity(None));
+    }
+
+    #[test]
+    fn user_query_accepts_address() {
+        let query: UserQuery =
+            serde_json::from_value(serde_json::json!({"address": "abc"})).unwrap();
+        assert_eq!(query.address.as_deref(), Some("abc"));
+    }
 
     // ── map_category ──
 

@@ -17,8 +17,7 @@ pub(super) fn test_config() -> CustodyConfig {
     CustodyConfig {
         db_path: "/tmp/test_custody".to_string(),
         solana_rpc_url: Some("http://localhost:8899".to_string()),
-        evm_rpc_url: Some("http://localhost:8545".to_string()),
-        eth_rpc_url: None,
+        eth_rpc_url: Some("http://localhost:8545".to_string()),
         bnb_rpc_url: None,
         eth_chain_id: ETH_MAINNET_CHAIN_ID,
         bnb_chain_id: BNB_MAINNET_CHAIN_ID,
@@ -35,9 +34,8 @@ pub(super) fn test_config() -> CustodyConfig {
         btc_fee_rate_sats_vb: 5,
         poll_interval_secs: 15,
         treasury_solana_address: Some("TEST_SOL_ADDR".to_string()),
-        treasury_evm_address: Some("0xTEST".to_string()),
-        treasury_eth_address: None,
-        treasury_bnb_address: None,
+        treasury_eth_address: Some("0xTEST".to_string()),
+        treasury_bnb_address: Some("0xTEST".to_string()),
         treasury_neox_address: None,
         treasury_btc_address: None,
         solana_fee_payer_keypair_path: Some("/tmp/fee.json".to_string()),
@@ -74,7 +72,8 @@ pub(super) fn test_config() -> CustodyConfig {
         signer_auth_tokens: vec![],
         signer_pq_addresses: vec![],
         api_auth_token: Some("test_api_token".to_string()),
-        evm_multisig_address: None,
+        eth_multisig_address: None,
+        bnb_multisig_address: None,
         neox_multisig_address: None,
         webhook_allowed_hosts: vec![],
         withdrawal_velocity_policy: test_withdrawal_velocity_policy(),
@@ -182,25 +181,12 @@ pub(super) fn test_auth_headers() -> axum::http::HeaderMap {
     headers
 }
 
-pub(super) fn test_bridge_access_auth_payload(seed: u8) -> (String, Value) {
-    let keypair = Keypair::from_seed(&[seed; 32]);
-    let user_id = keypair.pubkey().to_base58();
-    let issued_at = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("system clock")
-        .as_secs();
-    let expires_at = issued_at + 600;
-    let message = bridge_access_message(&user_id, issued_at, expires_at);
-
-    (
-        user_id,
-        json!({
-            "issued_at": issued_at,
-            "expires_at": expires_at,
-            "signature": serde_json::to_value(keypair.sign(&message))
-                .expect("encode bridge auth signature"),
-        }),
-    )
+pub(super) fn test_bridge_access_auth_payload(
+    seed: u8,
+    chain: &str,
+    asset: &str,
+) -> (String, Value) {
+    test_bridge_access_auth_payload_v2(seed, chain, asset)
 }
 
 pub(super) fn test_bridge_access_auth_payload_v2(

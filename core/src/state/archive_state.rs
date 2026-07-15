@@ -50,39 +50,81 @@ impl StateStore {
         pubkey: &Pubkey,
         target_slot: u64,
     ) -> Result<Option<Account>, String> {
-        let cf = self
-            .db
-            .cf_handle(CF_ACCOUNT_SNAPSHOTS)
-            .ok_or_else(|| "Account snapshots CF not found".to_string())?;
-
         let mut seek_key = [0u8; 40];
         seek_key[..32].copy_from_slice(&pubkey.0);
         seek_key[32..].copy_from_slice(&target_slot.to_be_bytes());
 
-        let iter = self.db.iterator_cf(
+        let hot = Self::get_account_snapshot_at_or_before(
+            self.db.as_ref(),
+            CF_ACCOUNT_SNAPSHOTS,
+            pubkey,
+            target_slot,
+            &seek_key,
+        )?;
+        let cold = match self.cold_db.as_ref() {
+            Some(db) if db.cf_handle(COLD_CF_ACCOUNT_SNAPSHOTS).is_some() => {
+                Self::get_account_snapshot_at_or_before(
+                    db.as_ref(),
+                    COLD_CF_ACCOUNT_SNAPSHOTS,
+                    pubkey,
+                    target_slot,
+                    &seek_key,
+                )?
+            }
+            _ => None,
+        };
+
+        Ok(match (hot, cold) {
+            (Some((hot_slot, hot_account)), Some((cold_slot, cold_account))) => {
+                if hot_slot >= cold_slot {
+                    Some(hot_account)
+                } else {
+                    Some(cold_account)
+                }
+            }
+            (Some((_, account)), None) | (None, Some((_, account))) => Some(account),
+            (None, None) => None,
+        })
+    }
+
+    fn get_account_snapshot_at_or_before(
+        db: &DB,
+        cf_name: &str,
+        pubkey: &Pubkey,
+        target_slot: u64,
+        seek_key: &[u8; 40],
+    ) -> Result<Option<(u64, Account)>, String> {
+        let cf = db
+            .cf_handle(cf_name)
+            .ok_or_else(|| format!("{} CF not found", cf_name))?;
+        let iter = db.iterator_cf(
             &cf,
-            rocksdb::IteratorMode::From(&seek_key, Direction::Reverse),
+            rocksdb::IteratorMode::From(seek_key, Direction::Reverse),
         );
 
-        for item in iter.flatten() {
-            let (key, value) = item;
+        for item in iter {
+            let (key, value) = item.map_err(|e| format!("Failed reading {}: {}", cf_name, e))?;
             if key.len() != 40 || key[..32] != pubkey.0 {
                 break;
             }
-            let mut slot_bytes = [0u8; 8];
-            slot_bytes.copy_from_slice(&key[32..40]);
-            let slot = u64::from_be_bytes(slot_bytes);
+            let slot = u64::from_be_bytes(
+                key[32..40]
+                    .try_into()
+                    .map_err(|_| "Invalid account snapshot slot key".to_string())?,
+            );
             if slot > target_slot {
                 continue;
             }
-            if value.first() == Some(&0xBC) {
-                let mut account: Account =
-                    deserialize_legacy_bincode(&value[1..], "account snapshot")
-                        .map_err(|e| format!("Failed to deserialize snapshot: {}", e))?;
-                account.fixup_legacy();
-                return Ok(Some(account));
+            if value.first() != Some(&0xBC) {
+                return Err(format!(
+                    "Unsupported account snapshot encoding in {} at slot {}",
+                    cf_name, slot
+                ));
             }
-            break;
+            let mut account: Account = deserialize_legacy_bincode(&value[1..], "account snapshot")
+                .map_err(|e| format!("Failed to deserialize snapshot: {}", e))?;
+            account.fixup_legacy();
+            return Ok(Some((slot, account)));
         }
 
         Ok(None)
@@ -91,6 +133,12 @@ impl StateStore {
     /// Remove all account snapshots older than `before_slot`.
     /// Returns the number of entries pruned.
     pub fn prune_account_snapshots(&self, before_slot: u64) -> Result<u64, String> {
+        if self.cold_db.is_some() {
+            return Err(
+                "Refusing to prune account snapshots from an archive-backed store; migrate them to cold storage instead"
+                    .to_string(),
+            );
+        }
         let cf = self
             .db
             .cf_handle(CF_ACCOUNT_SNAPSHOTS)
@@ -131,15 +179,26 @@ impl StateStore {
             .cf_handle(CF_ACCOUNT_SNAPSHOTS)
             .ok_or_else(|| "Account snapshots CF not found".to_string())?;
 
-        let iter = self.db.iterator_cf(&cf, rocksdb::IteratorMode::Start);
-        for item in iter.flatten() {
-            let (key, _) = item;
+        let mut oldest = None;
+        for item in self.db.iterator_cf(&cf, rocksdb::IteratorMode::Start) {
+            let (key, _) = item.map_err(|e| format!("Failed reading account snapshots: {}", e))?;
             if key.len() == 40 {
-                let mut slot_bytes = [0u8; 8];
-                slot_bytes.copy_from_slice(&key[32..40]);
-                return Ok(Some(u64::from_be_bytes(slot_bytes)));
+                let slot = u64::from_be_bytes(key[32..40].try_into().unwrap());
+                oldest = Some(oldest.map_or(slot, |current: u64| current.min(slot)));
             }
         }
-        Ok(None)
+        if let Some(cold) = self.cold_db.as_ref() {
+            if let Some(cold_cf) = cold.cf_handle(COLD_CF_ACCOUNT_SNAPSHOTS) {
+                for item in cold.iterator_cf(&cold_cf, rocksdb::IteratorMode::Start) {
+                    let (key, _) =
+                        item.map_err(|e| format!("Failed reading cold account snapshots: {}", e))?;
+                    if key.len() == 40 {
+                        let slot = u64::from_be_bytes(key[32..40].try_into().unwrap());
+                        oldest = Some(oldest.map_or(slot, |current| current.min(slot)));
+                    }
+                }
+            }
+        }
+        Ok(oldest)
     }
 }

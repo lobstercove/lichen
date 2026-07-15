@@ -196,7 +196,24 @@ impl TxProcessor {
 
     /// Process a transaction.
     pub fn process_transaction(&self, tx: &Transaction, _validator: &Pubkey) -> TxResult {
-        self.process_transaction_inner(tx, _validator, None)
+        let result = self.process_transaction_inner(tx, _validator, None);
+        if !self.is_speculative()
+            && result.receipt_eligible
+            && self
+                .state
+                .get_transaction(&tx.signature())
+                .ok()
+                .flatten()
+                .is_some()
+        {
+            if let Err(error) = self
+                .state
+                .put_tx_meta_full(&tx.signature(), &TxMeta::from_result(&result))
+            {
+                tracing::error!("Failed to persist canonical transaction receipt: {}", error);
+            }
+        }
+        result
     }
 
     /// Process a transaction with optional pre-cached blockhashes.
@@ -215,21 +232,12 @@ impl TxProcessor {
         }
 
         if let Err(e) = tx.validate_structure() {
-            return self.make_result(
-                false,
-                0,
-                Some(format!("Invalid transaction structure: {}", e)),
-                0,
-            );
+            return self.make_invalid_result(format!("Invalid transaction structure: {}", e), 0);
         }
 
         if tx.message.recent_blockhash == crate::hash::Hash::default() {
-            return self.make_result(
-                false,
-                0,
-                Some("Zero blockhash is not valid for replay protection".to_string()),
-                0,
-            );
+            return self
+                .make_invalid_result("Zero blockhash is not valid for replay protection", 0);
         }
 
         let tx_hash = tx.hash();
@@ -243,25 +251,15 @@ impl TxProcessor {
                 .is_some()
         };
         if already_processed {
-            return self.make_result(
-                false,
-                0,
-                Some("Transaction already processed".to_string()),
-                0,
-            );
+            return self.make_invalid_result("Transaction already processed", 0);
         }
 
         if tx.is_evm() {
             if is_evm_instruction(tx) {
                 return self.process_evm_transaction(tx);
             } else {
-                return self.make_result(
-                    false,
-                    0,
-                    Some(
-                        "EVM sentinel blockhash is reserved for EVM-wrapped transactions"
-                            .to_string(),
-                    ),
+                return self.make_invalid_result(
+                    "EVM sentinel blockhash is reserved for EVM-wrapped transactions",
                     0,
                 );
             }
@@ -280,12 +278,7 @@ impl TxProcessor {
             if !valid {
                 let nonce_valid = Self::check_durable_nonce(tx, &self.state);
                 if !nonce_valid {
-                    return self.make_result(
-                        false,
-                        0,
-                        Some("Blockhash not found or too old".to_string()),
-                        0,
-                    );
+                    return self.make_invalid_result("Blockhash not found or too old", 0);
                 }
             }
         }
@@ -295,7 +288,7 @@ impl TxProcessor {
         }
 
         if let Err(error) = self.verify_transaction_signatures(tx) {
-            return self.make_result(false, 0, Some(error), 0);
+            return self.make_invalid_result(error, 0);
         }
 
         *self
@@ -322,7 +315,7 @@ impl TxProcessor {
 
         if total_fee > 0 && !defer_mossstake_claim_fee {
             if let Err(e) = self.charge_fee_with_priority(&fee_payer, total_fee, priority_fee) {
-                return self.make_result(false, 0, Some(format!("Fee error: {}", e)), 0);
+                return self.make_invalid_result(format!("Fee error: {}", e), 0);
             }
         }
 
@@ -333,10 +326,8 @@ impl TxProcessor {
                 .unwrap_or_else(|e| e.into_inner())
                 .is_none()
             {
-                return self.make_result(
-                    false,
-                    total_fee,
-                    Some("Speculative execution requires an active state batch".to_string()),
+                return self.make_invalid_result(
+                    "Speculative execution requires an active state batch",
                     0,
                 );
             }
@@ -454,10 +445,8 @@ impl TxProcessor {
                         tracing::error!("Failed to store TX meta after deferred fee error: {e2}");
                     }
                 }
-                return self.make_result(
-                    false,
-                    0,
-                    Some(format!("Deferred MossStake claim fee error: {}", e)),
+                return self.make_invalid_result(
+                    format!("Deferred MossStake claim fee error: {}", e),
                     total_cu,
                 );
             }
@@ -522,13 +511,7 @@ impl TxProcessor {
                     tracing::error!("Failed to refund deploy premium: {}", refund_err);
                 }
             }
-            let actual_fee = total_fee.saturating_sub(premium);
-            return self.make_result(
-                false,
-                actual_fee,
-                Some(format!("Transaction storage error: {}", e)),
-                total_cu,
-            );
+            return self.make_invalid_result(format!("Transaction storage error: {}", e), total_cu);
         }
 
         if let Err(e) = self.b_put_tx_meta(&tx.signature(), total_cu) {
@@ -544,13 +527,7 @@ impl TxProcessor {
                         tracing::error!("Failed to refund deploy premium: {}", refund_err);
                     }
                 }
-                let actual_fee = total_fee.saturating_sub(premium);
-                return self.make_result(
-                    false,
-                    actual_fee,
-                    Some(format!("Atomic commit failed: {}", e)),
-                    total_cu,
-                );
+                return self.make_invalid_result(format!("Atomic commit failed: {}", e), total_cu);
             }
         }
 
@@ -566,6 +543,19 @@ impl TxProcessor {
         txs: &[Transaction],
         validator: &Pubkey,
     ) -> SpeculativeBlockExecution {
+        let archive_slot = self.state.get_last_slot().unwrap_or(0);
+        self.process_transactions_speculative_at_slot(txs, validator, archive_slot)
+    }
+
+    /// Execute a canonical block candidate using its declared slot for archive
+    /// account snapshots. The caller must pass the block height, not a local
+    /// database tip that may differ by block-delivery path.
+    pub fn process_transactions_speculative_at_slot(
+        &self,
+        txs: &[Transaction],
+        validator: &Pubkey,
+        archive_slot: u64,
+    ) -> SpeculativeBlockExecution {
         let cached_blockhashes: HashSet<Hash> = self
             .state
             .get_recent_blockhashes(MAX_TX_AGE_BLOCKS)
@@ -573,15 +563,53 @@ impl TxProcessor {
             .into_iter()
             .collect();
 
-        let mut cumulative = self.state.begin_batch();
+        let mut cumulative = self.state.begin_batch_at_slot(archive_slot);
         let mut results = Vec::with_capacity(txs.len());
         for tx in txs {
             let child = cumulative.clone_for_speculative();
             self.set_active_batch(child);
-            let result = self.process_transaction_inner(tx, validator, Some(&cached_blockhashes));
-            if result.success {
-                if let Some(updated) = self.take_active_batch() {
-                    cumulative = updated;
+            let mut result =
+                self.process_transaction_inner(tx, validator, Some(&cached_blockhashes));
+            if result.receipt_eligible {
+                let active_batch = self.take_active_batch();
+                let had_execution_batch = active_batch.is_some();
+                let receipt_result = (|| -> Result<StateBatch, String> {
+                    let receipt_batch = match active_batch {
+                        Some(batch) => batch,
+                        None if !result.success => cumulative.clone_for_speculative(),
+                        None => {
+                            return Err(
+                                "successful speculative execution lost its state batch".to_string()
+                            )
+                        }
+                    };
+                    self.set_active_batch(receipt_batch);
+
+                    // Native failure paths roll back their instruction batch. Reapply
+                    // only the deterministic fee before storing the failed receipt.
+                    // EVM reverts retain their execution batch, including gas and nonce.
+                    if !result.success && !had_execution_batch && result.fee_paid > 0 {
+                        let priority_fee = Self::compute_priority_fee(tx).min(result.fee_paid);
+                        self.charge_fee_with_priority_in_batch(
+                            &tx.sender(),
+                            result.fee_paid,
+                            priority_fee,
+                        )?;
+                    }
+
+                    self.b_put_transaction(tx)?;
+                    self.b_put_tx_result_meta(&tx.signature(), &result)?;
+                    self.take_active_batch()
+                        .ok_or_else(|| "receipt persistence lost its state batch".to_string())
+                })();
+
+                match receipt_result {
+                    Ok(updated) => cumulative = updated,
+                    Err(error) => {
+                        let _ = self.take_active_batch();
+                        result.receipt_eligible = false;
+                        result.error = Some(format!("Receipt persistence error: {}", error));
+                    }
                 }
             } else {
                 let _ = self.take_active_batch();
@@ -716,6 +744,7 @@ impl TxProcessor {
             (0..n)
                 .map(|_| TxResult {
                     success: false,
+                    receipt_eligible: false,
                     fee_paid: 0,
                     error: None,
                     compute_units_used: 0,
@@ -971,6 +1000,37 @@ impl TxProcessor {
         let mut total_state_changes: usize = 0;
         let mut simulated_contract_storage: HashMap<Pubkey, HashMap<Vec<u8>, Option<Vec<u8>>>> =
             HashMap::new();
+        let mut simulated_native_accounts: HashMap<Pubkey, Account> = HashMap::new();
+        if !deferred_mossstake_claim_fee && total_fee > 0 {
+            let mut payer = match self.state.get_account(&fee_payer) {
+                Ok(Some(account)) => account,
+                _ => {
+                    return SimulationResult {
+                        success: false,
+                        fee: total_fee,
+                        logs,
+                        error: Some("Fee payer account not found".to_string()),
+                        compute_used: 0,
+                        return_data: None,
+                        return_code: None,
+                        state_changes: 0,
+                    };
+                }
+            };
+            if let Err(error) = payer.deduct_spendable(total_fee) {
+                return SimulationResult {
+                    success: false,
+                    fee: total_fee,
+                    logs,
+                    error: Some(error),
+                    compute_used: 0,
+                    return_data: None,
+                    return_code: None,
+                    state_changes: 0,
+                };
+            }
+            simulated_native_accounts.insert(fee_payer, payer);
+        }
 
         for (idx, instruction) in tx.message.instructions.iter().enumerate() {
             if instruction.program_id == CONTRACT_PROGRAM_ID {
@@ -1011,9 +1071,16 @@ impl TxProcessor {
                                                     state_changes: total_state_changes,
                                                 };
                                             }
+                                            let logical_function_name =
+                                                resolve_abi_call_function_name(
+                                                    &contract, &function, &args,
+                                                )
+                                                .to_string();
                                             if let Err(error) = contract
                                                 .validate_lifecycle_for_execution(
-                                                    &function, false, value,
+                                                    &logical_function_name,
+                                                    false,
+                                                    value,
                                                 )
                                             {
                                                 return SimulationResult {
@@ -1051,7 +1118,52 @@ impl TxProcessor {
                                             }
                                             let remaining =
                                                 compute_budget.saturating_sub(total_compute);
-                                            let context = build_top_level_call_context(
+                                            if value > 0 {
+                                                let mut caller_account = simulated_native_accounts
+                                                    .get(caller)
+                                                    .cloned()
+                                                    .or_else(|| {
+                                                        self.state
+                                                            .get_account(caller)
+                                                            .ok()
+                                                            .flatten()
+                                                    });
+                                                let mut contract_account =
+                                                    simulated_native_accounts
+                                                        .get(contract_addr)
+                                                        .cloned()
+                                                        .unwrap_or_else(|| account.clone());
+                                                let transfer_result = caller_account
+                                                    .as_mut()
+                                                    .ok_or_else(|| {
+                                                        "Contract caller account not found"
+                                                            .to_string()
+                                                    })
+                                                    .and_then(|caller_account| {
+                                                        caller_account.deduct_spendable(value)?;
+                                                        contract_account.add_spendable(value)
+                                                    });
+                                                if let Err(error) = transfer_result {
+                                                    return SimulationResult {
+                                                        success: false,
+                                                        fee: total_fee,
+                                                        logs,
+                                                        error: Some(error),
+                                                        compute_used: total_compute,
+                                                        return_data: last_return_data,
+                                                        return_code: last_return_code,
+                                                        state_changes: total_state_changes,
+                                                    };
+                                                }
+                                                simulated_native_accounts.insert(
+                                                    *caller,
+                                                    caller_account.expect("caller checked above"),
+                                                );
+                                                simulated_native_accounts
+                                                    .insert(*contract_addr, contract_account);
+                                            }
+
+                                            let mut context = build_top_level_call_context(
                                                 ContractContext::with_args(
                                                     *caller,
                                                     *contract_addr,
@@ -1063,6 +1175,8 @@ impl TxProcessor {
                                                 self.state.clone(),
                                                 remaining,
                                             );
+                                            context.pending_native_account_state =
+                                                simulated_native_accounts.clone();
                                             let mut runtime = ContractRuntime::get_pooled();
                                             let exec_result = runtime
                                                 .execute(&contract, &function, &args, context);
@@ -1094,7 +1208,7 @@ impl TxProcessor {
                                                     }
                                                     let outcome = evaluate_contract_outcome(
                                                         &contract,
-                                                        &function,
+                                                        &logical_function_name,
                                                         &result,
                                                         ContractOutcomeFallback::LegacyNonzeroNoChangeFailure,
                                                     );
@@ -1110,6 +1224,106 @@ impl TxProcessor {
                                                             state_changes: total_state_changes,
                                                         };
                                                     }
+                                                    let mut next_native_accounts =
+                                                        simulated_native_accounts.clone();
+                                                    let native_result = (|| {
+                                                        for (address, delta) in
+                                                            &result.ccc_value_deltas
+                                                        {
+                                                            if *delta == 0 {
+                                                                continue;
+                                                            }
+                                                            let mut account = next_native_accounts
+                                                                .get(address)
+                                                                .cloned()
+                                                                .or_else(|| {
+                                                                    self.state
+                                                                        .get_account(address)
+                                                                        .ok()
+                                                                        .flatten()
+                                                                })
+                                                                .ok_or_else(|| {
+                                                                    format!(
+                                                                        "CCC value delta target {} not found",
+                                                                        address
+                                                                    )
+                                                                })?;
+                                                            if *delta > 0 {
+                                                                account
+                                                                    .add_spendable(*delta as u64)?;
+                                                            } else {
+                                                                account.deduct_spendable(
+                                                                    (-*delta) as u64,
+                                                                )?;
+                                                            }
+                                                            next_native_accounts
+                                                                .insert(*address, account);
+                                                        }
+                                                        for op in &result.native_account_ops {
+                                                            let address = op.account();
+                                                            let mut account = next_native_accounts
+                                                                .get(&address)
+                                                                .cloned()
+                                                                .or_else(|| {
+                                                                    self.state
+                                                                        .get_account(&address)
+                                                                        .ok()
+                                                                        .flatten()
+                                                                })
+                                                                .ok_or_else(|| {
+                                                                    format!(
+                                                                        "Native account op target {} not found",
+                                                                        address
+                                                                    )
+                                                                })?;
+                                                            op.apply(&mut account)?;
+                                                            next_native_accounts
+                                                                .insert(address, account);
+                                                            if let Some(to) = op.transfer_to() {
+                                                                if let NativeAccountOp::Transfer {
+                                                                    amount,
+                                                                    ..
+                                                                } = op
+                                                                {
+                                                                    let mut recipient =
+                                                                        next_native_accounts
+                                                                            .get(&to)
+                                                                            .cloned()
+                                                                            .or_else(|| {
+                                                                                self.state
+                                                                                    .get_account(
+                                                                                        &to,
+                                                                                    )
+                                                                                    .ok()
+                                                                                    .flatten()
+                                                                            })
+                                                                            .unwrap_or_else(|| {
+                                                                                Account::new(0, to)
+                                                                            });
+                                                                    recipient
+                                                                        .add_spendable(*amount)?;
+                                                                    next_native_accounts
+                                                                        .insert(to, recipient);
+                                                                }
+                                                            }
+                                                        }
+                                                        Ok::<(), String>(())
+                                                    })(
+                                                    );
+                                                    if let Err(error) = native_result {
+                                                        return SimulationResult {
+                                                            success: false,
+                                                            fee: total_fee,
+                                                            logs,
+                                                            error: Some(error),
+                                                            compute_used: total_compute,
+                                                            return_data: last_return_data,
+                                                            return_code: last_return_code,
+                                                            state_changes: total_state_changes,
+                                                        };
+                                                    }
+                                                    simulated_native_accounts =
+                                                        next_native_accounts;
                                                     if !result.storage_changes.is_empty() {
                                                         let storage = simulated_contract_storage
                                                             .entry(*contract_addr)
@@ -1317,12 +1531,7 @@ impl TxProcessor {
     /// Process an EVM transaction.
     fn process_evm_transaction(&self, tx: &Transaction) -> TxResult {
         if tx.message.instructions.len() != 1 {
-            return self.make_result(
-                false,
-                0,
-                Some("Invalid EVM transaction format".to_string()),
-                0,
-            );
+            return self.make_invalid_result("Invalid EVM transaction format", 0);
         }
 
         let instruction = &tx.message.instructions[0];
@@ -1331,29 +1540,24 @@ impl TxProcessor {
         let evm_tx = match decode_evm_transaction(raw) {
             Ok(tx) => tx,
             Err(err) => {
-                return self.make_result(false, 0, Some(err), 0);
+                return self.make_invalid_result(err, 0);
             }
         };
 
         if !u256_is_multiple_of_spore(&evm_tx.value) {
-            return self.make_result(
-                false,
-                0,
-                Some("EVM value must be multiple of 1e9 wei".to_string()),
-                0,
-            );
+            return self.make_invalid_result("EVM value must be multiple of 1e9 wei", 0);
         }
 
         let from_address: [u8; 20] = evm_tx.from.into();
         let mapping = match self.state.lookup_evm_address(&from_address) {
             Ok(value) => value,
             Err(err) => {
-                return self.make_result(false, 0, Some(err), 0);
+                return self.make_invalid_result(err, 0);
             }
         };
 
         if mapping.is_none() {
-            return self.make_result(false, 0, Some("EVM address not registered".to_string()), 0);
+            return self.make_invalid_result("EVM address not registered", 0);
         }
 
         let chain_id = evm_tx.chain_id.unwrap_or(0);
@@ -1361,7 +1565,7 @@ impl TxProcessor {
             match execute_evm_transaction(self.state.clone(), &evm_tx, chain_id) {
                 Ok(res) => res,
                 Err(err) => {
-                    return self.make_result(false, 0, Some(err), 0);
+                    return self.make_invalid_result(err, 0);
                 }
             };
 
@@ -1412,16 +1616,14 @@ impl TxProcessor {
             let native_payer = match mapping {
                 Some(payer) => payer,
                 None => {
-                    return self.make_result(
-                        false,
-                        0,
-                        Some("EVM fee charge error: missing native payer mapping".to_string()),
+                    return self.make_invalid_result(
+                        "EVM fee charge error: missing native payer mapping",
                         0,
                     );
                 }
             };
             if let Err(e) = self.charge_fee_direct(&native_payer, fee_paid) {
-                return self.make_result(false, 0, Some(format!("EVM fee charge error: {}", e)), 0);
+                return self.make_invalid_result(format!("EVM fee charge error: {}", e), 0);
             }
         }
 
@@ -1432,10 +1634,8 @@ impl TxProcessor {
                 .unwrap_or_else(|e| e.into_inner())
                 .is_none()
             {
-                return self.make_result(
-                    false,
-                    fee_paid,
-                    Some("Speculative EVM execution requires an active state batch".to_string()),
+                return self.make_invalid_result(
+                    "Speculative EVM execution requires an active state batch",
                     0,
                 );
             }
@@ -1445,65 +1645,35 @@ impl TxProcessor {
 
         if let Err(e) = self.b_put_evm_tx(&record) {
             self.rollback_batch();
-            return self.make_result(
-                false,
-                fee_paid,
-                Some(format!("EVM tx storage error: {}", e)),
-                0,
-            );
+            return self.make_invalid_result(format!("EVM tx storage error: {}", e), 0);
         }
         if let Err(e) = self.b_put_evm_receipt(&receipt) {
             self.rollback_batch();
-            return self.make_result(
-                false,
-                fee_paid,
-                Some(format!("EVM receipt storage error: {}", e)),
-                0,
-            );
+            return self.make_invalid_result(format!("EVM receipt storage error: {}", e), 0);
         }
 
         if !evm_log_entries.is_empty() {
             let slot = self.state.get_last_slot().unwrap_or(0);
             if let Err(e) = self.b_put_evm_logs_for_slot(slot, &evm_log_entries) {
                 self.rollback_batch();
-                return self.make_result(
-                    false,
-                    fee_paid,
-                    Some(format!("EVM log index error: {}", e)),
-                    0,
-                );
+                return self.make_invalid_result(format!("EVM log index error: {}", e), 0);
             }
         }
 
         if let Err(e) = self.b_put_transaction(tx) {
             self.rollback_batch();
-            return self.make_result(
-                false,
-                fee_paid,
-                Some(format!("Transaction storage error: {}", e)),
-                0,
-            );
+            return self.make_invalid_result(format!("Transaction storage error: {}", e), 0);
         }
 
         if let Err(e) = self.b_apply_evm_state_changes(&evm_state_changes) {
             self.rollback_batch();
-            return self.make_result(
-                false,
-                fee_paid,
-                Some(format!("EVM state apply error: {}", e)),
-                0,
-            );
+            return self.make_invalid_result(format!("EVM state apply error: {}", e), 0);
         }
 
         if !self.is_speculative() {
             if let Err(e) = self.commit_batch() {
                 self.rollback_batch();
-                return self.make_result(
-                    false,
-                    fee_paid,
-                    Some(format!("Atomic commit failed: {}", e)),
-                    0,
-                );
+                return self.make_invalid_result(format!("Atomic commit failed: {}", e), 0);
             }
         }
 

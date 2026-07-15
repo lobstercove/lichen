@@ -43,17 +43,11 @@ impl TransactionBuilder {
         Ok(Message::new(self.instructions, blockhash))
     }
 
-    /// Build and sign the transaction using legacy message bytes.
-    pub fn build_and_sign(self, keypair: &Keypair) -> Result<CoreTransaction> {
-        self.build_and_sign_for_chain_id(keypair, "")
-    }
-
     /// Build and sign the transaction using the versioned chain-id domain envelope.
-    pub fn build_and_sign_for_chain_id(
-        self,
-        keypair: &Keypair,
-        chain_id: &str,
-    ) -> Result<CoreTransaction> {
+    pub fn build_and_sign(self, keypair: &Keypair, chain_id: &str) -> Result<CoreTransaction> {
+        if chain_id.is_empty() {
+            return Err(Error::BuildError("Chain id is required".to_string()));
+        }
         let message = self.build_message()?;
         let message_bytes = message.signing_bytes_for_chain_id(chain_id);
         let signature = keypair.sign(&message_bytes);
@@ -123,7 +117,7 @@ mod tests {
         let kp = Keypair::new();
         let result = TransactionBuilder::new()
             .add_instruction(dummy_instruction())
-            .build_and_sign(&kp);
+            .build_and_sign(&kp, "lichen-testnet-1");
         assert!(result.is_err());
     }
 
@@ -132,7 +126,7 @@ mod tests {
         let kp = Keypair::new();
         let result = TransactionBuilder::new()
             .recent_blockhash(zero_blockhash())
-            .build_and_sign(&kp);
+            .build_and_sign(&kp, "lichen-testnet-1");
         assert!(result.is_err());
     }
 
@@ -142,7 +136,7 @@ mod tests {
         let tx = TransactionBuilder::new()
             .add_instruction(dummy_instruction())
             .recent_blockhash(zero_blockhash())
-            .build_and_sign(&kp)
+            .build_and_sign(&kp, "lichen-testnet-1")
             .expect("should build");
         assert_eq!(tx.signatures.len(), 1);
         assert!(tx.signatures[0].validate().is_ok());
@@ -150,7 +144,7 @@ mod tests {
     }
 
     #[test]
-    fn build_and_sign_for_chain_id_uses_domain_envelope() {
+    fn build_and_sign_uses_domain_envelope() {
         let kp = Keypair::new();
         let ix = Instruction {
             program_id: SYSTEM_PROGRAM_ID,
@@ -160,7 +154,7 @@ mod tests {
         let tx = TransactionBuilder::new()
             .add_instruction(ix)
             .recent_blockhash(zero_blockhash())
-            .build_and_sign_for_chain_id(&kp, "lichen-testnet-1")
+            .build_and_sign(&kp, "lichen-testnet-1")
             .expect("should build");
 
         assert!(tx
@@ -177,12 +171,12 @@ mod tests {
         let tx1 = TransactionBuilder::new()
             .add_instruction(dummy_instruction())
             .recent_blockhash(zero_blockhash())
-            .build_and_sign(&kp)
+            .build_and_sign(&kp, "lichen-testnet-1")
             .unwrap();
         let tx2 = TransactionBuilder::new()
             .add_instruction(dummy_instruction())
             .recent_blockhash(zero_blockhash())
-            .build_and_sign(&kp)
+            .build_and_sign(&kp, "lichen-testnet-1")
             .unwrap();
         assert_eq!(tx1.signatures, tx2.signatures);
     }
@@ -204,7 +198,7 @@ mod tests {
             .add_instruction(ix1)
             .add_instruction(ix2)
             .recent_blockhash(zero_blockhash())
-            .build_and_sign(&kp)
+            .build_and_sign(&kp, "lichen-testnet-1")
             .unwrap();
         assert_eq!(tx.message.instructions.len(), 2);
     }

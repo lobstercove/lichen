@@ -3,7 +3,6 @@ use super::*;
 pub(crate) fn load_config() -> CustodyConfig {
     let db_path = std::env::var("CUSTODY_DB_PATH").unwrap_or_else(|_| "./data/custody".to_string());
     let solana_rpc_url = std::env::var("CUSTODY_SOLANA_RPC_URL").ok();
-    let evm_rpc_url = std::env::var("CUSTODY_EVM_RPC_URL").ok();
     let solana_confirmations = std::env::var("CUSTODY_SOLANA_CONFIRMATIONS")
         .ok()
         .and_then(|value| value.parse().ok())
@@ -17,7 +16,6 @@ pub(crate) fn load_config() -> CustodyConfig {
         .and_then(|value| value.parse().ok())
         .unwrap_or(15);
     let treasury_solana_address = std::env::var("CUSTODY_TREASURY_SOLANA").ok();
-    let treasury_evm_address = std::env::var("CUSTODY_TREASURY_EVM").ok();
     let treasury_eth_address = std::env::var("CUSTODY_TREASURY_ETH").ok();
     let treasury_bnb_address = std::env::var("CUSTODY_TREASURY_BNB").ok();
     let eth_rpc_url = std::env::var("CUSTODY_ETH_RPC_URL").ok();
@@ -62,30 +60,10 @@ pub(crate) fn load_config() -> CustodyConfig {
         .or_else(|| treasury_solana_address.clone());
     let solana_usdc_mint = optional_env("CUSTODY_SOLANA_USDC_MINT").unwrap_or_default();
     let solana_usdt_mint = optional_env("CUSTODY_SOLANA_USDT_MINT").unwrap_or_default();
-    let evm_usdc_contract = first_env(&[
-        "CUSTODY_ETH_USDC_TOKEN_ADDR",
-        "CUSTODY_ETH_USDC",
-        "CUSTODY_EVM_USDC",
-    ])
-    .unwrap_or_default();
-    let evm_usdt_contract = first_env(&[
-        "CUSTODY_ETH_USDT_TOKEN_ADDR",
-        "CUSTODY_ETH_USDT",
-        "CUSTODY_EVM_USDT",
-    ])
-    .unwrap_or_default();
-    let bnb_usdc_contract = first_env(&[
-        "CUSTODY_BSC_USDC_TOKEN_ADDR",
-        "CUSTODY_BNB_USDC_TOKEN_ADDR",
-        "CUSTODY_BSC_USDC",
-        "CUSTODY_BNB_USDC",
-    ]);
-    let bnb_usdt_contract = first_env(&[
-        "CUSTODY_BSC_USDT_TOKEN_ADDR",
-        "CUSTODY_BNB_USDT_TOKEN_ADDR",
-        "CUSTODY_BSC_USDT",
-        "CUSTODY_BNB_USDT",
-    ]);
+    let evm_usdc_contract = optional_env("CUSTODY_ETH_USDC_TOKEN_ADDR").unwrap_or_default();
+    let evm_usdt_contract = optional_env("CUSTODY_ETH_USDT_TOKEN_ADDR").unwrap_or_default();
+    let bnb_usdc_contract = optional_env("CUSTODY_BSC_USDC_TOKEN_ADDR");
+    let bnb_usdt_contract = optional_env("CUSTODY_BSC_USDT_TOKEN_ADDR");
     let licn_rpc_url = std::env::var("CUSTODY_LICHEN_RPC_URL").ok();
     let treasury_keypair_path = std::env::var("CUSTODY_TREASURY_KEYPAIR").ok();
     let musd_contract_addr = std::env::var("CUSTODY_LUSD_TOKEN_ADDR").ok();
@@ -176,7 +154,6 @@ pub(crate) fn load_config() -> CustodyConfig {
     CustodyConfig {
         db_path,
         solana_rpc_url,
-        evm_rpc_url,
         eth_rpc_url,
         bnb_rpc_url,
         eth_chain_id,
@@ -194,7 +171,6 @@ pub(crate) fn load_config() -> CustodyConfig {
         btc_fee_rate_sats_vb,
         poll_interval_secs,
         treasury_solana_address,
-        treasury_evm_address,
         treasury_eth_address,
         treasury_bnb_address,
         treasury_neox_address,
@@ -275,7 +251,8 @@ pub(crate) fn load_config() -> CustodyConfig {
             token
         },
         withdrawal_velocity_policy,
-        evm_multisig_address: std::env::var("CUSTODY_EVM_MULTISIG_ADDRESS").ok(),
+        eth_multisig_address: std::env::var("CUSTODY_ETH_MULTISIG_ADDRESS").ok(),
+        bnb_multisig_address: std::env::var("CUSTODY_BNB_MULTISIG_ADDRESS").ok(),
         neox_multisig_address: std::env::var("CUSTODY_NEOX_MULTISIG_ADDRESS").ok(),
         webhook_allowed_hosts,
     }
@@ -286,8 +263,4 @@ fn optional_env(name: &str) -> Option<String> {
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
-}
-
-fn first_env(names: &[&str]) -> Option<String> {
-    names.iter().find_map(|name| optional_env(name))
 }

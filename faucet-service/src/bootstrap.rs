@@ -4,7 +4,7 @@ use axum::{
     Router,
 };
 use lichen_core::{
-    keypair_file::load_keypair_with_password_policy, plaintext_keypair_compat_allowed,
+    keypair_file::load_keypair_with_password_policy, plaintext_keypair_allowed_for_local_dev,
     require_runtime_keypair_password, Keypair,
 };
 use reqwest::Client;
@@ -77,7 +77,7 @@ fn load_configured_faucet_keypair(config: &FaucetConfig) -> Option<Keypair> {
     let keypair = load_keypair_with_password_policy(
         Path::new(path),
         password.as_deref(),
-        plaintext_keypair_compat_allowed(),
+        plaintext_keypair_allowed_for_local_dev(),
     )
     .unwrap_or_else(|err| panic!("failed to load FAUCET_KEYPAIR {}: {}", path, err));
     info!(

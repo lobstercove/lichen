@@ -133,7 +133,7 @@ async function main() {
     ], 'reserve-liability proof generation');
     fs.writeFileSync(proofPath, `${proofJson}\n`);
     const proof = JSON.parse(proofJson);
-    record(proof.type === 'reserve_liability', 'CLI generated reserve/liability proof');
+    record(proof.proof_type === 'reserve_liability', 'CLI generated reserve/liability proof');
     record(proof.privacy_model === 'transparent_aggregate_totals_no_address_list_v1', 'CLI discloses transparent privacy model');
 
     const verifyJson = runZkProve([

@@ -5,13 +5,13 @@ use crate::client::{RpcClient, TransactionHistoryResponse};
 
 impl RpcClient {
     /// Get transaction history
-    pub async fn get_transaction_history(
+    pub async fn get_transactions_by_address(
         &self,
         address: &str,
         limit: usize,
     ) -> Result<TransactionHistoryResponse> {
         let params = json!([address, { "limit": limit }]);
-        let result = self.call("getTransactionHistory", params).await?;
+        let result = self.call("getTransactionsByAddress", params).await?;
 
         let history: TransactionHistoryResponse =
             serde_json::from_value(result).context("Failed to parse transaction history")?;

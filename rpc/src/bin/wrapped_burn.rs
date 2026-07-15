@@ -75,6 +75,16 @@ async fn recent_blockhash(client: &reqwest::Client, rpc_url: &str) -> Result<Has
     Hash::from_hex(hash)
 }
 
+async fn chain_id(client: &reqwest::Client, rpc_url: &str) -> Result<String, String> {
+    let result = rpc_call(client, rpc_url, "getNetworkInfo", json!([])).await?;
+    result
+        .get("chain_id")
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| "getNetworkInfo response missing chain_id".to_string())
+}
+
 fn load_signer(seed_byte: Option<u8>, keypair_path: Option<PathBuf>) -> Result<Keypair, String> {
     match (seed_byte, keypair_path) {
         (Some(seed_byte), None) => Ok(Keypair::from_seed(&[seed_byte; 32])),
@@ -168,7 +178,10 @@ async fn main() {
         compute_budget: None,
         compute_unit_price: None,
     };
-    let signature = signer.sign(&message.serialize());
+    let signing_chain_id = chain_id(&client, &rpc_url)
+        .await
+        .unwrap_or_else(|error| panic!("get chain id: {}", error));
+    let signature = signer.sign(&message.signing_bytes_for_chain_id(&signing_chain_id));
     let tx = Transaction {
         signatures: vec![signature],
         message,

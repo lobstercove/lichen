@@ -292,7 +292,7 @@ function formatAddress(addr) {
     return formatHash(addr, 6);
 }
 
-// Normalize legacy transaction type names to current terminology
+// Normalize terminology stored in early public-chain transaction history.
 function normalizeTxType(type) {
     if (!type) return type;
     return type === 'DebtRepay' ? 'GrantRepay' : type;
@@ -825,9 +825,6 @@ async function getLiveRegistryEntries(method, fallbackRpcCall) {
         if (liveResponse && Array.isArray(liveResponse.entries)) {
             return normalizeRegistryEntries(liveResponse.entries);
         }
-        if (Array.isArray(liveResponse)) {
-            return normalizeRegistryEntries(liveResponse);
-        }
     } catch (_) {
         return [];
     }
@@ -857,8 +854,7 @@ async function signedMetadataRpcCall(method, params, networkKey, fallbackRpcCall
     switch (String(method || '')) {
         case 'getSignedMetadataManifest':
             return (await getSignedMetadataManifest(networkKey)).payload;
-        case 'getAllSymbolRegistry':
-        case 'getAllSymbols': {
+        case 'getAllSymbolRegistry': {
             var manifest = await getSignedMetadataManifestOrNull(networkKey);
             if (!manifest) {
                 if (typeof fallbackRpcCall === 'function') {
@@ -953,8 +949,8 @@ function readLeU64(bytes) {
     return value;
 }
 
-// ── Bincode Message Serializer ──
-// Produces the same bytes as Rust's legacy bincode message codec so signatures match.
+// ── Canonical Native Transaction Codec ──
+// Produces the same message payload bytes as the Rust bincode codec.
 
 function serializeMessageBincode(message) {
     var parts = [];
@@ -1011,6 +1007,208 @@ function serializeMessageBincode(message) {
     var offset = 0;
     for (var k = 0; k < parts.length; k++) { result.set(parts[k], offset); offset += parts[k].length; }
     return result;
+}
+
+function concatTransactionBytes(parts) {
+    var totalLen = parts.reduce(function (sum, part) { return sum + part.length; }, 0);
+    var result = new Uint8Array(totalLen);
+    var offset = 0;
+    for (var i = 0; i < parts.length; i++) {
+        result.set(parts[i], offset);
+        offset += parts[i].length;
+    }
+    return result;
+}
+
+function encodeTransactionU64(value) {
+    var result = new Uint8Array(8);
+    new DataView(result.buffer).setBigUint64(0, BigInt(value), true);
+    return result;
+}
+
+function encodeTransactionU32(value) {
+    var result = new Uint8Array(4);
+    new DataView(result.buffer).setUint32(0, Number(value), true);
+    return result;
+}
+
+function encodeTransactionU16(value) {
+    var result = new Uint8Array(2);
+    new DataView(result.buffer).setUint16(0, Number(value), true);
+    return result;
+}
+
+function transactionHexBytes(value, fieldName) {
+    var text = String(value || '').replace(/^0x/, '');
+    if (!/^[0-9a-fA-F]*$/.test(text) || text.length % 2 !== 0) {
+        throw new Error('Invalid ' + fieldName + ' hex');
+    }
+    var result = new Uint8Array(text.length / 2);
+    for (var i = 0; i < result.length; i++) {
+        result[i] = parseInt(text.slice(i * 2, i * 2 + 2), 16);
+    }
+    return result;
+}
+
+function encodeTransactionVec(bytes) {
+    return concatTransactionBytes([encodeTransactionU64(bytes.length), bytes]);
+}
+
+function encodePqSignatureBincode(signature) {
+    var schemeVersion = Number(signature && signature.scheme_version);
+    var publicKeySchemeVersion = Number(signature && signature.public_key && signature.public_key.scheme_version);
+    if (!Number.isInteger(schemeVersion) || schemeVersion < 0 || schemeVersion > 255 ||
+        !Number.isInteger(publicKeySchemeVersion) || publicKeySchemeVersion < 0 || publicKeySchemeVersion > 255) {
+        throw new Error('Invalid PQ signature scheme version');
+    }
+    var publicKey = transactionHexBytes(signature.public_key.bytes, 'PQ public key');
+    var signatureBytes = transactionHexBytes(signature.sig, 'PQ signature');
+    return concatTransactionBytes([
+        Uint8Array.of(schemeVersion),
+        Uint8Array.of(publicKeySchemeVersion),
+        encodeTransactionVec(publicKey),
+        encodeTransactionVec(signatureBytes)
+    ]);
+}
+
+function signingBytesForChainId(messageBytes, chainId) {
+    var normalizedChainId = String(chainId || '').trim();
+    if (!normalizedChainId) throw new Error('Chain id is required for transaction signing');
+    var textEncoder = new TextEncoder();
+    var domainBytes = textEncoder.encode('native-tx');
+    var chainBytes = textEncoder.encode(normalizedChainId);
+    if (domainBytes.length > 0xffff || chainBytes.length > 0xffff) {
+        throw new Error('Transaction signing domain is too long');
+    }
+    return concatTransactionBytes([
+        textEncoder.encode('LICHEN-SIG'),
+        Uint8Array.of(1),
+        encodeTransactionU16(domainBytes.length),
+        domainBytes,
+        encodeTransactionU16(chainBytes.length),
+        chainBytes,
+        encodeTransactionU64(messageBytes.length),
+        new Uint8Array(messageBytes)
+    ]);
+}
+
+function encodeTransactionV1Base64(transaction) {
+    var signatures = Array.isArray(transaction && transaction.signatures) ? transaction.signatures : [];
+    var messageBytes = serializeMessageBincode(transaction && transaction.message ? transaction.message : {});
+    var payloadParts = [encodeTransactionU64(signatures.length)];
+    for (var i = 0; i < signatures.length; i++) {
+        payloadParts.push(encodePqSignatureBincode(signatures[i]));
+    }
+    payloadParts.push(messageBytes, encodeTransactionU32(0));
+    var txBytes = concatTransactionBytes([
+        Uint8Array.of(0x4d, 0x54, 1, 0),
+        concatTransactionBytes(payloadParts)
+    ]);
+    var binary = '';
+    var chunkSize = 0x8000;
+    for (var offset = 0; offset < txBytes.length; offset += chunkSize) {
+        binary += String.fromCharCode.apply(null, txBytes.subarray(offset, offset + chunkSize));
+    }
+    return btoa(binary);
+}
+
+function decodeTransactionV1Base64(encodedTransaction) {
+    var raw = atob(String(encodedTransaction || '').trim());
+    var bytes = Uint8Array.from(raw, function (character) { return character.charCodeAt(0); });
+    if (bytes.length < 4 || bytes[0] !== 0x4d || bytes[1] !== 0x54) {
+        throw new Error('Transaction is not a lichen_tx_v1 wire envelope');
+    }
+    if (bytes[2] !== 1) throw new Error('Unsupported Lichen transaction wire version: ' + bytes[2]);
+    if (bytes[3] !== 0 && bytes[3] !== 1) throw new Error('Unknown Lichen transaction type byte: ' + bytes[3]);
+
+    var offset = 4;
+    function requireBytes(length, fieldName) {
+        if (!Number.isSafeInteger(length) || length < 0 || offset + length > bytes.length) {
+            throw new Error('Truncated ' + fieldName);
+        }
+    }
+    function readU8(fieldName) {
+        requireBytes(1, fieldName);
+        return bytes[offset++];
+    }
+    function readU32(fieldName) {
+        requireBytes(4, fieldName);
+        var value = new DataView(bytes.buffer, bytes.byteOffset + offset, 4).getUint32(0, true);
+        offset += 4;
+        return value;
+    }
+    function readU64(fieldName) {
+        requireBytes(8, fieldName);
+        var value = new DataView(bytes.buffer, bytes.byteOffset + offset, 8).getBigUint64(0, true);
+        offset += 8;
+        return value;
+    }
+    function readLength(fieldName) {
+        var value = readU64(fieldName);
+        if (value > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error(fieldName + ' exceeds JavaScript limits');
+        return Number(value);
+    }
+    function readBytes(length, fieldName) {
+        requireBytes(length, fieldName);
+        var result = bytes.slice(offset, offset + length);
+        offset += length;
+        return result;
+    }
+    function readVec(fieldName) {
+        return readBytes(readLength(fieldName + ' length'), fieldName);
+    }
+    function bytesHex(value) {
+        return Array.from(value, function (byte) { return byte.toString(16).padStart(2, '0'); }).join('');
+    }
+    function readOptionalU64(fieldName) {
+        var tag = readU8(fieldName + ' option');
+        if (tag === 0) return undefined;
+        if (tag !== 1) throw new Error('Invalid ' + fieldName + ' option tag');
+        return readU64(fieldName);
+    }
+
+    var signatureCount = readLength('signature count');
+    var signatures = [];
+    for (var signatureIndex = 0; signatureIndex < signatureCount; signatureIndex++) {
+        signatures.push({
+            scheme_version: readU8('signature scheme_version'),
+            public_key: {
+                scheme_version: readU8('signature public_key scheme_version'),
+                bytes: bytesHex(readVec('signature public_key bytes'))
+            },
+            sig: bytesHex(readVec('signature bytes'))
+        });
+    }
+
+    var instructionCount = readLength('instruction count');
+    var instructions = [];
+    for (var instructionIndex = 0; instructionIndex < instructionCount; instructionIndex++) {
+        var programId = Array.from(readBytes(32, 'instruction program_id'));
+        var accountCount = readLength('instruction account count');
+        var accounts = [];
+        for (var accountIndex = 0; accountIndex < accountCount; accountIndex++) {
+            accounts.push(Array.from(readBytes(32, 'instruction account')));
+        }
+        instructions.push({
+            program_id: programId,
+            accounts: accounts,
+            data: Array.from(readVec('instruction data'))
+        });
+    }
+
+    var message = {
+        instructions: instructions,
+        blockhash: bytesHex(readBytes(32, 'recent_blockhash'))
+    };
+    var computeBudget = readOptionalU64('compute_budget');
+    var computeUnitPrice = readOptionalU64('compute_unit_price');
+    if (computeBudget !== undefined) message.compute_budget = computeBudget;
+    if (computeUnitPrice !== undefined) message.compute_unit_price = computeUnitPrice;
+
+    var payloadTxType = readU32('transaction type');
+    if (payloadTxType !== bytes[3]) throw new Error('Transaction type does not match wire envelope');
+    if (offset !== bytes.length) throw new Error('Transaction wire envelope has trailing bytes');
+    return { signatures: signatures, message: message, tx_type: payloadTxType === 1 ? 'evm' : 'native' };
 }
 
 // ── Pagination ──
@@ -1136,7 +1334,8 @@ if (typeof module !== 'undefined' && module.exports) {
         formatBytes, formatSlot, formatTimeFull, formatTimeShort, formatSpores,
         updatePagination,
         bs58encode, bs58decode, base58Encode, base58Decode,
-        readLeU64, serializeMessageBincode,
+        readLeU64, serializeMessageBincode, signingBytesForChainId,
+        encodeTransactionV1Base64, decodeTransactionV1Base64,
         getLichenRpcUrl, getTrustedLichenRpcUrl, lichenRpcCall, trustedLichenRpcCall,
         SIGNED_METADATA_MANIFEST_SCHEMA_VERSION,
         LICHEN_SIGNED_METADATA_SIGNERS,

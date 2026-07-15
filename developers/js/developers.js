@@ -380,9 +380,9 @@ const SEARCH_INDEX = [
 
     // Exchange integration
     { title: 'Exchange Integration', desc: 'Native LICN exchange listing readiness and integration gates', url: 'exchange-integration.html', category: 'Exchange' },
-    { title: 'Exchange Chain Metadata', desc: 'Ticker, decimals, chain IDs, RPC URLs, address validation, and release metadata', url: 'exchange-integration.html#canonical-docs', category: 'Exchange' },
-    { title: 'Exchange Address Validation Vectors', desc: 'Native Base58 regex prefilter, decoded-length rule, valid vectors, and invalid cases', url: 'exchange-integration.html#canonical-docs', category: 'Exchange' },
-    { title: 'Exchange Operations Pack', desc: 'Status page, incident contacts, release signatures, rollback, and archive policy', url: 'exchange-integration.html#canonical-docs', category: 'Exchange' },
+    { title: 'Exchange Chain Metadata', desc: 'Ticker, decimals, chain IDs, RPC URLs, address validation, and release metadata', url: 'exchange-integration.html#metadata', category: 'Exchange' },
+    { title: 'Exchange Address Validation Vectors', desc: 'Native Base58 regex prefilter, decoded-length rule, valid vectors, and invalid cases', url: 'exchange-integration.html#addressing', category: 'Exchange' },
+    { title: 'Exchange Operations Pack', desc: 'Status page, incident contacts, release signatures, rollback, and archive policy', url: 'exchange-integration.html#operations', category: 'Exchange' },
 
     // SDK
     { title: 'JavaScript SDK', desc: 'Client library for Node.js and browsers', url: 'sdk-js.html', category: 'SDK' },

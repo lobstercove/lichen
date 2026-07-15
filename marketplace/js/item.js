@@ -372,9 +372,10 @@
             if (mp) {
                 var collectionId = currentNFT.collection || currentNFT.contract_id || '';
                 var listingResp = await marketTrustedRpcCall('getMarketListings', [{ collection: collectionId, limit: 100 }]);
-                var listings = Array.isArray(listingResp)
-                    ? listingResp
-                    : ((listingResp && Array.isArray(listingResp.listings)) ? listingResp.listings : []);
+                if (!listingResp || typeof listingResp !== 'object' || Array.isArray(listingResp) || !Array.isArray(listingResp.listings)) {
+                    throw new Error('Invalid RPC response: expected listings array');
+                }
+                var listings = listingResp.listings;
 
                 var matchedListing = listings.find(function (l) {
                     return (l.collection === collectionId && String(l.token_id || '') === String(currentNFT.token_id || '')) ||
@@ -410,14 +411,16 @@
             var tokenId = String(currentNFT.token_id || currentNFT.id || '');
 
             var auctionsResp = await marketTrustedRpcCall('getMarketAuctions', [{ collection: collectionId, limit: 200 }]);
-            var auctions = Array.isArray(auctionsResp)
-                ? auctionsResp
-                : ((auctionsResp && Array.isArray(auctionsResp.auctions)) ? auctionsResp.auctions : []);
+            if (!auctionsResp || typeof auctionsResp !== 'object' || Array.isArray(auctionsResp) || !Array.isArray(auctionsResp.auctions)) {
+                throw new Error('Invalid RPC response: expected auctions array');
+            }
+            var auctions = auctionsResp.auctions;
 
             var activityResp = await marketTrustedRpcCall('getMarketActivity', [{ collection: collectionId, limit: 200 }]);
-            var activity = Array.isArray(activityResp)
-                ? activityResp
-                : ((activityResp && Array.isArray(activityResp.activity)) ? activityResp.activity : []);
+            if (!activityResp || typeof activityResp !== 'object' || Array.isArray(activityResp) || !Array.isArray(activityResp.activity)) {
+                throw new Error('Invalid RPC response: expected activity array');
+            }
+            var activity = activityResp.activity;
 
             var relatedAuctionActivity = activity.filter(function (e) {
                 var eventTokenId = String((e && e.token_id !== undefined) ? e.token_id : '');
@@ -1269,7 +1272,10 @@
         try {
             var collectionId = currentNFT.collection || currentNFT.contract_id || '';
             var offers = await marketTrustedRpcCall('getMarketOffers', [{ collection: collectionId, token_id: currentNFT.token_id, include_collection_offers: true, limit: 50 }]);
-            var offerItems = Array.isArray(offers) ? offers : ((offers && Array.isArray(offers.offers)) ? offers.offers : []);
+            if (!offers || typeof offers !== 'object' || Array.isArray(offers) || !Array.isArray(offers.offers)) {
+                throw new Error('Invalid RPC response: expected offers array');
+            }
+            var offerItems = offers.offers;
 
             if (offerItems.length === 0) {
                 offersList.innerHTML = '<div style="text-align:center;padding:16px;opacity:0.5;">No offers yet</div>';

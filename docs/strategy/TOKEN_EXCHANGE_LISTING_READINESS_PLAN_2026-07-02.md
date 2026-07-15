@@ -6,6 +6,7 @@
 **Related native package:** [EXCHANGE_LISTING_READINESS_PLAN_2026-06-29.md](./EXCHANGE_LISTING_READINESS_PLAN_2026-06-29.md)
 **Scope:** Future exchange listings for fungible tokens issued, wrapped, launched, or traded on Lichen.
 **Out of scope:** Native LICN deposits and withdrawals, NFTs, marketplace assets, shielded assets, and mainnet token listing claims before mainnet launch.
+**Launchpad/DEX graduation dependency:** [LAUNCHPAD_DEX_GRADUATION_PLAN_2026-07-02.md](./LAUNCHPAD_DEX_GRADUATION_PLAN_2026-07-02.md)
 
 ## Executive Position
 
@@ -19,7 +20,7 @@ These facts are from repository inspection on 2026-07-02 and must be carried int
 
 | Area | Source-backed fact | Source files |
 | --- | --- | --- |
-| Token RPC | Canonical JSON-RPC dispatch exposes `getTokenAccounts`, `getTokenBalance`, `getTokenHolders`, `getTokenTransfers`, `getContractInfo`, `getContractEvents`, `getSymbolRegistry`, `getSymbolRegistryByProgram`, and `getAllSymbolRegistry` / `getAllSymbols`. | `rpc/src/lib.rs`, `docs/guides/RPC_API_REFERENCE.md`, `developers/rpc-reference.html` |
+| Token RPC | Canonical JSON-RPC dispatch exposes `getTokenAccounts`, `getTokenBalance`, `getTokenHolders`, `getTokenTransfers`, `getContractInfo`, `getContractEvents`, `getSymbolRegistry`, `getSymbolRegistryByProgram`, and `getAllSymbolRegistry`. | `rpc/src/lib.rs`, `docs/guides/RPC_API_REFERENCE.md`, `developers/rpc-reference.html` |
 | Token balances | Token balances are indexed from contract storage keys containing `_bal_`; keys map token program plus holder to a raw `u64` balance. | `core/src/processor/contract_execution.rs`, `core/src/state/secondary_indexes.rs` |
 | Holder token accounts | `getTokenAccounts` accepts `[holder_address]` and returns token program IDs, raw balances, registry-derived decimals, `ui_amount`, symbol, and name. | `rpc/src/lib.rs` |
 | Token balance lookup | `getTokenBalance` accepts `[token_program, holder]`, returns raw `balance`, registry-derived decimals, `ui_amount`, and symbol. | `rpc/src/lib.rs` |
@@ -155,8 +156,8 @@ Target implementation after this documentation phase:
 
 Required flow for a standard fungible token:
 
-1. Start a clean local validator stack with at least three validators.
-2. Optionally run a four-validator variant before public testnet deployment.
+1. Start a clean local validator stack with four validators.
+2. Prove each validator can stop and rejoin before public testnet deployment.
 3. Deploy or select a test token contract with known symbol, decimals, ABI, and code hash.
 4. Register the token symbol and metadata.
 5. Generate exchange hot, cold, deposit, and withdrawal destination accounts.
@@ -364,8 +365,8 @@ Purpose: prove the full token lifecycle before touching public testnet.
 Tasks:
 
 - Build local token exchange simulation.
-- Run on a clean three-validator stack.
-- Run a four-validator variant or restart/rejoin drill before public testnet deployment.
+- Run on a clean four-validator stack.
+- Run restart/rejoin drill for each local validator before public testnet deployment.
 - Include token deposit, credit, withdrawal, archive, restart, and cleanup.
 - Include wrapped and launchpad variants when those token classes are in scope.
 

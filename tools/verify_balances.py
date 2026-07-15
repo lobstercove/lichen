@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'sdk', 'python'))
 from lichen import Connection, PublicKey
-from deploy_dex import load_genesis_keypair
+from chain_helpers import load_genesis_keypair
 
 SPORES = 1_000_000_000
 

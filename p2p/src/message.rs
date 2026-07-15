@@ -2,8 +2,9 @@
 
 use lichen_core::{
     codec::{deserialize_legacy_bincode_strict, serialize_legacy_bincode_limited},
-    Block, BlockHeader, CommitSignature, Hash, PqSignature, Precommit, Prevote, Proposal, Pubkey,
-    SlashingEvidence, StakePool, Transaction, ValidatorSet, Vote,
+    Block, BlockHeader, CanonicalCommitCertificate, CanonicalValidatorPower, CommitSignature, Hash,
+    PqSignature, Precommit, Prevote, Proposal, Pubkey, SlashingEvidence, StakePool, Transaction,
+    ValidatorSet, Vote,
 };
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
@@ -20,6 +21,17 @@ pub struct SnapshotCategoryDigest {
     pub sha256: [u8; 32],
 }
 
+/// Proof that the exact checkpoint certificate is transaction zero of a
+/// finalized canonical child block.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CheckpointCanonicalProof {
+    pub child_header: BlockHeader,
+    pub certificate_merkle_proof: Vec<(Hash, bool)>,
+    pub child_commit_round: u32,
+    pub child_commit_signatures: Vec<CommitSignature>,
+    pub child_validator_powers: Vec<CanonicalValidatorPower>,
+}
+
 /// One verified checkpoint anchor advertised by a validator.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CheckpointMetaAnchor {
@@ -30,12 +42,12 @@ pub struct CheckpointMetaAnchor {
     /// Total accounts in the checkpoint.
     pub total_accounts: u64,
     /// Signed block header anchoring this checkpoint.
-    pub checkpoint_header: Option<BlockHeader>,
-    /// Consensus round that produced the checkpoint anchor commit.
-    pub commit_round: u32,
-    /// Commit certificate for the checkpoint anchor block.
-    #[serde(default)]
-    pub commit_signatures: Vec<CommitSignature>,
+    pub checkpoint_header: BlockHeader,
+    /// Canonical child certificate that authenticates finality against the
+    /// complete validator-power denominator committed by the checkpoint block.
+    pub commit_certificate: CanonicalCommitCertificate,
+    /// Inclusion and child-finality proof for `commit_certificate`.
+    pub canonical_proof: CheckpointCanonicalProof,
     /// Deterministic per-category digests for the checkpoint snapshot.
     #[serde(default)]
     pub snapshot_manifest: Vec<SnapshotCategoryDigest>,
@@ -43,17 +55,16 @@ pub struct CheckpointMetaAnchor {
 
 /// Build the signed payload for validator announcements.
 ///
-/// Legacy announcements signed only the fixed-width fields.
-/// New announcements append a length-prefixed version string so peers can
-/// enforce minimum validator versions for new admissions.
+/// The version is length-prefixed so peers can enforce the validator protocol
+/// version before admitting the announcement.
 pub fn validator_announcement_signing_message(
     pubkey: &Pubkey,
     stake: u64,
     current_slot: u64,
     machine_fingerprint: &[u8; 32],
-    version: Option<&str>,
+    version: &str,
 ) -> Result<Vec<u8>, String> {
-    let version_len = version.map_or(0, |value| value.len());
+    let version_len = version.len();
     if version_len > u16::MAX as usize {
         return Err(format!(
             "Validator announcement version too long: {} bytes",
@@ -61,22 +72,14 @@ pub fn validator_announcement_signing_message(
         ));
     }
 
-    let mut message = Vec::with_capacity(
-        80 + if version.is_some() {
-            2 + version_len
-        } else {
-            0
-        },
-    );
+    let mut message = Vec::with_capacity(82 + version_len);
     message.extend_from_slice(&pubkey.0);
     message.extend_from_slice(&stake.to_le_bytes());
     message.extend_from_slice(&current_slot.to_le_bytes());
     message.extend_from_slice(machine_fingerprint);
 
-    if let Some(version) = version {
-        message.extend_from_slice(&(version_len as u16).to_le_bytes());
-        message.extend_from_slice(version.as_bytes());
-    }
+    message.extend_from_slice(&(version_len as u16).to_le_bytes());
+    message.extend_from_slice(version.as_bytes());
 
     Ok(message)
 }
@@ -97,6 +100,9 @@ pub struct CompactBlock {
     pub header: BlockHeader,
     /// Short TX IDs (first 8 bytes of each tx hash)
     pub short_ids: Vec<ShortTxId>,
+    /// Protocol-generated consensus transactions, always prefixed before the
+    /// user transactions represented by `short_ids`.
+    pub consensus_transactions: Vec<Transaction>,
     /// Execution fees (needed for deterministic state; same order as short_ids)
     pub tx_fees_paid: Vec<u64>,
     /// Oracle price data from the block producer
@@ -114,11 +120,19 @@ impl CompactBlock {
         let short_ids = block
             .transactions
             .iter()
+            .filter(|tx| !tx.is_consensus())
             .map(|tx| short_tx_id(&tx.hash()))
+            .collect();
+        let consensus_transactions = block
+            .transactions
+            .iter()
+            .filter(|tx| tx.is_consensus())
+            .cloned()
             .collect();
         CompactBlock {
             header: block.header.clone(),
             short_ids,
+            consensus_transactions,
             tx_fees_paid: block.tx_fees_paid.clone(),
             oracle_prices: block.oracle_prices.clone(),
             commit_round: block.commit_round,
@@ -129,9 +143,8 @@ impl CompactBlock {
 
 /// Current P2P protocol version.
 ///
-/// Version 2 adds `current_slot` to `ConsistencyReport`, which changes the
-/// bincode layout and must not be mixed with version 1 peers.
-pub const P2P_PROTOCOL_VERSION: u32 = 2;
+/// Version 3 adds canonical consensus-envelope prefill to compact blocks.
+pub const P2P_PROTOCOL_VERSION: u32 = 3;
 
 /// P2P message envelope
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -139,7 +152,6 @@ pub struct P2PMessage {
     /// AUDIT-FIX L2: Protocol version — allows nodes to detect incompatible
     /// message formats and reject/ignore gracefully instead of deserialization
     /// failures.
-    #[serde(default = "default_protocol_version")]
     pub version: u32,
     /// Message type and payload
     pub msg_type: MessageType,
@@ -147,10 +159,6 @@ pub struct P2PMessage {
     pub sender: SocketAddr,
     /// Message timestamp
     pub timestamp: u64,
-}
-
-fn default_protocol_version() -> u32 {
-    P2P_PROTOCOL_VERSION
 }
 
 /// Snapshot request kinds
@@ -301,11 +309,10 @@ pub enum MessageType {
         total_accounts: u64,
         /// Signed block header anchoring this checkpoint, if available.
         checkpoint_header: Option<BlockHeader>,
-        /// Consensus round that produced the checkpoint anchor commit.
-        commit_round: u32,
-        /// Commit certificate for the checkpoint anchor block.
-        #[serde(default)]
-        commit_signatures: Vec<CommitSignature>,
+        /// Canonical child certificate for the checkpoint block, if available.
+        commit_certificate: Option<CanonicalCommitCertificate>,
+        /// Inclusion and child-finality proof for the canonical certificate.
+        canonical_proof: Option<Box<CheckpointCanonicalProof>>,
         /// Deterministic per-category digests for the checkpoint snapshot.
         #[serde(default)]
         snapshot_manifest: Vec<SnapshotCategoryDigest>,
@@ -438,11 +445,6 @@ impl P2PMessage {
     ///   `[0x00][bincode payload]`  — uncompressed
     ///   `[0xFF][4-byte LE uncompressed len][LZ4 compressed payload]`
     ///
-    /// Magic bytes 0x00 and 0xFF are chosen to avoid collision with raw bincode:
-    /// the first byte of a legacy message is the low byte of `P2P_PROTOCOL_VERSION`
-    /// (currently 1), so 0x00 and 0xFF can never be the start of a valid legacy
-    /// message unless the version reaches 0 or 255 (both implausible).
-    ///
     /// Limit is 16 MB to accommodate state snapshot chunks.
     pub fn serialize(&self) -> Result<Vec<u8>, String> {
         let raw =
@@ -468,8 +470,7 @@ impl P2PMessage {
     }
 
     /// Deserialize message from bytes (bounded to 16 MB to prevent OOM).
-    /// Handles compressed (0xFF prefix), uncompressed (0x00 prefix), and
-    /// legacy (raw bincode, any other first byte) formats.
+    /// Handles compressed (0xFF prefix) and uncompressed (0x00 prefix) envelopes.
     /// AUDIT-FIX L2: Rejects messages with incompatible protocol version.
     pub fn deserialize(bytes: &[u8]) -> Result<Self, String> {
         if bytes.is_empty() {
@@ -498,11 +499,7 @@ impl P2PMessage {
                     .map_err(|e| format!("LZ4 decompression error: {}", e))?;
                 return decode_p2p_message_payload(&decompressed);
             }
-            _other => {
-                // Legacy compatibility: no prefix byte, try raw bincode
-                // (for peers that haven't upgraded yet)
-                bytes
-            }
+            prefix => return Err(format!("Unsupported P2P message envelope: 0x{prefix:02x}")),
         };
 
         decode_p2p_message_payload(payload)
@@ -545,12 +542,12 @@ mod tests {
         let fingerprint = [7u8; 32];
 
         let payload =
-            validator_announcement_signing_message(&pubkey, 123, 456, &fingerprint, Some("0.1.0"))
+            validator_announcement_signing_message(&pubkey, 123, 456, &fingerprint, "0.1.0")
                 .unwrap();
         let signature = keypair.sign(&payload);
 
         let tampered =
-            validator_announcement_signing_message(&pubkey, 123, 456, &fingerprint, Some("0.1.1"))
+            validator_announcement_signing_message(&pubkey, 123, 456, &fingerprint, "0.1.1")
                 .unwrap();
 
         assert!(Keypair::verify(&pubkey, &payload, &signature));
@@ -558,16 +555,13 @@ mod tests {
     }
 
     #[test]
-    fn test_validator_announcement_signing_message_legacy_differs() {
+    fn test_validator_announcement_signing_message_requires_version() {
         let pubkey = Pubkey([9u8; 32]);
         let fingerprint = [3u8; 32];
-        let legacy =
-            validator_announcement_signing_message(&pubkey, 1, 2, &fingerprint, None).unwrap();
         let versioned =
-            validator_announcement_signing_message(&pubkey, 1, 2, &fingerprint, Some("0.1.0"))
-                .unwrap();
+            validator_announcement_signing_message(&pubkey, 1, 2, &fingerprint, "0.1.0").unwrap();
 
-        assert_ne!(legacy, versioned);
+        assert!(versioned.ends_with(b"0.1.0"));
     }
 
     #[test]
@@ -651,32 +645,17 @@ mod tests {
     }
 
     #[test]
-    fn test_legacy_message_backwards_compat() {
-        // Simulate a message from an old peer without the 0x00/0x01 prefix.
-        // The deserializer should handle raw bincode as legacy format.
+    fn test_unenveloped_message_rejected() {
         let addr = "127.0.0.1:8000".parse().unwrap();
         let msg = P2PMessage::new(MessageType::Ping, addr);
-        // Serialize with raw bincode (no envelope prefix)
         let raw =
             serialize_legacy_bincode_limited(&msg, P2P_MESSAGE_CODEC_LIMIT_BYTES, "P2P message")
                 .unwrap();
-        // Deserialize — should fall through to legacy path
-        let decoded = P2PMessage::deserialize(&raw).unwrap();
-        assert_eq!(decoded.version, msg.version);
-    }
-
-    #[test]
-    fn test_legacy_message_rejects_trailing_bytes() {
-        let addr = "127.0.0.1:8000".parse().unwrap();
-        let msg = P2PMessage::new(MessageType::Ping, addr);
-        let mut raw =
-            serialize_legacy_bincode_limited(&msg, P2P_MESSAGE_CODEC_LIMIT_BYTES, "P2P message")
-                .unwrap();
-        raw.push(0);
-
         let result = P2PMessage::deserialize(&raw);
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Deserialization error"));
+        assert!(result
+            .unwrap_err()
+            .contains("Unsupported P2P message envelope"));
     }
 
     #[test]
@@ -771,6 +750,46 @@ mod tests {
         assert_eq!(compact.header.slot, 42);
         assert!(compact.short_ids.is_empty());
         assert!(compact.tx_fees_paid.is_empty());
+    }
+
+    #[test]
+    fn compact_block_prefills_consensus_transaction() {
+        use lichen_core::{CanonicalCommitCertificate, CommitSignature, Keypair};
+
+        let validator = Keypair::generate();
+        let validator_powers = vec![lichen_core::CanonicalValidatorPower {
+            validator: validator.pubkey(),
+            power: lichen_core::MIN_VALIDATOR_STAKE,
+        }];
+        let certificate = CanonicalCommitCertificate {
+            version: lichen_core::CANONICAL_COMMIT_ENVELOPE_VERSION,
+            height: 1,
+            round: 0,
+            block_hash: Hash::hash(b"parent"),
+            validators_hash: lichen_core::canonical_validator_powers_hash(&validator_powers),
+            validator_powers,
+            parent_post_state_root: Hash::hash(b"compact-parent-post-state"),
+            child_metadata_hash: lichen_core::canonical_block_metadata_hash(&[0], &[]).unwrap(),
+            signatures: vec![CommitSignature {
+                validator: validator.pubkey().0,
+                signature: validator.sign(b"compact-consensus-prefill"),
+                timestamp: 1,
+            }],
+        };
+        let consensus = certificate.to_transaction().unwrap();
+        let mut block = Block::new(
+            2,
+            certificate.block_hash,
+            Hash::default(),
+            [1u8; 32],
+            vec![consensus.clone()],
+        );
+        block.tx_fees_paid = vec![0];
+
+        let compact = CompactBlock::from_block(&block);
+        assert!(compact.short_ids.is_empty());
+        assert_eq!(compact.consensus_transactions.len(), 1);
+        assert_eq!(compact.consensus_transactions[0].hash(), consensus.hash());
     }
 
     #[test]

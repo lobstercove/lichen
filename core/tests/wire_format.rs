@@ -112,6 +112,7 @@ fn build_expected_bincode(tx: &Transaction) -> Vec<u8> {
     let variant = match tx.tx_type {
         lichen_core::TransactionType::Native => 0u32,
         lichen_core::TransactionType::Evm => 1u32,
+        lichen_core::TransactionType::Consensus => 2u32,
     };
     out.extend_from_slice(&variant.to_le_bytes());
 
@@ -124,7 +125,7 @@ fn build_expected_bincode(tx: &Transaction) -> Vec<u8> {
 
 #[test]
 fn test_bincode_matches_sdk_layout() {
-    // The Rust legacy bincode codec output must match the expected byte layout
+    // The Rust canonical bincode payload must match the expected byte layout
     // that JS and Python SDKs produce with their manual encoders.
     let tx = make_test_transaction();
     let rust_bincode = serialize_legacy_bincode(&tx, "wire-format transaction").unwrap();
@@ -246,7 +247,7 @@ fn test_bincode_signature_encoding_is_pq_structured_bytes() {
 #[test]
 fn test_message_serialize_for_signing_matches_bincode() {
     // The Message::serialize() method (used for signing) must produce the same
-    // bytes as the canonical legacy bincode message codec, so signing bytes
+    // bytes as the canonical bincode message payload, so signing bytes
     // are consistent regardless of the code path.
     let tx = make_test_transaction();
     let sign_bytes = tx.message.serialize();
@@ -448,28 +449,24 @@ fn test_wire_envelope_round_trip_evm() {
 }
 
 #[test]
-fn test_wire_envelope_accepts_raw_bincode() {
-    // Raw bincode without the wire envelope is still accepted.
+fn test_wire_envelope_rejects_raw_bincode() {
     let tx = make_test_transaction();
     let raw_bincode = serialize_legacy_bincode(&tx, "wire-format transaction").unwrap();
 
     // First two bytes should NOT be the magic (they're the sig count u64 LE)
     assert_ne!(&raw_bincode[0..2], &lichen_core::TX_WIRE_MAGIC);
 
-    let tx2 = Transaction::from_wire(&raw_bincode, MAX_TEST_LIMIT).unwrap();
-    assert_eq!(tx2.signatures, tx.signatures);
-    assert_eq!(tx2.message.recent_blockhash, tx.message.recent_blockhash);
+    let error = Transaction::from_wire(&raw_bincode, MAX_TEST_LIMIT).unwrap_err();
+    assert!(error.contains("Missing transaction V1 wire envelope"));
 }
 
 #[test]
-fn test_wire_envelope_accepts_json_payload() {
-    // Browser wallet JSON payload.
+fn test_wire_envelope_rejects_json_payload() {
     let tx = make_test_transaction();
     let json_bytes = serde_json::to_vec(&tx).unwrap();
 
-    let tx2 = Transaction::from_wire(&json_bytes, MAX_TEST_LIMIT).unwrap();
-    assert_eq!(tx2.signatures, tx.signatures);
-    assert_eq!(tx2.message.recent_blockhash, tx.message.recent_blockhash);
+    let error = Transaction::from_wire(&json_bytes, MAX_TEST_LIMIT).unwrap_err();
+    assert!(error.contains("Missing transaction V1 wire envelope"));
 }
 
 #[test]
@@ -509,8 +506,9 @@ fn test_wire_envelope_too_short() {
     // Less than 4-byte header but starts with magic
     let wire = vec![0x4D, 0x54, 1]; // only 3 bytes
     let result = Transaction::from_wire(&wire, MAX_TEST_LIMIT);
-    // Should fall through to the non-envelope decoders (which also fail)
-    assert!(result.is_err());
+    assert!(result
+        .unwrap_err()
+        .contains("Missing transaction V1 wire envelope"));
 }
 
 #[test]

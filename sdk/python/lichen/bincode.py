@@ -8,6 +8,10 @@ from typing import Iterable, List, Optional
 from .pq import PqPublicKey, PqSignature, to_pq_signature
 from .publickey import PublicKey
 
+TX_WIRE_MAGIC = b"MT"
+TX_WIRE_VERSION = 1
+TX_TYPE_NATIVE = 0
+
 
 def _encode_u64(value: int) -> bytes:
     return value.to_bytes(8, byteorder="little", signed=False)
@@ -94,11 +98,14 @@ def encode_message(
     return encoded_instructions + blockhash + budget + cu_price
 
 
-def encode_transaction(
+def encode_transaction_wire(
     signatures: List[PqSignature],
     message_bytes: bytes,
-    tx_type: int = 0,
+    tx_type: int = TX_TYPE_NATIVE,
 ) -> bytes:
-    """Encode transaction matching Rust bincode format."""
+    """Encode the canonical V1 transaction wire envelope."""
+    if tx_type not in (0, 1):
+        raise ValueError(f"Unsupported transaction type: {tx_type}")
     sig_bytes = [_encode_pq_signature(to_pq_signature(signature)) for signature in signatures]
-    return _encode_u64(len(sig_bytes)) + b"".join(sig_bytes) + message_bytes + _encode_u32(tx_type)
+    payload = _encode_u64(len(sig_bytes)) + b"".join(sig_bytes) + message_bytes + _encode_u32(tx_type)
+    return TX_WIRE_MAGIC + bytes((TX_WIRE_VERSION, tx_type)) + payload

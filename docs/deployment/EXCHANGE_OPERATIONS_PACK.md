@@ -11,16 +11,21 @@
 
 This pack defines the operational material an exchange expects before listing
 native LICN. The current publication scope is testnet-only integration testing
-until mainnet launch. Operator contact and status-page approvals are recorded,
-and the final testnet-only exchange package is published under
-`exchange-testnet-v0.5.221`.
+until mainnet launch. Operator contact aliases are recorded, the final
+testnet-only exchange package is published under `exchange-testnet-v0.5.221`,
+and the public exchange status page is live at
+`https://exchanges.lichen.network`. As of 2026-07-05, the active Cloudflare
+zone, Pages custom domain, exchange status page, and default public readiness
+gate are green for the current testnet-only package.
 
 ## Publication Gate
 
 Do not include this pack in an external listing package until:
 
-- Status page URL is public or operator-private as disclosed, monitored, and
-  approved for exchange use.
+- Dedicated public exchange status page URL
+  `https://exchanges.lichen.network` is active, monitored, and approved for
+  exchange use. Internal operator monitoring is admin-only and must not be
+  published in exchange materials.
 - Public RPC and WebSocket endpoints for every network included in the package
   are healthy from outside the operator network. The current package includes
   testnet only.
@@ -38,11 +43,11 @@ Do not include this pack in an external listing package until:
 | --- | --- | --- | --- |
 | Mainnet RPC | `https://rpc.lichen.network` | Launch placeholder; excluded from the current testnet-only package until mainnet launch handoff passes | `seeds.json`, `developers/shared-config.js`, mainnet launch runbook |
 | Mainnet WebSocket | `wss://rpc.lichen.network/ws` | Launch placeholder; excluded from the current testnet-only package until mainnet launch handoff passes | `developers/shared-config.js`, mainnet launch runbook |
-| Testnet RPC | `https://testnet-rpc.lichen.network` | Healthy after signed `v0.5.221` recovery rollout on 2026-07-01; sustained public cadence sampled `370.0ms/block`, `getMetrics.observed_block_interval_ms = 372`, and `avg_block_time_ms = 380`; public exchange simulation passed | `seeds.json`, `developers/shared-config.js`, tracker Phase 5 evidence |
-| Testnet WebSocket | `wss://testnet-rpc.lichen.network/ws` | Public readiness WebSocket check passed after signed `v0.5.221` recovery rollout on 2026-07-01; live slot notifications advanced `6871609` -> `6871611` | `developers/shared-config.js` |
+| Testnet RPC | `https://testnet-api.lichen.network` | Healthy after signed `v0.5.221` recovery rollout on 2026-07-01; sustained public cadence sampled `370.0ms/block`, `getMetrics.observed_block_interval_ms = 372`, and `avg_block_time_ms = 380`; public exchange simulation passed | `seeds.json`, `developers/shared-config.js`, tracker Phase 5 evidence |
+| Testnet WebSocket | `wss://testnet-api.lichen.network/ws` | Public readiness WebSocket check passed after signed `v0.5.221` recovery rollout on 2026-07-01; live slot notifications advanced `6871609` -> `6871611` | `developers/shared-config.js` |
 | Explorer | `https://explorer.lichen.network` | Route templates verified | `seeds.json`, `developers/shared-config.js`, `explorer/js/*.js` |
-| Status page | `https://monitoring.lichen.network` | Operator-approved exchange status page for the current testnet-only package on 2026-07-01; private operator surface | Operator update on 2026-07-01 |
-| Developer portal exchange page | `https://developers.lichen.network/exchange-integration` | Deployed and verified; public page carries inline testnet-only metadata, address/accounting rules, deposit and withdrawal cookbooks, finality/archive policy, operations contacts, validation gates, mainnet handoff, and release-tagged source links | Cloudflare Pages deployment and tracker verification |
+| Public exchange status page | `https://exchanges.lichen.network` | Active on Cloudflare Pages project `lichen-network-exchanges`; production readiness is green; page uses a same-origin read-only status RPC proxy and the RPC CORS default now includes `exchanges.lichen.network` for validator rollouts | Operator correction on 2026-07-02; production verification on 2026-07-05 |
+| Developer portal exchange page | `https://developers.lichen.network/exchange-integration` | Deployed and verified; public page carries inline testnet-only metadata, address/accounting rules, deposit and withdrawal cookbooks, finality/archive policy, operations contacts, validation gates, mainnet handoff, release-tagged source links, and the exchange status URL without the old planned wording | Cloudflare Pages deployment and tracker verification |
 | GitHub exchange docs | `docs/guides/EXCHANGE_INTEGRATION.md` | Published under package tag `exchange-testnet-v0.5.221` for the current testnet-only package | Phase 1 docs work; final package release |
 
 ## Incident Contacts
@@ -61,13 +66,13 @@ Required exchange contact aliases:
 | Security incident alias | Vulnerability reports, suspected key compromise, signing compromise, bridge/custody fund-safety issues, and coordinated disclosure | `security@lichen.network` | Approved on 2026-07-01 for exchange escalation use; repository security policy response targets still apply to non-critical vulnerability reports |
 | Exchange operations alias | Deposit/withdrawal incidents, RPC/WebSocket/archive degradation, finality delays, maintenance coordination, stuck transaction investigation, and exchange-side pause/resume notices | `exchange-ops@lichen.network` | Approved on 2026-07-01 for exchange operations escalation |
 | Business/listing alias | Listing paperwork, legal/compliance coordination, market/asset metadata updates, and relationship management | `business@lichen.network` | Approved on 2026-07-01 for exchange business and listing coordination |
-| Status page contact surface | Incident and maintenance updates that exchanges can cite during operational events | `https://monitoring.lichen.network` | Approved as the status page on 2026-07-01 for the current testnet-only package |
+| Status page contact surface | Incident and maintenance updates that exchanges can cite during operational events | `https://exchanges.lichen.network` | Dedicated public exchange status/operations portal is active and approved for exchange use |
 
 Approved escalation policy:
 
 - Owner: Lichen operations owns `security@lichen.network`,
-  `exchange-ops@lichen.network`, `business@lichen.network`, and the monitoring
-  status surface for the current testnet-only package.
+  `exchange-ops@lichen.network`, `business@lichen.network`, and the dedicated
+  public exchange status surface.
 - Critical exchange-impacting incidents: acknowledge through the relevant alias
   within 1 hour when the incident affects deposits, withdrawals, RPC/WebSocket
   availability, archive/history lookup, finality, signing, keys, custody, or
@@ -77,15 +82,37 @@ Approved escalation policy:
 - Planned maintenance: target 72 hours notice; use 24 hours minimum where
   operationally possible. Emergency security releases may use shorter notice
   with immediate status-page publication.
-- Authenticated outbound policy: exchanges should treat status-page updates and
-  replies from the approved aliases as the authoritative exchange contact
-  surface unless a separate signed-contact ceremony is agreed bilaterally.
+- Authenticated outbound policy: exchanges should treat status-page updates
+  from the public exchange status page and replies from the approved aliases as
+  the authoritative exchange contact surface unless a separate signed-contact
+  ceremony is agreed bilaterally.
 - Backup path: if `exchange-ops@lichen.network` is unavailable during a live
   incident, use `security@lichen.network` for security or fund-safety impact and
-  `business@lichen.network` for listing or relationship coordination; the status
-  page remains the shared operational reference.
+  `business@lichen.network` for listing or relationship coordination; the
+  public exchange status page remains the shared operational reference.
 
 ## Status Page Policy
+
+Target exchange-facing portal: `https://exchanges.lichen.network`.
+
+Implementation policy:
+
+- Maintain it as a separate public Cloudflare page or application from the
+  admin monitoring portal.
+- Reuse only exchange-safe monitoring concepts: aggregate RPC health, WebSocket
+  health, explorer health, archive/history health, validator/finality aggregate
+  status, active incidents, maintenance notices, release/rollback advisory, and
+  approved contact aliases.
+- Do not expose admin commands, deployment controls, private metrics, validator
+  hostnames or private IPs, SSH/runbook controls, raw node logs, private RPC
+  endpoints, credentials, keys, operator notes, or any data that can be used to
+  operate infrastructure.
+- The page must identify the package scope as testnet-only until the mainnet
+  launch exchange handoff closes.
+- The page must be verified by
+  `python3 scripts/qa/exchange_public_readiness.py --scope testnet --status-approved --release-tag-selected`
+  before exchange outreach. The readiness gate defaults the status URL to
+  `https://exchanges.lichen.network` and rejects the admin monitoring host.
 
 For the current testnet-only package, the status page must report, at minimum:
 
@@ -111,11 +138,12 @@ LICN deposits, the same status surface must separately report:
 These optional ecosystem surfaces must not be presented as prerequisites for
 native LICN deposits or withdrawals.
 
-The monitoring surface `https://monitoring.lichen.network` returned HTTP `200`
-on 2026-06-29 and served the `Lichen Mission Control - Network Monitoring`
-page. The operator approved it on 2026-07-01 as the exchange status page for the
-current testnet-only package. During active exchange-impacting incidents, publish
-the first update at acknowledgement and continue updates at least every 2 hours
+Operator correction on 2026-07-02: the internal monitoring surface is
+admin-only and must not be published in exchange-facing material. The current
+package uses the dedicated public portal at `https://exchanges.lichen.network`,
+which is active on Cloudflare Pages and passed the default public readiness gate
+on 2026-07-05. During active exchange-impacting incidents, acknowledge through
+the approved aliases and continue status-page updates at least every 2 hours
 until mitigation or resolution.
 
 ## Upgrade Policy
@@ -224,7 +252,7 @@ Exchange rollback procedure:
    separate incident decision explicitly approves destructive recovery.
 5. After rollback, verify public RPC/WebSocket health, finalized slot
    progression, `getTransaction`, `getTransactionsByAddress`,
-   `getTransactionHistory`, `getAccountTxCount`, and representative old/recent
+   `getAccountTxCount`, and representative old/recent
    block lookups.
 6. Reconcile pending deposits and withdrawals by transaction hash and account
    history before telling exchanges to resume automation.
@@ -238,7 +266,7 @@ Exchange-facing RPC must be archive-backed. Archive policy must define:
 - Retention target: old transaction and account-history data queryable
   indefinitely for exchange operations.
 - Required query methods: `getBlock`, `getLatestBlock`, `getTransaction`,
-  `getTransactionsByAddress`, `getTransactionHistory`, and `getAccountTxCount`.
+  `getTransactionsByAddress`, and `getAccountTxCount`.
 - Backup schedule.
 - Restore drill.
 - Hot/cold migration procedure.
@@ -290,13 +318,18 @@ Observed result:
   finalized-slot, latest-block, and WebSocket upgrade passed.
 
 The public exchange package is published for testnet-only integration under
-`exchange-testnet-v0.5.221`. The status page was approved on 2026-07-01 as
-`https://monitoring.lichen.network` for the current testnet-only package, and
-exchange contact aliases were approved on 2026-07-01 as
-`security@lichen.network`, `exchange-ops@lichen.network`, and
-`business@lichen.network`. Mainnet RPC/WS readiness is deferred to the mainnet
-launch exchange handoff gate and must be rechecked with the public readiness
-gate in `--scope full` mode before mainnet is added.
+`exchange-testnet-v0.5.221`. Exchange contact aliases were approved on
+2026-07-01 as `security@lichen.network`, `exchange-ops@lichen.network`, and
+`business@lichen.network`. The public exchange status-page gate was reopened on
+2026-07-02 because the previously referenced monitoring surface is admin-only.
+The replacement Cloudflare Pages project `lichen-network-exchanges` is active
+on `https://exchanges.lichen.network`. On 2026-07-05, Cloudflare Pages reported
+the custom domain as active, the public status page returned HTTP `200`, the
+same-origin `/api/rpc` status proxy returned public testnet
+`getHealth.status = ok`, and the default public readiness gate passed.
+Mainnet RPC/WS readiness is deferred to the mainnet launch exchange handoff gate
+and must be rechecked with the public readiness gate in `--scope full` mode
+before mainnet is added.
 
 Update on 2026-06-30: the public testnet was stale again at slot `6715444`
 while all four services remained active. The signed `v0.5.217` rollout was
@@ -357,7 +390,7 @@ evidence/exchange-readiness/<date>/
 Required evidence:
 
 - Clean stack start output.
-- Three-validator health/status output.
+- Four-validator health/status output.
 - Generated exchange wallet addresses.
 - Deposit transaction hash, slot, and finality proof.
 - Internal credit ledger output showing exactly-once credit.
@@ -372,16 +405,17 @@ Do not commit private keys or filled production env files as evidence.
 
 ## Open Operations Blockers
 
-| ID | Blocker | Required next step |
-| --- | --- | --- |
-| None for current testnet-only package | Mainnet remains deferred | Run mainnet launch exchange handoff and full-scope readiness before adding mainnet |
+No open operations blockers remain for the current testnet-only exchange
+package. Mainnet remains out of scope until the mainnet launch exchange handoff
+gate closes.
 
 ## Resolved Operations Checks
 
 | ID | Check | Evidence |
 | --- | --- | --- |
-| O-01 | Status page URL approved | `https://monitoring.lichen.network` approved by the operator on 2026-07-01 for the current testnet-only package |
+| O-01 | Status page URL approval superseded | Superseded on 2026-07-02: internal monitoring is admin-only and must not be used as the public exchange status page |
 | O-02 | Incident aliases approved | Operator approved `security@lichen.network`, `exchange-ops@lichen.network`, and `business@lichen.network` on 2026-07-01; critical acknowledgement, active update, maintenance notice, emergency exception, authenticated outbound, and backup-path policy are recorded above |
+| O-15 | Public exchange status page active | `https://exchanges.lichen.network` is active on Cloudflare Pages, serves the exchange-safe status page, uses a same-origin read-only status RPC proxy, and passed `python3 scripts/qa/exchange_public_readiness.py --scope testnet --status-approved --release-tag-selected --report /tmp/lichen-exchange-public-readiness-exchanges-domain-20260705-post-status-logic-green.json` |
 | O-03 | Current release drift for core docs and Rust SDK pin | Core crates and the Rust SDK pin were updated to `0.5.221`; `v0.5.221` is the rollback anchor; JS/Python package boundaries are documented in the tracker |
 | O-04 | Final external exchange-package release URLs attached | Package release `https://github.com/lobstercove/lichen/releases/tag/exchange-testnet-v0.5.221` contains `lichen-exchange-testnet-v0.5.221.tar.gz` and `SHA256SUMS` |
 | O-05 | Local archive/history behavior | Core and RPC archive regressions passed after hot-to-cold migration and reopen |
@@ -389,7 +423,7 @@ Do not commit private keys or filled production env files as evidence.
 | O-09 | Rollback release checksum/signature verification | `v0.5.221` release checksum and detached PQ signature were verified against `deploy/release-trust-anchor.json` |
 | O-11 | June 29 live testnet consensus incident recovery evidence preserved | Operator-approved evidence-preserving recovery restarted only stale validator `15.204.229.189`; the June 30 recurrence is tracked separately in `docs/deployment/TESTNET_RECOVERY_INCIDENT_2026-06-30.md`; signed `v0.5.217` restored testnet liveness, and signed `v0.5.219` completed the faucet-signing and exchange-simulation follow-up |
 | O-12 | Signed `v0.5.221` testnet recovery release verification | Release artifacts and detached PQ signature verified; all four live hosts installed matching validator, custody, and faucet binaries through the runbook verify-only gate |
-| O-13 | Public testnet exchange simulation | Public faucet-backed simulation passed on `https://testnet-rpc.lichen.network` and wrote `tests/artifacts/exchange-simulation-public-testnet-v0.5.221.json`, covering funding, deposit detection, finalized transaction lookup, account history, operational buffers, sweep, withdrawal, CLI smoke, and reconciliation |
+| O-13 | Public testnet exchange simulation | Public faucet-backed simulation passed on `https://testnet-api.lichen.network` and wrote `tests/artifacts/exchange-simulation-public-testnet-v0.5.221.json`, covering funding, deposit detection, finalized transaction lookup, account history, operational buffers, sweep, withdrawal, CLI smoke, and reconciliation |
 | O-14 | Current package scope | External package is explicitly testnet-only until mainnet launch; mainnet RPC/WS and metadata are launch placeholders and require the mainnet launch exchange handoff gate plus `exchange_public_readiness.py --scope full` before inclusion |
 | O-10 | Public developer portal exchange page | `developers/` was deployed to Cloudflare Pages project `lichen-network-developers`; public `https://developers.lichen.network/exchange-integration` contains inline exchange metadata, deposit and withdrawal cookbooks, finality/archive policy, operations contacts, validation gates, mainnet handoff, release-tagged source links, and `testnet-only` |
 | O-06 | Exchange-specific rollback procedure | Rollback policy now includes exchange notification, pause/resume guidance, affected slot recording, signed-release-only rollback, archive/history verification, pending transaction reconciliation, and recovery notice requirements |

@@ -21,7 +21,6 @@ services:
     environment:
       - RUST_LOG=info
       - LICHEN_DATA_DIR=/var/lib/lichen
-      - LICHEN_ADMIN_TOKEN=${LICHEN_ADMIN_TOKEN:-}
     networks:
       - lichen
     healthcheck:

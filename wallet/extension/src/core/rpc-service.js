@@ -2,14 +2,14 @@ import { DEFAULT_NETWORK, STORAGE_KEY } from './state-store.js';
 
 const NETWORKS = {
   mainnet: 'https://rpc.lichen.network',
-  testnet: 'https://testnet-rpc.lichen.network',
+  testnet: 'https://testnet-api.lichen.network',
   'local-testnet': 'http://localhost:8899',
   'local-mainnet': 'http://localhost:9899'
 };
 
 const WS_ENDPOINTS = {
   mainnet: 'wss://rpc.lichen.network/ws',
-  testnet: 'wss://testnet-rpc.lichen.network/ws',
+  testnet: 'wss://testnet-api.lichen.network/ws',
   'local-testnet': 'ws://localhost:8900',
   'local-mainnet': 'ws://localhost:9900'
 };
@@ -105,6 +105,13 @@ export class LichenRPC {
       throw new Error('RPC returned invalid recent blockhash');
     }
     return blockhash;
+  }
+
+  async getChainId() {
+    const info = await this.call('getNetworkInfo');
+    const chainId = String(info?.chain_id || '').trim();
+    if (!chainId) throw new Error('RPC returned no chain id');
+    return chainId;
   }
 
   getLatestBlock() {

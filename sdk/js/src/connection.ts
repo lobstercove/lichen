@@ -5,7 +5,7 @@ import { createHash } from 'crypto';
 import { PublicKey } from './publickey.js';
 import { Keypair } from './keypair.js';
 import { Transaction, TransactionBuilder } from './transaction.js';
-import { encodeTransaction, hexToBytes, bytesToHex } from './bincode.js';
+import { encodeTransactionWire, hexToBytes, bytesToHex } from './bincode.js';
 
 /** SHA-256 hash as Uint8Array */
 function sha256(data: Uint8Array): Uint8Array {
@@ -190,6 +190,7 @@ export interface BurnedInfo {
 export interface TransactionHistoryResponse {
   transactions: any[];
   has_more: boolean;
+  next_before?: string | null;
   next_before_slot?: number | null;
 }
 
@@ -294,10 +295,15 @@ export class Connection {
     this.timeoutMs = options?.timeoutMs ?? 30_000;
   }
 
-  private transactionHistoryOptions(limit: number, beforeSlot?: number): { limit: number; before_slot?: number } {
-    const options: { limit: number; before_slot?: number } = { limit };
-    if (beforeSlot !== undefined) {
-      options.before_slot = beforeSlot;
+  private transactionHistoryOptions(
+    limit: number,
+    before?: string | number,
+  ): { limit: number; before?: string; before_slot?: number } {
+    const options: { limit: number; before?: string; before_slot?: number } = { limit };
+    if (typeof before === 'string') {
+      options.before = before;
+    } else if (before !== undefined) {
+      options.before_slot = before;
     }
     return options;
   }
@@ -453,7 +459,7 @@ export class Connection {
    * Send transaction
    */
   async sendTransaction(transaction: Transaction): Promise<string> {
-    const txBytes = encodeTransaction(transaction);
+    const txBytes = encodeTransactionWire(transaction);
     const txBase64 = Buffer.from(txBytes).toString('base64');
     const result = await this.rpc('sendTransaction', [txBase64]);
     return typeof result === 'string' ? result : result.signature;
@@ -484,8 +490,8 @@ export class Connection {
   /**
    * Health check
    */
-  async health(): Promise<{ status: string }> {
-    return this.rpc('health');
+  async getHealth(): Promise<{ status: string }> {
+    return this.rpc('getHealth');
   }
 
   // ============================================================================
@@ -713,25 +719,11 @@ export class Connection {
   async getTransactionsByAddress(
     pubkey: PublicKey,
     limit: number = 10,
-    beforeSlot?: number,
+    before?: string | number,
   ): Promise<TransactionHistoryResponse> {
     return this.rpc('getTransactionsByAddress', [
       pubkey.toBase58(),
-      this.transactionHistoryOptions(limit, beforeSlot),
-    ]);
-  }
-
-  /**
-   * Get transaction history through the compatibility alias.
-   */
-  async getTransactionHistory(
-    pubkey: PublicKey,
-    limit: number = 10,
-    beforeSlot?: number,
-  ): Promise<TransactionHistoryResponse> {
-    return this.rpc('getTransactionHistory', [
-      pubkey.toBase58(),
-      this.transactionHistoryOptions(limit, beforeSlot),
+      this.transactionHistoryOptions(limit, before),
     ]);
   }
 
@@ -746,7 +738,7 @@ export class Connection {
    * Simulate transaction (dry run)
    */
   async simulateTransaction(transaction: Transaction): Promise<any> {
-    const txBytes = encodeTransaction(transaction);
+    const txBytes = encodeTransactionWire(transaction);
     const txBase64 = Buffer.from(txBytes).toString('base64');
     return this.rpc('simulateTransaction', [txBase64]);
   }
@@ -793,10 +785,17 @@ export class Connection {
   }
 
   /**
-   * Set/update contract ABI (owner only)
+   * Set or update a contract ABI through an owner-signed consensus transaction.
    */
-  async setContractAbi(contractId: PublicKey, abi: any): Promise<any> {
-    return this.rpc('setContractAbi', [contractId.toBase58(), abi]);
+  async setContractAbi(owner: Keypair, contractId: PublicKey, abi: unknown): Promise<string> {
+    const blockhash = await this.getRecentBlockhash();
+    const chainId = await this.getSigningChainId();
+    const instruction = TransactionBuilder.setContractAbi(owner.pubkey(), contractId, abi);
+    const transaction = new TransactionBuilder()
+      .add(instruction)
+      .setRecentBlockhash(blockhash)
+      .buildAndSignForChainId(owner, chainId);
+    return this.sendTransaction(transaction);
   }
 
   /**
@@ -902,10 +901,6 @@ export class Connection {
   /**
    * Get aggregated LichenSwap AMM statistics.
    */
-  async getLichenSwapStats(): Promise<any> {
-    return this.rpc('getLichenSwapStats');
-  }
-
   /**
    * Get aggregated ThallLend lending statistics.
    */
@@ -1000,9 +995,8 @@ export class Connection {
     return this.rpc('getNFTsByCollection', [collectionId.toBase58()]);
   }
 
-  async getNFTActivity(collectionId: PublicKey, options: { limit?: number } | number = {}): Promise<any> {
-    const activityOptions = typeof options === 'number' ? { limit: options } : options;
-    return this.rpc('getNFTActivity', [collectionId.toBase58(), activityOptions]);
+  async getNFTActivity(collectionId: PublicKey, options: { limit?: number } = {}): Promise<any> {
+    return this.rpc('getNFTActivity', [collectionId.toBase58(), options]);
   }
 
   // ============================================================================

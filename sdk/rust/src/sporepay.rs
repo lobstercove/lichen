@@ -229,11 +229,10 @@ impl SporePayClient {
     }
 
     pub async fn get_program_id(&self) -> Result<Pubkey> {
-        if let Some(program_id) = self
+        if let Some(program_id) = *self
             .program_id
             .lock()
             .map_err(|_| Error::ConfigError("SporePayClient program cache lock poisoned".into()))?
-            .clone()
         {
             return Ok(program_id);
         }

@@ -363,7 +363,7 @@ function main() {
     });
 
     test('SDK portal docs expose Neo route constants and rewards helpers', () => {
-        assertAllIncludes(docs.jsSdkPortal, ['getNeoGasRewardsStats', 'BRIDGE_CHAINS.NEOX', 'verifyNeoReserveLiabilityProof', 'getNFTActivity(collectionId: PublicKey, options?: { limit?: number } | number)'], FILES.jsSdkPortal);
+        assertAllIncludes(docs.jsSdkPortal, ['getNeoGasRewardsStats', 'BRIDGE_CHAINS.NEOX', 'verifyNeoReserveLiabilityProof', 'getNFTActivity(collectionId: PublicKey, options?: { limit?: number })'], FILES.jsSdkPortal);
         assertAllIncludes(docs.pythonSdkPortal, ['get_neo_gas_rewards_stats', 'BRIDGE_CHAIN_NEOX', 'verify_neo_reserve_liability_proof', 'get_nft_activity(collection_id: PublicKey, limit: Optional[int] = None)'], FILES.pythonSdkPortal);
         assertAllIncludes(docs.rustSdkPortal, ['get_neo_gas_rewards_stats', 'BridgeChain::NeoX', 'verify_neo_reserve_liability_proof', 'get_nft_activity(&amp;self, collection_id: &amp;Pubkey, limit: Option&lt;u64&gt;)'], FILES.rustSdkPortal);
     });

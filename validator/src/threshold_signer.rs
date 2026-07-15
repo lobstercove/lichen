@@ -1,7 +1,7 @@
 use axum::{routing::get, routing::post, Json, Router};
 use lichen_core::{
     keypair_file::{
-        load_keypair_with_password_policy, plaintext_keypair_compat_allowed,
+        load_keypair_with_password_policy, plaintext_keypair_allowed_for_local_dev,
         require_runtime_keypair_password,
     },
     Keypair, KeypairFile,
@@ -168,7 +168,7 @@ fn resolve_signer_keypair_path(data_dir: &Path) -> PathBuf {
 }
 
 fn load_or_generate_signer_keypair(path: &Path) -> Result<Keypair, String> {
-    let allow_plaintext = plaintext_keypair_compat_allowed();
+    let allow_plaintext = plaintext_keypair_allowed_for_local_dev();
     let password = require_runtime_keypair_password("threshold signer keypair load")?;
 
     if path.exists() {

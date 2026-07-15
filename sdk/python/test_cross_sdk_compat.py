@@ -14,7 +14,7 @@ import asyncio
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from lichen.publickey import PublicKey
-from lichen.bincode import encode_message, encode_transaction, EncodedInstruction
+from lichen.bincode import encode_message, encode_transaction_wire, EncodedInstruction
 from lichen.connection import Connection
 from lichen.pq import PqPublicKey, PqSignature
 from lichen.transaction import TransactionBuilder
@@ -61,18 +61,18 @@ def test_message_golden_vector():
 def test_transaction_golden_vector():
     """Transaction encoding must match Rust bincode output length and hash."""
     msg_bytes = encode_message([ix], blockhash)
-    tx_bytes = encode_transaction([signature], msg_bytes)
+    tx_bytes = encode_transaction_wire([signature], msg_bytes)
     tx_hash = hashlib.sha256(tx_bytes).hexdigest()
 
-    assert len(tx_bytes) == 5417, (
+    assert len(tx_bytes) == 5421, (
         f"K4-02 PYTHON TX LENGTH MISMATCH!\n"
         f"Got:      {len(tx_bytes)}\n"
-        f"Expected: 5417"
+        f"Expected: 5421"
     )
-    assert tx_hash == "9d0eec7b657276b828c265995ce78b41a3e19b17ab354b11f37254bbc4ee2a91", (
+    assert tx_hash == "6cbbbe1071b48945540193d679c5ef2a42e7edc4dfa5652bfb715d93c8965ad1", (
         f"K4-02 PYTHON TX HASH MISMATCH!\n"
         f"Got:      {tx_hash}\n"
-        f"Expected: 9d0eec7b657276b828c265995ce78b41a3e19b17ab354b11f37254bbc4ee2a91"
+        f"Expected: 6cbbbe1071b48945540193d679c5ef2a42e7edc4dfa5652bfb715d93c8965ad1"
     )
     print("  ✓ Transaction golden vector matches Rust length + hash")
 

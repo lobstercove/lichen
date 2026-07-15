@@ -82,6 +82,48 @@
             </div>
         </section>
 
+        <section class="panel exchange-ops-panel">
+            <div class="panel-header">
+                <div class="panel-title">
+                    <i class="fas fa-building-columns"></i> Exchange Operations
+                </div>
+                <span class="panel-badge info">testnet-only</span>
+            </div>
+            <div class="panel-body">
+                <div class="exchange-ops-grid">
+                    <div class="exchange-ops-card">
+                        <span class="exchange-ops-label">Public exchange page</span>
+                        <a href="https://exchanges.lichen.network" target="_blank"
+                            rel="noopener">exchanges.lichen.network</a>
+                        <small>Public exchange-safe status, incidents, maintenance, and contacts.</small>
+                    </div>
+                    <div class="exchange-ops-card">
+                        <span class="exchange-ops-label">Developer integration</span>
+                        <a href="https://developers.lichen.network/exchange-integration" target="_blank"
+                            rel="noopener">Exchange Integration</a>
+                        <small>Deposit, withdrawal, polling, finality, archive, metadata, and handoff docs.</small>
+                    </div>
+                    <div class="exchange-ops-card">
+                        <span class="exchange-ops-label">Current package</span>
+                        <a href="https://github.com/lobstercove/lichen/releases/tag/exchange-testnet-v0.5.221"
+                            target="_blank" rel="noopener">exchange-testnet-v0.5.221</a>
+                        <small>Testnet-only package. Mainnet remains deferred until launch handoff.</small>
+                    </div>
+                    <div class="exchange-ops-card">
+                        <span class="exchange-ops-label">Readiness gate</span>
+                        <code>python3 scripts/qa/exchange_public_readiness.py --scope testnet --status-approved --release-tag-selected</code>
+                        <small>Must pass before exchange outreach or package refresh.</small>
+                    </div>
+                    <div class="exchange-ops-card">
+                        <span class="exchange-ops-label">Escalation aliases</span>
+                        <code>security@lichen.network</code>
+                        <code>exchange-ops@lichen.network</code>
+                        <code>business@lichen.network</code>
+                    </div>
+                </div>
+            </div>
+        </section>
+
         <!-- Row 1: Validator Status + Network Health -->
         <div class="grid mission-board-inline mission-board-capped">
             <!-- Validator Panel -->
@@ -705,8 +747,8 @@
                         <span class="dex-stat-value" id="tradeRoutes">--</span>
                     </div>
                     <div class="dex-stat-item">
-                        <span class="dex-stat-label">LichenSwap Swaps</span>
-                        <span class="dex-stat-value" id="tradeLichenSwaps">--</span>
+                        <span class="dex-stat-label">DEX AMM Swaps</span>
+                        <span class="dex-stat-value" id="tradeAmmSwaps">--</span>
                     </div>
                     <div class="dex-stat-item">
                         <span class="dex-stat-label">Analytics Records</span>

@@ -35,6 +35,15 @@ fn resolve_contracts_dir() -> Option<PathBuf> {
         }
     }
 
+    if let Ok(current_dir) = std::env::current_dir() {
+        for ancestor in current_dir.ancestors().skip(1) {
+            let candidate = ancestor.join("contracts");
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+    }
+
     if let Ok(exe_path) = std::env::current_exe() {
         for ancestor in exe_path.ancestors() {
             let candidate = ancestor.join("contracts");
@@ -1530,10 +1539,10 @@ pub fn genesis_initialize_contracts(
         return Err("mandatory genesis contract dex_router missing".to_string());
     }
 
-    // ── DEX Core → DEX Analytics: wire analytics address for trade recording ──
+    // ── DEX Core → DEX Analytics: retain the legacy immutable address binding ──
     // Opcode 28 = set_analytics_address. Format: [28][admin 32B][analytics_addr 32B]
-    // Without this, dex_core silently skips analytics cross-contract calls after trades,
-    // leaving candle data, 24h stats, volume, and last prices frozen/stale.
+    // Canonical analytics is projected from committed dex_trade_* records by the
+    // validator. This binding remains for deployed ABI/state compatibility.
     if let (Some(dex_core_pk), Some(analytics_pk)) = (
         address_map.get("dex_core"),
         address_map.get("dex_analytics"),
@@ -1571,9 +1580,9 @@ pub fn genesis_initialize_contracts(
         }
     }
 
-    // ── DEX Analytics ← DEX Core: authorize dex_core as trade recorder ──
+    // ── DEX Analytics ← DEX Core: retain the legacy authorization boundary ──
     // Opcode 11 = set_authorized_caller. Format: [11][admin 32B][dex_core_addr 32B]
-    // Without this, dex_analytics rejects all record_trade calls (error 200).
+    // Normal trade analytics is derived by the canonical post-block bridge.
     if let (Some(analytics_pk), Some(dex_core_pk)) = (
         address_map.get("dex_analytics"),
         address_map.get("dex_core"),
@@ -1820,6 +1829,94 @@ pub fn genesis_initialize_contracts(
         } else {
             warn!("  WARN: Failed to set sporepump licn token address");
         }
+
+        let dex_core = address_map
+            .get("dex_core")
+            .ok_or_else(|| "mandatory genesis contract dex_core missing".to_string())?;
+        let dex_amm = address_map
+            .get("dex_amm")
+            .ok_or_else(|| "mandatory genesis contract dex_amm missing".to_string())?;
+        let dex_router = address_map
+            .get("dex_router")
+            .ok_or_else(|| "mandatory genesis contract dex_router missing".to_string())?;
+
+        for (program, contract_label) in [
+            (dex_core, "dex_core(set_sporepump_authority)"),
+            (dex_amm, "dex_amm(set_sporepump_authority)"),
+            (dex_router, "dex_router(set_sporepump_authority)"),
+        ] {
+            let mut authority_args = Vec::with_capacity(64);
+            authority_args.extend_from_slice(&admin);
+            authority_args.extend_from_slice(&sporepump_pk.0);
+            if !exec_as_governance(
+                program,
+                "set_sporepump_authority",
+                &authority_args,
+                contract_label,
+            ) {
+                return Err(format!("failed mandatory {contract_label}"));
+            }
+            info!("  SET {contract_label}");
+        }
+
+        let mut dex_args = Vec::with_capacity(96);
+        dex_args.extend_from_slice(&admin);
+        dex_args.extend_from_slice(&dex_core.0);
+        dex_args.extend_from_slice(&dex_amm.0);
+        if !exec_as_governance(
+            sporepump_pk,
+            "set_dex_addresses",
+            &dex_args,
+            "sporepump(set_dex_addresses)",
+        ) {
+            return Err("failed mandatory sporepump DEX address configuration".to_string());
+        }
+
+        let mut governance_args = Vec::with_capacity(64);
+        governance_args.extend_from_slice(&admin);
+        governance_args.extend_from_slice(&admin);
+        if !exec_as_governance(
+            sporepump_pk,
+            "set_graduation_governance",
+            &governance_args,
+            "sporepump(set_graduation_governance)",
+        ) {
+            return Err("failed mandatory sporepump graduation governance binding".to_string());
+        }
+
+        let contracts_dir = resolve_contracts_dir()
+            .ok_or_else(|| "contracts directory unavailable for graduation template".to_string())?;
+        let template_path = contract_wasm_path(&contracts_dir, "launchpad_token");
+        let template_wasm = fs::read(&template_path).map_err(|error| {
+            format!(
+                "failed to read canonical launchpad token template {}: {}",
+                template_path.display(),
+                error
+            )
+        })?;
+        let template_hash: [u8; 32] = Sha256::digest(&template_wasm).into();
+        let tick_size = 1u64.to_le_bytes();
+        let lot_size = 1_000_000u64.to_le_bytes();
+        let min_order = 1_000u64.to_le_bytes();
+        let amm_fee_tier = 2u32.to_le_bytes();
+        let mut graduation_args = Vec::with_capacity(4 + 3 * 32 + 3 * 8 + 4);
+        graduation_args.extend_from_slice(&[0xAB, 32, 32, 32, 8, 8, 8, 4]);
+        graduation_args.extend_from_slice(&admin);
+        graduation_args.extend_from_slice(&dex_router.0);
+        graduation_args.extend_from_slice(&template_hash);
+        graduation_args.extend_from_slice(&tick_size);
+        graduation_args.extend_from_slice(&lot_size);
+        graduation_args.extend_from_slice(&min_order);
+        graduation_args.extend_from_slice(&amm_fee_tier);
+        if !exec_as_governance(
+            sporepump_pk,
+            "set_graduation_config",
+            &graduation_args,
+            "sporepump(set_graduation_config)",
+        ) {
+            return Err("failed mandatory sporepump graduation configuration".to_string());
+        }
+        info!("  SET canonical SporePump graduation path");
     }
 
     // ── SporeVault: wire LICN token address for withdraw() payouts ──
@@ -3766,20 +3863,33 @@ mod tests {
     const TEST_WASM_MODULE: &[u8] = b"\0asm\x01\0\0\0";
 
     fn with_contracts_dir_env_lock<T>(f: impl FnOnce() -> T) -> T {
-        let _guard = CONTRACTS_DIR_ENV_LOCK.lock().unwrap();
-        f()
+        let guard = CONTRACTS_DIR_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+        drop(guard);
+        match result {
+            Ok(value) => value,
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
     }
 
     fn with_contracts_dir<T>(contracts_dir: &Path, f: impl FnOnce() -> T) -> T {
-        let _guard = CONTRACTS_DIR_ENV_LOCK.lock().unwrap();
+        let guard = CONTRACTS_DIR_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let previous = std::env::var_os("LICHEN_CONTRACTS_DIR");
         std::env::set_var("LICHEN_CONTRACTS_DIR", contracts_dir);
-        let result = f();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
         match previous {
             Some(value) => std::env::set_var("LICHEN_CONTRACTS_DIR", value),
             None => std::env::remove_var("LICHEN_CONTRACTS_DIR"),
         }
-        result
+        drop(guard);
+        match result {
+            Ok(value) => value,
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
     }
 
     fn write_complete_contract_catalog(contracts_dir: &Path) {
@@ -3968,7 +4078,7 @@ mod tests {
             contracts_dir.path().join("wbtc_token").join("abi.json"),
             serde_json::to_vec(&serde_json::json!({
                 "version": "1.0",
-                "name": "wbtc_token",
+                "contract": "wbtc_token",
                 "template": "wrapped",
                 "functions": [
                     {
@@ -4048,6 +4158,21 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .program;
+            let dex_amm = state
+                .get_symbol_registry("DEXAMM")
+                .unwrap()
+                .unwrap()
+                .program;
+            let dex_router = state
+                .get_symbol_registry("DEXROUTER")
+                .unwrap()
+                .unwrap()
+                .program;
+            let sporepump = state
+                .get_symbol_registry("SPOREPUMP")
+                .unwrap()
+                .unwrap()
+                .program;
 
             assert_contract_storage_pubkey(&state, &predict, b"pm_lichenid_addr", &yid);
             assert_contract_storage_pubkey(&state, &predict, b"pm_oracle_addr", &oracle);
@@ -4058,6 +4183,45 @@ mod tests {
             assert_contract_storage_pubkey(&state, &dex_gov, b"gov_core_addr", &dex_core);
             assert_contract_storage_pubkey(&state, &dex_core, b"dex_governance_addr", &dex_gov);
             assert_contract_storage_pubkey(&state, &dex_rewards, b"rew_pool_addr", &dex_rewards);
+            assert_contract_storage_pubkey(
+                &state,
+                &dex_core,
+                b"dex_sporepump_authority",
+                &sporepump,
+            );
+            assert_contract_storage_pubkey(
+                &state,
+                &dex_amm,
+                b"amm_sporepump_authority",
+                &sporepump,
+            );
+            assert_contract_storage_pubkey(
+                &state,
+                &dex_router,
+                b"rtr_sporepump_authority",
+                &sporepump,
+            );
+            assert_contract_storage_pubkey(&state, &sporepump, b"cp_dex_core_addr", &dex_core);
+            assert_contract_storage_pubkey(&state, &sporepump, b"cp_dex_amm_addr", &dex_amm);
+            assert_contract_storage_pubkey(&state, &sporepump, b"cp_dex_router_addr", &dex_router);
+            assert_contract_storage_pubkey(
+                &state,
+                &sporepump,
+                b"cp_grad_governance",
+                &community_treasury,
+            );
+            let template_path = contract_wasm_path(
+                &resolve_contracts_dir().expect("contracts directory"),
+                "launchpad_token",
+            );
+            let expected_hash: [u8; 32] = Sha256::digest(fs::read(template_path).unwrap()).into();
+            assert_eq!(
+                state
+                    .get_contract_storage(&sporepump, b"cp_grad_template_hash")
+                    .unwrap()
+                    .unwrap(),
+                expected_hash
+            );
         });
     }
 }

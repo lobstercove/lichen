@@ -162,8 +162,8 @@ impl Client {
         }
     }
 
-    /// Send raw transaction (base64-encoded bincode)
-    pub async fn send_raw_transaction(&self, tx_base64: &str) -> Result<String> {
+    /// Submit a base64-encoded V1 transaction wire envelope.
+    pub async fn submit_transaction_wire(&self, tx_base64: &str) -> Result<String> {
         let result = self.rpc_call("sendTransaction", json!([tx_base64])).await?;
         result
             .as_str()
@@ -176,7 +176,7 @@ impl Client {
         let tx_bytes = tx.to_wire();
         let tx_base64 =
             base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &tx_bytes);
-        self.send_raw_transaction(&tx_base64).await
+        self.submit_transaction_wire(&tx_base64).await
     }
 
     /// Get transaction by signature
@@ -190,8 +190,8 @@ impl Client {
             .await
     }
 
-    /// Get transaction history for an account
-    pub async fn get_transaction_history(
+    /// Get transaction history for an account.
+    pub async fn get_transactions_by_address(
         &self,
         pubkey: &Pubkey,
         limit: Option<u64>,
@@ -203,7 +203,27 @@ impl Client {
             options.insert("before_slot".to_string(), json!(before_slot));
         }
         self.rpc_call(
-            "getTransactionHistory",
+            "getTransactionsByAddress",
+            json!([pubkey.to_base58(), Value::Object(options)]),
+        )
+        .await
+    }
+
+    /// Get transaction history using the exact signature cursor returned as
+    /// `next_before`. This cursor cannot skip transactions in the same slot.
+    pub async fn get_transactions_by_address_before_signature(
+        &self,
+        pubkey: &Pubkey,
+        limit: Option<u64>,
+        before: Option<&str>,
+    ) -> Result<Value> {
+        let mut options = serde_json::Map::new();
+        options.insert("limit".to_string(), json!(limit.unwrap_or(10)));
+        if let Some(before) = before {
+            options.insert("before".to_string(), json!(before));
+        }
+        self.rpc_call(
+            "getTransactionsByAddress",
             json!([pubkey.to_base58(), Value::Object(options)]),
         )
         .await
@@ -272,7 +292,7 @@ impl Client {
     /// Create stake transaction
     pub async fn stake(&self, staker: &Keypair, validator: &Pubkey, amount: u64) -> Result<String> {
         let blockhash_str = self.get_recent_blockhash().await?;
-        let blockhash = Hash::from_hex(&blockhash_str).map_err(|e| Error::ParseError(e))?;
+        let blockhash = Hash::from_hex(&blockhash_str).map_err(Error::ParseError)?;
         let chain_id = self.signing_chain_id().await?;
 
         let mut data = vec![9u8];
@@ -287,7 +307,7 @@ impl Client {
         let tx = TransactionBuilder::new()
             .add_instruction(instruction)
             .recent_blockhash(blockhash)
-            .build_and_sign_for_chain_id(staker, &chain_id)?;
+            .build_and_sign(staker, &chain_id)?;
 
         self.send_transaction(&tx).await
     }
@@ -300,7 +320,7 @@ impl Client {
         amount: u64,
     ) -> Result<String> {
         let blockhash_str = self.get_recent_blockhash().await?;
-        let blockhash = Hash::from_hex(&blockhash_str).map_err(|e| Error::ParseError(e))?;
+        let blockhash = Hash::from_hex(&blockhash_str).map_err(Error::ParseError)?;
         let chain_id = self.signing_chain_id().await?;
 
         let mut data = vec![10u8];
@@ -315,7 +335,7 @@ impl Client {
         let tx = TransactionBuilder::new()
             .add_instruction(instruction)
             .recent_blockhash(blockhash)
-            .build_and_sign_for_chain_id(staker, &chain_id)?;
+            .build_and_sign(staker, &chain_id)?;
 
         self.send_transaction(&tx).await
     }
@@ -339,7 +359,7 @@ impl Client {
     /// Transfer native LICN (spores) from one account to another.
     pub async fn transfer(&self, from: &Keypair, to: &Pubkey, amount: u64) -> Result<String> {
         let blockhash_str = self.get_recent_blockhash().await?;
-        let blockhash = Hash::from_hex(&blockhash_str).map_err(|e| Error::ParseError(e))?;
+        let blockhash = Hash::from_hex(&blockhash_str).map_err(Error::ParseError)?;
         let chain_id = self.signing_chain_id().await?;
 
         let mut data = vec![0u8]; // Transfer instruction type
@@ -354,7 +374,7 @@ impl Client {
         let tx = TransactionBuilder::new()
             .add_instruction(instruction)
             .recent_blockhash(blockhash)
-            .build_and_sign_for_chain_id(from, &chain_id)?;
+            .build_and_sign(from, &chain_id)?;
 
         self.send_transaction(&tx).await
     }
@@ -383,9 +403,10 @@ impl Client {
         }
 
         let blockhash_str = self.get_recent_blockhash().await?;
-        let blockhash = Hash::from_hex(&blockhash_str).map_err(|e| Error::ParseError(e))?;
+        let blockhash = Hash::from_hex(&blockhash_str).map_err(Error::ParseError)?;
         let chain_id = self.signing_chain_id().await?;
-        let contract_address = Self::derive_contract_address(&deployer.pubkey(), &code, self.get_slot().await?);
+        let contract_address =
+            Self::derive_contract_address(&deployer.pubkey(), &code, self.get_slot().await?);
 
         let contract_ix = ContractInstruction::Deploy { code, init_data };
         let data = serde_json::to_vec(&contract_ix)
@@ -400,7 +421,7 @@ impl Client {
         let tx = TransactionBuilder::new()
             .add_instruction(instruction)
             .recent_blockhash(blockhash)
-            .build_and_sign_for_chain_id(deployer, &chain_id)?;
+            .build_and_sign(deployer, &chain_id)?;
 
         let signature = self.send_transaction(&tx).await?;
         Ok(DeployContractResult {
@@ -436,7 +457,7 @@ impl Client {
         value: u64,
     ) -> Result<String> {
         let blockhash_str = self.get_recent_blockhash().await?;
-        let blockhash = Hash::from_hex(&blockhash_str).map_err(|e| Error::ParseError(e))?;
+        let blockhash = Hash::from_hex(&blockhash_str).map_err(Error::ParseError)?;
         let chain_id = self.signing_chain_id().await?;
 
         let contract_ix = ContractInstruction::Call {
@@ -456,7 +477,7 @@ impl Client {
         let tx = TransactionBuilder::new()
             .add_instruction(instruction)
             .recent_blockhash(blockhash)
-            .build_and_sign_for_chain_id(caller, &chain_id)?;
+            .build_and_sign(caller, &chain_id)?;
 
         self.send_transaction(&tx).await
     }
@@ -480,7 +501,7 @@ impl Client {
         }
 
         let blockhash_str = self.get_recent_blockhash().await?;
-        let blockhash = Hash::from_hex(&blockhash_str).map_err(|e| Error::ParseError(e))?;
+        let blockhash = Hash::from_hex(&blockhash_str).map_err(Error::ParseError)?;
         let chain_id = self.signing_chain_id().await?;
 
         let contract_ix = ContractInstruction::Upgrade { code };
@@ -496,7 +517,7 @@ impl Client {
         let tx = TransactionBuilder::new()
             .add_instruction(instruction)
             .recent_blockhash(blockhash)
-            .build_and_sign_for_chain_id(owner, &chain_id)?;
+            .build_and_sign(owner, &chain_id)?;
 
         self.send_transaction(&tx).await
     }
@@ -597,10 +618,6 @@ impl Client {
     }
 
     /// Get aggregated LichenSwap statistics.
-    pub async fn get_lichenswap_stats(&self) -> Result<Value> {
-        self.rpc_call("getLichenSwapStats", json!([])).await
-    }
-
     /// Get aggregated ThallLend lending statistics.
     pub async fn get_thalllend_stats(&self) -> Result<Value> {
         self.rpc_call("getThallLendStats", json!([])).await
@@ -690,7 +707,11 @@ impl Client {
             .await
     }
 
-    pub async fn get_nft_activity(&self, collection_id: &Pubkey, limit: Option<u64>) -> Result<Value> {
+    pub async fn get_nft_activity(
+        &self,
+        collection_id: &Pubkey,
+        limit: Option<u64>,
+    ) -> Result<Value> {
         let options = match limit {
             Some(limit) => json!({ "limit": limit }),
             None => json!({}),
@@ -747,8 +768,8 @@ impl Client {
     }
 
     /// Health check
-    pub async fn health(&self) -> Result<bool> {
-        let result = self.rpc_call("health", json!([])).await?;
+    pub async fn get_health(&self) -> Result<bool> {
+        let result = self.rpc_call("getHealth", json!([])).await?;
         Ok(result.get("status").and_then(|v| v.as_str()) == Some("ok"))
     }
 }

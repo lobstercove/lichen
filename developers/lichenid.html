@@ -841,8 +841,8 @@ pub extern "C" fn premium_action(caller_ptr: *const u8) -&gt; u32 {
                         <pre><code>import { Connection, Keypair, LichenIdClient } from '@lobstercove/lichen-sdk';
 
 const connection = new Connection(
-    'https://testnet-rpc.lichen.network',
-    'wss://testnet-rpc.lichen.network/ws'
+    'https://testnet-api.lichen.network',
+    'wss://testnet-api.lichen.network/ws'
 );
 
 const lichenId = new LichenIdClient(connection);
@@ -935,8 +935,8 @@ await lichenId.finalizeNameAuction(adminKeypair, {
 from lichen import Connection, Keypair, LichenIdClient, RegisterIdentityParams
 
 connection = Connection(
-    "https://testnet-rpc.lichen.network",
-    ws_url="wss://testnet-rpc.lichen.network/ws",
+    "https://testnet-api.lichen.network",
+    ws_url="wss://testnet-api.lichen.network/ws",
 )
 
 lichen_id = LichenIdClient(connection)
@@ -1037,7 +1037,7 @@ await lichen_id.finalize_name_auction(
 
 #[tokio::main]
 async fn main() -&gt; Result&lt;()&gt; {
-    let client = Client::new("https://testnet-rpc.lichen.network");
+    let client = Client::new("https://testnet-api.lichen.network");
     let lichen_id = LichenIdClient::new(client.clone());
     let keypair = Keypair::new();
 
