@@ -133,6 +133,7 @@ jobs:
           node scripts/qa/test_release_signer_trust_anchor.js
           node scripts/qa/test_deployment_env_examples.js
           node scripts/qa/test_rust_dependency_policy.js
+          node scripts/qa/test_archive_parity_gate_assets.js
           python3 scripts/qa/update-expected-contracts.py --check
 
   contract-bundle:

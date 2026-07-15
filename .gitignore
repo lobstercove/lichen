@@ -85,6 +85,15 @@ yarn-error.log*
 # ── Test artifacts / output ─────────────────────────────────
 /tests/*
 !/tests/local-multi-validator-test.sh
+!/tests/e2e-launchpad.js
+!/tests/e2e-volume.js
+!/tests/helpers/
+/tests/helpers/*
+!/tests/helpers/dex-setup.js
+!/tests/helpers/funded-wallets.js
+!/tests/helpers/pq-node.js
+!/tests/helpers/tx-receipt.js
+!/tests/helpers/tx-wire.js
 tests/artifacts/
 tests/dev_playground/
 evidence/

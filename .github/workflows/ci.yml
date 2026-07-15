@@ -103,17 +103,7 @@ jobs:
       - name: Verify Rust dependency policy
         run: node scripts/qa/test_rust_dependency_policy.js
       - name: Verify archive parity gate assets are trackable
-        run: |
-          set -euo pipefail
-          for path in \
-            tests/local-multi-validator-test.sh \
-            docs/deployment/ARCHIVE_PARITY_REPAIR_PLAN_2026-07-09.md \
-            docs/deployment/TESTNET_STATE_AND_SYNC_POLICY.md; do
-            if git check-ignore -q "$path"; then
-              echo "$path is ignored; archive parity cannot be enforced from release CI" >&2
-              exit 1
-            fi
-          done
+        run: node scripts/qa/test_archive_parity_gate_assets.js
       - name: Verify rolling release custody sequencing
         run: node scripts/qa/test_rolling_release_custody_sequence.js
       - name: Verify DEX frontend wiring
