@@ -16,9 +16,12 @@ verification, and deployment approval.
   genesis. That is expected.
 - Start the Lichen chain first. Enable custody only after all four validators
   are healthy, synced, and serving the same genesis.
-- Public mainnet validators must be archive-backed from first boot. `v0.5.190`
-  and later refuse non-dev `mainnet` startup unless `--archive-mode` and
-  `--cold-store /var/lib/lichen/archive-mainnet` are both present.
+- Public mainnet validators are archive-backed from first boot. `v0.5.224` and
+  later automatically enable archive mode and derive `archive-mainnet` beside
+  `state-mainnet`; public runtime archive flags fail startup.
+- A materially lagging validator returns to bounded catch-up before future
+  block processing. Canonical commits and accepted verified snapshot chunks,
+  not raw receipt or pending queues, are the runtime progress signal.
 - Every mainnet block after height 1 must contain exactly one version-2
   canonical parent commit transaction at index 0. Sync and startup must verify
   its signatures against the complete parent-height powers authenticated by the
@@ -456,16 +459,16 @@ CUSTODY_API_AUTH_TOKEN
 Required validator extra args:
 
 ```text
-LICHEN_EXTRA_ARGS=--auto-update=off --archive-mode --cold-store /var/lib/lichen/archive-mainnet
+LICHEN_EXTRA_ARGS=--auto-update=off
 ```
 
 Public RPC validators are archive validators. Do not launch or roll a public
 RPC node with state-only storage: consensus state can remain valid while
 `getTransactionsByAddress`, wallet activity, explorer activity, and historical
 block/transaction lookups lose their backed source rows. `deploy/setup.sh`
-creates `/var/lib/lichen/archive-<network>` and the systemd unit expands
-`$LICHEN_EXTRA_ARGS` so the three validator flags above arrive as separate argv
-entries.
+creates `/var/lib/lichen/archive-<network>`, while the validator derives that
+sibling from its state directory and enables archive mode without operator
+flags.
 
 Required base custody env keys:
 

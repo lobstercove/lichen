@@ -10,7 +10,10 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 GENESIS_LIB = ROOT / "genesis" / "src" / "lib.rs"
 CONTRACTS_DIR = ROOT / "contracts"
 DEFAULT_OUTPUT = ROOT / "scripts" / "qa" / "expected-contracts.json"
-KNOWN_NON_GENESIS_CONTRACTS = {"mt20_token"}
+KNOWN_NON_GENESIS_CONTRACTS = {
+    "launchpad_token": "canonical SporePump graduation template bound by hash at genesis",
+    "mt20_token": "standalone user-deployable MT20 template",
+}
 
 
 def discover_contracts() -> List[str]:
@@ -93,7 +96,9 @@ def main() -> int:
     contract_dir_set = set(contract_dirs)
     missing_dirs = sorted(discovered_set - contract_dir_set)
     non_genesis = sorted(contract_dir_set - discovered_set)
-    unexpected_non_genesis = sorted(set(non_genesis) - KNOWN_NON_GENESIS_CONTRACTS)
+    unexpected_non_genesis = sorted(
+        set(non_genesis) - set(KNOWN_NON_GENESIS_CONTRACTS)
+    )
 
     if args.names_only:
         for name in discovered:
@@ -122,7 +127,8 @@ def main() -> int:
     if non_genesis:
         print("\nIn-tree contracts outside genesis catalog:")
         for name in non_genesis:
-            marker = "known" if name in KNOWN_NON_GENESIS_CONTRACTS else "unexpected"
+            role = KNOWN_NON_GENESIS_CONTRACTS.get(name)
+            marker = f"known: {role}" if role else "unexpected"
             print(f"  - {name} ({marker})")
     if not missing and not stale:
         print("\nLockfile is up to date.")

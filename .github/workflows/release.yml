@@ -94,7 +94,7 @@ jobs:
       - name: Install dependency policy tools
         run: |
           cargo install cargo-audit --locked
-          cargo install cargo-deny --locked
+          cargo install cargo-deny --version 0.20.2 --locked
 
       - name: Verify dependency policy
         run: |
@@ -112,7 +112,7 @@ jobs:
               cargo audit --no-fetch -q -D warnings --file "$lockfile"
             fi
           done < <(find . -path '*/target' -prune -o -name Cargo.lock -print | sort)
-          cargo deny check --config deny.toml advisories licenses sources
+          cargo deny --config deny.toml check advisories licenses sources
 
       - name: Verify JS and Python dependency policy
         run: |

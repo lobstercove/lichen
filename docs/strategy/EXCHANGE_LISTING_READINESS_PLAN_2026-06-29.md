@@ -20,7 +20,7 @@ These facts were updated for the 2026-07-01 signed recovery release and must be 
 - Mainnet is not live and remains outside the current public testnet exchange package scope until the mainnet launch exchange handoff closes.
 - `sdk/rust/Cargo.toml` package version is `0.1.5` and now depends on `lobstercove-lichen-core = "=0.5.221"` while using the local `../../core` path.
 - `sdk/js/package.json` is `1.0.5`; `sdk/python/pyproject.toml` is `1.0.0`.
-- Mainnet launch docs already require public RPC validators to run `--archive-mode --cold-store /var/lib/lichen/archive-mainnet` and now require a post-launch exchange handoff before any mainnet exchange package is published.
+- Mainnet launch docs require every public RPC validator to use automatic archive-backed hot/cold storage from first boot and require a post-launch exchange handoff before any mainnet exchange package is published.
 - Testnet state policy already treats account activity and transaction history as persistent user-facing indexes.
 - Local full-stack testing is supported by `scripts/start-local-stack.sh testnet`, which starts the local three-validator cluster plus custody/faucet/source-chain mocks; cleanup is `scripts/stop-local-stack.sh testnet`.
 
@@ -254,7 +254,7 @@ Purpose: prove exchanges can query old transaction data indefinitely.
 
 Tasks:
 
-- Verify public/exchange RPC nodes run with `--archive-mode --cold-store`.
+- Verify public/exchange RPC nodes report the automatic archive-backed hot/cold runtime invariant.
 - Define "archive node" requirements for exchange-operated nodes.
 - Add or run tests for:
   - `getBlock(0)`

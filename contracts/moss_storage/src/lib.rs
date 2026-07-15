@@ -1972,8 +1972,13 @@ mod tests {
             .expect("slash should perform recorded challenger payout");
         assert_eq!(function, "transfer");
         assert_eq!(value, 0);
+        assert_eq!(args.len(), 76);
+        assert_eq!(
+            &args[..4],
+            &[lichen_sdk::crosscall::ABI_LAYOUT_MARKER, 32, 32, 8]
+        );
         let mut recipient = [0u8; 32];
-        recipient.copy_from_slice(&args[32..64]);
+        recipient.copy_from_slice(&args[36..68]);
         assert_eq!(recipient, challenger);
         assert_ne!(recipient, slash_caller);
     }

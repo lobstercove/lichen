@@ -303,6 +303,84 @@ fn caller_ccc_wat() -> &'static str {
     )"#
 }
 
+fn target_check_caller_wat() -> &'static str {
+    r#"(module
+        (import "env" "get_caller" (func $get_caller (param i32) (result i32)))
+        (memory (export "memory") 1)
+        (func (export "check_caller") (param $claimed i32) (result i32)
+            (drop (call $get_caller (i32.const 128)))
+            (if (result i32)
+                (i32.and
+                    (i32.and
+                        (i64.eq (i64.load (local.get $claimed)) (i64.load (i32.const 128)))
+                        (i64.eq (i64.load offset=8 (local.get $claimed)) (i64.load (i32.const 136))))
+                    (i32.and
+                        (i64.eq (i64.load offset=16 (local.get $claimed)) (i64.load (i32.const 144)))
+                        (i64.eq (i64.load offset=24 (local.get $claimed)) (i64.load (i32.const 152)))))
+                (then (i32.const 0))
+                (else (i32.const 200))))
+    )"#
+}
+
+fn caller_identity_ccc_wat() -> &'static str {
+    r#"(module
+        (import "env" "get_args" (func $get_args (param i32 i32) (result i32)))
+        (import "env" "get_contract_address" (func $get_contract_address (param i32) (result i32)))
+        (import "env" "cross_contract_call" (func $cross_contract_call (param i32 i32 i32 i32 i32 i64 i32 i32) (result i32)))
+        (memory (export "memory") 1)
+        (data (i32.const 100) "check_caller")
+        (func (export "call") (result i32)
+            (drop (call $get_args (i32.const 0) (i32.const 32)))
+            (drop (call $get_contract_address (i32.const 200)))
+            (call $cross_contract_call
+                (i32.const 0)
+                (i32.const 100)
+                (i32.const 12)
+                (i32.const 200)
+                (i32.const 32)
+                (i64.const 0)
+                (i32.const 300)
+                (i32.const 8)))
+    )"#
+}
+
+fn check_caller_success_abi() -> ContractAbi {
+    ContractAbi {
+        version: "1.0".to_string(),
+        name: "caller_identity_target".to_string(),
+        template: None,
+        description: None,
+        functions: vec![AbiFunction {
+            name: "check_caller".to_string(),
+            description: None,
+            params: vec![AbiParam {
+                name: "claimed".to_string(),
+                param_type: AbiType::Pubkey,
+                optional: false,
+                description: None,
+            }],
+            returns: Some(AbiReturn {
+                return_type: AbiType::I32,
+                description: None,
+            }),
+            opcode: None,
+            readonly: true,
+            result_semantics: Some(AbiResultSemantics {
+                kind: AbiResultKind::ReturnCode,
+                success_codes: vec![0],
+                failure_codes: Vec::new(),
+                description: None,
+            }),
+        }],
+        events: Vec::new(),
+        errors: vec![AbiError {
+            code: 200,
+            name: "CallerMismatch".to_string(),
+            message: Some("claimed caller differs from authenticated caller".to_string()),
+        }],
+    }
+}
+
 /// Payable target that refunds 40 spores from the 100 spores attached by its
 /// caller. The target starts with a zero native balance.
 fn target_partial_refund_wat() -> &'static str {
@@ -554,6 +632,54 @@ fn test_cross_contract_call_executes_target() {
     assert!(
         result.return_code.unwrap_or(0) > 0,
         "Return code should indicate success (>0 bytes from CCC)"
+    );
+}
+
+#[test]
+fn cross_contract_caller_address_starting_with_layout_marker_is_preserved() {
+    let (state, _tmp) = create_test_state();
+    let owner = Pubkey::new([1u8; 32]);
+    let mut caller_bytes = [0x55u8; 32];
+    caller_bytes[..5].copy_from_slice(&[0xAB, 0xF9, 0xEA, 0xF9, 0xA4]);
+    let caller_addr = Pubkey::new(caller_bytes);
+    let target_addr = Pubkey::new([0x44u8; 32]);
+
+    deploy_wasm_contract_with_abi(
+        &state,
+        &target_addr,
+        &owner,
+        target_check_caller_wat().as_bytes(),
+        check_caller_success_abi(),
+    );
+    deploy_wasm_contract(
+        &state,
+        &caller_addr,
+        &owner,
+        caller_identity_ccc_wat().as_bytes(),
+    );
+
+    let caller_account = state.get_account(&caller_addr).unwrap().unwrap();
+    let caller_contract: ContractAccount = serde_json::from_slice(&caller_account.data).unwrap();
+    let args = target_addr.0.to_vec();
+    let mut ctx = ContractContext::with_args(
+        owner,
+        caller_addr,
+        0,
+        1,
+        caller_contract.storage.clone(),
+        args.clone(),
+    );
+    ctx.state_store = Some(state);
+
+    let result = ContractRuntime::new()
+        .execute(&caller_contract, "call", &args, ctx)
+        .expect("caller identity probe should execute");
+
+    assert!(result.success, "runtime failed: {:?}", result.error);
+    assert!(
+        result.return_code.unwrap_or_default() > 0,
+        "cross-contract caller identity was corrupted: {:?}",
+        result.logs
     );
 }
 

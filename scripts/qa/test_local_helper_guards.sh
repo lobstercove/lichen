@@ -338,10 +338,7 @@ assert_run_validator_uses_current_dynamic_identity_setup() {
 
 assert_current_health_rpc_surface() {
     local files=(
-        "$ROOT_DIR/tests/launch-3v.sh"
-        "$ROOT_DIR/tests/multi-validator-e2e.sh"
-        "$ROOT_DIR/tests/services-deep-e2e.sh"
-        "$ROOT_DIR/tests/matrix-test-3val.sh"
+        "$ROOT_DIR/tests/local-multi-validator-test.sh"
     )
     if grep -En '"method":"health"|rpc(_ok|_has_result)?[^#]*"health"' "${files[@]}"; then
         echo "❌ current health RPC surface: removed health alias remains"
@@ -355,9 +352,22 @@ assert_current_health_rpc_surface() {
 }
 
 assert_current_e2e_transaction_protocol() {
-    local output_file="$TMP_DIR/current-e2e-transaction-protocol.log"
-    node "$ROOT_DIR/tests/test_tx_wire_helper.js" >"$output_file" 2>&1
-    assert_output_contains "current E2E transaction protocol" "tx-wire helper: canonical envelope" "$output_file"
+    local source
+    for source in \
+        "$ROOT_DIR/core/src/signing.rs" \
+        "$ROOT_DIR/sdk/js/src/transaction.ts" \
+        "$ROOT_DIR/sdk/python/lichen/transaction.py" \
+        "$ROOT_DIR/wallet/extension/src/core/tx-service.js"; do
+        if ! grep -Fq 'LICHEN-SIG' "$source"; then
+            echo "❌ current E2E transaction protocol: canonical signing envelope missing from $source"
+            exit 1
+        fi
+    done
+    if ! grep -Fq 'pub const TX_WIRE_MAGIC' "$ROOT_DIR/core/src/transaction.rs" || \
+        ! grep -Fq 'Missing transaction V1 wire envelope' "$ROOT_DIR/core/src/transaction.rs"; then
+        echo "❌ current E2E transaction protocol: canonical native wire envelope missing"
+        exit 1
+    fi
     echo "✅ current E2E transaction protocol"
 }
 
@@ -404,8 +414,18 @@ assert_public_history_repair_stays_quiesced() {
         exit 1
     fi
     manifest_function="$(sed -n '/^remote_manifest()/,/^}/p' "$verifier")"
-    if [ "$(grep -Fc -- '--archive-mode' <<<"$manifest_function")" -ne 2 ]; then
-        echo "❌ public-history offline parity gate: live/offline manifests must explicitly enable archive mode"
+    if grep -Fq -- '--archive-mode' <<<"$manifest_function" || \
+        grep -Fq -- '--cold-store' <<<"$manifest_function"; then
+        echo "❌ public-history offline parity gate: public archive configuration must come from the network invariant"
+        exit 1
+    fi
+    if ! grep -Fq -- "sudo rm -rf '\$secondary_dir'" <<<"$manifest_function"; then
+        echo "❌ public-history offline parity gate: live secondary cleanup must handle service-owned files"
+        exit 1
+    fi
+    if grep -Fq -- '--cold-store' "$script" || \
+        grep -Fq -- '--archive-mode' "$script"; then
+        echo "❌ public-history stream repair: public archive configuration must come from the network invariant"
         exit 1
     fi
     echo "✅ public-history quiesced repair"

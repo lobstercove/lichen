@@ -184,10 +184,8 @@ pub fn call_token_transfer(
     to: Address,
     amount: u64,
 ) -> CallResult<bool> {
-    let mut args = Vec::new();
-    args.extend_from_slice(&from.0);
-    args.extend_from_slice(&to.0);
-    args.extend_from_slice(&amount.to_le_bytes());
+    let amount_bytes = amount.to_le_bytes();
+    let args = encode_layout_args(&[&from.0, &to.0, &amount_bytes])?;
 
     let call = CrossCall::new(token, "transfer", args);
 
@@ -205,11 +203,8 @@ pub fn call_token_transfer_from(
     to: Address,
     amount: u64,
 ) -> CallResult<bool> {
-    let mut args = Vec::new();
-    args.extend_from_slice(&caller.0);
-    args.extend_from_slice(&from.0);
-    args.extend_from_slice(&to.0);
-    args.extend_from_slice(&amount.to_le_bytes());
+    let amount_bytes = amount.to_le_bytes();
+    let args = encode_layout_args(&[&caller.0, &from.0, &to.0, &amount_bytes])?;
 
     let call = CrossCall::new(token, "transfer_from", args);
 
@@ -226,10 +221,8 @@ pub fn call_nft_transfer(
     to: Address,
     token_id: u64,
 ) -> CallResult<bool> {
-    let mut args = Vec::new();
-    args.extend_from_slice(&from.0);
-    args.extend_from_slice(&to.0);
-    args.extend_from_slice(&token_id.to_le_bytes());
+    let token_id_bytes = token_id.to_le_bytes();
+    let args = encode_layout_args(&[&from.0, &to.0, &token_id_bytes])?;
 
     let call = CrossCall::new(nft, "transfer", args);
 
@@ -241,7 +234,7 @@ pub fn call_nft_transfer(
 
 /// Helper: Get token balance
 pub fn call_token_balance(token: Address, account: Address) -> CallResult<u64> {
-    let args = account.0.to_vec();
+    let args = encode_layout_args(&[&account.0])?;
 
     let call = CrossCall::new(token, "balance_of", args);
 
@@ -258,7 +251,8 @@ pub fn call_token_balance(token: Address, account: Address) -> CallResult<u64> {
 
 /// Helper: Get NFT owner
 pub fn call_nft_owner(nft: Address, token_id: u64) -> CallResult<Address> {
-    let args = token_id.to_le_bytes().to_vec();
+    let token_id_bytes = token_id.to_le_bytes();
+    let args = encode_layout_args(&[&token_id_bytes])?;
 
     let call = CrossCall::new(nft, "owner_of", args);
 
@@ -484,10 +478,11 @@ mod tests {
         let call = test_mock::get_last_cross_call().expect("cross-call recorded");
         assert_eq!(call.0, token.0);
         assert_eq!(call.1, "transfer_from");
-        assert_eq!(&call.2[..32], &to.0);
-        assert_eq!(&call.2[32..64], &from.0);
-        assert_eq!(&call.2[64..96], &to.0);
-        assert_eq!(&call.2[96..104], &99u64.to_le_bytes());
+        assert_eq!(&call.2[..5], &[ABI_LAYOUT_MARKER, 32, 32, 32, 8]);
+        assert_eq!(&call.2[5..37], &to.0);
+        assert_eq!(&call.2[37..69], &from.0);
+        assert_eq!(&call.2[69..101], &to.0);
+        assert_eq!(&call.2[101..109], &99u64.to_le_bytes());
     }
 
     #[test]
@@ -505,8 +500,9 @@ mod tests {
         let call = test_mock::get_last_cross_call().expect("cross-call recorded");
         assert_eq!(call.0, token.0);
         assert_eq!(call.1, "transfer");
-        assert_eq!(&call.2[..32], &from.0);
-        assert_eq!(&call.2[32..64], &to.0);
-        assert_eq!(&call.2[64..72], &77u64.to_le_bytes());
+        assert_eq!(&call.2[..4], &[ABI_LAYOUT_MARKER, 32, 32, 8]);
+        assert_eq!(&call.2[4..36], &from.0);
+        assert_eq!(&call.2[36..68], &to.0);
+        assert_eq!(&call.2[68..76], &77u64.to_le_bytes());
     }
 }

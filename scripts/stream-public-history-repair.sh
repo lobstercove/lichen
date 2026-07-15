@@ -484,7 +484,6 @@ if [ "$HAS_BLOCKS" = "1" ] && [ -n "$FROM_SLOT" ] && [ -n "$TO_SLOT" ]; then
       --no-watchdog \
       --network '$NETWORK' \
       --db-path '$STATE_DIR' \
-      --cold-store '$COLD_DIR' \
       --secondary-dir '$source_range_dir' \
       --cache-size-mb '$CACHE_SIZE_MB' \
       --verify-contiguous-block-range \
@@ -616,7 +615,6 @@ export_source_page() {
     --no-watchdog \
     --network '$NETWORK' \
     --db-path '$STATE_DIR' \
-    --cold-store '$COLD_DIR' \
     --secondary-dir '/tmp/lichen-public-history-export-${RUN_ID}-${category}' \
     --cache-size-mb '$CACHE_SIZE_MB' \
     --chunk-size '$chunk_size_value' \
@@ -644,7 +642,6 @@ import_page_dry_run() {
     --no-watchdog \
     --network '$NETWORK' \
     --db-path '$STATE_DIR' \
-    --cold-store '$COLD_DIR' \
     --secondary-dir '/tmp/lichen-public-history-import-${RUN_ID}-${target_label}-${category}' \
     --cache-size-mb '$CACHE_SIZE_MB' \
     --public-history-page-format '$PAGE_FORMAT' \
@@ -662,7 +659,6 @@ import_page_execute() {
     --no-watchdog \
     --network '$NETWORK' \
     --db-path '$STATE_DIR' \
-    --cold-store '$COLD_DIR' \
     --cache-size-mb '$CACHE_SIZE_MB' \
     --public-history-page-format '$PAGE_FORMAT' \
     --import-public-history-category '$category' \
@@ -703,7 +699,6 @@ stream_category_to_target() {
     --no-watchdog \
     --network '$NETWORK' \
     --db-path '$STATE_DIR' \
-    --cold-store '$COLD_DIR' \
     --secondary-dir '/tmp/lichen-public-history-export-${RUN_ID}-${category}' \
     --cache-size-mb '$CACHE_SIZE_MB' \
     --chunk-size '$chunk_size_value' \
@@ -717,7 +712,6 @@ stream_category_to_target() {
     --no-watchdog \
     --network '$NETWORK' \
     --db-path '$STATE_DIR' \
-    --cold-store '$COLD_DIR' \
     $target_secondary_arg \
     --cache-size-mb '$CACHE_SIZE_MB' \
     --public-history-page-format binary \

@@ -22,6 +22,11 @@ This policy exists because an active testnet is shared infrastructure. Developer
   They must never be used as fallback admission paths for new transactions,
   P2P messages, CLI commands, RPC methods, or WebSocket subscriptions.
 - Every new or returning validator must prove it can start from its own state directory and sync from the network.
+- A running validator that falls materially behind must return from LiveSync to
+  bounded sequential catch-up before processing future blocks. Checkpoint,
+  state-root, fork, and BFT-commit repair paths must make the same transition.
+  Raw block receipt and pending queues are not progress: only canonical commits
+  and accepted verified snapshot chunks may refresh the liveness watchdog.
 - Account activity is a persistent user-facing index. Do not run destructive
   `account_txs` rebuilds on a pruned/checkpoint node unless every indexed row
   can be proven from retained canonical block bodies. Snapshot/export paths
@@ -78,6 +83,12 @@ This policy exists because an active testnet is shared infrastructure. Developer
   bounded write/compaction peak, and the runtime reserve. A nominal disk-size
   threshold is not proof that a validator can or cannot hold the same
   genesis-to-tip surface.
+- Every non-development testnet and mainnet validator runs archive-backed
+  public history automatically. The validator derives the cold store as the
+  `archive-<network>` sibling of its configured state directory, enables
+  archive retention without an operator flag, and rejects both `--archive-mode`
+  and `--cold-store`. Those flags are development/admin controls only;
+  public-network correctness must never depend on an optional service argument.
 - A validator that reaches the 10 GiB runtime safety floor must stop with
   persistent exit status 78 and remain stopped until capacity is expanded.
   Checkpoints are skipped below 20 GiB free. Restart loops and history deletion
@@ -209,7 +220,9 @@ Do not distribute any of these to make a validator catch up:
 6. Verify catch-up by comparing:
    - `getHealth`
    - `getSlot`
+   - `getHealth.archive_contiguous_slot` against the canonical tip
    - recent block hashes at the same heights
+   - fixed-tip hot/cold public-history manifests
    - validator logs for sync completion and absence of state-root mismatch
 7. Record the slot/hash evidence in the deployment or incident notes.
 
@@ -236,6 +249,10 @@ Before declaring any sync-related change production-ready, run or document an eq
 - the joiner restarts and resumes from its own local state,
 - one running validator is stopped, the remaining validators keep finalizing,
   and the stopped validator rejoins from its own state without a state copy,
+- one LiveSync validator process is paused while the remaining quorum advances
+  across a material slot gap, then the same process resumes, catches up within
+  the configured drift bound, and retains the same hot/cold manifest as its
+  peers,
 - the seed or primary bootstrap validator is stopped and restarted from its own
   state, with the expected quorum behavior documented for the active topology,
 - the configured seed and its direct RPC are offline while the surviving quorum

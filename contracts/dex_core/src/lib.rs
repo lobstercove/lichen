@@ -47,8 +47,9 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use lichen_sdk::{
-    bytes_to_u64, call_contract, get_caller, get_contract_address, get_slot, get_value, log_info,
-    storage_get, storage_set, transfer_native, u64_to_bytes, Address, CrossCall,
+    bytes_to_u64, call_contract, encode_layout_args, get_caller, get_contract_address, get_slot,
+    get_value, log_info, storage_get, storage_set, transfer_native, u64_to_bytes, Address,
+    CrossCall,
 };
 
 // ============================================================================
@@ -1164,11 +1165,11 @@ fn escrow_tokens(token_addr: &[u8; 32], trader: &[u8; 32], amount: u64) -> bool 
     }
 
     let dex = get_contract_address();
-    let mut args = Vec::with_capacity(104);
-    args.extend_from_slice(&dex.0);
-    args.extend_from_slice(trader);
-    args.extend_from_slice(&dex.0);
-    args.extend_from_slice(&u64_to_bytes(amount));
+    let amount_bytes = u64_to_bytes(amount);
+    let args = match encode_layout_args(&[&dex.0, trader, &dex.0, &amount_bytes]) {
+        Ok(args) => args,
+        Err(_) => return false,
+    };
     let call = CrossCall::new(Address(*token_addr), "transfer_from", args).with_value(0);
     match call_contract(call) {
         Ok(ret) => match ret.first().copied().unwrap_or(255) {
@@ -1226,10 +1227,11 @@ fn release_tokens(token_addr: &[u8; 32], to: &[u8; 32], amount: u64) -> bool {
     }
 
     let dex = get_contract_address();
-    let mut args = Vec::with_capacity(72);
-    args.extend_from_slice(&dex.0);
-    args.extend_from_slice(to);
-    args.extend_from_slice(&u64_to_bytes(amount));
+    let amount_bytes = u64_to_bytes(amount);
+    let args = match encode_layout_args(&[&dex.0, to, &amount_bytes]) {
+        Ok(args) => args,
+        Err(_) => return false,
+    };
     let call = CrossCall::new(Address(*token_addr), "transfer", args).with_value(0);
     match call_contract(call) {
         Ok(ret) => decode_zero_success_return_code(&ret),

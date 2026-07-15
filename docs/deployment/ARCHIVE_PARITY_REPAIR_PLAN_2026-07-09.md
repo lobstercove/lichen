@@ -1,6 +1,6 @@
 # Archive Parity Repair Plan - 2026-07-09
 
-**Status:** Local four-validator parity/fault and earlier ten-validator scale gates passed; live four-VPS liveness, EU/IN capacity recovery, and redundant public RPC ingress are complete; the owner accepted the irrecoverable AP-060 gap for this existing testnet only, while mainnet remains fail-closed
+**Status:** Local four-validator parity/fault and earlier ten-validator scale gates passed; public archive storage is now an automatic non-dev testnet/mainnet invariant; live four-VPS liveness, EU/IN capacity recovery, and redundant public RPC ingress are complete; the owner accepted the irrecoverable AP-060 gap for this existing testnet only, while mainnet remains fail-closed
 **Scope:** Public testnet archive parity, validator resume parity, and release gate
 **Rule:** No live VPS rollout until the local four-validator testnet gate proves the repair.
 
@@ -602,7 +602,6 @@ proved 6,410,345 canonical body/cursor pairs with every integrity counter zero.
 sudo -u lichen /tmp/lichen-validator-0.5.224-candidate \
   --network testnet \
   --db-path /var/lib/lichen/state-testnet \
-  --cold-store /var/lib/lichen/archive-testnet \
   --cache-size-mb 256 \
   --migrate-public-history-to-cold \
   --to-slot CUTOFF_SLOT
@@ -614,7 +613,6 @@ sudo -u lichen /tmp/lichen-validator-0.5.224-candidate \
 sudo -u lichen /tmp/lichen-validator-0.5.224-candidate \
   --network testnet \
   --db-path /var/lib/lichen/state-testnet \
-  --cold-store /var/lib/lichen/archive-testnet \
   --cache-size-mb 256 \
   --migrate-public-history-to-cold \
   --to-slot CUTOFF_SLOT \
@@ -915,7 +913,6 @@ Implemented command:
 sudo -u lichen /usr/local/bin/lichen-validator \
   --network testnet \
   --db-path /var/lib/lichen/state-testnet \
-  --cold-store /var/lib/lichen/archive-testnet \
   --secondary-dir /tmp/lichen-public-history-manifest \
   --cache-size-mb 256 \
   --public-history-manifest \
@@ -976,7 +973,6 @@ bash scripts/stream-public-history-repair.sh --execute --leave-target-stopped \
 sudo -u lichen /tmp/lichen-validator-0.5.224-candidate \
   --network testnet \
   --db-path /var/lib/lichen/state-testnet \
-  --cold-store /var/lib/lichen/archive-testnet \
   --secondary-dir /tmp/lichen-public-history-export \
   --export-public-history-category blocks \
   --chunk-size 1000 \
@@ -985,7 +981,6 @@ sudo -u lichen /tmp/lichen-validator-0.5.224-candidate \
 sudo -u lichen /tmp/lichen-validator-0.5.224-candidate \
   --network testnet \
   --db-path /var/lib/lichen/state-testnet \
-  --cold-store /var/lib/lichen/archive-testnet \
   --import-public-history-category blocks \
   --execute \
   --confirm public-history-repair:v1 \
@@ -998,7 +993,6 @@ ssh -p 2222 ubuntu@SOURCE \
   "sudo -u lichen /tmp/lichen-validator-0.5.224-candidate \
     --network testnet \
     --db-path /var/lib/lichen/state-testnet \
-    --cold-store /var/lib/lichen/archive-testnet \
     --secondary-dir /tmp/lichen-public-history-export \
     --public-history-page-format binary \
     --stream-pages \
@@ -1009,7 +1003,6 @@ ssh -p 2222 ubuntu@SOURCE \
   "sudo -u lichen /tmp/lichen-validator-0.5.224-candidate \
     --network testnet \
     --db-path /var/lib/lichen/state-testnet \
-    --cold-store /var/lib/lichen/archive-testnet \
     --secondary-dir /tmp/lichen-public-history-import \
     --public-history-page-format binary \
     --stream-pages \
@@ -1020,7 +1013,6 @@ ssh -p 2222 ubuntu@SOURCE \
 sudo -u lichen /usr/local/bin/lichen-validator \
   --network testnet \
   --db-path /var/lib/lichen/state-testnet \
-  --cold-store /var/lib/lichen/archive-testnet \
   --secondary-dir /tmp/lichen-public-history-repair-check \
   --cache-size-mb 256 \
   --repair-public-history-from-source /mnt/verified-source/state-testnet \
@@ -1033,7 +1025,6 @@ sudo systemctl stop lichen-validator-testnet
 sudo -u lichen /usr/local/bin/lichen-validator \
   --network testnet \
   --db-path /var/lib/lichen/state-testnet \
-  --cold-store /var/lib/lichen/archive-testnet \
   --cache-size-mb 256 \
   --repair-public-history-from-source /mnt/verified-source/state-testnet \
   --source-cold-store /mnt/verified-source/archive-testnet \
@@ -1054,7 +1045,6 @@ Implemented source/target parity command:
 sudo -u lichen /usr/local/bin/lichen-validator \
   --network testnet \
   --db-path /var/lib/lichen/state-testnet \
-  --cold-store /var/lib/lichen/archive-testnet \
   --secondary-dir /tmp/lichen-public-history-parity-check \
   --cache-size-mb 256 \
   --verify-public-history-parity-with-source /mnt/verified-source/state-testnet \
@@ -1229,8 +1219,10 @@ All 40 committed Rust lockfiles were regenerated from their manifests and pass
 locked metadata plus cargo-audit. Cargo-deny passes advisories, bans, licenses,
 and sources. The previously failing standalone gates now pass: compiler 30/30,
 contract SDK 28/28, Rust client SDK 88/88 plus all examples, and all 14 fuzz
-targets compile. The 33 shipped contract WASMs and all 33 contract test suites
-also pass. CI and release workflows run `test_rust_dependency_policy.js` to
+targets compile. All 34 contract workspaces pass native tests and locked WASM
+builds: 32 genesis catalog contracts, the genesis-bound `launchpad_token`
+graduation template, and the standalone `mt20_token` template. CI and release
+workflows run `test_rust_dependency_policy.js` to
 guard the PQ compatibility anchor and shared contract target directory. The
 shared Cargo cache is isolated at `target/contract-build`; genesis development
 discovery walks working-directory ancestors before executable ancestors so a
@@ -1250,6 +1242,85 @@ final checkpoint-3000 hot/cold root matched on all four
 `evidence/post-block-effects-recovery/testnet-20260715T-final/four-local-final.log`,
 SHA-256 `f73e134bac9e6bbfe477dc08db86461d998fe49402f2ea2e2181c29d377fce9b`.
 
+## 2026-07-15 SEA LiveSync Stall And Source-Backed Gap
+
+Signed `v0.5.223` SEA detected a state-root mismatch at slot `9,236,790`,
+verified and activated checkpoint `9,238,000`, and caught up to slot
+`9,238,795`. The process and systemd service then remained active while the
+canonical tip stopped advancing. It continued receiving future blocks and
+requesting parent gaps, so the old receipt-based watchdog considered the node
+active and never restarted it. A controlled restart from the same SEA database,
+identity, keypair, WAL, and cold archive immediately resumed catch-up. No state
+copy or reset was used.
+
+The permanent candidate behavior is phase-based rather than restart-based. A
+LiveSync node that observes a material canonical gap, or enters checkpoint,
+state-root, fork, or BFT-commit repair, returns to bounded InitialSync before
+future-block handling. Only canonical block application or an accepted verified
+snapshot chunk refreshes the watchdog; pending or unchainable network blocks do
+not hide a stalled canonical tip. After the 120-second progress timeout, six
+five-second confirmation checks bound supervisor recovery without shortening
+the normal sync window.
+
+The final exact-source four-local gate rebuilt the candidate after the ABI
+marker-collision repair and paused V4 in
+LiveSync while the other three advanced 140 slots. The same V4 process caught
+up within the 20-slot drift bound; subsequent V4-only, seed-only, and
+all-validator preserved-state restarts passed. The final checkpoint-3000
+hot/cold manifest root was identical on all four validators
+(`3b764af7...34c55be`) after 244/244 user journeys. Certificate parity matched
+at slot `930` (`e4152bd9...103d5ae`), and the checkpoint-1000 root was
+`de87f503...174589d`. Transcript:
+`evidence/post-block-effects-recovery/testnet-20260715T-final/four-local-abi-marker-final.log`,
+SHA-256 `72eafc1a75cfc15e4c03d482fb057536e019cc306a7968a7fa844dcb95046fb5`.
+
+The final exact-source ten-validator expansion passed on the same candidate. V2 through V10
+joined from empty stores, V10 caught up in the same process after a 140-slot
+pause, individual and coordinated preserved-state restarts resumed finality,
+and the network continued with both V9 and V10 stopped before they recovered
+from their own identities and databases. Every validator proposed and voted;
+the canonical certificate matched at slot `2718`
+(`3a74f369...043a0d8`), and all ten checkpoint-3000 hot/cold manifests matched
+root `c85f3ca9...6750a2`. Transcript:
+`evidence/post-block-effects-recovery/testnet-20260715T-final/ten-validator-abi-marker-final.log`,
+SHA-256 `4f226b6efea98edb41f783dd8da1c913fb39420c900ea6b3963f610ee85701b7`.
+
+The four-validator user journey also caught a randomized contract address whose
+first byte was `0xAB`. The runtime previously treated that byte alone as a
+binary ABI layout marker, so raw DEX token-custody arguments were reinterpreted
+as strides and the authenticated nested caller was corrupted. Layout mode now
+requires one valid stride for every WASM parameter and exact payload coverage;
+otherwise the bytes remain raw. SDK and DEX cross-calls emit canonical layouts
+explicitly. Focused runtime/SDK/DEX tests, a nested caller identity regression,
+a preserved failed-chain restart, and the final 244/244 journey rerun pass.
+
+The final standalone matrix then passed compiler 30/30, contract SDK 28/28,
+Rust client SDK 88/88 plus documentation/examples, every fuzz binary, all 34
+native contract workspaces, all 34 locked WASM builds, and helper guards 12/12.
+Its transcript SHA-256 is
+`baa5788d4c9b96272c7aec434f7cb69316c80560e18b39931e8e4815e506d39f`.
+The numeric non-root compiler sandbox passed Rust, C, and AssemblyScript WASM
+with transcript SHA-256
+`b61fe3061c035428bab6d3650a9d8c39d9da4ce6887f755b37e11916249bd2fe`,
+and valid CycloneDX JSON was generated for every root workspace package.
+
+A fresh isolated running chain passed comprehensive RPC 146/0/1, CLI 29/0,
+deterministic E2E 25/0, and full RPC/DEX REST 146/0/1; the preserved default
+local databases were restored after the run. Transcript SHA-256:
+`91b1c392f64fc329ea91856652bafd8799dd543ec107578f2d0543798f155898`.
+That run also proved the CI readiness probe previously accepted a stale
+`getHealth` response and the CLI suite returned zero despite counted failures.
+Both gates now fail closed on non-healthy status or any CLI failure.
+
+Direct fixed-slot comparison also identified the historical side effect of the
+live repair: SEA serves the common block at `9,236,789`, lacks canonical bodies
+`9,236,790..9,237,999`, has a different checkpoint block at `9,238,000`, and
+matches US/EU/IN again from `9,238,001`. US, EU, and IN are verified sources for
+that bounded interval. Before final live archive parity, SEA must be stopped and
+repaired additively from one of those sources through the guarded stream repair
+path, then all four must pass the fixed-tip offline manifest gate. The repair
+must not copy another validator database or synthesize a block body.
+
 ## Tracker
 
 | ID | Work item | Evidence | Status |
@@ -1260,9 +1331,9 @@ SHA-256 `f73e134bac9e6bbfe477dc08db86461d998fe49402f2ea2e2181c29d377fce9b`.
 | AP-030 | Add source/target archive parity verifier | JSON category diff and nonzero exit on mismatch | Done for mounted/read-only source DBs |
 | AP-035 | Add peer/fleet archive parity automation so a new joiner can prove archive readiness from any validator | `tests/local-multi-validator-test.sh` and `scripts/verify-testnet-archive-parity.sh` output | Done for local harness plus VPS fleet verifier. The verifier reuses one SSH control transport per host so its probes cannot trip the intentional VPS connection-rate limit; live execution evidence is tracked under AP-060. |
 | AP-040 | Add regression tests for hot+cold archive import, repair, restart, and conflict handling | Cargo/test harness output | Done locally, including account-snapshot hot/cold manifest invariance, historical reads, idempotence, conflict preservation, exact inclusive range pagination, stopped-node migration audit/compaction, prune refusal, existing cold-DB schema upgrade, snapshot rollback completeness, and cold-source guarded repair; updated Core 981/981, all integrations, Validator 393/393, helper guards 12/12, and strict Clippy pass |
-| AP-050 | Run local four-validator testnet archive parity gate | `LICHEN_RUN_LAUNCHPAD_E2E=1 LICHEN_RUN_VOLUME_E2E=1 LICHEN_LOCAL_ARCHIVE_COLD=1 LICHEN_COLD_RETENTION_SLOTS=20 LICHEN_COLD_MIGRATION_INTERVAL_SECS=5 bash tests/local-multi-validator-test.sh 4` | Done on the final measured-repair source. V2/V3/V4 joined from empty stores; V4 and V1 resumed their own state; the network finalized with V1 offline; all four resumed from one preserved tip at spread `0`; all proposed and voted; certificate parity matched at slot `752` (`e62465d6...1661b`); checkpoint-1000 hot/cold manifests matched root `74636686...74bae`; volume/user journeys passed 140/140; launchpad/governance/graduation passed 104/104; all four persisted checkpoint `3000`; and final post-journey hot/cold manifests matched root `952221ea...c104e`. Transcript: `evidence/post-block-effects-recovery/testnet-20260713T-live/four-local-final-measured-repair.log`, SHA-256 `7de7f95b3999fac9b5792394874fa96305f2a70fa24bcebd23702f1adaa6ad2f`. The locked full workspace all-target/all-feature transcript is `evidence/post-block-effects-recovery/testnet-20260713T-live/workspace-full-final-measured-repair.log`, SHA-256 `919514bc0917f063530684262aaac1d69478e6044de1ec203d36c41f58827bbf`. |
+| AP-050 | Run local four-validator testnet archive parity gate | `LICHEN_RUN_LAUNCHPAD_E2E=1 LICHEN_RUN_VOLUME_E2E=1 LICHEN_LOCAL_ARCHIVE_COLD=1 LICHEN_COLD_RETENTION_SLOTS=20 LICHEN_COLD_MIGRATION_INTERVAL_SECS=5 bash tests/local-multi-validator-test.sh 4` | Done on the exact final candidate. V2/V3/V4 joined from empty stores; V4 resumed in the same process after a 140-slot LiveSync pause; V4 and V1 resumed their own state; the network finalized with V1 offline; and all four resumed from preserved state at spread `3`. Certificate parity matched at slot `930` (`e4152bd9...103d5ae`); checkpoint-1000 hot/cold manifests matched root `de87f503...174589d`; volume/user journeys passed 140/140; launchpad/governance/graduation passed 104/104; and final checkpoint-3000 manifests matched root `3b764af7...34c55be`. Transcript SHA-256: `72eafc1a75cfc15e4c03d482fb057536e019cc306a7968a7fa844dcb95046fb5`. |
 | AP-055 | Inventory current and detached backed public-history sources and gap boundaries | `evidence/archive-parity/testnet-20260709T181442Z`, July 13 read-only volume/WAL/ext4 audits | Done: recovered hidden EU volume `9878038e...2c57` proves exactly through `2,872,005`; IN proves `4,299,000..5,176,463`; US proves `4,864,001..5,275,998`; the US July 9 provider copy contains a decoded, hash-matching orphan body for `5,275,999`; no audited source yet proves `2,872,006..4,298,999` |
-| AP-057 | Add fail-closed source-range, binary, capacity, backup, and stopped-fleet gates | Validator range-proof JSON plus helper guard suite | Done: final Validator 393/393 and strict Clippy pass; helper guards pass 12/12; live read-only proof accepted EU `0..10` and IN `4,299,000..4,299,010`, and rejected missing EU slot `2,872,006` before any write |
+| AP-057 | Add fail-closed source-range, binary, capacity, backup, and stopped-fleet gates | Validator range-proof JSON plus helper guard suite | Done: final Validator 397/397 and strict Clippy pass; helper guards pass 12/12; live read-only proof accepted EU `0..10` and IN `4,299,000..4,299,010`, and rejected missing EU slot `2,872,006` before any write |
 | AP-057A | Refuse snapshot live apply before mutation unless measured replacement, compaction, runtime capacity, and complete target history are available; restore every exact pre-apply hot category on interrupted apply | Unit tests plus local snapshot roundtrip/ENOSPC/history-loss gate | Done locally; focused snapshot rollback 5/5, Core 981/981 plus integrations, Validator 393/393, strict Clippy, and the slot-3000 four-validator restart/archive gate pass |
 | AP-057B | Enforce slot-0 genesis config authority and remove local wall-clock BFT restart rounds | Drift repair/conflict tests plus staggered restart gate | Done locally; final Validator 393/393, equal-stake 4/3 and 10/8 unit gates, V4/V1 staggered restarts, and the coordinated four-node restart pass |
 | AP-057D | Maintain and expose a durable archive-contiguity proof; fail mainnet startup on missing blocks or transaction indexes | Mainnet startup tests, `getHealth` fields, full archive walk | Done locally; final Core 981/981 plus integrations, Validator 393/393, RPC `326+241`, strict Clippy, and final four- and earlier ten-node offline manifest gates pass |
@@ -1285,9 +1356,12 @@ SHA-256 `f73e134bac9e6bbfe477dc08db86461d998fe49402f2ea2e2181c29d377fce9b`.
 | AP-060 | Repair the current July chain on US, EU, SEA, and IN from verified source history | Per-range proof, per-host dry-run/execute evidence, fixed-tip manifests | Accepted testnet-only legacy-loss exception; remains a hard mainnet blocker. No current/provider copy contains bodies `2,872,006..4,298,999`; signed bodies must never be synthesized. The owner explicitly accepted that irrecoverable interval on 2026-07-15 only for upgrading the existing `lichen-testnet-1`. Mainnet startup, joining, and snapshot import remain fail-closed on any absent, behind, or mismatched genesis-to-tip archive proof. The US slot `5,275,999` body remains preserved for later additive repair, and any newly discovered real source may still be merged only through the guarded fixed-tip path. |
 | AP-065 | Recover four-validator live production and prove fresh-tip liveness | Same current slot/hash, fresh block age, all four producers observed | Done. US/EU/SEA/IN are active and enabled with zero systemd restarts; strict edge health reports all four ready at fresh tips. The final post-maintenance read-only pass found slots `9,182,142..9,182,188` at a 46-slot spread and the same digest `6c15273f...8cdd88` for fixed slot `9,139,000` on every host. All four run the identical signed `v0.5.223` rollback binary `e956a8fb...2e810`; no `0.5.224` candidate is installed. AP-060 remains the separate full-genesis archive release blocker. |
 | AP-066 | Remove the public RPC single-origin failure mode | Four authenticated origins, strict fleet health, failover tests, explorer same-origin smoke | Done. `testnet-api.lichen.network` is canonical. `edge/testnet-rpc` routes across US/EU/SEA/IN with unique origin credentials, bounded body replay, deterministic affinity, and failover. Caddy is active/enabled on every origin, direct unauthenticated origin requests return 403, Worker tests pass 7/7, frontend assets pass 377/377, all ten Pages projects are live on the canonical configuration, RPC/WS smokes pass, and a 24-request sample reached every region. |
-| AP-067 | Make every committed Rust graph independently reproducible and bound contract build-cache growth | Fresh lock regeneration, locked metadata/audit, standalone compiler/SDK/fuzz tests, dependency policy QA | Done. All 40 lockfiles regenerate with the exact PQ-compatible PKCS#8 prerelease and pass locked metadata plus cargo-audit. Cargo-deny passes. Compiler 30/30, contract SDK 28/28, Rust client SDK 88/88, all examples, all 14 fuzz targets, 33/33 contract builds, and 33/33 contract suites pass. The final locked workspace all-target/all-feature suite and strict workspace Clippy with `-D warnings` also pass. CI/release enforce the manifest anchor and shared non-runtime contract target directory. |
+| AP-067 | Make every committed Rust graph independently reproducible and bound contract build-cache growth | Fresh lock regeneration, locked metadata/audit, standalone compiler/SDK/fuzz tests, dependency policy QA | Done. All 40 lockfiles regenerate with the exact PQ-compatible PKCS#8 prerelease and pass locked metadata plus cargo-audit. Cargo-deny passes. Compiler 30/30, contract SDK 28/28, Rust client SDK 88/88, all examples, all 14 fuzz targets, and all 34 contract workspaces pass native tests and locked WASM builds. The 34 comprise 32 genesis catalog contracts, the genesis-bound `launchpad_token` graduation template, and the standalone `mt20_token` template. The final locked workspace all-target/all-feature suite, strict workspace Clippy with `-D warnings`, compiler sandbox, and Rust SBOM generation also pass. CI/release enforce the manifest anchor and shared non-runtime contract target directory. |
 | AP-068 | Recover IN disk headroom without deleting canonical state or public history | Protected hash comparison, typed sparse proof, checkpoint pruning, final fleet preflight | Done. IN stopped cleanly at `9,180,291`; the audited derived-cache rebuild passed, protected/cold metadata hashes matched, checkpoint `9,181,000` released obsolete cache files, free space rose to about 70.1 GB, and the clean-exit four-host verifier passed at a 46-slot spread with identical fixed-block digest. |
-| AP-070 | Cut new tag and publish release artifacts | Tag, checksums, crates/npm status | In progress after the explicit AP-060 testnet-only waiver. The final-candidate four-local-validator, contract, standalone Rust, audit, frontend, and deployment gates pass; AP-058 and AP-065 through AP-068 are complete. Mainnet release remains prohibited until a fresh chain proves complete genesis-to-tip archives without any waiver. |
+| AP-069 | Make archive-backed hot/cold retention an automatic public-network invariant | Runtime/admin flag rejection tests, environment contracts, four-validator archive gate | Done in source. Every non-dev testnet/mainnet runtime and public-history admin command derives `archive-<network>` beside `state-<network>`, enables archive retention automatically, and rejects `--archive-mode` or `--cold-store`. Disposable `--dev-mode` clusters retain explicit controls. The production verifier and stream-repair path pass neither flag; env contracts and maintained runbooks use no public archive opt-in. |
+| AP-071 | Prevent post-checkpoint LiveSync stalls and repair SEA's bounded July 15 archive gap | Same-process material-gap recovery, progress-watchdog tests, source range proof, fixed-tip fleet manifests | Code and exact local gates done; live repair is part of AP-070 deployment. Material gaps and every checkpoint-repair entry return to bounded InitialSync, and only canonical or verified snapshot progress feeds the watchdog. The final four- and ten-validator gates passed the 140-slot same-process pause and identical checkpoint-3000 manifests. SEA range `9,236,790..9,237,999` remains to be additively repaired from US/EU/IN before final live parity. |
+| AP-072 | Prevent binary ABI marker collisions from corrupting nested caller identity or custody arguments | Canonical descriptor parser, explicit SDK layouts, nested caller regression, preserved-chain recovery, exact release gates | Done. Layout mode requires descriptor/signature/payload agreement instead of a leading `0xAB` byte. The old DEX WASM succeeds on the preserved failed database under the corrected runtime, focused Core/SDK/DEX tests pass, and exact four- and ten-validator release gates pass. |
+| AP-070 | Cut new tag and publish release artifacts | Tag, checksums, crates/npm status | In progress after the explicit AP-060 testnet-only waiver. The final-candidate four-local-validator gate passes through restart, one-node-offline finality, 244/244 user journeys, and identical post-journey archive manifests. The ten-validator expansion also passes fresh join through V10, same-process gap recovery, individual and coordinated restarts, 8-of-10 finality, dual preserved-state recovery, and identical checkpoint-3000 manifests. Workspace, contract, standalone Rust, dependency, security, SDK, frontend, wallet, deployment, running-chain integration, compiler-sandbox, and SBOM gates pass. Hosted CI, signed artifacts, SEA repair, coordinated deployment, and package publication remain. AP-058 and AP-065 through AP-069 are complete. Mainnet release remains prohibited until a fresh chain proves complete genesis-to-tip archives without any waiver. |
 
 ## Release Acceptance
 

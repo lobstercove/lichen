@@ -301,6 +301,9 @@ lichen-validator \
                     the parent post-effects state root used by checkpoint sync.</li>
                 <li>Canonical execution state, receipts, block body, transaction slot indexes, and finality cursors
                     commit in one RocksDB write, so restart cannot expose a processed transaction without its block.</li>
+                <li>A running validator that falls materially behind returns to bounded sequential catch-up before
+                    processing future blocks. Checkpoint repair uses the same path, and only canonical commits or
+                    accepted verified snapshot chunks count as watchdog progress.</li>
                 <li>Fresh chains persist post-effects activation at slot 1. An existing public chain must stop every
                     validator at the same tip and prepare the same next-slot boundary on each database before startup;
                     a missing boundary exits with status 78. Missing pre-activation markers are never replayed, and
@@ -510,7 +513,6 @@ export LICHEN_KEYPAIR_PASSWORD='set-a-long-random-secret-before-first-start'
                 <div class="callout-title"><i class="fas fa-exclamation-triangle"></i> Note</div>
                 These settings map to command-line flags: <code>--network</code>, <code>--p2p-port</code>,
                 <code>--rpc-port</code>, <code>--ws-port</code>, <code>--db-path</code>, <code>--keypair</code>,
-                <code>--cold-store</code>, <code>--archive-mode</code>,
                 <code>--no-watchdog</code>, <code>--watchdog-timeout</code>, <code>--max-restarts</code>,
                 <code>--dev-mode</code>, <code>--import-key</code>. These are the canonical CLI spellings, not TOML keys
                 parsed by the current binary.
@@ -559,7 +561,7 @@ export LICHEN_KEYPAIR_PASSWORD='set-a-long-random-secret-before-first-start'
             <table class="config-table">
                 <thead>
                     <tr>
-                        <th>Flag</th>
+                        <th>Setting</th>
                         <th>Type</th>
                         <th>Default</th>
                         <th>Description</th>
@@ -567,20 +569,19 @@ export LICHEN_KEYPAIR_PASSWORD='set-a-long-random-secret-before-first-start'
                 </thead>
                 <tbody>
                     <tr>
-                        <td><code>--cold-store &lt;path&gt;</code></td>
-                        <td>String</td>
-                        <td>—</td>
-                        <td>Attach a secondary RocksDB for archival block, transaction, and index retention. The
-                            validator migrates data older than the hot retention window into this path every 5 minutes.
+                        <td>Public cold store</td>
+                        <td>Path</td>
+                        <td><code>archive-&lt;network&gt;</code> beside <code>state-&lt;network&gt;</code></td>
+                        <td>Non-development testnet and mainnet validators automatically attach a secondary RocksDB
+                            for archival block, transaction, index, event, trade, and account-snapshot retention.
                         </td>
                     </tr>
                     <tr>
-                        <td><code>--archive-mode</code></td>
+                        <td>Public archive mode</td>
                         <td>Boolean</td>
-                        <td><code>false</code></td>
-                        <td>Require archive-backed public history, including blocks, transactions, indexes, events,
-                            and account snapshots. Non-development testnet and mainnet validators must pair this with
-                            <code>--cold-store</code>.</td>
+                        <td><code>true</code></td>
+                        <td>Mandatory and automatic for non-development testnet and mainnet. Explicit archive-mode or
+                            cold-store runtime flags fail startup instead of creating a state-only or partial-history validator.</td>
                     </tr>
                 </tbody>
             </table>

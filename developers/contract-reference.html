@@ -168,7 +168,7 @@
                 </tr>
                 <tr>
                     <td>Layout Descriptor</td>
-                    <td>Args start with <code>0xAB</code></td>
+                    <td>Args contain a canonical <code>0xAB</code> descriptor</td>
                     <td>SDKs, binary callers — full stride control per param</td>
                 </tr>
                 <tr>
@@ -266,6 +266,12 @@
                     <td>I64 — 8 LE bytes, WASM receives raw I64 value</td>
                 </tr>
             </table>
+            <p>The descriptor must contain exactly one valid stride for every WASM parameter, and those strides must
+                cover the remaining payload exactly. For I32 parameters the valid scalar strides are 1, 2, and 4;
+                pointer strides are 32 or greater. I64 parameters require stride 8. A raw argument buffer whose first
+                byte happens to be <code>0xAB</code>, including a contract or account address, remains raw unless the
+                complete descriptor is canonical. Binary clients should use the SDK <code>encode_layout_args</code>
+                helper instead of constructing descriptors manually.</p>
 
             <div class="sub-heading">Raw Pointer Layout</div>
             <p>Without JSON or <code>0xAB</code> prefix: every I32 param advances 32 bytes (treated as a pointer). Every
@@ -2641,9 +2647,10 @@ lichen --rpc-url https://testnet-api.lichen.network --output json \
                 This matrix is generated from real contract source exports (<code>contracts/*/src/lib.rs</code>,
                 <code>#[no_mangle] pub extern "C" fn ...</code>) and is the authoritative surface.
                 The concise cards above are overviews; use this source-derived section for the exact runtime surface.
-                <code>mt20_token</code> remains in-tree as a standalone MT20 template, but it
-                is intentionally not deployed by <code>GENESIS_CONTRACT_CATALOG</code>; the matrix below reflects the
-                genesis contract set.
+                <code>launchpad_token</code> remains in-tree as the canonical SporePump graduation template whose WASM
+                hash is bound at genesis, and <code>mt20_token</code> remains as a standalone user-deployable MT20
+                template. Neither has a genesis-deployed address in <code>GENESIS_CONTRACT_CATALOG</code>; the matrix
+                below reflects the genesis contract set.
             </p>
             <table class="const-table">
                 <tr>

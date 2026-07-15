@@ -8017,8 +8017,13 @@ mod tests {
             test_mock::get_last_cross_call().expect("refund should transfer token");
         assert_eq!(function, "transfer");
         assert_eq!(value, 0);
-        assert_eq!(&args[32..64], &bidder1);
-        assert_eq!(bytes_to_u64(&args[64..72]), 600_000_000_000);
+        assert_eq!(args.len(), 76);
+        assert_eq!(
+            &args[..4],
+            &[lichen_sdk::crosscall::ABI_LAYOUT_MARKER, 32, 32, 8]
+        );
+        assert_eq!(&args[36..68], &bidder1);
+        assert_eq!(bytes_to_u64(&args[68..76]), 600_000_000_000);
     }
 
     #[test]

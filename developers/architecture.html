@@ -329,9 +329,9 @@ contribution_score = (
                         <td><code>account_snapshots</code></td>
                         <td>Address (32) + Slot (8, BE)</td>
                         <td>Account struct</td>
-                        <td>Historical account snapshots (archive mode). Enable by starting the validator with
-                            <code>--archive-mode</code>; pair with <code>--cold-store &lt;path&gt;</code> for bounded
-                            retention.
+                        <td>Historical account snapshots. Non-development testnet and mainnet validators enable
+                            archive mode automatically and use the <code>archive-&lt;network&gt;</code> sibling of their
+                            state directory for bounded retention.
                             Query via <code>getAccountAtSlot</code> RPC.
                         </td>
                     </tr>

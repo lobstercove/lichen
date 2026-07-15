@@ -333,19 +333,15 @@ remote_manifest() {
       --no-watchdog \
       --network '$NETWORK' \
       --db-path '$STATE_DIR' \
-      --archive-mode \
-      --cold-store '$COLD_DIR' \
       --cache-size-mb '$CACHE_SIZE_MB' \
       --chunk-size '$CHUNK_SIZE' \
       $category_args \
       --public-history-manifest" >"$output"
   else
-    ssh_run "$host" "rm -rf '$secondary_dir' && sudo -u lichen bash -lc 'ulimit -n $NOFILE_LIMIT 2>/dev/null || ulimit -n 65535 2>/dev/null || true; exec \"\$0\" \"\$@\"' '$VALIDATOR_BIN' \
+    ssh_run "$host" "sudo rm -rf '$secondary_dir' && sudo -u lichen bash -lc 'ulimit -n $NOFILE_LIMIT 2>/dev/null || ulimit -n 65535 2>/dev/null || true; exec \"\$0\" \"\$@\"' '$VALIDATOR_BIN' \
       --no-watchdog \
       --network '$NETWORK' \
       --db-path '$STATE_DIR' \
-      --archive-mode \
-      --cold-store '$COLD_DIR' \
       --secondary-dir '$secondary_dir' \
       --cache-size-mb '$CACHE_SIZE_MB' \
       --chunk-size '$CHUNK_SIZE' \

@@ -77,6 +77,11 @@ Rolling-release rules:
   consensus/startup changes, also stop all local validators from a healthy tip,
   restart them from preserved state, and prove they resume BFT without flushing
   state, copying RocksDB, deleting WAL, or regenerating identities.
+- Sync and checkpoint-repair changes must also pause one LiveSync validator
+  process while the remaining quorum advances across a material gap. Resume the
+  same process and prove it catches up within the configured drift bound, then
+  stop the fleet and prove its hot/cold public-history manifest still matches
+  every peer. Process liveness or incoming future blocks are not catch-up proof.
 - Before a VPS deploy, capture every host's active release hash, `getHealth`,
   `getMetrics`, validator identity, archive flags, and active
   `state-<network>/genesis.json` consensus timing. Mixed active timing
@@ -1792,7 +1797,13 @@ custody pattern. Before mainnet launch, verify governed signer custody with
 `scripts/verify-governed-key-custody.sh`, preserve at least two private/offline
 backups, and hard-stop if any live signer role is missing.
 
-`v0.5.190` and later refuse to start non-dev `testnet` or `mainnet` validators unless both `--archive-mode` and `--cold-store /var/lib/lichen/archive-<network>` are present. This is intentional: public validators are archive-backed RPC nodes, not state-only snapshot consumers. The exception is explicit local `--dev-mode`, which remains lightweight for disposable developer clusters.
+`v0.5.224` and later automatically enable archive mode for every non-dev
+`testnet` and `mainnet` validator and derive `archive-<network>` beside its
+`state-<network>` directory. Public runtime `--archive-mode` and `--cold-store`
+flags fail startup.
+Public validators are archive-backed RPC nodes, not state-only snapshot
+consumers. Explicit local `--dev-mode` remains lightweight for disposable
+developer clusters.
 
 State divergence must be corrected by normal replay or by the full verified checkpoint snapshot path. Verified snapshots require authenticated PQ node sources and a self-contained canonical proof: the parent certificate, its transaction-0 Merkle inclusion in a signed and finalized child header, the child's complete historical power denominator, and the parent post-effects root committed by that certificate. Snapshot bytes and the source-pinned archive manifest must match that root before import. Do not run local-history stake-pool counter rewrites; validator and stake-pool singletons are never imported outside this staged verification path.
 
@@ -2447,7 +2458,6 @@ bash scripts/verify-testnet-archive-parity.sh --offline-repair-gate
 sudo -u lichen /usr/local/bin/lichen-validator \
   --network testnet \
   --db-path /var/lib/lichen/state-testnet \
-  --cold-store /var/lib/lichen/archive-testnet \
   --secondary-dir /tmp/lichen-public-history-manifest \
   --cache-size-mb 256 \
   --public-history-manifest
@@ -2456,7 +2466,6 @@ sudo -u lichen /usr/local/bin/lichen-validator \
 sudo -u lichen /usr/local/bin/lichen-validator \
   --network testnet \
   --db-path /var/lib/lichen/state-testnet \
-  --cold-store /var/lib/lichen/archive-testnet \
   --secondary-dir /tmp/lichen-public-history-parity-check \
   --cache-size-mb 256 \
   --verify-public-history-parity-with-source /mnt/verified-source/state-testnet \
@@ -2466,7 +2475,6 @@ sudo -u lichen /usr/local/bin/lichen-validator \
 sudo -u lichen /usr/local/bin/lichen-validator \
   --network testnet \
   --db-path /var/lib/lichen/state-testnet \
-  --cold-store /var/lib/lichen/archive-testnet \
   --secondary-dir /tmp/lichen-public-history-repair-check \
   --cache-size-mb 256 \
   --repair-public-history-from-source /mnt/verified-source/state-testnet \
@@ -2478,7 +2486,6 @@ sudo systemctl stop lichen-validator-testnet
 sudo -u lichen /usr/local/bin/lichen-validator \
   --network testnet \
   --db-path /var/lib/lichen/state-testnet \
-  --cold-store /var/lib/lichen/archive-testnet \
   --cache-size-mb 256 \
   --repair-public-history-from-source /mnt/verified-source/state-testnet \
   --source-cold-store /mnt/verified-source/archive-testnet \
@@ -2525,7 +2532,6 @@ sudo systemctl stop lichen-validator-testnet
 sudo -u lichen /usr/local/bin/lichen-validator \
   --network testnet \
   --db-path /var/lib/lichen/state-testnet \
-  --cold-store /var/lib/lichen/archive-testnet \
   --cache-size-mb 256 \
   --merge-public-history-from-source /mnt/ovh-backup-20260607T2158/var/lib/lichen/state-testnet \
   --dry-run
@@ -2539,7 +2545,6 @@ sudo -u lichen /usr/local/bin/lichen-validator \
 sudo -u lichen /usr/local/bin/lichen-validator \
   --network testnet \
   --db-path /var/lib/lichen/state-testnet \
-  --cold-store /var/lib/lichen/archive-testnet \
   --cache-size-mb 256 \
   --merge-public-history-from-source /mnt/ovh-backup-20260607T2158/var/lib/lichen/state-testnet \
   --source-cold-store /mnt/ovh-backup-20260607T2158/var/lib/lichen/archive-testnet \
@@ -2555,7 +2560,6 @@ sudo -u lichen /usr/local/bin/lichen-validator \
 sudo -u lichen /usr/local/bin/lichen-validator \
   --network testnet \
   --db-path /var/lib/lichen/state-testnet \
-  --cold-store /var/lib/lichen/archive-testnet \
   --cache-size-mb 256 \
   --merge-public-history-indexes-from-source /mnt/ovh-backup-20260607T2158/var/lib/lichen/state-testnet \
   --source-cold-store /mnt/ovh-backup-20260607T2158/var/lib/lichen/archive-testnet \
@@ -2564,7 +2568,6 @@ sudo -u lichen /usr/local/bin/lichen-validator \
 sudo -u lichen /usr/local/bin/lichen-validator \
   --network testnet \
   --db-path /var/lib/lichen/state-testnet \
-  --cold-store /var/lib/lichen/archive-testnet \
   --cache-size-mb 256 \
   --merge-public-history-indexes-from-source /mnt/ovh-backup-20260607T2158/var/lib/lichen/state-testnet \
   --source-cold-store /mnt/ovh-backup-20260607T2158/var/lib/lichen/archive-testnet \
@@ -2574,7 +2577,6 @@ sudo -u lichen /usr/local/bin/lichen-validator \
 sudo -u lichen /usr/local/bin/lichen-validator \
   --network testnet \
   --db-path /var/lib/lichen/state-testnet \
-  --cold-store /var/lib/lichen/archive-testnet \
   --cache-size-mb 256 \
   --rebuild-account-txs \
   --source tx-index \
@@ -2586,7 +2588,6 @@ sudo -u lichen /usr/local/bin/lichen-validator \
 sudo -u lichen /usr/local/bin/lichen-validator \
   --network testnet \
   --db-path /var/lib/lichen/state-testnet \
-  --cold-store /var/lib/lichen/archive-testnet \
   --cache-size-mb 256 \
   --rebuild-account-txs \
   --source tx-index \
@@ -2625,15 +2626,16 @@ curl -fsS -H 'content-type: application/json' \
 **Prevention**: Every public RPC validator must run with:
 
 ```text
-LICHEN_EXTRA_ARGS=--auto-update=off --archive-mode --cold-store /var/lib/lichen/archive-<network>
+LICHEN_EXTRA_ARGS=--auto-update=off
 ```
 
 The systemd unit must expand `$LICHEN_EXTRA_ARGS`, not `${LICHEN_EXTRA_ARGS}`,
-so the validator receives each extra flag as a separate argv entry. Starting
-with `v0.5.190`, missing either archive flag is a fatal startup error outside
-`--dev-mode`. Keep `/var/lib/lichen/archive-<network>` on monitored storage and
-include archive history checks in release and rejoin drills before declaring
-wallet/explorer activity green.
+so current non-archive options remain separate argv entries. Starting with
+`v0.5.224`, public archive mode and the canonical sibling cold-store path are
+runtime invariants rather than operator flags. Keep
+`/var/lib/lichen/archive-<network>` on monitored storage and include archive
+history checks in release and rejoin drills before declaring wallet/explorer
+activity green.
 
 ### Pitfall 18: TOFU identity prevents rejoining after state wipe
 

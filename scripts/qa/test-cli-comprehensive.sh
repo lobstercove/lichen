@@ -307,4 +307,6 @@ echo "PASSED: $PASS" >> $RESULTS_FILE
 echo "FAILED: $FAIL" >> $RESULTS_FILE
 echo "Completed: $(date)" >> $RESULTS_FILE
 
-exit 0
+if (( FAIL > 0 )); then
+    exit 1
+fi

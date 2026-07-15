@@ -1565,14 +1565,18 @@ mod tests {
         let liquidity = add_liquidity(provider.as_ptr(), 1_000_000, 1_000_000, 0);
         assert!(liquidity > 0);
 
-        let call =
-            test_mock::get_last_cross_call().expect("liquidity deposit should pull token B");
+        let call = test_mock::get_last_cross_call().expect("liquidity deposit should pull token B");
         assert_eq!(call.0, token_b);
         assert_eq!(call.1, "transfer_from");
-        assert_eq!(&call.2[..32], &[0xCC; 32]);
-        assert_eq!(&call.2[32..64], &provider);
-        assert_eq!(&call.2[64..96], &[0xCC; 32]);
-        assert_eq!(&call.2[96..104], &1_000_000u64.to_le_bytes());
+        assert_eq!(call.2.len(), 109);
+        assert_eq!(
+            &call.2[..5],
+            &[lichen_sdk::crosscall::ABI_LAYOUT_MARKER, 32, 32, 32, 8]
+        );
+        assert_eq!(&call.2[5..37], &[0xCC; 32]);
+        assert_eq!(&call.2[37..69], &provider);
+        assert_eq!(&call.2[69..101], &[0xCC; 32]);
+        assert_eq!(&call.2[101..109], &1_000_000u64.to_le_bytes());
     }
 
     #[test]
@@ -1600,9 +1604,15 @@ mod tests {
             test_mock::get_last_cross_call().expect("swap should pull token A before payout");
         assert_eq!(call.0, token_a);
         assert_eq!(call.1, "transfer_from");
-        assert_eq!(&call.2[32..64], &swapper);
-        assert_eq!(&call.2[64..96], &[0xCC; 32]);
-        assert_eq!(&call.2[96..104], &1_000u64.to_le_bytes());
+        assert_eq!(call.2.len(), 109);
+        assert_eq!(
+            &call.2[..5],
+            &[lichen_sdk::crosscall::ABI_LAYOUT_MARKER, 32, 32, 32, 8]
+        );
+        assert_eq!(&call.2[5..37], &[0xCC; 32]);
+        assert_eq!(&call.2[37..69], &swapper);
+        assert_eq!(&call.2[69..101], &[0xCC; 32]);
+        assert_eq!(&call.2[101..109], &1_000u64.to_le_bytes());
     }
 
     #[test]

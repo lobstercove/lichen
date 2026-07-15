@@ -1107,6 +1107,22 @@ mod tests {
         assert_eq!(submit_work(0, worker.as_ptr(), proof_hash.as_ptr()), 0);
     }
 
+    fn assert_token_transfer_args(
+        args: &[u8],
+        expected_from: &[u8; 32],
+        expected_to: &[u8; 32],
+        expected_amount: u64,
+    ) {
+        assert_eq!(args.len(), 76);
+        assert_eq!(
+            &args[..4],
+            &[lichen_sdk::crosscall::ABI_LAYOUT_MARKER, 32, 32, 8]
+        );
+        assert_eq!(&args[4..36], expected_from);
+        assert_eq!(&args[36..68], expected_to);
+        assert_eq!(bytes_to_u64(&args[68..76]), expected_amount);
+    }
+
     #[test]
     fn test_create_bounty() {
         setup();
@@ -1463,9 +1479,7 @@ mod tests {
         assert_eq!(target, token);
         assert_eq!(function, "transfer");
         assert_eq!(value, 0);
-        assert_eq!(&args[0..32], &contract_addr);
-        assert_eq!(&args[32..64], &worker);
-        assert_eq!(bytes_to_u64(&args[64..72]), 500_000);
+        assert_token_transfer_args(&args, &contract_addr, &worker, 500_000);
     }
 
     #[test]
@@ -1580,9 +1594,7 @@ mod tests {
         assert_eq!(target, token);
         assert_eq!(function, "transfer");
         assert_eq!(value, 0);
-        assert_eq!(&args[0..32], &contract_addr);
-        assert_eq!(&args[32..64], &creator);
-        assert_eq!(bytes_to_u64(&args[64..72]), 300_000);
+        assert_token_transfer_args(&args, &contract_addr, &creator, 300_000);
     }
 
     // ========================================================================
@@ -1652,9 +1664,7 @@ mod tests {
         assert_eq!(target, token);
         assert_eq!(function, "transfer");
         assert_eq!(value, 0);
-        assert_eq!(&args[0..32], &contract_addr);
-        assert_eq!(&args[32..64], &creator);
-        assert_eq!(bytes_to_u64(&args[64..72]), 300_000);
+        assert_token_transfer_args(&args, &contract_addr, &creator, 300_000);
     }
 
     #[test]
@@ -1691,9 +1701,7 @@ mod tests {
             test_mock::get_last_cross_call().expect("approve_work should perform a token transfer");
         assert_eq!(function, "transfer");
         assert_eq!(value, 0);
-        assert_eq!(&args[0..32], &contract_addr);
-        assert_eq!(&args[32..64], &worker);
-        assert_eq!(bytes_to_u64(&args[64..72]), 500_000);
+        assert_token_transfer_args(&args, &contract_addr, &worker, 500_000);
     }
 
     #[test]

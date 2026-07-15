@@ -630,9 +630,9 @@
             <!-- getAccountAtSlot -->
             <div class="method-card" id="getAccountAtSlot">
                 <h3 class="method-name">getAccountAtSlot</h3>
-                <p class="method-desc">Returns historical account state at or before the given slot. Requires archive
-                    mode to be enabled on the validator via <code>--archive-mode</code>. Pair archival nodes with
-                    <code>--cold-store &lt;path&gt;</code> to keep old block and transaction history off the hot DB.
+                <p class="method-desc">Returns historical account state at or before the given slot. Non-development
+                    testnet and mainnet validators enable archive mode automatically and retain old block,
+                    transaction, index, and account-snapshot history in the canonical sibling cold store.
                 </p>
                 <div class="method-section">
                     <h4 class="method-section-title">Parameters</h4>

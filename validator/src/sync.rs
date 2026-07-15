@@ -601,6 +601,34 @@ impl SyncManager {
         *self.sync_phase.lock().await == SyncPhase::InitialSync
     }
 
+    /// Return a live validator to bounded sequential catch-up when it observes
+    /// a material gap. Keeping LiveSync active here lets future blocks and their
+    /// parent-gap requests outrun the exact next canonical child indefinitely.
+    pub async fn transition_to_initial_if_behind(
+        &self,
+        current_slot: u64,
+        observed_slot: u64,
+    ) -> bool {
+        if observed_slot <= current_slot.saturating_add(INITIAL_SYNC_FORWARD_WINDOW) {
+            return false;
+        }
+
+        self.transition_to_initial("material canonical gap").await
+    }
+
+    /// Transition to bounded sequential catch-up. This is required whenever a
+    /// live node starts checkpoint repair or falls materially behind the fleet.
+    pub async fn transition_to_initial(&self, reason: &str) -> bool {
+        let mut phase = self.sync_phase.lock().await;
+        if *phase == SyncPhase::InitialSync {
+            return false;
+        }
+
+        info!("Sync phase: LiveSync -> InitialSync ({})", reason);
+        *phase = SyncPhase::InitialSync;
+        true
+    }
+
     /// Transition to LiveSync phase.  Called when the node is within 2
     /// blocks of the tip and has finished initial catch-up.
     pub async fn transition_to_live(&self) {
@@ -1690,14 +1718,34 @@ mod tests {
         );
     }
 
-    /// LiveSync remains permissive because near-tip fork recovery needs to
-    /// observe blocks beyond the local tip.
+    /// A material gap observed during LiveSync must re-enter bounded catch-up
+    /// before the receiver decides whether to buffer the future block.
     #[tokio::test]
-    async fn test_live_sync_accepts_far_future_blocks() {
+    async fn test_live_sync_material_gap_reenters_initial_sync() {
         let sm = SyncManager::new();
         sm.transition_to_live().await;
 
-        assert!(!sm.should_defer_far_future_block(100, 10_000).await);
+        assert!(
+            sm.transition_to_initial_if_behind(100, 101 + INITIAL_SYNC_FORWARD_WINDOW)
+                .await
+        );
+        assert_eq!(sm.get_sync_phase().await, SyncPhase::InitialSync);
+        assert!(
+            sm.should_defer_far_future_block(100, 101 + INITIAL_SYNC_FORWARD_WINDOW)
+                .await
+        );
+    }
+
+    #[tokio::test]
+    async fn test_live_sync_near_tip_block_does_not_reenter_initial_sync() {
+        let sm = SyncManager::new();
+        sm.transition_to_live().await;
+
+        assert!(
+            !sm.transition_to_initial_if_behind(100, 100 + INITIAL_SYNC_FORWARD_WINDOW)
+                .await
+        );
+        assert_eq!(sm.get_sync_phase().await, SyncPhase::LiveSync);
     }
 
     /// P1-1: SyncMode enum round-trips for runtime-supported modes

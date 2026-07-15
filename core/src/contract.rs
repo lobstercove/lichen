@@ -284,6 +284,34 @@ fn build_opcode_dispatch_args(opcode: u8, args: &[u8]) -> Vec<u8> {
     dispatch_args
 }
 
+const ABI_LAYOUT_MARKER: u8 = 0xAB;
+
+fn canonical_layout_descriptor(args: &[u8], params: &[Type]) -> Option<(Vec<u8>, usize)> {
+    if params.is_empty() || args.first().copied() != Some(ABI_LAYOUT_MARKER) {
+        return None;
+    }
+
+    let data_start = 1usize.checked_add(params.len())?;
+    let layout = args.get(1..data_start)?;
+    let mut payload_len = 0usize;
+    for (param, stride) in params.iter().zip(layout.iter().copied()) {
+        let valid = match param {
+            Type::I32 => matches!(stride, 1 | 2 | 4) || stride >= 32,
+            Type::I64 => stride == 8,
+            _ => false,
+        };
+        if !valid {
+            return None;
+        }
+        payload_len = payload_len.checked_add(stride as usize)?;
+    }
+
+    if data_start.checked_add(payload_len)? != args.len() {
+        return None;
+    }
+    Some((layout.to_vec(), data_start))
+}
+
 fn find_abi_function<'a>(
     contract: &'a ContractAccount,
     function_name: &str,
@@ -1598,23 +1626,20 @@ impl ContractRuntime {
             //      4 (0x04) = u32 integer — read 4 LE bytes, pass raw i32
             //      1 (0x01) = u8/bool — read 1 byte, pass raw i32
             //      2 (0x02) = u16/i16 — read 2 LE bytes, pass raw i32
-            //      8 (0x08) = u64 via I32 — read 8 LE bytes (unusual, for compatibility)
+            //      8 (0x08) = u64 for an I64 parameter — read 8 LE bytes
             //   The actual arg data starts at offset 1 + N.
             //
             // This allows callers to correctly encode args for functions with
             // mixed pointer and plain-integer I32 parameters (e.g. lichendao's
             // create_proposal which takes both *const u8 and u32 lengths).
-            let has_layout = !args.is_empty() && args[0] == 0xAB && args.len() > params.len();
-            let layout: Vec<u8> = if has_layout {
-                args[1..1 + params.len()].to_vec()
-            } else {
-                Vec::new()
-            };
-            let data_start: u32 = if has_layout {
-                (1 + params.len()) as u32
-            } else {
-                0
-            };
+            // The marker alone is not enough: arbitrary raw arguments can begin
+            // with 0xAB (including a valid account or contract address). Treat
+            // the buffer as layout-encoded only when every stride is valid for
+            // the WASM signature and the descriptor covers the payload exactly.
+            let parsed_layout = canonical_layout_descriptor(args, &params);
+            let has_layout = parsed_layout.is_some();
+            let (layout, data_start) = parsed_layout.unwrap_or_default();
+            let data_start = data_start as u32;
 
             // Re-write only the data portion into WASM memory if using layout mode
             if has_layout {
@@ -5312,6 +5337,30 @@ mod tests {
     fn test_build_opcode_dispatch_args_prefixes_selector() {
         let args = vec![1u8, 2, 3, 4];
         assert_eq!(build_opcode_dispatch_args(9, &args), vec![9u8, 1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn raw_address_starting_with_layout_marker_is_not_reinterpreted() {
+        let mut args = vec![0u8; 104];
+        args[..5].copy_from_slice(&[0xAB, 0xF9, 0xEA, 0xF9, 0xA4]);
+        let params = vec![Type::I32, Type::I32, Type::I32, Type::I64];
+
+        assert!(canonical_layout_descriptor(&args, &params).is_none());
+    }
+
+    #[test]
+    fn canonical_layout_must_match_signature_and_payload_exactly() {
+        let params = vec![Type::I32, Type::I32, Type::I32, Type::I64];
+        let mut args = vec![ABI_LAYOUT_MARKER, 32, 32, 32, 8];
+        args.extend_from_slice(&[7u8; 104]);
+
+        let (layout, data_start) = canonical_layout_descriptor(&args, &params)
+            .expect("canonical descriptor should be accepted");
+        assert_eq!(layout, vec![32, 32, 32, 8]);
+        assert_eq!(data_start, 5);
+
+        args.push(0);
+        assert!(canonical_layout_descriptor(&args, &params).is_none());
     }
 
     #[test]

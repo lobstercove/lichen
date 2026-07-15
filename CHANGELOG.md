@@ -29,6 +29,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Consolidates the July validator liveness release line with archive parity
   hardening so stalled sync retries keep accepting delayed block-range
   responses while still retrying stale requests.
+- Returns a live validator to bounded sequential catch-up when it observes a
+  material canonical gap or enters checkpoint repair. Raw future-block receipt
+  no longer counts as watchdog progress: only a canonical commit or accepted
+  verified snapshot chunk can refresh liveness. This prevents an active process
+  from remaining indefinitely stalled behind a stream of unchainable future
+  blocks after checkpoint activation.
+- Validates the complete binary ABI layout descriptor before entering layout
+  mode. A raw account or contract address beginning with the marker byte
+  `0xAB` can no longer be misread as descriptor metadata and corrupt the
+  authenticated cross-contract caller. Rust contract SDK helpers and DEX token
+  custody calls now emit canonical descriptors explicitly; unit, nested-call,
+  preserved-state, and full trading regressions cover the collision.
 - Restores the signed `v0.5.223` future-round proposal replay path that was
   absent from `main`, so a proposal received before its round is reached is
   processed immediately when that round becomes current.
@@ -157,9 +169,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   verifier logs directly to its evidence file and closes every control master
   in one explicit exit path, so successful checks leave no local shell/logger
   processes behind.
-- Passes explicit archive mode to both live-secondary and stopped-primary fleet
-  manifest commands, so public validators accept the verifier's hot/cold
-  history inspection instead of correctly rejecting it as state-only startup.
+- Makes archive-backed hot/cold storage automatic for every non-development
+  testnet and mainnet validator. The cold archive is the canonical
+  `archive-<network>` sibling of its state directory; public runtime archive
+  flags are rejected, so new and resumed public validators cannot silently
+  operate as state-only nodes.
 - Removes query-string custody WebSocket credentials and generic cross-chain
   route configuration in favor of header-only authentication and route-specific
   RPC, treasury, multisig, token, and confirmation settings.
@@ -186,6 +200,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   before staging the genesis contract bundle.
 - Local Make, SDK, contract, E2E, and piped QA commands now propagate failures
   instead of reporting success after a failed child command.
+- Makes running-chain CI wait for an actually healthy validator instead of any
+  HTTP `getHealth` response, and makes the comprehensive CLI integration suite
+  return nonzero whenever its own failure counter is nonzero. A stale local
+  database can no longer be mistaken for a ready release test chain or leave a
+  counted CLI regression hidden behind a successful job exit.
 - Adds `scripts/verify-testnet-archive-parity.sh` for fleet-level archive
   evidence across US, EU, SEA, and IN, including strict stopped-validator
   manifest comparison for the release gate.
@@ -195,6 +214,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Adds binary framed public-history page streams for large block-body repairs,
   avoiding JSON/base64 page overhead while preserving source-backed additive
   imports and same-key conflict aborts.
+- Makes public-network fleet verification and streamed history repair derive the
+  same canonical cold archive as the runtime; neither operator path passes the
+  now-rejected development archive flags.
 - Runs remote archive-parity and stream-repair admin commands under an explicit
   high file-descriptor limit so RocksDB-heavy inspections do not fail from a
   low interactive shell default.
@@ -223,12 +245,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   history is a precondition for activation.
 
 ### Verified
-- Completed the final July 15 locked workspace all-target/all-feature suite and
-  strict workspace Clippy with `-D warnings`. The final four-validator
-  archive-cold gate passed restart/resume, one-validator outage, proposal/vote,
-  checkpoint parity, 140/140 volume journeys, and 104/104
-  launchpad/governance/graduation journeys; transcript SHA-256
-  `f73e134b...7fce9b`.
+- Rebuilt the exact candidate after the ABI marker-collision repair and passed
+  the authoritative four-local validator gate. V4 resumed in the same process
+  after a 140-slot pause, V4 and V1 restarted from their own state, the chain
+  finalized with V1 offline, and all four restarted from one preserved tip.
+  Canonical certificate parity matched at slot `930`
+  (`e4152bd9...103d5ae`); checkpoint-1000 hot/cold manifests matched root
+  `de87f503...174589d`; volume/trading passed 140/140; launchpad, governance,
+  and graduation passed 104/104; and post-journey checkpoint-3000 manifests
+  matched root `3b764af7...34c55be`. Transcript:
+  `evidence/post-block-effects-recovery/testnet-20260715T-final/four-local-abi-marker-final.log`,
+  SHA-256 `72eafc1a75cfc15e4c03d482fb057536e019cc306a7968a7fa844dcb95046fb5`.
+- Passed the exact-source ten-validator expansion. V2 through V10 joined from
+  empty stores, V10 closed a 140-slot gap in the same process, individual and
+  coordinated preserved-state restarts resumed finality, and the chain
+  advanced 42 blocks in 15 seconds with V9 and V10 stopped. All ten proposed
+  and voted, certificate parity matched at slot `2718`
+  (`3a74f369...043a0d8`), and checkpoint-3000 hot/cold manifests matched root
+  `c85f3ca9...6750a2`. Transcript:
+  `evidence/post-block-effects-recovery/testnet-20260715T-final/ten-validator-abi-marker-final.log`,
+  SHA-256 `4f226b6efea98edb41f783dd8da1c913fb39420c900ea6b3963f610ee85701b7`.
+- Completed the final locked workspace all-target/all-feature test suite and
+  strict workspace Clippy with `-D warnings` after the ABI hardening. Transcript
+  SHA-256 values are `841323c0...34004a` for tests and
+  `40f66495...04364` for Clippy.
+- Passed the final uninterrupted standalone release matrix after aligning
+  contract tests with the canonical SDK layout: compiler 30/30, contract SDK
+  28/28, Rust client SDK 88/88 plus docs/examples, all fuzz binaries, every one
+  of the 34 native contract workspaces, 33 active/genesis WASM builds, the
+  standalone MT-20 WASM build, and helper guards 12/12. Transcript SHA-256:
+  `baa5788d4c9b96272c7aec434f7cb69316c80560e18b39931e8e4815e506d39f`.
+- Passed the exact candidate compiler sandbox as numeric non-root UID 10001 for
+  Rust, C, and AssemblyScript WASM (transcript SHA-256
+  `b61fe3061c035428bab6d3650a9d8c39d9da4ce6887f755b37e11916249bd2fe`)
+  and generated valid CycloneDX JSON for all eight root workspace packages.
+- Passed a fresh isolated running-chain gate while preserving and restoring the
+  existing local databases: comprehensive RPC 146/0/1, CLI 29/0,
+  deterministic E2E 25/0, and full RPC/DEX REST 146/0/1. Transcript SHA-256:
+  `91b1c392f64fc329ea91856652bafd8799dd543ec107578f2d0543798f155898`.
 - Rebuilt IN's unbounded v0.5.223 derived sparse cache offline with the audited
   exact-tag maintenance binary. Typed root verification passed at stopped slot
   `9,180,291`, protected and cold-archive metadata hashes were unchanged, and

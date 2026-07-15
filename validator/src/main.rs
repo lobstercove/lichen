@@ -127,9 +127,10 @@ fn compact_block_full_block_fallback_request(slot: u64, local_addr: SocketAddr) 
 /// Default number of seconds with no block activity before the watchdog
 /// triggers a restart.  Override with `--watchdog-timeout <secs>`.
 /// Set to 120s to allow sufficient time for sync recovery under load.
-/// The watchdog is also sync-aware: it won't fire while the node has
-/// pending blocks or is actively syncing.
+/// The watchdog tracks canonical or verified snapshot progress. Pending or
+/// unchainable network blocks do not suppress it.
 const DEFAULT_WATCHDOG_TIMEOUT_SECS: u64 = 120;
+const WATCHDOG_STALE_CONFIRMATION_CHECKS: u32 = 6;
 const BACKGROUND_HISTORY_REPAIR_START_DELAY_SECS: u64 = 120;
 const GOVERNED_TX_BACKFILL_THROTTLE_EVERY_ROWS: u64 = 25_000;
 const GOVERNED_TX_BACKFILL_THROTTLE_SLEEP_MS: u64 = 10;
@@ -15087,7 +15088,13 @@ fn maybe_run_public_history_page_admin(args: &[String]) -> Option<i32> {
     }
     let cache_size_mb = get_flag_value(args, &["--cache-size-mb"]).and_then(|s| s.parse().ok());
     let target_dir = restriction_schema_data_dir(args);
-    let target_cold_store = get_flag_value(args, &["--cold-store"]).map(PathBuf::from);
+    let target_cold_store = match resolve_public_command_cold_store_path(args, &target_dir) {
+        Ok(path) => path,
+        Err(err) => {
+            eprintln!("{err}");
+            return Some(2);
+        }
+    };
     let secondary_dir = get_flag_value(args, &["--secondary-dir"]).map(PathBuf::from);
 
     if let Some(category) = export_category {
@@ -15515,8 +15522,17 @@ fn maybe_run_cold_migration_admin(args: &[String]) -> Option<i32> {
         return None;
     }
     let data_dir = restriction_schema_data_dir(args);
-    let Some(cold_store) = get_flag_value(args, &["--cold-store"]).map(PathBuf::from) else {
-        eprintln!("{MIGRATE_PUBLIC_HISTORY_TO_COLD_FLAG} requires --cold-store <path>");
+    let cold_store = match resolve_public_command_cold_store_path(args, &data_dir) {
+        Ok(path) => path,
+        Err(err) => {
+            eprintln!("{err}");
+            return Some(2);
+        }
+    };
+    let Some(cold_store) = cold_store else {
+        eprintln!(
+            "{MIGRATE_PUBLIC_HISTORY_TO_COLD_FLAG} requires --cold-store <path> outside a public network"
+        );
         return Some(2);
     };
     let Some(cutoff_slot) =
@@ -15690,7 +15706,13 @@ fn maybe_run_public_history_archive_admin(args: &[String]) -> Option<i32> {
     let chunk_size = public_history_chunk_size(args);
     let cache_size_mb = get_flag_value(args, &["--cache-size-mb"]).and_then(|s| s.parse().ok());
     let target_dir = restriction_schema_data_dir(args);
-    let target_cold_store = get_flag_value(args, &["--cold-store"]).map(PathBuf::from);
+    let target_cold_store = match resolve_public_command_cold_store_path(args, &target_dir) {
+        Ok(path) => path,
+        Err(err) => {
+            eprintln!("{err}");
+            return Some(2);
+        }
+    };
     let source_cold_store = get_flag_value(args, &[SOURCE_COLD_STORE_FLAG]).map(PathBuf::from);
     let secondary_dir = get_flag_value(args, &["--secondary-dir"]).map(PathBuf::from);
 
@@ -16058,7 +16080,13 @@ fn maybe_run_public_history_merge_admin(args: &[String]) -> Option<i32> {
     let target_dir = restriction_schema_data_dir(args);
     let cache_size_mb = get_flag_value(args, &["--cache-size-mb"]).and_then(|s| s.parse().ok());
     let source_cold_store_path = get_flag_value(args, &[SOURCE_COLD_STORE_FLAG]).map(PathBuf::from);
-    let cold_store_path = get_flag_value(args, &["--cold-store"]).map(PathBuf::from);
+    let cold_store_path = match resolve_public_command_cold_store_path(args, &target_dir) {
+        Ok(path) => path,
+        Err(err) => {
+            eprintln!("{err}");
+            return Some(2);
+        }
+    };
 
     if execute && cold_store_path.is_none() {
         eprintln!("Refusing public history merge execution without --cold-store");
@@ -16732,15 +16760,65 @@ async fn load_startup_genesis_config_or_bootstrap(
     ))
 }
 
-fn configure_archive_mode(state: &StateStore, args: &[String], cold_store_attached: bool) -> bool {
-    if !has_flag(args, "--archive-mode") {
+fn public_archive_network(network: Option<&str>, dev_mode: bool) -> bool {
+    !dev_mode && matches!(network, Some("testnet" | "mainnet"))
+}
+
+fn default_public_cold_store_path(network: &str, data_dir: &Path) -> PathBuf {
+    data_dir
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(format!("archive-{network}"))
+}
+
+fn resolve_runtime_cold_store_path(
+    args: &[String],
+    network: Option<&str>,
+    dev_mode: bool,
+    data_dir: &Path,
+) -> Result<Option<PathBuf>, String> {
+    let explicit = get_flag_value(args, &["--cold-store"]).map(PathBuf::from);
+    if !public_archive_network(network, dev_mode) {
+        return Ok(explicit);
+    }
+
+    let network = network.expect("public archive network must be present");
+    if has_flag(args, "--archive-mode") || explicit.is_some() {
+        return Err(format!(
+            "non-dev {network} archive storage is automatic; remove --archive-mode and --cold-store"
+        ));
+    }
+    let canonical = default_public_cold_store_path(network, data_dir);
+    Ok(Some(canonical))
+}
+
+fn resolve_public_command_cold_store_path(
+    args: &[String],
+    data_dir: &Path,
+) -> Result<Option<PathBuf>, String> {
+    let network = get_flag_value(args, &["--network"]).map(str::to_ascii_lowercase);
+    resolve_runtime_cold_store_path(
+        args,
+        network.as_deref(),
+        has_flag(args, "--dev-mode"),
+        data_dir,
+    )
+}
+
+fn configure_archive_mode(
+    state: &StateStore,
+    args: &[String],
+    public_archive: bool,
+    cold_store_attached: bool,
+) -> bool {
+    if !public_archive && !has_flag(args, "--archive-mode") {
         return false;
     }
 
     state.set_archive_mode(true);
     if cold_store_attached {
         info!(
-            "🗂️  Archive mode enabled; historical account snapshots will be retained alongside cold storage"
+            "🗂️  Archive mode enabled; historical account snapshots and public history are retained alongside cold storage"
         );
     } else {
         warn!(
@@ -16748,23 +16826,6 @@ fn configure_archive_mode(state: &StateStore, args: &[String], cold_store_attach
         );
     }
     true
-}
-
-fn production_archive_requirement_error(args: &[String]) -> Option<String> {
-    let network = get_flag_value(args, &["--network"]).map(|value| value.to_ascii_lowercase())?;
-    if !matches!(network.as_str(), "testnet" | "mainnet") || has_flag(args, "--dev-mode") {
-        return None;
-    }
-
-    let archive_mode = has_flag(args, "--archive-mode");
-    let cold_store = get_flag_value(args, &["--cold-store"]).is_some();
-    if archive_mode && cold_store {
-        return None;
-    }
-
-    Some(format!(
-        "Non-dev {network} validators must run archive-backed public history: add --archive-mode and --cold-store /var/lib/lichen/archive-{network}. Use --dev-mode only for disposable local validators."
-    ))
 }
 
 fn validate_mainnet_archive_contiguous_tip(
@@ -16930,11 +16991,6 @@ fn main() {
     }
     if let Some(exit_code) = maybe_run_analytics_24h_repair_admin(&args) {
         std::process::exit(exit_code);
-    }
-
-    if let Some(message) = production_archive_requirement_error(&args) {
-        eprintln!("FATAL: {message}");
-        std::process::exit(2);
     }
 
     // If we're the child (worker) process, go straight to the async validator.
@@ -17270,6 +17326,20 @@ async fn run_validator() {
     let data_dir = data_dir_path.to_string_lossy().to_string();
     info!("📂 Data directory: {}", data_dir);
 
+    let public_archive = public_archive_network(network_arg.as_deref(), dev_mode);
+    let cold_store_path: Option<String> = match resolve_runtime_cold_store_path(
+        &args,
+        network_arg.as_deref(),
+        dev_mode,
+        &data_dir_path,
+    ) {
+        Ok(path) => path.map(|path| path.to_string_lossy().into_owned()),
+        Err(err) => {
+            error!("FATAL: {err}");
+            std::process::exit(EXIT_CODE_FATAL_STARTUP);
+        }
+    };
+
     if !dev_mode {
         match require_runtime_disk_headroom(&data_dir_path) {
             Ok(available) => info!(
@@ -17359,9 +17429,6 @@ async fn run_validator() {
     // Parse --cache-size-mb flag for RocksDB shared block cache
     let cache_size_mb: Option<usize> =
         get_flag_value(&args, &["--cache-size-mb"]).and_then(|s| s.parse().ok());
-
-    let cold_store_path: Option<String> =
-        get_flag_value(&args, &["--cold-store"]).map(|s| s.to_string());
     match cleanup_stale_snapshot_staging_dirs(&data_dir) {
         Ok(removed) if removed > 0 => {
             info!(
@@ -17484,7 +17551,7 @@ async fn run_validator() {
         }
     }
 
-    configure_archive_mode(&state, &args, cold_store_path.is_some());
+    configure_archive_mode(&state, &args, public_archive, cold_store_path.is_some());
     sync_tx_by_slot_index_for_startup(&state, "startup");
     sync_dex_indexes_for_startup(&state, "startup");
 
@@ -19149,6 +19216,9 @@ async fn run_validator() {
                                     "⚠️  Rejecting pending block {} after staged state-root mismatch; switching to verified checkpoint repair",
                                     pending_slot
                                 );
+                                sync_mgr
+                                    .transition_to_initial("pending block checkpoint repair")
+                                    .await;
                                 sync_mgr.set_sync_mode(sync::SyncMode::Warp).await;
                                 sync_mgr.complete_sync().await;
                                 sync_mgr.record_sync_failure().await;
@@ -19385,22 +19455,6 @@ async fn run_validator() {
                     }
                 }
 
-                let current_slot_for_initial_window = state_for_blocks.get_last_slot().unwrap_or(0);
-                if sync_mgr
-                    .should_defer_far_future_block(current_slot_for_initial_window, block_slot)
-                    .await
-                {
-                    sync_mgr.note_seen(block_slot).await;
-                    *last_block_time_for_blocks.lock().await = std::time::Instant::now();
-                    debug!(
-                        "⏭️  Deferring far-future block {} during InitialSync (tip={}, window={})",
-                        block_slot,
-                        current_slot_for_initial_window,
-                        sync::INITIAL_SYNC_FORWARD_WINDOW,
-                    );
-                    continue;
-                }
-
                 // Early active-set membership check for live, non-sync blocks.
                 // Historical sync blocks are checked at the canonical acceptance
                 // boundary, after the parent has advanced the local validator set
@@ -19415,6 +19469,28 @@ async fn run_validator() {
                         );
                         continue;
                     }
+                }
+
+                // Do not let an arbitrary self-signed future block mutate sync
+                // state. Unsolicited live blocks must first pass canonical
+                // active-producer admission; requested historical blocks are
+                // authenticated at their canonical acceptance boundary.
+                let current_slot_for_initial_window = state_for_blocks.get_last_slot().unwrap_or(0);
+                sync_mgr
+                    .transition_to_initial_if_behind(current_slot_for_initial_window, block_slot)
+                    .await;
+                if sync_mgr
+                    .should_defer_far_future_block(current_slot_for_initial_window, block_slot)
+                    .await
+                {
+                    sync_mgr.note_seen(block_slot).await;
+                    debug!(
+                        "⏭️  Deferring far-future block {} during bounded catch-up (tip={}, window={})",
+                        block_slot,
+                        current_slot_for_initial_window,
+                        sync::INITIAL_SYNC_FORWARD_WINDOW,
+                    );
+                    continue;
                 }
 
                 // Network-origin blocks must carry a valid commit certificate
@@ -19573,13 +19649,10 @@ async fn run_validator() {
 
                 sync_mgr.note_seen(block_slot).await;
 
-                // STABILITY-FIX: Update last_block_time on block RECEIPT, not
-                // just on successful apply. A node that is receiving blocks from
-                // the network is alive — it's behind on sync, not deadlocked.
-                // Without this, the watchdog kills nodes that are actively
-                // receiving and queuing blocks but can't apply them yet because
-                // intermediate blocks are still missing.
-                *last_block_time_for_blocks.lock().await = std::time::Instant::now();
+                // Receipt is not canonical progress. Updating the watchdog here
+                // lets an endless stream of unusable future blocks conceal a
+                // stalled tip forever. Successful block application and verified
+                // snapshot chunks update the progress heartbeat instead.
                 if block_has_user_transactions {
                     *global_last_user_tx_activity_for_blocks.lock().await =
                         std::time::Instant::now();
@@ -20558,6 +20631,9 @@ async fn run_validator() {
                                         "⚠️  Rejecting pending block {} after staged state-root mismatch; switching to verified checkpoint repair",
                                         pending_slot
                                     );
+                                    sync_mgr
+                                        .transition_to_initial("pending block checkpoint repair")
+                                        .await;
                                     sync_mgr.set_sync_mode(sync::SyncMode::Warp).await;
                                     sync_mgr.complete_sync().await;
                                     sync_mgr.record_sync_failure().await;
@@ -20857,6 +20933,9 @@ async fn run_validator() {
                                     if is_sync_block { "synced" } else { "gossip" },
                                     block_slot
                                 );
+                                sync_mgr
+                                    .transition_to_initial("block checkpoint repair")
+                                    .await;
                                 sync_mgr.set_sync_mode(sync::SyncMode::Warp).await;
                                 sync_mgr.complete_sync().await;
                                 sync_mgr.record_sync_failure().await;
@@ -21070,6 +21149,9 @@ async fn run_validator() {
                                     "⚡ Parent gap {} -> {} exceeds replay threshold; probing checkpoint metadata instead of requesting block ranges",
                                     current_slot, block_slot
                                 );
+                                sync_mgr
+                                    .transition_to_initial("parent-gap checkpoint repair")
+                                    .await;
                                 sync_mgr.set_sync_mode(sync::SyncMode::Warp).await;
                                 sync_mgr.complete_sync().await;
                                 let should_request = snapshot_sync_for_blocks
@@ -21514,6 +21596,11 @@ async fn run_validator() {
                                             )
                                             .await;
                                         }
+                                        sync_mgr
+                                            .transition_to_initial(
+                                                "fork replacement checkpoint repair",
+                                            )
+                                            .await;
                                         sync_mgr.set_sync_mode(sync::SyncMode::Warp).await;
                                         sync_mgr.complete_sync().await;
                                         sync_mgr.record_sync_failure().await;
@@ -21932,17 +22019,14 @@ async fn run_validator() {
                     }
                 }
 
-                // Update highest seen slot from announcement so sync
-                // manager knows the network tip even before any blocks are
-                // processed by the block receiver.  Without this, a joining
-                // node's highest_seen_slot stays 0 after genesis and
-                // should_sync never fires.
-                sync_mgr_for_announce
-                    .note_authenticated_peer_tip_bounded(announcement.current_slot, 500)
-                    .await;
-
                 // Check if validator already exists
                 if is_existing_validator {
+                    // Only a validator already admitted by canonical state may
+                    // authenticate a peer-tip observation. Unknown joiners may
+                    // advertise for discovery, but cannot steer sync height.
+                    sync_mgr_for_announce
+                        .note_authenticated_peer_tip_bounded(announcement.current_slot, 500)
+                        .await;
                     peer_mgr_for_announce
                         .mark_validator(&announcement.peer_addr, announcement.pubkey);
                     // Announcements are peer-discovery metadata. Do not mutate
@@ -22913,6 +22997,7 @@ async fn run_validator() {
         let sync_mgr_for_snapshot = sync_manager.clone();
         let block_apply_lock_for_snapshot_apply = block_apply_lock.clone();
         let chain_id_for_snapshot_apply = genesis_config.chain_id.clone();
+        let last_block_time_for_snapshot_apply = last_block_time.clone();
         tokio::spawn(async move {
             // Track state snapshot download progress per category
             let mut state_snap_progress: std::collections::HashMap<String, (u64, u64)> =
@@ -23724,6 +23809,7 @@ async fn run_validator() {
                         .or_insert_with(|| SnapshotCategoryDigestAccumulator::new(category))
                         .update_entries(&entries);
                     snapshot_last_progress_at = std::time::Instant::now();
+                    *last_block_time_for_snapshot_apply.lock().await = std::time::Instant::now();
                     stalled_snapshot_retries = 0;
 
                     // Track progress
@@ -24277,6 +24363,9 @@ async fn run_validator() {
                             Err(e) => warn!("⚠️  Failed to create local checkpoint: {}", e),
                         }
                         sync_mgr_for_snapshot.set_checkpoint(snapshot_slot).await;
+                        sync_mgr_for_snapshot
+                            .transition_to_initial("verified snapshot activation")
+                            .await;
                         let cleared_requested = sync_mgr_for_snapshot.clear_requested_slots().await;
                         if cleared_requested > 0 {
                             info!(
@@ -25361,8 +25450,9 @@ async fn run_validator() {
     }
 
     // ── Internal health watchdog ──────────────────────────────────────
-    // Monitors last_block_time.  If no block is produced or received for
-    // watchdog_timeout seconds, the validator is likely deadlocked.
+    // Monitors canonical block and verified snapshot progress. Raw network
+    // receipt is deliberately excluded because unusable future blocks can keep
+    // arriving while the canonical tip is deadlocked.
     // Exit with EXIT_CODE_RESTART so the supervisor can relaunch us.
     let watchdog_timeout_secs = get_flag_value(&args, &["--watchdog-timeout"])
         .and_then(|s| s.parse::<u64>().ok())
@@ -25392,17 +25482,13 @@ async fn run_validator() {
         time::sleep(Duration::from_secs(60)).await;
         let mut interval = time::interval(Duration::from_secs(5));
         let mut stale_checks: u32 = 0;
-        let threshold = (watchdog_timeout_secs / 5).max(6) as u32; // 6 checks minimum (30s)
+        let threshold = WATCHDOG_STALE_CONFIRMATION_CHECKS;
         let mut last_known_slot: u64 = 0;
         loop {
             interval.tick().await;
             let elapsed = last_block_time_for_watchdog.lock().await.elapsed();
             let current_slot = state_for_watchdog.get_last_slot().unwrap_or(0);
-
-            // STABILITY-FIX: Don't count stale checks while the sync manager
-            // has pending blocks or is actively syncing. The node is alive —
-            // it's just behind, not deadlocked.
-            let actively_receiving = sync_manager_for_watchdog.is_actively_receiving().await;
+            let pending = sync_manager_for_watchdog.pending_count().await;
 
             // Suppress watchdog entirely while the joining sync phase is active.
             // Joining nodes wait for snapshots + chain sync before committing
@@ -25414,12 +25500,13 @@ async fn run_validator() {
 
             if elapsed > Duration::from_secs(watchdog_timeout_secs)
                 && current_slot == last_known_slot
-                && !actively_receiving
             {
                 stale_checks += 1;
                 warn!(
-                    "🐺 Watchdog: no block activity for {:.0}s (stale {}/{})",
+                    "🐺 Watchdog: no canonical or verified snapshot progress for {:.0}s (slot {}, pending {}, stale {}/{})",
                     elapsed.as_secs_f64(),
+                    current_slot,
+                    pending,
                     stale_checks,
                     threshold
                 );
@@ -25434,15 +25521,7 @@ async fn run_validator() {
                 }
             } else {
                 if stale_checks > 0 {
-                    if actively_receiving {
-                        info!(
-                            "🐺 Watchdog: sync active, resetting stale count (slot {}, {} pending)",
-                            current_slot,
-                            sync_manager_for_watchdog.pending_count().await
-                        );
-                    } else {
-                        info!("🐺 Watchdog: activity resumed (slot {})", current_slot);
-                    }
+                    info!("🐺 Watchdog: progress resumed (slot {})", current_slot);
                 }
                 stale_checks = 0;
                 last_known_slot = current_slot;
@@ -27902,6 +27981,9 @@ async fn enter_bft_commit_repair_mode(
     );
     bft_committing_slot.store(0, Ordering::Release);
     sync_manager.note_seen(height).await;
+    sync_manager
+        .transition_to_initial("BFT commit checkpoint repair")
+        .await;
     sync_manager.set_sync_mode(sync::SyncMode::Warp).await;
     sync_manager.complete_sync().await;
     sync_manager.record_sync_failure().await;
@@ -38040,63 +38122,147 @@ mod tests {
     }
 
     #[test]
-    fn archive_mode_requires_explicit_flag() {
+    fn live_gap_transition_follows_active_producer_admission() {
+        let source = include_str!("main.rs");
+        let start = source
+            .find("// Early active-set membership check for live, non-sync blocks.")
+            .expect("live producer admission section");
+        let relative_end = source[start..]
+            .find("// Network-origin blocks must carry a valid commit certificate")
+            .expect("network block authenticity section");
+        let section = &source[start..start + relative_end];
+
+        let admission = section
+            .find("vs.get_validator(&Pubkey(block.header.validator))")
+            .expect("canonical active-producer lookup");
+        let transition = section
+            .find("transition_to_initial_if_behind")
+            .expect("material-gap phase transition");
+        assert!(
+            admission < transition,
+            "untrusted live blocks must not mutate sync phase before producer admission"
+        );
+    }
+
+    #[test]
+    fn unknown_validator_announcement_cannot_authenticate_peer_tip() {
+        let source = include_str!("main.rs");
+        let start = source
+            .find("// Check if validator already exists")
+            .expect("validator announcement admission section");
+        let relative_end = source[start..]
+            .find("// Start consistency report handler")
+            .expect("end of announcement/status handlers");
+        let section = &source[start..start + relative_end];
+        let existing_branch = section
+            .find("if is_existing_validator {")
+            .expect("existing-validator branch");
+        let unknown_branch = section[existing_branch..]
+            .find("} else {")
+            .map(|offset| existing_branch + offset)
+            .expect("unknown-validator branch");
+        let authenticated_tip = section
+            .find("note_authenticated_peer_tip_bounded")
+            .expect("authenticated peer-tip update");
+
+        assert!(
+            authenticated_tip > existing_branch && authenticated_tip < unknown_branch,
+            "only canonical-set validators may authenticate peer-tip observations"
+        );
+    }
+
+    #[test]
+    fn dev_archive_mode_requires_explicit_flag() {
         let temp = tempfile::tempdir().unwrap();
         let state = StateStore::open(temp.path()).unwrap();
         let args = vec!["lichen-validator".to_string()];
 
-        assert!(!configure_archive_mode(&state, &args, false));
+        assert!(!configure_archive_mode(&state, &args, false, false));
         assert!(!state.is_archive_mode());
     }
 
     #[test]
-    fn archive_mode_flag_enables_historical_snapshots() {
+    fn dev_archive_mode_flag_enables_historical_snapshots() {
         let temp = tempfile::tempdir().unwrap();
         let state = StateStore::open(temp.path()).unwrap();
         let args = vec!["lichen-validator".to_string(), "--archive-mode".to_string()];
 
-        assert!(configure_archive_mode(&state, &args, true));
+        assert!(configure_archive_mode(&state, &args, false, true));
         assert!(state.is_archive_mode());
     }
 
     #[test]
-    fn production_testnet_requires_archive_backed_history() {
-        let args = vec![
-            "lichen-validator".to_string(),
-            "--network".to_string(),
-            "testnet".to_string(),
-        ];
+    fn public_networks_enable_archive_mode_without_operator_flags() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+        let args = vec!["lichen-validator".to_string()];
 
-        let err = production_archive_requirement_error(&args)
-            .expect("production testnet without archive must be rejected");
-        assert!(err.contains("--archive-mode"));
-        assert!(err.contains("--cold-store"));
+        for network in ["testnet", "mainnet"] {
+            let data_dir = temp.path().join(format!("state-{network}"));
+            let cold_store =
+                resolve_runtime_cold_store_path(&args, Some(network), false, &data_dir)
+                    .expect("resolve automatic public cold store");
+            assert_eq!(
+                cold_store,
+                Some(temp.path().join(format!("archive-{network}")))
+            );
+        }
+
+        assert!(configure_archive_mode(&state, &args, true, true));
+        assert!(state.is_archive_mode());
     }
 
     #[test]
-    fn production_testnet_accepts_archive_backed_history() {
+    fn public_network_rejects_archive_storage_flags() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_dir = temp.path().join("state-testnet");
+        for args in [
+            vec!["lichen-validator".to_string(), "--archive-mode".to_string()],
+            vec![
+                "lichen-validator".to_string(),
+                "--cold-store".to_string(),
+                temp.path().join("archive-testnet").display().to_string(),
+            ],
+            vec![
+                "lichen-validator".to_string(),
+                "--cold-store".to_string(),
+                temp.path().join("different").display().to_string(),
+            ],
+        ] {
+            let err = resolve_runtime_cold_store_path(&args, Some("testnet"), false, &data_dir)
+                .expect_err("public archive flags must fail closed");
+            assert!(err.contains("archive storage is automatic"));
+            assert!(err.contains("remove --archive-mode and --cold-store"));
+        }
+    }
+
+    #[test]
+    fn public_history_commands_derive_the_same_cold_store() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_dir = temp.path().join("state-testnet");
         let args = vec![
             "lichen-validator".to_string(),
             "--network".to_string(),
-            "testnet".to_string(),
-            "--archive-mode".to_string(),
-            "--cold-store".to_string(),
-            "/var/lib/lichen/archive-testnet".to_string(),
+            "TESTNET".to_string(),
         ];
 
-        assert!(production_archive_requirement_error(&args).is_none());
+        assert_eq!(
+            resolve_public_command_cold_store_path(&args, &data_dir)
+                .expect("resolve public command cold store"),
+            Some(temp.path().join("archive-testnet"))
+        );
     }
 
     #[test]
     fn dev_testnet_can_run_without_archive_backed_history() {
-        let args = vec![
-            "lichen-validator".to_string(),
-            "--network".to_string(),
-            "testnet".to_string(),
-            "--dev-mode".to_string(),
-        ];
+        let args = vec!["lichen-validator".to_string()];
+        let temp = tempfile::tempdir().unwrap();
 
-        assert!(production_archive_requirement_error(&args).is_none());
+        assert_eq!(
+            resolve_runtime_cold_store_path(&args, Some("testnet"), true, temp.path())
+                .expect("dev cold-store resolution"),
+            None
+        );
     }
 
     #[test]
@@ -38236,6 +38402,7 @@ mod tests {
     fn watchdog_timeout_reasonable() {
         assert!(DEFAULT_WATCHDOG_TIMEOUT_SECS >= 30);
         assert!(DEFAULT_WATCHDOG_TIMEOUT_SECS <= 600);
+        assert_eq!(WATCHDOG_STALE_CONFIRMATION_CHECKS, 6);
     }
 
     #[test]

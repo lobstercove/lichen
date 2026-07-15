@@ -55,9 +55,9 @@ jobs:
           toolchain: stable
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
       - name: Install cargo-deny
-        run: cargo install cargo-deny --locked
+        run: cargo install cargo-deny --version 0.20.2 --locked
       - name: Run cargo-deny
-        run: cargo deny check --config deny.toml advisories licenses sources
+        run: cargo deny --config deny.toml check advisories licenses sources
 
   js-python-deps:
     name: JS and Python Dependency Health
@@ -282,7 +282,10 @@ jobs:
 
           echo "Waiting for RPC to become ready (ZK setup may take ~30s)..."
           for i in $(seq 1 180); do
-            if curl -sf http://localhost:8899 -d '{"jsonrpc":"2.0","id":1,"method":"getHealth"}' -H 'Content-Type: application/json' >/dev/null 2>&1; then
+            if curl -sf http://localhost:8899 \
+              -d '{"jsonrpc":"2.0","id":1,"method":"getHealth"}' \
+              -H 'Content-Type: application/json' 2>/dev/null \
+              | grep -Eq '"status"[[:space:]]*:[[:space:]]*"ok"|"result"[[:space:]]*:[[:space:]]*"ok"'; then
               echo "RPC ready after ${i}s"
               tail -n 80 /tmp/lichen-ci-validator.log || true
               exit 0

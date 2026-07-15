@@ -233,8 +233,7 @@ const validatorExpected = {
     LICHEN_SERVICE_FLEET_STATUS_FILE:
       '/var/lib/lichen/service-fleet-status-testnet.json',
     LICHEN_CHECKPOINT_KEEP_COUNT: '2',
-    LICHEN_EXTRA_ARGS:
-      '--auto-update=off --archive-mode --cold-store /var/lib/lichen/archive-testnet',
+    LICHEN_EXTRA_ARGS: '--auto-update=off',
     CUSTODY_URL: 'http://127.0.0.1:9105',
   },
   'deploy/env-mainnet.example': {
@@ -251,8 +250,7 @@ const validatorExpected = {
     LICHEN_SERVICE_FLEET_STATUS_FILE:
       '/var/lib/lichen/service-fleet-status-mainnet.json',
     LICHEN_CHECKPOINT_KEEP_COUNT: '2',
-    LICHEN_EXTRA_ARGS:
-      '--auto-update=off --archive-mode --cold-store /var/lib/lichen/archive-mainnet',
+    LICHEN_EXTRA_ARGS: '--auto-update=off',
     CUSTODY_URL: 'http://127.0.0.1:9106',
   },
 };
@@ -264,6 +262,11 @@ for (const [relPath, expected] of Object.entries(validatorExpected)) {
   requireActiveKeys(env, validatorRpcCustodyKeys, relPath);
   requireValues(env, expected, relPath);
   requireRedactedSecrets(env, relPath);
+  assert(
+    !env.active.get('LICHEN_EXTRA_ARGS').includes('--archive-mode') &&
+      !env.active.get('LICHEN_EXTRA_ARGS').includes('--cold-store'),
+    `${relPath} must rely on automatic public archive configuration`,
+  );
 }
 
 const custodyRouteKeys = [
@@ -489,7 +492,8 @@ assert(
   'deployment docs must keep the faucet Pages portal separate from the faucet API hostname',
 );
 const testnetCaddy = read('deploy/Caddyfile.testnet');
-const setupSource = read('deploy/setup.sh');
+const setupPath = path.join(root, 'deploy/setup.sh');
+const setupSource = fs.existsSync(setupPath) ? fs.readFileSync(setupPath, 'utf8') : null;
 assert(
   productionDeployment.includes('Caddy (`deploy/Caddyfile.testnet`) reverse proxies faucet API traffic to `127.0.0.1:9100`') &&
     productionDeployment.includes('`lichen-network-faucet.pages.dev`** (Cloudflare Pages): Static faucet portal') &&
@@ -500,17 +504,19 @@ assert(
     !testnetCaddy.includes('root * /home/ubuntu/lichen/faucet'),
   'faucet API hostname must not serve static portal HTML from the VPS',
 );
-assert(
-  setupSource.includes('append_testnet_edge_origin()') &&
-    setupSource.includes('LICHEN_EDGE_ORIGIN_HOST') &&
-    setupSource.includes('LICHEN_EDGE_ORIGIN_AUTH_FILE') &&
-    setupSource.includes('LICHEN_EDGE_ORIGIN_REQUIRED') &&
-    setupSource.includes('@edge_origin header X-Lichen-Origin-Auth $auth_token') &&
-    setupSource.includes('respond "Forbidden" 403') &&
-    setupSource.includes('install -o root -g caddy -m 640 "$tmp_file" "$CADDY_CONFIG_FILE"') &&
-    !setupSource.includes('EnvironmentFile=/etc/lichen/caddy-edge.env'),
-  'testnet edge origins must use a root-owned token file and authenticated Caddy route',
-);
+if (setupSource !== null) {
+  assert(
+    setupSource.includes('append_testnet_edge_origin()') &&
+      setupSource.includes('LICHEN_EDGE_ORIGIN_HOST') &&
+      setupSource.includes('LICHEN_EDGE_ORIGIN_AUTH_FILE') &&
+      setupSource.includes('LICHEN_EDGE_ORIGIN_REQUIRED') &&
+      setupSource.includes('@edge_origin header X-Lichen-Origin-Auth $auth_token') &&
+      setupSource.includes('respond "Forbidden" 403') &&
+      setupSource.includes('install -o root -g caddy -m 640 "$tmp_file" "$CADDY_CONFIG_FILE"') &&
+      !setupSource.includes('EnvironmentFile=/etc/lichen/caddy-edge.env'),
+    'testnet edge origins must use a root-owned token file and authenticated Caddy route',
+  );
+}
 for (const expected of [
   '7LFPJ8gqmAtjbhfRg1P4VXmTQJV4AeZxzws3UsA6SVq',
   '6RMeoigHdJWB47pEZEMSj5gvT7nbJPYSfPqjcur9vMJ',

@@ -38,6 +38,7 @@ KEEP_CLUSTER_ON_SUCCESS="${LICHEN_KEEP_CLUSTER_ON_SUCCESS:-0}"
 RUN_LAUNCHPAD_E2E="${LICHEN_RUN_LAUNCHPAD_E2E:-0}"
 RUN_VOLUME_E2E="${LICHEN_RUN_VOLUME_E2E:-0}"
 SKIP_LOCAL_GATE_BUILD="${LICHEN_SKIP_LOCAL_GATE_BUILD:-0}"
+LIVE_PAUSE_GAP_SLOTS="${LICHEN_LIVE_PAUSE_GAP_SLOTS:-140}"
 
 export LICHEN_LOCAL_DEV=1
 export LICHEN_LOCAL_ARCHIVE_COLD="${LICHEN_LOCAL_ARCHIVE_COLD:-1}"
@@ -58,6 +59,8 @@ warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
 fail() { echo -e "${RED}[FAIL]${NC} $*"; exit 1; }
 
 stop_local_processes() {
+    pkill -CONT -f "lichen-validator" 2>/dev/null || true
+    pkill -CONT -f "run-validator.sh testnet" 2>/dev/null || true
     if [[ -x "$REPO_ROOT/scripts/stop-local-stack.sh" ]]; then
         "$REPO_ROOT/scripts/stop-local-stack.sh" testnet >/dev/null 2>&1 || true
     fi
@@ -122,6 +125,7 @@ stop_validator_pid() {
 
 signal_validator_pid_tree() {
     local pid=$1
+    local signal="${2:-TERM}"
     [[ -n "$pid" ]] || return 0
     if ! kill -0 "$pid" 2>/dev/null; then
         return 0
@@ -147,7 +151,7 @@ signal_validator_pid_tree() {
     )
 
     for child in $pids; do
-        kill "$child" 2>/dev/null || true
+        kill -"$signal" "$child" 2>/dev/null || true
     done
 }
 
@@ -492,6 +496,7 @@ public_history_manifest_root() {
     local args=(
         "$REPO_ROOT/target/release/lichen-validator"
         --network testnet
+        --dev-mode
         --db-path "$manifest_db_path"
         --cold-store "$manifest_cold_path"
         --cache-size-mb 128
@@ -846,6 +851,69 @@ for V_NUM in $(seq 2 "$MAX_VALIDATORS"); do
 
     ok "PHASE ${V_NUM} PASSED"
 done
+
+if [[ "$MAX_VALIDATORS" -ge 4 && "$SKIP_JOINER_RESTART_CHECK" != "1" ]]; then
+    PAUSE_VALIDATOR_NUM="$MAX_VALIDATORS"
+    PAUSE_PID="${VALIDATOR_PIDS[$PAUSE_VALIDATOR_NUM]:-}"
+    PAUSE_RPC="$(rpc_port "$PAUSE_VALIDATOR_NUM")"
+    PAUSE_LOG="$(log_path "$PAUSE_VALIDATOR_NUM")"
+
+    log "═══════════════════════════════════════════════════════════"
+    log "RG-401C: Pausing V${PAUSE_VALIDATOR_NUM} in LiveSync across a material gap"
+    log "═══════════════════════════════════════════════════════════"
+
+    PAUSE_START_SLOT="$(get_slot "$V1_RPC")"
+    PAUSE_TARGET_SLOT=$((PAUSE_START_SLOT + LIVE_PAUSE_GAP_SLOTS))
+    signal_validator_pid_tree "$PAUSE_PID" STOP
+
+    PAUSE_GAP_READY=false
+    for i in $(seq 1 180); do
+        sleep 1
+        if ! kill -0 "$PAUSE_PID" 2>/dev/null; then
+            fail "V${PAUSE_VALIDATOR_NUM} exited while process-paused"
+        fi
+        NET_SLOT="$(get_slot "$V1_RPC")"
+        if [[ "$NET_SLOT" -ge "$PAUSE_TARGET_SLOT" ]]; then
+            PAUSE_GAP_READY=true
+            break
+        fi
+        if [[ $((i % 20)) -eq 0 ]]; then
+            log "  Paused V${PAUSE_VALIDATOR_NUM}: network=$NET_SLOT target=$PAUSE_TARGET_SLOT"
+        fi
+    done
+    $PAUSE_GAP_READY || fail "Three-validator quorum did not advance across the material pause gap"
+
+    signal_validator_pid_tree "$PAUSE_PID" CONT
+    PAUSE_CAUGHT_UP=false
+    for i in $(seq 1 180); do
+        sleep 2
+        if ! kill -0 "$PAUSE_PID" 2>/dev/null; then
+            tail -60 "$PAUSE_LOG"
+            fail "V${PAUSE_VALIDATOR_NUM} exited while recovering from the live pause gap"
+        fi
+        PAUSED_SLOT="$(get_slot "$PAUSE_RPC")"
+        NET_SLOT="$(get_slot "$V1_RPC")"
+        DRIFT=$((NET_SLOT - PAUSED_SLOT))
+        if [[ "$PAUSED_SLOT" -gt "$PAUSE_START_SLOT" && "$DRIFT" -le 20 ]]; then
+            PAUSE_CAUGHT_UP=true
+            break
+        fi
+        if [[ $((i % 15)) -eq 0 ]]; then
+            log "  Live-pause catch-up: V${PAUSE_VALIDATOR_NUM}=$PAUSED_SLOT network=$NET_SLOT drift=$DRIFT"
+        fi
+    done
+    $PAUSE_CAUGHT_UP || {
+        tail -80 "$PAUSE_LOG"
+        fail "V${PAUSE_VALIDATOR_NUM} did not catch up in place after the live pause gap"
+    }
+    if grep -q "Sync phase: LiveSync -> InitialSync (material canonical gap)" "$PAUSE_LOG"; then
+        ok "V${PAUSE_VALIDATOR_NUM} observed a material gap and entered bounded catch-up"
+    else
+        ok "V${PAUSE_VALIDATOR_NUM} consumed the retained contiguous P2P backlog without a gap transition"
+    fi
+    ok "V${PAUSE_VALIDATOR_NUM} caught up in the same process after a ${LIVE_PAUSE_GAP_SLOTS}-slot live gap"
+    verify_chain_producing "after V${PAUSE_VALIDATOR_NUM} live-pause catch-up" "$V1_RPC" 10
+fi
 
 if [[ "$MAX_VALIDATORS" -ge 2 && "$SKIP_JOINER_RESTART_CHECK" != "1" ]]; then
     RESTART_VALIDATOR_NUM="$MAX_VALIDATORS"
