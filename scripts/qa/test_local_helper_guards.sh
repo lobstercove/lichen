@@ -403,6 +403,11 @@ assert_public_history_repair_stays_quiesced() {
         echo "❌ public-history offline parity gate: stopped-fleet behavior missing"
         exit 1
     fi
+    manifest_function="$(sed -n '/^remote_manifest()/,/^}/p' "$verifier")"
+    if [ "$(grep -Fc -- '--archive-mode' <<<"$manifest_function")" -ne 2 ]; then
+        echo "❌ public-history offline parity gate: live/offline manifests must explicitly enable archive mode"
+        exit 1
+    fi
     echo "✅ public-history quiesced repair"
 }
 

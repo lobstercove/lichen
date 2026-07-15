@@ -157,6 +157,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   verifier logs directly to its evidence file and closes every control master
   in one explicit exit path, so successful checks leave no local shell/logger
   processes behind.
+- Passes explicit archive mode to both live-secondary and stopped-primary fleet
+  manifest commands, so public validators accept the verifier's hot/cold
+  history inspection instead of correctly rejecting it as state-only startup.
 - Removes query-string custody WebSocket credentials and generic cross-chain
   route configuration in favor of header-only authentication and route-specific
   RPC, treasury, multisig, token, and confirmation settings.
