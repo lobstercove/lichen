@@ -45,16 +45,20 @@ run_typescript_comprehensive() {
     ts_out_dir="$PWD/.sdk-test-dist"
     rm -rf "$ts_out_dir"
 
-    if ! npx tsc -p tsconfig.test.json --outDir "$ts_out_dir"; then
+    if npx tsc -p tsconfig.test.json --outDir "$ts_out_dir"; then
+        :
+    else
         status=$?
         rm -rf "$ts_out_dir"
-        return $status
+        return "$status"
     fi
 
-    if ! node "$ts_out_dir/test-all-features.js"; then
+    if node "$ts_out_dir/test-all-features.js"; then
+        :
+    else
         status=$?
         rm -rf "$ts_out_dir"
-        return $status
+        return "$status"
     fi
 
     rm -rf "$ts_out_dir"

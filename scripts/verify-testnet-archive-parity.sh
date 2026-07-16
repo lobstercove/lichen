@@ -192,8 +192,9 @@ ssh_run() {
       -o ControlPath="$SSH_CONTROL_DIR/%C" \
       "$SSH_USER@$host" "$@"; then
       return 0
+    else
+      status=$?
     fi
-    status=$?
     if [ "$attempt" -lt "$SSH_ATTEMPTS" ]; then
       sleep "$SSH_RETRY_DELAY_SECS"
     fi

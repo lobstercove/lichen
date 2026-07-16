@@ -66,7 +66,9 @@ This policy exists because an active testnet is shared infrastructure. Developer
   are never joined by an unbounded concurrent pipe: target validation may stop
   reading while RocksDB checks a page, and that backpressure can terminate a
   long-running two-hop transport. A failed page is safe to retry because import
-  is idempotent and same-key differences abort.
+  is idempotent and same-key differences abort. Every SSH retry writes to a
+  separate temporary file and atomically promotes only a complete successful
+  export or report, so partial attempts cannot be concatenated.
 - RocksDB archive scans must run with the service-equivalent file-descriptor
   limit. The fleet verifier and repair helper raise it automatically. Direct
   operator invocations must use the documented `run_validator_admin` wrapper;

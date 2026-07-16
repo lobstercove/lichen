@@ -256,8 +256,9 @@ ssh_run() {
   for attempt in $(seq 1 "$SSH_ATTEMPTS"); do
     if ssh_base "$SSH_USER@$host" "$@"; then
       return 0
+    else
+      status=$?
     fi
-    status=$?
     if [ "$attempt" -lt "$SSH_ATTEMPTS" ]; then
       sleep "$SSH_RETRY_DELAY_SECS"
     fi
@@ -265,16 +266,22 @@ ssh_run() {
   return "$status"
 }
 
-ssh_run_stdin_file() {
-  local input_file="$1"
-  local host="$2"
+ssh_run_to_file() {
+  local host="$1"
+  local output_file="$2"
   shift 2
   local attempt status
+  local attempt_output
   for attempt in $(seq 1 "$SSH_ATTEMPTS"); do
-    if ssh_base "$SSH_USER@$host" "$@" <"$input_file"; then
+    attempt_output="${output_file}.attempt-${attempt}"
+    rm -f "$attempt_output"
+    if ssh_base "$SSH_USER@$host" "$@" >"$attempt_output"; then
+      mv -f "$attempt_output" "$output_file"
       return 0
+    else
+      status=$?
     fi
-    status=$?
+    rm -f "$attempt_output"
     if [ "$attempt" -lt "$SSH_ATTEMPTS" ]; then
       sleep "$SSH_RETRY_DELAY_SECS"
     fi
@@ -285,17 +292,29 @@ ssh_run_stdin_file() {
 ssh_run_stdin_json_file() {
   local input_file="$1"
   local host="$2"
-  shift 2
+  local output_file="$3"
+  shift 3
   local attempt status
+  local attempt_output
   for attempt in $(seq 1 "$SSH_ATTEMPTS"); do
+    attempt_output="${output_file}.attempt-${attempt}"
+    rm -f "$attempt_output"
     if [[ "$input_file" == *.gz ]]; then
-      if gzip -dc "$input_file" | ssh_base "$SSH_USER@$host" "$@"; then
+      if gzip -dc "$input_file" | ssh_base "$SSH_USER@$host" "$@" >"$attempt_output"; then
+        mv -f "$attempt_output" "$output_file"
         return 0
+      else
+        status=$?
       fi
-    elif ssh_base "$SSH_USER@$host" "$@" <"$input_file"; then
-      return 0
+    else
+      if ssh_base "$SSH_USER@$host" "$@" <"$input_file" >"$attempt_output"; then
+        mv -f "$attempt_output" "$output_file"
+        return 0
+      else
+        status=$?
+      fi
     fi
-    status=$?
+    rm -f "$attempt_output"
     if [ "$attempt" -lt "$SSH_ATTEMPTS" ]; then
       sleep "$SSH_RETRY_DELAY_SECS"
     fi
@@ -639,10 +658,10 @@ export_source_page() {
     $to_slot_arg"
   if [ "$COMPRESS_SOURCE_PAGES" = "1" ]; then
     local raw_page_file="${page_file%.gz}"
-    ssh_run "$SOURCE_HOST" "$export_command" >"$raw_page_file"
+    ssh_run_to_file "$SOURCE_HOST" "$raw_page_file" "$export_command"
     gzip -1 -f "$raw_page_file"
   else
-    ssh_run "$SOURCE_HOST" "$export_command" >"$page_file"
+    ssh_run_to_file "$SOURCE_HOST" "$page_file" "$export_command"
   fi
 }
 
@@ -653,7 +672,7 @@ import_page_dry_run() {
   local page_file="$4"
   local import_file="$5"
 
-  ssh_run_stdin_json_file "$page_file" "$target" "sudo -u lichen bash -lc 'ulimit -n $NOFILE_LIMIT 2>/dev/null || ulimit -n 65535 2>/dev/null || true; exec \"\$0\" \"\$@\"' '$REMOTE_BIN' \
+  ssh_run_stdin_json_file "$page_file" "$target" "$import_file" "sudo -u lichen bash -lc 'ulimit -n $NOFILE_LIMIT 2>/dev/null || ulimit -n 65535 2>/dev/null || true; exec \"\$0\" \"\$@\"' '$REMOTE_BIN' \
     --no-watchdog \
     --network '$NETWORK' \
     --db-path '$STATE_DIR' \
@@ -661,7 +680,7 @@ import_page_dry_run() {
     --cache-size-mb '$CACHE_SIZE_MB' \
     --public-history-page-format '$PAGE_FORMAT' \
     --import-public-history-category '$category' \
-    --dry-run" >"$import_file"
+    --dry-run"
 }
 
 import_page_execute() {
@@ -670,7 +689,7 @@ import_page_execute() {
   local page_file="$3"
   local import_file="$4"
 
-  ssh_run_stdin_json_file "$page_file" "$target" "sudo -u lichen bash -lc 'ulimit -n $NOFILE_LIMIT 2>/dev/null || ulimit -n 65535 2>/dev/null || true; exec \"\$0\" \"\$@\"' '$REMOTE_BIN' \
+  ssh_run_stdin_json_file "$page_file" "$target" "$import_file" "sudo -u lichen bash -lc 'ulimit -n $NOFILE_LIMIT 2>/dev/null || ulimit -n 65535 2>/dev/null || true; exec \"\$0\" \"\$@\"' '$REMOTE_BIN' \
     --no-watchdog \
     --network '$NETWORK' \
     --db-path '$STATE_DIR' \
@@ -678,7 +697,7 @@ import_page_execute() {
     --public-history-page-format '$PAGE_FORMAT' \
     --import-public-history-category '$category' \
     --execute \
-    --confirm public-history-repair:v1" >"$import_file"
+    --confirm public-history-repair:v1"
 }
 
 record_page_integrity() {

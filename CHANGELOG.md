@@ -224,6 +224,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Adds bounded binary public-history pages for large block-body repairs,
   avoiding JSON/base64 overhead while recording each page checksum and
   preserving source-backed additive imports and same-key conflict aborts.
+- Makes fleet SSH retries preserve nonzero exit status and atomically replace
+  per-attempt files, and makes comprehensive TypeScript SDK compilation/tests
+  propagate their original failures instead of returning success through `!`.
 - Makes public-network fleet verification and streamed history repair derive the
   same canonical cold archive as the runtime; neither operator path passes the
   now-rejected development archive flags.

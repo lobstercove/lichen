@@ -400,6 +400,9 @@ assert_public_history_repair_stays_quiesced() {
         'record_page_integrity "$page_file" "$integrity_file"' \
         'validate_page_import "$category" "$row_count" "$import_file"' \
         'sha256sum "$page_file"' \
+        'attempt_output="${output_file}.attempt-${attempt}"' \
+        'mv -f "$attempt_output" "$output_file"' \
+        'status=$?' \
         'Execute requires --leave-target-stopped' \
         'Execute block repair requires explicit --from-slot and --to-slot bounds.'; do
         if ! grep -Fq -- "$required_guard" "$script"; then
@@ -412,6 +415,12 @@ assert_public_history_repair_stays_quiesced() {
         echo "❌ public-history repair transport: concurrent two-hop stream must not bypass bounded page integrity"
         exit 1
     fi
+    repair_ssh_function="$(sed -n '/^ssh_run()/,/^}/p' "$script")"
+    if ! grep -Fq 'else' <<<"$repair_ssh_function" || \
+        ! grep -Fq 'status=$?' <<<"$repair_ssh_function"; then
+        echo "❌ public-history repair transport: SSH retries must preserve the failed command status"
+        exit 1
+    fi
     bash -n "$verifier"
     if ! grep -Fq -- '--offline-repair-gate' "$verifier" || \
         ! grep -Fq 'all validator services remain stopped pending parity decision' "$verifier" || \
@@ -422,6 +431,12 @@ assert_public_history_repair_stays_quiesced() {
         ! grep -Fq 'exec >"$RUN_LOG" 2>&1' "$verifier" || \
         grep -Fq 'exec > >(tee' "$verifier"; then
         echo "❌ public-history offline parity gate: stopped-fleet behavior missing"
+        exit 1
+    fi
+    verifier_ssh_function="$(sed -n '/^ssh_run()/,/^}/p' "$verifier")"
+    if ! grep -Fq 'else' <<<"$verifier_ssh_function" || \
+        ! grep -Fq 'status=$?' <<<"$verifier_ssh_function"; then
+        echo "❌ public-history offline parity gate: SSH retries must preserve the failed command status"
         exit 1
     fi
     manifest_function="$(sed -n '/^remote_manifest()/,/^}/p' "$verifier")"
@@ -464,6 +479,26 @@ assert_local_archive_parity_uses_immutable_checkpoints() {
         exit 1
     fi
     echo "✅ local archive parity uses immutable checkpoints"
+}
+
+assert_sdk_tests_preserve_failure_status() {
+    local script="$ROOT_DIR/scripts/test-all-sdks.sh"
+    bash -n "$script"
+    if grep -Fq 'if ! npx tsc -p tsconfig.test.json' "$script" || \
+        grep -Fq 'if ! node "$ts_out_dir/test-all-features.js"' "$script"; then
+        echo "❌ SDK test helper: negated commands cannot preserve their original failure status"
+        exit 1
+    fi
+    for required_guard in \
+        'if npx tsc -p tsconfig.test.json' \
+        'if node "$ts_out_dir/test-all-features.js"' \
+        'return "$status"'; do
+        if ! grep -Fq -- "$required_guard" "$script"; then
+            echo "❌ SDK test helper: missing failure propagation guard: $required_guard"
+            exit 1
+        fi
+    done
+    echo "✅ SDK test failure propagation"
 }
 
 assert_rejected() {
@@ -517,6 +552,7 @@ assert_current_health_rpc_surface
 assert_current_e2e_transaction_protocol
 assert_public_history_repair_stays_quiesced
 assert_local_archive_parity_uses_immutable_checkpoints
+assert_sdk_tests_preserve_failure_status
 
 echo "============================================================"
-echo "Local helper guards: 12 passed, 0 failed"
+echo "Local helper guards: 13 passed, 0 failed"

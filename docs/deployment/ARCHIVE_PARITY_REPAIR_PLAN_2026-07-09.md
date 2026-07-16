@@ -1527,7 +1527,12 @@ The fleet helper now exports and completes one bounded page before import,
 records its byte count and SHA-256, validates the target report category and
 exact source-row count, requires zero conflicts, then removes the payload unless
 evidence retention was explicitly requested. Persistent SSH controls remain,
-but there is no concurrent source/target pipe. Execute remains additive,
+but there is no concurrent source/target pipe. Export and report retries write
+per-attempt temporary files and atomically promote only a successful attempt,
+preventing partial retry concatenation. The repair and parity retry loops also
+capture the failed SSH command inside the `else` branch; they cannot turn an
+exhausted retry sequence into status zero by reading the completed `if`
+statement's status. Execute remains additive,
 idempotent, conflict-aborting, backup-gated, capacity-gated, and leaves every
 target stopped for fixed-tip fleet parity. The exact six-category bounded dry
 run passed in 12 pages with 8,746 source rows, 8,745 missing rows, one guarded
