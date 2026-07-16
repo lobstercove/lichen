@@ -221,9 +221,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Adds page-level public-history export/import admin commands plus
   `scripts/stream-public-history-repair.sh`, so live repair can stream verified
   history from EU/source into targets without copying another validator DB.
-- Adds binary framed public-history page streams for large block-body repairs,
-  avoiding JSON/base64 page overhead while preserving source-backed additive
-  imports and same-key conflict aborts.
+- Adds bounded binary public-history pages for large block-body repairs,
+  avoiding JSON/base64 overhead while recording each page checksum and
+  preserving source-backed additive imports and same-key conflict aborts.
 - Makes public-network fleet verification and streamed history repair derive the
   same canonical cold archive as the runtime; neither operator path passes the
   now-rejected development archive flags.

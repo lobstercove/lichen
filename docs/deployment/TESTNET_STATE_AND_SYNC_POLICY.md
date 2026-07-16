@@ -58,12 +58,15 @@ This policy exists because an active testnet is shared infrastructure. Developer
   identical candidate hashes, a mandatory complete target dry run with zero
   conflicts, and measured free space covering 150% of the missing key/value
   bytes plus the 10 GiB runtime reserve before the target is stopped.
-- Fleet repair uses the script's binary framed stream mode
-  (`--public-history-page-format binary --stream-pages` under the hood) for
-  every public-history category rather than JSON/base64 page loops. The stream
-  mode still performs additive imports and conflict aborts, but it keeps one
-  source and one target process open, reuses persistent SSH controls, and avoids
-  retaining huge raw page payloads as evidence.
+- Fleet repair transfers one bounded binary page at a time for every
+  public-history category. Each page is exported completely, hashed, recorded
+  in evidence, imported additively, and checked for exact row count and zero
+  conflicts before the temporary payload is removed. Persistent SSH controls
+  are reused between sequential operations, but source and target SSH sessions
+  are never joined by an unbounded concurrent pipe: target validation may stop
+  reading while RocksDB checks a page, and that backpressure can terminate a
+  long-running two-hop transport. A failed page is safe to retry because import
+  is idempotent and same-key differences abort.
 - RocksDB archive scans must run with the service-equivalent file-descriptor
   limit. The fleet verifier and repair helper raise it automatically. Direct
   operator invocations must use the documented `run_validator_admin` wrapper;

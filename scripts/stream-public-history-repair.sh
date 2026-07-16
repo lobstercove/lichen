@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Stream public-history pages from one verified source validator into target
-# validators. This does not copy source RocksDB into target state; the source
-# exports whitelisted public-history pages and each target imports them
-# additively, skipping identical rows and aborting on conflicts.
+# Transfer bounded public-history pages from one verified source validator into
+# target validators. This does not copy source RocksDB into target state; the
+# source exports whitelisted pages and each target imports them additively,
+# skipping identical rows and aborting on conflicts.
 
 usage() {
   cat >&2 <<'EOF'
@@ -53,7 +53,6 @@ EXECUTE="${LICHEN_PUBLIC_HISTORY_STREAM_EXECUTE:-0}"
 KEEP_SOURCE_PAGES="${LICHEN_PUBLIC_HISTORY_STREAM_KEEP_SOURCE_PAGES:-0}"
 COMPRESS_SOURCE_PAGES="${LICHEN_PUBLIC_HISTORY_STREAM_COMPRESS_SOURCE_PAGES:-1}"
 PAGE_FORMAT="${LICHEN_PUBLIC_HISTORY_STREAM_PAGE_FORMAT:-binary}"
-FRAME_STREAM_PAGES="${LICHEN_PUBLIC_HISTORY_STREAM_FRAME_STREAM_PAGES:-1}"
 LEAVE_TARGET_STOPPED="${LICHEN_PUBLIC_HISTORY_LEAVE_TARGET_STOPPED:-0}"
 
 while [ "$#" -gt 0 ]; do
@@ -376,10 +375,6 @@ source_page_suffix() {
   fi
 }
 
-stream_supported_category() {
-  [ "$PAGE_FORMAT" = "binary" ] && [ "$FRAME_STREAM_PAGES" = "1" ]
-}
-
 cursor_for_range_start() {
   local category="$1"
   local from_slot="$2"
@@ -442,7 +437,6 @@ fi
   echo "keep_source_pages=$KEEP_SOURCE_PAGES"
   echo "compress_source_pages=$COMPRESS_SOURCE_PAGES"
   echo "page_format=$PAGE_FORMAT"
-  echo "frame_stream_pages=$FRAME_STREAM_PAGES"
   echo "leave_target_stopped=$LEAVE_TARGET_STOPPED"
   echo "from_slot=${FROM_SLOT:-}"
   echo "to_slot=${TO_SLOT:-}"
@@ -687,78 +681,58 @@ import_page_execute() {
     --confirm public-history-repair:v1" >"$import_file"
 }
 
-stream_category_to_target() {
-  local target="$1"
-  local target_label="$2"
-  local category="$3"
-  local mode="$4"
-  local import_file="$5"
-  local chunk_size_value
-  local cursor
-  local cursor_arg=""
-  local to_slot_arg=""
-  local target_secondary_arg=""
-  local target_mode_args=""
+record_page_integrity() {
+  local page_file="$1"
+  local integrity_file="$2"
+  local page_bytes
+  local page_sha256
 
-  chunk_size_value="$(category_chunk_size "$category")"
-  cursor="$(cursor_for_range_start "$category" "$FROM_SLOT")"
-  if [ -n "$cursor" ]; then
-    cursor_arg="--after-key-hex '$cursor'"
+  if [ ! -s "$page_file" ]; then
+    echo "Exported public-history page is empty: $page_file" >&2
+    exit 1
   fi
-  if [ -n "$TO_SLOT" ]; then
-    to_slot_arg="--to-slot '$TO_SLOT'"
+  page_bytes="$(wc -c <"$page_file" | tr -d '[:space:]')"
+  page_sha256="$(sha256sum "$page_file" | awk '{print $1}')"
+  if ! [[ "$page_bytes" =~ ^[0-9]+$ ]] || ! [[ "$page_sha256" =~ ^[0-9a-f]{64}$ ]]; then
+    echo "Could not record public-history page integrity: $page_file" >&2
+    exit 1
   fi
+  {
+    echo "sha256=$page_sha256"
+    echo "bytes=$page_bytes"
+  } >"$integrity_file"
+}
 
-  if [ "$mode" = "execute" ]; then
-    target_mode_args="--execute --confirm public-history-repair:v1"
-  else
-    target_secondary_arg="--secondary-dir '/tmp/lichen-public-history-import-${RUN_ID}-${target_label}-${category}'"
-    target_mode_args="--dry-run"
-  fi
+validate_page_import() {
+  local category="$1"
+  local expected_rows="$2"
+  local import_file="$3"
 
-  local source_command="sudo -u lichen bash -lc 'ulimit -n $NOFILE_LIMIT 2>/dev/null || ulimit -n 65535 2>/dev/null || true; exec \"\$0\" \"\$@\"' '$REMOTE_BIN' \
-    --no-watchdog \
-    --network '$NETWORK' \
-    --db-path '$STATE_DIR' \
-    --secondary-dir '/tmp/lichen-public-history-export-${RUN_ID}-${category}' \
-    --cache-size-mb '$CACHE_SIZE_MB' \
-    --chunk-size '$chunk_size_value' \
-    --public-history-page-format binary \
-    --stream-pages \
-    --export-public-history-category '$category' \
-    $cursor_arg \
-    $to_slot_arg"
+  python3 - "$category" "$expected_rows" "$import_file" <<'PY'
+import json
+import pathlib
+import sys
 
-  local target_command="sudo -u lichen bash -lc 'ulimit -n $NOFILE_LIMIT 2>/dev/null || ulimit -n 65535 2>/dev/null || true; exec \"\$0\" \"\$@\"' '$REMOTE_BIN' \
-    --no-watchdog \
-    --network '$NETWORK' \
-    --db-path '$STATE_DIR' \
-    $target_secondary_arg \
-    --cache-size-mb '$CACHE_SIZE_MB' \
-    --public-history-page-format binary \
-    --stream-pages \
-    --import-public-history-category '$category' \
-    $target_mode_args"
-
-  ssh_run "$SOURCE_HOST" "sudo rm -rf '/tmp/lichen-public-history-export-${RUN_ID}-${category}'"
-  if [ "$mode" != "execute" ]; then
-    ssh_run "$target" "sudo rm -rf '/tmp/lichen-public-history-import-${RUN_ID}-${target_label}-${category}'"
-  fi
-
-  echo "Streaming $category from $SOURCE_HOST to $target_label mode=$mode chunk_size=$chunk_size_value"
-  if [ "$COMPRESS_SOURCE_PAGES" = "1" ]; then
-    ssh_base "$SSH_USER@$SOURCE_HOST" "$source_command" \
-      | gzip -1 \
-      | ssh_base "$SSH_USER@$target" "gzip -dc | $target_command" >"$import_file"
-  else
-    ssh_base "$SSH_USER@$SOURCE_HOST" "$source_command" \
-      | ssh_base "$SSH_USER@$target" "$target_command" >"$import_file"
-  fi
-
-  ssh_run "$SOURCE_HOST" "sudo rm -rf '/tmp/lichen-public-history-export-${RUN_ID}-${category}'"
-  if [ "$mode" != "execute" ]; then
-    ssh_run "$target" "sudo rm -rf '/tmp/lichen-public-history-import-${RUN_ID}-${target_label}-${category}'"
-  fi
+category, expected_rows_raw, report_path = sys.argv[1:]
+expected_rows = int(expected_rows_raw)
+path = pathlib.Path(report_path)
+with path.open("r", encoding="utf-8") as handle:
+    payload = json.load(handle)
+report = payload.get("report", payload)
+actual_category = report.get("category")
+source_rows = report.get("source_rows")
+conflict_rows = report.get("conflict_rows")
+if actual_category != category:
+    raise SystemExit(
+        f"import report category mismatch: expected {category}, got {actual_category}"
+    )
+if source_rows != expected_rows:
+    raise SystemExit(
+        f"import report row mismatch for {category}: expected {expected_rows}, got {source_rows}"
+    )
+if conflict_rows != 0:
+    raise SystemExit(f"import report has {conflict_rows} conflict row(s) for {category}")
+PY
 }
 
 if [ "$EXECUTE" != "1" ]; then
@@ -768,16 +742,6 @@ if [ "$EXECUTE" != "1" ]; then
     chunk_size_value="$(category_chunk_size "$category")"
     source_category_dir="$EVIDENCE_DIR/source/$category"
     mkdir -p "$source_category_dir"
-
-    if stream_supported_category "$category"; then
-      for target in $TARGET_HOSTS; do
-        target_label="$(host_label "$target")"
-        target_category_dir="$EVIDENCE_DIR/$target_label/$category"
-        mkdir -p "$target_category_dir"
-        stream_category_to_target "$target" "$target_label" "$category" "dry-run" "$target_category_dir/stream-import.json"
-      done
-      continue
-    fi
 
     ssh_run "$SOURCE_HOST" "sudo rm -rf '/tmp/lichen-public-history-export-${RUN_ID}-${category}'"
     for target in $TARGET_HOSTS; do
@@ -792,8 +756,10 @@ if [ "$EXECUTE" != "1" ]; then
     page_index=0
     while :; do
       page_file="$source_category_dir/page-${page_index}-export.$page_suffix"
+      integrity_file="$source_category_dir/page-${page_index}-export.integrity"
       echo "Exporting $category page $page_index from $SOURCE_HOST chunk_size=$chunk_size_value"
       export_source_page "$category" "$cursor" "$chunk_size_value" "$page_file"
+      record_page_integrity "$page_file" "$integrity_file"
 
       row_count="$(json_field "$page_file" row_count)"
       has_more="$(json_field "$page_file" has_more)"
@@ -808,6 +774,7 @@ if [ "$EXECUTE" != "1" ]; then
           import_file="$target_category_dir/page-${page_index}-import.json"
           echo "Importing $category page $page_index into $target_label rows=$row_count"
           import_page_dry_run "$target" "$target_label" "$category" "$page_file" "$import_file"
+          validate_page_import "$category" "$row_count" "$import_file"
         done
       fi
 
@@ -854,11 +821,6 @@ for target in $TARGET_HOSTS; do
     source_category_dir="$EVIDENCE_DIR/source/$category"
     mkdir -p "$category_dir" "$source_category_dir"
 
-    if stream_supported_category "$category"; then
-      stream_category_to_target "$target" "$target_label" "$category" "execute" "$category_dir/stream-import.json"
-      continue
-    fi
-
     cursor="$(cursor_for_range_start "$category" "$FROM_SLOT")"
     page_suffix="$(source_page_suffix)"
     page_index=0
@@ -870,10 +832,7 @@ for target in $TARGET_HOSTS; do
     while :; do
       page_file="$source_category_dir/page-${page_index}-export.$page_suffix"
       import_file="$category_dir/page-${page_index}-import.json"
-      cursor_arg=""
-      if [ -n "$cursor" ]; then
-        cursor_arg="--after-key-hex '$cursor'"
-      fi
+      integrity_file="$category_dir/page-${page_index}-export.integrity"
 
       if [ -f "$page_file" ]; then
         echo "Reusing $category page $page_index from $SOURCE_HOST for $target_label"
@@ -881,6 +840,7 @@ for target in $TARGET_HOSTS; do
         echo "Exporting $category page $page_index from $SOURCE_HOST for $target_label chunk_size=$chunk_size_value"
         export_source_page "$category" "$cursor" "$chunk_size_value" "$page_file"
       fi
+      record_page_integrity "$page_file" "$integrity_file"
 
       row_count="$(json_field "$page_file" row_count)"
       has_more="$(json_field "$page_file" has_more)"
@@ -895,6 +855,7 @@ for target in $TARGET_HOSTS; do
         else
           import_page_dry_run "$target" "$target_label" "$category" "$page_file" "$import_file"
         fi
+        validate_page_import "$category" "$row_count" "$import_file"
       fi
 
       if [ "$KEEP_SOURCE_PAGES" != "1" ]; then

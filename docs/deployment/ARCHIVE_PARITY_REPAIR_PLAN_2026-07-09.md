@@ -1474,12 +1474,13 @@ deletes and WAL-syncs the hot placeholder. Every other same-key difference
 remains a conflict. Dry-run and execute reports expose
 `upgraded_incomplete_rows`; repeat import is idempotent and manifest-equivalent.
 
-The operator transport now uses the existing binary framed protocol for every
-public-history category, not only blocks, and reuses one persistent SSH control
-connection per host. This avoids thousands of RocksDB process starts and SSH
-rate-limit penalties during a full source-union repair. Both fleet scripts run
-archive commands with a raised file-descriptor limit; direct operator commands
-must use the same service-equivalent wrapper. Focused Core repair tests,
+The operator transport uses the binary page protocol for every public-history
+category, not only blocks, and reuses one persistent SSH control connection per
+host. AP-077 replaced the concurrent source-to-target pipe with bounded,
+checksummed page transfer after the exact signed candidate proved that target
+RocksDB validation can backpressure and truncate a multi-page two-hop stream.
+Both fleet scripts run archive commands with a raised file-descriptor limit;
+direct operator commands must use the same service-equivalent wrapper. Focused Core repair tests,
 Validator frame/CLI tests for every archive category, strict workspace Clippy,
 the full locked workspace suite, all 40 lockfile audits, dependency policy, all
 34 contract workspaces, SDK/Python supply-chain checks,
@@ -1509,13 +1510,40 @@ Transcript:
 `evidence/local-multi-validator/20260716T184144Z-ap076-final-10/transcript.log`,
 SHA-256 `866ba875de3a537aa384c92ed9759e2b4c76e583ce611cb08acd86b730e4368f`.
 
+### AP-077: Bounded fleet repair transport
+
+The exact signed `bdc8de0d` candidate passed hosted release gates, but its live
+US-to-SEA dry run over `9,236,790..9,238,000` failed closed while decoding the
+second block page. No target write occurred. A complete US export produced
+34,657,898 bytes with SHA-256
+`f93a32f9efa55d11ae2eebdba193d27816fd9c106f3b5bb9022fe7ce5d7d4fb8`;
+feeding that immutable file to the same SEA candidate decoded two pages and
+1,211 rows, reported 1,211 insertions, one guarded header-only completion, and
+zero conflicts. Repeating the concurrent two-hop path failed with and without
+gzip, proving transport backpressure rather than corrupt source data or binary
+encoding.
+
+The fleet helper now exports and completes one bounded page before import,
+records its byte count and SHA-256, validates the target report category and
+exact source-row count, requires zero conflicts, then removes the payload unless
+evidence retention was explicitly requested. Persistent SSH controls remain,
+but there is no concurrent source/target pipe. Execute remains additive,
+idempotent, conflict-aborting, backup-gated, capacity-gated, and leaves every
+target stopped for fixed-tip fleet parity. The exact six-category bounded dry
+run passed in 12 pages with 8,746 source rows, 8,745 missing rows, one guarded
+header-only completion, one identical slot cursor, and zero conflicts. Its
+summary is recorded under
+`evidence/archive-parity/testnet-20260716T-ap077-bounded-dry-run`. The
+superseded `bdc8de0d` tag and draft must not be published or deployed;
+replacement source and artifacts must pass the complete release gates.
+
 ## Tracker
 
 | ID | Work item | Evidence | Status |
 | --- | --- | --- | --- |
 | AP-001 | Document archive parity incident, invariants, and release gate | This file plus runbook links | Done |
 | AP-010 | Add deterministic public-history manifest/audit command | JSON manifest over hot+cold public history | Done in core/validator admin |
-| AP-020 | Add source-backed public-history repair from verified source | Dry-run and execute counters, conflict aborts | Done for mounted/read-only source DBs and SSH-streamed public history. Binary framed streaming is the default for every category and uses persistent SSH controls. Import is additive and conflict-aborting, with one typed exception for source-backed completion of an exactly matching header-only block. |
+| AP-020 | Add source-backed public-history repair from verified source | Dry-run and execute counters, conflict aborts | Done for mounted/read-only source DBs and bounded SSH page transfer. Binary pages are checksummed and imported sequentially through persistent SSH controls. Import is additive and conflict-aborting, with one typed exception for source-backed completion of an exactly matching header-only block. |
 | AP-030 | Add source/target archive parity verifier | JSON category diff and nonzero exit on mismatch | Done for mounted/read-only source DBs |
 | AP-035 | Add peer/fleet archive parity automation so a new joiner can prove archive readiness from any validator | `tests/local-multi-validator-test.sh` and `scripts/verify-testnet-archive-parity.sh` output | Done for local harness plus VPS fleet verifier. The verifier reuses one SSH control transport per host so its probes cannot trip the intentional VPS connection-rate limit; live execution evidence is tracked under AP-060. |
 | AP-040 | Add regression tests for hot+cold archive import, repair, restart, and conflict handling | Cargo/test harness output | Done locally, including account-snapshot hot/cold manifest invariance, historical reads, idempotence, conflict preservation, exact inclusive range pagination, stopped-node migration audit/compaction, prune refusal, existing cold-DB schema upgrade, snapshot rollback completeness, and cold-source guarded repair; updated Core 981/981, all integrations, Validator 393/393, helper guards 12/12, and strict Clippy pass |
@@ -1552,8 +1580,9 @@ SHA-256 `866ba875de3a537aa384c92ed9759e2b4c76e583ce611cb08acd86b730e4368f`.
 | AP-073 | Preserve historical native transaction replay while activating strict chain-domain signatures and repair custody mint signing | Exact live block `9,273,160`, activation-boundary unit/execution tests, custody cross-chain rejection, full local gates | Done locally. Core 998/998 and custody 172/172 pass. Below the shared durable consensus-v1 slot, execution reproduces the bounded `v0.5.223` chain-domain-then-legacy transition policy; at/above activation it requires strict chain-ID verification. Malformed activated metadata fails closed. The operator command is `--prepare-consensus-v1-activation` with no legacy alias. The exact four-validator gate passed 140/140 volume journeys, 104/104 launchpad journeys, same-process gap recovery, own-state restarts, and root `b7232593...1bae1de`; the exact ten-validator expansion passed 8/10 liveness, preserved-state recovery, and root `48cb5614...649255`. Workspace, strict Clippy, dependency, contract, SDK, frontend, and static gates pass; hosted CI remains part of AP-070. |
 | AP-074 | Make the hosted archive gate self-contained instead of relying on workstation files or dependencies | Clean tag checkout, recursive JavaScript dependency closure, Git tracking/ignore/lock assertions, exact four-validator rerun | Done locally. The first `v0.5.224` tag attempt passed consensus recovery, certificate parity, and four-node hot/cold manifest parity, then correctly failed before volume journeys because `tests/e2e-volume.js` was absent from the clean checkout. A prior repository cleanup had ignored and untracked `tests/`; only the shell harness was later force-added. The volume and launchpad suites plus their five helper modules are now explicit tracked release inputs. The second tag attempt proved those assets and reached identical four-node checkpoint-1000 manifest root `9ce0e454...71e`, then failed before the first journey because that separate release job had not installed `ws` or `@noble/post-quantum` from the root lockfile. The job now installs Node.js 22 and runs `npm ci --ignore-scripts` before the harness. `test_archive_parity_gate_assets.js` recursively verifies every local `require`, discovers bare `require` and dynamic `import` packages, proves they are declared and locked, checks file tracking and ignore policy, and enforces dependency installation before the release harness. The clean-closure local rerun passed same-process 140-slot recovery, own-state and coordinated restarts, 140/140 volume journeys, 104/104 launchpad/governance/graduation journeys, and four-node checkpoint-3000 manifest root `7609ff7a...6bc1376`; transcript SHA-256 `eac37545...e5fd9f66`. Neither failed tag attempt created a release or distributable artifact. |
 | AP-075 | Eliminate the RocksDB 8.1 checkpoint-flush failure without breaking the signed rollback anchor | Preserved WAL audit, concurrent write/migrate/checkpoint stress, forward open, old-engine reverse open, full fleet gates | Done locally. The preserved failing V2 WAL contains no malformed block key. The candidate uses RocksDB 10.4.2, pins every hot/cold SST to rollback-readable format 5, passes the hot/cold option and concurrency stress regressions, opens the preserved RocksDB 8.1 range `0..3000`, and is readable after flush/compaction by the RocksDB 8.1 rollback engine. The exact four-validator gate passed certificate slot `931`, 244/244 user journeys, and checkpoint-3000 root `cd1e0a07...31ddd`; the exact ten-validator gate passed 8/10 finality, dual preserved-state recovery, certificate slots `2513`/`2673`, and checkpoint-3000 root `365a2a7a...21bfab`. Final logs contain zero RocksDB corruption or background-error matches. |
-| AP-076 | Complete an exactly matching header-only canonical block without weakening conflict checks | SEA boundary dry run, Merkle/header/oracle guards, local-certificate preservation, idempotence, all-category framed stream tests | Done locally. Signed draft `ce979e6d` proved automatic cold reads but reported one conflict after 1,210 valid insertions over SEA source range `9,236,790..9,238,000`. The replacement accepts only the typed header-only completion described above, reports it separately, WAL-syncs cold before retiring hot, preserves local finality proof, and leaves every other mismatch fail-closed. The fleet script frames every archive category over persistent SSH controls. Focused, full workspace, dependency, contract, SDK, frontend, strict four-validator, and independent ten-validator gates pass on the final source. Four-node root `828d5e8f...d444a5`; ten-node root `a8d3b924...1cf0bc`. No live write has occurred. |
-| AP-070 | Cut new tag and publish release artifacts | Tag, checksums, crates/npm status | Local gates complete. Still pending a clean commit, replacement hosted CI and signed artifacts, exact Linux dry-run evidence, complete source-backed fleet-union repair, coordinated deployment/activation, fixed-tip fleet parity, and package publication. The `ce979e6d` `v0.5.224` draft workflow and detached checksum signature passed, but the draft is superseded by the SEA boundary preflight and must not be published. Its tag/artifacts must be replaced only from the clean fully tested fix. Mainnet release remains prohibited until a fresh chain proves complete genesis-to-tip archives without any waiver. |
+| AP-076 | Complete an exactly matching header-only canonical block without weakening conflict checks | SEA boundary dry run, Merkle/header/oracle guards, local-certificate preservation, idempotence, all-category framed stream tests | Done locally. Signed draft `ce979e6d` proved automatic cold reads but reported one conflict after 1,210 valid insertions over SEA source range `9,236,790..9,238,000`. The replacement accepts only the typed header-only completion described above, reports it separately, WAL-syncs cold before retiring hot, preserves local finality proof, and leaves every other mismatch fail-closed. Focused, full workspace, dependency, contract, SDK, frontend, strict four-validator, and independent ten-validator gates pass on the final source. Four-node root `828d5e8f...d444a5`; ten-node root `a8d3b924...1cf0bc`. No live write has occurred. |
+| AP-077 | Prevent target validation backpressure from truncating fleet repair transport | Exact signed live dry run, immutable stream replay, bounded-page checksum and report guards | Fix and exact live dry run complete. The signed `bdc8de0d` two-hop stream failed closed twice, while its exact 34,657,898-byte export imported cleanly when sequenced. The helper now uses bounded checksummed pages, exact row-report validation, zero-conflict enforcement, and no concurrent source/target pipe. Its six-category dry run passed 12 pages and 8,746 rows with zero conflicts. Replacement hosted gates/tag remain. |
+| AP-070 | Cut new tag and publish release artifacts | Tag, checksums, crates/npm status | The `bdc8de0d` `v0.5.224` hosted workflow, artifacts, checksums, and detached signature passed, but AP-077 supersedes that draft/tag before publication or deployment. Pending: complete gates on the bounded transport fix, replacement tag and signed artifacts, exact Linux dry-run evidence, complete source-backed fleet-union repair, coordinated deployment/activation, fixed-tip fleet parity, and package publication. Mainnet release remains prohibited until a fresh chain proves complete genesis-to-tip archives without any waiver. |
 
 ## Release Acceptance
 

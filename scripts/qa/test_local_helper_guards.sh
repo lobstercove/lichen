@@ -397,8 +397,9 @@ assert_public_history_repair_stays_quiesced() {
         'ControlMaster=auto' \
         'ControlPersist=600' \
         'SSH_CONTROL_DIR="$(mktemp -d /tmp/lichen-ph-repair-ssh.XXXXXX)"' \
-        'FRAME_STREAM_PAGES="${LICHEN_PUBLIC_HISTORY_STREAM_FRAME_STREAM_PAGES:-1}"' \
-        '[ "$PAGE_FORMAT" = "binary" ] && [ "$FRAME_STREAM_PAGES" = "1" ]' \
+        'record_page_integrity "$page_file" "$integrity_file"' \
+        'validate_page_import "$category" "$row_count" "$import_file"' \
+        'sha256sum "$page_file"' \
         'Execute requires --leave-target-stopped' \
         'Execute block repair requires explicit --from-slot and --to-slot bounds.'; do
         if ! grep -Fq -- "$required_guard" "$script"; then
@@ -406,6 +407,11 @@ assert_public_history_repair_stays_quiesced() {
             exit 1
         fi
     done
+    if grep -Fq -- '--stream-pages' "$script" || \
+        grep -Fq 'ssh_base "$SSH_USER@$SOURCE_HOST"' "$script"; then
+        echo "❌ public-history repair transport: concurrent two-hop stream must not bypass bounded page integrity"
+        exit 1
+    fi
     bash -n "$verifier"
     if ! grep -Fq -- '--offline-repair-gate' "$verifier" || \
         ! grep -Fq 'all validator services remain stopped pending parity decision' "$verifier" || \
