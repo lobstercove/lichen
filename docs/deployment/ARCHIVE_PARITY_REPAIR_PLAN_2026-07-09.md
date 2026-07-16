@@ -1,6 +1,6 @@
 # Archive Parity Repair Plan - 2026-07-09
 
-**Status:** Public archive storage is an automatic non-dev testnet/mainnet invariant; EU/IN capacity recovery and redundant public RPC ingress are complete; the owner accepted the irrecoverable AP-060 gap for this existing testnet only, while mainnet remains fail-closed. AP-073 four- and ten-validator local release gates pass on the final source. US/EU/SEA/IN are currently healthy on `v0.5.223`; EU still runs the audited exact-tag sparse-maintenance bridge while the other three run the signed rollback artifact. Hosted CI, signed artifacts, complete source-backed fleet-union repair, coordinated activation/deployment, fixed-tip live parity, and publication remain.
+**Status:** Public archive storage is an automatic non-dev testnet/mainnet invariant; EU/IN capacity recovery and redundant public RPC ingress are complete; the owner accepted the irrecoverable AP-060 gap for this existing testnet only, while mainnet remains fail-closed. AP-075 four- and ten-validator local release gates pass on the RocksDB-upgraded final source. US/EU/SEA/IN are currently healthy on `v0.5.223`; EU still runs the audited exact-tag sparse-maintenance bridge while the other three run the signed rollback artifact. Hosted CI, signed artifacts, complete source-backed fleet-union repair, coordinated activation/deployment, fixed-tip live parity, and publication remain.
 **Scope:** Public testnet archive parity, validator resume parity, and release gate
 **Rule:** No live VPS rollout until the local four-validator testnet gate proves the repair.
 
@@ -919,6 +919,11 @@ sudo -u lichen /usr/local/bin/lichen-validator \
   > /tmp/lichen-public-history-manifest.json
 ```
 
+Non-development testnet/mainnet target commands must not pass `--archive-mode`
+or `--cold-store`. They derive the canonical `archive-<network>` sibling from
+`--db-path`; only an independently mounted source may use
+`--source-cold-store`.
+
 Use `--categories slots,blocks,transactions` only for narrow diagnostics. The
 release gate must use the default full public-history category list.
 
@@ -1380,6 +1385,63 @@ The final locked workspace suite, strict Clippy, dependency policy/security,
 all 34 contract native/WASM builds, SDK/compiler/fuzz suites, deployment/static
 QA, developer portal 244/244, and marketplace 390/390 also pass on this source.
 
+## 2026-07-16 RocksDB Checkpoint-Flush Failure
+
+The exact-source ten-validator rerun passed fresh joins, the 140-slot
+same-process LiveSync gap, individual and coordinated own-state restarts,
+8-of-10 finality, and dual stopped-validator recovery. At checkpoint 3000, V2
+then reported `Corrupted Key: Internal Key too small. Size=0` while RocksDB
+flushed the `blocks` column family. The checkpoint exposed the background
+failure; it did not create it. The preserved WAL contained 647 block puts and
+461 deletes, every application block key was exactly 32 bytes, and the same WAL
+replayed into valid SSTs on restart. This rules out a persisted malformed Lichen
+block key and identifies a transient RocksDB 8.1.1 in-memory flush failure under
+concurrent block writes, cold migration, and checkpoint pressure.
+
+Lichen had remained on `rocksdb 0.21.0` / RocksDB `8.1.1` since the original
+storage integration. The candidate now uses `rocksdb 0.24.0` / RocksDB
+`10.4.2`. A focused stress regression concurrently writes 600 parent-linked
+blocks with 16 KiB transactions, migrates to a 20-slot hot window, and creates
+eight full checkpoints; it then flushes both stores, proves every raw hot/cold
+block key is 32 bytes, and reads the complete canonical range. The regression
+passes.
+
+The upgrade is intentionally rollback-compatible. The unpinned RocksDB 10.4
+default wrote SST format 6, which the signed `v0.5.223` RocksDB 8.1 engine
+correctly rejected in a two-engine harness. Every Lichen hot and cold
+block-based table now pins SST format 5. The effective hot/cold option regression
+passes, RocksDB 8.1 opens a RocksDB 10.4 database after 38,059 writes/deletes,
+flushes, and compactions, and the new engine opens the preserved RocksDB 8.1 V2
+hot/cold database read-only and verifies canonical slots `0..3000` with digest
+`6d2d6c12...c3e4b5`.
+
+Those exact gates now pass. The four-validator run joined V2 through V4 from
+empty hot/cold stores, recovered V4 in the same process after a 140-slot pause,
+restarted V4 and V1 from their own state, resumed all four after a coordinated
+stop, and matched certificate slot `931`. Volume/user journeys passed 140/140,
+launchpad/governance/graduation journeys passed 104/104, and every validator's
+checkpoint-3000 public-history manifest matched root
+`cd1e0a078de404f85b30efadb8952dcd0545faf5256cc18bf23d42c93f531ddd`.
+Transcript:
+`evidence/post-block-effects-recovery/testnet-20260716T-ap075-final/four-validator-ap075-final.log`,
+SHA-256 `32eaea1d2bda61075cee494fe894d3fd489189de77c8a0fa8c3bbaec6c1026e6`.
+
+The independent ten-validator run joined V2 through V10 without copied state,
+recovered V10 in the same process after the same 140-slot pause, restarted V10
+and V1 from their own state, resumed all ten after a coordinated stop, kept
+finalizing with V9 and V10 offline, and recovered both with preserved
+identities. Certificate parity matched at slots `2513` and `2673`. Every
+validator's checkpoint-3000 public-history manifest matched root
+`365a2a7a49481faca51594f2fc48715f9b7293091a64fce5c38f2700ae21bfab`.
+Transcript:
+`evidence/post-block-effects-recovery/testnet-20260716T-ap075-final/ten-validator-ap075-final.log`,
+SHA-256 `24c3983f7648b880c3ca6bae96baf2b6a92be23c706a6dc5083c7e6a56f7dd51`.
+The final RocksDB logs contain zero corruption, background-error,
+`Internal Key too small`, panic, or fatal-error matches. RocksDB checkpoint
+cleanup did log benign duplicate unlink attempts for already-deleted obsolete
+WAL files; those did not set a background error, affect restart, or affect
+manifest parity.
+
 ## 2026-07-16 Live Source-Union Preflight
 
 A strict-host-key, read-only fleet pass found all four validators active,
@@ -1409,7 +1471,7 @@ Evidence is under `evidence/archive-parity/testnet-20260716T022033Z`.
 | AP-030 | Add source/target archive parity verifier | JSON category diff and nonzero exit on mismatch | Done for mounted/read-only source DBs |
 | AP-035 | Add peer/fleet archive parity automation so a new joiner can prove archive readiness from any validator | `tests/local-multi-validator-test.sh` and `scripts/verify-testnet-archive-parity.sh` output | Done for local harness plus VPS fleet verifier. The verifier reuses one SSH control transport per host so its probes cannot trip the intentional VPS connection-rate limit; live execution evidence is tracked under AP-060. |
 | AP-040 | Add regression tests for hot+cold archive import, repair, restart, and conflict handling | Cargo/test harness output | Done locally, including account-snapshot hot/cold manifest invariance, historical reads, idempotence, conflict preservation, exact inclusive range pagination, stopped-node migration audit/compaction, prune refusal, existing cold-DB schema upgrade, snapshot rollback completeness, and cold-source guarded repair; updated Core 981/981, all integrations, Validator 393/393, helper guards 12/12, and strict Clippy pass |
-| AP-050 | Run local four-validator testnet archive parity gate | `LICHEN_RUN_LAUNCHPAD_E2E=1 LICHEN_RUN_VOLUME_E2E=1 LICHEN_LOCAL_ARCHIVE_COLD=1 LICHEN_COLD_RETENTION_SLOTS=20 LICHEN_COLD_MIGRATION_INTERVAL_SECS=5 bash tests/local-multi-validator-test.sh 4` | Done on the exact final candidate. V2/V3/V4 joined from empty stores; V4 resumed in the same process after a 140-slot LiveSync pause; V4 and V1 resumed their own state; the network finalized with V1 offline; and all four resumed from preserved state at spread `3`. Certificate parity matched at slot `930` (`e4152bd9...103d5ae`); checkpoint-1000 hot/cold manifests matched root `de87f503...174589d`; volume/user journeys passed 140/140; launchpad/governance/graduation passed 104/104; and final checkpoint-3000 manifests matched root `3b764af7...34c55be`. Transcript SHA-256: `72eafc1a75cfc15e4c03d482fb057536e019cc306a7968a7fa844dcb95046fb5`. |
+| AP-050 | Run local four-validator testnet archive parity gate | `LICHEN_RUN_LAUNCHPAD_E2E=1 LICHEN_RUN_VOLUME_E2E=1 LICHEN_LOCAL_ARCHIVE_COLD=1 LICHEN_COLD_RETENTION_SLOTS=20 LICHEN_COLD_MIGRATION_INTERVAL_SECS=5 bash tests/local-multi-validator-test.sh 4` | Done on the exact AP-075 final candidate. V2/V3/V4 joined from empty stores; V4 resumed in the same process after a 140-slot LiveSync pause; V4 and V1 resumed their own state; the network finalized with V1 offline; and all four resumed from preserved state. Certificate parity matched at slot `931` (`c7beacc9...f8a63`); checkpoint-1000 hot/cold manifests matched root `eeed2ab2...e5dc`; volume/user journeys passed 140/140; launchpad/governance/graduation passed 104/104; and final checkpoint-3000 manifests matched root `cd1e0a07...31ddd`. Transcript SHA-256: `32eaea1d2bda61075cee494fe894d3fd489189de77c8a0fa8c3bbaec6c1026e6`. |
 | AP-055 | Inventory current and detached backed public-history sources and gap boundaries | `evidence/archive-parity/testnet-20260709T181442Z`, July 13 read-only volume/WAL/ext4 audits | Done: recovered hidden EU volume `9878038e...2c57` proves exactly through `2,872,005`; IN proves `4,299,000..5,176,463`; US proves `4,864,001..5,275,998`; the US July 9 provider copy contains a decoded, hash-matching orphan body for `5,275,999`; no audited source yet proves `2,872,006..4,298,999` |
 | AP-057 | Add fail-closed source-range, binary, capacity, backup, and stopped-fleet gates | Validator range-proof JSON plus helper guard suite | Done: final Validator 397/397 and strict Clippy pass; helper guards pass 12/12; live read-only proof accepted EU `0..10` and IN `4,299,000..4,299,010`, and rejected missing EU slot `2,872,006` before any write |
 | AP-057A | Refuse snapshot live apply before mutation unless measured replacement, compaction, runtime capacity, and complete target history are available; restore every exact pre-apply hot category on interrupted apply | Unit tests plus local snapshot roundtrip/ENOSPC/history-loss gate | Done locally; focused snapshot rollback 5/5, Core 981/981 plus integrations, Validator 393/393, strict Clippy, and the slot-3000 four-validator restart/archive gate pass |
@@ -1436,12 +1498,13 @@ Evidence is under `evidence/archive-parity/testnet-20260716T022033Z`.
 | AP-066 | Remove the public RPC single-origin failure mode | Four authenticated origins, strict fleet health, failover tests, explorer same-origin smoke | Done. `testnet-api.lichen.network` is canonical. `edge/testnet-rpc` routes across US/EU/SEA/IN with unique origin credentials, bounded body replay, deterministic affinity, and failover. Caddy is active/enabled on every origin, direct unauthenticated origin requests return 403, Worker tests pass 7/7, frontend assets pass 377/377, all ten Pages projects are live on the canonical configuration, RPC/WS smokes pass, and a 24-request sample reached every region. |
 | AP-067 | Make every committed Rust graph independently reproducible and bound contract build-cache growth | Fresh lock regeneration, locked metadata/audit, standalone compiler/SDK/fuzz tests, dependency policy QA | Done. All 40 lockfiles regenerate with the exact PQ-compatible PKCS#8 prerelease and pass locked metadata plus cargo-audit. Cargo-deny passes. Compiler 30/30, contract SDK 28/28, Rust client SDK 88/88, all examples, all 14 fuzz targets, and all 34 contract workspaces pass native tests and locked WASM builds. The 34 comprise 32 genesis catalog contracts, the genesis-bound `launchpad_token` graduation template, and the standalone `mt20_token` template. The final locked workspace all-target/all-feature suite, strict workspace Clippy with `-D warnings`, compiler sandbox, and Rust SBOM generation also pass. CI/release enforce the manifest anchor and shared non-runtime contract target directory. |
 | AP-068 | Recover IN disk headroom without deleting canonical state or public history | Protected hash comparison, typed sparse proof, checkpoint pruning, final fleet preflight | Done. IN stopped cleanly at `9,180,291`; the audited derived-cache rebuild passed, protected/cold metadata hashes matched, checkpoint `9,181,000` released obsolete cache files, free space rose to about 70.1 GB, and the clean-exit four-host verifier passed at a 46-slot spread with identical fixed-block digest. |
-| AP-069 | Make archive-backed hot/cold retention an automatic public-network invariant | Runtime/admin flag rejection tests, environment contracts, four-validator archive gate | Done in source. Every non-dev testnet/mainnet runtime and public-history admin command derives `archive-<network>` beside `state-<network>`, enables archive retention automatically, and rejects `--archive-mode` or `--cold-store`. Disposable `--dev-mode` clusters retain explicit controls. The production verifier and stream-repair path pass neither flag; env contracts and maintained runbooks use no public archive opt-in. |
+| AP-069 | Make archive-backed hot/cold retention an automatic public-network invariant | Runtime/admin flag rejection tests, cold-only handler regression, environment contracts, four-validator archive gate | Done locally. The signed-candidate preflight proved the runtime and manifest paths derived `archive-<network>`, but contiguous-range verification still opened only hot state unless an operator supplied the prohibited `--cold-store`; US slot `5,176,464` failed without the flag and returned exact hash `3af5d7c8...3ff8ca` with it. The corrected source routes contiguous verification, raw slot repair, normal block replay, account-history inspection/rebuild, and governed-proposal backfill through the same public resolver. A real cold-only handler test, ten-command manual-flag rejection test, exact four-validator gate, and exact ten-validator gate pass. Disposable `--dev-mode` clusters retain explicit controls, independently mounted sources use `--source-cold-store`, and both fleet scripts default to strict SSH host-key verification. A replacement tag/artifact/signature and exact Linux/VPS preflight remain pending. |
 | AP-071 | Prevent post-checkpoint LiveSync stalls and repair SEA's bounded July 15 archive gap | Same-process material-gap recovery, progress-watchdog tests, source range proof, fixed-tip fleet manifests | Code and exact local gates done; live repair is part of AP-070 deployment. Material gaps and every checkpoint-repair entry return to bounded InitialSync, and only canonical or verified snapshot progress feeds the watchdog. The final four- and ten-validator gates passed the 140-slot same-process pause and identical checkpoint-3000 manifests. SEA range `9,236,790..9,237,999` remains to be additively repaired from US/EU/IN before final live parity. |
 | AP-072 | Prevent binary ABI marker collisions from corrupting nested caller identity or custody arguments | Canonical descriptor parser, explicit SDK layouts, nested caller regression, preserved-chain recovery, exact release gates | Done. Layout mode requires descriptor/signature/payload agreement instead of a leading `0xAB` byte. The old DEX WASM succeeds on the preserved failed database under the corrected runtime, focused Core/SDK/DEX tests pass, and exact four- and ten-validator release gates pass. |
 | AP-073 | Preserve historical native transaction replay while activating strict chain-domain signatures and repair custody mint signing | Exact live block `9,273,160`, activation-boundary unit/execution tests, custody cross-chain rejection, full local gates | Done locally. Core 998/998 and custody 172/172 pass. Below the shared durable consensus-v1 slot, execution reproduces the bounded `v0.5.223` chain-domain-then-legacy transition policy; at/above activation it requires strict chain-ID verification. Malformed activated metadata fails closed. The operator command is `--prepare-consensus-v1-activation` with no legacy alias. The exact four-validator gate passed 140/140 volume journeys, 104/104 launchpad journeys, same-process gap recovery, own-state restarts, and root `b7232593...1bae1de`; the exact ten-validator expansion passed 8/10 liveness, preserved-state recovery, and root `48cb5614...649255`. Workspace, strict Clippy, dependency, contract, SDK, frontend, and static gates pass; hosted CI remains part of AP-070. |
 | AP-074 | Make the hosted archive gate self-contained instead of relying on workstation files or dependencies | Clean tag checkout, recursive JavaScript dependency closure, Git tracking/ignore/lock assertions, exact four-validator rerun | Done locally. The first `v0.5.224` tag attempt passed consensus recovery, certificate parity, and four-node hot/cold manifest parity, then correctly failed before volume journeys because `tests/e2e-volume.js` was absent from the clean checkout. A prior repository cleanup had ignored and untracked `tests/`; only the shell harness was later force-added. The volume and launchpad suites plus their five helper modules are now explicit tracked release inputs. The second tag attempt proved those assets and reached identical four-node checkpoint-1000 manifest root `9ce0e454...71e`, then failed before the first journey because that separate release job had not installed `ws` or `@noble/post-quantum` from the root lockfile. The job now installs Node.js 22 and runs `npm ci --ignore-scripts` before the harness. `test_archive_parity_gate_assets.js` recursively verifies every local `require`, discovers bare `require` and dynamic `import` packages, proves they are declared and locked, checks file tracking and ignore policy, and enforces dependency installation before the release harness. The clean-closure local rerun passed same-process 140-slot recovery, own-state and coordinated restarts, 140/140 volume journeys, 104/104 launchpad/governance/graduation journeys, and four-node checkpoint-3000 manifest root `7609ff7a...6bc1376`; transcript SHA-256 `eac37545...e5fd9f66`. Neither failed tag attempt created a release or distributable artifact. |
-| AP-070 | Cut new tag and publish release artifacts | Tag, checksums, crates/npm status | Blocked on hosted CI, signed artifacts, complete source-backed fleet-union repair, coordinated deployment/activation, fixed-tip fleet parity, and package publication. AP-058, AP-065 through AP-069, and AP-073 local release gates are complete. Mainnet release remains prohibited until a fresh chain proves complete genesis-to-tip archives without any waiver. |
+| AP-075 | Eliminate the RocksDB 8.1 checkpoint-flush failure without breaking the signed rollback anchor | Preserved WAL audit, concurrent write/migrate/checkpoint stress, forward open, old-engine reverse open, full fleet gates | Done locally. The preserved failing V2 WAL contains no malformed block key. The candidate uses RocksDB 10.4.2, pins every hot/cold SST to rollback-readable format 5, passes the hot/cold option and concurrency stress regressions, opens the preserved RocksDB 8.1 range `0..3000`, and is readable after flush/compaction by the RocksDB 8.1 rollback engine. The exact four-validator gate passed certificate slot `931`, 244/244 user journeys, and checkpoint-3000 root `cd1e0a07...31ddd`; the exact ten-validator gate passed 8/10 finality, dual preserved-state recovery, certificate slots `2513`/`2673`, and checkpoint-3000 root `365a2a7a...21bfab`. Final logs contain zero RocksDB corruption or background-error matches. |
+| AP-070 | Cut new tag and publish release artifacts | Tag, checksums, crates/npm status | Local AP-069/AP-075 revalidation is complete. Still blocked on a clean commit and hosted CI, replacement signed artifacts, complete source-backed fleet-union repair, coordinated deployment/activation, fixed-tip fleet parity, and package publication. The prior `v0.5.224` draft workflow and detached checksum signature passed but are superseded by the AP-069 preflight finding; that draft must not be published and its tag/artifacts must be replaced only from the clean fully tested fix. Mainnet release remains prohibited until a fresh chain proves complete genesis-to-tip archives without any waiver. |
 
 ## Release Acceptance
 

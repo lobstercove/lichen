@@ -22,6 +22,11 @@ use super::{
     COLD_CF_PROGRAM_CALLS, COLD_CF_TOKEN_TRANSFERS, COLD_CF_TRANSACTIONS, COLD_CF_TX_TO_SLOT,
 };
 
+// RocksDB 10 defaults to SST format 6, which RocksDB 8.1 in the signed
+// v0.5.223 rollback binary cannot read. Format 5 retains rollback readability
+// while using the upgraded engine's correctness fixes.
+const ROLLBACK_COMPATIBLE_SST_FORMAT_VERSION: i32 = 5;
+
 impl StateStore {
     /// Open or create state database with production-tuned column families.
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, String> {
@@ -275,6 +280,7 @@ fn apply_cf_tuning(opts: &mut Options, shared_cache: &Cache, tuning: RocksDbCfTu
     }
 
     let mut bbo = BlockBasedOptions::default();
+    bbo.set_format_version(ROLLBACK_COMPATIBLE_SST_FORMAT_VERSION);
     if tuning.enable_bloom_filter {
         bbo.set_bloom_filter(10.0, false);
     }
@@ -495,6 +501,7 @@ fn cold_archival_cf_options() -> Options {
     let mut opts = Options::default();
     opts.set_compression_type(rocksdb::DBCompressionType::Zstd);
     let mut bbo = BlockBasedOptions::default();
+    bbo.set_format_version(ROLLBACK_COMPATIBLE_SST_FORMAT_VERSION);
     bbo.set_bloom_filter(10.0, false);
     bbo.set_block_size(32 * 1024);
     opts.set_block_based_table_factory(&bbo);
@@ -617,6 +624,28 @@ mod tests {
     use super::*;
     use std::collections::BTreeSet;
 
+    fn assert_rollback_compatible_sst_format(options: Options) {
+        let temp = tempfile::tempdir().unwrap();
+        let mut db_options = Options::default();
+        db_options.create_if_missing(true);
+        db_options.create_missing_column_families(true);
+        let db = DB::open_cf_descriptors(
+            &db_options,
+            temp.path(),
+            [ColumnFamilyDescriptor::new("compatibility", options)],
+        )
+        .unwrap();
+        drop(db);
+
+        let log = std::fs::read_to_string(temp.path().join("LOG")).unwrap();
+        assert!(
+            log.contains(&format!(
+                "format_version: {ROLLBACK_COMPATIBLE_SST_FORMAT_VERSION}"
+            )),
+            "effective RocksDB configuration must retain v0.5.223 SST readability"
+        );
+    }
+
     const SNAPSHOT_EXCLUDED_HOT_CFS: &[&str] = &[
         // Sparse Merkle caches are rebuilt from rooted accounts/storage and do
         // not need to be transferred byte-for-byte with checkpoint snapshots.
@@ -660,6 +689,13 @@ mod tests {
             actual, decided,
             "every hot RocksDB column family must be snapshot-transferred, special-imported, or explicitly excluded"
         );
+    }
+
+    #[test]
+    fn hot_and_cold_sst_formats_remain_rollback_compatible() {
+        let shared_cache = Cache::new_lru_cache(8 * 1024 * 1024);
+        assert_rollback_compatible_sst_format(point_lookup_options(&shared_cache, 32));
+        assert_rollback_compatible_sst_format(cold_archival_cf_options());
     }
 
     #[test]

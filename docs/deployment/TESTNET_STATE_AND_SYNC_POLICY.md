@@ -87,12 +87,21 @@ This policy exists because an active testnet is shared infrastructure. Developer
   public history automatically. The validator derives the cold store as the
   `archive-<network>` sibling of its configured state directory, enables
   archive retention without an operator flag, and rejects both `--archive-mode`
-  and `--cold-store`. Those flags are development/admin controls only;
-  public-network correctness must never depend on an optional service argument.
+  and `--cold-store`. Those flags are disposable-development controls only;
+  independently mounted recovery sources use the separate
+  `--source-cold-store` input. Public-network runtime and target-admin
+  correctness must never depend on an optional archive argument.
 - A validator that reaches the 10 GiB runtime safety floor must stop with
   persistent exit status 78 and remain stopped until capacity is expanded.
   Checkpoints are skipped below 20 GiB free. Restart loops and history deletion
   are not capacity-management mechanisms.
+- A storage-engine upgrade must prove both directions against the signed
+  rollback anchor before release: the candidate opens preserved rollback hot
+  and cold stores without mutation, and the rollback engine opens candidate
+  SSTs after writes, deletes, flushes, and compactions. Lichen pins every hot
+  and cold block-based table to SST format 5 while `v0.5.223` remains the
+  rollback anchor; accepting the newer engine's default format 6 would make a
+  rollback unable to read candidate-written files.
 - A verified snapshot must not create rollback state or clear any live category
   until measured free space covers the staged replacement, compaction peak, and
   runtime reserve. Nominal disk size and hardlink checkpoint apparent size are

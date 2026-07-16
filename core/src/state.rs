@@ -6441,6 +6441,163 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_block_writes_cold_migration_and_checkpoints_remain_consistent() {
+        use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+        use std::sync::{Arc, Mutex};
+        use std::thread;
+        use std::time::Duration;
+
+        const BLOCKS: u64 = 600;
+        const RETAIN_HOT: u64 = 20;
+
+        let root = tempdir().unwrap();
+        let hot_dir = root.path().join("state");
+        let cold_dir = root.path().join("archive");
+        let checkpoint_root = hot_dir.join("stress-checkpoints");
+        let mut state = StateStore::open(&hot_dir).unwrap();
+        state.open_cold_store(&cold_dir).unwrap();
+
+        let progress = Arc::new(AtomicU64::new(0));
+        let writer_done = Arc::new(AtomicBool::new(false));
+        let errors = Arc::new(Mutex::new(Vec::<String>::new()));
+
+        let writer_state = state.clone();
+        let writer_progress = Arc::clone(&progress);
+        let writer_done_flag = Arc::clone(&writer_done);
+        let writer_errors = Arc::clone(&errors);
+        let writer = thread::spawn(move || {
+            let mut parent_hash = Hash::default();
+            for slot in 0..BLOCKS {
+                let tx = Transaction::new(Message::new(
+                    vec![Instruction {
+                        program_id: Pubkey([0xA5; 32]),
+                        accounts: Vec::new(),
+                        data: vec![slot as u8; 16 * 1024],
+                    }],
+                    Hash::hash(&slot.to_be_bytes()),
+                ));
+                let block = Block::new(
+                    slot,
+                    parent_hash,
+                    Hash::hash(b"checkpoint-migration-stress-state"),
+                    [0x5A; 32],
+                    vec![tx],
+                );
+                parent_hash = block.hash();
+                if let Err(error) = writer_state.put_block_atomic(&block, Some(slot), Some(slot)) {
+                    writer_errors.lock().unwrap().push(error);
+                    break;
+                }
+                writer_progress.store(slot.saturating_add(1), Ordering::Release);
+            }
+            writer_done_flag.store(true, Ordering::Release);
+        });
+
+        let migration_state = state.clone();
+        let migration_progress = Arc::clone(&progress);
+        let migration_done = Arc::clone(&writer_done);
+        let migration_errors = Arc::clone(&errors);
+        let migrator = thread::spawn(move || {
+            while !migration_done.load(Ordering::Acquire) {
+                let cutoff = migration_progress
+                    .load(Ordering::Acquire)
+                    .saturating_sub(RETAIN_HOT);
+                if let Err(error) = migration_state.migrate_to_cold(cutoff) {
+                    migration_errors.lock().unwrap().push(error);
+                    break;
+                }
+                thread::sleep(Duration::from_millis(2));
+            }
+            let cutoff = migration_progress
+                .load(Ordering::Acquire)
+                .saturating_sub(RETAIN_HOT);
+            if let Err(error) = migration_state.migrate_to_cold(cutoff) {
+                migration_errors.lock().unwrap().push(error);
+            }
+        });
+
+        let checkpoint_state = state.clone();
+        let checkpoint_progress = Arc::clone(&progress);
+        let checkpoint_done = Arc::clone(&writer_done);
+        let checkpoint_errors = Arc::clone(&errors);
+        let checkpointer = thread::spawn(move || {
+            let mut checkpoint_number = 0u64;
+            while checkpoint_number < 8 {
+                let observed = checkpoint_progress.load(Ordering::Acquire);
+                let target = checkpoint_number.saturating_add(1).saturating_mul(60);
+                if observed < target {
+                    if checkpoint_done.load(Ordering::Acquire) {
+                        checkpoint_errors.lock().unwrap().push(format!(
+                            "writer stopped at {observed} before checkpoint stress target {target}"
+                        ));
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(1));
+                    continue;
+                }
+                let checkpoint_dir = checkpoint_root.join(format!(
+                    "slot-{}-{}",
+                    observed.saturating_sub(1),
+                    checkpoint_number
+                ));
+                if let Err(error) = checkpoint_state
+                    .create_checkpoint(checkpoint_dir.to_str().unwrap(), observed.saturating_sub(1))
+                {
+                    checkpoint_errors.lock().unwrap().push(error);
+                    break;
+                }
+                checkpoint_number = checkpoint_number.saturating_add(1);
+                thread::sleep(Duration::from_millis(4));
+            }
+        });
+
+        writer.join().unwrap();
+        migrator.join().unwrap();
+        checkpointer.join().unwrap();
+        let errors = errors.lock().unwrap();
+        assert!(errors.is_empty(), "concurrent storage errors: {errors:?}");
+        drop(errors);
+
+        state.db.flush().unwrap();
+        state.cold_db.as_ref().unwrap().flush().unwrap();
+
+        let hot_blocks = state.db.cf_handle(CF_BLOCKS).unwrap();
+        let mut hot_read_options = rocksdb::ReadOptions::default();
+        hot_read_options.set_total_order_seek(true);
+        for item in
+            state
+                .db
+                .iterator_cf_opt(&hot_blocks, hot_read_options, rocksdb::IteratorMode::Start)
+        {
+            let (key, _) = item.unwrap();
+            assert_eq!(key.len(), 32, "hot block key must be a complete hash");
+        }
+
+        let cold = state.cold_db.as_ref().unwrap();
+        let cold_blocks = cold.cf_handle(COLD_CF_BLOCKS).unwrap();
+        let mut cold_read_options = rocksdb::ReadOptions::default();
+        cold_read_options.set_total_order_seek(true);
+        for item in cold.iterator_cf_opt(
+            &cold_blocks,
+            cold_read_options,
+            rocksdb::IteratorMode::Start,
+        ) {
+            let (key, _) = item.unwrap();
+            assert_eq!(key.len(), 32, "cold block key must be a complete hash");
+        }
+
+        let mut parent_hash = Hash::default();
+        for slot in 0..BLOCKS {
+            let block = state
+                .get_block_by_slot(slot)
+                .unwrap()
+                .unwrap_or_else(|| panic!("slot {slot} missing after concurrent storage stress"));
+            assert_eq!(block.header.parent_hash, parent_hash);
+            parent_hash = block.hash();
+        }
+    }
+
+    #[test]
     fn test_cold_migration_audit_reports_missing_identical_and_conflicting_rows() {
         let hot_dir = tempdir().unwrap();
         let cold_dir = tempdir().unwrap();

@@ -12274,7 +12274,17 @@ fn maybe_run_block_replay_diagnostic_admin(args: &[String]) -> Option<i32> {
     let block_secondary_dir = get_flag_value(args, &["--block-secondary-dir"]).map(PathBuf::from);
     let cache_size_mb = get_flag_value(args, &["--cache-size-mb"]).and_then(|s| s.parse().ok());
     let block_json = get_flag_value(args, &["--block-json"]).map(PathBuf::from);
-    let cold_store_path = get_flag_value(args, &["--cold-store"]).map(PathBuf::from);
+    let cold_store_path = if get_flag_value(args, &["--block-db-path"]).is_some() {
+        get_flag_value(args, &["--cold-store"]).map(PathBuf::from)
+    } else {
+        match resolve_public_command_cold_store_path(args, &block_data_dir) {
+            Ok(path) => path,
+            Err(err) => {
+                eprintln!("{err}");
+                return Some(2);
+            }
+        }
+    };
 
     if dump_block_json.is_some() && block_json.is_some() {
         eprintln!(
@@ -13996,7 +14006,13 @@ fn maybe_run_account_history_inspection_admin(args: &[String]) -> Option<i32> {
         .min(1000);
     let data_dir = restriction_schema_data_dir(args);
     let cache_size_mb = get_flag_value(args, &["--cache-size-mb"]).and_then(|s| s.parse().ok());
-    let cold_store_path = get_flag_value(args, &["--cold-store"]).map(PathBuf::from);
+    let cold_store_path = match resolve_public_command_cold_store_path(args, &data_dir) {
+        Ok(path) => path,
+        Err(err) => {
+            eprintln!("{err}");
+            return Some(2);
+        }
+    };
 
     let mut state = match maybe_open_account_txs_secondary_state(args, &data_dir, cache_size_mb) {
         Ok(Some(state)) => state,
@@ -14065,7 +14081,13 @@ fn maybe_run_account_txs_rebuild_admin(args: &[String]) -> Option<i32> {
 
     let data_dir = restriction_schema_data_dir(args);
     let cache_size_mb = get_flag_value(args, &["--cache-size-mb"]).and_then(|s| s.parse().ok());
-    let cold_store_path = get_flag_value(args, &["--cold-store"]).map(PathBuf::from);
+    let cold_store_path = match resolve_public_command_cold_store_path(args, &data_dir) {
+        Ok(path) => path,
+        Err(err) => {
+            eprintln!("{err}");
+            return Some(2);
+        }
+    };
 
     let mut state = if dry_run {
         match maybe_open_account_txs_secondary_state(args, &data_dir, cache_size_mb) {
@@ -14176,7 +14198,13 @@ fn maybe_run_governed_proposal_tx_backfill_admin(args: &[String]) -> Option<i32>
 
     let data_dir = restriction_schema_data_dir(args);
     let cache_size_mb = get_flag_value(args, &["--cache-size-mb"]).and_then(|s| s.parse().ok());
-    let cold_store_path = get_flag_value(args, &["--cold-store"]).map(PathBuf::from);
+    let cold_store_path = match resolve_public_command_cold_store_path(args, &data_dir) {
+        Ok(path) => path,
+        Err(err) => {
+            eprintln!("{err}");
+            return Some(2);
+        }
+    };
 
     let mut state = match StateStore::open_with_cache_mb(&data_dir, cache_size_mb) {
         Ok(state) => state,
@@ -14818,7 +14846,13 @@ fn maybe_run_contiguous_block_range_admin(args: &[String]) -> Option<i32> {
 
     let cache_size_mb = get_flag_value(args, &["--cache-size-mb"]).and_then(|s| s.parse().ok());
     let data_dir = restriction_schema_data_dir(args);
-    let cold_store = get_flag_value(args, &["--cold-store"]).map(PathBuf::from);
+    let cold_store = match resolve_public_command_cold_store_path(args, &data_dir) {
+        Ok(path) => path,
+        Err(err) => {
+            eprintln!("{err}");
+            return Some(2);
+        }
+    };
     let secondary_dir = get_flag_value(args, &["--secondary-dir"]).map(PathBuf::from);
     let state = match open_public_history_reader(
         &data_dir,
@@ -14898,7 +14932,13 @@ fn maybe_run_raw_block_history_repair_admin(args: &[String]) -> Option<i32> {
 
     let cache_size_mb = get_flag_value(args, &["--cache-size-mb"]).and_then(|s| s.parse().ok());
     let target_dir = restriction_schema_data_dir(args);
-    let cold_store = get_flag_value(args, &["--cold-store"]).map(PathBuf::from);
+    let cold_store = match resolve_public_command_cold_store_path(args, &target_dir) {
+        Ok(path) => path,
+        Err(err) => {
+            eprintln!("{err}");
+            return Some(2);
+        }
+    };
     let secondary_dir = get_flag_value(args, &["--secondary-dir"]).map(PathBuf::from);
     if execute && secondary_dir.is_some() {
         eprintln!("--secondary-dir is only valid with dry-run or diagnostics");
@@ -14936,14 +14976,16 @@ fn maybe_run_raw_block_history_repair_admin(args: &[String]) -> Option<i32> {
         }
     };
 
-    if let Some(cold_path) = cold_store.as_deref() {
-        if let Err(err) = state.open_cold_store_read_only(cold_path) {
-            eprintln!(
-                "Failed to open cold store at {}: {}",
-                cold_path.display(),
-                err
-            );
-            return Some(1);
+    if !dry_run {
+        if let Some(cold_path) = cold_store.as_deref() {
+            if let Err(err) = state.open_cold_store_read_only(cold_path) {
+                eprintln!(
+                    "Failed to open cold store at {}: {}",
+                    cold_path.display(),
+                    err
+                );
+                return Some(1);
+            }
         }
     }
 
@@ -38252,6 +38294,140 @@ mod tests {
             resolve_public_command_cold_store_path(&args, &data_dir)
                 .expect("resolve public command cold store"),
             Some(temp.path().join("archive-testnet"))
+        );
+    }
+
+    #[test]
+    fn contiguous_range_admin_reads_automatic_public_cold_store() {
+        let temp = tempfile::tempdir().expect("create public history temp dir");
+        let data_dir = temp.path().join("state-testnet");
+        let cold_dir = temp.path().join("archive-testnet");
+        let secondary_dir = temp.path().join("secondary");
+        let mut state = StateStore::open(&data_dir).expect("open hot state");
+        state
+            .open_cold_store(&cold_dir)
+            .expect("open automatic cold store");
+
+        let genesis = Block::genesis(Hash::hash(b"automatic-public-cold-store"), 1, vec![]);
+        let producer = Keypair::generate();
+        let mut child = Block::new_with_timestamp(
+            1,
+            genesis.hash(),
+            Hash::hash(b"automatic-public-cold-store-child"),
+            producer.pubkey().0,
+            Vec::new(),
+            2,
+        );
+        child.sign(&producer);
+        state.put_block(&genesis).expect("store genesis");
+        state.put_block(&child).expect("store child");
+        assert_eq!(state.migrate_to_cold(1).expect("migrate genesis"), 1);
+        drop(state);
+
+        let args = vec![
+            "lichen-validator".to_string(),
+            "--network".to_string(),
+            "testnet".to_string(),
+            "--db-path".to_string(),
+            data_dir.display().to_string(),
+            "--secondary-dir".to_string(),
+            secondary_dir.display().to_string(),
+            VERIFY_CONTIGUOUS_BLOCK_RANGE_FLAG.to_string(),
+            "--from-slot".to_string(),
+            "0".to_string(),
+            "--to-slot".to_string(),
+            "0".to_string(),
+        ];
+
+        assert_eq!(maybe_run_contiguous_block_range_admin(&args), Some(0));
+    }
+
+    #[test]
+    fn target_history_admins_reject_manual_public_cold_store() {
+        let temp = tempfile::tempdir().expect("create public history temp dir");
+        let data_dir = temp.path().join("state-testnet");
+        let cold_dir = temp.path().join("operator-selected-archive");
+        let base = || {
+            vec![
+                "lichen-validator".to_string(),
+                "--network".to_string(),
+                "testnet".to_string(),
+                "--db-path".to_string(),
+                data_dir.display().to_string(),
+                "--cold-store".to_string(),
+                cold_dir.display().to_string(),
+            ]
+        };
+        let with = |extra: &[&str]| {
+            let mut args = base();
+            args.extend(extra.iter().map(|value| (*value).to_string()));
+            args
+        };
+
+        assert_eq!(
+            maybe_run_block_replay_diagnostic_admin(&with(&[
+                DUMP_BLOCK_JSON_FLAG,
+                "-",
+                "--slot",
+                "0"
+            ])),
+            Some(2)
+        );
+        assert_eq!(
+            maybe_run_account_history_inspection_admin(&with(&[
+                INSPECT_ACCOUNT_HISTORY_FLAG,
+                "--account",
+                &Pubkey([7; 32]).to_base58(),
+            ])),
+            Some(2)
+        );
+        assert_eq!(
+            maybe_run_account_txs_rebuild_admin(&with(&[REBUILD_ACCOUNT_TXS_FLAG])),
+            Some(2)
+        );
+        assert_eq!(
+            maybe_run_governed_proposal_tx_backfill_admin(&with(&[
+                BACKFILL_GOVERNED_PROPOSAL_TX_INDEX_FLAG
+            ])),
+            Some(2)
+        );
+        assert_eq!(
+            maybe_run_contiguous_block_range_admin(&with(&[
+                VERIFY_CONTIGUOUS_BLOCK_RANGE_FLAG,
+                "--from-slot",
+                "0",
+                "--to-slot",
+                "0",
+            ])),
+            Some(2)
+        );
+        assert_eq!(
+            maybe_run_raw_block_history_repair_admin(&with(&[
+                REPAIR_MISSING_SLOT_CURSORS_FROM_BLOCKS_FLAG
+            ])),
+            Some(2)
+        );
+        assert_eq!(
+            maybe_run_cold_migration_admin(&with(&[MIGRATE_PUBLIC_HISTORY_TO_COLD_FLAG])),
+            Some(2)
+        );
+        assert_eq!(
+            maybe_run_public_history_page_admin(&with(&[
+                EXPORT_PUBLIC_HISTORY_CATEGORY_FLAG,
+                "blocks"
+            ])),
+            Some(2)
+        );
+        assert_eq!(
+            maybe_run_public_history_archive_admin(&with(&[PUBLIC_HISTORY_MANIFEST_FLAG])),
+            Some(2)
+        );
+        assert_eq!(
+            maybe_run_public_history_merge_admin(&with(&[
+                MERGE_PUBLIC_HISTORY_FROM_SOURCE_FLAG,
+                "/tmp/source-state"
+            ])),
+            Some(2)
         );
     }
 
