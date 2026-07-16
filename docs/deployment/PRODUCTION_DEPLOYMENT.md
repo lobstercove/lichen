@@ -436,6 +436,14 @@ Operational rules:
 Required preflight on every VPS, including rolling updates:
 
 ```bash
+run_validator_admin() {
+  local binary="$1"
+  shift
+  sudo -u lichen bash -lc \
+    'ulimit -n 1048576 2>/dev/null || ulimit -n 65535; exec "$0" "$@"' \
+    "$binary" "$@"
+}
+
 df -h /var/lib/lichen
 sudo du -sh /var/lib/lichen /var/log/journal /var/log/sudo-io 2>/dev/null || true
 sudo find /var/lib/lichen/state-<net>/checkpoints -mindepth 1 -maxdepth 1 \
@@ -457,13 +465,13 @@ reachable tree, stop and boot-disable the validator, record slot/root/identity/
 genesis/archive evidence and free space, then use the typed maintenance command:
 
 ```bash
-sudo -u lichen /usr/local/bin/lichen-validator \
+run_validator_admin /usr/local/bin/lichen-validator \
   --network <net> \
   --db-path /var/lib/lichen/state-<net> \
   --cache-size-mb 1024 \
   --rebuild-sparse-state-commitment
 
-sudo -u lichen /usr/local/bin/lichen-validator \
+run_validator_admin /usr/local/bin/lichen-validator \
   --network <net> \
   --db-path /var/lib/lichen/state-<net> \
   --cache-size-mb 1024 \
@@ -2422,6 +2430,18 @@ transaction, account-history, event, token-transfer, program-call, trade, market
 NFT, EVM, shielded, and account-snapshot public categories, and emit JSON
 evidence.
 
+Same-key mismatches remain fatal except for a typed completion of an existing
+header-only block. That completion requires an exact key/hash and canonical
+header match, a valid recomputed transaction root, and identical oracle payload;
+it preserves the target validator's local finality certificate. Require the
+expected `upgraded_incomplete_rows` count in dry-run evidence and zero other
+conflicts. The fleet repair helper uses binary framed streams and persistent SSH
+controls for every category.
+
+Use the `run_validator_admin` wrapper from the VPS preflight for every direct
+archive command. The current interactive `sudo` path can otherwise inherit a
+1,024-descriptor limit; the fleet scripts raise the limit automatically.
+
 Before executing repair, prove that at least one verified source contains each
 historical slot from genesis to tip. If every live validator returns
 `Block not found` for a slot range, that is a backed-source gap, not a parity
@@ -2460,7 +2480,7 @@ export LICHEN_ARCHIVE_PARITY_STOP_CONFIRM='archive-parity-stop:testnet:15.204.22
 bash scripts/verify-testnet-archive-parity.sh --offline-repair-gate
 
 # Read-only manifest on a live validator.
-sudo -u lichen /usr/local/bin/lichen-validator \
+run_validator_admin /usr/local/bin/lichen-validator \
   --network testnet \
   --db-path /var/lib/lichen/state-testnet \
   --secondary-dir /tmp/lichen-public-history-manifest \
@@ -2468,7 +2488,7 @@ sudo -u lichen /usr/local/bin/lichen-validator \
   --public-history-manifest
 
 # Compare the target to a verified backed source.
-sudo -u lichen /usr/local/bin/lichen-validator \
+run_validator_admin /usr/local/bin/lichen-validator \
   --network testnet \
   --db-path /var/lib/lichen/state-testnet \
   --secondary-dir /tmp/lichen-public-history-parity-check \
@@ -2477,7 +2497,7 @@ sudo -u lichen /usr/local/bin/lichen-validator \
   --source-cold-store /mnt/verified-source/archive-testnet
 
 # Dry-run repair from that source.
-sudo -u lichen /usr/local/bin/lichen-validator \
+run_validator_admin /usr/local/bin/lichen-validator \
   --network testnet \
   --db-path /var/lib/lichen/state-testnet \
   --secondary-dir /tmp/lichen-public-history-repair-check \
@@ -2488,7 +2508,7 @@ sudo -u lichen /usr/local/bin/lichen-validator \
 
 # Execute only after dry-run reports conflict_rows=0 and the validator is stopped.
 sudo systemctl stop lichen-validator-testnet
-sudo -u lichen /usr/local/bin/lichen-validator \
+run_validator_admin /usr/local/bin/lichen-validator \
   --network testnet \
   --db-path /var/lib/lichen/state-testnet \
   --cache-size-mb 256 \
@@ -2502,7 +2522,7 @@ sudo systemctl start lichen-validator-testnet
 **Fix**: Restore only from a real backed source. First prove the source before rebuilding:
 
 ```bash
-sudo -u lichen /usr/local/bin/lichen-validator \
+run_validator_admin /usr/local/bin/lichen-validator \
   --network testnet \
   --db-path /var/lib/lichen/state-testnet \
   --secondary-dir /tmp/lichen-account-history-check \
@@ -2511,7 +2531,7 @@ sudo -u lichen /usr/local/bin/lichen-validator \
   --source parent-chain \
   --dry-run
 
-sudo -u lichen /usr/local/bin/lichen-validator \
+run_validator_admin /usr/local/bin/lichen-validator \
   --network testnet \
   --db-path /var/lib/lichen/state-testnet \
   --secondary-dir /tmp/lichen-account-history-check \
@@ -2534,7 +2554,7 @@ contract storage from the backup:
 ```bash
 sudo systemctl stop lichen-validator-testnet
 
-sudo -u lichen /usr/local/bin/lichen-validator \
+run_validator_admin /usr/local/bin/lichen-validator \
   --network testnet \
   --db-path /var/lib/lichen/state-testnet \
   --cache-size-mb 256 \
@@ -2547,7 +2567,7 @@ sudo -u lichen /usr/local/bin/lichen-validator \
 #   --source-cold-store /mnt/ovh-backup-20260607T2158/var/lib/lichen/archive-testnet
 
 # Execute the broad merge only if its dry-run reports conflict_rows=0.
-sudo -u lichen /usr/local/bin/lichen-validator \
+run_validator_admin /usr/local/bin/lichen-validator \
   --network testnet \
   --db-path /var/lib/lichen/state-testnet \
   --cache-size-mb 256 \
@@ -2562,7 +2582,7 @@ sudo -u lichen /usr/local/bin/lichen-validator \
 # index-only repair mode instead. This restores backed transaction/account/
 # activity indexes without replacing block bodies, slot cursors, balances,
 # contract storage, or consensus state.
-sudo -u lichen /usr/local/bin/lichen-validator \
+run_validator_admin /usr/local/bin/lichen-validator \
   --network testnet \
   --db-path /var/lib/lichen/state-testnet \
   --cache-size-mb 256 \
@@ -2570,7 +2590,7 @@ sudo -u lichen /usr/local/bin/lichen-validator \
   --source-cold-store /mnt/ovh-backup-20260607T2158/var/lib/lichen/archive-testnet \
   --dry-run
 
-sudo -u lichen /usr/local/bin/lichen-validator \
+run_validator_admin /usr/local/bin/lichen-validator \
   --network testnet \
   --db-path /var/lib/lichen/state-testnet \
   --cache-size-mb 256 \
@@ -2579,7 +2599,7 @@ sudo -u lichen /usr/local/bin/lichen-validator \
   --execute \
   --confirm public-history-index-merge:v1
 
-sudo -u lichen /usr/local/bin/lichen-validator \
+run_validator_admin /usr/local/bin/lichen-validator \
   --network testnet \
   --db-path /var/lib/lichen/state-testnet \
   --cache-size-mb 256 \
@@ -2590,7 +2610,7 @@ sudo -u lichen /usr/local/bin/lichen-validator \
 # Execute only if the dry-run reports source_complete=true and zero missing
 # transaction bodies. This rebuilds account_txs from real transaction/index
 # rows after the public-history merge; it does not infer activity from balances.
-sudo -u lichen /usr/local/bin/lichen-validator \
+run_validator_admin /usr/local/bin/lichen-validator \
   --network testnet \
   --db-path /var/lib/lichen/state-testnet \
   --cache-size-mb 256 \

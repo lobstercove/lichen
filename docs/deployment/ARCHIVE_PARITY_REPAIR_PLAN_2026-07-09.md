@@ -1,6 +1,6 @@
 # Archive Parity Repair Plan - 2026-07-09
 
-**Status:** Public archive storage is an automatic non-dev testnet/mainnet invariant; EU/IN capacity recovery and redundant public RPC ingress are complete; the owner accepted the irrecoverable AP-060 gap for this existing testnet only, while mainnet remains fail-closed. AP-075 four- and ten-validator local release gates pass on the RocksDB-upgraded final source. US/EU/SEA/IN are currently healthy on `v0.5.223`; EU still runs the audited exact-tag sparse-maintenance bridge while the other three run the signed rollback artifact. Hosted CI, signed artifacts, complete source-backed fleet-union repair, coordinated activation/deployment, fixed-tip live parity, and publication remain.
+**Status:** Public archive storage is an automatic non-dev testnet/mainnet invariant; EU/IN capacity recovery and redundant public RPC ingress are complete; the owner accepted the irrecoverable AP-060 gap for this existing testnet only, while mainnet remains fail-closed. AP-076 supersedes signed draft commit `ce979e6d`: SEA slot `9,238,000` is a matching canonical header with a missing body, and the old repair path treated it as an unrepairable conflict. The guarded completion fix now passes the complete local source, dependency, contract, frontend, four-validator, and ten-validator release gates. Replacement commit/tag, hosted CI and signed artifacts, exact Linux preflight, stopped-fleet source-union repair, coordinated activation/deployment, fixed-tip live parity, and publication remain. US/EU/SEA/IN still run `v0.5.223`; EU uses the audited exact-tag sparse-maintenance bridge while the other three use the signed rollback artifact.
 **Scope:** Public testnet archive parity, validator resume parity, and release gate
 **Rule:** No live VPS rollout until the local four-validator testnet gate proves the repair.
 
@@ -597,9 +597,20 @@ the final total-order raw audit again decoded 6,513,019 hot-plus-cold rows and
 proved 6,410,345 canonical body/cursor pairs with every integrity counter zero.
 
 ```bash
+# Define once in the guarded operator shell. Direct `sudo -u lichen` inherits a
+# 1,024-descriptor interactive limit on the current VPSes and is not valid for
+# archive scans.
+run_validator_admin() {
+  local binary="$1"
+  shift
+  sudo -u lichen bash -lc \
+    'ulimit -n 1048576 2>/dev/null || ulimit -n 65535; exec "$0" "$@"' \
+    "$binary" "$@"
+}
+
 # Run only with the validator stopped. Use the fixed retained-window cutoff
 # recorded from the preserved tip; do not use a moving live tip.
-sudo -u lichen /tmp/lichen-validator-0.5.224-candidate \
+run_validator_admin /tmp/lichen-validator-0.5.224-candidate \
   --network testnet \
   --db-path /var/lib/lichen/state-testnet \
   --cache-size-mb 256 \
@@ -610,7 +621,7 @@ sudo -u lichen /tmp/lichen-validator-0.5.224-candidate \
 # after the current
 # provider backup is attached in file mode, mounted ro,norecovery, and verified,
 # and after every multiply-linked checkpoint is provider-preserved and retired.
-sudo -u lichen /tmp/lichen-validator-0.5.224-candidate \
+run_validator_admin /tmp/lichen-validator-0.5.224-candidate \
   --network testnet \
   --db-path /var/lib/lichen/state-testnet \
   --cache-size-mb 256 \
@@ -842,8 +853,11 @@ kept separate from the mainnet validation rule.
   node identity, peer cache, signer state, or runtime state.
 - Public-history repair must be additive, source-backed, idempotent, resumable,
   and conflict-checked.
-- Any same-key byte mismatch in repaired public-history column families must
-  abort execution and produce evidence.
+- Any same-key semantic mismatch in repaired public-history column families
+  must abort execution and produce evidence. The only permitted replacement is
+  source-backed completion of a header-only block whose canonical key/hash,
+  full header, transaction Merkle root, and oracle payload all match; the target
+  validator's local finality certificate is preserved.
 - Large historical payloads must land in the configured cold/archive store when
   one is attached. Small ordering indexes may remain in the hot state DB.
 - A validator resumed from its own state must serve the same public history as
@@ -910,7 +924,7 @@ enough to prove genesis-to-tip parity in batches.
 Implemented command:
 
 ```bash
-sudo -u lichen /usr/local/bin/lichen-validator \
+run_validator_admin /usr/local/bin/lichen-validator \
   --network testnet \
   --db-path /var/lib/lichen/state-testnet \
   --secondary-dir /tmp/lichen-public-history-manifest \
@@ -936,12 +950,14 @@ source archive without copying consensus state:
 - write blocks, transaction bodies, account transaction rows, events, token
   transfers, and program calls into the target cold store when attached
 - write slot cursors and ordering indexes into the target hot DB
-- skip existing identical rows
-- abort on existing conflicting rows
+- skip existing semantically identical rows, including block bodies that differ
+  only in their valid local commit-certificate subset
+- complete only a strictly matching header-only block and report it separately
+- abort on every other existing conflict
 - persist progress so the repair can resume after interruption
 - clear derived account-history counters only after successful writes
-- produce dry-run and execute evidence with inserted, skipped, and conflicted
-  row counts
+- produce dry-run and execute evidence with inserted, upgraded-incomplete,
+  skipped, and conflicted row counts
 
 This extends the existing guarded public-history merge concept from a mounted
 local source into an operational fleet repair that can be driven from a verified
@@ -970,52 +986,13 @@ bash scripts/stream-public-history-repair.sh --execute --leave-target-stopped \
 
 # Then merge the remaining source-backed public indexes without block-range
 # flags. Repeat both phases for every verified source in the complete union.
+# Binary framing and persistent SSH controls are automatic for every category.
 bash scripts/stream-public-history-repair.sh --execute --leave-target-stopped \
   --source SOURCE --targets "TARGETS" \
   --categories account_txs,events_by_slot,events,token_transfers,program_calls,evm_txs,evm_receipts,evm_logs_by_slot,shielded_txs,nft_activity,market_activity,dex_trades_by_pair,dex_trades_by_taker,dex_trades_by_pair_taker,account_snapshots
 
-# Page-level primitives used by the streaming repair script.
-sudo -u lichen /tmp/lichen-validator-0.5.224-candidate \
-  --network testnet \
-  --db-path /var/lib/lichen/state-testnet \
-  --secondary-dir /tmp/lichen-public-history-export \
-  --export-public-history-category blocks \
-  --chunk-size 1000 \
-  > /tmp/blocks-page.json
-
-sudo -u lichen /tmp/lichen-validator-0.5.224-candidate \
-  --network testnet \
-  --db-path /var/lib/lichen/state-testnet \
-  --import-public-history-category blocks \
-  --execute \
-  --confirm public-history-repair:v1 \
-  < /tmp/blocks-page.json
-
-# Large block-body ranges use binary framed streams instead of JSON pages.
-# This keeps one source process and one target process open for the range and
-# avoids copying RocksDB, WAL, identities, or peer state.
-ssh -p 2222 ubuntu@SOURCE \
-  "sudo -u lichen /tmp/lichen-validator-0.5.224-candidate \
-    --network testnet \
-    --db-path /var/lib/lichen/state-testnet \
-    --secondary-dir /tmp/lichen-public-history-export \
-    --public-history-page-format binary \
-    --stream-pages \
-    --export-public-history-category blocks \
-    --after-key-hex 0000000000419897 \
-    --to-slot 5176463" \
-| ssh -p 2222 ubuntu@TARGET \
-  "sudo -u lichen /tmp/lichen-validator-0.5.224-candidate \
-    --network testnet \
-    --db-path /var/lib/lichen/state-testnet \
-    --secondary-dir /tmp/lichen-public-history-import \
-    --public-history-page-format binary \
-    --stream-pages \
-    --import-public-history-category blocks \
-    --dry-run"
-
 # Dry-run first. This may use a RocksDB secondary for the target.
-sudo -u lichen /usr/local/bin/lichen-validator \
+run_validator_admin /usr/local/bin/lichen-validator \
   --network testnet \
   --db-path /var/lib/lichen/state-testnet \
   --secondary-dir /tmp/lichen-public-history-repair-check \
@@ -1027,7 +1004,7 @@ sudo -u lichen /usr/local/bin/lichen-validator \
 
 # Execute only with the target validator stopped and conflict_rows=0 from dry-run.
 sudo systemctl stop lichen-validator-testnet
-sudo -u lichen /usr/local/bin/lichen-validator \
+run_validator_admin /usr/local/bin/lichen-validator \
   --network testnet \
   --db-path /var/lib/lichen/state-testnet \
   --cache-size-mb 256 \
@@ -1047,7 +1024,7 @@ full EU source DB copy.
 Implemented source/target parity command:
 
 ```bash
-sudo -u lichen /usr/local/bin/lichen-validator \
+run_validator_admin /usr/local/bin/lichen-validator \
   --network testnet \
   --db-path /var/lib/lichen/state-testnet \
   --secondary-dir /tmp/lichen-public-history-parity-check \
@@ -1323,12 +1300,15 @@ Both gates now fail closed on non-healthy status or any CLI failure.
 
 Direct fixed-slot comparison also identified the historical side effect of the
 live repair: SEA serves the common block at `9,236,789`, lacks canonical bodies
-`9,236,790..9,237,999`, has a different checkpoint block at `9,238,000`, and
-matches US/EU/IN again from `9,238,001`. US, EU, and IN are verified sources for
-that bounded interval. Before final live archive parity, SEA must be stopped and
-repaired additively from one of those sources through the guarded stream repair
-path, then all four must pass the fixed-tip offline manifest gate. The repair
-must not copy another validator database or synthesize a block body.
+`9,236,790..9,237,999`, and retained only the canonical header at `9,238,000`.
+The `9,238,000` header and block hash match US/EU/IN, but SEA has an empty
+transaction vector against a nonempty transaction root. SEA matches the other
+validators again from `9,238,001`. US, EU, and IN are verified sources for the
+inclusive bounded range `9,236,790..9,238,000`. Before final live archive
+parity, SEA must be stopped and repaired additively from one of those sources
+through the guarded stream repair path, then all four must pass the fixed-tip
+offline manifest gate. The repair must not copy another validator database or
+synthesize a block body.
 
 ## 2026-07-15 Historical Transaction-Domain Replay Audit
 
@@ -1458,8 +1438,76 @@ backed source union has not yet been replicated across the fleet. It is not part
 of the accepted irrecoverable interval. AP-060 and AP-070 therefore require the
 stopped-fleet repair to union every proven current/provider source range,
 including the IN and US historical ranges, recovered US slot `5,275,999`, and
-SEA's recent `9,236,790..9,237,999` hole, before fixed-tip parity can pass.
+SEA's recent `9,236,790..9,237,999` hole plus the header-only `9,238,000`
+boundary, before fixed-tip parity can pass.
 Evidence is under `evidence/archive-parity/testnet-20260716T022033Z`.
+
+## 2026-07-16 Signed Artifact And SEA Boundary Preflight
+
+Commit `ce979e6deb0de2d53091e8d3dd715b26b41f99d7` was temporarily tagged as
+`v0.5.224` after the AP-069 correction. Hosted CI run `29501871873` passed all
+15 jobs. Release workflow `29506127542` produced a draft whose checksums,
+GitHub attestations, detached post-quantum checksum signature, tag binding, and
+five assets all verified. The draft was never published, and its Linux binary
+was staged only under `/tmp` for read-only preflight; no candidate was installed
+or executed by systemd.
+
+That exact binary proved automatic cold-store discovery against cold-only slots
+on US, EU, SEA, and IN. A broader live read-only pass then found the SEA boundary
+condition missed by the earlier sampled probe. SEA slot `9,238,000` has the same
+canonical header and block hash as US/EU/IN, but its stored block has no
+transactions despite a nonzero transaction root. SEA is complete again at
+`9,238,001`. A source-proven block dry run from US over the inclusive range
+`9,236,790..9,238,000` reported 1,211 source rows, 1,210 insertions, and one
+conflict at the header-only boundary. Evidence is under
+`evidence/archive-parity/testnet-20260716T-coordinated-v05224-prestop` and
+`evidence/public-history-stream-repair/testnet-20260716T-sea-block-boundary-dry-run`.
+This supersedes commit `ce979e6d`, its tag, and its draft artifacts.
+
+AP-076 implements one narrow, source-backed completion rule. The incoming block
+must be a full body whose key/hash, complete canonical header, transaction
+Merkle root, and oracle payload match the target header-only row. The target row
+must have no transactions, no fee vector, and a nonzero transaction root. The
+repair preserves the target validator's local commit round and certificate
+subset, writes and WAL-syncs the completed body to the target cold store, then
+deletes and WAL-syncs the hot placeholder. Every other same-key difference
+remains a conflict. Dry-run and execute reports expose
+`upgraded_incomplete_rows`; repeat import is idempotent and manifest-equivalent.
+
+The operator transport now uses the existing binary framed protocol for every
+public-history category, not only blocks, and reuses one persistent SSH control
+connection per host. This avoids thousands of RocksDB process starts and SSH
+rate-limit penalties during a full source-union repair. Both fleet scripts run
+archive commands with a raised file-descriptor limit; direct operator commands
+must use the same service-equivalent wrapper. Focused Core repair tests,
+Validator frame/CLI tests for every archive category, strict workspace Clippy,
+the full locked workspace suite, all 40 lockfile audits, dependency policy, all
+34 contract workspaces, SDK/Python supply-chain checks,
+frontend/wallet/deployment QA, shell syntax, and all 12 local helper guards
+pass.
+
+The exact final-source four-validator gate joined V2 through V4 from empty
+hot/cold stores, recovered a 140-slot LiveSync pause in-process, restarted V4
+and V1 from their own state, resumed all four from one preserved tip, and
+matched canonical certificates. Checkpoint-1000 manifests matched root
+`da5e1db3c5d6e196800bf7ea5ecea29ef59cffc6fe29c2b15dd9f0a048079958`.
+Volume/user journeys passed 140/140 and launchpad/governance/graduation passed
+104/104. The post-journey checkpoint-3000 manifest root matched on all four:
+`828d5e8f89f460e1f0b3240a1e2fa3a38aab4add9525b31816bcf9db48d444a5`.
+Transcript:
+`evidence/local-multi-validator/20260716T181722Z-ap076-final-4/transcript.log`,
+SHA-256 `18bd616fedb59f88040361bc2308ba0f6d6dd2373bbb27b724a358073063f4be`.
+
+The independent final-source ten-validator gate joined V2 through V10 from
+empty stores, recovered V10 in-process after the same 140-slot gap, restarted
+V10 and V1 from their own state, resumed all ten from one preserved tip,
+continued finality with V9 and V10 offline, and recovered both with preserved
+identities. Canonical certificates matched at slots `2598` and `2690`; every
+validator's checkpoint-3000 hot/cold manifest matched root
+`a8d3b9247b782fdd2cc5a051d8fbfbe65d12decff21a1b0be160abaa7c1cf0bc`.
+Transcript:
+`evidence/local-multi-validator/20260716T184144Z-ap076-final-10/transcript.log`,
+SHA-256 `866ba875de3a537aa384c92ed9759e2b4c76e583ce611cb08acd86b730e4368f`.
 
 ## Tracker
 
@@ -1467,11 +1515,11 @@ Evidence is under `evidence/archive-parity/testnet-20260716T022033Z`.
 | --- | --- | --- | --- |
 | AP-001 | Document archive parity incident, invariants, and release gate | This file plus runbook links | Done |
 | AP-010 | Add deterministic public-history manifest/audit command | JSON manifest over hot+cold public history | Done in core/validator admin |
-| AP-020 | Add source-backed public-history repair from verified source | Dry-run and execute counters, conflict aborts | Done for mounted/read-only source DBs, SSH-streamed public-history pages, and binary framed block streams |
+| AP-020 | Add source-backed public-history repair from verified source | Dry-run and execute counters, conflict aborts | Done for mounted/read-only source DBs and SSH-streamed public history. Binary framed streaming is the default for every category and uses persistent SSH controls. Import is additive and conflict-aborting, with one typed exception for source-backed completion of an exactly matching header-only block. |
 | AP-030 | Add source/target archive parity verifier | JSON category diff and nonzero exit on mismatch | Done for mounted/read-only source DBs |
 | AP-035 | Add peer/fleet archive parity automation so a new joiner can prove archive readiness from any validator | `tests/local-multi-validator-test.sh` and `scripts/verify-testnet-archive-parity.sh` output | Done for local harness plus VPS fleet verifier. The verifier reuses one SSH control transport per host so its probes cannot trip the intentional VPS connection-rate limit; live execution evidence is tracked under AP-060. |
 | AP-040 | Add regression tests for hot+cold archive import, repair, restart, and conflict handling | Cargo/test harness output | Done locally, including account-snapshot hot/cold manifest invariance, historical reads, idempotence, conflict preservation, exact inclusive range pagination, stopped-node migration audit/compaction, prune refusal, existing cold-DB schema upgrade, snapshot rollback completeness, and cold-source guarded repair; updated Core 981/981, all integrations, Validator 393/393, helper guards 12/12, and strict Clippy pass |
-| AP-050 | Run local four-validator testnet archive parity gate | `LICHEN_RUN_LAUNCHPAD_E2E=1 LICHEN_RUN_VOLUME_E2E=1 LICHEN_LOCAL_ARCHIVE_COLD=1 LICHEN_COLD_RETENTION_SLOTS=20 LICHEN_COLD_MIGRATION_INTERVAL_SECS=5 bash tests/local-multi-validator-test.sh 4` | Done on the exact AP-075 final candidate. V2/V3/V4 joined from empty stores; V4 resumed in the same process after a 140-slot LiveSync pause; V4 and V1 resumed their own state; the network finalized with V1 offline; and all four resumed from preserved state. Certificate parity matched at slot `931` (`c7beacc9...f8a63`); checkpoint-1000 hot/cold manifests matched root `eeed2ab2...e5dc`; volume/user journeys passed 140/140; launchpad/governance/graduation passed 104/104; and final checkpoint-3000 manifests matched root `cd1e0a07...31ddd`. Transcript SHA-256: `32eaea1d2bda61075cee494fe894d3fd489189de77c8a0fa8c3bbaec6c1026e6`. |
+| AP-050 | Run local four-validator testnet archive parity gate | `LICHEN_RUN_LAUNCHPAD_E2E=1 LICHEN_RUN_VOLUME_E2E=1 LICHEN_LOCAL_ARCHIVE_COLD=1 LICHEN_COLD_RETENTION_SLOTS=20 LICHEN_COLD_MIGRATION_INTERVAL_SECS=5 bash tests/local-multi-validator-test.sh 4` | Done on the exact AP-076 final source. V2/V3/V4 joined from empty stores; V4 recovered a 140-slot LiveSync pause in-process; V4 and V1 resumed their own state; all four resumed from one preserved tip; and canonical certificate parity matched. Checkpoint-1000 root `da5e1db3...079958`; volume/user journeys 140/140; launchpad/governance/graduation 104/104; final checkpoint-3000 root `828d5e8f...d444a5`. Transcript SHA-256 `18bd616f...063f4be`. The independent ten-validator gate also passed 8/10 finality, preserved-state recovery, certificate parity, and checkpoint-3000 root `a8d3b924...1cf0bc`; transcript SHA-256 `866ba875...0e4368f`. |
 | AP-055 | Inventory current and detached backed public-history sources and gap boundaries | `evidence/archive-parity/testnet-20260709T181442Z`, July 13 read-only volume/WAL/ext4 audits | Done: recovered hidden EU volume `9878038e...2c57` proves exactly through `2,872,005`; IN proves `4,299,000..5,176,463`; US proves `4,864,001..5,275,998`; the US July 9 provider copy contains a decoded, hash-matching orphan body for `5,275,999`; no audited source yet proves `2,872,006..4,298,999` |
 | AP-057 | Add fail-closed source-range, binary, capacity, backup, and stopped-fleet gates | Validator range-proof JSON plus helper guard suite | Done: final Validator 397/397 and strict Clippy pass; helper guards pass 12/12; live read-only proof accepted EU `0..10` and IN `4,299,000..4,299,010`, and rejected missing EU slot `2,872,006` before any write |
 | AP-057A | Refuse snapshot live apply before mutation unless measured replacement, compaction, runtime capacity, and complete target history are available; restore every exact pre-apply hot category on interrupted apply | Unit tests plus local snapshot roundtrip/ENOSPC/history-loss gate | Done locally; focused snapshot rollback 5/5, Core 981/981 plus integrations, Validator 393/393, strict Clippy, and the slot-3000 four-validator restart/archive gate pass |
@@ -1493,18 +1541,19 @@ Evidence is under `evidence/archive-parity/testnet-20260716T022033Z`.
 | AP-057Q | Prevent point-lookup RocksDB iterators from silently skipping migration rows and fail closed on missing block-referenced transaction indexes | Large-store total-order audit, absent/corrupt/cold-only transaction tests, bounded compaction test | Done in source. Runtime and stopped-node block scans plus auxiliary-history scans use total-order iteration. Audit and both migration paths require every referenced transaction and exact slot mapping in hot or cold storage. Focused cold migration 12/12, strict Core/Validator Clippy, the locked full workspace all-target/all-feature suite, and the final AP-050 four-validator gate all pass. Exact-final Linux build and live read-only repeat audit remain before execute. |
 | AP-057R | Bound sparse Merkle cache storage and provide a stopped-node canonical rebuild | Repeated-update node-count/proof/checkpoint regressions, exact-tag Linux recovery build, EU/IN pre/post evidence | Done. Current Core passes 994/994. Exact-tag optimized Linux tests passed. Recovery binary `9b71e7a9...ccee` rebuilt EU at slot `8,953,695`, reducing contract-node SST bytes from `42,022,557,879` to `246,455,989`, and rebuilt IN at slot `9,180,291` to 249,527 reachable contract nodes. Typed verification passed on both; protected and cold-archive metadata hashes were unchanged. Checkpoints `8,954,000` and `9,181,000` pruned the obsolete hard-linked files, leaving about 58.7 GB and 70.1 GB free respectively. Ongoing boundedness is in the candidate and exact-tag replay bridge. |
 | AP-058 | Restore EU runtime headroom and prove restart-loop suppression | Current provider backup mount, stopped rollback evidence, corrected total-order audit, bounded migration, sparse-cache rebuild, `df`, `getHealth.disk`, systemd status | Done without volume expansion. The guarded restore, full integrity audit, bounded hot-to-cold migration, derived-cache rebuild, root proof, and checkpoint rollover completed. Free space rose from 15.12 GB before rebuild to 58.72 GB after old-checkpoint pruning and remained about 53 GB in the July 15 live sample. EU caught up, serves fresh blocks through the authenticated edge, and `lichen-validator-testnet.service` is active/enabled with zero systemd restarts. The 500 GiB blocker is superseded. |
-| AP-060 | Repair the current July chain on US, EU, SEA, and IN from verified source history | Per-range proof, per-host dry-run/execute evidence, fixed-tip manifests | Testnet-only legacy-loss exception accepted; backed-union repair still pending and remains a release gate. No current/provider copy contains bodies `2,872,006..4,298,999`; signed bodies must never be synthesized. The owner explicitly accepted only that irrecoverable interval on 2026-07-15 for upgrading the existing `lichen-testnet-1`. The July 16 read-only midpoint probe proved IN has slot `4,679,179` while US/EU/SEA do not, confirming known source-backed ranges still need additive replication. The stopped-fleet repair must union every proven EU/IN/US/current range, recovered US slot `5,275,999`, and SEA's recent bounded hole, then pass conflict-free fixed-tip manifests. Mainnet startup, joining, and snapshot import remain fail-closed on any absent, behind, or mismatched genesis-to-tip archive proof. |
+| AP-060 | Repair the current July chain on US, EU, SEA, and IN from verified source history | Per-range proof, per-host dry-run/execute evidence, fixed-tip manifests | Testnet-only legacy-loss exception accepted; backed-union repair still pending and remains a release gate. No current/provider copy contains bodies `2,872,006..4,298,999`; signed bodies must never be synthesized. The owner explicitly accepted only that irrecoverable interval on 2026-07-15 for upgrading the existing `lichen-testnet-1`. The July 16 read-only midpoint probe proved IN has slot `4,679,179` while US/EU/SEA do not, confirming known source-backed ranges still need additive replication. The stopped-fleet repair must union every proven EU/IN/US/current range, recovered US slot `5,275,999`, and SEA's inclusive `9,236,790..9,238,000` hole/header-only boundary, then pass conflict-free fixed-tip manifests. Mainnet startup, joining, and snapshot import remain fail-closed on any absent, behind, or mismatched genesis-to-tip archive proof. |
 | AP-065 | Recover four-validator live production and prove fresh-tip liveness | Same current slot/hash, fresh block age, all four producers observed | Done for liveness. US/EU/SEA/IN are active and enabled with zero systemd restarts; the July 15 read-only sample found healthy slots `9,295,963..9,295,967` at block age `0..1` seconds. US/SEA/IN execute signed `v0.5.223` hash `e956a8fb...2e810`; EU executes the audited exact-tag sparse-maintenance bridge `9b71e7a9...6ccee` through a temporary catch-up override while its installed canonical binary remains signed `v0.5.223`. The override and image mismatch must be retired by the coordinated AP-070 deployment. No `0.5.224` candidate is installed. AP-060 remains the separate full-genesis archive blocker. |
 | AP-066 | Remove the public RPC single-origin failure mode | Four authenticated origins, strict fleet health, failover tests, explorer same-origin smoke | Done. `testnet-api.lichen.network` is canonical. `edge/testnet-rpc` routes across US/EU/SEA/IN with unique origin credentials, bounded body replay, deterministic affinity, and failover. Caddy is active/enabled on every origin, direct unauthenticated origin requests return 403, Worker tests pass 7/7, frontend assets pass 377/377, all ten Pages projects are live on the canonical configuration, RPC/WS smokes pass, and a 24-request sample reached every region. |
 | AP-067 | Make every committed Rust graph independently reproducible and bound contract build-cache growth | Fresh lock regeneration, locked metadata/audit, standalone compiler/SDK/fuzz tests, dependency policy QA | Done. All 40 lockfiles regenerate with the exact PQ-compatible PKCS#8 prerelease and pass locked metadata plus cargo-audit. Cargo-deny passes. Compiler 30/30, contract SDK 28/28, Rust client SDK 88/88, all examples, all 14 fuzz targets, and all 34 contract workspaces pass native tests and locked WASM builds. The 34 comprise 32 genesis catalog contracts, the genesis-bound `launchpad_token` graduation template, and the standalone `mt20_token` template. The final locked workspace all-target/all-feature suite, strict workspace Clippy with `-D warnings`, compiler sandbox, and Rust SBOM generation also pass. CI/release enforce the manifest anchor and shared non-runtime contract target directory. |
 | AP-068 | Recover IN disk headroom without deleting canonical state or public history | Protected hash comparison, typed sparse proof, checkpoint pruning, final fleet preflight | Done. IN stopped cleanly at `9,180,291`; the audited derived-cache rebuild passed, protected/cold metadata hashes matched, checkpoint `9,181,000` released obsolete cache files, free space rose to about 70.1 GB, and the clean-exit four-host verifier passed at a 46-slot spread with identical fixed-block digest. |
 | AP-069 | Make archive-backed hot/cold retention an automatic public-network invariant | Runtime/admin flag rejection tests, cold-only handler regression, environment contracts, four-validator archive gate | Done locally. The signed-candidate preflight proved the runtime and manifest paths derived `archive-<network>`, but contiguous-range verification still opened only hot state unless an operator supplied the prohibited `--cold-store`; US slot `5,176,464` failed without the flag and returned exact hash `3af5d7c8...3ff8ca` with it. The corrected source routes contiguous verification, raw slot repair, normal block replay, account-history inspection/rebuild, and governed-proposal backfill through the same public resolver. A real cold-only handler test, ten-command manual-flag rejection test, exact four-validator gate, and exact ten-validator gate pass. Disposable `--dev-mode` clusters retain explicit controls, independently mounted sources use `--source-cold-store`, and both fleet scripts default to strict SSH host-key verification. A replacement tag/artifact/signature and exact Linux/VPS preflight remain pending. |
-| AP-071 | Prevent post-checkpoint LiveSync stalls and repair SEA's bounded July 15 archive gap | Same-process material-gap recovery, progress-watchdog tests, source range proof, fixed-tip fleet manifests | Code and exact local gates done; live repair is part of AP-070 deployment. Material gaps and every checkpoint-repair entry return to bounded InitialSync, and only canonical or verified snapshot progress feeds the watchdog. The final four- and ten-validator gates passed the 140-slot same-process pause and identical checkpoint-3000 manifests. SEA range `9,236,790..9,237,999` remains to be additively repaired from US/EU/IN before final live parity. |
+| AP-071 | Prevent post-checkpoint LiveSync stalls and repair SEA's bounded July 15 archive gap | Same-process material-gap recovery, progress-watchdog tests, source range proof, fixed-tip fleet manifests | Code and exact final-source local gates done; live repair is part of AP-070 deployment. Material gaps and every checkpoint-repair entry return to bounded InitialSync, and only canonical or verified snapshot progress feeds the watchdog. The AP-076 four- and ten-validator gates both passed the 140-slot same-process pause, own-state/coordinated restarts, and identical checkpoint-3000 manifests. SEA range `9,236,790..9,237,999` plus its header-only boundary at `9,238,000` remain to be additively repaired from US/EU/IN before final live parity. |
 | AP-072 | Prevent binary ABI marker collisions from corrupting nested caller identity or custody arguments | Canonical descriptor parser, explicit SDK layouts, nested caller regression, preserved-chain recovery, exact release gates | Done. Layout mode requires descriptor/signature/payload agreement instead of a leading `0xAB` byte. The old DEX WASM succeeds on the preserved failed database under the corrected runtime, focused Core/SDK/DEX tests pass, and exact four- and ten-validator release gates pass. |
 | AP-073 | Preserve historical native transaction replay while activating strict chain-domain signatures and repair custody mint signing | Exact live block `9,273,160`, activation-boundary unit/execution tests, custody cross-chain rejection, full local gates | Done locally. Core 998/998 and custody 172/172 pass. Below the shared durable consensus-v1 slot, execution reproduces the bounded `v0.5.223` chain-domain-then-legacy transition policy; at/above activation it requires strict chain-ID verification. Malformed activated metadata fails closed. The operator command is `--prepare-consensus-v1-activation` with no legacy alias. The exact four-validator gate passed 140/140 volume journeys, 104/104 launchpad journeys, same-process gap recovery, own-state restarts, and root `b7232593...1bae1de`; the exact ten-validator expansion passed 8/10 liveness, preserved-state recovery, and root `48cb5614...649255`. Workspace, strict Clippy, dependency, contract, SDK, frontend, and static gates pass; hosted CI remains part of AP-070. |
 | AP-074 | Make the hosted archive gate self-contained instead of relying on workstation files or dependencies | Clean tag checkout, recursive JavaScript dependency closure, Git tracking/ignore/lock assertions, exact four-validator rerun | Done locally. The first `v0.5.224` tag attempt passed consensus recovery, certificate parity, and four-node hot/cold manifest parity, then correctly failed before volume journeys because `tests/e2e-volume.js` was absent from the clean checkout. A prior repository cleanup had ignored and untracked `tests/`; only the shell harness was later force-added. The volume and launchpad suites plus their five helper modules are now explicit tracked release inputs. The second tag attempt proved those assets and reached identical four-node checkpoint-1000 manifest root `9ce0e454...71e`, then failed before the first journey because that separate release job had not installed `ws` or `@noble/post-quantum` from the root lockfile. The job now installs Node.js 22 and runs `npm ci --ignore-scripts` before the harness. `test_archive_parity_gate_assets.js` recursively verifies every local `require`, discovers bare `require` and dynamic `import` packages, proves they are declared and locked, checks file tracking and ignore policy, and enforces dependency installation before the release harness. The clean-closure local rerun passed same-process 140-slot recovery, own-state and coordinated restarts, 140/140 volume journeys, 104/104 launchpad/governance/graduation journeys, and four-node checkpoint-3000 manifest root `7609ff7a...6bc1376`; transcript SHA-256 `eac37545...e5fd9f66`. Neither failed tag attempt created a release or distributable artifact. |
 | AP-075 | Eliminate the RocksDB 8.1 checkpoint-flush failure without breaking the signed rollback anchor | Preserved WAL audit, concurrent write/migrate/checkpoint stress, forward open, old-engine reverse open, full fleet gates | Done locally. The preserved failing V2 WAL contains no malformed block key. The candidate uses RocksDB 10.4.2, pins every hot/cold SST to rollback-readable format 5, passes the hot/cold option and concurrency stress regressions, opens the preserved RocksDB 8.1 range `0..3000`, and is readable after flush/compaction by the RocksDB 8.1 rollback engine. The exact four-validator gate passed certificate slot `931`, 244/244 user journeys, and checkpoint-3000 root `cd1e0a07...31ddd`; the exact ten-validator gate passed 8/10 finality, dual preserved-state recovery, certificate slots `2513`/`2673`, and checkpoint-3000 root `365a2a7a...21bfab`. Final logs contain zero RocksDB corruption or background-error matches. |
-| AP-070 | Cut new tag and publish release artifacts | Tag, checksums, crates/npm status | Local AP-069/AP-075 revalidation is complete. Still blocked on a clean commit and hosted CI, replacement signed artifacts, complete source-backed fleet-union repair, coordinated deployment/activation, fixed-tip fleet parity, and package publication. The prior `v0.5.224` draft workflow and detached checksum signature passed but are superseded by the AP-069 preflight finding; that draft must not be published and its tag/artifacts must be replaced only from the clean fully tested fix. Mainnet release remains prohibited until a fresh chain proves complete genesis-to-tip archives without any waiver. |
+| AP-076 | Complete an exactly matching header-only canonical block without weakening conflict checks | SEA boundary dry run, Merkle/header/oracle guards, local-certificate preservation, idempotence, all-category framed stream tests | Done locally. Signed draft `ce979e6d` proved automatic cold reads but reported one conflict after 1,210 valid insertions over SEA source range `9,236,790..9,238,000`. The replacement accepts only the typed header-only completion described above, reports it separately, WAL-syncs cold before retiring hot, preserves local finality proof, and leaves every other mismatch fail-closed. The fleet script frames every archive category over persistent SSH controls. Focused, full workspace, dependency, contract, SDK, frontend, strict four-validator, and independent ten-validator gates pass on the final source. Four-node root `828d5e8f...d444a5`; ten-node root `a8d3b924...1cf0bc`. No live write has occurred. |
+| AP-070 | Cut new tag and publish release artifacts | Tag, checksums, crates/npm status | Local gates complete. Still pending a clean commit, replacement hosted CI and signed artifacts, exact Linux dry-run evidence, complete source-backed fleet-union repair, coordinated deployment/activation, fixed-tip fleet parity, and package publication. The `ce979e6d` `v0.5.224` draft workflow and detached checksum signature passed, but the draft is superseded by the SEA boundary preflight and must not be published. Its tag/artifacts must be replaced only from the clean fully tested fix. Mainnet release remains prohibited until a fresh chain proves complete genesis-to-tip archives without any waiver. |
 
 ## Release Acceptance
 

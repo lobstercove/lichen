@@ -34,6 +34,13 @@ enum CanonicalTxSnapshotCategory {
 
 type SnapshotEntry = (Vec<u8>, Vec<u8>);
 
+enum PublicHistoryExistingRow {
+    Missing,
+    Identical(Vec<u8>),
+    UpgradeIncompleteBlock(Vec<u8>),
+    Conflict,
+}
+
 const CANONICAL_LEDGER_MANIFEST_CATEGORIES: &[&str] = &[
     "slots",
     "blocks",
@@ -214,6 +221,82 @@ fn canonical_block_snapshot_value(key: &[u8], value: &[u8]) -> Result<Vec<u8>, S
         ));
     }
     canonical_block_snapshot_value_from_block(block)
+}
+
+fn validate_complete_public_history_block(block: &Block) -> Result<(), String> {
+    if block.transactions.is_empty() && block.header.tx_root != Hash::default() {
+        return Err(format!(
+            "Refusing header-only public-history block at slot {}",
+            block.header.slot
+        ));
+    }
+    let transaction_hashes: Vec<Hash> = block.transactions.iter().map(|tx| tx.hash()).collect();
+    let computed_root = crate::block::merkle_tx_root_from_hashes(&transaction_hashes);
+    if computed_root != block.header.tx_root {
+        return Err(format!(
+            "Public-history block transaction root mismatch at slot {}: header={} computed={}",
+            block.header.slot,
+            block.header.tx_root.to_hex(),
+            computed_root.to_hex()
+        ));
+    }
+    Ok(())
+}
+
+fn canonical_public_history_block_import_value(
+    key: &[u8],
+    value: &[u8],
+) -> Result<Vec<u8>, String> {
+    let block = decode_snapshot_block_value(value)?;
+    let block_hash = block.hash();
+    if key != block_hash.0 {
+        return Err(format!(
+            "Block snapshot key/hash mismatch: key={} block_hash={}",
+            hex::encode(key),
+            block_hash.to_hex()
+        ));
+    }
+    validate_complete_public_history_block(&block)?;
+    canonical_block_snapshot_value_from_block(block)
+}
+
+fn canonical_block_header_value(block: &Block) -> Result<Vec<u8>, String> {
+    let mut value = Vec::new();
+    append_legacy_bincode(&mut value, &block.header, "block header")
+        .map_err(|err| format!("Failed to serialize canonical block header: {err}"))?;
+    Ok(value)
+}
+
+fn incomplete_public_history_block_upgrade(
+    key: &[u8],
+    existing: &[u8],
+    incoming: &[u8],
+) -> Result<Option<Vec<u8>>, String> {
+    let existing = decode_snapshot_block_value(existing)?;
+    if !existing.transactions.is_empty()
+        || existing.header.tx_root == Hash::default()
+        || !existing.tx_fees_paid.is_empty()
+    {
+        return Ok(None);
+    }
+
+    let mut incoming = decode_snapshot_block_value(incoming)?;
+    validate_complete_public_history_block(&incoming)?;
+    if incoming.transactions.is_empty()
+        || canonical_block_header_value(&existing)? != canonical_block_header_value(&incoming)?
+        || existing.oracle_prices != incoming.oracle_prices
+        || existing.hash().0.as_slice() != key
+        || incoming.hash().0.as_slice() != key
+    {
+        return Ok(None);
+    }
+
+    // A replay placeholder retained the target's local finality proof. Restore
+    // only the missing body fields and keep that proof instead of replacing it
+    // with a source validator's potentially different valid quorum subset.
+    incoming.commit_round = existing.commit_round;
+    incoming.commit_signatures = existing.commit_signatures;
+    canonical_block_snapshot_value_from_block(incoming).map(Some)
 }
 
 fn canonical_block_snapshot_value_from_block(mut block: Block) -> Result<Vec<u8>, String> {
@@ -3707,7 +3790,7 @@ impl StateStore {
         value: &[u8],
     ) -> Result<Vec<u8>, String> {
         match category {
-            "blocks" => canonical_block_snapshot_value(key, value),
+            "blocks" => canonical_public_history_block_import_value(key, value),
             "transactions" => canonical_transaction_snapshot_value_from_entry(key, value),
             "slots" => {
                 if key.len() != 8 || value.len() != 32 {
@@ -3749,14 +3832,43 @@ impl StateStore {
         existing: &[u8],
         incoming: &[u8],
     ) -> Result<bool, String> {
+        if category == "blocks" {
+            return Ok(public_history_manifest_block_value(key, existing)?
+                == public_history_manifest_block_value(key, incoming)?);
+        }
         let existing = Self::canonical_public_history_import_value(category, key, existing)?;
         Ok(existing == incoming)
     }
 
+    fn classify_public_history_existing_row(
+        category: &str,
+        key: &[u8],
+        existing: Option<&[u8]>,
+        incoming: &[u8],
+    ) -> Result<PublicHistoryExistingRow, String> {
+        let Some(existing) = existing else {
+            return Ok(PublicHistoryExistingRow::Missing);
+        };
+        if Self::public_history_values_match(category, key, existing, incoming)? {
+            return Ok(PublicHistoryExistingRow::Identical(
+                Self::canonical_public_history_import_value(category, key, existing)?,
+            ));
+        }
+        if category == "blocks" {
+            if let Some(upgraded) =
+                incomplete_public_history_block_upgrade(key, existing, incoming)?
+            {
+                return Ok(PublicHistoryExistingRow::UpgradeIncompleteBlock(upgraded));
+            }
+        }
+        Ok(PublicHistoryExistingRow::Conflict)
+    }
+
     /// Additively import public-history snapshot entries.
     ///
-    /// Existing identical rows are skipped. Existing same-key mismatches are
-    /// conflicts; execute mode aborts on the first mismatch. Cold-capable
+    /// Existing identical rows are skipped. A matching header-only block may
+    /// receive its source-backed body; every other same-key mismatch is a
+    /// conflict, and execute mode aborts on the first one. Cold-capable
     /// categories are written into the attached cold store when present.
     pub fn import_public_history_category_entries(
         &self,
@@ -3816,59 +3928,107 @@ impl StateStore {
             let row_bytes = (key.len() as u64).saturating_add(canonical.len() as u64);
             report.source_bytes = report.source_bytes.saturating_add(row_bytes);
 
-            if let Some(hot_cf) = hot_cf.as_ref() {
-                if let Some(existing) = self
-                    .db
+            let hot_existing = if let Some(hot_cf) = hot_cf.as_ref() {
+                self.db
                     .get_cf(hot_cf, key)
                     .map_err(|err| format!("Failed reading hot {}: {}", hot_cf_name, err))?
-                {
-                    if Self::public_history_values_match(category, key, &existing, &canonical)? {
-                        report.identical_rows = report.identical_rows.saturating_add(1);
-                    } else {
-                        report.conflict_rows = report.conflict_rows.saturating_add(1);
-                        if !dry_run {
-                            return Err(format!(
-                                "Refusing public-history import: hot {} key {} differs from source",
-                                hot_cf_name,
-                                hex::encode(key)
-                            ));
-                        }
-                    }
-                    continue;
+            } else {
+                None
+            };
+            let target_existing = target_db
+                .get_cf(&target_cf, key)
+                .map_err(|err| format!("Failed reading {}: {}", target_cf_name, err))?;
+            let hot_action = Self::classify_public_history_existing_row(
+                category,
+                key,
+                hot_existing.as_deref(),
+                &canonical,
+            )?;
+            let target_action = Self::classify_public_history_existing_row(
+                category,
+                key,
+                target_existing.as_deref(),
+                &canonical,
+            )?;
+
+            if matches!(&hot_action, PublicHistoryExistingRow::Conflict)
+                || matches!(&target_action, PublicHistoryExistingRow::Conflict)
+            {
+                report.conflict_rows = report.conflict_rows.saturating_add(1);
+                if !dry_run {
+                    return Err(format!(
+                        "Refusing public-history import: hot/cold {} key {} differs from source",
+                        hot_cf_name,
+                        hex::encode(key)
+                    ));
                 }
+                continue;
             }
 
-            match target_db
-                .get_cf(&target_cf, key)
-                .map_err(|err| format!("Failed reading {}: {}", target_cf_name, err))?
-            {
-                Some(existing) => {
-                    if Self::public_history_values_match(category, key, &existing, &canonical)? {
-                        report.identical_rows = report.identical_rows.saturating_add(1);
-                    } else {
-                        report.conflict_rows = report.conflict_rows.saturating_add(1);
-                        if !dry_run {
-                            return Err(format!(
-                                "Refusing public-history import: {} key {} differs from source",
-                                target_cf_name,
-                                hex::encode(key)
-                            ));
-                        }
+            let upgrades_incomplete = matches!(
+                &hot_action,
+                PublicHistoryExistingRow::UpgradeIncompleteBlock(_)
+            ) || matches!(
+                &target_action,
+                PublicHistoryExistingRow::UpgradeIncompleteBlock(_)
+            );
+            if upgrades_incomplete {
+                report.inserted_rows = report.inserted_rows.saturating_add(1);
+                report.inserted_bytes = report.inserted_bytes.saturating_add(row_bytes);
+                report.upgraded_incomplete_rows = report.upgraded_incomplete_rows.saturating_add(1);
+                if !dry_run {
+                    let upgraded = match (&hot_action, &target_action) {
+                        (PublicHistoryExistingRow::Identical(value), _) => value,
+                        (_, PublicHistoryExistingRow::Identical(value)) => value,
+                        (PublicHistoryExistingRow::UpgradeIncompleteBlock(value), _) => value,
+                        (_, PublicHistoryExistingRow::UpgradeIncompleteBlock(value)) => value,
+                        _ => unreachable!("incomplete upgrade must provide a full block"),
+                    };
+                    target_db.put_cf(&target_cf, key, upgraded).map_err(|err| {
+                        format!(
+                            "Failed upgrading incomplete {} key {}: {}",
+                            target_cf_name,
+                            hex::encode(key),
+                            err
+                        )
+                    })?;
+                    target_db.flush_wal(true).map_err(|err| {
+                        format!("Failed syncing {} upgrade WAL: {}", target_cf_name, err)
+                    })?;
+                    if let (Some(hot_cf), Some(_)) = (hot_cf.as_ref(), hot_existing.as_ref()) {
+                        self.db.delete_cf(hot_cf, key).map_err(|err| {
+                            format!(
+                                "Failed retiring incomplete hot {} key {}: {}",
+                                hot_cf_name,
+                                hex::encode(key),
+                                err
+                            )
+                        })?;
+                        self.db.flush_wal(true).map_err(|err| {
+                            format!("Failed syncing hot {} upgrade WAL: {}", hot_cf_name, err)
+                        })?;
                     }
                 }
-                None => {
-                    report.inserted_rows = report.inserted_rows.saturating_add(1);
-                    report.inserted_bytes = report.inserted_bytes.saturating_add(row_bytes);
-                    if !dry_run {
-                        batch.put_cf(&target_cf, key, canonical);
-                        pending += 1;
-                        if pending >= 10_000 {
-                            target_db.write(std::mem::take(&mut batch)).map_err(|err| {
-                                format!("Failed writing {} import batch: {}", target_cf_name, err)
-                            })?;
-                            pending = 0;
-                        }
-                    }
+                continue;
+            }
+
+            if matches!(&hot_action, PublicHistoryExistingRow::Identical(_))
+                || matches!(&target_action, PublicHistoryExistingRow::Identical(_))
+            {
+                report.identical_rows = report.identical_rows.saturating_add(1);
+                continue;
+            }
+
+            report.inserted_rows = report.inserted_rows.saturating_add(1);
+            report.inserted_bytes = report.inserted_bytes.saturating_add(row_bytes);
+            if !dry_run {
+                batch.put_cf(&target_cf, key, canonical);
+                pending += 1;
+                if pending >= 10_000 {
+                    target_db.write(std::mem::take(&mut batch)).map_err(|err| {
+                        format!("Failed writing {} import batch: {}", target_cf_name, err)
+                    })?;
+                    pending = 0;
                 }
             }
         }
@@ -3877,6 +4037,11 @@ impl StateStore {
             target_db.write(batch).map_err(|err| {
                 format!("Failed writing {} import batch: {}", target_cf_name, err)
             })?;
+        }
+        if !dry_run && report.inserted_rows > 0 {
+            target_db
+                .flush_wal(true)
+                .map_err(|err| format!("Failed syncing {} import WAL: {}", target_cf_name, err))?;
         }
 
         Ok(report)

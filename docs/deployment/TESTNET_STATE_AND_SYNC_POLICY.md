@@ -36,6 +36,13 @@ This policy exists because an active testnet is shared infrastructure. Developer
   has a separate archive/cold store, `--merge-public-history-from-source` must
   be paired with `--source-cold-store` on both dry-run and execute so hot and
   cold backed history are restored together.
+- Same-key public-history differences are conflicts except for one typed block
+  completion: an existing header-only row may be completed only from a full
+  source block with the same key/hash, complete canonical header, recomputed
+  transaction Merkle root, and oracle payload. The target validator's local
+  commit round and certificate subset must be preserved. Cold storage must be
+  WAL-synced before a hot placeholder is retired, and the completion count must
+  be explicit in dry-run and execute evidence.
 - When the verified source is another live VPS rather than a locally mounted
   DB, use `scripts/stream-public-history-repair.sh`. It exports whitelisted
   public-history pages from the source and imports them into one stopped target
@@ -51,11 +58,16 @@ This policy exists because an active testnet is shared infrastructure. Developer
   identical candidate hashes, a mandatory complete target dry run with zero
   conflicts, and measured free space covering 150% of the missing key/value
   bytes plus the 10 GiB runtime reserve before the target is stopped.
-- Large block-body ranges must use the script's binary framed stream mode
-  (`--public-history-page-format binary --stream-pages` under the hood) rather
-  than JSON/base64 pages. The stream mode still performs additive imports and
-  conflict aborts, but it keeps one source and one target process open for the
-  range and avoids retaining huge raw page payloads as evidence.
+- Fleet repair uses the script's binary framed stream mode
+  (`--public-history-page-format binary --stream-pages` under the hood) for
+  every public-history category rather than JSON/base64 page loops. The stream
+  mode still performs additive imports and conflict aborts, but it keeps one
+  source and one target process open, reuses persistent SSH controls, and avoids
+  retaining huge raw page payloads as evidence.
+- RocksDB archive scans must run with the service-equivalent file-descriptor
+  limit. The fleet verifier and repair helper raise it automatically. Direct
+  operator invocations must use the documented `run_validator_admin` wrapper;
+  plain interactive `sudo -u lichen` is not a valid archive-scan launch path.
 - Public-history parity is a validator-set invariant. If one validator can
   serve backed historical `getBlock`, `getTransaction`, or
   `getTransactionsByAddress` data that another validator cannot serve, the

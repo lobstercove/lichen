@@ -14304,6 +14304,7 @@ struct PublicHistoryRepairCategoryCliReport {
     source_bytes: u64,
     inserted_rows: u64,
     inserted_bytes: u64,
+    upgraded_incomplete_rows: u64,
     identical_rows: u64,
     conflict_rows: u64,
     targets: Vec<String>,
@@ -14324,6 +14325,7 @@ struct PublicHistoryRepairCliReport {
     source_bytes: u64,
     inserted_rows: u64,
     inserted_bytes: u64,
+    upgraded_incomplete_rows: u64,
     identical_rows: u64,
     conflict_rows: u64,
     cleared_account_tx_counters: u64,
@@ -14691,6 +14693,9 @@ fn merge_public_history_import_report(
     aggregate.inserted_bytes = aggregate
         .inserted_bytes
         .saturating_add(report.inserted_bytes);
+    aggregate.upgraded_incomplete_rows = aggregate
+        .upgraded_incomplete_rows
+        .saturating_add(report.upgraded_incomplete_rows);
     aggregate.identical_rows = aggregate
         .identical_rows
         .saturating_add(report.identical_rows);
@@ -15097,6 +15102,9 @@ fn merge_public_history_import_report_fields(
     aggregate.inserted_bytes = aggregate
         .inserted_bytes
         .saturating_add(report.inserted_bytes);
+    aggregate.upgraded_incomplete_rows = aggregate
+        .upgraded_incomplete_rows
+        .saturating_add(report.upgraded_incomplete_rows);
     aggregate.identical_rows = aggregate
         .identical_rows
         .saturating_add(report.identical_rows);
@@ -15276,7 +15284,7 @@ fn maybe_run_public_history_page_admin(args: &[String]) -> Option<i32> {
             return Some(1);
         }
         if target_cold_store.is_none() {
-            eprintln!("Refusing public-history page import execution without --cold-store");
+            eprintln!("Refusing public-history page import without an attached target cold store");
             return Some(1);
         }
         if secondary_dir.is_some() {
@@ -15880,7 +15888,7 @@ fn maybe_run_public_history_archive_admin(args: &[String]) -> Option<i32> {
                 return Some(1);
             }
             if target_cold_store.is_none() {
-                eprintln!("Refusing public-history repair execution without --cold-store");
+                eprintln!("Refusing public-history repair without an attached target cold store");
                 return Some(1);
             }
             if secondary_dir.is_some() {
@@ -16003,6 +16011,10 @@ fn maybe_run_public_history_archive_admin(args: &[String]) -> Option<i32> {
             .iter()
             .map(|report| report.inserted_bytes)
             .sum();
+        let upgraded_incomplete_rows = category_reports
+            .iter()
+            .map(|report| report.upgraded_incomplete_rows)
+            .sum();
         let identical_rows = category_reports
             .iter()
             .map(|report| report.identical_rows)
@@ -16046,6 +16058,7 @@ fn maybe_run_public_history_archive_admin(args: &[String]) -> Option<i32> {
             source_bytes,
             inserted_rows,
             inserted_bytes,
+            upgraded_incomplete_rows,
             identical_rows,
             conflict_rows,
             cleared_account_tx_counters,
@@ -16133,7 +16146,7 @@ fn maybe_run_public_history_merge_admin(args: &[String]) -> Option<i32> {
     };
 
     if execute && cold_store_path.is_none() {
-        eprintln!("Refusing public history merge execution without --cold-store");
+        eprintln!("Refusing public history merge without an attached target cold store");
         return Some(1);
     }
 
@@ -35582,6 +35595,44 @@ mod tests {
             .is_some());
         assert!(read_public_history_binary_page_frame(&mut reader)
             .expect("read eof")
+            .is_none());
+    }
+
+    #[test]
+    fn public_history_binary_frames_support_every_archive_category() {
+        let entries = vec![(b"category-key".to_vec(), b"category-value".to_vec())];
+        let mut stream = Vec::new();
+
+        for category in PUBLIC_HISTORY_SNAPSHOT_CATEGORIES {
+            assert_eq!(
+                parse_public_history_category_arg(category).expect("supported category"),
+                *category
+            );
+            let header = public_history_page_header(
+                "binary",
+                category,
+                1,
+                None,
+                Some("01".to_string()),
+                false,
+                entries.len() as u64,
+            );
+            stream.extend_from_slice(
+                &encode_public_history_binary_page(&header, &entries)
+                    .expect("encode category frame"),
+            );
+        }
+
+        let mut reader = std::io::BufReader::new(std::io::Cursor::new(stream));
+        for category in PUBLIC_HISTORY_SNAPSHOT_CATEGORIES {
+            let (header, decoded_entries) = read_public_history_binary_page_frame(&mut reader)
+                .expect("decode category frame")
+                .expect("category frame");
+            assert_eq!(header.category, *category);
+            assert_eq!(decoded_entries, entries);
+        }
+        assert!(read_public_history_binary_page_frame(&mut reader)
+            .expect("read category stream eof")
             .is_none());
     }
 

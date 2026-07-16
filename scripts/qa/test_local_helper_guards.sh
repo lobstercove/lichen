@@ -394,6 +394,11 @@ assert_public_history_repair_stays_quiesced() {
         'without byte/conflict counters' \
         'required_free_bytes=$required_free_bytes' \
         '--verify-contiguous-block-range' \
+        'ControlMaster=auto' \
+        'ControlPersist=600' \
+        'SSH_CONTROL_DIR="$(mktemp -d /tmp/lichen-ph-repair-ssh.XXXXXX)"' \
+        'FRAME_STREAM_PAGES="${LICHEN_PUBLIC_HISTORY_STREAM_FRAME_STREAM_PAGES:-1}"' \
+        '[ "$PAGE_FORMAT" = "binary" ] && [ "$FRAME_STREAM_PAGES" = "1" ]' \
         'Execute requires --leave-target-stopped' \
         'Execute block repair requires explicit --from-slot and --to-slot bounds.'; do
         if ! grep -Fq -- "$required_guard" "$script"; then

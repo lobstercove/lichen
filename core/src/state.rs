@@ -128,6 +128,9 @@ pub struct PublicHistoryImportReport {
     pub source_bytes: u64,
     pub inserted_rows: u64,
     pub inserted_bytes: u64,
+    /// Inserted rows that safely replaced an incomplete header-only block.
+    /// These are included in `inserted_rows` and `inserted_bytes`.
+    pub upgraded_incomplete_rows: u64,
     pub identical_rows: u64,
     pub conflict_rows: u64,
 }
@@ -7809,6 +7812,238 @@ mod tests {
                 .1,
             target_hash.0.to_vec()
         );
+    }
+
+    #[test]
+    fn public_history_repair_upgrades_only_matching_header_only_blocks() {
+        let source_dir = tempdir().unwrap();
+        let target_hot_dir = tempdir().unwrap();
+        let target_cold_dir = tempdir().unwrap();
+        let source = StateStore::open(source_dir.path()).unwrap();
+        let mut target = StateStore::open(target_hot_dir.path()).unwrap();
+        target.open_cold_store(target_cold_dir.path()).unwrap();
+
+        let tx = crate::Transaction::new(crate::Message::new(
+            Vec::new(),
+            Hash::hash(b"header-only-upgrade-tx"),
+        ));
+        let mut source_block = Block::new_with_timestamp(
+            42,
+            Hash::hash(b"header-only-upgrade-parent"),
+            Hash::hash(b"header-only-upgrade-state"),
+            [0x42; 32],
+            vec![tx],
+            1_700_000_042,
+        );
+        source_block.oracle_prices = vec![("LICN".to_string(), 123_456)];
+        source_block.commit_round = 7;
+        source_block.commit_signatures = vec![CommitSignature {
+            validator: [0x11; 32],
+            signature: PqSignature {
+                scheme_version: 1,
+                public_key: PqPublicKey {
+                    scheme_version: 1,
+                    bytes: vec![0x11; 4],
+                },
+                sig: vec![0x12; 8],
+            },
+            timestamp: 100,
+        }];
+        source.put_block(&source_block).unwrap();
+
+        let mut target_header = source_block.clone();
+        target_header.commit_round = 9;
+        target_header.commit_signatures = vec![CommitSignature {
+            validator: [0x21; 32],
+            signature: PqSignature {
+                scheme_version: 1,
+                public_key: PqPublicKey {
+                    scheme_version: 1,
+                    bytes: vec![0x21; 4],
+                },
+                sig: vec![0x22; 8],
+            },
+            timestamp: 200,
+        }];
+        target
+            .put_replay_block_header_atomic(&target_header, None, None)
+            .unwrap();
+
+        let page = source
+            .export_public_history_category_cursor_untracked("blocks", None, 10)
+            .unwrap();
+        let dry_run = target
+            .import_public_history_category_entries("blocks", &page.entries, true)
+            .unwrap();
+        assert_eq!(dry_run.inserted_rows, 1);
+        assert_eq!(dry_run.upgraded_incomplete_rows, 1);
+        assert_eq!(dry_run.conflict_rows, 0);
+        assert!(target
+            .get_block(&source_block.hash())
+            .unwrap()
+            .unwrap()
+            .transactions
+            .is_empty());
+
+        let executed = target
+            .import_public_history_category_entries("blocks", &page.entries, false)
+            .unwrap();
+        assert_eq!(executed.inserted_rows, 1);
+        assert_eq!(executed.upgraded_incomplete_rows, 1);
+        assert_eq!(executed.conflict_rows, 0);
+
+        let restored = target
+            .get_block(&source_block.hash())
+            .unwrap()
+            .expect("restored full block");
+        assert_eq!(
+            restored
+                .transactions
+                .iter()
+                .map(crate::Transaction::hash)
+                .collect::<Vec<_>>(),
+            source_block
+                .transactions
+                .iter()
+                .map(crate::Transaction::hash)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(restored.commit_round, target_header.commit_round);
+        assert_eq!(restored.commit_signatures.len(), 1);
+        assert_eq!(
+            restored.commit_signatures[0].validator,
+            target_header.commit_signatures[0].validator
+        );
+        let hot_blocks = target.db.cf_handle(CF_BLOCKS).unwrap();
+        assert!(target
+            .db
+            .get_cf(&hot_blocks, source_block.hash().0)
+            .unwrap()
+            .is_none());
+        let cold = target.cold_db.as_ref().unwrap();
+        let cold_blocks = cold.cf_handle(COLD_CF_BLOCKS).unwrap();
+        assert!(cold
+            .get_cf(&cold_blocks, source_block.hash().0)
+            .unwrap()
+            .is_some());
+
+        let repeated = target
+            .import_public_history_category_entries("blocks", &page.entries, true)
+            .unwrap();
+        assert_eq!(repeated.identical_rows, 1);
+        assert_eq!(repeated.inserted_rows, 0);
+        assert_eq!(repeated.upgraded_incomplete_rows, 0);
+        assert_eq!(repeated.conflict_rows, 0);
+        assert_eq!(
+            source
+                .compute_public_history_manifest(&["blocks"], 1)
+                .unwrap()
+                .root,
+            target
+                .compute_public_history_manifest(&["blocks"], 1)
+                .unwrap()
+                .root
+        );
+    }
+
+    #[test]
+    fn public_history_repair_rejects_invalid_or_mismatched_block_upgrades() {
+        let source_dir = tempdir().unwrap();
+        let target_dir = tempdir().unwrap();
+        let source = StateStore::open(source_dir.path()).unwrap();
+        let target = StateStore::open(target_dir.path()).unwrap();
+
+        let tx = crate::Transaction::new(crate::Message::new(
+            Vec::new(),
+            Hash::hash(b"guarded-upgrade-source-tx"),
+        ));
+        let mut source_block = Block::new_with_timestamp(
+            51,
+            Hash::hash(b"guarded-upgrade-parent"),
+            Hash::hash(b"guarded-upgrade-state"),
+            [0x51; 32],
+            vec![tx],
+            1_700_000_051,
+        );
+        source_block.oracle_prices = vec![("LICN".to_string(), 10)];
+        source.put_block(&source_block).unwrap();
+
+        let mut mismatched_header = source_block.clone();
+        mismatched_header.oracle_prices = vec![("LICN".to_string(), 11)];
+        target
+            .put_replay_block_header_atomic(&mismatched_header, None, None)
+            .unwrap();
+        let page = source
+            .export_public_history_category_cursor_untracked("blocks", None, 10)
+            .unwrap();
+        let mismatch = target
+            .import_public_history_category_entries("blocks", &page.entries, true)
+            .unwrap();
+        assert_eq!(mismatch.conflict_rows, 1);
+        assert_eq!(mismatch.upgraded_incomplete_rows, 0);
+
+        let mut invalid_body = source_block.clone();
+        invalid_body.transactions = vec![crate::Transaction::new(crate::Message::new(
+            Vec::new(),
+            Hash::hash(b"guarded-upgrade-wrong-tx"),
+        ))];
+        let mut invalid_value = vec![0xBC];
+        append_legacy_bincode(&mut invalid_value, &invalid_body, "invalid block").unwrap();
+        let error = target
+            .import_public_history_category_entries(
+                "blocks",
+                &[(source_block.hash().0.to_vec(), invalid_value)],
+                true,
+            )
+            .unwrap_err();
+        assert!(error.contains("transaction root mismatch"), "{error}");
+    }
+
+    #[test]
+    fn public_history_repair_preserves_valid_local_commit_subset() {
+        let source_dir = tempdir().unwrap();
+        let target_dir = tempdir().unwrap();
+        let source = StateStore::open(source_dir.path()).unwrap();
+        let target = StateStore::open(target_dir.path()).unwrap();
+        let mut source_block = Block::new_with_timestamp(
+            61,
+            Hash::hash(b"commit-subset-parent"),
+            Hash::hash(b"commit-subset-state"),
+            [0x61; 32],
+            Vec::new(),
+            1_700_000_061,
+        );
+        source_block.commit_round = 1;
+        source_block.commit_signatures = vec![CommitSignature {
+            validator: [0x31; 32],
+            signature: PqSignature {
+                scheme_version: 1,
+                public_key: PqPublicKey {
+                    scheme_version: 1,
+                    bytes: vec![0x31; 4],
+                },
+                sig: vec![0x32; 8],
+            },
+            timestamp: 300,
+        }];
+        let mut target_block = source_block.clone();
+        target_block.commit_round = 2;
+        target_block.commit_signatures[0].validator = [0x41; 32];
+        source.put_block(&source_block).unwrap();
+        target.put_block(&target_block).unwrap();
+
+        let page = source
+            .export_public_history_category_cursor_untracked("blocks", None, 10)
+            .unwrap();
+        let report = target
+            .import_public_history_category_entries("blocks", &page.entries, true)
+            .unwrap();
+        assert_eq!(report.identical_rows, 1);
+        assert_eq!(report.conflict_rows, 0);
+        assert_eq!(report.upgraded_incomplete_rows, 0);
+        let stored = target.get_block(&target_block.hash()).unwrap().unwrap();
+        assert_eq!(stored.commit_round, 2);
+        assert_eq!(stored.commit_signatures[0].validator, [0x41; 32]);
     }
 
     #[test]

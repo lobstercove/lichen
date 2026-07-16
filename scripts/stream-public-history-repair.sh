@@ -53,7 +53,7 @@ EXECUTE="${LICHEN_PUBLIC_HISTORY_STREAM_EXECUTE:-0}"
 KEEP_SOURCE_PAGES="${LICHEN_PUBLIC_HISTORY_STREAM_KEEP_SOURCE_PAGES:-0}"
 COMPRESS_SOURCE_PAGES="${LICHEN_PUBLIC_HISTORY_STREAM_COMPRESS_SOURCE_PAGES:-1}"
 PAGE_FORMAT="${LICHEN_PUBLIC_HISTORY_STREAM_PAGE_FORMAT:-binary}"
-FRAME_STREAM_BLOCKS="${LICHEN_PUBLIC_HISTORY_STREAM_FRAME_STREAM_BLOCKS:-1}"
+FRAME_STREAM_PAGES="${LICHEN_PUBLIC_HISTORY_STREAM_FRAME_STREAM_PAGES:-1}"
 LEAVE_TARGET_STOPPED="${LICHEN_PUBLIC_HISTORY_LEAVE_TARGET_STOPPED:-0}"
 
 while [ "$#" -gt 0 ]; do
@@ -183,6 +183,7 @@ SSH_ATTEMPTS="${LICHEN_PUBLIC_HISTORY_STREAM_SSH_ATTEMPTS:-5}"
 SSH_RETRY_DELAY_SECS="${LICHEN_PUBLIC_HISTORY_STREAM_SSH_RETRY_DELAY_SECS:-2}"
 SSH_STRICT_HOST_KEY_CHECKING="${LICHEN_PUBLIC_HISTORY_STREAM_STRICT_HOST_KEY_CHECKING:-yes}"
 SSH_KNOWN_HOSTS_FILE="${LICHEN_PUBLIC_HISTORY_STREAM_KNOWN_HOSTS_FILE:-$HOME/.ssh/known_hosts}"
+SSH_CONTROL_DIR="$(mktemp -d /tmp/lichen-ph-repair-ssh.XXXXXX)"
 CACHE_SIZE_MB="${LICHEN_PUBLIC_HISTORY_STREAM_CACHE_SIZE_MB:-256}"
 NOFILE_LIMIT="${LICHEN_PUBLIC_HISTORY_STREAM_NOFILE_LIMIT:-1048576}"
 REQUIRED_FREE_RESERVE_BYTES="${LICHEN_PUBLIC_HISTORY_FREE_RESERVE_BYTES:-10737418240}"
@@ -213,6 +214,26 @@ fi
 mkdir -p "$EVIDENCE_DIR"
 exec > >(tee "$EVIDENCE_DIR/run.log") 2>&1
 
+close_ssh_controls() {
+  local host
+  for host in $SOURCE_HOST $TARGET_HOSTS; do
+    ssh -p "$SSH_PORT" \
+      -o ControlPath="$SSH_CONTROL_DIR/%C" \
+      -O exit \
+      "$SSH_USER@$host" >/dev/null 2>&1 || true
+  done
+  rm -rf "$SSH_CONTROL_DIR"
+}
+
+finalize() {
+  local status=$?
+  trap - EXIT
+  close_ssh_controls
+  exit "$status"
+}
+
+trap finalize EXIT
+
 ssh_base() {
   ssh -p "$SSH_PORT" \
     -o BatchMode=yes \
@@ -223,6 +244,9 @@ ssh_base() {
     -o StrictHostKeyChecking="$SSH_STRICT_HOST_KEY_CHECKING" \
     -o UserKnownHostsFile="$SSH_KNOWN_HOSTS_FILE" \
     -o LogLevel=ERROR \
+    -o ControlMaster=auto \
+    -o ControlPersist=600 \
+    -o ControlPath="$SSH_CONTROL_DIR/%C" \
     "$@"
 }
 
@@ -353,10 +377,7 @@ source_page_suffix() {
 }
 
 stream_supported_category() {
-  case "$1" in
-    blocks) [ "$PAGE_FORMAT" = "binary" ] && [ "$FRAME_STREAM_BLOCKS" = "1" ] ;;
-    *) return 1 ;;
-  esac
+  [ "$PAGE_FORMAT" = "binary" ] && [ "$FRAME_STREAM_PAGES" = "1" ]
 }
 
 cursor_for_range_start() {
@@ -421,7 +442,7 @@ fi
   echo "keep_source_pages=$KEEP_SOURCE_PAGES"
   echo "compress_source_pages=$COMPRESS_SOURCE_PAGES"
   echo "page_format=$PAGE_FORMAT"
-  echo "frame_stream_blocks=$FRAME_STREAM_BLOCKS"
+  echo "frame_stream_pages=$FRAME_STREAM_PAGES"
   echo "leave_target_stopped=$LEAVE_TARGET_STOPPED"
   echo "from_slot=${FROM_SLOT:-}"
   echo "to_slot=${TO_SLOT:-}"
