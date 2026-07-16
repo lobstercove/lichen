@@ -227,6 +227,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Makes fleet SSH retries preserve nonzero exit status and atomically replace
   per-attempt files, and makes comprehensive TypeScript SDK compilation/tests
   propagate their original failures instead of returning success through `!`.
+- Runs each bounded page's read-only target validation concurrently across the
+  independent fleet while keeping all execute imports sequential and quiesced.
 - Makes public-network fleet verification and streamed history repair derive the
   same canonical cold archive as the runtime; neither operator path passes the
   now-rejected development archive flags.

@@ -1542,6 +1542,12 @@ summary is recorded under
 superseded `bdc8de0d` tag and draft must not be published or deployed;
 replacement source and artifacts must pass the complete release gates.
 
+Read-only target checks for a completed source page run concurrently because
+they touch independent validators and evidence files. This removes a measured
+three-times fleet serialization penalty on 100 MB compressed block pages.
+Source export remains single-copy and checksummed; execute imports remain
+strictly sequential and quiesced.
+
 ## Tracker
 
 | ID | Work item | Evidence | Status |

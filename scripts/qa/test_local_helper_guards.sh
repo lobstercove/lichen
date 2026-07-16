@@ -403,6 +403,9 @@ assert_public_history_repair_stays_quiesced() {
         'attempt_output="${output_file}.attempt-${attempt}"' \
         'mv -f "$attempt_output" "$output_file"' \
         'status=$?' \
+        'import_page_dry_run_all_targets "$category" "$page_file" "$row_count" "$page_index"' \
+        'if wait "${pids[$index]}"; then' \
+        'Dry-run import failed for ${labels[$index]}' \
         'Execute requires --leave-target-stopped' \
         'Execute block repair requires explicit --from-slot and --to-slot bounds.'; do
         if ! grep -Fq -- "$required_guard" "$script"; then

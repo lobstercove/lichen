@@ -754,6 +754,48 @@ if conflict_rows != 0:
 PY
 }
 
+import_page_dry_run_all_targets() {
+  local category="$1"
+  local page_file="$2"
+  local row_count="$3"
+  local page_index="$4"
+  local target target_label target_category_dir import_file
+  local wait_status=0
+  local wait_failed=0
+  local index
+  local -a pids=()
+  local -a labels=()
+  local -a import_files=()
+
+  for target in $TARGET_HOSTS; do
+    target_label="$(host_label "$target")"
+    target_category_dir="$EVIDENCE_DIR/$target_label/$category"
+    import_file="$target_category_dir/page-${page_index}-import.json"
+    echo "Importing $category page $page_index into $target_label rows=$row_count"
+    import_page_dry_run "$target" "$target_label" "$category" "$page_file" "$import_file" &
+    pids+=("$!")
+    labels+=("$target_label")
+    import_files+=("$import_file")
+  done
+
+  for index in "${!pids[@]}"; do
+    if wait "${pids[$index]}"; then
+      :
+    else
+      wait_status=$?
+      wait_failed=1
+      echo "Dry-run import failed for ${labels[$index]} with status $wait_status" >&2
+    fi
+  done
+  if [ "$wait_failed" -ne 0 ]; then
+    return 1
+  fi
+
+  for index in "${!import_files[@]}"; do
+    validate_page_import "$category" "$row_count" "${import_files[$index]}"
+  done
+}
+
 if [ "$EXECUTE" != "1" ]; then
   for raw_category in "${CATEGORY_LIST[@]}"; do
     category="$(echo "$raw_category" | xargs)"
@@ -787,14 +829,7 @@ if [ "$EXECUTE" != "1" ]; then
       if [ "${row_count:-0}" = "0" ] && [ "$has_more" != "true" ]; then
         echo "  $category page $page_index empty and complete"
       else
-        for target in $TARGET_HOSTS; do
-          target_label="$(host_label "$target")"
-          target_category_dir="$EVIDENCE_DIR/$target_label/$category"
-          import_file="$target_category_dir/page-${page_index}-import.json"
-          echo "Importing $category page $page_index into $target_label rows=$row_count"
-          import_page_dry_run "$target" "$target_label" "$category" "$page_file" "$import_file"
-          validate_page_import "$category" "$row_count" "$import_file"
-        done
+        import_page_dry_run_all_targets "$category" "$page_file" "$row_count" "$page_index"
       fi
 
       if [ "$KEEP_SOURCE_PAGES" != "1" ]; then
