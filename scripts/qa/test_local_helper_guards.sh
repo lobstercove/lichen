@@ -403,6 +403,8 @@ assert_public_history_repair_stays_quiesced() {
         'attempt_output="${output_file}.attempt-${attempt}"' \
         'mv -f "$attempt_output" "$output_file"' \
         'status=$?' \
+        'remote_pipeline="gzip -dc | $1"' \
+        'bash -o pipefail -c $remote_pipeline_quoted' \
         'import_page_dry_run_all_targets "$category" "$page_file" "$row_count" "$page_index"' \
         'if wait "${pids[$index]}"; then' \
         'Dry-run import failed for ${labels[$index]}' \
@@ -414,7 +416,8 @@ assert_public_history_repair_stays_quiesced() {
         fi
     done
     if grep -Fq -- '--stream-pages' "$script" || \
-        grep -Fq 'ssh_base "$SSH_USER@$SOURCE_HOST"' "$script"; then
+        grep -Fq 'ssh_base "$SSH_USER@$SOURCE_HOST"' "$script" || \
+        grep -Fq 'gzip -dc "$input_file" | ssh_base' "$script"; then
         echo "❌ public-history repair transport: concurrent two-hop stream must not bypass bounded page integrity"
         exit 1
     fi

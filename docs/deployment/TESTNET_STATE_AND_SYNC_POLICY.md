@@ -71,7 +71,9 @@ This policy exists because an active testnet is shared infrastructure. Developer
   export or report, so partial attempts cannot be concatenated. Read-only
   import checks fan out concurrently across independent target validators for
   each completed source page; execute remains sequential and leaves each target
-  stopped for fleet-level parity.
+  stopped for fleet-level parity. Compressed page bytes cross SSH unchanged and
+  are decompressed under remote `pipefail`; raw block bodies are never expanded
+  over the workstation-to-validator network path.
 - RocksDB archive scans must run with the service-equivalent file-descriptor
   limit. The fleet verifier and repair helper raise it automatically. Direct
   operator invocations must use the documented `run_validator_admin` wrapper;

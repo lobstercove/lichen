@@ -296,11 +296,22 @@ ssh_run_stdin_json_file() {
   shift 3
   local attempt status
   local attempt_output
+  local remote_pipeline=""
+  local remote_pipeline_quoted=""
+  if [[ "$input_file" == *.gz ]]; then
+    if [ "$#" -ne 1 ]; then
+      echo "Compressed page import requires one remote command" >&2
+      return 2
+    fi
+    remote_pipeline="gzip -dc | $1"
+    printf -v remote_pipeline_quoted '%q' "$remote_pipeline"
+  fi
   for attempt in $(seq 1 "$SSH_ATTEMPTS"); do
     attempt_output="${output_file}.attempt-${attempt}"
     rm -f "$attempt_output"
     if [[ "$input_file" == *.gz ]]; then
-      if gzip -dc "$input_file" | ssh_base "$SSH_USER@$host" "$@" >"$attempt_output"; then
+      if ssh_base "$SSH_USER@$host" "bash -o pipefail -c $remote_pipeline_quoted" \
+        <"$input_file" >"$attempt_output"; then
         mv -f "$attempt_output" "$output_file"
         return 0
       else

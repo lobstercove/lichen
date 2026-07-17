@@ -1546,7 +1546,9 @@ Read-only target checks for a completed source page run concurrently because
 they touch independent validators and evidence files. This removes a measured
 three-times fleet serialization penalty on 100 MB compressed block pages.
 Source export remains single-copy and checksummed; execute imports remain
-strictly sequential and quiesced.
+strictly sequential and quiesced. Compressed pages remain compressed across SSH
+and are expanded under target-side `pipefail`, eliminating the measured raw
+block-body upload amplification.
 
 ## Tracker
 
