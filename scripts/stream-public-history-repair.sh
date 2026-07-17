@@ -36,6 +36,13 @@ Execute confirmation:
 Block repair requirements:
   Execute mode requires explicit --from-slot and --to-slot bounds. The source
   range must pass --verify-contiguous-block-range before any target is stopped.
+
+Bulk transport:
+  Compressed binary pages use direct source-to-target SSH when a local agent is
+  available. Authentication is forwarded for only the bounded copy command;
+  private keys are never copied to a validator. Set
+  LICHEN_PUBLIC_HISTORY_DIRECT_TRANSFER=0 to use local bounded transfer, or 1
+  to require direct transfer instead of the automatic selection.
 EOF
 }
 
@@ -54,6 +61,7 @@ KEEP_SOURCE_PAGES="${LICHEN_PUBLIC_HISTORY_STREAM_KEEP_SOURCE_PAGES:-0}"
 COMPRESS_SOURCE_PAGES="${LICHEN_PUBLIC_HISTORY_STREAM_COMPRESS_SOURCE_PAGES:-1}"
 PAGE_FORMAT="${LICHEN_PUBLIC_HISTORY_STREAM_PAGE_FORMAT:-binary}"
 LEAVE_TARGET_STOPPED="${LICHEN_PUBLIC_HISTORY_LEAVE_TARGET_STOPPED:-0}"
+DIRECT_TRANSFER_MODE="${LICHEN_PUBLIC_HISTORY_DIRECT_TRANSFER:-auto}"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -183,6 +191,18 @@ SSH_RETRY_DELAY_SECS="${LICHEN_PUBLIC_HISTORY_STREAM_SSH_RETRY_DELAY_SECS:-2}"
 SSH_STRICT_HOST_KEY_CHECKING="${LICHEN_PUBLIC_HISTORY_STREAM_STRICT_HOST_KEY_CHECKING:-yes}"
 SSH_KNOWN_HOSTS_FILE="${LICHEN_PUBLIC_HISTORY_STREAM_KNOWN_HOSTS_FILE:-$HOME/.ssh/known_hosts}"
 SSH_CONTROL_DIR="$(mktemp -d /tmp/lichen-ph-repair-ssh.XXXXXX)"
+TRANSFER_ID="${RUN_ID}-$$"
+DIRECT_KNOWN_HOSTS_REMOTE="/tmp/lichen-public-history-known-hosts-${TRANSFER_ID}"
+DIRECT_PAGE_PREFIX="/tmp/lichen-public-history-page-${TRANSFER_ID}"
+DIRECT_RELAY_REMOTE_DIR="/tmp/lichen-public-history-relay-${TRANSFER_ID}"
+DIRECT_RELAY_CONFIG_REMOTE="$DIRECT_RELAY_REMOTE_DIR/sshd_config"
+DIRECT_RELAY_HOST_KEY_REMOTE="$DIRECT_RELAY_REMOTE_DIR/hostkey"
+DIRECT_AGENT_PUBLIC_REMOTE="$DIRECT_RELAY_REMOTE_DIR/agent-identity.pub"
+DIRECT_RELAY_ALIAS="lichen-public-history-relay-${TRANSFER_ID}"
+DIRECT_RELAY_CONFIG_LOCAL="$EVIDENCE_DIR/direct-source-relay-sshd-config"
+DIRECT_RELAY_HOST_PUBLIC_LOCAL="$EVIDENCE_DIR/direct-source-relay-host-key.pub"
+DIRECT_RELAY_KNOWN_HOSTS_LOCAL="$EVIDENCE_DIR/direct-source-relay-known-hosts"
+DIRECT_AGENT_PUBLIC_LOCAL="$EVIDENCE_DIR/direct-agent-identity.pub"
 CACHE_SIZE_MB="${LICHEN_PUBLIC_HISTORY_STREAM_CACHE_SIZE_MB:-256}"
 NOFILE_LIMIT="${LICHEN_PUBLIC_HISTORY_STREAM_NOFILE_LIMIT:-1048576}"
 REQUIRED_FREE_RESERVE_BYTES="${LICHEN_PUBLIC_HISTORY_FREE_RESERVE_BYTES:-10737418240}"
@@ -195,6 +215,30 @@ fi
 if ! [[ "$WRITE_HEADROOM_PERCENT" =~ ^[0-9]+$ ]] || [ "$WRITE_HEADROOM_PERCENT" -lt 100 ]; then
   echo "LICHEN_PUBLIC_HISTORY_WRITE_HEADROOM_PERCENT must be an integer >= 100" >&2
   exit 2
+fi
+case "$DIRECT_TRANSFER_MODE" in
+  auto|0|1) ;;
+  *)
+    echo "LICHEN_PUBLIC_HISTORY_DIRECT_TRANSFER must be auto, 0, or 1" >&2
+    exit 2
+    ;;
+esac
+
+DIRECT_TRANSFER_ENABLED=0
+direct_transfer_eligible=1
+if [ "$PAGE_FORMAT" != "binary" ] || [ "$COMPRESS_SOURCE_PAGES" != "1" ] || \
+  [ "$KEEP_SOURCE_PAGES" = "1" ] || [ ! -r "$SSH_KNOWN_HOSTS_FILE" ] || \
+  [ -z "${SSH_AUTH_SOCK:-}" ] || [ ! -S "${SSH_AUTH_SOCK:-/nonexistent}" ] || \
+  ! ssh-add -l >/dev/null 2>&1; then
+  direct_transfer_eligible=0
+fi
+if [ "$DIRECT_TRANSFER_MODE" = "1" ] && [ "$direct_transfer_eligible" != "1" ]; then
+  echo "Direct transfer requires compressed binary pages, a readable known-hosts file, and a loaded SSH agent." >&2
+  exit 2
+fi
+if [ "$DIRECT_TRANSFER_MODE" = "1" ] || \
+  { [ "$DIRECT_TRANSFER_MODE" = "auto" ] && [ "$direct_transfer_eligible" = "1" ]; }; then
+  DIRECT_TRANSFER_ENABLED=1
 fi
 
 if [ -n "$FROM_SLOT" ] && ! [[ "$FROM_SLOT" =~ ^[0-9]+$ ]]; then
@@ -215,6 +259,10 @@ exec > >(tee "$EVIDENCE_DIR/run.log") 2>&1
 
 close_ssh_controls() {
   local host
+  if [ "$DIRECT_TRANSFER_ENABLED" = "1" ]; then
+    ssh -o ControlPath="$SSH_CONTROL_DIR/direct-%C" -O exit \
+      "$SSH_USER@$SOURCE_HOST" >/dev/null 2>&1 || true
+  fi
   for host in $SOURCE_HOST $TARGET_HOSTS; do
     ssh -p "$SSH_PORT" \
       -o ControlPath="$SSH_CONTROL_DIR/%C" \
@@ -224,9 +272,21 @@ close_ssh_controls() {
   rm -rf "$SSH_CONTROL_DIR"
 }
 
+cleanup_remote_transfer_files() {
+  local host
+  for host in $SOURCE_HOST $TARGET_HOSTS; do
+    ssh_base "$SSH_USER@$host" \
+      "rm -f -- ${DIRECT_PAGE_PREFIX}-* '$DIRECT_KNOWN_HOSTS_REMOTE'" \
+      >/dev/null 2>&1 || true
+  done
+  ssh_run "$SOURCE_HOST" \
+    "rm -rf -- '$DIRECT_RELAY_REMOTE_DIR'" >/dev/null 2>&1 || true
+}
+
 finalize() {
   local status=$?
   trap - EXIT
+  cleanup_remote_transfer_files
   close_ssh_controls
   exit "$status"
 }
@@ -287,6 +347,117 @@ ssh_run_to_file() {
     fi
   done
   return "$status"
+}
+
+ssh_run_stdin_file() {
+  local input_file="$1"
+  local host="$2"
+  shift 2
+  local attempt status
+  for attempt in $(seq 1 "$SSH_ATTEMPTS"); do
+    if ssh_base "$SSH_USER@$host" "$@" <"$input_file"; then
+      return 0
+    else
+      status=$?
+    fi
+    if [ "$attempt" -lt "$SSH_ATTEMPTS" ]; then
+      sleep "$SSH_RETRY_DELAY_SECS"
+    fi
+  done
+  return "$status"
+}
+
+ssh_agent_base() {
+  ssh -A \
+    -o BatchMode=yes \
+    -o ConnectTimeout="$SSH_CONNECT_TIMEOUT" \
+    -o ConnectionAttempts=1 \
+    -o ServerAliveInterval=10 \
+    -o ServerAliveCountMax=3 \
+    -o StrictHostKeyChecking=yes \
+    -o HostKeyAlias="$DIRECT_RELAY_ALIAS" \
+    -o UserKnownHostsFile="$DIRECT_RELAY_KNOWN_HOSTS_LOCAL" \
+    -o LogLevel=ERROR \
+    -o ControlMaster=auto \
+    -o ControlPersist=600 \
+    -o ControlPath="$SSH_CONTROL_DIR/direct-%C" \
+    -o ForwardAgent=yes \
+    -o ProxyCommand="$DIRECT_PROXY_COMMAND" \
+    "$@"
+}
+
+ssh_agent_run_source() {
+  local attempt status
+  for attempt in $(seq 1 "$SSH_ATTEMPTS"); do
+    if ssh_agent_base "$SSH_USER@$SOURCE_HOST" "$@"; then
+      return 0
+    else
+      status=$?
+    fi
+    if [ "$attempt" -lt "$SSH_ATTEMPTS" ]; then
+      sleep "$SSH_RETRY_DELAY_SECS"
+    fi
+  done
+  return "$status"
+}
+
+setup_direct_agent_relay() {
+  local agent_key_count
+  local source_proxy_command
+
+  ssh-add -L | sed -n '1p' >"$DIRECT_AGENT_PUBLIC_LOCAL"
+  if ! ssh-keygen -lf "$DIRECT_AGENT_PUBLIC_LOCAL" >/dev/null 2>&1; then
+    echo "Could not select a public identity from the local SSH agent." >&2
+    return 1
+  fi
+  agent_key_count="$(ssh-add -L | grep -Ec '^(ssh-|ecdsa-|sk-)' || true)"
+  if [ "$agent_key_count" -ne 1 ]; then
+    echo "Direct transfer requires exactly one loaded SSH agent identity; found $agent_key_count." >&2
+    return 1
+  fi
+
+  {
+    echo "HostKey $DIRECT_RELAY_HOST_KEY_REMOTE"
+    echo "AuthorizedKeysFile /home/%u/.ssh/authorized_keys"
+    echo "PubkeyAuthentication yes"
+    echo "PasswordAuthentication no"
+    echo "KbdInteractiveAuthentication no"
+    echo "PermitRootLogin no"
+    echo "AllowUsers $SSH_USER"
+    echo "AllowAgentForwarding yes"
+    echo "AllowTcpForwarding no"
+    echo "AllowStreamLocalForwarding no"
+    echo "X11Forwarding no"
+    echo "PermitTTY no"
+    echo "UsePAM no"
+    echo "StrictModes yes"
+    echo "LogLevel ERROR"
+  } >"$DIRECT_RELAY_CONFIG_LOCAL"
+
+  ssh_run "$SOURCE_HOST" \
+    "umask 077; rm -rf -- '$DIRECT_RELAY_REMOTE_DIR'; mkdir -p '$DIRECT_RELAY_REMOTE_DIR'; ssh-keygen -q -t ed25519 -N '' -f '$DIRECT_RELAY_HOST_KEY_REMOTE'"
+  ssh_run_stdin_file "$DIRECT_RELAY_CONFIG_LOCAL" "$SOURCE_HOST" \
+    "umask 077; cat > '$DIRECT_RELAY_CONFIG_REMOTE'"
+  ssh_run_stdin_file "$DIRECT_AGENT_PUBLIC_LOCAL" "$SOURCE_HOST" \
+    "umask 077; cat > '$DIRECT_AGENT_PUBLIC_REMOTE'"
+  ssh_run_to_file "$SOURCE_HOST" "$DIRECT_RELAY_HOST_PUBLIC_LOCAL" \
+    "cat '$DIRECT_RELAY_HOST_KEY_REMOTE.pub'"
+  if ! ssh-keygen -lf "$DIRECT_RELAY_HOST_PUBLIC_LOCAL" >/dev/null 2>&1; then
+    echo "Transient direct-transfer SSH relay returned an invalid host key." >&2
+    return 1
+  fi
+  {
+    printf '%s ' "$DIRECT_RELAY_ALIAS"
+    cat "$DIRECT_RELAY_HOST_PUBLIC_LOCAL"
+  } >"$DIRECT_RELAY_KNOWN_HOSTS_LOCAL"
+  ssh_run "$SOURCE_HOST" "sudo /usr/sbin/sshd -t -f '$DIRECT_RELAY_CONFIG_REMOTE'"
+
+  printf -v source_proxy_command \
+    "ssh -p %q -o BatchMode=yes -o ConnectTimeout=%q -o ConnectionAttempts=1 -o ServerAliveInterval=10 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=%q -o UserKnownHostsFile=%q -o LogLevel=ERROR %q sudo /usr/sbin/sshd -i -e -f %q" \
+    "$SSH_PORT" "$SSH_CONNECT_TIMEOUT" "$SSH_STRICT_HOST_KEY_CHECKING" \
+    "$SSH_KNOWN_HOSTS_FILE" "$SSH_USER@$SOURCE_HOST" "$DIRECT_RELAY_CONFIG_REMOTE"
+  DIRECT_PROXY_COMMAND="$source_proxy_command"
+  export DIRECT_PROXY_COMMAND
 }
 
 ssh_run_stdin_json_file() {
@@ -467,6 +638,8 @@ fi
   echo "keep_source_pages=$KEEP_SOURCE_PAGES"
   echo "compress_source_pages=$COMPRESS_SOURCE_PAGES"
   echo "page_format=$PAGE_FORMAT"
+  echo "direct_transfer_mode=$DIRECT_TRANSFER_MODE"
+  echo "direct_transfer_enabled=$DIRECT_TRANSFER_ENABLED"
   echo "leave_target_stopped=$LEAVE_TARGET_STOPPED"
   echo "from_slot=${FROM_SLOT:-}"
   echo "to_slot=${TO_SLOT:-}"
@@ -482,6 +655,22 @@ echo "Network: $NETWORK"
 echo "Source: $SOURCE_HOST"
 echo "Targets: $TARGET_HOSTS"
 echo "Mode: $([ "$EXECUTE" = "1" ] && echo execute || echo dry-run)"
+echo "Bulk transport: $([ "$DIRECT_TRANSFER_ENABLED" = "1" ] && echo direct-vps-ssh || echo local-bounded)"
+
+if [ "$DIRECT_TRANSFER_ENABLED" = "1" ]; then
+  echo "Preflight direct source-to-target SSH transport"
+  setup_direct_agent_relay
+  ssh_run_stdin_file "$SSH_KNOWN_HOSTS_FILE" "$SOURCE_HOST" \
+    "umask 077; cat > '$DIRECT_KNOWN_HOSTS_REMOTE'"
+  for target in $TARGET_HOSTS; do
+    printf -v direct_probe_command \
+      "ssh -p %q -o BatchMode=yes -o ConnectTimeout=%q -o ConnectionAttempts=1 -o IdentitiesOnly=yes -o IdentityFile=%q -o StrictHostKeyChecking=%q -o UserKnownHostsFile=%q -o LogLevel=ERROR %q true" \
+      "$SSH_PORT" "$SSH_CONNECT_TIMEOUT" "$DIRECT_AGENT_PUBLIC_REMOTE" \
+      "$SSH_STRICT_HOST_KEY_CHECKING" \
+      "$DIRECT_KNOWN_HOSTS_REMOTE" "$SSH_USER@$target"
+    ssh_agent_run_source "$direct_probe_command"
+  done
+fi
 
 echo "Preflight candidate binaries"
 expected_binary_hash=""
@@ -676,6 +865,181 @@ export_source_page() {
   fi
 }
 
+remote_source_page_path() {
+  local category="$1"
+  local page_index="$2"
+  echo "${DIRECT_PAGE_PREFIX}-source-${category}-${page_index}.bin.gz"
+}
+
+remote_target_page_path() {
+  local target_label="$1"
+  local category="$2"
+  local page_index="$3"
+  echo "${DIRECT_PAGE_PREFIX}-${target_label}-${category}-${page_index}.bin.gz"
+}
+
+export_source_page_remote() {
+  local category="$1"
+  local cursor="$2"
+  local chunk_size_value="$3"
+  local page_index="$4"
+  local header_file="$5"
+  local integrity_file="$6"
+  local cursor_arg=""
+  local to_slot_arg=""
+  local remote_page
+  local remote_attempt
+  local export_command
+  local remote_export_command
+
+  remote_page="$(remote_source_page_path "$category" "$page_index")"
+  remote_attempt="${remote_page}.attempt"
+  if [ -n "$cursor" ]; then
+    cursor_arg="--after-key-hex '$cursor'"
+  fi
+  if [ -n "$TO_SLOT" ]; then
+    to_slot_arg="--to-slot '$TO_SLOT'"
+  fi
+  export_command="sudo -u lichen bash -lc 'ulimit -n $NOFILE_LIMIT 2>/dev/null || ulimit -n 65535 2>/dev/null || true; exec \"\$0\" \"\$@\"' '$REMOTE_BIN' \
+    --no-watchdog \
+    --network '$NETWORK' \
+    --db-path '$STATE_DIR' \
+    --secondary-dir '/tmp/lichen-public-history-export-${RUN_ID}-${category}' \
+    --cache-size-mb '$CACHE_SIZE_MB' \
+    --chunk-size '$chunk_size_value' \
+    --public-history-page-format binary \
+    --export-public-history-category '$category' \
+    $cursor_arg \
+    $to_slot_arg"
+  remote_export_command="set -euo pipefail; rm -f -- '$remote_page' '$remote_attempt'; $export_command | gzip -1 > '$remote_attempt'; test -s '$remote_attempt'; mv -f '$remote_attempt' '$remote_page'"
+  ssh_run "$SOURCE_HOST" "$remote_export_command"
+  ssh_run_to_file "$SOURCE_HOST" "$integrity_file" \
+    "set -euo pipefail; bytes=\$(wc -c < '$remote_page' | tr -d '[:space:]'); sha=\$(sha256sum '$remote_page' | awk '{print \$1}'); printf 'sha256=%s\\nbytes=%s\\n' \"\$sha\" \"\$bytes\""
+  if ! grep -Eq '^sha256=[0-9a-f]{64}$' "$integrity_file" || \
+    ! grep -Eq '^bytes=[0-9]+$' "$integrity_file"; then
+    echo "Could not record remote public-history page integrity: $remote_page" >&2
+    return 1
+  fi
+  ssh_run_to_file "$SOURCE_HOST" "$header_file" \
+    "gzip -dc '$remote_page' | head -n 2"
+  if [ "$(sed -n '1p' "$header_file")" != "lichen-public-history-page-binary-v1" ]; then
+    echo "Invalid remote binary page header: $remote_page" >&2
+    return 1
+  fi
+}
+
+direct_copy_page_to_target() {
+  local target="$1"
+  local target_label="$2"
+  local category="$3"
+  local page_index="$4"
+  local source_integrity_file="$5"
+  local target_integrity_file="$6"
+  local remote_source_page
+  local remote_target_page
+  local remote_target_attempt
+  local cleanup_command
+  local promote_command
+  local direct_copy_command
+
+  remote_source_page="$(remote_source_page_path "$category" "$page_index")"
+  remote_target_page="$(remote_target_page_path "$target_label" "$category" "$page_index")"
+  remote_target_attempt="${remote_target_page}.attempt"
+  cleanup_command="rm -f -- '$remote_target_page' '$remote_target_attempt'"
+  promote_command="set -euo pipefail; test -s '$remote_target_attempt'; mv -f '$remote_target_attempt' '$remote_target_page'"
+  printf -v direct_copy_command \
+    "set -euo pipefail; ssh -p %q -o BatchMode=yes -o ConnectTimeout=%q -o ConnectionAttempts=1 -o IdentitiesOnly=yes -o IdentityFile=%q -o StrictHostKeyChecking=%q -o UserKnownHostsFile=%q -o LogLevel=ERROR %q %q; scp -O -P %q -o BatchMode=yes -o ConnectTimeout=%q -o ConnectionAttempts=1 -o IdentitiesOnly=yes -o IdentityFile=%q -o StrictHostKeyChecking=%q -o UserKnownHostsFile=%q -o LogLevel=ERROR %q %q; ssh -p %q -o BatchMode=yes -o ConnectTimeout=%q -o ConnectionAttempts=1 -o IdentitiesOnly=yes -o IdentityFile=%q -o StrictHostKeyChecking=%q -o UserKnownHostsFile=%q -o LogLevel=ERROR %q %q" \
+    "$SSH_PORT" "$SSH_CONNECT_TIMEOUT" "$DIRECT_AGENT_PUBLIC_REMOTE" \
+    "$SSH_STRICT_HOST_KEY_CHECKING" \
+    "$DIRECT_KNOWN_HOSTS_REMOTE" "$SSH_USER@$target" "$cleanup_command" \
+    "$SSH_PORT" "$SSH_CONNECT_TIMEOUT" "$DIRECT_AGENT_PUBLIC_REMOTE" \
+    "$SSH_STRICT_HOST_KEY_CHECKING" \
+    "$DIRECT_KNOWN_HOSTS_REMOTE" "$remote_source_page" \
+    "$SSH_USER@$target:$remote_target_attempt" \
+    "$SSH_PORT" "$SSH_CONNECT_TIMEOUT" "$DIRECT_AGENT_PUBLIC_REMOTE" \
+    "$SSH_STRICT_HOST_KEY_CHECKING" \
+    "$DIRECT_KNOWN_HOSTS_REMOTE" "$SSH_USER@$target" "$promote_command"
+  ssh_agent_run_source "$direct_copy_command"
+  ssh_run_to_file "$target" "$target_integrity_file" \
+    "set -euo pipefail; bytes=\$(wc -c < '$remote_target_page' | tr -d '[:space:]'); sha=\$(sha256sum '$remote_target_page' | awk '{print \$1}'); printf 'sha256=%s\\nbytes=%s\\n' \"\$sha\" \"\$bytes\""
+  if ! cmp -s "$source_integrity_file" "$target_integrity_file"; then
+    echo "Direct page integrity mismatch for $target_label $category page $page_index" >&2
+    return 1
+  fi
+}
+
+ssh_run_remote_page_to_file() {
+  local remote_page="$1"
+  local host="$2"
+  local output_file="$3"
+  local remote_command="$4"
+  local remote_pipeline
+  local remote_pipeline_quoted
+
+  remote_pipeline="gzip -dc '$remote_page' | $remote_command"
+  printf -v remote_pipeline_quoted '%q' "$remote_pipeline"
+  ssh_run_to_file "$host" "$output_file" \
+    "bash -o pipefail -c $remote_pipeline_quoted"
+}
+
+import_remote_page_dry_run() {
+  local target="$1"
+  local target_label="$2"
+  local category="$3"
+  local page_index="$4"
+  local import_file="$5"
+  local remote_target_page
+
+  remote_target_page="$(remote_target_page_path "$target_label" "$category" "$page_index")"
+  ssh_run_remote_page_to_file "$remote_target_page" "$target" "$import_file" "sudo -u lichen bash -lc 'ulimit -n $NOFILE_LIMIT 2>/dev/null || ulimit -n 65535 2>/dev/null || true; exec \"\$0\" \"\$@\"' '$REMOTE_BIN' \
+    --no-watchdog \
+    --network '$NETWORK' \
+    --db-path '$STATE_DIR' \
+    --secondary-dir '/tmp/lichen-public-history-import-${RUN_ID}-${target_label}-${category}' \
+    --cache-size-mb '$CACHE_SIZE_MB' \
+    --public-history-page-format binary \
+    --import-public-history-category '$category' \
+    --dry-run"
+}
+
+import_remote_page_execute() {
+  local target="$1"
+  local target_label="$2"
+  local category="$3"
+  local page_index="$4"
+  local import_file="$5"
+  local remote_target_page
+
+  remote_target_page="$(remote_target_page_path "$target_label" "$category" "$page_index")"
+  ssh_run_remote_page_to_file "$remote_target_page" "$target" "$import_file" "sudo -u lichen bash -lc 'ulimit -n $NOFILE_LIMIT 2>/dev/null || ulimit -n 65535 2>/dev/null || true; exec \"\$0\" \"\$@\"' '$REMOTE_BIN' \
+    --no-watchdog \
+    --network '$NETWORK' \
+    --db-path '$STATE_DIR' \
+    --cache-size-mb '$CACHE_SIZE_MB' \
+    --public-history-page-format binary \
+    --import-public-history-category '$category' \
+    --execute \
+    --confirm public-history-repair:v1"
+}
+
+cleanup_direct_target_page() {
+  local target="$1"
+  local target_label="$2"
+  local category="$3"
+  local page_index="$4"
+  local remote_target_page
+  remote_target_page="$(remote_target_page_path "$target_label" "$category" "$page_index")"
+  ssh_run "$target" "rm -f -- '$remote_target_page' '${remote_target_page}.attempt'"
+}
+
+cleanup_direct_source_page() {
+  local category="$1"
+  local page_index="$2"
+  local remote_source_page
+  remote_source_page="$(remote_source_page_path "$category" "$page_index")"
+  ssh_run "$SOURCE_HOST" "rm -f -- '$remote_source_page' '${remote_source_page}.attempt'"
+}
+
 import_page_dry_run() {
   local target="$1"
   local target_label="$2"
@@ -807,6 +1171,86 @@ import_page_dry_run_all_targets() {
   done
 }
 
+import_remote_page_dry_run_all_targets() {
+  local category="$1"
+  local row_count="$2"
+  local page_index="$3"
+  local source_integrity_file="$4"
+  local target target_label target_category_dir import_file transfer_integrity_file
+  local wait_status=0
+  local wait_failed=0
+  local index
+  local -a pids=()
+  local -a labels=()
+  local -a targets=()
+  local -a import_files=()
+
+  for target in $TARGET_HOSTS; do
+    target_label="$(host_label "$target")"
+    target_category_dir="$EVIDENCE_DIR/$target_label/$category"
+    transfer_integrity_file="$target_category_dir/page-${page_index}-transfer.integrity"
+    echo "Staging $category page $page_index directly into $target_label rows=$row_count"
+    direct_copy_page_to_target "$target" "$target_label" "$category" "$page_index" \
+      "$source_integrity_file" "$transfer_integrity_file" &
+    pids+=("$!")
+    labels+=("$target_label")
+    targets+=("$target")
+  done
+
+  for index in "${!pids[@]}"; do
+    if wait "${pids[$index]}"; then
+      :
+    else
+      wait_status=$?
+      wait_failed=1
+      echo "Direct page staging failed for ${labels[$index]} with status $wait_status" >&2
+    fi
+  done
+  if [ "$wait_failed" -ne 0 ]; then
+    for index in "${!targets[@]}"; do
+      cleanup_direct_target_page "${targets[$index]}" "${labels[$index]}" \
+        "$category" "$page_index" || true
+    done
+    return 1
+  fi
+
+  pids=()
+  import_files=()
+  for index in "${!targets[@]}"; do
+    target="${targets[$index]}"
+    target_label="${labels[$index]}"
+    target_category_dir="$EVIDENCE_DIR/$target_label/$category"
+    import_file="$target_category_dir/page-${page_index}-import.json"
+    echo "Importing $category page $page_index into $target_label rows=$row_count"
+    import_remote_page_dry_run "$target" "$target_label" "$category" "$page_index" \
+      "$import_file" &
+    pids+=("$!")
+    import_files+=("$import_file")
+  done
+
+  wait_failed=0
+  for index in "${!pids[@]}"; do
+    if wait "${pids[$index]}"; then
+      :
+    else
+      wait_status=$?
+      wait_failed=1
+      echo "Dry-run import failed for ${labels[$index]} with status $wait_status" >&2
+    fi
+  done
+  for index in "${!targets[@]}"; do
+    cleanup_direct_target_page "${targets[$index]}" "${labels[$index]}" \
+      "$category" "$page_index" || wait_failed=1
+  done
+  if [ "$wait_failed" -ne 0 ]; then
+    return 1
+  fi
+
+  for index in "${!import_files[@]}"; do
+    validate_page_import "$category" "$row_count" "${import_files[$index]}"
+  done
+}
+
 if [ "$EXECUTE" != "1" ]; then
   for raw_category in "${CATEGORY_LIST[@]}"; do
     category="$(echo "$raw_category" | xargs)"
@@ -830,8 +1274,14 @@ if [ "$EXECUTE" != "1" ]; then
       page_file="$source_category_dir/page-${page_index}-export.$page_suffix"
       integrity_file="$source_category_dir/page-${page_index}-export.integrity"
       echo "Exporting $category page $page_index from $SOURCE_HOST chunk_size=$chunk_size_value"
-      export_source_page "$category" "$cursor" "$chunk_size_value" "$page_file"
-      record_page_integrity "$page_file" "$integrity_file"
+      if [ "$DIRECT_TRANSFER_ENABLED" = "1" ]; then
+        page_file="$source_category_dir/page-${page_index}-export.header.bin"
+        export_source_page_remote "$category" "$cursor" "$chunk_size_value" \
+          "$page_index" "$page_file" "$integrity_file"
+      else
+        export_source_page "$category" "$cursor" "$chunk_size_value" "$page_file"
+        record_page_integrity "$page_file" "$integrity_file"
+      fi
 
       row_count="$(json_field "$page_file" row_count)"
       has_more="$(json_field "$page_file" has_more)"
@@ -839,11 +1289,16 @@ if [ "$EXECUTE" != "1" ]; then
 
       if [ "${row_count:-0}" = "0" ] && [ "$has_more" != "true" ]; then
         echo "  $category page $page_index empty and complete"
+      elif [ "$DIRECT_TRANSFER_ENABLED" = "1" ]; then
+        import_remote_page_dry_run_all_targets "$category" "$row_count" \
+          "$page_index" "$integrity_file"
       else
         import_page_dry_run_all_targets "$category" "$page_file" "$row_count" "$page_index"
       fi
 
-      if [ "$KEEP_SOURCE_PAGES" != "1" ]; then
+      if [ "$DIRECT_TRANSFER_ENABLED" = "1" ]; then
+        cleanup_direct_source_page "$category" "$page_index"
+      elif [ "$KEEP_SOURCE_PAGES" != "1" ]; then
         rm -f "$page_file"
       fi
 
@@ -899,13 +1354,20 @@ for target in $TARGET_HOSTS; do
       import_file="$category_dir/page-${page_index}-import.json"
       integrity_file="$category_dir/page-${page_index}-export.integrity"
 
-      if [ -f "$page_file" ]; then
+      if [ "$DIRECT_TRANSFER_ENABLED" = "1" ]; then
+        page_file="$source_category_dir/page-${page_index}-${target_label}-export.header.bin"
+        echo "Exporting $category page $page_index from $SOURCE_HOST for $target_label chunk_size=$chunk_size_value"
+        export_source_page_remote "$category" "$cursor" "$chunk_size_value" \
+          "$page_index" "$page_file" "$integrity_file"
+      elif [ -f "$page_file" ]; then
         echo "Reusing $category page $page_index from $SOURCE_HOST for $target_label"
       else
         echo "Exporting $category page $page_index from $SOURCE_HOST for $target_label chunk_size=$chunk_size_value"
         export_source_page "$category" "$cursor" "$chunk_size_value" "$page_file"
       fi
-      record_page_integrity "$page_file" "$integrity_file"
+      if [ "$DIRECT_TRANSFER_ENABLED" != "1" ]; then
+        record_page_integrity "$page_file" "$integrity_file"
+      fi
 
       row_count="$(json_field "$page_file" row_count)"
       has_more="$(json_field "$page_file" has_more)"
@@ -915,7 +1377,14 @@ for target in $TARGET_HOSTS; do
         echo "  $category page $page_index empty and complete"
       else
         echo "Importing $category page $page_index into $target_label rows=$row_count"
-        if [ "$EXECUTE" = "1" ]; then
+        if [ "$DIRECT_TRANSFER_ENABLED" = "1" ]; then
+          transfer_integrity_file="$category_dir/page-${page_index}-transfer.integrity"
+          direct_copy_page_to_target "$target" "$target_label" "$category" \
+            "$page_index" "$integrity_file" "$transfer_integrity_file"
+          import_remote_page_execute "$target" "$target_label" "$category" \
+            "$page_index" "$import_file"
+          cleanup_direct_target_page "$target" "$target_label" "$category" "$page_index"
+        elif [ "$EXECUTE" = "1" ]; then
           import_page_execute "$target" "$category" "$page_file" "$import_file"
         else
           import_page_dry_run "$target" "$target_label" "$category" "$page_file" "$import_file"
@@ -923,7 +1392,9 @@ for target in $TARGET_HOSTS; do
         validate_page_import "$category" "$row_count" "$import_file"
       fi
 
-      if [ "$KEEP_SOURCE_PAGES" != "1" ]; then
+      if [ "$DIRECT_TRANSFER_ENABLED" = "1" ]; then
+        cleanup_direct_source_page "$category" "$page_index"
+      elif [ "$KEEP_SOURCE_PAGES" != "1" ]; then
         rm -f "$page_file"
       fi
 

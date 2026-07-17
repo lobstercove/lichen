@@ -2467,6 +2467,12 @@ bash scripts/stream-public-history-repair.sh \
   --source SOURCE --targets "TARGETS" \
   --categories slots,blocks,transactions,tx_by_slot,tx_to_slot,tx_meta \
   --from-slot FIRST --to-slot LAST
+
+# The default bulk path uses one loaded local SSH-agent identity to copy each
+# checksummed compressed page directly between VPSes through a transient pinned
+# source relay. It does not copy private keys or alter system SSH configuration.
+# Set LICHEN_PUBLIC_HISTORY_DIRECT_TRANSFER=1 to require this path and fail
+# closed when its strict preflight cannot be established.
 export LICHEN_PUBLIC_HISTORY_BACKUP_CONFIRM='current-backups-verified:testnet:15.204.229.189,37.59.97.61,15.235.142.253,148.113.43.247'
 export LICHEN_PUBLIC_HISTORY_STREAM_CONFIRM='stream-public-history-repair:testnet:SOURCE:TARGETS_CSV'
 bash scripts/stream-public-history-repair.sh --execute --leave-target-stopped \

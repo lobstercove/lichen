@@ -5,7 +5,7 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.5.224] - 2026-07-15
+## [0.5.224] - 2026-07-17
 
 ### Known Testnet Limitation
 - The existing `lichen-testnet-1` source set irrecoverably lacks signed block
@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   block body and required transaction index from genesis through canonical tip.
 
 ### Fixed
+- Moves bounded public-history repair pages directly between source and target
+  VPSes through a pinned transient SSH relay when a local agent is available.
+  The helper forwards only the selected identity, never copies a private key or
+  changes system SSH access, verifies source/target SHA-256 and byte counts,
+  atomically promotes each compressed page, and cleans every relay/page file.
+  Local bounded transfer remains the automatic no-agent fallback.
 - Uses the guarded consensus-v1 activation slot as the deterministic native
   transaction signature boundary. Historical blocks below the boundary retain
   the bounded `v0.5.223` chain-domain-then-legacy transition policy, while

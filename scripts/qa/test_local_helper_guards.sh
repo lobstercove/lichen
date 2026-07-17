@@ -405,7 +405,21 @@ assert_public_history_repair_stays_quiesced() {
         'status=$?' \
         'remote_pipeline="gzip -dc | $1"' \
         'bash -o pipefail -c $remote_pipeline_quoted' \
+        'DIRECT_TRANSFER_MODE="${LICHEN_PUBLIC_HISTORY_DIRECT_TRANSFER:-auto}"' \
+        '! ssh-add -l >/dev/null 2>&1' \
+        '-o ForwardAgent=yes' \
+        'sudo /usr/sbin/sshd -i -e -f %q' \
+        'echo "AllowTcpForwarding no"' \
+        'echo "AllowStreamLocalForwarding no"' \
+        'echo "PermitTTY no"' \
+        'DIRECT_AGENT_PUBLIC_REMOTE="$DIRECT_RELAY_REMOTE_DIR/agent-identity.pub"' \
+        'IdentitiesOnly=yes -o IdentityFile=%q' \
+        'StrictHostKeyChecking=%q' \
+        'remote_target_attempt="${remote_target_page}.attempt"' \
+        'cmp -s "$source_integrity_file" "$target_integrity_file"' \
+        'cleanup_remote_transfer_files' \
         'import_page_dry_run_all_targets "$category" "$page_file" "$row_count" "$page_index"' \
+        'import_remote_page_dry_run_all_targets "$category" "$row_count"' \
         'if wait "${pids[$index]}"; then' \
         'Dry-run import failed for ${labels[$index]}' \
         'Execute requires --leave-target-stopped' \
@@ -419,6 +433,10 @@ assert_public_history_repair_stays_quiesced() {
         grep -Fq 'ssh_base "$SSH_USER@$SOURCE_HOST"' "$script" || \
         grep -Fq 'gzip -dc "$input_file" | ssh_base' "$script"; then
         echo "❌ public-history repair transport: concurrent two-hop stream must not bypass bounded page integrity"
+        exit 1
+    fi
+    if grep -Eq 'id_(rsa|ecdsa|ed25519)|scp[^;]*(private|keypair)' "$script"; then
+        echo "❌ public-history direct transport: private keys must not be copied to validators"
         exit 1
     fi
     repair_ssh_function="$(sed -n '/^ssh_run()/,/^}/p' "$script")"

@@ -61,19 +61,25 @@ This policy exists because an active testnet is shared infrastructure. Developer
 - Fleet repair transfers one bounded binary page at a time for every
   public-history category. Each page is exported completely, hashed, recorded
   in evidence, imported additively, and checked for exact row count and zero
-  conflicts before the temporary payload is removed. Persistent SSH controls
-  are reused between sequential operations, but source and target SSH sessions
-  are never joined by an unbounded concurrent pipe: target validation may stop
-  reading while RocksDB checks a page, and that backpressure can terminate a
-  long-running two-hop transport. A failed page is safe to retry because import
-  is idempotent and same-key differences abort. Every SSH retry writes to a
-  separate temporary file and atomically promotes only a complete successful
-  export or report, so partial attempts cannot be concatenated. Read-only
-  import checks fan out concurrently across independent target validators for
-  each completed source page; execute remains sequential and leaves each target
-  stopped for fleet-level parity. Compressed page bytes cross SSH unchanged and
-  are decompressed under remote `pipefail`; raw block bodies are never expanded
-  over the workstation-to-validator network path.
+  conflicts before the temporary payload is removed. With one local SSH-agent
+  identity loaded, the helper starts a pinned one-shot `sshd -i` relay inside
+  the already authenticated source session, forwards only that agent, forces
+  the staged public identity, and copies each compressed page directly from the
+  source VPS to a target VPS. It never copies a private key or changes the
+  system SSH daemon or `authorized_keys`. Source and target SHA-256/byte records
+  must match before the target atomically promotes and imports the page. The
+  relay disables password auth, TCP/stream forwarding, TTY, X11, and root
+  login, and every transient file is removed on success or failure. If no agent
+  is available, automatic mode retains the local bounded-page path; selecting
+  direct mode explicitly fails closed instead of falling back. Source and
+  target sessions are never joined by an unbounded concurrent pipe: target
+  validation may stop reading while RocksDB checks a page, and that
+  backpressure can terminate a long-running two-hop transport. A failed page is
+  safe to retry because import is idempotent and same-key differences abort.
+  Every SSH retry writes to a separate temporary file and atomically promotes
+  only a complete successful export or report, so partial attempts cannot be
+  concatenated. Read-only import checks fan out across independent targets;
+  execute remains sequential and leaves each target stopped for fleet parity.
 - RocksDB archive scans must run with the service-equivalent file-descriptor
   limit. The fleet verifier and repair helper raise it automatically. Direct
   operator invocations must use the documented `run_validator_admin` wrapper;
