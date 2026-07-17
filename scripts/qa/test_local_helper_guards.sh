@@ -413,7 +413,13 @@ assert_public_history_repair_stays_quiesced() {
         'echo "AllowStreamLocalForwarding no"' \
         'echo "PermitTTY no"' \
         'DIRECT_AGENT_PUBLIC_REMOTE="$DIRECT_RELAY_REMOTE_DIR/agent-identity.pub"' \
+        'DIRECT_TARGET_CONTROL_PREFIX="/tmp/lichen-public-history-target-${TRANSFER_ID}"' \
         'IdentitiesOnly=yes -o IdentityFile=%q' \
+        'open_direct_target_control "$target"' \
+        'ControlMaster=yes -o ControlPersist=no' \
+        'ssh -S %q -O check %q >/dev/null 2>&1' \
+        'ssh_run "$SOURCE_HOST" "$direct_copy_command"' \
+        'close_direct_target_controls' \
         'StrictHostKeyChecking=%q' \
         'remote_target_attempt="${remote_target_page}.attempt"' \
         'cmp -s "$source_integrity_file" "$target_integrity_file"' \

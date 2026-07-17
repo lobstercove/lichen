@@ -2470,7 +2470,9 @@ bash scripts/stream-public-history-repair.sh \
 
 # The default bulk path uses one loaded local SSH-agent identity to copy each
 # checksummed compressed page directly between VPSes through a transient pinned
-# source relay. It does not copy private keys or alter system SSH configuration.
+# source relay. The relay opens one pinned source-to-target SSH control per
+# target and reuses it for every page so the VPS new-connection limiter is not
+# triggered. It does not copy private keys or alter system SSH configuration.
 # Set LICHEN_PUBLIC_HISTORY_DIRECT_TRANSFER=1 to require this path and fail
 # closed when its strict preflight cannot be established.
 export LICHEN_PUBLIC_HISTORY_BACKUP_CONFIRM='current-backups-verified:testnet:15.204.229.189,37.59.97.61,15.235.142.253,148.113.43.247'

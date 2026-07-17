@@ -19,9 +19,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Moves bounded public-history repair pages directly between source and target
   VPSes through a pinned transient SSH relay when a local agent is available.
   The helper forwards only the selected identity, never copies a private key or
-  changes system SSH access, verifies source/target SHA-256 and byte counts,
-  atomically promotes each compressed page, and cleans every relay/page file.
-  Local bounded transfer remains the automatic no-agent fallback.
+  changes system SSH access. It opens one pinned source-to-target SSH control
+  connection per target and reuses it for every page, avoiding the deliberate
+  VPS new-connection rate limit. Source/target SHA-256 and byte counts must
+  match before atomic page promotion, and every control, relay, and page file
+  is removed on exit. Local bounded transfer remains the automatic no-agent
+  fallback.
 - Uses the guarded consensus-v1 activation slot as the deterministic native
   transaction signature boundary. Historical blocks below the boundary retain
   the bounded `v0.5.223` chain-domain-then-legacy transition policy, while

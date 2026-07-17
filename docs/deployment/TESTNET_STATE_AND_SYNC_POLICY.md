@@ -64,15 +64,18 @@ This policy exists because an active testnet is shared infrastructure. Developer
   conflicts before the temporary payload is removed. With one local SSH-agent
   identity loaded, the helper starts a pinned one-shot `sshd -i` relay inside
   the already authenticated source session, forwards only that agent, forces
-  the staged public identity, and copies each compressed page directly from the
-  source VPS to a target VPS. It never copies a private key or changes the
-  system SSH daemon or `authorized_keys`. Source and target SHA-256/byte records
-  must match before the target atomically promotes and imports the page. The
-  relay disables password auth, TCP/stream forwarding, TTY, X11, and root
-  login, and every transient file is removed on success or failure. If no agent
-  is available, automatic mode retains the local bounded-page path; selecting
-  direct mode explicitly fails closed instead of falling back. Source and
-  target sessions are never joined by an unbounded concurrent pipe: target
+  the staged public identity, and opens one pinned source-to-target SSH control
+  connection per target. Every compressed page reuses that connection; opening
+  cleanup, copy, and promotion sessions per page would exceed the VPS UFW limit
+  of six new SSH connections in 30 seconds. The helper never copies a private
+  key or changes the system SSH daemon or `authorized_keys`. Source and target
+  SHA-256/byte records must match before the target atomically promotes and
+  imports the page. The relay disables password auth, TCP/stream forwarding,
+  TTY, X11, and root login, and every transient control, relay, and page file is
+  removed on success or failure. If no agent is available, automatic mode
+  retains the local bounded-page path; selecting direct mode explicitly fails
+  closed instead of falling back. Source and target sessions are never joined
+  by an unbounded concurrent pipe: target
   validation may stop reading while RocksDB checks a page, and that
   backpressure can terminate a long-running two-hop transport. A failed page is
   safe to retry because import is idempotent and same-key differences abort.

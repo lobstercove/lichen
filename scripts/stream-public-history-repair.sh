@@ -199,6 +199,7 @@ DIRECT_RELAY_CONFIG_REMOTE="$DIRECT_RELAY_REMOTE_DIR/sshd_config"
 DIRECT_RELAY_HOST_KEY_REMOTE="$DIRECT_RELAY_REMOTE_DIR/hostkey"
 DIRECT_AGENT_PUBLIC_REMOTE="$DIRECT_RELAY_REMOTE_DIR/agent-identity.pub"
 DIRECT_RELAY_ALIAS="lichen-public-history-relay-${TRANSFER_ID}"
+DIRECT_TARGET_CONTROL_PREFIX="/tmp/lichen-public-history-target-${TRANSFER_ID}"
 DIRECT_RELAY_CONFIG_LOCAL="$EVIDENCE_DIR/direct-source-relay-sshd-config"
 DIRECT_RELAY_HOST_PUBLIC_LOCAL="$EVIDENCE_DIR/direct-source-relay-host-key.pub"
 DIRECT_RELAY_KNOWN_HOSTS_LOCAL="$EVIDENCE_DIR/direct-source-relay-known-hosts"
@@ -272,6 +273,25 @@ close_ssh_controls() {
   rm -rf "$SSH_CONTROL_DIR"
 }
 
+direct_target_control_path() {
+  local target_label
+  target_label="$(host_label "$1")"
+  echo "${DIRECT_TARGET_CONTROL_PREFIX}-${target_label}.sock"
+}
+
+close_direct_target_controls() {
+  local target control_path
+  if [ "$DIRECT_TRANSFER_ENABLED" != "1" ]; then
+    return 0
+  fi
+  for target in $TARGET_HOSTS; do
+    control_path="$(direct_target_control_path "$target")"
+    ssh_run "$SOURCE_HOST" \
+      "control='$control_path'; if [ -S \"\$control\" ]; then ssh -S \"\$control\" -O exit '$SSH_USER@$target' >/dev/null 2>&1 || true; fi; rm -f -- \"\$control\" \"\$control\".*" \
+      >/dev/null 2>&1 || true
+  done
+}
+
 cleanup_remote_transfer_files() {
   local host
   for host in $SOURCE_HOST $TARGET_HOSTS; do
@@ -286,6 +306,7 @@ cleanup_remote_transfer_files() {
 finalize() {
   local status=$?
   trap - EXIT
+  close_direct_target_controls
   cleanup_remote_transfer_files
   close_ssh_controls
   exit "$status"
@@ -458,6 +479,22 @@ setup_direct_agent_relay() {
     "$SSH_KNOWN_HOSTS_FILE" "$SSH_USER@$SOURCE_HOST" "$DIRECT_RELAY_CONFIG_REMOTE"
   DIRECT_PROXY_COMMAND="$source_proxy_command"
   export DIRECT_PROXY_COMMAND
+}
+
+open_direct_target_control() {
+  local target="$1"
+  local target_label control_path open_command evidence_file
+  target_label="$(host_label "$target")"
+  control_path="$(direct_target_control_path "$target")"
+  evidence_file="$EVIDENCE_DIR/direct-target-control-${target_label}.txt"
+
+  printf -v open_command \
+    "set -euo pipefail; umask 077; control=%q; if [ -S \"\$control\" ]; then ssh -S \"\$control\" -O exit %q >/dev/null 2>&1 || true; fi; rm -f -- \"\$control\" \"\$control\".*; ssh -M -N -f -p %q -o BatchMode=yes -o ConnectTimeout=%q -o ConnectionAttempts=1 -o ServerAliveInterval=10 -o ServerAliveCountMax=3 -o ControlMaster=yes -o ControlPersist=no -o ControlPath=%q -o IdentitiesOnly=yes -o IdentityFile=%q -o StrictHostKeyChecking=%q -o UserKnownHostsFile=%q -o LogLevel=ERROR %q; ssh -S \"\$control\" -O check %q" \
+    "$control_path" "$SSH_USER@$target" \
+    "$SSH_PORT" "$SSH_CONNECT_TIMEOUT" "$control_path" \
+    "$DIRECT_AGENT_PUBLIC_REMOTE" "$SSH_STRICT_HOST_KEY_CHECKING" \
+    "$DIRECT_KNOWN_HOSTS_REMOTE" "$SSH_USER@$target" "$SSH_USER@$target"
+  ssh_agent_run_source "$open_command" 2>&1 | tee "$evidence_file"
 }
 
 ssh_run_stdin_json_file() {
@@ -663,12 +700,7 @@ if [ "$DIRECT_TRANSFER_ENABLED" = "1" ]; then
   ssh_run_stdin_file "$SSH_KNOWN_HOSTS_FILE" "$SOURCE_HOST" \
     "umask 077; cat > '$DIRECT_KNOWN_HOSTS_REMOTE'"
   for target in $TARGET_HOSTS; do
-    printf -v direct_probe_command \
-      "ssh -p %q -o BatchMode=yes -o ConnectTimeout=%q -o ConnectionAttempts=1 -o IdentitiesOnly=yes -o IdentityFile=%q -o StrictHostKeyChecking=%q -o UserKnownHostsFile=%q -o LogLevel=ERROR %q true" \
-      "$SSH_PORT" "$SSH_CONNECT_TIMEOUT" "$DIRECT_AGENT_PUBLIC_REMOTE" \
-      "$SSH_STRICT_HOST_KEY_CHECKING" \
-      "$DIRECT_KNOWN_HOSTS_REMOTE" "$SSH_USER@$target"
-    ssh_agent_run_source "$direct_probe_command"
+    open_direct_target_control "$target"
   done
 fi
 
@@ -938,6 +970,7 @@ direct_copy_page_to_target() {
   local remote_source_page
   local remote_target_page
   local remote_target_attempt
+  local target_control_path
   local cleanup_command
   local promote_command
   local direct_copy_command
@@ -945,21 +978,20 @@ direct_copy_page_to_target() {
   remote_source_page="$(remote_source_page_path "$category" "$page_index")"
   remote_target_page="$(remote_target_page_path "$target_label" "$category" "$page_index")"
   remote_target_attempt="${remote_target_page}.attempt"
+  target_control_path="$(direct_target_control_path "$target")"
   cleanup_command="rm -f -- '$remote_target_page' '$remote_target_attempt'"
   promote_command="set -euo pipefail; test -s '$remote_target_attempt'; mv -f '$remote_target_attempt' '$remote_target_page'"
   printf -v direct_copy_command \
-    "set -euo pipefail; ssh -p %q -o BatchMode=yes -o ConnectTimeout=%q -o ConnectionAttempts=1 -o IdentitiesOnly=yes -o IdentityFile=%q -o StrictHostKeyChecking=%q -o UserKnownHostsFile=%q -o LogLevel=ERROR %q %q; scp -O -P %q -o BatchMode=yes -o ConnectTimeout=%q -o ConnectionAttempts=1 -o IdentitiesOnly=yes -o IdentityFile=%q -o StrictHostKeyChecking=%q -o UserKnownHostsFile=%q -o LogLevel=ERROR %q %q; ssh -p %q -o BatchMode=yes -o ConnectTimeout=%q -o ConnectionAttempts=1 -o IdentitiesOnly=yes -o IdentityFile=%q -o StrictHostKeyChecking=%q -o UserKnownHostsFile=%q -o LogLevel=ERROR %q %q" \
-    "$SSH_PORT" "$SSH_CONNECT_TIMEOUT" "$DIRECT_AGENT_PUBLIC_REMOTE" \
-    "$SSH_STRICT_HOST_KEY_CHECKING" \
+    "set -euo pipefail; ssh -S %q -O check %q >/dev/null 2>&1; ssh -p %q -o BatchMode=yes -o ConnectTimeout=%q -o ConnectionAttempts=1 -o ControlMaster=no -o ControlPath=%q -o StrictHostKeyChecking=%q -o UserKnownHostsFile=%q -o LogLevel=ERROR %q %q; scp -O -P %q -o BatchMode=yes -o ConnectTimeout=%q -o ConnectionAttempts=1 -o ControlMaster=no -o ControlPath=%q -o StrictHostKeyChecking=%q -o UserKnownHostsFile=%q -o LogLevel=ERROR %q %q; ssh -p %q -o BatchMode=yes -o ConnectTimeout=%q -o ConnectionAttempts=1 -o ControlMaster=no -o ControlPath=%q -o StrictHostKeyChecking=%q -o UserKnownHostsFile=%q -o LogLevel=ERROR %q %q" \
+    "$target_control_path" "$SSH_USER@$target" \
+    "$SSH_PORT" "$SSH_CONNECT_TIMEOUT" "$target_control_path" "$SSH_STRICT_HOST_KEY_CHECKING" \
     "$DIRECT_KNOWN_HOSTS_REMOTE" "$SSH_USER@$target" "$cleanup_command" \
-    "$SSH_PORT" "$SSH_CONNECT_TIMEOUT" "$DIRECT_AGENT_PUBLIC_REMOTE" \
-    "$SSH_STRICT_HOST_KEY_CHECKING" \
+    "$SSH_PORT" "$SSH_CONNECT_TIMEOUT" "$target_control_path" "$SSH_STRICT_HOST_KEY_CHECKING" \
     "$DIRECT_KNOWN_HOSTS_REMOTE" "$remote_source_page" \
     "$SSH_USER@$target:$remote_target_attempt" \
-    "$SSH_PORT" "$SSH_CONNECT_TIMEOUT" "$DIRECT_AGENT_PUBLIC_REMOTE" \
-    "$SSH_STRICT_HOST_KEY_CHECKING" \
+    "$SSH_PORT" "$SSH_CONNECT_TIMEOUT" "$target_control_path" "$SSH_STRICT_HOST_KEY_CHECKING" \
     "$DIRECT_KNOWN_HOSTS_REMOTE" "$SSH_USER@$target" "$promote_command"
-  ssh_agent_run_source "$direct_copy_command"
+  ssh_run "$SOURCE_HOST" "$direct_copy_command"
   ssh_run_to_file "$target" "$target_integrity_file" \
     "set -euo pipefail; bytes=\$(wc -c < '$remote_target_page' | tr -d '[:space:]'); sha=\$(sha256sum '$remote_target_page' | awk '{print \$1}'); printf 'sha256=%s\\nbytes=%s\\n' \"\$sha\" \"\$bytes\""
   if ! cmp -s "$source_integrity_file" "$target_integrity_file"; then
