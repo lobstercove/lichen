@@ -83,6 +83,12 @@ This policy exists because an active testnet is shared infrastructure. Developer
   only a complete successful export or report, so partial attempts cannot be
   concatenated. Read-only import checks fan out across independent targets;
   execute remains sequential and leaves each target stopped for fleet parity.
+- Bulk page bytes must never cross the `sudo` I/O-audit boundary. Export and
+  compression run inside one unprivileged `lichen` child; decompression and
+  import run inside another. The privileged session may return only bounded
+  JSON/report metadata. This is a disk-safety invariant on hosts that enable
+  `log_input`/`log_output`: piping a page into or out of `sudo -u lichen` can
+  duplicate the complete archive stream under `/var/log/sudo-io`.
 - RocksDB archive scans must run with the service-equivalent file-descriptor
   limit. The fleet verifier and repair helper raise it automatically. Direct
   operator invocations must use the documented `run_validator_admin` wrapper;

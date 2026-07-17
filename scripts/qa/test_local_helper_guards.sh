@@ -4,6 +4,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/lichen-helper-guards.XXXXXX")"
+TMP_DIR="$(cd "$TMP_DIR" && pwd -P)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
 write_file_from_stdin() {
@@ -44,6 +45,27 @@ assert_path_missing() {
         echo "❌ ${label}: expected path to be removed: $path"
         exit 1
     fi
+}
+
+terminate_fixture_pid() {
+    local fixture_root="$1"
+    local pid="$2"
+    local command cwd=""
+
+    if ! kill -0 "$pid" 2>/dev/null; then
+        return 0
+    fi
+    command="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+    if [ -L "/proc/$pid/cwd" ]; then
+        cwd="$(readlink "/proc/$pid/cwd" 2>/dev/null || true)"
+    elif command -v lsof >/dev/null 2>&1; then
+        cwd="$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1)"
+    fi
+    if [[ "$command" != *"$fixture_root/"* ]] && [[ "$cwd" != "$fixture_root"* ]]; then
+        echo "❌ fixture cleanup refused non-owned PID $pid: $command"
+        exit 1
+    fi
+    kill "$pid" 2>/dev/null || true
 }
 
 make_fixture_dir() {
@@ -150,7 +172,8 @@ assert_start_local_stack_clears_peer_trust_state() {
 
     write_file_from_stdin "$fixture_root/run-validator.sh" <<'EOF'
 #!/usr/bin/env bash
-exit 0
+trap 'exit 0' TERM INT
+while :; do sleep 1; done
 EOF
     chmod +x "$fixture_root/run-validator.sh"
     write_file_from_stdin "$fixture_root/scripts/run-custody.sh" <<'EOF'
@@ -213,7 +236,7 @@ EOF
     assert_peer_trust_state_removed "start-local-stack cleanup" "$fixture_root" 7001 7002 7003
     assert_output_contains "start-local-stack metadata signer default" "$expected_signing_key" "$fixture_root/bootstrap-keypair-path.txt"
     while IFS=$'\t' read -r _kind pid; do
-        kill "$pid" 2>/dev/null || true
+        terminate_fixture_pid "$fixture_root" "$pid"
     done <"$fixture_root/data/local-cluster/stack-testnet-pids.tsv"
     echo "✅ start-local-stack peer trust cleanup"
 }
@@ -231,7 +254,8 @@ assert_start_local_3validators_clears_peer_trust_state() {
 
     write_file_from_stdin "$fixture_root/run-validator.sh" <<'EOF'
 #!/usr/bin/env bash
-exit 0
+trap 'exit 0' TERM INT
+while :; do sleep 1; done
 EOF
     chmod +x "$fixture_root/run-validator.sh"
     mkdir -p "$fixture_root/target/release"
@@ -277,6 +301,11 @@ EOF
     ) >"$output_file" 2>&1
 
     assert_peer_trust_state_removed "start-local-3validators cleanup" "$fixture_root" 7001 7002 7003
+    while read -r -a fixture_pids; do
+        for pid in "${fixture_pids[@]}"; do
+            terminate_fixture_pid "$fixture_root" "$pid"
+        done
+    done <"$fixture_root/data/local-cluster/pids.txt"
     echo "✅ start-local-3validators peer trust cleanup"
 }
 
@@ -403,8 +432,13 @@ assert_public_history_repair_stays_quiesced() {
         'attempt_output="${output_file}.attempt-${attempt}"' \
         'mv -f "$attempt_output" "$output_file"' \
         'status=$?' \
-        'remote_pipeline="gzip -dc | $1"' \
-        'bash -o pipefail -c $remote_pipeline_quoted' \
+        'export_source_page_to_remote "$category" "$cursor" "$chunk_size_value"' \
+        '"$3" "${@:4}" | gzip -1 > "$attempt"' \
+        'if [ "$2" = "1" ]; then gzip -dc "$3"; else cat "$3"; fi | "$4" "${@:5}"' \
+        'run_remote_page_import_to_file "$remote_target_page" "$target" "$import_file"' \
+        'stage_local_page_to_target "$page_file" "$target" "$target_label" "$category"' \
+        'sudo rm -f -- ${DIRECT_PAGE_PREFIX}-*' \
+        'chmod 0644 "$attempt"' \
         'DIRECT_TRANSFER_MODE="${LICHEN_PUBLIC_HISTORY_DIRECT_TRANSFER:-auto}"' \
         '! ssh-add -l >/dev/null 2>&1' \
         '-o ForwardAgent=yes' \
@@ -437,7 +471,10 @@ assert_public_history_repair_stays_quiesced() {
     done
     if grep -Fq -- '--stream-pages' "$script" || \
         grep -Fq 'ssh_base "$SSH_USER@$SOURCE_HOST"' "$script" || \
-        grep -Fq 'gzip -dc "$input_file" | ssh_base' "$script"; then
+        grep -Fq 'gzip -dc "$input_file" | ssh_base' "$script" || \
+        grep -Fq 'ssh_run_stdin_json_file' "$script" || \
+        grep -Fq 'remote_pipeline="gzip -dc' "$script" || \
+        grep -Eq 'gzip -dc[^|]*\|[[:space:]]*sudo|sudo -u lichen[^|]*\|[[:space:]]*gzip' "$script"; then
         echo "❌ public-history repair transport: concurrent two-hop stream must not bypass bounded page integrity"
         exit 1
     fi

@@ -296,7 +296,7 @@ cleanup_remote_transfer_files() {
   local host
   for host in $SOURCE_HOST $TARGET_HOSTS; do
     ssh_base "$SSH_USER@$host" \
-      "rm -f -- ${DIRECT_PAGE_PREFIX}-* '$DIRECT_KNOWN_HOSTS_REMOTE'" \
+      "sudo rm -f -- ${DIRECT_PAGE_PREFIX}-* '$DIRECT_KNOWN_HOSTS_REMOTE'" \
       >/dev/null 2>&1 || true
   done
   ssh_run "$SOURCE_HOST" \
@@ -495,50 +495,6 @@ open_direct_target_control() {
     "$DIRECT_AGENT_PUBLIC_REMOTE" "$SSH_STRICT_HOST_KEY_CHECKING" \
     "$DIRECT_KNOWN_HOSTS_REMOTE" "$SSH_USER@$target" "$SSH_USER@$target"
   ssh_agent_run_source "$open_command" 2>&1 | tee "$evidence_file"
-}
-
-ssh_run_stdin_json_file() {
-  local input_file="$1"
-  local host="$2"
-  local output_file="$3"
-  shift 3
-  local attempt status
-  local attempt_output
-  local remote_pipeline=""
-  local remote_pipeline_quoted=""
-  if [[ "$input_file" == *.gz ]]; then
-    if [ "$#" -ne 1 ]; then
-      echo "Compressed page import requires one remote command" >&2
-      return 2
-    fi
-    remote_pipeline="gzip -dc | $1"
-    printf -v remote_pipeline_quoted '%q' "$remote_pipeline"
-  fi
-  for attempt in $(seq 1 "$SSH_ATTEMPTS"); do
-    attempt_output="${output_file}.attempt-${attempt}"
-    rm -f "$attempt_output"
-    if [[ "$input_file" == *.gz ]]; then
-      if ssh_base "$SSH_USER@$host" "bash -o pipefail -c $remote_pipeline_quoted" \
-        <"$input_file" >"$attempt_output"; then
-        mv -f "$attempt_output" "$output_file"
-        return 0
-      else
-        status=$?
-      fi
-    else
-      if ssh_base "$SSH_USER@$host" "$@" <"$input_file" >"$attempt_output"; then
-        mv -f "$attempt_output" "$output_file"
-        return 0
-      else
-        status=$?
-      fi
-    fi
-    rm -f "$attempt_output"
-    if [ "$attempt" -lt "$SSH_ATTEMPTS" ]; then
-      sleep "$SSH_RETRY_DELAY_SECS"
-    fi
-  done
-  return "$status"
 }
 
 host_label() {
@@ -868,33 +824,16 @@ export_source_page() {
   local cursor="$2"
   local chunk_size_value="$3"
   local page_file="$4"
-  local cursor_arg=""
-  local to_slot_arg=""
-  if [ -n "$cursor" ]; then
-    cursor_arg="--after-key-hex '$cursor'"
-  fi
-  if [ -n "$TO_SLOT" ]; then
-    to_slot_arg="--to-slot '$TO_SLOT'"
-  fi
 
-  local export_command="sudo -u lichen bash -lc 'ulimit -n $NOFILE_LIMIT 2>/dev/null || ulimit -n 65535 2>/dev/null || true; exec \"\$0\" \"\$@\"' '$REMOTE_BIN' \
-    --no-watchdog \
-    --network '$NETWORK' \
-    --db-path '$STATE_DIR' \
-    --secondary-dir '/tmp/lichen-public-history-export-${RUN_ID}-${category}' \
-    --cache-size-mb '$CACHE_SIZE_MB' \
-    --chunk-size '$chunk_size_value' \
-    --public-history-page-format '$PAGE_FORMAT' \
-    --export-public-history-category '$category' \
-    $cursor_arg \
-    $to_slot_arg"
+  local remote_page="${DIRECT_PAGE_PREFIX}-fallback-source-${category}.page.gz"
+  export_source_page_to_remote "$category" "$cursor" "$chunk_size_value" \
+    "$remote_page" "$PAGE_FORMAT"
   if [ "$COMPRESS_SOURCE_PAGES" = "1" ]; then
-    local raw_page_file="${page_file%.gz}"
-    ssh_run_to_file "$SOURCE_HOST" "$raw_page_file" "$export_command"
-    gzip -1 -f "$raw_page_file"
+    ssh_run_to_file "$SOURCE_HOST" "$page_file" "cat '$remote_page'"
   else
-    ssh_run_to_file "$SOURCE_HOST" "$page_file" "$export_command"
+    ssh_run_to_file "$SOURCE_HOST" "$page_file" "gzip -dc '$remote_page'"
   fi
+  ssh_run "$SOURCE_HOST" "sudo rm -f -- '$remote_page' '${remote_page}.attempt'"
 }
 
 remote_source_page_path() {
@@ -910,6 +849,43 @@ remote_target_page_path() {
   echo "${DIRECT_PAGE_PREFIX}-${target_label}-${category}-${page_index}.bin.gz"
 }
 
+export_source_page_to_remote() {
+  local category="$1"
+  local cursor="$2"
+  local chunk_size_value="$3"
+  local remote_page="$4"
+  local page_format="$5"
+  local inner_script remote_command
+  local -a validator_args command
+
+  validator_args=(
+    --no-watchdog
+    --network "$NETWORK"
+    --db-path "$STATE_DIR"
+    --secondary-dir "/tmp/lichen-public-history-export-${RUN_ID}-${category}"
+    --cache-size-mb "$CACHE_SIZE_MB"
+    --chunk-size "$chunk_size_value"
+    --public-history-page-format "$page_format"
+    --export-public-history-category "$category"
+  )
+  if [ -n "$cursor" ]; then
+    validator_args+=(--after-key-hex "$cursor")
+  fi
+  if [ -n "$TO_SLOT" ]; then
+    validator_args+=(--to-slot "$TO_SLOT")
+  fi
+
+  # Expanded by the remote login shell after positional arguments are bound.
+  # shellcheck disable=SC2016
+  inner_script='set -euo pipefail; umask 022; page="$1"; attempt="${page}.attempt"; rm -f -- "$page" "$attempt"; ulimit -n "$2" 2>/dev/null || ulimit -n 65535 2>/dev/null || true; "$3" "${@:4}" | gzip -1 > "$attempt"; test -s "$attempt"; chmod 0644 "$attempt"; mv -f "$attempt" "$page"'
+  command=(
+    sudo -u lichen bash -lc "$inner_script" bash
+    "$remote_page" "$NOFILE_LIMIT" "$REMOTE_BIN" "${validator_args[@]}"
+  )
+  printf -v remote_command '%q ' "${command[@]}"
+  ssh_run "$SOURCE_HOST" "sudo rm -f -- '$remote_page' '${remote_page}.attempt'; ${remote_command% }"
+}
+
 export_source_page_remote() {
   local category="$1"
   local cursor="$2"
@@ -917,34 +893,11 @@ export_source_page_remote() {
   local page_index="$4"
   local header_file="$5"
   local integrity_file="$6"
-  local cursor_arg=""
-  local to_slot_arg=""
   local remote_page
-  local remote_attempt
-  local export_command
-  local remote_export_command
 
   remote_page="$(remote_source_page_path "$category" "$page_index")"
-  remote_attempt="${remote_page}.attempt"
-  if [ -n "$cursor" ]; then
-    cursor_arg="--after-key-hex '$cursor'"
-  fi
-  if [ -n "$TO_SLOT" ]; then
-    to_slot_arg="--to-slot '$TO_SLOT'"
-  fi
-  export_command="sudo -u lichen bash -lc 'ulimit -n $NOFILE_LIMIT 2>/dev/null || ulimit -n 65535 2>/dev/null || true; exec \"\$0\" \"\$@\"' '$REMOTE_BIN' \
-    --no-watchdog \
-    --network '$NETWORK' \
-    --db-path '$STATE_DIR' \
-    --secondary-dir '/tmp/lichen-public-history-export-${RUN_ID}-${category}' \
-    --cache-size-mb '$CACHE_SIZE_MB' \
-    --chunk-size '$chunk_size_value' \
-    --public-history-page-format binary \
-    --export-public-history-category '$category' \
-    $cursor_arg \
-    $to_slot_arg"
-  remote_export_command="set -euo pipefail; rm -f -- '$remote_page' '$remote_attempt'; $export_command | gzip -1 > '$remote_attempt'; test -s '$remote_attempt'; mv -f '$remote_attempt' '$remote_page'"
-  ssh_run "$SOURCE_HOST" "$remote_export_command"
+  export_source_page_to_remote "$category" "$cursor" "$chunk_size_value" \
+    "$remote_page" binary
   ssh_run_to_file "$SOURCE_HOST" "$integrity_file" \
     "set -euo pipefail; bytes=\$(wc -c < '$remote_page' | tr -d '[:space:]'); sha=\$(sha256sum '$remote_page' | awk '{print \$1}'); printf 'sha256=%s\\nbytes=%s\\n' \"\$sha\" \"\$bytes\""
   if ! grep -Eq '^sha256=[0-9a-f]{64}$' "$integrity_file" || \
@@ -980,7 +933,7 @@ direct_copy_page_to_target() {
   remote_target_attempt="${remote_target_page}.attempt"
   target_control_path="$(direct_target_control_path "$target")"
   cleanup_command="rm -f -- '$remote_target_page' '$remote_target_attempt'"
-  promote_command="set -euo pipefail; test -s '$remote_target_attempt'; mv -f '$remote_target_attempt' '$remote_target_page'"
+  promote_command="set -euo pipefail; test -s '$remote_target_attempt'; chmod 0644 '$remote_target_attempt'; mv -f '$remote_target_attempt' '$remote_target_page'"
   printf -v direct_copy_command \
     "set -euo pipefail; ssh -S %q -O check %q >/dev/null 2>&1; ssh -p %q -o BatchMode=yes -o ConnectTimeout=%q -o ConnectionAttempts=1 -o ControlMaster=no -o ControlPath=%q -o StrictHostKeyChecking=%q -o UserKnownHostsFile=%q -o LogLevel=ERROR %q %q; scp -O -P %q -o BatchMode=yes -o ConnectTimeout=%q -o ConnectionAttempts=1 -o ControlMaster=no -o ControlPath=%q -o StrictHostKeyChecking=%q -o UserKnownHostsFile=%q -o LogLevel=ERROR %q %q; ssh -p %q -o BatchMode=yes -o ConnectTimeout=%q -o ConnectionAttempts=1 -o ControlMaster=no -o ControlPath=%q -o StrictHostKeyChecking=%q -o UserKnownHostsFile=%q -o LogLevel=ERROR %q %q" \
     "$target_control_path" "$SSH_USER@$target" \
@@ -1000,18 +953,45 @@ direct_copy_page_to_target() {
   fi
 }
 
-ssh_run_remote_page_to_file() {
+run_remote_page_import_to_file() {
   local remote_page="$1"
   local host="$2"
   local output_file="$3"
-  local remote_command="$4"
-  local remote_pipeline
-  local remote_pipeline_quoted
+  local target_label="$4"
+  local category="$5"
+  local page_format="$6"
+  local compressed="$7"
+  local execute="$8"
+  local inner_script remote_command
+  local -a validator_args command
 
-  remote_pipeline="gzip -dc '$remote_page' | $remote_command"
-  printf -v remote_pipeline_quoted '%q' "$remote_pipeline"
-  ssh_run_to_file "$host" "$output_file" \
-    "bash -o pipefail -c $remote_pipeline_quoted"
+  validator_args=(
+    --no-watchdog
+    --network "$NETWORK"
+    --db-path "$STATE_DIR"
+    --cache-size-mb "$CACHE_SIZE_MB"
+    --public-history-page-format "$page_format"
+    --import-public-history-category "$category"
+  )
+  if [ "$execute" = "1" ]; then
+    validator_args+=(--execute --confirm public-history-repair:v1)
+  else
+    validator_args+=(
+      --secondary-dir "/tmp/lichen-public-history-import-${RUN_ID}-${target_label}-${category}"
+      --dry-run
+    )
+  fi
+
+  # Expanded by the remote login shell after positional arguments are bound.
+  # shellcheck disable=SC2016
+  inner_script='set -euo pipefail; ulimit -n "$1" 2>/dev/null || ulimit -n 65535 2>/dev/null || true; if [ "$2" = "1" ]; then gzip -dc "$3"; else cat "$3"; fi | "$4" "${@:5}"'
+  command=(
+    sudo -u lichen bash -lc "$inner_script" bash
+    "$NOFILE_LIMIT" "$compressed" "$remote_page" "$REMOTE_BIN"
+    "${validator_args[@]}"
+  )
+  printf -v remote_command '%q ' "${command[@]}"
+  ssh_run_to_file "$host" "$output_file" "${remote_command% }"
 }
 
 import_remote_page_dry_run() {
@@ -1023,15 +1003,8 @@ import_remote_page_dry_run() {
   local remote_target_page
 
   remote_target_page="$(remote_target_page_path "$target_label" "$category" "$page_index")"
-  ssh_run_remote_page_to_file "$remote_target_page" "$target" "$import_file" "sudo -u lichen bash -lc 'ulimit -n $NOFILE_LIMIT 2>/dev/null || ulimit -n 65535 2>/dev/null || true; exec \"\$0\" \"\$@\"' '$REMOTE_BIN' \
-    --no-watchdog \
-    --network '$NETWORK' \
-    --db-path '$STATE_DIR' \
-    --secondary-dir '/tmp/lichen-public-history-import-${RUN_ID}-${target_label}-${category}' \
-    --cache-size-mb '$CACHE_SIZE_MB' \
-    --public-history-page-format binary \
-    --import-public-history-category '$category' \
-    --dry-run"
+  run_remote_page_import_to_file "$remote_target_page" "$target" "$import_file" \
+    "$target_label" "$category" binary 1 0
 }
 
 import_remote_page_execute() {
@@ -1043,15 +1016,8 @@ import_remote_page_execute() {
   local remote_target_page
 
   remote_target_page="$(remote_target_page_path "$target_label" "$category" "$page_index")"
-  ssh_run_remote_page_to_file "$remote_target_page" "$target" "$import_file" "sudo -u lichen bash -lc 'ulimit -n $NOFILE_LIMIT 2>/dev/null || ulimit -n 65535 2>/dev/null || true; exec \"\$0\" \"\$@\"' '$REMOTE_BIN' \
-    --no-watchdog \
-    --network '$NETWORK' \
-    --db-path '$STATE_DIR' \
-    --cache-size-mb '$CACHE_SIZE_MB' \
-    --public-history-page-format binary \
-    --import-public-history-category '$category' \
-    --execute \
-    --confirm public-history-repair:v1"
+  run_remote_page_import_to_file "$remote_target_page" "$target" "$import_file" \
+    "$target_label" "$category" binary 1 1
 }
 
 cleanup_direct_target_page() {
@@ -1069,7 +1035,26 @@ cleanup_direct_source_page() {
   local page_index="$2"
   local remote_source_page
   remote_source_page="$(remote_source_page_path "$category" "$page_index")"
-  ssh_run "$SOURCE_HOST" "rm -f -- '$remote_source_page' '${remote_source_page}.attempt'"
+  ssh_run "$SOURCE_HOST" "sudo rm -f -- '$remote_source_page' '${remote_source_page}.attempt'"
+}
+
+fallback_target_page_path() {
+  local target_label="$1"
+  local category="$2"
+  echo "${DIRECT_PAGE_PREFIX}-fallback-${target_label}-${category}.page"
+}
+
+stage_local_page_to_target() {
+  local page_file="$1"
+  local target="$2"
+  local target_label="$3"
+  local category="$4"
+  local remote_page remote_attempt
+  remote_page="$(fallback_target_page_path "$target_label" "$category")"
+  remote_attempt="${remote_page}.attempt"
+  ssh_run "$target" "sudo rm -f -- '$remote_page' '$remote_attempt'"
+  ssh_run_stdin_file "$page_file" "$target" \
+    "set -euo pipefail; umask 022; cat > '$remote_attempt'; test -s '$remote_attempt'; chmod 0644 '$remote_attempt'; mv -f '$remote_attempt' '$remote_page'"
 }
 
 import_page_dry_run() {
@@ -1079,32 +1064,32 @@ import_page_dry_run() {
   local page_file="$4"
   local import_file="$5"
 
-  ssh_run_stdin_json_file "$page_file" "$target" "$import_file" "sudo -u lichen bash -lc 'ulimit -n $NOFILE_LIMIT 2>/dev/null || ulimit -n 65535 2>/dev/null || true; exec \"\$0\" \"\$@\"' '$REMOTE_BIN' \
-    --no-watchdog \
-    --network '$NETWORK' \
-    --db-path '$STATE_DIR' \
-    --secondary-dir '/tmp/lichen-public-history-import-${RUN_ID}-${target_label}-${category}' \
-    --cache-size-mb '$CACHE_SIZE_MB' \
-    --public-history-page-format '$PAGE_FORMAT' \
-    --import-public-history-category '$category' \
-    --dry-run"
+  local remote_page compressed=0
+  remote_page="$(fallback_target_page_path "$target_label" "$category")"
+  if [[ "$page_file" == *.gz ]]; then
+    compressed=1
+  fi
+  stage_local_page_to_target "$page_file" "$target" "$target_label" "$category"
+  run_remote_page_import_to_file "$remote_page" "$target" "$import_file" \
+    "$target_label" "$category" "$PAGE_FORMAT" "$compressed" 0
+  ssh_run "$target" "sudo rm -f -- '$remote_page' '${remote_page}.attempt'"
 }
 
 import_page_execute() {
   local target="$1"
-  local category="$2"
-  local page_file="$3"
-  local import_file="$4"
-
-  ssh_run_stdin_json_file "$page_file" "$target" "$import_file" "sudo -u lichen bash -lc 'ulimit -n $NOFILE_LIMIT 2>/dev/null || ulimit -n 65535 2>/dev/null || true; exec \"\$0\" \"\$@\"' '$REMOTE_BIN' \
-    --no-watchdog \
-    --network '$NETWORK' \
-    --db-path '$STATE_DIR' \
-    --cache-size-mb '$CACHE_SIZE_MB' \
-    --public-history-page-format '$PAGE_FORMAT' \
-    --import-public-history-category '$category' \
-    --execute \
-    --confirm public-history-repair:v1"
+  local target_label="$2"
+  local category="$3"
+  local page_file="$4"
+  local import_file="$5"
+  local remote_page compressed=0
+  remote_page="$(fallback_target_page_path "$target_label" "$category")"
+  if [[ "$page_file" == *.gz ]]; then
+    compressed=1
+  fi
+  stage_local_page_to_target "$page_file" "$target" "$target_label" "$category"
+  run_remote_page_import_to_file "$remote_page" "$target" "$import_file" \
+    "$target_label" "$category" "$PAGE_FORMAT" "$compressed" 1
+  ssh_run "$target" "sudo rm -f -- '$remote_page' '${remote_page}.attempt'"
 }
 
 record_page_integrity() {
@@ -1417,7 +1402,7 @@ for target in $TARGET_HOSTS; do
             "$page_index" "$import_file"
           cleanup_direct_target_page "$target" "$target_label" "$category" "$page_index"
         elif [ "$EXECUTE" = "1" ]; then
-          import_page_execute "$target" "$category" "$page_file" "$import_file"
+          import_page_execute "$target" "$target_label" "$category" "$page_file" "$import_file"
         else
           import_page_dry_run "$target" "$target_label" "$category" "$page_file" "$import_file"
         fi

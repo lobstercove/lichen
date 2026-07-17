@@ -24,7 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   VPS new-connection rate limit. Source/target SHA-256 and byte counts must
   match before atomic page promotion, and every control, relay, and page file
   is removed on exit. Local bounded transfer remains the automatic no-agent
-  fallback.
+  fallback. Export, compression, decompression, and import now run entirely
+  inside the unprivileged `lichen` subprocess, so a host with `sudo` I/O
+  auditing records only bounded command/report metadata instead of duplicating
+  block payloads into `/var/log/sudo-io` and exhausting the validator disk.
 - Uses the guarded consensus-v1 activation slot as the deterministic native
   transaction signature boundary. Historical blocks below the boundary retain
   the bounded `v0.5.223` chain-domain-then-legacy transition policy, while

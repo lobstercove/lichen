@@ -2438,6 +2438,15 @@ expected `upgraded_incomplete_rows` count in dry-run evidence and zero other
 conflicts. The fleet repair helper uses binary framed streams and persistent SSH
 controls for every category.
 
+Bulk archive bytes must remain outside the `sudo` I/O-audit boundary. The
+helper starts an unprivileged `lichen` child whose internal pipeline performs
+export plus compression, and another whose internal pipeline performs
+decompression plus import. Only the bounded import report returns through the
+privileged session. Do not rewrite this as `sudo ... | gzip`, `gzip -dc | sudo
+...`, or as a page streamed on `sudo` stdin: hosts with `log_input` or
+`log_output` will duplicate the payload under `/var/log/sudo-io` and can fill
+the validator disk without changing canonical history.
+
 Use the `run_validator_admin` wrapper from the VPS preflight for every direct
 archive command. The current interactive `sudo` path can otherwise inherit a
 1,024-descriptor limit; the fleet scripts raise the limit automatically.
