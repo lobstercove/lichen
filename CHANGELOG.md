@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   block body and required transaction index from genesis through canonical tip.
 
 ### Fixed
+- Bounds canonical transaction-history pagination to the current page frontier.
+  Repair exports no longer rescan the entire remaining `tx_by_slot` archive
+  after every page, and rows already sourced from canonical block bodies avoid
+  duplicate block lookups. This changes a multi-million-slot transaction/index
+  repair from quadratic archive work to cursor-bounded work while preserving
+  the source-backed fallback path for indexes whose block body is unavailable.
 - Moves bounded public-history repair pages directly between source and target
   VPSes through a pinned transient SSH relay when a local agent is available.
   The helper forwards only the selected identity, never copies a private key or

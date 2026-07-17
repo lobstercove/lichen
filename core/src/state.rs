@@ -7767,6 +7767,69 @@ mod tests {
     }
 
     #[test]
+    fn canonical_tx_export_does_not_scan_past_the_current_page_frontier() {
+        let dir = tempdir().unwrap();
+        let state = StateStore::open(dir.path()).unwrap();
+        let make_tx = |seed: &[u8]| {
+            crate::transaction::Transaction::new(crate::transaction::Message::new(
+                vec![crate::transaction::Instruction {
+                    program_id: crate::SYSTEM_PROGRAM_ID,
+                    accounts: vec![Pubkey([0x83; 32]), Pubkey([0x84; 32])],
+                    data: seed.to_vec(),
+                }],
+                Hash::hash(seed),
+            ))
+        };
+
+        let block_10 = crate::Block::new_with_timestamp(
+            10,
+            Hash::default(),
+            Hash::hash(b"frontier-state-10"),
+            [0x10; 32],
+            vec![make_tx(b"frontier-tx-10")],
+            1_700_000_010,
+        );
+        let block_11 = crate::Block::new_with_timestamp(
+            11,
+            block_10.hash(),
+            Hash::hash(b"frontier-state-11"),
+            [0x11; 32],
+            vec![make_tx(b"frontier-tx-11-a"), make_tx(b"frontier-tx-11-b")],
+            1_700_000_011,
+        );
+        for block in [&block_10, &block_11] {
+            state
+                .put_block_atomic(block, Some(block.header.slot), Some(block.header.slot))
+                .unwrap();
+        }
+
+        let tx_by_slot_cf = state.db.cf_handle(CF_TX_BY_SLOT).unwrap();
+        let tx_cursor = |slot: u64, index: u64| {
+            let mut cursor = slot.to_be_bytes().to_vec();
+            cursor.extend_from_slice(&index.to_be_bytes());
+            cursor
+        };
+        state
+            .db
+            .put_cf(&tx_by_slot_cf, tx_cursor(12, 0), b"invalid-later-row")
+            .unwrap();
+
+        let after_slot_9 = tx_cursor(9, u64::MAX);
+        let page = state
+            .export_public_history_category_range_cursor_untracked(
+                "transactions",
+                Some(&after_slot_9),
+                1,
+                Some(12),
+            )
+            .expect("the first page must not inspect a later tx index row");
+
+        assert_eq!(page.entries.len(), 1);
+        assert!(page.has_more);
+        assert_eq!(page.next_cursor, Some(tx_cursor(10, 0)));
+    }
+
+    #[test]
     fn public_history_repair_dry_run_reports_conflicts_without_writing() {
         let source_dir = tempdir().unwrap();
         let target_dir = tempdir().unwrap();

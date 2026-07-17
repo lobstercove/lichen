@@ -1919,6 +1919,9 @@ impl StateStore {
             tx_read_opts,
             rocksdb::IteratorMode::From(&start_key, rocksdb::Direction::Forward),
         );
+        let canonical_frontier = canonical_has_more
+            .then(|| merged.last_key_value().map(|(cursor, _)| cursor.clone()))
+            .flatten();
         let mut tx_index_has_more = false;
 
         for item in tx_iter {
@@ -1928,6 +1931,12 @@ impl StateStore {
                     category_name, err
                 )
             })?;
+            if canonical_frontier
+                .as_ref()
+                .is_some_and(|frontier| key.as_ref() > frontier.as_slice())
+            {
+                break;
+            }
             let Some((slot, tx_index, tx_hash)) = parse_tx_by_slot_snapshot_row(&key, &value)?
             else {
                 continue;
@@ -1939,6 +1948,9 @@ impl StateStore {
                 break;
             }
             if slot == start_slot && after_index.is_some_and(|index| tx_index <= index) {
+                continue;
+            }
+            if merged.contains_key(key.as_ref()) {
                 continue;
             }
             if self.get_block_by_slot(slot)?.is_some() {
