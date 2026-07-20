@@ -2,7 +2,7 @@
 
 Official Rust SDK for building on Lichen blockchain.
 
-Current source crate version: `0.1.6`.
+Current source crate version: `0.1.7`.
 
 ## Features
 
@@ -18,7 +18,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-lichen-client-sdk = "0.1.6"
+lichen-client-sdk = "0.1.7"
 tokio = { version = "1.35", features = ["full"] }
 ```
 

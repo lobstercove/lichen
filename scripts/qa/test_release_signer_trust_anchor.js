@@ -107,7 +107,7 @@ async function deriveReleaseSignerAddress() {
         /^version = "(\d+\.\d+\.\d+)"/m
     )?.[1];
     const releasePair = runbook.match(
-        /Candidate release target for this\s+runbook is `(v\d+\.\d+\.\d+)`; keep `(v\d+\.\d+\.\d+)` as the signed rollback point/
+        /Release target for this\s+runbook is\s+signed `(v\d+\.\d+\.\d+)`; keep `(v\d+\.\d+\.\d+)` as the signed rollback point/
     );
     assert(
         runbook.includes(releaseSigner),
@@ -115,7 +115,7 @@ async function deriveReleaseSignerAddress() {
     );
     assert(
         Boolean(releasePair) && releasePair[1] === `v${workspaceVersion}`,
-        'mainnet launch runbook candidate matches the workspace version and declares a rollback tag'
+        'mainnet launch runbook release matches the workspace version and declares a rollback tag'
     );
     assert(
         runbook.includes('node "$REPO_ROOT/scripts/verify-release-checksums.mjs" .') &&

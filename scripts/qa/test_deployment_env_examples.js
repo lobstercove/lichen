@@ -462,7 +462,7 @@ assert(
 assert(
   productionReleasePair &&
     productionReleasePair[1] === `v${validatorVersion}` &&
-    productionReleasePair[2] === 'v0.5.223' &&
+    productionReleasePair[2] === 'v0.5.224' &&
     productionDeployment.includes('This destructive checklist does not apply to the current July testnet') &&
     productionDeployment.includes('in-place archive repair and coordinated resume') &&
     productionDeployment.includes('LICHEN_RUN_LAUNCHPAD_E2E=1') &&

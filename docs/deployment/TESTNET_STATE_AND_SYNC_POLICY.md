@@ -27,6 +27,16 @@ This policy exists because an active testnet is shared infrastructure. Developer
   state-root, fork, and BFT-commit repair paths must make the same transition.
   Raw block receipt and pending queues are not progress: only canonical commits
   and accepted verified snapshot chunks may refresh the liveness watchdog.
+- Periodic consensus-view reconciliation must acquire the canonical block
+  application lock before loading persisted validator or stake state and retain
+  it through the live-view swap. Reading before the lock can regress a rapid
+  catch-up commit. A catch-up block is already committed history: verify and
+  replay it, but never sign or broadcast a new vote for it.
+- A verified child parent-root mismatch is a recovery event, not an ordinary
+  peer rejection. Targeted repair may commit only a deterministic candidate
+  whose complete root exactly matches the already-verified child certificate.
+  If no exact candidate matches, clear in-flight ranges and enter quorum-anchored
+  checkpoint repair; retrying the same block indefinitely is forbidden.
 - Account activity is a persistent user-facing index. Do not run destructive
   `account_txs` rebuilds on a pruned/checkpoint node unless every indexed row
   can be proven from retained canonical block bodies. Snapshot/export paths
@@ -128,10 +138,17 @@ This policy exists because an active testnet is shared infrastructure. Developer
   independently mounted recovery sources use the separate
   `--source-cold-store` input. Public-network runtime and target-admin
   correctness must never depend on an optional archive argument.
-- A validator that reaches the 10 GiB runtime safety floor must stop with
-  persistent exit status 78 and remain stopped until capacity is expanded.
-  Checkpoints are skipped below 20 GiB free. Restart loops and history deletion
-  are not capacity-management mechanisms.
+- Checkpoint capacity is measured from allocated filesystem blocks and hard-link
+  ownership, not logical directory size. Below the 20 GiB checkpoint-creation
+  floor, periodic maintenance releases complete or interrupted derived
+  checkpoint directories when they exclusively pin storage, then creates a
+  replacement only after rechecking that the floor is satisfied. SST files
+  still linked from active hot/cold stores are never reclaimable. Below the
+  10 GiB runtime floor, startup and the runtime guard may reclaim derived
+  checkpoints only when measured exclusive bytes can restore that floor. If
+  they cannot, the validator stops with persistent exit status 78 and remains
+  stopped until capacity is expanded. Restart loops and canonical-history
+  deletion are not capacity-management mechanisms.
 - A storage-engine upgrade must prove both directions against the signed
   rollback anchor before release: the candidate opens preserved rollback hot
   and cold stores without mutation, and the rollback engine opens candidate

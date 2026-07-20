@@ -5,6 +5,52 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.225] - 2026-07-20
+
+### Fixed
+- Serializes periodic validator-set and stake-pool reconciliation with canonical
+  block application. A reconciler can no longer read an older persisted pool,
+  wait while catch-up commits newer blocks, and then overwrite the live pool
+  with that stale snapshot.
+- Treats a quorum-authenticated parent post-state mismatch as a typed recovery
+  condition instead of retrying the same block forever. A single missing
+  parent-producer counter may be repaired only when an uncommitted candidate
+  produces the authenticated child's exact expected root; every other mismatch
+  transitions to verified checkpoint repair.
+- Prevents the block receiver from signing votes for already-committed catch-up
+  blocks. Historical sync still verifies certificates, transaction execution,
+  post-block effects, and archive writes, but voting resumes only through live
+  consensus paths.
+- Prevents a full hot/cold RocksDB checkpoint from pinning obsolete SST files
+  until the validator reaches its runtime disk safety exit. Checkpoint pressure
+  now uses allocated blocks and hard-link ownership to measure bytes that can
+  actually be reclaimed; active hot/cold SST links are never counted.
+- Reclaims complete and interrupted derived checkpoint directories proactively
+  when periodic checkpoint creation encounters its 20 GiB floor. A replacement
+  is created only after free space is rechecked. Startup and runtime reclaim
+  only when exclusive checkpoint bytes can restore the 10 GiB floor, otherwise
+  they preserve data and fail closed with status 78.
+- Serializes checkpoint creation with runtime checkpoint reclamation and skips
+  duplicate same-slot creation, so disk-pressure maintenance cannot remove a
+  checkpoint while another block-processing path is constructing it.
+- Updates release trust-anchor QA to parse the current mainnet runbook wording,
+  fixing the false hosted-CI failure after the signed `v0.5.224` rollout.
+
+### Operations
+- Recovers IN's exact one-counter post-state divergence without copying another
+  validator database or changing public history. Canonical producer counts prove
+  that slot `9,736,991` is missing only SEA's one production increment; the
+  signed child at `9,736,992` supplies the required target root.
+- Recovers IN from its own preserved `v0.5.224` database by removing only the
+  derived `slot-9683000` checkpoint. No hot state, cold archive, identity, key,
+  WAL, or canonical history was removed or copied.
+- Keeps `v0.5.224` as the signed rollback anchor for this release. The existing
+  testnet legacy-history waiver remains unchanged and does not apply to fresh
+  networks or mainnet.
+- Advances publish candidates to `lichen-contract-sdk 1.0.4`,
+  `lichen-client-sdk 0.1.7`, and `@lobstercove/lichen-sdk 1.0.7` alongside
+  `lobstercove-lichen-core` and `lichen-cli 0.5.225`.
+
 ## [0.5.224] - 2026-07-17
 
 ### Known Testnet Limitation

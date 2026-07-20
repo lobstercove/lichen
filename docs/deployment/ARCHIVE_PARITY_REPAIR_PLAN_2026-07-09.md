@@ -1572,6 +1572,103 @@ indexes then produced 15 clean target reports, 92,928 validated source rows,
 80,936 missing rows, 11,992 identical rows, and zero conflicts in 3 minutes 44
 seconds; all 15 target payload digests matched their source pages.
 
+## 2026-07-20 IN Checkpoint Headroom Incident
+
+IN stopped cleanly at slot `9,705,333` on the signed `v0.5.224` binary at
+03:27:05 UTC. The service returned persistent status 78 because the active
+filesystem had 10,724,171,776 available bytes, just below the 10 GiB runtime
+safety floor. This was not a RocksDB crash, consensus fault, archive gap, key
+loss, or systemd restart failure. The safety exit worked as designed, but the
+checkpoint lifecycle had created an availability deadlock.
+
+IN's only checkpoint, `slot-9683000`, was a normal full hot/cold RocksDB
+checkpoint created at 01:18:49 UTC. Its logical size was about 172.34 GB because
+it hard-linked the active archive. After subsequent compaction, it uniquely
+pinned 9,613,877,248 allocated bytes of obsolete SST files. Checkpoint creation
+was skipped below the 20 GiB creation floor, while size retention deliberately
+kept the newest checkpoint. The node could therefore neither replace nor prune
+that sole checkpoint before reaching the lower runtime floor.
+
+The guarded live recovery stopped no additional validator and changed no chain
+data. With IN already inactive, the operator proved the installed binary hash,
+the exact checkpoint path and metadata, same-filesystem ownership, active hot
+state and sibling cold archive, and exclusive allocation. Only
+`state-testnet/checkpoints/slot-9683000` was removed. Free space rose from
+10,460,078,080 to 20,074,176,512 bytes; `/var/lib/lichen/state-testnet`,
+`/var/lib/lichen/archive-testnet`, identity, validator keys, consensus WAL, and
+the signed binary were untouched. IN restarted from its own database and
+entered bounded sequential catch-up.
+
+AP-080 makes checkpoint pressure a lifecycle concern rather than a last-second
+operator cleanup. The candidate measures reclaimable allocation by filesystem
+device/inode, allocated blocks, and hard-link count. Files still linked by the
+active hot or cold store never count as reclaimable. Periodic checkpoint
+maintenance releases complete or interrupted derived checkpoint directories
+when below the 20 GiB creation floor, then creates a replacement only if the
+rechecked free space satisfies that floor. Startup and the runtime guard may
+reclaim checkpoints below 10 GiB only when the measured exclusive bytes can
+restore the runtime floor; otherwise they retain the checkpoint and fail closed
+with status 78. Checkpoint creation and runtime reclamation share one process
+lock, and duplicate same-slot creation is suppressed, so independent block
+processing paths cannot race the disk guard. Focused hard-link,
+interrupted-checkpoint, pressure-policy, and warnings-as-errors tests are
+mandatory before the full four-validator release gate.
+
+This correction prevents derived checkpoints from needlessly stopping a node;
+it does not make finite storage infinite. All four 200 GB testnet disks remain
+tight because every validator retains the same growing genesis-to-tip public
+archive. Mainnet and indefinite testnet operation still require monitored
+capacity growth above the documented runtime, checkpoint, and operation-peak
+reserves.
+
+## 2026-07-20 IN Catch-up State-Root Incident
+
+After the checkpoint was removed and IN restarted from its own preserved
+database, it replayed canonical blocks through slot `9,736,991`. The signed
+child at `9,736,992` then proved parent post-state root
+`645499e28e8b8229de842da3268cb82c20204dfad7cf2d81b67abae609c8f373`,
+while IN computed
+`8c52624945404fe4ac58af6ca04ffda4a47b4cb9d292a6f719ed1802e2f4850e`.
+The process remained active but retried the same rejected range indefinitely,
+so monitoring saw a running service while the explorer correctly reported only
+three fresh validators.
+
+The live journal proves the deterministic race. IN committed slot `9,736,990`
+at 12:02:11.592 UTC. At 12:02:11.596 the periodic consensus-state reconciler
+logged that it replaced the live stake pool from RocksDB. It had loaded that
+pool before the latest catch-up commit and did not share the canonical block
+application lock. Slot `9,736,991` then applied from the stale in-memory pool
+and persisted it. The source-backed counter proof is exact: starting from US at
+fixed slot `9,738,730` and subtracting canonical producers in
+`9,736,992..9,738,730` reconstructs every IN counter at `9,736,991` except SEA.
+SEA must be `2,637,959`; IN contains `2,637,958`. No other validator counter
+differs.
+
+AP-081 serializes both the RocksDB load and live validator/stake view swap under
+the same `block_apply_lock` used by sync and BFT commits. Its concurrency test
+queues reconciliation behind a simulated commit, advances the persisted and
+live pools, and proves reconciliation can only observe the newer pool. Catch-up
+blocks no longer create or broadcast votes. Parent post-state mismatch is a
+typed error emitted only after the embedded parent certificate, power snapshot,
+and commit signatures verify. For this exact already-persisted failure, the
+validator tests one missing parent-producer increment in an uncommitted batch
+and commits it only if the resulting root equals the signed child's exact root.
+It cannot apply an arbitrary delta. Any non-matching condition enters the
+existing verified checkpoint repair path instead of looping.
+
+The exact `v0.5.225` source passed the complete local release gate on
+2026-07-20 at 13:28 UTC. Locked workspace tests and strict Clippy passed, as did
+all standalone Rust workspaces, 40-lockfile Cargo Audit, Cargo Deny, JS/Python
+dependency policy, static release QA, wallet audits, and all 33 genesis-contract
+native/WASM builds. The required four-validator command passed a 140-slot
+same-process catch-up, V4 and seed own-state restarts, a coordinated four-state
+restart, canonical certificate parity, 140/140 volume journeys, and 104/104
+launchpad/governance/graduation journeys. After those writes, all four stopped
+stores produced the same slot-3000 hot/cold public-history manifest root
+`a143df619b23c6e955c073916afd95acc00e0261e80f53c493e6ef7d1e369147`.
+Hosted CI, signed artifacts, coordinated fleet deployment, IN's authenticated
+live repair, and final fleet parity remain mandatory before AP-080/AP-081 close.
+
 ## Tracker
 
 | ID | Work item | Evidence | Status |
@@ -1619,6 +1716,8 @@ seconds; all 15 target payload digests matched their source pages.
 | AP-077 | Prevent target validation backpressure, SSH connection limiting, and privileged I/O auditing from exhausting or truncating fleet repair transport | Exact signed live dry run, immutable stream replay, bounded-page checksum/report guards, audited-sudo byte proof | Done in the replacement transport and exact signed Linux dry run. The signed `bdc8de0d` two-hop stream failed closed twice, while its exact 34,657,898-byte export imported cleanly when sequenced. Bounded checksummed pages then passed an 18-report six-category smoke and one full 5,000-body page plus indexes: 15 reports, 92,928 rows, 15 matching transfer digests, and zero conflicts in 3 minutes 44 seconds. The first full EU-range attempt proved all 2,872,006 linked bodies but page 1 hit the fleet's six-new-SSH-connections-per-30-seconds UFW policy. The persistent-control replacement passed a three-page, 180,000-row live dry run, but its first complete-range retry exposed a second operational defect: US `sudo` I/O auditing copied raw block output into `/var/log/sudo-io`, allocating 11,297,062,912 bytes by block page 46. The run was stopped before disk danger, and only those exact generated sessions and transient pages were removed; no live database write occurred. Export/compression and decompression/import now remain inside the unprivileged `lichen` child. Direct six-category slot `0..10` smoke produced about 811 KB of audit data, and the forced local-bounded slots/blocks smoke produced exactly 28,497 bytes across 12 matching sessions, with zero conflicts and no transient residue. The exact `373db78c` Linux artifact subsequently proved EU slots and all blocks `0..2,872,005` conflict-free across US/SEA/IN without privileged payload logging. |
 | AP-078 | Keep canonical transaction/index repair pagination linear in the selected source range | Later-row isolation regression, full Core suite, strict Clippy, exact Linux live timing | Done in `v0.5.224`. Pagination stops at each page's canonical cursor frontier, avoids duplicate index lookups already backed by selected bodies, and retains source-backed index-only rows before that frontier. The isolation regression, exact release gates, and completed live source-union repair passed. |
 | AP-079 | Compare canonical RPC block bodies without requiring node-local commit-certificate presentation to match | Field-isolation proof, helper guard, four-origin read-only rerun | Done after release. The verifier already excluded signatures/count but still hashed `commit_source` and `commit_round`, causing SEA's valid `local_pending_child` proof at slot `5,275,999` to differ from peers' `legacy_local` proof despite identical canonical slot/hash/parent/state/transaction roots and body. It now excludes every `commit_*` presentation field. Helper guards pass 13/13, and the four-origin rerun passed health, 49-slot spread, and all six fixed canonical body digests. |
+| AP-080 | Prevent a hard-linked checkpoint from pinning obsolete SSTs until the runtime safety exit | IN allocation/inode evidence, active-linked and interrupted-checkpoint tests, four-validator pressure/restart gate | In progress; source and local gates are done. IN was recovered without changing active state/archive or the signed `v0.5.224` binary. The candidate measures actual exclusive checkpoint allocation, proactively reclaims complete/incomplete derived checkpoints under creation pressure, and preserves fail-closed runtime behavior when measured reclaim cannot restore 10 GiB. Full locked/security/contract/static gates and the exact four-validator restart/user/archive gate pass, ending with common slot-3000 manifest root `a143df61...e369147`. Hosted CI, signed deployment, and live capacity evidence remain. |
+| AP-081 | Prevent periodic consensus reconciliation from regressing a rapidly catching-up validator and recover authenticated parent-root divergence without retry loops | IN journal interleaving, fixed-slot producer-count proof, forced lock race, typed mismatch, exact-root repair, and no-sync-vote tests | In progress; source and local gates are done. The stale-load race and one missing SEA production counter are proven. Reconciliation now loads and swaps under `block_apply_lock`; a signed child can authorize only an exact candidate-root repair, all other mismatches request verified checkpoint state, and catch-up blocks never vote. Focused race/repair/vote tests, the locked workspace, strict Clippy, and the exact four-validator 140-slot catch-up plus own-state/coordinated restart gate pass. Hosted CI, coordinated signed deployment, IN's exact live repair, and final fleet parity remain. |
 | AP-070 | Cut new tag and publish release artifacts | Tag, checksums, crates/npm status | Done for the existing testnet. Signed tag `v0.5.224` at `ffbdd799...98a59b0` passed every hosted check and is public with five platform archives, checksums, attestations, and detached PQ signature. The coordinated activation/deployment completed at slot `9,680,289`; exact installed/running hashes and the tagged unit match on all four. Core/CLI `0.5.224`, contract SDK `1.0.3`, Rust client SDK `0.1.6`, and npm SDK `1.0.6` are published and visible. Mainnet still requires a fresh no-waiver genesis-to-tip proof and materially larger monitored storage. |
 
 ## Release Acceptance

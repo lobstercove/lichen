@@ -602,6 +602,95 @@ fn checkpoint_paths_total_size(checkpoints: &[(u64, String)]) -> Result<u64, Str
     })
 }
 
+fn checkpoint_directory_paths(data_dir: &str) -> Result<Vec<std::path::PathBuf>, String> {
+    let checkpoint_root = std::path::Path::new(data_dir).join("checkpoints");
+    let entries = match std::fs::read_dir(&checkpoint_root) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => {
+            return Err(format!(
+                "failed to read checkpoint directory {}: {}",
+                checkpoint_root.display(),
+                err
+            ));
+        }
+    };
+
+    let mut paths = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|err| {
+            format!(
+                "failed to read entry in checkpoint directory {}: {}",
+                checkpoint_root.display(),
+                err
+            )
+        })?;
+        let file_type = entry
+            .file_type()
+            .map_err(|err| format!("failed to inspect {}: {}", entry.path().display(), err))?;
+        if file_type.is_dir() {
+            paths.push(entry.path());
+        }
+    }
+    paths.sort();
+    Ok(paths)
+}
+
+#[cfg(unix)]
+fn checkpoint_paths_reclaimable_size(checkpoints: &[std::path::PathBuf]) -> Result<u64, String> {
+    use std::os::unix::fs::MetadataExt;
+
+    // Count every link that lives inside the checkpoint set. An inode is
+    // reclaimable only when deleting all checkpoints would remove all of its
+    // links; files still referenced by the active hot/cold stores do not count.
+    let mut files = std::collections::HashMap::<(u64, u64), (u64, u64, u64)>::new();
+    for checkpoint in checkpoints {
+        let mut stack = vec![checkpoint.clone()];
+        while let Some(current) = stack.pop() {
+            let metadata = std::fs::symlink_metadata(&current)
+                .map_err(|err| format!("failed to stat {}: {}", current.display(), err))?;
+            if metadata.file_type().is_symlink() {
+                continue;
+            }
+            if metadata.is_dir() {
+                for entry in std::fs::read_dir(&current)
+                    .map_err(|err| format!("failed to read {}: {}", current.display(), err))?
+                {
+                    let entry = entry.map_err(|err| {
+                        format!("failed to read entry in {}: {}", current.display(), err)
+                    })?;
+                    stack.push(entry.path());
+                }
+                continue;
+            }
+            if !metadata.is_file() {
+                continue;
+            }
+
+            let entry = files.entry((metadata.dev(), metadata.ino())).or_insert((
+                metadata.blocks().saturating_mul(512),
+                metadata.nlink(),
+                0,
+            ));
+            entry.2 = entry.2.saturating_add(1);
+        }
+    }
+
+    Ok(files
+        .values()
+        .filter(|(_, total_links, checkpoint_links)| checkpoint_links >= total_links)
+        .fold(0u64, |total, (bytes, _, _)| total.saturating_add(*bytes)))
+}
+
+#[cfg(not(unix))]
+fn checkpoint_paths_reclaimable_size(checkpoints: &[std::path::PathBuf]) -> Result<u64, String> {
+    // RocksDB checkpoint files are copies on platforms without Unix hard-link
+    // metadata, so their allocated size is reclaimable with the directory.
+    checkpoints.iter().try_fold(0u64, |total, checkpoint| {
+        directory_total_size(checkpoint).map(|size| total.saturating_add(size))
+    })
+}
+
 impl StateStore {
     pub(crate) fn snapshot_category_cf(category: &str) -> Option<(&'static str, &'static str)> {
         match category {
@@ -818,6 +907,30 @@ impl StateStore {
             let meta: CheckpointMeta = serde_json::from_str(&data).ok()?;
             Some((meta, path.clone()))
         })
+    }
+
+    /// Return bytes that would actually be released by deleting every listed
+    /// checkpoint. Hard-linked SSTs still referenced by active hot/cold stores
+    /// are excluded.
+    pub fn checkpoint_reclaimable_bytes(data_dir: &str) -> Result<u64, String> {
+        checkpoint_paths_reclaimable_size(&checkpoint_directory_paths(data_dir)?)
+    }
+
+    /// Remove every derived checkpoint directory, including incomplete
+    /// checkpoints left by interrupted creation. Active hot/cold stores live
+    /// outside this directory and hard-linked SSTs remain available there.
+    pub fn prune_all_checkpoints(data_dir: &str) -> Result<usize, String> {
+        let checkpoints = checkpoint_directory_paths(data_dir)?;
+        for checkpoint in &checkpoints {
+            std::fs::remove_dir_all(checkpoint).map_err(|err| {
+                format!(
+                    "failed to remove checkpoint {}: {}",
+                    checkpoint.display(),
+                    err
+                )
+            })?;
+        }
+        Ok(checkpoints.len())
     }
 
     /// Prune old checkpoints, keeping only the most recent `keep_count`.

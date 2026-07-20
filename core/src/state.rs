@@ -919,6 +919,69 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn checkpoint_reclaimable_bytes_excludes_active_hard_links() {
+        use std::os::unix::fs::MetadataExt;
+
+        let temp = tempdir().unwrap();
+        let state_dir = temp.path().join("state");
+        let checkpoint_root = state_dir.join("checkpoints");
+        let first = checkpoint_root.join("slot-1");
+        let second = checkpoint_root.join("slot-2");
+        let incomplete = checkpoint_root.join("slot-incomplete");
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+        std::fs::create_dir_all(&incomplete).unwrap();
+
+        for (slot, path) in [(1u64, &first), (2, &second)] {
+            let meta = CheckpointMeta {
+                slot,
+                state_root: [slot as u8; 32],
+                created_at: slot,
+                total_accounts: 0,
+            };
+            std::fs::write(
+                path.join("checkpoint_meta.json"),
+                serde_json::to_vec(&meta).unwrap(),
+            )
+            .unwrap();
+        }
+
+        let active_file = state_dir.join("active.sst");
+        std::fs::write(&active_file, vec![1u8; 8192]).unwrap();
+        std::fs::hard_link(&active_file, first.join("active.sst")).unwrap();
+
+        let checkpoint_only = first.join("checkpoint-only.sst");
+        std::fs::write(&checkpoint_only, vec![2u8; 8192]).unwrap();
+        std::fs::hard_link(&checkpoint_only, second.join("checkpoint-only.sst")).unwrap();
+        let incomplete_file = incomplete.join("orphaned.sst");
+        std::fs::write(&incomplete_file, vec![3u8; 8192]).unwrap();
+
+        let allocated = |path: &std::path::Path| {
+            std::fs::metadata(path)
+                .unwrap()
+                .blocks()
+                .saturating_mul(512)
+        };
+        let expected = allocated(&checkpoint_only)
+            .saturating_add(allocated(&incomplete_file))
+            .saturating_add(allocated(&first.join("checkpoint_meta.json")))
+            .saturating_add(allocated(&second.join("checkpoint_meta.json")));
+
+        assert_eq!(
+            StateStore::checkpoint_reclaimable_bytes(state_dir.to_str().unwrap()).unwrap(),
+            expected,
+            "active hot/cold hard links must not be counted as reclaimable"
+        );
+        assert_eq!(
+            StateStore::prune_all_checkpoints(state_dir.to_str().unwrap()).unwrap(),
+            3,
+            "complete and interrupted checkpoint directories must be removed"
+        );
+        assert!(checkpoint_root.read_dir().unwrap().next().is_none());
+    }
+
     #[test]
     fn test_sparse_checkpoint_read_only_root_does_not_rebuild_checkpoint() {
         let temp = tempdir().unwrap();

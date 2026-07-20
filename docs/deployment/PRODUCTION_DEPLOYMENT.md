@@ -14,7 +14,7 @@ Use this document as the canonical workflow for:
 
 This runbook intentionally prefers the scripts that are verified in the current tree over older narrative docs.
 
-Current signed testnet release for this runbook is `v0.5.224`; keep `v0.5.223`
+Current signed testnet release for this runbook is `v0.5.225`; keep `v0.5.224`
 as the signed rollback point until a newer rollback anchor is explicitly
 verified and recorded.
 
@@ -98,7 +98,13 @@ Rolling-release rules:
   four local validators.
 - Any release that changes fee charging or block commit batching must prove the public `getTotalBurned` value increases after a finalized fee-bearing transaction or drill. Do not accept explorer fee display alone as proof; it can be derived from the transaction while the consensus burned counter remains stale.
 - For an existing chain, Neo route/rewards/proof/agent code ships as a normal signed rolling release first. Do not set `LICHEN_GENESIS_NEO_GAS_REWARDS_ENABLE=1`, do not inject fresh-genesis Neo env, and do not activate Neo post-genesis payloads until every validator is running the new release and health/WS/DEX smokes pass.
-- If a rolling release exposes a state-root mismatch, split tip, or stalled BFT height, stop every validator service, keep state/logs intact for evidence, fix and tag the code, then use the owner-approved clean-slate path only after the fix is verified. Do not copy RocksDB state between validators to "heal" the split.
+- If a rolling release exposes a state-root mismatch, split tip, or stalled BFT
+  height, preserve every validator's state/logs, identify the last certified
+  common boundary, fix and tag the code, and recover each database through
+  deterministic replay or authenticated checkpoint repair. A clean slate is
+  allowed only when the owner separately changes chain identity or evidence
+  proves the complete network state unrecoverable. Do not copy RocksDB state
+  between validators to "heal" the split.
 - A full reset is not a code-deploy mechanism. Use it only when the chain identity or genesis state must intentionally change, or after captured evidence proves the whole network state is unrecoverable.
 
 Coordinated signed-release recovery rules for a stalled live height:
@@ -1818,7 +1824,19 @@ Public validators are archive-backed RPC nodes, not state-only snapshot
 consumers. Explicit local `--dev-mode` remains lightweight for disposable
 developer clusters.
 
-State divergence must be corrected by normal replay or by the full verified checkpoint snapshot path. Verified snapshots require authenticated PQ node sources and a self-contained canonical proof: the parent certificate, its transaction-0 Merkle inclusion in a signed and finalized child header, the child's complete historical power denominator, and the parent post-effects root committed by that certificate. Snapshot bytes and the source-pinned archive manifest must match that root before import. Do not run local-history stake-pool counter rewrites; validator and stake-pool singletons are never imported outside this staged verification path.
+State divergence must be corrected by normal replay or by the full verified
+checkpoint snapshot path. Verified snapshots require authenticated PQ node
+sources and a self-contained canonical proof: the parent certificate, its
+transaction-0 Merkle inclusion in a signed and finalized child header, the
+child's complete historical power denominator, and the parent post-effects root
+committed by that certificate. Snapshot bytes and the source-pinned archive
+manifest must match that root before import. The validator may self-repair one
+missing parent-producer counter only when every block-bound economic marker is
+complete and an uncommitted one-increment candidate produces the already
+verified child's exact parent root. This is certificate-constrained crash/race
+recovery, not a local-history counter rewrite. Every nonmatching divergence
+must use verified checkpoint repair; operators must never edit the stake-pool
+singleton directly.
 
 If a validator was mistakenly registered through the explicit funded path while it should enter bootstrap recovery, first roll a signed release that supports `ReclassifyValidatorBootstrap`, then submit the validator-signed correction:
 
@@ -2687,8 +2705,8 @@ activity green.
 
 Also, the wiped validator's new pubkey registers as a separate entry in the validator set. With N+1 validators and only N-1 online (original minus the ghost), BFT quorum (2/3+) may be unreachable.
 
-**Current release behavior**: `v0.5.224` is the signed live testnet release and
-`v0.5.223` is the signed rollback anchor.
+**Current release behavior**: `v0.5.225` is the signed live testnet release and
+`v0.5.224` is the signed rollback anchor.
 State-repair snapshots carry consensus state and complete public-history
 categories, while public-history repair remains additive, source-backed,
 conflict-checked, and never replaces validator identity, consensus WAL, or

@@ -2,7 +2,7 @@
 
 Official SDK for interacting with Lichen blockchain.
 
-Current source package version: `1.0.6`.
+Current source package version: `1.0.7`.
 
 ## Installation
 

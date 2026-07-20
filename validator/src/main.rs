@@ -108,6 +108,7 @@ const EXIT_CODE_FATAL_STARTUP: i32 = 78;
 const TESTNET_CHAIN_DOMAIN_ACTIVATION_SLOT: u64 = 800_000;
 const MIN_RUNTIME_AVAILABLE_BYTES: u64 = 10 * 1024 * 1024 * 1024;
 const MIN_CHECKPOINT_AVAILABLE_BYTES: u64 = 20 * 1024 * 1024 * 1024;
+static CHECKPOINT_MAINTENANCE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 const SNAPSHOT_APPLY_COMPACTION_COPIES: u64 = 2;
 const DISK_CAPACITY_CHECK_INTERVAL_SECS: u64 = 30;
 fn validator_log_filter_from_env_value(value: Option<&str>) -> EnvFilter {
@@ -2996,6 +2997,10 @@ fn block_may_mutate_stake_pool(block: &Block) -> bool {
     })
 }
 
+fn block_receiver_may_vote(is_sync_block: bool) -> bool {
+    !is_sync_block
+}
+
 fn reconcile_live_stake_pool_from_state(live_pool: &mut StakePool, loaded_pool: StakePool) -> bool {
     if hash_stake_pool(live_pool) == hash_stake_pool(&loaded_pool) {
         return false;
@@ -3003,6 +3008,54 @@ fn reconcile_live_stake_pool_from_state(live_pool: &mut StakePool, loaded_pool: 
 
     *live_pool = loaded_pool;
     true
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct ConsensusViewReconcileResult {
+    validator_set_changed: bool,
+    stake_pool_changed: bool,
+    validator_counter_repairs: u64,
+}
+
+async fn reconcile_live_consensus_views_from_state(
+    state: &StateStore,
+    validator_set: &Arc<RwLock<ValidatorSet>>,
+    stake_pool: &Arc<RwLock<StakePool>>,
+    block_apply_lock: &Arc<Mutex<()>>,
+    context: &str,
+) -> Result<ConsensusViewReconcileResult, String> {
+    // Load and swap both consensus views while canonical block application is
+    // excluded. Loading before taking this lock can overwrite a freshly
+    // applied stake pool with a stale RocksDB snapshot during fast catch-up.
+    let _block_apply_guard = block_apply_lock.lock().await;
+    let loaded_pool = state.get_stake_pool()?;
+    let mut loaded_set = state.load_validator_set()?;
+    let validator_counter_repairs = persist_validator_set_production_counter_repair(
+        state,
+        &mut loaded_set,
+        &loaded_pool,
+        context,
+    )?;
+
+    let validator_set_changed = {
+        let mut live_set = validator_set.write().await;
+        if hash_validator_set(&live_set) == hash_validator_set(&loaded_set) {
+            false
+        } else {
+            *live_set = loaded_set;
+            true
+        }
+    };
+    let stake_pool_changed = {
+        let mut live_pool = stake_pool.write().await;
+        reconcile_live_stake_pool_from_state(&mut live_pool, loaded_pool)
+    };
+
+    Ok(ConsensusViewReconcileResult {
+        validator_set_changed,
+        stake_pool_changed,
+        validator_counter_repairs,
+    })
 }
 
 fn resolve_treasury_keypair_path(
@@ -8975,8 +9028,72 @@ fn has_required_disk_headroom(available_bytes: u64, minimum_bytes: u64) -> bool 
     available_bytes >= minimum_bytes
 }
 
-fn require_runtime_disk_headroom(path: &Path) -> Result<u64, String> {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CheckpointReclaimPolicy {
+    RequireMinimum,
+    ImproveHeadroom,
+}
+
+fn reclaim_checkpoints_under_disk_pressure(
+    data_dir: &Path,
+    available_bytes: u64,
+    minimum_bytes: u64,
+    context: &str,
+    policy: CheckpointReclaimPolicy,
+) -> Result<u64, String> {
+    if has_required_disk_headroom(available_bytes, minimum_bytes) {
+        return Ok(available_bytes);
+    }
+
+    let data_dir = data_dir.to_str().ok_or_else(|| {
+        format!(
+            "checkpoint data path is not valid UTF-8: {}",
+            data_dir.display()
+        )
+    })?;
+    let reclaimable_bytes = StateStore::checkpoint_reclaimable_bytes(data_dir)?;
+    let reaches_minimum = has_required_disk_headroom(
+        available_bytes.saturating_add(reclaimable_bytes),
+        minimum_bytes,
+    );
+    if reclaimable_bytes == 0
+        || (!reaches_minimum && policy == CheckpointReclaimPolicy::RequireMinimum)
+    {
+        return Ok(available_bytes);
+    }
+
+    let removed = StateStore::prune_all_checkpoints(data_dir)?;
+    if removed == 0 {
+        return Err(format!(
+            "checkpoint files became unavailable during {context} reclamation"
+        ));
+    }
+
+    let available_after = filesystem_available_bytes(Path::new(data_dir))?;
+    warn!(
+        "Reclaimed {} derived checkpoint(s) during {}: projected_reclaimable_bytes={}, available_bytes_before={}, available_bytes_after={}, required_bytes={}",
+        removed,
+        context,
+        reclaimable_bytes,
+        available_bytes,
+        available_after,
+        minimum_bytes
+    );
+    Ok(available_after)
+}
+
+fn require_runtime_disk_headroom_with_checkpoint_reclaim(
+    path: &Path,
+    context: &str,
+) -> Result<u64, String> {
     let available = filesystem_available_bytes(path)?;
+    let available = reclaim_checkpoints_under_disk_pressure(
+        path,
+        available,
+        MIN_RUNTIME_AVAILABLE_BYTES,
+        context,
+        CheckpointReclaimPolicy::RequireMinimum,
+    )?;
     if !has_required_disk_headroom(available, MIN_RUNTIME_AVAILABLE_BYTES) {
         return Err(format!(
             "{} has {} available bytes; at least {} are required to open a validator safely",
@@ -9065,7 +9182,9 @@ fn spawn_runtime_disk_guard(path: PathBuf) {
         interval.tick().await;
         loop {
             interval.tick().await;
-            match require_runtime_disk_headroom(&path) {
+            let _checkpoint_guard = CHECKPOINT_MAINTENANCE_LOCK.lock().await;
+            match require_runtime_disk_headroom_with_checkpoint_reclaim(&path, "runtime disk guard")
+            {
                 Ok(_) => {}
                 Err(err) => {
                     error!(
@@ -9139,16 +9258,29 @@ async fn maybe_create_checkpoint(
     if !SyncManager::should_checkpoint(slot) {
         return;
     }
+    let _checkpoint_guard = CHECKPOINT_MAINTENANCE_LOCK.lock().await;
+    let checkpoint_path = format!("{}/checkpoints/slot-{}", data_dir, slot);
+    if Path::new(&checkpoint_path).is_dir() {
+        return;
+    }
     let checkpoint_root = Path::new(data_dir);
-    match filesystem_available_bytes(checkpoint_root) {
-        Ok(available) if !has_required_disk_headroom(available, MIN_CHECKPOINT_AVAILABLE_BYTES) => {
-            warn!(
-                "Skipping checkpoint at slot {}: {} available bytes is below the {} byte checkpoint safety floor",
-                slot, available, MIN_CHECKPOINT_AVAILABLE_BYTES
-            );
-            return;
-        }
-        Ok(_) => {}
+    let available = match filesystem_available_bytes(checkpoint_root) {
+        Ok(available) => match reclaim_checkpoints_under_disk_pressure(
+            checkpoint_root,
+            available,
+            MIN_CHECKPOINT_AVAILABLE_BYTES,
+            "periodic checkpoint replacement",
+            CheckpointReclaimPolicy::ImproveHeadroom,
+        ) {
+            Ok(available) => available,
+            Err(err) => {
+                warn!(
+                    "Skipping checkpoint at slot {} because stale checkpoint reclamation failed: {}",
+                    slot, err
+                );
+                return;
+            }
+        },
         Err(err) => {
             warn!(
                 "Skipping checkpoint at slot {} because disk capacity cannot be verified: {}",
@@ -9156,8 +9288,14 @@ async fn maybe_create_checkpoint(
             );
             return;
         }
+    };
+    if !has_required_disk_headroom(available, MIN_CHECKPOINT_AVAILABLE_BYTES) {
+        warn!(
+                "Skipping checkpoint at slot {}: {} available bytes is below the {} byte checkpoint safety floor",
+                slot, available, MIN_CHECKPOINT_AVAILABLE_BYTES
+            );
+        return;
     }
-    let checkpoint_path = format!("{}/checkpoints/slot-{}", data_dir, slot);
     match state.create_checkpoint(&checkpoint_path, slot) {
         Ok(meta) => {
             info!(
@@ -9802,11 +9940,63 @@ fn validate_block_payload_commitments(block: &Block) -> Result<(), String> {
     Ok(())
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SyncedBlockAuthenticityError {
+    Invalid(String),
+    ParentPostStateRootMismatch {
+        slot: u64,
+        expected: Hash,
+        actual: Hash,
+    },
+}
+
+impl SyncedBlockAuthenticityError {
+    fn requires_checkpoint_repair(&self) -> bool {
+        matches!(self, Self::ParentPostStateRootMismatch { .. })
+    }
+
+    fn parent_post_state_root_mismatch(&self) -> Option<(u64, Hash, Hash)> {
+        match self {
+            Self::ParentPostStateRootMismatch {
+                slot,
+                expected,
+                actual,
+            } => Some((*slot, *expected, *actual)),
+            Self::Invalid(_) => None,
+        }
+    }
+}
+
+impl std::fmt::Display for SyncedBlockAuthenticityError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Invalid(message) => formatter.write_str(message),
+            Self::ParentPostStateRootMismatch {
+                slot,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "block {} parent post-state root {} does not match local {}",
+                slot,
+                expected.to_hex(),
+                actual.to_hex()
+            ),
+        }
+    }
+}
+
+impl From<String> for SyncedBlockAuthenticityError {
+    fn from(message: String) -> Self {
+        Self::Invalid(message)
+    }
+}
+
 fn verify_synced_block_parent_certificate(
     state: &StateStore,
     block: &Block,
     chain_id: &str,
-) -> Result<(), String> {
+) -> Result<(), SyncedBlockAuthenticityError> {
     if block.header.slot <= 1 {
         return Ok(());
     }
@@ -9817,40 +10007,43 @@ fn verify_synced_block_parent_certificate(
         .filter(|transaction| transaction.is_consensus());
     let Some(consensus_transaction) = consensus_transaction else {
         if chain_id.to_ascii_lowercase().contains("mainnet") {
-            return Err(format!(
+            return Err(SyncedBlockAuthenticityError::Invalid(format!(
                 "mainnet block {} has no canonical parent commit transaction",
                 block.header.slot
-            ));
+            )));
         }
         return Ok(());
     };
 
     let parent = state.get_block(&block.header.parent_hash)?.ok_or_else(|| {
-        format!(
+        SyncedBlockAuthenticityError::Invalid(format!(
             "block {} canonical parent {} is unavailable",
             block.header.slot,
             block.header.parent_hash.to_hex()
-        )
+        ))
     })?;
     if parent.header.slot + 1 != block.header.slot {
-        return Err(format!(
+        return Err(SyncedBlockAuthenticityError::Invalid(format!(
             "block {} canonical parent has noncontiguous slot {}",
             block.header.slot, parent.header.slot
-        ));
+        )));
     }
 
     let certificate = CanonicalCommitCertificate::from_transaction(consensus_transaction)?
-        .ok_or_else(|| "canonical parent commit transaction is missing".to_string())?;
+        .ok_or_else(|| {
+            SyncedBlockAuthenticityError::Invalid(
+                "canonical parent commit transaction is missing".to_string(),
+            )
+        })?;
     certificate.verify_child_metadata(&block.tx_fees_paid, &block.oracle_prices)?;
     certificate.verify_parent(&parent, chain_id, MIN_VALIDATOR_STAKE)?;
     let local_parent_post_state_root = state.compute_state_root();
     if certificate.parent_post_state_root != local_parent_post_state_root {
-        return Err(format!(
-            "block {} parent post-state root {} does not match local {}",
-            block.header.slot,
-            certificate.parent_post_state_root.to_hex(),
-            local_parent_post_state_root.to_hex(),
-        ));
+        return Err(SyncedBlockAuthenticityError::ParentPostStateRootMismatch {
+            slot: block.header.slot,
+            expected: certificate.parent_post_state_root,
+            actual: local_parent_post_state_root,
+        });
     }
     Ok(())
 }
@@ -9870,6 +10063,7 @@ fn verify_synced_block_consensus_authenticity(
         stake_pool,
         "",
     )
+    .map_err(|err| err.to_string())
 }
 
 fn verify_synced_block_consensus_authenticity_with_chain_id(
@@ -9878,7 +10072,7 @@ fn verify_synced_block_consensus_authenticity_with_chain_id(
     validator_set: &ValidatorSet,
     stake_pool: &StakePool,
     chain_id: &str,
-) -> Result<(), String> {
+) -> Result<(), SyncedBlockAuthenticityError> {
     validate_block_payload_commitments(block)?;
     if block.header.slot == 0 {
         return Ok(());
@@ -9888,18 +10082,18 @@ fn verify_synced_block_consensus_authenticity_with_chain_id(
     match validator_set.get_validator(&proposer) {
         Some(validator) if !validator.pending_activation => {}
         Some(_) => {
-            return Err(format!(
+            return Err(SyncedBlockAuthenticityError::Invalid(format!(
                 "block {} proposer {} is pending activation",
                 block.header.slot,
                 proposer.to_base58()
-            ));
+            )));
         }
         None => {
-            return Err(format!(
+            return Err(SyncedBlockAuthenticityError::Invalid(format!(
                 "block {} proposer {} is not in the active validator set",
                 block.header.slot,
                 proposer.to_base58()
-            ));
+            )));
         }
     }
 
@@ -9909,17 +10103,17 @@ fn verify_synced_block_consensus_authenticity_with_chain_id(
         0
     };
     if !block.verify_historical_signature_with_chain_id(chain_id, activation_slot) {
-        return Err(format!(
+        return Err(SyncedBlockAuthenticityError::Invalid(format!(
             "block {} producer signature is invalid for chain {}",
             block.header.slot, chain_id
-        ));
+        )));
     }
 
     if block.commit_signatures.is_empty() {
-        return Err(format!(
+        return Err(SyncedBlockAuthenticityError::Invalid(format!(
             "block {} has no commit certificate",
             block.header.slot
-        ));
+        )));
     }
     block.verify_commit_with_chain_id_and_min_stake_for_history(
         chain_id,
@@ -9929,6 +10123,130 @@ fn verify_synced_block_consensus_authenticity_with_chain_id(
         MIN_VALIDATOR_STAKE,
     )?;
     verify_synced_block_parent_certificate(state, block, chain_id)
+}
+
+async fn repair_single_missing_parent_production_effect(
+    state: &StateStore,
+    live_stake_pool: &Arc<RwLock<StakePool>>,
+    child: &Block,
+    error: &SyncedBlockAuthenticityError,
+) -> Result<bool, String> {
+    let Some((child_slot, expected_root, reported_actual_root)) =
+        error.parent_post_state_root_mismatch()
+    else {
+        return Ok(false);
+    };
+    if child_slot != child.header.slot || child_slot <= 1 {
+        return Ok(false);
+    }
+
+    let parent = state
+        .get_block(&child.header.parent_hash)?
+        .ok_or_else(|| "authenticated child parent disappeared during root repair".to_string())?;
+    if parent.header.slot.saturating_add(1) != child_slot
+        || state.get_last_slot()? != parent.header.slot
+        || !tip_post_block_effects_complete(state, &parent)?
+    {
+        return Ok(false);
+    }
+
+    let actual_root = state.compute_state_root();
+    if actual_root != reported_actual_root || actual_root == expected_root {
+        return Ok(false);
+    }
+
+    let producer = Pubkey(parent.header.validator);
+    let mut candidate_pool = state.get_stake_pool()?;
+    let Some(producer_stake) = candidate_pool.get_stake_mut(&producer) else {
+        return Ok(false);
+    };
+    if producer_stake.last_reward_slot != parent.header.slot {
+        return Ok(false);
+    }
+    producer_stake.blocks_produced = producer_stake
+        .blocks_produced
+        .checked_add(1)
+        .ok_or_else(|| "parent producer counter overflow during root repair".to_string())?;
+
+    let mut candidate_batch = state.begin_batch_at_slot(parent.header.slot);
+    candidate_batch.put_stake_pool(&candidate_pool)?;
+    if state.compute_state_root_for_batch(&candidate_batch) != expected_root {
+        return Ok(false);
+    }
+
+    state.commit_batch(candidate_batch)?;
+    let repaired_root = state.compute_state_root();
+    if repaired_root != expected_root {
+        return Err(format!(
+            "verified parent production repair committed root {} instead of {}",
+            repaired_root.to_hex(),
+            expected_root.to_hex()
+        ));
+    }
+    *live_stake_pool.write().await = candidate_pool;
+    record_post_block_state_commitment_anchor(
+        state,
+        &parent,
+        "authenticated parent production repair",
+    );
+    warn!(
+        "🔧 Repaired one missing producer counter for parent slot {} producer {}; authenticated child {} proved root {}",
+        parent.header.slot,
+        producer.to_base58(),
+        child_slot,
+        expected_root.to_hex()
+    );
+    Ok(true)
+}
+
+struct VerifiedCheckpointRepairRequest<'a> {
+    sync_manager: &'a Arc<SyncManager>,
+    snapshot_sync: &'a Arc<Mutex<SnapshotSync>>,
+    peer_manager: &'a Arc<lichen_p2p::PeerManager>,
+    local_addr: SocketAddr,
+    transition_reason: &'a str,
+    request_reason: &'a str,
+}
+
+async fn recover_authenticated_parent_root_or_request_checkpoint(
+    state: &StateStore,
+    live_stake_pool: &Arc<RwLock<StakePool>>,
+    child: &Block,
+    error: &SyncedBlockAuthenticityError,
+    request: VerifiedCheckpointRepairRequest<'_>,
+) -> bool {
+    match repair_single_missing_parent_production_effect(state, live_stake_pool, child, error).await
+    {
+        Ok(true) => true,
+        Ok(false) => {
+            transition_to_verified_checkpoint_repair(
+                request.sync_manager,
+                request.snapshot_sync,
+                request.peer_manager,
+                request.local_addr,
+                request.transition_reason,
+                request.request_reason,
+            )
+            .await;
+            false
+        }
+        Err(repair_error) => {
+            error!(
+                "Authenticated parent-state targeted repair failed for child {}: {}",
+                child.header.slot, repair_error
+            );
+            transition_to_verified_checkpoint_repair(
+                request.sync_manager,
+                request.snapshot_sync,
+                request.peer_manager,
+                request.local_addr,
+                request.transition_reason,
+                request.request_reason,
+            )
+            .await;
+            false
+        }
+    }
 }
 
 struct CheckpointAnchor<'a> {
@@ -17398,7 +17716,10 @@ async fn run_validator() {
     };
 
     if !dev_mode {
-        match require_runtime_disk_headroom(&data_dir_path) {
+        match require_runtime_disk_headroom_with_checkpoint_reclaim(
+            &data_dir_path,
+            "validator startup",
+        ) {
             Ok(available) => info!(
                 "Disk headroom preflight passed: {} available bytes",
                 available
@@ -19238,22 +19559,39 @@ async fn run_validator() {
                             .await
                             .chain_id
                             .clone();
-                        {
+                        let authenticity = {
                             let vs = validator_set_for_blocks.read().await;
                             let pool = stake_pool_for_blocks.read().await;
-                            if let Err(err) =
-                                verify_synced_block_consensus_authenticity_with_chain_id(
+                            verify_synced_block_consensus_authenticity_with_chain_id(
+                                &state_for_blocks,
+                                &pending_block,
+                                &vs,
+                                &pool,
+                                &chain_id,
+                            )
+                        };
+                        if let Err(err) = authenticity {
+                            warn!(
+                                "⚠️  Rejecting pending block {} — consensus authenticity failed: {}",
+                                pending_slot, err
+                            );
+                            let recovered = err.requires_checkpoint_repair()
+                                && recover_authenticated_parent_root_or_request_checkpoint(
                                     &state_for_blocks,
+                                    &stake_pool_for_blocks,
                                     &pending_block,
-                                    &vs,
-                                    &pool,
-                                    &chain_id,
+                                    &err,
+                                    VerifiedCheckpointRepairRequest {
+                                        sync_manager: &sync_mgr,
+                                        snapshot_sync: &snapshot_sync_for_blocks,
+                                        peer_manager: &peer_mgr_for_sync,
+                                        local_addr,
+                                        transition_reason: "pending parent-state checkpoint repair",
+                                        request_reason: "pending parent-state mismatch",
+                                    },
                                 )
-                            {
-                                warn!(
-                                    "⚠️  Rejecting pending block {} — consensus authenticity failed: {}",
-                                    pending_slot, err
-                                );
+                                .await;
+                            if !recovered {
                                 continue;
                             }
                         }
@@ -20652,22 +20990,40 @@ async fn run_validator() {
                                 .await
                                 .chain_id
                                 .clone();
-                            {
+                            let authenticity = {
                                 let vs = validator_set_for_blocks.read().await;
                                 let pool = stake_pool_for_blocks.read().await;
-                                if let Err(err) =
-                                    verify_synced_block_consensus_authenticity_with_chain_id(
+                                verify_synced_block_consensus_authenticity_with_chain_id(
+                                    &state_for_blocks,
+                                    &pending_block,
+                                    &vs,
+                                    &pool,
+                                    &chain_id,
+                                )
+                            };
+                            if let Err(err) = authenticity {
+                                warn!(
+                                    "⚠️  Rejecting pending block {} — consensus authenticity failed: {}",
+                                    pending_slot, err
+                                );
+                                let recovered = err.requires_checkpoint_repair()
+                                    && recover_authenticated_parent_root_or_request_checkpoint(
                                         &state_for_blocks,
+                                        &stake_pool_for_blocks,
                                         &pending_block,
-                                        &vs,
-                                        &pool,
-                                        &chain_id,
+                                        &err,
+                                        VerifiedCheckpointRepairRequest {
+                                            sync_manager: &sync_mgr,
+                                            snapshot_sync: &snapshot_sync_for_blocks,
+                                            peer_manager: &peer_mgr_for_sync,
+                                            local_addr,
+                                            transition_reason:
+                                                "pending parent-state checkpoint repair",
+                                            request_reason: "pending parent-state mismatch",
+                                        },
                                     )
-                                {
-                                    warn!(
-                                        "⚠️  Rejecting pending block {} — consensus authenticity failed: {}",
-                                        pending_slot, err
-                                    );
+                                    .await;
+                                if !recovered {
                                     continue;
                                 }
                             }
@@ -20954,22 +21310,39 @@ async fn run_validator() {
                             .await
                             .chain_id
                             .clone();
-                        {
+                        let authenticity = {
                             let vs = validator_set_for_blocks.read().await;
                             let pool = stake_pool_for_blocks.read().await;
-                            if let Err(err) =
-                                verify_synced_block_consensus_authenticity_with_chain_id(
+                            verify_synced_block_consensus_authenticity_with_chain_id(
+                                &state_for_blocks,
+                                &block,
+                                &vs,
+                                &pool,
+                                &chain_id,
+                            )
+                        };
+                        if let Err(err) = authenticity {
+                            warn!(
+                                "⚠️  Rejecting block {} — consensus authenticity failed: {}",
+                                block_slot, err
+                            );
+                            let recovered = err.requires_checkpoint_repair()
+                                && recover_authenticated_parent_root_or_request_checkpoint(
                                     &state_for_blocks,
+                                    &stake_pool_for_blocks,
                                     &block,
-                                    &vs,
-                                    &pool,
-                                    &chain_id,
+                                    &err,
+                                    VerifiedCheckpointRepairRequest {
+                                        sync_manager: &sync_mgr,
+                                        snapshot_sync: &snapshot_sync_for_blocks,
+                                        peer_manager: &peer_mgr_for_sync,
+                                        local_addr,
+                                        transition_reason: "block parent-state checkpoint repair",
+                                        request_reason: "block parent-state mismatch",
+                                    },
                                 )
-                            {
-                                warn!(
-                                    "⚠️  Rejecting block {} — consensus authenticity failed: {}",
-                                    block_slot, err
-                                );
+                                .await;
+                            if !recovered {
                                 continue;
                             }
                         }
@@ -21045,82 +21418,84 @@ async fn run_validator() {
                                 fork_choice.add_head(block_slot, block.hash(), weight);
                             }
 
-                            // VOTE-AUTHORITY: Atomically check-then-sign via VoteAuthority.
-                            // This is the ONLY code path that can create a signed vote
-                            // in the block receiver. VoteAuthority prevents all DoubleVote
-                            // scenarios: P2P echo, fork re-evaluation, and view rotation.
-                            let block_hash = block.hash();
-                            let maybe_vote = vote_authority_for_rx
-                                .lock()
-                                .await
-                                .try_vote(block_slot, block_hash);
+                            if block_receiver_may_vote(is_sync_block) {
+                                // VOTE-AUTHORITY: Atomically check-then-sign via VoteAuthority.
+                                // This is the ONLY code path that can create a signed vote
+                                // in the block receiver. VoteAuthority prevents all DoubleVote
+                                // scenarios: P2P echo, fork re-evaluation, and view rotation.
+                                let block_hash = block.hash();
+                                let maybe_vote = vote_authority_for_rx
+                                    .lock()
+                                    .await
+                                    .try_vote(block_slot, block_hash);
 
-                            if let Some(vote) = maybe_vote {
-                                // Add our own vote (validated against validator set)
-                                {
-                                    let mut agg = vote_agg_for_blocks.write().await;
-                                    let vs = validator_set_for_blocks.read().await;
-                                    let pool = stake_pool_for_blocks.read().await;
-                                    if agg.add_vote_validated_with_min_stake(
-                                        vote.clone(),
-                                        &vs,
-                                        &pool,
-                                        min_validator_stake,
-                                    ) {
-                                        info!("🗳️  Cast vote for block {}", block_slot);
-
-                                        // Check if block reached finality (2/3 supermajority - STAKE-WEIGHTED)
-                                        if agg.has_supermajority_with_min_stake(
-                                            block_slot,
-                                            &block_hash,
+                                if let Some(vote) = maybe_vote {
+                                    // Add our own vote (validated against validator set)
+                                    {
+                                        let mut agg = vote_agg_for_blocks.write().await;
+                                        let vs = validator_set_for_blocks.read().await;
+                                        let pool = stake_pool_for_blocks.read().await;
+                                        if agg.add_vote_validated_with_min_stake(
+                                            vote.clone(),
                                             &vs,
                                             &pool,
                                             min_validator_stake,
                                         ) {
-                                            info!("🔒 Block {} FINALIZED with stake-weighted supermajority!", block_slot);
-                                            // Update finality tracker + persist to StateStore
-                                            if finality_for_blocks.mark_confirmed(block_slot) {
-                                                if let Err(e) = state_for_blocks
-                                                    .set_last_confirmed_slot(
-                                                        finality_for_blocks.confirmed_slot(),
-                                                    )
-                                                {
-                                                    tracing::error!(
-                                                        "Failed to persist confirmed slot: {e}"
-                                                    );
-                                                }
-                                                if let Err(e) = state_for_blocks
-                                                    .set_last_finalized_slot(
-                                                        finality_for_blocks.finalized_slot(),
-                                                    )
-                                                {
-                                                    tracing::error!(
-                                                        "Failed to persist finalized slot: {e}"
-                                                    );
+                                            info!("🗳️  Cast vote for block {}", block_slot);
+
+                                            // Check if block reached finality (2/3 supermajority - STAKE-WEIGHTED)
+                                            if agg.has_supermajority_with_min_stake(
+                                                block_slot,
+                                                &block_hash,
+                                                &vs,
+                                                &pool,
+                                                min_validator_stake,
+                                            ) {
+                                                info!("🔒 Block {} FINALIZED with stake-weighted supermajority!", block_slot);
+                                                // Update finality tracker + persist to StateStore
+                                                if finality_for_blocks.mark_confirmed(block_slot) {
+                                                    if let Err(e) = state_for_blocks
+                                                        .set_last_confirmed_slot(
+                                                            finality_for_blocks.confirmed_slot(),
+                                                        )
+                                                    {
+                                                        tracing::error!(
+                                                            "Failed to persist confirmed slot: {e}"
+                                                        );
+                                                    }
+                                                    if let Err(e) = state_for_blocks
+                                                        .set_last_finalized_slot(
+                                                            finality_for_blocks.finalized_slot(),
+                                                        )
+                                                    {
+                                                        tracing::error!(
+                                                            "Failed to persist finalized slot: {e}"
+                                                        );
+                                                    }
                                                 }
                                             }
+                                            drop(pool);
                                         }
-                                        drop(pool);
+                                        // Drop agg + vs before broadcast
                                     }
-                                    // Drop agg + vs before broadcast
-                                }
 
-                                // PERF-OPT 3: Fire-and-forget vote broadcast.
-                                // P3-5: Route votes through validator mesh for lowest latency.
-                                // Falls back to full broadcast if no validator peers are known.
-                                {
-                                    let vote_msg =
-                                        P2PMessage::new(MessageType::Vote(vote), local_addr);
-                                    let pm = peer_mgr_for_sync.clone();
-                                    tokio::spawn(async move {
-                                        pm.broadcast_to_validators(vote_msg).await;
-                                    });
+                                    // PERF-OPT 3: Fire-and-forget vote broadcast.
+                                    // P3-5: Route votes through validator mesh for lowest latency.
+                                    // Falls back to full broadcast if no validator peers are known.
+                                    {
+                                        let vote_msg =
+                                            P2PMessage::new(MessageType::Vote(vote), local_addr);
+                                        let pm = peer_mgr_for_sync.clone();
+                                        tokio::spawn(async move {
+                                            pm.broadcast_to_validators(vote_msg).await;
+                                        });
+                                    }
+                                } else {
+                                    info!(
+                                        "⚠️  VoteAuthority: slot {} already voted — skipping (prevents DoubleVote)",
+                                        block_slot
+                                    );
                                 }
-                            } else {
-                                info!(
-                                    "⚠️  VoteAuthority: slot {} already voted — skipping (prevents DoubleVote)",
-                                    block_slot
-                                );
                             }
 
                             // Now apply deterministic post-block effects after the
@@ -21576,22 +21951,40 @@ async fn run_validator() {
                                     .await
                                     .chain_id
                                     .clone();
-                                {
+                                let authenticity = {
                                     let vs = validator_set_for_blocks.read().await;
                                     let pool = stake_pool_for_blocks.read().await;
-                                    if let Err(err) =
-                                        verify_synced_block_consensus_authenticity_with_chain_id(
+                                    verify_synced_block_consensus_authenticity_with_chain_id(
+                                        &state_for_blocks,
+                                        &block,
+                                        &vs,
+                                        &pool,
+                                        &chain_id,
+                                    )
+                                };
+                                if let Err(err) = authenticity {
+                                    warn!(
+                                        "⚠️  Rejecting fork replacement block {} — consensus authenticity failed: {}",
+                                        block_slot, err
+                                    );
+                                    let recovered = err.requires_checkpoint_repair()
+                                        && recover_authenticated_parent_root_or_request_checkpoint(
                                             &state_for_blocks,
+                                            &stake_pool_for_blocks,
                                             &block,
-                                            &vs,
-                                            &pool,
-                                            &chain_id,
+                                            &err,
+                                            VerifiedCheckpointRepairRequest {
+                                                sync_manager: &sync_mgr,
+                                                snapshot_sync: &snapshot_sync_for_blocks,
+                                                peer_manager: &peer_mgr_for_sync,
+                                                local_addr,
+                                                transition_reason:
+                                                    "fork parent-state checkpoint repair",
+                                                request_reason: "fork parent-state mismatch",
+                                            },
                                         )
-                                    {
-                                        warn!(
-                                            "⚠️  Rejecting fork replacement block {} — consensus authenticity failed: {}",
-                                            block_slot, err
-                                        );
+                                        .await;
+                                    if !recovered {
                                         continue;
                                     }
                                 }
@@ -24978,42 +25371,33 @@ async fn run_validator() {
     let validator_set_for_reconcile = validator_set.clone();
     let stake_pool_for_reconcile = stake_pool.clone();
     let state_for_reconcile = state.clone();
+    let block_apply_lock_for_reconcile = block_apply_lock.clone();
     tokio::spawn(async move {
         let mut interval = time::interval(Duration::from_secs(60));
         loop {
             interval.tick().await;
-            let loaded_pool = state_for_reconcile.get_stake_pool().ok();
-            if let Ok(mut loaded_set) = state_for_reconcile.load_validator_set() {
-                let repaired = if let Some(pool) = loaded_pool.as_ref() {
-                    match persist_validator_set_production_counter_repair(
-                        &state_for_reconcile,
-                        &mut loaded_set,
-                        pool,
-                        "Periodic reconcile",
-                    ) {
-                        Ok(count) => count,
-                        Err(err) => {
-                            warn!(
-                                "⚠️  Periodic validator production counter repair failed: {}",
-                                err
-                            );
-                            0
-                        }
+            match reconcile_live_consensus_views_from_state(
+                &state_for_reconcile,
+                &validator_set_for_reconcile,
+                &stake_pool_for_reconcile,
+                &block_apply_lock_for_reconcile,
+                "Periodic reconcile",
+            )
+            .await
+            {
+                Ok(result) => {
+                    if result.validator_set_changed || result.validator_counter_repairs > 0 {
+                        info!(
+                            "🔄 Validator set reconciled from state (counter_repairs={})",
+                            result.validator_counter_repairs
+                        );
                     }
-                } else {
-                    0
-                };
-                let mut vs = validator_set_for_reconcile.write().await;
-                if repaired > 0 || hash_validator_set(&vs) != hash_validator_set(&loaded_set) {
-                    *vs = loaded_set;
-                    info!("🔄 Validator set reconciled from state");
+                    if result.stake_pool_changed {
+                        info!("🔄 Stake pool reconciled from state");
+                    }
                 }
-            }
-
-            if let Some(loaded_pool) = loaded_pool {
-                let mut pool = stake_pool_for_reconcile.write().await;
-                if reconcile_live_stake_pool_from_state(&mut pool, loaded_pool) {
-                    info!("🔄 Stake pool reconciled from state");
+                Err(err) => {
+                    warn!("⚠️  Periodic consensus-state reconcile failed: {}", err);
                 }
             }
         }
@@ -28276,6 +28660,24 @@ async fn request_checkpoint_metadata_from_peers(
     }
 }
 
+async fn transition_to_verified_checkpoint_repair(
+    sync_manager: &Arc<sync::SyncManager>,
+    snapshot_sync: &Arc<Mutex<SnapshotSync>>,
+    peer_manager: &Arc<lichen_p2p::PeerManager>,
+    local_addr: SocketAddr,
+    transition_reason: &str,
+    request_reason: &str,
+) {
+    sync_manager.transition_to_initial(transition_reason).await;
+    sync_manager.set_sync_mode(sync::SyncMode::Warp).await;
+    sync_manager.complete_sync().await;
+    sync_manager.record_sync_failure().await;
+    sync_manager.clear_requested_slots().await;
+    sync_manager.clear_pending_blocks().await;
+    snapshot_sync.lock().await.mark_checkpoint_repair_pending();
+    request_checkpoint_metadata_from_peers(peer_manager, local_addr, request_reason).await;
+}
+
 async fn ensure_peer_for_response(
     peer_mgr: &Arc<lichen_p2p::PeerManager>,
     requester: SocketAddr,
@@ -31385,6 +31787,73 @@ mod tests {
     }
 
     #[test]
+    fn block_receiver_never_votes_for_catch_up_blocks() {
+        assert!(!block_receiver_may_vote(true));
+        assert!(block_receiver_may_vote(false));
+    }
+
+    #[tokio::test]
+    async fn consensus_reconciliation_loads_state_only_after_block_apply_lock() {
+        let dir = tempfile::tempdir().expect("state temp dir");
+        let state = StateStore::open(dir.path()).expect("open state");
+        let validator = Pubkey([43u8; 32]);
+        let mut initial_pool = StakePool::new();
+        initial_pool
+            .try_bootstrap_with_fingerprint(validator, MIN_VALIDATOR_STAKE, 0, [0u8; 32])
+            .expect("bootstrap validator");
+        state
+            .put_stake_pool(&initial_pool)
+            .expect("persist initial pool");
+        state
+            .save_validator_set(&ValidatorSet::new())
+            .expect("persist validator set");
+
+        let live_pool = Arc::new(RwLock::new(initial_pool.clone()));
+        let live_set = Arc::new(RwLock::new(ValidatorSet::new()));
+        let block_apply_lock = Arc::new(Mutex::new(()));
+        let block_guard = block_apply_lock.lock().await;
+
+        let reconcile_state = state.clone();
+        let reconcile_pool = live_pool.clone();
+        let reconcile_set = live_set.clone();
+        let reconcile_lock = block_apply_lock.clone();
+        let reconcile = tokio::spawn(async move {
+            reconcile_live_consensus_views_from_state(
+                &reconcile_state,
+                &reconcile_set,
+                &reconcile_pool,
+                &reconcile_lock,
+                "test reconcile",
+            )
+            .await
+        });
+        tokio::task::yield_now().await;
+
+        let mut committed_pool = initial_pool;
+        committed_pool.distribute_block_reward(&validator, 1, true, GENESIS_SUPPLY_SPORES);
+        committed_pool.record_block_produced(&validator);
+        state
+            .put_stake_pool(&committed_pool)
+            .expect("persist simulated block effects");
+        {
+            let mut live = live_pool.write().await;
+            *live = committed_pool.clone();
+        }
+        drop(block_guard);
+
+        let result = reconcile
+            .await
+            .expect("reconcile task")
+            .expect("reconcile succeeds");
+        assert!(!result.stake_pool_changed);
+        assert_eq!(
+            hash_stake_pool(&*live_pool.read().await),
+            hash_stake_pool(&committed_pool),
+            "reconciliation must not reload the pre-commit pool"
+        );
+    }
+
+    #[test]
     fn genesis_state_bundle_roundtrips_without_local_contract_replay() {
         let source_dir = tempfile::tempdir().expect("source temp dir");
         let dest_dir = tempfile::tempdir().expect("dest temp dir");
@@ -32589,6 +33058,99 @@ mod tests {
     }
 
     #[test]
+    fn synced_block_parent_root_mismatch_requires_verified_checkpoint_repair() {
+        let (_temp_dir, state, child, _validator) = parent_certificate_sync_fixture();
+        let expected = state.compute_state_root();
+        let account = Pubkey([91u8; 32]);
+        state
+            .put_account(&account, &Account::new(1, account))
+            .expect("mutate local state after certificate creation");
+        let actual = state.compute_state_root();
+        assert_ne!(expected, actual);
+
+        let err = verify_synced_block_parent_certificate(&state, &child, "lichen-mainnet-1")
+            .expect_err("different authenticated parent root must fail");
+        assert!(err.requires_checkpoint_repair());
+        assert_eq!(
+            err,
+            SyncedBlockAuthenticityError::ParentPostStateRootMismatch {
+                slot: child.header.slot,
+                expected,
+                actual,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn authenticated_parent_root_repairs_exactly_one_missing_production_increment() {
+        let (_temp_dir, state, child, validator) = parent_certificate_sync_fixture();
+        let parent = state
+            .get_block(&child.header.parent_hash)
+            .expect("read parent")
+            .expect("stored parent");
+        state
+            .set_last_slot(parent.header.slot)
+            .expect("set parent tip");
+
+        let mut corrupted_pool = StakePool::new();
+        corrupted_pool
+            .stake(validator.pubkey(), MIN_VALIDATOR_STAKE, 0)
+            .expect("stake producer");
+        corrupted_pool.distribute_block_reward(
+            &validator.pubkey(),
+            parent.header.slot,
+            true,
+            GENESIS_SUPPLY_SPORES,
+        );
+        state
+            .put_stake_pool(&corrupted_pool)
+            .expect("persist pool missing production increment");
+
+        let parent_hash = parent.hash();
+        let mut marker_batch = state.begin_batch_at_slot(parent.header.slot);
+        marker_batch
+            .set_stake_pool_production_hash(parent.header.slot, &parent_hash)
+            .expect("stage production marker");
+        marker_batch
+            .set_reward_distribution_hash(parent.header.slot, &parent_hash)
+            .expect("stage reward marker");
+        marker_batch
+            .set_fee_distribution_hash(parent.header.slot, &parent_hash)
+            .expect("stage fee marker");
+        marker_batch
+            .set_post_block_effects_hash(parent.header.slot, &parent_hash)
+            .expect("stage comprehensive marker");
+        state.commit_batch(marker_batch).expect("commit markers");
+
+        let actual = state.compute_state_root();
+        let mut expected_pool = corrupted_pool.clone();
+        expected_pool.record_block_produced(&validator.pubkey());
+        let mut expected_batch = state.begin_batch_at_slot(parent.header.slot);
+        expected_batch
+            .put_stake_pool(&expected_pool)
+            .expect("stage expected pool");
+        let expected = state.compute_state_root_for_batch(&expected_batch);
+        assert_ne!(actual, expected);
+
+        let live_pool = Arc::new(RwLock::new(corrupted_pool));
+        let error = SyncedBlockAuthenticityError::ParentPostStateRootMismatch {
+            slot: child.header.slot,
+            expected,
+            actual,
+        };
+        assert!(
+            repair_single_missing_parent_production_effect(&state, &live_pool, &child, &error,)
+                .await
+                .expect("targeted repair succeeds")
+        );
+        assert_eq!(state.compute_state_root(), expected);
+        assert_eq!(
+            hash_stake_pool(&*live_pool.read().await),
+            hash_stake_pool(&expected_pool)
+        );
+    }
+
+    #[test]
     fn synced_mainnet_block_rejects_missing_parent_certificate() {
         let (_temp_dir, state, mut child, _validator) = parent_certificate_sync_fixture();
         child.transactions.clear();
@@ -32596,7 +33158,9 @@ mod tests {
 
         let err = verify_synced_block_parent_certificate(&state, &child, "lichen-mainnet-1")
             .expect_err("mainnet sync must fail closed without parent finality evidence");
-        assert!(err.contains("no canonical parent commit transaction"));
+        assert!(err
+            .to_string()
+            .contains("no canonical parent commit transaction"));
 
         verify_synced_block_parent_certificate(&state, &child, "lichen-testnet-1")
             .expect("preserved pre-upgrade testnet history remains readable");
@@ -32613,7 +33177,9 @@ mod tests {
 
         let err = verify_synced_block_parent_certificate(&state, &child, "lichen-mainnet-1")
             .expect_err("invalid parent commit must be rejected");
-        assert!(err.contains("Insufficient canonical commit power"));
+        assert!(err
+            .to_string()
+            .contains("Insufficient canonical commit power"));
     }
 
     #[test]
@@ -38644,6 +39210,54 @@ mod tests {
             MIN_RUNTIME_AVAILABLE_BYTES,
             MIN_RUNTIME_AVAILABLE_BYTES
         ));
+    }
+
+    #[test]
+    fn checkpoint_reclaim_obeys_disk_pressure_policy() {
+        let temp = tempfile::tempdir().expect("create checkpoint reclaim test dir");
+        let data_dir = temp.path().join("state");
+        let checkpoint_dir = data_dir.join("checkpoints/slot-1");
+        fs::create_dir_all(&checkpoint_dir).expect("create checkpoint directory");
+        let meta = lichen_core::CheckpointMeta {
+            slot: 1,
+            state_root: [1u8; 32],
+            created_at: 1,
+            total_accounts: 0,
+        };
+        fs::write(
+            checkpoint_dir.join("checkpoint_meta.json"),
+            serde_json::to_vec(&meta).expect("serialize checkpoint metadata"),
+        )
+        .expect("write checkpoint metadata");
+        fs::write(checkpoint_dir.join("obsolete.sst"), vec![7u8; 8192])
+            .expect("write reclaimable checkpoint file");
+
+        assert_eq!(
+            reclaim_checkpoints_under_disk_pressure(
+                &data_dir,
+                0,
+                u64::MAX,
+                "insufficient projection test",
+                CheckpointReclaimPolicy::RequireMinimum,
+            )
+            .expect("measure insufficient reclaim"),
+            0
+        );
+        assert_eq!(
+            StateStore::list_checkpoints(data_dir.to_str().unwrap()).len(),
+            1
+        );
+
+        let available_after = reclaim_checkpoints_under_disk_pressure(
+            &data_dir,
+            0,
+            u64::MAX,
+            "proactive pressure test",
+            CheckpointReclaimPolicy::ImproveHeadroom,
+        )
+        .expect("reclaim checkpoint");
+        assert!(available_after >= 1);
+        assert!(StateStore::list_checkpoints(data_dir.to_str().unwrap()).is_empty());
     }
 
     #[test]

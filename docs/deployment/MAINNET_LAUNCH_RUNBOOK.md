@@ -5,7 +5,7 @@ mainnet custody. It is intentionally step-by-step and gate-based. Do not skip a
 gate because mainnet genesis and custody routes handle real value.
 
 Written for the current mainnet package. Release target for this runbook is
-signed `v0.5.224`; keep `v0.5.223` as the signed rollback point. Mainnet remains
+signed `v0.5.225`; keep `v0.5.224` as the signed rollback point. Mainnet remains
 blocked until production storage, full-scope launch gates, independent review,
 and deployment approval pass.
 
@@ -22,6 +22,12 @@ and deployment approval pass.
 - A materially lagging validator returns to bounded catch-up before future
   block processing. Canonical commits and accepted verified snapshot chunks,
   not raw receipt or pending queues, are the runtime progress signal.
+- Catch-up blocks are already committed history and must never create new local
+  votes. Periodic validator/stake reconciliation must load and swap its views
+  while holding the canonical block-application lock.
+- A quorum-authenticated child parent-root mismatch must recover through an
+  exact certificate-matching deterministic repair or verified checkpoint state;
+  it must not remain in an ordinary block-range retry loop.
 - Every mainnet block after height 1 must contain exactly one version-2
   canonical parent commit transaction at index 0. Sync and startup must verify
   its signatures against the complete parent-height powers authenticated by the
@@ -50,7 +56,7 @@ and deployment approval pass.
   preserve replay compatibility for the June 2026 testnet after governed signer
   custody was lost; mainnet must launch from verified custody instead.
 - Do not deploy a release that changes consensus rules with a mixed-version
-  rolling restart. The current rollback point `v0.5.223` must remain available
+  rolling restart. The current rollback point `v0.5.224` must remain available
   until a newer signed rollback point is explicitly recorded.
 - `v0.5.224` introduces the canonical analytics v2 state projection. Deploy it
   only as a coordinated all-validator upgrade after proving every validator can
@@ -229,7 +235,7 @@ credentials, or keypair passwords.
 Use the signed release that passed CI. For the current package:
 
 ```bash
-export LICHEN_RELEASE_TAG=v0.5.224
+export LICHEN_RELEASE_TAG=v0.5.225
 export LICHEN_MAINNET_VPS_HOSTS="15.204.229.189 37.59.97.61 15.235.142.253 148.113.43.247"
 ```
 
@@ -273,7 +279,7 @@ For an emergency rollback to the current signed rollback point, set the tag
 explicitly and run the same signed-release path:
 
 ```bash
-export LICHEN_RELEASE_TAG=v0.5.223
+export LICHEN_RELEASE_TAG=v0.5.224
 LICHEN_VERIFY_RELEASE_ONLY=1 bash scripts/rolling-release-deploy.sh mainnet
 bash scripts/rolling-release-deploy.sh mainnet
 ```
