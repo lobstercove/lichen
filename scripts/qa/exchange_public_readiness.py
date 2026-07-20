@@ -38,7 +38,7 @@ ADMIN_MONITORING_HOST = "monitoring.lichen.network"
 EXCHANGE_STATUS_URL = "https://exchanges.lichen.network"
 DEFAULT_STATUS_URL = os.environ.get("LICHEN_EXCHANGE_STATUS_URL", EXCHANGE_STATUS_URL).strip()
 DEVELOPER_EXCHANGE_URL = "https://developers.lichen.network/exchange-integration"
-ROLLBACK_TAG = "v0.5.221"
+ROLLBACK_TAG = "v0.5.223"
 ROLLBACK_RELEASE_API = (
     "https://api.github.com/repos/lobstercove/lichen/releases/tags/" + ROLLBACK_TAG
 )

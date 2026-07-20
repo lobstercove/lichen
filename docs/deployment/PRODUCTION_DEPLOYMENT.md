@@ -14,9 +14,9 @@ Use this document as the canonical workflow for:
 
 This runbook intentionally prefers the scripts that are verified in the current tree over older narrative docs.
 
-Candidate release target for this runbook is `v0.5.224`; keep `v0.5.223` as
-the signed rollback point until the candidate is tagged, signed, deployed, and
-verified on all four validators.
+Current signed testnet release for this runbook is `v0.5.224`; keep `v0.5.223`
+as the signed rollback point until a newer rollback anchor is explicitly
+verified and recorded.
 
 Mainnet launch must use the gated checklist in [MAINNET_LAUNCH_RUNBOOK.md](MAINNET_LAUNCH_RUNBOOK.md). That runbook is the owner-facing package for launching the 4-validator mainnet first, then enabling custody only after post-genesis verification and route-specific dust tests pass.
 
@@ -1798,11 +1798,11 @@ Do not distribute `genesis-wallet.json` or `genesis-keys/` to validator joiners.
 
 This is the full step-by-step procedure for stopping everything, flushing all state, and redeploying from scratch so VPSes match the live validator set exactly.
 
-This destructive checklist does not apply to the current July testnet or the
-`v0.5.224` candidate. That release must preserve `v0.5.223` as the signed
-rollback anchor and follow the in-place archive repair and coordinated resume
-gate above. Keep this section only for a future, separately approved network
-whose chain identity is intentionally being replaced.
+This destructive checklist does not apply to the current July testnet or
+`v0.5.224`. The completed deployment preserved `v0.5.223` as the signed rollback
+anchor and followed the in-place archive repair and coordinated resume gate
+above. Keep this section only for a future, separately approved network whose
+chain identity is intentionally being replaced.
 
 The `testnet_governed_signer_recovery_v1` hook is live-testnet lineage recovery
 only. It must not be copied into a fresh mainnet launch plan or treated as a
@@ -2687,8 +2687,8 @@ activity green.
 
 Also, the wiped validator's new pubkey registers as a separate entry in the validator set. With N+1 validators and only N-1 online (original minus the ghost), BFT quorum (2/3+) may be unreachable.
 
-**Current release behavior**: `v0.5.223` is the signed rollback anchor;
-`0.5.224` remains an unreleased candidate until all release gates pass.
+**Current release behavior**: `v0.5.224` is the signed live testnet release and
+`v0.5.223` is the signed rollback anchor.
 State-repair snapshots carry consensus state and complete public-history
 categories, while public-history repair remains additive, source-backed,
 conflict-checked, and never replaces validator identity, consensus WAL, or

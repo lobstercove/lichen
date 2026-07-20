@@ -7,7 +7,7 @@ Ultra-low fees · Sub-second BFT block commitment · Agent-native identity · Mu
 [![License: Apache--2.0%20%2B%20MIT](https://img.shields.io/badge/License-Apache--2.0%20%2B%20MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.88+-00C9DB.svg)](https://www.rust-lang.org)
 
-**Current release candidate:** `0.5.224` (unreleased and under audit). The signed rollback anchor is `v0.5.223` until a newer candidate passes every local, CI, archive-parity, signature, and deployment gate. The candidate consolidates the July liveness fixes, archive parity repair/export coverage, crash-atomic canonical block persistence, historical-power finality and checkpoint proofs, activation-bounded fail-closed post-block recovery, canonical transaction admission, and RustSec dependency remediation while preserving the exchange-readiness surface and guarded hot/cold archive behavior.
+**Current testnet release:** `v0.5.224`. The signed rollback anchor is `v0.5.223`. This release consolidates the July liveness fixes, automatic hot/cold archive parity, crash-atomic canonical block persistence, historical-power finality and checkpoint proofs, activation-bounded fail-closed post-block recovery, canonical transaction admission, and RustSec dependency remediation. The existing testnet has an explicit legacy-history waiver; fresh networks and mainnet fail closed on incomplete genesis-to-tip history.
 
 **Website:** https://lichen.network  
 **Documentation:** https://developers.lichen.network  
@@ -135,9 +135,9 @@ https://github.com/lobstercove/lichen/releases/download/<tag>/lichen-validator-<
 ```
 
 Examples:
-- `https://github.com/lobstercove/lichen/releases/download/v0.5.223/lichen-validator-linux-x86_64.tar.gz`
-- `https://github.com/lobstercove/lichen/releases/download/v0.5.223/lichen-validator-darwin-aarch64.tar.gz`
-- `https://github.com/lobstercove/lichen/releases/download/v0.5.223/lichen-validator-windows-x86_64.tar.gz`
+- `https://github.com/lobstercove/lichen/releases/download/v0.5.224/lichen-validator-linux-x86_64.tar.gz`
+- `https://github.com/lobstercove/lichen/releases/download/v0.5.224/lichen-validator-darwin-aarch64.tar.gz`
+- `https://github.com/lobstercove/lichen/releases/download/v0.5.224/lichen-validator-windows-x86_64.tar.gz`
 
 Linux x86_64:
 

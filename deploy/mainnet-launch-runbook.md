@@ -4,10 +4,10 @@ This is the operator runbook for launching Lichen mainnet and then enabling
 mainnet custody. It is intentionally step-by-step and gate-based. Do not skip a
 gate because mainnet genesis and custody routes handle real value.
 
-Written for the current mainnet package. Candidate release target for this
-runbook is `v0.5.224`; keep `v0.5.223` as the signed rollback point. The
-candidate is not deployable until it passes CI, archive parity, signature
-verification, and deployment approval.
+Written for the current mainnet package. Release target for this runbook is
+signed `v0.5.224`; keep `v0.5.223` as the signed rollback point. Mainnet remains
+blocked until production storage, full-scope launch gates, independent review,
+and deployment approval pass.
 
 ## Operating Rules
 

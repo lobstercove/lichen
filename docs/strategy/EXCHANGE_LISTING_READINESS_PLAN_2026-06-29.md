@@ -2,7 +2,7 @@
 
 **Created:** 2026-06-29
 **Status:** Testnet technical gates green; local gates, public testnet exchange validation, developer-portal publication, GitHub CI, public technical readiness, status-page approval, incident alias approval, and final testnet-only package publication have passed. The current package is testnet-only until mainnet launch.
-**Current signed testnet recovery release:** `v0.5.221`; rollback anchor `v0.5.221` per operator update on 2026-07-01.
+**Current signed testnet release:** `v0.5.224`; rollback anchor `v0.5.223`.
 **Scope:** Native LICN exchange integration package, public RPC/WebSocket behavior, archive/history guarantees, exchange deposit/withdrawal operations, SDK/CLI/docs parity, and listing operations pack.
 
 ## Executive Position
@@ -13,13 +13,16 @@ The priority is credibility. Do not contact serious exchanges with a partial gui
 
 ## Current Repo Facts To Carry Forward
 
-These facts were updated for the 2026-07-01 signed recovery release and must be reconciled before any external package is published:
+These facts were updated after the 2026-07-20 archive-parity release:
 
-- Core protocol crates are at `0.5.221`: `core`, `rpc`, `validator`, and `cli`.
-- The root `README.md`, production deployment runbook, mainnet launch runbook, exchange docs, and public readiness gate now use `v0.5.221` as the rollback anchor.
+- Core protocol crates are at `0.5.224`: `core`, `rpc`, `validator`, and `cli`.
+- The root `README.md`, production deployment runbook, mainnet launch runbook,
+  exchange docs, and public readiness gate use `v0.5.223` as the rollback anchor.
 - Mainnet is not live and remains outside the current public testnet exchange package scope until the mainnet launch exchange handoff closes.
-- `sdk/rust/Cargo.toml` package version is `0.1.5` and now depends on `lobstercove-lichen-core = "=0.5.221"` while using the local `../../core` path.
-- `sdk/js/package.json` is `1.0.5`; `sdk/python/pyproject.toml` is `1.0.0`.
+- `sdk/rust/Cargo.toml` package version `0.1.6` is published and depends on
+  `lobstercove-lichen-core = "=0.5.224"` while using the local `../../core` path.
+- `sdk/js/package.json` version `1.0.6` is published; the Python SDK remains
+  `1.0.0`.
 - Mainnet launch docs require every public RPC validator to use automatic archive-backed hot/cold storage from first boot and require a post-launch exchange handoff before any mainnet exchange package is published.
 - Testnet state policy already treats account activity and transaction history as persistent user-facing indexes.
 - Local full-stack testing is supported by `scripts/start-local-stack.sh testnet`, which starts the local three-validator cluster plus custody/faucet/source-chain mocks; cleanup is `scripts/stop-local-stack.sh testnet`.
@@ -45,7 +48,8 @@ Exchange readiness means an integration engineer can perform the full LICN lifec
 - No exchange guide may claim archive support until `getTransaction`, `getTransactionsByAddress`, `getBlock`, latest block, and account history are verified against hot and cold archive-backed data.
 - No docs may publish guessed address regexes, chain IDs, fee units, logo URLs, or finality buffers. Values must come from source code, deployed configuration, or signed release artifacts.
 - No public docs may expose secrets, private RPC provider URLs, hot wallet key material, custody seeds, private contacts beyond approved incident aliases, or filled production env files.
-- Any release after this work keeps `v0.5.221` as the rollback anchor until a newer signed rollback point is explicitly recorded.
+- Keep `v0.5.223` as the rollback anchor until a newer signed rollback point is
+  explicitly recorded.
 
 ## Deliverables
 
@@ -134,7 +138,7 @@ Required content:
 - Incident contact aliases and escalation windows.
 - Upgrade policy: release cadence, maintenance windows, breaking-change notice period, and emergency exception process.
 - Release verification: GitHub release URLs, `SHA256SUMS`, detached signatures, attestations, trust anchor, and binary hash evidence.
-- Rollback policy: current rollback anchor `v0.5.221`, rollback decision criteria, service restart order, and expected exchange-facing impact.
+- Rollback policy: current rollback anchor `v0.5.223`, rollback decision criteria, service restart order, and expected exchange-facing impact.
 - Archive policy: retention, backup/restore, repair, and public-history merge rules.
 - Chain halt / delayed finality communication policy.
 
@@ -360,7 +364,7 @@ Preconditions:
 - Archive/history tests passed.
 - Docs package passes link/static checks.
 - SDK/CLI examples are current.
-- Rollback anchor `v0.5.221` is recorded.
+- Rollback anchor `v0.5.223` is recorded.
 - Public testnet RPC is healthy and not stale/readiness-gated.
 - Mainnet RPC/WebSocket/archive checks are deferred because the package is
   explicitly scoped to testnet-only integration testing before mainnet launch.
@@ -456,7 +460,7 @@ Mainnet handoff after launch:
 | SDK package drift                     | Integration examples fail                                         | Version consistency pass and smoke tests                            |
 | DEX/custody confusion                 | Native LICN listing appears dependent on bridge routes            | Separate native LICN integration from optional ecosystem context    |
 | Retry/idempotency gaps                | Duplicate credits or withdrawals                                  | Simulation must include retries and ledger idempotency checks       |
-| Rollback unproven                     | Incident response looks improvised                                | Keep `v0.5.221` rollback anchor until superseded by signed evidence |
+| Rollback unproven                     | Incident response looks improvised                                | Keep `v0.5.223` rollback anchor until superseded by signed evidence |
 
 ## Initial Tracker
 

@@ -406,6 +406,11 @@ assert_public_history_repair_stays_quiesced() {
     local output_file="$TMP_DIR/public-history-repair-help.log"
     bash -n "$script"
     bash "$script" --help >"$output_file" 2>&1
+    if ! grep -Fq 'REMOTE_BIN="${LICHEN_PUBLIC_HISTORY_STREAM_REMOTE_BIN:-/usr/local/bin/lichen-validator}"' "$script" || \
+        grep -Fq 'lichen-validator-0.5.224-candidate' "$script"; then
+        echo "❌ public-history quiesced repair: stale candidate binary default"
+        exit 1
+    fi
     assert_output_contains \
         "public-history quiesced repair option" \
         "--leave-target-stopped" \
@@ -495,6 +500,7 @@ assert_public_history_repair_stays_quiesced() {
         ! grep -Fq 'ControlMaster=auto' "$verifier" || \
         ! grep -Fq 'ControlPersist=120' "$verifier" || \
         ! grep -Fq 'SSH_RETRY_DELAY_SECS="${LICHEN_ARCHIVE_PARITY_SSH_RETRY_DELAY_SECS:-31}"' "$verifier" || \
+        ! grep -Fq 'if key.startswith("commit_"):' "$verifier" || \
         ! grep -Fq 'exec >"$RUN_LOG" 2>&1' "$verifier" || \
         grep -Fq 'exec > >(tee' "$verifier"; then
         echo "❌ public-history offline parity gate: stopped-fleet behavior missing"

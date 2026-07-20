@@ -7,7 +7,8 @@
 **Metadata:** [EXCHANGE_CHAIN_METADATA.md](EXCHANGE_CHAIN_METADATA.md)
 **Address vectors:** [EXCHANGE_ADDRESS_VALIDATION_VECTORS.md](EXCHANGE_ADDRESS_VALIDATION_VECTORS.md)
 **Operations pack:** [../deployment/EXCHANGE_OPERATIONS_PACK.md](../deployment/EXCHANGE_OPERATIONS_PACK.md)
-**Rollback anchor:** `v0.5.221`, per operator update on 2026-07-01
+**Current testnet release:** `v0.5.224`
+**Rollback anchor:** `v0.5.223`
 **Exchange package tag:** `exchange-testnet-v0.5.221`
 **Exchange package release:** `https://github.com/lobstercove/lichen/releases/tag/exchange-testnet-v0.5.221`
 
@@ -16,8 +17,10 @@ It is approved for testnet-only exchange integration under package tag
 `exchange-testnet-v0.5.221`. The three-validator local exchange simulation
 passed from a clean stack with cleanup evidence on 2026-06-29, and the public
 faucet-backed testnet exchange simulation passed after the signed `v0.5.221`
-recovery rollout on 2026-07-01. External publication is scoped to testnet-only
-integration testing until mainnet launch.
+recovery rollout on 2026-07-01. Public RPC/WebSocket, explorer, rollback,
+developer-page, status-page, and package readiness were revalidated after the
+signed `v0.5.224` archive-parity rollout on 2026-07-20. External publication is
+scoped to testnet-only integration testing until mainnet launch.
 
 ## Publication Gate
 
@@ -25,7 +28,7 @@ The current testnet-only package is published. Do not extend this guide to a
 mainnet exchange package while any of these remain open:
 
 - Runtime fee config verification on every public network included in the
-  package. Testnet was verified after `v0.5.221`; mainnet remains pending until
+  package. Testnet was reverified after `v0.5.224`; mainnet remains pending until
   mainnet launch.
 - Mainnet launch exchange handoff and full-scope public readiness.
 

@@ -597,8 +597,9 @@ def digest_result(payload):
     result = payload["result"]
     if isinstance(result, dict) and {"slot", "hash", "parent_hash", "state_root", "tx_root"}.issubset(result):
         result = dict(result)
-        result.pop("commit_signatures", None)
-        result.pop("commit_validator_count", None)
+        for key in tuple(result):
+            if key.startswith("commit_"):
+                result.pop(key)
     raw = json.dumps(result, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(raw).hexdigest()
 

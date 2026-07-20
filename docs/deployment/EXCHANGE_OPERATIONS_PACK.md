@@ -5,7 +5,8 @@
 **Integration guide:** [../guides/EXCHANGE_INTEGRATION.md](../guides/EXCHANGE_INTEGRATION.md)
 **Metadata sheet:** [../guides/EXCHANGE_CHAIN_METADATA.md](../guides/EXCHANGE_CHAIN_METADATA.md)
 **Tracker:** [../strategy/EXCHANGE_LISTING_READINESS_TRACKER.md](../strategy/EXCHANGE_LISTING_READINESS_TRACKER.md)
-**Rollback anchor:** `v0.5.221`, per operator update on 2026-07-01
+**Current testnet release:** `v0.5.224`
+**Rollback anchor:** `v0.5.223`
 **Exchange package tag:** `exchange-testnet-v0.5.221`
 **Exchange package release:** `https://github.com/lobstercove/lichen/releases/tag/exchange-testnet-v0.5.221`
 
@@ -33,7 +34,7 @@ Do not include this pack in an external listing package until:
 - Archive retention and repair procedures are tested against the public target
   network.
 - A public exchange simulation passes after local validation for every public
-  network included in the package. Testnet passed this gate after `v0.5.221`;
+  network included in the package. Testnet passed this gate after `v0.5.224`;
   mainnet remains out of scope until mainnet launch and the launch runbook
   exchange handoff gate closes.
 
@@ -43,8 +44,8 @@ Do not include this pack in an external listing package until:
 | --- | --- | --- | --- |
 | Mainnet RPC | `https://rpc.lichen.network` | Launch placeholder; excluded from the current testnet-only package until mainnet launch handoff passes | `seeds.json`, `developers/shared-config.js`, mainnet launch runbook |
 | Mainnet WebSocket | `wss://rpc.lichen.network/ws` | Launch placeholder; excluded from the current testnet-only package until mainnet launch handoff passes | `developers/shared-config.js`, mainnet launch runbook |
-| Testnet RPC | `https://testnet-api.lichen.network` | Healthy after signed `v0.5.221` recovery rollout on 2026-07-01; sustained public cadence sampled `370.0ms/block`, `getMetrics.observed_block_interval_ms = 372`, and `avg_block_time_ms = 380`; public exchange simulation passed | `seeds.json`, `developers/shared-config.js`, tracker Phase 5 evidence |
-| Testnet WebSocket | `wss://testnet-api.lichen.network/ws` | Public readiness WebSocket check passed after signed `v0.5.221` recovery rollout on 2026-07-01; live slot notifications advanced `6871609` -> `6871611` | `developers/shared-config.js` |
+| Testnet RPC | `https://testnet-api.lichen.network` | Healthy after signed `v0.5.224` archive-parity rollout on 2026-07-20; public health was `ok`, all four producers were fresh, and observed block interval was 334 ms | `seeds.json`, `developers/shared-config.js`, deployment evidence |
+| Testnet WebSocket | `wss://testnet-api.lichen.network/ws` | Public readiness WebSocket check passed after signed `v0.5.224` rollout on 2026-07-20 | `developers/shared-config.js`, deployment evidence |
 | Explorer | `https://explorer.lichen.network` | Route templates verified | `seeds.json`, `developers/shared-config.js`, `explorer/js/*.js` |
 | Public exchange status page | `https://exchanges.lichen.network` | Active on Cloudflare Pages project `lichen-network-exchanges`; production readiness is green; page uses a same-origin read-only status RPC proxy and the RPC CORS default now includes `exchanges.lichen.network` for validator rollouts | Operator correction on 2026-07-02; production verification on 2026-07-05 |
 | Developer portal exchange page | `https://developers.lichen.network/exchange-integration` | Deployed and verified; public page carries inline testnet-only metadata, address/accounting rules, deposit and withdrawal cookbooks, finality/archive policy, operations contacts, validation gates, mainnet handoff, release-tagged source links, and the exchange status URL without the old planned wording | Cloudflare Pages deployment and tracker verification |
@@ -160,7 +161,7 @@ External exchange docs must define:
 Current rollback anchor:
 
 ```text
-v0.5.221
+v0.5.223
 ```
 
 Version drift is a release blocker. Root README, mainnet runbook, RPC docs, and
@@ -189,7 +190,7 @@ Current trust-anchor signer:
 8HitBNnh8qbhfne5NCv2yHrQFoD6xbmHcWaUSgCGtsk
 ```
 
-Verified rollback-anchor release subset on 2026-07-01:
+Historical rollback release subset verified on 2026-07-01:
 
 - `https://github.com/lobstercove/lichen/releases/tag/v0.5.221` returned HTTP
   `200`.
@@ -200,7 +201,7 @@ Verified rollback-anchor release subset on 2026-07-01:
   release artifacts
   verified signer `8HitBNnh8qbhfne5NCv2yHrQFoD6xbmHcWaUSgCGtsk`.
 
-Current signed recovery release verified on 2026-07-01:
+Historical signed recovery release verified on 2026-07-01:
 
 - `https://github.com/lobstercove/lichen/releases/tag/v0.5.221`
 - GitHub release is published, not a draft, and not a prerelease.
@@ -219,8 +220,8 @@ Published exchange package metadata:
 - Package checksum asset: `SHA256SUMS`
 - Scope: testnet-only until the mainnet launch exchange handoff closes.
 
-Current recovery release and rollback anchor: `v0.5.221`, retained until a newer
-signed rollback point is explicitly recorded.
+Current testnet release: `v0.5.224`. Current rollback anchor: `v0.5.223`, retained
+until a newer signed rollback point is explicitly recorded.
 
 ## Rollback Policy
 
@@ -236,7 +237,7 @@ Rollback policy must define:
 - Expected effect on deposits and withdrawals.
 - Evidence required before declaring recovery.
 
-Current rule: keep `v0.5.221` as the rollback anchor until a newer signed rollback
+Current rule: keep `v0.5.223` as the rollback anchor until a newer signed rollback
 point is explicitly recorded.
 
 Exchange rollback procedure:
@@ -416,14 +417,15 @@ gate closes.
 | O-01 | Status page URL approval superseded | Superseded on 2026-07-02: internal monitoring is admin-only and must not be used as the public exchange status page |
 | O-02 | Incident aliases approved | Operator approved `security@lichen.network`, `exchange-ops@lichen.network`, and `business@lichen.network` on 2026-07-01; critical acknowledgement, active update, maintenance notice, emergency exception, authenticated outbound, and backup-path policy are recorded above |
 | O-15 | Public exchange status page active | `https://exchanges.lichen.network` is active on Cloudflare Pages, serves the exchange-safe status page, uses a same-origin read-only status RPC proxy, and passed `python3 scripts/qa/exchange_public_readiness.py --scope testnet --status-approved --release-tag-selected --report /tmp/lichen-exchange-public-readiness-exchanges-domain-20260705-post-status-logic-green.json` |
-| O-03 | Current release drift for core docs and Rust SDK pin | Core crates and the Rust SDK pin were updated to `0.5.221`; `v0.5.221` is the rollback anchor; JS/Python package boundaries are documented in the tracker |
+| O-03 | Current release drift for core docs and Rust SDK pin | Core/CLI `0.5.224`, Rust client SDK `0.1.6`, contract SDK `1.0.3`, and JS SDK `1.0.6` are published; `v0.5.223` is the rollback anchor |
 | O-04 | Final external exchange-package release URLs attached | Package release `https://github.com/lobstercove/lichen/releases/tag/exchange-testnet-v0.5.221` contains `lichen-exchange-testnet-v0.5.221.tar.gz` and `SHA256SUMS` |
 | O-05 | Local archive/history behavior | Core and RPC archive regressions passed after hot-to-cold migration and reopen |
 | O-07 | Local cleanup evidence | Local stack stop/status/process checks passed; generated credentials, state dirs, manifests, and staging dirs were removed after the local exchange simulation |
-| O-09 | Rollback release checksum/signature verification | `v0.5.221` release checksum and detached PQ signature were verified against `deploy/release-trust-anchor.json` |
+| O-09 | Rollback release checksum/signature verification | `v0.5.223` release checksum and detached PQ signature were verified against `deploy/release-trust-anchor.json` |
 | O-11 | June 29 live testnet consensus incident recovery evidence preserved | Operator-approved evidence-preserving recovery restarted only stale validator `15.204.229.189`; the June 30 recurrence is tracked separately in `docs/deployment/TESTNET_RECOVERY_INCIDENT_2026-06-30.md`; signed `v0.5.217` restored testnet liveness, and signed `v0.5.219` completed the faucet-signing and exchange-simulation follow-up |
 | O-12 | Signed `v0.5.221` testnet recovery release verification | Release artifacts and detached PQ signature verified; all four live hosts installed matching validator, custody, and faucet binaries through the runbook verify-only gate |
 | O-13 | Public testnet exchange simulation | Public faucet-backed simulation passed on `https://testnet-api.lichen.network` and wrote `tests/artifacts/exchange-simulation-public-testnet-v0.5.221.json`, covering funding, deposit detection, finalized transaction lookup, account history, operational buffers, sweep, withdrawal, CLI smoke, and reconciliation |
 | O-14 | Current package scope | External package is explicitly testnet-only until mainnet launch; mainnet RPC/WS and metadata are launch placeholders and require the mainnet launch exchange handoff gate plus `exchange_public_readiness.py --scope full` before inclusion |
+| O-16 | Signed `v0.5.224` archive-parity rollout | All four validators run the exact signed artifact from preserved state; source-backed manifests match, public RPC/WS and exchange readiness pass, and the existing testnet legacy-hole waiver remains explicit and non-transferable |
 | O-10 | Public developer portal exchange page | `developers/` was deployed to Cloudflare Pages project `lichen-network-developers`; public `https://developers.lichen.network/exchange-integration` contains inline exchange metadata, deposit and withdrawal cookbooks, finality/archive policy, operations contacts, validation gates, mainnet handoff, release-tagged source links, and `testnet-only` |
 | O-06 | Exchange-specific rollback procedure | Rollback policy now includes exchange notification, pause/resume guidance, affected slot recording, signed-release-only rollback, archive/history verification, pending transaction reconciliation, and recovery notice requirements |

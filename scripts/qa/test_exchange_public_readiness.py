@@ -31,6 +31,11 @@ readiness = load_readiness_module()
 
 
 class ExchangePublicReadinessTests(unittest.TestCase):
+    def test_rollback_release_uses_current_signed_anchor(self) -> None:
+        self.assertEqual("v0.5.223", readiness.ROLLBACK_TAG)
+        self.assertTrue(readiness.ROLLBACK_RELEASE_API.endswith("/releases/tags/v0.5.223"))
+        self.assertTrue(readiness.ROLLBACK_RELEASE_PAGE.endswith("/releases/tag/v0.5.223"))
+
     def test_rpc_health_ready_requires_ok_and_fresh_tip(self) -> None:
         self.assertTrue(
             readiness.rpc_health_ready(

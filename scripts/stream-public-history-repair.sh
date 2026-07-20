@@ -23,7 +23,7 @@ Options:
   --chunk-size <n>                  Page size (default: 1000)
   --block-chunk-size <n>            Block-body page size (default: min(chunk-size, 2000))
   --page-format <json|binary>       Source page format (default: binary)
-  --remote-bin <path>               Candidate validator binary on each host
+  --remote-bin <path>               Signed validator admin binary on each host
   --evidence-dir <path>             Evidence output directory
   --leave-target-stopped            Required in execute mode; keep targets stopped
   --execute                         Apply writes; requires exact confirmation
@@ -54,7 +54,7 @@ CHUNK_SIZE="${LICHEN_PUBLIC_HISTORY_STREAM_CHUNK_SIZE:-1000}"
 BLOCK_CHUNK_SIZE="${LICHEN_PUBLIC_HISTORY_STREAM_BLOCK_CHUNK_SIZE:-}"
 FROM_SLOT="${LICHEN_PUBLIC_HISTORY_STREAM_FROM_SLOT:-}"
 TO_SLOT="${LICHEN_PUBLIC_HISTORY_STREAM_TO_SLOT:-}"
-REMOTE_BIN="${LICHEN_PUBLIC_HISTORY_STREAM_REMOTE_BIN:-/tmp/lichen-validator-0.5.224-candidate}"
+REMOTE_BIN="${LICHEN_PUBLIC_HISTORY_STREAM_REMOTE_BIN:-/usr/local/bin/lichen-validator}"
 EVIDENCE_DIR=""
 EXECUTE="${LICHEN_PUBLIC_HISTORY_STREAM_EXECUTE:-0}"
 KEEP_SOURCE_PAGES="${LICHEN_PUBLIC_HISTORY_STREAM_KEEP_SOURCE_PAGES:-0}"

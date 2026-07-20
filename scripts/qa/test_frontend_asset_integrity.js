@@ -723,6 +723,7 @@ function validateExchangesPublicPortal() {
         'business@lichen.network',
         'https://developers.lichen.network/exchange-integration',
         'https://github.com/lobstercove/lichen/releases/tag/exchange-testnet-v0.5.221',
+        'https://github.com/lobstercove/lichen/releases/tag/v0.5.223',
     ];
     assert(
         requiredHtmlTokens.every((token) => html.includes(token)),
@@ -1059,6 +1060,7 @@ function validateDeveloperExchangePage() {
             exchangeHtml.includes('Mainnet Handoff') &&
             exchangeHtml.includes('testnet-only') &&
             exchangeHtml.includes('mainnet launch exchange handoff') &&
+            exchangeHtml.includes('<code>v0.5.223</code>') &&
             exchangeHtml.includes('0xca3f1595a6c25e9f'),
         'developers exchange integration page is present and contains inline exchange-specific testnet-only content'
     );

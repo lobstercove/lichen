@@ -420,7 +420,7 @@ const mainnetRunbook = read('deploy/mainnet-launch-runbook.md');
 const mainnetRunbookDoc = read('docs/deployment/MAINNET_LAUNCH_RUNBOOK.md');
 const productionDeployment = read('docs/deployment/PRODUCTION_DEPLOYMENT.md');
 const productionReleasePair = productionDeployment.match(
-  /Candidate release target for this runbook is `(v\d+\.\d+\.\d+)`;\s+keep `(v\d+\.\d+\.\d+)` as\s+the signed rollback point/,
+  /Current signed testnet release for this runbook is `(v\d+\.\d+\.\d+)`;\s+keep `(v\d+\.\d+\.\d+)`\s+as the signed rollback point/,
 );
 const validatorVersion = read('validator/Cargo.toml').match(/^version = "(\d+\.\d+\.\d+)"/m)?.[1];
 const dexLiquidityStrategy = read('docs/strategy/DEX_LIQUIDITY_STRATEGY.md');
@@ -483,7 +483,7 @@ assert(
     !productionDeployment.includes('31 manifest symbols') &&
     !productionDeployment.includes('--repair-stake-pool-production-counters') &&
     !productionDeployment.includes('such as `v0.5.50`'),
-  'production deployment docs must match the current candidate, rollback, preserved-state, archive, and activation policy',
+  'production deployment docs must match the current release, rollback, preserved-state, archive, and activation policy',
 );
 assert(
   productionDeployment.includes('Do not add `faucet.lichen.network` as a Cloudflare Pages custom domain') &&
