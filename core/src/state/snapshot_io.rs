@@ -687,7 +687,7 @@ fn checkpoint_paths_reclaimable_size(checkpoints: &[std::path::PathBuf]) -> Resu
     // RocksDB checkpoint files are copies on platforms without Unix hard-link
     // metadata, so their allocated size is reclaimable with the directory.
     checkpoints.iter().try_fold(0u64, |total, checkpoint| {
-        directory_total_size(checkpoint).map(|size| total.saturating_add(size))
+        directory_logical_size(checkpoint).map(|size| total.saturating_add(size))
     })
 }
 
