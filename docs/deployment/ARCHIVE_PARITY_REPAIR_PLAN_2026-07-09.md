@@ -1721,8 +1721,9 @@ also offered a moving-tip full scan that could not be a strict proof. The helper
 now defaults to bounded host/RPC/fixed-block probes, keeps live manifests an
 explicit diagnostic, raises the manifest chunk to 20,000, runs stop/manifest/
 start work concurrently, and writes each manifest and exit status to durable
-host-local files before retrieval. Strict fixed-tip manifests remain required
-after archive/history changes and for fresh networks/mainnet.
+host-local files before retrieval. Under the current hard release rules, every
+release still runs one strict fixed-tip proof; archive/history changes, fresh
+networks, and mainnet can never reuse or waive that proof.
 
 ## Tracker
 
