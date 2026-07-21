@@ -5,7 +5,8 @@ mainnet custody. It is intentionally step-by-step and gate-based. Do not skip a
 gate because mainnet genesis and custody routes handle real value.
 
 Written for the current mainnet package. Release target for this runbook is
-signed `v0.5.226`; keep `v0.5.225` as the signed rollback point. Mainnet remains
+signed `v0.5.227`; keep `v0.5.227` as the signed restart-safe anchor. Preserve
+`v0.5.225` as pre-change evidence, not as a restartable rollback. Mainnet remains
 blocked until production storage, full-scope launch gates, independent review,
 and deployment approval pass.
 
@@ -56,8 +57,8 @@ and deployment approval pass.
   preserve replay compatibility for the June 2026 testnet after governed signer
   custody was lost; mainnet must launch from verified custody instead.
 - Do not deploy a release that changes consensus rules with a mixed-version
-  rolling restart. The current rollback point `v0.5.224` must remain available
-  until a newer signed rollback point is explicitly recorded.
+  rolling restart. The current safe anchor `v0.5.227` must remain available
+  until a newer signed restart-safe anchor is explicitly recorded.
 - `v0.5.224` introduces the canonical analytics v2 state projection. Deploy it
   only as a coordinated all-validator upgrade after proving every validator can
   read every `dex_trade_*` row and its referenced block from genesis through
@@ -235,7 +236,7 @@ credentials, or keypair passwords.
 Use the signed release that passed CI. For the current package:
 
 ```bash
-export LICHEN_RELEASE_TAG=v0.5.226
+export LICHEN_RELEASE_TAG=v0.5.227
 export LICHEN_MAINNET_VPS_HOSTS="15.204.229.189 37.59.97.61 15.235.142.253 148.113.43.247"
 ```
 
@@ -275,11 +276,12 @@ sha256sum -c SHA256SUMS
 The rolling deploy script verifies the detached PQ signature over `SHA256SUMS`
 before it installs anything on a VPS. Do not bypass that gate during rollout.
 
-For an emergency rollback to the current signed rollback point, set the tag
-explicitly and run the same signed-release path:
+There is no supported downgrade to v0.5.225 because its initial post-effects
+cursor is not restart-safe on a mature activated chain. For recovery, explicitly
+reinstall the current signed safe anchor through the same release path:
 
 ```bash
-export LICHEN_RELEASE_TAG=v0.5.225
+export LICHEN_RELEASE_TAG=v0.5.227
 LICHEN_VERIFY_RELEASE_ONLY=1 bash scripts/rolling-release-deploy.sh mainnet
 bash scripts/rolling-release-deploy.sh mainnet
 ```

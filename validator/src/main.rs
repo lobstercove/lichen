@@ -158,6 +158,10 @@ const SHOW_STAKE_POOL_DIGEST_FLAG: &str = "--show-stake-pool-digest";
 const PREPARE_CONSENSUS_V1_ACTIVATION_FLAG: &str = "--prepare-consensus-v1-activation";
 const REPAIR_RECENT_POST_BLOCK_EFFECTS_FLAG: &str = "--repair-recent-post-block-effects";
 const RECENT_POST_BLOCK_EFFECTS_REPAIR_CONFIRMATION: &str = "recent-post-block-effects-repair:v1";
+const REPAIR_LEGACY_TESTNET_POST_EFFECT_REPLAY_DRIFT_FLAG: &str =
+    "--repair-legacy-testnet-post-effect-replay-drift";
+const LEGACY_TESTNET_POST_EFFECT_REPLAY_DRIFT_CONFIRMATION: &str =
+    "legacy-testnet-post-effect-replay-drift:v1";
 const DIAGNOSE_BLOCK_REPLAY_FLAG: &str = "--diagnose-block-replay";
 const DIAGNOSE_CHAIN_REPLAY_FLAG: &str = "--diagnose-chain-replay";
 const DUMP_BLOCK_JSON_FLAG: &str = "--dump-block-json";
@@ -8580,6 +8584,22 @@ async fn recover_stored_block_post_effects_if_needed(
     Ok(())
 }
 
+fn recent_post_block_effect_scan_start(
+    tip: u64,
+    verified_tip: u64,
+    activation_slot: u64,
+    window: u64,
+) -> (bool, u64) {
+    let initial_scan = verified_tip <= activation_slot.saturating_sub(1);
+    let first_slot = if initial_scan {
+        tip.saturating_sub(window.saturating_sub(1))
+            .max(activation_slot)
+    } else {
+        verified_tip.saturating_add(1).max(activation_slot)
+    };
+    (initial_scan, first_slot)
+}
+
 async fn ensure_recent_stored_post_block_effects_before_bft(
     state: &StateStore,
     validator_set: &Arc<RwLock<ValidatorSet>>,
@@ -8601,15 +8621,8 @@ async fn ensure_recent_stored_post_block_effects_before_bft(
         return Ok(0);
     }
 
-    let initial_scan = *verified_tip < runtime.activation_slot.saturating_sub(1);
-    let first_slot = if initial_scan {
-        tip.saturating_sub(window.saturating_sub(1))
-            .max(runtime.activation_slot)
-    } else {
-        (*verified_tip)
-            .saturating_add(1)
-            .max(runtime.activation_slot)
-    };
+    let (initial_scan, first_slot) =
+        recent_post_block_effect_scan_start(tip, *verified_tip, runtime.activation_slot, window);
     let mut repaired = 0u64;
 
     for slot in first_slot..=tip {
@@ -13573,6 +13586,308 @@ fn maybe_run_recent_post_block_effects_repair_admin(args: &[String]) -> Option<i
     Some(0)
 }
 
+const LEGACY_TESTNET_REPLAY_DRIFT_SLOT: u64 = 9_830_991;
+const LEGACY_TESTNET_REPLAY_DRIFT_TIP_BLOCK_HASH: &str =
+    "6620bb63abec9f52897d97576ead011c31bd913eebc030000131c68c9494bdf0";
+const LEGACY_TESTNET_REPLAY_DRIFT_BEFORE_ROOT: &str =
+    "24084cf1e8b1094bc5c77515d272a8fe1b0f2d98f04ca2b4dcedee3001dc51cb";
+const LEGACY_TESTNET_REPLAY_DRIFT_AFTER_ROOT: &str =
+    "937e9d82772121e1f8a180c7bc3e7edaeb2a2538649d9c3e0287fb084078ec4c";
+const LEGACY_TESTNET_REPLAY_DRIFT_BEFORE_STAKE_POOL_HASH: &str =
+    "b8baf242cca480cce86de1e2043ddf8be25893770d48ea4bce7abe480bf19d85";
+const LEGACY_TESTNET_REPLAY_DRIFT_STAKE_VALIDATOR: &str =
+    "6TghL7ioQz5R8pfrX1Qcfy8rNMzRP5F2pndmmRQ2sPm";
+
+#[derive(Clone, Copy)]
+struct LegacyTestnetReplayAccountCorrection {
+    pubkey: &'static str,
+    before_spores: u64,
+    after_spores: u64,
+}
+
+const LEGACY_TESTNET_REPLAY_ACCOUNT_CORRECTIONS: &[LegacyTestnetReplayAccountCorrection] = &[
+    LegacyTestnetReplayAccountCorrection {
+        pubkey: "6JhhxYKc5tmXMttnrCNTCPnMkMWRQ96US3LtNRiFJjW",
+        before_spores: 49_599_406_026_359_855,
+        after_spores: 49_599_406_026_859_855,
+    },
+    LegacyTestnetReplayAccountCorrection {
+        pubkey: "6RMeoigHdJWB47pEZEMSj5gvT7nbJPYSfPqjcur9vMJ",
+        before_spores: 592_701_782_223_010,
+        after_spores: 592_701_782_198_010,
+    },
+    LegacyTestnetReplayAccountCorrection {
+        pubkey: "6TghL7ioQz5R8pfrX1Qcfy8rNMzRP5F2pndmmRQ2sPm",
+        before_spores: 592_708_284_068_010,
+        after_spores: 592_708_283_743_010,
+    },
+    LegacyTestnetReplayAccountCorrection {
+        pubkey: "6XhsGituXoWSd1wLtutZgdJve6gLrdSi7YhEx1ZDFHW",
+        before_spores: 395_395_283_317_961,
+        after_spores: 395_395_283_292_961,
+    },
+    LegacyTestnetReplayAccountCorrection {
+        pubkey: "7LFPJ8gqmAtjbhfRg1P4VXmTQJV4AeZxzws3UsA6SVq",
+        before_spores: 592_702_797_313_010,
+        after_spores: 592_702_797_288_010,
+    },
+    LegacyTestnetReplayAccountCorrection {
+        pubkey: "8i6Y9q1i2bKJwBXfzWrAfKMwbdeZxFxH3U4HJRJEEri",
+        before_spores: 123_900_002_499_080_000,
+        after_spores: 123_900_002_498_980_000,
+    },
+];
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LegacyTestnetReplayDriftRepairReport {
+    dry_run: bool,
+    already_repaired: bool,
+    tip: u64,
+    before_root: Hash,
+    projected_root: Hash,
+    after_root: Hash,
+    corrected_accounts: usize,
+}
+
+fn parse_legacy_testnet_replay_hash(value: &str, label: &str) -> Result<Hash, String> {
+    Hash::from_hex(value).map_err(|err| format!("invalid {label}: {err}"))
+}
+
+fn project_legacy_testnet_replay_drift_correction(
+    state: &StateStore,
+) -> Result<(StateBatch, usize), String> {
+    state.set_archive_mode(true);
+    let mut batch = state.begin_batch_at_slot(LEGACY_TESTNET_REPLAY_DRIFT_SLOT);
+
+    for correction in LEGACY_TESTNET_REPLAY_ACCOUNT_CORRECTIONS {
+        let pubkey = Pubkey::from_base58(correction.pubkey).map_err(|err| {
+            format!(
+                "invalid embedded repair pubkey {}: {err}",
+                correction.pubkey
+            )
+        })?;
+        let mut account = state
+            .get_account(&pubkey)?
+            .ok_or_else(|| format!("repair account {} is missing", correction.pubkey))?;
+        if account.spores != correction.before_spores
+            || account.spendable != correction.before_spores
+        {
+            return Err(format!(
+                "repair account {} does not match the source-corroborated before image: spores={} spendable={} expected={}",
+                correction.pubkey,
+                account.spores,
+                account.spendable,
+                correction.before_spores,
+            ));
+        }
+        account.spores = correction.after_spores;
+        account.spendable = correction.after_spores;
+        batch.put_account(&pubkey, &account)?;
+    }
+
+    let before_pool_hash = parse_legacy_testnet_replay_hash(
+        LEGACY_TESTNET_REPLAY_DRIFT_BEFORE_STAKE_POOL_HASH,
+        "legacy replay before stake-pool hash",
+    )?;
+    let mut stake_pool = state.get_stake_pool()?;
+    if stake_pool.canonical_hash() != before_pool_hash {
+        return Err(format!(
+            "stake pool does not match the source-proven replay-drift before image: actual={} expected={}",
+            stake_pool.canonical_hash().to_hex(),
+            before_pool_hash.to_hex(),
+        ));
+    }
+    let stake_validator = Pubkey::from_base58(LEGACY_TESTNET_REPLAY_DRIFT_STAKE_VALIDATOR)
+        .map_err(|err| format!("invalid embedded stake repair pubkey: {err}"))?;
+    let stake = stake_pool
+        .get_stake_mut(&stake_validator)
+        .ok_or_else(|| "legacy replay repair stake entry is missing".to_string())?;
+    if stake.last_reward_slot != 9_817_994
+        || stake.blocks_produced != 2_666_367
+        || stake.total_claimed != 592_708_279_052_495
+    {
+        return Err(format!(
+            "legacy replay repair stake entry does not match the source-proven before image: last_reward_slot={} blocks_produced={} total_claimed={}",
+            stake.last_reward_slot, stake.blocks_produced, stake.total_claimed,
+        ));
+    }
+    stake.last_reward_slot = LEGACY_TESTNET_REPLAY_DRIFT_SLOT;
+    stake.blocks_produced = 2_665_940;
+    stake.total_claimed = 592_708_278_752_495;
+    batch.put_stake_pool(&stake_pool)?;
+
+    Ok((batch, LEGACY_TESTNET_REPLAY_ACCOUNT_CORRECTIONS.len()))
+}
+
+fn repair_legacy_testnet_post_effect_replay_drift(
+    state: &StateStore,
+    dry_run: bool,
+) -> Result<LegacyTestnetReplayDriftRepairReport, String> {
+    let chain_id = state
+        .get_metadata(CHAIN_ID_METADATA_KEY)?
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+        .ok_or_else(|| "chain-id metadata is missing or invalid".to_string())?;
+    if chain_id != "lichen-testnet-1" {
+        return Err(format!(
+            "legacy post-effect replay repair is restricted to lichen-testnet-1, found {chain_id}"
+        ));
+    }
+
+    let tip = state.get_last_slot()?;
+    if tip != LEGACY_TESTNET_REPLAY_DRIFT_SLOT {
+        return Err(format!(
+            "legacy post-effect replay repair requires fixed tip {}, found {}",
+            LEGACY_TESTNET_REPLAY_DRIFT_SLOT, tip
+        ));
+    }
+    let tip_block = state
+        .get_block_by_slot(tip)?
+        .ok_or_else(|| format!("canonical tip block {tip} is missing"))?;
+    let expected_block_hash = parse_legacy_testnet_replay_hash(
+        LEGACY_TESTNET_REPLAY_DRIFT_TIP_BLOCK_HASH,
+        "legacy replay tip block hash",
+    )?;
+    if tip_block.hash() != expected_block_hash {
+        return Err(format!(
+            "legacy replay repair tip block mismatch: actual={} expected={}",
+            tip_block.hash().to_hex(),
+            expected_block_hash.to_hex(),
+        ));
+    }
+
+    let expected_before = parse_legacy_testnet_replay_hash(
+        LEGACY_TESTNET_REPLAY_DRIFT_BEFORE_ROOT,
+        "legacy replay before root",
+    )?;
+    let expected_after = parse_legacy_testnet_replay_hash(
+        LEGACY_TESTNET_REPLAY_DRIFT_AFTER_ROOT,
+        "legacy replay after root",
+    )?;
+    state.invalidate_merkle_cache();
+    let before_root = state.compute_state_root_cold_start();
+    if before_root == expected_after {
+        let mut after_root = before_root;
+        if !dry_run {
+            let rebuilt = state.rebuild_sparse_state_commitment(false)?;
+            after_root = rebuilt.current_state_root;
+            if after_root != expected_after {
+                return Err(format!(
+                    "repaired legacy replay state has an unexpected rebuilt root: actual={} expected={}",
+                    after_root.to_hex(),
+                    expected_after.to_hex(),
+                ));
+            }
+            state.put_post_state_commitment_anchor(tip, &tip_block.hash(), &after_root)?;
+            state.put_metadata("legacy_testnet_post_effect_replay_drift_v1", b"1")?;
+        }
+        return Ok(LegacyTestnetReplayDriftRepairReport {
+            dry_run,
+            already_repaired: true,
+            tip,
+            before_root,
+            projected_root: before_root,
+            after_root,
+            corrected_accounts: 0,
+        });
+    }
+    if before_root != expected_before {
+        return Err(format!(
+            "legacy replay repair refuses an unknown before state: actual={} expected={}",
+            before_root.to_hex(),
+            expected_before.to_hex(),
+        ));
+    }
+
+    let (batch, corrected_accounts) = project_legacy_testnet_replay_drift_correction(state)?;
+    let projected_root = state.compute_state_root_for_batch(&batch);
+    if projected_root != expected_after {
+        return Err(format!(
+            "legacy replay repair projection does not match the child-certified root: projected={} expected={}",
+            projected_root.to_hex(),
+            expected_after.to_hex(),
+        ));
+    }
+
+    if dry_run {
+        return Ok(LegacyTestnetReplayDriftRepairReport {
+            dry_run,
+            already_repaired: false,
+            tip,
+            before_root,
+            projected_root,
+            after_root: before_root,
+            corrected_accounts,
+        });
+    }
+
+    state.commit_batch(batch)?;
+    state.invalidate_merkle_cache();
+    let rebuilt = state.rebuild_sparse_state_commitment(false)?;
+    let after_root = rebuilt.current_state_root;
+    if after_root != expected_after {
+        return Err(format!(
+            "FATAL: committed legacy replay repair root mismatch: actual={} expected={}",
+            after_root.to_hex(),
+            expected_after.to_hex(),
+        ));
+    }
+    state.put_post_state_commitment_anchor(tip, &tip_block.hash(), &after_root)?;
+    state.put_metadata("legacy_testnet_post_effect_replay_drift_v1", b"1")?;
+
+    Ok(LegacyTestnetReplayDriftRepairReport {
+        dry_run,
+        already_repaired: false,
+        tip,
+        before_root,
+        projected_root,
+        after_root,
+        corrected_accounts,
+    })
+}
+
+fn maybe_run_legacy_testnet_post_effect_replay_drift_admin(args: &[String]) -> Option<i32> {
+    if !has_flag(args, REPAIR_LEGACY_TESTNET_POST_EFFECT_REPLAY_DRIFT_FLAG) {
+        return None;
+    }
+    let dry_run = has_flag(args, "--dry-run");
+    if !dry_run
+        && get_flag_value(args, &["--confirm"])
+            != Some(LEGACY_TESTNET_POST_EFFECT_REPLAY_DRIFT_CONFIRMATION)
+    {
+        eprintln!(
+            "Refusing write without --confirm {LEGACY_TESTNET_POST_EFFECT_REPLAY_DRIFT_CONFIRMATION}"
+        );
+        return Some(1);
+    }
+
+    let data_dir = restriction_schema_data_dir(args);
+    let cache_size_mb = get_flag_value(args, &["--cache-size-mb"]).and_then(|s| s.parse().ok());
+    let state = match StateStore::open_with_cache_mb(&data_dir, cache_size_mb) {
+        Ok(state) => state,
+        Err(err) => {
+            eprintln!("Failed to open state DB at {}: {}", data_dir.display(), err);
+            return Some(1);
+        }
+    };
+    match repair_legacy_testnet_post_effect_replay_drift(&state, dry_run) {
+        Ok(report) => {
+            println!("data_dir={}", data_dir.display());
+            println!("mode={}", if report.dry_run { "dry-run" } else { "write" });
+            println!("tip={}", report.tip);
+            println!("already_repaired={}", report.already_repaired);
+            println!("corrected_accounts={}", report.corrected_accounts);
+            println!("before_root={}", report.before_root.to_hex());
+            println!("projected_root={}", report.projected_root.to_hex());
+            println!("after_root={}", report.after_root.to_hex());
+            Some(0)
+        }
+        Err(err) => {
+            eprintln!("Legacy testnet post-effect replay repair failed: {err}");
+            Some(1)
+        }
+    }
+}
+
 fn export_roundtrip_snapshot_entries(
     state: &StateStore,
     category: &str,
@@ -17344,6 +17659,9 @@ fn main() {
         std::process::exit(exit_code);
     }
     if let Some(exit_code) = maybe_run_recent_post_block_effects_repair_admin(&args) {
+        std::process::exit(exit_code);
+    }
+    if let Some(exit_code) = maybe_run_legacy_testnet_post_effect_replay_drift_admin(&args) {
         std::process::exit(exit_code);
     }
     if let Some(exit_code) = maybe_run_warp_snapshot_roundtrip_admin(&args) {
@@ -35490,6 +35808,83 @@ mod tests {
         assert_eq!(after_audit.comprehensive_missing_slots, vec![7]);
         assert!(after_audit.stake_pool_missing_slots.is_empty());
         assert!(after_audit.fee_missing_slots.is_empty());
+    }
+
+    #[test]
+    fn initial_bft_post_effect_scan_is_bounded_to_the_recent_window() {
+        let activation_slot = 9_680_289;
+        let tip = 9_830_991;
+        let window = RECENT_POST_BLOCK_EFFECTS_RECOVERY_WINDOW;
+        let verified_tip = activation_slot - 1;
+
+        let (initial_scan, first_slot) =
+            recent_post_block_effect_scan_start(tip, verified_tip, activation_slot, window);
+
+        assert!(initial_scan);
+        assert_eq!(first_slot, tip - window + 1);
+        assert_ne!(first_slot, activation_slot);
+
+        assert_eq!(
+            recent_post_block_effect_scan_start(
+                activation_slot + 10,
+                verified_tip,
+                activation_slot,
+                window
+            ),
+            (true, activation_slot)
+        );
+        assert_eq!(
+            recent_post_block_effect_scan_start(tip, activation_slot, activation_slot, window),
+            (false, activation_slot + 1)
+        );
+        assert_eq!(
+            recent_post_block_effect_scan_start(tip, tip, activation_slot, window),
+            (false, tip + 1)
+        );
+    }
+
+    #[test]
+    fn legacy_testnet_replay_repair_refuses_write_without_exact_confirmation() {
+        let args = vec![
+            "lichen-validator".to_string(),
+            REPAIR_LEGACY_TESTNET_POST_EFFECT_REPLAY_DRIFT_FLAG.to_string(),
+        ];
+        assert_eq!(
+            maybe_run_legacy_testnet_post_effect_replay_drift_admin(&args),
+            Some(1)
+        );
+
+        let wrong_confirmation = vec![
+            "lichen-validator".to_string(),
+            REPAIR_LEGACY_TESTNET_POST_EFFECT_REPLAY_DRIFT_FLAG.to_string(),
+            "--confirm".to_string(),
+            "legacy-testnet-post-effect-replay-drift:wrong".to_string(),
+        ];
+        assert_eq!(
+            maybe_run_legacy_testnet_post_effect_replay_drift_admin(&wrong_confirmation),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn legacy_testnet_replay_account_correction_conserves_supply() {
+        let before = LEGACY_TESTNET_REPLAY_ACCOUNT_CORRECTIONS
+            .iter()
+            .map(|correction| correction.before_spores as u128)
+            .sum::<u128>();
+        let after = LEGACY_TESTNET_REPLAY_ACCOUNT_CORRECTIONS
+            .iter()
+            .map(|correction| correction.after_spores as u128)
+            .sum::<u128>();
+
+        assert_eq!(before, after);
+        assert_eq!(LEGACY_TESTNET_REPLAY_ACCOUNT_CORRECTIONS.len(), 6);
+        assert_eq!(
+            Hash::from_hex(LEGACY_TESTNET_REPLAY_DRIFT_AFTER_ROOT)
+                .expect("embedded child-certified root")
+                .to_hex(),
+            LEGACY_TESTNET_REPLAY_DRIFT_AFTER_ROOT
+        );
     }
 
     #[test]

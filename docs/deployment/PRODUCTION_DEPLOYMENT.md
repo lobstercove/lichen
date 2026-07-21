@@ -14,9 +14,10 @@ Use this document as the canonical workflow for:
 
 This runbook intentionally prefers the scripts that are verified in the current tree over older narrative docs.
 
-Current signed testnet release for this runbook is `v0.5.226`; keep `v0.5.225`
-as the signed rollback point until a newer rollback anchor is explicitly
-verified and recorded.
+Current testnet release target for this runbook is signed `v0.5.227`; keep
+`v0.5.227` as the signed restart-safe anchor. Preserve signed `v0.5.225` as
+pre-change evidence, but do not restart it on the mature activated testnet
+because it contains the initial post-effects replay-boundary defect.
 
 Mainnet launch must use the gated checklist in [MAINNET_LAUNCH_RUNBOOK.md](MAINNET_LAUNCH_RUNBOOK.md). That runbook is the owner-facing package for launching the 4-validator mainnet first, then enabling custody only after post-genesis verification and route-specific dust tests pass.
 
@@ -2711,11 +2712,14 @@ activity green.
 
 Also, the wiped validator's new pubkey registers as a separate entry in the validator set. With N+1 validators and only N-1 online (original minus the ghost), BFT quorum (2/3+) may be unreachable.
 
-**Current release behavior**: `v0.5.226` is the signed testnet release target and
-`v0.5.225` is the signed rollback anchor. The release changes only the exact
-testnet runtime reserve to 5 GiB and the default hot-history window to 50,000
-slots; mainnet and unclassified production retain the 10 GiB reserve, and all
-backed historical data remains available through hot/cold reads.
+**Current release behavior**: `v0.5.227` is the signed testnet release target and
+`v0.5.225` is the preserved signed pre-change binary, not a restartable
+rollback. The release fixes the inclusive
+initial post-effects recovery boundary and retains the exact-testnet 5 GiB
+runtime reserve plus the 50,000-slot default hot-history window; mainnet and
+unclassified production retain the 10 GiB reserve, and all backed historical
+data remains available through hot/cold reads. v0.5.226 was superseded before
+deployment because it contains the storage bridge but not the restart fix.
 State-repair snapshots carry consensus state and complete public-history
 categories, while public-history repair remains additive, source-backed,
 conflict-checked, and never replaces validator identity, consensus WAL, or

@@ -32,6 +32,12 @@ This policy exists because an active testnet is shared infrastructure. Developer
   it through the live-view swap. Reading before the lock can regress a rapid
   catch-up commit. A catch-up block is already committed history: verify and
   replay it, but never sign or broadcast a new vote for it.
+- Initial startup recovery at an activated chain must treat a durable verified
+  cursor equal to `activation_slot - 1` as an initial scan and inspect only the
+  bounded recent recovery window. It must never scan from activation merely
+  because old exact-once post-effect markers were pruned. Release tests must
+  cover this equality boundary and restart a validator from its own state after
+  real economic/user activity while the remaining quorum advances.
 - A verified child parent-root mismatch is a recovery event, not an ordinary
   peer rejection. Targeted repair may commit only a deterministic candidate
   whose complete root exactly matches the already-verified child certificate.
@@ -351,6 +357,10 @@ Before declaring any sync-related change production-ready, run or document an eq
   producer and deterministic post-block effect for an activated, recently stored
   canonical parent before the next-height state root is read; a second pass is
   a no-op, and pre-activation marker absence never replays effects,
+- the initial post-effects cursor equality boundary selects only the bounded
+  recent window, and a post-volume/launchpad own-state validator outage catches
+  up without replaying historical rewards or diverging from canonical commit
+  parity,
 - checkpoint verification succeeds after validator-set expansion without using
   the receiver's current stake denominator and rejects detached root/proof tampering,
 - hot/cold archive reads for old `getBlock`, `getTransaction`, and account

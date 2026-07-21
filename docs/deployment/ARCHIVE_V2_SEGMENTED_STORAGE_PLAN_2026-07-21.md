@@ -1,7 +1,7 @@
 # Archive V2 Segmented Storage And Validator Roles Plan
 
 **Created:** 2026-07-21
-**Status:** Owner-approved architecture direction; emergency bridge and implementation pending signed release gates
+**Status:** Owner-approved architecture direction; v0.5.227 emergency/restart-recovery candidate pending signed release gates; Archive V2 implementation pending
 **Scope:** Testnet, future mainnet, archive-capable validators, constrained validator agents, historical RPC, sync, backup, recovery, and capacity operations
 **Related policy:** [TESTNET_STATE_AND_SYNC_POLICY.md](TESTNET_STATE_AND_SYNC_POLICY.md)
 **Current incident baseline:** [ARCHIVE_PARITY_REPAIR_PLAN_2026-07-09.md](ARCHIVE_PARITY_REPAIR_PLAN_2026-07-09.md)
@@ -38,9 +38,11 @@ it cannot make unbounded history fit permanently on a fixed disk.
 
 ## 2. Immediate Emergency Bridge
 
-The live `lichen-testnet-1` fleet is currently close to the signed v0.5.225
-10 GiB runtime floor. The owner has explicitly authorized this temporary bridge
-while Archive V2 is implemented:
+The live `lichen-testnet-1` fleet reached the signed v0.5.225 10 GiB runtime
+floor. The owner has explicitly authorized this temporary bridge while Archive
+V2 is implemented. v0.5.226 contains the storage settings but was deliberately
+not deployed after the restart defect in section 2.1 was found; v0.5.227
+supersedes it before the fleet changes:
 
 - lower the **testnet-only** runtime safety reserve from 10 GiB to 5 GiB;
 - keep the production/mainnet default at 10 GiB until the adaptive guard in
@@ -75,6 +77,122 @@ in their current compatible storage until Archive V2 implements and verifies
 their segment indexes. Operators must report physical `df` change by family and
 must not describe the 50,000-slot boundary as having compacted all 21 manifest
 categories.
+
+### 2.1 Restart incident discovered during the bridge
+
+The US seed/public-RPC validator exited correctly when available space fell
+below the old 10 GiB hard floor. EU, SEA, and IN retained finality. Explorer
+availability briefly followed the failed US origin before the public edge
+failed over to the three healthy RPC origins. Safe cleanup was limited to
+bounded journals, package caches, and generated diagnostics; validator state,
+the cold archive, WAL, keys, identities, access configuration, rollback
+artifacts, and provider backups were preserved.
+The provider backups remain mounted read-only/no-recovery: US's retained backup
+is from July 9 at tip `8,525,115`, and the other retained backups are from July
+12. They are recovery assets, not free-space targets. After bounded cleanup,
+the healthy hosts had roughly 11-13 GB available; US had 12,065,382,400 bytes
+available at the latest read-only fleet check.
+
+Restarting US on the exact signed v0.5.225 binary exposed a separate defect.
+The startup post-effects cursor was initialized to `activation_slot - 1`, but
+the initial-scan test used strict `<` rather than `<=`. Equality therefore took
+the resume branch and began scanning at the activation slot instead of the
+bounded recent window. Markers for old blocks had been intentionally pruned, so
+startup treated old economic effects as missing and replayed 137,711 stored
+blocks. This was not a cold-migration or fixed-tip defect. It was a restart-only
+post-effects recovery boundary error.
+
+US then rejected canonical child slot `9,830,992`. That child's authenticated
+parent certificate requires post-state root
+`937e9d82772121e1f8a180c7bc3e7edaeb2a2538649d9c3e0287fb084078ec4c`,
+while US computed
+`24084cf1e8b1094bc5c77515d272a8fe1b0f2d98f04ca2b4dcedee3001dc51cb`
+for parent slot `9,830,991`. The fixed parent block hash is
+`6620bb63abec9f52897d97576ead011c31bd913eebc030000131c68c9494bdf0`.
+Its header pre-effects root is
+`0526d5ea50f3098b11c2ceac1f5240a664cef9881941a5e3f0999384b0b37c1b`,
+its producer is SEA, its timestamp is `1,784,639,918`, and it contains one
+consensus transaction with zero user fee.
+All three healthy validators returned identical slot-bound account values. A
+disposable diagnostic checkpoint proved the complete correction below produces
+the exact child-certified root; it was then deleted, leaving no multiply-linked
+diagnostic SST files and making no write to the live database.
+
+| Account | US before spores/spendable | Certified value | Delta |
+| --- | ---: | ---: | ---: |
+| Treasury `6JhhxYKc5tmXMttnrCNTCPnMkMWRQ96US3LtNRiFJjW` | 49,599,406,026,359,855 | 49,599,406,026,859,855 | +500,000 |
+| EU `6RMeoigHdJWB47pEZEMSj5gvT7nbJPYSfPqjcur9vMJ` | 592,701,782,223,010 | 592,701,782,198,010 | -25,000 |
+| SEA `6TghL7ioQz5R8pfrX1Qcfy8rNMzRP5F2pndmmRQ2sPm` | 592,708,284,068,010 | 592,708,283,743,010 | -325,000 |
+| IN `6XhsGituXoWSd1wLtutZgdJve6gLrdSi7YhEx1ZDFHW` | 395,395,283,317,961 | 395,395,283,292,961 | -25,000 |
+| US `7LFPJ8gqmAtjbhfRg1P4VXmTQJV4AeZxzws3UsA6SVq` | 592,702,797,313,010 | 592,702,797,288,010 | -25,000 |
+| Community `8i6Y9q1i2bKJwBXfzWrAfKMwbdeZxFxH3U4HJRJEEri` | 123,900,002,499,080,000 | 123,900,002,498,980,000 | -100,000 |
+
+The six deltas sum to zero. SEA's stake entry changes from reward slot
+`9,817,994`, `2,666,367` produced blocks, and
+`592,708,279,052,495` total claimed to reward slot `9,830,991`, `2,665,940`
+produced blocks, and `592,708,278,752,495` total claimed. The before stake-pool
+hash is
+`b8baf242cca480cce86de1e2043ddf8be25893770d48ea4bce7abe480bf19d85`.
+For the production-counter proof, EU's observed comparison tip was `9,833,704`.
+Canonical slots `9,830,992..9,833,704` contained 907 EU, 885 SEA, 921 IN, and
+zero US blocks. Healthy SEA reported `2,666,825` at that later tip, so subtracting
+the 885 post-target blocks gives the fixed target `2,665,940`; US's drifted
+value was 427 too high. The claimed-reward delta is independently fixed by the
+six source-corroborated account deltas and the complete root projection.
+The account root after correction is
+`352937863a0badbccb4f433a9689dd9455e2768e5aa2dbc22919bcb515a25955`;
+the complete state root is the authenticated root above.
+
+The healthy fleet's certified target retains the one historical compatibility
+application that occurred when the three surviving databases first crossed the
+v0.5.225 recovery boundary. The US incident was a second application on a later
+restart. The emergency repair removes only that second drift so US matches the
+already-certified chain; it does not invent a counterfactual root or rewrite
+signed history.
+
+The replay also advanced non-root validator activity/reputation counters on US.
+Those fields do not contribute to the authenticated state root, validator stake
+power, leader selection, or the account/stake correction above, so they must
+not be guessed inside the emergency root repair. After all four validators are
+live, export the complete operational validator profile at a fixed slot,
+reconstruct any target values from canonical block producers and commit
+signatures, and reconcile only with a separately reviewed source-bound command.
+Until that audit closes, activity lifetime counters are not a fleet-parity
+claim; fixed-slot state roots, certificates, stake powers, fresh activity, and
+public-history manifests remain the recovery gates.
+
+v0.5.227 makes the initial scan condition inclusive, factors the boundary
+choice into a tested helper, and adds a one-purpose stopped-node repair. The
+repair is restricted to chain ID `lichen-testnet-1`, exact slot and block hash,
+exact before state and stake-pool hashes, and the six exact before images. A
+dry run must project the authenticated after root. Execution requires explicit
+confirmation, stages all accounts, account snapshots, and stake state in one
+RocksDB batch, rebuilds the sparse commitment, restores the parent sidecar
+anchor, and verifies the after root. Unknown or partial states fail closed. A
+second execute pass completes any interrupted derived-cache/anchor work and is
+otherwise idempotent.
+
+The deployment consequence is strict: do not deploy or restart v0.5.226, and
+do not restart healthy v0.5.225 validators before the corrected signed binary
+is staged. v0.5.227 requires the full release gates and a coordinated stop so no
+mixed recovery behavior enters consensus. US remains stopped until its signed
+v0.5.227 dry run proves the exact target. The repair uses US's own preserved
+state; no peer state snapshot or validator database is copied.
+
+### 2.2 Completed bounded US hot-to-cold preparation
+
+With US stopped at tip `9,830,991`, the fixed 50,000-slot cutoff was
+`9,780,991`. The preflight found 50,000 eligible hot blocks and 101,545
+eligible transaction/index rows, with zero decode, hash, cursor, integrity, or
+cold conflicts. Five write-first batches migrated all 50,000 blocks. The
+post-run dry audit found zero eligible rows and zero errors/conflicts, and
+available space rose from 11,249,733,632 to 12,066,140,160 bytes. This is
+bounded preparation only; runtime migration of the other currently supported
+history families still has to be observed after the signed restart.
+At that point US used approximately 3.96 GB for hot state and 174.86 GB for its
+cold archive. The size is why the 50,000-slot bridge cannot replace Archive V2:
+it reduces hot duplication and working pressure but does not re-encode the
+existing large cold RocksDB into immutable deduplicated segments.
 
 ## 3. Current Storage Model And Its Limits
 
@@ -1001,37 +1119,54 @@ This bridge is separate from Archive V2 implementation.
 6. Verify detached PQ checksums and the exact Linux validator hash.
 7. Stage the signed artifact on all validators without installing from local
    builds.
-8. Because storage behavior changes on every validator, use a coordinated
-   stop/install/start unless the exact mixed-version analysis proves a rolling
-   sequence safe and the release runbook explicitly permits it.
-9. Verify every validator resumed its own state and archive with unchanged
-   identity/key/WAL evidence.
-10. Record one fixed cutoff per validator from its stopped canonical tip. For a
-    50,000-slot window, cutoff is `fixed_tip - 50,000`.
-11. On one stopped validator at a time, run the signed binary's cold-migration
-    dry run with service-equivalent file-descriptor limits.
-12. Require zero decode, hash, cursor, transaction, index, or cold conflicts.
-13. Require no multiply-linked active hot SST checkpoint files and enough
-    bounded transient headroom.
+8. Because restart recovery and storage behavior change, do not use the normal
+   rolling restart helper. Stage and verify the signed artifact on all hosts,
+   then stop EU/SEA/IN together at a recorded healthy tip; US is already stopped.
+9. Remove the temporary US runtime retention override before any validator
+   start. Preserve its contents in incident evidence first so the change is
+   auditable.
+10. Run the signed v0.5.227 US lineage-repair dry run. Require fixed tip
+    `9,830,991`, fixed block hash, before root, before stake-pool hash, six exact
+    account images, and projected root from section 2.1. Execute only with the
+    required confirmation, then rerun dry-run/write idempotence and require the
+    exact after root and repaired post-state anchor.
+11. Record one fixed cutoff per validator from its stopped canonical tip. For a
+    50,000-slot window, cutoff is `fixed_tip - 50,000`. US's completed cutoff is
+    recorded in section 2.2; do not repeat that bounded migration.
+12. On each other stopped validator, run the signed binary's cold-migration dry
+    run with service-equivalent file-descriptor limits. Parallel execution is
+    permitted because stores are host-local, but every report remains separate.
+13. Require zero decode, hash, cursor, transaction, index, or cold conflicts,
+    no multiply-linked active hot SST checkpoint files, and enough bounded
+    transient headroom on every host.
 14. Execute write-first bounded migration for blocks, transactions, and
-    transaction-to-slot rows, then re-run the dry run and fixed historical
-    probes. Record physical available bytes before and after each bounded
-    compaction batch.
-15. Start and catch up that validator. Confirm the runtime's first 50,000-slot
-    maintenance pass also migrates the supported account-transaction, account
-    snapshot, event, token-transfer, and program-call indexes; any error stops
-    the fleet sequence. Re-run old and recent RPC probes before proceeding.
-16. Keep at least three validators live so the four-validator network retains
-    quorum; stop if any remaining validator becomes unhealthy.
-17. After all four, run the strict stopped fixed-tip manifest parity gate and a
-    coordinated restart.
-18. Verify public strict edge health, WebSocket delivery, Explorer, installed
-    and running hashes, disk bytes, and continued block production.
+    transaction-to-slot rows, then rerun dry run and fixed historical probes.
+    Record physical available bytes before and after every bounded compaction
+    batch. Any unexpected value aborts before services start.
+15. Atomically promote the verified v0.5.227 executable on all four hosts while
+    preserving v0.5.225 as signed pre-change evidence. It is not a restart-safe
+    rollback on this mature activated chain. Prove installed SHA-256 parity
+    before starting any validator.
+16. Start all four from their own preserved state. Confirm the runtime's first
+    50,000-slot maintenance pass also migrates supported account-transaction,
+    account-snapshot, event, token-transfer, and program-call indexes. Any
+    repair, replay, archive, or root error stops the recovery.
+17. Require all four to catch up, report the same canonical block/hash and
+    state-root evidence at a fixed slot, produce fresh blocks, retain unchanged
+    identities/keys/WAL, and execute the exact signed binary hash.
+18. At a common checkpoint, stop all four once more for the strict fixed-tip
+    hot/cold public-history manifest parity gate; then restart from preserved
+    state and repeat liveness/root probes.
+19. Verify strict edge health, origin failover, WebSocket delivery, Explorer,
+    installed/running hashes, disk bytes, zero systemd restart loops, and a
+    production sample containing every validator.
 
-Rollback before migration uses the signed prior release and preserved legacy
-stores. Rollback after the extra 50,000 slots are migrated remains possible
-because the current rollback-compatible cold RocksDB format and transparent
-hot/cold reads are preserved. No Archive V2 retirement occurs in this bridge.
+If staging or checksum verification fails, abort before the coordinated stop.
+After the stop or US correction begins, recovery fails forward using the same
+signed v0.5.227 artifact; restarting v0.5.225 is prohibited. The old binary and
+legacy stores remain preserved for evidence and format compatibility, and the
+50,000-slot migration remains nondestructive because both releases understand
+the current cold RocksDB format. No Archive V2 retirement occurs in this bridge.
 
 ## 19. Acceptance Criteria
 

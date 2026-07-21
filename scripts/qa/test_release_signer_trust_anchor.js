@@ -107,7 +107,7 @@ async function deriveReleaseSignerAddress() {
         /^version = "(\d+\.\d+\.\d+)"/m
     )?.[1];
     const releasePair = runbook.match(
-        /Release target for this\s+runbook is\s+signed `(v\d+\.\d+\.\d+)`; keep `(v\d+\.\d+\.\d+)` as the signed rollback point/
+        /Release target for this\s+runbook is\s+signed `(v\d+\.\d+\.\d+)`; keep `(v\d+\.\d+\.\d+)` as the signed restart-safe anchor/
     );
     assert(
         runbook.includes(releaseSigner),
@@ -115,14 +115,14 @@ async function deriveReleaseSignerAddress() {
     );
     assert(
         Boolean(releasePair) && releasePair[1] === `v${workspaceVersion}`,
-        'mainnet launch runbook release matches the workspace version and declares a rollback tag'
+        'mainnet launch runbook release matches the workspace version and declares a restart-safe anchor'
     );
     assert(
         runbook.includes('node "$REPO_ROOT/scripts/verify-release-checksums.mjs" .') &&
             releasePair &&
             runbook.includes(`export LICHEN_RELEASE_TAG=${releasePair[1]}`) &&
             runbook.includes(`export LICHEN_RELEASE_TAG=${releasePair[2]}`),
-        'mainnet launch runbook verifies detached release checksums and documents signed rollback'
+        'mainnet launch runbook verifies detached release checksums and documents the signed restart-safe anchor'
     );
 
     const readme = readText('README.md');

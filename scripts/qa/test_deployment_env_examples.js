@@ -420,7 +420,7 @@ const mainnetRunbook = read('deploy/mainnet-launch-runbook.md');
 const mainnetRunbookDoc = read('docs/deployment/MAINNET_LAUNCH_RUNBOOK.md');
 const productionDeployment = read('docs/deployment/PRODUCTION_DEPLOYMENT.md');
 const productionReleasePair = productionDeployment.match(
-  /Current signed testnet release for this runbook is `(v\d+\.\d+\.\d+)`;\s+keep `(v\d+\.\d+\.\d+)`\s+as the signed rollback point/,
+  /Current testnet release target for this runbook is signed `(v\d+\.\d+\.\d+)`;\s+keep\s+`(v\d+\.\d+\.\d+)` as the signed restart-safe anchor/,
 );
 const validatorVersion = read('validator/Cargo.toml').match(/^version = "(\d+\.\d+\.\d+)"/m)?.[1];
 const dexLiquidityStrategy = read('docs/strategy/DEX_LIQUIDITY_STRATEGY.md');
@@ -462,7 +462,8 @@ assert(
 assert(
   productionReleasePair &&
     productionReleasePair[1] === `v${validatorVersion}` &&
-    productionReleasePair[2] === 'v0.5.225' &&
+    productionReleasePair[2] === `v${validatorVersion}` &&
+    /Preserve signed\s+`v0\.5\.225` as\s+pre-change evidence/.test(productionDeployment) &&
     productionDeployment.includes('This destructive checklist does not apply to the current July testnet') &&
     productionDeployment.includes('in-place archive repair and coordinated resume') &&
     productionDeployment.includes('LICHEN_RUN_LAUNCHPAD_E2E=1') &&

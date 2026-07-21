@@ -1332,6 +1332,75 @@ else
         ok "Launchpad graduation E2E passed on ${MAX_VALIDATORS} validators"
     fi
 
+    if [[ "$MAX_VALIDATORS" -ge 4 && "$SKIP_JOINER_RESTART_CHECK" != "1" && ( "$RUN_LAUNCHPAD_E2E" == "1" || "$RUN_VOLUME_E2E" == "1" ) ]]; then
+        POST_ACTIVITY_VALIDATOR_NUM="$MAX_VALIDATORS"
+        POST_ACTIVITY_RPC="$(rpc_port "$POST_ACTIVITY_VALIDATOR_NUM")"
+        POST_ACTIVITY_LOG="/tmp/lichen-testnet/v${POST_ACTIVITY_VALIDATOR_NUM}-post-activity-restart.log"
+        POST_ACTIVITY_KEYPAIR="$(db_path "$POST_ACTIVITY_VALIDATOR_NUM")/validator-keypair.json"
+        POST_ACTIVITY_PUBKEY="${ALL_PUBKEYS[$((POST_ACTIVITY_VALIDATOR_NUM - 1))]}"
+        POST_ACTIVITY_OLD_PID="${VALIDATOR_PIDS[$POST_ACTIVITY_VALIDATOR_NUM]:-}"
+
+        log "RG-402D: Restarting V${POST_ACTIVITY_VALIDATOR_NUM} from its own state after user activity"
+        POST_ACTIVITY_START_SLOT="$(get_slot "$V1_RPC")"
+        stop_validator_pid "$POST_ACTIVITY_OLD_PID"
+        if ! wait_validator_resources_released "$POST_ACTIVITY_VALIDATOR_NUM"; then
+            fail "V${POST_ACTIVITY_VALIDATOR_NUM} did not release resources before its post-activity restart"
+        fi
+
+        POST_ACTIVITY_ADVANCE_TARGET=$((POST_ACTIVITY_START_SLOT + 20))
+        POST_ACTIVITY_ADVANCED=false
+        for _ in $(seq 1 90); do
+            NET_SLOT="$(get_slot "$V1_RPC")"
+            if [[ "$NET_SLOT" -ge "$POST_ACTIVITY_ADVANCE_TARGET" ]]; then
+                POST_ACTIVITY_ADVANCED=true
+                break
+            fi
+            sleep 1
+        done
+        $POST_ACTIVITY_ADVANCED || fail "Three-validator quorum did not advance during the post-activity outage"
+
+        LICHEN_DISABLE_SUPERVISOR=1 "$REPO_ROOT/run-validator.sh" testnet "$POST_ACTIVITY_VALIDATOR_NUM" \
+            > "$POST_ACTIVITY_LOG" 2>&1 &
+        POST_ACTIVITY_PID=$!
+        VALIDATOR_PIDS[$POST_ACTIVITY_VALIDATOR_NUM]="$POST_ACTIVITY_PID"
+
+        POST_ACTIVITY_CAUGHT_UP=false
+        for i in $(seq 1 120); do
+            sleep 2
+            if ! kill -0 "$POST_ACTIVITY_PID" 2>/dev/null; then
+                tail -80 "$POST_ACTIVITY_LOG"
+                fail "V${POST_ACTIVITY_VALIDATOR_NUM} exited during its post-activity restart"
+            fi
+            RESTART_SLOT="$(get_slot "$POST_ACTIVITY_RPC")"
+            NET_SLOT="$(get_slot "$V1_RPC")"
+            DRIFT=$((NET_SLOT - RESTART_SLOT))
+            if [[ "$RESTART_SLOT" -gt "$POST_ACTIVITY_START_SLOT" && "$DRIFT" -le 20 ]]; then
+                POST_ACTIVITY_CAUGHT_UP=true
+                break
+            fi
+            if [[ $((i % 15)) -eq 0 ]]; then
+                log "  Post-activity restart catch-up: V${POST_ACTIVITY_VALIDATOR_NUM}=$RESTART_SLOT network=$NET_SLOT drift=$DRIFT"
+            fi
+        done
+        $POST_ACTIVITY_CAUGHT_UP || {
+            tail -100 "$POST_ACTIVITY_LOG"
+            fail "V${POST_ACTIVITY_VALIDATOR_NUM} did not catch up from its own post-activity state"
+        }
+
+        RESTARTED_PUBKEY=$(grep -m1 '"publicKeyBase58"' "$POST_ACTIVITY_KEYPAIR" \
+            | sed -E 's/.*"publicKeyBase58"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')
+        [[ "$RESTARTED_PUBKEY" == "$POST_ACTIVITY_PUBKEY" ]] || fail "V${POST_ACTIVITY_VALIDATOR_NUM} pubkey changed after post-activity restart"
+        if grep -q "Fresh node — will sync from existing network" "$POST_ACTIVITY_LOG"; then
+            fail "V${POST_ACTIVITY_VALIDATOR_NUM} post-activity restart used fresh-join mode"
+        fi
+        if grep -q "Applied canonical genesis state bundle from block 0" "$POST_ACTIVITY_LOG"; then
+            fail "V${POST_ACTIVITY_VALIDATOR_NUM} post-activity restart re-imported genesis"
+        fi
+        verify_chain_producing "after post-activity own-state restart" "$V1_RPC" 10
+        verify_canonical_commit_parity
+        ok "V${POST_ACTIVITY_VALIDATOR_NUM} restarted after real user activity, caught up from preserved state, and retained canonical parity"
+    fi
+
     if [[ "$RUN_LAUNCHPAD_E2E" == "1" || "$RUN_VOLUME_E2E" == "1" ]]; then
         FINAL_SLOT=$(get_slot "$V1_RPC")
         FINAL_VCNT=$(get_validator_count "$V1_RPC")

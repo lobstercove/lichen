@@ -5,6 +5,42 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.227] - 2026-07-21
+
+### Fixed
+- Corrects the initial post-block-effects recovery boundary. A validator whose
+  durable verified cursor is exactly `activation_slot - 1` now scans only the
+  configured recent recovery window instead of treating the activation slot as
+  a resume cursor. This prevents a restart from interpreting intentionally
+  pruned historical markers as unapplied economic effects and replaying old
+  rewards a second time.
+- Adds a chain-, tip-, block-, root-, account-, and stake-pool-bound repair for
+  the one `lichen-testnet-1` validator affected before the boundary defect was
+  found. The command defaults to dry-run, requires an exact confirmation for
+  writes, projects the complete child-certified target root before one atomic
+  account/stake commit, rebuilds the sparse commitment, repairs the sidecar
+  anchor, and is safe to rerun. Any unknown byte, value, tip, or root aborts.
+
+### Changed
+- Retains the v0.5.226 emergency bridge: the exact `testnet` selector uses a
+  temporary 5 GiB hard runtime reserve, other production selectors retain 10
+  GiB, and the default hot-history window is 50,000 slots with write-first
+  transparent cold migration.
+- Extends the mandatory four-validator release drill with an own-state outage
+  and catch-up after real volume/launchpad activity, followed by canonical
+  certificate and stopped hot/cold archive parity checks.
+
+### Operations
+- Supersedes v0.5.226 before fleet deployment. The affected validator is
+  repaired from its own preserved database using exact canonical evidence; no
+  peer database, snapshot, WAL, key, identity, or synthetic history is copied.
+- Requires a coordinated signed-artifact deployment because restart recovery
+  and default storage behavior change. Signed v0.5.225 is preserved as the
+  pre-change artifact but is not a restart-safe rollback because it contains
+  the replay-boundary defect. Once signed, v0.5.227 becomes the first safe
+  restart anchor; staging failures abort before the fleet stop, and post-stop
+  recovery fails forward on the same verified v0.5.227 artifact.
+
 ## [0.5.226] - 2026-07-21
 
 ### Changed
@@ -23,9 +59,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   seekable Zstandard segments, canonical indexes, full/verified-cache/consensus
   validator roles, replication, restore, legacy migration, adaptive capacity,
   security, observability, benchmarks, failure drills, and rollout gates.
-- Keeps signed `v0.5.225` as the immediate rollback point. The 5 GiB floor is
-  an emergency testnet availability bridge, not a mainnet capacity approval or
-  a substitute for the planned larger dedicated storage.
+- Originally retained signed `v0.5.225` as the immediate rollback point. The
+  later restart incident proved that assumption unsafe on the mature activated
+  testnet; v0.5.226 was therefore superseded before deployment and must not be
+  started there. The 5 GiB floor is an emergency testnet availability bridge,
+  not a mainnet capacity approval or a substitute for planned larger storage.
 
 ## [0.5.225] - 2026-07-20
 
