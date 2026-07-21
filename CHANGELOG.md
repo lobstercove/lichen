@@ -5,6 +5,33 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.228] - 2026-07-21
+
+### Fixed
+- Corrects the legacy testnet replay-drift repair so each source-bound account
+  before image validates `spores` and `spendable` independently. Validator
+  accounts retain their exact 100,000 LICN bonded difference while both fields
+  receive the same zero-sum replay correction. The repair still projects and
+  requires the exact child-certified target root before its single atomic
+  commit.
+- Bumps the write confirmation and durable completion marker to v2 so the
+  invalid v0.5.227 repair path cannot be confused with the corrected operation.
+  Total-spore and spendable conservation, per-account delta equality, fixed
+  chain/tip/block/root checks, stake-pool before-image checks, and post-commit
+  sparse-root verification all fail closed.
+
+### Operations
+- Supersedes v0.5.227 for the affected US validator repair. The v0.5.227 repair
+  dry-run stopped at the first bonded validator account before any live write;
+  v0.5.227 must not be used to execute that repair.
+- v0.5.227 remains restart-safe for validators already on canonical state. It
+  restored the EU, SEA, and IN quorum while US remained stopped, preserving the
+  US database, WAL, keys, identity, and archives for this corrected signed
+  release.
+- Retains the testnet-only 5 GiB runtime reserve and the 50,000-slot default
+  hot-history window. These remain an emergency bridge to Archive V2, not a
+  mainnet capacity approval.
+
 ## [0.5.227] - 2026-07-21
 
 ### Fixed
@@ -40,6 +67,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the replay-boundary defect. Once signed, v0.5.227 becomes the first safe
   restart anchor; staging failures abort before the fleet stop, and post-stop
   recovery fails forward on the same verified v0.5.227 artifact.
+
+### Known issue
+- The legacy replay-drift repair command in this release incorrectly expects a
+  validator account's spendable balance to equal its total balance. Its dry-run
+  fails closed on the first bonded validator account and writes nothing. Do not
+  execute the v0.5.227 repair command; use v0.5.228 or later. Normal validator
+  restart recovery in v0.5.227 is unaffected.
 
 ## [0.5.226] - 2026-07-21
 

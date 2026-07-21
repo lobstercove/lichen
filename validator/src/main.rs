@@ -161,7 +161,7 @@ const RECENT_POST_BLOCK_EFFECTS_REPAIR_CONFIRMATION: &str = "recent-post-block-e
 const REPAIR_LEGACY_TESTNET_POST_EFFECT_REPLAY_DRIFT_FLAG: &str =
     "--repair-legacy-testnet-post-effect-replay-drift";
 const LEGACY_TESTNET_POST_EFFECT_REPLAY_DRIFT_CONFIRMATION: &str =
-    "legacy-testnet-post-effect-replay-drift:v1";
+    "legacy-testnet-post-effect-replay-drift:v2";
 const DIAGNOSE_BLOCK_REPLAY_FLAG: &str = "--diagnose-block-replay";
 const DIAGNOSE_CHAIN_REPLAY_FLAG: &str = "--diagnose-chain-replay";
 const DUMP_BLOCK_JSON_FLAG: &str = "--dump-block-json";
@@ -13602,39 +13602,53 @@ const LEGACY_TESTNET_REPLAY_DRIFT_STAKE_VALIDATOR: &str =
 struct LegacyTestnetReplayAccountCorrection {
     pubkey: &'static str,
     before_spores: u64,
+    before_spendable: u64,
     after_spores: u64,
+    after_spendable: u64,
 }
 
 const LEGACY_TESTNET_REPLAY_ACCOUNT_CORRECTIONS: &[LegacyTestnetReplayAccountCorrection] = &[
     LegacyTestnetReplayAccountCorrection {
         pubkey: "6JhhxYKc5tmXMttnrCNTCPnMkMWRQ96US3LtNRiFJjW",
         before_spores: 49_599_406_026_359_855,
+        before_spendable: 49_599_406_026_359_855,
         after_spores: 49_599_406_026_859_855,
+        after_spendable: 49_599_406_026_859_855,
     },
     LegacyTestnetReplayAccountCorrection {
         pubkey: "6RMeoigHdJWB47pEZEMSj5gvT7nbJPYSfPqjcur9vMJ",
         before_spores: 592_701_782_223_010,
+        before_spendable: 492_701_782_223_010,
         after_spores: 592_701_782_198_010,
+        after_spendable: 492_701_782_198_010,
     },
     LegacyTestnetReplayAccountCorrection {
         pubkey: "6TghL7ioQz5R8pfrX1Qcfy8rNMzRP5F2pndmmRQ2sPm",
         before_spores: 592_708_284_068_010,
+        before_spendable: 492_708_284_068_010,
         after_spores: 592_708_283_743_010,
+        after_spendable: 492_708_283_743_010,
     },
     LegacyTestnetReplayAccountCorrection {
         pubkey: "6XhsGituXoWSd1wLtutZgdJve6gLrdSi7YhEx1ZDFHW",
         before_spores: 395_395_283_317_961,
+        before_spendable: 295_395_283_317_961,
         after_spores: 395_395_283_292_961,
+        after_spendable: 295_395_283_292_961,
     },
     LegacyTestnetReplayAccountCorrection {
         pubkey: "7LFPJ8gqmAtjbhfRg1P4VXmTQJV4AeZxzws3UsA6SVq",
         before_spores: 592_702_797_313_010,
+        before_spendable: 492_702_797_313_010,
         after_spores: 592_702_797_288_010,
+        after_spendable: 492_702_797_288_010,
     },
     LegacyTestnetReplayAccountCorrection {
         pubkey: "8i6Y9q1i2bKJwBXfzWrAfKMwbdeZxFxH3U4HJRJEEri",
         before_spores: 123_900_002_499_080_000,
+        before_spendable: 123_900_002_499_080_000,
         after_spores: 123_900_002_498_980_000,
+        after_spendable: 123_900_002_498_980_000,
     },
 ];
 
@@ -13670,18 +13684,19 @@ fn project_legacy_testnet_replay_drift_correction(
             .get_account(&pubkey)?
             .ok_or_else(|| format!("repair account {} is missing", correction.pubkey))?;
         if account.spores != correction.before_spores
-            || account.spendable != correction.before_spores
+            || account.spendable != correction.before_spendable
         {
             return Err(format!(
-                "repair account {} does not match the source-corroborated before image: spores={} spendable={} expected={}",
+                "repair account {} does not match the source-corroborated before image: spores={} expected_spores={} spendable={} expected_spendable={}",
                 correction.pubkey,
                 account.spores,
-                account.spendable,
                 correction.before_spores,
+                account.spendable,
+                correction.before_spendable,
             ));
         }
         account.spores = correction.after_spores;
-        account.spendable = correction.after_spores;
+        account.spendable = correction.after_spendable;
         batch.put_account(&pubkey, &account)?;
     }
 
@@ -13778,7 +13793,7 @@ fn repair_legacy_testnet_post_effect_replay_drift(
                 ));
             }
             state.put_post_state_commitment_anchor(tip, &tip_block.hash(), &after_root)?;
-            state.put_metadata("legacy_testnet_post_effect_replay_drift_v1", b"1")?;
+            state.put_metadata("legacy_testnet_post_effect_replay_drift_v2", b"1")?;
         }
         return Ok(LegacyTestnetReplayDriftRepairReport {
             dry_run,
@@ -13832,7 +13847,7 @@ fn repair_legacy_testnet_post_effect_replay_drift(
         ));
     }
     state.put_post_state_commitment_anchor(tip, &tip_block.hash(), &after_root)?;
-    state.put_metadata("legacy_testnet_post_effect_replay_drift_v1", b"1")?;
+    state.put_metadata("legacy_testnet_post_effect_replay_drift_v2", b"1")?;
 
     Ok(LegacyTestnetReplayDriftRepairReport {
         dry_run,
@@ -35868,17 +35883,34 @@ mod tests {
 
     #[test]
     fn legacy_testnet_replay_account_correction_conserves_supply() {
-        let before = LEGACY_TESTNET_REPLAY_ACCOUNT_CORRECTIONS
+        let spores_before = LEGACY_TESTNET_REPLAY_ACCOUNT_CORRECTIONS
             .iter()
             .map(|correction| correction.before_spores as u128)
             .sum::<u128>();
-        let after = LEGACY_TESTNET_REPLAY_ACCOUNT_CORRECTIONS
+        let spores_after = LEGACY_TESTNET_REPLAY_ACCOUNT_CORRECTIONS
             .iter()
             .map(|correction| correction.after_spores as u128)
             .sum::<u128>();
+        let spendable_before = LEGACY_TESTNET_REPLAY_ACCOUNT_CORRECTIONS
+            .iter()
+            .map(|correction| correction.before_spendable as u128)
+            .sum::<u128>();
+        let spendable_after = LEGACY_TESTNET_REPLAY_ACCOUNT_CORRECTIONS
+            .iter()
+            .map(|correction| correction.after_spendable as u128)
+            .sum::<u128>();
 
-        assert_eq!(before, after);
+        assert_eq!(spores_before, spores_after);
+        assert_eq!(spendable_before, spendable_after);
         assert_eq!(LEGACY_TESTNET_REPLAY_ACCOUNT_CORRECTIONS.len(), 6);
+        for correction in LEGACY_TESTNET_REPLAY_ACCOUNT_CORRECTIONS {
+            assert_eq!(
+                correction.after_spores as i128 - correction.before_spores as i128,
+                correction.after_spendable as i128 - correction.before_spendable as i128,
+                "spores and spendable must receive the same replay-drift delta for {}",
+                correction.pubkey,
+            );
+        }
         assert_eq!(
             Hash::from_hex(LEGACY_TESTNET_REPLAY_DRIFT_AFTER_ROOT)
                 .expect("embedded child-certified root")

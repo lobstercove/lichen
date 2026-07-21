@@ -1125,11 +1125,15 @@ This bridge is separate from Archive V2 implementation.
 9. Remove the temporary US runtime retention override before any validator
    start. Preserve its contents in incident evidence first so the change is
    auditable.
-10. Run the signed v0.5.227 US lineage-repair dry run. Require fixed tip
-    `9,830,991`, fixed block hash, before root, before stake-pool hash, six exact
-    account images, and projected root from section 2.1. Execute only with the
-    required confirmation, then rerun dry-run/write idempotence and require the
-    exact after root and repaired post-state anchor.
+10. Do not execute the v0.5.227 US lineage repair. Its first live dry run
+    correctly failed before writing because the embedded validator-account
+    image conflated total spores with spendable spores and did not preserve the
+    separately bonded 100,000 LICN. Supersede only that repair path with signed
+    v0.5.228. Require fixed tip `9,830,991`, fixed block hash, before root,
+    before stake-pool hash, six exact account total/spendable images, conserved
+    totals, equal per-account deltas, and the projected root from section 2.1.
+    Execute only with the v2 confirmation, then rerun the command for
+    idempotence and require the exact after root and repaired post-state anchor.
 11. Record one fixed cutoff per validator from its stopped canonical tip. For a
     50,000-slot window, cutoff is `fixed_tip - 50,000`. US's completed cutoff is
     recorded in section 2.2; do not repeat that bounded migration.
@@ -1147,26 +1151,68 @@ This bridge is separate from Archive V2 implementation.
     preserving v0.5.225 as signed pre-change evidence. It is not a restart-safe
     rollback on this mature activated chain. Prove installed SHA-256 parity
     before starting any validator.
-16. Start all four from their own preserved state. Confirm the runtime's first
+16. Start EU, SEA, and IN from their own preserved canonical state while US
+    remains stopped for v0.5.228. Confirm the runtime's first
     50,000-slot maintenance pass also migrates supported account-transaction,
     account-snapshot, event, token-transfer, and program-call indexes. Any
     repair, replay, archive, or root error stops the recovery.
-17. Require all four to catch up, report the same canonical block/hash and
+17. Require those three validators to converge their preserved BFT WAL rounds,
+    finalize fresh blocks with three-of-four stake, retain unchanged
+    identities/keys/WAL, and execute the exact signed v0.5.227 binary hash.
+    Require local and public RPC health plus the Explorer route before declaring
+    temporary availability restored.
+18. Run every release gate for v0.5.228, publish signed artifacts, verify the
+    detached PQ checksum signature and attestation, and stage the exact signed
+    artifacts on all four hosts. Stop EU/SEA/IN together at a recorded tip,
+    execute the signed v0.5.228 US dry run and repair, promote v0.5.228 on all
+    four, and start the complete fleet together from node-owned state.
+19. Require all four to catch up, report the same canonical block/hash and
     state-root evidence at a fixed slot, produce fresh blocks, retain unchanged
     identities/keys/WAL, and execute the exact signed binary hash.
-18. At a common checkpoint, stop all four once more for the strict fixed-tip
+20. At a common checkpoint, stop all four once more for the strict fixed-tip
     hot/cold public-history manifest parity gate; then restart from preserved
     state and repeat liveness/root probes.
-19. Verify strict edge health, origin failover, WebSocket delivery, Explorer,
+21. Verify strict edge health, origin failover, WebSocket delivery, Explorer,
     installed/running hashes, disk bytes, zero systemd restart loops, and a
     production sample containing every validator.
 
 If staging or checksum verification fails, abort before the coordinated stop.
-After the stop or US correction begins, recovery fails forward using the same
-signed v0.5.227 artifact; restarting v0.5.225 is prohibited. The old binary and
-legacy stores remain preserved for evidence and format compatibility, and the
-50,000-slot migration remains nondestructive because both releases understand
-the current cold RocksDB format. No Archive V2 retirement occurs in this bridge.
+After the v0.5.228 fleet stop or US correction begins, recovery fails forward
+using the same signed v0.5.228 artifact; restarting v0.5.225 is prohibited.
+Signed v0.5.227 remains the restart-safe temporary anchor for already-canonical
+nodes but is not an allowed US repair executable. The old binaries and legacy
+stores remain preserved for evidence and format compatibility, and the
+50,000-slot migration remains nondestructive because all bridge releases
+understand the current cold RocksDB format. No Archive V2 retirement occurs in
+this bridge.
+
+### 18.1 Emergency bridge execution record (2026-07-21)
+
+- Safe package/journal cleanup left approximately 12.1 GB free on US, 11.9 GB
+  on EU, 13.0 GB on SEA, and 14.0 GB on IN. No state, archive, WAL, key,
+  identity, access configuration, backup, or signed rollback artifact was
+  deleted.
+- Stopped-node write-first migration established a 50,000-slot hot boundary:
+  US migrated 50,000 blocks at cutoff `9,780,991`; EU migrated 50,026 blocks
+  and SEA/IN 50,000 blocks at cutoff `9,785,779`. Post-migration v0.5.227 dry
+  runs on all four reported zero eligible rows, decode errors, hash mismatches,
+  missing/conflicting cursors, missing/mismatched transaction indexes,
+  integrity errors, and conflicts.
+- The complete signed v0.5.227 executable set was staged and promoted on all
+  four while validators were stopped. The running validator SHA-256 on the
+  three active nodes is
+  `73355b766adeade94fd4a4aec460d51a1d839f780cc2edb10ec38fd7140062d3`;
+  each host retains the complete pre-v0.5.227 executable set.
+- US remains stopped at slot `9,830,991`. Its v0.5.227 repair dry run rejected
+  the first bonded validator account and wrote nothing. EU/SEA/IN resumed from
+  common slot `9,835,779`; their preserved WALs converged at BFT round 21 and
+  committed block `9,835,780` with hash prefix `7327be51` before returning to
+  normal round-0/1 production.
+- Public `testnet-rpc.lichen.network`, `testnet-api.lichen.network`, and the
+  Explorer same-origin `/api/testnet` route returned HTTP 200 with advancing
+  slots. `getHealth` returned `status=ok`, and the Explorer root returned HTTP
+  200. This is temporary three-validator availability pending the signed
+  v0.5.228 repair and complete four-validator parity gate.
 
 ## 19. Acceptance Criteria
 
