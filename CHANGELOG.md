@@ -44,9 +44,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Recovers IN from its own preserved `v0.5.224` database by removing only the
   derived `slot-9683000` checkpoint. No hot state, cold archive, identity, key,
   WAL, or canonical history was removed or copied.
-- Keeps `v0.5.224` as the signed rollback anchor for this release. The existing
-  testnet legacy-history waiver remains unchanged and does not apply to fresh
-  networks or mainnet.
+- Keeps `v0.5.224` as the immediate signed rollback for this release. Exact
+  source-backed repair closes the former incomplete slot `5,276,000`; the only
+  remaining existing-testnet waiver is unavailable signed bodies
+  `2,872,006..4,298,999`, and it does not apply to fresh networks or mainnet.
 - Advances publish candidates to `lichen-contract-sdk 1.0.4`,
   `lichen-client-sdk 0.1.7`, and `@lobstercove/lichen-sdk 1.0.7` alongside
   `lobstercove-lichen-core` and `lichen-cli 0.5.225`.

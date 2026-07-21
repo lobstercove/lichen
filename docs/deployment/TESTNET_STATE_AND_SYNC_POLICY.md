@@ -111,12 +111,14 @@ This policy exists because an active testnet is shared infrastructure. Developer
   command in `PRODUCTION_DEPLOYMENT.md`, not by checking only `getHealth`,
   `getSlot`, or current checkpoint roots.
 - Fleet readiness must also run `scripts/verify-testnet-archive-parity.sh`
-  against US, EU, SEA, and IN. The live read-only pass is useful for diagnosis;
-  the strict release gate uses `--stop-for-manifest` with the exact confirmation
-  string so every validator manifest is computed at one fixed tip before the
-  services are restarted. The verifier reuses one SSH control connection per
-  host; do not replace that with repeated short sessions because the VPS UFW
-  policy deliberately limits six new SSH connections in 30 seconds.
+  against US, EU, SEA, and IN. Its default is the bounded host/RPC/fixed-block
+  health probe; `--live-manifest` is an explicit moving-tip diagnostic and is
+  not release evidence. The strict release gate uses `--stop-for-manifest` with
+  the exact confirmation string so every validator manifest is computed at one
+  fixed tip before the services are restarted. Strict manifests run concurrently
+  with durable host-local output and reuse one SSH control connection per host;
+  do not replace that with repeated short sessions because the VPS UFW policy
+  deliberately limits six new SSH connections in 30 seconds.
 - Canonical genesis bootstrap must carry the full state/public-history snapshot
   surface needed by network joiners. A joiner that imports block 0 must not miss
   slot-0 explorer rows such as program calls, events, transaction indexes, or any

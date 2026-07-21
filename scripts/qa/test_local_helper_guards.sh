@@ -500,6 +500,12 @@ assert_public_history_repair_stays_quiesced() {
         ! grep -Fq 'ControlMaster=auto' "$verifier" || \
         ! grep -Fq 'ControlPersist=120' "$verifier" || \
         ! grep -Fq 'SSH_RETRY_DELAY_SECS="${LICHEN_ARCHIVE_PARITY_SSH_RETRY_DELAY_SECS:-31}"' "$verifier" || \
+        ! grep -Fq 'CHUNK_SIZE="${LICHEN_ARCHIVE_PARITY_CHUNK_SIZE:-20000}"' "$verifier" || \
+        ! grep -Fq 'SKIP_MANIFEST=1' "$verifier" || \
+        ! grep -Fq -- '--live-manifest' "$verifier" || \
+        ! grep -Fq 'Computing public-history manifests concurrently' "$verifier" || \
+        ! grep -Fq 'sudo -u lichen nohup bash -c' "$verifier" || \
+        ! grep -Fq 'remote_manifest "$host" "$label" "$manifest_mode" &' "$verifier" || \
         ! grep -Fq 'if key.startswith("commit_"):' "$verifier" || \
         ! grep -Fq 'exec >"$RUN_LOG" 2>&1' "$verifier" || \
         grep -Fq 'exec > >(tee' "$verifier"; then

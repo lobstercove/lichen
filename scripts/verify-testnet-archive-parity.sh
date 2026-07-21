@@ -2,11 +2,11 @@
 set -euo pipefail
 
 # Read-only public-history parity verifier for the four-validator public fleet.
-# By default it keeps validators running and opens RocksDB through a secondary.
-# For the strict release gate, set LICHEN_ARCHIVE_PARITY_STOP_FOR_MANIFEST=1
-# and provide the exact confirmation string printed by this script. That mode
-# stops all validator services, computes offline manifests at one fixed tip, and
-# restarts every service before exiting.
+# By default it runs bounded host/RPC probes only. A full manifest is an explicit
+# diagnostic (`--live-manifest`) or strict fixed-tip gate (`--stop-for-manifest`),
+# because a moving live manifest is expensive and cannot prove release parity.
+# Strict mode stops all validator services, computes manifests concurrently into
+# durable host-local files, and restarts every service after a matching precheck.
 
 usage() {
   cat >&2 <<'EOF'
@@ -18,11 +18,12 @@ Options:
   --hosts "<host host ...>"         Override VPS host list
   --evidence-dir <path>             Evidence output directory
   --categories <csv>                Public-history categories to scan
-  --chunk-size <n>                  Manifest chunk size (default: 1000)
+  --chunk-size <n>                  Manifest chunk size (default: 20000)
   --sample-slots <csv>              getBlock slots to compare
   --sample-txs <csv>                getTransaction signatures to compare
   --sample-addresses <csv>          getTransactionsByAddress addresses to compare
-  --skip-manifest                   Only run RPC probes and host preflight
+  --skip-manifest                   Only run RPC probes and host preflight (default)
+  --live-manifest                   Explicit moving-tip manifest diagnostic
   --stop-for-manifest               Stop validators for strict offline manifests
   --offline-repair-gate             Stop, verify fixed-tip manifests, and leave stopped
   --help                            Show this help
@@ -37,11 +38,12 @@ NETWORK="testnet"
 HOSTS=""
 EVIDENCE_DIR=""
 CATEGORIES="${LICHEN_ARCHIVE_PARITY_CATEGORIES:-}"
-CHUNK_SIZE="${LICHEN_ARCHIVE_PARITY_CHUNK_SIZE:-1000}"
+CHUNK_SIZE="${LICHEN_ARCHIVE_PARITY_CHUNK_SIZE:-20000}"
 SAMPLE_SLOTS="${LICHEN_ARCHIVE_PARITY_SAMPLE_SLOTS:-}"
 SAMPLE_TXS="${LICHEN_ARCHIVE_PARITY_SAMPLE_TXS:-}"
 SAMPLE_ADDRESSES="${LICHEN_ARCHIVE_PARITY_SAMPLE_ADDRESSES:-}"
-SKIP_MANIFEST=0
+SKIP_MANIFEST=1
+LIVE_MANIFEST=0
 STOP_FOR_MANIFEST="${LICHEN_ARCHIVE_PARITY_STOP_FOR_MANIFEST:-0}"
 OFFLINE_REPAIR_GATE=0
 
@@ -83,11 +85,18 @@ while [ "$#" -gt 0 ]; do
       SKIP_MANIFEST=1
       shift
       ;;
+    --live-manifest)
+      SKIP_MANIFEST=0
+      LIVE_MANIFEST=1
+      shift
+      ;;
     --stop-for-manifest)
+      SKIP_MANIFEST=0
       STOP_FOR_MANIFEST=1
       shift
       ;;
     --offline-repair-gate)
+      SKIP_MANIFEST=0
       STOP_FOR_MANIFEST=1
       OFFLINE_REPAIR_GATE=1
       shift
@@ -103,6 +112,20 @@ while [ "$#" -gt 0 ]; do
       ;;
   esac
 done
+
+if [ "$STOP_FOR_MANIFEST" = "1" ]; then
+  SKIP_MANIFEST=0
+fi
+
+if [ "$LIVE_MANIFEST" = "1" ] && [ "$STOP_FOR_MANIFEST" = "1" ]; then
+  echo "--live-manifest and stopped manifest modes are mutually exclusive" >&2
+  exit 2
+fi
+
+if ! [[ "$CHUNK_SIZE" =~ ^[1-9][0-9]*$ ]]; then
+  echo "--chunk-size must be a positive integer" >&2
+  exit 2
+fi
 
 case "$NETWORK" in
   testnet)
@@ -197,6 +220,16 @@ ssh_run() {
     fi
     if [ "$attempt" -lt "$SSH_ATTEMPTS" ]; then
       sleep "$SSH_RETRY_DELAY_SECS"
+    fi
+  done
+  return "$status"
+}
+
+wait_pids() {
+  local status=0 pid
+  for pid in "$@"; do
+    if ! wait "$pid"; then
+      status=1
     fi
   done
   return "$status"
@@ -323,31 +356,112 @@ remote_manifest() {
   local mode="$3"
   local output="$EVIDENCE_DIR/manifest-${label}.json"
   local secondary_dir="/tmp/lichen-public-history-manifest-${NETWORK}-${label}-${RUN_ID}"
-  local category_args=""
+  local remote_dir="/var/tmp/lichen-archive-parity/${NETWORK}-${RUN_ID}-${label}"
+  local remote_output="$remote_dir/manifest.json"
+  local remote_stderr="$remote_dir/stderr.log"
+  local remote_status="$remote_dir/status"
+  local remote_pid="$remote_dir/pid"
+  local wrapper command_q="" launch q_wrapper q_output q_stderr q_status q_pid
+  local poll_result status started_at now
+  local -a command=(
+    "$VALIDATOR_BIN"
+    --no-watchdog
+    --network "$NETWORK"
+    --db-path "$STATE_DIR"
+    --cache-size-mb "$CACHE_SIZE_MB"
+    --chunk-size "$CHUNK_SIZE"
+  )
 
   if [ -n "$CATEGORIES" ]; then
-    category_args="--categories '$CATEGORIES'"
+    command+=(--categories "$CATEGORIES")
   fi
+  if [ "$mode" != "offline" ]; then
+    command+=(--secondary-dir "$secondary_dir")
+  fi
+  command+=(--public-history-manifest)
+  printf -v command_q ' %q' "${command[@]}"
 
-  if [ "$mode" = "offline" ]; then
-    ssh_run "$host" "sudo -u lichen bash -lc 'ulimit -n $NOFILE_LIMIT 2>/dev/null || ulimit -n 65535 2>/dev/null || true; exec \"\$0\" \"\$@\"' '$VALIDATOR_BIN' \
-      --no-watchdog \
-      --network '$NETWORK' \
-      --db-path '$STATE_DIR' \
-      --cache-size-mb '$CACHE_SIZE_MB' \
-      --chunk-size '$CHUNK_SIZE' \
-      $category_args \
-      --public-history-manifest" >"$output"
-  else
-    ssh_run "$host" "sudo rm -rf '$secondary_dir' && sudo -u lichen bash -lc 'ulimit -n $NOFILE_LIMIT 2>/dev/null || ulimit -n 65535 2>/dev/null || true; exec \"\$0\" \"\$@\"' '$VALIDATOR_BIN' \
-      --no-watchdog \
-      --network '$NETWORK' \
-      --db-path '$STATE_DIR' \
-      --secondary-dir '$secondary_dir' \
-      --cache-size-mb '$CACHE_SIZE_MB' \
-      --chunk-size '$CHUNK_SIZE' \
-      $category_args \
-      --public-history-manifest" >"$output"
+  # The wrapper is intentionally expanded only by the remote bash process.
+  # shellcheck disable=SC2016
+  wrapper='set +e
+out="$1"
+err="$2"
+status_file="$3"
+pid_file="$4"
+shift 4
+printf "%s\n" "$BASHPID" >"${pid_file}.partial"
+mv -f "${pid_file}.partial" "$pid_file"
+ulimit -n '"$NOFILE_LIMIT"' 2>/dev/null || ulimit -n 65535 2>/dev/null || true
+"$@" >"${out}.partial" 2>"$err"
+status=$?
+if [ "$status" -eq 0 ]; then mv -f "${out}.partial" "$out"; fi
+printf "%s\n" "$status" >"${status_file}.partial"
+mv -f "${status_file}.partial" "$status_file"
+exit "$status"'
+  printf -v q_wrapper %q "$wrapper"
+  printf -v q_output %q "$remote_output"
+  printf -v q_stderr %q "$remote_stderr"
+  printf -v q_status %q "$remote_status"
+  printf -v q_pid %q "$remote_pid"
+  printf -v launch 'sudo -u lichen nohup bash -c %s bash %s %s %s %s%s >/dev/null 2>&1 </dev/null &' \
+    "$q_wrapper" "$q_output" "$q_stderr" "$q_status" "$q_pid" "$command_q"
+
+  if [ "$mode" != "offline" ]; then
+    ssh_run "$host" "sudo rm -rf '$secondary_dir'"
+  fi
+  ssh_run "$host" "
+    set -e
+    sudo install -d -o lichen -g lichen -m 0700 '$remote_dir'
+    if sudo -u lichen test -s '$remote_status'; then exit 0; fi
+    if sudo -u lichen test -s '$remote_pid' && sudo -u lichen kill -0 \$(sudo -u lichen cat '$remote_pid') 2>/dev/null; then exit 0; fi
+    sudo -u lichen rm -f '$remote_output' '${remote_output}.partial' '$remote_stderr' '$remote_status' '${remote_status}.partial' '$remote_pid'
+    $launch
+    for attempt in \$(seq 1 50); do
+      if sudo -u lichen test -s '$remote_pid' || sudo -u lichen test -s '$remote_status'; then exit 0; fi
+      sleep 0.1
+    done
+    exit 1
+  "
+
+  started_at="$(date +%s)"
+  while :; do
+    poll_result="$(ssh_run "$host" "
+      if sudo -u lichen test -s '$remote_status'; then
+        printf 'done:'
+        sudo -u lichen cat '$remote_status'
+      elif sudo -u lichen test -s '$remote_pid' && sudo -u lichen kill -0 \$(sudo -u lichen cat '$remote_pid') 2>/dev/null; then
+        echo running
+      else
+        echo missing
+      fi
+    ")"
+    case "$poll_result" in
+      done:*)
+        status="${poll_result#done:}"
+        break
+        ;;
+      running) ;;
+      *)
+        echo "Remote manifest job disappeared on $label: $poll_result" >&2
+        return 1
+        ;;
+    esac
+    now="$(date +%s)"
+    if [ $(((now - started_at) % 60)) -lt 15 ]; then
+      echo "  - $label manifest still running ($((now - started_at))s)"
+    fi
+    sleep 15
+  done
+
+  ssh_run "$host" "sudo -u lichen cat '$remote_stderr'" >"$EVIDENCE_DIR/manifest-${label}.stderr.log" || true
+  if [ "$status" != "0" ]; then
+    echo "Remote manifest failed on $label with status $status" >&2
+    cat "$EVIDENCE_DIR/manifest-${label}.stderr.log" >&2
+    return 1
+  fi
+  ssh_run "$host" "sudo -u lichen cat '$remote_output'" >"$output"
+  if [ "$mode" != "offline" ]; then
+    ssh_run "$host" "sudo rm -rf '$secondary_dir'"
   fi
 }
 
@@ -377,10 +491,21 @@ capture_preflight() {
 }
 
 start_services() {
+  local -a pids=()
   for host in $HOSTS; do
     echo "Starting $SERVICE on $host"
-    ssh_run "$host" "sudo systemctl start '$SERVICE'" || true
+    ssh_run "$host" "
+      set -e
+      sudo systemctl start '$SERVICE'
+      for attempt in \$(seq 1 30); do
+        if systemctl is-active --quiet '$SERVICE'; then exit 0; fi
+        sleep 1
+      done
+      exit 1
+    " &
+    pids+=("$!")
   done
+  wait_pids "${pids[@]}"
 }
 
 if [ "$STOP_FOR_MANIFEST" = "1" ]; then
@@ -405,6 +530,7 @@ fi
   echo "skip_manifest=$SKIP_MANIFEST"
   echo "stop_for_manifest=$STOP_FOR_MANIFEST"
   echo "offline_repair_gate=$OFFLINE_REPAIR_GATE"
+  echo "live_manifest=$LIVE_MANIFEST"
   echo "categories=${CATEGORIES:-default}"
   echo "chunk_size=$CHUNK_SIZE"
   echo "nofile_limit=$NOFILE_LIMIT"
@@ -419,34 +545,45 @@ echo "Network: $NETWORK"
 echo "Hosts: $HOSTS"
 
 echo "Capturing host preflight and RPC health"
+preflight_pids=()
 for host in $HOSTS; do
   label="$(host_label "$host")"
   echo "  - $label ($host)"
-  capture_preflight "$host" "$label"
-  rpc_call "$host" "getHealth" "[]" "$EVIDENCE_DIR/rpc-getHealth-${label}.json" || true
-  rpc_call "$host" "getSlot" "[]" "$EVIDENCE_DIR/rpc-getSlot-${label}.json" || true
-  rpc_call "$host" "getLatestBlock" "[]" "$EVIDENCE_DIR/rpc-getLatestBlock-${label}.json" || true
-  rpc_call "$host" "getMetrics" "[]" "$EVIDENCE_DIR/rpc-getMetrics-${label}.json" || true
+  (
+    capture_preflight "$host" "$label"
+    rpc_call "$host" "getHealth" "[]" "$EVIDENCE_DIR/rpc-getHealth-${label}.json" || true
+    rpc_call "$host" "getSlot" "[]" "$EVIDENCE_DIR/rpc-getSlot-${label}.json" || true
+    rpc_call "$host" "getLatestBlock" "[]" "$EVIDENCE_DIR/rpc-getLatestBlock-${label}.json" || true
+    rpc_call "$host" "getMetrics" "[]" "$EVIDENCE_DIR/rpc-getMetrics-${label}.json" || true
+  ) &
+  preflight_pids+=("$!")
 done
+wait_pids "${preflight_pids[@]}"
 
 if [ "$SKIP_MANIFEST" != "1" ]; then
   manifest_mode="live"
   if [ "$STOP_FOR_MANIFEST" = "1" ]; then
     manifest_mode="offline"
     echo "Stopping all validators for strict offline manifest parity"
+    stop_pids=()
     for host in $HOSTS; do
       echo "  - stopping $host"
-      ssh_run "$host" "sudo systemctl stop '$SERVICE'"
+      ssh_run "$host" "sudo systemctl stop '$SERVICE'" &
+      stop_pids+=("$!")
     done
+    wait_pids "${stop_pids[@]}"
     sleep 2
   fi
 
-  echo "Computing public-history manifests ($manifest_mode)"
+  echo "Computing public-history manifests concurrently ($manifest_mode)"
+  manifest_pids=()
   for host in $HOSTS; do
     label="$(host_label "$host")"
     echo "  - $label ($host)"
-    remote_manifest "$host" "$label" "$manifest_mode"
+    remote_manifest "$host" "$label" "$manifest_mode" &
+    manifest_pids+=("$!")
   done
+  wait_pids "${manifest_pids[@]}"
 
   if [ "$STOP_FOR_MANIFEST" = "1" ]; then
     expected_manifest_count="$(wc -w <<<"$HOSTS" | xargs)"
@@ -492,13 +629,14 @@ if [ -z "$slot_probe_csv" ]; then
   # HOSTS is intentionally expanded as words here so the helper receives the
   # same host list used by the collection loops.
   # shellcheck disable=SC2086
-  slot_probe_csv="$(python3 - "$EVIDENCE_DIR" $HOSTS <<'PY'
+  slot_probe_csv="$(python3 - "$EVIDENCE_DIR" "$NETWORK" $HOSTS <<'PY'
 import json
 import pathlib
 import sys
 
 root = pathlib.Path(sys.argv[1])
-hosts = sys.argv[2:]
+network = sys.argv[2]
+hosts = sys.argv[3:]
 
 def label(host):
     return {
@@ -527,7 +665,29 @@ if not slots:
     print("0")
 else:
     tip = max(0, min(slots) - 2)
-    candidates = [0, 1, tip // 2, max(0, tip - 1000), tip]
+    existing_testnet_hosts = {
+        "15.204.229.189",
+        "37.59.97.61",
+        "15.235.142.253",
+        "148.113.43.247",
+    }
+    normalized_hosts = {
+        {
+            "seed-01.lichen.network": "15.204.229.189",
+            "seed-02.lichen.network": "37.59.97.61",
+            "seed-03.lichen.network": "15.235.142.253",
+            "seed-04.lichen.network": "148.113.43.247",
+        }.get(host, host)
+        for host in hosts
+    }
+    if network == "testnet" and normalized_hosts == existing_testnet_hosts:
+        # Existing lichen-testnet-1 has one explicit legacy-loss interval.
+        # Probe the first available post-gap block, the repaired former
+        # singleton exception, a known July boundary, and two fresh slots.
+        candidates = [4_299_000, 5_276_000, 9_236_790, max(0, tip - 1000), tip]
+    else:
+        # Fresh testnets and mainnet have no waiver and must expose genesis.
+        candidates = [0, 1, tip // 2, max(0, tip - 1000), tip]
     seen = []
     for slot in candidates:
         if slot not in seen:
@@ -542,10 +702,13 @@ slots_json="$(csv_to_json_number_array "$slot_probe_csv")"
 txs_json="$(csv_to_json_array "$SAMPLE_TXS")"
 addresses_json="$(csv_to_json_array "$SAMPLE_ADDRESSES")"
 if [ "$OFFLINE_REPAIR_GATE" != "1" ]; then
+  probe_pids=()
   for host in $HOSTS; do
     label="$(host_label "$host")"
-    capture_historical_rpc_probes "$host" "$label" "$slots_json" "$txs_json" "$addresses_json" || true
+    capture_historical_rpc_probes "$host" "$label" "$slots_json" "$txs_json" "$addresses_json" &
+    probe_pids+=("$!")
   done
+  wait_pids "${probe_pids[@]}" || true
 else
   echo "Skipping RPC probes while validators remain stopped"
 fi
