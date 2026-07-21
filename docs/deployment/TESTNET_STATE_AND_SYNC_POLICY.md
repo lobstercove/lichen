@@ -140,13 +140,22 @@ This policy exists because an active testnet is shared infrastructure. Developer
   independently mounted recovery sources use the separate
   `--source-cold-store` input. Public-network runtime and target-admin
   correctness must never depend on an optional archive argument.
+- The 2026-07-21 emergency bridge temporarily uses a 5 GiB runtime floor only
+  when `--network testnet` is selected and a default 50,000-slot hot-history
+  window before write-first migration into the cold archive. Mainnet,
+  unclassified production invocations, and any invocation without the exact
+  testnet network selector retain the 10 GiB floor. The testnet reduction is an
+  availability trade-off, not a capacity approval; alert before 8 GiB and treat
+  6 GiB as an immediate incident. The complete replacement design is
+  [ARCHIVE_V2_SEGMENTED_STORAGE_PLAN_2026-07-21.md](ARCHIVE_V2_SEGMENTED_STORAGE_PLAN_2026-07-21.md).
 - Checkpoint capacity is measured from allocated filesystem blocks and hard-link
   ownership, not logical directory size. Below the 20 GiB checkpoint-creation
   floor, periodic maintenance releases complete or interrupted derived
   checkpoint directories when they exclusively pin storage, then creates a
   replacement only after rechecking that the floor is satisfied. SST files
   still linked from active hot/cold stores are never reclaimable. Below the
-  10 GiB runtime floor, startup and the runtime guard may reclaim derived
+  selected runtime floor (temporarily 5 GiB for the exact testnet selector and
+  10 GiB otherwise), startup and the runtime guard may reclaim derived
   checkpoints only when measured exclusive bytes can restore that floor. If
   they cannot, the validator stops with persistent exit status 78 and remains
   stopped until capacity is expanded. Restart loops and canonical-history

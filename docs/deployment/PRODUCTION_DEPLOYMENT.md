@@ -14,13 +14,19 @@ Use this document as the canonical workflow for:
 
 This runbook intentionally prefers the scripts that are verified in the current tree over older narrative docs.
 
-Current signed testnet release for this runbook is `v0.5.225`; keep `v0.5.224`
+Current signed testnet release for this runbook is `v0.5.226`; keep `v0.5.225`
 as the signed rollback point until a newer rollback anchor is explicitly
 verified and recorded.
 
 Mainnet launch must use the gated checklist in [MAINNET_LAUNCH_RUNBOOK.md](MAINNET_LAUNCH_RUNBOOK.md). That runbook is the owner-facing package for launching the 4-validator mainnet first, then enabling custody only after post-genesis verification and route-specific dust tests pass.
 
 Mandatory state/sync policy: [TESTNET_STATE_AND_SYNC_POLICY.md](TESTNET_STATE_AND_SYNC_POLICY.md). For any shared testnet, staging, or mainnet-like network, do not reset state and do not distribute a copied validator state directory unless the network owner explicitly approves that exact reset. Joining validators must sync from their own state directories.
+
+Archive V2 architecture and the approved 2026-07-21 storage bridge:
+[ARCHIVE_V2_SEGMENTED_STORAGE_PLAN_2026-07-21.md](ARCHIVE_V2_SEGMENTED_STORAGE_PLAN_2026-07-21.md).
+This is the canonical implementation plan for immutable compressed segments,
+transparent historical reads, validator archive roles, migration, replication,
+capacity policy, and the temporary testnet-only 5 GiB / 50,000-slot response.
 
 Restriction schema activation policy: [RESTRICTION_SCHEMA_ACTIVATION.md](RESTRICTION_SCHEMA_ACTIVATION.md). RG-804 activation is testnet-only, uses `scripts/activate-restriction-schema-testnet.sh`, requires explicit owner approval for that exact activation, stops validators only long enough to set the shipped state-root schema flag, and records per-host sync evidence. It is not a reset path and must not copy chain state.
 
@@ -2705,8 +2711,11 @@ activity green.
 
 Also, the wiped validator's new pubkey registers as a separate entry in the validator set. With N+1 validators and only N-1 online (original minus the ghost), BFT quorum (2/3+) may be unreachable.
 
-**Current release behavior**: `v0.5.225` is the signed live testnet release and
-`v0.5.224` is the signed rollback anchor.
+**Current release behavior**: `v0.5.226` is the signed testnet release target and
+`v0.5.225` is the signed rollback anchor. The release changes only the exact
+testnet runtime reserve to 5 GiB and the default hot-history window to 50,000
+slots; mainnet and unclassified production retain the 10 GiB reserve, and all
+backed historical data remains available through hot/cold reads.
 State-repair snapshots carry consensus state and complete public-history
 categories, while public-history repair remains additive, source-backed,
 conflict-checked, and never replaces validator identity, consensus WAL, or

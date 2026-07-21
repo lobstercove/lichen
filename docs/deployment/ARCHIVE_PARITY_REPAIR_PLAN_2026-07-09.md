@@ -4,6 +4,32 @@
 **Scope:** Public testnet archive parity, validator resume parity, and release gate
 **Rule:** No live VPS rollout until the local four-validator testnet gate proves the repair.
 
+## 2026-07-21 Emergency Capacity Bridge And Archive V2 Direction
+
+The owner approved an urgent, non-destructive bridge while the fleet remains on
+200 GB VPS disks:
+
+- reduce the runtime shutdown floor to 5 GiB only for the exact `testnet`
+  network selector, retaining 10 GiB for mainnet and unclassified production;
+- reduce the default hot-history window from 100,000 to 50,000 slots;
+- migrate the additional eligible history through the existing write-first,
+  same-key-verifying, WAL-synced, bounded-compaction path;
+- retain the complete backed logical history on every current public archive
+  validator and preserve the existing testnet legacy-loss waiver exactly;
+- operate on one stopped validator at a fixed cutoff at a time, require three
+  healthy validators to retain quorum, and abort on any conflict or health loss;
+- use only a signed release artifact after all mandatory local and hosted gates.
+
+The bridge is not permission to delete history, compact the whole cold RocksDB
+without peak headroom, copy validator state, or treat 5 GiB as sustainable.
+The complete immutable-segment compression, replication, verified-cache,
+consensus-only role, migration, backup, recovery, capacity, security,
+observability, test, and rollout design is recorded in
+[ARCHIVE_V2_SEGMENTED_STORAGE_PLAN_2026-07-21.md](ARCHIVE_V2_SEGMENTED_STORAGE_PLAN_2026-07-21.md).
+Its role model is not active on the current network; every current public host
+continues to be held to the existing full backed-history invariant until a
+separately gated role-admission release is approved.
+
 ## Problem Statement
 
 The July 2026 public testnet fleet reached consensus with four validators, but

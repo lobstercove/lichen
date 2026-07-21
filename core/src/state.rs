@@ -406,7 +406,7 @@ const COLD_CF_PROGRAM_CALLS: &str = "program_calls";
 
 /// Default number of slots to retain in the hot DB before migration-eligible.
 /// Blocks older than `current_slot - COLD_RETENTION_SLOTS` can be moved.
-pub const COLD_RETENTION_SLOTS: u64 = 100_000;
+pub const COLD_RETENTION_SLOTS: u64 = 50_000;
 
 // ─── PERF-OPT 3: In-process blockhash cache ─────────────────────────────────
 
@@ -609,6 +609,11 @@ mod tests {
     use crate::transaction::Message;
     use crate::{Instruction, PqPublicKey, PqSignature};
     use tempfile::tempdir;
+
+    #[test]
+    fn default_hot_history_window_is_fifty_thousand_slots() {
+        assert_eq!(COLD_RETENTION_SLOTS, 50_000);
+    }
 
     fn directory_fingerprint(root: &std::path::Path) -> Vec<(String, u64)> {
         fn collect(root: &std::path::Path, dir: &std::path::Path, files: &mut Vec<(String, u64)>) {

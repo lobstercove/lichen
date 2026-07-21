@@ -5,7 +5,7 @@ mainnet custody. It is intentionally step-by-step and gate-based. Do not skip a
 gate because mainnet genesis and custody routes handle real value.
 
 Written for the current mainnet package. Release target for this runbook is
-signed `v0.5.225`; keep `v0.5.224` as the signed rollback point. Mainnet remains
+signed `v0.5.226`; keep `v0.5.225` as the signed rollback point. Mainnet remains
 blocked until production storage, full-scope launch gates, independent review,
 and deployment approval pass.
 
@@ -243,7 +243,7 @@ credentials, or keypair passwords.
 Use the signed release that passed CI. For the current package:
 
 ```bash
-export LICHEN_RELEASE_TAG=v0.5.225
+export LICHEN_RELEASE_TAG=v0.5.226
 export LICHEN_MAINNET_VPS_HOSTS="15.204.229.189 37.59.97.61 15.235.142.253 148.113.43.247"
 ```
 
@@ -290,7 +290,7 @@ For an emergency rollback to the current signed rollback point, set the tag
 explicitly and run the same signed-release path:
 
 ```bash
-export LICHEN_RELEASE_TAG=v0.5.224
+export LICHEN_RELEASE_TAG=v0.5.225
 LICHEN_VERIFY_RELEASE_ONLY=1 bash scripts/rolling-release-deploy.sh mainnet
 bash scripts/rolling-release-deploy.sh mainnet
 ```

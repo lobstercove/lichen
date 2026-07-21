@@ -64,7 +64,7 @@ is_consensus_critical_release() {
   fi
 
   case "$RELEASE_TAG" in
-    v0.5.188|v0.5.223|v0.5.224|v0.5.225) return 0 ;;
+    v0.5.188|v0.5.223|v0.5.224|v0.5.225|v0.5.226) return 0 ;;
   esac
 
   if ! command -v git >/dev/null 2>&1 ||
@@ -950,7 +950,7 @@ fi
 
 if is_consensus_critical_release &&
   [ "${LICHEN_ALLOW_CONSENSUS_CRITICAL_ROLLING:-0}" != "1" ]; then
-  echo "${RELEASE_TAG} changes consensus-critical leader selection; refusing mixed-version rolling restart." >&2
+  echo "${RELEASE_TAG} changes consensus- or storage-critical behavior; refusing mixed-version rolling restart." >&2
   echo "Use a coordinated stop/install/start rollout, then run this script with LICHEN_VERIFY_RELEASE_ONLY=1." >&2
   echo "Set LICHEN_ALLOW_CONSENSUS_CRITICAL_ROLLING=1 only after explicit operator review." >&2
   exit 2

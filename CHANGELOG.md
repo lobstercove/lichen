@@ -5,6 +5,28 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.226] - 2026-07-21
+
+### Changed
+- Temporarily lowers the hard runtime disk reserve from 10 GiB to 5 GiB only
+  for validators started with the exact `testnet` network selector. Mainnet,
+  unclassified production, and missing-network invocations retain the 10 GiB
+  floor. Startup, runtime monitoring, checkpoint reclamation, and verified
+  snapshot capacity checks all use the same selected reserve.
+- Reduces the default recent hot-history window from 100,000 to 50,000 slots.
+  Eligible history continues through the existing cold archive's write-first,
+  same-key-verifying, WAL-synced migration path; this release does not prune or
+  weaken backed historical RPC data.
+
+### Operations
+- Adds the complete Archive V2 segmented-storage plan covering immutable
+  seekable Zstandard segments, canonical indexes, full/verified-cache/consensus
+  validator roles, replication, restore, legacy migration, adaptive capacity,
+  security, observability, benchmarks, failure drills, and rollout gates.
+- Keeps signed `v0.5.225` as the immediate rollback point. The 5 GiB floor is
+  an emergency testnet availability bridge, not a mainnet capacity approval or
+  a substitute for the planned larger dedicated storage.
+
 ## [0.5.225] - 2026-07-20
 
 ### Fixed

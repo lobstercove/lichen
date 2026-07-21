@@ -106,7 +106,8 @@ const SYSTEM_ACCOUNT_OWNER: Pubkey = Pubkey([0x01; 32]);
 const EXIT_CODE_RESTART: i32 = 75;
 const EXIT_CODE_FATAL_STARTUP: i32 = 78;
 const TESTNET_CHAIN_DOMAIN_ACTIVATION_SLOT: u64 = 800_000;
-const MIN_RUNTIME_AVAILABLE_BYTES: u64 = 10 * 1024 * 1024 * 1024;
+const TESTNET_MIN_RUNTIME_AVAILABLE_BYTES: u64 = 5 * 1024 * 1024 * 1024;
+const DEFAULT_MIN_RUNTIME_AVAILABLE_BYTES: u64 = 10 * 1024 * 1024 * 1024;
 const MIN_CHECKPOINT_AVAILABLE_BYTES: u64 = 20 * 1024 * 1024 * 1024;
 static CHECKPOINT_MAINTENANCE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 const SNAPSHOT_APPLY_COMPACTION_COPIES: u64 = 2;
@@ -9028,6 +9029,14 @@ fn has_required_disk_headroom(available_bytes: u64, minimum_bytes: u64) -> bool 
     available_bytes >= minimum_bytes
 }
 
+fn minimum_runtime_available_bytes(network: Option<&str>) -> u64 {
+    if network == Some("testnet") {
+        TESTNET_MIN_RUNTIME_AVAILABLE_BYTES
+    } else {
+        DEFAULT_MIN_RUNTIME_AVAILABLE_BYTES
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CheckpointReclaimPolicy {
     RequireMinimum,
@@ -9085,21 +9094,22 @@ fn reclaim_checkpoints_under_disk_pressure(
 fn require_runtime_disk_headroom_with_checkpoint_reclaim(
     path: &Path,
     context: &str,
+    minimum_bytes: u64,
 ) -> Result<u64, String> {
     let available = filesystem_available_bytes(path)?;
     let available = reclaim_checkpoints_under_disk_pressure(
         path,
         available,
-        MIN_RUNTIME_AVAILABLE_BYTES,
+        minimum_bytes,
         context,
         CheckpointReclaimPolicy::RequireMinimum,
     )?;
-    if !has_required_disk_headroom(available, MIN_RUNTIME_AVAILABLE_BYTES) {
+    if !has_required_disk_headroom(available, minimum_bytes) {
         return Err(format!(
             "{} has {} available bytes; at least {} are required to open a validator safely",
             path.display(),
             available,
-            MIN_RUNTIME_AVAILABLE_BYTES
+            minimum_bytes
         ));
     }
     Ok(available)
@@ -9148,19 +9158,24 @@ fn directory_allocated_bytes(path: &Path) -> Result<u64, String> {
     Ok(total)
 }
 
-fn snapshot_apply_required_available_bytes(staging_allocated_bytes: u64) -> u64 {
+fn snapshot_apply_required_available_bytes(
+    staging_allocated_bytes: u64,
+    runtime_minimum_bytes: u64,
+) -> u64 {
     staging_allocated_bytes
         .saturating_mul(SNAPSHOT_APPLY_COMPACTION_COPIES)
-        .saturating_add(MIN_RUNTIME_AVAILABLE_BYTES)
+        .saturating_add(runtime_minimum_bytes)
 }
 
 fn require_snapshot_apply_disk_headroom(
     filesystem_path: &Path,
     staging_path: &Path,
+    runtime_minimum_bytes: u64,
 ) -> Result<(u64, u64, u64), String> {
     let available_bytes = filesystem_available_bytes(filesystem_path)?;
     let staging_allocated_bytes = directory_allocated_bytes(staging_path)?;
-    let required_bytes = snapshot_apply_required_available_bytes(staging_allocated_bytes);
+    let required_bytes =
+        snapshot_apply_required_available_bytes(staging_allocated_bytes, runtime_minimum_bytes);
     if available_bytes < required_bytes {
         return Err(format!(
             "{} has {} available bytes, but applying verified staging DB {} ({} allocated bytes) requires at least {} available bytes: one replacement copy, one compaction copy, and the {} byte runtime reserve",
@@ -9169,13 +9184,13 @@ fn require_snapshot_apply_disk_headroom(
             staging_path.display(),
             staging_allocated_bytes,
             required_bytes,
-            MIN_RUNTIME_AVAILABLE_BYTES,
+            runtime_minimum_bytes,
         ));
     }
     Ok((available_bytes, staging_allocated_bytes, required_bytes))
 }
 
-fn spawn_runtime_disk_guard(path: PathBuf) {
+fn spawn_runtime_disk_guard(path: PathBuf, minimum_bytes: u64) {
     tokio::spawn(async move {
         let mut interval =
             tokio::time::interval(Duration::from_secs(DISK_CAPACITY_CHECK_INTERVAL_SECS));
@@ -9183,8 +9198,11 @@ fn spawn_runtime_disk_guard(path: PathBuf) {
         loop {
             interval.tick().await;
             let _checkpoint_guard = CHECKPOINT_MAINTENANCE_LOCK.lock().await;
-            match require_runtime_disk_headroom_with_checkpoint_reclaim(&path, "runtime disk guard")
-            {
+            match require_runtime_disk_headroom_with_checkpoint_reclaim(
+                &path,
+                "runtime disk guard",
+                minimum_bytes,
+            ) {
                 Ok(_) => {}
                 Err(err) => {
                     error!(
@@ -17702,6 +17720,7 @@ async fn run_validator() {
     info!("📂 Data directory: {}", data_dir);
 
     let public_archive = public_archive_network(network_arg.as_deref(), dev_mode);
+    let runtime_minimum_available_bytes = minimum_runtime_available_bytes(network_arg.as_deref());
     let cold_store_path: Option<String> = match resolve_runtime_cold_store_path(
         &args,
         network_arg.as_deref(),
@@ -17719,17 +17738,18 @@ async fn run_validator() {
         match require_runtime_disk_headroom_with_checkpoint_reclaim(
             &data_dir_path,
             "validator startup",
+            runtime_minimum_available_bytes,
         ) {
             Ok(available) => info!(
-                "Disk headroom preflight passed: {} available bytes",
-                available
+                "Disk headroom preflight passed: {} available bytes, runtime reserve {} bytes",
+                available, runtime_minimum_available_bytes
             ),
             Err(err) => {
                 error!("FATAL: validator disk headroom preflight failed: {}", err);
                 std::process::exit(EXIT_CODE_FATAL_STARTUP);
             }
         }
-        spawn_runtime_disk_guard(data_dir_path.clone());
+        spawn_runtime_disk_guard(data_dir_path.clone(), runtime_minimum_available_bytes);
     }
 
     let signer_bind = match env::var("LICHEN_SIGNER_BIND") {
@@ -24607,6 +24627,7 @@ async fn run_validator() {
                         match require_snapshot_apply_disk_headroom(
                             Path::new(&data_dir_for_snapshot_apply),
                             Path::new(&staging_dir),
+                            runtime_minimum_available_bytes,
                         ) {
                             Ok((available, staging_allocated, required)) => info!(
                                 "Snapshot live-apply capacity preflight passed: available_bytes={} staging_allocated_bytes={} required_bytes={}",
@@ -39203,13 +39224,29 @@ mod tests {
     #[test]
     fn disk_headroom_threshold_is_inclusive() {
         assert!(!has_required_disk_headroom(
-            MIN_RUNTIME_AVAILABLE_BYTES - 1,
-            MIN_RUNTIME_AVAILABLE_BYTES
+            TESTNET_MIN_RUNTIME_AVAILABLE_BYTES - 1,
+            TESTNET_MIN_RUNTIME_AVAILABLE_BYTES
         ));
         assert!(has_required_disk_headroom(
-            MIN_RUNTIME_AVAILABLE_BYTES,
-            MIN_RUNTIME_AVAILABLE_BYTES
+            TESTNET_MIN_RUNTIME_AVAILABLE_BYTES,
+            TESTNET_MIN_RUNTIME_AVAILABLE_BYTES
         ));
+    }
+
+    #[test]
+    fn runtime_disk_floor_is_reduced_only_for_testnet() {
+        assert_eq!(
+            minimum_runtime_available_bytes(Some("testnet")),
+            5 * 1024 * 1024 * 1024
+        );
+        assert_eq!(
+            minimum_runtime_available_bytes(Some("mainnet")),
+            10 * 1024 * 1024 * 1024
+        );
+        assert_eq!(
+            minimum_runtime_available_bytes(None),
+            DEFAULT_MIN_RUNTIME_AVAILABLE_BYTES
+        );
     }
 
     #[test]
@@ -39264,11 +39301,14 @@ mod tests {
     fn snapshot_apply_capacity_includes_replacement_compaction_and_runtime_reserve() {
         let staging_bytes = 37u64;
         assert_eq!(
-            snapshot_apply_required_available_bytes(staging_bytes),
-            staging_bytes * SNAPSHOT_APPLY_COMPACTION_COPIES + MIN_RUNTIME_AVAILABLE_BYTES
+            snapshot_apply_required_available_bytes(
+                staging_bytes,
+                TESTNET_MIN_RUNTIME_AVAILABLE_BYTES
+            ),
+            staging_bytes * SNAPSHOT_APPLY_COMPACTION_COPIES + TESTNET_MIN_RUNTIME_AVAILABLE_BYTES
         );
         assert_eq!(
-            snapshot_apply_required_available_bytes(u64::MAX),
+            snapshot_apply_required_available_bytes(u64::MAX, u64::MAX),
             u64::MAX,
             "capacity arithmetic must fail closed on overflow"
         );
