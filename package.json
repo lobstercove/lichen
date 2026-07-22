@@ -33,5 +33,8 @@
     "@noble/post-quantum": "^0.6.1",
     "esbuild": "^0.25.11",
     "wrangler": "^4.70.0"
+  },
+  "overrides": {
+    "sharp": "0.35.3"
   }
 }
