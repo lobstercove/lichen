@@ -1,7 +1,7 @@
 # Archive V2 Segmented Storage And Validator Roles Plan
 
 **Created:** 2026-07-21
-**Status:** Owner-approved architecture direction; signed v0.5.228 emergency bridge live on all four testnet validators; strict fixed-tip archive parity still open after a one-slot coordinated-stop race; Archive V2 implementation pending
+**Status:** Owner-approved architecture direction; signed v0.5.229 emergency bridge live on all four testnet validators; bounded composite fixed-tip parity closure accepted and fresh full rescan capacity-gated; Archive V2 implementation pending
 **Scope:** Testnet, future mainnet, archive-capable validators, constrained validator agents, historical RPC, sync, backup, recovery, and capacity operations
 **Related policy:** [TESTNET_STATE_AND_SYNC_POLICY.md](TESTNET_STATE_AND_SYNC_POLICY.md)
 **Current incident baseline:** [ARCHIVE_PARITY_REPAIR_PLAN_2026-07-09.md](ARCHIVE_PARITY_REPAIR_PLAN_2026-07-09.md)
@@ -1454,6 +1454,55 @@ this bridge.
   v0.5.229's aligned readiness decision and the full segmented Archive V2 plan
   are both required. The planned 2x960 GB NVMe RAID1 hosts remain the durable
   capacity solution, not a reason to defer the bridge.
+- Branch CI run `29914449168` and exact-tag Release workflow `29917910218`
+  completed green. v0.5.229 commit
+  `feb0a97bcc9e0cb8055e8e8c2abd5f78a8f41d80` was published with attested
+  platform artifacts, `SHA256SUMS`, and a detached PQ signature from
+  `8HitBNnh8qbhfne5NCv2yHrQFoD6xbmHcWaUSgCGtsk`. The Linux archive SHA-256 is
+  `9e021d40911afc2dae220c2aaae2dab53e8c5e42d27f16b5614628adb4ef1e22`;
+  the validator executable SHA-256 is
+  `56ca8642d52b78f8ff166c733254a9b9a1da2d354c7d85261f77e12f3a03ab60`.
+- The live deployment stopped all four validators before replacing any binary.
+  Every v0.5.228 executable and seed file was preserved as a space-efficient
+  hard-linked rollback, and all six v0.5.229 binaries were installed and hash
+  checked while every validator remained inactive. No state, archive, WAL,
+  key, identity, peer database, or access configuration was copied or reset.
+- The exact SEA five-row `tx_meta` page first dry-ran as five inserts on
+  US/EU/IN and five identical rows on SEA, with zero conflicts. Execute wrote
+  only US/EU/IN. The immediate four-host rerun returned five identical rows,
+  zero inserts, and zero conflicts. The stopped post-write range manifest is
+  identical on all four: 5 rows, 285 bytes, digest
+  `8e29166eb53bd482e8d7df1aec54dd96e817195310476498e548263128e9a0b9`.
+- The signed v0.5.229 US canonical account-snapshot export contains exactly 21
+  rows and has page SHA-256
+  `e1ac7a4a0dff643e57c0c8c37af7d1851ba189628ee8806a6dbff14a9a1269b6`.
+  Dry run returned 21 identical rows on US and six inserts plus 15 identical
+  rows on EU/SEA/IN, with zero conflicts. Execute wrote only those 18 additive
+  rows, and the immediate rerun returned 21 identical rows on every host.
+  Independent stopped exports from all four hosts are byte-identical.
+- Those two narrow proofs close the only divergences isolated by the preserved
+  immutable v0.5.228 fixed-tip scan; the other 19 category digests and the
+  underlying block/state boundary are unchanged. This is the release's
+  composite fixed-tip parity proof, not a claim that a new complete scanner ran
+  after v0.5.229. Repeating the full immutable one-command scan remains required
+  after larger storage provides the hours of safe checkpoint headroom.
+- All four validators started from their own databases at 14:54:56-59 UTC and
+  remain active with zero restarts. Installed and running hashes match the
+  signed v0.5.229 validator. Fixed slot `9,882,300` has the same block hash
+  `9b4f19ef7d97feb7206926054ac8ed012e145f774d43af72c214785d8d57e637`
+  and state root
+  `29276d75079e849e71ea56f83592b7403d4d555801f0c658e6ac50ac9e69c096`
+  on all four hosts. All four identities proposed within the first two-slot
+  sample; cadence was 392 ms after warm-up and later 390 ms over 120 samples
+  with 100% slot pace.
+- Canonical RPC, every `/edge-health` origin, Explorer RPC, Explorer HTTP, both
+  WebSocket routes, and DEX oracle/candle reads passed. Enabled US custody and
+  the pre-existing US/SEA/IN faucets are active on exact v0.5.229 hashes with
+  zero restarts. Final free-space samples were approximately 7.6, 8.0, 8.7,
+  and 9.9 GiB for US, EU, SEA, and IN; all four readiness responses are `ok`
+  and `disk.critical=false`. Exact release downloads/test extracts were removed
+  after acceptance while repair evidence and all rollback/data artifacts were
+  retained.
 
 ## 19. Acceptance Criteria
 

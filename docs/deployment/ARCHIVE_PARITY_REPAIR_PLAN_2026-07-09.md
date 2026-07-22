@@ -1920,6 +1920,70 @@ readiness branch can still remove US/EU from edge rotation even while their
 consensus processes remain live; v0.5.229 aligns readiness to the explicit
 5 GiB available-byte floor while retaining percentage telemetry.
 
+### v0.5.229 live closure (2026-07-22)
+
+Branch CI run `29914449168` and tagged Release workflow `29917910218` passed.
+The published tag is commit
+`feb0a97bcc9e0cb8055e8e8c2abd5f78a8f41d80`. GitHub attestations, the Linux
+archive SHA-256
+`9e021d40911afc2dae220c2aaae2dab53e8c5e42d27f16b5614628adb4ef1e22`,
+`SHA256SUMS`, and its detached PQ signature were verified before deployment.
+The installed and running validator SHA-256 on all four hosts is
+`56ca8642d52b78f8ff166c733254a9b9a1da2d354c7d85261f77e12f3a03ab60`.
+Every previous v0.5.228 executable remains preserved as a hard-linked rollback.
+
+All optional services were stopped first, then all four validator services
+were stopped and required inactive with `MainPID=0`. Installation and repair
+ran only while the full fleet was stopped. Every host retained its own state,
+cold archive, keys, identity, WAL, peer data, and access configuration.
+
+The exact SEA source page SHA-256 remained
+`c17771d2f4d8120ecdf9e4ca13dcda4b5afbe38ac66021248ad707e95eecb7c7`.
+Its v0.5.229 pre-write dry run returned five inserts and zero identical rows on
+US/EU/IN, five identical rows and zero inserts on SEA, and zero conflicts on
+all four. Execute added exactly five `tx_meta` rows to each missing host. The
+immediate post-write dry run returned zero inserts, five identical rows, and
+zero conflicts on every host. The stopped bounded manifest then matched on all
+four with 5 rows, 285 bytes, first key
+`970f1b9dafd99ef885da2110f85aeb74058db3b8a3681102e0b04c110f1a461e`,
+last key
+`979cae8d2a2199ff8c15b6e890aeec02da7b6c4e43bc7a2ada636594df8d7354`,
+and digest
+`8e29166eb53bd482e8d7df1aec54dd96e817195310476498e548263128e9a0b9`.
+
+The v0.5.229 US canonical account-snapshot export contained exactly 21 rows,
+no next page, and page SHA-256
+`e1ac7a4a0dff643e57c0c8c37af7d1851ba189628ee8806a6dbff14a9a1269b6`.
+The pre-write dry run returned 21 identical rows on US and exactly six inserts
+plus 15 identical rows on EU/SEA/IN, with zero conflicts. Execute added only
+those six rows to each target. The immediate post-write dry run returned zero
+inserts, 21 identical rows, and zero conflicts everywhere. Independent stopped
+exports on US, EU, SEA, and IN all have the same page SHA-256 above.
+
+The immutable v0.5.228 reports already bind the common fixed tip/state root and
+all unchanged public-history categories. Exact diffing proved that the bounded
+`account_snapshots` and `tx_meta` views were the only remaining differences;
+v0.5.229 changes only their source-bound canonicalization/import behavior. The
+preserved full reports plus the two four-way post-write proofs therefore form
+the release's composite fixed-tip parity closure. This must not be cited as a
+new full-scanner report. A fresh complete immutable scan remains scheduled for
+the larger archive hosts because the current 200 GB roots cannot safely pin
+hours of checkpoint allocation while live or sustain another long public
+outage.
+
+All four validators restarted together from their independent databases at
+14:54:56-59 UTC and remain active with zero restarts. Fixed slot `9,882,300`
+matches on every host with block hash
+`9b4f19ef7d97feb7206926054ac8ed012e145f774d43af72c214785d8d57e637`
+and state root
+`29276d75079e849e71ea56f83592b7403d4d555801f0c658e6ac50ac9e69c096`.
+All four identities were active within two slots. Canonical RPC, all four edge
+origins, Explorer HTTP/RPC, both WebSocket routes, and DEX oracle/candle reads
+passed. US custody and US/SEA/IN faucet services are active where their enabled
+pre-release service policy requires them. Exact release downloads and test
+extracts were removed after acceptance; repair evidence and rollback/data
+artifacts remain.
+
 ## Tracker
 
 | ID | Work item | Evidence | Status |
@@ -1952,8 +2016,8 @@ consensus processes remain live; v0.5.229 aligns readiness to the explicit
 | AP-057Q | Prevent point-lookup RocksDB iterators from silently skipping migration rows and fail closed on missing block-referenced transaction indexes | Large-store total-order audit, absent/corrupt/cold-only transaction tests, bounded compaction test | Done in source. Runtime and stopped-node block scans plus auxiliary-history scans use total-order iteration. Audit and both migration paths require every referenced transaction and exact slot mapping in hot or cold storage. Focused cold migration 12/12, strict Core/Validator Clippy, the locked full workspace all-target/all-feature suite, and the final AP-050 four-validator gate all pass. Exact-final Linux build and live read-only repeat audit remain before execute. |
 | AP-057R | Bound sparse Merkle cache storage and provide a stopped-node canonical rebuild | Repeated-update node-count/proof/checkpoint regressions, exact-tag Linux recovery build, EU/IN pre/post evidence | Done. Current Core passes 994/994. Exact-tag optimized Linux tests passed. Recovery binary `9b71e7a9...ccee` rebuilt EU at slot `8,953,695`, reducing contract-node SST bytes from `42,022,557,879` to `246,455,989`, and rebuilt IN at slot `9,180,291` to 249,527 reachable contract nodes. Typed verification passed on both; protected and cold-archive metadata hashes were unchanged. Checkpoints `8,954,000` and `9,181,000` pruned the obsolete hard-linked files, leaving about 58.7 GB and 70.1 GB free respectively. Ongoing boundedness is in the candidate and exact-tag replay bridge. |
 | AP-058 | Restore EU runtime headroom and prove restart-loop suppression | Current provider backup mount, stopped rollback evidence, corrected total-order audit, bounded migration, sparse-cache rebuild, `df`, `getHealth.disk`, systemd status | Done without volume expansion. The guarded restore, full integrity audit, bounded hot-to-cold migration, derived-cache rebuild, root proof, and checkpoint rollover completed. Free space rose from 15.12 GB before rebuild to 58.72 GB after old-checkpoint pruning and remained about 53 GB in the July 15 live sample. EU caught up, serves fresh blocks through the authenticated edge, and `lichen-validator-testnet.service` is active/enabled with zero systemd restarts. The 500 GiB blocker is superseded. |
-| AP-060 | Repair the current July chain on US, EU, SEA, and IN from verified source history | Per-range proof, per-host dry-run/execute evidence, fixed-tip manifests | Done for all available source-backed history. The earlier additive union repair and the exact source-backed slot-`5,276,000` closure leave all four with common stopped tip `9,771,064`, state root `e18a4f93...6a093`, and 20-category composite manifest root `71f3da66...6f46`. The one-slot post dry run found 51 official rows identical; all five block-backed account-history rows are also identical with zero conflicts. No audited source contains signed bodies `2,872,006..4,298,999`; that is the sole explicit exception for existing `lichen-testnet-1`. Mainnet/fresh-network startup, joining, checkpoint, and snapshot import remain fail-closed on any absent, behind, or mismatched genesis-to-tip proof. |
-| AP-065 | Recover four-validator live production and prove fresh-tip liveness | Same current slot/hash, fresh block age, all four producers observed | Done on signed `v0.5.225`. US/EU/SEA/IN are active and enabled, execute validator SHA-256 `12e8a18b...eea2f`, use tagged unit SHA-256 `e8eda48d...70d39`, and report zero systemd restarts. The final 300-block sample observed 77 US, 74 EU, 71 SEA, and 78 IN productions with public health `ok` and four-slot fleet spread. |
+| AP-060 | Repair the current July chain on US, EU, SEA, and IN from verified source history | Per-range proof, per-host dry-run/execute evidence, fixed-tip manifests | Done for all available source-backed history. v0.5.229 added the five exact SEA `tx_meta` rows to US/EU/IN and the six canonical US repair-slot account-snapshot rows to EU/SEA/IN. Pre-write, execute, and idempotence reports all had zero conflicts. Post-write four-way proofs match at 5 `tx_meta` rows/digest `8e29166e...e9a0b9` and one byte-identical 21-row account page SHA-256 `e1ac7a4a...a1269b6`. These close the only differences isolated by the preserved immutable v0.5.228 fixed-tip reports; the result is explicitly a composite proof, not a new full-scanner report. No audited source contains signed bodies `2,872,006..4,298,999`; that remains the sole explicit exception for existing `lichen-testnet-1`. Mainnet and fresh networks remain fail-closed. |
+| AP-065 | Recover four-validator live production and prove fresh-tip liveness | Same current slot/hash, fresh block age, all four producers observed | Done on signed `v0.5.229`. US/EU/SEA/IN are active and enabled with zero restarts and exact installed/running validator SHA-256 `56ca8642...3ab60`. Slot `9,882,300` has identical block hash `9b4f19ef...7e637` and state root `29276d75...69c096` on all four, every identity proposed within two slots, and public health/edge/Explorer/WS/DEX smokes pass. |
 | AP-066 | Remove the public RPC single-origin failure mode | Four authenticated origins, strict fleet health, failover tests, explorer same-origin smoke | Done. `testnet-api.lichen.network` is canonical. `edge/testnet-rpc` routes across US/EU/SEA/IN with unique origin credentials, bounded body replay, deterministic affinity, and failover. Caddy is active/enabled on every origin, direct unauthenticated origin requests return 403, Worker tests pass 7/7, frontend assets pass 377/377, all ten Pages projects are live on the canonical configuration, RPC/WS smokes pass, and a 24-request sample reached every region. |
 | AP-067 | Make every committed Rust graph independently reproducible and bound contract build-cache growth | Fresh lock regeneration, locked metadata/audit, standalone compiler/SDK/fuzz tests, dependency policy QA | Done. All 40 lockfiles regenerate with the exact PQ-compatible PKCS#8 prerelease and pass locked metadata plus cargo-audit. Cargo-deny passes. Compiler 30/30, contract SDK 28/28, Rust client SDK 88/88, all examples, all 14 fuzz targets, and all 34 contract workspaces pass native tests and locked WASM builds. The 34 comprise 32 genesis catalog contracts, the genesis-bound `launchpad_token` graduation template, and the standalone `mt20_token` template. The final locked workspace all-target/all-feature suite, strict workspace Clippy with `-D warnings`, compiler sandbox, and Rust SBOM generation also pass. CI/release enforce the manifest anchor and shared non-runtime contract target directory. |
 | AP-068 | Recover IN disk headroom without deleting canonical state or public history | Protected hash comparison, typed sparse proof, checkpoint pruning, final fleet preflight | Done. IN stopped cleanly at `9,180,291`; the audited derived-cache rebuild passed, protected/cold metadata hashes matched, checkpoint `9,181,000` released obsolete cache files, free space rose to about 70.1 GB, and the clean-exit four-host verifier passed at a 46-slot spread with identical fixed-block digest. |
@@ -1967,9 +2031,9 @@ consensus processes remain live; v0.5.229 aligns readiness to the explicit
 | AP-077 | Prevent target validation backpressure, SSH connection limiting, and privileged I/O auditing from exhausting or truncating fleet repair transport | Exact signed live dry run, immutable stream replay, bounded-page checksum/report guards, audited-sudo byte proof | Done in the replacement transport and exact signed Linux dry run. The signed `bdc8de0d` two-hop stream failed closed twice, while its exact 34,657,898-byte export imported cleanly when sequenced. Bounded checksummed pages then passed an 18-report six-category smoke and one full 5,000-body page plus indexes: 15 reports, 92,928 rows, 15 matching transfer digests, and zero conflicts in 3 minutes 44 seconds. The first full EU-range attempt proved all 2,872,006 linked bodies but page 1 hit the fleet's six-new-SSH-connections-per-30-seconds UFW policy. The persistent-control replacement passed a three-page, 180,000-row live dry run, but its first complete-range retry exposed a second operational defect: US `sudo` I/O auditing copied raw block output into `/var/log/sudo-io`, allocating 11,297,062,912 bytes by block page 46. The run was stopped before disk danger, and only those exact generated sessions and transient pages were removed; no live database write occurred. Export/compression and decompression/import now remain inside the unprivileged `lichen` child. Direct six-category slot `0..10` smoke produced about 811 KB of audit data, and the forced local-bounded slots/blocks smoke produced exactly 28,497 bytes across 12 matching sessions, with zero conflicts and no transient residue. The exact `373db78c` Linux artifact subsequently proved EU slots and all blocks `0..2,872,005` conflict-free across US/SEA/IN without privileged payload logging. |
 | AP-078 | Keep canonical transaction/index repair pagination linear in the selected source range | Later-row isolation regression, full Core suite, strict Clippy, exact Linux live timing | Done in `v0.5.224`. Pagination stops at each page's canonical cursor frontier, avoids duplicate index lookups already backed by selected bodies, and retains source-backed index-only rows before that frontier. The isolation regression, exact release gates, and completed live source-union repair passed. |
 | AP-079 | Compare canonical RPC block bodies without requiring node-local commit-certificate presentation to match | Field-isolation proof, helper guard, four-origin read-only rerun | Done after release. The verifier already excluded signatures/count but still hashed `commit_source` and `commit_round`, causing SEA's valid `local_pending_child` proof at slot `5,275,999` to differ from peers' `legacy_local` proof despite identical canonical slot/hash/parent/state/transaction roots and body. It now excludes every `commit_*` presentation field. Helper guards pass 13/13, and the four-origin rerun passed health, 49-slot spread, and all six fixed canonical body digests. |
-| AP-080 | Prevent a hard-linked checkpoint from pinning obsolete SSTs until the runtime safety exit | IN allocation/inode evidence, active-linked and interrupted-checkpoint tests, four-validator pressure/restart gate | Done and live in signed `v0.5.225`. Exact-tag hosted/local gates cover active links, interrupted checkpoints, pressure, and restart behavior. The four-host deployment preserves the 10 GiB fail-closed runtime floor, correctly skips creation below 20 GiB, and has no checkpoint-pinning restart loop. Larger storage remains mandatory for mainnet and indefinite growth. |
+| AP-080 | Prevent a hard-linked checkpoint from pinning obsolete SSTs until the runtime safety exit | IN allocation/inode evidence, active-linked and interrupted-checkpoint tests, four-validator pressure/restart gate | Done and retained through signed `v0.5.229`. Exact-tag hosted/local gates cover active links, interrupted checkpoints, pressure, and restart behavior. Mainnet and other production selectors retain the 10 GiB fail-closed floor; only the current testnet uses the owner-approved temporary 5 GiB bridge and skips checkpoint creation without working headroom. Larger storage remains mandatory for mainnet and indefinite growth. |
 | AP-081 | Prevent periodic consensus reconciliation from regressing a rapidly catching-up validator and recover authenticated parent-root divergence without retry loops | IN journal interleaving, fixed-slot producer-count proof, forced lock race, typed mismatch, exact-root repair, and no-sync-vote tests | Done and live in signed `v0.5.225`. IN repaired the one proven missing producer counter at `9,736,991` exactly once under authenticated child `9,736,992`, caught up from its own state, and joined finality. The final restart and stability journals contain no repeated repair/root mismatch or InitialSync loop; fixed-tip parity and all-four production pass. |
-| AP-070 | Cut new tag and publish release artifacts | Tag, checksums, crates/npm status | Done for the existing testnet. Signed tag `v0.5.225` at `c7a67e6a...af5ac75` passed every hosted check and is public with five platform archives, checksums, attestations, and detached PQ signature. Exact installed/running hashes and the tagged unit match on all four. Core/CLI `0.5.225`, contract SDK `1.0.4`, Rust client SDK `0.1.7`, and npm SDK `1.0.7` are published and visible. Immediate signed rollback is `v0.5.224`; mainnet still requires a fresh no-waiver genesis-to-tip proof and materially larger monitored storage. |
+| AP-070 | Cut new tag and publish release artifacts | Tag, checksums, crates/npm status | Done for the current testnet. Signed tag `v0.5.229` at `feb0a97b...f41d80` passed branch run `29914449168` and Release workflow `29917910218`; the public release contains attested platform archives, checksums, and a detached PQ signature. Exact installed/running hashes match on all four. `lobstercove-lichen-core@0.5.229` and `lichen-cli@0.5.229` were published from a clean detached exact-tag worktree and are visible on crates.io; the CLI registry dependency is exactly core `=0.5.229`. Unchanged contract SDK `1.0.4`, Rust client SDK `0.1.7`, and npm SDK `1.0.7` remain published and visible. Immediate in-place rollback is `v0.5.228`; mainnet still requires a fresh no-waiver genesis-to-tip proof and materially larger monitored storage. |
 
 ## Release Acceptance
 
