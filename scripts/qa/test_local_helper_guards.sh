@@ -504,7 +504,9 @@ assert_public_history_repair_stays_quiesced() {
         ! grep -Fq 'SKIP_MANIFEST=1' "$verifier" || \
         ! grep -Fq -- '--live-manifest' "$verifier" || \
         ! grep -Fq 'Computing public-history manifests concurrently' "$verifier" || \
-        ! grep -Fq 'sudo -u lichen nohup bash -c' "$verifier" || \
+        ! grep -Fq 'sudo prlimit --nofile=%s:%s -- setpriv --reuid=lichen --regid=lichen --init-groups -- nohup bash -c' "$verifier" || \
+        ! grep -Fq 'archive manifest requires nofile=%s, effective soft=%s hard=%s' "$verifier" || \
+        ! grep -Fq 'command -v setpriv >/dev/null' "$verifier" || \
         ! grep -Fq 'remote_manifest "$host" "$label" "$manifest_mode" &' "$verifier" || \
         ! grep -Fq 'if key.startswith("commit_"):' "$verifier" || \
         ! grep -Fq 'exec >"$RUN_LOG" 2>&1' "$verifier" || \

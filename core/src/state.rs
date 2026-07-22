@@ -9055,6 +9055,119 @@ mod tests {
     // ─── Task 3.9: Archive Mode Tests ───────────────────────────────
 
     #[test]
+    fn legacy_testnet_replay_snapshots_are_logically_normalized_without_raw_rewrite() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+        state
+            .put_metadata(crate::signing::CHAIN_ID_METADATA_KEY, b"lichen-testnet-1")
+            .unwrap();
+
+        let before_rows = [
+            (
+                "6JhhxYKc5tmXMttnrCNTCPnMkMWRQ96US3LtNRiFJjW",
+                "bc2f8445a16536b0002f8445a16536b00000000000000000000000000000000000000000000000000000010101010101010101010101010101010101010101010101010101010101010100ef36670000000000000000000000000000",
+            ),
+            (
+                "6RMeoigHdJWB47pEZEMSj5gvT7nbJPYSfPqjcur9vMJ",
+                "bca2e82f230f1b0200a2a8b5121cc0010000407a10f35a000000000000000000000000000000000000000101010101010101010101010101010101010101010101010101010101010101000105910000000000000000000000000000",
+            ),
+            (
+                "6TghL7ioQz5R8pfrX1Qcfy8rNMzRP5F2pndmmRQ2sPm",
+                "bcaa30baa6101b0200aaf03f961dc0010000407a10f35a000000000000000000000000000000000000000101010101010101010101010101010101010101010101010101010101010101000005910000000000000000000000000000",
+            ),
+            (
+                "6XhsGituXoWSd1wLtutZgdJve6gLrdSi7YhEx1ZDFHW",
+                "bcc97468239c670100c934ee12a90c010000407a10f35a00000000000000000000000000000000000000016a9f314f56c81459e5a0e2df270f1b923a339de363f520884f84d47b85f5d5000205910000000000000000000000000000",
+            ),
+            (
+                "7LFPJ8gqmAtjbhfRg1P4VXmTQJV4AeZxzws3UsA6SVq",
+                "bcf2f3b05f0f1b0200f2b3364f1cc0010000407a10f35a000000000000000000000000000000000000000101010101010101010101010101010101010101010101010101010101010101000a05910000000000000000000000000000",
+            ),
+            (
+                "8i6Y9q1i2bKJwBXfzWrAfKMwbdeZxFxH3U4HJRJEEri",
+                "bc40afa054652eb80140afa054652eb801000000000000000000000000000000000000000000000000000101010101010101010101010101010101010101010101010101010101010101000b415b0000000000000000000000000000",
+            ),
+        ];
+        let hot_cf = state.db.cf_handle(CF_ACCOUNT_SNAPSHOTS).unwrap();
+        for (pubkey, before_hex) in before_rows {
+            let pubkey = Pubkey::from_base58(pubkey).unwrap();
+            let mut key = [0u8; 40];
+            key[..32].copy_from_slice(&pubkey.0);
+            key[32..].copy_from_slice(
+                &snapshot_io::LEGACY_TESTNET_REPLAY_DRIFT_SNAPSHOT_SLOT.to_be_bytes(),
+            );
+            state
+                .db
+                .put_cf(&hot_cf, key, hex::decode(before_hex).unwrap())
+                .unwrap();
+        }
+
+        let page = state
+            .export_snapshot_category_cursor_untracked("account_snapshots", None, 100)
+            .unwrap();
+        assert_eq!(page.entries.len(), 6);
+        for (key, canonical) in &page.entries {
+            let correction = snapshot_io::LEGACY_TESTNET_REPLAY_SNAPSHOT_CORRECTIONS
+                .iter()
+                .find(|correction| {
+                    Pubkey::from_base58(correction.pubkey).is_ok_and(|pubkey| key[..32] == pubkey.0)
+                })
+                .unwrap();
+            assert_eq!(
+                hex::encode(Sha256::digest(canonical)),
+                correction.after_value_sha256
+            );
+            let raw = state.db.get_cf(&hot_cf, key).unwrap().unwrap();
+            assert_eq!(
+                hex::encode(Sha256::digest(raw)),
+                correction.before_value_sha256,
+                "canonical reads must not overwrite the preserved raw before image"
+            );
+        }
+
+        let first_pubkey = Pubkey::from_base58(before_rows[0].0).unwrap();
+        let account = state
+            .get_account_at_slot(
+                &first_pubkey,
+                snapshot_io::LEGACY_TESTNET_REPLAY_DRIFT_SNAPSHOT_SLOT,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(account.spores, 49_599_406_026_859_855);
+        assert_eq!(account.spendable, 49_599_406_026_859_855);
+
+        let report = state
+            .import_public_history_category_entries(
+                "account_snapshots",
+                &[page.entries[0].clone()],
+                true,
+            )
+            .unwrap();
+        assert_eq!(report.identical_rows, 1);
+        assert_eq!(report.conflict_rows, 0);
+        assert_eq!(report.inserted_rows, 0);
+    }
+
+    #[test]
+    fn legacy_testnet_replay_snapshot_normalization_is_chain_gated() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+        let pubkey = Pubkey::from_base58("6JhhxYKc5tmXMttnrCNTCPnMkMWRQ96US3LtNRiFJjW").unwrap();
+        let mut key = [0u8; 40];
+        key[..32].copy_from_slice(&pubkey.0);
+        key[32..]
+            .copy_from_slice(&snapshot_io::LEGACY_TESTNET_REPLAY_DRIFT_SNAPSHOT_SLOT.to_be_bytes());
+        let before = hex::decode("bc2f8445a16536b0002f8445a16536b00000000000000000000000000000000000000000000000000000010101010101010101010101010101010101010101010101010101010101010100ef36670000000000000000000000000000").unwrap();
+        let hot_cf = state.db.cf_handle(CF_ACCOUNT_SNAPSHOTS).unwrap();
+        state.db.put_cf(&hot_cf, key, &before).unwrap();
+
+        let page = state
+            .export_snapshot_category_cursor_untracked("account_snapshots", None, 10)
+            .unwrap();
+        assert_eq!(page.entries, vec![(key.to_vec(), before)]);
+    }
+
+    #[test]
     fn test_archive_put_and_get_account_at_slot() {
         let temp = tempdir().unwrap();
         let state = StateStore::open(temp.path()).unwrap();

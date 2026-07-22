@@ -176,6 +176,7 @@ const PUBLIC_HISTORY_MANIFEST_FLAG: &str = "--public-history-manifest";
 const VERIFY_PUBLIC_HISTORY_PARITY_WITH_SOURCE_FLAG: &str =
     "--verify-public-history-parity-with-source";
 const REPAIR_PUBLIC_HISTORY_FROM_SOURCE_FLAG: &str = "--repair-public-history-from-source";
+const PUBLIC_HISTORY_RANGE_MANIFEST_FLAG: &str = "--public-history-range-manifest";
 const EXPORT_PUBLIC_HISTORY_CATEGORY_FLAG: &str = "--export-public-history-category";
 const IMPORT_PUBLIC_HISTORY_CATEGORY_FLAG: &str = "--import-public-history-category";
 const PUBLIC_HISTORY_PAGE_FORMAT_FLAG: &str = "--public-history-page-format";
@@ -14936,6 +14937,32 @@ struct ContiguousBlockRangeCliReport {
 }
 
 #[derive(Debug, Serialize)]
+struct PublicHistoryRangeManifestCliReport {
+    schema_version: u32,
+    data_dir: String,
+    cold_store: Option<String>,
+    secondary_dir: Option<String>,
+    category: String,
+    chunk_size: u64,
+    from_slot: u64,
+    to_slot: u64,
+    row_count: u64,
+    byte_count: u64,
+    first_key_hex: Option<String>,
+    last_key_hex: Option<String>,
+    sha256: String,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct PublicHistoryRangeManifestDigest {
+    row_count: u64,
+    byte_count: u64,
+    first_key_hex: Option<String>,
+    last_key_hex: Option<String>,
+    sha256: String,
+}
+
+#[derive(Debug, Serialize)]
 struct PublicHistoryParityCategoryDiff {
     category: String,
     source_count: u64,
@@ -15426,6 +15453,192 @@ fn repair_public_history_from_source(
     }
 
     Ok((category_reports, cleared_account_tx_counters))
+}
+
+fn public_history_range_start_cursor(
+    category: &str,
+    from_slot: u64,
+) -> Result<Option<Vec<u8>>, String> {
+    if from_slot == 0 {
+        return Ok(None);
+    }
+
+    let preceding_slot = from_slot - 1;
+    match category {
+        "slots" | "blocks" => Ok(Some(preceding_slot.to_be_bytes().to_vec())),
+        "transactions" | "tx_by_slot" | "tx_to_slot" | "tx_meta" => {
+            let mut cursor = Vec::with_capacity(16);
+            cursor.extend_from_slice(&preceding_slot.to_be_bytes());
+            cursor.extend_from_slice(&u64::MAX.to_be_bytes());
+            Ok(Some(cursor))
+        }
+        _ => Err(format!(
+            "Slot-bounded public-history range manifests are not supported for {category}"
+        )),
+    }
+}
+
+fn public_history_range_manifest(
+    state: &StateStore,
+    category: &str,
+    chunk_size: u64,
+    from_slot: u64,
+    to_slot: u64,
+) -> Result<PublicHistoryRangeManifestDigest, String> {
+    if to_slot < from_slot {
+        return Err("--to-slot must be >= --from-slot".to_string());
+    }
+
+    let mut cursor = public_history_range_start_cursor(category, from_slot)?;
+    let mut row_count = 0u64;
+    let mut byte_count = 0u64;
+    let mut first_key_hex = None;
+    let mut last_key_hex = None;
+    let mut digest = Sha256::new();
+    digest.update(b"lichen-public-history-category-range-manifest-v1");
+    digest.update((category.len() as u64).to_be_bytes());
+    digest.update(category.as_bytes());
+    digest.update(from_slot.to_be_bytes());
+    digest.update(to_slot.to_be_bytes());
+
+    loop {
+        let page = state.export_public_history_category_range_cursor_untracked(
+            category,
+            cursor.as_deref(),
+            chunk_size,
+            Some(to_slot),
+        )?;
+        for (key, value) in page.entries {
+            first_key_hex.get_or_insert_with(|| hex::encode(&key));
+            last_key_hex = Some(hex::encode(&key));
+            row_count = row_count.saturating_add(1);
+            byte_count = byte_count.saturating_add((key.len() + value.len()) as u64);
+            digest.update((key.len() as u64).to_be_bytes());
+            digest.update(&key);
+            digest.update((value.len() as u64).to_be_bytes());
+            digest.update(&value);
+        }
+
+        if !page.has_more {
+            break;
+        }
+        let Some(next_cursor) = page.next_cursor else {
+            return Err(format!(
+                "{category} public-history range manifest had more entries but no cursor"
+            ));
+        };
+        if cursor
+            .as_ref()
+            .is_some_and(|previous| *previous == next_cursor)
+        {
+            return Err(format!(
+                "{category} public-history range manifest cursor did not advance"
+            ));
+        }
+        cursor = Some(next_cursor);
+    }
+
+    Ok(PublicHistoryRangeManifestDigest {
+        row_count,
+        byte_count,
+        first_key_hex,
+        last_key_hex,
+        sha256: hex::encode(digest.finalize()),
+    })
+}
+
+fn maybe_run_public_history_range_manifest_admin(args: &[String]) -> Option<i32> {
+    let category = get_flag_value(args, &[PUBLIC_HISTORY_RANGE_MANIFEST_FLAG])?;
+    let category = match parse_public_history_category_arg(category) {
+        Ok(category) => category,
+        Err(err) => {
+            eprintln!("{err}");
+            return Some(2);
+        }
+    };
+    let parse_slot = |flag: &'static str| -> Result<u64, String> {
+        get_flag_value(args, &[flag])
+            .ok_or_else(|| format!("{PUBLIC_HISTORY_RANGE_MANIFEST_FLAG} requires {flag} <slot>"))?
+            .parse::<u64>()
+            .map_err(|_| format!("{flag} must be an unsigned integer"))
+    };
+    let from_slot = match parse_slot("--from-slot") {
+        Ok(slot) => slot,
+        Err(err) => {
+            eprintln!("{err}");
+            return Some(2);
+        }
+    };
+    let to_slot = match parse_slot("--to-slot") {
+        Ok(slot) if slot >= from_slot => slot,
+        Ok(_) => {
+            eprintln!("--to-slot must be >= --from-slot");
+            return Some(2);
+        }
+        Err(err) => {
+            eprintln!("{err}");
+            return Some(2);
+        }
+    };
+
+    let chunk_size = public_history_chunk_size(args);
+    let cache_size_mb = get_flag_value(args, &["--cache-size-mb"]).and_then(|s| s.parse().ok());
+    let data_dir = restriction_schema_data_dir(args);
+    let cold_store = match resolve_public_command_cold_store_path(args, &data_dir) {
+        Ok(path) => path,
+        Err(err) => {
+            eprintln!("{err}");
+            return Some(2);
+        }
+    };
+    let secondary_dir = get_flag_value(args, &["--secondary-dir"]).map(PathBuf::from);
+    let state = match open_public_history_reader(
+        &data_dir,
+        cold_store.as_deref(),
+        secondary_dir.as_deref(),
+        cache_size_mb,
+    ) {
+        Ok(state) => state,
+        Err(err) => {
+            eprintln!(
+                "Failed to open public-history state at {}: {}",
+                data_dir.display(),
+                err
+            );
+            return Some(1);
+        }
+    };
+
+    match public_history_range_manifest(&state, category, chunk_size, from_slot, to_slot) {
+        Ok(digest) => {
+            let report = PublicHistoryRangeManifestCliReport {
+                schema_version: 1,
+                data_dir: data_dir.display().to_string(),
+                cold_store: cold_store.map(|path| path.display().to_string()),
+                secondary_dir: secondary_dir.map(|path| path.display().to_string()),
+                category: category.to_string(),
+                chunk_size,
+                from_slot,
+                to_slot,
+                row_count: digest.row_count,
+                byte_count: digest.byte_count,
+                first_key_hex: digest.first_key_hex,
+                last_key_hex: digest.last_key_hex,
+                sha256: digest.sha256,
+            };
+            match print_json_report(&report) {
+                Ok(()) => Some(0),
+                Err(err) => {
+                    eprintln!("{err}");
+                    Some(1)
+                }
+            }
+        }
+        Err(err) => {
+            eprintln!("Failed to compute public-history range manifest: {err}");
+            Some(1)
+        }
+    }
 }
 
 fn verify_contiguous_block_range(
@@ -17695,6 +17908,9 @@ fn main() {
         std::process::exit(exit_code);
     }
     if let Some(exit_code) = maybe_run_governed_proposal_tx_backfill_admin(&args) {
+        std::process::exit(exit_code);
+    }
+    if let Some(exit_code) = maybe_run_public_history_range_manifest_admin(&args) {
         std::process::exit(exit_code);
     }
     if let Some(exit_code) = maybe_run_contiguous_block_range_admin(&args) {
@@ -39363,6 +39579,81 @@ mod tests {
     }
 
     #[test]
+    fn public_history_range_manifest_is_slot_bounded_and_detects_missing_tx_meta() {
+        let temp = tempfile::tempdir().expect("create range-manifest state");
+        let state = StateStore::open(temp.path()).expect("open range-manifest state");
+        let validator = Pubkey([42; 32]);
+        let make_tx = |marker| {
+            Transaction::new(lichen_core::Message::new(
+                vec![lichen_core::Instruction {
+                    program_id: CORE_SYSTEM_PROGRAM_ID,
+                    accounts: vec![validator],
+                    data: vec![marker],
+                }],
+                Hash::default(),
+            ))
+        };
+        let tx_1 = make_tx(1);
+        let tx_2 = make_tx(2);
+        let tx_1_hash = tx_1.signature();
+        let tx_2_hash = tx_2.signature();
+        let genesis = Block::genesis(Hash::hash(b"range-manifest-genesis"), 1, vec![]);
+        let block_1 = Block::new_with_timestamp(
+            1,
+            genesis.hash(),
+            Hash::hash(b"range-manifest-state-1"),
+            validator.0,
+            vec![tx_1],
+            2,
+        );
+        let block_2 = Block::new_with_timestamp(
+            2,
+            block_1.hash(),
+            Hash::hash(b"range-manifest-state-2"),
+            validator.0,
+            vec![tx_2],
+            3,
+        );
+        state.put_block(&genesis).expect("store genesis");
+        state.put_block(&block_1).expect("store block 1");
+        state.put_block(&block_2).expect("store block 2");
+        state
+            .put_tx_meta_full(&tx_1_hash, &lichen_core::TxMeta::default())
+            .expect("store first tx metadata");
+
+        let before = public_history_range_manifest(&state, "tx_meta", 1, 1, 2)
+            .expect("manifest with one receipt");
+        assert_eq!(before.row_count, 1);
+        let second_only = public_history_range_manifest(&state, "tx_meta", 1, 2, 2)
+            .expect("manifest over missing receipt");
+        assert_eq!(second_only.row_count, 0);
+
+        state
+            .put_tx_meta_full(&tx_2_hash, &lichen_core::TxMeta::default())
+            .expect("store second tx metadata");
+        let after = public_history_range_manifest(&state, "tx_meta", 1, 1, 2)
+            .expect("manifest with both receipts");
+        assert_eq!(after.row_count, 2);
+        assert_ne!(before.sha256, after.sha256);
+        assert_eq!(
+            public_history_range_manifest(&state, "tx_meta", 1, 2, 2)
+                .expect("second-slot manifest")
+                .row_count,
+            1
+        );
+
+        assert_eq!(
+            public_history_range_start_cursor("slots", 5).unwrap(),
+            Some(4u64.to_be_bytes().to_vec())
+        );
+        let tx_cursor = public_history_range_start_cursor("tx_meta", 5)
+            .unwrap()
+            .expect("tx cursor");
+        assert_eq!(&tx_cursor[..8], &4u64.to_be_bytes());
+        assert_eq!(&tx_cursor[8..], &u64::MAX.to_be_bytes());
+    }
+
+    #[test]
     fn contiguous_range_admin_reads_automatic_public_cold_store() {
         let temp = tempfile::tempdir().expect("create public history temp dir");
         let data_dir = temp.path().join("state-testnet");
@@ -39453,6 +39744,17 @@ mod tests {
         assert_eq!(
             maybe_run_governed_proposal_tx_backfill_admin(&with(&[
                 BACKFILL_GOVERNED_PROPOSAL_TX_INDEX_FLAG
+            ])),
+            Some(2)
+        );
+        assert_eq!(
+            maybe_run_public_history_range_manifest_admin(&with(&[
+                PUBLIC_HISTORY_RANGE_MANIFEST_FLAG,
+                "tx_meta",
+                "--from-slot",
+                "0",
+                "--to-slot",
+                "0",
             ])),
             Some(2)
         );

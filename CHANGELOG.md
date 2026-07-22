@@ -5,6 +5,35 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.229] - 2026-07-22
+
+### Fixed
+- Canonicalizes the six exact `lichen-testnet-1` account-snapshot before
+  images left by the legacy replay-drift incident. The compatibility path is
+  gated by the exact chain ID, slot, account keys, serialized-value hashes,
+  and independently sourced before/after balances; every unknown row remains
+  unchanged and therefore still fails archive parity closed.
+- Applies the same canonicalization to public-history manifests, exports,
+  conflict classification, imports, and point-in-time account reads. The raw
+  US before images remain untouched on disk as recovery provenance, while the
+  logical public-history view matches the three independently agreeing
+  validators.
+- Aligns RPC/Explorer disk readiness with the explicit 5 GiB available-space
+  floor instead of also applying a hidden 95%-used threshold. Percentage use
+  remains visible as telemetry; the validator runtime still enforces its
+  network-specific reserve and keeps the 10 GiB floor outside testnet.
+
+### Operations
+- Allows the six source-backed repair-slot snapshot rows already present on US
+  to be imported additively into EU, SEA, and IN. No account snapshot, state,
+  WAL, key, identity, block, transaction, or archive row is deleted.
+- Adds a read-only, slot-bounded public-history category manifest so the five
+  SEA-only canonical transaction-metadata rows can be isolated by digest and
+  repaired from their exact source without transferring or rewriting unrelated
+  history.
+- Retains the testnet-only 5 GiB runtime reserve and 50,000-slot hot-history
+  boundary while Archive V2 segmented compression is implemented.
+
 ## [0.5.228] - 2026-07-21
 
 ### Fixed

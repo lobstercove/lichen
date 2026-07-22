@@ -98,7 +98,6 @@ const SOLANA_SPL_TOKEN_PROGRAM_ID: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss62
 const SOLANA_TOKEN_ACCOUNT_SPACE: usize = 165;
 const SOLANA_TOKEN_ACCOUNT_RENT_EXEMPT_LAMPORTS: u64 = 2_039_280;
 const RPC_STALE_BLOCK_SECS: u64 = 120;
-const RPC_DISK_CRITICAL_USED_PCT: u64 = 95;
 const RPC_DISK_CRITICAL_MIN_AVAILABLE_BYTES: u64 = 5 * 1024 * 1024 * 1024;
 
 /// P9-RPC-02: Maximum size for transaction wire deserialization.
@@ -1378,8 +1377,13 @@ fn disk_readiness_from_counts(
     let available_bytes = blocks_available.saturating_mul(block_size).min(total_bytes);
     let used_bytes = total_bytes.saturating_sub(available_bytes);
     let used_percent = used_bytes.saturating_mul(100) / total_bytes;
-    let critical = used_percent >= RPC_DISK_CRITICAL_USED_PCT
-        || available_bytes < RPC_DISK_CRITICAL_MIN_AVAILABLE_BYTES;
+    // Keep percentage usage as an operator-facing metric, but make readiness
+    // consume the same explicit byte floor as the temporary testnet runtime
+    // guard. A percentage branch silently imposed a ~10.35 GiB floor on the
+    // current ~207 GB VPS roots even after the signed runtime floor was reduced
+    // to 5 GiB, removing consensus-live origins from RPC/Explorer rotation.
+    // Mainnet still fails earlier at its validator runtime reserve.
+    let critical = available_bytes < RPC_DISK_CRITICAL_MIN_AVAILABLE_BYTES;
 
     Some(DiskReadiness {
         available_bytes,
@@ -21398,10 +21402,11 @@ mod tests {
     }
 
     #[test]
-    fn rpc_disk_readiness_flags_full_or_low_space_filesystems() {
-        let full = disk_readiness_from_counts(4096, 100, 4).expect("disk stats");
-        assert_eq!(full.used_percent, 96);
-        assert!(full.critical);
+    fn rpc_disk_readiness_uses_the_explicit_available_byte_floor() {
+        let percentage_only =
+            disk_readiness_from_counts(1024 * 1024 * 1024, 200, 8).expect("disk stats");
+        assert_eq!(percentage_only.used_percent, 96);
+        assert!(!percentage_only.critical);
 
         let low_available = disk_readiness_from_counts(
             1024 * 1024 * 1024,

@@ -194,6 +194,89 @@ cold archive. The size is why the 50,000-slot bridge cannot replace Archive V2:
 it reduces hot duplication and working pressure but does not re-encode the
 existing large cold RocksDB into immutable deduplicated segments.
 
+### 2.3 Deterministic fixed-tip parity recovery (2026-07-22)
+
+The replacement parity procedure freezes one exact chain boundary before it
+opens any archive reader. Run `v05228-parity-20260722T021900Z` selected slot
+`9,861,624` with block hash
+`bd3f2a374d397b527cfaaf493b745a84cc6ee359a6d4911d27d54c6ad99ee844`
+and state root
+`3ab5e2799429aebd29606eff5e850679b8baf70f4f66860e9e4f051a2ccba473`.
+US and EU were started temporarily in sync-only mode with cold migration
+disabled until they reached that boundary; SEA and IN were held there. All four
+services were then stopped and required inactive before checkpoint creation.
+Each hot and cold checkpoint hard-linked immutable SST/blob files on the same
+filesystem, copied mutable RocksDB metadata and WAL files, verified the
+`CURRENT`-selected manifest, and proved source/target/link counts. No live
+state, archive, WAL, key, identity, or peer database was replaced or copied
+between validators.
+
+Two methods discovered during this execution are explicitly invalid on the
+current VPS fleet:
+
+- A full manifest over a RocksDB secondary attached to a live primary is not a
+  fixed historical view. Live compaction can replace SST files while the lazy
+  secondary scan is still opening them, so different late read failures are
+  not valid evidence of a common archive hole.
+- Keeping hard-linked checkpoints while live validators compact pins replaced
+  source SST allocation. Available space fell to about 8 GB on SEA even with
+  runtime cold migration deferred. On 200 GB roots the validator must remain
+  stopped for the full immutable-checkpoint scan; the checkpoint is removed
+  immediately after its report is preserved and accepted.
+
+The first immutable-checkpoint pass completed byte-identical reports on EU and
+IN at exact slot `9,861,624`: report SHA-256
+`924a414c23a44a31afcffa4e6e51e26f2a831cfd0873f366e57d471c0bf497f7`
+and public-history manifest root
+`1f713cc5634c8621f460cad70f8a4a92c11656fed1accb0489e6d69b629c8d90`.
+US and SEA returned apparent missing-block errors at slots `7,397,000` and
+`6,136,998`. Exact checkpoint block-range reads immediately proved both rows
+present, and a source-backed US import dry run classified its alleged missing
+row as identical with zero conflicts. The
+failed transient units had `LimitNOFILESoft=1024`; their cold-store lookup path
+suppressed a RocksDB read error into `None`, which the manifest layer reported
+as a missing block. Only US and SEA are being repeated against the unchanged
+checkpoints with explicit soft/hard `LimitNOFILE=1048576`, normal CPU priority,
+bounded cache, zero live writers, and separate stderr/report artifacts. The
+fleet must not restart until those reports match EU/IN category-for-category.
+
+The US rerun completed successfully after opening more than 3,300 files. It
+matched EU/IN in the fixed tip, state root, and every category except
+`account_snapshots`. Exact comparison found 21 US rows versus 15 EU/IN rows:
+six exact pre-repair values at slot `9,816,321` conflict with the three-node
+post-repair values, and six additional US rows at signed repair slot
+`9,830,991` contain those exact canonical post-repair values. A source-backed
+union dry run against EU, SEA, and IN reported six conflicts and six candidate
+inserts on each target and wrote nothing. The six keys are exactly the six
+accounts covered by the v0.5.228 replay-drift repair; consensus tip and state
+root remain identical.
+
+The v0.5.229 bridge keeps this correction non-destructive. A chain-, slot-,
+key-, serialized-hash-, and decoded-balance-bound canonical read maps only the
+six exact raw US before images to their independently proven after images.
+Unknown values remain visible and keep failing closed. The six repair-slot rows
+are then copied additively to the other validators. This preserves the raw US
+incident provenance while every manifest, export/import, and historical
+account read exposes the same 21-row logical history. It is a narrow legacy
+testnet compatibility bridge, not the Archive V2 account-delta format.
+
+This changes the mandatory operator method, not the archive acceptance bar:
+
+1. converge every validator at one deterministic slot and hash;
+2. stop and verify the real service is inactive;
+3. create an offline immutable hot+cold checkpoint on the same filesystem;
+4. run the signed manifest command with an explicit service-equivalent open-file
+   limit and capture stdout/stderr separately;
+5. require exact tip, state root, manifest root, category digests, exit status,
+   and empty stderr equality across all validators;
+6. preserve the reports, remove the checkpoints, remove all runtime-only
+   overrides, and only then start the fleet together.
+
+Archive V2 operational tooling must report cold-store read errors instead of
+converting them to absence, expose scan progress, support resumable category
+checkpoints, and preflight the effective file-descriptor limit against the
+number of hot/cold table files.
+
 ## 3. Current Storage Model And Its Limits
 
 ### 3.1 Current hot database
@@ -691,6 +774,62 @@ Future network policy should require:
 - enough consensus validators to preserve finality when archive nodes are
   offline.
 
+### 9.5 Offline proposers, quorum, and validator high availability
+
+Archive role and consensus membership are separate. Losing an archive origin
+must not remove its voting power or proposer turns unless a deterministic
+on-chain validator-set transition has occurred.
+
+Current Lichen BFT freezes eligible voting power for each height. A value has a
+supermajority when `vote_power * 3 >= total_eligible_stake * 2`; the denominator
+contains every active, non-pending validator above minimum stake, not only peers
+that this node currently sees. Leader selection uses deterministic weighted
+round-robin over that same eligible set with `sqrt(stake) + 1` weight. An absent
+round-0 proposer therefore remains eligible until consensus state removes it.
+The current base propose timeout is 800 ms; phase timeouts multiply by 1.5 per
+round and cap at 5 seconds. On proposal timeout, validators prevote nil and
+advance through the safe round-change path.
+
+For four equal-stake validators with one offline, the three live validators own
+75% and can still commit, but three signatures are required. Approximately 25%
+of round-0 proposer selections hit the offline identity and pay at least the
+800 ms proposal timeout. The expected average penalty from that first timeout
+alone is about 200 ms, consistent with an observed move from below 400 ms to
+roughly 566 ms. The original three-validator fleet needed two signatures and,
+when all three were healthy, had no offline proposer turns. With ten equal
+validators and one offline, nine retain 90% voting power and only about 10% of
+round-0 proposer turns miss, giving an approximately 80 ms first-timeout
+average penalty rather than slowing every block equally.
+
+Do not renormalize stake from each node's connectivity view. During a network
+partition, two sides would compute different denominators and proposer sets;
+that converts a liveness optimization into a safety and double-finality risk.
+Use these ordered mitigations instead:
+
+1. Keep each validator process healthy with the shared adaptive disk decision,
+   bounded checkpoints, systemd-only supervision, and automatic same-state
+   restart before its proposer turn is lost.
+2. Design active/passive high availability for one validator identity across
+   failure domains. Exactly one signer may hold a lease at a time, and durable
+   shared or replicated slashing-protection/WAL state must prevent both sites
+   signing the same height/round. Never run two independent active copies of
+   one validator key.
+3. Add deterministic downtime accounting and epoch-bound removal/re-activation
+   through consensus state. Evidence windows and re-entry rules must tolerate
+   transient partitions and cannot depend on one observer's peer list.
+4. Benchmark a shorter or latency-adaptive proposal window against p99
+   cross-region propagation, catch-up, archive-serving pressure, and delayed
+   honest proposer tests. Do not lower the current 800 ms constant during the
+   storage recovery release.
+5. Research a versioned backup-proposer or proposal-availability protocol only
+   with a complete safety proof, wire migration, equivocation rules, and mixed-
+   failure tests. This is a consensus upgrade, not an operations toggle.
+
+The immediate v0.5.229 release deliberately keeps 3-of-4 quorum, proposer
+selection, and phase timeouts unchanged. It restores storage/RPC readiness and
+archive parity first; validator high availability and any timeout/proposer
+upgrade require their own release gates.
+
 ## 10. Replication, Backup, And Disaster Recovery
 
 ### 10.1 Replication acknowledgement
@@ -789,6 +928,31 @@ must stop segment construction and remote caching before it consumes the
 hot-state reserve. Failure to persist consensus state remains a fatal stop;
 failure to cache a remote historical segment does not corrupt or alter
 consensus.
+
+Every readiness, RPC-origin admission, runtime shutdown, checkpoint, migration,
+and segment-builder check must consume this same calculated reserve and report
+the same limiting component. The current testnet violates that rule: the signed
+temporary runtime shutdown floor is 5 GiB, but RPC readiness independently
+fails at either 5 GiB available or 95% filesystem use. On the approximately
+207 GB VPS roots, the percentage branch rejects an origin with roughly 10.35 GB
+still available. That mismatch removed otherwise consensus-live origins from
+the edge and made Explorer availability appear worse than validator finality.
+
+Archive V2 therefore replaces independent magic thresholds with one capacity
+decision object containing at least `available_bytes`, `required_bytes`,
+`absolute_reserve_bytes`, `percentage_reserve_bytes`, `growth_reserve_bytes`,
+`staging_reserve_bytes`, `compaction_reserve_bytes`, `limiting_component`, and
+`action`. RPC may apply a separately named service margin, but it must be
+derived from the shared reserve and exposed as such; it must not silently
+reintroduce a larger shutdown floor through a filesystem-used percentage.
+
+The v0.5.229 emergency bridge removes the independent 95%-used decision from
+RPC readiness. RPC continues to expose `used_percent`, but its critical bit is
+temporarily derived from the explicit 5 GiB available-byte floor. The validator
+runtime remains the authority for its network-specific reserve: exact testnet
+uses 5 GiB during this bridge and every other production selector retains
+10 GiB. This restores one effective bridge threshold without pretending that
+the full adaptive Archive V2 capacity object is already implemented.
 
 ## 12. Security And Threat Model
 
@@ -1263,6 +1427,33 @@ this bridge.
   and served the public edge. This does not change the signed testnet runtime
   shutdown floor of 5 GiB, and it reinforces that Archive V2 plus larger disks
   remain urgent.
+- The deterministic replacement gate stopped all four at exact slot
+  `9,861,624`, created one immutable per-validator hot+cold checkpoint, and ran
+  the signed v0.5.228 scanner with `LimitNOFILE=1048576`. EU/IN produced
+  byte-identical reports with manifest root
+  `1f713cc5634c8621f460cad70f8a4a92c11656fed1accb0489e6d69b629c8d90`;
+  the corrected US and SEA reruns also exited zero with empty stderr. All
+  checkpoint and secondary directories were retired only after their reports
+  were preserved, then every validator restarted from its own database.
+- Exact diffing reduced the remaining fixed-tip mismatch to two derived-index
+  repairs. v0.5.229 canonicalizes only the six source-bound legacy US account
+  snapshot before images while preserving their raw bytes, then permits the
+  six repair-slot rows to be added to EU/SEA/IN. Separately, SEA is the exact
+  source for five receipt rows at legacy incomplete slot `5,276,000`; all five
+  canonical transaction bodies are byte-identical on SEA and EU. The signed
+  v0.5.228 source page contains exactly five rows (SHA-256
+  `c17771d2f4d8120ecdf9e4ca13dcda4b5afbe38ac66021248ad707e95eecb7c7`).
+  Dry-run import is conflict-free on all four targets: five inserts on
+  US/EU/IN and five identical rows on SEA. The exact keys and per-row proof are
+  retained in the archive parity repair plan.
+- A second safe cleanup pass removed package indexes/caches, bounded journals,
+  and old sudo I/O recordings on all four hosts. It did not delete state,
+  archives, WAL, keys, identities, rollback artifacts, or parity evidence.
+  Because cold history itself occupies roughly 176-179 GB per constrained
+  host, safe housekeeping cannot maintain the legacy percentage threshold;
+  v0.5.229's aligned readiness decision and the full segmented Archive V2 plan
+  are both required. The planned 2x960 GB NVMe RAID1 hosts remain the durable
+  capacity solution, not a reason to defer the bridge.
 
 ## 19. Acceptance Criteria
 

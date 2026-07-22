@@ -5,7 +5,7 @@ mainnet custody. It is intentionally step-by-step and gate-based. Do not skip a
 gate because mainnet genesis and custody routes handle real value.
 
 Written for the current mainnet package. Release target for this runbook is
-signed `v0.5.227`; keep `v0.5.227` as the signed restart-safe anchor. Preserve
+signed `v0.5.229`; keep `v0.5.229` as the signed restart-safe anchor. Preserve
 `v0.5.225` as pre-change evidence, not as a restartable rollback. Mainnet remains
 blocked until production storage, full-scope launch gates, independent review,
 and deployment approval pass.
@@ -57,7 +57,7 @@ and deployment approval pass.
   preserve replay compatibility for the June 2026 testnet after governed signer
   custody was lost; mainnet must launch from verified custody instead.
 - Do not deploy a release that changes consensus rules with a mixed-version
-  rolling restart. The current safe anchor `v0.5.227` must remain available
+  rolling restart. The current safe anchor `v0.5.229` must remain available
   until a newer signed restart-safe anchor is explicitly recorded.
 - `v0.5.224` introduces the canonical analytics v2 state projection. Deploy it
   only as a coordinated all-validator upgrade after proving every validator can
@@ -236,7 +236,7 @@ credentials, or keypair passwords.
 Use the signed release that passed CI. For the current package:
 
 ```bash
-export LICHEN_RELEASE_TAG=v0.5.227
+export LICHEN_RELEASE_TAG=v0.5.229
 export LICHEN_MAINNET_VPS_HOSTS="15.204.229.189 37.59.97.61 15.235.142.253 148.113.43.247"
 ```
 
@@ -281,7 +281,7 @@ cursor is not restart-safe on a mature activated chain. For recovery, explicitly
 reinstall the current signed safe anchor through the same release path:
 
 ```bash
-export LICHEN_RELEASE_TAG=v0.5.227
+export LICHEN_RELEASE_TAG=v0.5.229
 LICHEN_VERIFY_RELEASE_ONLY=1 bash scripts/rolling-release-deploy.sh mainnet
 bash scripts/rolling-release-deploy.sh mainnet
 ```

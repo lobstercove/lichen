@@ -54,7 +54,7 @@ impl StateStore {
         seek_key[..32].copy_from_slice(&pubkey.0);
         seek_key[32..].copy_from_slice(&target_slot.to_be_bytes());
 
-        let hot = Self::get_account_snapshot_at_or_before(
+        let hot = self.get_account_snapshot_at_or_before(
             self.db.as_ref(),
             CF_ACCOUNT_SNAPSHOTS,
             pubkey,
@@ -62,15 +62,14 @@ impl StateStore {
             &seek_key,
         )?;
         let cold = match self.cold_db.as_ref() {
-            Some(db) if db.cf_handle(COLD_CF_ACCOUNT_SNAPSHOTS).is_some() => {
-                Self::get_account_snapshot_at_or_before(
+            Some(db) if db.cf_handle(COLD_CF_ACCOUNT_SNAPSHOTS).is_some() => self
+                .get_account_snapshot_at_or_before(
                     db.as_ref(),
                     COLD_CF_ACCOUNT_SNAPSHOTS,
                     pubkey,
                     target_slot,
                     &seek_key,
-                )?
-            }
+                )?,
             _ => None,
         };
 
@@ -88,6 +87,7 @@ impl StateStore {
     }
 
     fn get_account_snapshot_at_or_before(
+        &self,
         db: &DB,
         cf_name: &str,
         pubkey: &Pubkey,
@@ -115,6 +115,8 @@ impl StateStore {
             if slot > target_slot {
                 continue;
             }
+            let value =
+                self.canonical_public_history_import_value("account_snapshots", &key, &value)?;
             if value.first() != Some(&0xBC) {
                 return Err(format!(
                     "Unsupported account snapshot encoding in {} at slot {}",

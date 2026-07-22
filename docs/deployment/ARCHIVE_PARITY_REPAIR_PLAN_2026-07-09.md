@@ -1751,6 +1751,175 @@ host-local files before retrieval. Under the current hard release rules, every
 release still runs one strict fixed-tip proof; archive/history changes, fresh
 networks, and mainnet can never reuse or waive that proof.
 
+## 2026-07-22 v0.5.228 Deterministic Checkpoint Gate
+
+Run `v05228-parity-20260722T021900Z` replaced the one-slot coordinated-stop
+race with a deterministic sync-only halt at slot `9,861,624`, then created one
+immutable hot+cold checkpoint per inactive validator. The installed and admin
+binary on every source remained the signed v0.5.228 validator SHA-256
+`4f91e2bb44ed07fcc4103003ebb40a0ee86f3a4d4a9a7017baeb01bf0ddf8bfd`.
+All checkpoint SST/blob files were same-filesystem hard links; mutable RocksDB
+metadata and WAL files were copied only after the service was inactive, and
+the `CURRENT` manifest plus source/target/link counts were verified. This is a
+read-only proof of each validator's own history, not a peer database copy.
+
+The earlier live-secondary attempt is rejected evidence. RocksDB secondaries
+are lazy views, and primary compaction replaced SSTs while the long scans were
+still opening them, producing different old-slot failures on different hosts.
+Restarting the validators while immutable checkpoints were retained was also
+rejected: compaction could not release the checkpoint-linked source files and
+reduced SEA to roughly 8 GB available. On these 200 GB filesystems, strict
+checkpoint scans run with every live writer stopped.
+
+EU and IN completed exact byte-identical reports with last slot `9,861,624`,
+state root
+`3ab5e2799429aebd29606eff5e850679b8baf70f4f66860e9e4f051a2ccba473`,
+manifest root
+`1f713cc5634c8621f460cad70f8a4a92c11656fed1accb0489e6d69b629c8d90`,
+and report SHA-256
+`924a414c23a44a31afcffa4e6e51e26f2a831cfd0873f366e57d471c0bf497f7`.
+Their stderr files were empty and exit status was zero. US and SEA's first
+checkpoint readers reported blocks `7,397,000` and `6,136,998` absent, but
+exact reads against those unchanged checkpoints immediately returned the full
+canonical blocks and hashes. The failed transient units exposed the cause:
+`LimitNOFILESoft=1024`, combined with a cold `get_block` path that turns a
+RocksDB cold-read error into absence. Only those two signed scans are repeated
+with explicit soft/hard `LimitNOFILE=1048576`, normal CPU/I/O priority, the
+same immutable tip, and separate artifacts. No chain or archive repair was
+executed because the alleged rows were present and identical.
+
+The corrected US scanner then completed with exit status zero, empty stderr,
+and no block/index error after crossing 3,300 simultaneously open files. Its
+report SHA-256 is
+`0c425ec27376db237e811def0f3a81509faf70098a76875e71bb51d56c2a052e`.
+The fixed tip and state root match EU/IN, and 20 of 21 category digests match
+exactly. `account_snapshots` is the sole divergence: US has 21 rows and digest
+`c2d860ad6ae6ed6a6df8cc21fe01eb32cd17d3a52f4a1c07b95d1a28d18c2623`
+instead of the 15-row EU/IN digest below, producing US manifest root
+`174eb73ca737fde3867b75af37caa9921cad26b7a4862bac468287b261eba733`.
+
+A v0.5.228 source-backed US-to-EU/SEA/IN dry run failed closed on every target
+with six same-key conflicts; it wrote nothing. Exact export comparison proved
+that the keys are precisely the six accounts in the signed US replay-drift
+repair. At slot `9,816,321`, US retains each exact serialized pre-repair image,
+while the other validators retain the exact post-repair image. US also has six
+post-repair rows at fixed repair slot `9,830,991`; those values are byte-equal
+to the other validators' canonical account images. The six-key public-history
+discrepancy is therefore recovery provenance in a derived archive index, not a
+consensus-state, block, transaction, or state-root mismatch.
+
+v0.5.229 resolves this without deleting or overwriting the raw before images.
+Only on exact `lichen-testnet-1`, exact slot `9,816,321`, and the six embedded
+account keys, a value is normalized only when its full serialized SHA-256 and
+decoded before balances match the source-proven image; the generated after
+image must also match its embedded SHA-256. Manifests, exports, imports,
+conflict classification, and point-in-time reads share that canonical view.
+Every unknown value remains unchanged and therefore fails parity closed. The
+six US repair-slot rows can then be imported additively into EU, SEA, and IN,
+so all validators expose the same 21 canonical rows while US retains its raw
+incident evidence.
+
+The accepted EU/IN reference report contains these exact per-category counts
+and SHA-256 digests; US and SEA must match every row, not only the composite
+root:
+
+| Category | Entries | SHA-256 |
+| --- | ---: | --- |
+| `slots` | 8,434,631 | `866d7cf0b0f0f2c98c3d9554f6e431e6e7fd1453cd7d292566e3508a350d7469` |
+| `blocks` | 8,434,631 | `9d575b63b059478abec57c865f234f6454995f7ddde98549ede00a708c3fb5d2` |
+| `transactions` | 5,273,131 | `ccc7bfabfd573465e6ca23a69088cc91a8db6edfd746c94617b967a52767f6e0` |
+| `tx_by_slot` | 5,273,131 | `f3860842cb5e29cd44046f82d49ed07889311b52e1f9ed373b8be592bf79d4cc` |
+| `tx_to_slot` | 5,273,131 | `e6a1b82411c269f82a8ff831d8c0db2222ae8930ec617cd83fa780dd1012c987` |
+| `tx_meta` | 4,858,307 | `76b791481b8511490a09595d898545bf80f44aa6dcb69e1ef99f4b25e248664f` |
+| `account_txs` | 5,091,964 | `42728c42bf38b97370a96762d3f9a7d692c5296fdc637435b439de8390ef9118` |
+| `events_by_slot` | 43 | `94a6274af1ed147d9391d4d9d48f1656059dc41ba3cf8f82f4b1e3dd4247f400` |
+| `events` | 43 | `efc12fd5d33a517f37ba804ff68156d21e16f5b9ad5c66bb9a10ffbdc4ec9401` |
+| `token_transfers` | 0 | `b632faca5cceb6d258f3c658c89d8ad678884c529f9fda13d7531e27a12ec9ec` |
+| `program_calls` | 40 | `d906dafda4ed27389eb054c03a0f0297fa0e6dbfc92e6019a8c0d1c65fa9bd2b` |
+| `evm_txs` | 0 | `4647f0a94236acce0108afdf2723e658ed104c05d833e1c67a6a59271a27b439` |
+| `evm_receipts` | 0 | `3fd04d1b123fb4c9b95f66a1cfac789e74096b367ee2ddacea30d7ff09c5a5fb` |
+| `evm_logs_by_slot` | 0 | `2681a700c75db50cf5854936c51d1bfbf8995f3c026f39f3acb44723941d86d2` |
+| `shielded_txs` | 24 | `6222d923b3620c56d124d665fb3291cc706043062e5b9df14348468f0752b426` |
+| `nft_activity` | 0 | `190861ffbb7a66d680d1be20f979b156dbdce4ebb7be1b55217a06b5a6b3715b` |
+| `market_activity` | 0 | `a6895e153b53342924ba885ef9d16ec63a1ce7ca6521f6a284768cbe956e890e` |
+| `dex_trades_by_pair` | 0 | `797684e3274cf1407f0589644ad646876621285016a61c518a3e473f5bffd702` |
+| `dex_trades_by_taker` | 0 | `b3df9a4554cba991fc399782200cc952f86082edcdab6011b59529949b38132e` |
+| `dex_trades_by_pair_taker` | 0 | `b21ab84adff8b3135eb7eb9b78005c86ce4b8e9be37246cb6985bdd32e1f85ea` |
+| `account_snapshots` | 15 | `c46f27f13b1b3209a1c262c3d24649acfbbf1ccfaf41ffec0e1b3f3da95b6b84` |
+
+SEA's corrected scanner also completed with exit status zero and empty stderr.
+Its report SHA-256 is
+`a8eb8bb020713c78b42f4fe224bdffeca1e1ac64422a54051b67a48afdf1b542`
+and manifest root is
+`d6c05579a2a5e7e804bd760642c1b84092f13db5cbb010b6bd1748e264c4fe0d`.
+SEA matches EU/IN in every category except `tx_meta`: SEA has `4,858,312`
+rows with digest
+`8c97a3613b2859d6273a1a9d7d91b34ee86e83309d33e434cfd2d863d7be40a0`,
+while US/EU/IN have `4,858,307` rows with the tabled digest. SEA's
+`account_snapshots` count and digest match EU/IN exactly.
+
+The five `tx_meta` rows were then isolated without a write by scanning only
+the raw receipt key set through RocksDB secondary instances with
+`LimitNOFILE=1048576`. SEA had five additional keys and EU had no key absent
+from SEA:
+
+- `13add5c59c02f6de72e87ba664881dec183190f6c840f5369d06c65694d04ca4`
+- `4afd4247c17b4147eef5f6ec338cf9b1ecb97370e73208097bbb062533e97cca`
+- `8e7fc57040a30abe573bc13812f7cd5e88821e4bc488726a210296b960337a96`
+- `970f1b9dafd99ef885da2110f85aeb74058db3b8a3681102e0b04c110f1a461e`
+- `979cae8d2a2199ff8c15b6e890aeec02da7b6c4e43bc7a2ada636594df8d7354`
+
+Every key maps to legacy incomplete slot `5,276,000`. SEA and EU contain
+byte-identical canonical transaction bodies for each hash; only SEA has the
+25-byte derived receipt value. All five receipt values are byte-identical
+(`f401` followed by 23 zero bytes, SHA-256
+`73126a0b078d36b0dace64215fecbd75d8e2695cc5f25796d5e5f5acb62da484`).
+The signed v0.5.228 canonical range exporter returned exactly these five SEA
+rows and no EU rows for slot `5,276,000`; the immutable source page SHA-256 is
+`c17771d2f4d8120ecdf9e4ca13dcda4b5afbe38ac66021248ad707e95eecb7c7`.
+Signed dry-run imports report five inserts, zero identical rows, and zero
+conflicts on US/EU/IN, while SEA reports five identical rows and zero inserts
+or conflicts. The final repair therefore imports this exact page additively
+into US/EU/IN after the signed v0.5.229 coordinated deployment. It does not
+alter the existing one-slot legacy-loss waiver, any block body, consensus
+state, WAL, key, identity, or existing archive row.
+
+v0.5.229 also provides a read-only bounded digest for repeating this isolation
+through the canonical hot+cold view without exporting every row:
+
+```bash
+/usr/local/bin/lichen-validator \
+  --no-watchdog \
+  --network testnet \
+  --db-path /var/lib/lichen/state-testnet \
+  --secondary-dir /var/tmp/lichen-range-manifest-secondary \
+  --cache-size-mb 64 \
+  --public-history-range-manifest tx_meta \
+  --from-slot 5276000 \
+  --to-slot 5276000 \
+  --chunk-size 20000
+```
+
+Run it with the validator stopped for release evidence, or against a secondary
+only for diagnosis. The report binds category, inclusive slot bounds, row and
+byte counts, first/last keys, and a length-delimited SHA-256 over every key and
+value. Supported bounded categories are `slots`, `blocks`, `transactions`,
+`tx_by_slot`, `tx_to_slot`, and `tx_meta`; unsupported categories fail closed.
+
+Required follow-up is fail-closed: propagate service-equivalent open-file
+limits into every archive admin unit; return cold-store read errors instead of
+`None`; preflight table-file count and effective limits; add progress and
+resumable per-category manifests; and reject live-secondary manifests as a
+release proof. After the accepted US report and exact row evidence were
+preserved, every checkpoint and temporary secondary was removed. US, EU, IN,
+and then SEA restarted from their own unchanged databases on the signed
+v0.5.228 binary with normal 50,000-slot retention. All four services are active
+with zero systemd restarts and matching installed/running executable hashes.
+The canonical API and Explorer are advancing. The pre-v0.5.229 95%-used RPC
+readiness branch can still remove US/EU from edge rotation even while their
+consensus processes remain live; v0.5.229 aligns readiness to the explicit
+5 GiB available-byte floor while retaining percentage telemetry.
+
 ## Tracker
 
 | ID | Work item | Evidence | Status |

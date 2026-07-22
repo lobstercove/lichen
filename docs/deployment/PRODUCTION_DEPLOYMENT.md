@@ -14,10 +14,11 @@ Use this document as the canonical workflow for:
 
 This runbook intentionally prefers the scripts that are verified in the current tree over older narrative docs.
 
-Current testnet release target for this runbook is signed `v0.5.228`; keep
-`v0.5.228` as the signed restart-safe anchor. Preserve signed `v0.5.225` as
+Current testnet release target for this runbook is signed `v0.5.229`; keep
+`v0.5.229` as the signed restart-safe anchor. Preserve signed `v0.5.225` as
 pre-change evidence, but do not restart it on the mature activated testnet
-because it contains the initial post-effects replay-boundary defect.
+because it contains the initial post-effects replay-boundary defect. Signed
+`v0.5.228` remains the immediate in-place rollback artifact for v0.5.229.
 
 Mainnet launch must use the gated checklist in [MAINNET_LAUNCH_RUNBOOK.md](MAINNET_LAUNCH_RUNBOOK.md). That runbook is the owner-facing package for launching the 4-validator mainnet first, then enabling custody only after post-genesis verification and route-specific dust tests pass.
 
@@ -2474,7 +2475,22 @@ the validator disk without changing canonical history.
 
 Use the `run_validator_admin` wrapper from the VPS preflight for every direct
 archive command. The current interactive `sudo` path can otherwise inherit a
-1,024-descriptor limit; the fleet scripts raise the limit automatically.
+1,024-descriptor limit. The fleet verifier sets the hard/soft limit with root
+`prlimit`, drops identity with `setpriv` without reapplying the PAM ceiling, and
+fails with status 98 unless both effective limits equal the requested value.
+Do not move the limit change after `sudo -u lichen` or make the effective-limit
+check best-effort.
+
+A live RocksDB secondary manifest is diagnostic only. The secondary opens SSTs
+lazily, so a long scan can encounter files replaced by primary compaction and
+produce an apparent historical hole. A release proof requires one deterministic
+common tip, every real validator service inactive, and an immutable hot+cold
+checkpoint per validator. On the current 200 GB VPS roots, keep the validators
+stopped while those checkpoints are scanned: restarting a live writer pins
+compaction replacements behind the checkpoint hard links. Preserve accepted
+reports, remove the checkpoints, and only then perform the coordinated start.
+The exact operational record is in
+[`ARCHIVE_V2_SEGMENTED_STORAGE_PLAN_2026-07-21.md`](ARCHIVE_V2_SEGMENTED_STORAGE_PLAN_2026-07-21.md#23-deterministic-fixed-tip-parity-recovery-2026-07-22).
 
 Before executing repair, prove that at least one verified source contains each
 historical slot from genesis to tip. If every live validator returns
@@ -2712,7 +2728,7 @@ activity green.
 
 Also, the wiped validator's new pubkey registers as a separate entry in the validator set. With N+1 validators and only N-1 online (original minus the ghost), BFT quorum (2/3+) may be unreachable.
 
-**Current release behavior**: `v0.5.228` is the signed testnet release target and
+**Current release behavior**: `v0.5.229` is the signed testnet release target and
 `v0.5.225` is the preserved signed pre-change binary, not a restartable
 rollback. The release fixes the inclusive
 initial post-effects recovery boundary and retains the exact-testnet 5 GiB
@@ -2722,7 +2738,18 @@ data remains available through hot/cold reads. It also supersedes the
 v0.5.227-only legacy replay-drift repair command, whose dry run fails closed
 before writing because it conflates bonded validator total and spendable
 balances. v0.5.228 validates those fields independently and requires the exact
-child-certified projected root. v0.5.226 was superseded before deployment
+child-certified projected root. v0.5.229 additionally normalizes only the six
+exact chain-, slot-, key-, and value-hash-bound account snapshot before images
+for public-history reads while preserving the raw US rows as provenance; the
+six repair-slot rows are added to the other validators without deletion or
+overwrite. It also removes the independent 95%-used RPC readiness threshold so
+the temporary explicit 5 GiB testnet reserve is not silently raised to roughly
+10.35 GiB on the current VPS roots; disk percentage remains visible as
+telemetry and the validator runtime keeps the 10 GiB reserve outside exact
+testnet. Finally, the exact five SEA-sourced `tx_meta` rows at legacy incomplete
+slot `5,276,000` are imported additively into US/EU/IN only after signed dry
+runs show five inserts and zero conflicts; no block, transaction, state, WAL,
+key, identity, or existing history row is overwritten. v0.5.226 was superseded before deployment
 because it contains the storage bridge but not the restart fix.
 State-repair snapshots carry consensus state and complete public-history
 categories, while public-history repair remains additive, source-backed,

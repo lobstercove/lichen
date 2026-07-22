@@ -50,6 +50,82 @@ const CANONICAL_LEDGER_MANIFEST_CATEGORIES: &[&str] = &[
     "tx_meta",
 ];
 
+/// The legacy testnet replay-drift incident left six validators' account
+/// snapshots with node-local before images at this slot. The signed recovery
+/// later wrote the canonical after images at its own fixed repair slot on the
+/// repaired validator. Public-history reads normalize only the six exact
+/// source-proven before rows below; the raw rows remain preserved on disk as
+/// recovery provenance.
+pub(super) const LEGACY_TESTNET_REPLAY_DRIFT_SNAPSHOT_SLOT: u64 = 9_816_321;
+
+pub(super) struct LegacyTestnetReplaySnapshotCorrection {
+    pub(super) pubkey: &'static str,
+    pub(super) before_spores: u64,
+    pub(super) before_spendable: u64,
+    pub(super) after_spores: u64,
+    pub(super) after_spendable: u64,
+    pub(super) before_value_sha256: &'static str,
+    pub(super) after_value_sha256: &'static str,
+}
+
+pub(super) const LEGACY_TESTNET_REPLAY_SNAPSHOT_CORRECTIONS:
+    &[LegacyTestnetReplaySnapshotCorrection] = &[
+    LegacyTestnetReplaySnapshotCorrection {
+        pubkey: "6JhhxYKc5tmXMttnrCNTCPnMkMWRQ96US3LtNRiFJjW",
+        before_spores: 49_599_406_026_359_855,
+        before_spendable: 49_599_406_026_359_855,
+        after_spores: 49_599_406_026_859_855,
+        after_spendable: 49_599_406_026_859_855,
+        before_value_sha256: "87ef2ee61c1c6441e67c4bafbfda61591007fcb200d6457eb93cb75f86aff3f1",
+        after_value_sha256: "d1970cf599ec5ba24ee7826f6abd825070407ce7a8d99073dcdbdf9aa43c7d28",
+    },
+    LegacyTestnetReplaySnapshotCorrection {
+        pubkey: "6RMeoigHdJWB47pEZEMSj5gvT7nbJPYSfPqjcur9vMJ",
+        before_spores: 592_701_782_223_010,
+        before_spendable: 492_701_782_223_010,
+        after_spores: 592_701_782_198_010,
+        after_spendable: 492_701_782_198_010,
+        before_value_sha256: "0662e6ff72e6dcd3ca0c2fa65f418123937627bfe1509d065495b5ce2d99e848",
+        after_value_sha256: "2e1744ff129260ed809e66ff70b1272f98c08669feb8250681e62b850a56906a",
+    },
+    LegacyTestnetReplaySnapshotCorrection {
+        pubkey: "6TghL7ioQz5R8pfrX1Qcfy8rNMzRP5F2pndmmRQ2sPm",
+        before_spores: 592_708_284_068_010,
+        before_spendable: 492_708_284_068_010,
+        after_spores: 592_708_283_743_010,
+        after_spendable: 492_708_283_743_010,
+        before_value_sha256: "1efd57f37c1a74d58a4848d723875b233926128bf3c41d5d93a66d279270403e",
+        after_value_sha256: "fbc7759bb678e6b88a20ac4ad933f80182403d63d3fad0400821fea4052d9414",
+    },
+    LegacyTestnetReplaySnapshotCorrection {
+        pubkey: "6XhsGituXoWSd1wLtutZgdJve6gLrdSi7YhEx1ZDFHW",
+        before_spores: 395_395_283_317_961,
+        before_spendable: 295_395_283_317_961,
+        after_spores: 395_395_283_292_961,
+        after_spendable: 295_395_283_292_961,
+        before_value_sha256: "d1d320909f8d1d5fbc65771d8c03e7dc46bad4ce5f33d16fda7427727de4d6c9",
+        after_value_sha256: "a19c9bc1fa5e5003b92a4fc0869f7c5a544c463e1c683d8e6ae9971836d3f253",
+    },
+    LegacyTestnetReplaySnapshotCorrection {
+        pubkey: "7LFPJ8gqmAtjbhfRg1P4VXmTQJV4AeZxzws3UsA6SVq",
+        before_spores: 592_702_797_313_010,
+        before_spendable: 492_702_797_313_010,
+        after_spores: 592_702_797_288_010,
+        after_spendable: 492_702_797_288_010,
+        before_value_sha256: "497f08bec9f241ba31a2abb98e893bdcfe4ee353b6112ea16545bb03ddfb37cf",
+        after_value_sha256: "9cc6915f32ce0e3f48a2004f0c1614fb41ca26f71033c9052289ea1aeb47ef3b",
+    },
+    LegacyTestnetReplaySnapshotCorrection {
+        pubkey: "8i6Y9q1i2bKJwBXfzWrAfKMwbdeZxFxH3U4HJRJEEri",
+        before_spores: 123_900_002_499_080_000,
+        before_spendable: 123_900_002_499_080_000,
+        after_spores: 123_900_002_498_980_000,
+        after_spendable: 123_900_002_498_980_000,
+        before_value_sha256: "f9a4960bb30d5a9ea98405a91cf5ff04481611dbf17e6c4d11ebed2b7feed18d",
+        after_value_sha256: "e5c746dae54223d8b759a5dd5d6156467ff27187788d98852083325413b1e3fc",
+    },
+];
+
 struct PublicHistoryDigestAccumulator {
     category: String,
     hasher: Sha256,
@@ -1803,12 +1879,14 @@ impl StateStore {
                 continue;
             }
 
+            let value = self.canonical_public_history_import_value(category, &key, &value)?;
+
             match entries.entry(key.to_vec()) {
                 std::collections::btree_map::Entry::Vacant(entry) => {
-                    entry.insert(value.to_vec());
+                    entry.insert(value);
                 }
                 std::collections::btree_map::Entry::Occupied(existing)
-                    if existing.get().as_slice() == value.as_ref() => {}
+                    if existing.get().as_slice() == value.as_slice() => {}
                 std::collections::btree_map::Entry::Occupied(_) => {
                     return Err(format!(
                         "Conflicting hot/cold {} snapshot row for key {}",
@@ -3909,7 +3987,82 @@ impl StateStore {
         }
     }
 
-    fn canonical_public_history_import_value(
+    fn is_legacy_testnet_replay_snapshot_history(&self) -> Result<bool, String> {
+        Ok(self
+            .get_metadata(crate::signing::CHAIN_ID_METADATA_KEY)?
+            .as_deref()
+            .is_some_and(|chain_id| chain_id == b"lichen-testnet-1"))
+    }
+
+    fn canonical_legacy_testnet_account_snapshot_value(
+        &self,
+        key: &[u8],
+        value: &[u8],
+    ) -> Result<Vec<u8>, String> {
+        if key.len() != 40
+            || u64::from_be_bytes(
+                key[32..40]
+                    .try_into()
+                    .map_err(|_| "Invalid account snapshot slot key".to_string())?,
+            ) != LEGACY_TESTNET_REPLAY_DRIFT_SNAPSHOT_SLOT
+            || !self.is_legacy_testnet_replay_snapshot_history()?
+        {
+            return Ok(value.to_vec());
+        }
+
+        let Some(correction) =
+            LEGACY_TESTNET_REPLAY_SNAPSHOT_CORRECTIONS
+                .iter()
+                .find(|correction| {
+                    Pubkey::from_base58(correction.pubkey).is_ok_and(|pubkey| key[..32] == pubkey.0)
+                })
+        else {
+            return Ok(value.to_vec());
+        };
+
+        let value_sha256 = hex::encode(Sha256::digest(value));
+        if value_sha256 == correction.after_value_sha256 {
+            return Ok(value.to_vec());
+        }
+        if value_sha256 != correction.before_value_sha256 {
+            return Ok(value.to_vec());
+        }
+        if value.first() != Some(&0xBC) {
+            return Err("Legacy testnet account snapshot before image has invalid encoding".into());
+        }
+
+        let mut account: Account =
+            deserialize_legacy_bincode(&value[1..], "legacy testnet account snapshot")?;
+        account.fixup_legacy();
+        if account.spores != correction.before_spores
+            || account.spendable != correction.before_spendable
+        {
+            return Err(format!(
+                "Legacy testnet account snapshot {} does not match its source-proven before balances",
+                correction.pubkey
+            ));
+        }
+        account.spores = correction.after_spores;
+        account.spendable = correction.after_spendable;
+
+        let mut canonical = vec![0xBC];
+        append_legacy_bincode(
+            &mut canonical,
+            &account,
+            "canonical legacy testnet account snapshot",
+        )?;
+        let canonical_sha256 = hex::encode(Sha256::digest(&canonical));
+        if canonical_sha256 != correction.after_value_sha256 {
+            return Err(format!(
+                "Canonical legacy testnet account snapshot {} does not match its source-proven after image",
+                correction.pubkey
+            ));
+        }
+        Ok(canonical)
+    }
+
+    pub(super) fn canonical_public_history_import_value(
+        &self,
         category: &str,
         key: &[u8],
         value: &[u8],
@@ -3947,11 +4100,13 @@ impl StateStore {
                 }
                 Ok(value.to_vec())
             }
+            "account_snapshots" => self.canonical_legacy_testnet_account_snapshot_value(key, value),
             _ => Ok(value.to_vec()),
         }
     }
 
     fn public_history_values_match(
+        &self,
         category: &str,
         key: &[u8],
         existing: &[u8],
@@ -3961,11 +4116,12 @@ impl StateStore {
             return Ok(public_history_manifest_block_value(key, existing)?
                 == public_history_manifest_block_value(key, incoming)?);
         }
-        let existing = Self::canonical_public_history_import_value(category, key, existing)?;
+        let existing = self.canonical_public_history_import_value(category, key, existing)?;
         Ok(existing == incoming)
     }
 
     fn classify_public_history_existing_row(
+        &self,
         category: &str,
         key: &[u8],
         existing: Option<&[u8]>,
@@ -3974,9 +4130,9 @@ impl StateStore {
         let Some(existing) = existing else {
             return Ok(PublicHistoryExistingRow::Missing);
         };
-        if Self::public_history_values_match(category, key, existing, incoming)? {
+        if self.public_history_values_match(category, key, existing, incoming)? {
             return Ok(PublicHistoryExistingRow::Identical(
-                Self::canonical_public_history_import_value(category, key, existing)?,
+                self.canonical_public_history_import_value(category, key, existing)?,
             ));
         }
         if category == "blocks" {
@@ -4048,7 +4204,7 @@ impl StateStore {
         let mut pending = 0usize;
 
         for (key, value) in entries {
-            let canonical = Self::canonical_public_history_import_value(category, key, value)?;
+            let canonical = self.canonical_public_history_import_value(category, key, value)?;
             report.source_rows = report.source_rows.saturating_add(1);
             let row_bytes = (key.len() as u64).saturating_add(canonical.len() as u64);
             report.source_bytes = report.source_bytes.saturating_add(row_bytes);
@@ -4063,13 +4219,13 @@ impl StateStore {
             let target_existing = target_db
                 .get_cf(&target_cf, key)
                 .map_err(|err| format!("Failed reading {}: {}", target_cf_name, err))?;
-            let hot_action = Self::classify_public_history_existing_row(
+            let hot_action = self.classify_public_history_existing_row(
                 category,
                 key,
                 hot_existing.as_deref(),
                 &canonical,
             )?;
-            let target_action = Self::classify_public_history_existing_row(
+            let target_action = self.classify_public_history_existing_row(
                 category,
                 key,
                 target_existing.as_deref(),

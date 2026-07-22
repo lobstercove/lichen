@@ -168,6 +168,10 @@ MAX_SLOT_SPREAD="${LICHEN_ARCHIVE_PARITY_MAX_SLOT_SPREAD:-180}"
 CACHE_SIZE_MB="${LICHEN_ARCHIVE_PARITY_CACHE_SIZE_MB:-256}"
 VALIDATOR_BIN="${LICHEN_ARCHIVE_PARITY_VALIDATOR_BIN:-/usr/local/bin/lichen-validator}"
 NOFILE_LIMIT="${LICHEN_ARCHIVE_PARITY_NOFILE_LIMIT:-1048576}"
+if ! [[ "$NOFILE_LIMIT" =~ ^[1-9][0-9]*$ ]]; then
+  echo "LICHEN_ARCHIVE_PARITY_NOFILE_LIMIT must be a positive integer" >&2
+  exit 2
+fi
 
 mkdir -p "$EVIDENCE_DIR"
 RUN_LOG="$EVIDENCE_DIR/run.log"
@@ -361,7 +365,7 @@ remote_manifest() {
   local remote_stderr="$remote_dir/stderr.log"
   local remote_status="$remote_dir/status"
   local remote_pid="$remote_dir/pid"
-  local wrapper command_q="" launch q_wrapper q_output q_stderr q_status q_pid
+  local wrapper command_q="" launch q_wrapper q_output q_stderr q_status q_pid q_nofile
   local poll_result status started_at now
   local -a command=(
     "$VALIDATOR_BIN"
@@ -388,10 +392,21 @@ out="$1"
 err="$2"
 status_file="$3"
 pid_file="$4"
-shift 4
+required_nofile="$5"
+shift 5
 printf "%s\n" "$BASHPID" >"${pid_file}.partial"
 mv -f "${pid_file}.partial" "$pid_file"
-ulimit -n '"$NOFILE_LIMIT"' 2>/dev/null || ulimit -n 65535 2>/dev/null || true
+soft_nofile=$(ulimit -Sn)
+hard_nofile=$(ulimit -Hn)
+if ! [[ "$soft_nofile" =~ ^[0-9]+$ && "$hard_nofile" =~ ^[0-9]+$ ]] ||
+   [ "$soft_nofile" -lt "$required_nofile" ] ||
+   [ "$hard_nofile" -lt "$required_nofile" ]; then
+  printf "archive manifest requires nofile=%s, effective soft=%s hard=%s\n" \
+    "$required_nofile" "$soft_nofile" "$hard_nofile" >"$err"
+  printf "%s\n" 98 >"${status_file}.partial"
+  mv -f "${status_file}.partial" "$status_file"
+  exit 98
+fi
 "$@" >"${out}.partial" 2>"$err"
 status=$?
 if [ "$status" -eq 0 ]; then mv -f "${out}.partial" "$out"; fi
@@ -403,14 +418,21 @@ exit "$status"'
   printf -v q_stderr %q "$remote_stderr"
   printf -v q_status %q "$remote_status"
   printf -v q_pid %q "$remote_pid"
-  printf -v launch 'sudo -u lichen nohup bash -c %s bash %s %s %s %s%s >/dev/null 2>&1 </dev/null &' \
-    "$q_wrapper" "$q_output" "$q_stderr" "$q_status" "$q_pid" "$command_q"
+  printf -v q_nofile %q "$NOFILE_LIMIT"
+  # `sudo -u lichen` applies the host's PAM nofile ceiling after `prlimit`.
+  # Set the limit as root and drop identity with setpriv so the scanner keeps
+  # the requested hard/soft values; the wrapper verifies both before reading.
+  printf -v launch 'sudo prlimit --nofile=%s:%s -- setpriv --reuid=lichen --regid=lichen --init-groups -- nohup bash -c %s bash %s %s %s %s %s%s >/dev/null 2>&1 </dev/null &' \
+    "$NOFILE_LIMIT" "$NOFILE_LIMIT" "$q_wrapper" "$q_output" "$q_stderr" \
+    "$q_status" "$q_pid" "$q_nofile" "$command_q"
 
   if [ "$mode" != "offline" ]; then
     ssh_run "$host" "sudo rm -rf '$secondary_dir'"
   fi
   ssh_run "$host" "
     set -e
+    command -v prlimit >/dev/null
+    command -v setpriv >/dev/null
     sudo install -d -o lichen -g lichen -m 0700 '$remote_dir'
     if sudo -u lichen test -s '$remote_status'; then exit 0; fi
     if sudo -u lichen test -s '$remote_pid' && sudo -u lichen kill -0 \$(sudo -u lichen cat '$remote_pid') 2>/dev/null; then exit 0; fi

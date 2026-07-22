@@ -7,7 +7,7 @@ Ultra-low fees · Sub-second BFT block commitment · Agent-native identity · Mu
 [![License: Apache--2.0%20%2B%20MIT](https://img.shields.io/badge/License-Apache--2.0%20%2B%20MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.88+-00C9DB.svg)](https://www.rust-lang.org)
 
-**Current testnet release and restart-safe anchor:** `v0.5.228`. Signed `v0.5.225` is preserved as the pre-change artifact but is not restart-safe on the legacy testnet. Signed `v0.5.227` fixed the restart recovery boundary and is safe for canonical nodes, but its legacy one-node repair command fails closed because it conflates total and spendable balances; do not execute that command. v0.5.228 corrects the source-bound repair and retains the emergency bridge: complete hot/cold archive reads, a 5 GiB floor only for the exact testnet selector, and a 50,000-slot default hot/cold boundary while Archive V2 is implemented. The existing testnet has an explicit legacy-history waiver; fresh networks and mainnet fail closed on incomplete genesis-to-tip history.
+**Current testnet release target and restart-safe anchor:** `v0.5.229`. Signed `v0.5.228` remains the immediate rollback anchor. v0.5.229 preserves the raw six-row US recovery before image while exposing the exact source-proven canonical account-snapshot history and allowing the six repair-slot rows to be added to the other validators. It retains complete hot/cold archive reads, a 5 GiB floor only for the exact testnet selector, and a 50,000-slot default hot/cold boundary while Archive V2 is implemented. The existing testnet has an explicit legacy-history waiver; fresh networks and mainnet fail closed on incomplete genesis-to-tip history.
 
 **Website:** https://lichen.network  
 **Documentation:** https://developers.lichen.network  
@@ -135,9 +135,9 @@ https://github.com/lobstercove/lichen/releases/download/<tag>/lichen-validator-<
 ```
 
 Examples:
-- `https://github.com/lobstercove/lichen/releases/download/v0.5.228/lichen-validator-linux-x86_64.tar.gz`
-- `https://github.com/lobstercove/lichen/releases/download/v0.5.228/lichen-validator-darwin-aarch64.tar.gz`
-- `https://github.com/lobstercove/lichen/releases/download/v0.5.228/lichen-validator-windows-x86_64.tar.gz`
+- `https://github.com/lobstercove/lichen/releases/download/v0.5.229/lichen-validator-linux-x86_64.tar.gz`
+- `https://github.com/lobstercove/lichen/releases/download/v0.5.229/lichen-validator-darwin-aarch64.tar.gz`
+- `https://github.com/lobstercove/lichen/releases/download/v0.5.229/lichen-validator-windows-x86_64.tar.gz`
 
 Linux x86_64:
 
