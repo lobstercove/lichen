@@ -1,7 +1,7 @@
 # Archive V2 Segmented Storage And Validator Roles Plan
 
 **Created:** 2026-07-21
-**Status:** Owner-approved architecture direction; v0.5.227 emergency/restart-recovery candidate pending signed release gates; Archive V2 implementation pending
+**Status:** Owner-approved architecture direction; signed v0.5.228 emergency bridge live on all four testnet validators; strict fixed-tip archive parity still open after a one-slot coordinated-stop race; Archive V2 implementation pending
 **Scope:** Testnet, future mainnet, archive-capable validators, constrained validator agents, historical RPC, sync, backup, recovery, and capacity operations
 **Related policy:** [TESTNET_STATE_AND_SYNC_POLICY.md](TESTNET_STATE_AND_SYNC_POLICY.md)
 **Current incident baseline:** [ARCHIVE_PARITY_REPAIR_PLAN_2026-07-09.md](ARCHIVE_PARITY_REPAIR_PLAN_2026-07-09.md)
@@ -1188,31 +1188,81 @@ this bridge.
 
 ### 18.1 Emergency bridge execution record (2026-07-21)
 
-- Safe package/journal cleanup left approximately 12.1 GB free on US, 11.9 GB
-  on EU, 13.0 GB on SEA, and 14.0 GB on IN. No state, archive, WAL, key,
-  identity, access configuration, backup, or signed rollback artifact was
-  deleted.
-- Stopped-node write-first migration established a 50,000-slot hot boundary:
-  US migrated 50,000 blocks at cutoff `9,780,991`; EU migrated 50,026 blocks
-  and SEA/IN 50,000 blocks at cutoff `9,785,779`. Post-migration v0.5.227 dry
-  runs on all four reported zero eligible rows, decode errors, hash mismatches,
-  missing/conflicting cursors, missing/mismatched transaction indexes,
-  integrity errors, and conflicts.
-- The complete signed v0.5.227 executable set was staged and promoted on all
-  four while validators were stopped. The running validator SHA-256 on the
-  three active nodes is
-  `73355b766adeade94fd4a4aec460d51a1d839f780cc2edb10ec38fd7140062d3`;
-  each host retains the complete pre-v0.5.227 executable set.
-- US remains stopped at slot `9,830,991`. Its v0.5.227 repair dry run rejected
-  the first bonded validator account and wrote nothing. EU/SEA/IN resumed from
-  common slot `9,835,779`; their preserved WALs converged at BFT round 21 and
-  committed block `9,835,780` with hash prefix `7327be51` before returning to
-  normal round-0/1 production.
-- Public `testnet-rpc.lichen.network`, `testnet-api.lichen.network`, and the
-  Explorer same-origin `/api/testnet` route returned HTTP 200 with advancing
-  slots. `getHealth` returned `status=ok`, and the Explorer root returned HTTP
-  200. This is temporary three-validator availability pending the signed
-  v0.5.228 repair and complete four-validator parity gate.
+- Safe package-cache, bounded-journal, and generated-temporary cleanup left
+  approximately 12.1 GB free on US, 11.9 GB on EU, 13.0 GB on SEA, and 14.0 GB
+  on IN before the release work. Package caches were empty and retained
+  journals were only about 70 MB on the most constrained nodes, so there was
+  no further meaningful safe cleanup. No state, archive, WAL, key, identity,
+  access configuration, provider backup, signed release evidence, or rollback
+  artifact was deleted. After migration, catch-up, and the parity scan, the
+  observed available space was approximately 9.4 GB US, 9.6 GB EU, 11 GB SEA,
+  and 12 GB IN.
+- Stopped-node write-first migration established the temporary 50,000-slot hot
+  boundary: US migrated 50,000 blocks at cutoff `9,780,991`; EU migrated
+  50,026 blocks and SEA/IN 50,000 blocks at cutoff `9,785,779`. Post-migration
+  v0.5.227 audits on all four reported zero eligible rows, decode errors, hash
+  mismatches, missing/conflicting cursors, missing/mismatched transaction
+  indexes, integrity errors, and conflicts. The first live v0.5.228 maintenance
+  pass then moved 3,599 additional US blocks and 300 blocks on each other
+  validator, preserving the configured boundary.
+- v0.5.228 is signed at commit
+  `da501f084a63cb7eb764eaf03dec02c7d48b0f8d`. Hosted release workflow
+  `29857047073` passed. The Linux archive SHA-256 is
+  `ff245553b8852d7ceb8a38d4c5cc979ebd9c99b9d739172f6798c22d08f9e650`;
+  `SHA256SUMS` and its detached post-quantum signature were downloaded again
+  and verified against signer
+  `8HitBNnh8qbhfne5NCv2yHrQFoD6xbmHcWaUSgCGtsk`. The exact validator executable
+  SHA-256 is
+  `4f91e2bb44ed07fcc4103003ebb40a0ee86f3a4d4a9a7017baeb01bf0ddf8bfd`.
+  All four installed and running executables match it, and the complete signed
+  v0.5.227 set remains available on every host.
+- The signed US repair dry run at fixed tip `9,830,991` required exactly six
+  corrections and projected root
+  `937e9d82772121e1f8a180c7bc3e7edaeb2a2538649d9c3e0287fb084078ec4c`
+  from before root
+  `24084cf1e8b1094bc5c77515d272a8fe1b0f2d98f04ca2b4dcedee3001dc51cb`.
+  Execution with confirmation `legacy-testnet-post-effect-replay-drift:v2`
+  produced that exact root. Its immediate rerun reported
+  `already_repaired=true`, zero corrections, and the same root.
+- All four validators were promoted only while stopped and then started
+  together from their own preserved state. US caught up without root, repair,
+  RocksDB, or restart errors. A fixed block at slot `9,850,830` matched between
+  independent nodes with block hash
+  `6da795bd44fef39bd9e598d83e461090df2288dc9d6c81dd14e2322b2025836d`
+  and state root
+  `94fb5ed5fb448fe4b37e3d983bf186066bfddf7dc8e1e0fca9166beca7e0a82c`.
+  A fresh 300-block sample contained every validator and no missing blocks.
+- The subsequent strict offline manifest attempt stopped all four concurrently
+  at the live boundary. India completed at `9,852,186` with manifest root
+  `daf085f259922eee006f28e28c49f1eff1a81934e3a66102e25cdbaf46f34ab8`;
+  EU completed at `9,852,185` with root
+  `76a2dcd80f599057521fc0febb0d3f0884c6b58a286d6e9dc48e6cbca7dddda2`.
+  The category diff is identical through the EU tip: only `slots`, `blocks`,
+  `transactions`, `tx_by_slot`, and `tx_to_slot` contain India's one terminal
+  block and its one transaction; every other manifest category matches. This
+  is a one-slot stop-arrival race, not missing historical data or a conflicting
+  block. Because exact `last_slot` equality was already impossible, the
+  read-only US and SEA scans were terminated after roughly 148 minutes rather
+  than extend public downtime. Their partial outputs were never promoted and
+  no chain data was written. The strict fixed-tip parity gate therefore remains
+  **open** and must be repeated with a deterministic common-tip halt or an
+  immutable common-tip checkpoint; this execution must not be cited as a pass.
+- All four services were restarted together after that diagnostic. Each is
+  active with zero systemd restarts and the exact signed v0.5.228 executable.
+  A post-restart continuous 400-block window `9,851,945..9,852,344` had zero
+  missing blocks and contributions from all four validator identities
+  (`112`, `107`, `105`, and `76`). Canonical
+  `testnet-api.lichen.network` and Explorer `/api/testnet` returned advancing
+  `status=ok` results, Explorer root and block routes returned HTTP 200, and
+  both canonical and same-origin WebSocket routes returned HTTP 101. The old
+  `testnet-rpc.lichen.network` hostname timed out during the final check and is
+  not accepted as healthy; canonical API and Explorer routing remained live.
+- US and EU can be consensus-live while their local public RPC readiness is
+  `degraded/disk_critical` because that separate guard trips at 95% used even
+  with approximately 9.9-10.2 GB available. SEA and IN were below that guard
+  and served the public edge. This does not change the signed testnet runtime
+  shutdown floor of 5 GiB, and it reinforces that Archive V2 plus larger disks
+  remain urgent.
 
 ## 19. Acceptance Criteria
 
