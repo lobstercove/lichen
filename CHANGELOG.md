@@ -27,6 +27,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Pins the authenticated genesis hash for validator-announcement capability
   checks so consensus-role denial or a verified-cache source outage cannot
   reject validator peers or stall quorum through an unrelated deep read.
+- Keeps an established nonzero validator state out of the fresh-join genesis
+  wait when an admitted verified cache correctly fails a public slot-0 read
+  during source outage; fresh joiners still require canonical genesis sync.
+- Requires a sustained block-production burst within the bounded BFT recovery
+  window between sequential Archive V2 repair and source-outage restarts, so
+  each recovery reaches live consensus before the next deliberate interruption.
 
 ## [0.5.234] - 2026-08-04
 

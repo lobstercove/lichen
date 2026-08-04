@@ -2880,6 +2880,19 @@ fn should_use_join_checkpoint_bootstrap(
     is_joining_network || (current_tip == 0 && has_seed_peers)
 }
 
+fn pre_consensus_genesis_is_ready(
+    is_joining_network: bool,
+    public_genesis_probe: impl FnOnce() -> bool,
+) -> bool {
+    // An established nonzero state was already classified as Resume from its
+    // canonical local tip and chain configuration. After Archive V2 admission,
+    // a verified-cache node can intentionally fail a public slot-0 read while
+    // its source is unavailable; that must not turn a routine restart into a
+    // permanent pre-consensus genesis wait. Fresh joiners still fail closed
+    // until slot 0 has actually arrived through their sync path.
+    !is_joining_network || public_genesis_probe()
+}
+
 fn needs_pre_consensus_tip_catch_up(current_slot: u64, network_slot: u64) -> bool {
     // Peer gossip/RPC can report a live tip a few slots ahead while this node
     // is actively applying blocks. Requiring exact equality here can keep a
@@ -28888,7 +28901,9 @@ async fn run_validator() {
             .count();
         let pre_consensus_sync_started = Instant::now();
         loop {
-            let has_genesis = state.get_block_by_slot(0).unwrap_or(None).is_some();
+            let has_genesis = pre_consensus_genesis_is_ready(is_joining_network, || {
+                state.get_block_by_slot(0).unwrap_or(None).is_some()
+            });
             if !has_genesis {
                 info!(
                     "⏳ Waiting for genesis sync from network (tip: {})",
@@ -41718,6 +41733,22 @@ mod tests {
         );
         assert!(!should_use_join_checkpoint_bootstrap(false, 42, true));
         assert!(!should_use_join_checkpoint_bootstrap(false, 0, false));
+    }
+
+    #[test]
+    fn resumed_archive_role_does_not_probe_deep_genesis_before_consensus() {
+        let probe_called = std::cell::Cell::new(false);
+        assert!(pre_consensus_genesis_is_ready(false, || {
+            probe_called.set(true);
+            false
+        }));
+        assert!(
+            !probe_called.get(),
+            "an established resume must not depend on a public deep-history read"
+        );
+
+        assert!(!pre_consensus_genesis_is_ready(true, || false));
+        assert!(pre_consensus_genesis_is_ready(true, || true));
     }
 
     #[test]

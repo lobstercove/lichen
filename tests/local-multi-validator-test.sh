@@ -331,7 +331,7 @@ wait_for_cluster_slot_spread() {
     local max_spread=$1
     local timeout_seconds=$2
     local deadline=$((SECONDS + timeout_seconds))
-    local maximum minimum slot spread live
+    local maximum minimum slot spread live validator_num
 
     while (( SECONDS < deadline )); do
         maximum=0
@@ -577,7 +577,7 @@ verify_chain_producing() {
     ok "Chain alive ($label): $diff blocks in ${seconds}s (slot $s1 → $s2)"
 }
 
-verify_chain_recovers_after_registration() {
+verify_chain_recovers_within_bft_window() {
     local label=$1 rpc=$2
     local initial_window_secs=10 recovery_window_secs=50 recovery_min_blocks=10
     local s1 s2 diff
@@ -592,17 +592,17 @@ verify_chain_recovers_after_registration() {
         return 0
     fi
 
-    warn "Chain entered bounded BFT recovery after registration: ${diff} block(s) in ${initial_window_secs}s"
-    # A membership transition can land while peers occupy different BFT
-    # rounds. Each protocol phase backs off to a 5s cap, so permit enough time
-    # for several complete rounds, then require a sustained recovery burst
-    # rather than accepting one late block.
+    warn "Chain entered bounded BFT recovery ($label): ${diff} block(s) in ${initial_window_secs}s"
+    # A membership transition or rapid own-state restart can land while peers
+    # occupy different BFT rounds. Each protocol phase backs off to a 5s cap,
+    # so permit enough time for several complete rounds, then require a
+    # sustained recovery burst rather than accepting one late block.
     for _ in $(seq 1 $((recovery_window_secs / 2))); do
         sleep 2
         s2=$(get_slot "$rpc")
         diff=$((s2 - s1))
         if [[ "$diff" -ge "$recovery_min_blocks" ]]; then
-            ok "Chain recovered after registration: $diff blocks in at most $((initial_window_secs + recovery_window_secs))s (slot $s1 → $s2)"
+            ok "Chain recovered ($label): $diff blocks in at most $((initial_window_secs + recovery_window_secs))s (slot $s1 → $s2)"
             return 0
         fi
     done
@@ -612,7 +612,7 @@ verify_chain_recovers_after_registration() {
         lp="$(log_path $n)"
         [[ -f "$lp" ]] && { warn "V${n} log tail:"; tail -20 "$lp"; }
     done
-    fail "Chain did not recover after registration: only $diff blocks in $((initial_window_secs + recovery_window_secs))s (slot $s1 → $s2)"
+    fail "Chain did not recover ($label): only $diff blocks in $((initial_window_secs + recovery_window_secs))s (slot $s1 → $s2)"
 }
 
 verify_canonical_commit_parity() {
@@ -1496,6 +1496,9 @@ restart_archive_v2_validator() {
         fail "V${validator_num} failed Archive V2 ${reason} restart"
     }
     wait_for_archive_v2_runtime_convergence "V${validator_num} ${reason} restart"
+    verify_chain_recovers_within_bft_window \
+        "after V${validator_num} Archive V2 ${reason} restart" \
+        "$V1_RPC"
 }
 
 wait_for_archive_v2_runtime_convergence() {
@@ -1582,6 +1585,7 @@ verify_archive_v2_runtime_role_matrix() {
         fail "V4 did not restart after replica-backed segment repair"
     }
     wait_for_archive_v2_runtime_convergence "V4 replica-backed repair"
+    verify_chain_producing "after V4 replica-backed Archive V2 repair" "$V1_RPC" 10
     [[ "$(archive_v2_rpc_block_hash "$(rpc_port 4)" 0)" == "$genesis_hash" ]] \
         || fail "Full-archive V4 did not recover deep history from the repaired replica"
     ok "Corrupt full-archive segment was quarantined and recovered from another replica"
@@ -1622,6 +1626,7 @@ verify_archive_v2_runtime_role_matrix() {
         fail "V2 did not restart for cache-corruption recovery"
     }
     wait_for_archive_v2_runtime_convergence "V2 cache-corruption restart"
+    verify_chain_producing "after V2 verified-cache corruption recovery" "$V1_RPC" 10
     [[ "$(archive_v2_rpc_block_hash "$(rpc_port 2)" 0)" == "$genesis_hash" ]] \
         || fail "Verified-cache V2 did not quarantine and refetch its corrupt object"
     find "$v2_cache/quarantine" -type f -print -quit | grep -q . \
@@ -1649,7 +1654,9 @@ verify_archive_v2_runtime_role_matrix() {
         fail "Verified-cache V2 served deep history with both cache and source unavailable"
     fi
     before_slot="$(get_slot "$V1_RPC")"
-    verify_chain_producing "during verified-cache source outage" "$V1_RPC" 10
+    verify_chain_recovers_within_bft_window \
+        "during verified-cache source outage" \
+        "$V1_RPC"
     after_slot="$(get_slot "$V1_RPC")"
     [[ "$after_slot" -gt "$before_slot" ]] \
         || fail "Consensus did not advance independently of the Archive V2 source outage"
@@ -2204,7 +2211,7 @@ for V_NUM in $(seq "$JOIN_START" "$MAX_VALIDATORS"); do
     done
 
     # Verify chain didn't stall
-    verify_chain_recovers_after_registration "during V${V_NUM} registration" "$V1_RPC"
+    verify_chain_recovers_within_bft_window "during V${V_NUM} registration" "$V1_RPC"
 
     # Wait for activation warmup after registration.
     ACTIVATION_SLOT=$((REG_SLOT + WARMUP_SLOTS + 10))
