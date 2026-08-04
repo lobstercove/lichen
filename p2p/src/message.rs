@@ -601,7 +601,7 @@ mod tests {
             123,
             456,
             &fingerprint,
-            "0.5.230",
+            "0.5.231",
             Some(&capability),
         )
         .unwrap();
@@ -614,7 +614,7 @@ mod tests {
             123,
             456,
             &fingerprint,
-            "0.5.230",
+            "0.5.231",
             Some(&tampered),
         )
         .unwrap();
@@ -623,7 +623,7 @@ mod tests {
             123,
             456,
             &fingerprint,
-            "0.5.230",
+            "0.5.231",
             None,
         )
         .unwrap();

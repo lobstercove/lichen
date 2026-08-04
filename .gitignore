@@ -85,6 +85,7 @@ yarn-error.log*
 # ── Test artifacts / output ─────────────────────────────────
 /tests/*
 !/tests/local-multi-validator-test.sh
+!/tests/archive-v2-https-source.py
 !/tests/e2e-launchpad.js
 !/tests/e2e-volume.js
 !/tests/helpers/

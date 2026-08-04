@@ -12,6 +12,9 @@ const entrypoints = [
     'tests/e2e-volume.js',
     'tests/e2e-launchpad.js',
 ];
+const supportPaths = [
+    'tests/archive-v2-https-source.py',
+];
 const policyPaths = [
     'docs/deployment/ARCHIVE_PARITY_REPAIR_PLAN_2026-07-09.md',
     'docs/deployment/TESTNET_STATE_AND_SYNC_POLICY.md',
@@ -138,6 +141,9 @@ function extractWorkflowJob(workflow, jobName) {
 
 const harness = fs.readFileSync(repoPath(harnessPath), 'utf8');
 verifySource(harnessPath);
+for (const supportPath of supportPaths) {
+    verifySource(supportPath);
+}
 for (const policyPath of policyPaths) {
     verifySource(policyPath);
 }
