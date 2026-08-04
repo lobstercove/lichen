@@ -30,7 +30,8 @@ use lichen_core::archive_v2::{
     ArchiveV2CapacityGuard, ArchiveV2CapacityInputs, ArchiveV2CapacityThresholds,
     ArchiveV2CapacityTotals, ArchiveV2Catalog, ArchiveV2DirectorySource, ArchiveV2ObjectSource,
     ArchiveV2PressureAction, ArchiveV2Reader, ArchiveV2ReaderConfig, ArchiveV2Role,
-    ArchiveV2RoleConfig, ArchiveV2RoleRequirements, ARCHIVE_V2_ROLE_CONFIG_VERSION,
+    ArchiveV2RoleAdmission, ArchiveV2RoleConfig, ArchiveV2RoleRequirements,
+    ARCHIVE_V2_MIN_RECENT_HISTORY_SLOTS, ARCHIVE_V2_ROLE_CONFIG_VERSION,
 };
 use lichen_core::codec::{
     deserialize_legacy_bincode_from, deserialize_legacy_bincode_strict, serialize_legacy_bincode,
@@ -2322,19 +2323,19 @@ fn validate_announced_archive_v2_capability(
 fn admit_announced_archive_v2_capability(
     capability: Option<&ArchiveV2CapabilityAdvertisement>,
     chain_id: &str,
-    state: &StateStore,
+    authoritative_genesis_hash: Option<Hash>,
 ) -> Result<Option<ArchiveV2CapabilityAdvertisement>, String> {
     let Some(capability) = capability else {
         return Ok(None);
     };
-    let Some(genesis) = state.get_block_by_slot(0)? else {
+    let Some(genesis_hash) = authoritative_genesis_hash else {
         // A fresh joiner can authenticate the capability-bound announcement
         // signature before it has canonical slot 0, but it cannot authenticate
         // the advertised archive identity yet. Periodic announcements will be
         // reconsidered after genesis sync.
         return Ok(None);
     };
-    validate_announced_archive_v2_capability(capability, chain_id, genesis.hash())?;
+    validate_announced_archive_v2_capability(capability, chain_id, genesis_hash)?;
     Ok(Some(capability.clone()))
 }
 
@@ -18962,6 +18963,7 @@ fn activate_runtime_archive_v2(
     config: RuntimeArchiveV2Config,
     chain_id: &str,
     data_dir: &Path,
+    local_dev_mode: bool,
 ) -> Result<ArchiveV2CapabilityAdvertisement, String> {
     let catalog_path = config.root.join("catalog.av2");
     let catalog = ArchiveV2Catalog::load(&catalog_path).map_err(|error| error.to_string())?;
@@ -19095,10 +19097,8 @@ fn activate_runtime_archive_v2(
         network_archive_policy_satisfied: true,
         no_archive_operation_in_progress: true,
     };
-    let admission = config
-        .role_config
-        .admit(&requirements)
-        .map_err(|error| error.to_string())?;
+    let admission =
+        admit_runtime_archive_v2_role(&config.role_config, &requirements, local_dev_mode)?;
     if !admission.admitted {
         return Err(format!(
             "Archive V2 {} role admission failed: {}",
@@ -19189,6 +19189,29 @@ fn activate_runtime_archive_v2(
         admission.serves_deep_history
     );
     Ok(capability)
+}
+
+fn admit_runtime_archive_v2_role(
+    role_config: &ArchiveV2RoleConfig,
+    requirements: &ArchiveV2RoleRequirements,
+    local_dev_mode: bool,
+) -> Result<ArchiveV2RoleAdmission, String> {
+    if role_config.recent_history_slots == 0 {
+        return Err("Archive V2 recent-history retention must be non-zero".to_string());
+    }
+    if local_dev_mode && role_config.recent_history_slots < ARCHIVE_V2_MIN_RECENT_HISTORY_SLOTS {
+        // Keep the library and every public-network path on the 50,000-slot
+        // minimum. Only an explicit --dev-mode validator may scale the same
+        // admission boundary down for the accelerated four-validator gate.
+        let mut policy_config = role_config.clone();
+        policy_config.recent_history_slots = ARCHIVE_V2_MIN_RECENT_HISTORY_SLOTS;
+        return policy_config
+            .admit(requirements)
+            .map_err(|error| error.to_string());
+    }
+    role_config
+        .admit(requirements)
+        .map_err(|error| error.to_string())
 }
 
 fn validate_deferred_runtime_archive_v2(
@@ -20167,6 +20190,7 @@ async fn run_validator() {
                 config,
                 &genesis_config.chain_id,
                 &data_dir_path,
+                dev_mode,
             ) {
                 Ok(capability) => {
                     match restore_archive_v2_fresh_sync_admission(&state, &capability) {
@@ -24667,6 +24691,22 @@ async fn run_validator() {
         let validator_pubkey_for_announce_handler = validator_pubkey;
         let sync_mgr_for_announce = sync_manager.clone();
         let chain_id_for_announce = genesis_config.chain_id.clone();
+        // Pin canonical identity before the announcement task starts. Looking
+        // up slot 0 for every announcement would route through the admitted
+        // local archive role: consensus nodes deny that deep read and a
+        // verified-cache source outage must not affect validator discovery.
+        let genesis_hash_for_announce = archive_v2_capability
+            .read()
+            .await
+            .as_ref()
+            .map(|capability| capability.identity.genesis_hash)
+            .or_else(|| {
+                state_for_validators
+                    .get_block_by_slot(0)
+                    .ok()
+                    .flatten()
+                    .map(|genesis| genesis.hash())
+            });
         tokio::spawn(async move {
             info!("🔄 Validator announcement receiver started");
             // 1.5d: Per-minute announcement rate limiting
@@ -24720,7 +24760,7 @@ async fn run_validator() {
                 let admitted_archive_v2 = match admit_announced_archive_v2_capability(
                     announcement.archive_v2.as_ref(),
                     &chain_id_for_announce,
-                    &state_for_validators,
+                    genesis_hash_for_announce,
                 ) {
                     Ok(capability) => capability,
                     Err(error) => {
@@ -29014,6 +29054,7 @@ async fn run_validator() {
                     config,
                     &genesis_config.chain_id,
                     &data_dir_path,
+                    dev_mode,
                 ) {
                     Ok(capability) => {
                         if let Err(error) =
@@ -43370,6 +43411,41 @@ mod tests {
     }
 
     #[test]
+    fn short_archive_v2_hot_window_is_local_dev_only() {
+        let requirements = ArchiveV2RoleRequirements {
+            independent_consensus_state: true,
+            consensus_wal_and_identity: true,
+            recovery_data_present: true,
+            complete_catalog_verified: true,
+            every_segment_local: true,
+            authenticated_remote_sources: 0,
+            cache_staging_headroom_bytes: 0,
+            network_archive_policy_satisfied: true,
+            no_archive_operation_in_progress: true,
+        };
+        let short = ArchiveV2RoleConfig {
+            recent_history_slots: 20,
+            ..ArchiveV2RoleConfig::default()
+        };
+        assert!(admit_runtime_archive_v2_role(&short, &requirements, false)
+            .unwrap_err()
+            .contains("at least 50000"));
+        assert!(
+            admit_runtime_archive_v2_role(&short, &requirements, true)
+                .unwrap()
+                .admitted
+        );
+
+        let zero = ArchiveV2RoleConfig {
+            recent_history_slots: 0,
+            ..ArchiveV2RoleConfig::default()
+        };
+        assert!(admit_runtime_archive_v2_role(&zero, &requirements, true)
+            .unwrap_err()
+            .contains("non-zero"));
+    }
+
+    #[test]
     fn fresh_joiner_defers_archive_capability_identity_until_genesis_sync() {
         let root = tempfile::tempdir().unwrap();
         let state = StateStore::open(root.path()).unwrap();
@@ -43389,12 +43465,8 @@ mod tests {
         };
 
         assert_eq!(
-            admit_announced_archive_v2_capability(
-                Some(&capability),
-                "announcement-testnet",
-                &state,
-            )
-            .unwrap(),
+            admit_announced_archive_v2_capability(Some(&capability), "announcement-testnet", None,)
+                .unwrap(),
             None,
             "fresh joiners must keep processing signed announcements before slot 0 is synced"
         );
@@ -43404,7 +43476,7 @@ mod tests {
             admit_announced_archive_v2_capability(
                 Some(&capability),
                 "announcement-testnet",
-                &state,
+                Some(genesis.hash()),
             )
             .unwrap(),
             Some(capability.clone())
@@ -43415,7 +43487,7 @@ mod tests {
         assert!(admit_announced_archive_v2_capability(
             Some(&wrong_genesis),
             "announcement-testnet",
-            &state,
+            Some(genesis.hash()),
         )
         .unwrap_err()
         .contains("genesis"));

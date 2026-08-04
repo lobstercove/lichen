@@ -327,6 +327,35 @@ print(result)
     return 1
 }
 
+wait_for_cluster_slot_spread() {
+    local max_spread=$1
+    local timeout_seconds=$2
+    local deadline=$((SECONDS + timeout_seconds))
+    local maximum minimum slot spread live
+
+    while (( SECONDS < deadline )); do
+        maximum=0
+        minimum=999999999999
+        live=0
+        for validator_num in $(seq 1 "$MAX_VALIDATORS"); do
+            slot="$(get_slot "$(rpc_port "$validator_num")")"
+            if [[ "$slot" =~ ^[1-9][0-9]*$ ]]; then
+                (( slot > maximum )) && maximum=$slot
+                (( slot < minimum )) && minimum=$slot
+                live=$((live + 1))
+            fi
+        done
+        spread=$((maximum - minimum))
+        if (( live == MAX_VALIDATORS && spread <= max_spread )); then
+            ok "All validators are within ${spread} slots before coordinated Archive V2 stop"
+            return 0
+        fi
+        sleep 1
+    done
+    warn "Validator slot spread did not converge within ${timeout_seconds}s (live=${live}/${MAX_VALIDATORS}, min=${minimum}, max=${maximum}, spread=${spread})"
+    return 1
+}
+
 get_validator_count() {
     rpc_query "$1" "getValidators" | python3 -c "import json,sys; r=json.load(sys.stdin).get('result',{}); print(len(r.get('validators',[])) if isinstance(r,dict) else 0)" 2>/dev/null || echo 0
 }
@@ -710,17 +739,61 @@ print(value)
 ' <<< "$response"
 }
 
+archive_v2_source_finalized_slot() {
+    local validator_num=$1
+    local profile_json
+    profile_json="$(
+        "$REPO_ROOT/target/release/lichen-archive-v2" profile-source \
+            --state-dir "$(db_path "$validator_num")" \
+            --cold-store "$(cold_path "$validator_num")" \
+            --start-slot 0 \
+            --end-slot 0 \
+            --top-blocks 1
+    )" || fail "V${validator_num} Archive V2 source profile failed"
+    python3 -c '
+import json
+import sys
+print(json.load(sys.stdin)["finalized_slot"])
+' <<< "$profile_json"
+}
+
 verify_archive_v2_offline_matrix() {
     local checkpoint_slot=$1
     local genesis_hash=$2
     local archive_finality_depth=$((LICHEN_COLD_RETENTION_SLOTS - ARCHIVE_V2_TEST_CATALOG_HEADROOM_SLOTS))
-    local build_end=$((checkpoint_slot - archive_finality_depth - 5))
+    local minimum_finalized_slot=""
+    local maximum_finalized_slot=0
+    local validator_finalized_slot stopped_spread build_end required_archive_end
     local baseline_root=""
     local archive_root replica_root mirror_root restore_root build_json status_json catalog_root
     local av2="$REPO_ROOT/target/release/lichen-archive-v2"
 
-    [[ "$build_end" -ge 0 ]] || fail "Archive V2 test range is empty at checkpoint ${checkpoint_slot}"
-    log "Building and independently verifying Archive V2 range 0..${build_end} on all ${MAX_VALIDATORS} node-owned states..."
+    # The validators advance beyond the common checkpoint while its immutable
+    # public-history parity is being computed. Build from the actual stopped
+    # sources, not the older checkpoint. A coordinated stop can leave a small
+    # finalized spread, so the catalog deliberately overlaps the retained hot
+    # suffix by a bounded test-only headroom and must cover the highest tip.
+    for V_NUM in $(seq 1 "$MAX_VALIDATORS"); do
+        validator_finalized_slot="$(archive_v2_source_finalized_slot "$V_NUM")"
+        [[ "$validator_finalized_slot" =~ ^[0-9]+$ ]] \
+            || fail "V${V_NUM} returned an invalid finalized slot: ${validator_finalized_slot}"
+        if [[ -z "$minimum_finalized_slot" || "$validator_finalized_slot" -lt "$minimum_finalized_slot" ]]; then
+            minimum_finalized_slot="$validator_finalized_slot"
+        fi
+        if (( validator_finalized_slot > maximum_finalized_slot )); then
+            maximum_finalized_slot=$validator_finalized_slot
+        fi
+    done
+    stopped_spread=$((maximum_finalized_slot - minimum_finalized_slot))
+    (( stopped_spread <= ARCHIVE_V2_TEST_CATALOG_HEADROOM_SLOTS )) \
+        || fail "Stopped Archive V2 finalized spread ${stopped_spread} exceeds catalog headroom ${ARCHIVE_V2_TEST_CATALOG_HEADROOM_SLOTS}"
+    build_end=$((minimum_finalized_slot - archive_finality_depth))
+    required_archive_end=$((maximum_finalized_slot - LICHEN_COLD_RETENTION_SLOTS))
+    [[ "$build_end" -ge 0 ]] \
+        || fail "Archive V2 test range is empty at finalized slot ${minimum_finalized_slot}"
+    (( build_end >= required_archive_end )) \
+        || fail "Archive V2 catalog end ${build_end} does not cover highest stopped requirement ${required_archive_end}"
+    log "Building and independently verifying Archive V2 range 0..${build_end} from stopped finalized range ${minimum_finalized_slot}..${maximum_finalized_slot} (checkpoint evidence ${checkpoint_slot})..."
     for V_NUM in $(seq 1 "$MAX_VALIDATORS"); do
         archive_root="/tmp/lichen-testnet/archive-v2-v${V_NUM}"
         replica_root="/tmp/lichen-testnet/archive-v2-replica-v${V_NUM}"
@@ -730,8 +803,8 @@ verify_archive_v2_offline_matrix() {
 
         build_json="$(
             "$av2" build \
-                --state-dir "$(db_path "$V_NUM")/checkpoints/slot-${checkpoint_slot}" \
-                --cold-store "$(db_path "$V_NUM")/checkpoints/slot-${checkpoint_slot}/cold" \
+                --state-dir "$(db_path "$V_NUM")" \
+                --cold-store "$(cold_path "$V_NUM")" \
                 --root "$archive_root" \
                 --network-id lichen-testnet-1 \
                 --genesis-hash "$genesis_hash" \
@@ -813,6 +886,67 @@ archive_v2_runtime_role() {
     esac
 }
 
+refresh_archive_v2_runtime_catalog() {
+    local validator_num=$1
+    local root=$2
+    local expected_root="/tmp/lichen-testnet/archive-v2-v${validator_num}"
+    local replica_root="/tmp/lichen-testnet/archive-v2-replica-v${validator_num}"
+    local offline_replica_root="${replica_root}.offline"
+    local transient_replica=0
+    local status_json genesis_hash catalog_end finalized_slot required_end build_start
+    local av2="$REPO_ROOT/target/release/lichen-archive-v2"
+
+    # Fresh-role joins use separately prepared immutable catalogs. The runtime
+    # matrix uses these node-owned roots and must append every newly finalized
+    # legacy hot/cold range before a deliberate restart can be admitted.
+    [[ "$root" == "$expected_root" && -f "$root/catalog.av2" ]] || return 0
+    status_json="$("$av2" status --root "$root")" \
+        || fail "V${validator_num} Archive V2 pre-start status failed"
+    genesis_hash="$(python3 -c '
+import json
+import sys
+print(json.load(sys.stdin)["genesis_hash"])
+' <<< "$status_json")"
+    catalog_end="$(python3 -c '
+import json
+import sys
+value = json.load(sys.stdin)["slot_range"]
+print(-1 if value is None else value[1])
+' <<< "$status_json")"
+    finalized_slot="$(archive_v2_source_finalized_slot "$validator_num")"
+    (( finalized_slot >= LICHEN_COLD_RETENTION_SLOTS )) || return 0
+    required_end=$((finalized_slot - LICHEN_COLD_RETENTION_SLOTS))
+    (( required_end > catalog_end )) || return 0
+    build_start=$((catalog_end + 1))
+
+    # Preserve a deliberately unavailable V2 source during its outage drill.
+    # Full/consensus nodes do not consume replicas at runtime, so a temporary
+    # acknowledgement destination avoids retaining unused duplicate objects.
+    if [[ ! -d "$replica_root" && -d "$offline_replica_root" ]]; then
+        replica_root="$offline_replica_root"
+    elif [[ ! -d "$replica_root" ]]; then
+        transient_replica=1
+    fi
+    "$av2" build \
+        --state-dir "$(db_path "$validator_num")" \
+        --cold-store "$(cold_path "$validator_num")" \
+        --root "$root" \
+        --network-id lichen-testnet-1 \
+        --genesis-hash "$genesis_hash" \
+        --start-slot "$build_start" \
+        --end-slot "$required_end" \
+        --finality-depth-slots "$LICHEN_COLD_RETENTION_SLOTS" \
+        --zstd-level 6 \
+        --frame-bytes 1048576 \
+        --replica-root "$replica_root" \
+        --required-replicas 1 >/dev/null \
+        || fail "V${validator_num} Archive V2 pre-start catalog append failed"
+    if [[ "$transient_replica" == "1" ]]; then
+        rm -rf "$replica_root"
+    fi
+    ok "V${validator_num} Archive V2 catalog advanced ${build_start}..${required_end} before restart"
+}
+
 start_archive_v2_validator() {
     local validator_num=$1
     local output_log=$2
@@ -829,8 +963,13 @@ start_archive_v2_validator() {
     source_token_override="LICHEN_LOCAL_ARCHIVE_V2_SOURCE_BEARER_TOKEN_V${validator_num}"
     role="${!role_override:-$(archive_v2_runtime_role "$validator_num")}"
     root="${!root_override:-/tmp/lichen-testnet/archive-v2-v${validator_num}}"
+    refresh_archive_v2_runtime_catalog "$validator_num" "$root"
     role_env=(
         "LICHEN_DISABLE_SUPERVISOR=1"
+        # Tell run-validator.sh that the gate itself owns the process. This
+        # enters the validator worker directly and avoids a second admission
+        # racing one slot behind the just-refreshed immutable catalog.
+        "LICHEN_SUPERVISED=1"
         "LICHEN_LOCAL_ARCHIVE_V2_ROLE=${role}"
         "LICHEN_LOCAL_ARCHIVE_V2_ROOT=${root}"
         # Role admission must prove the same hot suffix that this gate's cold
@@ -1356,6 +1495,13 @@ restart_archive_v2_validator() {
         tail -100 "$restart_log"
         fail "V${validator_num} failed Archive V2 ${reason} restart"
     }
+    wait_for_archive_v2_runtime_convergence "V${validator_num} ${reason} restart"
+}
+
+wait_for_archive_v2_runtime_convergence() {
+    local phase=$1
+    wait_for_cluster_slot_spread "$ARCHIVE_V2_TEST_CATALOG_HEADROOM_SLOTS" 180 \
+        || fail "Archive V2 role matrix did not reconverge after ${phase}"
 }
 
 verify_archive_v2_runtime_role_matrix() {
@@ -1387,6 +1533,7 @@ verify_archive_v2_runtime_role_matrix() {
         done
         fail "Archive V2 role matrix did not become healthy"
     fi
+    wait_for_archive_v2_runtime_convergence "initial role admission"
 
     [[ "$(archive_v2_rpc_block_hash "$(rpc_port 1)" 0)" == "$genesis_hash" ]] \
         || fail "Full-archive V1 did not serve verified genesis history"
@@ -1405,6 +1552,7 @@ verify_archive_v2_runtime_role_matrix() {
         tail -100 /tmp/lichen-testnet/v4-archive-v2-corrupt-segment.log
         fail "V4 did not restart for the segment-corruption drill"
     }
+    wait_for_archive_v2_runtime_convergence "V4 corrupt-segment restart"
     response="$(archive_v2_rpc_block_hash "$(rpc_port 4)" 0)" \
         || fail "Full-archive V4 did not preserve canonical legacy fallback while its Archive V2 segment was corrupt"
     [[ "$response" == "$genesis_hash" ]] \
@@ -1433,6 +1581,7 @@ verify_archive_v2_runtime_role_matrix() {
         tail -100 /tmp/lichen-testnet/v4-archive-v2-repaired-segment.log
         fail "V4 did not restart after replica-backed segment repair"
     }
+    wait_for_archive_v2_runtime_convergence "V4 replica-backed repair"
     [[ "$(archive_v2_rpc_block_hash "$(rpc_port 4)" 0)" == "$genesis_hash" ]] \
         || fail "Full-archive V4 did not recover deep history from the repaired replica"
     ok "Corrupt full-archive segment was quarantined and recovered from another replica"
@@ -1472,6 +1621,7 @@ verify_archive_v2_runtime_role_matrix() {
         tail -100 /tmp/lichen-testnet/v2-archive-v2-corrupt-cache.log
         fail "V2 did not restart for cache-corruption recovery"
     }
+    wait_for_archive_v2_runtime_convergence "V2 cache-corruption restart"
     [[ "$(archive_v2_rpc_block_hash "$(rpc_port 2)" 0)" == "$genesis_hash" ]] \
         || fail "Verified-cache V2 did not quarantine and refetch its corrupt object"
     find "$v2_cache/quarantine" -type f -print -quit | grep -q . \
@@ -1493,6 +1643,7 @@ verify_archive_v2_runtime_role_matrix() {
         tail -100 /tmp/lichen-testnet/v2-archive-v2-empty-cache-outage.log
         fail "V2 did not restart with an unavailable archive source"
     }
+    wait_for_archive_v2_runtime_convergence "V2 empty-cache source outage"
     response="$(rpc_query_params "$(rpc_port 2)" getBlock "[0]")"
     if python3 -c 'import json,sys; raise SystemExit(0 if isinstance(json.load(sys.stdin).get("result"), dict) else 1)' <<< "$response"; then
         fail "Verified-cache V2 served deep history with both cache and source unavailable"
@@ -1767,6 +1918,10 @@ if [[ "$RESUME_AFTER_PUBLIC_PARITY" == "1" ]]; then
             || fail "Public-parity resume found a V${validator_num} genesis mismatch"
     done
     verify_chain_producing "after public-parity exact-gate resume" "$V1_RPC" 10
+    wait_for_cluster_slot_spread \
+        "$ARCHIVE_V2_TEST_CATALOG_HEADROOM_SLOTS" \
+        "$ARCHIVE_V2_FRESH_ROLE_TIMEOUT_SECS" \
+        || fail "Public-parity resume did not converge before the Archive V2 stop"
 
     log "Stopping resumed validators before immutable public-history and Archive V2 tail checks..."
     for validator_num in $(seq 1 "$MAX_VALIDATORS"); do
@@ -2520,6 +2675,10 @@ else
     PRE_JOURNEY_CHECKPOINT_SLOT="$COMMON_CHECKPOINT_SLOT"
     ARCHIVE_V2_GENESIS_HASH="$(archive_v2_genesis_hash)" \
         || fail "Could not capture canonical genesis hash for Archive V2 verification"
+    wait_for_cluster_slot_spread \
+        "$ARCHIVE_V2_TEST_CATALOG_HEADROOM_SLOTS" \
+        "$ARCHIVE_V2_FRESH_ROLE_TIMEOUT_SECS" \
+        || fail "Validators did not converge before the Archive V2 stop"
     log "Stopping validators before final public-history manifest parity check..."
     for V_NUM in $(seq 1 "$MAX_VALIDATORS"); do
         signal_validator_pid_tree "${VALIDATOR_PIDS[$V_NUM]:-}"

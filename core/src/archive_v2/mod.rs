@@ -62,5 +62,5 @@ pub use retirement::{
 };
 pub use roles::{
     ArchiveV2CapabilityAdvertisement, ArchiveV2Role, ArchiveV2RoleAdmission, ArchiveV2RoleConfig,
-    ArchiveV2RoleRequirements, ARCHIVE_V2_ROLE_CONFIG_VERSION,
+    ArchiveV2RoleRequirements, ARCHIVE_V2_MIN_RECENT_HISTORY_SLOTS, ARCHIVE_V2_ROLE_CONFIG_VERSION,
 };

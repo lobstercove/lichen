@@ -7,6 +7,7 @@ use super::{ArchiveV2Error, ArchiveV2Identity};
 use crate::Hash;
 
 pub const ARCHIVE_V2_ROLE_CONFIG_VERSION: u16 = 1;
+pub const ARCHIVE_V2_MIN_RECENT_HISTORY_SLOTS: u64 = 50_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -56,7 +57,7 @@ impl Default for ArchiveV2RoleConfig {
         Self {
             version: ARCHIVE_V2_ROLE_CONFIG_VERSION,
             role: ArchiveV2Role::FullArchive,
-            recent_history_slots: 50_000,
+            recent_history_slots: ARCHIVE_V2_MIN_RECENT_HISTORY_SLOTS,
             verified_cache_quota_bytes: 0,
             advertise_deep_history: true,
         }
@@ -152,7 +153,7 @@ impl ArchiveV2RoleConfig {
                 self.version
             )));
         }
-        if self.recent_history_slots < 50_000 {
+        if self.recent_history_slots < ARCHIVE_V2_MIN_RECENT_HISTORY_SLOTS {
             return Err(ArchiveV2Error::Role(
                 "recent history retention must be at least 50000 slots".to_string(),
             ));
