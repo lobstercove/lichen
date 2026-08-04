@@ -1043,8 +1043,13 @@ prepare_archive_v2_fresh_join_roots() {
         fi
         sleep 2
     done
-    $SOURCE_RESTARTED \
-        || fail "V1/V2 did not restart in sync after immutable fresh-join source construction"
+    if ! $SOURCE_RESTARTED; then
+        for validator_num in 1 2; do
+            echo "--- V${validator_num} post-fresh-source restart log ---" >&2
+            tail -100 "/tmp/lichen-testnet/v${validator_num}-post-fresh-source.log" >&2 || true
+        done
+        fail "V1/V2 did not restart in sync after immutable fresh-join source construction"
+    fi
     verify_chain_producing "after immutable fresh-join source construction" "$V1_RPC" 10
 
     LICHEN_LOCAL_ARCHIVE_V2_ROLE_V3="full-archive"

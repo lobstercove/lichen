@@ -177,6 +177,15 @@ fn parse_bounded_env_u64(
     Ok(value)
 }
 
+fn runtime_cold_retention_slots() -> Result<u64, String> {
+    parse_bounded_env_u64(
+        "LICHEN_COLD_RETENTION_SLOTS",
+        lichen_core::state::COLD_RETENTION_SLOTS,
+        1,
+        10_000_000,
+    )
+}
+
 fn runtime_cold_migration_config(
     runtime_minimum_available_bytes: u64,
 ) -> Result<RuntimeColdMigrationConfig, String> {
@@ -192,12 +201,7 @@ fn runtime_cold_migration_config(
         1,
         3_600,
     )?;
-    let retention_slots = parse_bounded_env_u64(
-        "LICHEN_COLD_RETENTION_SLOTS",
-        lichen_core::state::COLD_RETENTION_SLOTS,
-        1,
-        10_000_000,
-    )?;
+    let retention_slots = runtime_cold_retention_slots()?;
     let max_rows = parse_bounded_env_u64("LICHEN_COLD_MIGRATION_MAX_ROWS", 2_000, 1, 100_000)?;
     let max_bytes = parse_bounded_env_u64(
         "LICHEN_COLD_MIGRATION_MAX_BYTES",
@@ -8759,6 +8763,12 @@ struct PostBlockEffectsRuntime {
     slot_duration_ms: u64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RecentPostBlockRecoveryHistory {
+    PublicHistory,
+    HotRetainedWindow { retention_slots: u64 },
+}
+
 async fn recover_tip_post_block_effects_if_needed(
     state: &StateStore,
     validator_set: &Arc<RwLock<ValidatorSet>>,
@@ -8803,6 +8813,7 @@ async fn recover_recent_stored_block_post_effects_if_needed(
     activation_slot: u64,
     min_validator_stake: u64,
     window: u64,
+    history: RecentPostBlockRecoveryHistory,
     context: &str,
 ) -> Result<u64, String> {
     let tip = state.get_last_slot()?;
@@ -8811,9 +8822,12 @@ async fn recover_recent_stored_block_post_effects_if_needed(
     }
 
     let last_historical_slot = tip.saturating_sub(1);
-    let first_slot = last_historical_slot
+    let mut first_slot = last_historical_slot
         .saturating_sub(window.saturating_sub(1))
         .max(activation_slot);
+    if let RecentPostBlockRecoveryHistory::HotRetainedWindow { retention_slots } = history {
+        first_slot = first_slot.max(tip.saturating_sub(retention_slots));
+    }
     if first_slot > last_historical_slot {
         return Ok(0);
     }
@@ -8824,12 +8838,22 @@ async fn recover_recent_stored_block_post_effects_if_needed(
     let mut scanned = 0u64;
 
     for slot in first_slot..=last_historical_slot {
-        let block = state.get_hot_block_by_slot(slot)?.ok_or_else(|| {
-            format!(
-                "{}: activated canonical slot {} is missing its hot stored block while recovering through tip {}",
-                context, slot, tip
-            )
-        })?;
+        let block = match history {
+            RecentPostBlockRecoveryHistory::PublicHistory => state.get_block_by_slot(slot)?,
+            RecentPostBlockRecoveryHistory::HotRetainedWindow { .. } => {
+                state.get_hot_block_by_slot(slot)?
+            }
+        };
+        let Some(block) = block else {
+            let storage = match history {
+                RecentPostBlockRecoveryHistory::PublicHistory => "public-history",
+                RecentPostBlockRecoveryHistory::HotRetainedWindow { .. } => "hot",
+            };
+            return Err(format!(
+                "{}: activated canonical slot {} is missing its {} stored block while recovering through tip {}",
+                context, slot, storage, tip
+            ));
+        };
         scanned = scanned.saturating_add(1);
         if recover_stored_block_economic_effects_if_needed(
             state,
@@ -14170,6 +14194,7 @@ fn maybe_run_recent_post_block_effects_repair_admin(args: &[String]) -> Option<i
             activation_slot,
             min_validator_stake,
             historical_window,
+            RecentPostBlockRecoveryHistory::PublicHistory,
             "Offline recent post-block repair",
         )
         .await?;
@@ -21265,6 +21290,13 @@ async fn run_validator() {
         error!("Failed startup post-block recovery: {}", e);
         std::process::exit(1);
     }
+    let recent_hot_retention_slots = match runtime_cold_retention_slots() {
+        Ok(slots) => slots,
+        Err(e) => {
+            error!("Failed to determine startup hot-retention boundary: {}", e);
+            std::process::exit(EXIT_CODE_FATAL_STARTUP);
+        }
+    };
     if let Err(e) = recover_recent_stored_block_post_effects_if_needed(
         &state,
         &validator_set,
@@ -21272,6 +21304,9 @@ async fn run_validator() {
         post_block_effects_activation_slot,
         min_validator_stake,
         RECENT_POST_BLOCK_EFFECTS_RECOVERY_WINDOW,
+        RecentPostBlockRecoveryHistory::HotRetainedWindow {
+            retention_slots: recent_hot_retention_slots,
+        },
         "Startup recent-window recovery",
     )
     .await
@@ -37537,6 +37572,7 @@ mod tests {
                 8,
                 MIN_VALIDATOR_STAKE,
                 16,
+                RecentPostBlockRecoveryHistory::PublicHistory,
                 "pre-activation regression",
             ))
             .expect("pre-activation window is a no-op");
@@ -37795,6 +37831,7 @@ mod tests {
                 7,
                 MIN_VALIDATOR_STAKE,
                 16,
+                RecentPostBlockRecoveryHistory::PublicHistory,
                 "test recent-window recovery",
             ))
             .expect("recent recovery");
@@ -37835,6 +37872,166 @@ mod tests {
         assert_ne!(repaired_root, stale_tip_root);
         assert_eq!(repaired_anchor.block_hash, tip_block.hash());
         assert_eq!(repaired_anchor.state_root, repaired_root);
+    }
+
+    #[test]
+    fn startup_hot_recent_recovery_accepts_only_a_migrated_prefix() {
+        let hot_dir = tempfile::tempdir().expect("create hot state dir");
+        let cold_dir = tempfile::tempdir().expect("create cold state dir");
+        let mut state = StateStore::open(hot_dir.path()).expect("open state");
+        state
+            .open_cold_store(cold_dir.path())
+            .expect("open cold store");
+        let producer = Keypair::generate().pubkey();
+        let genesis = Block::genesis(Hash::hash(b"migrated-prefix-genesis"), 1, vec![]);
+        let slot_one = Block::new_with_timestamp(
+            1,
+            genesis.hash(),
+            Hash::hash(b"migrated-prefix-one"),
+            producer.0,
+            vec![],
+            2,
+        );
+        let slot_two = Block::new_with_timestamp(
+            2,
+            slot_one.hash(),
+            Hash::hash(b"migrated-prefix-two"),
+            producer.0,
+            vec![],
+            3,
+        );
+        let tip = Block::new_with_timestamp(
+            3,
+            slot_two.hash(),
+            Hash::hash(b"migrated-prefix-tip"),
+            producer.0,
+            vec![],
+            4,
+        );
+        for block in [&genesis, &slot_one, &slot_two, &tip] {
+            state
+                .put_block_atomic(block, None, None)
+                .expect("store canonical block");
+        }
+        for block in [&slot_one, &slot_two] {
+            state
+                .set_stake_pool_production_hash(block.header.slot, &block.hash())
+                .expect("mark stake-pool production");
+            state
+                .set_reward_distribution_hash(block.header.slot, &block.hash())
+                .expect("mark reward distribution");
+            state
+                .set_fee_distribution_hash(block.header.slot, &block.hash())
+                .expect("mark fee distribution");
+        }
+        state
+            .put_stake_pool(&StakePool::new())
+            .expect("store stake pool");
+        assert_eq!(state.migrate_to_cold(2).expect("migrate old prefix"), 2);
+        assert!(
+            state
+                .get_hot_block_by_slot(1)
+                .expect("read migrated hot slot")
+                .is_none(),
+            "the regression requires slot one to be outside the retained hot window"
+        );
+        assert!(
+            state
+                .get_hot_block_by_slot(2)
+                .expect("read retained hot slot")
+                .is_some(),
+            "the retained hot suffix must remain available"
+        );
+
+        let stake_pool = Arc::new(RwLock::new(StakePool::new()));
+        let validator_set = Arc::new(RwLock::new(ValidatorSet::new()));
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        assert_eq!(
+            runtime
+                .block_on(recover_recent_stored_block_post_effects_if_needed(
+                    &state,
+                    &validator_set,
+                    &stake_pool,
+                    1,
+                    MIN_VALIDATOR_STAKE,
+                    8,
+                    RecentPostBlockRecoveryHistory::HotRetainedWindow { retention_slots: 1 },
+                    "migrated-prefix startup recovery",
+                ))
+                .expect("startup recovery accepts a migrated prefix"),
+            0
+        );
+        assert_eq!(
+            runtime
+                .block_on(recover_recent_stored_block_post_effects_if_needed(
+                    &state,
+                    &validator_set,
+                    &stake_pool,
+                    1,
+                    MIN_VALIDATOR_STAKE,
+                    8,
+                    RecentPostBlockRecoveryHistory::PublicHistory,
+                    "migrated-prefix offline recovery",
+                ))
+                .expect("offline recovery retains verified public-history access"),
+            0
+        );
+    }
+
+    #[test]
+    fn startup_hot_recent_recovery_rejects_an_internal_gap() {
+        let temp_dir = tempfile::tempdir().expect("create state dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let producer = Keypair::generate().pubkey();
+        let genesis = Block::genesis(Hash::hash(b"internal-hot-gap-genesis"), 1, vec![]);
+        let slot_one = Block::new_with_timestamp(
+            1,
+            genesis.hash(),
+            Hash::hash(b"internal-hot-gap-one"),
+            producer.0,
+            vec![],
+            2,
+        );
+        let tip = Block::new_with_timestamp(
+            3,
+            slot_one.hash(),
+            Hash::hash(b"internal-hot-gap-tip"),
+            producer.0,
+            vec![],
+            4,
+        );
+        for block in [&genesis, &slot_one, &tip] {
+            state
+                .put_block_atomic(block, None, None)
+                .expect("store canonical block");
+        }
+        state
+            .set_stake_pool_production_hash(1, &slot_one.hash())
+            .expect("mark slot one stake-pool production");
+        state
+            .set_reward_distribution_hash(1, &slot_one.hash())
+            .expect("mark slot one reward distribution");
+        state
+            .set_fee_distribution_hash(1, &slot_one.hash())
+            .expect("mark slot one fee distribution");
+        state
+            .put_stake_pool(&StakePool::new())
+            .expect("store stake pool");
+
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let err = runtime
+            .block_on(recover_recent_stored_block_post_effects_if_needed(
+                &state,
+                &Arc::new(RwLock::new(ValidatorSet::new())),
+                &Arc::new(RwLock::new(StakePool::new())),
+                1,
+                MIN_VALIDATOR_STAKE,
+                8,
+                RecentPostBlockRecoveryHistory::HotRetainedWindow { retention_slots: 8 },
+                "internal-gap startup recovery",
+            ))
+            .expect_err("an internal retained-history gap must fail closed");
+        assert!(err.contains("slot 2 is missing its hot stored block"));
     }
 
     #[test]
@@ -37951,6 +38148,9 @@ mod tests {
                     1,
                     MIN_VALIDATOR_STAKE,
                     16,
+                    RecentPostBlockRecoveryHistory::HotRetainedWindow {
+                        retention_slots: 16,
+                    },
                     "verified-cache outage startup recovery",
                 ))
                 .expect("startup recovery must use hot history"),

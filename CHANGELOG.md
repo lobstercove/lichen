@@ -5,6 +5,15 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.235] - 2026-08-04
+
+### Fixed
+- Bounds startup's hot-only recent post-block recovery to the configured
+  hot-retention window, excluding only the older prefix already migrated to
+  cold storage while still failing closed on any missing retained block.
+- Keeps the explicit offline repair path on verified public history so
+  retroactive repairs can still cross the legacy hot/cold boundary.
+
 ## [0.5.234] - 2026-08-04
 
 ### Fixed
