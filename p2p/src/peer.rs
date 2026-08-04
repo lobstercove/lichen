@@ -10,6 +10,7 @@ use chacha20poly1305::{
 use dashmap::DashMap;
 use hkdf::Hkdf;
 use lichen_core::{
+    archive_v2::{ArchiveV2CapabilityAdvertisement, ArchiveV2Identity, ArchiveV2Role},
     codec::{deserialize_legacy_bincode_strict, serialize_legacy_bincode_limited},
     Keypair, PqSignature, Pubkey,
 };
@@ -60,6 +61,9 @@ pub struct PeerInfo {
     /// Highest slot this peer has advertised through a signed validator
     /// announcement or status response.
     pub advertised_slot: u64,
+    /// Signed Archive V2 capability retained only after the peer is admitted as
+    /// a locally authenticated validator route.
+    pub archive_v2: Option<ArchiveV2CapabilityAdvertisement>,
     /// Peer scoring: rolling average response latency in milliseconds.
     /// Updated on each successful block/status response from this peer.
     pub avg_response_ms: Option<f64>,
@@ -92,6 +96,7 @@ impl PeerInfo {
             node_id: [0u8; 32],
             validator_pubkey: None,
             advertised_slot: 0,
+            archive_v2: None,
             avg_response_ms: None,
             bytes_received: 0,
             bytes_sent: 0,
@@ -271,6 +276,14 @@ fn consensus_relay_targets(peers: &DashMap<SocketAddr, PeerInfo>) -> Vec<SocketA
         .filter(|entry| entry.value().score > -5)
         .map(|entry| *entry.key())
         .collect()
+}
+
+fn archive_v2_role_priority(role: ArchiveV2Role) -> u8 {
+    match role {
+        ArchiveV2Role::FullArchive => 0,
+        ArchiveV2Role::VerifiedCache => 1,
+        ArchiveV2Role::Consensus => 2,
+    }
 }
 
 #[derive(Clone)]
@@ -1143,6 +1156,78 @@ impl PeerManager {
             // Boost score: validators get +5 priority to resist eviction
             peer.adjust_score(5);
         }
+    }
+
+    /// Retain a signed Archive V2 capability only for a peer already admitted
+    /// as a validator by local canonical state. Passing `None` explicitly
+    /// clears stale capability metadata after a role change.
+    pub fn record_archive_v2_capability(
+        &self,
+        peer_addr: &SocketAddr,
+        capability: Option<ArchiveV2CapabilityAdvertisement>,
+    ) -> Result<(), String> {
+        if let Some(capability) = capability.as_ref() {
+            capability.validate().map_err(|error| error.to_string())?;
+        }
+        let mut peer = self
+            .peers
+            .get_mut(peer_addr)
+            .ok_or_else(|| format!("Archive V2 announcing peer {peer_addr} is not connected"))?;
+        if !peer.is_validator || peer.validator_pubkey.is_none() {
+            return Err(format!(
+                "Archive V2 announcing peer {peer_addr} is not an admitted validator route"
+            ));
+        }
+        peer.archive_v2 = capability;
+        peer.update_last_seen();
+        Ok(())
+    }
+
+    /// Return deterministic, authenticated candidates capable of serving the
+    /// requested Archive V2 slot. Full archives are preferred over
+    /// verified-cache peers, followed by score, observed latency, and address.
+    pub fn archive_v2_sources(
+        &self,
+        identity: &ArchiveV2Identity,
+        slot: u64,
+    ) -> Vec<(SocketAddr, ArchiveV2CapabilityAdvertisement)> {
+        let mut candidates = self
+            .peers
+            .iter()
+            .filter_map(|entry| {
+                let peer = entry.value();
+                let capability = peer.archive_v2.as_ref()?;
+                let range_contains_slot = capability
+                    .catalog_start_slot
+                    .zip(capability.catalog_end_slot)
+                    .is_some_and(|(start, end)| start <= slot && slot <= end);
+                (peer.is_validator
+                    && peer.score > -5
+                    && capability.identity == *identity
+                    && capability.serves_deep_history
+                    && range_contains_slot
+                    && capability.validate().is_ok())
+                .then(|| {
+                    (
+                        *entry.key(),
+                        capability.clone(),
+                        peer.score,
+                        peer.avg_response_ms.unwrap_or(f64::INFINITY),
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_by(|left, right| {
+            archive_v2_role_priority(left.1.role)
+                .cmp(&archive_v2_role_priority(right.1.role))
+                .then_with(|| right.2.cmp(&left.2))
+                .then_with(|| left.3.total_cmp(&right.3))
+                .then_with(|| left.0.cmp(&right.0))
+        });
+        candidates
+            .into_iter()
+            .map(|(address, capability, _, _)| (address, capability))
+            .collect()
     }
 
     /// P3-5: Broadcast consensus-critical validator messages to all connected
@@ -2570,6 +2655,103 @@ mod tests {
         mgr.record_peer_advertised_slot(&peer_addr, 640);
 
         assert_eq!(mgr.get_peer_tip_infos(), vec![(peer_addr, 0, 641)]);
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn archive_v2_sources_require_validator_admission_and_prefer_full_archives() {
+        let tmp = std::env::temp_dir().join(format!(
+            "lichen-test-peer-archive-v2-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let (tx, _rx) = mpsc::channel(8);
+        let mgr = PeerManager::new(
+            "127.0.0.1:0".parse().unwrap(),
+            tx,
+            Some(tmp.clone()),
+            None,
+            16,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+        let identity = ArchiveV2Identity {
+            network_id: "lichen-test".to_string(),
+            genesis_hash: lichen_core::Hash::hash(b"archive-v2-genesis"),
+        };
+        let full_addr: SocketAddr = "127.0.0.1:7101".parse().unwrap();
+        let cache_addr: SocketAddr = "127.0.0.1:7102".parse().unwrap();
+        let consensus_addr: SocketAddr = "127.0.0.1:7103".parse().unwrap();
+        for address in [full_addr, cache_addr, consensus_addr] {
+            mgr.peers.insert(address, PeerInfo::new(address));
+        }
+
+        let full = ArchiveV2CapabilityAdvertisement {
+            version: 1,
+            identity: identity.clone(),
+            role: ArchiveV2Role::FullArchive,
+            catalog_root: lichen_core::Hash::hash(b"full-catalog"),
+            catalog_start_slot: Some(0),
+            catalog_end_slot: Some(100),
+            serves_deep_history: true,
+            remote_fetch_enabled: false,
+        };
+        assert!(mgr
+            .record_archive_v2_capability(&full_addr, Some(full.clone()))
+            .is_err());
+        mgr.mark_validator(&full_addr, Pubkey([1; 32]));
+        mgr.mark_validator(&cache_addr, Pubkey([2; 32]));
+        mgr.mark_validator(&consensus_addr, Pubkey([3; 32]));
+        mgr.record_archive_v2_capability(&full_addr, Some(full))
+            .unwrap();
+        mgr.record_archive_v2_capability(
+            &cache_addr,
+            Some(ArchiveV2CapabilityAdvertisement {
+                version: 1,
+                identity: identity.clone(),
+                role: ArchiveV2Role::VerifiedCache,
+                catalog_root: lichen_core::Hash::hash(b"cache-catalog"),
+                catalog_start_slot: Some(0),
+                catalog_end_slot: Some(100),
+                serves_deep_history: true,
+                remote_fetch_enabled: true,
+            }),
+        )
+        .unwrap();
+        mgr.record_archive_v2_capability(
+            &consensus_addr,
+            Some(ArchiveV2CapabilityAdvertisement {
+                version: 1,
+                identity: identity.clone(),
+                role: ArchiveV2Role::Consensus,
+                catalog_root: lichen_core::Hash::hash(b"consensus-catalog"),
+                catalog_start_slot: Some(0),
+                catalog_end_slot: Some(100),
+                serves_deep_history: false,
+                remote_fetch_enabled: false,
+            }),
+        )
+        .unwrap();
+
+        let sources = mgr.archive_v2_sources(&identity, 50);
+        assert_eq!(
+            sources
+                .iter()
+                .map(|(address, _)| *address)
+                .collect::<Vec<_>>(),
+            vec![full_addr, cache_addr]
+        );
+        assert!(mgr.archive_v2_sources(&identity, 101).is_empty());
+
+        mgr.record_archive_v2_capability(&full_addr, None).unwrap();
+        assert_eq!(
+            mgr.archive_v2_sources(&identity, 50)[0].0,
+            cache_addr,
+            "signed capability absence must clear stale full-archive routing"
+        );
         let _ = fs::remove_dir_all(&tmp);
     }
 

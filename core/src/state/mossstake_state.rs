@@ -1,6 +1,29 @@
 use super::*;
 
 impl StateStore {
+    pub fn cache_genesis_mossstake_slot_only(&self, declared: bool) -> Result<(), String> {
+        if let Some(existing) = self.genesis_mossstake_slot_only.get() {
+            return if *existing == declared {
+                Ok(())
+            } else {
+                Err(format!(
+                    "genesis MossStake slot-only declaration changed from {existing} to {declared}"
+                ))
+            };
+        }
+        self.genesis_mossstake_slot_only
+            .set(declared)
+            .map_err(|observed| {
+                format!(
+                    "genesis MossStake slot-only declaration was concurrently set to {observed}"
+                )
+            })
+    }
+
+    pub fn cached_genesis_mossstake_slot_only(&self) -> Option<bool> {
+        self.genesis_mossstake_slot_only.get().copied()
+    }
+
     pub fn is_mossstake_slot_only(&self) -> bool {
         matches!(
             self.get_metadata(crate::mossstake::MOSSSTAKE_SLOT_ONLY_METADATA_KEY)

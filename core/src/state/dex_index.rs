@@ -49,7 +49,7 @@ fn dex_order_id_from_storage_key(storage_key: &[u8]) -> Option<u64> {
     std::str::from_utf8(suffix).ok()?.parse().ok()
 }
 
-fn dex_trade_id_from_storage_key(storage_key: &[u8]) -> Option<u64> {
+pub(super) fn dex_trade_id_from_storage_key(storage_key: &[u8]) -> Option<u64> {
     let suffix = storage_key.strip_prefix(b"dex_trade_")?;
     std::str::from_utf8(suffix).ok()?.parse().ok()
 }
@@ -199,7 +199,7 @@ fn read_contract_storage_bytes(
         .map_err(|e| format!("Failed to read DEX contract storage: {}", e))
 }
 
-fn dex_program_from_registry(db: &DB) -> Result<Option<Pubkey>, String> {
+pub(super) fn dex_program_from_registry(db: &DB) -> Result<Option<Pubkey>, String> {
     let cf = db
         .cf_handle(CF_SYMBOL_REGISTRY)
         .ok_or_else(|| "Symbol registry CF not found".to_string())?;
@@ -703,7 +703,7 @@ impl StateStore {
         prefix.extend_from_slice(&pair_id.to_be_bytes());
         let mut start = prefix.clone();
         start.extend_from_slice(&u64::MAX.to_be_bytes());
-        collect_index_ids(
+        let mut ids = collect_index_ids(
             &self.db,
             CF_DEX_TRADES_BY_PAIR,
             &prefix,
@@ -711,7 +711,16 @@ impl StateStore {
             8,
             limit,
             Direction::Reverse,
-        )
+        )?;
+        for (key, _) in self.archive_v2_category_rows("dex_trades_by_pair", 0, u64::MAX)? {
+            if key.len() == 16 && key.starts_with(&prefix) {
+                ids.push(u64::from_be_bytes(key[8..16].try_into().unwrap()));
+            }
+        }
+        ids.sort_unstable_by(|left, right| right.cmp(left));
+        ids.dedup();
+        ids.truncate(limit);
+        Ok(ids)
     }
 
     pub fn get_dex_taker_trade_ids(
@@ -725,7 +734,7 @@ impl StateStore {
         let mut start = Vec::with_capacity(40);
         start.extend_from_slice(&taker);
         start.extend_from_slice(&u64::MAX.to_be_bytes());
-        collect_index_ids(
+        let mut ids = collect_index_ids(
             &self.db,
             CF_DEX_TRADES_BY_TAKER,
             &taker,
@@ -733,7 +742,16 @@ impl StateStore {
             32,
             limit,
             Direction::Reverse,
-        )
+        )?;
+        for (key, _) in self.archive_v2_category_rows("dex_trades_by_taker", 0, u64::MAX)? {
+            if key.len() == 40 && key.starts_with(&taker) {
+                ids.push(u64::from_be_bytes(key[32..40].try_into().unwrap()));
+            }
+        }
+        ids.sort_unstable_by(|left, right| right.cmp(left));
+        ids.dedup();
+        ids.truncate(limit);
+        Ok(ids)
     }
 
     pub fn get_dex_pair_taker_trade_ids(
@@ -752,7 +770,7 @@ impl StateStore {
         start.extend_from_slice(&pair_id.to_be_bytes());
         start.extend_from_slice(&taker);
         start.extend_from_slice(&u64::MAX.to_be_bytes());
-        collect_index_ids(
+        let mut ids = collect_index_ids(
             &self.db,
             CF_DEX_TRADES_BY_PAIR_TAKER,
             &prefix,
@@ -760,7 +778,16 @@ impl StateStore {
             40,
             limit,
             Direction::Reverse,
-        )
+        )?;
+        for (key, _) in self.archive_v2_category_rows("dex_trades_by_pair_taker", 0, u64::MAX)? {
+            if key.len() == 48 && key.starts_with(&prefix) {
+                ids.push(u64::from_be_bytes(key[40..48].try_into().unwrap()));
+            }
+        }
+        ids.sort_unstable_by(|left, right| right.cmp(left));
+        ids.dedup();
+        ids.truncate(limit);
+        Ok(ids)
     }
 }
 

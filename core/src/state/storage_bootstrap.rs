@@ -89,6 +89,10 @@ impl StateStore {
             state_commitment_lock: Arc::new(std::sync::Mutex::new(())),
             blockhash_cache: Arc::new(Mutex::new(None)),
             archive_mode: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            cold_migration_lock: Arc::new(std::sync::Mutex::new(())),
+            cold_migration_status: Arc::new(std::sync::Mutex::new(Default::default())),
+            archive_v2_reader: Arc::new(std::sync::RwLock::new(None)),
+            genesis_mossstake_slot_only: Arc::new(std::sync::OnceLock::new()),
         })
     }
 
@@ -112,6 +116,10 @@ impl StateStore {
             state_commitment_lock: Arc::new(std::sync::Mutex::new(())),
             blockhash_cache: Arc::new(Mutex::new(None)),
             archive_mode: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            cold_migration_lock: Arc::new(std::sync::Mutex::new(())),
+            cold_migration_status: Arc::new(std::sync::Mutex::new(Default::default())),
+            archive_v2_reader: Arc::new(std::sync::RwLock::new(None)),
+            genesis_mossstake_slot_only: Arc::new(std::sync::OnceLock::new()),
         })
     }
 

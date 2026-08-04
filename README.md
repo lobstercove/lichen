@@ -7,7 +7,7 @@ Ultra-low fees · Sub-second BFT block commitment · Agent-native identity · Mu
 [![License: Apache--2.0%20%2B%20MIT](https://img.shields.io/badge/License-Apache--2.0%20%2B%20MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.88+-00C9DB.svg)](https://www.rust-lang.org)
 
-**Current testnet release target and restart-safe anchor:** `v0.5.229`. Signed `v0.5.228` remains the immediate rollback anchor. v0.5.229 preserves the raw six-row US recovery before image while exposing the exact source-proven canonical account-snapshot history and allowing the six repair-slot rows to be added to the other validators. It retains complete hot/cold archive reads, a 5 GiB floor only for the exact testnet selector, and a 50,000-slot default hot/cold boundary while Archive V2 is implemented. The existing testnet has an explicit legacy-history waiver; fresh networks and mainnet fail closed on incomplete genesis-to-tip history.
+**Current testnet release target and restart-safe anchor:** `v0.5.230`. Signed `v0.5.229` remains the immediate rollback anchor while legacy hot/cold history stays authoritative. v0.5.230 adds the Archive V2 dual reader, retroactive fixed-range builder, authenticated replication and restore, explicit archive roles, and capacity-aware legacy migration without changing canonical block, transaction, state-root, or public RPC identities. Live conversion and legacy retirement remain blocked until adequate writable staging capacity, exact parity, replica acknowledgements, and restore evidence exist. The existing testnet has an explicit legacy-history waiver; fresh networks and mainnet fail closed on incomplete genesis-to-tip history.
 
 **Website:** https://lichen.network  
 **Documentation:** https://developers.lichen.network  
@@ -135,9 +135,9 @@ https://github.com/lobstercove/lichen/releases/download/<tag>/lichen-validator-<
 ```
 
 Examples:
-- `https://github.com/lobstercove/lichen/releases/download/v0.5.229/lichen-validator-linux-x86_64.tar.gz`
-- `https://github.com/lobstercove/lichen/releases/download/v0.5.229/lichen-validator-darwin-aarch64.tar.gz`
-- `https://github.com/lobstercove/lichen/releases/download/v0.5.229/lichen-validator-windows-x86_64.tar.gz`
+- `https://github.com/lobstercove/lichen/releases/download/v0.5.230/lichen-validator-linux-x86_64.tar.gz`
+- `https://github.com/lobstercove/lichen/releases/download/v0.5.230/lichen-validator-darwin-aarch64.tar.gz`
+- `https://github.com/lobstercove/lichen/releases/download/v0.5.230/lichen-validator-windows-x86_64.tar.gz`
 
 Linux x86_64:
 
@@ -153,7 +153,7 @@ node scripts/verify-release-checksums.mjs .
 grep 'lichen-validator-linux-x86_64.tar.gz' SHA256SUMS | sha256sum -c -
 gh attestation verify lichen-validator-linux-x86_64.tar.gz -R lobstercove/lichen
 tar xzf lichen-validator-linux-x86_64.tar.gz --strip-components=1
-chmod +x lichen-validator lichen-genesis lichen zk-prove
+chmod +x lichen-validator lichen-genesis lichen lichen-archive-v2 zk-prove
 mkdir -p "$HOME/.lichen/state-mainnet"
 cp seeds.json "$HOME/.lichen/state-mainnet/seeds.json"
 export LICHEN_KEYPAIR_PASSWORD='set-a-long-random-secret-before-first-start'
@@ -179,7 +179,7 @@ node scripts/verify-release-checksums.mjs .
 grep 'lichen-validator-darwin-aarch64.tar.gz' SHA256SUMS | shasum -a 256 -c -
 gh attestation verify lichen-validator-darwin-aarch64.tar.gz -R lobstercove/lichen
 tar xzf lichen-validator-darwin-aarch64.tar.gz --strip-components=1
-chmod +x lichen-validator lichen-genesis lichen zk-prove
+chmod +x lichen-validator lichen-genesis lichen lichen-archive-v2 zk-prove
 mkdir -p "$HOME/.lichen/state-mainnet"
 cp seeds.json "$HOME/.lichen/state-mainnet/seeds.json"
 export LICHEN_KEYPAIR_PASSWORD='set-a-long-random-secret-before-first-start'
@@ -210,7 +210,7 @@ $env:LICHEN_KEYPAIR_PASSWORD = 'set-a-long-random-secret-before-first-start'
 
 Windows release assets are now part of the release contract, but if a given tag does not include them yet, use the source-build workflow for Windows until the next release is published.
 
-Release bundles now ship `lichen-validator`, `lichen-genesis`, `lichen`, `zk-prove`, `lichen-custody`, `lichen-faucet`, `seeds.json`, and the contract WASM bundle beside the operator tools so agents can keep validator, custody, faucet, shielded-transaction tooling, and runtime artifacts installed from the same signed archive. Operators should pin the current seed set under `{db-path}/seeds.json` for supervisor-managed starts, and `--auto-update=apply` refreshes that file from newer release archives during apply-mode upgrades. Validator identity keys are generated locally on first start, and external signed-metadata manifests or standalone proving/verification-key bundles are not required just to join and sync a validator.
+Release bundles now ship `lichen-validator`, `lichen-genesis`, `lichen`, `lichen-archive-v2`, `zk-prove`, `lichen-custody`, `lichen-faucet`, `seeds.json`, and the contract WASM bundle beside the operator tools so agents can keep validator, archive migration/repair, custody, faucet, shielded-transaction tooling, and runtime artifacts installed from the same signed archive. Operators should pin the current seed set under `{db-path}/seeds.json` for supervisor-managed starts, and `--auto-update=apply` refreshes that file from newer release archives during apply-mode upgrades. Validator identity keys are generated locally on first start, and external signed-metadata manifests or standalone proving/verification-key bundles are not required just to join and sync a validator.
 
 The validator identity is also the validator wallet/reward account. The address printed at startup is the account that receives bootstrap stake and validator rewards. Preserve the state directory, validator key files, and `LICHEN_KEYPAIR_PASSWORD`; an agent can restart or upgrade from the same state and catch up, but it cannot sign as the same validator if the key or password is lost.
 

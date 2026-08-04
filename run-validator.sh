@@ -273,6 +273,9 @@ except Exception:
 		--wallet-file "$GENESIS_WALLET_FILE"
 		--initial-validator "$VALIDATOR_PUBKEY"
 	)
+	if [[ -n "${LICHEN_LOCAL_SLOT_DURATION_MS:-}" ]]; then
+		GENESIS_ARGS+=(--local-slot-duration-ms "$LICHEN_LOCAL_SLOT_DURATION_MS")
+	fi
 	for local_pubkey in "${LOCAL_VALIDATOR_PUBKEYS[@]}"; do
 		GENESIS_ARGS+=(
 			--bridge-validator "$local_pubkey"
@@ -302,6 +305,7 @@ echo "Signer:  http://localhost:$SIGNER_PORT"
 echo "DB:      $DB_PATH"
 echo "HOME:    $HOME"
 LOCAL_COLD_STORE="${LICHEN_LOCAL_COLD_STORE_DIR:-${REPO_ROOT}/data/archive-${P2P_PORT}}"
+LOCAL_ARCHIVE_V2_ROLE="${LICHEN_LOCAL_ARCHIVE_V2_ROLE:-}"
 echo ""
 
 if [ "$VALIDATOR_NUM" = "1" ]; then
@@ -312,7 +316,7 @@ fi
 
 echo ""
 echo "Block Production (Tendermint BFT):"
-echo "   Continuous 400ms slots"
+echo "   Continuous ${LICHEN_LOCAL_SLOT_DURATION_MS:-400}ms slots"
 echo "   Empty liveness and transaction blocks use the same cadence"
 echo ""
 
@@ -326,10 +330,47 @@ else
 	EXTRA_FLAGS=""
 fi
 
-if [[ "${LICHEN_LOCAL_ARCHIVE_COLD:-0}" == "1" || -f "$LOCAL_COLD_STORE/CURRENT" ]]; then
+if [[ "$LOCAL_ARCHIVE_V2_ROLE" == "verified-cache" || "$LOCAL_ARCHIVE_V2_ROLE" == "verified_cache" || "$LOCAL_ARCHIVE_V2_ROLE" == "consensus" ]]; then
+	if [[ -f "$LOCAL_COLD_STORE/CURRENT" ]]; then
+		EXTRA_FLAGS="$EXTRA_FLAGS --cold-store $LOCAL_COLD_STORE"
+		echo "Archive bootstrap (read-only after V2 admission): $LOCAL_COLD_STORE"
+	fi
+elif [[ "${LICHEN_LOCAL_ARCHIVE_COLD:-0}" == "1" || -f "$LOCAL_COLD_STORE/CURRENT" ]]; then
 	mkdir -p "$LOCAL_COLD_STORE"
 	EXTRA_FLAGS="$EXTRA_FLAGS --archive-mode --cold-store $LOCAL_COLD_STORE"
 	echo "Archive: $LOCAL_COLD_STORE"
+fi
+
+if [[ -n "$LOCAL_ARCHIVE_V2_ROLE" ]]; then
+	LOCAL_ARCHIVE_V2_ROOT="${LICHEN_LOCAL_ARCHIVE_V2_ROOT:-}"
+	if [[ -z "$LOCAL_ARCHIVE_V2_ROOT" ]]; then
+		echo "LICHEN_LOCAL_ARCHIVE_V2_ROLE requires LICHEN_LOCAL_ARCHIVE_V2_ROOT" >&2
+		exit 1
+	fi
+	EXTRA_FLAGS="$EXTRA_FLAGS --archive-v2-role $LOCAL_ARCHIVE_V2_ROLE --archive-v2-root $LOCAL_ARCHIVE_V2_ROOT"
+	if [[ -n "${LICHEN_LOCAL_ARCHIVE_V2_RECENT_HISTORY_SLOTS:-}" ]]; then
+		EXTRA_FLAGS="$EXTRA_FLAGS --archive-v2-recent-history-slots $LICHEN_LOCAL_ARCHIVE_V2_RECENT_HISTORY_SLOTS"
+	fi
+	if [[ "$LOCAL_ARCHIVE_V2_ROLE" == "verified-cache" || "$LOCAL_ARCHIVE_V2_ROLE" == "verified_cache" ]]; then
+		if [[ -z "${LICHEN_LOCAL_ARCHIVE_V2_CACHE_ROOT:-}" || ( -z "${LICHEN_LOCAL_ARCHIVE_V2_SOURCE_DIRS:-}" && -z "${LICHEN_LOCAL_ARCHIVE_V2_SOURCE_URLS:-}" ) || -z "${LICHEN_LOCAL_ARCHIVE_V2_CACHE_QUOTA_BYTES:-}" ]]; then
+			echo "verified-cache role requires cache root, at least one source directory or HTTPS URL, and a cache quota" >&2
+			exit 1
+		fi
+		EXTRA_FLAGS="$EXTRA_FLAGS --archive-v2-cache-root $LICHEN_LOCAL_ARCHIVE_V2_CACHE_ROOT --archive-v2-cache-quota-bytes $LICHEN_LOCAL_ARCHIVE_V2_CACHE_QUOTA_BYTES"
+		if [[ -n "${LICHEN_LOCAL_ARCHIVE_V2_SOURCE_DIRS:-}" ]]; then
+			EXTRA_FLAGS="$EXTRA_FLAGS --archive-v2-source-dirs $LICHEN_LOCAL_ARCHIVE_V2_SOURCE_DIRS"
+		fi
+		if [[ -n "${LICHEN_LOCAL_ARCHIVE_V2_SOURCE_URLS:-}" ]]; then
+			EXTRA_FLAGS="$EXTRA_FLAGS --archive-v2-source-urls $LICHEN_LOCAL_ARCHIVE_V2_SOURCE_URLS"
+		fi
+		if [[ -n "${LICHEN_LOCAL_ARCHIVE_V2_SOURCE_TIMEOUT_SECS:-}" ]]; then
+			EXTRA_FLAGS="$EXTRA_FLAGS --archive-v2-source-timeout-secs $LICHEN_LOCAL_ARCHIVE_V2_SOURCE_TIMEOUT_SECS"
+		fi
+		if [[ -n "${LICHEN_LOCAL_ARCHIVE_V2_SOURCE_MAX_OBJECT_BYTES:-}" ]]; then
+			EXTRA_FLAGS="$EXTRA_FLAGS --archive-v2-source-max-object-bytes $LICHEN_LOCAL_ARCHIVE_V2_SOURCE_MAX_OBJECT_BYTES"
+		fi
+	fi
+	echo "Archive V2: role=$LOCAL_ARCHIVE_V2_ROLE root=$LOCAL_ARCHIVE_V2_ROOT"
 fi
 
 for arg in "$@"; do

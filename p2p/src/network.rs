@@ -414,6 +414,7 @@ pub struct ValidatorAnnouncement {
     pub signature: PqSignature,
     /// SHA-256 machine fingerprint (platform UUID + MAC). [0u8;32] if not set.
     pub machine_fingerprint: [u8; 32],
+    pub archive_v2: Option<lichen_core::archive_v2::ArchiveV2CapabilityAdvertisement>,
 }
 
 /// Block range request from peer
@@ -1451,6 +1452,7 @@ impl P2PNetwork {
                 version,
                 signature,
                 machine_fingerprint,
+                archive_v2,
             } => {
                 let signature_valid = validator_announcement_signing_message(
                     &pubkey,
@@ -1458,6 +1460,7 @@ impl P2PNetwork {
                     current_slot,
                     &machine_fingerprint,
                     version.as_str(),
+                    archive_v2.as_ref(),
                 )
                 .ok()
                 .map(|message| lichen_core::account::Keypair::verify(&pubkey, &message, &signature))
@@ -1511,6 +1514,7 @@ impl P2PNetwork {
                     version,
                     signature,
                     machine_fingerprint,
+                    archive_v2,
                 };
                 if let Err(e) = self.validator_announce_tx.try_send(announcement) {
                     warn!(

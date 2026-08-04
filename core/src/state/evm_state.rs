@@ -319,7 +319,10 @@ impl StateStore {
             .ok_or_else(|| "EVM Txs CF not found".to_string())?;
         match self.db.get_cf(&cf, evm_hash) {
             Ok(Some(data)) => deserialize_legacy_bincode(&data, "EVM tx").map(Some),
-            Ok(None) => Ok(None),
+            Ok(None) => self
+                .archive_v2_category_value("evm_txs", evm_hash)?
+                .map(|(_, data)| deserialize_legacy_bincode(&data, "Archive V2 EVM tx"))
+                .transpose(),
             Err(e) => Err(format!("Database error: {}", e)),
         }
     }
@@ -357,7 +360,10 @@ impl StateStore {
             .ok_or_else(|| "EVM Receipts CF not found".to_string())?;
         match self.db.get_cf(&cf, evm_hash) {
             Ok(Some(data)) => deserialize_evm_receipt_from_storage(&data).map(Some),
-            Ok(None) => Ok(None),
+            Ok(None) => self
+                .archive_v2_category_value("evm_receipts", evm_hash)?
+                .map(|(_, data)| deserialize_evm_receipt_from_storage(&data))
+                .transpose(),
             Err(e) => Err(format!("Database error: {}", e)),
         }
     }
@@ -395,7 +401,11 @@ impl StateStore {
         let key = slot.to_be_bytes();
         match self.db.get_cf(&cf, key) {
             Ok(Some(data)) => deserialize_legacy_bincode(&data, "EVM logs"),
-            Ok(None) => Ok(Vec::new()),
+            Ok(None) => self
+                .archive_v2_category_value("evm_logs_by_slot", &key)?
+                .map(|(_, data)| deserialize_legacy_bincode(&data, "Archive V2 EVM logs"))
+                .transpose()
+                .map(Option::unwrap_or_default),
             Err(e) => Err(format!("Database error: {}", e)),
         }
     }

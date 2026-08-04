@@ -390,29 +390,50 @@ impl StateStore {
         }
 
         let mut rows = std::collections::BTreeMap::new();
-        if let Some(cold) = self.cold_db.as_ref() {
-            if let Some(cold_cf) = cold.cf_handle(COLD_CF_PROGRAM_CALLS) {
-                let iter = cold.iterator_cf(
-                    &cold_cf,
-                    rocksdb::IteratorMode::From(&end_key, Direction::Reverse),
-                );
-                for item in iter {
-                    let (key, value) = item.map_err(|e| format!("Iterator error: {}", e))?;
-                    if !key.starts_with(&prefix) {
-                        break;
-                    }
-                    if key.len() < 44 {
-                        continue;
-                    }
-                    let slot = u64::from_be_bytes(key[32..40].try_into().unwrap_or([0xFF; 8]));
-                    let seq = u32::from_be_bytes(key[40..44].try_into().unwrap_or([0xFF; 4]));
-                    if let Some((before_slot, before_seq)) = before_cursor {
-                        if slot > before_slot || (slot == before_slot && seq >= before_seq) {
+        if self.legacy_cold_history_reads_enabled() {
+            if let Some(cold) = self.cold_db.as_ref() {
+                if let Some(cold_cf) = cold.cf_handle(COLD_CF_PROGRAM_CALLS) {
+                    let iter = cold.iterator_cf(
+                        &cold_cf,
+                        rocksdb::IteratorMode::From(&end_key, Direction::Reverse),
+                    );
+                    for item in iter {
+                        let (key, value) = item.map_err(|e| format!("Iterator error: {}", e))?;
+                        if !key.starts_with(&prefix) {
+                            break;
+                        }
+                        if key.len() < 44 {
                             continue;
                         }
+                        let slot = u64::from_be_bytes(key[32..40].try_into().unwrap_or([0xFF; 8]));
+                        let seq = u32::from_be_bytes(key[40..44].try_into().unwrap_or([0xFF; 4]));
+                        if let Some((before_slot, before_seq)) = before_cursor {
+                            if slot > before_slot || (slot == before_slot && seq >= before_seq) {
+                                continue;
+                            }
+                        }
+                        rows.insert(key.to_vec(), value.to_vec());
                     }
-                    rows.insert(key.to_vec(), value.to_vec());
                 }
+            }
+        }
+        let archive_end = before_cursor.map(|(slot, _)| slot).unwrap_or(u64::MAX);
+        for (key, value) in self.archive_v2_category_rows("program_calls", 0, archive_end)? {
+            if !key.starts_with(&prefix) || key.len() < 44 {
+                continue;
+            }
+            let slot = u64::from_be_bytes(key[32..40].try_into().unwrap());
+            let seq = u32::from_be_bytes(key[40..44].try_into().unwrap());
+            if before_cursor.is_some_and(|(before_slot, before_seq)| {
+                slot > before_slot || (slot == before_slot && seq >= before_seq)
+            }) {
+                continue;
+            }
+            match rows.insert(key, value.clone()) {
+                Some(existing) if existing != value => {
+                    return Err("Conflicting Archive V2 program-call row".to_string())
+                }
+                _ => {}
             }
         }
 
@@ -470,19 +491,26 @@ impl StateStore {
         prefix.extend_from_slice(&program.0);
 
         let mut keys = std::collections::BTreeSet::new();
-        if let Some(cold) = self.cold_db.as_ref() {
-            if let Some(cold_cf) = cold.cf_handle(COLD_CF_PROGRAM_CALLS) {
-                let iter = cold.iterator_cf(
-                    &cold_cf,
-                    rocksdb::IteratorMode::From(&prefix, Direction::Forward),
-                );
-                for item in iter {
-                    let (key, _) = item.map_err(|e| format!("Iterator error: {}", e))?;
-                    if !key.starts_with(&prefix) {
-                        break;
+        if self.legacy_cold_history_reads_enabled() {
+            if let Some(cold) = self.cold_db.as_ref() {
+                if let Some(cold_cf) = cold.cf_handle(COLD_CF_PROGRAM_CALLS) {
+                    let iter = cold.iterator_cf(
+                        &cold_cf,
+                        rocksdb::IteratorMode::From(&prefix, Direction::Forward),
+                    );
+                    for item in iter {
+                        let (key, _) = item.map_err(|e| format!("Iterator error: {}", e))?;
+                        if !key.starts_with(&prefix) {
+                            break;
+                        }
+                        keys.insert(key.to_vec());
                     }
-                    keys.insert(key.to_vec());
                 }
+            }
+        }
+        for (key, _) in self.archive_v2_category_rows("program_calls", 0, u64::MAX)? {
+            if key.starts_with(&prefix) {
+                keys.insert(key);
             }
         }
 
@@ -556,8 +584,6 @@ impl StateStore {
             .cf_handle(CF_MARKET_ACTIVITY)
             .ok_or_else(|| "Market activity CF not found".to_string())?;
 
-        let mut items = Vec::with_capacity(limit);
-
         let iter = if let Some(collection) = collection {
             let mut prefix = Vec::with_capacity(32);
             prefix.extend_from_slice(&collection.0);
@@ -573,6 +599,15 @@ impl StateStore {
 
         let prefix = collection.map(|c| c.0);
 
+        let mut rows = std::collections::BTreeMap::new();
+        for (key, value) in self.archive_v2_category_rows("market_activity", 0, u64::MAX)? {
+            if prefix
+                .as_ref()
+                .is_none_or(|prefix_bytes| key.starts_with(prefix_bytes))
+            {
+                rows.insert(key, value);
+            }
+        }
         for item in iter {
             let (key, value) = item.map_err(|e| format!("Iterator error: {}", e))?;
             if let Some(prefix_bytes) = prefix.as_ref() {
@@ -580,8 +615,17 @@ impl StateStore {
                     break;
                 }
             }
+            match rows.insert(key.to_vec(), value.to_vec()) {
+                Some(existing) if existing.as_slice() != value.as_ref() => {
+                    return Err("Conflicting hot and Archive V2 market activity row".to_string())
+                }
+                _ => {}
+            }
+        }
 
-            let activity = crate::decode_market_activity(&value)?;
+        let mut items = Vec::with_capacity(limit);
+        for value in rows.values().rev() {
+            let activity = crate::decode_market_activity(value)?;
             if let Some(filter_kind) = kind.as_ref() {
                 if &activity.kind != filter_kind {
                     continue;

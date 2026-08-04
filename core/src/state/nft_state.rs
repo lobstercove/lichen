@@ -88,14 +88,28 @@ impl StateStore {
             rocksdb::IteratorMode::From(&end_key, Direction::Reverse),
         );
 
-        let mut items = Vec::with_capacity(limit);
+        let mut rows = std::collections::BTreeMap::new();
+        for (key, value) in self.archive_v2_category_rows("nft_activity", 0, u64::MAX)? {
+            if key.starts_with(&prefix) {
+                rows.insert(key, value);
+            }
+        }
         for item in iter {
             let (key, value) = item.map_err(|e| format!("Iterator error: {}", e))?;
             if !key.starts_with(&prefix) {
                 break;
             }
+            match rows.insert(key.to_vec(), value.to_vec()) {
+                Some(existing) if existing.as_slice() != value.as_ref() => {
+                    return Err("Conflicting hot and Archive V2 NFT activity row".to_string())
+                }
+                _ => {}
+            }
+        }
 
-            let activity = crate::nft::decode_nft_activity(&value)?;
+        let mut items = Vec::with_capacity(limit);
+        for value in rows.values().rev() {
+            let activity = crate::nft::decode_nft_activity(value)?;
             items.push(activity);
             if items.len() >= limit {
                 break;

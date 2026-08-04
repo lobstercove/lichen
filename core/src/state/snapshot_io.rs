@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::time::Duration;
 
 use crate::block::Block;
@@ -996,8 +997,28 @@ impl StateStore {
     /// checkpoints left by interrupted creation. Active hot/cold stores live
     /// outside this directory and hard-linked SSTs remain available there.
     pub fn prune_all_checkpoints(data_dir: &str) -> Result<usize, String> {
+        Self::prune_all_checkpoints_excluding(data_dir, &HashSet::new())
+    }
+
+    /// Remove every derived checkpoint except slots pinned by an active
+    /// snapshot export. Pins are process-local admission state supplied by the
+    /// validator; this storage helper only applies the resolved exclusion set.
+    pub fn prune_all_checkpoints_excluding(
+        data_dir: &str,
+        protected_slots: &HashSet<u64>,
+    ) -> Result<usize, String> {
         let checkpoints = checkpoint_directory_paths(data_dir)?;
+        let mut removed = 0;
         for checkpoint in &checkpoints {
+            let protected = checkpoint
+                .file_name()
+                .and_then(|name| name.to_str())
+                .and_then(|name| name.strip_prefix("slot-"))
+                .and_then(|slot| slot.parse::<u64>().ok())
+                .is_some_and(|slot| protected_slots.contains(&slot));
+            if protected {
+                continue;
+            }
             std::fs::remove_dir_all(checkpoint).map_err(|err| {
                 format!(
                     "failed to remove checkpoint {}: {}",
@@ -1005,8 +1026,9 @@ impl StateStore {
                     err
                 )
             })?;
+            removed += 1;
         }
-        Ok(checkpoints.len())
+        Ok(removed)
     }
 
     /// Prune old checkpoints, keeping only the most recent `keep_count`.
@@ -1024,12 +1046,40 @@ impl StateStore {
         keep_count: usize,
         max_total_bytes: Option<u64>,
     ) -> Result<usize, String> {
+        Self::prune_checkpoints_with_size_limit_excluding(
+            data_dir,
+            keep_count,
+            max_total_bytes,
+            &HashSet::new(),
+        )
+    }
+
+    /// Prune checkpoints while preserving both the configured recent window
+    /// and any slots pinned by active snapshot exports.
+    pub fn prune_checkpoints_with_size_limit_excluding(
+        data_dir: &str,
+        keep_count: usize,
+        max_total_bytes: Option<u64>,
+        protected_slots: &HashSet<u64>,
+    ) -> Result<usize, String> {
         let checkpoints = Self::list_checkpoints(data_dir);
         let mut remaining = checkpoints;
         let mut removed = 0;
 
-        while remaining.len() > keep_count {
-            let (_, path) = remaining.remove(0);
+        let recent_slots: HashSet<u64> = remaining
+            .iter()
+            .rev()
+            .take(keep_count)
+            .map(|(slot, _)| *slot)
+            .collect();
+        let mut index = 0;
+        while index < remaining.len() {
+            let slot = remaining[index].0;
+            if protected_slots.contains(&slot) || recent_slots.contains(&slot) {
+                index += 1;
+                continue;
+            }
+            let (_, path) = remaining.remove(index);
             if std::fs::remove_dir_all(path).is_ok() {
                 removed += 1;
             }
@@ -1037,7 +1087,13 @@ impl StateStore {
 
         if let Some(max_bytes) = max_total_bytes.filter(|value| *value > 0) {
             while remaining.len() > 1 && checkpoint_paths_total_size(&remaining)? > max_bytes {
-                let (_, path) = remaining.remove(0);
+                let Some(index) = remaining
+                    .iter()
+                    .position(|(slot, _)| !protected_slots.contains(slot))
+                else {
+                    break;
+                };
+                let (_, path) = remaining.remove(index);
                 if std::fs::remove_dir_all(path).is_ok() {
                     removed += 1;
                 }

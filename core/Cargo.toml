@@ -1,6 +1,6 @@
 [package]
 name = "lobstercove-lichen-core"
-version = "0.5.229"
+version = "0.5.230"
 edition = "2021"
 authors = ["Lichen Labs <trading.lobster@lichen.network>"]
 description = "Lichen core blockchain implementation"
@@ -45,6 +45,8 @@ alloy-consensus = { version = "0.7.3", default-features = false, features = ["k2
 alloy-primitives = "0.8.26"
 alloy-rlp = "0.3.13"
 derive_more = { version = "1.0.0", features = ["display"] }
+zstd = "0.13"
+libc = "0.2"
 
 # ZK proof dependencies.
 # The live shielded runtime is Plonky3/FRI; arkworks remains for field and

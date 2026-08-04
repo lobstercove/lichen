@@ -61,8 +61,11 @@ impl StateStore {
             target_slot,
             &seek_key,
         )?;
-        let cold = match self.cold_db.as_ref() {
-            Some(db) if db.cf_handle(COLD_CF_ACCOUNT_SNAPSHOTS).is_some() => self
+        let cold = match (
+            self.legacy_cold_history_reads_enabled(),
+            self.cold_db.as_ref(),
+        ) {
+            (true, Some(db)) if db.cf_handle(COLD_CF_ACCOUNT_SNAPSHOTS).is_some() => self
                 .get_account_snapshot_at_or_before(
                     db.as_ref(),
                     COLD_CF_ACCOUNT_SNAPSHOTS,
@@ -72,18 +75,40 @@ impl StateStore {
                 )?,
             _ => None,
         };
-
-        Ok(match (hot, cold) {
-            (Some((hot_slot, hot_account)), Some((cold_slot, cold_account))) => {
-                if hot_slot >= cold_slot {
-                    Some(hot_account)
-                } else {
-                    Some(cold_account)
+        let archive_v2 = self
+            .archive_v2_category_rows("account_snapshots", 0, target_slot)?
+            .into_iter()
+            .rev()
+            .find_map(|(key, value)| {
+                if key.len() != 40 || key[..32] != pubkey.0 {
+                    return None;
                 }
-            }
-            (Some((_, account)), None) | (None, Some((_, account))) => Some(account),
-            (None, None) => None,
-        })
+                let slot = u64::from_be_bytes(key[32..40].try_into().ok()?);
+                Some((slot, key, value))
+            })
+            .map(|(slot, key, value)| {
+                let value =
+                    self.canonical_public_history_import_value("account_snapshots", &key, &value)?;
+                if value.first() != Some(&0xBC) {
+                    return Err(format!(
+                        "Unsupported Archive V2 account snapshot encoding at slot {slot}"
+                    ));
+                }
+                let mut account: Account =
+                    deserialize_legacy_bincode(&value[1..], "Archive V2 account snapshot")
+                        .map_err(|error| {
+                            format!("Failed to deserialize Archive V2 snapshot: {error}")
+                        })?;
+                account.fixup_legacy();
+                Ok((slot, account))
+            })
+            .transpose()?;
+
+        Ok([hot, cold, archive_v2]
+            .into_iter()
+            .flatten()
+            .max_by_key(|(slot, _)| *slot)
+            .map(|(_, account)| account))
     }
 
     fn get_account_snapshot_at_or_before(
@@ -189,14 +214,16 @@ impl StateStore {
                 oldest = Some(oldest.map_or(slot, |current: u64| current.min(slot)));
             }
         }
-        if let Some(cold) = self.cold_db.as_ref() {
-            if let Some(cold_cf) = cold.cf_handle(COLD_CF_ACCOUNT_SNAPSHOTS) {
-                for item in cold.iterator_cf(&cold_cf, rocksdb::IteratorMode::Start) {
-                    let (key, _) =
-                        item.map_err(|e| format!("Failed reading cold account snapshots: {}", e))?;
-                    if key.len() == 40 {
-                        let slot = u64::from_be_bytes(key[32..40].try_into().unwrap());
-                        oldest = Some(oldest.map_or(slot, |current| current.min(slot)));
+        if self.legacy_cold_history_reads_enabled() {
+            if let Some(cold) = self.cold_db.as_ref() {
+                if let Some(cold_cf) = cold.cf_handle(COLD_CF_ACCOUNT_SNAPSHOTS) {
+                    for item in cold.iterator_cf(&cold_cf, rocksdb::IteratorMode::Start) {
+                        let (key, _) = item
+                            .map_err(|e| format!("Failed reading cold account snapshots: {}", e))?;
+                        if key.len() == 40 {
+                            let slot = u64::from_be_bytes(key[32..40].try_into().unwrap());
+                            oldest = Some(oldest.map_or(slot, |current| current.min(slot)));
+                        }
                     }
                 }
             }
