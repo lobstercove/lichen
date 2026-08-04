@@ -18,7 +18,10 @@ use std::sync::Mutex;
 
 mod account_state;
 mod archive_state;
+mod archive_v2_retirement;
+mod archive_v2_state;
 mod batch_state;
+mod cold_migration_v1;
 mod cold_storage;
 mod contract_state;
 mod dex_index;
@@ -37,6 +40,16 @@ mod stats_metadata;
 mod storage_bootstrap;
 mod validator_state;
 
+pub use archive_v2_retirement::{
+    ArchiveV2RetirementFaultPoint, ArchiveV2RetirementLimits, ArchiveV2RetirementPassReport,
+    ArchiveV2RetirementPhase, ArchiveV2RetirementReclaimLimits, ArchiveV2RetirementReclaimReport,
+};
+pub use cold_migration_v1::{
+    ColdMigrationCategoryProgress, ColdMigrationCursor, ColdMigrationFaultPoint,
+    ColdMigrationLimits, ColdMigrationPassReport, ColdMigrationPhase, ColdMigrationReserveStatus,
+    ColdMigrationStatus, ColdReclaimLimits, ColdReclaimReport, ColdStorageFamilyMetrics,
+    COLD_MIGRATION_CURSOR_FORMAT_VERSION, COLD_MIGRATION_STORAGE_FORMAT_VERSION,
+};
 pub use cold_storage::{
     ColdMigrationAuditReport, ColdMigrationAuditRows, PublicHistoryMergeCfReport,
     PublicHistoryMergeReport, COLD_BLOCK_MIGRATION_COMPACTION_BATCH_SIZE,
@@ -492,9 +505,29 @@ pub struct StateStore {
     /// CF_ACCOUNT_SNAPSHOTS keyed by `pubkey(32) + slot(8,BE)`, enabling
     /// historical state queries via `get_account_at_slot`.
     archive_mode: Arc<std::sync::atomic::AtomicBool>,
+    /// Serializes archival migration passes and cursor recovery. Archival work
+    /// is operational and must never overlap itself or become a consensus
+    /// state input.
+    cold_migration_lock: Arc<std::sync::Mutex<()>>,
+    /// In-process observability for the bounded migration scheduler. Durable
+    /// progress remains exclusively in the checksummed cursor record.
+    cold_migration_status: Arc<std::sync::Mutex<ColdMigrationStatus>>,
+    /// Optional Archive V2 reader. This is an operational public-history
+    /// source only and never participates in consensus state transitions.
+    archive_v2_reader: Arc<std::sync::RwLock<Option<Arc<crate::archive_v2::ArchiveV2Reader>>>>,
+    /// Genesis-only MossStake mode declaration captured before a non-archive
+    /// Archive V2 role hides legacy deep history. This is process-local and is
+    /// restored from the checksummed Archive V2 role marker on later starts.
+    genesis_mossstake_slot_only: Arc<std::sync::OnceLock<bool>>,
 }
 
 impl StateStore {
+    pub(crate) fn lock_archive_maintenance(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.cold_migration_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     pub(crate) fn lock_state_commitment(&self) -> std::sync::MutexGuard<'_, ()> {
         self.state_commitment_lock
             .lock()
@@ -922,6 +955,80 @@ mod tests {
             vec![3],
             "the newest checkpoint must remain available even when it exceeds the size cap"
         );
+    }
+
+    #[test]
+    fn checkpoint_prune_preserves_active_export_pins() {
+        let temp = tempdir().unwrap();
+        let state_dir = temp.path().join("state");
+        let checkpoint_root = state_dir.join("checkpoints");
+        std::fs::create_dir_all(&checkpoint_root).unwrap();
+
+        for slot in 1u64..=3 {
+            let checkpoint_dir = checkpoint_root.join(format!("slot-{slot}"));
+            std::fs::create_dir_all(&checkpoint_dir).unwrap();
+            let meta = CheckpointMeta {
+                slot,
+                state_root: [slot as u8; 32],
+                created_at: slot,
+                total_accounts: 0,
+            };
+            std::fs::write(
+                checkpoint_dir.join("checkpoint_meta.json"),
+                serde_json::to_vec(&meta).unwrap(),
+            )
+            .unwrap();
+            std::fs::write(checkpoint_dir.join("payload.bin"), vec![slot as u8; 1_000]).unwrap();
+        }
+
+        let protected_slots = std::collections::HashSet::from([1u64]);
+        assert_eq!(
+            StateStore::prune_checkpoints_with_size_limit_excluding(
+                state_dir.to_str().unwrap(),
+                1,
+                None,
+                &protected_slots,
+            )
+            .unwrap(),
+            1,
+        );
+        assert_eq!(
+            StateStore::list_checkpoints(state_dir.to_str().unwrap())
+                .iter()
+                .map(|(slot, _)| *slot)
+                .collect::<Vec<_>>(),
+            vec![1, 3],
+            "the active export and configured recent window must both survive count pruning",
+        );
+
+        assert_eq!(
+            StateStore::prune_checkpoints_with_size_limit_excluding(
+                state_dir.to_str().unwrap(),
+                1,
+                Some(500),
+                &protected_slots,
+            )
+            .unwrap(),
+            1,
+        );
+        assert_eq!(
+            StateStore::list_checkpoints(state_dir.to_str().unwrap())
+                .iter()
+                .map(|(slot, _)| *slot)
+                .collect::<Vec<_>>(),
+            vec![1],
+            "the active export must survive byte-cap pruning even when it alone exceeds the cap",
+        );
+
+        assert_eq!(
+            StateStore::prune_all_checkpoints_excluding(
+                state_dir.to_str().unwrap(),
+                &protected_slots,
+            )
+            .unwrap(),
+            0,
+        );
+        assert!(checkpoint_root.join("slot-1").is_dir());
     }
 
     #[cfg(unix)]

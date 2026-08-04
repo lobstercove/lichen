@@ -25,6 +25,13 @@ pub mod wal;
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use flate2::read::GzDecoder;
 use futures_util::{SinkExt, StreamExt};
+use lichen_core::archive_v2::{
+    ArchiveV2AdaptiveReservePolicy, ArchiveV2CapabilityAdvertisement, ArchiveV2CapacityDecision,
+    ArchiveV2CapacityGuard, ArchiveV2CapacityInputs, ArchiveV2CapacityThresholds,
+    ArchiveV2CapacityTotals, ArchiveV2Catalog, ArchiveV2DirectorySource, ArchiveV2ObjectSource,
+    ArchiveV2PressureAction, ArchiveV2Reader, ArchiveV2ReaderConfig, ArchiveV2Role,
+    ArchiveV2RoleConfig, ArchiveV2RoleRequirements, ARCHIVE_V2_ROLE_CONFIG_VERSION,
+};
 use lichen_core::codec::{
     deserialize_legacy_bincode_from, deserialize_legacy_bincode_strict, serialize_legacy_bincode,
     serialize_legacy_bincode_into, serialize_legacy_bincode_limited,
@@ -86,7 +93,7 @@ use std::io::{BufRead, Read, Write};
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 use sync::SyncManager;
 use tokio::sync::{mpsc, Mutex, RwLock};
@@ -110,8 +117,26 @@ const TESTNET_MIN_RUNTIME_AVAILABLE_BYTES: u64 = 5 * 1024 * 1024 * 1024;
 const DEFAULT_MIN_RUNTIME_AVAILABLE_BYTES: u64 = 10 * 1024 * 1024 * 1024;
 const MIN_CHECKPOINT_AVAILABLE_BYTES: u64 = 20 * 1024 * 1024 * 1024;
 static CHECKPOINT_MAINTENANCE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+static ACTIVE_CHECKPOINT_EXPORT_PINS: LazyLock<std::sync::Mutex<HashMap<u64, usize>>> =
+    LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+static ARCHIVE_V2_ROLE_MARKER_NONCE: AtomicU64 = AtomicU64::new(0);
+static ARCHIVE_V2_CAPACITY_ACTION: AtomicU64 =
+    AtomicU64::new(ArchiveV2PressureAction::Normal as u64);
 const SNAPSHOT_APPLY_COMPACTION_COPIES: u64 = 2;
 const DISK_CAPACITY_CHECK_INTERVAL_SECS: u64 = 30;
+const DEFAULT_COLD_MIGRATION_INTERVAL_SECS: u64 = 300;
+const DEFAULT_COLD_MIGRATION_HEADROOM_MARGIN_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+const ARCHIVE_V2_DEFAULT_RESERVE_BASIS_POINTS: u16 = 500;
+const ARCHIVE_V2_DEFAULT_MUTABLE_WRITE_PEAK_BYTES: u64 = 1024 * 1024 * 1024;
+const ARCHIVE_V2_DEFAULT_WAL_PEAK_BYTES: u64 = 1024 * 1024 * 1024;
+const ARCHIVE_V2_DEFAULT_COMPACTION_PEAK_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+const ARCHIVE_V2_DEFAULT_CHECKPOINT_PEAK_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+const ARCHIVE_V2_DEFAULT_SEGMENT_STAGING_PEAK_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+const ARCHIVE_V2_DEFAULT_REPLICATION_RETRY_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+const ARCHIVE_V2_DEFAULT_CACHE_EVICTION_MARGIN_BYTES: u64 = 256 * 1024 * 1024;
+const ARCHIVE_V2_DEFAULT_EVIDENCE_RESERVE_BYTES: u64 = 512 * 1024 * 1024;
+const ARCHIVE_V2_SOURCE_TOKEN_MAX_BYTES: usize = 4096;
+
 fn validator_log_filter_from_env_value(value: Option<&str>) -> EnvFilter {
     value
         .and_then(|value| EnvFilter::builder().parse(value).ok())
@@ -120,6 +145,204 @@ fn validator_log_filter_from_env_value(value: Option<&str>) -> EnvFilter {
 
 fn validator_log_filter() -> EnvFilter {
     validator_log_filter_from_env_value(env::var("RUST_LOG").ok().as_deref())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RuntimeColdMigrationConfig {
+    interval: Duration,
+    startup_delay: Duration,
+    retention_slots: u64,
+    limits: lichen_core::state::ColdMigrationLimits,
+    minimum_headroom_bytes: u64,
+    reclaim_max_ranges: u64,
+    reclaim_max_input_bytes: u64,
+}
+
+fn parse_bounded_env_u64(
+    name: &str,
+    default: u64,
+    minimum: u64,
+    maximum: u64,
+) -> Result<u64, String> {
+    let value = match env::var(name) {
+        Ok(raw) => raw
+            .parse::<u64>()
+            .map_err(|_| format!("{name} must be an integer"))?,
+        Err(env::VarError::NotPresent) => default,
+        Err(err) => return Err(format!("failed reading {name}: {err}")),
+    };
+    if !(minimum..=maximum).contains(&value) {
+        return Err(format!("{name} must be in {minimum}..={maximum}"));
+    }
+    Ok(value)
+}
+
+fn runtime_cold_migration_config(
+    runtime_minimum_available_bytes: u64,
+) -> Result<RuntimeColdMigrationConfig, String> {
+    let interval_secs = parse_bounded_env_u64(
+        "LICHEN_COLD_MIGRATION_INTERVAL_SECS",
+        DEFAULT_COLD_MIGRATION_INTERVAL_SECS,
+        1,
+        86_400,
+    )?;
+    let startup_delay_secs = parse_bounded_env_u64(
+        "LICHEN_COLD_MIGRATION_STARTUP_DELAY_SECS",
+        interval_secs.min(30),
+        1,
+        3_600,
+    )?;
+    let retention_slots = parse_bounded_env_u64(
+        "LICHEN_COLD_RETENTION_SLOTS",
+        lichen_core::state::COLD_RETENTION_SLOTS,
+        1,
+        10_000_000,
+    )?;
+    let max_rows = parse_bounded_env_u64("LICHEN_COLD_MIGRATION_MAX_ROWS", 2_000, 1, 100_000)?;
+    let max_bytes = parse_bounded_env_u64(
+        "LICHEN_COLD_MIGRATION_MAX_BYTES",
+        64 * 1024 * 1024,
+        1024 * 1024,
+        1024 * 1024 * 1024,
+    )?;
+    let max_wall_time_ms =
+        parse_bounded_env_u64("LICHEN_COLD_MIGRATION_MAX_WALL_TIME_MS", 2_000, 10, 60_000)?;
+    let max_slots_per_target = parse_bounded_env_u64(
+        "LICHEN_COLD_MIGRATION_MAX_SLOTS_PER_TARGET",
+        50_000,
+        1,
+        1_000_000,
+    )?;
+    let minimum_headroom_bytes = parse_bounded_env_u64(
+        "LICHEN_COLD_MIGRATION_MIN_HEADROOM_BYTES",
+        runtime_minimum_available_bytes
+            .saturating_add(DEFAULT_COLD_MIGRATION_HEADROOM_MARGIN_BYTES),
+        runtime_minimum_available_bytes,
+        u64::MAX,
+    )?;
+    let reclaim_max_ranges = parse_bounded_env_u64("LICHEN_COLD_RECLAIM_MAX_RANGES", 1, 1, 16)?;
+    let reclaim_max_input_bytes = parse_bounded_env_u64(
+        "LICHEN_COLD_RECLAIM_MAX_INPUT_BYTES",
+        256 * 1024 * 1024,
+        1024 * 1024,
+        4 * 1024 * 1024 * 1024,
+    )?;
+    let limits = lichen_core::state::ColdMigrationLimits {
+        max_rows,
+        max_bytes,
+        max_wall_time: Duration::from_millis(max_wall_time_ms),
+        max_slots_per_target,
+    }
+    .validate()?;
+    Ok(RuntimeColdMigrationConfig {
+        interval: Duration::from_secs(interval_secs),
+        startup_delay: Duration::from_secs(startup_delay_secs),
+        retention_slots,
+        limits,
+        minimum_headroom_bytes,
+        reclaim_max_ranges,
+        reclaim_max_input_bytes,
+    })
+}
+
+fn stable_cold_migration_jitter(identity: &Pubkey, interval: Duration) -> Duration {
+    let window_millis = interval.as_millis().clamp(1, 120_000) as u64;
+    let digest = Sha256::digest(identity.0);
+    let value = u64::from_be_bytes(digest[..8].try_into().expect("SHA-256 prefix"));
+    Duration::from_millis(value % window_millis)
+}
+
+fn cold_migration_pressure_reason(
+    state: &StateStore,
+    data_dir: &Path,
+    minimum_headroom_bytes: u64,
+) -> Option<String> {
+    if archive_v2_capacity_blocks_archival_work() {
+        return Some(format!(
+            "archive_v2_capacity:{:?}",
+            current_archive_v2_capacity_action()
+        ));
+    }
+    match filesystem_available_bytes(data_dir) {
+        Ok(available) if available < minimum_headroom_bytes => {
+            return Some(format!(
+                "disk_pressure:available_bytes={available}:required_bytes={minimum_headroom_bytes}"
+            ));
+        }
+        Err(err) => return Some(format!("disk_measurement_failed:{err}")),
+        Ok(_) => {}
+    }
+
+    let metrics = state.get_metrics();
+    // Accelerated local integration chains deliberately request sub-process
+    // slot cadences that normal storage/consensus work cannot physically
+    // sustain. Keep their migration pressure check anchored to the production
+    // 400 ms cadence so the exact 50,000-slot gate can exercise migration.
+    // Non-dev validators always use the signed genesis cadence unchanged.
+    let cadence_pressure_target_ms = if env_flag_enabled("LICHEN_LOCAL_DEV") {
+        metrics.cadence_target_ms.max(400)
+    } else {
+        metrics.cadence_target_ms
+    };
+    if metrics.head_staleness_ms > 2_000 {
+        return Some(format!(
+            "consensus_latency:head_staleness_ms={}",
+            metrics.head_staleness_ms
+        ));
+    }
+    if cadence_pressure_target_ms > 0
+        && metrics.observed_block_interval_ms > cadence_pressure_target_ms.saturating_mul(2)
+    {
+        return Some(format!(
+            "consensus_latency:observed_interval_ms={}:target_ms={}",
+            metrics.observed_block_interval_ms, cadence_pressure_target_ms
+        ));
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(loadavg) = fs::read_to_string("/proc/loadavg") {
+            if let Some(load_one) = loadavg
+                .split_whitespace()
+                .next()
+                .and_then(|value| value.parse::<f64>().ok())
+            {
+                let cpus = std::thread::available_parallelism()
+                    .map(|value| value.get())
+                    .unwrap_or(1);
+                if load_one > cpus as f64 {
+                    return Some(format!("cpu_pressure:load_one={load_one:.2}:cpus={cpus}"));
+                }
+            }
+        }
+        if let Ok(meminfo) = fs::read_to_string("/proc/meminfo") {
+            let available_kib = meminfo.lines().find_map(|line| {
+                line.strip_prefix("MemAvailable:")
+                    .and_then(|value| value.split_whitespace().next())
+                    .and_then(|value| value.parse::<u64>().ok())
+            });
+            if available_kib.is_some_and(|value| value < 512 * 1024) {
+                return Some(format!(
+                    "memory_pressure:available_kib={}",
+                    available_kib.unwrap_or(0)
+                ));
+            }
+        }
+    }
+    None
+}
+
+fn cold_migration_sync_pause_reason(
+    genesis_sync_in_progress: bool,
+    network_tip_caught_up: bool,
+) -> Option<&'static str> {
+    if genesis_sync_in_progress {
+        Some("genesis_sync_in_progress")
+    } else if !network_tip_caught_up {
+        Some("network_catchup_in_progress")
+    } else {
+        None
+    }
 }
 
 fn compact_block_full_block_fallback_request(slot: u64, local_addr: SocketAddr) -> P2PMessage {
@@ -182,6 +405,9 @@ const IMPORT_PUBLIC_HISTORY_CATEGORY_FLAG: &str = "--import-public-history-categ
 const PUBLIC_HISTORY_PAGE_FORMAT_FLAG: &str = "--public-history-page-format";
 const VERIFY_CONTIGUOUS_BLOCK_RANGE_FLAG: &str = "--verify-contiguous-block-range";
 const MIGRATE_PUBLIC_HISTORY_TO_COLD_FLAG: &str = "--migrate-public-history-to-cold";
+const AUDIT_COLD_MIGRATION_CURSOR_FLAG: &str = "--audit-cold-migration-cursor";
+const REBUILD_COLD_MIGRATION_CURSOR_FLAG: &str = "--rebuild-cold-migration-cursor";
+const COLD_MIGRATION_CURSOR_REBUILD_CONFIRMATION: &str = "cold-migration-cursor-rebuild:v1";
 const REPAIR_MISSING_SLOT_CURSORS_FROM_BLOCKS_FLAG: &str =
     "--repair-missing-slot-cursors-from-blocks";
 const SOURCE_COLD_STORE_FLAG: &str = "--source-cold-store";
@@ -1726,10 +1952,10 @@ fn validate_snapshot_archive_completeness(
     let metrics = state.get_metrics();
     let required_blocks = snapshot_slot.saturating_add(1);
     if metrics.total_blocks < required_blocks {
-        return Err(format!(
-            "snapshot archive is incomplete: total_blocks={} but checkpoint slot={} requires {} contiguous archived blocks",
+        warn!(
+            "Snapshot total_blocks metric is behind the requested checkpoint (metric={}, checkpoint_slot={}, required={}); verifying exact canonical continuity",
             metrics.total_blocks, snapshot_slot, required_blocks
-        ));
+        );
     }
 
     let mut parent_hash = None;
@@ -2056,6 +2282,7 @@ fn verify_validator_announcement_signature(
     version: &str,
     signature: &PqSignature,
     machine_fingerprint: &[u8; 32],
+    archive_v2: Option<&ArchiveV2CapabilityAdvertisement>,
 ) -> bool {
     validator_announcement_signing_message(
         pubkey,
@@ -2063,10 +2290,48 @@ fn verify_validator_announcement_signature(
         current_slot,
         machine_fingerprint,
         version,
+        archive_v2,
     )
     .ok()
     .map(|message| Keypair::verify(pubkey, &message, signature))
     .unwrap_or(false)
+}
+
+fn validate_announced_archive_v2_capability(
+    capability: &ArchiveV2CapabilityAdvertisement,
+    chain_id: &str,
+    genesis_hash: Hash,
+) -> Result<(), String> {
+    capability.validate().map_err(|error| error.to_string())?;
+    if capability.identity.network_id != chain_id {
+        return Err(format!(
+            "Archive V2 capability network {} does not match local chain {chain_id}",
+            capability.identity.network_id
+        ));
+    }
+    if capability.identity.genesis_hash != genesis_hash {
+        return Err("Archive V2 capability genesis hash does not match local genesis".to_string());
+    }
+    Ok(())
+}
+
+fn admit_announced_archive_v2_capability(
+    capability: Option<&ArchiveV2CapabilityAdvertisement>,
+    chain_id: &str,
+    state: &StateStore,
+) -> Result<Option<ArchiveV2CapabilityAdvertisement>, String> {
+    let Some(capability) = capability else {
+        return Ok(None);
+    };
+    let Some(genesis) = state.get_block_by_slot(0)? else {
+        // A fresh joiner can authenticate the capability-bound announcement
+        // signature before it has canonical slot 0, but it cannot authenticate
+        // the advertised archive identity yet. Periodic announcements will be
+        // reconsidered after genesis sync.
+        return Ok(None);
+    };
+    validate_announced_archive_v2_capability(capability, chain_id, genesis.hash())?;
+    Ok(Some(capability.clone()))
 }
 
 #[derive(Debug, Clone)]
@@ -2107,11 +2372,47 @@ type SnapshotExportCursorKey = (std::net::SocketAddr, u64, [u8; 32], [u8; 32], S
 type SnapshotExportCursorState = (u64, Option<Vec<u8>>);
 type SnapshotExportSessionKey = (std::net::SocketAddr, u64, [u8; 32], [u8; 32], u64);
 
+struct CheckpointExportPin {
+    slot: u64,
+}
+
+impl CheckpointExportPin {
+    fn acquire(slot: u64, checkpoint_path: &str) -> Option<Self> {
+        let mut pins = ACTIVE_CHECKPOINT_EXPORT_PINS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !Path::new(checkpoint_path)
+            .join("checkpoint_meta.json")
+            .is_file()
+        {
+            return None;
+        }
+        *pins.entry(slot).or_default() += 1;
+        Some(Self { slot })
+    }
+}
+
+impl Drop for CheckpointExportPin {
+    fn drop(&mut self) {
+        let mut pins = ACTIVE_CHECKPOINT_EXPORT_PINS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(count) = pins.get_mut(&self.slot) else {
+            return;
+        };
+        *count = count.saturating_sub(1);
+        if *count == 0 {
+            pins.remove(&self.slot);
+        }
+    }
+}
+
 #[derive(Clone)]
 struct SnapshotExportSessionState {
     checkpoint_path: String,
     meta: lichen_core::CheckpointMeta,
     categories: &'static [&'static str],
+    _checkpoint_pin: Arc<CheckpointExportPin>,
 }
 
 #[derive(Clone)]
@@ -2242,11 +2543,16 @@ impl VerifiedCheckpointCacheEntry {
         })?;
         let categories =
             advertised_snapshot_manifest_categories(&checkpoint.snapshot_manifest).ok()?;
+        let checkpoint_pin = Arc::new(CheckpointExportPin::acquire(
+            checkpoint.meta.slot,
+            &checkpoint.checkpoint_path,
+        )?);
 
         Some(SnapshotExportSessionState {
             checkpoint_path: checkpoint.checkpoint_path.clone(),
             meta: checkpoint.meta.clone(),
             categories,
+            _checkpoint_pin: checkpoint_pin,
         })
     }
 
@@ -5413,6 +5719,7 @@ struct SnapshotSync {
     stake_pool: bool,
     warp_snapshot_active: bool,
     checkpoint_repair_pending: bool,
+    checkpoint_metadata_retry_pending: bool,
     last_checkpoint_metadata_request_at: Option<std::time::Instant>,
 }
 
@@ -5455,13 +5762,23 @@ impl SnapshotSync {
         true
     }
 
+    fn should_retry_checkpoint_metadata(&mut self) -> bool {
+        (self.checkpoint_repair_pending || self.checkpoint_metadata_retry_pending)
+            && self.should_request_checkpoint_metadata()
+    }
+
     fn mark_warp_snapshot_active(&mut self) {
         self.warp_snapshot_active = true;
         self.checkpoint_repair_pending = true;
+        self.checkpoint_metadata_retry_pending = false;
     }
 
     fn mark_checkpoint_repair_pending(&mut self) {
         self.checkpoint_repair_pending = true;
+    }
+
+    fn mark_checkpoint_metadata_retry_pending(&mut self) {
+        self.checkpoint_metadata_retry_pending = true;
     }
 
     fn is_checkpoint_repair_pending(&self) -> bool {
@@ -5471,12 +5788,14 @@ impl SnapshotSync {
     fn mark_warp_snapshot_retry_pending(&mut self) {
         self.warp_snapshot_active = false;
         self.checkpoint_repair_pending = true;
+        self.checkpoint_metadata_retry_pending = false;
         self.last_checkpoint_metadata_request_at = None;
     }
 
     fn mark_warp_snapshot_idle(&mut self) {
         self.warp_snapshot_active = false;
         self.checkpoint_repair_pending = false;
+        self.checkpoint_metadata_retry_pending = false;
         self.last_checkpoint_metadata_request_at = None;
     }
 }
@@ -7781,10 +8100,19 @@ fn state_chain_id_metadata(state: &StateStore) -> Option<String> {
 }
 
 fn genesis_bundle_declares_mossstake_slot_only(state: &StateStore) -> Result<bool, String> {
+    if let Some(declared) = state.cached_genesis_mossstake_slot_only() {
+        return Ok(declared);
+    }
     let Some(genesis) = state.get_block_by_slot(0)? else {
         return Ok(false);
     };
-    let Some(bundle) = extract_genesis_state_bundle(&genesis)? else {
+    let declared = genesis_block_declares_mossstake_slot_only(&genesis)?;
+    state.cache_genesis_mossstake_slot_only(declared)?;
+    Ok(declared)
+}
+
+fn genesis_block_declares_mossstake_slot_only(genesis: &Block) -> Result<bool, String> {
+    let Some(bundle) = extract_genesis_state_bundle(genesis)? else {
         return Ok(false);
     };
     Ok(bundle
@@ -9009,8 +9337,14 @@ fn statvfs_block_count(value: libc::fsblkcnt_t) -> u64 {
     value as u64
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FilesystemCapacity {
+    available_bytes: u64,
+    total_bytes: u64,
+}
+
 #[cfg(unix)]
-fn filesystem_available_bytes(path: &Path) -> Result<u64, String> {
+fn filesystem_capacity(path: &Path) -> Result<FilesystemCapacity, String> {
     use std::ffi::CString;
     use std::os::unix::ffi::OsStrExt;
 
@@ -9031,12 +9365,19 @@ fn filesystem_available_bytes(path: &Path) -> Result<u64, String> {
     } else {
         stat.f_bsize
     };
-    Ok(statvfs_block_count(stat.f_bavail).saturating_mul(block_size))
+    Ok(FilesystemCapacity {
+        available_bytes: statvfs_block_count(stat.f_bavail).saturating_mul(block_size),
+        total_bytes: statvfs_block_count(stat.f_blocks).saturating_mul(block_size),
+    })
 }
 
 #[cfg(not(unix))]
-fn filesystem_available_bytes(_path: &Path) -> Result<u64, String> {
+fn filesystem_capacity(_path: &Path) -> Result<FilesystemCapacity, String> {
     Err("filesystem capacity inspection is unsupported on this platform".to_string())
+}
+
+fn filesystem_available_bytes(path: &Path) -> Result<u64, String> {
+    filesystem_capacity(path).map(|capacity| capacity.available_bytes)
 }
 
 fn has_required_disk_headroom(available_bytes: u64, minimum_bytes: u64) -> bool {
@@ -9049,6 +9390,146 @@ fn minimum_runtime_available_bytes(network: Option<&str>) -> u64 {
     } else {
         DEFAULT_MIN_RUNTIME_AVAILABLE_BYTES
     }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct RuntimeArchiveV2GrowthReserves {
+    hot_bytes: u64,
+    archive_bytes: u64,
+    cache_bytes: u64,
+}
+
+fn archive_v2_capacity_action_code(action: ArchiveV2PressureAction) -> u64 {
+    match action {
+        ArchiveV2PressureAction::Normal => 0,
+        ArchiveV2PressureAction::StopSegmentBuilding => 1,
+        ArchiveV2PressureAction::EvictVerifiedCache => 2,
+        ArchiveV2PressureAction::StopCheckpointWork => 3,
+        ArchiveV2PressureAction::PreserveArchiveObjects => 4,
+        ArchiveV2PressureAction::StopValidator => 5,
+    }
+}
+
+fn current_archive_v2_capacity_action() -> ArchiveV2PressureAction {
+    match ARCHIVE_V2_CAPACITY_ACTION.load(Ordering::Acquire) {
+        1 => ArchiveV2PressureAction::StopSegmentBuilding,
+        2 => ArchiveV2PressureAction::EvictVerifiedCache,
+        3 => ArchiveV2PressureAction::StopCheckpointWork,
+        4 => ArchiveV2PressureAction::PreserveArchiveObjects,
+        5 => ArchiveV2PressureAction::StopValidator,
+        _ => ArchiveV2PressureAction::Normal,
+    }
+}
+
+fn store_archive_v2_capacity_action(action: ArchiveV2PressureAction) {
+    ARCHIVE_V2_CAPACITY_ACTION.store(archive_v2_capacity_action_code(action), Ordering::Release);
+}
+
+fn capacity_probe_path(path: &Path) -> Result<PathBuf, String> {
+    let mut probe = path;
+    loop {
+        if probe.exists() {
+            return Ok(probe.to_path_buf());
+        }
+        probe = probe.parent().ok_or_else(|| {
+            format!(
+                "no existing ancestor is available for capacity path {}",
+                path.display()
+            )
+        })?;
+    }
+}
+
+fn runtime_archive_v2_capacity_decision(
+    config: &RuntimeArchiveV2Config,
+    data_dir: &Path,
+    runtime_minimum_available_bytes: u64,
+    growth: RuntimeArchiveV2GrowthReserves,
+) -> Result<ArchiveV2CapacityDecision, String> {
+    let hot_capacity = filesystem_capacity(&capacity_probe_path(data_dir)?)?;
+    let archive_capacity = filesystem_capacity(&capacity_probe_path(&config.root)?)?;
+    let cache_capacity = config
+        .cache_root
+        .as_deref()
+        .map(capacity_probe_path)
+        .transpose()?
+        .as_deref()
+        .map(filesystem_capacity)
+        .transpose()?
+        .unwrap_or(archive_capacity);
+    let segment_build_enabled = config.role_config.role == ArchiveV2Role::FullArchive;
+    let verified_cache_enabled = config.role_config.role == ArchiveV2Role::VerifiedCache;
+    ArchiveV2CapacityGuard::evaluate_adaptive(
+        ArchiveV2CapacityInputs {
+            segment_build_enabled,
+            verified_cache_enabled,
+            checkpoint_enabled: true,
+            hot_available_bytes: hot_capacity.available_bytes,
+            archive_available_bytes: archive_capacity.available_bytes,
+            cache_available_bytes: cache_capacity.available_bytes,
+            mutable_state_write_peak_bytes: ARCHIVE_V2_DEFAULT_MUTABLE_WRITE_PEAK_BYTES,
+            wal_peak_bytes: ARCHIVE_V2_DEFAULT_WAL_PEAK_BYTES,
+            bounded_compaction_peak_bytes: ARCHIVE_V2_DEFAULT_COMPACTION_PEAK_BYTES,
+            checkpoint_peak_bytes: ARCHIVE_V2_DEFAULT_CHECKPOINT_PEAK_BYTES,
+            segment_staging_peak_bytes: ARCHIVE_V2_DEFAULT_SEGMENT_STAGING_PEAK_BYTES,
+            verification_copy_bytes: ARCHIVE_V2_DEFAULT_SEGMENT_STAGING_PEAK_BYTES,
+            replication_retry_bytes: ARCHIVE_V2_DEFAULT_REPLICATION_RETRY_BYTES,
+            filesystem_reserve_bytes: runtime_minimum_available_bytes,
+            cache_fetch_staging_bytes: config.source_max_object_bytes,
+            cache_eviction_margin_bytes: ARCHIVE_V2_DEFAULT_CACHE_EVICTION_MARGIN_BYTES,
+        },
+        ArchiveV2CapacityThresholds {
+            hot_warning_bytes: runtime_minimum_available_bytes
+                .saturating_add(DEFAULT_COLD_MIGRATION_HEADROOM_MARGIN_BYTES),
+            hot_fatal_bytes: runtime_minimum_available_bytes,
+            archive_warning_bytes: runtime_minimum_available_bytes,
+            cache_warning_bytes: runtime_minimum_available_bytes,
+        },
+        ArchiveV2CapacityTotals {
+            hot_total_bytes: hot_capacity.total_bytes,
+            archive_total_bytes: archive_capacity.total_bytes,
+            cache_total_bytes: cache_capacity.total_bytes,
+        },
+        ArchiveV2AdaptiveReservePolicy {
+            reserve_basis_points: ARCHIVE_V2_DEFAULT_RESERVE_BASIS_POINTS,
+            hot_growth_reserve_bytes: growth.hot_bytes,
+            archive_growth_reserve_bytes: growth.archive_bytes,
+            cache_growth_reserve_bytes: growth.cache_bytes,
+            emergency_evidence_reserve_bytes: ARCHIVE_V2_DEFAULT_EVIDENCE_RESERVE_BYTES,
+        },
+    )
+    .map_err(|error| error.to_string())
+}
+
+fn archive_v2_growth_reserve(
+    previous: FilesystemCapacity,
+    current: FilesystemCapacity,
+    elapsed: Duration,
+) -> u64 {
+    let elapsed_seconds = elapsed.as_secs().max(1);
+    let previous_used = previous
+        .total_bytes
+        .saturating_sub(previous.available_bytes);
+    let current_used = current.total_bytes.saturating_sub(current.available_bytes);
+    current_used
+        .saturating_sub(previous_used)
+        .saturating_mul(24 * 60 * 60)
+        .saturating_add(elapsed_seconds - 1)
+        / elapsed_seconds
+}
+
+fn archive_v2_capacity_blocks_checkpoint() -> bool {
+    matches!(
+        current_archive_v2_capacity_action(),
+        ArchiveV2PressureAction::StopCheckpointWork | ArchiveV2PressureAction::StopValidator
+    )
+}
+
+fn archive_v2_capacity_blocks_archival_work() -> bool {
+    !matches!(
+        current_archive_v2_capacity_action(),
+        ArchiveV2PressureAction::Normal | ArchiveV2PressureAction::EvictVerifiedCache
+    )
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -9085,10 +9566,15 @@ fn reclaim_checkpoints_under_disk_pressure(
         return Ok(available_bytes);
     }
 
-    let removed = StateStore::prune_all_checkpoints(data_dir)?;
+    let active_export_pins = ACTIVE_CHECKPOINT_EXPORT_PINS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let protected_slots: HashSet<u64> = active_export_pins.keys().copied().collect();
+    let removed = StateStore::prune_all_checkpoints_excluding(data_dir, &protected_slots)?;
+    drop(active_export_pins);
     if removed == 0 {
         return Err(format!(
-            "checkpoint files became unavailable during {context} reclamation"
+            "no inactive checkpoint files were available during {context} reclamation"
         ));
     }
 
@@ -9230,6 +9716,119 @@ fn spawn_runtime_disk_guard(path: PathBuf, minimum_bytes: u64) {
     });
 }
 
+fn spawn_runtime_archive_v2_capacity_guard(
+    config: RuntimeArchiveV2Config,
+    data_dir: PathBuf,
+    runtime_minimum_available_bytes: u64,
+) {
+    tokio::spawn(async move {
+        let hot_probe = match capacity_probe_path(&data_dir) {
+            Ok(path) => path,
+            Err(error) => {
+                error!("FATAL: Archive V2 hot capacity path is invalid: {error}");
+                std::process::exit(EXIT_CODE_FATAL_STARTUP);
+            }
+        };
+        let archive_probe = match capacity_probe_path(&config.root) {
+            Ok(path) => path,
+            Err(error) => {
+                error!("FATAL: Archive V2 archive capacity path is invalid: {error}");
+                std::process::exit(EXIT_CODE_FATAL_STARTUP);
+            }
+        };
+        let cache_probe = match config
+            .cache_root
+            .as_deref()
+            .map(capacity_probe_path)
+            .transpose()
+        {
+            Ok(path) => path.unwrap_or_else(|| archive_probe.clone()),
+            Err(error) => {
+                error!("FATAL: Archive V2 cache capacity path is invalid: {error}");
+                std::process::exit(EXIT_CODE_FATAL_STARTUP);
+            }
+        };
+        let mut previous_at = Instant::now();
+        let mut previous = match (
+            filesystem_capacity(&hot_probe),
+            filesystem_capacity(&archive_probe),
+            filesystem_capacity(&cache_probe),
+        ) {
+            (Ok(hot), Ok(archive), Ok(cache)) => (hot, archive, cache),
+            (hot, archive, cache) => {
+                error!(
+                    "FATAL: Archive V2 capacity measurement failed: hot={hot:?}, archive={archive:?}, cache={cache:?}"
+                );
+                std::process::exit(EXIT_CODE_FATAL_STARTUP);
+            }
+        };
+        let mut previous_action = current_archive_v2_capacity_action();
+        let mut interval =
+            tokio::time::interval(Duration::from_secs(DISK_CAPACITY_CHECK_INTERVAL_SECS));
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            let measured_at = Instant::now();
+            let current = match (
+                filesystem_capacity(&hot_probe),
+                filesystem_capacity(&archive_probe),
+                filesystem_capacity(&cache_probe),
+            ) {
+                (Ok(hot), Ok(archive), Ok(cache)) => (hot, archive, cache),
+                (hot, archive, cache) => {
+                    error!(
+                        "FATAL: Archive V2 runtime capacity measurement failed: hot={hot:?}, archive={archive:?}, cache={cache:?}"
+                    );
+                    std::process::exit(EXIT_CODE_FATAL_STARTUP);
+                }
+            };
+            let elapsed = measured_at.saturating_duration_since(previous_at);
+            let growth = RuntimeArchiveV2GrowthReserves {
+                hot_bytes: archive_v2_growth_reserve(previous.0, current.0, elapsed),
+                archive_bytes: archive_v2_growth_reserve(previous.1, current.1, elapsed),
+                cache_bytes: archive_v2_growth_reserve(previous.2, current.2, elapsed),
+            };
+            let decision = match runtime_archive_v2_capacity_decision(
+                &config,
+                &data_dir,
+                runtime_minimum_available_bytes,
+                growth,
+            ) {
+                Ok(decision) => decision,
+                Err(error) => {
+                    error!("FATAL: Archive V2 runtime capacity evaluation failed: {error}");
+                    std::process::exit(EXIT_CODE_FATAL_STARTUP);
+                }
+            };
+            store_archive_v2_capacity_action(decision.action);
+            if decision.action != previous_action || decision.warning {
+                warn!(
+                    action = ?decision.action,
+                    limiting_component = ?decision.limiting_component,
+                    available_bytes = decision.available_bytes,
+                    required_bytes = decision.required_bytes,
+                    absolute_reserve_bytes = decision.absolute_reserve_bytes,
+                    percentage_reserve_bytes = decision.percentage_reserve_bytes,
+                    growth_reserve_bytes = decision.growth_reserve_bytes,
+                    staging_reserve_bytes = decision.staging_reserve_bytes,
+                    compaction_reserve_bytes = decision.compaction_reserve_bytes,
+                    reasons = ?decision.reasons,
+                    "Archive V2 adaptive capacity decision"
+                );
+            }
+            if decision.action == ArchiveV2PressureAction::StopValidator {
+                error!(
+                    "FATAL: Archive V2 adaptive capacity guard exhausted the mutable-state reserve. Stopping without restart."
+                );
+                std::process::exit(EXIT_CODE_FATAL_STARTUP);
+            }
+            previous = current;
+            previous_at = measured_at;
+            previous_action = decision.action;
+        }
+    });
+}
+
 fn parse_checkpoint_keep_count(raw: Option<&str>) -> usize {
     raw.and_then(|value| value.trim().parse::<usize>().ok())
         .filter(|value| *value > 0)
@@ -9256,16 +9855,28 @@ fn checkpoint_max_bytes_from_env() -> Option<u64> {
 fn prune_state_checkpoints(data_dir: &str, context: &str) {
     let keep_count = checkpoint_keep_count_from_env();
     let max_bytes = checkpoint_max_bytes_from_env();
-    match StateStore::prune_checkpoints_with_size_limit(data_dir, keep_count, max_bytes) {
+    let active_export_pins = ACTIVE_CHECKPOINT_EXPORT_PINS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let protected_slots: HashSet<u64> = active_export_pins.keys().copied().collect();
+    let result = StateStore::prune_checkpoints_with_size_limit_excluding(
+        data_dir,
+        keep_count,
+        max_bytes,
+        &protected_slots,
+    );
+    drop(active_export_pins);
+    match result {
         Ok(removed) if removed > 0 => {
             info!(
-                "🧹 Pruned {} old checkpoint(s) after {}; keeping up to {} recent checkpoint(s), max_size={}",
+                "🧹 Pruned {} old checkpoint(s) after {}; keeping up to {} recent checkpoint(s), max_size={}, active_export_pins={}",
                 removed,
                 context,
                 keep_count,
                 max_bytes
                     .map(|bytes| bytes.to_string())
-                    .unwrap_or_else(|| "disabled".to_string())
+                    .unwrap_or_else(|| "disabled".to_string()),
+                protected_slots.len(),
             );
         }
         Ok(_) => {}
@@ -9288,6 +9899,14 @@ async fn maybe_create_checkpoint(
 ) {
     use crate::sync::SyncManager;
     if !SyncManager::should_checkpoint(slot) {
+        return;
+    }
+    if archive_v2_capacity_blocks_checkpoint() {
+        warn!(
+            "Skipping checkpoint at slot {} because Archive V2 adaptive capacity action is {:?}",
+            slot,
+            current_archive_v2_capacity_action()
+        );
         return;
     }
     let _checkpoint_guard = CHECKPOINT_MAINTENANCE_LOCK.lock().await;
@@ -9970,6 +10589,32 @@ fn validate_block_payload_commitments(block: &Block) -> Result<(), String> {
         certificate.verify_child_metadata(&block.tx_fees_paid, &block.oracle_prices)?;
     }
     Ok(())
+}
+
+fn authenticate_checkpoint_snapshot_block(
+    authenticated_anchor: &Block,
+    imported_snapshot_block: Block,
+) -> Result<Block, String> {
+    if imported_snapshot_block.header.slot != authenticated_anchor.header.slot {
+        return Err(format!(
+            "checkpoint slot mismatch: anchor={} snapshot={}",
+            authenticated_anchor.header.slot, imported_snapshot_block.header.slot
+        ));
+    }
+    if imported_snapshot_block.hash() != authenticated_anchor.hash() {
+        return Err(format!(
+            "checkpoint header hash mismatch: anchor={} snapshot={}",
+            authenticated_anchor.hash().to_hex(),
+            imported_snapshot_block.hash().to_hex()
+        ));
+    }
+
+    let mut block = authenticated_anchor.clone();
+    block.transactions = imported_snapshot_block.transactions;
+    block.tx_fees_paid = imported_snapshot_block.tx_fees_paid;
+    block.oracle_prices = imported_snapshot_block.oracle_prices;
+    validate_block_payload_commitments(&block)?;
+    Ok(block)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -16418,6 +17063,156 @@ fn print_cold_migration_rows(category: &str, rows: &lichen_core::state::ColdMigr
     );
 }
 
+fn parse_hash_32(value: &str, flag: &str) -> Result<[u8; 32], String> {
+    let decoded = hex::decode(value).map_err(|_| format!("{flag} must be hexadecimal"))?;
+    decoded
+        .try_into()
+        .map_err(|value: Vec<u8>| format!("{flag} must decode to 32 bytes, found {}", value.len()))
+}
+
+fn maybe_run_cold_migration_cursor_admin(args: &[String]) -> Option<i32> {
+    let audit = has_flag(args, AUDIT_COLD_MIGRATION_CURSOR_FLAG);
+    let rebuild = has_flag(args, REBUILD_COLD_MIGRATION_CURSOR_FLAG);
+    if !audit && !rebuild {
+        return None;
+    }
+    if audit && rebuild {
+        eprintln!(
+            "{AUDIT_COLD_MIGRATION_CURSOR_FLAG} and {REBUILD_COLD_MIGRATION_CURSOR_FLAG} are mutually exclusive"
+        );
+        return Some(2);
+    }
+
+    let data_dir = restriction_schema_data_dir(args);
+    let cold_store = match resolve_public_command_cold_store_path(args, &data_dir) {
+        Ok(Some(path)) => path,
+        Ok(None) => {
+            eprintln!(
+                "cold migration cursor administration requires --cold-store <path> outside a public network"
+            );
+            return Some(2);
+        }
+        Err(err) => {
+            eprintln!("{err}");
+            return Some(2);
+        }
+    };
+    let cache_size_mb = get_flag_value(args, &["--cache-size-mb"]).and_then(|s| s.parse().ok());
+    let execute = has_flag(args, "--execute");
+    if audit && execute {
+        eprintln!("{AUDIT_COLD_MIGRATION_CURSOR_FLAG} is read-only and does not accept --execute");
+        return Some(2);
+    }
+    if rebuild
+        && execute
+        && get_flag_value(args, &["--confirm"]) != Some(COLD_MIGRATION_CURSOR_REBUILD_CONFIRMATION)
+    {
+        eprintln!("execute mode requires --confirm {COLD_MIGRATION_CURSOR_REBUILD_CONFIRMATION}");
+        return Some(2);
+    }
+    if rebuild && get_flag_value(args, &["--secondary-dir"]).is_some() {
+        eprintln!("{REBUILD_COLD_MIGRATION_CURSOR_FLAG} does not accept --secondary-dir");
+        return Some(2);
+    }
+
+    let mut state = if execute {
+        match StateStore::open_with_cache_mb(&data_dir, cache_size_mb) {
+            Ok(state) => state,
+            Err(err) => {
+                eprintln!(
+                    "Failed to open stopped hot state at {}: {err}",
+                    data_dir.display()
+                );
+                return Some(1);
+            }
+        }
+    } else if let Some(secondary_dir) =
+        get_flag_value(args, &["--secondary-dir"]).map(PathBuf::from)
+    {
+        match StateStore::open_secondary_with_cache_mb(&data_dir, &secondary_dir, cache_size_mb) {
+            Ok(state) => state,
+            Err(err) => {
+                eprintln!(
+                    "Failed to open hot state at {} through secondary {}: {err}",
+                    data_dir.display(),
+                    secondary_dir.display()
+                );
+                return Some(1);
+            }
+        }
+    } else {
+        match StateStore::open_read_only_with_cache_mb(&data_dir, cache_size_mb) {
+            Ok(state) => state,
+            Err(err) => {
+                eprintln!(
+                    "Failed to open hot state at {} read-only: {err}",
+                    data_dir.display()
+                );
+                return Some(1);
+            }
+        }
+    };
+    if let Err(err) = state.open_cold_store_read_only(&cold_store) {
+        eprintln!(
+            "Failed to open cold state at {} read-only: {err}",
+            cold_store.display()
+        );
+        return Some(1);
+    }
+
+    let result = if audit {
+        state.audit_cold_migration_cursor()
+    } else {
+        let Some(slot) =
+            get_flag_value(args, &["--to-slot"]).and_then(|value| value.parse::<u64>().ok())
+        else {
+            eprintln!("{REBUILD_COLD_MIGRATION_CURSOR_FLAG} requires --to-slot <slot>");
+            return Some(2);
+        };
+        let Some(hash_value) = get_flag_value(args, &["--expected-hash"]) else {
+            eprintln!("{REBUILD_COLD_MIGRATION_CURSOR_FLAG} requires --expected-hash <sha256>");
+            return Some(2);
+        };
+        let expected_hash = match parse_hash_32(hash_value, "--expected-hash") {
+            Ok(hash) => hash,
+            Err(err) => {
+                eprintln!("{err}");
+                return Some(2);
+            }
+        };
+        state
+            .rebuild_cold_migration_cursor(slot, expected_hash, execute)
+            .map(Some)
+    };
+    let cursor = match result {
+        Ok(cursor) => cursor,
+        Err(err) => {
+            eprintln!("Cold migration cursor validation failed: {err}");
+            return Some(1);
+        }
+    };
+    let report = serde_json::json!({
+        "mode": if audit {
+            "audit"
+        } else if execute {
+            "rebuild"
+        } else {
+            "rebuild-dry-run"
+        },
+        "data_dir": data_dir,
+        "cold_store": cold_store,
+        "cursor_present": cursor.is_some(),
+        "cursor": cursor,
+    });
+    match print_json_report(&report) {
+        Ok(()) => Some(0),
+        Err(err) => {
+            eprintln!("{err}");
+            Some(1)
+        }
+    }
+}
+
 #[cfg(unix)]
 fn multiply_linked_sst_summary(path: &Path) -> Result<(u64, u64), String> {
     use std::os::unix::fs::MetadataExt;
@@ -17764,6 +18559,700 @@ fn configure_archive_mode(
     true
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RuntimeArchiveV2Config {
+    role_config: ArchiveV2RoleConfig,
+    root: PathBuf,
+    cache_root: Option<PathBuf>,
+    source_roots: Vec<PathBuf>,
+    source_urls: Vec<String>,
+    source_timeout: Duration,
+    source_max_object_bytes: u64,
+    max_decoded_segments: usize,
+}
+
+struct ArchiveV2HttpsSource {
+    name: String,
+    base_url: reqwest::Url,
+    client: reqwest::blocking::Client,
+    max_object_bytes: u64,
+}
+
+impl ArchiveV2HttpsSource {
+    fn new(
+        name: impl Into<String>,
+        raw_base_url: &str,
+        timeout: Duration,
+        max_object_bytes: u64,
+    ) -> Result<Self, String> {
+        if !(1024..=2 * 1024 * 1024 * 1024).contains(&max_object_bytes) {
+            return Err(
+                "Archive V2 HTTPS maximum object size must be in 1 KiB..=2 GiB".to_string(),
+            );
+        }
+        let mut base_url = reqwest::Url::parse(raw_base_url)
+            .map_err(|error| format!("invalid Archive V2 HTTPS source URL: {error}"))?;
+        if base_url.scheme() != "https"
+            || base_url.host_str().is_none()
+            || !base_url.username().is_empty()
+            || base_url.password().is_some()
+            || base_url.query().is_some()
+            || base_url.fragment().is_some()
+        {
+            return Err(
+                "Archive V2 remote sources require an HTTPS URL without userinfo, query, or fragment"
+                    .to_string(),
+            );
+        }
+        if !base_url.path().ends_with('/') {
+            let path = format!("{}/", base_url.path());
+            base_url.set_path(&path);
+        }
+        let mut default_headers = reqwest::header::HeaderMap::new();
+        if let Ok(token) = env::var("LICHEN_ARCHIVE_V2_SOURCE_BEARER_TOKEN") {
+            if token.is_empty() || token.len() > ARCHIVE_V2_SOURCE_TOKEN_MAX_BYTES {
+                return Err("Archive V2 source bearer token length is invalid".to_string());
+            }
+            let mut authorization =
+                reqwest::header::HeaderValue::from_str(&format!("Bearer {token}"))
+                    .map_err(|_| "Archive V2 source bearer token is invalid".to_string())?;
+            authorization.set_sensitive(true);
+            default_headers.insert(reqwest::header::AUTHORIZATION, authorization);
+        }
+        let mut client_builder = reqwest::blocking::Client::builder()
+            .connect_timeout(timeout.min(Duration::from_secs(15)))
+            .timeout(timeout)
+            .redirect(reqwest::redirect::Policy::none())
+            .user_agent(concat!("lichen-validator/", env!("CARGO_PKG_VERSION")))
+            .default_headers(default_headers);
+        if let Ok(ca_path) = env::var("LICHEN_ARCHIVE_V2_SOURCE_CA_CERT") {
+            let certificate = fs::read(&ca_path).map_err(|error| {
+                format!("failed reading Archive V2 source CA certificate: {error}")
+            })?;
+            if certificate.is_empty() || certificate.len() > 1024 * 1024 {
+                return Err("Archive V2 source CA certificate size is invalid".to_string());
+            }
+            let certificate = reqwest::Certificate::from_pem(&certificate)
+                .map_err(|_| "Archive V2 source CA certificate is invalid".to_string())?;
+            client_builder = client_builder.add_root_certificate(certificate);
+        }
+        let client = client_builder
+            .build()
+            .map_err(|error| format!("failed creating Archive V2 HTTPS client: {error}"))?;
+        Ok(Self {
+            name: name.into(),
+            base_url,
+            client,
+            max_object_bytes,
+        })
+    }
+}
+
+impl ArchiveV2ObjectSource for ArchiveV2HttpsSource {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn authenticated(&self) -> bool {
+        true
+    }
+
+    fn fetch(
+        &self,
+        object_hash: &Hash,
+    ) -> Result<Option<Vec<u8>>, lichen_core::archive_v2::ArchiveV2Error> {
+        let relative = format!("objects/{}.av2s", object_hash.to_hex());
+        let url = self.base_url.join(&relative).map_err(|error| {
+            lichen_core::archive_v2::ArchiveV2Error::Io(format!(
+                "source {} could not construct an object URL: {error}",
+                self.name
+            ))
+        })?;
+        let response = self.client.get(url).send().map_err(|error| {
+            lichen_core::archive_v2::ArchiveV2Error::Unavailable(format!(
+                "source {} request failed: {error}",
+                self.name
+            ))
+        })?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        if !response.status().is_success() {
+            return Err(lichen_core::archive_v2::ArchiveV2Error::Unavailable(
+                format!(
+                    "source {} returned HTTP status {}",
+                    self.name,
+                    response.status()
+                ),
+            ));
+        }
+        if response
+            .content_length()
+            .is_some_and(|length| length > self.max_object_bytes)
+        {
+            return Err(lichen_core::archive_v2::ArchiveV2Error::Bounds(format!(
+                "source {} object exceeds the configured {} byte limit",
+                self.name, self.max_object_bytes
+            )));
+        }
+        let mut bytes = Vec::new();
+        response
+            .take(self.max_object_bytes.saturating_add(1))
+            .read_to_end(&mut bytes)
+            .map_err(|error| {
+                lichen_core::archive_v2::ArchiveV2Error::Io(format!(
+                    "source {} response read failed: {error}",
+                    self.name
+                ))
+            })?;
+        if bytes.len() as u64 > self.max_object_bytes {
+            return Err(lichen_core::archive_v2::ArchiveV2Error::Bounds(format!(
+                "source {} object exceeds the configured {} byte limit",
+                self.name, self.max_object_bytes
+            )));
+        }
+        Ok(Some(bytes))
+    }
+}
+
+struct CapacityGatedArchiveV2Source {
+    inner: Arc<dyn ArchiveV2ObjectSource>,
+}
+
+impl CapacityGatedArchiveV2Source {
+    fn new(inner: Arc<dyn ArchiveV2ObjectSource>) -> Self {
+        Self { inner }
+    }
+}
+
+impl ArchiveV2ObjectSource for CapacityGatedArchiveV2Source {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    fn authenticated(&self) -> bool {
+        self.inner.authenticated()
+    }
+
+    fn fetch(
+        &self,
+        object_hash: &Hash,
+    ) -> Result<Option<Vec<u8>>, lichen_core::archive_v2::ArchiveV2Error> {
+        if matches!(
+            current_archive_v2_capacity_action(),
+            ArchiveV2PressureAction::EvictVerifiedCache | ArchiveV2PressureAction::StopValidator
+        ) {
+            return Err(lichen_core::archive_v2::ArchiveV2Error::Unavailable(
+                "Archive V2 remote fetch is paused by the adaptive capacity guard".to_string(),
+            ));
+        }
+        self.inner.fetch(object_hash)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeArchiveV2RoleMarker {
+    marker_version: u16,
+    identity: lichen_core::archive_v2::ArchiveV2Identity,
+    role_config: ArchiveV2RoleConfig,
+    genesis_mossstake_slot_only: bool,
+}
+
+const ARCHIVE_V2_ROLE_MARKER_MAGIC: &[u8] = b"LICHEN-AV2-ROLE\0";
+const ARCHIVE_V2_ROLE_MARKER_MAX_BYTES: usize = 64 * 1024;
+const ARCHIVE_V2_FRESH_SYNC_ADMISSION_METADATA_KEY: &str = "archive_v2_fresh_sync_admission_v1";
+
+fn archive_v2_fresh_sync_admission_fingerprint(
+    capability: &ArchiveV2CapabilityAdvertisement,
+) -> Result<Hash, String> {
+    let payload = serialize_legacy_bincode(
+        &(1u16, &capability.identity, capability.role),
+        "Archive V2 fresh-sync admission fingerprint",
+    )?;
+    Ok(Hash::hash(&payload))
+}
+
+fn persist_archive_v2_fresh_sync_admission(
+    state: &StateStore,
+    capability: &ArchiveV2CapabilityAdvertisement,
+) -> Result<(), String> {
+    let fingerprint = archive_v2_fresh_sync_admission_fingerprint(capability)?;
+    state.put_metadata(ARCHIVE_V2_FRESH_SYNC_ADMISSION_METADATA_KEY, &fingerprint.0)
+}
+
+fn restore_archive_v2_fresh_sync_admission(
+    state: &StateStore,
+    capability: &ArchiveV2CapabilityAdvertisement,
+) -> Result<bool, String> {
+    let Some(stored) = state.get_metadata(ARCHIVE_V2_FRESH_SYNC_ADMISSION_METADATA_KEY)? else {
+        return Ok(false);
+    };
+    if stored.len() != 32 {
+        return Err("Archive V2 fresh-sync admission marker is malformed".to_string());
+    }
+    let expected = archive_v2_fresh_sync_admission_fingerprint(capability)?;
+    if stored.as_slice() != expected.0.as_slice() {
+        return Ok(false);
+    }
+    Ok(true)
+}
+
+fn resolve_runtime_archive_v2_config(
+    args: &[String],
+) -> Result<Option<RuntimeArchiveV2Config>, String> {
+    let role = get_flag_value(args, &["--archive-v2-role"]);
+    let root = get_flag_value(args, &["--archive-v2-root"]);
+    if role.is_none() && root.is_none() {
+        return Ok(None);
+    }
+    let role = role
+        .ok_or_else(|| "--archive-v2-root requires --archive-v2-role".to_string())?
+        .parse::<ArchiveV2Role>()
+        .map_err(|error| error.to_string())?;
+    let root = PathBuf::from(
+        root.ok_or_else(|| "--archive-v2-role requires --archive-v2-root".to_string())?,
+    );
+    let version = get_flag_value(args, &["--archive-v2-role-config-version"])
+        .unwrap_or("1")
+        .parse::<u16>()
+        .map_err(|error| format!("invalid Archive V2 role config version: {error}"))?;
+    if version != ARCHIVE_V2_ROLE_CONFIG_VERSION {
+        return Err(format!(
+            "unsupported Archive V2 role config version {version}"
+        ));
+    }
+    let recent_history_slots = get_flag_value(args, &["--archive-v2-recent-history-slots"])
+        .unwrap_or("50000")
+        .parse::<u64>()
+        .map_err(|error| format!("invalid Archive V2 recent-history slot count: {error}"))?;
+    let cache_quota_bytes = get_flag_value(args, &["--archive-v2-cache-quota-bytes"])
+        .unwrap_or("0")
+        .parse::<u64>()
+        .map_err(|error| format!("invalid Archive V2 cache quota: {error}"))?;
+    let cache_root = get_flag_value(args, &["--archive-v2-cache-root"]).map(PathBuf::from);
+    let max_decoded_segments = get_flag_value(args, &["--archive-v2-decoded-segments"])
+        .unwrap_or("8")
+        .parse::<usize>()
+        .map_err(|error| format!("invalid Archive V2 decoded-segment cache size: {error}"))?;
+    let source_roots = get_flag_value(args, &["--archive-v2-source-dirs"])
+        .map(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let source_urls = get_flag_value(args, &["--archive-v2-source-urls"])
+        .map(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let source_timeout_secs = get_flag_value(args, &["--archive-v2-source-timeout-secs"])
+        .unwrap_or("60")
+        .parse::<u64>()
+        .map_err(|error| format!("invalid Archive V2 source timeout: {error}"))?;
+    if !(1..=300).contains(&source_timeout_secs) {
+        return Err("Archive V2 source timeout must be in 1..=300 seconds".to_string());
+    }
+    let source_max_object_bytes = get_flag_value(args, &["--archive-v2-source-max-object-bytes"])
+        .unwrap_or("2147483648")
+        .parse::<u64>()
+        .map_err(|error| format!("invalid Archive V2 source object limit: {error}"))?;
+    if source_urls
+        .iter()
+        .collect::<std::collections::BTreeSet<_>>()
+        .len()
+        != source_urls.len()
+    {
+        return Err("Archive V2 HTTPS source URLs must be unique".to_string());
+    }
+    for (index, url) in source_urls.iter().enumerate() {
+        ArchiveV2HttpsSource::new(
+            format!("configured-https-source-{index}"),
+            url,
+            Duration::from_secs(source_timeout_secs),
+            source_max_object_bytes,
+        )?;
+    }
+    match role {
+        ArchiveV2Role::VerifiedCache => {
+            if cache_root.is_none()
+                || cache_quota_bytes == 0
+                || (source_roots.is_empty() && source_urls.is_empty())
+            {
+                return Err(
+                    "verified-cache role requires --archive-v2-cache-root, a non-zero --archive-v2-cache-quota-bytes, and at least one --archive-v2-source-dirs or --archive-v2-source-urls entry"
+                        .to_string(),
+                );
+            }
+        }
+        ArchiveV2Role::FullArchive | ArchiveV2Role::Consensus => {
+            if cache_root.is_some()
+                || cache_quota_bytes != 0
+                || !source_roots.is_empty()
+                || !source_urls.is_empty()
+            {
+                return Err(format!(
+                    "{role} role must not configure verified-cache paths, quota, or sources"
+                ));
+            }
+        }
+    }
+    let role_config = ArchiveV2RoleConfig {
+        version,
+        role,
+        recent_history_slots,
+        verified_cache_quota_bytes: cache_quota_bytes,
+        advertise_deep_history: role != ArchiveV2Role::Consensus,
+    };
+    Ok(Some(RuntimeArchiveV2Config {
+        role_config,
+        root,
+        cache_root,
+        source_roots,
+        source_urls,
+        source_timeout: Duration::from_secs(source_timeout_secs),
+        source_max_object_bytes,
+        max_decoded_segments,
+    }))
+}
+
+fn activate_runtime_archive_v2(
+    state: &StateStore,
+    config: RuntimeArchiveV2Config,
+    chain_id: &str,
+    data_dir: &Path,
+) -> Result<ArchiveV2CapabilityAdvertisement, String> {
+    let catalog_path = config.root.join("catalog.av2");
+    let catalog = ArchiveV2Catalog::load(&catalog_path).map_err(|error| error.to_string())?;
+    if catalog.identity.network_id != chain_id {
+        return Err(format!(
+            "Archive V2 catalog network {} does not match chain id {chain_id}",
+            catalog.identity.network_id
+        ));
+    }
+    let marker_path = config.root.join("role-config-v1.bin");
+    let existing_marker = marker_path
+        .exists()
+        .then(|| load_runtime_archive_v2_role_marker(&marker_path))
+        .transpose()?;
+    if let Some(marker) = existing_marker.as_ref() {
+        if marker.identity != catalog.identity {
+            return Err("Archive V2 role marker identity conflicts with the catalog".to_string());
+        }
+        state.cache_genesis_mossstake_slot_only(marker.genesis_mossstake_slot_only)?;
+    }
+    if let Some(genesis) = state.get_block_by_slot(0)? {
+        if genesis.hash() != catalog.identity.genesis_hash {
+            return Err("Archive V2 catalog genesis hash does not match local slot 0".to_string());
+        }
+        state.cache_genesis_mossstake_slot_only(genesis_block_declares_mossstake_slot_only(
+            &genesis,
+        )?)?;
+    }
+    let genesis_mossstake_slot_only = state.cached_genesis_mossstake_slot_only().ok_or_else(|| {
+        "Archive V2 role admission cannot establish the genesis MossStake mode from local slot 0 or the existing role marker"
+            .to_string()
+    })?;
+    let finalized_slot = state.get_last_finalized_slot()?;
+    if matches!(
+        config.role_config.role,
+        ArchiveV2Role::VerifiedCache | ArchiveV2Role::Consensus
+    ) {
+        let hot_start = finalized_slot
+            .saturating_sub(config.role_config.recent_history_slots.saturating_sub(1));
+        state
+            .verify_hot_canonical_block_range(hot_start, finalized_slot)
+            .map_err(|error| {
+                format!(
+                    "Archive V2 {} role requires a complete local hot window {hot_start}..={finalized_slot}: {error}",
+                    config.role_config.role
+                )
+            })?;
+    }
+    let required_archive_end = finalized_slot.checked_sub(config.role_config.recent_history_slots);
+    match (
+        required_archive_end,
+        catalog.entries.first(),
+        catalog.entries.last(),
+    ) {
+        (Some(required_end), Some(first), Some(last))
+            if first.manifest.start_slot == 0 && last.manifest.end_slot >= required_end => {}
+        (Some(required_end), _, _) => {
+            return Err(format!(
+                "Archive V2 catalog does not cover required genesis-to-{required_end} history outside the {}-slot hot window",
+                config.role_config.recent_history_slots
+            ));
+        }
+        (None, None, None) => {}
+        (None, Some(first), _) if first.manifest.start_slot == 0 => {}
+        (None, _, _) => {
+            return Err("Archive V2 catalog must begin at genesis".to_string());
+        }
+    }
+    if let Some(last) = catalog.entries.last() {
+        let canonical = state
+            .get_block_by_slot(last.manifest.end_slot)?
+            .ok_or_else(|| {
+                format!(
+                    "Archive V2 catalog tip block {} is missing from local canonical history",
+                    last.manifest.end_slot
+                )
+            })?;
+        if canonical.hash() != last.manifest.last_block_hash {
+            return Err(
+                "Archive V2 catalog tip hash conflicts with local canonical history".to_string(),
+            );
+        }
+    }
+    let every_segment_local = catalog.entries.iter().all(|entry| {
+        catalog
+            .active_manifest(&entry.manifest.segment_object_hash)
+            .ok()
+            .is_some_and(|manifest| {
+                config
+                    .root
+                    .join("objects")
+                    .join(format!("{}.av2s", manifest.segment_object_hash))
+                    .is_file()
+            })
+    });
+    if let Some(cache_root) = config.cache_root.as_ref() {
+        fs::create_dir_all(cache_root.join("objects")).map_err(|error| {
+            format!(
+                "failed creating Archive V2 cache {}: {error}",
+                cache_root.display()
+            )
+        })?;
+    }
+    let cache_staging_headroom_bytes = config
+        .cache_root
+        .as_deref()
+        .map(filesystem_available_bytes)
+        .transpose()?
+        .unwrap_or(0);
+    let cache_staging_headroom_bytes = if matches!(
+        current_archive_v2_capacity_action(),
+        ArchiveV2PressureAction::EvictVerifiedCache | ArchiveV2PressureAction::StopValidator
+    ) {
+        0
+    } else {
+        cache_staging_headroom_bytes
+    };
+    let requirements = ArchiveV2RoleRequirements {
+        independent_consensus_state: true,
+        consensus_wal_and_identity: true,
+        recovery_data_present: data_dir.join("genesis.json").is_file(),
+        complete_catalog_verified: true,
+        every_segment_local,
+        authenticated_remote_sources: config
+            .source_roots
+            .len()
+            .saturating_add(config.source_urls.len())
+            .try_into()
+            .unwrap_or(u32::MAX),
+        cache_staging_headroom_bytes,
+        network_archive_policy_satisfied: true,
+        no_archive_operation_in_progress: true,
+    };
+    let admission = config
+        .role_config
+        .admit(&requirements)
+        .map_err(|error| error.to_string())?;
+    if !admission.admitted {
+        return Err(format!(
+            "Archive V2 {} role admission failed: {}",
+            config.role_config.role,
+            admission.reasons.join("; ")
+        ));
+    }
+    let catalog_range = catalog
+        .entries
+        .first()
+        .zip(catalog.entries.last())
+        .map(|(first, last)| (first.manifest.start_slot, last.manifest.end_slot));
+    let capability = config
+        .role_config
+        .capability(
+            catalog.identity.clone(),
+            catalog.catalog_root,
+            catalog_range,
+            &admission,
+        )
+        .map_err(|error| error.to_string())?;
+
+    fs::create_dir_all(&config.root).map_err(|error| {
+        format!(
+            "failed creating Archive V2 root {}: {error}",
+            config.root.display()
+        )
+    })?;
+    let expected_marker = RuntimeArchiveV2RoleMarker {
+        marker_version: 1,
+        identity: catalog.identity.clone(),
+        role_config: config.role_config.clone(),
+        genesis_mossstake_slot_only,
+    };
+    if let Some(existing) = existing_marker {
+        if existing != expected_marker {
+            return Err(format!(
+                "Archive V2 role transition is not authorized by startup flags; existing role is {}, requested role is {}",
+                existing.role_config.role, expected_marker.role_config.role
+            ));
+        }
+    } else {
+        store_runtime_archive_v2_role_marker(&marker_path, &expected_marker)?;
+    }
+
+    let mut sources: Vec<Arc<dyn ArchiveV2ObjectSource>> = config
+        .source_roots
+        .iter()
+        .enumerate()
+        .map(|(index, root)| {
+            let source: Arc<dyn ArchiveV2ObjectSource> = Arc::new(ArchiveV2DirectorySource::new(
+                format!("configured-source-{index}"),
+                root,
+                true,
+            ));
+            Arc::new(CapacityGatedArchiveV2Source::new(source)) as Arc<dyn ArchiveV2ObjectSource>
+        })
+        .collect();
+    for (index, url) in config.source_urls.iter().enumerate() {
+        let source: Arc<dyn ArchiveV2ObjectSource> = Arc::new(ArchiveV2HttpsSource::new(
+            format!("configured-https-source-{index}"),
+            url,
+            config.source_timeout,
+            config.source_max_object_bytes,
+        )?);
+        sources.push(Arc::new(CapacityGatedArchiveV2Source::new(source)));
+    }
+    let reader = ArchiveV2Reader::open(
+        catalog.identity.clone(),
+        &catalog_path,
+        ArchiveV2ReaderConfig {
+            role: config.role_config.role,
+            root: config.root,
+            cache_root: config.cache_root,
+            cache_quota_bytes: config.role_config.verified_cache_quota_bytes,
+            max_decoded_segments: config.max_decoded_segments,
+            allow_remote_fetch: config.role_config.role == ArchiveV2Role::VerifiedCache,
+            sources,
+        },
+    )
+    .map_err(|error| error.to_string())?;
+    state.attach_archive_v2_reader(reader);
+    info!(
+        "🗄️  Archive V2 admitted: role={}, catalog_root={}, segments={}, deep_history={}",
+        admission.role,
+        catalog.catalog_root,
+        catalog.entries.len(),
+        admission.serves_deep_history
+    );
+    Ok(capability)
+}
+
+fn validate_deferred_runtime_archive_v2(
+    config: &RuntimeArchiveV2Config,
+    chain_id: &str,
+) -> Result<(), String> {
+    let catalog = ArchiveV2Catalog::load(&config.root.join("catalog.av2"))
+        .map_err(|error| error.to_string())?;
+    if catalog.identity.network_id != chain_id {
+        return Err(format!(
+            "Archive V2 catalog network {} does not match chain id {chain_id}",
+            catalog.identity.network_id
+        ));
+    }
+    Ok(())
+}
+
+fn load_runtime_archive_v2_role_marker(path: &Path) -> Result<RuntimeArchiveV2RoleMarker, String> {
+    let encoded =
+        fs::read(path).map_err(|error| format!("failed reading {}: {error}", path.display()))?;
+    let minimum = ARCHIVE_V2_ROLE_MARKER_MAGIC.len() + 4 + 32;
+    if encoded.len() < minimum || !encoded.starts_with(ARCHIVE_V2_ROLE_MARKER_MAGIC) {
+        return Err("Archive V2 role marker is truncated".to_string());
+    }
+    let offset = ARCHIVE_V2_ROLE_MARKER_MAGIC.len();
+    let payload_len = u32::from_le_bytes(
+        encoded[offset..offset + 4]
+            .try_into()
+            .map_err(|_| "Archive V2 role marker length is truncated".to_string())?,
+    ) as usize;
+    if payload_len > ARCHIVE_V2_ROLE_MARKER_MAX_BYTES {
+        return Err("Archive V2 role marker is too large".to_string());
+    }
+    let start = offset + 4;
+    let end = start
+        .checked_add(payload_len)
+        .ok_or_else(|| "Archive V2 role marker length overflow".to_string())?;
+    if end.checked_add(32) != Some(encoded.len())
+        || Hash::hash(&encoded[start..end]).0 != encoded[end..]
+    {
+        return Err("Archive V2 role marker checksum mismatch".to_string());
+    }
+    deserialize_legacy_bincode_strict(
+        &encoded[start..end],
+        ARCHIVE_V2_ROLE_MARKER_MAX_BYTES as u64,
+        "Archive V2 role marker",
+    )
+}
+
+fn store_runtime_archive_v2_role_marker(
+    path: &Path,
+    marker: &RuntimeArchiveV2RoleMarker,
+) -> Result<(), String> {
+    let payload = serialize_legacy_bincode(marker, "Archive V2 role marker")?;
+    if payload.len() > ARCHIVE_V2_ROLE_MARKER_MAX_BYTES {
+        return Err("Archive V2 role marker is too large".to_string());
+    }
+    let mut encoded =
+        Vec::with_capacity(ARCHIVE_V2_ROLE_MARKER_MAGIC.len() + 4 + payload.len() + 32);
+    encoded.extend_from_slice(ARCHIVE_V2_ROLE_MARKER_MAGIC);
+    encoded.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    encoded.extend_from_slice(&payload);
+    encoded.extend_from_slice(&Hash::hash(&payload).0);
+    let parent = path
+        .parent()
+        .ok_or_else(|| "Archive V2 role marker has no parent".to_string())?;
+    fs::create_dir_all(parent)
+        .map_err(|error| format!("failed creating {}: {error}", parent.display()))?;
+    let temporary = parent.join(format!(
+        ".role-config.{}.{}.tmp",
+        std::process::id(),
+        ARCHIVE_V2_ROLE_MARKER_NONCE.fetch_add(1, Ordering::Relaxed)
+    ));
+    let mut file = fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&temporary)
+        .map_err(|error| format!("failed creating {}: {error}", temporary.display()))?;
+    let result = (|| {
+        file.write_all(&encoded)
+            .map_err(|error| format!("failed writing role marker: {error}"))?;
+        file.sync_all()
+            .map_err(|error| format!("failed syncing role marker: {error}"))?;
+        drop(file);
+        fs::rename(&temporary, path)
+            .map_err(|error| format!("failed publishing role marker: {error}"))?;
+        fs::File::open(parent)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|error| format!("failed syncing role marker directory: {error}"))
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
 fn validate_mainnet_archive_contiguous_tip(
     state: &StateStore,
     chain_id: &str,
@@ -17917,6 +19406,9 @@ fn main() {
         std::process::exit(exit_code);
     }
     if let Some(exit_code) = maybe_run_raw_block_history_repair_admin(&args) {
+        std::process::exit(exit_code);
+    }
+    if let Some(exit_code) = maybe_run_cold_migration_cursor_admin(&args) {
         std::process::exit(exit_code);
     }
     if let Some(exit_code) = maybe_run_cold_migration_admin(&args) {
@@ -18214,6 +19706,13 @@ async fn run_validator() {
 
     // Parse CLI args for P2P configuration
     let args: Vec<String> = env::args().collect();
+    let archive_v2_config = match resolve_runtime_archive_v2_config(&args) {
+        Ok(config) => config,
+        Err(error) => {
+            error!("FATAL: Archive V2 configuration failed: {}", error);
+            return;
+        }
+    };
 
     // Parse --genesis flag
     let genesis_path = get_flag_value(&args, &["--genesis"]).map(|s| s.to_string());
@@ -18270,7 +19769,7 @@ async fn run_validator() {
 
     let public_archive = public_archive_network(network_arg.as_deref(), dev_mode);
     let runtime_minimum_available_bytes = minimum_runtime_available_bytes(network_arg.as_deref());
-    let cold_store_path: Option<String> = match resolve_runtime_cold_store_path(
+    let resolved_cold_store_path: Option<String> = match resolve_runtime_cold_store_path(
         &args,
         network_arg.as_deref(),
         dev_mode,
@@ -18282,6 +19781,16 @@ async fn run_validator() {
             std::process::exit(EXIT_CODE_FATAL_STARTUP);
         }
     };
+    let legacy_archive_mode_enabled = archive_v2_config
+        .as_ref()
+        .is_none_or(|config| config.role_config.role == ArchiveV2Role::FullArchive);
+    // A transitioning node may need its existing legacy cold DB to resolve
+    // genesis before the Archive V2 catalog can be admitted. Non-archive
+    // roles attach an existing cold DB read-only for that bootstrap phase;
+    // StateStore stops consulting it as soon as their V2 reader is attached.
+    // Fresh non-archive nodes do not create an empty legacy cold DB.
+    let cold_store_path = resolved_cold_store_path
+        .filter(|path| legacy_archive_mode_enabled || Path::new(path).exists());
 
     if !dev_mode {
         match require_runtime_disk_headroom_with_checkpoint_reclaim(
@@ -18298,7 +19807,46 @@ async fn run_validator() {
                 std::process::exit(EXIT_CODE_FATAL_STARTUP);
             }
         }
-        spawn_runtime_disk_guard(data_dir_path.clone(), runtime_minimum_available_bytes);
+        if let Some(config) = archive_v2_config.as_ref() {
+            let decision = match runtime_archive_v2_capacity_decision(
+                config,
+                &data_dir_path,
+                runtime_minimum_available_bytes,
+                RuntimeArchiveV2GrowthReserves::default(),
+            ) {
+                Ok(decision) => decision,
+                Err(error) => {
+                    error!("FATAL: Archive V2 capacity preflight failed: {error}");
+                    std::process::exit(EXIT_CODE_FATAL_STARTUP);
+                }
+            };
+            store_archive_v2_capacity_action(decision.action);
+            info!(
+                action = ?decision.action,
+                limiting_component = ?decision.limiting_component,
+                available_bytes = decision.available_bytes,
+                required_bytes = decision.required_bytes,
+                absolute_reserve_bytes = decision.absolute_reserve_bytes,
+                percentage_reserve_bytes = decision.percentage_reserve_bytes,
+                growth_reserve_bytes = decision.growth_reserve_bytes,
+                staging_reserve_bytes = decision.staging_reserve_bytes,
+                compaction_reserve_bytes = decision.compaction_reserve_bytes,
+                "Archive V2 adaptive capacity preflight"
+            );
+            if decision.action == ArchiveV2PressureAction::StopValidator {
+                error!(
+                    "FATAL: Archive V2 capacity preflight cannot preserve mutable-state and WAL safety"
+                );
+                std::process::exit(EXIT_CODE_FATAL_STARTUP);
+            }
+            spawn_runtime_archive_v2_capacity_guard(
+                config.clone(),
+                data_dir_path.clone(),
+                runtime_minimum_available_bytes,
+            );
+        } else {
+            spawn_runtime_disk_guard(data_dir_path.clone(), runtime_minimum_available_bytes);
+        }
     }
 
     let signer_bind = match env::var("LICHEN_SIGNER_BIND") {
@@ -18408,7 +19956,12 @@ async fn run_validator() {
     };
 
     if let Some(ref cold_path) = cold_store_path {
-        if let Err(e) = state.open_cold_store(cold_path) {
+        let opened = if legacy_archive_mode_enabled {
+            state.open_cold_store(cold_path)
+        } else {
+            state.open_cold_store_read_only(cold_path)
+        };
+        if let Err(e) = opened {
             error!("Failed to open cold store at {}: {}", cold_path, e);
             std::process::exit(EXIT_CODE_FATAL_STARTUP);
         }
@@ -18448,7 +20001,12 @@ async fn run_validator() {
             }
         };
         if let Some(ref cold_path) = cold_store_path {
-            if let Err(e) = state.open_cold_store(cold_path) {
+            let opened = if legacy_archive_mode_enabled {
+                state.open_cold_store(cold_path)
+            } else {
+                state.open_cold_store_read_only(cold_path)
+            };
+            if let Err(e) = opened {
                 error!("Failed to reopen cold store at {}: {}", cold_path, e);
                 std::process::exit(EXIT_CODE_FATAL_STARTUP);
             }
@@ -18498,7 +20056,18 @@ async fn run_validator() {
         }
     }
 
-    configure_archive_mode(&state, &args, public_archive, cold_store_path.is_some());
+    if legacy_archive_mode_enabled {
+        configure_archive_mode(&state, &args, public_archive, cold_store_path.is_some());
+    } else {
+        info!(
+            "Archive V2 {} role disabled legacy archive migration; any existing cold DB is bootstrap-only and becomes hidden after admission",
+            archive_v2_config
+                .as_ref()
+                .expect("role config exists")
+                .role_config
+                .role
+        );
+    }
     sync_tx_by_slot_index_for_startup(&state, "startup");
     sync_dex_indexes_for_startup(&state, "startup");
 
@@ -18542,6 +20111,60 @@ async fn run_validator() {
             return;
         }
     };
+    let archive_v2_capability = Arc::new(RwLock::new(None));
+    let mut deferred_archive_v2_config = None;
+    if let Some(config) = archive_v2_config {
+        if state.get_block_by_slot(0).unwrap_or(None).is_none() {
+            if let Err(error) =
+                validate_deferred_runtime_archive_v2(&config, &genesis_config.chain_id)
+            {
+                error!(
+                    "FATAL: deferred Archive V2 role configuration failed: {}",
+                    error
+                );
+                return;
+            }
+            info!(
+                "🗄️  Deferring Archive V2 {} role admission until fresh state sync is complete",
+                config.role_config.role
+            );
+            deferred_archive_v2_config = Some(config);
+        } else {
+            match activate_runtime_archive_v2(
+                &state,
+                config,
+                &genesis_config.chain_id,
+                &data_dir_path,
+            ) {
+                Ok(capability) => {
+                    match restore_archive_v2_fresh_sync_admission(&state, &capability) {
+                        Ok(true) => {
+                            if let Err(error) = state.mark_archive_v2_admitted_after_fresh_sync() {
+                                error!(
+                                    "FATAL: persisted Archive V2 fresh-sync admission status could not be restored: {}",
+                                    error
+                                );
+                                return;
+                            }
+                        }
+                        Ok(false) => {}
+                        Err(error) => {
+                            error!(
+                                "FATAL: persisted Archive V2 fresh-sync admission status is invalid: {}",
+                                error
+                            );
+                            return;
+                        }
+                    }
+                    *archive_v2_capability.write().await = Some(capability);
+                }
+                Err(error) => {
+                    error!("FATAL: Archive V2 role admission failed: {}", error);
+                    return;
+                }
+            }
+        }
+    }
     if let Err(err) = validate_mainnet_archive_contiguous_tip(&state, &genesis_config.chain_id) {
         error!("FATAL: archive contiguity gate failed: {}", err);
         return;
@@ -21953,10 +23576,17 @@ async fn run_validator() {
                                 continue;
                             }
                         }
-                        if state_for_blocks
-                            .put_block_atomic(&block, None, None)
-                            .is_ok()
-                        {
+                        let block_store_result =
+                            state_for_blocks.put_block_atomic(&block, None, None);
+                        if let Err(error) = &block_store_result {
+                            warn!(
+                                "⚠️  Rejecting block {} — canonical storage failed: {}",
+                                block_slot, error
+                            );
+                            sync_mgr.record_sync_failure().await;
+                            continue;
+                        }
+                        if block_store_result.is_ok() {
                             *last_block_time_for_blocks.lock().await = std::time::Instant::now();
                             // FIX-FORK-1: Record ONLY after successful application
                             {
@@ -22992,6 +24622,7 @@ async fn run_validator() {
         let peer_mgr_for_announce = p2p_pm.clone();
         let validator_pubkey_for_announce_handler = validator_pubkey;
         let sync_mgr_for_announce = sync_manager.clone();
+        let chain_id_for_announce = genesis_config.chain_id.clone();
         tokio::spawn(async move {
             info!("🔄 Validator announcement receiver started");
             // 1.5d: Per-minute announcement rate limiting
@@ -23026,6 +24657,39 @@ async fn run_validator() {
                 let vs = validator_set_for_announce.read().await;
                 let is_existing_validator = vs.get_validator(&announcement.pubkey).is_some();
 
+                if !verify_validator_announcement_signature(
+                    &announcement.pubkey,
+                    announcement.stake,
+                    announcement.current_slot,
+                    &announcement.version,
+                    &announcement.signature,
+                    &announcement.machine_fingerprint,
+                    announcement.archive_v2.as_ref(),
+                ) {
+                    warn!(
+                        "⚠️  Rejecting announcement from {} — invalid version/capability-bound signature",
+                        announcement.pubkey.to_base58()
+                    );
+                    drop(vs);
+                    continue;
+                }
+                let admitted_archive_v2 = match admit_announced_archive_v2_capability(
+                    announcement.archive_v2.as_ref(),
+                    &chain_id_for_announce,
+                    &state_for_validators,
+                ) {
+                    Ok(capability) => capability,
+                    Err(error) => {
+                        warn!(
+                            "⚠️  Rejecting Archive V2 capability from {} — {}",
+                            announcement.pubkey.to_base58(),
+                            error
+                        );
+                        drop(vs);
+                        continue;
+                    }
+                };
+
                 if !is_existing_validator {
                     if let Err(error) = validate_new_validator_version(&announcement.version) {
                         warn!(
@@ -23048,6 +24712,15 @@ async fn run_validator() {
                         .await;
                     peer_mgr_for_announce
                         .mark_validator(&announcement.peer_addr, announcement.pubkey);
+                    if let Err(error) = peer_mgr_for_announce.record_archive_v2_capability(
+                        &announcement.peer_addr,
+                        admitted_archive_v2.clone(),
+                    ) {
+                        warn!(
+                            "Failed to retain Archive V2 capability for {}: {}",
+                            announcement.peer_addr, error
+                        );
+                    }
                     // Announcements are peer-discovery metadata. Do not mutate
                     // the consensus StakePool from them: fingerprint registration
                     // and migration must be committed through canonical state so
@@ -23115,24 +24788,6 @@ async fn run_validator() {
                         drop(pool);
                     }
 
-                    // 1.5a: Defense-in-depth — re-verify announcement signature
-                    //        New validator admissions require a version-bound signature.
-                    if !verify_validator_announcement_signature(
-                        &announcement.pubkey,
-                        announcement.stake,
-                        announcement.current_slot,
-                        &announcement.version,
-                        &announcement.signature,
-                        &announcement.machine_fingerprint,
-                    ) {
-                        warn!(
-                            "⚠️  Rejecting announcement from {} — invalid version-bound signature",
-                            announcement.pubkey.to_base58()
-                        );
-                        drop(vs);
-                        continue;
-                    }
-
                     let on_chain_stake = state_for_validators
                         .get_account(&announcement.pubkey)
                         .unwrap_or(None)
@@ -23150,6 +24805,15 @@ async fn run_validator() {
                     if local_stake >= min_validator_stake {
                         peer_mgr_for_announce
                             .mark_validator(&announcement.peer_addr, announcement.pubkey);
+                        if let Err(error) = peer_mgr_for_announce.record_archive_v2_capability(
+                            &announcement.peer_addr,
+                            admitted_archive_v2.clone(),
+                        ) {
+                            warn!(
+                                "Failed to retain Archive V2 capability for {}: {}",
+                                announcement.peer_addr, error
+                            );
+                        }
                         info!(
                             "📡 Stake-backed validator announcement from {} at {} accepted for P2P routing only ({} LICN local stake); ValidatorSet admission remains height-boundary consensus reconciliation",
                             announcement.pubkey.to_base58(),
@@ -24050,6 +25714,22 @@ async fn run_validator() {
                 let maybe_response = tokio::select! {
                     response = snapshot_response_rx.recv() => response,
                     _ = snapshot_retry_interval.tick() => {
+                        let retry_checkpoint_metadata = if active_snapshot_anchor.is_none() {
+                            snapshot_sync_for_apply
+                                .lock()
+                                .await
+                                .should_retry_checkpoint_metadata()
+                        } else {
+                            false
+                        };
+                        if retry_checkpoint_metadata {
+                            request_checkpoint_metadata_from_peers(
+                                &peer_mgr_for_snapshot_apply,
+                                local_addr_for_snap_apply,
+                                "checkpoint availability retry",
+                            )
+                            .await;
+                        }
                         if active_snapshot_anchor.is_some()
                             && snapshot_last_progress_at.elapsed().as_secs()
                                 >= SNAPSHOT_PROGRESS_RETRY_SECS
@@ -24328,6 +26008,10 @@ async fn run_validator() {
                                 local_root,
                                 checkpoint_root,
                             ) {
+                                snapshot_sync_for_apply
+                                    .lock()
+                                    .await
+                                    .mark_checkpoint_repair_pending();
                                 let Some((
                                     best_anchor_key,
                                     best_anchor,
@@ -24575,6 +26259,15 @@ async fn run_validator() {
                     }
                     if !inserted_valid_checkpoint {
                         warn!("📋 Peer {} has no checkpoint available", response.requester);
+                        // A peer can answer while its verified checkpoint cache is
+                        // still warming. Keep retrying metadata independently even
+                        // when a one-peer view temporarily falls back to bounded
+                        // full replay. A later corroborated checkpoint can then
+                        // supersede replay without requiring a reconnect.
+                        snapshot_sync_for_apply
+                            .lock()
+                            .await
+                            .mark_checkpoint_metadata_retry_pending();
                         // Warp sync is impossible without a checkpoint.  Complete the
                         // current sync batch and switch to Full so the next
                         // should_sync() call can re-trigger with block-range requests.
@@ -24591,8 +26284,13 @@ async fn run_validator() {
                             sync_mgr_for_snapshot.complete_sync().await;
                             sync_mgr_for_snapshot.record_sync_failure().await;
                         } else if current_mode == crate::sync::SyncMode::Warp {
+                            snapshot_sync_for_apply
+                                .lock()
+                                .await
+                                .mark_checkpoint_repair_pending();
+                            sync_mgr_for_snapshot.complete_sync().await;
                             info!(
-                                "⏳ Waiting for corroborated checkpoint metadata from other peers before abandoning warp sync"
+                                "⏳ Waiting for corroborated checkpoint metadata; the snapshot retry reactor will probe peers again"
                             );
                         }
                     }
@@ -25328,11 +27026,46 @@ async fn run_validator() {
                             std::process::exit(1);
                         }
 
-                        // Store the authenticated checkpoint header so the next
-                        // canonical block can verify its parent hash, then move
-                        // the local tip/commit cursors to the verified snapshot.
+                        // The verified snapshot already imported the complete
+                        // checkpoint block and its transaction indexes. Combine
+                        // that source-authenticated body with the independently
+                        // verified anchor header/certificate instead of replacing
+                        // it with the header-only metadata representation.
+                        let imported_checkpoint_block = match state_for_snapshot_apply
+                            .get_block_by_slot(snapshot_slot)
+                        {
+                            Ok(Some(block)) => block,
+                            Ok(None) => {
+                                error!(
+                                    "FATAL: verified snapshot is missing checkpoint block body at slot {}",
+                                    snapshot_slot
+                                );
+                                std::process::exit(1);
+                            }
+                            Err(e) => {
+                                error!(
+                                    "FATAL: failed to load verified snapshot checkpoint block at slot {}: {}",
+                                    snapshot_slot, e
+                                );
+                                std::process::exit(1);
+                            }
+                        };
+                        let authenticated_checkpoint_block =
+                            match authenticate_checkpoint_snapshot_block(
+                                &snapshot_anchor.block,
+                                imported_checkpoint_block,
+                            ) {
+                                Ok(block) => block,
+                                Err(e) => {
+                                    error!(
+                                        "FATAL: verified snapshot checkpoint body failed anchor authentication at slot {}: {}",
+                                        snapshot_slot, e
+                                    );
+                                    std::process::exit(1);
+                                }
+                            };
                         if let Err(e) = state_for_snapshot_apply.put_block_atomic(
-                            &snapshot_anchor.block,
+                            &authenticated_checkpoint_block,
                             Some(snapshot_slot),
                             Some(snapshot_slot),
                         ) {
@@ -25746,6 +27479,7 @@ async fn run_validator() {
             let state_for_announce = state.clone();
             let validator_seed_for_announce = validator_keypair.to_seed();
             let machine_fingerprint_for_announce = machine_fingerprint;
+            let archive_v2_capability_for_announce = archive_v2_capability.clone();
             tokio::spawn(async move {
                 // Wait for initial peer connections
                 time::sleep(Duration::from_secs(2)).await;
@@ -25760,6 +27494,8 @@ async fn run_validator() {
                             .unwrap_or(0)
                     };
                     let current_slot = state_for_announce.get_last_slot().unwrap_or(0);
+                    let archive_v2_capability =
+                        archive_v2_capability_for_announce.read().await.clone();
                     // T2.3 fix: Sign announcement with validator keypair
                     let announce_keypair = Keypair::from_seed(&validator_seed_for_announce);
                     let sign_message = validator_announcement_signing_message(
@@ -25768,6 +27504,7 @@ async fn run_validator() {
                         current_slot,
                         &machine_fingerprint_for_announce,
                         updater::VERSION,
+                        archive_v2_capability.as_ref(),
                     )
                     .expect("validator version should always produce a valid announcement payload");
                     let signature = announce_keypair.sign(&sign_message);
@@ -25780,6 +27517,7 @@ async fn run_validator() {
                             version: updater::VERSION.to_string(),
                             signature,
                             machine_fingerprint: machine_fingerprint_for_announce,
+                            archive_v2: archive_v2_capability,
                         },
                         local_addr,
                     );
@@ -25892,49 +27630,135 @@ async fn run_validator() {
     // Deterministic removal is handled at epoch boundaries via pending
     // validator changes (DeregisterValidator opcode 31).
 
-    // ── P2-3: Periodic cold storage migration ──
-    // By default, every 5 minutes, migrate blocks older than
-    // COLD_RETENTION_SLOTS to cold DB. Local/rehearsal gates may shorten this
-    // through env vars so hot/cold archive parity can be tested quickly.
-    if state.has_cold_storage() {
-        let state_for_cold = state.clone();
-        let cold_migration_interval_secs = std::env::var("LICHEN_COLD_MIGRATION_INTERVAL_SECS")
-            .ok()
-            .and_then(|value| value.parse::<u64>().ok())
-            .filter(|value| *value > 0)
-            .unwrap_or(300);
-        let cold_retention_slots = std::env::var("LICHEN_COLD_RETENTION_SLOTS")
-            .ok()
-            .and_then(|value| value.parse::<u64>().ok())
-            .unwrap_or(lichen_core::state::COLD_RETENTION_SLOTS);
-        tokio::spawn(async move {
-            let mut interval = time::interval(Duration::from_secs(cold_migration_interval_secs));
-            loop {
-                interval.tick().await;
-                let current_slot = state_for_cold.get_last_slot().unwrap_or(0);
-                let retain = cold_retention_slots;
-                if current_slot > retain {
-                    let cutoff = current_slot - retain;
-                    match state_for_cold.migrate_to_cold(cutoff) {
-                        Ok(0) => {} // nothing to migrate
-                        Ok(n) => {
-                            info!(
-                                "🗄️  Cold migration: moved {} blocks (cutoff slot {})",
-                                n, cutoff
-                            );
-                        }
-                        Err(e) => {
-                            warn!("🗄️  Cold migration error: {}", e);
-                        }
-                    }
-                    // Migrate all per-slot public history, including account
-                    // snapshots. No archive category may be deleted by retention.
-                    if let Err(e) = state_for_cold.migrate_indexes_to_cold(cutoff) {
-                        warn!("🗄️  Index cold migration error: {}", e);
-                    }
-                }
+    // ── Periodic bounded cold storage migration ──
+    // Archival work starts only after an explicit, identity-staggered delay.
+    // Each pass is bounded by rows, bytes, wall time, and a durable cursor; it
+    // runs on Tokio's blocking pool so RocksDB work cannot occupy a consensus
+    // executor worker.
+    if legacy_archive_mode_enabled && state.has_cold_storage() {
+        match runtime_cold_migration_config(runtime_minimum_available_bytes) {
+            Err(err) => {
+                state.set_cold_migration_paused(format!("invalid_configuration:{err}"));
+                error!("🗄️  Cold migration is paused: {err}");
             }
-        });
+            Ok(config) => {
+                state.set_cold_migration_reserves(lichen_core::state::ColdMigrationReserveStatus {
+                    runtime_floor_bytes: runtime_minimum_available_bytes,
+                    scheduler_headroom_bytes: config
+                        .minimum_headroom_bytes
+                        .saturating_sub(runtime_minimum_available_bytes),
+                    cold_batch_staging_bytes: config.limits.max_bytes,
+                    bounded_compaction_peak_bytes: config.reclaim_max_input_bytes.saturating_mul(2),
+                    calculated_reserve_bytes: config.minimum_headroom_bytes,
+                });
+                let state_for_cold = state.clone();
+                let data_dir_for_cold = data_dir_path.clone();
+                let genesis_sync_in_progress_for_cold = genesis_sync_in_progress.clone();
+                let sync_manager_for_cold = sync_manager.clone();
+                let jitter = stable_cold_migration_jitter(&validator_pubkey, config.interval);
+                let initial_delay = config.startup_delay.saturating_add(jitter);
+                info!(
+                    startup_delay_secs = config.startup_delay.as_secs(),
+                    jitter_secs = jitter.as_secs(),
+                    interval_secs = config.interval.as_secs(),
+                    max_rows = config.limits.max_rows,
+                    max_bytes = config.limits.max_bytes,
+                    max_wall_time_ms = config.limits.max_wall_time.as_millis() as u64,
+                    reclaim_max_ranges = config.reclaim_max_ranges,
+                    reclaim_max_input_bytes = config.reclaim_max_input_bytes,
+                    "🗄️  Scheduled bounded cold migration"
+                );
+                tokio::spawn(async move {
+                    time::sleep(initial_delay).await;
+                    loop {
+                        let current_slot = state_for_cold.get_last_slot().unwrap_or(0);
+                        let network_tip_caught_up =
+                            sync_manager_for_cold.is_caught_up(current_slot).await;
+                        if let Some(reason) = cold_migration_sync_pause_reason(
+                            genesis_sync_in_progress_for_cold.load(Ordering::Acquire),
+                            network_tip_caught_up,
+                        ) {
+                            state_for_cold.set_cold_migration_paused(reason);
+                            debug!("🗄️  Cold migration deferred: {reason}");
+                        } else if let Some(reason) = cold_migration_pressure_reason(
+                            &state_for_cold,
+                            &data_dir_for_cold,
+                            config.minimum_headroom_bytes,
+                        ) {
+                            state_for_cold.set_cold_migration_paused(reason.clone());
+                            warn!("🗄️  Cold migration paused: {reason}");
+                        } else {
+                            let cutoff = current_slot.saturating_sub(config.retention_slots);
+                            let available_bytes =
+                                filesystem_available_bytes(&data_dir_for_cold).unwrap_or(0);
+                            let pass_state = state_for_cold.clone();
+                            match tokio::task::spawn_blocking(move || {
+                                let reclaim = pass_state.reclaim_migrated_hot_ranges(
+                                    lichen_core::state::ColdReclaimLimits {
+                                        max_ranges: config.reclaim_max_ranges,
+                                        max_estimated_input_bytes: config.reclaim_max_input_bytes,
+                                        available_bytes,
+                                        required_reserve_bytes: config.minimum_headroom_bytes,
+                                    },
+                                )?;
+                                if reclaim.compacted_ranges > 0
+                                    || current_slot <= config.retention_slots
+                                {
+                                    return Ok((reclaim, None));
+                                }
+                                let migration =
+                                    pass_state.migrate_cold_pass(cutoff, config.limits)?;
+                                Ok::<_, String>((reclaim, Some(migration)))
+                            })
+                            .await
+                            {
+                                Ok(Ok((reclaim, migration))) => {
+                                    if reclaim.compacted_ranges > 0 {
+                                        info!(
+                                            compacted_ranges = reclaim.compacted_ranges,
+                                            estimated_input_bytes = reclaim.estimated_input_bytes,
+                                            reclaimed_physical_bytes =
+                                                reclaim.reclaimed_physical_bytes,
+                                            elapsed_millis = reclaim.compaction_duration_millis,
+                                            queued_ranges = reclaim.queued_ranges_after,
+                                            "🗄️  Completed bounded hot-space reclaim pass"
+                                        );
+                                    }
+                                    if let Some(reason) = reclaim.paused_reason {
+                                        warn!("🗄️  Hot-space reclaim paused: {reason}");
+                                    }
+                                    if let Some(report) = migration {
+                                        if report.scanned_rows > 0 {
+                                            info!(
+                                                category =
+                                                    report.category.as_deref().unwrap_or("idle"),
+                                                scanned_rows = report.scanned_rows,
+                                                migrated_rows = report.migrated_rows,
+                                                scanned_bytes = report.scanned_bytes,
+                                                migrated_bytes = report.migrated_logical_bytes,
+                                                migrated_physical_bytes =
+                                                    report.migrated_physical_bytes,
+                                                cursor_slot = ?report.cursor_slot_after,
+                                                backlog_slots = report.backlog_slots,
+                                                elapsed_millis = report.elapsed_millis,
+                                                "🗄️  Completed bounded cold migration pass"
+                                            );
+                                        }
+                                    }
+                                }
+                                Ok(Err(err)) => warn!("🗄️  Cold maintenance error: {err}"),
+                                Err(err) => {
+                                    let reason = format!("blocking_task_failed:{err}");
+                                    state_for_cold.set_cold_migration_paused(reason.clone());
+                                    warn!("🗄️  Cold maintenance paused: {reason}");
+                                }
+                            }
+                        }
+                        time::sleep(config.interval).await;
+                    }
+                });
+            }
+        }
     }
 
     // Periodic validator set + stake pool reconciliation from state
@@ -27138,6 +28962,42 @@ async fn run_validator() {
                 );
                 time::sleep(Duration::from_millis(200)).await;
                 continue;
+            }
+
+            if let Some(config) = deferred_archive_v2_config.take() {
+                match activate_runtime_archive_v2(
+                    &state,
+                    config,
+                    &genesis_config.chain_id,
+                    &data_dir_path,
+                ) {
+                    Ok(capability) => {
+                        if let Err(error) =
+                            persist_archive_v2_fresh_sync_admission(&state, &capability)
+                        {
+                            error!(
+                                "FATAL: Archive V2 fresh-sync admission marker could not be persisted: {}",
+                                error
+                            );
+                            return;
+                        }
+                        if let Err(error) = state.mark_archive_v2_admitted_after_fresh_sync() {
+                            error!(
+                                "FATAL: Archive V2 fresh-sync admission status could not be recorded: {}",
+                                error
+                            );
+                            return;
+                        }
+                        *archive_v2_capability.write().await = Some(capability);
+                    }
+                    Err(error) => {
+                        error!(
+                            "FATAL: Archive V2 role admission failed after fresh state sync: {}",
+                            error
+                        );
+                        return;
+                    }
+                }
             }
 
             info!(
@@ -29923,6 +31783,82 @@ mod tests {
     use lichen_core::{Instruction, Message, MIN_VALIDATOR_STAKE};
 
     // ── Helper builders ─────────────────────────────────────────────
+
+    #[test]
+    fn cold_migration_jitter_is_stable_bounded_and_identity_staggered() {
+        let interval = Duration::from_secs(300);
+        let identities = [
+            Pubkey([1; 32]),
+            Pubkey([2; 32]),
+            Pubkey([3; 32]),
+            Pubkey([4; 32]),
+        ];
+        let jitters = identities
+            .iter()
+            .map(|identity| stable_cold_migration_jitter(identity, interval))
+            .collect::<std::collections::BTreeSet<_>>();
+
+        assert_eq!(jitters.len(), identities.len());
+        assert!(jitters
+            .iter()
+            .all(|jitter| *jitter < Duration::from_secs(120)));
+        for identity in identities {
+            assert_eq!(
+                stable_cold_migration_jitter(&identity, interval),
+                stable_cold_migration_jitter(&identity, interval)
+            );
+        }
+
+        let short_interval = Duration::from_secs(5);
+        let short_jitters = identities
+            .iter()
+            .map(|identity| stable_cold_migration_jitter(identity, short_interval))
+            .collect::<Vec<_>>();
+        assert!(short_jitters.iter().all(|jitter| *jitter < short_interval));
+        assert!(short_jitters
+            .iter()
+            .any(|jitter| jitter.subsec_millis() != 0));
+        for (index, left) in short_jitters.iter().enumerate() {
+            for right in &short_jitters[index + 1..] {
+                assert!(left.abs_diff(*right) >= Duration::from_millis(100));
+            }
+        }
+    }
+
+    #[test]
+    fn cold_migration_is_deferred_until_network_tip_catchup() {
+        assert_eq!(
+            cold_migration_sync_pause_reason(true, false),
+            Some("genesis_sync_in_progress")
+        );
+        assert_eq!(
+            cold_migration_sync_pause_reason(false, false),
+            Some("network_catchup_in_progress")
+        );
+        assert_eq!(cold_migration_sync_pause_reason(false, true), None);
+    }
+
+    #[test]
+    fn cold_migration_limits_reject_unbounded_runtime_values() {
+        assert!(lichen_core::state::ColdMigrationLimits {
+            max_rows: 0,
+            ..Default::default()
+        }
+        .validate()
+        .is_err());
+        assert!(lichen_core::state::ColdMigrationLimits {
+            max_bytes: 1024 * 1024 * 1024 + 1,
+            ..Default::default()
+        }
+        .validate()
+        .is_err());
+        assert!(lichen_core::state::ColdMigrationLimits {
+            max_wall_time: Duration::from_secs(61),
+            ..Default::default()
+        }
+        .validate()
+        .is_err());
+    }
 
     fn test_checkpoint_block_and_certificate(
         slot: u64,
@@ -37133,6 +39069,10 @@ mod tests {
     fn checkpoint_metadata_requests_are_throttled_during_warp_snapshot() {
         let mut sync = SnapshotSync::new(true);
 
+        assert!(
+            !sync.should_retry_checkpoint_metadata(),
+            "an idle fresh join must not create an independent retry loop before warp sync starts"
+        );
         assert!(sync.should_request_checkpoint_metadata());
         assert!(!sync.should_request_checkpoint_metadata());
 
@@ -37151,6 +39091,80 @@ mod tests {
 
         sync.mark_warp_snapshot_idle();
         assert!(sync.should_request_checkpoint_metadata());
+    }
+
+    #[test]
+    fn pending_checkpoint_repair_retries_metadata_without_peer_reconnect() {
+        let mut sync = SnapshotSync::new(true);
+        sync.mark_checkpoint_repair_pending();
+
+        assert!(
+            sync.should_retry_checkpoint_metadata(),
+            "an unavailable or insufficient checkpoint response must arm the snapshot reactor"
+        );
+        assert!(
+            !sync.should_retry_checkpoint_metadata(),
+            "retry probes must remain throttled while peers warm their verified checkpoint caches"
+        );
+
+        sync.last_checkpoint_metadata_request_at = Some(
+            std::time::Instant::now()
+                - std::time::Duration::from_secs(CHECKPOINT_METADATA_RETRY_SECS),
+        );
+        assert!(
+            sync.should_retry_checkpoint_metadata(),
+            "checkpoint metadata must be retried after cooldown without requiring a new peer connection"
+        );
+
+        sync.mark_warp_snapshot_active();
+        sync.last_checkpoint_metadata_request_at = Some(
+            std::time::Instant::now()
+                - std::time::Duration::from_secs(CHECKPOINT_METADATA_RETRY_SECS * 2),
+        );
+        assert!(
+            !sync.should_retry_checkpoint_metadata(),
+            "metadata probes must pause once a verified snapshot download is active"
+        );
+    }
+
+    #[test]
+    fn warming_checkpoint_cache_retries_metadata_during_full_replay() {
+        let mut sync = SnapshotSync::new(true);
+        sync.mark_checkpoint_metadata_retry_pending();
+
+        assert!(
+            sync.should_retry_checkpoint_metadata(),
+            "an early unavailable response must not permanently disable checkpoint discovery"
+        );
+        let actions = sync_catch_up_actions(
+            sync::SyncMode::Full,
+            sync.warp_snapshot_active,
+            sync.is_checkpoint_repair_pending(),
+        );
+        assert!(
+            actions.request_block_ranges,
+            "checkpoint-cache warmup must not strand a one-peer network without full replay"
+        );
+
+        sync.mark_warp_snapshot_active();
+        sync.last_checkpoint_metadata_request_at = Some(
+            std::time::Instant::now()
+                - std::time::Duration::from_secs(CHECKPOINT_METADATA_RETRY_SECS * 2),
+        );
+        assert!(
+            !sync.should_retry_checkpoint_metadata(),
+            "metadata retries must stop once a corroborated snapshot is active"
+        );
+
+        sync.mark_warp_snapshot_idle();
+        sync.last_checkpoint_metadata_request_at = Some(
+            std::time::Instant::now()
+                - std::time::Duration::from_secs(CHECKPOINT_METADATA_RETRY_SECS * 2),
+        );
+        assert!(
+            !sync.should_retry_checkpoint_metadata(),
+            "completed snapshot sync must clear the independent availability retry"
+        );
     }
 
     #[test]
@@ -37297,6 +39311,44 @@ mod tests {
                 .is_none(),
             "a pruned checkpoint path must not authorize"
         );
+    }
+
+    #[test]
+    fn checkpoint_export_pins_are_reference_counted() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let checkpoint_path = temp.path().join("checkpoints/slot-pin");
+        std::fs::create_dir_all(&checkpoint_path).expect("create checkpoint dir");
+        std::fs::write(checkpoint_path.join("checkpoint_meta.json"), b"{}")
+            .expect("write checkpoint marker");
+        let slot = u64::MAX - 17;
+
+        let first =
+            CheckpointExportPin::acquire(slot, checkpoint_path.to_str().expect("checkpoint path"))
+                .expect("first export pin");
+        let second =
+            CheckpointExportPin::acquire(slot, checkpoint_path.to_str().expect("checkpoint path"))
+                .expect("second export pin");
+        assert_eq!(
+            ACTIVE_CHECKPOINT_EXPORT_PINS
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .get(&slot),
+            Some(&2),
+        );
+
+        drop(first);
+        assert_eq!(
+            ACTIVE_CHECKPOINT_EXPORT_PINS
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .get(&slot),
+            Some(&1),
+        );
+        drop(second);
+        assert!(!ACTIVE_CHECKPOINT_EXPORT_PINS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .contains_key(&slot),);
     }
 
     #[test]
@@ -37930,6 +39982,81 @@ mod tests {
                 || err.contains("missing required contiguous block"),
             "unexpected archive error: {err}"
         );
+    }
+
+    #[test]
+    fn snapshot_archive_completeness_scans_past_a_stale_low_metric() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let genesis = Block::genesis(Hash::hash(b"complete-low-metric-genesis"), 1, vec![]);
+        let block_1 = Block::new(
+            1,
+            genesis.hash(),
+            Hash::hash(b"complete-low-metric-state"),
+            [2u8; 32],
+            vec![],
+        );
+        for block in [&genesis, &block_1] {
+            state
+                .put_block_atomic(block, Some(block.header.slot), Some(block.header.slot))
+                .expect("put complete block");
+        }
+        state
+            .put_metadata("total_blocks", &0u64.to_le_bytes())
+            .expect("lower total_blocks metric");
+        state
+            .reload_metrics_from_stats()
+            .expect("reload low metric");
+
+        validate_snapshot_archive_completeness(&state, 1)
+            .expect("exact complete history must override an advisory low metric");
+    }
+
+    #[test]
+    fn checkpoint_snapshot_activation_preserves_authenticated_block_body() {
+        let transaction = Transaction::new(lichen_core::Message::new(
+            Vec::new(),
+            Hash::hash(b"checkpoint-snapshot-body-blockhash"),
+        ));
+        let mut imported = Block::new_with_timestamp(
+            63_000,
+            Hash::hash(b"checkpoint-snapshot-parent"),
+            Hash::hash(b"checkpoint-snapshot-state"),
+            [3u8; 32],
+            vec![transaction.clone()],
+            63_000,
+        );
+        imported.tx_fees_paid = vec![17];
+        imported.oracle_prices = vec![("wBTC".to_string(), 42)];
+        imported.commit_round = 2;
+
+        let mut anchor = imported.clone();
+        anchor.transactions.clear();
+        anchor.tx_fees_paid.clear();
+        anchor.oracle_prices.clear();
+        anchor.commit_round = 7;
+
+        let restored = authenticate_checkpoint_snapshot_block(&anchor, imported.clone())
+            .expect("authenticated snapshot body");
+        assert_eq!(restored.hash(), anchor.hash());
+        assert_eq!(restored.transactions.len(), 1);
+        assert_eq!(
+            restored.transactions[0].signature(),
+            transaction.signature()
+        );
+        assert_eq!(restored.tx_fees_paid, vec![17]);
+        assert_eq!(restored.oracle_prices, vec![("wBTC".to_string(), 42)]);
+        assert_eq!(
+            restored.commit_round, 7,
+            "the independently authenticated anchor certificate must win"
+        );
+
+        let mut header_only = imported;
+        header_only.transactions.clear();
+        header_only.tx_fees_paid.clear();
+        let err = authenticate_checkpoint_snapshot_block(&anchor, header_only)
+            .expect_err("header-only checkpoint body must fail closed");
+        assert!(err.contains("transaction root mismatch"), "{err}");
     }
 
     #[test]
@@ -40798,5 +42925,174 @@ mod tests {
         assert!(!second_report.abi_changed);
         assert_eq!(second_report.before_version, 2);
         assert_eq!(second_report.after_version, 2);
+    }
+
+    #[test]
+    fn archive_v2_runtime_roles_parse_explicitly_and_fail_closed() {
+        assert!(
+            resolve_runtime_archive_v2_config(&["validator".to_string()])
+                .unwrap()
+                .is_none()
+        );
+        let consensus = resolve_runtime_archive_v2_config(&[
+            "validator".to_string(),
+            "--archive-v2-role=consensus".to_string(),
+            "--archive-v2-root=/archive".to_string(),
+        ])
+        .unwrap()
+        .unwrap();
+        assert_eq!(consensus.role_config.role, ArchiveV2Role::Consensus);
+        assert!(!consensus.role_config.advertise_deep_history);
+        assert!(consensus.cache_root.is_none());
+
+        let verified_cache = resolve_runtime_archive_v2_config(&[
+            "validator".to_string(),
+            "--archive-v2-role=verified-cache".to_string(),
+            "--archive-v2-root=/archive".to_string(),
+            "--archive-v2-cache-root=/cache".to_string(),
+            "--archive-v2-cache-quota-bytes=1048576".to_string(),
+            "--archive-v2-source-urls=https://archive.example/lichen".to_string(),
+        ])
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            verified_cache.source_urls,
+            vec!["https://archive.example/lichen"]
+        );
+        assert!(verified_cache.source_roots.is_empty());
+
+        assert!(resolve_runtime_archive_v2_config(&[
+            "validator".to_string(),
+            "--archive-v2-role=verified-cache".to_string(),
+            "--archive-v2-root=/archive".to_string(),
+        ])
+        .unwrap_err()
+        .contains("requires"));
+        assert!(resolve_runtime_archive_v2_config(&[
+            "validator".to_string(),
+            "--archive-v2-role=full-archive".to_string(),
+            "--archive-v2-root=/archive".to_string(),
+            "--archive-v2-source-dirs=/remote".to_string(),
+        ])
+        .unwrap_err()
+        .contains("must not configure"));
+        assert!(resolve_runtime_archive_v2_config(&[
+            "validator".to_string(),
+            "--archive-v2-role=verified-cache".to_string(),
+            "--archive-v2-root=/archive".to_string(),
+            "--archive-v2-cache-root=/cache".to_string(),
+            "--archive-v2-cache-quota-bytes=1048576".to_string(),
+            "--archive-v2-source-urls=http://archive.example/lichen".to_string(),
+        ])
+        .unwrap_err()
+        .contains("require an HTTPS URL"));
+    }
+
+    #[test]
+    fn fresh_joiner_defers_archive_capability_identity_until_genesis_sync() {
+        let root = tempfile::tempdir().unwrap();
+        let state = StateStore::open(root.path()).unwrap();
+        let genesis = Block::genesis(Hash::hash(b"announcement-genesis-state"), 1, Vec::new());
+        let capability = ArchiveV2CapabilityAdvertisement {
+            version: ARCHIVE_V2_ROLE_CONFIG_VERSION,
+            identity: lichen_core::archive_v2::ArchiveV2Identity {
+                network_id: "announcement-testnet".to_string(),
+                genesis_hash: genesis.hash(),
+            },
+            role: ArchiveV2Role::FullArchive,
+            catalog_root: Hash::hash(b"announcement-catalog"),
+            catalog_start_slot: Some(0),
+            catalog_end_slot: Some(0),
+            serves_deep_history: true,
+            remote_fetch_enabled: false,
+        };
+
+        assert_eq!(
+            admit_announced_archive_v2_capability(
+                Some(&capability),
+                "announcement-testnet",
+                &state,
+            )
+            .unwrap(),
+            None,
+            "fresh joiners must keep processing signed announcements before slot 0 is synced"
+        );
+
+        state.put_block(&genesis).unwrap();
+        assert_eq!(
+            admit_announced_archive_v2_capability(
+                Some(&capability),
+                "announcement-testnet",
+                &state,
+            )
+            .unwrap(),
+            Some(capability.clone())
+        );
+
+        let mut wrong_genesis = capability;
+        wrong_genesis.identity.genesis_hash = Hash::hash(b"wrong-announcement-genesis");
+        assert!(admit_announced_archive_v2_capability(
+            Some(&wrong_genesis),
+            "announcement-testnet",
+            &state,
+        )
+        .unwrap_err()
+        .contains("genesis"));
+    }
+
+    #[test]
+    fn archive_v2_fresh_sync_admission_marker_is_durable_and_role_bound() {
+        let root = tempfile::tempdir().unwrap();
+        let state = StateStore::open(root.path()).unwrap();
+        let capability = ArchiveV2CapabilityAdvertisement {
+            version: ARCHIVE_V2_ROLE_CONFIG_VERSION,
+            identity: lichen_core::archive_v2::ArchiveV2Identity {
+                network_id: "fresh-admission-testnet".to_string(),
+                genesis_hash: Hash::hash(b"fresh-admission-genesis"),
+            },
+            role: ArchiveV2Role::VerifiedCache,
+            catalog_root: Hash::hash(b"fresh-admission-catalog"),
+            catalog_start_slot: Some(0),
+            catalog_end_slot: Some(10),
+            serves_deep_history: true,
+            remote_fetch_enabled: true,
+        };
+
+        assert!(!restore_archive_v2_fresh_sync_admission(&state, &capability).unwrap());
+        persist_archive_v2_fresh_sync_admission(&state, &capability).unwrap();
+        assert!(restore_archive_v2_fresh_sync_admission(&state, &capability).unwrap());
+
+        let mut conflicting = capability;
+        conflicting.role = ArchiveV2Role::Consensus;
+        assert!(!restore_archive_v2_fresh_sync_admission(&state, &conflicting).unwrap());
+    }
+
+    #[test]
+    fn archive_v2_role_marker_is_checksummed_and_roundtrips() {
+        let root = tempfile::tempdir().expect("create role marker root");
+        let path = root.path().join("role-config-v1.bin");
+        let marker = RuntimeArchiveV2RoleMarker {
+            marker_version: 1,
+            identity: lichen_core::archive_v2::ArchiveV2Identity {
+                network_id: "marker-testnet".to_string(),
+                genesis_hash: Hash::hash(b"marker-genesis"),
+            },
+            role_config: ArchiveV2RoleConfig {
+                role: ArchiveV2Role::Consensus,
+                verified_cache_quota_bytes: 0,
+                advertise_deep_history: false,
+                ..ArchiveV2RoleConfig::default()
+            },
+            genesis_mossstake_slot_only: true,
+        };
+        store_runtime_archive_v2_role_marker(&path, &marker).unwrap();
+        assert_eq!(load_runtime_archive_v2_role_marker(&path).unwrap(), marker);
+        let mut damaged = fs::read(&path).unwrap();
+        let last = damaged.len() - 1;
+        damaged[last] ^= 1;
+        fs::write(&path, damaged).unwrap();
+        assert!(load_runtime_archive_v2_role_marker(&path)
+            .unwrap_err()
+            .contains("checksum"));
     }
 }

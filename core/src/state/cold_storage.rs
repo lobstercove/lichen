@@ -124,7 +124,10 @@ impl StateStore {
         None
     }
 
-    fn decode_cold_migration_block(value: &[u8], context: &str) -> Result<Block, String> {
+    pub(super) fn decode_cold_migration_block(
+        value: &[u8],
+        context: &str,
+    ) -> Result<Block, String> {
         if value.first() == Some(&0xBC) {
             deserialize_legacy_bincode(&value[1..], context)
                 .map_err(|err| format!("Failed decoding {context}: {err}"))
@@ -145,7 +148,7 @@ impl StateStore {
         }
     }
 
-    fn cold_migration_transaction_matches(
+    pub(super) fn cold_migration_transaction_matches(
         value: &[u8],
         expected: &Transaction,
         context: &str,
@@ -156,7 +159,7 @@ impl StateStore {
         Ok(decoded_hash == expected_hash && decoded.signature() == expected.signature())
     }
 
-    fn validate_cold_migration_transaction(
+    pub(super) fn validate_cold_migration_transaction(
         value: &[u8],
         expected: &Transaction,
         context: &str,
@@ -170,7 +173,7 @@ impl StateStore {
         Ok(())
     }
 
-    fn validate_cold_migration_tx_slot(
+    pub(super) fn validate_cold_migration_tx_slot(
         value: &[u8],
         expected_slot: u64,
         context: &str,

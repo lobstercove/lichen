@@ -321,28 +321,49 @@ impl StateStore {
         }
 
         let mut rows = std::collections::BTreeMap::new();
-        if let Some(cold) = self.cold_db.as_ref() {
-            if let Some(cold_cf) = cold.cf_handle(COLD_CF_EVENTS) {
-                let iter = cold.iterator_cf(
-                    &cold_cf,
-                    rocksdb::IteratorMode::From(&end_key, Direction::Reverse),
-                );
-                for (key, value) in iter.flatten() {
-                    if !key.starts_with(&prefix) {
-                        break;
-                    }
-                    if key.len() < 56 {
-                        continue;
-                    }
-                    let slot = u64::from_be_bytes(key[32..40].try_into().unwrap_or([0xFF; 8]));
-                    let seq = u64::from_be_bytes(key[48..56].try_into().unwrap_or([0xFF; 8]));
-                    if let Some((before_slot, before_seq)) = before_cursor {
-                        if slot > before_slot || (slot == before_slot && seq >= before_seq) {
+        if self.legacy_cold_history_reads_enabled() {
+            if let Some(cold) = self.cold_db.as_ref() {
+                if let Some(cold_cf) = cold.cf_handle(COLD_CF_EVENTS) {
+                    let iter = cold.iterator_cf(
+                        &cold_cf,
+                        rocksdb::IteratorMode::From(&end_key, Direction::Reverse),
+                    );
+                    for (key, value) in iter.flatten() {
+                        if !key.starts_with(&prefix) {
+                            break;
+                        }
+                        if key.len() < 56 {
                             continue;
                         }
+                        let slot = u64::from_be_bytes(key[32..40].try_into().unwrap_or([0xFF; 8]));
+                        let seq = u64::from_be_bytes(key[48..56].try_into().unwrap_or([0xFF; 8]));
+                        if let Some((before_slot, before_seq)) = before_cursor {
+                            if slot > before_slot || (slot == before_slot && seq >= before_seq) {
+                                continue;
+                            }
+                        }
+                        rows.insert(key.to_vec(), value.to_vec());
                     }
-                    rows.insert(key.to_vec(), value.to_vec());
                 }
+            }
+        }
+        let archive_end = before_cursor.map(|(slot, _)| slot).unwrap_or(u64::MAX);
+        for (key, value) in self.archive_v2_category_rows("events", 0, archive_end)? {
+            if !key.starts_with(&prefix) || key.len() < 56 {
+                continue;
+            }
+            let slot = u64::from_be_bytes(key[32..40].try_into().unwrap());
+            let seq = u64::from_be_bytes(key[48..56].try_into().unwrap());
+            if before_cursor.is_some_and(|(before_slot, before_seq)| {
+                slot > before_slot || (slot == before_slot && seq >= before_seq)
+            }) {
+                continue;
+            }
+            match rows.insert(key, value.clone()) {
+                Some(existing) if existing != value => {
+                    return Err("Conflicting Archive V2 contract event row".to_string())
+                }
+                _ => {}
             }
         }
 
@@ -417,24 +438,48 @@ impl StateStore {
             rocksdb::IteratorMode::From(&slot_prefix, Direction::Forward),
         );
 
-        let mut events = Vec::new();
+        let mut index_rows = self
+            .archive_v2_category_rows("events_by_slot", slot, slot)?
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>();
         for item in iter.flatten() {
             let (key, event_key) = item;
             if key.len() < 8 || key[..8] != slot_prefix {
                 break;
             }
+            match index_rows.insert(key.to_vec(), event_key.to_vec()) {
+                Some(existing) if existing.as_slice() != event_key.as_ref() => {
+                    return Err("Conflicting hot and Archive V2 event-slot row".to_string())
+                }
+                _ => {}
+            }
+        }
+        let archived_events = self
+            .archive_v2_category_rows("events", slot, slot)?
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>();
+
+        let mut events = Vec::new();
+        for (_, event_key) in index_rows {
             let data = self
                 .db
-                .get_cf(&cf_events, &*event_key)
+                .get_cf(&cf_events, &event_key)
                 .map_err(|e| format!("Failed to read event: {}", e))?
                 .map(|value| value.to_vec())
                 .or_else(|| {
-                    self.cold_db.as_ref().and_then(|cold| {
-                        cold.cf_handle(COLD_CF_EVENTS)
-                            .and_then(|cold_cf| cold.get_cf(&cold_cf, &*event_key).ok().flatten())
-                            .map(|value| value.to_vec())
-                    })
-                });
+                    self.legacy_cold_history_reads_enabled()
+                        .then(|| {
+                            self.cold_db.as_ref().and_then(|cold| {
+                                cold.cf_handle(COLD_CF_EVENTS)
+                                    .and_then(|cold_cf| {
+                                        cold.get_cf(&cold_cf, &event_key).ok().flatten()
+                                    })
+                                    .map(|value| value.to_vec())
+                            })
+                        })
+                        .flatten()
+                })
+                .or_else(|| archived_events.get(&event_key).cloned());
 
             if let Some(data) = data {
                 if let Ok(event) = serde_json::from_slice::<ContractEvent>(&data) {

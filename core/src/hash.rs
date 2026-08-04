@@ -5,7 +5,9 @@ use sha2::{Digest, Sha256};
 use std::fmt;
 
 /// 32-byte hash (SHA-256)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default,
+)]
 pub struct Hash(pub [u8; 32]);
 
 impl Hash {

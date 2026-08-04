@@ -1,10 +1,11 @@
 # Archive V2 Segmented Storage And Validator Roles Plan
 
 **Created:** 2026-07-21
-**Status:** Owner-approved architecture direction; signed v0.5.229 emergency bridge live on all four testnet validators; bounded composite fixed-tip parity closure accepted and fresh full rescan capacity-gated; Archive V2 implementation pending
+**Status:** Archive V2 local candidate implemented and locally qualified; no Archive V2 release, tag, or live deployment
 **Scope:** Testnet, future mainnet, archive-capable validators, constrained validator agents, historical RPC, sync, backup, recovery, and capacity operations
 **Related policy:** [TESTNET_STATE_AND_SYNC_POLICY.md](TESTNET_STATE_AND_SYNC_POLICY.md)
 **Current incident baseline:** [ARCHIVE_PARITY_REPAIR_PLAN_2026-07-09.md](ARCHIVE_PARITY_REPAIR_PLAN_2026-07-09.md)
+**Physical/code audit:** [STORAGE_PHYSICAL_AND_CODE_AUDIT_2026-07-23.md](STORAGE_PHYSICAL_AND_CODE_AUDIT_2026-07-23.md)
 
 ## 1. Executive Decision
 
@@ -35,6 +36,36 @@ physically retain every historical byte forever, every validator requires an
 ever-growing disk. Archive V2 reduces the growth factor, removes avoidable
 duplication, supports verified remote access, and makes capacity predictable;
 it cannot make unbounded history fit permanently on a fixed disk.
+
+### 1.1 Implementation update — 2026-07-27
+
+This table tracks the current local candidate against the authoritative
+AV2-001 through AV2-130 backlog. "Implemented" means code and focused tests
+exist in the working tree; it does not mean the candidate has been released or
+deployed.
+
+| Work item | Local candidate status | Qualification status |
+| --- | --- | --- |
+| AV2-001 format specification | Implemented: deterministic versioned identities, manifests, frames, indexes, ordering, checksums, bounds, and compatibility validation | Focused codec/catalog rejection and round-trip tests passed |
+| AV2-010 segment codec | Implemented: seekable Zstandard frames, deterministic dictionaries, bounded decode, content hashes, and oversized-record support | Full 60-candidate benchmark matrix completed on five representative ranges |
+| AV2-020 block/transaction deduplication | Implemented: one canonical transaction body with block/ordinal reconstruction | Focused exact reconstruction and manifest-category tests passed |
+| AV2-030 public indexes | Implemented for every public-history manifest category with deterministic rebuild commitments | Focused category tests and exact four-node slot-90,000 parity passed |
+| AV2-040 manifest catalog | Implemented: atomic catalog promotion, continuity, supersession, root verification, import, and recovery | Focused catalog corruption/continuity tests passed |
+| AV2-050 segment builder | Implemented: immutable fixed-range source, resumable journal, crash-safe promotion, and replica acknowledgements | Focused fault/resume tests and four independent build/mirror/restore runs passed |
+| AV2-060 read integration | Implemented: hot, legacy cold, local V2, then verified cache/source order with typed fail-closed errors | Focused reader/corruption tests and the full/cache/consensus network matrix passed |
+| AV2-070 migration and retirement | Implemented: write-first equivalence proof, signed-anchor policy, bounded journaled retirement, and physical reclaim limits | Focused durability/interruption tests passed; no live legacy row has been retired |
+| AV2-080 replication | Implemented: authenticated local/HTTPS sources, immutable inventories, hash verification, bounded mirroring, quarantine, and source failover | Focused tests and network source-outage/corruption/refetch drills passed |
+| AV2-090 validator roles | Implemented: versioned full-archive, verified-cache, and consensus roles; admission, readiness, RPC, and P2P capabilities | Focused admission tests and fresh full/cache/consensus joins passed |
+| AV2-100 adaptive capacity guard | Implemented: separate hot/archive/cache reserve components, forecast, prioritization, and fail-closed admission | Focused threshold and pressure-action tests passed |
+| AV2-110 snapshot and join | Implemented: catalog discovery plus fresh checkpoint join without copied mutable state, WAL, key, or identity | Snapshot completeness tests and exact fresh role joins passed |
+| AV2-120 operations and tooling | Implemented: build, inspect, verify, benchmark, mirror, repair, restore, retirement, and public-history tooling plus health metrics | Static tooling/guard QA passed |
+| AV2-130 documentation and release | Local implementation and qualification record complete | Clean commit, CI, signed tag workflow, artifact provenance, capacity, and deployment remain intentionally open |
+
+The candidate remains a dual-reader, no-deletion transition. The signed
+`v0.5.229` production baseline and its rollback artifacts remain untouched.
+No legacy retirement is authorized until a clean, signed, deployed dual-reader
+release becomes the explicit rollback anchor and every replication/equivalence
+gate passes.
 
 ## 2. Immediate Emergency Bridge
 
@@ -1265,6 +1296,37 @@ measures block-body deduplication, index encoding, account history, and legacy
 encoding separately. Compression-only comparison against the current Zstd cold
 DB is insufficient because the major win is removing duplicate payloads and
 LSM overhead.
+
+### 17.1 Local codec benchmark evidence — 2026-07-24
+
+The required matrix executed all 60 combinations of Zstandard levels
+3/6/9/12/15, 1/4/16 MiB frames, and no/repeated-public-key/trained-64-KiB/
+trained-128-KiB dictionaries on old, recent, busy, sparse, and oversized
+PQ-signed local ranges. Every successful measurement produced byte-identical
+repeated segment/manifest output and exact canonical reconstruction.
+
+Version 1 currently selects the conservative level-6, 4 MiB, no-dictionary
+default. It gives the following local results:
+
+| Range | Blocks / unique tx | Source bytes | Segment bytes | Ratio | Build | Block p95 | Tx p95 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| old PQ | 1,000 / 1,064 | 38,914,146 | 10,410,667 | 3.738x | 940 ms | 161.449 ms | 123.427 ms |
+| recent PQ | 1,000 / 1,077 | 39,057,887 | 10,456,753 | 3.735x | 195 ms | 32.155 ms | 24.973 ms |
+| busy PQ | 128 / 139 | 5,012,493 | 1,348,222 | 3.718x | 120 ms | 30.080 ms | 24.198 ms |
+| sparse PQ | 128 / 131 | 4,924,037 | 1,320,988 | 3.728x | 26 ms | 6.646 ms | 5.224 ms |
+| oversized genesis PQ | 128 / 147 | 4,650,397 | 1,747,380 | 2.661x | 27 ms | 7.325 ms | 6.139 ms |
+
+The original old-range result was recorded under host contention and remains
+preserved rather than waived. After the network gate released the machine, a
+quiet-host rerun of the selected level-6, 4 MiB, no-dictionary candidate on
+slots `1,000..1,999` produced deterministic repeated output, exact
+reconstruction, a 3.737x ratio, 34.130 ms block p95, 25.089 ms transaction p95,
+and 223.63 MiB/s sequential decode. This closes the local 100 ms/150 ms reader
+targets. The original evidence is under
+`evidence/archive-v2/local-20260724/`; the rerun and final gate evidence are
+under `evidence/archive-v2/local-20260727-final/`. The full release
+interpretation is in
+[ARCHIVE_V2_RELEASE_READINESS_2026-07-27.md](ARCHIVE_V2_RELEASE_READINESS_2026-07-27.md).
 
 ## 18. Emergency 5 GiB / 50,000-Slot Release Procedure
 

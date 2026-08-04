@@ -168,6 +168,8 @@ docs/audits/*
 docs/deployment/*
 !docs/deployment/ARCHIVE_PARITY_REPAIR_PLAN_2026-07-09.md
 !docs/deployment/TESTNET_STATE_AND_SYNC_POLICY.md
+!docs/deployment/STORAGE_PHYSICAL_AND_CODE_AUDIT_2026-07-23.md
+!docs/deployment/ARCHIVE_V2_RELEASE_READINESS_2026-07-27.md
 infra/
 internal-docs/
 FIX_PLAN.md

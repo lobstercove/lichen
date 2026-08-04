@@ -5,6 +5,47 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.230] - 2026-08-04
+
+### Added
+- Introduces Archive V2 as a versioned, content-addressed segmented history
+  format with deterministic catalogs, seekable Zstandard frames, canonical
+  transaction deduplication, authenticated replicas, verified cache reads,
+  corruption quarantine, repair, and restore tooling.
+- Adds a retroactive builder that reads already-existing legacy hot and cold
+  history in fixed resumable ranges. Every segment is reconstructed and
+  verified against the canonical block, transaction, index, and public-history
+  commitments before it can be admitted or replicated.
+- Adds explicit full-archive, verified-cache, and consensus validator roles,
+  P2P capability advertisement, role-bound storage markers, capacity telemetry,
+  and fail-closed fresh-sync admission.
+- Ships the `lichen-archive-v2` migration, mirror, repair, and restore CLI in
+  every signed release archive and verifies the installed tool against the
+  release checksums during deployment.
+
+### Changed
+- Makes legacy cold migration resumable and capacity-aware with durable
+  chain-bound cursors, bounded row/byte/time passes, write-before-delete
+  recovery, validator-specific scheduling jitter, and bounded physical reclaim.
+- Integrates Archive V2 dual reads into validator, RPC, snapshot, checkpoint,
+  and public-history paths without changing consensus, wire encoding, block or
+  transaction identity, signatures, state roots, or public RPC objects.
+
+### Safety
+- Keeps legacy history authoritative during the initial deployment. Legacy
+  retirement remains disabled until exact parity, replica acknowledgements,
+  authenticated restore drills, and a signed dual-reader rollback anchor are
+  proven for the live chain.
+- Updates the transitive `ruint` dependency to 1.20.0, resolving
+  RUSTSEC-2026-0220 in checked, saturating, and overflowing shift operations.
+- Pins the root JavaScript toolchain to patched `undici` 7.29.0 and raises the
+  Python SDK cryptography floor to 50.0.0 for the current npm and Python audit
+  advisories.
+- Requires adequate writable staging and compaction headroom for retroactive
+  conversion. The release does not authorize deleting empty blocks, mutable
+  validator state, WALs, keys, identities, or provider backups, and it does not
+  weaken the configured disk reserve.
+
 ## [0.5.229] - 2026-07-22
 
 ### Fixed

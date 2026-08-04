@@ -64,7 +64,7 @@ is_consensus_critical_release() {
   fi
 
   case "$RELEASE_TAG" in
-    v0.5.188|v0.5.223|v0.5.224|v0.5.225|v0.5.226|v0.5.227|v0.5.228|v0.5.229) return 0 ;;
+    v0.5.188|v0.5.223|v0.5.224|v0.5.225|v0.5.226|v0.5.227|v0.5.228|v0.5.229|v0.5.230) return 0 ;;
   esac
 
   if ! command -v git >/dev/null 2>&1 ||
@@ -201,7 +201,7 @@ validate_release_archive() {
   local archive="$1"
   local root="$2"
   local bin
-  for bin in lichen-validator lichen-genesis lichen zk-prove lichen-custody lichen-faucet; do
+  for bin in lichen-validator lichen-genesis lichen lichen-archive-v2 zk-prove lichen-custody lichen-faucet; do
     require_archive_bin_sha "$archive" "$root" "$bin" >/dev/null
   done
 }
@@ -389,12 +389,13 @@ REMOTE
 
 install_host() {
   local host="$1"
-  local arch archive root expected_archive_sha expected_validator_sha expected_custody_sha expected_faucet_sha release_url
+  local arch archive root expected_archive_sha expected_validator_sha expected_archive_v2_sha expected_custody_sha expected_faucet_sha release_url
   arch="$(ssh_run "$host" "uname -m")"
   archive="$(archive_for_arch "$arch")"
   root="$(archive_root "$archive")"
   expected_archive_sha="$(archive_sha "$archive")"
   expected_validator_sha="$(require_archive_bin_sha "$archive" "$root" lichen-validator)"
+  expected_archive_v2_sha="$(require_archive_bin_sha "$archive" "$root" lichen-archive-v2)"
   expected_custody_sha="$(require_archive_bin_sha "$archive" "$root" lichen-custody)"
   expected_faucet_sha="$(require_archive_bin_sha "$archive" "$root" lichen-faucet)"
   release_url="$(release_asset_url "$archive")"
@@ -416,7 +417,7 @@ REMOTE
   else
     scp_to "$ARTIFACT_DIR/$archive" "$host" "/tmp/$archive"
   fi
-  ssh_run_script "$host" "NETWORK='$NETWORK' SERVICE='$SERVICE' CUSTODY_SERVICE='$CUSTODY_SERVICE' RELEASE_TAG='$RELEASE_TAG' ARCHIVE='/tmp/$archive' EXPECTED_VALIDATOR_SHA='$expected_validator_sha' EXPECTED_CUSTODY_SHA='$expected_custody_sha' EXPECTED_FAUCET_SHA='$expected_faucet_sha'" <<'REMOTE'
+  ssh_run_script "$host" "NETWORK='$NETWORK' SERVICE='$SERVICE' CUSTODY_SERVICE='$CUSTODY_SERVICE' RELEASE_TAG='$RELEASE_TAG' ARCHIVE='/tmp/$archive' EXPECTED_VALIDATOR_SHA='$expected_validator_sha' EXPECTED_ARCHIVE_V2_SHA='$expected_archive_v2_sha' EXPECTED_CUSTODY_SHA='$expected_custody_sha' EXPECTED_FAUCET_SHA='$expected_faucet_sha'" <<'REMOTE'
 set -euo pipefail
 sudo() { command sudo -n "$@" </dev/null; }
 tmp="$(mktemp -d)"
@@ -490,7 +491,7 @@ stage_release_bin() {
   sudo -n install -m 755 "$root/$bin" "/usr/local/bin/$bin.new"
 }
 
-for bin in lichen-validator lichen-genesis lichen zk-prove; do
+for bin in lichen-validator lichen-genesis lichen lichen-archive-v2 zk-prove; do
   stage_release_bin "$bin"
 done
 
@@ -536,12 +537,13 @@ check_staged_bin_hash() {
   fi
 }
 
-for bin in lichen-validator lichen-genesis lichen zk-prove; do
+for bin in lichen-validator lichen-genesis lichen lichen-archive-v2 zk-prove; do
   expected_bin_sha="$(sha256sum "$root/$bin" | awk '{print $1}')"
   check_staged_bin_hash "$bin" "$expected_bin_sha"
 done
 check_staged_bin_hash lichen-custody "$EXPECTED_CUSTODY_SHA"
 check_staged_bin_hash lichen-faucet "$EXPECTED_FAUCET_SHA"
+check_staged_bin_hash lichen-archive-v2 "$EXPECTED_ARCHIVE_V2_SHA"
 
 install_staged_bin() {
   local bin="$1"
@@ -557,7 +559,7 @@ install_staged_bin() {
   fi
 }
 
-for bin in lichen-validator lichen-genesis lichen zk-prove; do
+for bin in lichen-validator lichen-genesis lichen lichen-archive-v2 zk-prove; do
   install_staged_bin "$bin"
 done
 install_staged_bin lichen-custody "$EXPECTED_CUSTODY_SHA"
@@ -621,16 +623,17 @@ REMOTE
 
 verify_host_release() {
   local host="$1"
-  local arch archive root expected_validator_sha expected_custody_sha expected_faucet_sha
+  local arch archive root expected_validator_sha expected_archive_v2_sha expected_custody_sha expected_faucet_sha
   arch="$(ssh_run "$host" "uname -m")"
   archive="$(archive_for_arch "$arch")"
   root="$(archive_root "$archive")"
   expected_validator_sha="$(require_archive_bin_sha "$archive" "$root" lichen-validator)"
+  expected_archive_v2_sha="$(require_archive_bin_sha "$archive" "$root" lichen-archive-v2)"
   expected_custody_sha="$(require_archive_bin_sha "$archive" "$root" lichen-custody)"
   expected_faucet_sha="$(require_archive_bin_sha "$archive" "$root" lichen-faucet)"
 
   echo "Verify installed release ${host}"
-  ssh_run "$host" "SERVICE='$SERVICE' CUSTODY_SERVICE='$CUSTODY_SERVICE' EXPECTED_VALIDATOR_SHA='$expected_validator_sha' EXPECTED_CUSTODY_SHA='$expected_custody_sha' EXPECTED_FAUCET_SHA='$expected_faucet_sha' bash -s" <<'REMOTE'
+  ssh_run "$host" "SERVICE='$SERVICE' CUSTODY_SERVICE='$CUSTODY_SERVICE' EXPECTED_VALIDATOR_SHA='$expected_validator_sha' EXPECTED_ARCHIVE_V2_SHA='$expected_archive_v2_sha' EXPECTED_CUSTODY_SHA='$expected_custody_sha' EXPECTED_FAUCET_SHA='$expected_faucet_sha' bash -s" <<'REMOTE'
 set -euo pipefail
 sudo() { command sudo -n "$@" </dev/null; }
 
@@ -724,6 +727,7 @@ check_service_tree_hash() {
 }
 
 check_file_hash /usr/local/bin/lichen-validator "$EXPECTED_VALIDATOR_SHA" lichen-validator
+check_file_hash /usr/local/bin/lichen-archive-v2 "$EXPECTED_ARCHIVE_V2_SHA" lichen-archive-v2
 check_file_hash /usr/local/bin/lichen-custody "$EXPECTED_CUSTODY_SHA" lichen-custody
 check_file_hash /usr/local/bin/lichen-faucet "$EXPECTED_FAUCET_SHA" lichen-faucet
 

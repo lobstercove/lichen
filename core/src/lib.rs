@@ -10,6 +10,7 @@
 pub extern "C" fn __rust_probestack() {}
 
 pub mod account;
+pub mod archive_v2;
 pub mod block;
 pub mod codec;
 pub mod consensus;

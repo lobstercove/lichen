@@ -1,6 +1,7 @@
 // P2P Message Types
 
 use lichen_core::{
+    archive_v2::ArchiveV2CapabilityAdvertisement,
     codec::{deserialize_legacy_bincode_strict, serialize_legacy_bincode_limited},
     Block, BlockHeader, CanonicalCommitCertificate, CanonicalValidatorPower, CommitSignature, Hash,
     PqSignature, Precommit, Prevote, Proposal, Pubkey, SlashingEvidence, StakePool, Transaction,
@@ -63,6 +64,7 @@ pub fn validator_announcement_signing_message(
     current_slot: u64,
     machine_fingerprint: &[u8; 32],
     version: &str,
+    archive_v2: Option<&ArchiveV2CapabilityAdvertisement>,
 ) -> Result<Vec<u8>, String> {
     let version_len = version.len();
     if version_len > u16::MAX as usize {
@@ -80,6 +82,22 @@ pub fn validator_announcement_signing_message(
 
     message.extend_from_slice(&(version_len as u16).to_le_bytes());
     message.extend_from_slice(version.as_bytes());
+    match archive_v2 {
+        Some(capability) => {
+            capability
+                .validate()
+                .map_err(|error| format!("invalid Archive V2 capability: {error}"))?;
+            let encoded = serialize_legacy_bincode_limited(
+                capability,
+                64 * 1024,
+                "Archive V2 capability advertisement",
+            )?;
+            message.push(1);
+            message.extend_from_slice(&(encoded.len() as u32).to_le_bytes());
+            message.extend_from_slice(&encoded);
+        }
+        None => message.push(0),
+    }
 
     Ok(message)
 }
@@ -143,8 +161,9 @@ impl CompactBlock {
 
 /// Current P2P protocol version.
 ///
-/// Version 3 adds canonical consensus-envelope prefill to compact blocks.
-pub const P2P_PROTOCOL_VERSION: u32 = 3;
+/// Version 4 binds the optional Archive V2 role/capability advertisement into
+/// signed validator announcements. It requires coordinated activation.
+pub const P2P_PROTOCOL_VERSION: u32 = 4;
 
 /// P2P message envelope
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -256,6 +275,11 @@ pub enum MessageType {
         /// [0u8; 32] if not available (dev mode or legacy).
         #[serde(default)]
         machine_fingerprint: [u8; 32],
+        /// Versioned, signed archive capability. Absence means legacy
+        /// capability is unknown and must never be treated as deep-history
+        /// admission.
+        #[serde(default)]
+        archive_v2: Option<ArchiveV2CapabilityAdvertisement>,
     },
 
     /// State snapshot chunk request — joining validator asks for a chunk of
@@ -542,12 +566,12 @@ mod tests {
         let fingerprint = [7u8; 32];
 
         let payload =
-            validator_announcement_signing_message(&pubkey, 123, 456, &fingerprint, "0.1.0")
+            validator_announcement_signing_message(&pubkey, 123, 456, &fingerprint, "0.1.0", None)
                 .unwrap();
         let signature = keypair.sign(&payload);
 
         let tampered =
-            validator_announcement_signing_message(&pubkey, 123, 456, &fingerprint, "0.1.1")
+            validator_announcement_signing_message(&pubkey, 123, 456, &fingerprint, "0.1.1", None)
                 .unwrap();
 
         assert!(Keypair::verify(&pubkey, &payload, &signature));
@@ -555,13 +579,69 @@ mod tests {
     }
 
     #[test]
+    fn test_validator_announcement_signing_message_binds_archive_v2_capability() {
+        let keypair = Keypair::new();
+        let pubkey = keypair.pubkey();
+        let fingerprint = [11u8; 32];
+        let capability = ArchiveV2CapabilityAdvertisement {
+            version: 1,
+            identity: lichen_core::archive_v2::ArchiveV2Identity {
+                network_id: "lichen-test".to_string(),
+                genesis_hash: Hash::hash(b"genesis"),
+            },
+            role: lichen_core::archive_v2::ArchiveV2Role::FullArchive,
+            catalog_root: Hash::hash(b"catalog-a"),
+            catalog_start_slot: Some(0),
+            catalog_end_slot: Some(99),
+            serves_deep_history: true,
+            remote_fetch_enabled: false,
+        };
+        let payload = validator_announcement_signing_message(
+            &pubkey,
+            123,
+            456,
+            &fingerprint,
+            "0.5.230",
+            Some(&capability),
+        )
+        .unwrap();
+        let signature = keypair.sign(&payload);
+
+        let mut tampered = capability.clone();
+        tampered.catalog_root = Hash::hash(b"catalog-b");
+        let tampered_payload = validator_announcement_signing_message(
+            &pubkey,
+            123,
+            456,
+            &fingerprint,
+            "0.5.230",
+            Some(&tampered),
+        )
+        .unwrap();
+        let absent_payload = validator_announcement_signing_message(
+            &pubkey,
+            123,
+            456,
+            &fingerprint,
+            "0.5.230",
+            None,
+        )
+        .unwrap();
+
+        assert!(Keypair::verify(&pubkey, &payload, &signature));
+        assert!(!Keypair::verify(&pubkey, &tampered_payload, &signature));
+        assert!(!Keypair::verify(&pubkey, &absent_payload, &signature));
+    }
+
+    #[test]
     fn test_validator_announcement_signing_message_requires_version() {
         let pubkey = Pubkey([9u8; 32]);
         let fingerprint = [3u8; 32];
         let versioned =
-            validator_announcement_signing_message(&pubkey, 1, 2, &fingerprint, "0.1.0").unwrap();
+            validator_announcement_signing_message(&pubkey, 1, 2, &fingerprint, "0.1.0", None)
+                .unwrap();
 
-        assert!(versioned.ends_with(b"0.1.0"));
+        assert!(versioned.ends_with(&[0]));
     }
 
     #[test]

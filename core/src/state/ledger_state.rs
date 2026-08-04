@@ -302,7 +302,7 @@ impl StateStore {
         {
             let tx_signature = tx.signature();
             if self
-                .get_tx_meta_full(&tx_signature)?
+                .get_hot_tx_meta_full(&tx_signature)?
                 .is_some_and(|meta| !meta.succeeded())
             {
                 continue;
@@ -592,7 +592,7 @@ impl StateStore {
         for (tx_index, tx) in block.transactions.iter().enumerate() {
             let sig = tx.signature();
             let succeeded = self
-                .get_tx_meta_full(&sig)?
+                .get_hot_tx_meta_full(&sig)?
                 .map(|meta| meta.succeeded())
                 .unwrap_or(true);
             if succeeded && is_shielded_transaction(tx) {
@@ -732,25 +732,30 @@ impl StateStore {
                 Ok(Some(block))
             }
             Ok(None) => {
-                if let Some(ref cold) = self.cold_db {
-                    if let Some(cold_cf) = cold.cf_handle(COLD_CF_BLOCKS) {
-                        if let Ok(Some(data)) = cold.get_cf(&cold_cf, hash.0) {
-                            let block: Block = if data.first() == Some(&0xBC) {
-                                deserialize_legacy_bincode(&data[1..], "cold block").map_err(
-                                    |e| {
-                                        format!("Failed to deserialize cold block (bincode): {}", e)
-                                    },
-                                )?
-                            } else {
-                                serde_json::from_slice(&data).map_err(|e| {
-                                    format!("Failed to deserialize cold block (json): {}", e)
-                                })?
-                            };
-                            return Ok(Some(block));
+                if self.legacy_cold_history_reads_enabled() {
+                    if let Some(ref cold) = self.cold_db {
+                        if let Some(cold_cf) = cold.cf_handle(COLD_CF_BLOCKS) {
+                            if let Ok(Some(data)) = cold.get_cf(&cold_cf, hash.0) {
+                                let block: Block = if data.first() == Some(&0xBC) {
+                                    deserialize_legacy_bincode(&data[1..], "cold block").map_err(
+                                        |e| {
+                                            format!(
+                                                "Failed to deserialize cold block (bincode): {}",
+                                                e
+                                            )
+                                        },
+                                    )?
+                                } else {
+                                    serde_json::from_slice(&data).map_err(|e| {
+                                        format!("Failed to deserialize cold block (json): {}", e)
+                                    })?
+                                };
+                                return Ok(Some(block));
+                            }
                         }
                     }
                 }
-                Ok(None)
+                self.archive_v2_block_by_hash(hash)
             }
             Err(e) => Err(format!("Database error: {}", e)),
         }
@@ -758,6 +763,16 @@ impl StateStore {
 
     /// Get block by slot
     pub fn get_block_by_slot(&self, slot: u64) -> Result<Option<Block>, String> {
+        // A freshly synchronized Archive V2 node can retain bootstrap-only hot
+        // history until an independently authorized retirement removes it.
+        // Catalog-covered slots nevertheless belong to the admitted role's
+        // verified path, so those bootstrap bytes cannot bypass verified-cache
+        // source failures or a consensus role's deep-history denial. Established
+        // migration nodes retain the documented hot -> cold -> V2 read order.
+        if self.archive_v2_covers_slot(slot) {
+            return self.archive_v2_block_by_slot(slot);
+        }
+
         let slot_cf = self
             .db
             .cf_handle(CF_SLOTS)
@@ -765,13 +780,77 @@ impl StateStore {
 
         match self.db.get_cf(&slot_cf, slot.to_be_bytes()) {
             Ok(Some(hash_bytes)) => {
+                if hash_bytes.len() != 32 {
+                    return Err(format!(
+                        "Invalid canonical slot hash length at slot {slot}: {}",
+                        hash_bytes.len()
+                    ));
+                }
                 let mut hash = [0u8; 32];
                 hash.copy_from_slice(&hash_bytes);
-                self.get_block(&Hash(hash))
+                match self.get_block(&Hash(hash))? {
+                    Some(block) => Ok(Some(block)),
+                    None => self.archive_v2_block_by_slot(slot),
+                }
             }
-            Ok(None) => Ok(None),
+            Ok(None) => self.archive_v2_block_by_slot(slot),
             Err(e) => Err(format!("Database error: {}", e)),
         }
+    }
+
+    /// Verify that every canonical block in an inclusive range is physically
+    /// present in the hot database. Archive V2 role admission uses this to
+    /// prove that consensus-critical recent-history recovery cannot fall
+    /// through to legacy cold storage, a remote cache, or a deep-history
+    /// reader after the role boundary is activated.
+    pub fn verify_hot_canonical_block_range(
+        &self,
+        start_slot: u64,
+        end_slot: u64,
+    ) -> Result<(), String> {
+        if end_slot < start_slot {
+            return Ok(());
+        }
+        let slot_cf = self
+            .db
+            .cf_handle(CF_SLOTS)
+            .ok_or_else(|| "Slots CF not found".to_string())?;
+        let blocks_cf = self
+            .db
+            .cf_handle(CF_BLOCKS)
+            .ok_or_else(|| "Blocks CF not found".to_string())?;
+
+        for slot in start_slot..=end_slot {
+            let hash_bytes = self
+                .db
+                .get_cf(&slot_cf, slot.to_be_bytes())
+                .map_err(|error| format!("hot slot {slot} lookup failed: {error}"))?
+                .ok_or_else(|| format!("canonical slot {slot} is missing from hot storage"))?;
+            if hash_bytes.len() != 32 {
+                return Err(format!(
+                    "canonical hot slot {slot} has invalid hash length {}",
+                    hash_bytes.len()
+                ));
+            }
+            let encoded = self
+                .db
+                .get_cf(&blocks_cf, hash_bytes.as_slice())
+                .map_err(|error| format!("hot block {slot} lookup failed: {error}"))?
+                .ok_or_else(|| format!("canonical block {slot} is missing from hot storage"))?;
+            let block: Block = if encoded.first() == Some(&0xBC) {
+                deserialize_legacy_bincode(&encoded[1..], "hot retained block")
+                    .map_err(|error| format!("invalid hot retained block {slot}: {error}"))?
+            } else {
+                serde_json::from_slice(&encoded)
+                    .map_err(|error| format!("invalid hot retained block {slot}: {error}"))?
+            };
+            if block.header.slot != slot || block.hash().0.as_slice() != hash_bytes.as_slice() {
+                return Err(format!(
+                    "canonical hot block {slot} conflicts with its slot index"
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Iterate canonical blocks from the slot index in ascending slot order.
@@ -979,6 +1058,25 @@ impl StateStore {
             .map_err(|e| format!("Failed to store transaction: {}", e))
     }
 
+    /// Check only consensus-active transaction storage.
+    ///
+    /// Proposal construction and execution must not depend on deep-history
+    /// availability or object I/O. Transactions protected by a recent blockhash
+    /// remain in this hot family for far longer than the replay window; durable
+    /// nonce and EVM replay protection is additionally enforced by their
+    /// canonical account nonce state. Public historical queries must continue
+    /// to use [`Self::get_transaction`].
+    pub fn has_hot_transaction(&self, sig: &Hash) -> Result<bool, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_TRANSACTIONS)
+            .ok_or_else(|| "Transactions CF not found".to_string())?;
+        self.db
+            .get_cf(&cf, sig.0)
+            .map(|value| value.is_some())
+            .map_err(|e| format!("Database error: {}", e))
+    }
+
     /// Get transaction by signature
     pub fn get_transaction(&self, sig: &Hash) -> Result<Option<Transaction>, String> {
         let cf = self
@@ -999,28 +1097,32 @@ impl StateStore {
                 Ok(Some(tx))
             }
             Ok(None) => {
-                if let Some(ref cold) = self.cold_db {
-                    if let Some(cold_cf) = cold.cf_handle(COLD_CF_TRANSACTIONS) {
-                        if let Ok(Some(data)) = cold.get_cf(&cold_cf, sig.0) {
-                            let tx: Transaction = if data.first() == Some(&0xBC) {
-                                deserialize_legacy_bincode(&data[1..], "cold transaction").map_err(
-                                    |e| {
-                                        format!(
+                if self.legacy_cold_history_reads_enabled() {
+                    if let Some(ref cold) = self.cold_db {
+                        if let Some(cold_cf) = cold.cf_handle(COLD_CF_TRANSACTIONS) {
+                            if let Ok(Some(data)) = cold.get_cf(&cold_cf, sig.0) {
+                                let tx: Transaction = if data.first() == Some(&0xBC) {
+                                    deserialize_legacy_bincode(&data[1..], "cold transaction")
+                                        .map_err(|e| {
+                                            format!(
                                             "Failed to deserialize cold transaction (bincode): {}",
                                             e
                                         )
-                                    },
-                                )?
-                            } else {
-                                serde_json::from_slice(&data).map_err(|e| {
-                                    format!("Failed to deserialize cold transaction (json): {}", e)
-                                })?
-                            };
-                            return Ok(Some(tx));
+                                        })?
+                                } else {
+                                    serde_json::from_slice(&data).map_err(|e| {
+                                        format!(
+                                            "Failed to deserialize cold transaction (json): {}",
+                                            e
+                                        )
+                                    })?
+                                };
+                                return Ok(Some(tx));
+                            }
                         }
                     }
                 }
-                Ok(None)
+                self.archive_v2_transaction(sig)
             }
             Err(e) => Err(format!("Database error: {}", e)),
         }
@@ -1083,7 +1185,15 @@ impl StateStore {
                     Ok(None)
                 }
             }
-            Ok(None) => Ok(None),
+            Ok(None) => match self.archive_v2_category_value("tx_meta", &sig.0)? {
+                Some((_, data)) if data.len() == 8 => {
+                    Ok(Some(u64::from_le_bytes(data.try_into().unwrap())))
+                }
+                Some((_, data)) => Ok(decode_tx_meta(&data)
+                    .ok()
+                    .map(|meta| meta.compute_units_used)),
+                None => Ok(None),
+            },
             Err(e) => Err(format!("Database error: {}", e)),
         }
     }
@@ -1091,7 +1201,7 @@ impl StateStore {
     /// Get full transaction execution metadata.
     /// Returns None for transactions stored in the old 8-byte CU-only format
     /// (those are handled transparently with default return_code/return_data/logs).
-    pub fn get_tx_meta_full(&self, sig: &Hash) -> Result<Option<crate::processor::TxMeta>, String> {
+    fn get_hot_tx_meta_full(&self, sig: &Hash) -> Result<Option<crate::processor::TxMeta>, String> {
         let cf = self
             .db
             .cf_handle(CF_TX_META)
@@ -1107,5 +1217,53 @@ impl StateStore {
             Ok(None) => Ok(None),
             Err(e) => Err(format!("Database error: {}", e)),
         }
+    }
+
+    /// Read transaction execution metadata from hot state, then fall through to
+    /// verified Archive V2 history for public historical queries.
+    pub fn get_tx_meta_full(&self, sig: &Hash) -> Result<Option<crate::processor::TxMeta>, String> {
+        match self.get_hot_tx_meta_full(sig)? {
+            Some(meta) => Ok(Some(meta)),
+            None => match self.archive_v2_category_value("tx_meta", &sig.0)? {
+                Some((_, data)) if data.len() == 8 => Ok(Some(crate::processor::TxMeta {
+                    compute_units_used: u64::from_le_bytes(data.try_into().unwrap()),
+                    ..Default::default()
+                })),
+                Some((_, data)) => decode_tx_meta(&data)
+                    .map(Some)
+                    .map_err(|e| format!("Failed to deserialize Archive V2 tx meta: {e}")),
+                None => Ok(None),
+            },
+        }
+    }
+}
+
+#[cfg(test)]
+mod hot_retention_tests {
+    use super::*;
+
+    #[test]
+    fn hot_canonical_range_verification_fails_closed_on_a_gap() {
+        let root = tempfile::tempdir().expect("create state root");
+        let state = StateStore::open(root.path()).expect("open state");
+        let genesis = Block::genesis(Hash::hash(b"hot-window-state"), 1, Vec::new());
+        let block = Block::new(
+            1,
+            genesis.hash(),
+            Hash::hash(b"hot-window-state-1"),
+            [7u8; 32],
+            Vec::new(),
+        );
+        state.put_block(&genesis).expect("store genesis");
+        state.put_block(&block).expect("store block");
+
+        state
+            .verify_hot_canonical_block_range(0, 1)
+            .expect("complete hot range");
+        let error = state
+            .verify_hot_canonical_block_range(0, 2)
+            .expect_err("missing hot slot must fail closed");
+        assert!(error.contains("slot 2"));
+        assert!(error.contains("hot storage"));
     }
 }

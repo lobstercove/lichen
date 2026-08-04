@@ -193,6 +193,7 @@ for (const [packageName, importers] of Array.from(allPackages).sort()) {
 }
 
 const releaseWorkflow = fs.readFileSync(repoPath('.github/workflows/release.yml'), 'utf8');
+const rollingReleaseDeploy = fs.readFileSync(repoPath('scripts/rolling-release-deploy.sh'), 'utf8');
 const archiveJob = extractWorkflowJob(releaseWorkflow, 'archive-parity-local-gate');
 const setupNodeOffset = archiveJob.indexOf('actions/setup-node@');
 const npmCiOffset = archiveJob.indexOf('npm ci --ignore-scripts');
@@ -216,6 +217,17 @@ assert(
 assert(
     harnessOffset >= 0,
     'release workflow runs the tracked four-validator harness',
+);
+assert(
+    releaseWorkflow.includes('--bin lichen-archive-v2')
+        && releaseWorkflow.includes('cp target/${{ matrix.target }}/release/lichen-archive-v2 ${{ matrix.artifact }}/')
+        && releaseWorkflow.includes('Copy-Item target/${{ matrix.target }}/release/lichen-archive-v2.exe ${{ matrix.artifact }}/'),
+    'release workflow builds and packages the Archive V2 operator CLI on every platform',
+);
+assert(
+    rollingReleaseDeploy.includes('require_archive_bin_sha "$archive" "$root" lichen-archive-v2')
+        && rollingReleaseDeploy.includes('check_file_hash /usr/local/bin/lichen-archive-v2 "$EXPECTED_ARCHIVE_V2_SHA" lichen-archive-v2'),
+    'signed release deployment requires, installs, and verifies the Archive V2 operator CLI',
 );
 
 console.log(`\nArchive parity gate asset QA: ${passed} passed, ${failed} failed`);

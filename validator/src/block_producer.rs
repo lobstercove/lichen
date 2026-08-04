@@ -80,9 +80,11 @@ pub fn build_block(
 ) -> Result<(Block, Vec<Hash>), String> {
     let build_started = Instant::now();
 
-    // Collect pending transactions (up to 2000).  Drop transactions that the
-    // local ledger has already committed before they reach the processor; they
-    // can arrive late through RPC retries or P2P relay after block inclusion.
+    // Collect pending transactions (up to 2000). Drop transactions that the
+    // consensus-active ledger has already committed before they reach the
+    // processor; they can arrive late through RPC retries or P2P relay after
+    // block inclusion. Never consult Archive V2 here: deep-history object I/O
+    // is not an input to proposal timing or consensus liveness.
     let collect_started = Instant::now();
     let mut stale_hashes = Vec::new();
     let tx_limit = max_transactions.min(2000);
@@ -94,8 +96,8 @@ pub fn build_block(
             .into_iter()
             .filter(|tx| {
                 let tx_hash = tx.hash();
-                match state.get_transaction(&tx_hash) {
-                    Ok(Some(_)) => {
+                match state.has_hot_transaction(&tx_hash) {
+                    Ok(true) => {
                         stale_hashes.push(tx_hash);
                         false
                     }

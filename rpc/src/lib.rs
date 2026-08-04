@@ -43,11 +43,12 @@ use axum::body::Bytes as AxumBytes;
 use axum::http::{HeaderMap, HeaderValue, Method};
 use axum::{
     extract::ConnectInfo,
+    extract::Path as AxumPath,
     extract::State,
     http::StatusCode,
     middleware,
     response::{IntoResponse, Response},
-    routing::post,
+    routing::{get, post},
     Json, Router,
 };
 use chrono::{SecondsFormat, Utc};
@@ -99,6 +100,7 @@ const SOLANA_TOKEN_ACCOUNT_SPACE: usize = 165;
 const SOLANA_TOKEN_ACCOUNT_RENT_EXEMPT_LAMPORTS: u64 = 2_039_280;
 const RPC_STALE_BLOCK_SECS: u64 = 120;
 const RPC_DISK_CRITICAL_MIN_AVAILABLE_BYTES: u64 = 5 * 1024 * 1024 * 1024;
+const ARCHIVE_V2_GATEWAY_TOKEN_MAX_BYTES: usize = 4096;
 
 /// P9-RPC-02: Maximum size for transaction wire deserialization.
 /// Prevents OOM/DoS from maliciously large payloads and matches the core
@@ -557,6 +559,32 @@ fn env_var_enabled(name: &str) -> bool {
             | Some("on")
             | Some("ON")
     )
+}
+
+fn constant_time_token_eq(left: &[u8], right: &[u8]) -> bool {
+    let max_len = left.len().max(right.len());
+    let mut difference = left.len() ^ right.len();
+    for index in 0..max_len {
+        difference |= usize::from(
+            left.get(index).copied().unwrap_or(0) ^ right.get(index).copied().unwrap_or(0),
+        );
+    }
+    difference == 0
+}
+
+fn archive_v2_gateway_authorized(headers: &HeaderMap, expected_token: &str) -> bool {
+    if expected_token.is_empty() || expected_token.len() > ARCHIVE_V2_GATEWAY_TOKEN_MAX_BYTES {
+        return false;
+    }
+    let Some(candidate) = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+    else {
+        return false;
+    };
+    candidate.len() <= ARCHIVE_V2_GATEWAY_TOKEN_MAX_BYTES
+        && constant_time_token_eq(candidate.as_bytes(), expected_token.as_bytes())
 }
 
 fn live_signed_metadata_runtime_enabled() -> bool {
@@ -1513,10 +1541,23 @@ fn rpc_readiness(state: &RpcState) -> RpcReadiness {
 
 fn rpc_readiness_json(state: &RpcState) -> serde_json::Value {
     let readiness = rpc_readiness(state);
+    let migration = state.state.cold_migration_status();
+    let archive_v2 = state.state.archive_v2_status();
     let mut payload = serde_json::json!({
         "status": readiness.status,
         "reason": readiness.reason,
         "slot": readiness.slot,
+        "archive_migration": {
+            "advisory_only": true,
+            "affects_consensus_readiness": false,
+            "status": migration,
+        },
+        "archive_v2": {
+            "advisory_only": true,
+            "affects_consensus_readiness": false,
+            "enabled": archive_v2.is_some(),
+            "status": archive_v2,
+        },
     });
 
     if let Some(block_age_secs) = readiness.block_age_secs {
@@ -1533,6 +1574,20 @@ fn rpc_readiness_json(state: &RpcState) -> serde_json::Value {
     if let Some((archive_slot, archive_hash)) = readiness.archive_contiguous_tip {
         payload["archive_contiguous_slot"] = serde_json::json!(archive_slot);
         payload["archive_contiguous_hash"] = serde_json::json!(archive_hash.to_hex());
+    }
+    if let Some(archive_disk) = state
+        .state
+        .cold_storage_path()
+        .as_deref()
+        .and_then(disk_readiness_for_path)
+    {
+        payload["archive_disk"] = serde_json::json!({
+            "available_bytes": archive_disk.available_bytes,
+            "total_bytes": archive_disk.total_bytes,
+            "used_percent": archive_disk.used_percent,
+            "critical": archive_disk.critical,
+            "advisory_only": true,
+        });
     }
 
     payload
@@ -2515,6 +2570,29 @@ fn encode_rpc_response(headers: &HeaderMap, response: RpcResponse) -> Response {
 
 fn sanitize_rpc_error_message(message: &str) -> String {
     let lower = message.to_ascii_lowercase();
+
+    // Archive V2 role and availability failures are part of the public node
+    // capability contract, not internal database diagnostics. `getBlock`
+    // wraps all StateStore errors with "Database error:", so classify these
+    // known, path-free states before applying the broad storage redaction.
+    // Keep the response canonical instead of reflecting source URLs, object
+    // hashes, filesystem paths, or transport details from the original error.
+    if lower.contains("archive v2") {
+        if lower.contains("consensus role does not serve archive v2 deep history") {
+            return "Archive V2 consensus role does not serve deep history".to_string();
+        }
+        if lower.contains("archive v2 object is unavailable") {
+            return if lower.contains("source") {
+                "Archive V2 segment unavailable from authenticated source".to_string()
+            } else {
+                "Archive V2 segment unavailable".to_string()
+            };
+        }
+        if lower.contains("archive v2 object is being fetched") {
+            return "Archive V2 segment fetch in progress".to_string();
+        }
+    }
+
     let storage_detail = lower.contains("database error")
         || lower.contains("rocksdb")
         || lower.contains("column family")
@@ -5180,6 +5258,68 @@ pub fn build_rpc_router_with_min_validator_stake(
     )
 }
 
+async fn handle_archive_v2_object(
+    State(state): State<Arc<RpcState>>,
+    AxumPath(object_hash): AxumPath<String>,
+    headers: HeaderMap,
+) -> Response {
+    let expected_token = match std::env::var("LICHEN_ARCHIVE_V2_GATEWAY_BEARER_TOKEN") {
+        Ok(token) if !token.is_empty() && token.len() <= ARCHIVE_V2_GATEWAY_TOKEN_MAX_BYTES => {
+            token
+        }
+        _ => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Archive V2 gateway is not configured",
+            )
+                .into_response()
+        }
+    };
+    if !archive_v2_gateway_authorized(&headers, &expected_token) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            [(
+                axum::http::header::WWW_AUTHENTICATE,
+                HeaderValue::from_static("Bearer"),
+            )],
+            "Archive V2 gateway authentication failed",
+        )
+            .into_response();
+    }
+    let object_hash = match Hash::from_hex(&object_hash) {
+        Ok(hash) => hash,
+        Err(_) => {
+            return (StatusCode::BAD_REQUEST, "invalid Archive V2 object hash").into_response()
+        }
+    };
+    match state.state.archive_v2_local_verified_object(&object_hash) {
+        Ok(Some(bytes)) => (
+            StatusCode::OK,
+            [
+                (
+                    axum::http::header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/octet-stream"),
+                ),
+                (
+                    axum::http::header::CACHE_CONTROL,
+                    HeaderValue::from_static("public, max-age=31536000, immutable"),
+                ),
+            ],
+            bytes,
+        )
+            .into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, "Archive V2 object is unavailable").into_response(),
+        Err(error) => {
+            warn!("Archive V2 gateway refused object {object_hash}: {error}");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Archive V2 object verification failed",
+            )
+                .into_response()
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn build_rpc_router_internal(
     state: StateStore,
@@ -5340,6 +5480,10 @@ fn build_rpc_router_internal(
         .route("/", post(handle_rpc))
         .route("/solana-compat", post(handle_solana_rpc))
         .route("/evm", post(handle_evm_rpc))
+        .route(
+            "/archive-v2/objects/:object_hash",
+            get(handle_archive_v2_object),
+        )
         // DEX REST API — /api/v1/*
         .nest("/api/v1", dex::build_dex_router())
         // Prediction Market REST API — /api/v1/prediction-market/*
@@ -9837,6 +9981,17 @@ async fn handle_get_metrics(state: &RpcState) -> Result<serde_json::Value, RpcEr
 /// Inner metrics computation (expensive — calls multiple DB reads)
 async fn compute_metrics(state: &RpcState) -> Result<serde_json::Value, RpcError> {
     let metrics = state.state.get_metrics();
+    let cold_migration = state.state.cold_migration_status();
+    let archive_v2 = state.state.archive_v2_status();
+    let hot_disk = state
+        .data_dir_path
+        .as_deref()
+        .and_then(disk_readiness_for_path);
+    let archive_disk = state
+        .state
+        .cold_storage_path()
+        .as_deref()
+        .and_then(disk_readiness_for_path);
     let validators = cached_validators(state).await?;
     let total_staked = canonical_total_staked(state, &validators);
 
@@ -9933,6 +10088,29 @@ async fn compute_metrics(state: &RpcState) -> Result<serde_json::Value, RpcError
     let projected_supply = metrics
         .total_supply
         .saturating_add(projected_unminted as u64);
+    let hot_filesystem = hot_disk.map(|disk| {
+        serde_json::json!({
+            "available_bytes": disk.available_bytes,
+            "total_bytes": disk.total_bytes,
+            "used_percent": disk.used_percent,
+            "critical": disk.critical,
+        })
+    });
+    let archive_filesystem = archive_disk.map(|disk| {
+        serde_json::json!({
+            "available_bytes": disk.available_bytes,
+            "total_bytes": disk.total_bytes,
+            "used_percent": disk.used_percent,
+            "critical": disk.critical,
+            "advisory_only": true,
+        })
+    });
+    let storage_metrics = serde_json::json!({
+        "hot_filesystem": hot_filesystem,
+        "archive_filesystem": archive_filesystem,
+        "cold_migration": cold_migration,
+        "archive_v2": archive_v2,
+    });
 
     Ok(serde_json::json!({
         "tps": metrics.tps,
@@ -9971,6 +10149,7 @@ async fn compute_metrics(state: &RpcState) -> Result<serde_json::Value, RpcError
         "current_epoch": current_epoch,
         "slots_into_epoch": slots_into_epoch,
         "inflation_rate_bps": lichen_core::consensus::inflation_rate_bps(current_slot),
+        "storage": storage_metrics,
     }))
 }
 
@@ -20349,10 +20528,11 @@ mod tests {
         prediction_address_aliases, privileged_rpc_mutation_test_output,
         put_cached_program_list_response, put_cached_read_slot_response,
         rpc_commit_certificate_for_block, rpc_read_slot_cache_key, rpc_readiness,
-        rpc_readiness_json, rpc_unready_error, solana_method_allowed_when_rpc_unready,
-        solana_transaction_json, storage_key_with_pubkey_hex, storage_key_with_u64_le,
-        submit_transaction, transaction_has_governed_system_preflight, transaction_summary_fields,
-        tx_to_rpc_json, validate_incoming_transaction_limits, validate_solana_encoding,
+        rpc_readiness_json, rpc_unready_error, sanitize_rpc_error_message,
+        solana_method_allowed_when_rpc_unready, solana_transaction_json,
+        storage_key_with_pubkey_hex, storage_key_with_u64_le, submit_transaction,
+        transaction_has_governed_system_preflight, transaction_summary_fields, tx_to_rpc_json,
+        validate_incoming_transaction_limits, validate_solana_encoding,
         validate_solana_transaction_details, validate_transaction_for_submission_queue,
         verify_bridge_access_auth_at, verify_bridge_access_auth_for_create_at, AirdropCooldowns,
         MethodTier, RateLimiter, RpcError, RpcResponse, RpcState, TransactionSubmission,
@@ -20390,6 +20570,56 @@ mod tests {
     use tempfile::tempdir;
     use tokio::sync::{mpsc, Mutex as TokioMutex, RwLock};
     use tower::ServiceExt;
+
+    #[test]
+    fn archive_v2_gateway_authentication_fails_closed() {
+        let mut headers = HeaderMap::new();
+        assert!(!super::archive_v2_gateway_authorized(
+            &headers,
+            "expected-token"
+        ));
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            "Bearer wrong-token".parse().unwrap(),
+        );
+        assert!(!super::archive_v2_gateway_authorized(
+            &headers,
+            "expected-token"
+        ));
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            "Bearer expected-token".parse().unwrap(),
+        );
+        assert!(super::archive_v2_gateway_authorized(
+            &headers,
+            "expected-token"
+        ));
+        assert!(!super::archive_v2_gateway_authorized(&headers, ""));
+    }
+
+    #[test]
+    fn archive_v2_public_capability_errors_survive_storage_redaction() {
+        assert_eq!(
+            sanitize_rpc_error_message(
+                "Database error: archive v2 object is unavailable: no authenticated source \
+                 supplied valid segment deadbeef from /private/archive"
+            ),
+            "Archive V2 segment unavailable from authenticated source"
+        );
+        assert_eq!(
+            sanitize_rpc_error_message(
+                "Database error: archive v2 role admission failed: consensus role does not serve \
+                 Archive V2 deep history"
+            ),
+            "Archive V2 consensus role does not serve deep history"
+        );
+        assert_eq!(
+            sanitize_rpc_error_message(
+                "Database error: RocksDB failure opening /private/archive column family blocks"
+            ),
+            "Database error"
+        );
+    }
 
     fn make_test_rpc_state_with_program_cache_capacity(
         state: StateStore,
@@ -21572,6 +21802,32 @@ mod tests {
         let payload = rpc_readiness_json(&rpc_state);
         assert_eq!(payload["status"], "ok");
         assert_eq!(payload["slot"], 7);
+    }
+
+    #[tokio::test]
+    async fn rpc_readiness_keeps_archive_migration_pressure_advisory() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+        put_tip_block_with_timestamp(&state, 8, current_unix_secs());
+        state.set_cold_migration_paused("test_archive_pressure");
+
+        let rpc_state = make_test_rpc_state(state);
+        let readiness = rpc_readiness(&rpc_state);
+        assert_eq!(readiness.status, "ok");
+        assert_eq!(readiness.reason, "ok");
+
+        let payload = rpc_readiness_json(&rpc_state);
+        assert_eq!(payload["status"], "ok");
+        assert_eq!(
+            payload["archive_migration"]["affects_consensus_readiness"],
+            false
+        );
+        assert_eq!(
+            payload["archive_migration"]["status"]["pause_reason"],
+            "test_archive_pressure"
+        );
+        assert_eq!(payload["archive_v2"]["enabled"], false);
+        assert_eq!(payload["archive_v2"]["affects_consensus_readiness"], false);
     }
 
     #[tokio::test]

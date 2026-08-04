@@ -68,6 +68,7 @@ Options:
   --oracle-operator <base58>       Repeatable oracle committee operator address
   --validator-keypair <path>       Derive the validator address from a canonical keypair file
   --config <path>                  Optional genesis config override passed through to lichen-genesis
+  --local-slot-duration-ms <ms>    Local-dev-only slot cadence override (1..=400)
   --genesis-prices-file <path>     Optional audited price snapshot for genesis market seeds
   --help                           Show this message
 
@@ -114,6 +115,7 @@ DB_PATH=""
 WALLET_FILE=""
 VALIDATOR_KEYPAIR=""
 CONFIG_PATH=""
+LOCAL_SLOT_DURATION_MS=""
 GENESIS_PRICES_FILE=""
 INITIAL_VALIDATORS=()
 BRIDGE_VALIDATORS=()
@@ -170,6 +172,11 @@ while [[ $# -gt 0 ]]; do
             CONFIG_PATH="$2"
             shift 2
             ;;
+        --local-slot-duration-ms)
+            require_value "$1" "${2:-}"
+            LOCAL_SLOT_DURATION_MS="$2"
+            shift 2
+            ;;
         --genesis-prices-file)
             require_value "$1" "${2:-}"
             GENESIS_PRICES_FILE="$2"
@@ -201,6 +208,9 @@ COMMAND=("$GENESIS_BIN" --network "$NETWORK")
 
 if [[ -n "$CONFIG_PATH" ]]; then
     COMMAND+=(--config "$CONFIG_PATH")
+fi
+if [[ -n "$LOCAL_SLOT_DURATION_MS" ]]; then
+    COMMAND+=(--local-slot-duration-ms "$LOCAL_SLOT_DURATION_MS")
 fi
 if [[ -n "$GENESIS_PRICES_FILE" ]]; then
     COMMAND+=(--genesis-prices-file "$GENESIS_PRICES_FILE")

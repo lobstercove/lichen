@@ -209,6 +209,8 @@ jobs:
           LICHEN_RUN_VOLUME_E2E=1 \
           LICHEN_LOCAL_ARCHIVE_COLD=1 \
           LICHEN_COLD_RETENTION_SLOTS=20 \
+          LICHEN_ARCHIVE_V2_TEST_CATALOG_HEADROOM_SLOTS=5 \
+          LICHEN_ARCHIVE_V2_FRESH_JOIN_CATALOG_HEADROOM_SLOTS=10 \
           LICHEN_COLD_MIGRATION_INTERVAL_SECS=5 \
           bash tests/local-multi-validator-test.sh 4
 
@@ -273,7 +275,7 @@ jobs:
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
 
       - name: Build release binary
-        run: cargo build --release --locked --target ${{ matrix.target }} --bin lichen-validator --bin lichen-genesis --bin lichen --bin zk-prove
+        run: cargo build --release --locked --target ${{ matrix.target }} --bin lichen-validator --bin lichen-genesis --bin lichen --bin lichen-archive-v2 --bin zk-prove
 
       - name: Build Linux service binaries
         if: startsWith(matrix.os, 'ubuntu')
@@ -291,6 +293,7 @@ jobs:
           strip target/${{ matrix.target }}/release/lichen-validator
           strip target/${{ matrix.target }}/release/lichen-genesis
           strip target/${{ matrix.target }}/release/lichen
+          strip target/${{ matrix.target }}/release/lichen-archive-v2
           strip target/${{ matrix.target }}/release/zk-prove
           strip target/${{ matrix.target }}/release/lichen-custody
           strip target/${{ matrix.target }}/release/lichen-faucet
@@ -301,6 +304,7 @@ jobs:
           aarch64-linux-gnu-strip target/${{ matrix.target }}/release/lichen-validator
           aarch64-linux-gnu-strip target/${{ matrix.target }}/release/lichen-genesis
           aarch64-linux-gnu-strip target/${{ matrix.target }}/release/lichen
+          aarch64-linux-gnu-strip target/${{ matrix.target }}/release/lichen-archive-v2
           aarch64-linux-gnu-strip target/${{ matrix.target }}/release/zk-prove
           aarch64-linux-gnu-strip target/${{ matrix.target }}/release/lichen-custody
           aarch64-linux-gnu-strip target/${{ matrix.target }}/release/lichen-faucet
@@ -311,6 +315,7 @@ jobs:
           strip target/${{ matrix.target }}/release/lichen-validator
           strip target/${{ matrix.target }}/release/lichen-genesis
           strip target/${{ matrix.target }}/release/lichen
+          strip target/${{ matrix.target }}/release/lichen-archive-v2
           strip target/${{ matrix.target }}/release/zk-prove
 
       - name: Create archive
@@ -320,6 +325,7 @@ jobs:
           cp target/${{ matrix.target }}/release/lichen-validator ${{ matrix.artifact }}/
           cp target/${{ matrix.target }}/release/lichen-genesis ${{ matrix.artifact }}/
           cp target/${{ matrix.target }}/release/lichen ${{ matrix.artifact }}/
+          cp target/${{ matrix.target }}/release/lichen-archive-v2 ${{ matrix.artifact }}/
           cp target/${{ matrix.target }}/release/zk-prove ${{ matrix.artifact }}/
           for bin in lichen-custody lichen-faucet; do
             if [ -x "target/${{ matrix.target }}/release/$bin" ]; then
@@ -338,6 +344,7 @@ jobs:
           Copy-Item target/${{ matrix.target }}/release/lichen-validator.exe ${{ matrix.artifact }}/
           Copy-Item target/${{ matrix.target }}/release/lichen-genesis.exe ${{ matrix.artifact }}/
           Copy-Item target/${{ matrix.target }}/release/lichen.exe ${{ matrix.artifact }}/
+          Copy-Item target/${{ matrix.target }}/release/lichen-archive-v2.exe ${{ matrix.artifact }}/
           Copy-Item target/${{ matrix.target }}/release/zk-prove.exe ${{ matrix.artifact }}/
           Copy-Item seeds.json ${{ matrix.artifact }}/
           Copy-Item release-contracts/contracts ${{ matrix.artifact }}/contracts -Recurse
@@ -436,12 +443,13 @@ jobs:
 
             # Extract
             tar xzf lichen-validator-linux-x86_64.tar.gz --strip-components=1
-            chmod +x lichen-validator lichen-genesis lichen zk-prove
+            chmod +x lichen-validator lichen-genesis lichen lichen-archive-v2 zk-prove
             mkdir -p "$HOME/.lichen/state-mainnet"
             cp seeds.json "$HOME/.lichen/state-mainnet/seeds.json"
             ```
 
-            Each archive includes `lichen-validator`, `lichen-genesis`, `lichen`, `zk-prove`,
+            Each archive includes `lichen-validator`, `lichen-genesis`, `lichen`,
+            `lichen-archive-v2`, `zk-prove`,
             `seeds.json`, and the genesis contract WASM bundle under `contracts/`. Linux
             archives also include `lichen-custody` and `lichen-faucet` for VPS service rollouts.
             Install `seeds.json` under your chosen `--db-path` (or `/etc/lichen/seeds.json`)

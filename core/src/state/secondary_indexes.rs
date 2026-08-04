@@ -391,28 +391,49 @@ impl StateStore {
         }
 
         let mut rows = std::collections::BTreeMap::new();
-        if let Some(cold) = self.cold_db.as_ref() {
-            if let Some(cold_cf) = cold.cf_handle(COLD_CF_TOKEN_TRANSFERS) {
-                let iter = cold.iterator_cf(
-                    &cold_cf,
-                    rocksdb::IteratorMode::From(&end_key, Direction::Reverse),
-                );
-                for (key, value) in iter.flatten() {
-                    if !key.starts_with(&prefix) {
-                        break;
-                    }
-                    if key.len() < 48 {
-                        continue;
-                    }
-                    let slot = u64::from_be_bytes(key[32..40].try_into().unwrap_or([0xFF; 8]));
-                    let seq = u64::from_be_bytes(key[40..48].try_into().unwrap_or([0xFF; 8]));
-                    if let Some((before_slot, before_seq)) = before_cursor {
-                        if slot > before_slot || (slot == before_slot && seq >= before_seq) {
+        if self.legacy_cold_history_reads_enabled() {
+            if let Some(cold) = self.cold_db.as_ref() {
+                if let Some(cold_cf) = cold.cf_handle(COLD_CF_TOKEN_TRANSFERS) {
+                    let iter = cold.iterator_cf(
+                        &cold_cf,
+                        rocksdb::IteratorMode::From(&end_key, Direction::Reverse),
+                    );
+                    for (key, value) in iter.flatten() {
+                        if !key.starts_with(&prefix) {
+                            break;
+                        }
+                        if key.len() < 48 {
                             continue;
                         }
+                        let slot = u64::from_be_bytes(key[32..40].try_into().unwrap_or([0xFF; 8]));
+                        let seq = u64::from_be_bytes(key[40..48].try_into().unwrap_or([0xFF; 8]));
+                        if let Some((before_slot, before_seq)) = before_cursor {
+                            if slot > before_slot || (slot == before_slot && seq >= before_seq) {
+                                continue;
+                            }
+                        }
+                        rows.insert(key.to_vec(), value.to_vec());
                     }
-                    rows.insert(key.to_vec(), value.to_vec());
                 }
+            }
+        }
+        let archive_end = before_cursor.map(|(slot, _)| slot).unwrap_or(u64::MAX);
+        for (key, value) in self.archive_v2_category_rows("token_transfers", 0, archive_end)? {
+            if !key.starts_with(&prefix) || key.len() < 48 {
+                continue;
+            }
+            let slot = u64::from_be_bytes(key[32..40].try_into().unwrap());
+            let seq = u64::from_be_bytes(key[40..48].try_into().unwrap());
+            if before_cursor.is_some_and(|(before_slot, before_seq)| {
+                slot > before_slot || (slot == before_slot && seq >= before_seq)
+            }) {
+                continue;
+            }
+            match rows.insert(key, value.clone()) {
+                Some(existing) if existing != value => {
+                    return Err("Conflicting Archive V2 token transfer row".to_string())
+                }
+                _ => {}
             }
         }
 
@@ -543,19 +564,27 @@ impl StateStore {
                 Ok(Some(slot))
             }
             Ok(_) => {
-                if let Some(ref cold) = self.cold_db {
-                    if let Some(cold_cf) = cold.cf_handle(COLD_CF_TX_TO_SLOT) {
-                        return match cold.get_cf(&cold_cf, sig.0) {
-                            Ok(Some(data)) if data.len() == 8 => {
-                                let slot = u64::from_be_bytes(data.as_slice().try_into().unwrap());
-                                Ok(Some(slot))
+                if self.legacy_cold_history_reads_enabled() {
+                    if let Some(ref cold) = self.cold_db {
+                        if let Some(cold_cf) = cold.cf_handle(COLD_CF_TX_TO_SLOT) {
+                            match cold.get_cf(&cold_cf, sig.0) {
+                                Ok(Some(data)) if data.len() == 8 => {
+                                    let slot =
+                                        u64::from_be_bytes(data.as_slice().try_into().unwrap());
+                                    return Ok(Some(slot));
+                                }
+                                Ok(_) => {}
+                                Err(e) => {
+                                    return Err(format!(
+                                        "Cold database error looking up tx slot: {}",
+                                        e
+                                    ));
+                                }
                             }
-                            Ok(_) => Ok(None),
-                            Err(e) => Err(format!("Cold database error looking up tx slot: {}", e)),
-                        };
+                        }
                     }
                 }
-                Ok(None)
+                self.archive_v2_transaction_slot(sig)
             }
             Err(e) => Err(format!("Database error looking up tx slot: {}", e)),
         }
@@ -797,10 +826,24 @@ impl StateStore {
     /// hot and cold account indexes because old rows may have been migrated out
     /// of hot RocksDB.
     pub fn count_account_txs(&self, pubkey: &Pubkey) -> Result<u64, String> {
-        if let Some(ref cold) = self.cold_db {
+        if self.cold_db.is_some() || self.has_archive_v2_reader() {
             let mut keys = std::collections::BTreeSet::new();
             Self::collect_account_tx_keys_in_db(&self.db, CF_ACCOUNT_TXS, pubkey, &mut keys)?;
-            Self::collect_account_tx_keys_in_db(cold, COLD_CF_ACCOUNT_TXS, pubkey, &mut keys)?;
+            if self.legacy_cold_history_reads_enabled() {
+                if let Some(cold) = self.cold_db.as_ref() {
+                    Self::collect_account_tx_keys_in_db(
+                        cold,
+                        COLD_CF_ACCOUNT_TXS,
+                        pubkey,
+                        &mut keys,
+                    )?;
+                }
+            }
+            for (key, _) in self.archive_v2_category_rows("account_txs", 0, u64::MAX)? {
+                if key.starts_with(&pubkey.0) && key.len() >= 76 {
+                    keys.insert(key);
+                }
+            }
             return Ok(keys.len() as u64);
         }
 
@@ -867,14 +910,31 @@ impl StateStore {
             limit,
             before_cursor,
         )?;
-        if let Some(ref cold) = self.cold_db {
-            rows.extend(Self::scan_account_tx_signatures_in_db(
-                cold,
-                COLD_CF_ACCOUNT_TXS,
-                pubkey,
-                limit,
-                before_cursor,
-            )?);
+        if self.legacy_cold_history_reads_enabled() {
+            if let Some(ref cold) = self.cold_db {
+                rows.extend(Self::scan_account_tx_signatures_in_db(
+                    cold,
+                    COLD_CF_ACCOUNT_TXS,
+                    pubkey,
+                    limit,
+                    before_cursor,
+                )?);
+            }
+        }
+        let archive_end = before_cursor.map(|(slot, _)| slot).unwrap_or(u64::MAX);
+        for (key, _) in self.archive_v2_category_rows("account_txs", 0, archive_end)? {
+            if !key.starts_with(&pubkey.0) {
+                continue;
+            }
+            let Some(row) = parse_account_tx_index_key(&key)? else {
+                continue;
+            };
+            if before_cursor
+                .is_some_and(|(slot, seq)| row.slot > slot || (row.slot == slot && row.seq >= seq))
+            {
+                continue;
+            }
+            rows.push(row);
         }
 
         rows.sort_by(|a, b| {
@@ -1001,6 +1061,37 @@ impl StateStore {
             }
         }
 
+        let archive_end = before_cursor.map(|(slot, _)| slot).unwrap_or(u64::MAX);
+        for (key, value) in self.archive_v2_category_rows("tx_by_slot", 0, archive_end)? {
+            if key.len() != 16 || value.len() != 32 {
+                return Err("Corrupt Archive V2 tx-by-slot row".to_string());
+            }
+            let slot = u64::from_be_bytes(key[..8].try_into().unwrap());
+            let seq = u64::from_be_bytes(key[8..16].try_into().unwrap());
+            if before_cursor.is_some_and(|(before_slot, before_seq)| {
+                slot > before_slot || (slot == before_slot && seq >= before_seq)
+            }) {
+                continue;
+            }
+            let hash = Hash(value.as_slice().try_into().unwrap());
+            if user_only
+                && self
+                    .get_transaction(&hash)?
+                    .is_some_and(|transaction| transaction.is_consensus())
+            {
+                continue;
+            }
+            results.push((hash, slot, seq));
+        }
+        results.sort_by(|left, right| {
+            right
+                .1
+                .cmp(&left.1)
+                .then_with(|| right.2.cmp(&left.2))
+                .then_with(|| right.0.cmp(&left.0))
+        });
+        results.dedup();
+        results.truncate(limit);
         Ok(results)
     }
 
@@ -1070,6 +1161,29 @@ impl StateStore {
             }
         }
 
+        let archive_end = before_cursor.map(|(slot, _)| slot).unwrap_or(u64::MAX);
+        for (key, _) in self.archive_v2_category_rows("shielded_txs", 0, archive_end)? {
+            if key.len() != 48 {
+                return Err("Corrupt Archive V2 shielded transaction row".to_string());
+            }
+            let slot = u64::from_be_bytes(key[..8].try_into().unwrap());
+            let seq = u64::from_be_bytes(key[8..16].try_into().unwrap());
+            if before_cursor.is_some_and(|(before_slot, before_seq)| {
+                slot > before_slot || (slot == before_slot && seq >= before_seq)
+            }) {
+                continue;
+            }
+            results.push((Hash(key[16..48].try_into().unwrap()), slot, seq));
+        }
+        results.sort_by(|left, right| {
+            right
+                .1
+                .cmp(&left.1)
+                .then_with(|| right.2.cmp(&left.2))
+                .then_with(|| right.0.cmp(&left.0))
+        });
+        results.dedup();
+        results.truncate(limit);
         Ok(results)
     }
 

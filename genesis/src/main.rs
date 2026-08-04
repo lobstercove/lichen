@@ -700,6 +700,7 @@ fn main() {
     let prepare_wallet = args.iter().any(|arg| arg == "--prepare-wallet");
     let config_path = flag_value(&args, "--config").map(PathBuf::from);
     let genesis_prices_file = flag_value(&args, "--genesis-prices-file").map(PathBuf::from);
+    let local_slot_duration_ms = flag_value(&args, "--local-slot-duration-ms");
 
     let network_str = match network {
         Some(n @ ("mainnet" | "testnet")) => n,
@@ -730,6 +731,24 @@ fn main() {
             _ => GenesisConfig::default_testnet(),
         }
     };
+    if let Some(raw) = local_slot_duration_ms {
+        if std::env::var("LICHEN_LOCAL_DEV").ok().as_deref() != Some("1") {
+            error!("--local-slot-duration-ms is restricted to LICHEN_LOCAL_DEV=1");
+            std::process::exit(1);
+        }
+        let slot_duration_ms = match raw.parse::<u64>() {
+            Ok(value @ 1..=400) => value,
+            _ => {
+                error!("--local-slot-duration-ms must be an integer in 1..=400");
+                std::process::exit(1);
+            }
+        };
+        genesis_config.consensus.slot_duration_ms = slot_duration_ms;
+        if let Err(error) = genesis_config.validate() {
+            error!("Invalid local genesis slot-duration override: {error}");
+            std::process::exit(1);
+        }
+    }
 
     if prepare_wallet {
         if let Err(err) = prepare_wallet_artifacts(&args, &genesis_config) {
