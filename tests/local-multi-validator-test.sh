@@ -1298,6 +1298,20 @@ print(value)
 ' 2>/dev/null
 }
 
+archive_v2_rpc_block_hash_with_retry() {
+    local rpc=$1 slot=$2 attempts=${3:-10}
+    local value
+    for attempt in $(seq 1 "$attempts"); do
+        value="$(archive_v2_rpc_block_hash "$rpc" "$slot" 2>/dev/null || true)"
+        if [[ "$value" =~ ^[0-9a-fA-F]{64}$ ]]; then
+            printf '%s\n' "$value"
+            return 0
+        fi
+        (( attempt < attempts )) && sleep 1
+    done
+    return 1
+}
+
 archive_v2_rpc_error_message() {
     local rpc=$1
     local slot=$2
@@ -1383,11 +1397,13 @@ verify_archive_v2_runtime_role_matrix() {
         tail -100 /tmp/lichen-testnet/v4-archive-v2-corrupt-segment.log
         fail "V4 did not restart for the segment-corruption drill"
     }
-    if archive_v2_rpc_block_hash "$(rpc_port 4)" 0 >/dev/null; then
-        fail "Full-archive V4 returned deep history from a corrupt segment"
-    fi
+    response="$(archive_v2_rpc_block_hash "$(rpc_port 4)" 0)" \
+        || fail "Full-archive V4 did not preserve canonical legacy fallback while its Archive V2 segment was corrupt"
+    [[ "$response" == "$genesis_hash" ]] \
+        || fail "Full-archive V4 legacy fallback returned the wrong genesis hash while its Archive V2 segment was corrupt"
     find "$v4_root/quarantine" -type f -print -quit | grep -q . \
         || fail "Full-archive V4 did not quarantine its corrupt segment"
+    ok "Corrupt full-archive segment was quarantined while the pre-retirement legacy source served matching canonical history"
     verify_chain_producing "while one full-archive segment is corrupt" "$V1_RPC" 10
 
     stop_validator_pid "${VALIDATOR_PIDS[4]:-}"
@@ -1739,7 +1755,7 @@ if [[ "$RESUME_AFTER_PUBLIC_PARITY" == "1" ]]; then
     ARCHIVE_V2_GENESIS_HASH="$(archive_v2_genesis_hash)" \
         || fail "Public-parity resume could not capture canonical genesis hash"
     for validator_num in $(seq 1 "$MAX_VALIDATORS"); do
-        [[ "$(archive_v2_rpc_block_hash "$(rpc_port "$validator_num")" 0)" == "$ARCHIVE_V2_GENESIS_HASH" ]] \
+        [[ "$(archive_v2_rpc_block_hash_with_retry "$(rpc_port "$validator_num")" 0)" == "$ARCHIVE_V2_GENESIS_HASH" ]] \
             || fail "Public-parity resume found a V${validator_num} genesis mismatch"
     done
     verify_chain_producing "after public-parity exact-gate resume" "$V1_RPC" 10
