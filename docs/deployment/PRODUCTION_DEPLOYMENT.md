@@ -14,8 +14,8 @@ Use this document as the canonical workflow for:
 
 This runbook intentionally prefers the scripts that are verified in the current tree over older narrative docs.
 
-Current testnet release target for this runbook is signed `v0.5.231`; keep
-`v0.5.231` as the signed restart-safe anchor. The target must not be installed
+Current testnet release target for this runbook is signed `v0.5.232`; keep
+`v0.5.232` as the signed restart-safe anchor. The target must not be installed
 until its exact tag workflow and detached signature pass. Preserve signed
 `v0.5.225` as pre-change evidence, but do not restart it on the mature activated
 testnet because it contains the initial post-effects replay-boundary defect.

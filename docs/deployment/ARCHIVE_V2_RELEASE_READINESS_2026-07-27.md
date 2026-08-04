@@ -15,7 +15,7 @@ authorization.
 ## 2026-08-04 release-preparation update
 
 Release preparation resumed on an isolated branch at runtime version
-`0.5.231`. The candidate now includes the retroactive fixed-range builder and
+`0.5.232`. The candidate now includes the retroactive fixed-range builder and
 dual reader described below, dependency advisory updates, an exact-version
 lockfile set, and release/deployment packaging for the `lichen-archive-v2`
 operator binary. The short tag-workflow topology has explicit Archive V2

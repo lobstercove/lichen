@@ -5,6 +5,15 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.232] - 2026-08-04
+
+### Fixed
+- Aligns the Archive V2 corruption drill with the documented pre-retirement
+  dual-reader policy: corrupt V2 objects must be quarantined while an exact
+  canonical legacy fallback remains available.
+- Retries transient post-start genesis RPC reads during exact-gate resume while
+  still aborting on any persistent hash mismatch.
+
 ## [0.5.231] - 2026-08-04
 
 ### Fixed
