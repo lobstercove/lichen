@@ -8769,6 +8769,14 @@ enum RecentPostBlockRecoveryHistory {
     HotRetainedWindow { retention_slots: u64 },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RecentPostBlockRecoveryConfig {
+    activation_slot: u64,
+    min_validator_stake: u64,
+    window: u64,
+    history: RecentPostBlockRecoveryHistory,
+}
+
 async fn recover_tip_post_block_effects_if_needed(
     state: &StateStore,
     validator_set: &Arc<RwLock<ValidatorSet>>,
@@ -8810,22 +8818,19 @@ async fn recover_recent_stored_block_post_effects_if_needed(
     state: &StateStore,
     validator_set: &Arc<RwLock<ValidatorSet>>,
     stake_pool: &Arc<RwLock<StakePool>>,
-    activation_slot: u64,
-    min_validator_stake: u64,
-    window: u64,
-    history: RecentPostBlockRecoveryHistory,
+    config: RecentPostBlockRecoveryConfig,
     context: &str,
 ) -> Result<u64, String> {
     let tip = state.get_last_slot()?;
-    if tip <= 1 || window == 0 || tip <= activation_slot {
+    if tip <= 1 || config.window == 0 || tip <= config.activation_slot {
         return Ok(0);
     }
 
     let last_historical_slot = tip.saturating_sub(1);
     let mut first_slot = last_historical_slot
-        .saturating_sub(window.saturating_sub(1))
-        .max(activation_slot);
-    if let RecentPostBlockRecoveryHistory::HotRetainedWindow { retention_slots } = history {
+        .saturating_sub(config.window.saturating_sub(1))
+        .max(config.activation_slot);
+    if let RecentPostBlockRecoveryHistory::HotRetainedWindow { retention_slots } = config.history {
         first_slot = first_slot.max(tip.saturating_sub(retention_slots));
     }
     if first_slot > last_historical_slot {
@@ -8838,14 +8843,14 @@ async fn recover_recent_stored_block_post_effects_if_needed(
     let mut scanned = 0u64;
 
     for slot in first_slot..=last_historical_slot {
-        let block = match history {
+        let block = match config.history {
             RecentPostBlockRecoveryHistory::PublicHistory => state.get_block_by_slot(slot)?,
             RecentPostBlockRecoveryHistory::HotRetainedWindow { .. } => {
                 state.get_hot_block_by_slot(slot)?
             }
         };
         let Some(block) = block else {
-            let storage = match history {
+            let storage = match config.history {
                 RecentPostBlockRecoveryHistory::PublicHistory => "public-history",
                 RecentPostBlockRecoveryHistory::HotRetainedWindow { .. } => "hot",
             };
@@ -8860,8 +8865,8 @@ async fn recover_recent_stored_block_post_effects_if_needed(
             validator_set,
             stake_pool,
             &block,
-            activation_slot,
-            min_validator_stake,
+            config.activation_slot,
+            config.min_validator_stake,
             context,
         )
         .await?
@@ -14191,10 +14196,12 @@ fn maybe_run_recent_post_block_effects_repair_admin(args: &[String]) -> Option<i
             &state,
             &validator_set,
             &stake_pool,
-            activation_slot,
-            min_validator_stake,
-            historical_window,
-            RecentPostBlockRecoveryHistory::PublicHistory,
+            RecentPostBlockRecoveryConfig {
+                activation_slot,
+                min_validator_stake,
+                window: historical_window,
+                history: RecentPostBlockRecoveryHistory::PublicHistory,
+            },
             "Offline recent post-block repair",
         )
         .await?;
@@ -21301,11 +21308,13 @@ async fn run_validator() {
         &state,
         &validator_set,
         &stake_pool,
-        post_block_effects_activation_slot,
-        min_validator_stake,
-        RECENT_POST_BLOCK_EFFECTS_RECOVERY_WINDOW,
-        RecentPostBlockRecoveryHistory::HotRetainedWindow {
-            retention_slots: recent_hot_retention_slots,
+        RecentPostBlockRecoveryConfig {
+            activation_slot: post_block_effects_activation_slot,
+            min_validator_stake,
+            window: RECENT_POST_BLOCK_EFFECTS_RECOVERY_WINDOW,
+            history: RecentPostBlockRecoveryHistory::HotRetainedWindow {
+                retention_slots: recent_hot_retention_slots,
+            },
         },
         "Startup recent-window recovery",
     )
@@ -37569,10 +37578,12 @@ mod tests {
                 &state,
                 &validator_set,
                 &stake_pool,
-                8,
-                MIN_VALIDATOR_STAKE,
-                16,
-                RecentPostBlockRecoveryHistory::PublicHistory,
+                RecentPostBlockRecoveryConfig {
+                    activation_slot: 8,
+                    min_validator_stake: MIN_VALIDATOR_STAKE,
+                    window: 16,
+                    history: RecentPostBlockRecoveryHistory::PublicHistory,
+                },
                 "pre-activation regression",
             ))
             .expect("pre-activation window is a no-op");
@@ -37828,10 +37839,12 @@ mod tests {
                 &state,
                 &validator_set,
                 &stake_pool,
-                7,
-                MIN_VALIDATOR_STAKE,
-                16,
-                RecentPostBlockRecoveryHistory::PublicHistory,
+                RecentPostBlockRecoveryConfig {
+                    activation_slot: 7,
+                    min_validator_stake: MIN_VALIDATOR_STAKE,
+                    window: 16,
+                    history: RecentPostBlockRecoveryHistory::PublicHistory,
+                },
                 "test recent-window recovery",
             ))
             .expect("recent recovery");
@@ -37952,10 +37965,14 @@ mod tests {
                     &state,
                     &validator_set,
                     &stake_pool,
-                    1,
-                    MIN_VALIDATOR_STAKE,
-                    8,
-                    RecentPostBlockRecoveryHistory::HotRetainedWindow { retention_slots: 1 },
+                    RecentPostBlockRecoveryConfig {
+                        activation_slot: 1,
+                        min_validator_stake: MIN_VALIDATOR_STAKE,
+                        window: 8,
+                        history: RecentPostBlockRecoveryHistory::HotRetainedWindow {
+                            retention_slots: 1,
+                        },
+                    },
                     "migrated-prefix startup recovery",
                 ))
                 .expect("startup recovery accepts a migrated prefix"),
@@ -37967,10 +37984,12 @@ mod tests {
                     &state,
                     &validator_set,
                     &stake_pool,
-                    1,
-                    MIN_VALIDATOR_STAKE,
-                    8,
-                    RecentPostBlockRecoveryHistory::PublicHistory,
+                    RecentPostBlockRecoveryConfig {
+                        activation_slot: 1,
+                        min_validator_stake: MIN_VALIDATOR_STAKE,
+                        window: 8,
+                        history: RecentPostBlockRecoveryHistory::PublicHistory,
+                    },
                     "migrated-prefix offline recovery",
                 ))
                 .expect("offline recovery retains verified public-history access"),
@@ -38024,10 +38043,14 @@ mod tests {
                 &state,
                 &Arc::new(RwLock::new(ValidatorSet::new())),
                 &Arc::new(RwLock::new(StakePool::new())),
-                1,
-                MIN_VALIDATOR_STAKE,
-                8,
-                RecentPostBlockRecoveryHistory::HotRetainedWindow { retention_slots: 8 },
+                RecentPostBlockRecoveryConfig {
+                    activation_slot: 1,
+                    min_validator_stake: MIN_VALIDATOR_STAKE,
+                    window: 8,
+                    history: RecentPostBlockRecoveryHistory::HotRetainedWindow {
+                        retention_slots: 8,
+                    },
+                },
                 "internal-gap startup recovery",
             ))
             .expect_err("an internal retained-history gap must fail closed");
@@ -38145,11 +38168,13 @@ mod tests {
                     &state,
                     &validator_set,
                     &stake_pool,
-                    1,
-                    MIN_VALIDATOR_STAKE,
-                    16,
-                    RecentPostBlockRecoveryHistory::HotRetainedWindow {
-                        retention_slots: 16,
+                    RecentPostBlockRecoveryConfig {
+                        activation_slot: 1,
+                        min_validator_stake: MIN_VALIDATOR_STAKE,
+                        window: 16,
+                        history: RecentPostBlockRecoveryHistory::HotRetainedWindow {
+                            retention_slots: 16,
+                        },
                     },
                     "verified-cache outage startup recovery",
                 ))
