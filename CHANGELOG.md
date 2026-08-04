@@ -5,6 +5,35 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.235] - 2026-08-04
+
+### Fixed
+- Bounds startup's hot-only recent post-block recovery to the configured
+  hot-retention window, excluding only the older prefix already migrated to
+  cold storage while still failing closed on any missing retained block.
+- Keeps the explicit offline repair path on verified public history so
+  retroactive repairs can still cross the legacy hot/cold boundary.
+- Aligns Archive V2 role admission in the accelerated four-validator gate with
+  that gate's configured hot-retention window.
+- Anchors the deterministic Archive V2 runtime catalog to the validators'
+  actual stopped finalized range with bounded hot/catalog overlap, closing the
+  gap that could form while checkpoint parity was computed before admission.
+- Preserves the 50,000-slot public-network role minimum while allowing an
+  explicit local `--dev-mode` gate to exercise the identical hot/archive
+  admission boundary with accelerated retention.
+- Makes the role/restart matrix append newly finalized legacy history to its
+  immutable catalogs before each direct worker start, proving restart safety
+  without a supervisor race or a stale catalog waiver.
+- Pins the authenticated genesis hash for validator-announcement capability
+  checks so consensus-role denial or a verified-cache source outage cannot
+  reject validator peers or stall quorum through an unrelated deep read.
+- Keeps an established nonzero validator state out of the fresh-join genesis
+  wait when an admitted verified cache correctly fails a public slot-0 read
+  during source outage; fresh joiners still require canonical genesis sync.
+- Requires a sustained block-production burst within the bounded BFT recovery
+  window between sequential Archive V2 repair and source-outage restarts, so
+  each recovery reaches live consensus before the next deliberate interruption.
+
 ## [0.5.234] - 2026-08-04
 
 ### Fixed
