@@ -14,14 +14,13 @@ Use this document as the canonical workflow for:
 
 This runbook intentionally prefers the scripts that are verified in the current tree over older narrative docs.
 
-The next testnet candidate target for this runbook is `v0.5.230`; the current
-signed release and restart-safe anchor remains `v0.5.229` until the candidate's
-exact tag workflow and detached signature pass. Preserve signed `v0.5.225` as
-pre-change evidence, but do not restart it on the mature activated testnet
-because it contains the initial post-effects replay-boundary defect. Signed
-`v0.5.228` remains the immediate in-place rollback artifact for the current
-signed fleet; `v0.5.229` becomes the in-place rollback for v0.5.230 only after
-the candidate is signed and deployed without legacy retirement.
+Current testnet release target for this runbook is signed `v0.5.230`; keep
+`v0.5.230` as the signed restart-safe anchor. The target must not be installed
+until its exact tag workflow and detached signature pass. Preserve signed
+`v0.5.225` as pre-change evidence, but do not restart it on the mature activated
+testnet because it contains the initial post-effects replay-boundary defect.
+Signed `v0.5.229` is the immediate in-place rollback while legacy history stays
+authoritative; it cannot be used after any required legacy rows are retired.
 
 Mainnet launch must use the gated checklist in [MAINNET_LAUNCH_RUNBOOK.md](MAINNET_LAUNCH_RUNBOOK.md). That runbook is the owner-facing package for launching the 4-validator mainnet first, then enabling custody only after post-genesis verification and route-specific dust tests pass.
 
