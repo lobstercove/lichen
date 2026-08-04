@@ -833,7 +833,10 @@ start_archive_v2_validator() {
         "LICHEN_DISABLE_SUPERVISOR=1"
         "LICHEN_LOCAL_ARCHIVE_V2_ROLE=${role}"
         "LICHEN_LOCAL_ARCHIVE_V2_ROOT=${root}"
-        "LICHEN_LOCAL_ARCHIVE_V2_RECENT_HISTORY_SLOTS=50000"
+        # Role admission must prove the same hot suffix that this gate's cold
+        # migrator is configured to retain. The hosted accelerated gate uses
+        # 20 slots; production-like local runs keep the larger default above.
+        "LICHEN_LOCAL_ARCHIVE_V2_RECENT_HISTORY_SLOTS=${LICHEN_COLD_RETENTION_SLOTS}"
     )
     if [[ "$role" == "verified-cache" ]]; then
         role_env+=(

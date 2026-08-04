@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cold storage while still failing closed on any missing retained block.
 - Keeps the explicit offline repair path on verified public history so
   retroactive repairs can still cross the legacy hot/cold boundary.
+- Aligns Archive V2 role admission in the accelerated four-validator gate with
+  that gate's configured hot-retention window.
 
 ## [0.5.234] - 2026-08-04
 
