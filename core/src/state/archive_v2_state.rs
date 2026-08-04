@@ -814,6 +814,15 @@ mod tests {
             state.get_block_by_slot(0).is_err(),
             "catalog-covered deep history must not fall back to stale hot bytes while the verified source is unavailable"
         );
+        assert_eq!(
+            state
+                .get_hot_block_by_slot(0)
+                .expect("read consensus-critical hot history")
+                .expect("hot block exists")
+                .hash(),
+            historical.hash(),
+            "consensus-critical recovery must remain independent of an unavailable Archive V2 source"
+        );
         let transaction = Transaction::new(Message::new(
             vec![Instruction {
                 program_id: Pubkey([0x41; 32]),

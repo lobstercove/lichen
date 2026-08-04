@@ -5,6 +5,17 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.234] - 2026-08-04
+
+### Fixed
+- Keeps consensus-critical recent post-block recovery on the physically
+  verified hot window after Archive V2 admission, so a verified-cache source
+  outage cannot prevent validator startup merely because the Archive V2
+  catalog also covers those slots.
+- Preserves fail-closed public deep-history reads during source loss; the new
+  hot-only lookup is limited to internal recent-window recovery and still
+  aborts if the required canonical hot block is absent.
+
 ## [0.5.233] - 2026-08-04
 
 ### Security

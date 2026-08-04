@@ -8352,9 +8352,9 @@ fn ensure_tip_post_state_commitment_anchor(state: &StateStore) -> Result<(), Str
         return Ok(());
     }
 
-    let Some(block) = state.get_block_by_slot(tip)? else {
+    let Some(block) = state.get_hot_block_by_slot(tip)? else {
         return Err(format!(
-            "stored tip slot {} is missing its canonical block",
+            "stored tip slot {} is missing its canonical hot block",
             tip
         ));
     };
@@ -8772,9 +8772,9 @@ async fn recover_tip_post_block_effects_if_needed(
         return Ok(());
     }
 
-    let Some(block) = state.get_block_by_slot(tip)? else {
+    let Some(block) = state.get_hot_block_by_slot(tip)? else {
         return Err(format!(
-            "stored tip slot {} is missing its canonical block",
+            "stored tip slot {} is missing its canonical hot block",
             tip
         ));
     };
@@ -8824,9 +8824,9 @@ async fn recover_recent_stored_block_post_effects_if_needed(
     let mut scanned = 0u64;
 
     for slot in first_slot..=last_historical_slot {
-        let block = state.get_block_by_slot(slot)?.ok_or_else(|| {
+        let block = state.get_hot_block_by_slot(slot)?.ok_or_else(|| {
             format!(
-                "{}: activated canonical slot {} is missing its stored block while recovering through tip {}",
+                "{}: activated canonical slot {} is missing its hot stored block while recovering through tip {}",
                 context, slot, tip
             )
         })?;
@@ -8955,12 +8955,12 @@ async fn ensure_recent_stored_post_block_effects_before_bft(
     let mut repaired = 0u64;
 
     for slot in first_slot..=tip {
-        let Some(block) = state.get_block_by_slot(slot)? else {
+        let Some(block) = state.get_hot_block_by_slot(slot)? else {
             if initial_scan {
                 continue;
             }
             return Err(format!(
-                "{}: canonical slot {} is missing its stored block while verifying post-block effects through tip {}",
+                "{}: canonical slot {} is missing its hot stored block while verifying post-block effects through tip {}",
                 context, slot, tip
             ));
         };
@@ -37835,6 +37835,162 @@ mod tests {
         assert_ne!(repaired_root, stale_tip_root);
         assert_eq!(repaired_anchor.block_hash, tip_block.hash());
         assert_eq!(repaired_anchor.state_root, repaired_root);
+    }
+
+    #[test]
+    fn verified_cache_outage_keeps_consensus_recovery_on_the_hot_window() {
+        use lichen_core::archive_v2::{
+            ArchiveV2CodecConfig, ArchiveV2Identity, ArchiveV2SegmentCodec,
+            ArchiveV2SegmentContents,
+        };
+
+        let state_root = tempfile::tempdir().expect("create state root");
+        let archive_root = tempfile::tempdir().expect("create archive root");
+        let cache_root = tempfile::tempdir().expect("create cache root");
+        let unavailable_source = tempfile::tempdir().expect("create unavailable source root");
+        let state = StateStore::open(state_root.path()).expect("open state");
+        let producer = Keypair::generate().pubkey();
+        let genesis = Block::genesis(Hash::hash(b"archive-v2-hot-recovery-state"), 1, vec![]);
+        let parent = Block::new_with_timestamp(
+            1,
+            genesis.hash(),
+            Hash::hash(b"archive-v2-hot-recovery-parent"),
+            producer.0,
+            vec![],
+            2,
+        );
+        let tip = Block::new_with_timestamp(
+            2,
+            parent.hash(),
+            Hash::hash(b"archive-v2-hot-recovery-tip"),
+            producer.0,
+            vec![],
+            3,
+        );
+        state
+            .put_block_atomic(&genesis, Some(0), Some(0))
+            .expect("store genesis");
+        state
+            .put_block_atomic(&parent, Some(1), Some(1))
+            .expect("store parent");
+        state
+            .put_block_atomic(&tip, Some(2), Some(2))
+            .expect("store tip");
+        let pool = StakePool::new();
+        state.put_stake_pool(&pool).expect("store stake pool");
+        for block in [&parent, &tip] {
+            state
+                .set_stake_pool_production_hash(block.header.slot, &block.hash())
+                .expect("mark stake-pool production");
+            state
+                .set_reward_distribution_hash(block.header.slot, &block.hash())
+                .expect("mark reward distribution");
+            state
+                .set_fee_distribution_hash(block.header.slot, &block.hash())
+                .expect("mark fee distribution");
+            state
+                .set_post_block_effects_hash(block.header.slot, &block.hash())
+                .expect("mark comprehensive post effects");
+        }
+
+        let identity = ArchiveV2Identity {
+            network_id: "archive-v2-hot-recovery-testnet".to_string(),
+            genesis_hash: genesis.hash(),
+        };
+        let (_, manifest) = ArchiveV2SegmentCodec::encode(
+            identity.clone(),
+            None,
+            Hash::default(),
+            &ArchiveV2SegmentContents::from_blocks(vec![genesis, parent.clone(), tip.clone()]),
+            &ArchiveV2CodecConfig::default(),
+        )
+        .expect("encode catalog-covered history");
+        let mut catalog = ArchiveV2Catalog::empty(identity.clone()).expect("create catalog");
+        catalog.append(manifest).expect("append manifest");
+        let catalog_path = archive_root.path().join("catalog.av2");
+        catalog.store_atomic(&catalog_path).expect("store catalog");
+        state.attach_archive_v2_reader(
+            ArchiveV2Reader::open(
+                identity,
+                &catalog_path,
+                ArchiveV2ReaderConfig {
+                    role: ArchiveV2Role::VerifiedCache,
+                    root: archive_root.path().to_path_buf(),
+                    cache_root: Some(cache_root.path().to_path_buf()),
+                    cache_quota_bytes: 1024 * 1024,
+                    max_decoded_segments: 1,
+                    allow_remote_fetch: true,
+                    sources: vec![Arc::new(ArchiveV2DirectorySource::new(
+                        "unavailable-source",
+                        unavailable_source.path(),
+                        true,
+                    ))],
+                },
+            )
+            .expect("attach verified-cache reader"),
+        );
+        state
+            .mark_archive_v2_admitted_after_fresh_sync()
+            .expect("mark fresh-sync admission");
+
+        assert!(
+            state.get_block_by_slot(1).is_err(),
+            "public deep-history reads must fail closed while the source is unavailable"
+        );
+        let status_before = state.archive_v2_status().expect("reader status");
+        let stake_pool = Arc::new(RwLock::new(pool));
+        let validator_set = Arc::new(RwLock::new(ValidatorSet::new()));
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+
+        assert_eq!(
+            runtime
+                .block_on(recover_recent_stored_block_post_effects_if_needed(
+                    &state,
+                    &validator_set,
+                    &stake_pool,
+                    1,
+                    MIN_VALIDATOR_STAKE,
+                    16,
+                    "verified-cache outage startup recovery",
+                ))
+                .expect("startup recovery must use hot history"),
+            0
+        );
+        runtime
+            .block_on(recover_tip_post_block_effects_if_needed(
+                &state,
+                &validator_set,
+                &stake_pool,
+                1,
+                MIN_VALIDATOR_STAKE,
+                400,
+            ))
+            .expect("tip recovery must use hot history");
+        let mut verified_tip = 0;
+        assert_eq!(
+            runtime
+                .block_on(ensure_recent_stored_post_block_effects_before_bft(
+                    &state,
+                    &validator_set,
+                    &stake_pool,
+                    PostBlockEffectsRuntime {
+                        activation_slot: 1,
+                        min_validator_stake: MIN_VALIDATOR_STAKE,
+                        slot_duration_ms: 400,
+                    },
+                    &mut verified_tip,
+                    16,
+                    "verified-cache outage BFT gate",
+                ))
+                .expect("BFT gate must use hot history"),
+            0
+        );
+        assert_eq!(verified_tip, 2);
+        let status_after = state
+            .archive_v2_status()
+            .expect("reader status after recovery");
+        assert_eq!(status_after.remote_fetches, status_before.remote_fetches);
+        assert_eq!(status_after.source_failures, status_before.source_failures);
     }
 
     #[test]

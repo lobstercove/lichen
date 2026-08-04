@@ -64,7 +64,7 @@ is_consensus_critical_release() {
   fi
 
   case "$RELEASE_TAG" in
-    v0.5.188|v0.5.223|v0.5.224|v0.5.225|v0.5.226|v0.5.227|v0.5.228|v0.5.229|v0.5.230|v0.5.231|v0.5.232|v0.5.233) return 0 ;;
+    v0.5.188|v0.5.223|v0.5.224|v0.5.225|v0.5.226|v0.5.227|v0.5.228|v0.5.229|v0.5.230|v0.5.231|v0.5.232|v0.5.233|v0.5.234) return 0 ;;
   esac
 
   if ! command -v git >/dev/null 2>&1 ||
