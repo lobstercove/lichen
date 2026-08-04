@@ -761,7 +761,60 @@ impl StateStore {
         }
     }
 
-    /// Get block by slot
+    /// Get a canonical block only when both its slot mapping and body are
+    /// physically present in hot state.
+    ///
+    /// Consensus-critical recent-window recovery uses this path after Archive
+    /// V2 role admission has proved the configured hot window complete. It
+    /// must never become dependent on legacy cold storage, a verified cache,
+    /// or a remote Archive V2 source merely because the catalog also covers
+    /// the requested slot.
+    pub fn get_hot_block_by_slot(&self, slot: u64) -> Result<Option<Block>, String> {
+        let slot_cf = self
+            .db
+            .cf_handle(CF_SLOTS)
+            .ok_or_else(|| "Slots CF not found".to_string())?;
+        let blocks_cf = self
+            .db
+            .cf_handle(CF_BLOCKS)
+            .ok_or_else(|| "Blocks CF not found".to_string())?;
+
+        let Some(hash_bytes) = self
+            .db
+            .get_cf(&slot_cf, slot.to_be_bytes())
+            .map_err(|error| format!("hot slot {slot} lookup failed: {error}"))?
+        else {
+            return Ok(None);
+        };
+        if hash_bytes.len() != 32 {
+            return Err(format!(
+                "Invalid canonical slot hash length at slot {slot}: {}",
+                hash_bytes.len()
+            ));
+        }
+        let Some(data) = self
+            .db
+            .get_cf(&blocks_cf, &hash_bytes)
+            .map_err(|error| format!("hot block at slot {slot} lookup failed: {error}"))?
+        else {
+            return Ok(None);
+        };
+        let block: Block = if data.first() == Some(&0xBC) {
+            deserialize_legacy_bincode(&data[1..], "hot block")
+                .map_err(|error| format!("Failed to deserialize hot block (bincode): {error}"))?
+        } else {
+            serde_json::from_slice(&data)
+                .map_err(|error| format!("Failed to deserialize hot block (json): {error}"))?
+        };
+        if block.header.slot != slot || block.hash().0.as_slice() != hash_bytes.as_slice() {
+            return Err(format!(
+                "canonical hot block {slot} conflicts with its slot index"
+            ));
+        }
+        Ok(Some(block))
+    }
+
+    /// Get block by slot for public historical reads.
     pub fn get_block_by_slot(&self, slot: u64) -> Result<Option<Block>, String> {
         // A freshly synchronized Archive V2 node can retain bootstrap-only hot
         // history until an independently authorized retirement removes it.
