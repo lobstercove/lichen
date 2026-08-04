@@ -64,6 +64,7 @@ CHECKPOINT_INTERVAL_SLOTS=1000
 ARCHIVE_V2_RETENTION_PROOF_SLOT=$((LICHEN_COLD_RETENTION_SLOTS + 2500))
 ARCHIVE_V2_TEST_CATALOG_HEADROOM_SLOTS="${LICHEN_ARCHIVE_V2_TEST_CATALOG_HEADROOM_SLOTS:-10000}"
 ARCHIVE_V2_FRESH_JOIN_CATALOG_HEADROOM_SLOTS="${LICHEN_ARCHIVE_V2_FRESH_JOIN_CATALOG_HEADROOM_SLOTS:-40000}"
+ARCHIVE_V2_FRESH_JOIN_RECENT_HISTORY_SLOTS="${LICHEN_ARCHIVE_V2_FRESH_JOIN_RECENT_HISTORY_SLOTS:-50000}"
 ARCHIVE_V2_RETENTION_TIMEOUT_SECS="${LICHEN_ARCHIVE_V2_RETENTION_TIMEOUT_SECS:-21600}"
 ARCHIVE_V2_FRESH_ROLE_TIMEOUT_SECS="${LICHEN_ARCHIVE_V2_FRESH_ROLE_TIMEOUT_SECS:-1800}"
 ARCHIVE_V2_DEEP_HISTORY_RPC_TIMEOUT_SECS="${LICHEN_ARCHIVE_V2_DEEP_HISTORY_RPC_TIMEOUT_SECS:-300}"
@@ -75,6 +76,10 @@ fi
 if (( ARCHIVE_V2_FRESH_JOIN_CATALOG_HEADROOM_SLOTS <= 0
     || ARCHIVE_V2_FRESH_JOIN_CATALOG_HEADROOM_SLOTS >= LICHEN_COLD_RETENTION_SLOTS )); then
     echo "LICHEN_ARCHIVE_V2_FRESH_JOIN_CATALOG_HEADROOM_SLOTS must be within 1..$((LICHEN_COLD_RETENTION_SLOTS - 1))" >&2
+    exit 2
+fi
+if (( ARCHIVE_V2_FRESH_JOIN_RECENT_HISTORY_SLOTS < 50000 )); then
+    echo "LICHEN_ARCHIVE_V2_FRESH_JOIN_RECENT_HISTORY_SLOTS must be at least the 50000-slot public-network minimum" >&2
     exit 2
 fi
 if [[ ! "$ARCHIVE_V2_RETENTION_TIMEOUT_SECS" =~ ^[1-9][0-9]*$ ]]; then
@@ -951,7 +956,7 @@ start_archive_v2_validator() {
     local validator_num=$1
     local output_log=$2
     local detached="${3:-0}"
-    local role root role_override root_override cache_override source_override
+    local role root role_override root_override cache_override source_override recent_override recent_history_slots
     local source_url_override source_ca_override source_token_override source_url
     local -a role_env
     role_override="LICHEN_LOCAL_ARCHIVE_V2_ROLE_V${validator_num}"
@@ -961,8 +966,10 @@ start_archive_v2_validator() {
     source_url_override="LICHEN_LOCAL_ARCHIVE_V2_SOURCE_URLS_V${validator_num}"
     source_ca_override="LICHEN_LOCAL_ARCHIVE_V2_SOURCE_CA_CERT_V${validator_num}"
     source_token_override="LICHEN_LOCAL_ARCHIVE_V2_SOURCE_BEARER_TOKEN_V${validator_num}"
+    recent_override="LICHEN_LOCAL_ARCHIVE_V2_RECENT_HISTORY_SLOTS_V${validator_num}"
     role="${!role_override:-$(archive_v2_runtime_role "$validator_num")}"
     root="${!root_override:-/tmp/lichen-testnet/archive-v2-v${validator_num}}"
+    recent_history_slots="${!recent_override:-$LICHEN_COLD_RETENTION_SLOTS}"
     refresh_archive_v2_runtime_catalog "$validator_num" "$root"
     role_env=(
         "LICHEN_DISABLE_SUPERVISOR=1"
@@ -975,7 +982,7 @@ start_archive_v2_validator() {
         # Role admission must prove the same hot suffix that this gate's cold
         # migrator is configured to retain. The hosted accelerated gate uses
         # 20 slots; production-like local runs keep the larger default above.
-        "LICHEN_LOCAL_ARCHIVE_V2_RECENT_HISTORY_SLOTS=${LICHEN_COLD_RETENTION_SLOTS}"
+        "LICHEN_LOCAL_ARCHIVE_V2_RECENT_HISTORY_SLOTS=${recent_history_slots}"
     )
     if [[ "$role" == "verified-cache" ]]; then
         role_env+=(
@@ -1196,6 +1203,11 @@ prepare_archive_v2_fresh_join_roots() {
 
     LICHEN_LOCAL_ARCHIVE_V2_ROLE_V3="full-archive"
     LICHEN_LOCAL_ARCHIVE_V2_ROOT_V3="$full_root"
+    # A fresh role syncs against a moving network tip. Keep its admission
+    # suffix at the real public-network minimum instead of reusing the gate's
+    # synthetic 20-slot cold-migration window; the immutable catalog remains
+    # responsible for every older slot and admission still fails closed.
+    LICHEN_LOCAL_ARCHIVE_V2_RECENT_HISTORY_SLOTS_V3="$ARCHIVE_V2_FRESH_JOIN_RECENT_HISTORY_SLOTS"
     LICHEN_LOCAL_ARCHIVE_V2_CACHE_ROOT_V3="/tmp/lichen-testnet/archive-v2-fresh-cache-v3"
     LICHEN_LOCAL_ARCHIVE_V2_SOURCE_DIRS_V3="$replica_root"
     LICHEN_LOCAL_ARCHIVE_V2_SOURCE_URLS_V3="https://127.0.0.1:${ARCHIVE_V2_HTTPS_SOURCE_PORT}/"
@@ -1393,7 +1405,8 @@ verify_fresh_archive_v2_role_rejoins() {
         LICHEN_LOCAL_ARCHIVE_V2_SOURCE_DIRS_V3 \
         LICHEN_LOCAL_ARCHIVE_V2_SOURCE_URLS_V3 \
         LICHEN_LOCAL_ARCHIVE_V2_SOURCE_CA_CERT_V3 \
-        LICHEN_LOCAL_ARCHIVE_V2_SOURCE_BEARER_TOKEN_V3
+        LICHEN_LOCAL_ARCHIVE_V2_SOURCE_BEARER_TOKEN_V3 \
+        LICHEN_LOCAL_ARCHIVE_V2_RECENT_HISTORY_SLOTS_V3
     role_log="/tmp/lichen-testnet/v3-restored-full-state.log"
     LICHEN_DISABLE_SUPERVISOR=1 "$REPO_ROOT/run-validator.sh" testnet "$validator_num" \
         > "$role_log" 2>&1 &

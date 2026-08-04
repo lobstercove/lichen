@@ -18587,8 +18587,9 @@ fn configure_archive_mode(
     args: &[String],
     public_archive: bool,
     cold_store_attached: bool,
+    archive_v2_role_configured: bool,
 ) -> bool {
-    if !public_archive && !has_flag(args, "--archive-mode") {
+    if !public_archive && !has_flag(args, "--archive-mode") && !archive_v2_role_configured {
         return false;
     }
 
@@ -20124,11 +20125,21 @@ async fn run_validator() {
         }
     }
 
-    if legacy_archive_mode_enabled {
-        configure_archive_mode(&state, &args, public_archive, cold_store_path.is_some());
-    } else {
+    // Account snapshots are canonical recent public-history indexes, not a
+    // full-archive-only side effect. Keep generating them for verified-cache
+    // and consensus roles while independently disabling their legacy cold
+    // migration below. Otherwise nodes with identical blocks/state roots
+    // diverge solely according to their Archive V2 role.
+    configure_archive_mode(
+        &state,
+        &args,
+        public_archive,
+        cold_store_path.is_some(),
+        archive_v2_config.is_some(),
+    );
+    if !legacy_archive_mode_enabled {
         info!(
-            "Archive V2 {} role disabled legacy archive migration; any existing cold DB is bootstrap-only and becomes hidden after admission",
+            "Archive V2 {} role disabled legacy archive migration while retaining canonical recent account snapshots; any existing cold DB is bootstrap-only and becomes hidden after admission",
             archive_v2_config
                 .as_ref()
                 .expect("role config exists")
@@ -42082,7 +42093,7 @@ mod tests {
         let state = StateStore::open(temp.path()).unwrap();
         let args = vec!["lichen-validator".to_string()];
 
-        assert!(!configure_archive_mode(&state, &args, false, false));
+        assert!(!configure_archive_mode(&state, &args, false, false, false));
         assert!(!state.is_archive_mode());
     }
 
@@ -42092,7 +42103,7 @@ mod tests {
         let state = StateStore::open(temp.path()).unwrap();
         let args = vec!["lichen-validator".to_string(), "--archive-mode".to_string()];
 
-        assert!(configure_archive_mode(&state, &args, false, true));
+        assert!(configure_archive_mode(&state, &args, false, true, false));
         assert!(state.is_archive_mode());
     }
 
@@ -42113,7 +42124,17 @@ mod tests {
             );
         }
 
-        assert!(configure_archive_mode(&state, &args, true, true));
+        assert!(configure_archive_mode(&state, &args, true, true, false));
+        assert!(state.is_archive_mode());
+    }
+
+    #[test]
+    fn archive_v2_roles_retain_canonical_recent_account_snapshots() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = StateStore::open(dir.path()).unwrap();
+        let args = vec!["lichen-validator".to_string(), "--dev-mode".to_string()];
+
+        assert!(configure_archive_mode(&state, &args, false, false, true));
         assert!(state.is_archive_mode());
     }
 

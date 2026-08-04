@@ -5,6 +5,18 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.236] - 2026-08-05
+
+### Fixed
+- Gives fresh Archive V2 role joins the real 50,000-slot public-network recent
+  history window instead of reusing the accelerated gate's synthetic 20-slot
+  cold-migration boundary, so immutable catalogs remain valid while the live
+  head advances during state sync.
+- Keeps canonical recent account snapshots enabled for full-archive,
+  verified-cache, and consensus roles while independently disabling legacy
+  cold migration where required, preserving post-journey public-history
+  parity without making remote archive availability consensus-critical.
+
 ## [0.5.235] - 2026-08-04
 
 ### Fixed
