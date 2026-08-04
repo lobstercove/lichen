@@ -14,7 +14,7 @@ Use this document as the canonical workflow for:
 
 This runbook intentionally prefers the scripts that are verified in the current tree over older narrative docs.
 
-Current testnet release candidate for this runbook is `v0.5.235`; keep signed
+Current testnet release candidate for this runbook is `v0.5.236`; keep signed
 `v0.5.229` as the immediate restart-safe anchor while legacy history remains
 authoritative. The candidate must not be installed until its exact tag workflow
 and detached signature pass. Preserve signed

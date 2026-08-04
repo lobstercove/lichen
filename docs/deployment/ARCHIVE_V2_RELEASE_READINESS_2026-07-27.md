@@ -12,10 +12,10 @@ checksum set, detached PQ signature, or new rollback anchor exists.
 This report records the final local result. It is not release or deployment
 authorization.
 
-## 2026-08-04 release-preparation update
+## 2026-08-05 release-preparation update
 
 Release preparation resumed on an isolated branch at runtime version
-`0.5.235`. The candidate now includes the retroactive fixed-range builder and
+`0.5.236`. The candidate now includes the retroactive fixed-range builder and
 dual reader described below, dependency advisory updates, an exact-version
 lockfile set, and release/deployment packaging for the `lichen-archive-v2`
 operator binary. The short tag-workflow topology has explicit Archive V2
@@ -26,18 +26,22 @@ boundary; the default local qualification still crosses the production-like
 The immutable `v0.5.232` tag is retained as failed release-audit history: its
 tag workflow stopped before artifact publication when the refreshed RustSec
 database reported `RUSTSEC-2026-0235` against transitive `rkyv 0.7.46`.
-Candidate `v0.5.235` upgrades Wasmer to 5.0.6, resolves the graph to patched
+Candidate `v0.5.236` upgrades Wasmer to 5.0.6, resolves the graph to patched
 `rkyv 0.8.17`, and keeps recent consensus recovery on physically verified hot
 state during Archive V2 source outages. Immutable `v0.5.233` remains failed
 tag-workflow history after its verified-cache outage gate exposed the remote
 dependency; immutable `v0.5.234` remains failed tag-workflow history after its
 accelerated 20-slot retention gate exposed a 4,096-slot startup scan treating
-the already-migrated prefix as a hot-state gap. `v0.5.235` bounds the scan to
-the configured retention window and still aborts on any missing block inside
-that retained suffix. None of `v0.5.232`, `v0.5.233`, or `v0.5.234` may be
-deployed or re-tagged.
+the already-migrated prefix as a hot-state gap. Immutable `v0.5.235` remains
+failed tag-workflow history after its fresh-role gate reused that synthetic
+20-slot boundary while the live head advanced during state sync. `v0.5.236`
+bounds the startup scan, uses the real 50,000-slot public-network window for
+fresh role admission, and retains canonical recent account snapshots across
+all roles while keeping legacy migration and remote archive availability out
+of consensus. None of `v0.5.232` through `v0.5.235` may be deployed or
+re-tagged.
 
-The following clean rerun gates passed on 2026-08-04 before the candidate
+The following clean rerun gates passed on 2026-08-05 before the candidate
 commit:
 
 - workspace formatting, all-target/all-feature Clippy, and all-feature tests;
