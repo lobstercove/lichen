@@ -15,13 +15,20 @@ authorization.
 ## 2026-08-04 release-preparation update
 
 Release preparation resumed on an isolated branch at runtime version
-`0.5.232`. The candidate now includes the retroactive fixed-range builder and
+`0.5.233`. The candidate now includes the retroactive fixed-range builder and
 dual reader described below, dependency advisory updates, an exact-version
 lockfile set, and release/deployment packaging for the `lichen-archive-v2`
 operator binary. The short tag-workflow topology has explicit Archive V2
 catalog headroom values compatible with its accelerated 20-slot legacy cold
 boundary; the default local qualification still crosses the production-like
 50,000-slot boundary.
+
+The immutable `v0.5.232` tag is retained as failed release-audit history: its
+tag workflow stopped before artifact publication when the refreshed RustSec
+database reported `RUSTSEC-2026-0235` against transitive `rkyv 0.7.46`.
+Candidate `v0.5.233` upgrades Wasmer to 5.0.6, resolves the graph to patched
+`rkyv 0.8.17`, and must complete fresh branch, main, and tag-workflow gates;
+`v0.5.232` must not be deployed or re-tagged.
 
 The following clean rerun gates passed on 2026-08-04 before the candidate
 commit:

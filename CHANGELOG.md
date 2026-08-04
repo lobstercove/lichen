@@ -5,6 +5,16 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.233] - 2026-08-04
+
+### Security
+- Upgrades the smart-contract runtime from Wasmer 4.4.0 to 5.0.6 so its
+  transitive archive validation dependency moves from vulnerable `rkyv 0.7.46`
+  (`RUSTSEC-2026-0235`) to patched `rkyv 0.8.17`.
+- Adds an owned, expiring informational-advisory exception for Wasmer's
+  build-time-only `proc-macro-error2` helper, which remains required through
+  the latest Wasmer release and is not linked into validator runtime code.
+
 ## [0.5.232] - 2026-08-04
 
 ### Fixed

@@ -66,6 +66,15 @@
       "mitigation": "Migrate or encapsulate bincode behind versioned canonical serializers with compatibility tests before expiry."
     },
     {
+      "id": "RUSTSEC-2026-0173",
+      "crate": "proc-macro-error2",
+      "owner": "Smart Contract Runtime",
+      "tools": ["cargo-audit", "cargo-deny"],
+      "expires": "2026-09-30",
+      "reason": "Wasmer 5.0.6 through the current 7.2.1 release requires this unmaintained procedural-macro helper only while compiling Wasmer's derive crate; it is not linked into validator runtime code or used to decode network, state, archive, contract, or custody input.",
+      "mitigation": "Track the Wasmer derive stack for removal or replacement of proc-macro-error2, retain locked source and supply-chain checks, and remove this exception as soon as an upstream Wasmer release no longer requires the compile-time helper."
+    },
+    {
       "id": "RUSTSEC-2026-0186",
       "crate": "memmap2",
       "owner": "Smart Contract Runtime",
