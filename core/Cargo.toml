@@ -1,6 +1,6 @@
 [package]
 name = "lobstercove-lichen-core"
-version = "0.5.230"
+version = "0.5.231"
 edition = "2021"
 authors = ["Lichen Labs <trading.lobster@lichen.network>"]
 description = "Lichen core blockchain implementation"
