@@ -4,12 +4,12 @@ This is the operator runbook for launching Lichen mainnet and then enabling
 mainnet custody. It is intentionally step-by-step and gate-based. Do not skip a
 gate because mainnet genesis and custody routes handle real value.
 
-Written for the next mainnet package. Candidate target for this runbook is
-`v0.5.230`; it must not be used until its exact tag and signed artifacts pass
-the release gates. Keep `v0.5.229` as the current signed restart-safe anchor. Preserve
-`v0.5.225` as pre-change evidence, not as a restartable rollback. Mainnet remains
-blocked until production storage, full-scope launch gates, independent review,
-and deployment approval pass.
+Written for the next mainnet package. Release target for this runbook is
+signed `v0.5.230`; keep `v0.5.229` as the signed restart-safe anchor. The target
+must not be used until its exact tag and signed artifacts pass the release
+gates. Preserve `v0.5.225` as pre-change evidence, not as a restartable
+rollback. Mainnet remains blocked until production storage, full-scope launch
+gates, independent review, and deployment approval pass.
 
 ## Operating Rules
 
