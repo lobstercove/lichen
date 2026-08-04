@@ -107,7 +107,7 @@ async function deriveReleaseSignerAddress() {
         /^version = "(\d+\.\d+\.\d+)"/m
     )?.[1];
     const releasePair = runbook.match(
-        /Release target for this\s+runbook is\s+signed `(v\d+\.\d+\.\d+)`; keep `(v\d+\.\d+\.\d+)` as the signed restart-safe anchor/
+        /Release candidate for this\s+runbook is\s+`(v\d+\.\d+\.\d+)`; keep `(v\d+\.\d+\.\d+)` as the signed restart-safe anchor/
     );
     assert(
         runbook.includes(releaseSigner),
