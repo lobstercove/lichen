@@ -2,8 +2,11 @@
 
 ## Status
 
-`v0.5.237` is the signed, deployed catalog-schema-3 dual-reader anchor on all
-four testnet validators. Archive V2 legacy retirement has not begun.
+`v0.5.238` is the signed, deployed catalog-schema-3 dual-reader anchor on all
+four testnet validators. Two bounded `0..49,999` and `50,000..99,999` Archive
+V2 segments were independently verified locally and in both R2 failure
+domains. Archive V2 legacy retirement has not begun and no legacy row was
+deleted.
 
 The first live bounded build proved that the mature testnet database predates
 the atomic genesis-to-tip archive watermark. `v0.5.237` therefore fails closed
@@ -14,7 +17,15 @@ for the pinned `lichen-testnet-1` identity and genesis; bounded source bodies,
 parent links, finality depth, catalog order, deterministic reconstruction, and
 replica gates are unchanged. No watermark is invented or backdated.
 
-`v0.5.238` must pass the complete release gates, exact-commit CI, signed tag
+The first mature-fleet retirement authorization exposed two release blockers:
+legacy blocks retain locally collected commit-certificate subsets that Archive
+V2 deliberately normalizes, and a restarted validator more than 10,000 slots
+behind could discard an in-flight replay batch when all peers lacked a verified
+checkpoint. `v0.5.239` applies the same canonical block normalization on both
+retirement sides and keeps ordinary full replay active while checkpoint
+availability retries continue. Explicit state-root repair remains fail-closed.
+
+`v0.5.239` must pass the complete release gates, exact-commit CI, signed tag
 workflow, provenance and detached PQ verification, and coordinated
 four-validator deployment before any legacy row is eligible for deletion.
 
@@ -87,7 +98,7 @@ after verifying its live hash and parent commitment.
 
 ## Rollback and abort conditions
 
-Before retirement, `v0.5.237` remains the signed rollback anchor and legacy
+Before retirement, `v0.5.238` remains the signed rollback anchor and legacy
 storage stays authoritative. After retirement starts, rollback is permitted
 only to a signed release that understands catalog schema 3 and Archive V2
 segments; the retirement command requires this acknowledgement explicitly.

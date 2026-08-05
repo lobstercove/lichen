@@ -2108,6 +2108,34 @@ fn sync_catch_up_actions(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MissingCheckpointAction {
+    ContinueBlockReplay,
+    AwaitRequiredRepair,
+}
+
+fn missing_checkpoint_action(checkpoint_repair_pending: bool) -> MissingCheckpointAction {
+    if checkpoint_repair_pending {
+        MissingCheckpointAction::AwaitRequiredRepair
+    } else {
+        MissingCheckpointAction::ContinueBlockReplay
+    }
+}
+
+async fn apply_missing_checkpoint_action(
+    sync_manager: &Arc<SyncManager>,
+    action: MissingCheckpointAction,
+) {
+    match action {
+        MissingCheckpointAction::ContinueBlockReplay => {
+            sync_manager.set_sync_mode(sync::SyncMode::Full).await;
+        }
+        MissingCheckpointAction::AwaitRequiredRepair => {
+            sync_manager.complete_sync().await;
+        }
+    }
+}
+
 fn parent_gap_should_probe_checkpoint(current_slot: u64, block_slot: u64) -> bool {
     block_slot > current_slot.saturating_add(1)
         && sync_catch_up_actions(
@@ -26370,37 +26398,42 @@ async fn run_validator() {
                         warn!("📋 Peer {} has no checkpoint available", response.requester);
                         // A peer can answer while its verified checkpoint cache is
                         // still warming. Keep retrying metadata independently even
-                        // when a one-peer view temporarily falls back to bounded
+                        // while the ordinary catch-up path falls back to bounded
                         // full replay. A later corroborated checkpoint can then
                         // supersede replay without requiring a reconnect.
-                        snapshot_sync_for_apply
-                            .lock()
-                            .await
-                            .mark_checkpoint_metadata_retry_pending();
-                        // Warp sync is impossible without a checkpoint.  Complete the
-                        // current sync batch and switch to Full so the next
-                        // should_sync() call can re-trigger with block-range requests.
-                        let current_mode = sync_mgr_for_snapshot.get_sync_mode().await;
-                        let known_peers = peer_mgr_for_snapshot_apply.get_peer_infos().len();
-                        if current_mode == crate::sync::SyncMode::Warp
-                            && active_snapshot_anchor.is_none()
+                        let checkpoint_repair_pending = {
+                            let mut snapshot_sync = snapshot_sync_for_apply.lock().await;
+                            let checkpoint_repair_pending =
+                                snapshot_sync.is_checkpoint_repair_pending();
+                            snapshot_sync.mark_checkpoint_metadata_retry_pending();
+                            checkpoint_repair_pending
+                        };
+                        if active_snapshot_anchor.is_none()
                             && verified_checkpoint_anchors.is_empty()
-                            && known_peers <= 1
                         {
-                            sync_mgr_for_snapshot
-                                .set_sync_mode(crate::sync::SyncMode::Full)
-                                .await;
-                            sync_mgr_for_snapshot.complete_sync().await;
-                            sync_mgr_for_snapshot.record_sync_failure().await;
-                        } else if current_mode == crate::sync::SyncMode::Warp {
-                            snapshot_sync_for_apply
-                                .lock()
-                                .await
-                                .mark_checkpoint_repair_pending();
-                            sync_mgr_for_snapshot.complete_sync().await;
-                            info!(
-                                "⏳ Waiting for corroborated checkpoint metadata; the snapshot retry reactor will probe peers again"
-                            );
+                            let action = missing_checkpoint_action(checkpoint_repair_pending);
+                            apply_missing_checkpoint_action(&sync_mgr_for_snapshot, action).await;
+                            match action {
+                                MissingCheckpointAction::ContinueBlockReplay => {
+                                    // The range request was sent alongside the metadata
+                                    // probe. Do not complete the batch here: completion
+                                    // clears its requested-slot admission set and makes
+                                    // the in-flight response look stale. Full validation
+                                    // remains mandatory for every replayed block.
+                                    info!(
+                                        "🔄 Checkpoint unavailable; continuing the active bounded full-replay batch while metadata retries remain armed"
+                                    );
+                                }
+                                MissingCheckpointAction::AwaitRequiredRepair => {
+                                    // A state-root/authenticity failure explicitly
+                                    // requested a checkpoint repair. Replaying the same
+                                    // rejected path cannot make progress, so preserve the
+                                    // fail-closed pause until a verified snapshot exists.
+                                    info!(
+                                        "⏳ Waiting for required corroborated checkpoint repair; the snapshot retry reactor will probe peers again"
+                                    );
+                                }
+                            }
                         }
                     }
                     continue;
@@ -39614,6 +39647,37 @@ mod tests {
             !sync.should_retry_checkpoint_metadata(),
             "completed snapshot sync must clear the independent availability retry"
         );
+    }
+
+    #[tokio::test]
+    async fn unavailable_checkpoint_preserves_inflight_block_range_admission() {
+        let sync_manager = Arc::new(SyncManager::new());
+        sync_manager.set_sync_mode(sync::SyncMode::Warp).await;
+        sync_manager.mark_requested(42).await;
+        sync_manager.start_sync(42, 42).await;
+
+        let action = missing_checkpoint_action(false);
+        assert_eq!(action, MissingCheckpointAction::ContinueBlockReplay);
+        apply_missing_checkpoint_action(&sync_manager, action).await;
+
+        assert_eq!(sync_manager.get_sync_mode().await, sync::SyncMode::Full);
+        assert!(sync_manager.is_requested(42).await);
+        assert!(sync_manager.stats().await.is_syncing);
+    }
+
+    #[tokio::test]
+    async fn required_checkpoint_repair_still_fails_closed() {
+        let sync_manager = Arc::new(SyncManager::new());
+        sync_manager.set_sync_mode(sync::SyncMode::Warp).await;
+        sync_manager.mark_requested(42).await;
+        sync_manager.start_sync(42, 42).await;
+
+        let action = missing_checkpoint_action(true);
+        assert_eq!(action, MissingCheckpointAction::AwaitRequiredRepair);
+        apply_missing_checkpoint_action(&sync_manager, action).await;
+
+        assert!(!sync_manager.is_requested(42).await);
+        assert!(!sync_manager.stats().await.is_syncing);
     }
 
     #[test]
