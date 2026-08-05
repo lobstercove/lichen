@@ -7,15 +7,13 @@ Ultra-low fees · Sub-second BFT block commitment · Agent-native identity · Mu
 [![License: Apache--2.0%20%2B%20MIT](https://img.shields.io/badge/License-Apache--2.0%20%2B%20MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.88+-00C9DB.svg)](https://www.rust-lang.org)
 
-**Current signed testnet release:** `v0.5.236`. The unreleased `v0.5.237`
-retrofit candidate root-commits the exact existing-testnet legacy-loss interval,
-allows verified Archive V2 construction to resume after that interval, exposes
-signed bounded retirement operations, and isolates fleet SSH connections. It
-does not change canonical block, transaction, state-root, consensus, wire, or
-public RPC identities. No legacy row may be retired until the exact candidate
-passes every release gate, is signed and deployed coherently, and has two
-independently verified replicas. Fresh networks and mainnet still fail closed
-on incomplete genesis-to-tip history.
+**Current signed testnet release:** `v0.5.237`. The unreleased `v0.5.238`
+retrofit candidate adds an explicit, exact-network acknowledgement for the
+mature testnet database, which predates the atomic genesis-to-tip archive
+watermark. Bounded source blocks and parent links, the root-committed historical
+loss declaration, two independently verified replicas, and signed retirement
+authorization remain mandatory. The exception cannot be used by a different
+network or genesis; fresh networks and mainnet still fail closed.
 
 **Website:** https://lichen.network  
 **Documentation:** https://developers.lichen.network  

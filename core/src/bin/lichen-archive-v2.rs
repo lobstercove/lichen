@@ -756,7 +756,7 @@ fn run_build(args: &CommandArgs) -> Result<(), String> {
             "replica-root",
             "required-replicas",
         ],
-        &[],
+        &["acknowledge-exact-testnet-missing-watermark"],
     )?;
     let state_dir = PathBuf::from(args.required("state-dir")?);
     let root = PathBuf::from(args.required("root")?);
@@ -813,6 +813,8 @@ fn run_build(args: &CommandArgs) -> Result<(), String> {
         codec,
         replica_roots,
         required_replica_count,
+        acknowledge_exact_testnet_missing_watermark: args
+            .flag("acknowledge-exact-testnet-missing-watermark"),
     };
     let builder =
         ArchiveV2Builder::new(&state, identity, options).map_err(|error| error.to_string())?;

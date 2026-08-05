@@ -2,18 +2,21 @@
 
 ## Status
 
-`v0.5.236` is the signed, deployed dual-reader anchor on all four testnet
-validators. Its Linux x86_64 release archive SHA-256 is
-`697e82dfcda104ed891ff458b164ae61995ec852e5be98d267db8251e3f601cf`;
-the installed and running validator SHA-256 is
-`f95e9727197705ae9772456450f9acabd9a8ae31d2eef819b7cf01e85c1b0749`.
-The fleet was accepted at a common fixed boundary and resumed finality with all
-four authors represented. Archive V2 legacy retirement has not begun.
+`v0.5.237` is the signed, deployed catalog-schema-3 dual-reader anchor on all
+four testnet validators. Archive V2 legacy retirement has not begun.
 
-`v0.5.237` is the follow-up retrofit candidate. It must pass the complete
-release gates, exact-commit CI, signed tag workflow, provenance and detached PQ
-verification, and coordinated four-validator deployment before any legacy row
-is eligible for deletion.
+The first live bounded build proved that the mature testnet database predates
+the atomic genesis-to-tip archive watermark. `v0.5.237` therefore fails closed
+before collecting the range, as designed for ordinary networks, but cannot
+start this exact legacy retrofit. `v0.5.238` adds a required
+`--acknowledge-exact-testnet-missing-watermark` build flag. It is accepted only
+for the pinned `lichen-testnet-1` identity and genesis; bounded source bodies,
+parent links, finality depth, catalog order, deterministic reconstruction, and
+replica gates are unchanged. No watermark is invented or backdated.
+
+`v0.5.238` must pass the complete release gates, exact-commit CI, signed tag
+workflow, provenance and detached PQ verification, and coordinated
+four-validator deployment before any legacy row is eligible for deletion.
 
 ## Exact historical constraint
 
@@ -60,7 +63,9 @@ therefore bounded and additive:
 
 1. Stop one source validator while the other three retain quorum.
 2. Build one finalized Archive V2 range in tmpfs from its preserved hot/cold
-   state. The local build remains deterministic and resumable.
+   state. The exact mature testnet invocation includes
+   `--acknowledge-exact-testnet-missing-watermark`; the local build remains
+   deterministic and resumable.
 3. Verify the segment locally, upload it to both R2 buckets, verify both remote
    objects and manifests, and publish the append-only catalog extension.
 4. Keep the verified segment available locally in tmpfs and create a signed
@@ -82,7 +87,7 @@ after verifying its live hash and parent commitment.
 
 ## Rollback and abort conditions
 
-Before retirement, `v0.5.236` remains the signed rollback anchor and legacy
+Before retirement, `v0.5.237` remains the signed rollback anchor and legacy
 storage stays authoritative. After retirement starts, rollback is permitted
 only to a signed release that understands catalog schema 3 and Archive V2
 segments; the retirement command requires this acknowledgement explicitly.
