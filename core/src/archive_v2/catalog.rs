@@ -89,7 +89,10 @@ impl ArchiveV2LegacyLossDeclaration {
         }
     }
 
-    fn validate_for_identity(&self, identity: &ArchiveV2Identity) -> Result<(), ArchiveV2Error> {
+    pub(crate) fn validate_for_identity(
+        &self,
+        identity: &ArchiveV2Identity,
+    ) -> Result<(), ArchiveV2Error> {
         let allowed = Self::lichen_testnet_1();
         if identity.network_id != "lichen-testnet-1"
             || identity.genesis_hash.to_hex() != TESTNET_GENESIS_HASH

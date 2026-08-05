@@ -6,8 +6,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde::{Deserialize, Serialize};
 
 use super::{
-    ArchiveV2Catalog, ArchiveV2CodecConfig, ArchiveV2Error, ArchiveV2Identity, ArchiveV2Manifest,
-    ArchiveV2SegmentCodec,
+    ArchiveV2Catalog, ArchiveV2CodecConfig, ArchiveV2Error, ArchiveV2Identity,
+    ArchiveV2LegacyLossDeclaration, ArchiveV2Manifest, ArchiveV2SegmentCodec,
 };
 use crate::codec::{deserialize_legacy_bincode_strict, serialize_legacy_bincode};
 use crate::{Hash, StateStore};
@@ -27,6 +27,11 @@ pub struct ArchiveV2BuildOptions {
     pub codec: ArchiveV2CodecConfig,
     pub replica_roots: Vec<PathBuf>,
     pub required_replica_count: usize,
+    /// The existing lichen-testnet-1 database predates the atomic archive
+    /// watermark. This acknowledgement permits bounded catalog construction
+    /// only for that exact network/genesis while every source range remains
+    /// subject to the builder's canonical block and parent-link verification.
+    pub acknowledge_exact_testnet_missing_watermark: bool,
 }
 
 impl ArchiveV2BuildOptions {
@@ -174,6 +179,9 @@ impl<'a> ArchiveV2Builder<'a> {
         };
         if genesis_hash != identity.genesis_hash {
             return Err(ArchiveV2Error::WrongGenesis);
+        }
+        if options.acknowledge_exact_testnet_missing_watermark {
+            ArchiveV2LegacyLossDeclaration::lichen_testnet_1().validate_for_identity(&identity)?;
         }
         Ok(Self {
             state,
@@ -530,15 +538,21 @@ impl<'a> ArchiveV2Builder<'a> {
         required_end: u64,
         catalog: &ArchiveV2Catalog,
     ) -> Result<(), ArchiveV2Error> {
-        let (watermark_slot, watermark_hash) = self
+        let watermark = self
             .state
             .get_archive_contiguous_tip()
-            .map_err(ArchiveV2Error::Io)?
-            .ok_or_else(|| {
-                ArchiveV2Error::Continuity(
-                    "authoritative source has no genesis-to-tip archive watermark".to_string(),
-                )
-            })?;
+            .map_err(ArchiveV2Error::Io)?;
+        let Some((watermark_slot, watermark_hash)) = watermark else {
+            if !self.options.acknowledge_exact_testnet_missing_watermark {
+                return Err(ArchiveV2Error::Continuity(
+                    "authoritative source has no genesis-to-tip archive watermark; the exact existing testnet requires an explicit signed-release acknowledgement"
+                        .to_string(),
+                ));
+            }
+            ArchiveV2LegacyLossDeclaration::lichen_testnet_1()
+                .validate_for_identity(&self.identity)?;
+            return Ok(());
+        };
         let canonical_hash = self
             .canonical_or_catalog_block(catalog, watermark_slot)?
             .map(|block| block.hash());
@@ -1033,6 +1047,7 @@ mod tests {
                 },
                 replica_roots: vec![replica.path().to_path_buf()],
                 required_replica_count: 1,
+                acknowledge_exact_testnet_missing_watermark: false,
             };
             let builder = ArchiveV2Builder::new(&state, identity, options).unwrap();
             assert!(builder.build_faulted(fault).is_err());
@@ -1093,6 +1108,7 @@ mod tests {
                 },
                 replica_roots: vec![replica.path().to_path_buf()],
                 required_replica_count: 1,
+                acknowledge_exact_testnet_missing_watermark: false,
             },
         )
         .unwrap();
@@ -1103,5 +1119,94 @@ mod tests {
         // trust only the re-verified immutable staging object and continue.
         state.set_last_finalized_slot(0).unwrap();
         assert!(builder.build().unwrap().promoted);
+    }
+
+    #[test]
+    fn exact_testnet_missing_watermark_requires_explicit_acknowledgement() {
+        let state_root = tempdir().unwrap();
+        let state = StateStore::open(state_root.path()).unwrap();
+        let exact_identity = ArchiveV2Identity {
+            network_id: "lichen-testnet-1".to_string(),
+            genesis_hash: Hash::from_hex(
+                "f08308ef2520af0967120f3314fa95b14d8239a898d34a6993981cb93f740884",
+            )
+            .unwrap(),
+        };
+        let catalog = ArchiveV2Catalog::empty(exact_identity.clone()).unwrap();
+        let root = tempdir().unwrap();
+        let replica = tempdir().unwrap();
+        let options = ArchiveV2BuildOptions {
+            root: root.path().to_path_buf(),
+            start_slot: 0,
+            end_slot: 0,
+            required_finality_depth_slots: 0,
+            codec: ArchiveV2CodecConfig::default(),
+            replica_roots: vec![replica.path().to_path_buf()],
+            required_replica_count: 1,
+            acknowledge_exact_testnet_missing_watermark: true,
+        };
+        let builder = ArchiveV2Builder {
+            state: &state,
+            identity: exact_identity,
+            options: options.clone(),
+        };
+        builder.verify_archive_watermark(0, &catalog).unwrap();
+
+        let unacknowledged = ArchiveV2Builder {
+            state: &state,
+            identity: builder.identity.clone(),
+            options: ArchiveV2BuildOptions {
+                acknowledge_exact_testnet_missing_watermark: false,
+                ..options
+            },
+        };
+        let error = unacknowledged
+            .verify_archive_watermark(0, &catalog)
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("explicit signed-release acknowledgement"));
+    }
+
+    #[test]
+    fn missing_watermark_acknowledgement_is_rejected_for_other_networks() {
+        let state_root = tempdir().unwrap();
+        let state = StateStore::open(state_root.path()).unwrap();
+        let block = Block::new_with_timestamp(
+            0,
+            Hash::default(),
+            Hash::hash(b"other-network-state"),
+            [7; 32],
+            Vec::new(),
+            1,
+        );
+        state.put_block_atomic(&block, Some(0), Some(0)).unwrap();
+        state
+            .put_metadata(crate::CHAIN_ID_METADATA_KEY, b"other-network")
+            .unwrap();
+        let root = tempdir().unwrap();
+        let replica = tempdir().unwrap();
+        let error = ArchiveV2Builder::new(
+            &state,
+            ArchiveV2Identity {
+                network_id: "other-network".to_string(),
+                genesis_hash: block.hash(),
+            },
+            ArchiveV2BuildOptions {
+                root: root.path().to_path_buf(),
+                start_slot: 0,
+                end_slot: 0,
+                required_finality_depth_slots: 0,
+                codec: ArchiveV2CodecConfig::default(),
+                replica_roots: vec![replica.path().to_path_buf()],
+                required_replica_count: 1,
+                acknowledge_exact_testnet_missing_watermark: true,
+            },
+        )
+        .err()
+        .expect("other networks must reject the exact-testnet acknowledgement");
+        assert!(error
+            .to_string()
+            .contains("not the exact lichen-testnet-1 waiver"));
     }
 }

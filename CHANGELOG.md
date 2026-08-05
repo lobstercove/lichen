@@ -5,6 +5,17 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.238] - 2026-08-05
+
+### Fixed
+- Allows bounded Archive V2 construction on the exact existing
+  `lichen-testnet-1` database, which predates the atomic genesis-to-tip archive
+  watermark, only when the operator supplies
+  `--acknowledge-exact-testnet-missing-watermark`. The acknowledgement is
+  rejected for every other network or genesis; canonical source blocks,
+  parent-link continuity, finality depth, catalog ordering, deterministic
+  encoding, and replicas remain mandatory.
+
 ## [0.5.237] - 2026-08-05
 
 ### Added
