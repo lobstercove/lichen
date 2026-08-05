@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use super::*;
 use crate::archive_v2::{
     ArchiveV2CategoryProof, ArchiveV2ReplicaEvidence, ArchiveV2RetirementManifest,
-    ArchiveV2RetirementRequest, ArchiveV2RollbackAnchor,
+    ArchiveV2RetirementRequest, ArchiveV2RollbackAnchor, ArchiveV2Rows,
 };
 use crate::codec::{deserialize_legacy_bincode_strict, serialize_legacy_bincode};
 
@@ -211,9 +211,11 @@ impl StateStore {
             } else {
                 self.archive_v2_legacy_category_rows(category, start_slot, end_slot)?
             };
+            let legacy_rows = self.normalize_archive_v2_retirement_rows(category, legacy_rows)?;
             let archive_rows = reader
                 .category_rows(category, start_slot, end_slot)
                 .map_err(|error| error.to_string())?;
+            let archive_rows = self.normalize_archive_v2_retirement_rows(category, archive_rows)?;
             if legacy_rows != archive_rows {
                 return Err(format!(
                     "Archive V2 retirement equivalence failed for category {category}"
@@ -715,6 +717,22 @@ impl StateStore {
         }
     }
 
+    fn normalize_archive_v2_retirement_rows(
+        &self,
+        category: &str,
+        rows: ArchiveV2Rows,
+    ) -> Result<ArchiveV2Rows, String> {
+        if category != "blocks" {
+            return Ok(rows);
+        }
+        rows.into_iter()
+            .map(|(key, value)| {
+                self.canonical_archive_v2_retirement_value(category, &key, &value)
+                    .map(|value| (key, value))
+            })
+            .collect()
+    }
+
     fn verify_retirement_equivalence(
         &self,
         retirement: &ArchiveV2RetirementManifest,
@@ -732,6 +750,8 @@ impl StateStore {
             let archive_rows = reader
                 .category_rows(&proof.category, start_slot, end_slot)
                 .map_err(|error| error.to_string())?;
+            let archive_rows =
+                self.normalize_archive_v2_retirement_rows(&proof.category, archive_rows)?;
             let actual_proof =
                 ArchiveV2CategoryProof::from_rows(proof.category.clone(), &archive_rows)
                     .map_err(|error| error.to_string())?;
@@ -748,6 +768,8 @@ impl StateStore {
             } else {
                 self.archive_v2_legacy_category_rows(&proof.category, start_slot, end_slot)?
             };
+            let legacy_rows =
+                self.normalize_archive_v2_retirement_rows(&proof.category, legacy_rows)?;
             if archive_rows != legacy_rows {
                 return Err(format!(
                     "Legacy/V2 category {} equivalence changed before retirement",
@@ -777,7 +799,7 @@ impl StateStore {
         expected_value: &[u8],
     ) -> Result<Vec<PendingRetirementDeletion>, String> {
         let hot_cf_name = retirement_hot_cf(category)?;
-        let expected = self.canonical_public_history_import_value(category, key, expected_value)?;
+        let expected = self.canonical_archive_v2_retirement_value(category, key, expected_value)?;
         let expected_hash = Hash::hash(&expected);
         let mut targets = Vec::new();
         if let Some(cf) = self.db.cf_handle(hot_cf_name) {
@@ -786,7 +808,7 @@ impl StateStore {
                 .get_cf(&cf, key)
                 .map_err(|error| format!("Failed reading hot {category}: {error}"))?
             {
-                let actual = self.canonical_public_history_import_value(category, key, &value)?;
+                let actual = self.canonical_archive_v2_retirement_value(category, key, &value)?;
                 if actual != expected {
                     return Err(format!(
                         "Hot {category} row {} conflicts with Archive V2",
@@ -811,7 +833,7 @@ impl StateStore {
                     .map_err(|error| format!("Failed reading cold {category}: {error}"))?
                 {
                     let actual =
-                        self.canonical_public_history_import_value(category, key, &value)?;
+                        self.canonical_archive_v2_retirement_value(category, key, &value)?;
                     if actual != expected {
                         return Err(format!(
                             "Cold {category} row {} conflicts with Archive V2",
@@ -863,7 +885,7 @@ impl StateStore {
                 .get_cf(&cf, &deletion.key)
                 .map_err(|error| format!("Failed validating pending retirement: {error}"))?
             {
-                let canonical = self.canonical_public_history_import_value(
+                let canonical = self.canonical_archive_v2_retirement_value(
                     &deletion.category,
                     &deletion.key,
                     &value,
@@ -1187,7 +1209,7 @@ mod tests {
         ArchiveV2Reader, ArchiveV2ReaderConfig, ArchiveV2SegmentCodec, ArchiveV2SegmentContents,
         ARCHIVE_V2_FORMAT_VERSION,
     };
-    use crate::{Block, Keypair};
+    use crate::{Block, CommitSignature, Keypair, PqPublicKey, PqSignature};
 
     struct RetirementFixture {
         _state_root: TempDir,
@@ -1206,7 +1228,7 @@ mod tests {
         let journal_root = tempdir().unwrap();
         let mut state = StateStore::open(state_root.path()).unwrap();
         state.open_cold_store(cold_root.path()).unwrap();
-        let block = Block::new_with_timestamp(
+        let mut block = Block::new_with_timestamp(
             0,
             Hash::default(),
             Hash::hash(b"retirement-state"),
@@ -1214,6 +1236,19 @@ mod tests {
             Vec::new(),
             1,
         );
+        block.commit_round = 7;
+        block.commit_signatures.push(CommitSignature {
+            validator: [6; 32],
+            signature: PqSignature {
+                scheme_version: 1,
+                public_key: PqPublicKey {
+                    scheme_version: 1,
+                    bytes: vec![7; 32],
+                },
+                sig: vec![8; 64],
+            },
+            timestamp: 2,
+        });
         let block_hash = block.hash();
         state.put_block_atomic(&block, Some(0), Some(0)).unwrap();
         state.set_last_slot(COLD_RETENTION_SLOTS + 10).unwrap();

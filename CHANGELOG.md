@@ -5,6 +5,19 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.239] - 2026-08-05
+
+### Fixed
+- Compares Archive V2 block rows and legacy block rows with the same canonical
+  public-history normalization during retirement authorization, re-verification,
+  and journaled deletion. Locally collected commit-certificate subsets remain
+  validated on import but no longer create a false mismatch against the
+  deterministic Archive V2 body.
+- Keeps an in-flight, fully validated block-range replay admissible when peers
+  report that no verified checkpoint is available. Checkpoint discovery keeps
+  retrying independently, while an explicit state-root/authenticity repair still
+  pauses block replay fail-closed.
+
 ## [0.5.238] - 2026-08-05
 
 ### Fixed

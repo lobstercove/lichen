@@ -4161,6 +4161,25 @@ impl StateStore {
         }
     }
 
+    pub(super) fn canonical_archive_v2_retirement_value(
+        &self,
+        category: &str,
+        key: &[u8],
+        value: &[u8],
+    ) -> Result<Vec<u8>, String> {
+        let canonical = self.canonical_public_history_import_value(category, key, value)?;
+        if category == "blocks" {
+            // Archive V2 intentionally omits locally collected commit-round and
+            // commit-signature subsets. Historical proof RPC reconstructs the
+            // deterministic proof from the canonical child commit transaction,
+            // so retirement equivalence must use the same normalized block body
+            // commitment as the Archive V2 codec and public-history manifests.
+            public_history_manifest_block_value(key, &canonical)
+        } else {
+            Ok(canonical)
+        }
+    }
+
     fn public_history_values_match(
         &self,
         category: &str,
