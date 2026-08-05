@@ -5,6 +5,28 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.237] - 2026-08-05
+
+### Added
+- Adds catalog-schema-3 legacy-loss commitments for the exact
+  `lichen-testnet-1` signed-body interval `2,872,006..4,298,999`, pinned to the
+  live genesis and both surviving boundary hashes. The waiver cannot be used
+  by another network, genesis, interval, or boundary, and the unavailable
+  bodies are never synthesized.
+- Allows deterministic Archive V2 segment construction to resume after that
+  exact root-committed interval while still requiring every source block in
+  each constructed range and preserving segment codec V2.
+- Exposes signed, bounded, journaled `retirement-authorize`,
+  `retirement-pass`, and `retirement-reclaim` operator commands. Destructive
+  passes require explicit stopped-validator and V2-only-rollback
+  acknowledgements; signed retirement anchors bind both segment and catalog
+  format versions, and physical reclaim enforces the network capacity floor.
+
+### Fixed
+- Disables inherited SSH connection multiplexing in the fleet deployment
+  script so parallel hosts cannot share a socket and silently stage an
+  artifact on the wrong validator.
+
 ## [0.5.236] - 2026-08-05
 
 ### Fixed

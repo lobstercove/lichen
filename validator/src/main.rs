@@ -19027,22 +19027,23 @@ fn activate_runtime_archive_v2(
             })?;
     }
     let required_archive_end = finalized_slot.checked_sub(config.role_config.recent_history_slots);
-    match (
-        required_archive_end,
-        catalog.entries.first(),
-        catalog.entries.last(),
-    ) {
-        (Some(required_end), Some(first), Some(last))
-            if first.manifest.start_slot == 0 && last.manifest.end_slot >= required_end => {}
-        (Some(required_end), _, _) => {
+    match required_archive_end {
+        Some(required_end)
+            if catalog
+                .covers_genesis_through(required_end)
+                .map_err(|error| error.to_string())? => {}
+        Some(required_end) => {
             return Err(format!(
-                "Archive V2 catalog does not cover required genesis-to-{required_end} history outside the {}-slot hot window",
+                "Archive V2 catalog does not cover required genesis-to-{required_end} history outside the {}-slot hot window with verified segments or an exact-network loss declaration",
                 config.role_config.recent_history_slots
             ));
         }
-        (None, None, None) => {}
-        (None, Some(first), _) if first.manifest.start_slot == 0 => {}
-        (None, _, _) => {
+        None if catalog.entries.is_empty() => {}
+        None if catalog
+            .entries
+            .first()
+            .is_some_and(|first| first.manifest.start_slot == 0) => {}
+        None => {
             return Err("Archive V2 catalog must begin at genesis".to_string());
         }
     }

@@ -3,18 +3,25 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use lichen_core::archive_v2::{
     benchmark_archive_v2_range, discover_archive_v2_catalog, ArchiveV2AdaptiveReservePolicy,
     ArchiveV2BenchmarkCandidate, ArchiveV2BenchmarkPlan, ArchiveV2BuildOptions, ArchiveV2Builder,
     ArchiveV2CapacityDecision, ArchiveV2CapacityGuard, ArchiveV2CapacityInputs,
     ArchiveV2CapacityThresholds, ArchiveV2CapacityTotals, ArchiveV2Catalog, ArchiveV2CodecConfig,
-    ArchiveV2DictionaryKind, ArchiveV2DirectoryReplica, ArchiveV2Identity, ArchiveV2Manifest,
-    ArchiveV2MirrorLimits, ArchiveV2PressureAction, ArchiveV2ReplicaPolicy,
-    ArchiveV2ReplicaTransport, ArchiveV2Replicator, ArchiveV2SegmentCodec,
+    ArchiveV2DictionaryKind, ArchiveV2DirectoryReplica, ArchiveV2Identity,
+    ArchiveV2LegacyLossDeclaration, ArchiveV2Manifest, ArchiveV2MirrorLimits,
+    ArchiveV2PressureAction, ArchiveV2Reader, ArchiveV2ReaderConfig, ArchiveV2ReplicaEvidence,
+    ArchiveV2ReplicaPolicy, ArchiveV2ReplicaTransport, ArchiveV2Replicator,
+    ArchiveV2RetirementManifest, ArchiveV2Role, ArchiveV2RollbackAnchor, ArchiveV2SegmentCodec,
+    ARCHIVE_V2_CATALOG_VERSION, ARCHIVE_V2_FORMAT_VERSION,
 };
 use lichen_core::codec::serialized_size_legacy_bincode;
-use lichen_core::{Hash, StateStore};
+use lichen_core::{
+    keypair_password_from_env, plaintext_keypair_allowed_for_local_dev, ArchiveV2RetirementLimits,
+    ArchiveV2RetirementPhase, ArchiveV2RetirementReclaimLimits, Hash, KeypairFile, StateStore,
+};
 use serde_json::json;
 
 const DEFAULT_MAX_MIRROR_BYTES: u64 = 1024 * 1024 * 1024;
@@ -38,6 +45,10 @@ fn run(raw: Vec<String>) -> Result<(), String> {
         "status" => run_status(&args),
         "verify" => run_verify(&args),
         "repair" => run_repair(&args),
+        "declare-legacy-loss" => run_declare_legacy_loss(&args),
+        "retirement-authorize" => run_retirement_authorize(&args),
+        "retirement-pass" => run_retirement_pass(&args),
+        "retirement-reclaim" => run_retirement_reclaim(&args),
         "build" => run_build(&args),
         "mirror" => run_mirror(&args),
         "restore" => run_restore(&args),
@@ -48,7 +59,7 @@ fn run(raw: Vec<String>) -> Result<(), String> {
             Ok(())
         }
         _ => Err(format!(
-            "unknown command {command:?}; expected status, verify, repair, build, mirror, restore, profile-source, or benchmark"
+            "unknown command {command:?}; expected status, verify, repair, declare-legacy-loss, build, mirror, restore, retirement-authorize, retirement-pass, retirement-reclaim, profile-source, or benchmark"
         )),
     }
 }
@@ -185,6 +196,7 @@ fn run_status(args: &CommandArgs) -> Result<(), String> {
         "catalog_root": catalog.catalog_root.to_hex(),
         "segments": manifests.len(),
         "supersessions": catalog.supersessions.len(),
+        "legacy_loss_declarations": catalog.legacy_loss_declarations,
         "slot_range": slot_range,
         "object_bytes": object_bytes,
         "manifest_bytes": manifest_bytes,
@@ -194,6 +206,319 @@ fn run_status(args: &CommandArgs) -> Result<(), String> {
         "missing_manifests_first_100": missing_manifests,
         "complete_local_inventory": missing_object_count == 0 && missing_manifest_count == 0,
     }))
+}
+
+fn run_declare_legacy_loss(args: &CommandArgs) -> Result<(), String> {
+    args.ensure_only(&["root"], &[])?;
+    let root = PathBuf::from(args.required("root")?);
+    let catalog_path = root.join("catalog.av2");
+    let mut catalog = ArchiveV2Catalog::load(&catalog_path).map_err(|error| error.to_string())?;
+    let declaration = ArchiveV2LegacyLossDeclaration::lichen_testnet_1();
+    if catalog.legacy_loss_declarations.contains(&declaration) {
+        return Err(
+            "exact lichen-testnet-1 legacy-loss declaration is already cataloged".to_string(),
+        );
+    }
+    catalog
+        .declare_legacy_loss(declaration.clone())
+        .map_err(|error| error.to_string())?;
+    catalog
+        .store_atomic(&catalog_path)
+        .map_err(|error| error.to_string())?;
+    print_json(&json!({
+        "operation": "declare-legacy-loss",
+        "root": root,
+        "catalog_root": catalog.catalog_root.to_hex(),
+        "declaration": declaration,
+    }))
+}
+
+fn run_retirement_authorize(args: &CommandArgs) -> Result<(), String> {
+    args.ensure_only(
+        &[
+            "state-dir",
+            "cold-store",
+            "root",
+            "segment-object-hash",
+            "replica-evidence",
+            "required-replicas",
+            "required-failure-domains",
+            "release-tag",
+            "release-commit",
+            "artifact-sha256",
+            "pq-signature-sha256",
+            "deployed-validator-count",
+            "activated-unix-seconds",
+            "authorized-unix-seconds",
+            "signer-keypair",
+            "output",
+        ],
+        &[],
+    )?;
+    let state_dir = PathBuf::from(args.required("state-dir")?);
+    let root = PathBuf::from(args.required("root")?);
+    let mut state = StateStore::open_read_only_with_cache_mb(&state_dir, Some(256))?;
+    if let Some(cold) = args.optional("cold-store")? {
+        state.open_cold_store_read_only(cold)?;
+    }
+    attach_retirement_reader(&state, &root)?;
+    let segment_object_hash = Hash::from_hex(args.required("segment-object-hash")?)?;
+    let replica_evidence =
+        parse_retirement_replica_evidence(args.repeated("replica-evidence"), segment_object_hash)?;
+    let required_replica_count =
+        parse_u16(args.required("required-replicas")?, "required-replicas")?;
+    let required_failure_domains = parse_u16(
+        args.required("required-failure-domains")?,
+        "required-failure-domains",
+    )?;
+    let rollback_anchor = ArchiveV2RollbackAnchor {
+        release_tag: args.required("release-tag")?.to_string(),
+        release_commit: args.required("release-commit")?.to_string(),
+        artifact_sha256: Hash::from_hex(args.required("artifact-sha256")?)?,
+        detached_pq_checksum_signature_sha256: Hash::from_hex(
+            args.required("pq-signature-sha256")?,
+        )?,
+        archive_format_version: ARCHIVE_V2_FORMAT_VERSION,
+        catalog_format_version: ARCHIVE_V2_CATALOG_VERSION,
+        deployed_validator_count: parse_u16(
+            args.required("deployed-validator-count")?,
+            "deployed-validator-count",
+        )?,
+        activated_unix_seconds: parse_u64(
+            args.required("activated-unix-seconds")?,
+            "activated-unix-seconds",
+        )?,
+    };
+    let authorized_unix_seconds = parse_u64(
+        args.required("authorized-unix-seconds")?,
+        "authorized-unix-seconds",
+    )?;
+    let request = state.prepare_archive_v2_retirement_request(
+        segment_object_hash,
+        replica_evidence,
+        required_replica_count,
+        required_failure_domains,
+        rollback_anchor,
+        authorized_unix_seconds,
+    )?;
+    let password = keypair_password_from_env();
+    let signer = KeypairFile::load_with_password_policy(
+        Path::new(args.required("signer-keypair")?),
+        password.as_deref(),
+        plaintext_keypair_allowed_for_local_dev(),
+    )?
+    .to_keypair()?;
+    let retirement =
+        ArchiveV2RetirementManifest::sign(request, &signer).map_err(|error| error.to_string())?;
+    let encoded = retirement
+        .encode_canonical()
+        .map_err(|error| error.to_string())?;
+    let output = PathBuf::from(args.required("output")?);
+    write_bytes_create_new(&output, &encoded)?;
+    print_json(&json!({
+        "operation": "retirement-authorize",
+        "output": output,
+        "retirement_manifest_sha256": Hash::hash(&encoded).to_hex(),
+        "catalog_root": retirement.catalog_root().to_hex(),
+        "segment_object_hash": retirement.segment_object_hash().to_hex(),
+        "slot_range": [retirement.slot_range().0, retirement.slot_range().1],
+        "signer": retirement.signer().to_string(),
+    }))
+}
+
+fn run_retirement_pass(args: &CommandArgs) -> Result<(), String> {
+    args.ensure_only(
+        &[
+            "state-dir",
+            "cold-store",
+            "root",
+            "retirement-manifest",
+            "journal",
+            "max-rows",
+            "max-bytes",
+            "max-wall-time-ms",
+        ],
+        &[
+            "acknowledge-stopped-validator",
+            "acknowledge-v2-rollback-only",
+        ],
+    )?;
+    require_retirement_acknowledgements(args)?;
+    let state_dir = PathBuf::from(args.required("state-dir")?);
+    let root = PathBuf::from(args.required("root")?);
+    let mut state = StateStore::open_with_cache_mb(&state_dir, Some(256))?;
+    if let Some(cold) = args.optional("cold-store")? {
+        state.open_cold_store(cold)?;
+    }
+    attach_retirement_reader(&state, &root)?;
+    let retirement = read_retirement_manifest(Path::new(args.required("retirement-manifest")?))?;
+    let limits = ArchiveV2RetirementLimits {
+        max_rows: parse_u64(args.optional("max-rows")?.unwrap_or("2000"), "max-rows")?,
+        max_bytes: parse_u64(
+            args.optional("max-bytes")?.unwrap_or("67108864"),
+            "max-bytes",
+        )?,
+        max_wall_time: Duration::from_millis(parse_u64(
+            args.optional("max-wall-time-ms")?.unwrap_or("2000"),
+            "max-wall-time-ms",
+        )?),
+    };
+    let journal = PathBuf::from(args.required("journal")?);
+    let report = state.retire_archive_v2_segment_pass(&retirement, &journal, limits)?;
+    print_json(&json!({
+        "operation": "retirement-pass",
+        "journal": journal,
+        "phase": report.phase,
+        "category": report.category,
+        "scanned_rows": report.scanned_rows,
+        "deleted_hot_rows": report.deleted_hot_rows,
+        "deleted_cold_rows": report.deleted_cold_rows,
+        "deleted_logical_bytes": report.deleted_logical_bytes,
+        "recovered_pending_batch": report.recovered_pending_batch,
+        "categories_completed": report.categories_completed,
+        "elapsed_millis": report.elapsed_millis,
+        "tombstoning_complete": report.phase == ArchiveV2RetirementPhase::ReclaimPending,
+    }))
+}
+
+fn run_retirement_reclaim(args: &CommandArgs) -> Result<(), String> {
+    args.ensure_only(
+        &[
+            "state-dir",
+            "cold-store",
+            "root",
+            "retirement-manifest",
+            "journal",
+            "max-ranges",
+            "max-estimated-input-bytes",
+            "reserve-bytes",
+        ],
+        &[
+            "acknowledge-stopped-validator",
+            "acknowledge-v2-rollback-only",
+        ],
+    )?;
+    require_retirement_acknowledgements(args)?;
+    let state_dir = PathBuf::from(args.required("state-dir")?);
+    let cold_store = args.optional("cold-store")?.map(PathBuf::from);
+    let root = PathBuf::from(args.required("root")?);
+    let retirement = read_retirement_manifest(Path::new(args.required("retirement-manifest")?))?;
+    let default_reserve = if retirement.identity().network_id == "lichen-testnet-1" {
+        TESTNET_CAPACITY_FLOOR_BYTES
+    } else {
+        DEFAULT_CAPACITY_FLOOR_BYTES
+    };
+    let reserve_bytes = match args.optional("reserve-bytes")? {
+        Some(value) => parse_u64(value, "reserve-bytes")?,
+        None => default_reserve,
+    };
+    if reserve_bytes < default_reserve {
+        return Err(format!(
+            "--reserve-bytes cannot be below the {} byte network floor",
+            default_reserve
+        ));
+    }
+    let hot_capacity = cli_filesystem_capacity(&capacity_probe_path(&state_dir)?)?;
+    let cold_capacity = match cold_store.as_deref() {
+        Some(cold) => cli_filesystem_capacity(&capacity_probe_path(cold)?)?,
+        None => hot_capacity,
+    };
+    let mut state = StateStore::open_with_cache_mb(&state_dir, Some(256))?;
+    if let Some(cold) = cold_store.as_deref() {
+        state.open_cold_store(cold)?;
+    }
+    attach_retirement_reader(&state, &root)?;
+    let limits = ArchiveV2RetirementReclaimLimits {
+        max_ranges: parse_u64(args.optional("max-ranges")?.unwrap_or("1"), "max-ranges")?,
+        max_estimated_input_bytes: parse_u64(
+            args.optional("max-estimated-input-bytes")?
+                .unwrap_or("67108864"),
+            "max-estimated-input-bytes",
+        )?,
+        hot_available_bytes: hot_capacity.available_bytes,
+        hot_required_reserve_bytes: reserve_bytes,
+        cold_available_bytes: cold_capacity.available_bytes,
+        cold_required_reserve_bytes: reserve_bytes,
+    };
+    let journal = PathBuf::from(args.required("journal")?);
+    let report = state.reclaim_archive_v2_retirement_pass(&retirement, &journal, limits)?;
+    print_json(&json!({
+        "operation": "retirement-reclaim",
+        "journal": journal,
+        "phase": report.phase,
+        "queued_ranges_before": report.queued_ranges_before,
+        "queued_ranges_after": report.queued_ranges_after,
+        "compacted_ranges": report.compacted_ranges,
+        "estimated_input_bytes": report.estimated_input_bytes,
+        "reclaimed_physical_bytes": report.reclaimed_physical_bytes,
+        "total_reclaimed_physical_bytes": report.total_reclaimed_physical_bytes,
+        "compaction_duration_millis": report.compaction_duration_millis,
+        "paused_reason": report.paused_reason,
+        "complete": report.phase == ArchiveV2RetirementPhase::Complete,
+    }))
+}
+
+fn attach_retirement_reader(state: &StateStore, root: &Path) -> Result<(), String> {
+    let catalog =
+        ArchiveV2Catalog::load(&root.join("catalog.av2")).map_err(|error| error.to_string())?;
+    let reader = ArchiveV2Reader::open(
+        catalog.identity.clone(),
+        &root.join("catalog.av2"),
+        ArchiveV2ReaderConfig {
+            role: ArchiveV2Role::FullArchive,
+            root: root.to_path_buf(),
+            cache_root: None,
+            cache_quota_bytes: 0,
+            max_decoded_segments: 2,
+            allow_remote_fetch: false,
+            sources: Vec::new(),
+        },
+    )
+    .map_err(|error| error.to_string())?;
+    state.attach_archive_v2_reader(reader);
+    Ok(())
+}
+
+fn read_retirement_manifest(path: &Path) -> Result<ArchiveV2RetirementManifest, String> {
+    let encoded =
+        fs::read(path).map_err(|error| format!("failed reading {}: {error}", path.display()))?;
+    ArchiveV2RetirementManifest::decode_canonical(&encoded).map_err(|error| error.to_string())
+}
+
+fn require_retirement_acknowledgements(args: &CommandArgs) -> Result<(), String> {
+    if !args.flag("acknowledge-stopped-validator") || !args.flag("acknowledge-v2-rollback-only") {
+        return Err(
+            "retirement requires --acknowledge-stopped-validator and --acknowledge-v2-rollback-only"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn parse_retirement_replica_evidence(
+    specs: Vec<&str>,
+    segment_object_hash: Hash,
+) -> Result<Vec<ArchiveV2ReplicaEvidence>, String> {
+    if specs.is_empty() {
+        return Err("retirement authorization requires --replica-evidence".to_string());
+    }
+    specs
+        .into_iter()
+        .map(|spec| {
+            let parts = spec.split(',').collect::<Vec<_>>();
+            if parts.len() != 3 || parts[0].is_empty() || parts[1].is_empty() {
+                return Err(format!(
+                    "replica evidence {spec:?} must use destination,failure-domain,verified-unix-seconds"
+                ));
+            }
+            Ok(ArchiveV2ReplicaEvidence {
+                destination: parts[0].to_string(),
+                failure_domain: parts[1].to_string(),
+                segment_object_hash,
+                verified_unix_seconds: parse_u64(parts[2], "replica-evidence timestamp")?,
+            })
+        })
+        .collect()
 }
 
 fn run_verify(args: &CommandArgs) -> Result<(), String> {
@@ -214,6 +539,7 @@ fn run_verify(args: &CommandArgs) -> Result<(), String> {
         .saturating_add(max_objects)
         .min(manifests.len() as u64);
     let mut verified_bytes = 0u64;
+    let mut verified_object_hashes = Vec::new();
     for manifest in &manifests[start_index as usize..end_index as usize] {
         let stored_manifest = ArchiveV2Manifest::decode_canonical(
             &fs::read(manifest_path(&root, &manifest.segment_object_hash))
@@ -231,6 +557,7 @@ fn run_verify(args: &CommandArgs) -> Result<(), String> {
         ArchiveV2SegmentCodec::decode(&object, manifest, &catalog.identity)
             .map_err(|error| error.to_string())?;
         verified_bytes = verified_bytes.saturating_add(object.len() as u64);
+        verified_object_hashes.push(manifest.segment_object_hash.to_hex());
     }
     print_json(&json!({
         "operation": "verify",
@@ -238,6 +565,7 @@ fn run_verify(args: &CommandArgs) -> Result<(), String> {
         "start_index": start_index,
         "next_index": end_index,
         "verified_objects": end_index.saturating_sub(start_index),
+        "verified_object_hashes": verified_object_hashes,
         "verified_bytes": verified_bytes,
         "complete": end_index == manifests.len() as u64,
     }))
@@ -989,6 +1317,12 @@ fn parse_u32(value: &str, name: &str) -> Result<u32, String> {
         .map_err(|error| format!("invalid --{name}: {error}"))
 }
 
+fn parse_u16(value: &str, name: &str) -> Result<u16, String> {
+    value
+        .parse()
+        .map_err(|error| format!("invalid --{name}: {error}"))
+}
+
 fn push_bounded(values: &mut Vec<String>, value: String) {
     if values.len() < 100 {
         values.push(value);
@@ -1030,11 +1364,35 @@ fn write_json_create_new<T: serde::Serialize>(path: &Path, value: &T) -> Result<
         .map_err(|error| error.to_string())
 }
 
+fn write_bytes_create_new(path: &Path, encoded: &[u8]) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| "output path has no parent".to_string())?;
+    let parent = if parent.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        parent
+    };
+    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    let mut file = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(path)
+        .map_err(|error| format!("failed creating {}: {error}", path.display()))?;
+    file.write_all(encoded).map_err(|error| error.to_string())?;
+    file.sync_all().map_err(|error| error.to_string())?;
+    OpenOptions::new()
+        .read(true)
+        .open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| error.to_string())
+}
+
 fn print_usage() {
     println!(
-        "lichen-archive-v2 <status|verify|repair|build|mirror|restore|profile-source|benchmark> [options]\n\
+        "lichen-archive-v2 <status|verify|repair|declare-legacy-loss|build|mirror|restore|retirement-authorize|retirement-pass|retirement-reclaim|profile-source|benchmark> [options]\n\
          Run `lichen-archive-v2 <command> --help` is intentionally unsupported; unknown options fail closed.\n\
-         Replica specifications use name:failure-domain:path. Verify and mirror default to one object per pass."
+         Replica specifications use name:failure-domain:path. Retirement evidence uses destination,failure-domain,verified-unix-seconds. Verify and mirror default to one object per pass."
     );
 }
 
@@ -1075,5 +1433,38 @@ mod tests {
         );
         assert!(parse_benchmark_candidate("9:4194304:unknown").is_err());
         assert!(parse_benchmark_candidate("9:4194304").is_err());
+    }
+
+    #[test]
+    fn retirement_evidence_parser_binds_every_replica_to_the_segment() {
+        let hash = Hash::hash(b"retirement-cli-segment");
+        let evidence = parse_retirement_replica_evidence(
+            vec!["r2-primary,enam,42", "r2-replica,apac,43"],
+            hash,
+        )
+        .unwrap();
+        assert_eq!(evidence.len(), 2);
+        assert!(evidence
+            .iter()
+            .all(|entry| entry.segment_object_hash == hash));
+        assert!(parse_retirement_replica_evidence(vec!["missing-fields"], hash).is_err());
+    }
+
+    #[test]
+    fn destructive_retirement_commands_require_both_acknowledgements() {
+        let (_, incomplete) = CommandArgs::parse(vec![
+            "retirement-pass".to_string(),
+            "--acknowledge-stopped-validator".to_string(),
+        ])
+        .unwrap();
+        assert!(require_retirement_acknowledgements(&incomplete).is_err());
+
+        let (_, complete) = CommandArgs::parse(vec![
+            "retirement-pass".to_string(),
+            "--acknowledge-stopped-validator".to_string(),
+            "--acknowledge-v2-rollback-only".to_string(),
+        ])
+        .unwrap();
+        assert!(require_retirement_acknowledgements(&complete).is_ok());
     }
 }

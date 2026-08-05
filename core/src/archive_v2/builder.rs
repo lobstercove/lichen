@@ -158,15 +158,20 @@ impl<'a> ArchiveV2Builder<'a> {
                 actual: String::from_utf8_lossy(&state_network).into_owned(),
             });
         }
-        let genesis_hash = state
+        let genesis_hash = match state
             .get_block_by_slot(0)
             .map_err(ArchiveV2Error::Io)?
-            .map(|block| block.hash())
-            .ok_or_else(|| {
-                ArchiveV2Error::Continuity(
-                    "authoritative source has no canonical genesis block".to_string(),
-                )
-            })?;
+        {
+            Some(block) => block.hash(),
+            None => verified_catalog_block_at(&options.root, &identity, 0)?
+                .map(|block| block.hash())
+                .ok_or_else(|| {
+                    ArchiveV2Error::Continuity(
+                        "authoritative source and Archive V2 catalog have no canonical genesis block"
+                            .to_string(),
+                    )
+                })?,
+        };
         if genesis_hash != identity.genesis_hash {
             return Err(ArchiveV2Error::WrongGenesis);
         }
@@ -291,19 +296,32 @@ impl<'a> ArchiveV2Builder<'a> {
                     self.options.end_slot,
                 )));
             }
-            self.verify_archive_watermark(self.options.end_slot)?;
+            self.verify_archive_watermark(self.options.end_slot, &catalog)?;
             let (previous_segment_hash, previous_block_hash) = if let Some(previous) =
                 catalog.entries.last()
             {
                 let previous = catalog.active_manifest(&previous.manifest.segment_object_hash)?;
-                if self.options.start_slot != previous.end_slot.saturating_add(1) {
-                    return Err(ArchiveV2Error::Continuity(format!(
-                        "build starts at {}, catalog expects {}",
-                        self.options.start_slot,
-                        previous.end_slot.saturating_add(1)
-                    )));
-                }
-                (Some(previous.segment_object_hash), previous.last_block_hash)
+                let previous_block_hash =
+                    if self.options.start_slot == previous.end_slot.saturating_add(1) {
+                        previous.last_block_hash
+                    } else if let Some(declaration) = catalog.trailing_loss_declaration()? {
+                        if declaration.following_slot()? != self.options.start_slot {
+                            return Err(ArchiveV2Error::Continuity(format!(
+                            "build starts at {}, catalog expects {} or declared-loss successor {}",
+                            self.options.start_slot,
+                            previous.end_slot.saturating_add(1),
+                            declaration.following_slot()?
+                        )));
+                        }
+                        declaration.missing_tip_block_hash
+                    } else {
+                        return Err(ArchiveV2Error::Continuity(format!(
+                            "build starts at {}, catalog expects {}",
+                            self.options.start_slot,
+                            previous.end_slot.saturating_add(1)
+                        )));
+                    };
+                (Some(previous.segment_object_hash), previous_block_hash)
             } else {
                 if self.options.start_slot != 0 {
                     return Err(ArchiveV2Error::Continuity(
@@ -351,7 +369,7 @@ impl<'a> ArchiveV2Builder<'a> {
                     "authoritative finalized source changed during segment collection".to_string(),
                 ));
             }
-            self.verify_archive_watermark(self.options.end_slot)?;
+            self.verify_archive_watermark(self.options.end_slot, &catalog)?;
             let (segment_bytes, manifest) = ArchiveV2SegmentCodec::encode(
                 self.identity.clone(),
                 previous_segment_hash,
@@ -507,7 +525,11 @@ impl<'a> ArchiveV2Builder<'a> {
         Ok(Hash::hash(&encoded))
     }
 
-    fn verify_archive_watermark(&self, required_end: u64) -> Result<(), ArchiveV2Error> {
+    fn verify_archive_watermark(
+        &self,
+        required_end: u64,
+        catalog: &ArchiveV2Catalog,
+    ) -> Result<(), ArchiveV2Error> {
         let (watermark_slot, watermark_hash) = self
             .state
             .get_archive_contiguous_tip()
@@ -517,22 +539,94 @@ impl<'a> ArchiveV2Builder<'a> {
                     "authoritative source has no genesis-to-tip archive watermark".to_string(),
                 )
             })?;
-        if watermark_slot < required_end {
-            return Err(ArchiveV2Error::Continuity(format!(
-                "archive watermark {watermark_slot} does not cover build end {required_end}"
-            )));
-        }
         let canonical_hash = self
-            .state
-            .get_block_by_slot(watermark_slot)
-            .map_err(ArchiveV2Error::Io)?
+            .canonical_or_catalog_block(catalog, watermark_slot)?
             .map(|block| block.hash());
         if canonical_hash != Some(watermark_hash) {
             return Err(ArchiveV2Error::Continuity(
                 "archive watermark hash does not match its canonical block".to_string(),
             ));
         }
+        if watermark_slot >= required_end {
+            return Ok(());
+        }
+
+        // The existing lichen-testnet-1 history cannot advance its legacy
+        // genesis-contiguous watermark across the one approved missing-body
+        // interval. A root-committed exact waiver may bridge only that known
+        // boundary; every requested source block remains mandatory.
+        let declaration = catalog.legacy_loss_declarations.first().ok_or_else(|| {
+            ArchiveV2Error::Continuity(format!(
+                "archive watermark {watermark_slot} does not cover build end {required_end}"
+            ))
+        })?;
+        let following_slot = declaration.following_slot()?;
+        if self.options.start_slot < following_slot {
+            return Err(ArchiveV2Error::Continuity(format!(
+                "archive watermark {watermark_slot} does not cover pre-waiver build end {required_end}"
+            )));
+        }
+        let following = self
+            .canonical_or_catalog_block(catalog, following_slot)?
+            .ok_or_else(|| {
+                ArchiveV2Error::Unavailable(format!(
+                    "declared-loss successor block {following_slot} is unavailable"
+                ))
+            })?;
+        if following.hash() != declaration.following_block_hash
+            || following.header.parent_hash != declaration.missing_tip_block_hash
+        {
+            return Err(ArchiveV2Error::Continuity(
+                "declared-loss successor boundary conflicts with canonical history".to_string(),
+            ));
+        }
+        if self.options.start_slot > following_slot {
+            let previous = catalog.entries.last().ok_or_else(|| {
+                ArchiveV2Error::Continuity(
+                    "post-waiver build has no cataloged predecessor".to_string(),
+                )
+            })?;
+            let previous = catalog.active_manifest(&previous.manifest.segment_object_hash)?;
+            if previous.start_slot < following_slot
+                || previous.end_slot.checked_add(1) != Some(self.options.start_slot)
+                || self
+                    .canonical_or_catalog_block(catalog, previous.end_slot)?
+                    .map(|block| block.hash())
+                    != Some(previous.last_block_hash)
+            {
+                return Err(ArchiveV2Error::Continuity(
+                    "post-waiver catalog predecessor conflicts with canonical history".to_string(),
+                ));
+            }
+        }
+        if self
+            .state
+            .get_block_by_slot(required_end)
+            .map_err(ArchiveV2Error::Io)?
+            .is_none()
+        {
+            return Err(ArchiveV2Error::Unavailable(format!(
+                "canonical build-end block {required_end} is unavailable"
+            )));
+        }
         Ok(())
+    }
+
+    fn canonical_or_catalog_block(
+        &self,
+        catalog: &ArchiveV2Catalog,
+        slot: u64,
+    ) -> Result<Option<crate::Block>, ArchiveV2Error> {
+        match self
+            .state
+            .get_block_by_slot(slot)
+            .map_err(ArchiveV2Error::Io)?
+        {
+            Some(block) => Ok(Some(block)),
+            None => {
+                verified_catalog_block_at_loaded(&self.options.root, &self.identity, catalog, slot)
+            }
+        }
     }
 
     fn replica_destinations(&self) -> Vec<String> {
@@ -650,6 +744,52 @@ impl<'a> ArchiveV2Builder<'a> {
         }
         Ok(())
     }
+}
+
+fn verified_catalog_block_at(
+    root: &Path,
+    identity: &ArchiveV2Identity,
+    slot: u64,
+) -> Result<Option<crate::Block>, ArchiveV2Error> {
+    let catalog_path = root.join("catalog.av2");
+    if !catalog_path.is_file() {
+        return Ok(None);
+    }
+    let catalog = ArchiveV2Catalog::load(&catalog_path)?;
+    verified_catalog_block_at_loaded(root, identity, &catalog, slot)
+}
+
+fn verified_catalog_block_at_loaded(
+    root: &Path,
+    identity: &ArchiveV2Identity,
+    catalog: &ArchiveV2Catalog,
+    slot: u64,
+) -> Result<Option<crate::Block>, ArchiveV2Error> {
+    if &catalog.identity != identity {
+        return Err(if catalog.identity.network_id != identity.network_id {
+            ArchiveV2Error::WrongNetwork {
+                expected: identity.network_id.clone(),
+                actual: catalog.identity.network_id.clone(),
+            }
+        } else {
+            ArchiveV2Error::WrongGenesis
+        });
+    }
+    let Some(entry) = catalog
+        .entries
+        .iter()
+        .find(|entry| entry.manifest.start_slot <= slot && slot <= entry.manifest.end_slot)
+    else {
+        return Ok(None);
+    };
+    let manifest = catalog.active_manifest(&entry.manifest.segment_object_hash)?;
+    let object = fs::read(object_path(root, &manifest.segment_object_hash)).map_err(|error| {
+        ArchiveV2Error::Io(format!(
+            "failed reading catalog fallback object {}: {error}",
+            manifest.segment_object_hash
+        ))
+    })?;
+    ArchiveV2SegmentCodec::decode_block_at(&object, manifest, identity, slot)
 }
 
 fn maybe_fault(
@@ -805,6 +945,53 @@ mod tests {
 
     use super::*;
     use crate::Block;
+
+    #[test]
+    fn verified_catalog_fallback_authenticates_retired_genesis() {
+        let root = tempdir().unwrap();
+        let block = Block::new_with_timestamp(
+            0,
+            Hash::default(),
+            Hash::hash(b"retired-genesis-state"),
+            [4; 32],
+            Vec::new(),
+            1,
+        );
+        let identity = ArchiveV2Identity {
+            network_id: "retired-genesis-testnet".to_string(),
+            genesis_hash: block.hash(),
+        };
+        let (object, manifest) = ArchiveV2SegmentCodec::encode(
+            identity.clone(),
+            None,
+            Hash::default(),
+            &super::super::ArchiveV2SegmentContents::from_blocks(vec![block.clone()]),
+            &ArchiveV2CodecConfig {
+                target_frame_bytes: 1024 * 1024,
+                ..ArchiveV2CodecConfig::default()
+            },
+        )
+        .unwrap();
+        let mut catalog = ArchiveV2Catalog::empty(identity.clone()).unwrap();
+        catalog.append(manifest.clone()).unwrap();
+        catalog
+            .store_atomic(&root.path().join("catalog.av2"))
+            .unwrap();
+        write_atomic_identical(
+            &object_path(root.path(), &manifest.segment_object_hash),
+            &object,
+        )
+        .unwrap();
+
+        let restored = verified_catalog_block_at(root.path(), &identity, 0)
+            .unwrap()
+            .unwrap();
+        assert_eq!(restored.header.slot, 0);
+        assert_eq!(restored.hash(), block.hash());
+        assert!(verified_catalog_block_at(root.path(), &identity, 1)
+            .unwrap()
+            .is_none());
+    }
 
     #[test]
     fn builder_resumes_every_promotion_boundary_with_identical_output() {

@@ -6,6 +6,7 @@ const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..', '..');
 const script = fs.readFileSync(path.join(ROOT, 'scripts/rolling-release-deploy.sh'), 'utf8');
+const r2Script = fs.readFileSync(path.join(ROOT, 'scripts/archive-v2-r2-put.sh'), 'utf8');
 
 function assert(condition, message) {
   if (!condition) {
@@ -47,6 +48,10 @@ assert(script.includes('SSH_CONNECT_TIMEOUT="${LICHEN_SSH_CONNECT_TIMEOUT:-20}"'
   'SSH connect timeout must be configurable for flaky recovery links');
 assert(script.includes('-o ConnectionAttempts=3'),
   'SSH operations must retry connection establishment during rolling deploys');
+assert((script.match(/-o ControlMaster=no/g) || []).length >= 2,
+  'SSH and SCP must disable inherited multiplex masters to prevent cross-host socket reuse');
+assert((script.match(/-o ControlPath=none/g) || []).length >= 2,
+  'SSH and SCP must disable inherited multiplex control paths');
 assert(script.includes('-o ServerAliveInterval=10'),
   'SSH operations must use keepalives during rolling deploys');
 assert(script.includes('bash -s; status=\\$?; exit \\$status'),
@@ -99,5 +104,19 @@ assert(script.includes('curl -fsS "$CUSTODY_HEALTH_URL"'), 'custody health must 
 assert(script.includes('sudo -n systemctl start lichen-faucet.service'), 'faucet service must be started after RPC is healthy');
 assert(script.includes('http://127.0.0.1:9100/health'), 'faucet health must be verified after restart');
 assert(script.includes('unit is enabled but inactive'), 'release verification must fail enabled inactive optional services');
+assert(r2Script.includes('"$ARCHIVE_V2_BINARY" verify'),
+  'R2 publication must verify the exact catalog segment before upload');
+assert(r2Script.includes('verified_object_hashes'),
+  'R2 publication must bind the verified catalog index to the requested object hash');
+assert(r2Script.includes('/dev/shm'),
+  'R2 temporary credential configuration must prefer tmpfs');
+assert(r2Script.includes('trap cleanup EXIT HUP INT TERM'),
+  'R2 temporary credentials must be removed on every exit path');
+assert(!r2Script.includes('--user "$AWS_ACCESS_KEY_ID'),
+  'R2 secret credentials must not be exposed in curl process arguments');
+assert(r2Script.includes('curl --config "$curl_config" "$endpoint/$R2_BUCKET/$prefix/$key"'),
+  'R2 publication must read every object back through the authenticated endpoint');
+assert(r2Script.includes('R2 read-after-write hash mismatch'),
+  'R2 publication must fail closed on remote hash mismatch');
 
 console.log('rolling release custody sequencing QA passed');
