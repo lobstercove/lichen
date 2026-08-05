@@ -143,7 +143,9 @@ pub use state::SymbolRegistryEntry;
 pub use state::STATE_SNAPSHOT_CATEGORIES;
 pub use state::STATE_SNAPSHOT_SPECIAL_CATEGORIES;
 pub use state::{
-    AccountTxsRebuildReport, AccountTxsSlotInspection, AccountTxsSourceInspection, CheckpointMeta,
+    AccountTxsRebuildReport, AccountTxsSlotInspection, AccountTxsSourceInspection,
+    ArchiveV2RetirementLimits, ArchiveV2RetirementPassReport, ArchiveV2RetirementPhase,
+    ArchiveV2RetirementReclaimLimits, ArchiveV2RetirementReclaimReport, CheckpointMeta,
     GovernedProposalTxBackfillReport, PublicHistoryCategoryDigest, PublicHistoryImportReport,
     PublicHistoryManifest, PUBLIC_HISTORY_SNAPSHOT_CATEGORIES,
 };

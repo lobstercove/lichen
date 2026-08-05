@@ -33,7 +33,10 @@ pub use capacity::{
     ArchiveV2CapacitySample, ArchiveV2CapacityThresholds, ArchiveV2CapacityTotals,
     ArchiveV2PressureAction,
 };
-pub use catalog::{ArchiveV2Catalog, ArchiveV2CatalogEntry, ArchiveV2CatalogSupersession};
+pub use catalog::{
+    ArchiveV2Catalog, ArchiveV2CatalogEntry, ArchiveV2CatalogSupersession,
+    ArchiveV2LegacyLossDeclaration, ARCHIVE_V2_CATALOG_VERSION,
+};
 pub use codec::{
     ArchiveV2DecodedSegment, ArchiveV2SegmentCodec, ArchiveV2SegmentContents,
     ArchiveV2TransactionLocation,

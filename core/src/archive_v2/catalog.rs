@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 use super::{
     format::{
         ArchiveV2Error, ArchiveV2Identity, ArchiveV2Manifest, ARCHIVE_V2_CATALOG_MAGIC,
-        ARCHIVE_V2_FORMAT_VERSION, ARCHIVE_V2_ROOT_DOMAIN,
+        ARCHIVE_V2_ROOT_DOMAIN,
     },
     ArchiveV2SegmentCodec,
 };
@@ -19,7 +19,28 @@ use crate::Hash;
 const MAX_CATALOG_BYTES: usize = 64 * 1024 * 1024;
 const MAX_CATALOG_ENTRIES: usize = 1_000_000;
 const MAX_CATALOG_SUPERSESSIONS: usize = 100_000;
+const MAX_CATALOG_LEGACY_LOSS_DECLARATIONS: usize = 16;
 static CATALOG_TEMPORARY_NONCE: AtomicU64 = AtomicU64::new(0);
+
+/// Catalog schema 3 adds root-committed, exact-network legacy-loss
+/// declarations without changing the Archive V2 segment codec version.
+pub const ARCHIVE_V2_CATALOG_VERSION: u16 = 3;
+
+const TESTNET_LEGACY_LOSS_WAIVER_ID: &str = "lichen-testnet-1-signed-block-bodies-2872006-4298999";
+const TESTNET_GENESIS_HASH: &str =
+    "f08308ef2520af0967120f3314fa95b14d8239a898d34a6993981cb93f740884";
+const TESTNET_LEGACY_LOSS_START_SLOT: u64 = 2_872_006;
+const TESTNET_LEGACY_LOSS_END_SLOT: u64 = 4_298_999;
+const TESTNET_LEGACY_LOSS_PRECEDING_BLOCK_HASH: &str =
+    "74e23fbbf02a56763497ada2c40606b94f6a24504764926adc1e40d080c7bd84";
+const TESTNET_LEGACY_LOSS_MISSING_TIP_BLOCK_HASH: &str =
+    "250dc7792f94e8e7a2084ac0396b8e333e9e4fc8673efcbc74257253cbd4a483";
+const TESTNET_LEGACY_LOSS_FOLLOWING_BLOCK_HASH: &str =
+    "af42961b53719845f1ac7b913f20c602bc520e274a52347d7d46ab92522ebbc1";
+
+fn parse_policy_hash(value: &str) -> Hash {
+    Hash::from_hex(value).expect("hard-coded Archive V2 policy hash must be valid")
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -37,6 +58,57 @@ pub struct ArchiveV2CatalogSupersession {
     pub manifest: ArchiveV2Manifest,
 }
 
+/// A catalog-root commitment to a historical interval whose original signed
+/// block bodies are unavailable. This is not a sparse-segment mechanism: the
+/// only accepted declaration is the existing lichen-testnet-1 waiver, pinned
+/// to its genesis and both surviving boundary commitments.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArchiveV2LegacyLossDeclaration {
+    pub sequence: u64,
+    pub waiver_id: String,
+    pub start_slot: u64,
+    pub end_slot: u64,
+    pub preceding_block_hash: Hash,
+    /// Hash committed by the first surviving block as its parent. The body for
+    /// this last unavailable block is not reconstructed or synthesized.
+    pub missing_tip_block_hash: Hash,
+    pub following_block_hash: Hash,
+}
+
+impl ArchiveV2LegacyLossDeclaration {
+    pub fn lichen_testnet_1() -> Self {
+        Self {
+            sequence: 0,
+            waiver_id: TESTNET_LEGACY_LOSS_WAIVER_ID.to_string(),
+            start_slot: TESTNET_LEGACY_LOSS_START_SLOT,
+            end_slot: TESTNET_LEGACY_LOSS_END_SLOT,
+            preceding_block_hash: parse_policy_hash(TESTNET_LEGACY_LOSS_PRECEDING_BLOCK_HASH),
+            missing_tip_block_hash: parse_policy_hash(TESTNET_LEGACY_LOSS_MISSING_TIP_BLOCK_HASH),
+            following_block_hash: parse_policy_hash(TESTNET_LEGACY_LOSS_FOLLOWING_BLOCK_HASH),
+        }
+    }
+
+    fn validate_for_identity(&self, identity: &ArchiveV2Identity) -> Result<(), ArchiveV2Error> {
+        let allowed = Self::lichen_testnet_1();
+        if identity.network_id != "lichen-testnet-1"
+            || identity.genesis_hash.to_hex() != TESTNET_GENESIS_HASH
+            || self != &allowed
+        {
+            return Err(ArchiveV2Error::Continuity(
+                "legacy-loss declaration is not the exact lichen-testnet-1 waiver".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn following_slot(&self) -> Result<u64, ArchiveV2Error> {
+        self.end_slot
+            .checked_add(1)
+            .ok_or_else(|| ArchiveV2Error::Bounds("legacy-loss end slot overflow".to_string()))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ArchiveV2Catalog {
@@ -44,6 +116,7 @@ pub struct ArchiveV2Catalog {
     pub identity: ArchiveV2Identity,
     pub entries: Vec<ArchiveV2CatalogEntry>,
     pub supersessions: Vec<ArchiveV2CatalogSupersession>,
+    pub legacy_loss_declarations: Vec<ArchiveV2LegacyLossDeclaration>,
     pub catalog_root: Hash,
 }
 
@@ -51,10 +124,11 @@ impl ArchiveV2Catalog {
     pub fn empty(identity: ArchiveV2Identity) -> Result<Self, ArchiveV2Error> {
         identity.validate()?;
         let mut catalog = Self {
-            format_version: ARCHIVE_V2_FORMAT_VERSION,
+            format_version: ARCHIVE_V2_CATALOG_VERSION,
             identity,
             entries: Vec::new(),
             supersessions: Vec::new(),
+            legacy_loss_declarations: Vec::new(),
             catalog_root: Hash::default(),
         };
         catalog.catalog_root = catalog.compute_root()?;
@@ -82,18 +156,20 @@ impl ArchiveV2Catalog {
                             && supersession.manifest.segment_object_hash == hash
                     })
             });
-            if manifest.start_slot != previous.manifest.end_slot.saturating_add(1)
-                || !valid_predecessor
-                || manifest.previous_block_hash != previous.manifest.last_block_hash
-            {
+            let direct_continuity = manifest.start_slot
+                == previous.manifest.end_slot.saturating_add(1)
+                && manifest.previous_block_hash == previous.manifest.last_block_hash;
+            let declared_continuity =
+                self.loss_declaration_between(&previous.manifest, Some(&manifest))?;
+            if (!direct_continuity && !declared_continuity) || !valid_predecessor {
                 return Err(ArchiveV2Error::Continuity(format!(
                     "segment {}..{} does not extend catalog tip {}",
                     manifest.start_slot, manifest.end_slot, previous.manifest.end_slot
                 )));
             }
-        } else if manifest.previous_segment_hash.is_some() {
+        } else if manifest.previous_segment_hash.is_some() || manifest.start_slot != 0 {
             return Err(ArchiveV2Error::Continuity(
-                "first catalog segment has an unknown predecessor".to_string(),
+                "first catalog segment must begin at genesis without a predecessor".to_string(),
             ));
         }
         let encoded = manifest.encode_canonical()?;
@@ -108,6 +184,128 @@ impl ArchiveV2Catalog {
         }
         self.catalog_root = self.compute_root()?;
         self.validate()
+    }
+
+    pub fn declare_legacy_loss(
+        &mut self,
+        declaration: ArchiveV2LegacyLossDeclaration,
+    ) -> Result<(), ArchiveV2Error> {
+        self.validate()?;
+        declaration.validate_for_identity(&self.identity)?;
+        if declaration.sequence != self.legacy_loss_declarations.len() as u64 {
+            return Err(ArchiveV2Error::Ordering(
+                "legacy-loss declaration sequence is not canonical".to_string(),
+            ));
+        }
+        if self.legacy_loss_declarations.len() >= MAX_CATALOG_LEGACY_LOSS_DECLARATIONS {
+            return Err(ArchiveV2Error::Bounds(
+                "catalog has too many legacy-loss declarations".to_string(),
+            ));
+        }
+        let previous = self.entries.last().ok_or_else(|| {
+            ArchiveV2Error::Continuity(
+                "legacy-loss declaration requires a cataloged preceding segment".to_string(),
+            )
+        })?;
+        if previous.manifest.end_slot.checked_add(1) != Some(declaration.start_slot)
+            || previous.manifest.last_block_hash != declaration.preceding_block_hash
+        {
+            return Err(ArchiveV2Error::Continuity(
+                "legacy-loss declaration does not extend the catalog tip".to_string(),
+            ));
+        }
+        self.legacy_loss_declarations.push(declaration);
+        self.catalog_root = self.compute_root()?;
+        self.validate()
+    }
+
+    /// True when every slot from genesis through `required_end` is represented
+    /// by a verified segment or by the one exact, root-committed testnet loss
+    /// declaration. Declared slots remain unavailable to block-body RPCs.
+    pub fn covers_genesis_through(&self, required_end: u64) -> Result<bool, ArchiveV2Error> {
+        self.validate()?;
+        let Some(first) = self.entries.first() else {
+            return Ok(false);
+        };
+        if first.manifest.start_slot != 0 {
+            return Ok(false);
+        }
+        if required_end <= first.manifest.end_slot {
+            return Ok(true);
+        }
+        let mut previous = &first.manifest;
+        for next in self.entries.iter().skip(1) {
+            if next.manifest.start_slot == previous.end_slot.saturating_add(1) {
+                previous = &next.manifest;
+            } else if self.loss_declaration_between(previous, Some(&next.manifest))? {
+                let declaration = self
+                    .legacy_loss_declarations
+                    .iter()
+                    .find(|declaration| {
+                        declaration.start_slot == previous.end_slot.saturating_add(1)
+                    })
+                    .ok_or_else(|| {
+                        ArchiveV2Error::Continuity(
+                            "catalog loss declaration disappeared during coverage check"
+                                .to_string(),
+                        )
+                    })?;
+                if required_end <= declaration.end_slot {
+                    return Ok(true);
+                }
+                previous = &next.manifest;
+            } else {
+                return Ok(false);
+            }
+            if required_end <= previous.end_slot {
+                return Ok(true);
+            }
+        }
+        if let Some(declaration) = self
+            .legacy_loss_declarations
+            .iter()
+            .find(|declaration| declaration.start_slot == previous.end_slot.saturating_add(1))
+        {
+            if required_end <= declaration.end_slot {
+                return Ok(true);
+            }
+        }
+        Ok(required_end <= previous.end_slot)
+    }
+
+    pub fn trailing_loss_declaration(
+        &self,
+    ) -> Result<Option<&ArchiveV2LegacyLossDeclaration>, ArchiveV2Error> {
+        let Some(previous) = self.entries.last() else {
+            return Ok(None);
+        };
+        Ok(self.legacy_loss_declarations.iter().find(|declaration| {
+            previous.manifest.end_slot.checked_add(1) == Some(declaration.start_slot)
+        }))
+    }
+
+    fn loss_declaration_between(
+        &self,
+        previous: &ArchiveV2Manifest,
+        following: Option<&ArchiveV2Manifest>,
+    ) -> Result<bool, ArchiveV2Error> {
+        let Some(declaration) = self
+            .legacy_loss_declarations
+            .iter()
+            .find(|declaration| previous.end_slot.checked_add(1) == Some(declaration.start_slot))
+        else {
+            return Ok(false);
+        };
+        declaration.validate_for_identity(&self.identity)?;
+        if declaration.preceding_block_hash != previous.last_block_hash {
+            return Ok(false);
+        }
+        let Some(following) = following else {
+            return Ok(true);
+        };
+        Ok(declaration.following_slot()? == following.start_slot
+            && declaration.missing_tip_block_hash == following.previous_block_hash
+            && declaration.following_block_hash == following.first_block_hash)
     }
 
     pub fn supersede(&mut self, manifest: ArchiveV2Manifest) -> Result<(), ArchiveV2Error> {
@@ -324,8 +522,11 @@ impl ArchiveV2Catalog {
         }
         if self.entries.len() > incoming.entries.len()
             || self.supersessions.len() > incoming.supersessions.len()
+            || self.legacy_loss_declarations.len() > incoming.legacy_loss_declarations.len()
             || self.entries != incoming.entries[..self.entries.len()]
             || self.supersessions != incoming.supersessions[..self.supersessions.len()]
+            || self.legacy_loss_declarations
+                != incoming.legacy_loss_declarations[..self.legacy_loss_declarations.len()]
         {
             return Err(ArchiveV2Error::Continuity(
                 "incoming catalog is not an exact append-only extension".to_string(),
@@ -373,7 +574,7 @@ impl ArchiveV2Catalog {
     }
 
     pub fn validate(&self) -> Result<(), ArchiveV2Error> {
-        if self.format_version != ARCHIVE_V2_FORMAT_VERSION {
+        if self.format_version != ARCHIVE_V2_CATALOG_VERSION {
             return Err(ArchiveV2Error::Malformed(format!(
                 "unsupported catalog version {}",
                 self.format_version
@@ -382,6 +583,7 @@ impl ArchiveV2Catalog {
         self.identity.validate()?;
         if self.entries.len() > MAX_CATALOG_ENTRIES
             || self.supersessions.len() > MAX_CATALOG_SUPERSESSIONS
+            || self.legacy_loss_declarations.len() > MAX_CATALOG_LEGACY_LOSS_DECLARATIONS
         {
             return Err(ArchiveV2Error::Bounds(
                 "catalog has too many entries or supersessions".to_string(),
@@ -389,6 +591,14 @@ impl ArchiveV2Catalog {
         }
         let mut versions_by_range =
             std::collections::BTreeMap::<(u64, u64), std::collections::BTreeSet<Hash>>::new();
+        for (index, declaration) in self.legacy_loss_declarations.iter().enumerate() {
+            if declaration.sequence != index as u64 {
+                return Err(ArchiveV2Error::Ordering(
+                    "legacy-loss declaration sequence is not canonical".to_string(),
+                ));
+            }
+            declaration.validate_for_identity(&self.identity)?;
+        }
         for (index, entry) in self.entries.iter().enumerate() {
             entry.manifest.validate()?;
             if entry.manifest.identity != self.identity {
@@ -401,16 +611,21 @@ impl ArchiveV2Catalog {
                 .checked_sub(1)
                 .and_then(|previous| self.entries.get(previous))
             {
-                if entry.manifest.start_slot != previous.manifest.end_slot.saturating_add(1)
-                    || entry.manifest.previous_block_hash != previous.manifest.last_block_hash
+                let direct = entry.manifest.start_slot
+                    == previous.manifest.end_slot.saturating_add(1)
+                    && entry.manifest.previous_block_hash == previous.manifest.last_block_hash;
+                if !direct
+                    && !self.loss_declaration_between(&previous.manifest, Some(&entry.manifest))?
                 {
                     return Err(ArchiveV2Error::Continuity(format!(
                         "catalog entry {index} is not continuous"
                     )));
                 }
-            } else if entry.manifest.previous_segment_hash.is_some() {
+            } else if entry.manifest.previous_segment_hash.is_some()
+                || entry.manifest.start_slot != 0
+            {
                 return Err(ArchiveV2Error::Continuity(
-                    "catalog begins with an external predecessor".to_string(),
+                    "catalog must begin at genesis without an external predecessor".to_string(),
                 ));
             }
             let range = (entry.manifest.start_slot, entry.manifest.end_slot);
@@ -509,6 +724,39 @@ impl ArchiveV2Catalog {
                 )));
             }
         }
+        for declaration in &self.legacy_loss_declarations {
+            let previous = self
+                .entries
+                .iter()
+                .find(|entry| {
+                    entry.manifest.end_slot.checked_add(1) == Some(declaration.start_slot)
+                })
+                .ok_or_else(|| {
+                    ArchiveV2Error::Continuity(
+                        "legacy-loss declaration has no cataloged predecessor".to_string(),
+                    )
+                })?;
+            let following = self.entries.iter().find(|entry| {
+                Some(entry.manifest.start_slot) == declaration.end_slot.checked_add(1)
+            });
+            if !self.loss_declaration_between(
+                &previous.manifest,
+                following.map(|entry| &entry.manifest),
+            )? {
+                return Err(ArchiveV2Error::Continuity(
+                    "legacy-loss declaration boundary commitments do not match the catalog"
+                        .to_string(),
+                ));
+            }
+            if following.is_none()
+                && self.entries.last().map(|entry| entry.manifest.end_slot)
+                    != Some(previous.manifest.end_slot)
+            {
+                return Err(ArchiveV2Error::Ordering(
+                    "legacy-loss declaration may be pending only at the catalog tip".to_string(),
+                ));
+            }
+        }
         if self.compute_root()? != self.catalog_root {
             return Err(ArchiveV2Error::WrongRoot);
         }
@@ -538,6 +786,17 @@ impl ArchiveV2Catalog {
             hasher.update(entry.manifest_hash.0);
             hasher.update(entry.manifest.segment_object_hash.0);
             hasher.update(entry.manifest.segment_content_root.0);
+        }
+        hasher.update((self.legacy_loss_declarations.len() as u64).to_le_bytes());
+        for declaration in &self.legacy_loss_declarations {
+            hasher.update(declaration.sequence.to_le_bytes());
+            hasher.update((declaration.waiver_id.len() as u64).to_le_bytes());
+            hasher.update(declaration.waiver_id.as_bytes());
+            hasher.update(declaration.start_slot.to_le_bytes());
+            hasher.update(declaration.end_slot.to_le_bytes());
+            hasher.update(declaration.preceding_block_hash.0);
+            hasher.update(declaration.missing_tip_block_hash.0);
+            hasher.update(declaration.following_block_hash.0);
         }
         Ok(Hash(hasher.finalize().into()))
     }
@@ -778,6 +1037,57 @@ mod tests {
         let gap = manifest(&identity, 2, first_block, Some(Hash::hash(b"wrong")));
         assert!(matches!(
             catalog.append(gap),
+            Err(ArchiveV2Error::Continuity(_))
+        ));
+    }
+
+    #[test]
+    fn exact_testnet_legacy_loss_is_root_committed_and_non_transferable() {
+        let identity = ArchiveV2Identity {
+            network_id: "lichen-testnet-1".to_string(),
+            genesis_hash: Hash::from_hex(TESTNET_GENESIS_HASH).unwrap(),
+        };
+        let mut catalog = ArchiveV2Catalog::empty(identity.clone()).unwrap();
+        let mut before = manifest(&identity, 0, Hash::default(), None);
+        before.end_slot = TESTNET_LEGACY_LOSS_START_SLOT - 1;
+        before.block_count = before.end_slot + 1;
+        before.last_block_hash = Hash::from_hex(TESTNET_LEGACY_LOSS_PRECEDING_BLOCK_HASH).unwrap();
+        let before_object_hash = before.segment_object_hash;
+        catalog.append(before).unwrap();
+
+        let declaration = ArchiveV2LegacyLossDeclaration::lichen_testnet_1();
+        catalog.declare_legacy_loss(declaration.clone()).unwrap();
+        assert!(catalog
+            .covers_genesis_through(TESTNET_LEGACY_LOSS_END_SLOT)
+            .unwrap());
+
+        let mut after = manifest(
+            &identity,
+            declaration.following_slot().unwrap(),
+            declaration.missing_tip_block_hash,
+            Some(before_object_hash),
+        );
+        after.first_block_hash = declaration.following_block_hash;
+        after.last_block_hash = declaration.following_block_hash;
+        catalog.append(after).unwrap();
+        assert!(catalog
+            .covers_genesis_through(declaration.following_slot().unwrap())
+            .unwrap());
+        assert_eq!(
+            ArchiveV2Catalog::decode_canonical(&catalog.encode_canonical().unwrap()).unwrap(),
+            catalog
+        );
+
+        let wrong_identity = ArchiveV2Identity {
+            network_id: "fresh-testnet".to_string(),
+            genesis_hash: identity.genesis_hash,
+        };
+        let mut wrong_catalog = ArchiveV2Catalog::empty(wrong_identity.clone()).unwrap();
+        wrong_catalog
+            .append(manifest(&wrong_identity, 0, Hash::default(), None))
+            .unwrap();
+        assert!(matches!(
+            wrong_catalog.declare_legacy_loss(declaration),
             Err(ArchiveV2Error::Continuity(_))
         ));
     }

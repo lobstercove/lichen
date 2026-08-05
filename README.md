@@ -7,7 +7,15 @@ Ultra-low fees · Sub-second BFT block commitment · Agent-native identity · Mu
 [![License: Apache--2.0%20%2B%20MIT](https://img.shields.io/badge/License-Apache--2.0%20%2B%20MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.88+-00C9DB.svg)](https://www.rust-lang.org)
 
-**Current testnet release candidate:** `v0.5.236`. Signed `v0.5.229` remains the immediate restart-safe rollback anchor while legacy hot/cold history stays authoritative. The v0.5.236 candidate adds the Archive V2 dual reader, retroactive fixed-range builder, authenticated replication and restore, explicit archive roles, capacity-aware legacy migration, the patched Wasmer/rkyv runtime dependency line, retention-bounded hot-only consensus recovery during Archive V2 source outages, moving-head-safe fresh role admission, and role-independent canonical recent account snapshots without changing canonical block, transaction, state-root, or public RPC identities. Live conversion and legacy retirement remain blocked until adequate writable staging capacity, exact parity, replica acknowledgements, and restore evidence exist. The existing testnet has an explicit legacy-history waiver; fresh networks and mainnet fail closed on incomplete genesis-to-tip history.
+**Current signed testnet release:** `v0.5.236`. The unreleased `v0.5.237`
+retrofit candidate root-commits the exact existing-testnet legacy-loss interval,
+allows verified Archive V2 construction to resume after that interval, exposes
+signed bounded retirement operations, and isolates fleet SSH connections. It
+does not change canonical block, transaction, state-root, consensus, wire, or
+public RPC identities. No legacy row may be retired until the exact candidate
+passes every release gate, is signed and deployed coherently, and has two
+independently verified replicas. Fresh networks and mainnet still fail closed
+on incomplete genesis-to-tip history.
 
 **Website:** https://lichen.network  
 **Documentation:** https://developers.lichen.network  

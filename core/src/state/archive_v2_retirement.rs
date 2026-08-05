@@ -1301,6 +1301,7 @@ mod tests {
                     artifact_sha256: Hash::hash(b"artifact"),
                     detached_pq_checksum_signature_sha256: Hash::hash(b"pq"),
                     archive_format_version: ARCHIVE_V2_FORMAT_VERSION,
+                    catalog_format_version: crate::archive_v2::ARCHIVE_V2_CATALOG_VERSION,
                     deployed_validator_count: 4,
                     activated_unix_seconds: 1,
                 },

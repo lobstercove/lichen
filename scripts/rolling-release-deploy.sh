@@ -64,7 +64,7 @@ is_consensus_critical_release() {
   fi
 
   case "$RELEASE_TAG" in
-    v0.5.188|v0.5.223|v0.5.224|v0.5.225|v0.5.226|v0.5.227|v0.5.228|v0.5.229|v0.5.230|v0.5.231|v0.5.232|v0.5.233|v0.5.234|v0.5.235|v0.5.236) return 0 ;;
+    v0.5.188|v0.5.223|v0.5.224|v0.5.225|v0.5.226|v0.5.227|v0.5.228|v0.5.229|v0.5.230|v0.5.231|v0.5.232|v0.5.233|v0.5.234|v0.5.235|v0.5.236|v0.5.237) return 0 ;;
   esac
 
   if ! command -v git >/dev/null 2>&1 ||
@@ -127,6 +127,8 @@ ssh_run() {
   shift
   ssh -p "$SSH_PORT" \
     -o BatchMode=yes \
+    -o ControlMaster=no \
+    -o ControlPath=none \
     -o ConnectTimeout="$SSH_CONNECT_TIMEOUT" \
     -o ConnectionAttempts=3 \
     -o ServerAliveInterval=10 \
@@ -142,6 +144,8 @@ scp_to() {
   local dst="$3"
   scp -O -P "$SSH_PORT" \
     -o BatchMode=yes \
+    -o ControlMaster=no \
+    -o ControlPath=none \
     -o ConnectTimeout="$SSH_CONNECT_TIMEOUT" \
     -o ConnectionAttempts=3 \
     -o ServerAliveInterval=10 \

@@ -1,12 +1,16 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use super::{ArchiveV2Error, ArchiveV2Identity, ArchiveV2Manifest, ARCHIVE_V2_FORMAT_VERSION};
+use super::{
+    ArchiveV2Error, ArchiveV2Identity, ArchiveV2Manifest, ARCHIVE_V2_CATALOG_VERSION,
+    ARCHIVE_V2_FORMAT_VERSION,
+};
 use crate::codec::{deserialize_legacy_bincode_strict, serialize_legacy_bincode};
 use crate::{Hash, Keypair, PqSignature, Pubkey};
 
 const RETIREMENT_MAGIC: &[u8] = b"LICHEN-AV2-RETIRE\0";
-const RETIREMENT_DOMAIN: &[u8] = b"lichen:archive-v2:retirement:v2";
+const RETIREMENT_FORMAT_VERSION: u16 = 3;
+const RETIREMENT_DOMAIN: &[u8] = b"lichen:archive-v2:retirement:v3";
 const CATEGORY_PROOF_DOMAIN: &[u8] = b"lichen:archive-v2:category-proof:v2";
 const MAX_RETIREMENT_MANIFEST_BYTES: usize = 16 * 1024 * 1024;
 const MAX_RETIREMENT_CATEGORIES: usize = 128;
@@ -76,6 +80,7 @@ pub struct ArchiveV2RollbackAnchor {
     pub artifact_sha256: Hash,
     pub detached_pq_checksum_signature_sha256: Hash,
     pub archive_format_version: u16,
+    pub catalog_format_version: u16,
     pub deployed_validator_count: u16,
     pub activated_unix_seconds: u64,
 }
@@ -90,6 +95,7 @@ impl ArchiveV2RollbackAnchor {
                 .bytes()
                 .all(|byte| byte.is_ascii_hexdigit())
             || self.archive_format_version < ARCHIVE_V2_FORMAT_VERSION
+            || self.catalog_format_version < ARCHIVE_V2_CATALOG_VERSION
             || self.deployed_validator_count == 0
             || self.activated_unix_seconds == 0
             || self.artifact_sha256 == Hash::default()
@@ -148,7 +154,7 @@ impl ArchiveV2RetirementManifest {
         signer: &Keypair,
     ) -> Result<Self, ArchiveV2Error> {
         let payload = ArchiveV2RetirementPayload {
-            format_version: ARCHIVE_V2_FORMAT_VERSION,
+            format_version: RETIREMENT_FORMAT_VERSION,
             identity: request.identity,
             catalog_root: request.catalog_root,
             segment_object_hash: request.segment_manifest.segment_object_hash,
@@ -174,7 +180,7 @@ impl ArchiveV2RetirementManifest {
 
     pub fn validate(&self) -> Result<(), ArchiveV2Error> {
         let payload = &self.payload;
-        if payload.format_version != ARCHIVE_V2_FORMAT_VERSION
+        if payload.format_version != RETIREMENT_FORMAT_VERSION
             || payload.end_slot < payload.start_slot
             || payload.authorized_unix_seconds == 0
             || payload.catalog_root == Hash::default()
@@ -401,11 +407,19 @@ mod tests {
                 artifact_sha256: Hash::hash(b"artifact"),
                 detached_pq_checksum_signature_sha256: Hash::hash(b"pq-signature"),
                 archive_format_version: ARCHIVE_V2_FORMAT_VERSION,
+                catalog_format_version: ARCHIVE_V2_CATALOG_VERSION,
                 deployed_validator_count: 4,
                 activated_unix_seconds: 1,
             },
             authorized_unix_seconds: 1,
         };
+        let mut stale_catalog_anchor = request.clone();
+        stale_catalog_anchor.rollback_anchor.catalog_format_version =
+            ARCHIVE_V2_CATALOG_VERSION - 1;
+        assert!(matches!(
+            ArchiveV2RetirementManifest::sign(stale_catalog_anchor, &signer),
+            Err(ArchiveV2Error::Role(_))
+        ));
         let manifest = ArchiveV2RetirementManifest::sign(request, &signer).unwrap();
         let encoded = manifest.encode_canonical().unwrap();
         assert_eq!(
