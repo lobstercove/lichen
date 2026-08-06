@@ -50,6 +50,8 @@ ARCHIVE_V2_HTTPS_SOURCE_KEY=""
 ARCHIVE_V2_HTTPS_SOURCE_LOG="/tmp/lichen-testnet/archive-v2-https-source.log"
 ARCHIVE_V2_HTTPS_SOURCE_PORT=9443
 ARCHIVE_V2_HTTPS_SOURCE_TOKEN="local-archive-v2-gate-token"
+LOCAL_GATE_LOCK_DIR="${TMPDIR:-/tmp}/lichen-local-multi-validator-test.lock"
+LOCAL_GATE_LOCK_HELD=0
 
 export LICHEN_LOCAL_DEV=1
 export LICHEN_LOCAL_ARCHIVE_COLD="${LICHEN_LOCAL_ARCHIVE_COLD:-1}"
@@ -257,8 +259,57 @@ wait_validator_resources_released() {
     return 1
 }
 
+acquire_local_gate_lock() {
+    local owner_pid=""
+
+    if mkdir "$LOCAL_GATE_LOCK_DIR" 2>/dev/null; then
+        if ! printf '%s\n' "$$" >"$LOCAL_GATE_LOCK_DIR/pid"; then
+            rmdir "$LOCAL_GATE_LOCK_DIR" 2>/dev/null || true
+            fail "Unable to record local multi-validator gate lock ownership"
+        fi
+        LOCAL_GATE_LOCK_HELD=1
+        return 0
+    fi
+
+    if [[ -r "$LOCAL_GATE_LOCK_DIR/pid" ]]; then
+        owner_pid="$(tr -cd '0-9' <"$LOCAL_GATE_LOCK_DIR/pid")"
+    fi
+    if [[ -n "$owner_pid" ]] && kill -0 "$owner_pid" 2>/dev/null; then
+        fail "Another local multi-validator gate is already running (PID $owner_pid)"
+    fi
+
+    # Only reclaim a lock whose recorded owner is no longer alive. Removal is
+    # deliberately limited to the exact lock files rather than a recursive path.
+    if [[ -n "$owner_pid" ]]; then
+        rm "$LOCAL_GATE_LOCK_DIR/pid" 2>/dev/null || true
+        rmdir "$LOCAL_GATE_LOCK_DIR" 2>/dev/null || true
+    fi
+    if ! mkdir "$LOCAL_GATE_LOCK_DIR" 2>/dev/null; then
+        fail "Local multi-validator gate lock exists without a live, reclaimable owner"
+    fi
+    if ! printf '%s\n' "$$" >"$LOCAL_GATE_LOCK_DIR/pid"; then
+        rmdir "$LOCAL_GATE_LOCK_DIR" 2>/dev/null || true
+        fail "Unable to record local multi-validator gate lock ownership"
+    fi
+    LOCAL_GATE_LOCK_HELD=1
+}
+
+release_local_gate_lock() {
+    local owner_pid=""
+
+    [[ "$LOCAL_GATE_LOCK_HELD" -eq 1 ]] || return 0
+    if [[ -r "$LOCAL_GATE_LOCK_DIR/pid" ]]; then
+        owner_pid="$(tr -cd '0-9' <"$LOCAL_GATE_LOCK_DIR/pid")"
+    fi
+    if [[ "$owner_pid" == "$$" ]]; then
+        rm "$LOCAL_GATE_LOCK_DIR/pid" 2>/dev/null || true
+        rmdir "$LOCAL_GATE_LOCK_DIR" 2>/dev/null || true
+    fi
+    LOCAL_GATE_LOCK_HELD=0
+}
+
 cleanup() {
-    local exit_status=$?
+    local exit_status="${1:-$?}"
     if [[ "$USING_EXISTING_CLUSTER" == "true" ]]; then
         log "Reused existing cluster — skipping cleanup"
         return
@@ -276,7 +327,17 @@ cleanup() {
     stop_local_processes
     log "Cleanup done"
 }
-trap cleanup EXIT
+
+cleanup_and_release_local_gate_lock() {
+    local exit_status=$?
+
+    cleanup "$exit_status"
+    release_local_gate_lock
+    return "$exit_status"
+}
+
+acquire_local_gate_lock
+trap cleanup_and_release_local_gate_lock EXIT
 
 # ── Preflight ──
 [[ -x "$REPO_ROOT/run-validator.sh" ]] || fail "run-validator.sh not found"

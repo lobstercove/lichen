@@ -365,6 +365,43 @@ assert_run_validator_uses_current_dynamic_identity_setup() {
     echo "✅ run-validator dynamic canonical identity setup"
 }
 
+assert_run_validator_preserves_incomplete_primary_state() {
+    local fixture_root output_file state_dir
+    fixture_root="$(make_fixture_dir run-validator-incomplete-primary)"
+    state_dir="$fixture_root/data/state-7001"
+    output_file="$TMP_DIR/run-validator-incomplete-primary.log"
+
+    copy_repo_script "run-validator.sh" "$fixture_root"
+    mkdir -p "$state_dir/home"
+    printf 'MANIFEST-000777\n' >"$state_dir/CURRENT"
+    printf 'existing-manifest\n' >"$state_dir/MANIFEST-000777"
+    printf 'existing-wal\n' >"$state_dir/consensus.wal"
+
+    if (
+        cd "$fixture_root"
+        env \
+            LICHEN_LOCAL_DEV=1 \
+            LICHEN_DISABLE_SUPERVISOR=1 \
+            ./run-validator.sh testnet 1
+    ) >"$output_file" 2>&1; then
+        echo "❌ run-validator incomplete primary: command unexpectedly succeeded"
+        cat "$output_file"
+        exit 1
+    fi
+
+    assert_output_contains \
+        "run-validator incomplete primary" \
+        "Refusing to regenerate genesis over incomplete local chain state" \
+        "$output_file"
+    [[ "$(cat "$state_dir/CURRENT")" == "MANIFEST-000777" ]] \
+        || { echo "❌ run-validator incomplete primary: CURRENT changed"; exit 1; }
+    [[ "$(cat "$state_dir/MANIFEST-000777")" == "existing-manifest" ]] \
+        || { echo "❌ run-validator incomplete primary: manifest changed"; exit 1; }
+    [[ "$(cat "$state_dir/consensus.wal")" == "existing-wal" ]] \
+        || { echo "❌ run-validator incomplete primary: WAL changed"; exit 1; }
+    echo "✅ run-validator preserves incomplete primary state"
+}
+
 assert_current_health_rpc_surface() {
     local files=(
         "$ROOT_DIR/tests/local-multi-validator-test.sh"
@@ -629,6 +666,7 @@ assert_start_local_stack_clears_peer_trust_state
 assert_start_local_3validators_clears_peer_trust_state
 assert_run_validator_reattaches_existing_cold_store
 assert_run_validator_uses_current_dynamic_identity_setup
+assert_run_validator_preserves_incomplete_primary_state
 assert_current_health_rpc_surface
 assert_current_e2e_transaction_protocol
 assert_public_history_repair_stays_quiesced
@@ -636,4 +674,4 @@ assert_local_archive_parity_uses_immutable_checkpoints
 assert_sdk_tests_preserve_failure_status
 
 echo "============================================================"
-echo "Local helper guards: 13 passed, 0 failed"
+echo "Local helper guards: 14 passed, 0 failed"
