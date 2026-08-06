@@ -420,7 +420,7 @@ const mainnetRunbook = read('deploy/mainnet-launch-runbook.md');
 const mainnetRunbookDoc = read('docs/deployment/MAINNET_LAUNCH_RUNBOOK.md');
 const productionDeployment = read('docs/deployment/PRODUCTION_DEPLOYMENT.md');
 const productionReleasePair = productionDeployment.match(
-  /Current testnet release candidate for this runbook is `(v\d+\.\d+\.\d+)`;\s+keep signed\s+`(v\d+\.\d+\.\d+)` as the immediate restart-safe anchor/,
+  /Current signed testnet release is `(v\d+\.\d+\.\d+)` at\s+`[0-9a-f]{40}`;[\s\S]*?Keep signed\s+`(v\d+\.\d+\.\d+)` as the immediate restart-safe anchor/,
 );
 const validatorVersion = read('validator/Cargo.toml').match(/^version = "(\d+\.\d+\.\d+)"/m)?.[1];
 const dexLiquidityStrategy = read('docs/strategy/DEX_LIQUIDITY_STRATEGY.md');

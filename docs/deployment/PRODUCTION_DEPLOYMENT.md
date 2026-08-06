@@ -14,10 +14,12 @@ Use this document as the canonical workflow for:
 
 This runbook intentionally prefers the scripts that are verified in the current tree over older narrative docs.
 
-Current testnet release candidate for this runbook is `v0.5.239`; keep signed
+Current signed testnet release is `v0.5.239` at
+`84ec5fb4907f70d3c5916eb226955fda5e7acd35`; it passed its exact tag workflow,
+attestations, checksum, and detached PQ signature gates and was deployed by a
+coordinated four-validator stop/install/start on 2026-08-06. Keep signed
 `v0.5.238` as the immediate restart-safe anchor while legacy history remains
-authoritative. That anchor is Archive V2 dual-reader capable. The candidate must not be installed until its
-exact tag workflow and detached signature pass. Preserve signed
+authoritative. That anchor is Archive V2 dual-reader capable. Preserve signed
 `v0.5.225` as pre-change evidence, but do not restart it on the mature activated
 testnet because it contains the initial post-effects replay-boundary defect.
 Neither `v0.5.229` nor any pre-schema-3 anchor can be used after required legacy

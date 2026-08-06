@@ -2,11 +2,15 @@
 
 ## Status
 
-`v0.5.238` is the signed, deployed catalog-schema-3 dual-reader anchor on all
-four testnet validators. Two bounded `0..49,999` and `50,000..99,999` Archive
-V2 segments were independently verified locally and in both R2 failure
-domains. Archive V2 legacy retirement has not begun and no legacy row was
-deleted.
+`v0.5.239` is the signed, deployed catalog-schema-3 dual-reader release on all
+four testnet validators. Signed `v0.5.238` remains the immediate rollback while
+legacy storage is authoritative. Two bounded `0..49,999` and `50,000..99,999`
+Archive V2 segments were independently verified locally and in both R2 failure
+domains. Segment 0 authorization succeeded on EU under `v0.5.239`, but its
+journaled retirement pass was stopped during the mandatory pre-delete
+equivalence recheck, before journal creation. No legacy row was deleted and no
+physical space was reclaimed. Runtime Archive V2 remains disabled on all four
+live validators.
 
 The first live bounded build proved that the mature testnet database predates
 the atomic genesis-to-tip archive watermark. `v0.5.237` therefore fails closed
@@ -25,9 +29,14 @@ checkpoint. `v0.5.239` applies the same canonical block normalization on both
 retirement sides and keeps ordinary full replay active while checkpoint
 availability retries continue. Explicit state-root repair remains fail-closed.
 
-`v0.5.239` must pass the complete release gates, exact-commit CI, signed tag
+`v0.5.239` passed the complete release gates, exact-commit CI, signed tag
 workflow, provenance and detached PQ verification, and coordinated
-four-validator deployment before any legacy row is eligible for deletion.
+four-validator deployment on 2026-08-06. EU caught up through bounded replay,
+entered BFT at frozen height `10,235,558`, and all four validators later
+matched fixed slot `10,235,600`. The segment-0 authorization manifest is
+`/var/lib/lichen/archive-v2-testnet/retirement-2ed2c026-v0.5.239.av2r`, SHA-256
+`5ceb444032e1f47e251624f35ee389adad333fcc73272c919a3fd57d391c6dd6`.
+It is authorization evidence, not proof of deletion.
 
 ## Exact historical constraint
 
