@@ -184,17 +184,21 @@ ensure_local_genesis() {
 		return
 	fi
 
-	if [[ -f "$DB_PATH/CURRENT" && ! -f "$DB_PATH/genesis.json" ]]; then
-		echo "Detected partial local genesis state without genesis.json; clearing chain DB files before regenerating"
-		find "$DB_PATH" -mindepth 1 -maxdepth 1 \
-			! -name 'genesis-keys' \
-			! -name 'genesis-wallet.json' \
-			! -name 'home' \
-			! -name 'seeds.json' \
-			! -name 'signer-keypair.json' \
-			! -name 'validator-keypair.json' \
-			-exec rm -rf {} +
-		mkdir -p "$VALIDATOR_HOME"
+	if find "$DB_PATH" -mindepth 1 -maxdepth 1 \
+		\( -name 'CURRENT' \
+		-o -name 'IDENTITY' \
+		-o -name 'LOCK' \
+		-o -name 'LOG*' \
+		-o -name 'MANIFEST-*' \
+		-o -name 'OPTIONS-*' \
+		-o -name '*.sst' \
+		-o -name '*.log' \
+		-o -name 'consensus.wal' \
+		-o -name 'consensus_wal*' \) \
+		-print -quit | grep -q .; then
+		echo "Refusing to regenerate genesis over incomplete local chain state; preserve and repair $DB_PATH" >&2
+		echo "Expected both CURRENT and genesis.json before resuming an existing primary database" >&2
+		exit 1
 	fi
 
 	echo "Preparing local genesis state for $NAME"
