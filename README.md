@@ -7,14 +7,16 @@ Ultra-low fees · Sub-second BFT block commitment · Agent-native identity · Mu
 [![License: Apache--2.0%20%2B%20MIT](https://img.shields.io/badge/License-Apache--2.0%20%2B%20MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.88+-00C9DB.svg)](https://www.rust-lang.org)
 
-**Current signed testnet release:** `v0.5.238`. The unreleased `v0.5.239`
-candidate fixes mature-network Archive V2 retirement equivalence for locally
-collected commit-certificate subsets and preserves bounded block replay when no
-verified warp checkpoint is available. Bounded source blocks and parent links,
-the root-committed historical loss declaration, two independently verified
-replicas, and signed retirement authorization remain mandatory. The exact
-testnet exception cannot be used by a different network or genesis; fresh
-networks and mainnet still fail closed.
+**Current signed testnet release:** `v0.5.239`. The unreleased `v0.5.240`
+candidate keeps transient measured disk growth from becoming a false
+consensus-fatal Archive V2 shutdown and permits a still-headroom-checked 8 GiB
+bound for retirement reclaim when a single RocksDB SST exceeds 4 GiB. It also
+keeps the hard floor while allowing stopped, read-only retrofit sources to use
+separate adequately reserved Archive V2 staging storage. Bounded
+source blocks and parent links, the root-committed historical loss declaration,
+two independently verified replicas, and signed retirement authorization
+remain mandatory. The exact testnet exception cannot be used by a different
+network or genesis; fresh networks and mainnet still fail closed.
 
 **Website:** https://lichen.network  
 **Documentation:** https://developers.lichen.network  

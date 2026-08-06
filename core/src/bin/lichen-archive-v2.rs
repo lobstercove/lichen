@@ -683,7 +683,15 @@ fn archive_v2_build_capacity_preflight(
 ) -> Result<ArchiveV2CapacityDecision, String> {
     let hot = cli_filesystem_capacity(&capacity_probe_path(state_dir)?)?;
     let archive = cli_filesystem_capacity(&capacity_probe_path(archive_root)?)?;
-    let absolute_reserve = if identity.network_id == "lichen-testnet-1" {
+    archive_v2_build_capacity_decision(hot, archive, &identity.network_id)
+}
+
+fn archive_v2_build_capacity_decision(
+    hot: CliFilesystemCapacity,
+    archive: CliFilesystemCapacity,
+    network_id: &str,
+) -> Result<ArchiveV2CapacityDecision, String> {
+    let absolute_reserve = if network_id == "lichen-testnet-1" {
         TESTNET_CAPACITY_FLOOR_BYTES
     } else {
         DEFAULT_CAPACITY_FLOOR_BYTES
@@ -714,7 +722,12 @@ fn archive_v2_build_capacity_preflight(
             cache_warning_bytes: absolute_reserve,
         },
         ArchiveV2CapacityTotals {
-            hot_total_bytes: hot.total_bytes,
+            // The builder opens the source stores read-only and stages every
+            // byte under archive_root. Preserve the absolute source floor,
+            // but do not impose a writable-filesystem percentage reserve on
+            // a source that this operation cannot grow. The writable archive
+            // destination retains its percentage and operation reserves.
+            hot_total_bytes: 0,
             archive_total_bytes: archive.total_bytes,
             cache_total_bytes: archive.total_bytes,
         },
@@ -1468,5 +1481,37 @@ mod tests {
         ])
         .unwrap();
         assert!(require_retirement_acknowledgements(&complete).is_ok());
+    }
+
+    #[test]
+    fn read_only_build_source_keeps_absolute_floor_without_writable_percentage_reserve() {
+        let gib = 1024 * 1024 * 1024;
+        let archive = CliFilesystemCapacity {
+            available_bytes: 15 * gib,
+            total_bytes: 20 * gib,
+        };
+        let admitted = archive_v2_build_capacity_decision(
+            CliFilesystemCapacity {
+                available_bytes: 6 * gib,
+                total_bytes: 200 * gib,
+            },
+            archive,
+            "lichen-testnet-1",
+        )
+        .unwrap();
+        assert_eq!(admitted.action, ArchiveV2PressureAction::Normal);
+        assert_eq!(admitted.hot_consensus_required_bytes, 5 * gib);
+
+        let below_floor = archive_v2_build_capacity_decision(
+            CliFilesystemCapacity {
+                available_bytes: 5 * gib - 1,
+                total_bytes: 200 * gib,
+            },
+            archive,
+            "lichen-testnet-1",
+        )
+        .unwrap_err();
+        assert!(below_floor.contains("action=StopValidator"));
+        assert!(below_floor.contains("required_bytes=5368709120"));
     }
 }

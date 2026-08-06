@@ -162,12 +162,18 @@ impl ArchiveV2CapacityGuard {
         let hot_percentage_reserve = percentage(totals.hot_total_bytes);
         let archive_percentage_reserve = percentage(totals.archive_total_bytes);
         let cache_percentage_reserve = percentage(totals.cache_total_bytes);
+        // Measured growth is a planning signal, not a consensus-fatal floor.
+        // A short flush or compaction can consume several hundred MiB between
+        // samples and make a naive extrapolation look like a full day of
+        // sustained growth. Keep the immutable mutable-state/WAL/compaction
+        // reserve authoritative for fatal shutdown, while using the larger
+        // observed-growth reserve to stop checkpoint and archival work early.
         let hot_base_reserve = inputs
             .filesystem_reserve_bytes
             .max(hot_percentage_reserve)
-            .max(policy.hot_growth_reserve_bytes)
             .max(policy.emergency_evidence_reserve_bytes)
             .max(thresholds.hot_fatal_bytes);
+        let hot_planning_reserve = hot_base_reserve.max(policy.hot_growth_reserve_bytes);
         let archive_base_reserve = inputs
             .filesystem_reserve_bytes
             .max(archive_percentage_reserve)
@@ -183,12 +189,17 @@ impl ArchiveV2CapacityGuard {
             .saturating_add(inputs.wal_peak_bytes)
             .saturating_add(inputs.bounded_compaction_peak_bytes)
             .saturating_add(hot_base_reserve);
+        let hot_planning_required_bytes = inputs
+            .mutable_state_write_peak_bytes
+            .saturating_add(inputs.wal_peak_bytes)
+            .saturating_add(inputs.bounded_compaction_peak_bytes)
+            .saturating_add(hot_planning_reserve);
         let checkpoint_reserve = if inputs.checkpoint_enabled {
             inputs.checkpoint_peak_bytes
         } else {
             0
         };
-        let hot_required_bytes = hot_consensus_required_bytes.saturating_add(checkpoint_reserve);
+        let hot_required_bytes = hot_planning_required_bytes.saturating_add(checkpoint_reserve);
         let archive_operation_reserve = if inputs.segment_build_enabled {
             inputs
                 .segment_staging_peak_bytes
@@ -217,6 +228,14 @@ impl ArchiveV2CapacityGuard {
                 ArchiveV2PressureAction::StopValidator,
                 ArchiveV2CapacityComponent::HotConsensus,
             )
+        } else if inputs.checkpoint_enabled && inputs.hot_available_bytes < hot_required_bytes {
+            reasons.push(format!(
+                "hot storage cannot cover calculated reserve {hot_required_bytes}"
+            ));
+            (
+                ArchiveV2PressureAction::StopCheckpointWork,
+                ArchiveV2CapacityComponent::Checkpoint,
+            )
         } else if inputs.segment_build_enabled
             && inputs.archive_available_bytes < archive_required_bytes
         {
@@ -236,14 +255,6 @@ impl ArchiveV2CapacityGuard {
             (
                 ArchiveV2PressureAction::EvictVerifiedCache,
                 ArchiveV2CapacityComponent::VerifiedCache,
-            )
-        } else if inputs.checkpoint_enabled && inputs.hot_available_bytes < hot_required_bytes {
-            reasons.push(format!(
-                "hot storage cannot cover calculated reserve {hot_required_bytes}"
-            ));
-            (
-                ArchiveV2PressureAction::StopCheckpointWork,
-                ArchiveV2CapacityComponent::Checkpoint,
             )
         } else if inputs.archive_available_bytes < thresholds.archive_warning_bytes {
             reasons.push("archive storage is below its warning floor".to_string());
@@ -572,5 +583,47 @@ mod tests {
         assert_eq!(decision.growth_reserve_bytes, 150);
         assert_eq!(decision.staging_reserve_bytes, 120);
         assert_eq!(decision.compaction_reserve_bytes, 20);
+    }
+
+    #[test]
+    fn transient_hot_growth_stops_optional_work_without_becoming_consensus_fatal() {
+        let decision = ArchiveV2CapacityGuard::evaluate_adaptive(
+            ArchiveV2CapacityInputs {
+                segment_build_enabled: true,
+                verified_cache_enabled: false,
+                checkpoint_enabled: true,
+                hot_available_bytes: 20,
+                archive_available_bytes: 1_000,
+                cache_available_bytes: 1_000,
+                mutable_state_write_peak_bytes: 2,
+                wal_peak_bytes: 2,
+                bounded_compaction_peak_bytes: 2,
+                checkpoint_peak_bytes: 2,
+                segment_staging_peak_bytes: 2,
+                verification_copy_bytes: 2,
+                replication_retry_bytes: 2,
+                filesystem_reserve_bytes: 5,
+                cache_fetch_staging_bytes: 0,
+                cache_eviction_margin_bytes: 0,
+            },
+            ArchiveV2CapacityThresholds {
+                hot_warning_bytes: 5,
+                hot_fatal_bytes: 5,
+                archive_warning_bytes: 5,
+                cache_warning_bytes: 5,
+            },
+            ArchiveV2CapacityTotals::default(),
+            ArchiveV2AdaptiveReservePolicy {
+                hot_growth_reserve_bytes: 1_000,
+                ..ArchiveV2AdaptiveReservePolicy::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(decision.hot_consensus_required_bytes, 11);
+        assert_eq!(decision.hot_required_bytes, 1_008);
+        assert_eq!(decision.action, ArchiveV2PressureAction::StopCheckpointWork);
+        assert!(!decision.fatal);
+        assert_eq!(decision.growth_reserve_bytes, 1_000);
     }
 }

@@ -14,12 +14,10 @@ Use this document as the canonical workflow for:
 
 This runbook intentionally prefers the scripts that are verified in the current tree over older narrative docs.
 
-Current signed testnet release is `v0.5.239` at
-`84ec5fb4907f70d3c5916eb226955fda5e7acd35`; it passed its exact tag workflow,
-attestations, checksum, and detached PQ signature gates and was deployed by a
-coordinated four-validator stop/install/start on 2026-08-06. Keep signed
-`v0.5.238` as the immediate restart-safe anchor while legacy history remains
-authoritative. That anchor is Archive V2 dual-reader capable. Preserve signed
+Current testnet release candidate for this runbook is `v0.5.240`; keep signed
+`v0.5.239` as the immediate restart-safe anchor. The candidate must not be
+installed until its exact tag workflow, attestations, checksum, and detached
+PQ signature pass. Both releases are Archive V2 dual-reader capable. Preserve signed
 `v0.5.225` as pre-change evidence, but do not restart it on the mature activated
 testnet because it contains the initial post-effects replay-boundary defect.
 Neither `v0.5.229` nor any pre-schema-3 anchor can be used after required legacy
@@ -2733,7 +2731,7 @@ activity green.
 
 Also, the wiped validator's new pubkey registers as a separate entry in the validator set. With N+1 validators and only N-1 online (original minus the ghost), BFT quorum (2/3+) may be unreachable.
 
-**Current release behavior**: `v0.5.238` is the signed testnet release target and
+**Current release behavior**: `v0.5.239` is the signed testnet release target and
 `v0.5.225` is the preserved signed pre-change binary, not a restartable
 rollback. It preserves the recovery and storage safeguards established by
 `v0.5.229` and adds the signed Archive V2 retrofit gates. The earlier release fixes the inclusive

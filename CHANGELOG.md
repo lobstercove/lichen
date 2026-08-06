@@ -5,6 +5,21 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.240] - 2026-08-06
+
+### Fixed
+- Keeps bursty 30-second filesystem growth measurements as an Archive V2
+  planning signal that stops optional archival/checkpoint work, without
+  replacing the fixed mutable-state, WAL, compaction, and disk-floor reserve
+  used for consensus-fatal shutdown.
+- Raises the still-headroom-checked Archive V2 retirement reclaim input bound
+  from 4 GiB to 8 GiB so an indivisible live RocksDB SST can be compacted while
+  preserving the configured network floor and the estimated two-copy peak.
+- Keeps the absolute network floor for a stopped builder's read-only legacy
+  source without applying a writable-filesystem percentage reserve to storage
+  the build cannot grow; destination staging and percentage reserves remain
+  mandatory.
+
 ## [0.5.239] - 2026-08-05
 
 ### Fixed
