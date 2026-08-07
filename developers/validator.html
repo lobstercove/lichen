@@ -93,6 +93,13 @@
                 This guide covers hardware requirements, installation, configuration, staking, monitoring, and
                 production deployment.</p>
 
+            <div class="callout callout-info">
+                <div class="callout-title"><i class="fas fa-shield-halved"></i> Current signed testnet release</div>
+                Use <code>v0.5.240</code>. It provides the explicit Archive V2 <code>full_archive</code>,
+                <code>verified_cache</code>, and <code>consensus</code> roles documented below. Verify the release
+                checksum and detached post-quantum signature before installation.
+            </div>
+
             <!-- ========== 1. REQUIREMENTS ========== -->
             <h2 id="requirements">Requirements</h2>
 
@@ -112,13 +119,21 @@
                 <div class="req-card">
                     <div class="req-card-icon"><i class="fa-solid fa-floppy-disk"></i></div>
                     <div class="req-card-title">Storage</div>
-                    <div class="req-card-value">500 GB NVMe SSD</div>
+                    <div class="req-card-value">NVMe sized for the selected Archive V2 role</div>
                 </div>
                 <div class="req-card">
                     <div class="req-card-icon"><i class="fa-solid fa-globe"></i></div>
                     <div class="req-card-title">Network</div>
                     <div class="req-card-value">100 Mbps symmetric</div>
                 </div>
+            </div>
+
+            <div class="callout callout-warning">
+                <div class="callout-title"><i class="fas fa-hard-drive"></i> Capacity is role-dependent</div>
+                A <code>full_archive</code> host must hold every segment and needs monitored growth capacity;
+                <code>verified_cache</code> uses an explicit bounded quota; <code>consensus</code> retains independent
+                consensus/recovery state and at least 50,000 recent slots. A 200 GB root is not approved for mainnet
+                or indefinite full-archive growth. Never lower the runtime disk floor to make an undersized host pass.
             </div>
 
             <h3>Operating System</h3>
@@ -189,9 +204,15 @@
                 <pre><code>VERSION=$(curl -fsSL https://api.github.com/repos/lobstercove/lichen/releases/latest | jq -r .tag_name)
 curl -LO "https://github.com/lobstercove/lichen/releases/download/${VERSION}/lichen-validator-linux-x86_64.tar.gz"
 curl -LO "https://github.com/lobstercove/lichen/releases/download/${VERSION}/SHA256SUMS"
+curl -LO "https://github.com/lobstercove/lichen/releases/download/${VERSION}/SHA256SUMS.sig"
+mkdir -p scripts deploy
+curl -fsSLo scripts/verify-release-checksums.mjs "https://raw.githubusercontent.com/lobstercove/lichen/${VERSION}/scripts/verify-release-checksums.mjs"
+curl -fsSLo deploy/release-trust-anchor.json "https://raw.githubusercontent.com/lobstercove/lichen/${VERSION}/deploy/release-trust-anchor.json"
+node scripts/verify-release-checksums.mjs .
 grep 'lichen-validator-linux-x86_64.tar.gz' SHA256SUMS | sha256sum -c -
+gh attestation verify lichen-validator-linux-x86_64.tar.gz -R lobstercove/lichen
 tar xzf lichen-validator-linux-x86_64.tar.gz --strip-components=1
-chmod +x lichen-validator lichen-genesis lichen zk-prove
+chmod +x lichen-validator lichen-genesis lichen lichen-archive-v2 zk-prove lichen-custody lichen-faucet
 mkdir -p "$HOME/.lichen/state-mainnet"
 cp seeds.json "$HOME/.lichen/state-mainnet/seeds.json"
 export LICHEN_KEYPAIR_PASSWORD='set-a-long-random-secret-before-first-start'
@@ -213,9 +234,15 @@ export LICHEN_KEYPAIR_PASSWORD='set-a-long-random-secret-before-first-start'
                 <pre><code>VERSION=$(curl -fsSL https://api.github.com/repos/lobstercove/lichen/releases/latest | jq -r .tag_name)
 curl -LO "https://github.com/lobstercove/lichen/releases/download/${VERSION}/lichen-validator-darwin-aarch64.tar.gz"
 curl -LO "https://github.com/lobstercove/lichen/releases/download/${VERSION}/SHA256SUMS"
+curl -LO "https://github.com/lobstercove/lichen/releases/download/${VERSION}/SHA256SUMS.sig"
+mkdir -p scripts deploy
+curl -fsSLo scripts/verify-release-checksums.mjs "https://raw.githubusercontent.com/lobstercove/lichen/${VERSION}/scripts/verify-release-checksums.mjs"
+curl -fsSLo deploy/release-trust-anchor.json "https://raw.githubusercontent.com/lobstercove/lichen/${VERSION}/deploy/release-trust-anchor.json"
+node scripts/verify-release-checksums.mjs .
 grep 'lichen-validator-darwin-aarch64.tar.gz' SHA256SUMS | shasum -a 256 -c -
+gh attestation verify lichen-validator-darwin-aarch64.tar.gz -R lobstercove/lichen
 tar xzf lichen-validator-darwin-aarch64.tar.gz --strip-components=1
-chmod +x lichen-validator lichen-genesis lichen zk-prove
+chmod +x lichen-validator lichen-genesis lichen lichen-archive-v2 zk-prove lichen-custody lichen-faucet
 mkdir -p "$HOME/.lichen/state-mainnet"
 cp seeds.json "$HOME/.lichen/state-mainnet/seeds.json"
 export LICHEN_KEYPAIR_PASSWORD='set-a-long-random-secret-before-first-start'
@@ -554,37 +581,85 @@ export LICHEN_KEYPAIR_PASSWORD='set-a-long-random-secret-before-first-start'
                 </tbody>
             </table>
 
-            <!-- [history] -->
-            <h3><span class="config-section-label">[history]</span></h3>
-            <p>Required public-validator archival settings for complete genesis-to-tip history.</p>
+            <h3 id="archive-v2-roles"><span class="config-section-label">[archive-v2]</span></h3>
+            <p>Archive V2 separates consensus participation from deep-history storage. Every role keeps an
+                independent consensus database, WAL, validator identity, recovery data, a complete verified catalog,
+                and at least 50,000 recent slots. Archive-source outages never stop consensus.</p>
 
             <table class="config-table">
                 <thead>
                     <tr>
-                        <th>Setting</th>
-                        <th>Type</th>
+                        <th>Role</th>
+                        <th>Deep history</th>
                         <th>Default</th>
-                        <th>Description</th>
+                        <th>Required flags</th>
                     </tr>
                 </thead>
                 <tbody>
                     <tr>
-                        <td>Public cold store</td>
-                        <td>Path</td>
-                        <td><code>archive-&lt;network&gt;</code> beside <code>state-&lt;network&gt;</code></td>
-                        <td>Non-development testnet and mainnet validators automatically attach a secondary RocksDB
-                            for archival block, transaction, index, event, trade, and account-snapshot retention.
-                        </td>
+                        <td><code>full_archive</code></td>
+                        <td>Every segment local; advertised to peers</td>
+                        <td>50,000 recent slots</td>
+                        <td><code>--archive-v2-role full_archive --archive-v2-root &lt;path&gt;</code></td>
                     </tr>
                     <tr>
-                        <td>Public archive mode</td>
-                        <td>Boolean</td>
-                        <td><code>true</code></td>
-                        <td>Mandatory and automatic for non-development testnet and mainnet. Explicit archive-mode or
-                            cold-store runtime flags fail startup instead of creating a state-only or partial-history validator.</td>
+                        <td><code>verified_cache</code></td>
+                        <td>Verified on demand; bounded local cache</td>
+                        <td>50,000 recent slots</td>
+                        <td>Role/root plus <code>--archive-v2-cache-root</code>, nonzero
+                            <code>--archive-v2-cache-quota-bytes</code>, and at least one comma-separated
+                            <code>--archive-v2-source-dirs</code> or HTTPS <code>--archive-v2-source-urls</code> entry.</td>
+                    </tr>
+                    <tr>
+                        <td><code>consensus</code></td>
+                        <td>Not advertised</td>
+                        <td>50,000 recent slots</td>
+                        <td><code>--archive-v2-role consensus --archive-v2-root &lt;path&gt;</code></td>
                     </tr>
                 </tbody>
             </table>
+
+            <p>Optional tuning flags are <code>--archive-v2-role-config-version</code> (default <code>1</code>),
+                <code>--archive-v2-recent-history-slots</code> (minimum/default <code>50000</code>),
+                <code>--archive-v2-decoded-segments</code> (default <code>8</code>),
+                <code>--archive-v2-source-timeout-secs</code> (default <code>60</code>, range 1–300), and
+                <code>--archive-v2-source-max-object-bytes</code> (default <code>2147483648</code>).
+                The source options apply only to <code>verified_cache</code>.</p>
+
+            <div class="code-block">
+                <div class="code-block-header">
+                    <span class="code-lang">Shell — consensus storage profile</span>
+                    <button class="code-copy-btn">Copy</button>
+                </div>
+                <pre><code>./lichen-validator \
+    --network testnet \
+    --db-path "$HOME/.lichen/state-testnet" \
+    --archive-v2-role consensus \
+    --archive-v2-root "$HOME/.lichen/archive-v2-testnet" \
+    --archive-v2-recent-history-slots 50000</code></pre>
+            </div>
+
+            <div class="code-block">
+                <div class="code-block-header">
+                    <span class="code-lang">Shell — verified cache profile</span>
+                    <button class="code-copy-btn">Copy</button>
+                </div>
+                <pre><code>./lichen-validator \
+    --network testnet \
+    --db-path "$HOME/.lichen/state-testnet" \
+    --archive-v2-role verified_cache \
+    --archive-v2-root "$HOME/.lichen/archive-v2-testnet" \
+    --archive-v2-cache-root "$HOME/.lichen/archive-v2-cache-testnet" \
+    --archive-v2-cache-quota-bytes 21474836480 \
+    --archive-v2-source-urls "https://archive-a.example/lichen,https://archive-b.example/lichen"</code></pre>
+            </div>
+
+            <div class="callout callout-warning">
+                <div class="callout-title"><i class="fas fa-shield-halved"></i> Fail-closed role changes</div>
+                <code>full_archive</code> and <code>consensus</code> reject cache paths, quotas, and sources. Role
+                transitions fail while archive work is active; demoting a full archive also requires proven replica
+                policy. Never delete legacy history manually—use source-backed, signed, resumable retirement only.
+            </div>
 
             <!-- [network] -->
             <h3><span class="config-section-label">[network]</span></h3>

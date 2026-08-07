@@ -7,16 +7,15 @@ Ultra-low fees · Sub-second BFT block commitment · Agent-native identity · Mu
 [![License: Apache--2.0%20%2B%20MIT](https://img.shields.io/badge/License-Apache--2.0%20%2B%20MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.88+-00C9DB.svg)](https://www.rust-lang.org)
 
-**Current signed testnet release:** `v0.5.239`. The unreleased `v0.5.240`
-candidate keeps transient measured disk growth from becoming a false
-consensus-fatal Archive V2 shutdown and permits a still-headroom-checked 8 GiB
-bound for retirement reclaim when a single RocksDB SST exceeds 4 GiB. It also
-keeps the hard floor while allowing stopped, read-only retrofit sources to use
-separate adequately reserved Archive V2 staging storage. Bounded
-source blocks and parent links, the root-committed historical loss declaration,
-two independently verified replicas, and signed retirement authorization
-remain mandatory. The exact testnet exception cannot be used by a different
-network or genesis; fresh networks and mainnet still fail closed.
+**Current signed testnet release:** `v0.5.240`. This release adds explicit
+Archive V2 runtime roles (`full_archive`, `verified_cache`, and `consensus`),
+keeps transient measured disk growth from becoming a false consensus-fatal
+shutdown, and permits a still-headroom-checked 8 GiB retirement-reclaim bound
+when a single RocksDB SST exceeds 4 GiB. Bounded source blocks and parent links,
+the root-committed historical-loss declaration, two independently verified
+replicas, and signed retirement authorization remain mandatory. The exact
+testnet exception cannot be used by another network or genesis; fresh networks
+and mainnet still fail closed on incomplete genesis-to-tip public history.
 
 **Website:** https://lichen.network  
 **Documentation:** https://developers.lichen.network  
@@ -144,9 +143,9 @@ https://github.com/lobstercove/lichen/releases/download/<tag>/lichen-validator-<
 ```
 
 Examples:
-- `https://github.com/lobstercove/lichen/releases/download/v0.5.236/lichen-validator-linux-x86_64.tar.gz`
-- `https://github.com/lobstercove/lichen/releases/download/v0.5.236/lichen-validator-darwin-aarch64.tar.gz`
-- `https://github.com/lobstercove/lichen/releases/download/v0.5.236/lichen-validator-windows-x86_64.tar.gz`
+- `https://github.com/lobstercove/lichen/releases/download/v0.5.240/lichen-validator-linux-x86_64.tar.gz`
+- `https://github.com/lobstercove/lichen/releases/download/v0.5.240/lichen-validator-darwin-aarch64.tar.gz`
+- `https://github.com/lobstercove/lichen/releases/download/v0.5.240/lichen-validator-windows-x86_64.tar.gz`
 
 Linux x86_64:
 
@@ -162,7 +161,7 @@ node scripts/verify-release-checksums.mjs .
 grep 'lichen-validator-linux-x86_64.tar.gz' SHA256SUMS | sha256sum -c -
 gh attestation verify lichen-validator-linux-x86_64.tar.gz -R lobstercove/lichen
 tar xzf lichen-validator-linux-x86_64.tar.gz --strip-components=1
-chmod +x lichen-validator lichen-genesis lichen lichen-archive-v2 zk-prove
+chmod +x lichen-validator lichen-genesis lichen lichen-archive-v2 zk-prove lichen-custody lichen-faucet
 mkdir -p "$HOME/.lichen/state-mainnet"
 cp seeds.json "$HOME/.lichen/state-mainnet/seeds.json"
 export LICHEN_KEYPAIR_PASSWORD='set-a-long-random-secret-before-first-start'
@@ -220,6 +219,63 @@ $env:LICHEN_KEYPAIR_PASSWORD = 'set-a-long-random-secret-before-first-start'
 Windows release assets are now part of the release contract, but if a given tag does not include them yet, use the source-build workflow for Windows until the next release is published.
 
 Release bundles now ship `lichen-validator`, `lichen-genesis`, `lichen`, `lichen-archive-v2`, `zk-prove`, `lichen-custody`, `lichen-faucet`, `seeds.json`, and the contract WASM bundle beside the operator tools so agents can keep validator, archive migration/repair, custody, faucet, shielded-transaction tooling, and runtime artifacts installed from the same signed archive. Operators should pin the current seed set under `{db-path}/seeds.json` for supervisor-managed starts, and `--auto-update=apply` refreshes that file from newer release archives during apply-mode upgrades. Validator identity keys are generated locally on first start, and external signed-metadata manifests or standalone proving/verification-key bundles are not required just to join and sync a validator.
+
+### Archive V2 storage roles
+
+`v0.5.240` lets an operator choose how the validator stores and serves public
+history. Every role keeps its own consensus state, WAL, validator identity, and
+recovery data, retains at least 50,000 recent slots, and requires the complete
+verified Archive V2 catalog. Archive access never becomes a consensus
+dependency.
+
+| Role | Storage and serving behavior | Required role-specific flags |
+|---|---|---|
+| `full_archive` | Keeps every cataloged segment locally and advertises complete deep history. | `--archive-v2-role full_archive --archive-v2-root <path>` |
+| `verified_cache` | Fetches hash-addressed segments from authenticated local directories or HTTPS sources, verifies them against the catalog, and evicts within a fixed cache quota. | Role/root plus `--archive-v2-cache-root`, nonzero `--archive-v2-cache-quota-bytes`, and at least one `--archive-v2-source-dirs` or `--archive-v2-source-urls` entry. |
+| `consensus` | Keeps consensus/recovery data and the recent-history window but does not advertise deep-history service. | `--archive-v2-role consensus --archive-v2-root <path>` |
+
+Common options:
+
+```text
+--archive-v2-role-config-version 1
+--archive-v2-recent-history-slots 50000
+--archive-v2-decoded-segments 8
+--archive-v2-source-timeout-secs 60
+--archive-v2-source-max-object-bytes 2147483648
+```
+
+The last two source options apply to `verified_cache`. Source directory and URL
+lists are comma-separated; remote URLs must use HTTPS. `full_archive` and
+`consensus` reject cache paths, cache quota, and remote sources. Role changes
+fail closed while an archive build, mirror, or retirement operation is active,
+and demoting a full archive additionally requires proof that the network's
+archive-replica policy remains satisfied. Do not point multiple validators at
+one live consensus database, and do not delete legacy history until the signed,
+source-backed retirement gate reports success.
+
+Example consensus-only storage profile:
+
+```bash
+./lichen-validator \
+    --network testnet \
+    --db-path "$HOME/.lichen/state-testnet" \
+    --archive-v2-role consensus \
+    --archive-v2-root "$HOME/.lichen/archive-v2-testnet" \
+    --archive-v2-recent-history-slots 50000
+```
+
+Example verified cache with two HTTPS failure domains:
+
+```bash
+./lichen-validator \
+    --network testnet \
+    --db-path "$HOME/.lichen/state-testnet" \
+    --archive-v2-role verified_cache \
+    --archive-v2-root "$HOME/.lichen/archive-v2-testnet" \
+    --archive-v2-cache-root "$HOME/.lichen/archive-v2-cache-testnet" \
+    --archive-v2-cache-quota-bytes 21474836480 \
+    --archive-v2-source-urls "https://archive-a.example/lichen,https://archive-b.example/lichen"
+```
 
 The validator identity is also the validator wallet/reward account. The address printed at startup is the account that receives bootstrap stake and validator rewards. Preserve the state directory, validator key files, and `LICHEN_KEYPAIR_PASSWORD`; an agent can restart or upgrade from the same state and catch up, but it cannot sign as the same validator if the key or password is lost.
 
@@ -397,7 +453,10 @@ lichen token create "My Token" MYTOK --wasm ./path/to/token.wasm --decimals 9
 
 Lichen uses **Tendermint-style BFT** consensus (Propose → Prevote → Precommit → Commit). Validators earn LICN by producing blocks, voting, and maintaining uptime.
 
-**Minimum requirements:** 2 CPU cores · 2 GB RAM · 50 GB SSD · stable internet
+**Production baseline:** 8 CPU cores · 32 GB RAM · stable internet · monitored
+NVMe capacity sized for the selected Archive V2 role and its growth/staging
+reserves. A 200 GB root is not approved for mainnet or indefinite archive
+growth.
 
 ### 1. Build
 
