@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use super::StateStore;
+use super::{StateStore, CF_ACCOUNT_TXS, COLD_CF_ACCOUNT_TXS};
 use crate::archive_v2::{
     ArchiveV2PublicRow, ArchiveV2Reader, ArchiveV2ReaderStatus, ArchiveV2Role, ArchiveV2Rows,
     ArchiveV2SegmentContents,
@@ -110,7 +110,8 @@ impl StateStore {
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let public_categories = self.archive_v2_public_categories(start_slot, end_slot)?;
+        let public_categories =
+            self.archive_v2_public_categories_from_blocks(start_slot, end_slot, Some(&blocks))?;
         Ok(ArchiveV2SegmentContents {
             blocks,
             public_categories,
@@ -195,6 +196,15 @@ impl StateStore {
         start_slot: u64,
         end_slot: u64,
     ) -> Result<BTreeMap<String, Vec<ArchiveV2PublicRow>>, String> {
+        self.archive_v2_public_categories_from_blocks(start_slot, end_slot, None)
+    }
+
+    fn archive_v2_public_categories_from_blocks(
+        &self,
+        start_slot: u64,
+        end_slot: u64,
+        blocks: Option<&[Block]>,
+    ) -> Result<BTreeMap<String, Vec<ArchiveV2PublicRow>>, String> {
         if end_slot < start_slot {
             return Err("Archive V2 category range end precedes start".to_string());
         }
@@ -202,6 +212,15 @@ impl StateStore {
         let dex_trade_slots = self.archive_v2_dex_trade_slots()?;
         let mut categories = BTreeMap::new();
         for category in ARCHIVE_V2_RAW_PUBLIC_CATEGORIES {
+            if *category == "account_txs" {
+                if let Some(blocks) = blocks {
+                    categories.insert(
+                        (*category).to_string(),
+                        self.archive_v2_account_tx_rows_from_blocks(start_slot, end_slot, blocks)?,
+                    );
+                    continue;
+                }
+            }
             if *category == "tx_meta" {
                 let source =
                     self.archive_v2_export_bounded_category(category, start_slot, end_slot)?;
@@ -274,6 +293,103 @@ impl StateStore {
             categories.insert((*category).to_string(), rows);
         }
         Ok(categories)
+    }
+
+    fn archive_v2_account_tx_rows_from_blocks(
+        &self,
+        start_slot: u64,
+        end_slot: u64,
+        blocks: &[Block],
+    ) -> Result<Vec<ArchiveV2PublicRow>, String> {
+        // CF_ACCOUNT_TXS is ordered by account before slot. A range export that
+        // walks that CF therefore rescans and revalidates all historical rows
+        // for every Archive V2 segment. Canonical blocks already determine the
+        // exact index keys; point-checking each derived key in the immutable
+        // hot/cold source preserves source backing and conflict detection while
+        // making collection proportional to this segment's transactions.
+        let expected_block_count = end_slot
+            .checked_sub(start_slot)
+            .and_then(|distance| distance.checked_add(1))
+            .ok_or_else(|| "Archive V2 account_txs block range overflow".to_string())?;
+        if blocks.len() as u64 != expected_block_count
+            || blocks.first().map(|block| block.header.slot) != Some(start_slot)
+            || blocks.last().map(|block| block.header.slot) != Some(end_slot)
+            || blocks
+                .windows(2)
+                .any(|pair| pair[0].header.slot.checked_add(1) != Some(pair[1].header.slot))
+        {
+            return Err(
+                "Archive V2 account_txs derivation requires an exact contiguous block range"
+                    .to_string(),
+            );
+        }
+
+        let hot_cf = self
+            .db
+            .cf_handle(CF_ACCOUNT_TXS)
+            .ok_or_else(|| "Account txs CF not found".to_string())?;
+        let cold_cf = self
+            .cold_db
+            .as_ref()
+            .and_then(|cold| cold.cf_handle(COLD_CF_ACCOUNT_TXS));
+        let mut rows = BTreeMap::<Vec<u8>, ArchiveV2PublicRow>::new();
+
+        for block in blocks {
+            for (_, key) in super::secondary_indexes::account_tx_index_entries_for_block(block) {
+                let hot = self
+                    .db
+                    .get_cf(&hot_cf, &key)
+                    .map_err(|error| format!("Archive V2 account_txs hot lookup failed: {error}"))?
+                    .map(|value| {
+                        self.canonical_public_history_import_value("account_txs", &key, &value)
+                    })
+                    .transpose()?;
+                let cold = match (&self.cold_db, &cold_cf) {
+                    (Some(cold), Some(cold_cf)) => cold
+                        .get_cf(cold_cf, &key)
+                        .map_err(|error| {
+                            format!("Archive V2 account_txs cold lookup failed: {error}")
+                        })?
+                        .map(|value| {
+                            self.canonical_public_history_import_value("account_txs", &key, &value)
+                        })
+                        .transpose()?,
+                    _ => None,
+                };
+                let value = match (hot, cold) {
+                    (Some(hot), Some(cold)) if hot != cold => {
+                        return Err(format!(
+                            "Archive V2 account_txs hot/cold conflict for key {}",
+                            hex::encode(&key)
+                        ));
+                    }
+                    (Some(value), _) | (_, Some(value)) => value,
+                    (None, None) => {
+                        return Err(format!(
+                            "Archive V2 canonical block {} account_txs key {} is missing from the legacy source",
+                            block.header.slot,
+                            hex::encode(&key)
+                        ));
+                    }
+                };
+                let row = ArchiveV2PublicRow {
+                    slot: block.header.slot,
+                    key: key.clone(),
+                    value,
+                };
+                match rows.insert(key.clone(), row.clone()) {
+                    Some(existing) if existing != row => {
+                        return Err(format!(
+                            "Archive V2 account_txs key {} has conflicting canonical rows",
+                            hex::encode(key)
+                        ));
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        Ok(rows.into_values().collect())
     }
 
     pub(crate) fn archive_v2_legacy_category_rows(
@@ -949,5 +1065,121 @@ mod tests {
             .get("tx_meta")
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn segment_export_derives_exact_account_txs_from_canonical_blocks() {
+        let root = tempdir().unwrap();
+        let cold_root = tempdir().unwrap();
+        let mut state = StateStore::open(root.path()).unwrap();
+        state.open_cold_store(cold_root.path()).unwrap();
+        let first_transaction = Transaction::new(Message::new(
+            vec![Instruction {
+                program_id: Pubkey([0x61; 32]),
+                accounts: vec![Pubkey([0x62; 32]), Pubkey([0x63; 32])],
+                data: vec![0x64],
+            }],
+            Hash::hash(b"archive-v2-derived-account-txs-0"),
+        ));
+        let second_transaction = Transaction::new(Message::new(
+            vec![Instruction {
+                program_id: Pubkey([0x65; 32]),
+                accounts: vec![Pubkey([0x66; 32])],
+                data: vec![0x67],
+            }],
+            Hash::hash(b"archive-v2-derived-account-txs-1"),
+        ));
+        let first = Block::new_with_timestamp(
+            0,
+            Hash::default(),
+            Hash::hash(b"archive-v2-derived-account-state-0"),
+            [0x68; 32],
+            vec![first_transaction],
+            1,
+        );
+        let second = Block::new_with_timestamp(
+            1,
+            first.hash(),
+            Hash::hash(b"archive-v2-derived-account-state-1"),
+            [0x69; 32],
+            vec![second_transaction],
+            2,
+        );
+        state.put_block_atomic(&first, Some(0), Some(0)).unwrap();
+        state.put_block_atomic(&second, Some(1), Some(1)).unwrap();
+        let (_, cold_only_key) =
+            super::super::secondary_indexes::account_tx_index_entries_for_block(&first)
+                .into_iter()
+                .next()
+                .unwrap();
+        state
+            .cold_db
+            .as_ref()
+            .unwrap()
+            .put_cf(
+                &state
+                    .cold_db
+                    .as_ref()
+                    .unwrap()
+                    .cf_handle(COLD_CF_ACCOUNT_TXS)
+                    .unwrap(),
+                &cold_only_key,
+                [],
+            )
+            .unwrap();
+        state
+            .db
+            .delete_cf(&state.db.cf_handle(CF_ACCOUNT_TXS).unwrap(), &cold_only_key)
+            .unwrap();
+
+        let scanned = state.archive_v2_public_categories(0, 1).unwrap();
+        let exported = state.export_archive_v2_segment_contents(0, 1).unwrap();
+        assert_eq!(
+            exported.public_categories.get("account_txs"),
+            scanned.get("account_txs")
+        );
+        assert_eq!(
+            exported.public_categories["account_txs"].len(),
+            super::super::secondary_indexes::account_tx_index_entries_for_block(&first).len()
+                + super::super::secondary_indexes::account_tx_index_entries_for_block(&second)
+                    .len()
+        );
+    }
+
+    #[test]
+    fn segment_export_fails_when_a_derived_account_tx_source_row_is_missing() {
+        let root = tempdir().unwrap();
+        let state = StateStore::open(root.path()).unwrap();
+        let transaction = Transaction::new(Message::new(
+            vec![Instruction {
+                program_id: Pubkey([0x71; 32]),
+                accounts: vec![Pubkey([0x72; 32])],
+                data: vec![0x73],
+            }],
+            Hash::hash(b"archive-v2-missing-derived-account-tx"),
+        ));
+        let block = Block::new_with_timestamp(
+            0,
+            Hash::default(),
+            Hash::hash(b"archive-v2-missing-derived-account-state"),
+            [0x74; 32],
+            vec![transaction],
+            1,
+        );
+        state.put_block_atomic(&block, Some(0), Some(0)).unwrap();
+        let (_, key) = super::super::secondary_indexes::account_tx_index_entries_for_block(&block)
+            .into_iter()
+            .next()
+            .unwrap();
+        state
+            .db
+            .delete_cf(&state.db.cf_handle(CF_ACCOUNT_TXS).unwrap(), key)
+            .unwrap();
+
+        let error = state.export_archive_v2_segment_contents(0, 0).unwrap_err();
+        assert!(
+            error.contains("account_txs key") && error.contains("missing from the legacy source"),
+            "unexpected error: {error}"
+        );
     }
 }
