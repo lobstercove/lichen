@@ -5,6 +5,19 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.243] - 2026-08-10
+
+### Fixed
+- Advances across multiple Archive V2 retirement categories and deletion
+  batches within one bounded pass, while retaining the same aggregate row,
+  byte, wall-time, synchronous-journal, and fault-recovery limits. This avoids
+  reopening the stopped validator databases for every category without
+  weakening source equivalence or deletion safety.
+- Reclaims the first queued RocksDB range that fits the signed input and
+  two-copy headroom limits instead of parking behind one larger range. Queue
+  ordering remains canonical, and the original first blocked range and reason
+  remain preserved when no queued range can safely advance.
+
 ## [0.5.242] - 2026-08-10
 
 ### Fixed
