@@ -334,13 +334,16 @@ impl StateStore {
             categories_completed: journal.category_index as u64,
             ..ArchiveV2RetirementPassReport::default()
         };
+        let mut selected_rows = 0u64;
+        let mut selected_bytes = 0u64;
         if journal.phase == ArchiveV2RetirementPhase::Complete
             || journal.phase == ArchiveV2RetirementPhase::ReclaimPending
         {
             return Ok(report);
         }
         if !journal.pending.is_empty() {
-            self.apply_pending_retirement_deletions(&journal.pending, &mut report, fault)?;
+            let mut batch_report = ArchiveV2RetirementPassReport::default();
+            self.apply_pending_retirement_deletions(&journal.pending, &mut batch_report, fault)?;
             let last_key = journal
                 .pending
                 .iter()
@@ -350,17 +353,20 @@ impl StateStore {
             journal.after_key = last_key;
             journal.deleted_hot_rows = journal
                 .deleted_hot_rows
-                .saturating_add(report.deleted_hot_rows);
+                .saturating_add(batch_report.deleted_hot_rows);
             journal.deleted_cold_rows = journal
                 .deleted_cold_rows
-                .saturating_add(report.deleted_cold_rows);
+                .saturating_add(batch_report.deleted_cold_rows);
             journal.deleted_logical_bytes = journal
                 .deleted_logical_bytes
-                .saturating_add(report.deleted_logical_bytes);
+                .saturating_add(batch_report.deleted_logical_bytes);
             journal.pending.clear();
             journal.phase = ArchiveV2RetirementPhase::Tombstoning;
             store_retirement_journal(journal_path, &journal)?;
             maybe_retirement_fault(fault, ArchiveV2RetirementFaultPoint::AfterProgressJournal)?;
+            report.deleted_hot_rows = batch_report.deleted_hot_rows;
+            report.deleted_cold_rows = batch_report.deleted_cold_rows;
+            report.deleted_logical_bytes = batch_report.deleted_logical_bytes;
             report.recovered_pending_batch = true;
             report.phase = journal.phase;
             report.elapsed_millis = started.elapsed().as_millis() as u64;
@@ -368,97 +374,141 @@ impl StateStore {
         }
 
         let categories = retirement.category_proofs();
-        if journal.category_index as usize >= categories.len() {
-            journal.phase = ArchiveV2RetirementPhase::ReclaimPending;
-            store_retirement_journal(journal_path, &journal)?;
-            report.phase = journal.phase;
-            report.elapsed_millis = started.elapsed().as_millis() as u64;
-            return Ok(report);
-        }
-        let category = &categories[journal.category_index as usize].category;
-        report.category = Some(category.clone());
-        let rows = reader
-            .category_rows(category, segment.start_slot, segment.end_slot)
-            .map_err(|error| error.to_string())?;
-        let mut pending = Vec::new();
-        let mut selected_rows = 0u64;
-        let mut selected_bytes = 0u64;
-        let mut final_key = None;
-        for (key, expected_value) in rows {
-            if journal
-                .after_key
-                .as_ref()
-                .is_some_and(|after| key.as_slice() <= after.as_slice())
-            {
+        loop {
+            if journal.category_index as usize >= categories.len() {
+                journal.phase = ArchiveV2RetirementPhase::ReclaimPending;
+                store_retirement_journal(journal_path, &journal)?;
+                report.phase = journal.phase;
+                report.categories_completed = journal.category_index as u64;
+                report.elapsed_millis = started.elapsed().as_millis() as u64;
+                return Ok(report);
+            }
+            let category = &categories[journal.category_index as usize].category;
+            report.category = Some(category.clone());
+            let rows = reader
+                .category_rows(category, segment.start_slot, segment.end_slot)
+                .map_err(|error| error.to_string())?;
+            let mut pending = Vec::new();
+            let mut final_key = None;
+            let mut exhausted = true;
+            for (key, expected_value) in rows {
+                if journal
+                    .after_key
+                    .as_ref()
+                    .is_some_and(|after| key.as_slice() <= after.as_slice())
+                {
+                    continue;
+                }
+                if selected_rows >= limits.max_rows
+                    || selected_bytes >= limits.max_bytes
+                    || started.elapsed() >= limits.max_wall_time
+                {
+                    exhausted = false;
+                    break;
+                }
+                report.scanned_rows = report.scanned_rows.saturating_add(1);
+                let targets = self.prepare_retirement_row(category, &key, &expected_value)?;
+                if targets.is_empty() {
+                    return Err(format!(
+                        "Legacy {category} row {} disappeared before its authorized retirement batch",
+                        hex::encode(&key)
+                    ));
+                }
+                selected_rows = selected_rows.saturating_add(1);
+                selected_bytes =
+                    selected_bytes.saturating_add((key.len() + expected_value.len()) as u64);
+                final_key = Some(key);
+                pending.extend(targets);
+            }
+            if pending.len() > MAX_PENDING_DELETIONS {
+                return Err("Archive V2 retirement pending batch is too large".to_string());
+            }
+            if pending.is_empty() {
+                if !exhausted {
+                    report.phase = journal.phase;
+                    report.elapsed_millis = started.elapsed().as_millis() as u64;
+                    return Ok(report);
+                }
+                journal.category_index = journal.category_index.saturating_add(1);
+                journal.after_key = None;
+                journal.phase = if journal.category_index as usize >= categories.len() {
+                    ArchiveV2RetirementPhase::ReclaimPending
+                } else {
+                    ArchiveV2RetirementPhase::Tombstoning
+                };
+                store_retirement_journal(journal_path, &journal)?;
+                report.phase = journal.phase;
+                report.categories_completed = journal.category_index as u64;
+                if journal.phase == ArchiveV2RetirementPhase::ReclaimPending
+                    || selected_rows >= limits.max_rows
+                    || selected_bytes >= limits.max_bytes
+                    || started.elapsed() >= limits.max_wall_time
+                {
+                    report.elapsed_millis = started.elapsed().as_millis() as u64;
+                    return Ok(report);
+                }
                 continue;
             }
-            if selected_rows >= limits.max_rows
+
+            journal.affected_families.extend(
+                pending
+                    .iter()
+                    .map(retirement_family_for_deletion)
+                    .collect::<Result<Vec<_>, _>>()?,
+            );
+            journal.affected_families.sort();
+            journal.affected_families.dedup();
+            journal.pending = pending;
+            journal.phase = ArchiveV2RetirementPhase::Tombstoning;
+            store_retirement_journal(journal_path, &journal)?;
+            maybe_retirement_fault(fault, ArchiveV2RetirementFaultPoint::AfterPendingJournal)?;
+            let mut batch_report = ArchiveV2RetirementPassReport::default();
+            self.apply_pending_retirement_deletions(&journal.pending, &mut batch_report, fault)?;
+            journal.after_key = final_key;
+            journal.deleted_hot_rows = journal
+                .deleted_hot_rows
+                .saturating_add(batch_report.deleted_hot_rows);
+            journal.deleted_cold_rows = journal
+                .deleted_cold_rows
+                .saturating_add(batch_report.deleted_cold_rows);
+            journal.deleted_logical_bytes = journal
+                .deleted_logical_bytes
+                .saturating_add(batch_report.deleted_logical_bytes);
+            journal.pending.clear();
+            store_retirement_journal(journal_path, &journal)?;
+            maybe_retirement_fault(fault, ArchiveV2RetirementFaultPoint::AfterProgressJournal)?;
+            report.deleted_hot_rows = report
+                .deleted_hot_rows
+                .saturating_add(batch_report.deleted_hot_rows);
+            report.deleted_cold_rows = report
+                .deleted_cold_rows
+                .saturating_add(batch_report.deleted_cold_rows);
+            report.deleted_logical_bytes = report
+                .deleted_logical_bytes
+                .saturating_add(batch_report.deleted_logical_bytes);
+            report.phase = journal.phase;
+
+            if exhausted {
+                journal.category_index = journal.category_index.saturating_add(1);
+                journal.after_key = None;
+                journal.phase = if journal.category_index as usize >= categories.len() {
+                    ArchiveV2RetirementPhase::ReclaimPending
+                } else {
+                    ArchiveV2RetirementPhase::Tombstoning
+                };
+                store_retirement_journal(journal_path, &journal)?;
+                report.phase = journal.phase;
+                report.categories_completed = journal.category_index as u64;
+            }
+            if report.phase == ArchiveV2RetirementPhase::ReclaimPending
+                || selected_rows >= limits.max_rows
                 || selected_bytes >= limits.max_bytes
                 || started.elapsed() >= limits.max_wall_time
             {
-                break;
+                report.elapsed_millis = started.elapsed().as_millis() as u64;
+                return Ok(report);
             }
-            report.scanned_rows = report.scanned_rows.saturating_add(1);
-            let targets = self.prepare_retirement_row(category, &key, &expected_value)?;
-            if targets.is_empty() {
-                return Err(format!(
-                    "Legacy {category} row {} disappeared before its authorized retirement batch",
-                    hex::encode(&key)
-                ));
-            }
-            selected_rows = selected_rows.saturating_add(1);
-            selected_bytes =
-                selected_bytes.saturating_add((key.len() + expected_value.len()) as u64);
-            final_key = Some(key);
-            pending.extend(targets);
         }
-        if pending.len() > MAX_PENDING_DELETIONS {
-            return Err("Archive V2 retirement pending batch is too large".to_string());
-        }
-        if pending.is_empty() {
-            journal.category_index = journal.category_index.saturating_add(1);
-            journal.after_key = None;
-            journal.phase = if journal.category_index as usize >= categories.len() {
-                ArchiveV2RetirementPhase::ReclaimPending
-            } else {
-                ArchiveV2RetirementPhase::Tombstoning
-            };
-            store_retirement_journal(journal_path, &journal)?;
-            report.phase = journal.phase;
-            report.categories_completed = journal.category_index as u64;
-            report.elapsed_millis = started.elapsed().as_millis() as u64;
-            return Ok(report);
-        }
-
-        journal.affected_families.extend(
-            pending
-                .iter()
-                .map(retirement_family_for_deletion)
-                .collect::<Result<Vec<_>, _>>()?,
-        );
-        journal.affected_families.sort();
-        journal.affected_families.dedup();
-        journal.pending = pending;
-        journal.phase = ArchiveV2RetirementPhase::Tombstoning;
-        store_retirement_journal(journal_path, &journal)?;
-        maybe_retirement_fault(fault, ArchiveV2RetirementFaultPoint::AfterPendingJournal)?;
-        self.apply_pending_retirement_deletions(&journal.pending, &mut report, fault)?;
-        journal.after_key = final_key;
-        journal.deleted_hot_rows = journal
-            .deleted_hot_rows
-            .saturating_add(report.deleted_hot_rows);
-        journal.deleted_cold_rows = journal
-            .deleted_cold_rows
-            .saturating_add(report.deleted_cold_rows);
-        journal.deleted_logical_bytes = journal
-            .deleted_logical_bytes
-            .saturating_add(report.deleted_logical_bytes);
-        journal.pending.clear();
-        store_retirement_journal(journal_path, &journal)?;
-        maybe_retirement_fault(fault, ArchiveV2RetirementFaultPoint::AfterProgressJournal)?;
-        report.phase = journal.phase;
-        report.elapsed_millis = started.elapsed().as_millis() as u64;
-        Ok(report)
     }
 
     pub fn reclaim_archive_v2_retirement_pass(
@@ -518,21 +568,31 @@ impl StateStore {
         let mut hot_available_bytes = limits.hot_available_bytes;
         let mut cold_available_bytes = limits.cold_available_bytes;
         while report.compacted_ranges < limits.max_ranges {
-            let Some(range) = journal.reclaim_queue.first().cloned() else {
+            if journal.reclaim_queue.is_empty() {
                 break;
-            };
-            let db = self.retirement_db(range.store)?;
-            let estimate = retirement_estimated_reclaim_input_bytes(db, &range)?;
+            }
             let remaining_input = limits
                 .max_estimated_input_bytes
                 .saturating_sub(report.estimated_input_bytes);
-            if estimate > remaining_input {
-                report.paused_reason = Some(format!(
-                    "compaction_input_budget:store={:?}:family={}:estimated_bytes={estimate}:remaining_bytes={remaining_input}",
-                    range.store, range.cf_name
-                ));
+            let (candidate, paused_reason) = select_retirement_reclaim_candidate(
+                &journal.reclaim_queue,
+                remaining_input,
+                hot_available_bytes,
+                limits.hot_required_reserve_bytes,
+                cold_available_bytes,
+                limits.cold_required_reserve_bytes,
+                |range| {
+                    retirement_estimated_reclaim_input_bytes(
+                        self.retirement_db(range.store)?,
+                        range,
+                    )
+                },
+            )?;
+            let Some((range_index, range, _estimate)) = candidate else {
+                report.paused_reason = paused_reason;
                 break;
-            }
+            };
+            let db = self.retirement_db(range.store)?;
             let (available_bytes, required_reserve_bytes) = match range.store {
                 RetirementStore::Hot => {
                     (&mut hot_available_bytes, limits.hot_required_reserve_bytes)
@@ -542,14 +602,6 @@ impl StateStore {
                     limits.cold_required_reserve_bytes,
                 ),
             };
-            let estimated_peak = estimate.saturating_mul(2);
-            if *available_bytes < required_reserve_bytes.saturating_add(estimated_peak) {
-                report.paused_reason = Some(format!(
-                    "compaction_headroom:store={:?}:family={}:available_bytes={}:reserve_bytes={required_reserve_bytes}:estimated_peak_bytes={estimated_peak}",
-                    range.store, range.cf_name, *available_bytes
-                ));
-                break;
-            }
 
             let cf = db
                 .cf_handle(&range.cf_name)
@@ -591,7 +643,7 @@ impl StateStore {
             let after = retirement_family_physical_bytes(db, &range.cf_name)?;
             let reclaimed = before.saturating_sub(after);
 
-            journal.reclaim_queue.remove(0);
+            journal.reclaim_queue.remove(range_index);
             journal.reclaimed_physical_bytes =
                 journal.reclaimed_physical_bytes.saturating_add(reclaimed);
             store_retirement_journal(journal_path, &journal)?;
@@ -1009,6 +1061,49 @@ fn retirement_estimated_reclaim_input_bytes(
     Ok(total)
 }
 
+type RetirementReclaimCandidate = (usize, RetirementReclaimRange, u64);
+
+#[allow(clippy::too_many_arguments)]
+fn select_retirement_reclaim_candidate(
+    ranges: &[RetirementReclaimRange],
+    remaining_input_bytes: u64,
+    hot_available_bytes: u64,
+    hot_required_reserve_bytes: u64,
+    cold_available_bytes: u64,
+    cold_required_reserve_bytes: u64,
+    mut estimate_input_bytes: impl FnMut(&RetirementReclaimRange) -> Result<u64, String>,
+) -> Result<(Option<RetirementReclaimCandidate>, Option<String>), String> {
+    let mut first_paused_reason = None;
+    for (index, range) in ranges.iter().enumerate() {
+        let estimate = estimate_input_bytes(range)?;
+        if estimate > remaining_input_bytes {
+            first_paused_reason.get_or_insert_with(|| {
+                format!(
+                    "compaction_input_budget:store={:?}:family={}:estimated_bytes={estimate}:remaining_bytes={remaining_input_bytes}",
+                    range.store, range.cf_name
+                )
+            });
+            continue;
+        }
+        let (available_bytes, required_reserve_bytes) = match range.store {
+            RetirementStore::Hot => (hot_available_bytes, hot_required_reserve_bytes),
+            RetirementStore::Cold => (cold_available_bytes, cold_required_reserve_bytes),
+        };
+        let estimated_peak = estimate.saturating_mul(2);
+        if available_bytes < required_reserve_bytes.saturating_add(estimated_peak) {
+            first_paused_reason.get_or_insert_with(|| {
+                format!(
+                    "compaction_headroom:store={:?}:family={}:available_bytes={available_bytes}:reserve_bytes={required_reserve_bytes}:estimated_peak_bytes={estimated_peak}",
+                    range.store, range.cf_name
+                )
+            });
+            continue;
+        }
+        return Ok((Some((index, range.clone(), estimate)), None));
+    }
+    Ok((None, first_paused_reason))
+}
+
 fn retirement_family_physical_bytes(db: &DB, cf_name: &str) -> Result<u64, String> {
     let cf = db
         .cf_handle(cf_name)
@@ -1405,6 +1500,72 @@ mod tests {
         }
         .validate()
         .is_err());
+    }
+
+    #[test]
+    fn retirement_reclaim_skips_a_blocked_front_range() {
+        let ranges = vec![
+            RetirementReclaimRange {
+                store: RetirementStore::Cold,
+                cf_name: "blocks".to_string(),
+                start_key: vec![0],
+                end_key: vec![1],
+            },
+            RetirementReclaimRange {
+                store: RetirementStore::Hot,
+                cf_name: "tx_meta".to_string(),
+                start_key: vec![0],
+                end_key: vec![1],
+            },
+        ];
+        let estimate = |range: &RetirementReclaimRange| match range.cf_name.as_str() {
+            "blocks" => Ok(400),
+            "tx_meta" => Ok(40),
+            other => Err(format!("unexpected family {other}")),
+        };
+
+        let (candidate, paused_reason) =
+            select_retirement_reclaim_candidate(&ranges, 1_000, 1_000, 100, 500, 100, estimate)
+                .unwrap();
+        assert_eq!(candidate, Some((1, ranges[1].clone(), 40)));
+        assert_eq!(paused_reason, None);
+
+        let (candidate, paused_reason) =
+            select_retirement_reclaim_candidate(&ranges, 30, 1_000, 100, 500, 100, estimate)
+                .unwrap();
+        assert_eq!(candidate, None);
+        assert_eq!(
+            paused_reason.as_deref(),
+            Some(
+                "compaction_input_budget:store=Cold:family=blocks:estimated_bytes=400:remaining_bytes=30"
+            )
+        );
+    }
+
+    #[test]
+    fn retirement_single_pass_advances_across_categories_within_limits() {
+        let fixture = fixture();
+        let journal = fixture.journal_root.path().join("single-pass.journal");
+        let report = fixture
+            .state
+            .retire_archive_v2_segment_pass(
+                &fixture.retirement,
+                &journal,
+                ArchiveV2RetirementLimits {
+                    max_rows: 100_000,
+                    max_bytes: 1024 * 1024 * 1024,
+                    max_wall_time: Duration::from_secs(60),
+                },
+            )
+            .unwrap();
+
+        assert_eq!(report.phase, ArchiveV2RetirementPhase::ReclaimPending);
+        assert_eq!(
+            report.categories_completed as usize,
+            fixture.retirement.category_proofs().len()
+        );
+        assert!(report.scanned_rows > 0);
+        assert!(report.deleted_hot_rows + report.deleted_cold_rows > 0);
     }
 
     #[test]
