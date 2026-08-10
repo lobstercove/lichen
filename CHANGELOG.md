@@ -5,6 +5,23 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.242] - 2026-08-10
+
+### Fixed
+- Builds signed Archive V2 retirement category proofs directly from the
+  already-verified segment instead of repeatedly scanning unrelated legacy
+  history for every segment. Before the first journal or deletion is created,
+  the destructive pass still point-checks every represented row against the
+  hot and cold source stores and fails closed on a missing or conflicting row.
+
+## [0.5.241] - 2026-08-09
+
+### Fixed
+- Derives each Archive V2 `account_txs` segment from its exact canonical block
+  range and point-checks the derived keys against hot and cold source storage,
+  avoiding a full account-history rescan for every segment while retaining
+  missing-row and conflict detection.
+
 ## [0.5.240] - 2026-08-06
 
 ### Fixed

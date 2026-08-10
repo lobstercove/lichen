@@ -191,6 +191,7 @@ impl StateStore {
             .map_err(|error| error.to_string())
     }
 
+    #[cfg(test)]
     pub(crate) fn archive_v2_public_categories(
         &self,
         start_slot: u64,
@@ -390,66 +391,6 @@ impl StateStore {
         }
 
         Ok(rows.into_values().collect())
-    }
-
-    pub(crate) fn archive_v2_legacy_category_rows(
-        &self,
-        category: &str,
-        start_slot: u64,
-        end_slot: u64,
-    ) -> Result<ArchiveV2Rows, String> {
-        if ARCHIVE_V2_RAW_PUBLIC_CATEGORIES.contains(&category) {
-            return Ok(self
-                .archive_v2_public_categories(start_slot, end_slot)?
-                .remove(category)
-                .unwrap_or_default()
-                .into_iter()
-                .map(|row| (row.key, row.value))
-                .collect());
-        }
-        if !matches!(
-            category,
-            "slots" | "blocks" | "transactions" | "tx_by_slot" | "tx_to_slot"
-        ) {
-            return Err(format!(
-                "Archive V2 has no legacy range exporter for {category}"
-            ));
-        }
-        let mut cursor = start_slot.checked_sub(1).map(|slot| {
-            let mut cursor = Vec::with_capacity(if matches!(category, "slots" | "blocks") {
-                8
-            } else {
-                16
-            });
-            cursor.extend_from_slice(&slot.to_be_bytes());
-            if !matches!(category, "slots" | "blocks") {
-                cursor.extend_from_slice(&u64::MAX.to_be_bytes());
-            }
-            cursor
-        });
-        let mut rows = Vec::new();
-        loop {
-            let page = self.export_public_history_category_range_cursor_untracked(
-                category,
-                cursor.as_deref(),
-                ARCHIVE_V2_EXPORT_PAGE_ROWS,
-                Some(end_slot),
-            )?;
-            rows.extend(page.entries);
-            if !page.has_more {
-                break;
-            }
-            cursor = Some(page.next_cursor.ok_or_else(|| {
-                format!("{category} export has more rows but no continuation cursor")
-            })?);
-        }
-        rows.sort_by(|left, right| left.0.cmp(&right.0));
-        if rows.windows(2).any(|pair| pair[0].0 >= pair[1].0) {
-            return Err(format!(
-                "Archive V2 legacy {category} rows are duplicated or out of order"
-            ));
-        }
-        Ok(rows)
     }
 
     fn archive_v2_export_bounded_category(
