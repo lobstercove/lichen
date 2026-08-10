@@ -202,26 +202,14 @@ impl StateStore {
             .map_err(|error| error.to_string())?;
         let (start_slot, end_slot) = (segment_manifest.start_slot, segment_manifest.end_slot);
 
-        let raw_categories = self.archive_v2_public_categories(start_slot, end_slot)?;
         let mut category_proofs = Vec::with_capacity(PUBLIC_HISTORY_SNAPSHOT_CATEGORIES.len());
         for category in PUBLIC_HISTORY_SNAPSHOT_CATEGORIES {
-            let legacy_rows = if let Some(rows) = raw_categories.get(*category) {
-                rows.iter()
-                    .map(|row| (row.key.clone(), row.value.clone()))
-                    .collect::<Vec<_>>()
-            } else {
-                self.archive_v2_legacy_category_rows(category, start_slot, end_slot)?
-            };
-            let legacy_rows = self.normalize_archive_v2_retirement_rows(category, legacy_rows)?;
-            let archive_rows = reader
-                .category_rows(category, start_slot, end_slot)
-                .map_err(|error| error.to_string())?;
-            let archive_rows = self.normalize_archive_v2_retirement_rows(category, archive_rows)?;
-            if legacy_rows != archive_rows {
-                return Err(format!(
-                    "Archive V2 retirement equivalence failed for category {category}"
-                ));
-            }
+            // Authorization binds the signed request to the verified Archive V2
+            // rows and replica evidence. The first destructive pass separately
+            // point-checks every one of these rows against hot/cold state before
+            // it creates a journal or deletes anything.
+            let archive_rows =
+                self.archive_v2_retirement_rows(&reader, category, start_slot, end_slot)?;
             category_proofs.push(
                 ArchiveV2CategoryProof::from_rows(*category, &archive_rows)
                     .map_err(|error| error.to_string())?,
@@ -740,7 +728,6 @@ impl StateStore {
         reader: &crate::archive_v2::ArchiveV2Reader,
     ) -> Result<(), String> {
         let (start_slot, end_slot) = retirement.slot_range();
-        let raw_categories = self.archive_v2_public_categories(start_slot, end_slot)?;
         for proof in retirement.category_proofs() {
             if !PUBLIC_HISTORY_SNAPSHOT_CATEGORIES.contains(&proof.category.as_str()) {
                 return Err(format!(
@@ -748,32 +735,18 @@ impl StateStore {
                     proof.category
                 ));
             }
-            let archive_rows = reader
-                .category_rows(&proof.category, start_slot, end_slot)
-                .map_err(|error| error.to_string())?;
-            let archive_rows =
-                self.normalize_archive_v2_retirement_rows(&proof.category, archive_rows)?;
+            let archive_rows = self.verify_archive_v2_retirement_rows(
+                reader,
+                &proof.category,
+                start_slot,
+                end_slot,
+            )?;
             let actual_proof =
                 ArchiveV2CategoryProof::from_rows(proof.category.clone(), &archive_rows)
                     .map_err(|error| error.to_string())?;
             if &actual_proof != proof {
                 return Err(format!(
                     "Retirement proof differs from Archive V2 category {}",
-                    proof.category
-                ));
-            }
-            let legacy_rows = if let Some(rows) = raw_categories.get(&proof.category) {
-                rows.iter()
-                    .map(|row| (row.key.clone(), row.value.clone()))
-                    .collect()
-            } else {
-                self.archive_v2_legacy_category_rows(&proof.category, start_slot, end_slot)?
-            };
-            let legacy_rows =
-                self.normalize_archive_v2_retirement_rows(&proof.category, legacy_rows)?;
-            if archive_rows != legacy_rows {
-                return Err(format!(
-                    "Legacy/V2 category {} equivalence changed before retirement",
                     proof.category
                 ));
             }
@@ -791,6 +764,46 @@ impl StateStore {
             return Err("Retirement manifest does not prove every public-history category".into());
         }
         Ok(())
+    }
+
+    fn verify_archive_v2_retirement_rows(
+        &self,
+        reader: &crate::archive_v2::ArchiveV2Reader,
+        category: &str,
+        start_slot: u64,
+        end_slot: u64,
+    ) -> Result<ArchiveV2Rows, String> {
+        let archive_rows =
+            self.archive_v2_retirement_rows(reader, category, start_slot, end_slot)?;
+        for (key, value) in &archive_rows {
+            // Only rows represented by this verified segment are candidates for
+            // deletion. Point reads fail on missing/conflicting source data while
+            // unrelated legacy rows remain untouched; rescanning all history for
+            // every segment is unnecessary and quadratically expensive.
+            if self
+                .prepare_retirement_row(category, key, value)?
+                .is_empty()
+            {
+                return Err(format!(
+                    "Archive V2 retirement source row {} is absent from hot and cold {category}",
+                    hex::encode(key)
+                ));
+            }
+        }
+        Ok(archive_rows)
+    }
+
+    fn archive_v2_retirement_rows(
+        &self,
+        reader: &crate::archive_v2::ArchiveV2Reader,
+        category: &str,
+        start_slot: u64,
+        end_slot: u64,
+    ) -> Result<ArchiveV2Rows, String> {
+        let archive_rows = reader
+            .category_rows(category, start_slot, end_slot)
+            .map_err(|error| error.to_string())?;
+        self.normalize_archive_v2_retirement_rows(category, archive_rows)
     }
 
     fn prepare_retirement_row(
@@ -1210,6 +1223,7 @@ mod tests {
         ArchiveV2Reader, ArchiveV2ReaderConfig, ArchiveV2SegmentCodec, ArchiveV2SegmentContents,
         ARCHIVE_V2_FORMAT_VERSION,
     };
+    use crate::codec::append_legacy_bincode;
     use crate::{Block, CommitSignature, Keypair, PqPublicKey, PqSignature};
 
     struct RetirementFixture {
@@ -1520,5 +1534,63 @@ mod tests {
             )
             .unwrap_err()
             .contains("checksum"));
+    }
+
+    #[test]
+    fn retirement_point_verification_rejects_conflicting_source_rows() {
+        let fixture = fixture();
+        let hot_blocks = fixture.state.db.cf_handle(CF_BLOCKS).unwrap();
+        let mut conflicting_block = fixture
+            .state
+            .get_block(&fixture.block_hash)
+            .unwrap()
+            .unwrap();
+        conflicting_block.header.state_root = Hash::hash(b"conflicting-state-root");
+        let mut conflicting_value = vec![0xBC];
+        append_legacy_bincode(&mut conflicting_value, &conflicting_block, "block").unwrap();
+        fixture
+            .state
+            .db
+            .put_cf(&hot_blocks, fixture.block_hash.0, conflicting_value)
+            .unwrap();
+        let journal = fixture.journal_root.path().join("conflict.journal");
+        let error = fixture
+            .state
+            .retire_archive_v2_segment_pass(
+                &fixture.retirement,
+                &journal,
+                ArchiveV2RetirementLimits::default(),
+            )
+            .unwrap_err();
+        assert!(
+            error.contains("Block snapshot key/hash mismatch"),
+            "{error}"
+        );
+        assert!(!journal.exists());
+    }
+
+    #[test]
+    fn retirement_point_verification_rejects_missing_source_rows() {
+        let fixture = fixture();
+        let hot_blocks = fixture.state.db.cf_handle(CF_BLOCKS).unwrap();
+        fixture
+            .state
+            .db
+            .delete_cf(&hot_blocks, fixture.block_hash.0)
+            .unwrap();
+        let cold = fixture.state.cold_db.as_ref().unwrap();
+        let cold_blocks = cold.cf_handle(COLD_CF_BLOCKS).unwrap();
+        cold.delete_cf(&cold_blocks, fixture.block_hash.0).unwrap();
+        let journal = fixture.journal_root.path().join("missing.journal");
+        let error = fixture
+            .state
+            .retire_archive_v2_segment_pass(
+                &fixture.retirement,
+                &journal,
+                ArchiveV2RetirementLimits::default(),
+            )
+            .unwrap_err();
+        assert!(error.contains("absent from hot and cold blocks"), "{error}");
+        assert!(!journal.exists());
     }
 }
