@@ -20,7 +20,8 @@ use lichen_core::archive_v2::{
 use lichen_core::codec::serialized_size_legacy_bincode;
 use lichen_core::{
     keypair_password_from_env, plaintext_keypair_allowed_for_local_dev, ArchiveV2RetirementLimits,
-    ArchiveV2RetirementPhase, ArchiveV2RetirementReclaimLimits, Hash, KeypairFile, StateStore,
+    ArchiveV2RetirementPassReport, ArchiveV2RetirementPhase, ArchiveV2RetirementReclaimLimits,
+    Hash, KeypairFile, StateStore,
 };
 use serde_json::json;
 
@@ -31,6 +32,7 @@ const DEFAULT_CAPACITY_FLOOR_BYTES: u64 = 10 * 1024 * 1024 * 1024;
 const CAPACITY_RESERVE_BASIS_POINTS: u16 = 500;
 const SEGMENT_OPERATION_PEAK_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const EVIDENCE_RESERVE_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_RETIREMENT_PASSES_PER_OPEN: u64 = 16;
 
 fn main() {
     if let Err(error) = run(std::env::args().skip(1).collect()) {
@@ -337,6 +339,7 @@ fn run_retirement_pass(args: &CommandArgs) -> Result<(), String> {
             "max-rows",
             "max-bytes",
             "max-wall-time-ms",
+            "max-passes-per-open",
         ],
         &[
             "acknowledge-stopped-validator",
@@ -363,8 +366,12 @@ fn run_retirement_pass(args: &CommandArgs) -> Result<(), String> {
             "max-wall-time-ms",
         )?),
     };
+    let max_passes =
+        parse_retirement_passes_per_open(args.optional("max-passes-per-open")?.unwrap_or("1"))?;
     let journal = PathBuf::from(args.required("journal")?);
-    let report = state.retire_archive_v2_segment_pass(&retirement, &journal, limits)?;
+    let (report, passes_completed) = run_retirement_passes_per_open(max_passes, || {
+        state.retire_archive_v2_segment_pass(&retirement, &journal, limits)
+    })?;
     print_json(&json!({
         "operation": "retirement-pass",
         "journal": journal,
@@ -377,6 +384,7 @@ fn run_retirement_pass(args: &CommandArgs) -> Result<(), String> {
         "recovered_pending_batch": report.recovered_pending_batch,
         "categories_completed": report.categories_completed,
         "elapsed_millis": report.elapsed_millis,
+        "passes_completed": passes_completed,
         "tombstoning_complete": report.phase == ArchiveV2RetirementPhase::ReclaimPending,
     }))
 }
@@ -1320,6 +1328,55 @@ fn parse_u64(value: &str, name: &str) -> Result<u64, String> {
         .map_err(|error| format!("invalid --{name}: {error}"))
 }
 
+fn parse_retirement_passes_per_open(value: &str) -> Result<u64, String> {
+    let passes = parse_u64(value, "max-passes-per-open")?;
+    if passes == 0 || passes > MAX_RETIREMENT_PASSES_PER_OPEN {
+        return Err(format!(
+            "--max-passes-per-open must be in 1..={MAX_RETIREMENT_PASSES_PER_OPEN}"
+        ));
+    }
+    Ok(passes)
+}
+
+fn run_retirement_passes_per_open(
+    max_passes: u64,
+    mut run_pass: impl FnMut() -> Result<ArchiveV2RetirementPassReport, String>,
+) -> Result<(ArchiveV2RetirementPassReport, u64), String> {
+    if max_passes == 0 || max_passes > MAX_RETIREMENT_PASSES_PER_OPEN {
+        return Err(format!(
+            "retirement pass count must be in 1..={MAX_RETIREMENT_PASSES_PER_OPEN}"
+        ));
+    }
+    let mut report = run_pass()?;
+    let mut passes_completed = 1u64;
+    for _ in 1..max_passes {
+        if matches!(
+            report.phase,
+            ArchiveV2RetirementPhase::ReclaimPending | ArchiveV2RetirementPhase::Complete
+        ) {
+            break;
+        }
+        let next = run_pass()?;
+        passes_completed = passes_completed.saturating_add(1);
+        report.phase = next.phase;
+        report.category = next.category;
+        report.scanned_rows = report.scanned_rows.saturating_add(next.scanned_rows);
+        report.deleted_hot_rows = report
+            .deleted_hot_rows
+            .saturating_add(next.deleted_hot_rows);
+        report.deleted_cold_rows = report
+            .deleted_cold_rows
+            .saturating_add(next.deleted_cold_rows);
+        report.deleted_logical_bytes = report
+            .deleted_logical_bytes
+            .saturating_add(next.deleted_logical_bytes);
+        report.recovered_pending_batch |= next.recovered_pending_batch;
+        report.categories_completed = next.categories_completed;
+        report.elapsed_millis = report.elapsed_millis.saturating_add(next.elapsed_millis);
+    }
+    Ok((report, passes_completed))
+}
+
 fn parse_usize(value: &str, name: &str) -> Result<usize, String> {
     value
         .parse()
@@ -1481,6 +1538,64 @@ mod tests {
         ])
         .unwrap();
         assert!(require_retirement_acknowledgements(&complete).is_ok());
+    }
+
+    #[test]
+    fn retirement_passes_per_open_is_strictly_bounded() {
+        assert_eq!(parse_retirement_passes_per_open("1").unwrap(), 1);
+        assert_eq!(
+            parse_retirement_passes_per_open("16").unwrap(),
+            MAX_RETIREMENT_PASSES_PER_OPEN
+        );
+        assert!(parse_retirement_passes_per_open("0").is_err());
+        assert!(parse_retirement_passes_per_open("17").is_err());
+        assert!(parse_retirement_passes_per_open("invalid").is_err());
+    }
+
+    #[test]
+    fn retirement_passes_per_open_reuses_one_open_and_aggregates_reports() {
+        let mut calls = 0u64;
+        let (report, passes_completed) = run_retirement_passes_per_open(16, || {
+            calls = calls.saturating_add(1);
+            Ok(if calls == 1 {
+                ArchiveV2RetirementPassReport {
+                    phase: ArchiveV2RetirementPhase::Tombstoning,
+                    category: Some("blocks".to_string()),
+                    scanned_rows: 10,
+                    deleted_hot_rows: 1,
+                    deleted_cold_rows: 2,
+                    deleted_logical_bytes: 100,
+                    recovered_pending_batch: false,
+                    categories_completed: 2,
+                    elapsed_millis: 60_000,
+                }
+            } else {
+                ArchiveV2RetirementPassReport {
+                    phase: ArchiveV2RetirementPhase::ReclaimPending,
+                    category: Some("transactions".to_string()),
+                    scanned_rows: 20,
+                    deleted_hot_rows: 3,
+                    deleted_cold_rows: 4,
+                    deleted_logical_bytes: 200,
+                    recovered_pending_batch: true,
+                    categories_completed: 8,
+                    elapsed_millis: 61_000,
+                }
+            })
+        })
+        .unwrap();
+
+        assert_eq!(calls, 2);
+        assert_eq!(passes_completed, 2);
+        assert_eq!(report.phase, ArchiveV2RetirementPhase::ReclaimPending);
+        assert_eq!(report.category.as_deref(), Some("transactions"));
+        assert_eq!(report.scanned_rows, 30);
+        assert_eq!(report.deleted_hot_rows, 4);
+        assert_eq!(report.deleted_cold_rows, 6);
+        assert_eq!(report.deleted_logical_bytes, 300);
+        assert!(report.recovered_pending_batch);
+        assert_eq!(report.categories_completed, 8);
+        assert_eq!(report.elapsed_millis, 121_000);
     }
 
     #[test]

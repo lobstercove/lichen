@@ -5,6 +5,15 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.245] - 2026-08-11
+
+### Fixed
+- Adds an explicitly bounded `--max-passes-per-open` retirement option. Up to
+  16 independently journaled passes may reuse one stopped-node RocksDB open,
+  while every pass retains the existing 100,000-row, 1 GiB, and 60-second
+  limits. This removes repeated remote-SST reopen scans without weakening
+  source equivalence, crash recovery, or disk-reserve checks.
+
 ## [0.5.244] - 2026-08-11
 
 ### Fixed
