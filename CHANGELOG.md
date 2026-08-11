@@ -5,6 +5,14 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.244] - 2026-08-11
+
+### Fixed
+- Raises the still-bounded Archive V2 retirement reclaim input ceiling from
+  8 GiB to 32 GiB for wide legacy transaction families. The configured disk
+  reserve and estimated two-copy compaction-peak admission remain mandatory,
+  so the larger ceiling cannot bypass physical headroom checks.
+
 ## [0.5.243] - 2026-08-10
 
 ### Fixed
