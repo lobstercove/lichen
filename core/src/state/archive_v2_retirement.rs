@@ -21,7 +21,7 @@ const RETIREMENT_JOURNAL_VERSION: u16 = 2;
 const MAX_RETIREMENT_JOURNAL_BYTES: usize = 16 * 1024 * 1024;
 const MAX_PENDING_DELETIONS: usize = 100_000;
 const MAX_RETIREMENT_RECLAIM_RANGES: usize = 4_096;
-const MAX_RETIREMENT_RECLAIM_INPUT_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+const MAX_RETIREMENT_RECLAIM_INPUT_BYTES: u64 = 32 * 1024 * 1024 * 1024;
 static RETIREMENT_TEMPORARY_NONCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,7 +77,7 @@ impl ArchiveV2RetirementReclaimLimits {
             || self.max_estimated_input_bytes > MAX_RETIREMENT_RECLAIM_INPUT_BYTES
         {
             return Err(
-                "Archive V2 retirement reclaim max_estimated_input_bytes must be in 1 MiB..=8 GiB"
+                "Archive V2 retirement reclaim max_estimated_input_bytes must be in 1 MiB..=32 GiB"
                     .to_string(),
             );
         }
@@ -1482,7 +1482,7 @@ mod tests {
     fn retirement_reclaim_limit_accepts_large_bounded_sst_input() {
         assert!(ArchiveV2RetirementReclaimLimits {
             max_ranges: 1,
-            max_estimated_input_bytes: 8 * 1024 * 1024 * 1024,
+            max_estimated_input_bytes: 32 * 1024 * 1024 * 1024,
             hot_available_bytes: u64::MAX,
             hot_required_reserve_bytes: 0,
             cold_available_bytes: u64::MAX,
@@ -1492,7 +1492,7 @@ mod tests {
         .is_ok());
         assert!(ArchiveV2RetirementReclaimLimits {
             max_ranges: 1,
-            max_estimated_input_bytes: 8 * 1024 * 1024 * 1024 + 1,
+            max_estimated_input_bytes: 32 * 1024 * 1024 * 1024 + 1,
             hot_available_bytes: u64::MAX,
             hot_required_reserve_bytes: 0,
             cold_available_bytes: u64::MAX,
