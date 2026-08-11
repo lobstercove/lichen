@@ -61,6 +61,7 @@ impl StateStore {
             dirty_contract_keys: Vec::new(),
             archive_slot,
             db: Arc::clone(&self.db),
+            cold_db: self.cold_db.clone(),
         }
     }
 
@@ -260,6 +261,7 @@ impl StateBatch {
             dirty_contract_keys: self.dirty_contract_keys.clone(),
             archive_slot: self.archive_slot,
             db: Arc::clone(&self.db),
+            cold_db: self.cold_db.clone(),
         }
     }
 
@@ -569,10 +571,24 @@ impl StateBatch {
             .db
             .cf_handle(CF_TRANSACTIONS)
             .ok_or_else(|| "Transactions CF not found".to_string())?;
-        self.db
+        if self
+            .db
             .get_cf(&cf, sig.0)
+            .map_err(|e| format!("Database error: {}", e))?
+            .is_some()
+        {
+            return Ok(true);
+        }
+
+        let Some(cold) = &self.cold_db else {
+            return Ok(false);
+        };
+        let cold_cf = cold
+            .cf_handle(COLD_CF_TRANSACTIONS)
+            .ok_or_else(|| "Cold transactions CF not found".to_string())?;
+        cold.get_cf(&cold_cf, sig.0)
             .map(|value| value.is_some())
-            .map_err(|e| format!("Database error: {}", e))
+            .map_err(|e| format!("Cold database error: {}", e))
     }
 
     pub fn put_tx_meta(&mut self, sig: &Hash, compute_units_used: u64) -> Result<(), String> {
