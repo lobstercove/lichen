@@ -622,6 +622,10 @@ pub struct StateBatch {
     archive_slot: u64,
     /// Reference to the DB (needed for cf_handle lookups during put)
     db: Arc<DB>,
+    /// Local legacy cold history used only for transaction replay protection.
+    /// Archive V2 readers are intentionally excluded: remote archive I/O must
+    /// never become a consensus input.
+    cold_db: Option<Arc<DB>>,
 }
 
 #[cfg(test)]
@@ -6569,6 +6573,37 @@ mod tests {
             let block = state.get_block_by_slot(slot).unwrap();
             assert!(block.is_some(), "slot {} should still be in hot", slot);
         }
+    }
+
+    #[test]
+    fn speculative_replay_rejects_transaction_already_migrated_to_cold() {
+        let hot_dir = tempdir().unwrap();
+        let cold_dir = tempdir().unwrap();
+        let mut state = StateStore::open(hot_dir.path()).unwrap();
+        state.open_cold_store(cold_dir.path()).unwrap();
+
+        let transaction = make_test_transaction(0x62);
+        let signature = transaction.signature();
+        let block = Block::new(
+            9,
+            Hash::default(),
+            Hash::default(),
+            [0x62; 32],
+            vec![transaction.clone()],
+        );
+        state.put_block(&block).unwrap();
+        assert_eq!(state.migrate_to_cold(10).unwrap(), 1);
+        assert!(!state.has_hot_transaction(&signature).unwrap());
+        assert!(state.get_transaction(&signature).unwrap().is_some());
+
+        let speculative = crate::TxProcessor::new_speculative(state)
+            .process_transactions_speculative_at_slot(&[transaction], &Pubkey([0x63; 32]), 10);
+        assert_eq!(speculative.results.len(), 1);
+        assert!(!speculative.results[0].receipt_eligible);
+        assert_eq!(
+            speculative.results[0].error.as_deref(),
+            Some("Transaction already processed")
+        );
     }
 
     #[test]

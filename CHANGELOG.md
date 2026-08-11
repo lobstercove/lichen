@@ -5,6 +5,15 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.246] - 2026-08-11
+
+### Fixed
+- Extends canonical transaction replay detection into the attached local cold
+  store during speculative block execution. This prevents a transaction that
+  crossed an accelerated hot-retention boundary from being included a second
+  time while preserving Archive V2 and remote object stores as non-consensus
+  inputs.
+
 ## [0.5.245] - 2026-08-11
 
 ### Fixed
