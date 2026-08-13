@@ -190,6 +190,51 @@ impl StateStore {
     pub fn prepare_archive_v2_retirement_request(
         &self,
         segment_object_hash: Hash,
+        replica_evidence: Vec<ArchiveV2ReplicaEvidence>,
+        required_replica_count: u16,
+        required_failure_domains: u16,
+        rollback_anchor: ArchiveV2RollbackAnchor,
+        authorized_unix_seconds: u64,
+    ) -> Result<ArchiveV2RetirementRequest, String> {
+        self.prepare_archive_v2_retirement_request_for_window(
+            segment_object_hash,
+            None,
+            replica_evidence,
+            required_replica_count,
+            required_failure_domains,
+            rollback_anchor,
+            authorized_unix_seconds,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_archive_v2_retirement_window_request(
+        &self,
+        segment_object_hash: Hash,
+        start_slot: u64,
+        end_slot: u64,
+        replica_evidence: Vec<ArchiveV2ReplicaEvidence>,
+        required_replica_count: u16,
+        required_failure_domains: u16,
+        rollback_anchor: ArchiveV2RollbackAnchor,
+        authorized_unix_seconds: u64,
+    ) -> Result<ArchiveV2RetirementRequest, String> {
+        self.prepare_archive_v2_retirement_request_for_window(
+            segment_object_hash,
+            Some((start_slot, end_slot)),
+            replica_evidence,
+            required_replica_count,
+            required_failure_domains,
+            rollback_anchor,
+            authorized_unix_seconds,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_archive_v2_retirement_request_for_window(
+        &self,
+        segment_object_hash: Hash,
+        slot_window: Option<(u64, u64)>,
         mut replica_evidence: Vec<ArchiveV2ReplicaEvidence>,
         required_replica_count: u16,
         required_failure_domains: u16,
@@ -202,7 +247,14 @@ impl StateStore {
         let segment_manifest = reader
             .verify_segment(&segment_object_hash)
             .map_err(|error| error.to_string())?;
-        let (start_slot, end_slot) = (segment_manifest.start_slot, segment_manifest.end_slot);
+        let segment_range = (segment_manifest.start_slot, segment_manifest.end_slot);
+        let (start_slot, end_slot) = slot_window.unwrap_or(segment_range);
+        if !retirement_range_within_segment(segment_range, (start_slot, end_slot)) {
+            return Err(format!(
+                "Archive V2 retirement window {start_slot}..{end_slot} is outside segment {}..{}",
+                segment_range.0, segment_range.1
+            ));
+        }
 
         let mut category_proofs = Vec::with_capacity(PUBLIC_HISTORY_SNAPSHOT_CATEGORIES.len());
         for category in PUBLIC_HISTORY_SNAPSHOT_CATEGORIES {
@@ -228,6 +280,8 @@ impl StateStore {
             identity: reader.catalog().identity.clone(),
             catalog_root: reader.catalog().catalog_root,
             segment_manifest,
+            start_slot,
+            end_slot,
             category_proofs,
             replica_evidence,
             required_replica_count,
@@ -287,7 +341,10 @@ impl StateStore {
             .verify_segment(&retirement.segment_object_hash())
             .map_err(|error| error.to_string())?;
         if segment.segment_content_root != retirement.segment_content_root()
-            || (segment.start_slot, segment.end_slot) != retirement.slot_range()
+            || !retirement_range_within_segment(
+                (segment.start_slot, segment.end_slot),
+                retirement.slot_range(),
+            )
         {
             return Err("Retirement manifest does not match its verified segment".to_string());
         }
@@ -312,8 +369,8 @@ impl StateStore {
                 journal_version: RETIREMENT_JOURNAL_VERSION,
                 retirement_manifest_hash: manifest_hash,
                 segment_object_hash: retirement.segment_object_hash(),
-                start_slot: segment.start_slot,
-                end_slot: segment.end_slot,
+                start_slot: retirement.slot_range().0,
+                end_slot: retirement.slot_range().1,
                 phase: ArchiveV2RetirementPhase::Authorized,
                 category_index: 0,
                 after_key: None,
@@ -388,7 +445,7 @@ impl StateStore {
             let category = &categories[journal.category_index as usize].category;
             report.category = Some(category.clone());
             let rows = reader
-                .category_rows(category, segment.start_slot, segment.end_slot)
+                .category_rows(category, journal.start_slot, journal.end_slot)
                 .map_err(|error| error.to_string())?;
             let mut pending = Vec::new();
             let mut final_key = None;
@@ -1108,6 +1165,10 @@ fn retirement_multi_get_chunk_end<T>(
     end
 }
 
+fn retirement_range_within_segment(segment: (u64, u64), retirement: (u64, u64)) -> bool {
+    retirement.0 <= retirement.1 && retirement.0 >= segment.0 && retirement.1 <= segment.1
+}
+
 fn retirement_family_for_deletion(
     deletion: &PendingRetirementDeletion,
 ) -> Result<RetirementFamily, String> {
@@ -1437,55 +1498,76 @@ mod tests {
         journal_root: TempDir,
         state: StateStore,
         block_hash: Hash,
+        unretired_block_hash: Option<Hash>,
         retirement: ArchiveV2RetirementManifest,
     }
 
     fn fixture() -> RetirementFixture {
+        fixture_with_segment(0, None)
+    }
+
+    fn fixture_with_segment(
+        segment_end_slot: u64,
+        retirement_window: Option<(u64, u64)>,
+    ) -> RetirementFixture {
         let state_root = tempdir().unwrap();
         let cold_root = tempdir().unwrap();
         let archive_root = tempdir().unwrap();
         let journal_root = tempdir().unwrap();
         let mut state = StateStore::open(state_root.path()).unwrap();
         state.open_cold_store(cold_root.path()).unwrap();
-        let mut block = Block::new_with_timestamp(
-            0,
-            Hash::default(),
-            Hash::hash(b"retirement-state"),
-            [9; 32],
-            Vec::new(),
-            1,
-        );
-        block.commit_round = 7;
-        block.commit_signatures.push(CommitSignature {
-            validator: [6; 32],
-            signature: PqSignature {
-                scheme_version: 1,
-                public_key: PqPublicKey {
+        let mut blocks = Vec::new();
+        let mut parent_hash = Hash::default();
+        for slot in 0..=segment_end_slot {
+            let mut block = Block::new_with_timestamp(
+                slot,
+                parent_hash,
+                Hash::hash(&slot.to_be_bytes()),
+                [9; 32],
+                Vec::new(),
+                slot + 1,
+            );
+            block.commit_round = 7;
+            block.commit_signatures.push(CommitSignature {
+                validator: [6; 32],
+                signature: PqSignature {
                     scheme_version: 1,
-                    bytes: vec![7; 32],
+                    public_key: PqPublicKey {
+                        scheme_version: 1,
+                        bytes: vec![7; 32],
+                    },
+                    sig: vec![8; 64],
                 },
-                sig: vec![8; 64],
-            },
-            timestamp: 2,
-        });
-        let block_hash = block.hash();
-        state.put_block_atomic(&block, Some(0), Some(0)).unwrap();
+                timestamp: slot + 2,
+            });
+            parent_hash = block.hash();
+            state
+                .put_block_atomic(&block, Some(slot), Some(slot))
+                .unwrap();
+            blocks.push(block);
+        }
+        let block_hash = blocks[0].hash();
+        let unretired_block_hash = blocks.get(1).map(Block::hash);
         state.set_last_slot(COLD_RETENTION_SLOTS + 10).unwrap();
 
         let hot_blocks = state.db.cf_handle(CF_BLOCKS).unwrap();
-        let block_bytes = state.db.get_cf(&hot_blocks, block_hash.0).unwrap().unwrap();
         let cold = state.cold_db.as_ref().unwrap();
         let cold_blocks = cold.cf_handle(COLD_CF_BLOCKS).unwrap();
-        cold.put_cf(&cold_blocks, block_hash.0, &block_bytes)
-            .unwrap();
+        for block in &blocks {
+            let hash = block.hash();
+            let block_bytes = state.db.get_cf(&hot_blocks, hash.0).unwrap().unwrap();
+            cold.put_cf(&cold_blocks, hash.0, &block_bytes).unwrap();
+        }
 
         let identity = ArchiveV2Identity {
             network_id: "retirement-testnet".to_string(),
             genesis_hash: block_hash,
         };
         let contents = ArchiveV2SegmentContents {
-            blocks: vec![block],
-            public_categories: state.archive_v2_public_categories(0, 0).unwrap(),
+            blocks,
+            public_categories: state
+                .archive_v2_public_categories(0, segment_end_slot)
+                .unwrap(),
         };
         let (segment_bytes, segment_manifest) = ArchiveV2SegmentCodec::encode(
             identity.clone(),
@@ -1543,25 +1625,37 @@ mod tests {
                 verified_unix_seconds: 1,
             },
         ];
-        let request = state
-            .prepare_archive_v2_retirement_request(
+        let rollback_anchor = ArchiveV2RollbackAnchor {
+            release_tag: "v0.6.0".to_string(),
+            release_commit: "b".repeat(40),
+            artifact_sha256: Hash::hash(b"artifact"),
+            detached_pq_checksum_signature_sha256: Hash::hash(b"pq"),
+            archive_format_version: ARCHIVE_V2_FORMAT_VERSION,
+            catalog_format_version: crate::archive_v2::ARCHIVE_V2_CATALOG_VERSION,
+            deployed_validator_count: 4,
+            activated_unix_seconds: 1,
+        };
+        let request = match retirement_window {
+            Some((start_slot, end_slot)) => state.prepare_archive_v2_retirement_window_request(
+                segment_manifest.segment_object_hash,
+                start_slot,
+                end_slot,
+                replica_evidence,
+                2,
+                2,
+                rollback_anchor,
+                1,
+            ),
+            None => state.prepare_archive_v2_retirement_request(
                 segment_manifest.segment_object_hash,
                 replica_evidence,
                 2,
                 2,
-                ArchiveV2RollbackAnchor {
-                    release_tag: "v0.6.0".to_string(),
-                    release_commit: "b".repeat(40),
-                    artifact_sha256: Hash::hash(b"artifact"),
-                    detached_pq_checksum_signature_sha256: Hash::hash(b"pq"),
-                    archive_format_version: ARCHIVE_V2_FORMAT_VERSION,
-                    catalog_format_version: crate::archive_v2::ARCHIVE_V2_CATALOG_VERSION,
-                    deployed_validator_count: 4,
-                    activated_unix_seconds: 1,
-                },
+                rollback_anchor,
                 1,
-            )
-            .unwrap();
+            ),
+        }
+        .unwrap();
         let retirement =
             ArchiveV2RetirementManifest::sign(request, &Keypair::from_seed(&[3; 32])).unwrap();
 
@@ -1572,6 +1666,7 @@ mod tests {
             journal_root,
             state,
             block_hash,
+            unretired_block_hash,
             retirement,
         }
     }
@@ -1626,6 +1721,30 @@ mod tests {
             retirement_multi_get_chunk_end(&logical_sizes, 1, |bytes| *bytes),
             2
         );
+    }
+
+    #[test]
+    fn retirement_window_must_be_nonempty_and_contained_by_its_segment() {
+        assert!(retirement_range_within_segment(
+            (250_000, 299_999),
+            (250_000, 254_999)
+        ));
+        assert!(retirement_range_within_segment(
+            (250_000, 299_999),
+            (250_000, 299_999)
+        ));
+        assert!(!retirement_range_within_segment(
+            (250_000, 299_999),
+            (249_999, 254_999)
+        ));
+        assert!(!retirement_range_within_segment(
+            (250_000, 299_999),
+            (295_000, 300_000)
+        ));
+        assert!(!retirement_range_within_segment(
+            (250_000, 299_999),
+            (255_000, 254_999)
+        ));
     }
 
     #[test]
@@ -1716,6 +1835,63 @@ mod tests {
         );
         assert!(report.scanned_rows > 0);
         assert!(report.deleted_hot_rows + report.deleted_cold_rows > 0);
+    }
+
+    #[test]
+    fn retirement_window_journals_and_deletes_only_its_signed_slot_range() {
+        let fixture = fixture_with_segment(1, Some((0, 0)));
+        let journal_path = fixture.journal_root.path().join("window.journal");
+        let report = fixture
+            .state
+            .retire_archive_v2_segment_pass(
+                &fixture.retirement,
+                &journal_path,
+                ArchiveV2RetirementLimits {
+                    max_rows: 100_000,
+                    max_bytes: 1024 * 1024 * 1024,
+                    max_wall_time: Duration::from_secs(60),
+                },
+            )
+            .unwrap();
+
+        assert_eq!(report.phase, ArchiveV2RetirementPhase::ReclaimPending);
+        assert_eq!(fixture.retirement.slot_range(), (0, 0));
+        let journal = load_retirement_journal(&journal_path).unwrap();
+        assert_eq!((journal.start_slot, journal.end_slot), (0, 0));
+
+        let unretired_hash = fixture.unretired_block_hash.unwrap();
+        let hot_blocks = fixture.state.db.cf_handle(CF_BLOCKS).unwrap();
+        assert!(fixture
+            .state
+            .db
+            .get_cf(&hot_blocks, fixture.block_hash.0)
+            .unwrap()
+            .is_none());
+        assert!(fixture
+            .state
+            .db
+            .get_cf(&hot_blocks, unretired_hash.0)
+            .unwrap()
+            .is_some());
+        let cold = fixture.state.cold_db.as_ref().unwrap();
+        let cold_blocks = cold.cf_handle(COLD_CF_BLOCKS).unwrap();
+        assert!(cold
+            .get_cf(&cold_blocks, fixture.block_hash.0)
+            .unwrap()
+            .is_none());
+        assert!(cold
+            .get_cf(&cold_blocks, unretired_hash.0)
+            .unwrap()
+            .is_some());
+        assert_eq!(
+            fixture
+                .state
+                .get_block(&fixture.block_hash)
+                .unwrap()
+                .unwrap()
+                .hash(),
+            fixture.block_hash
+        );
     }
 
     #[test]

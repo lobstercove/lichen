@@ -140,6 +140,8 @@ pub struct ArchiveV2RetirementRequest {
     pub identity: ArchiveV2Identity,
     pub catalog_root: Hash,
     pub segment_manifest: ArchiveV2Manifest,
+    pub start_slot: u64,
+    pub end_slot: u64,
     pub category_proofs: Vec<ArchiveV2CategoryProof>,
     pub replica_evidence: Vec<ArchiveV2ReplicaEvidence>,
     pub required_replica_count: u16,
@@ -153,14 +155,22 @@ impl ArchiveV2RetirementManifest {
         request: ArchiveV2RetirementRequest,
         signer: &Keypair,
     ) -> Result<Self, ArchiveV2Error> {
+        if request.start_slot > request.end_slot
+            || request.start_slot < request.segment_manifest.start_slot
+            || request.end_slot > request.segment_manifest.end_slot
+        {
+            return Err(ArchiveV2Error::Bounds(
+                "retirement window is outside its segment".to_string(),
+            ));
+        }
         let payload = ArchiveV2RetirementPayload {
             format_version: RETIREMENT_FORMAT_VERSION,
             identity: request.identity,
             catalog_root: request.catalog_root,
             segment_object_hash: request.segment_manifest.segment_object_hash,
             segment_content_root: request.segment_manifest.segment_content_root,
-            start_slot: request.segment_manifest.start_slot,
-            end_slot: request.segment_manifest.end_slot,
+            start_slot: request.start_slot,
+            end_slot: request.end_slot,
             category_proofs: request.category_proofs,
             replica_evidence: request.replica_evidence,
             required_replica_count: request.required_replica_count,
@@ -384,6 +394,8 @@ mod tests {
             identity,
             catalog_root: Hash::hash(b"catalog"),
             segment_manifest,
+            start_slot: 0,
+            end_slot: 0,
             category_proofs: vec![proof],
             replica_evidence: vec![
                 ArchiveV2ReplicaEvidence {
@@ -419,6 +431,12 @@ mod tests {
         assert!(matches!(
             ArchiveV2RetirementManifest::sign(stale_catalog_anchor, &signer),
             Err(ArchiveV2Error::Role(_))
+        ));
+        let mut outside_segment = request.clone();
+        outside_segment.end_slot = 1;
+        assert!(matches!(
+            ArchiveV2RetirementManifest::sign(outside_segment, &signer),
+            Err(ArchiveV2Error::Bounds(_))
         ));
         let manifest = ArchiveV2RetirementManifest::sign(request, &signer).unwrap();
         let encoded = manifest.encode_canonical().unwrap();

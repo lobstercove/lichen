@@ -242,6 +242,8 @@ fn run_retirement_authorize(args: &CommandArgs) -> Result<(), String> {
             "cold-store",
             "root",
             "segment-object-hash",
+            "start-slot",
+            "end-slot",
             "replica-evidence",
             "required-replicas",
             "required-failure-domains",
@@ -265,6 +267,7 @@ fn run_retirement_authorize(args: &CommandArgs) -> Result<(), String> {
     }
     attach_retirement_reader(&state, &root)?;
     let segment_object_hash = Hash::from_hex(args.required("segment-object-hash")?)?;
+    let slot_window = parse_optional_retirement_window(args)?;
     let replica_evidence =
         parse_retirement_replica_evidence(args.repeated("replica-evidence"), segment_object_hash)?;
     let required_replica_count =
@@ -295,14 +298,26 @@ fn run_retirement_authorize(args: &CommandArgs) -> Result<(), String> {
         args.required("authorized-unix-seconds")?,
         "authorized-unix-seconds",
     )?;
-    let request = state.prepare_archive_v2_retirement_request(
-        segment_object_hash,
-        replica_evidence,
-        required_replica_count,
-        required_failure_domains,
-        rollback_anchor,
-        authorized_unix_seconds,
-    )?;
+    let request = match slot_window {
+        Some((start_slot, end_slot)) => state.prepare_archive_v2_retirement_window_request(
+            segment_object_hash,
+            start_slot,
+            end_slot,
+            replica_evidence,
+            required_replica_count,
+            required_failure_domains,
+            rollback_anchor,
+            authorized_unix_seconds,
+        )?,
+        None => state.prepare_archive_v2_retirement_request(
+            segment_object_hash,
+            replica_evidence,
+            required_replica_count,
+            required_failure_domains,
+            rollback_anchor,
+            authorized_unix_seconds,
+        )?,
+    };
     let password = keypair_password_from_env();
     let signer = KeypairFile::load_with_password_policy(
         Path::new(args.required("signer-keypair")?),
@@ -1328,6 +1343,21 @@ fn parse_u64(value: &str, name: &str) -> Result<u64, String> {
         .map_err(|error| format!("invalid --{name}: {error}"))
 }
 
+fn parse_optional_retirement_window(args: &CommandArgs) -> Result<Option<(u64, u64)>, String> {
+    match (args.optional("start-slot")?, args.optional("end-slot")?) {
+        (None, None) => Ok(None),
+        (Some(start), Some(end)) => {
+            let start = parse_u64(start, "start-slot")?;
+            let end = parse_u64(end, "end-slot")?;
+            if end < start {
+                return Err("--end-slot precedes --start-slot".to_string());
+            }
+            Ok(Some((start, end)))
+        }
+        _ => Err("--start-slot and --end-slot must be provided together".to_string()),
+    }
+}
+
 fn parse_retirement_passes_per_open(value: &str) -> Result<u64, String> {
     let passes = parse_u64(value, "max-passes-per-open")?;
     if passes == 0 || passes > MAX_RETIREMENT_PASSES_PER_OPEN {
@@ -1464,6 +1494,7 @@ fn print_usage() {
     println!(
         "lichen-archive-v2 <status|verify|repair|declare-legacy-loss|build|mirror|restore|retirement-authorize|retirement-pass|retirement-reclaim|profile-source|benchmark> [options]\n\
          Run `lichen-archive-v2 <command> --help` is intentionally unsupported; unknown options fail closed.\n\
+         Retirement authorization accepts paired --start-slot/--end-slot bounds inside one verified segment; omitting both authorizes the full segment.\n\
          Replica specifications use name:failure-domain:path. Retirement evidence uses destination,failure-domain,verified-unix-seconds. Verify and mirror default to one object per pass."
     );
 }
@@ -1550,6 +1581,47 @@ mod tests {
         assert!(parse_retirement_passes_per_open("0").is_err());
         assert!(parse_retirement_passes_per_open("17").is_err());
         assert!(parse_retirement_passes_per_open("invalid").is_err());
+    }
+
+    #[test]
+    fn retirement_authorize_window_requires_a_complete_ordered_pair() {
+        let (_, full_segment) =
+            CommandArgs::parse(vec!["retirement-authorize".to_string()]).unwrap();
+        assert_eq!(
+            parse_optional_retirement_window(&full_segment).unwrap(),
+            None
+        );
+
+        let (_, window) = CommandArgs::parse(vec![
+            "retirement-authorize".to_string(),
+            "--start-slot".to_string(),
+            "250000".to_string(),
+            "--end-slot".to_string(),
+            "254999".to_string(),
+        ])
+        .unwrap();
+        assert_eq!(
+            parse_optional_retirement_window(&window).unwrap(),
+            Some((250_000, 254_999))
+        );
+
+        let (_, incomplete) = CommandArgs::parse(vec![
+            "retirement-authorize".to_string(),
+            "--start-slot".to_string(),
+            "250000".to_string(),
+        ])
+        .unwrap();
+        assert!(parse_optional_retirement_window(&incomplete).is_err());
+
+        let (_, reversed) = CommandArgs::parse(vec![
+            "retirement-authorize".to_string(),
+            "--start-slot".to_string(),
+            "255000".to_string(),
+            "--end-slot".to_string(),
+            "254999".to_string(),
+        ])
+        .unwrap();
+        assert!(parse_optional_retirement_window(&reversed).is_err());
     }
 
     #[test]

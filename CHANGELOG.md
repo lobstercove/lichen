@@ -5,6 +5,17 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.248] - 2026-08-13
+
+### Fixed
+- Allows a signed Archive V2 retirement authorization to cover an explicitly
+  bounded slot window inside one verified segment. Each window remains bound to
+  the full segment content root, dual-failure-domain replica evidence, exact
+  category proofs, stopped-validator acknowledgement, point verification,
+  synchronous deletion journal, and reclaim gates. Full-segment manifests keep
+  their existing encoding and behavior; older tools fail closed on subset
+  windows.
+
 ## [0.5.247] - 2026-08-13
 
 ### Fixed
