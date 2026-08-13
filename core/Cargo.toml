@@ -1,6 +1,6 @@
 [package]
 name = "lobstercove-lichen-core"
-version = "0.5.246"
+version = "0.5.247"
 edition = "2021"
 authors = ["Lichen Labs <trading.lobster@lichen.network>"]
 description = "Lichen core blockchain implementation"
@@ -38,7 +38,7 @@ wasmer-compiler-cranelift = "5.0.6"  # JIT compiler for WASM
 wasmer-middlewares = "5.0.6"  # Metering middleware for compute limits
 chrono = { version = "0.4", features = ["serde"] }  # For genesis timestamps
 rayon = "1.10"  # Parallel TX processing for non-conflicting account sets
-lru = "0.16"  # P9-CORE-04: LRU eviction for MODULE_CACHE
+lru = "0.18.2"  # P9-CORE-04: LRU eviction for MODULE_CACHE
 tracing = "0.1"  # Logging for VoteAuthority and consensus internals
 revm = "34.0.0"
 alloy-consensus = { version = "0.7.3", default-features = false, features = ["k256"] }
