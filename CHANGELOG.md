@@ -5,6 +5,15 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.247] - 2026-08-13
+
+### Fixed
+- Uses RocksDB batched multi-gets, bounded to 4,096 rows and 64 MiB, for Archive
+  V2 retirement equivalence checks, tombstone selection, and pending-journal
+  revalidation. The signed manifest, per-row canonical conflict checks,
+  synchronous deletion journal, pass limits, and crash-recovery boundaries
+  remain unchanged while RocksDB can coalesce remote-backed table reads.
+
 ## [0.5.246] - 2026-08-11
 
 ### Fixed

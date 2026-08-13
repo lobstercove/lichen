@@ -20,6 +20,8 @@ const RETIREMENT_JOURNAL_MAGIC: &[u8] = b"LICHEN-AV2-RETIRE-JOURNAL\0";
 const RETIREMENT_JOURNAL_VERSION: u16 = 2;
 const MAX_RETIREMENT_JOURNAL_BYTES: usize = 16 * 1024 * 1024;
 const MAX_PENDING_DELETIONS: usize = 100_000;
+const RETIREMENT_MULTI_GET_ROWS: usize = 4_096;
+const RETIREMENT_MULTI_GET_BYTES: usize = 64 * 1024 * 1024;
 const MAX_RETIREMENT_RECLAIM_RANGES: usize = 4_096;
 const MAX_RETIREMENT_RECLAIM_INPUT_BYTES: u64 = 32 * 1024 * 1024 * 1024;
 static RETIREMENT_TEMPORARY_NONCE: AtomicU64 = AtomicU64::new(0);
@@ -390,35 +392,70 @@ impl StateStore {
                 .map_err(|error| error.to_string())?;
             let mut pending = Vec::new();
             let mut final_key = None;
-            let mut exhausted = true;
-            for (key, expected_value) in rows {
-                if journal
-                    .after_key
-                    .as_ref()
-                    .is_some_and(|after| key.as_slice() <= after.as_slice())
-                {
-                    continue;
-                }
-                if selected_rows >= limits.max_rows
-                    || selected_bytes >= limits.max_bytes
-                    || started.elapsed() >= limits.max_wall_time
-                {
-                    exhausted = false;
+            let mut exhausted = false;
+            let mut rows = rows
+                .into_iter()
+                .filter(|(key, _)| {
+                    journal
+                        .after_key
+                        .as_ref()
+                        .is_none_or(|after| key.as_slice() > after.as_slice())
+                })
+                .peekable();
+            loop {
+                if rows.peek().is_none() {
+                    exhausted = true;
                     break;
                 }
-                report.scanned_rows = report.scanned_rows.saturating_add(1);
-                let targets = self.prepare_retirement_row(category, &key, &expected_value)?;
-                if targets.is_empty() {
-                    return Err(format!(
-                        "Legacy {category} row {} disappeared before its authorized retirement batch",
-                        hex::encode(&key)
-                    ));
+
+                let mut chunk = Vec::with_capacity(RETIREMENT_MULTI_GET_ROWS);
+                let mut chunk_bytes = 0usize;
+                let mut planned_rows = selected_rows;
+                let mut planned_bytes = selected_bytes;
+                while chunk.len() < RETIREMENT_MULTI_GET_ROWS {
+                    if planned_rows >= limits.max_rows
+                        || planned_bytes >= limits.max_bytes
+                        || started.elapsed() >= limits.max_wall_time
+                    {
+                        break;
+                    }
+                    let Some((key, expected_value)) = rows.peek() else {
+                        break;
+                    };
+                    let row_bytes = key.len().saturating_add(expected_value.len());
+                    if !chunk.is_empty()
+                        && chunk_bytes.saturating_add(row_bytes) > RETIREMENT_MULTI_GET_BYTES
+                    {
+                        break;
+                    }
+                    let Some((key, expected_value)) = rows.next() else {
+                        break;
+                    };
+                    chunk_bytes = chunk_bytes.saturating_add(row_bytes);
+                    planned_rows = planned_rows.saturating_add(1);
+                    planned_bytes =
+                        planned_bytes.saturating_add((key.len() + expected_value.len()) as u64);
+                    chunk.push((key, expected_value));
                 }
-                selected_rows = selected_rows.saturating_add(1);
-                selected_bytes =
-                    selected_bytes.saturating_add((key.len() + expected_value.len()) as u64);
-                final_key = Some(key);
-                pending.extend(targets);
+                if chunk.is_empty() {
+                    break;
+                }
+
+                let prepared = self.prepare_retirement_rows(category, &chunk)?;
+                for ((key, expected_value), targets) in chunk.into_iter().zip(prepared) {
+                    report.scanned_rows = report.scanned_rows.saturating_add(1);
+                    if targets.is_empty() {
+                        return Err(format!(
+                            "Legacy {category} row {} disappeared before its authorized retirement batch",
+                            hex::encode(&key)
+                        ));
+                    }
+                    selected_rows = selected_rows.saturating_add(1);
+                    selected_bytes =
+                        selected_bytes.saturating_add((key.len() + expected_value.len()) as u64);
+                    final_key = Some(key);
+                    pending.extend(targets);
+                }
             }
             if pending.len() > MAX_PENDING_DELETIONS {
                 return Err("Archive V2 retirement pending batch is too large".to_string());
@@ -827,20 +864,25 @@ impl StateStore {
     ) -> Result<ArchiveV2Rows, String> {
         let archive_rows =
             self.archive_v2_retirement_rows(reader, category, start_slot, end_slot)?;
-        for (key, value) in &archive_rows {
+        let mut offset = 0;
+        while offset < archive_rows.len() {
+            let end = retirement_multi_get_chunk_end(&archive_rows, offset, |(key, value)| {
+                key.len().saturating_add(value.len())
+            });
+            let rows = &archive_rows[offset..end];
             // Only rows represented by this verified segment are candidates for
-            // deletion. Point reads fail on missing/conflicting source data while
-            // unrelated legacy rows remain untouched; rescanning all history for
-            // every segment is unnecessary and quadratically expensive.
-            if self
-                .prepare_retirement_row(category, key, value)?
-                .is_empty()
-            {
-                return Err(format!(
-                    "Archive V2 retirement source row {} is absent from hot and cold {category}",
-                    hex::encode(key)
-                ));
+            // deletion. Bounded multi-gets fail on missing/conflicting source data
+            // while avoiding one remote RocksDB lookup per row.
+            let prepared = self.prepare_retirement_rows(category, rows)?;
+            for ((key, _), targets) in rows.iter().zip(prepared) {
+                if targets.is_empty() {
+                    return Err(format!(
+                        "Archive V2 retirement source row {} is absent from hot and cold {category}",
+                        hex::encode(key)
+                    ));
+                }
             }
+            offset = end;
         }
         Ok(archive_rows)
     }
@@ -858,61 +900,89 @@ impl StateStore {
         self.normalize_archive_v2_retirement_rows(category, archive_rows)
     }
 
-    fn prepare_retirement_row(
+    fn prepare_retirement_rows(
         &self,
         category: &str,
-        key: &[u8],
-        expected_value: &[u8],
-    ) -> Result<Vec<PendingRetirementDeletion>, String> {
+        rows: &[(Vec<u8>, Vec<u8>)],
+    ) -> Result<Vec<Vec<PendingRetirementDeletion>>, String> {
+        if retirement_multi_get_chunk_end(rows, 0, |(key, value)| {
+            key.len().saturating_add(value.len())
+        }) != rows.len()
+        {
+            return Err(format!(
+                "Archive V2 retirement multi-get exceeds its {RETIREMENT_MULTI_GET_ROWS}-row or {}-byte safety bound",
+                RETIREMENT_MULTI_GET_BYTES
+            ));
+        }
         let hot_cf_name = retirement_hot_cf(category)?;
-        let expected = self.canonical_archive_v2_retirement_value(category, key, expected_value)?;
-        let expected_hash = Hash::hash(&expected);
-        let mut targets = Vec::new();
+        let expected = rows
+            .iter()
+            .map(|(key, value)| self.canonical_archive_v2_retirement_value(category, key, value))
+            .collect::<Result<Vec<_>, _>>()?;
+        let expected_hashes = expected
+            .iter()
+            .map(|value| Hash::hash(value))
+            .collect::<Vec<_>>();
+        let mut targets = vec![Vec::new(); rows.len()];
         if let Some(cf) = self.db.cf_handle(hot_cf_name) {
-            if let Some(value) = self
-                .db
-                .get_cf(&cf, key)
-                .map_err(|error| format!("Failed reading hot {category}: {error}"))?
-            {
-                let actual = self.canonical_archive_v2_retirement_value(category, key, &value)?;
-                if actual != expected {
-                    return Err(format!(
-                        "Hot {category} row {} conflicts with Archive V2",
-                        hex::encode(key)
-                    ));
+            let values = self.db.batched_multi_get_cf(
+                &cf,
+                rows.iter().map(|(key, _)| key.as_slice()),
+                false,
+            );
+            for (index, value) in values.into_iter().enumerate() {
+                if let Some(value) =
+                    value.map_err(|error| format!("Failed reading hot {category}: {error}"))?
+                {
+                    let (key, _) = &rows[index];
+                    let actual =
+                        self.canonical_archive_v2_retirement_value(category, key, &value)?;
+                    if actual != expected[index] {
+                        return Err(format!(
+                            "Hot {category} row {} conflicts with Archive V2",
+                            hex::encode(key)
+                        ));
+                    }
+                    targets[index].push(PendingRetirementDeletion {
+                        store: RetirementStore::Hot,
+                        category: category.to_string(),
+                        key: key.clone(),
+                        canonical_value_hash: expected_hashes[index],
+                        logical_bytes: (key.len() + value.len()) as u64,
+                    });
                 }
-                targets.push(PendingRetirementDeletion {
-                    store: RetirementStore::Hot,
-                    category: category.to_string(),
-                    key: key.to_vec(),
-                    canonical_value_hash: expected_hash,
-                    logical_bytes: (key.len() + value.len()) as u64,
-                });
             }
         }
         if let (Some(cold), Some(cold_cf_name)) =
             (self.cold_db.as_ref(), retirement_cold_cf(category))
         {
             if let Some(cf) = cold.cf_handle(cold_cf_name) {
-                if let Some(value) = cold
-                    .get_cf(&cf, key)
-                    .map_err(|error| format!("Failed reading cold {category}: {error}"))?
-                {
-                    let actual =
-                        self.canonical_archive_v2_retirement_value(category, key, &value)?;
-                    if actual != expected {
-                        return Err(format!(
-                            "Cold {category} row {} conflicts with Archive V2",
-                            hex::encode(key)
-                        ));
+                let values = cold.batched_multi_get_cf(
+                    &cf,
+                    rows.iter().map(|(key, _)| key.as_slice()),
+                    false,
+                );
+                for (index, value) in values.into_iter().enumerate() {
+                    if let Some(value) =
+                        value.map_err(|error| format!("Failed reading cold {category}: {error}"))?
+                    {
+                        let (key, _) = &rows[index];
+                        let actual =
+                            self.canonical_archive_v2_retirement_value(category, key, &value)?;
+                        if actual != expected[index] {
+                            return Err(format!(
+                                "Cold {category} row {} conflicts with Archive V2",
+                                hex::encode(key)
+                            ));
+                        }
+                        targets[index].push(PendingRetirementDeletion {
+                            store: RetirementStore::Cold,
+                            category: category.to_string(),
+                            key: key.clone(),
+                            canonical_value_hash: expected_hashes[index],
+                            logical_bytes: (key.len() + value.len()) as u64,
+                        });
                     }
-                    targets.push(PendingRetirementDeletion {
-                        store: RetirementStore::Cold,
-                        category: category.to_string(),
-                        key: key.to_vec(),
-                        canonical_value_hash: expected_hash,
-                        logical_bytes: (key.len() + value.len()) as u64,
-                    });
                 }
             }
         }
@@ -927,56 +997,77 @@ impl StateStore {
     ) -> Result<(), String> {
         let mut hot_batch = WriteBatch::default();
         let mut cold_batch = WriteBatch::default();
-        for deletion in pending {
-            let (db, cf_name) = match deletion.store {
-                RetirementStore::Hot => (self.db.as_ref(), retirement_hot_cf(&deletion.category)?),
-                RetirementStore::Cold => {
-                    let cold = self
-                        .cold_db
-                        .as_deref()
-                        .ok_or_else(|| "Cold retirement target is not attached".to_string())?;
-                    let cf_name = retirement_cold_cf(&deletion.category).ok_or_else(|| {
-                        format!(
-                            "Category {} has no cold retirement target",
-                            deletion.category
-                        )
-                    })?;
-                    (cold, cf_name)
-                }
+        for store in [RetirementStore::Hot, RetirementStore::Cold] {
+            let deletions = pending
+                .iter()
+                .filter(|deletion| deletion.store == store)
+                .collect::<Vec<_>>();
+            if deletions.is_empty() {
+                continue;
+            }
+            let db = self.retirement_db(store)?;
+            let category = &deletions[0].category;
+            if deletions
+                .iter()
+                .any(|deletion| deletion.category != *category)
+            {
+                return Err(
+                    "Archive V2 retirement pending batch spans multiple categories".to_string(),
+                );
+            }
+            let cf_name = match store {
+                RetirementStore::Hot => retirement_hot_cf(category)?,
+                RetirementStore::Cold => retirement_cold_cf(category)
+                    .ok_or_else(|| format!("Category {category} has no cold retirement target"))?,
             };
             let cf = db
                 .cf_handle(cf_name)
                 .ok_or_else(|| format!("{cf_name} retirement CF is missing"))?;
-            if let Some(value) = db
-                .get_cf(&cf, &deletion.key)
-                .map_err(|error| format!("Failed validating pending retirement: {error}"))?
-            {
-                let canonical = self.canonical_archive_v2_retirement_value(
-                    &deletion.category,
-                    &deletion.key,
-                    &value,
-                )?;
-                if Hash::hash(&canonical) != deletion.canonical_value_hash {
-                    return Err(format!(
-                        "Pending retirement row {} changed after authorization",
-                        hex::encode(&deletion.key)
-                    ));
-                }
-                match deletion.store {
-                    RetirementStore::Hot => hot_batch.delete_cf(&cf, &deletion.key),
-                    RetirementStore::Cold => cold_batch.delete_cf(&cf, &deletion.key),
-                }
-                report.deleted_logical_bytes = report
-                    .deleted_logical_bytes
-                    .saturating_add(deletion.logical_bytes);
-                match deletion.store {
-                    RetirementStore::Hot => {
-                        report.deleted_hot_rows = report.deleted_hot_rows.saturating_add(1)
+            let mut offset = 0;
+            while offset < deletions.len() {
+                let end = retirement_multi_get_chunk_end(&deletions, offset, |deletion| {
+                    usize::try_from(deletion.logical_bytes).unwrap_or(usize::MAX)
+                });
+                let deletions = &deletions[offset..end];
+                let values = db.batched_multi_get_cf(
+                    &cf,
+                    deletions.iter().map(|deletion| deletion.key.as_slice()),
+                    false,
+                );
+                for (deletion, value) in deletions.iter().zip(values) {
+                    if let Some(value) = value
+                        .map_err(|error| format!("Failed validating pending retirement: {error}"))?
+                    {
+                        let canonical = self.canonical_archive_v2_retirement_value(
+                            &deletion.category,
+                            &deletion.key,
+                            &value,
+                        )?;
+                        if Hash::hash(&canonical) != deletion.canonical_value_hash {
+                            return Err(format!(
+                                "Pending retirement row {} changed after authorization",
+                                hex::encode(&deletion.key)
+                            ));
+                        }
+                        match store {
+                            RetirementStore::Hot => hot_batch.delete_cf(&cf, &deletion.key),
+                            RetirementStore::Cold => cold_batch.delete_cf(&cf, &deletion.key),
+                        }
+                        report.deleted_logical_bytes = report
+                            .deleted_logical_bytes
+                            .saturating_add(deletion.logical_bytes);
+                        match store {
+                            RetirementStore::Hot => {
+                                report.deleted_hot_rows = report.deleted_hot_rows.saturating_add(1)
+                            }
+                            RetirementStore::Cold => {
+                                report.deleted_cold_rows =
+                                    report.deleted_cold_rows.saturating_add(1)
+                            }
+                        }
                     }
-                    RetirementStore::Cold => {
-                        report.deleted_cold_rows = report.deleted_cold_rows.saturating_add(1)
-                    }
                 }
+                offset = end;
             }
         }
         let mut write_options = WriteOptions::default();
@@ -997,6 +1088,24 @@ impl StateStore {
         maybe_retirement_fault(fault, ArchiveV2RetirementFaultPoint::AfterColdDeletion)?;
         Ok(())
     }
+}
+
+fn retirement_multi_get_chunk_end<T>(
+    items: &[T],
+    start: usize,
+    logical_bytes: impl Fn(&T) -> usize,
+) -> usize {
+    let mut end = start;
+    let mut bytes = 0usize;
+    while end < items.len() && end.saturating_sub(start) < RETIREMENT_MULTI_GET_ROWS {
+        let item_bytes = logical_bytes(&items[end]);
+        if end > start && bytes.saturating_add(item_bytes) > RETIREMENT_MULTI_GET_BYTES {
+            break;
+        }
+        bytes = bytes.saturating_add(item_bytes);
+        end += 1;
+    }
+    end
 }
 
 fn retirement_family_for_deletion(
@@ -1476,6 +1585,47 @@ mod tests {
             cold_available_bytes: u64::MAX,
             cold_required_reserve_bytes: 0,
         }
+    }
+
+    #[test]
+    fn retirement_multi_get_is_bounded_and_preserves_row_order() {
+        let state_root = tempdir().unwrap();
+        let state = StateStore::open(state_root.path()).unwrap();
+        let slots = state.db.cf_handle(CF_SLOTS).unwrap();
+        let mut batch = WriteBatch::default();
+        let mut rows = Vec::with_capacity(RETIREMENT_MULTI_GET_ROWS);
+        for slot in 0..RETIREMENT_MULTI_GET_ROWS as u64 {
+            let key = slot.to_be_bytes().to_vec();
+            let value = Hash::hash(&key).0.to_vec();
+            batch.put_cf(&slots, &key, &value);
+            rows.push((key, value));
+        }
+        state.db.write(batch).unwrap();
+
+        let prepared = state.prepare_retirement_rows("slots", &rows).unwrap();
+        assert_eq!(prepared.len(), rows.len());
+        for ((key, value), targets) in rows.iter().zip(prepared) {
+            assert_eq!(targets.len(), 1);
+            assert_eq!(targets[0].store, RetirementStore::Hot);
+            assert_eq!(targets[0].key, *key);
+            assert_eq!(targets[0].canonical_value_hash, Hash::hash(value));
+        }
+
+        rows.push((vec![0; 8], vec![0; 32]));
+        assert!(state
+            .prepare_retirement_rows("slots", &rows)
+            .unwrap_err()
+            .contains("safety bound"));
+
+        let logical_sizes = [RETIREMENT_MULTI_GET_BYTES / 2 + 1; 2];
+        assert_eq!(
+            retirement_multi_get_chunk_end(&logical_sizes, 0, |bytes| *bytes),
+            1
+        );
+        assert_eq!(
+            retirement_multi_get_chunk_end(&logical_sizes, 1, |bytes| *bytes),
+            2
+        );
     }
 
     #[test]
