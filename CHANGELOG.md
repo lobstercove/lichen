@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   revalidation. The signed manifest, per-row canonical conflict checks,
   synchronous deletion journal, pass limits, and crash-recovery boundaries
   remain unchanged while RocksDB can coalesce remote-backed table reads.
+- Upgrades `lru` to 0.18.2 to incorporate the upstream panic-safety fix for
+  cache eviction and satisfy the fail-closed RustSec release gate.
 
 ## [0.5.246] - 2026-08-11
 
