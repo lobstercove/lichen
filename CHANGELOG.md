@@ -5,6 +5,21 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.249] - 2026-08-13
+
+### Fixed
+- Splits an oversized Archive V2 physical-reclaim range only at exact live-SST
+  key boundaries until a subrange fits both the signed 32 GiB input cap and
+  the configured filesystem reserve. Every split preserves the original
+  covered keyspace, is durably recorded in the existing replay-compatible
+  journal before compaction, and fails closed when no reducing boundary
+  exists.
+- Treats an already-absent `tx_by_slot` row as a skipped deterministic
+  secondary index during retirement, after the signed Archive V2 block and
+  transaction categories have passed complete equivalence. Present rows must
+  still match byte-for-byte, conflicts still abort, and missing canonical
+  history remains a hard failure.
+
 ## [0.5.248] - 2026-08-13
 
 ### Fixed

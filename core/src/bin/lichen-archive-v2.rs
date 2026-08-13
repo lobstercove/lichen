@@ -393,6 +393,7 @@ fn run_retirement_pass(args: &CommandArgs) -> Result<(), String> {
         "phase": report.phase,
         "category": report.category,
         "scanned_rows": report.scanned_rows,
+        "skipped_absent_rebuildable_rows": report.skipped_absent_rebuildable_rows,
         "deleted_hot_rows": report.deleted_hot_rows,
         "deleted_cold_rows": report.deleted_cold_rows,
         "deleted_logical_bytes": report.deleted_logical_bytes,
@@ -472,6 +473,7 @@ fn run_retirement_reclaim(args: &CommandArgs) -> Result<(), String> {
         "queued_ranges_before": report.queued_ranges_before,
         "queued_ranges_after": report.queued_ranges_after,
         "compacted_ranges": report.compacted_ranges,
+        "split_ranges": report.split_ranges,
         "estimated_input_bytes": report.estimated_input_bytes,
         "reclaimed_physical_bytes": report.reclaimed_physical_bytes,
         "total_reclaimed_physical_bytes": report.total_reclaimed_physical_bytes,
@@ -1391,6 +1393,9 @@ fn run_retirement_passes_per_open(
         report.phase = next.phase;
         report.category = next.category;
         report.scanned_rows = report.scanned_rows.saturating_add(next.scanned_rows);
+        report.skipped_absent_rebuildable_rows = report
+            .skipped_absent_rebuildable_rows
+            .saturating_add(next.skipped_absent_rebuildable_rows);
         report.deleted_hot_rows = report
             .deleted_hot_rows
             .saturating_add(next.deleted_hot_rows);
@@ -1634,6 +1639,7 @@ mod tests {
                     phase: ArchiveV2RetirementPhase::Tombstoning,
                     category: Some("blocks".to_string()),
                     scanned_rows: 10,
+                    skipped_absent_rebuildable_rows: 2,
                     deleted_hot_rows: 1,
                     deleted_cold_rows: 2,
                     deleted_logical_bytes: 100,
@@ -1646,6 +1652,7 @@ mod tests {
                     phase: ArchiveV2RetirementPhase::ReclaimPending,
                     category: Some("transactions".to_string()),
                     scanned_rows: 20,
+                    skipped_absent_rebuildable_rows: 3,
                     deleted_hot_rows: 3,
                     deleted_cold_rows: 4,
                     deleted_logical_bytes: 200,
@@ -1662,6 +1669,7 @@ mod tests {
         assert_eq!(report.phase, ArchiveV2RetirementPhase::ReclaimPending);
         assert_eq!(report.category.as_deref(), Some("transactions"));
         assert_eq!(report.scanned_rows, 30);
+        assert_eq!(report.skipped_absent_rebuildable_rows, 5);
         assert_eq!(report.deleted_hot_rows, 4);
         assert_eq!(report.deleted_cold_rows, 6);
         assert_eq!(report.deleted_logical_bytes, 300);

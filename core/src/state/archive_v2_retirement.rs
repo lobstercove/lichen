@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use rocksdb::{
-    BottommostLevelCompaction, CompactOptions, FlushOptions, WriteBatch, WriteOptions, DB,
+    BottommostLevelCompaction, CompactOptions, FlushOptions, LiveFile, WriteBatch, WriteOptions, DB,
 };
 use serde::{Deserialize, Serialize};
 
@@ -24,6 +24,7 @@ const RETIREMENT_MULTI_GET_ROWS: usize = 4_096;
 const RETIREMENT_MULTI_GET_BYTES: usize = 64 * 1024 * 1024;
 const MAX_RETIREMENT_RECLAIM_RANGES: usize = 4_096;
 const MAX_RETIREMENT_RECLAIM_INPUT_BYTES: u64 = 32 * 1024 * 1024 * 1024;
+const MAX_RETIREMENT_RECLAIM_SPLITS_PER_PASS: u64 = 64;
 static RETIREMENT_TEMPORARY_NONCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,6 +94,7 @@ pub struct ArchiveV2RetirementReclaimReport {
     pub queued_ranges_before: u64,
     pub queued_ranges_after: u64,
     pub compacted_ranges: u64,
+    pub split_ranges: u64,
     pub estimated_input_bytes: u64,
     pub reclaimed_physical_bytes: u64,
     pub total_reclaimed_physical_bytes: u64,
@@ -123,6 +125,7 @@ pub struct ArchiveV2RetirementPassReport {
     pub phase: ArchiveV2RetirementPhase,
     pub category: Option<String>,
     pub scanned_rows: u64,
+    pub skipped_absent_rebuildable_rows: u64,
     pub deleted_hot_rows: u64,
     pub deleted_cold_rows: u64,
     pub deleted_logical_bytes: u64,
@@ -502,10 +505,14 @@ impl StateStore {
                 for ((key, expected_value), targets) in chunk.into_iter().zip(prepared) {
                     report.scanned_rows = report.scanned_rows.saturating_add(1);
                     if targets.is_empty() {
-                        return Err(format!(
-                            "Legacy {category} row {} disappeared before its authorized retirement batch",
-                            hex::encode(&key)
-                        ));
+                        if !retirement_allows_absent_source_row(category) {
+                            return Err(format!(
+                                "Legacy {category} row {} disappeared before its authorized retirement batch",
+                                hex::encode(&key)
+                            ));
+                        }
+                        report.skipped_absent_rebuildable_rows =
+                            report.skipped_absent_rebuildable_rows.saturating_add(1);
                     }
                     selected_rows = selected_rows.saturating_add(1);
                     selected_bytes =
@@ -519,6 +526,9 @@ impl StateStore {
             }
             if pending.is_empty() {
                 if !exhausted {
+                    journal.after_key = final_key;
+                    journal.phase = ArchiveV2RetirementPhase::Tombstoning;
+                    store_retirement_journal(journal_path, &journal)?;
                     report.phase = journal.phase;
                     report.elapsed_millis = started.elapsed().as_millis() as u64;
                     return Ok(report);
@@ -683,7 +693,56 @@ impl StateStore {
                 },
             )?;
             let Some((range_index, range, _estimate)) = candidate else {
-                report.paused_reason = paused_reason;
+                // A fresh pass that cannot admit any queued range may be
+                // blocked only because one SST-derived range spans too many
+                // lower-level files. Split it at a real live-file boundary;
+                // this preserves the exact covered keyspace and journal
+                // compatibility while giving RocksDB a bounded compaction
+                // interval. Never fragment a range merely because this pass
+                // has already consumed its budget; the next invocation gets a
+                // fresh budget and may admit it unchanged.
+                if report.estimated_input_bytes == 0
+                    && report.split_ranges < MAX_RETIREMENT_RECLAIM_SPLITS_PER_PASS
+                    && journal.reclaim_queue.len() < MAX_RETIREMENT_RECLAIM_RANGES
+                {
+                    let mut split = None;
+                    for (index, queued) in journal.reclaim_queue.iter().enumerate() {
+                        let db = self.retirement_db(queued.store)?;
+                        let live_files = db.live_files().map_err(|error| {
+                            format!(
+                                "Failed inspecting {:?} SSTs for retirement reclaim split: {error}",
+                                queued.store
+                            )
+                        })?;
+                        if let Some((left, right)) =
+                            split_retirement_reclaim_range(queued, &live_files)
+                        {
+                            split = Some((index, left, right));
+                            break;
+                        }
+                    }
+                    if let Some((index, left, right)) = split {
+                        journal.reclaim_queue.remove(index);
+                        journal.reclaim_queue.push(left);
+                        journal.reclaim_queue.push(right);
+                        journal.reclaim_queue.sort();
+                        journal.reclaim_queue.dedup();
+                        store_retirement_journal(journal_path, &journal)?;
+                        report.split_ranges = report.split_ranges.saturating_add(1);
+                        report.queued_ranges_after = journal.reclaim_queue.len() as u64;
+                        continue;
+                    }
+                }
+                report.paused_reason = if report.split_ranges
+                    >= MAX_RETIREMENT_RECLAIM_SPLITS_PER_PASS
+                {
+                    Some(format!(
+                        "reclaim_split_limit:split_ranges={}:limit={MAX_RETIREMENT_RECLAIM_SPLITS_PER_PASS}",
+                        report.split_ranges
+                    ))
+                } else {
+                    paused_reason
+                };
                 break;
             };
             let db = self.retirement_db(range.store)?;
@@ -928,11 +987,14 @@ impl StateStore {
             });
             let rows = &archive_rows[offset..end];
             // Only rows represented by this verified segment are candidates for
-            // deletion. Bounded multi-gets fail on missing/conflicting source data
-            // while avoiding one remote RocksDB lookup per row.
+            // deletion. Bounded multi-gets fail on conflicting source data and on
+            // missing canonical data while avoiding one remote RocksDB lookup per
+            // row. A missing deterministic secondary index needs no tombstone once
+            // its canonical block and transaction rows have passed this complete
+            // manifest verification.
             let prepared = self.prepare_retirement_rows(category, rows)?;
             for ((key, _), targets) in rows.iter().zip(prepared) {
-                if targets.is_empty() {
+                if targets.is_empty() && !retirement_allows_absent_source_row(category) {
                     return Err(format!(
                         "Archive V2 retirement source row {} is absent from hot and cold {category}",
                         hex::encode(key)
@@ -1210,25 +1272,89 @@ fn retirement_estimated_reclaim_input_bytes(
     db: &DB,
     range: &RetirementReclaimRange,
 ) -> Result<u64, String> {
-    let mut total = 0u64;
-    for file in db
+    let files = db
         .live_files()
-        .map_err(|error| format!("Failed inspecting retirement reclaim SSTs: {error}"))?
-    {
-        if file.column_family_name != range.cf_name {
-            continue;
-        }
-        let overlaps = match (file.start_key.as_deref(), file.end_key.as_deref()) {
-            (Some(file_start), Some(file_end)) => {
-                file_end >= range.start_key.as_slice() && file_start < range.end_key.as_slice()
-            }
-            _ => true,
-        };
-        if overlaps {
-            total = total.saturating_add(file.size as u64);
-        }
+        .map_err(|error| format!("Failed inspecting retirement reclaim SSTs: {error}"))?;
+    Ok(retirement_estimated_reclaim_input_bytes_from_files(
+        &files, range,
+    ))
+}
+
+fn retirement_live_file_overlaps_range(file: &LiveFile, range: &RetirementReclaimRange) -> bool {
+    if file.column_family_name != range.cf_name {
+        return false;
     }
-    Ok(total)
+    match (file.start_key.as_deref(), file.end_key.as_deref()) {
+        (Some(file_start), Some(file_end)) => {
+            file_end >= range.start_key.as_slice() && file_start < range.end_key.as_slice()
+        }
+        _ => true,
+    }
+}
+
+fn retirement_estimated_reclaim_input_bytes_from_files(
+    files: &[LiveFile],
+    range: &RetirementReclaimRange,
+) -> u64 {
+    files
+        .iter()
+        .filter(|file| retirement_live_file_overlaps_range(file, range))
+        .fold(0u64, |total, file| total.saturating_add(file.size as u64))
+}
+
+fn split_retirement_reclaim_range(
+    range: &RetirementReclaimRange,
+    files: &[LiveFile],
+) -> Option<(RetirementReclaimRange, RetirementReclaimRange)> {
+    let parent_estimate = retirement_estimated_reclaim_input_bytes_from_files(files, range);
+    let mut boundaries = files
+        .iter()
+        .filter(|file| retirement_live_file_overlaps_range(file, range))
+        .flat_map(|file| {
+            [
+                file.start_key.clone(),
+                file.end_key.as_deref().map(retirement_reclaim_range_end),
+            ]
+        })
+        .flatten()
+        .filter(|boundary| {
+            boundary.as_slice() > range.start_key.as_slice()
+                && boundary.as_slice() < range.end_key.as_slice()
+        })
+        .collect::<Vec<_>>();
+    boundaries.sort();
+    boundaries.dedup();
+
+    boundaries
+        .into_iter()
+        .filter_map(|boundary| {
+            let left = RetirementReclaimRange {
+                store: range.store,
+                cf_name: range.cf_name.clone(),
+                start_key: range.start_key.clone(),
+                end_key: boundary.clone(),
+            };
+            let right = RetirementReclaimRange {
+                store: range.store,
+                cf_name: range.cf_name.clone(),
+                start_key: boundary,
+                end_key: range.end_key.clone(),
+            };
+            let left_estimate = retirement_estimated_reclaim_input_bytes_from_files(files, &left);
+            let right_estimate = retirement_estimated_reclaim_input_bytes_from_files(files, &right);
+            if left_estimate >= parent_estimate || right_estimate >= parent_estimate {
+                return None;
+            }
+            Some((
+                left_estimate.max(right_estimate),
+                left_estimate.saturating_add(right_estimate),
+                left.end_key.clone(),
+                left,
+                right,
+            ))
+        })
+        .min_by(|left, right| (left.0, left.1, &left.2).cmp(&(right.0, right.1, &right.2)))
+        .map(|(_, _, _, left, right)| (left, right))
 }
 
 type RetirementReclaimCandidate = (usize, RetirementReclaimRange, u64);
@@ -1311,6 +1437,17 @@ fn retirement_hot_cf(category: &str) -> Result<&'static str, String> {
         "account_snapshots" => Ok(CF_ACCOUNT_SNAPSHOTS),
         _ => Err(format!("Unsupported retirement category {category}")),
     }
+}
+
+fn retirement_allows_absent_source_row(category: &str) -> bool {
+    // Archive V2 derives tx_by_slot byte-for-byte from the verified canonical
+    // block transaction order. Retirement equivalence separately requires and
+    // verifies both the full block and transaction categories before a journal
+    // can be created. An absent tx_by_slot row is therefore an already-absent,
+    // rebuildable secondary index entry, not missing canonical history. Every
+    // present row must still match exactly, and every other missing category
+    // continues to abort retirement.
+    category == "tx_by_slot"
 }
 
 fn retirement_cold_cf(category: &str) -> Option<&'static str> {
@@ -1489,7 +1626,7 @@ mod tests {
         ARCHIVE_V2_FORMAT_VERSION,
     };
     use crate::codec::append_legacy_bincode;
-    use crate::{Block, CommitSignature, Keypair, PqPublicKey, PqSignature};
+    use crate::{Block, CommitSignature, Keypair, Message, PqPublicKey, PqSignature, Transaction};
 
     struct RetirementFixture {
         _state_root: TempDir,
@@ -1498,6 +1635,7 @@ mod tests {
         journal_root: TempDir,
         state: StateStore,
         block_hash: Hash,
+        tx_hash: Hash,
         unretired_block_hash: Option<Hash>,
         retirement: ArchiveV2RetirementManifest,
     }
@@ -1517,14 +1655,20 @@ mod tests {
         let mut state = StateStore::open(state_root.path()).unwrap();
         state.open_cold_store(cold_root.path()).unwrap();
         let mut blocks = Vec::new();
+        let mut tx_hash = None;
         let mut parent_hash = Hash::default();
         for slot in 0..=segment_end_slot {
+            let transaction = Transaction::new(Message::new(
+                Vec::new(),
+                Hash::hash(&[b"archive-v2-retirement-tx".as_slice(), &slot.to_be_bytes()].concat()),
+            ));
+            tx_hash.get_or_insert_with(|| transaction.signature());
             let mut block = Block::new_with_timestamp(
                 slot,
                 parent_hash,
                 Hash::hash(&slot.to_be_bytes()),
                 [9; 32],
-                Vec::new(),
+                vec![transaction],
                 slot + 1,
             );
             block.commit_round = 7;
@@ -1666,6 +1810,7 @@ mod tests {
             journal_root,
             state,
             block_hash,
+            tx_hash: tx_hash.expect("fixture has a transaction"),
             unretired_block_hash,
             retirement,
         }
@@ -1809,6 +1954,69 @@ mod tests {
                 "compaction_input_budget:store=Cold:family=blocks:estimated_bytes=400:remaining_bytes=30"
             )
         );
+    }
+
+    fn retirement_test_live_file(
+        name: &str,
+        size: usize,
+        start: Option<u8>,
+        end: Option<u8>,
+    ) -> LiveFile {
+        LiveFile {
+            column_family_name: "blocks".to_string(),
+            name: name.to_string(),
+            size,
+            level: 1,
+            start_key: start.map(|key| vec![key]),
+            end_key: end.map(|key| vec![key]),
+            num_entries: 1,
+            num_deletions: 1,
+        }
+    }
+
+    #[test]
+    fn retirement_reclaim_split_uses_a_balanced_live_file_boundary() {
+        let range = RetirementReclaimRange {
+            store: RetirementStore::Cold,
+            cf_name: "blocks".to_string(),
+            start_key: vec![0],
+            end_key: vec![100],
+        };
+        let files = vec![
+            retirement_test_live_file("one.sst", 20, Some(0), Some(30)),
+            retirement_test_live_file("two.sst", 20, Some(31), Some(60)),
+            retirement_test_live_file("three.sst", 20, Some(61), Some(99)),
+        ];
+
+        let (left, right) = split_retirement_reclaim_range(&range, &files).unwrap();
+        assert_eq!(left.start_key, range.start_key);
+        assert_eq!(left.end_key, right.start_key);
+        assert_eq!(right.end_key, range.end_key);
+        assert_eq!(left.end_key, vec![31]);
+        assert_eq!(
+            retirement_estimated_reclaim_input_bytes_from_files(&files, &left),
+            20
+        );
+        assert_eq!(
+            retirement_estimated_reclaim_input_bytes_from_files(&files, &right),
+            40
+        );
+    }
+
+    #[test]
+    fn retirement_reclaim_split_refuses_a_non_reducing_boundary() {
+        let range = RetirementReclaimRange {
+            store: RetirementStore::Cold,
+            cf_name: "blocks".to_string(),
+            start_key: vec![0],
+            end_key: vec![100],
+        };
+        let files = vec![
+            retirement_test_live_file("spanning.sst", 100, Some(0), Some(99)),
+            retirement_test_live_file("unbounded.sst", 50, None, None),
+        ];
+
+        assert_eq!(split_retirement_reclaim_range(&range, &files), None);
     }
 
     #[test]
@@ -2078,6 +2286,93 @@ mod tests {
             )
             .unwrap_err();
         assert!(error.contains("absent from hot and cold blocks"), "{error}");
+        assert!(!journal.exists());
+    }
+
+    #[test]
+    fn retirement_skips_absent_rebuildable_tx_by_slot_rows() {
+        let fixture = fixture();
+        let tx_by_slot = fixture.state.db.cf_handle(CF_TX_BY_SLOT).unwrap();
+        let mut tx_by_slot_key = Vec::with_capacity(16);
+        tx_by_slot_key.extend_from_slice(&0u64.to_be_bytes());
+        tx_by_slot_key.extend_from_slice(&0u64.to_be_bytes());
+        fixture
+            .state
+            .db
+            .delete_cf(&tx_by_slot, &tx_by_slot_key)
+            .unwrap();
+
+        let journal = fixture
+            .journal_root
+            .path()
+            .join("missing-rebuildable-index.journal");
+        let report = fixture
+            .state
+            .retire_archive_v2_segment_pass(
+                &fixture.retirement,
+                &journal,
+                ArchiveV2RetirementLimits {
+                    max_rows: 100_000,
+                    max_bytes: 1024 * 1024 * 1024,
+                    max_wall_time: Duration::from_secs(60),
+                },
+            )
+            .unwrap();
+
+        assert_eq!(report.phase, ArchiveV2RetirementPhase::ReclaimPending);
+        assert_eq!(report.skipped_absent_rebuildable_rows, 1);
+        assert!(journal.exists());
+        assert_eq!(
+            fixture
+                .state
+                .get_block(&fixture.block_hash)
+                .unwrap()
+                .unwrap()
+                .hash(),
+            fixture.block_hash
+        );
+        assert_eq!(
+            fixture
+                .state
+                .get_transaction(&fixture.tx_hash)
+                .unwrap()
+                .unwrap()
+                .signature(),
+            fixture.tx_hash
+        );
+    }
+
+    #[test]
+    fn retirement_rejects_conflicting_rebuildable_tx_by_slot_rows() {
+        let fixture = fixture();
+        let tx_by_slot = fixture.state.db.cf_handle(CF_TX_BY_SLOT).unwrap();
+        let mut tx_by_slot_key = Vec::with_capacity(16);
+        tx_by_slot_key.extend_from_slice(&0u64.to_be_bytes());
+        tx_by_slot_key.extend_from_slice(&0u64.to_be_bytes());
+        fixture
+            .state
+            .db
+            .put_cf(
+                &tx_by_slot,
+                &tx_by_slot_key,
+                Hash::hash(b"conflicting-tx-by-slot").0,
+            )
+            .unwrap();
+
+        let journal = fixture
+            .journal_root
+            .path()
+            .join("conflicting-rebuildable-index.journal");
+        let error = fixture
+            .state
+            .retire_archive_v2_segment_pass(
+                &fixture.retirement,
+                &journal,
+                ArchiveV2RetirementLimits::default(),
+            )
+            .unwrap_err();
+        assert!(error.contains("Hot tx_by_slot row"), "{error}");
+        assert!(error.contains("conflicts with Archive V2"), "{error}");
         assert!(!journal.exists());
     }
 }
