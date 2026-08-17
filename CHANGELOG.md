@@ -5,6 +5,19 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.250] - 2026-08-18
+
+### Fixed
+- Releases a completed catch-up guard immediately before consensus admission
+  when the pending queue is empty and the local tip has reached the exact
+  active batch target. This prevents a restarted validator on a continuously
+  advancing network from remaining trapped in one-block catch-up cycles while
+  preserving the existing fail-closed path for pending or incomplete batches.
+- Serializes hot and cold RocksDB checkpoints with Archive V2 maintenance so a
+  bounded cold migration cannot be captured after its hot deletion but before
+  the matching cold row is visible. Checkpoints now preserve complete public
+  history across the migration boundary.
+
 ## [0.5.249] - 2026-08-13
 
 ### Fixed

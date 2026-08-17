@@ -886,6 +886,14 @@ impl StateStore {
     pub fn create_raw_checkpoint(&self, checkpoint_dir: &str) -> Result<(), String> {
         use rocksdb::checkpoint::Checkpoint;
 
+        // Hot deletion follows a durable cold write inside the archive
+        // maintenance boundary.  Snapshotting hot and cold independently
+        // without the same boundary can capture the hot database after a row
+        // was deleted and the cold database before that row was visible in its
+        // checkpoint, producing a locally incomplete snapshot even though the
+        // live pair is complete.
+        let _archive_guard = self.lock_archive_maintenance();
+
         self.create_hot_raw_checkpoint(checkpoint_dir)?;
 
         if let Some(cold) = self.cold_db.as_ref() {
@@ -4509,7 +4517,44 @@ impl StateStore {
 #[cfg(test)]
 mod manifest_tests {
     use super::*;
+    use std::sync::mpsc;
+    use std::time::Duration;
     use tempfile::tempdir;
+
+    #[test]
+    fn hot_cold_checkpoint_waits_for_archive_maintenance_boundary() {
+        let hot = tempdir().unwrap();
+        let cold = tempdir().unwrap();
+        let checkpoint_parent = tempdir().unwrap();
+        let checkpoint = checkpoint_parent.path().join("coherent-checkpoint");
+        let mut state = StateStore::open(hot.path()).unwrap();
+        state.open_cold_store(cold.path()).unwrap();
+
+        let archive_guard = state.lock_archive_maintenance();
+        let checkpoint_state = state.clone();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (completed_tx, completed_rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            let result = checkpoint_state.create_raw_checkpoint(checkpoint.to_str().unwrap());
+            completed_tx.send(result).unwrap();
+        });
+
+        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(
+            completed_rx
+                .recv_timeout(Duration::from_millis(100))
+                .is_err(),
+            "hot/cold checkpoint must not cross an active archive mutation"
+        );
+
+        drop(archive_guard);
+        completed_rx
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        worker.join().unwrap();
+    }
 
     #[test]
     fn shared_canonical_ledger_walk_matches_paged_category_digests() {

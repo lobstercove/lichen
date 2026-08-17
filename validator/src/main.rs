@@ -29075,6 +29075,9 @@ async fn run_validator() {
                 time::sleep(Duration::from_millis(500)).await;
                 continue;
             }
+            sync_manager_join
+                .release_caught_up_sync_guard(current_slot)
+                .await;
             if sync_manager_join.is_actively_receiving().await {
                 let pending = sync_manager_join.pending_count().await;
                 info!(
@@ -29203,6 +29206,9 @@ async fn run_validator() {
                     }
                 }
 
+                sync_manager
+                    .release_caught_up_sync_guard(current_slot)
+                    .await;
                 if sync_manager.is_actively_receiving().await {
                     let pending = sync_manager.pending_count().await;
                     info!(

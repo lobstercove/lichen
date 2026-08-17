@@ -348,6 +348,42 @@ impl SyncManager {
         has_pending || is_syncing
     }
 
+    /// Release a completed catch-up guard before consensus admission.
+    ///
+    /// The normal delayed progress check remains the fallback for incomplete
+    /// batches.  A validator that has already applied the active batch through
+    /// its requested end, however, must not wait for that timer while newly
+    /// finalized blocks keep triggering one-block catch-up batches.  Only an
+    /// empty pending queue and a local tip at or beyond the exact active target
+    /// may release the guard.
+    pub async fn release_caught_up_sync_guard(&self, current_slot: u64) -> bool {
+        if !self.pending_blocks.lock().await.is_empty() {
+            return false;
+        }
+
+        let mut is_syncing = self.is_syncing.lock().await;
+        let mut batch = self.current_sync_batch.lock().await;
+        let Some((start, end)) = *batch else {
+            return false;
+        };
+
+        if !*is_syncing || current_slot < end {
+            return false;
+        }
+
+        *is_syncing = false;
+        *batch = None;
+        drop(batch);
+        drop(is_syncing);
+
+        self.clear_requested_range(start, end).await;
+        info!(
+            "✅ Released completed catch-up guard {}-{} at local slot {}",
+            start, end, current_slot
+        );
+        true
+    }
+
     /// Check if we need to start syncing (returns next batch to sync)
     pub async fn should_sync(&self, current_slot: u64) -> Option<(u64, u64)> {
         let highest = *self.highest_seen_slot.lock().await;
@@ -1610,6 +1646,54 @@ mod tests {
         // Complete sync, no pending → not actively receiving
         sm.complete_sync().await;
         assert!(!sm.is_actively_receiving().await);
+    }
+
+    #[tokio::test]
+    async fn test_release_caught_up_sync_guard_at_target() {
+        let sm = SyncManager::new();
+        assert_eq!(
+            sm.claim_unrequested_ranges(101, 103).await,
+            vec![(101, 103)]
+        );
+        sm.start_sync(101, 103).await;
+
+        assert!(sm.release_caught_up_sync_guard(103).await);
+        assert!(!sm.is_actively_receiving().await);
+        assert_eq!(*sm.current_sync_batch.lock().await, None);
+        assert!(
+            !sm.is_requested(101).await,
+            "completed admission batch must release its requested range"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_release_caught_up_sync_guard_refuses_incomplete_batch() {
+        let sm = SyncManager::new();
+        sm.start_sync(101, 103).await;
+
+        assert!(!sm.release_caught_up_sync_guard(102).await);
+        assert!(sm.is_actively_receiving().await);
+        assert_eq!(*sm.current_sync_batch.lock().await, Some((101, 103)));
+    }
+
+    #[tokio::test]
+    async fn test_release_caught_up_sync_guard_refuses_pending_blocks() {
+        let sm = SyncManager::new();
+        sm.start_sync(101, 103).await;
+        sm.add_pending_block(test_block(104)).await;
+
+        assert!(!sm.release_caught_up_sync_guard(103).await);
+        assert!(sm.is_actively_receiving().await);
+        assert_eq!(*sm.current_sync_batch.lock().await, Some((101, 103)));
+    }
+
+    #[tokio::test]
+    async fn test_release_caught_up_sync_guard_is_noop_without_active_batch() {
+        let sm = SyncManager::new();
+
+        assert!(!sm.release_caught_up_sync_guard(103).await);
+        assert!(!sm.is_actively_receiving().await);
+        assert_eq!(*sm.current_sync_batch.lock().await, None);
     }
 
     /// STABILITY-FIX: has_pending_child detects if pending blocks chain from a given hash
