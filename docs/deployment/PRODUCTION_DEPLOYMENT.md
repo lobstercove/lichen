@@ -14,8 +14,9 @@ Use this document as the canonical workflow for:
 
 This runbook intentionally prefers the scripts that are verified in the current tree over older narrative docs.
 
-Current testnet release candidate for this runbook is `v0.5.250`; keep signed
-`v0.5.240` as the immediate restart-safe anchor. The candidate must not be
+Current testnet release candidate for this runbook is `v0.5.251`; keep signed
+`v0.5.250` as the immediate restart-safe anchor and retain `v0.5.240` as the
+Archive V2 recovery anchor. The candidate must not be
 installed until its exact tag workflow, attestations, checksum, and detached
 PQ signature pass. Both releases are Archive V2 dual-reader capable. Preserve signed
 `v0.5.225` as pre-change evidence, but do not restart it on the mature activated
@@ -32,6 +33,11 @@ Archive V2 architecture and the approved 2026-07-21 storage bridge:
 This is the canonical implementation plan for immutable compressed segments,
 transparent historical reads, validator archive roles, migration, replication,
 capacity policy, and the temporary testnet-only 5 GiB / 50,000-slot response.
+The exact live-fleet completion and cadence plan is
+[ARCHIVE_V2_ACTIVATION_CADENCE_AND_VALIDATOR_LIVENESS_PLAN_2026-08-18.md](ARCHIVE_V2_ACTIVATION_CADENCE_AND_VALIDATOR_LIVENESS_PLAN_2026-08-18.md).
+It records the bounded US/EU verified-cache plus SEA/IN consensus-role
+transition, stable tail-building procedure, dual-R2 publication order, storage
+gates, and the separate future offline-validator consensus design.
 
 Restriction schema activation policy: [RESTRICTION_SCHEMA_ACTIVATION.md](RESTRICTION_SCHEMA_ACTIVATION.md). RG-804 activation is testnet-only, uses `scripts/activate-restriction-schema-testnet.sh`, requires explicit owner approval for that exact activation, stops validators only long enough to set the shipped state-root schema flag, and records per-host sync evidence. It is not a reset path and must not copy chain state.
 

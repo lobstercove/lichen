@@ -259,14 +259,27 @@ pub fn build_block(
     block.tx_fees_paid = tx_fees_paid;
     block.oracle_prices = oracle_prices;
 
-    if user_transaction_count == 0 {
-        debug!("📦 Built empty liveness block at height {}", height);
+    let total_ms = build_started.elapsed().as_millis();
+    if user_transaction_count == 0 && total_ms < 200 {
+        debug!(
+            "📦 Built empty liveness block at height {} (total_ms={} collect_ms={} spec_ms={} exec_ms={} root_ms={})",
+            height, total_ms, collect_ms, spec_ms, execution_ms, root_ms,
+        );
     } else {
         info!(
+            target: "lichen::cadence",
+            event = "proposal_build_complete",
+            height,
+            transactions = user_transaction_count,
+            total_ms = %total_ms,
+            collect_ms = %collect_ms,
+            speculative_ms = %spec_ms,
+            execution_ms = %execution_ms,
+            state_root_ms = %root_ms,
             "📦 Built block at height {} with {} txs (total_ms={} collect_ms={} spec_ms={} exec_ms={} root_ms={})",
             height,
             user_transaction_count,
-            build_started.elapsed().as_millis(),
+            total_ms,
             collect_ms,
             spec_ms,
             execution_ms,

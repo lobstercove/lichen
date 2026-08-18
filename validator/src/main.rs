@@ -118,6 +118,7 @@ const TESTNET_MIN_RUNTIME_AVAILABLE_BYTES: u64 = 5 * 1024 * 1024 * 1024;
 const DEFAULT_MIN_RUNTIME_AVAILABLE_BYTES: u64 = 10 * 1024 * 1024 * 1024;
 const MIN_CHECKPOINT_AVAILABLE_BYTES: u64 = 20 * 1024 * 1024 * 1024;
 static CHECKPOINT_MAINTENANCE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+static CHECKPOINT_CREATION_TERMINALLY_PAUSED: AtomicBool = AtomicBool::new(false);
 static ACTIVE_CHECKPOINT_EXPORT_PINS: LazyLock<std::sync::Mutex<HashMap<u64, usize>>> =
     LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
 static ARCHIVE_V2_ROLE_MARKER_NONCE: AtomicU64 = AtomicU64::new(0);
@@ -257,6 +258,15 @@ fn stable_cold_migration_jitter(identity: &Pubkey, interval: Duration) -> Durati
     Duration::from_millis(value % window_millis)
 }
 
+fn stable_checkpoint_metadata_retry_jitter_secs(identity: &Pubkey) -> u64 {
+    let mut input = Vec::with_capacity(32 + 38);
+    input.extend_from_slice(b"lichen-checkpoint-metadata-retry-v1");
+    input.extend_from_slice(&identity.0);
+    let digest = Sha256::digest(input);
+    let value = u64::from_be_bytes(digest[..8].try_into().expect("SHA-256 prefix"));
+    value % (CHECKPOINT_METADATA_RETRY_SECS + 1)
+}
+
 fn cold_migration_pressure_reason(
     state: &StateStore,
     data_dir: &Path,
@@ -335,6 +345,22 @@ fn cold_migration_pressure_reason(
         }
     }
     None
+}
+
+fn terminal_cold_maintenance_pause_reason(error: &str) -> Option<&'static str> {
+    if error.contains("cold migration reclaim queue would exceed") {
+        Some("reclaim_queue_capacity_exhausted")
+    } else {
+        None
+    }
+}
+
+fn terminal_checkpoint_creation_pause_reason(error: &str) -> Option<&'static str> {
+    if error.contains("Failed to create checkpoint:") && error.contains("Operation not permitted") {
+        Some("unsupported_hot_sst_link")
+    } else {
+        None
+    }
 }
 
 fn cold_migration_sync_pause_reason(
@@ -5767,15 +5793,18 @@ struct SnapshotSync {
     checkpoint_repair_pending: bool,
     checkpoint_metadata_retry_pending: bool,
     last_checkpoint_metadata_request_at: Option<std::time::Instant>,
+    checkpoint_metadata_retry_attempt: u32,
+    checkpoint_metadata_retry_jitter_secs: u64,
 }
 
 const MIN_WARP_CHECKPOINT_ANCHOR_PEERS: usize = 2;
 const RECENT_VERIFIED_CHECKPOINT_ADVERTISEMENT_LIMIT: usize = 3;
 const CHECKPOINT_METADATA_RETRY_SECS: u64 = 15;
+const CHECKPOINT_METADATA_RETRY_MAX_SECS: u64 = 300;
 
 impl SnapshotSync {
-    fn new(is_joining_network: bool) -> Self {
-        if is_joining_network {
+    fn new(is_joining_network: bool, checkpoint_metadata_retry_jitter_secs: u64) -> Self {
+        let mut snapshot_sync = if is_joining_network {
             Self::default()
         } else {
             Self {
@@ -5783,7 +5812,10 @@ impl SnapshotSync {
                 stake_pool: true,
                 ..Self::default()
             }
-        }
+        };
+        snapshot_sync.checkpoint_metadata_retry_jitter_secs =
+            checkpoint_metadata_retry_jitter_secs.min(CHECKPOINT_METADATA_RETRY_SECS);
+        snapshot_sync
     }
 
     fn is_ready(&self) -> bool {
@@ -5796,16 +5828,33 @@ impl SnapshotSync {
         }
 
         let now = std::time::Instant::now();
+        let retry_pending =
+            self.checkpoint_repair_pending || self.checkpoint_metadata_retry_pending;
+        let retry_delay_secs = self.checkpoint_metadata_retry_delay_secs();
         if self
             .last_checkpoint_metadata_request_at
-            .map(|last| last.elapsed().as_secs() < CHECKPOINT_METADATA_RETRY_SECS)
+            .map(|last| last.elapsed().as_secs() < retry_delay_secs)
             .unwrap_or(false)
         {
             return false;
         }
 
         self.last_checkpoint_metadata_request_at = Some(now);
+        if retry_pending {
+            self.checkpoint_metadata_retry_attempt =
+                self.checkpoint_metadata_retry_attempt.saturating_add(1);
+        } else {
+            self.checkpoint_metadata_retry_attempt = 0;
+        }
         true
+    }
+
+    fn checkpoint_metadata_retry_delay_secs(&self) -> u64 {
+        let exponent = self.checkpoint_metadata_retry_attempt.min(5);
+        CHECKPOINT_METADATA_RETRY_SECS
+            .saturating_mul(1u64 << exponent)
+            .saturating_add(self.checkpoint_metadata_retry_jitter_secs)
+            .min(CHECKPOINT_METADATA_RETRY_MAX_SECS)
     }
 
     fn should_retry_checkpoint_metadata(&mut self) -> bool {
@@ -5843,6 +5892,7 @@ impl SnapshotSync {
         self.checkpoint_repair_pending = false;
         self.checkpoint_metadata_retry_pending = false;
         self.last_checkpoint_metadata_request_at = None;
+        self.checkpoint_metadata_retry_attempt = 0;
     }
 }
 
@@ -9972,6 +10022,9 @@ async fn maybe_create_checkpoint(
     if !SyncManager::should_checkpoint(slot) {
         return;
     }
+    if CHECKPOINT_CREATION_TERMINALLY_PAUSED.load(Ordering::Acquire) {
+        return;
+    }
     if archive_v2_capacity_blocks_checkpoint() {
         warn!(
             "Skipping checkpoint at slot {} because Archive V2 adaptive capacity action is {:?}",
@@ -10031,7 +10084,15 @@ async fn maybe_create_checkpoint(
             prune_state_checkpoints(data_dir, "periodic checkpoint");
         }
         Err(e) => {
-            warn!("⚠️  Failed to create checkpoint at slot {}: {}", slot, e);
+            if let Some(reason) = terminal_checkpoint_creation_pause_reason(&e) {
+                CHECKPOINT_CREATION_TERMINALLY_PAUSED.store(true, Ordering::Release);
+                error!(
+                    "📸 Periodic checkpoint creation terminally paused until restart/storage placement change: slot={} reason={} error={}",
+                    slot, reason, e
+                );
+            } else {
+                warn!("⚠️  Failed to create checkpoint at slot {}: {}", slot, e);
+            }
         }
     }
 }
@@ -21599,7 +21660,10 @@ async fn run_validator() {
             }
         });
     }
-    let snapshot_sync = Arc::new(Mutex::new(SnapshotSync::new(use_join_checkpoint_bootstrap)));
+    let snapshot_sync = Arc::new(Mutex::new(SnapshotSync::new(
+        use_join_checkpoint_bootstrap,
+        stable_checkpoint_metadata_retry_jitter_secs(&validator_pubkey),
+    )));
 
     // FIX-FORK-1: Shared set of slots where we received a valid block from the
     // network.  The block-receiver task inserts here; the production loop checks
@@ -27888,7 +27952,19 @@ async fn run_validator() {
                                         }
                                     }
                                 }
-                                Ok(Err(err)) => warn!("🗄️  Cold maintenance error: {err}"),
+                                Ok(Err(err)) => {
+                                    if let Some(reason) =
+                                        terminal_cold_maintenance_pause_reason(&err)
+                                    {
+                                        state_for_cold.set_cold_migration_paused(reason);
+                                        error!(
+                                            "🗄️  Cold maintenance terminally paused until restart/configuration change: reason={} error={}",
+                                            reason, err
+                                        );
+                                        break;
+                                    }
+                                    warn!("🗄️  Cold maintenance error: {err}");
+                                }
                                 Err(err) => {
                                     let reason = format!("blocking_task_failed:{err}");
                                     state_for_cold.set_cold_migration_paused(reason.clone());
@@ -32009,6 +32085,34 @@ mod tests {
         }
         .validate()
         .is_err());
+    }
+
+    #[test]
+    fn reclaim_queue_capacity_error_terminally_pauses_cold_maintenance() {
+        assert_eq!(
+            terminal_cold_maintenance_pause_reason(
+                "cold migration reclaim queue would exceed 4096 ranges"
+            ),
+            Some("reclaim_queue_capacity_exhausted")
+        );
+        assert_eq!(
+            terminal_cold_maintenance_pause_reason("temporary RocksDB iterator error"),
+            None
+        );
+    }
+
+    #[test]
+    fn unsupported_hot_sst_link_terminally_pauses_periodic_checkpoints() {
+        assert_eq!(
+            terminal_checkpoint_creation_pause_reason(
+                "Failed to create checkpoint: IO error: Operation not permitted: While link file"
+            ),
+            Some("unsupported_hot_sst_link")
+        );
+        assert_eq!(
+            terminal_checkpoint_creation_pause_reason("temporary RocksDB I/O error"),
+            None
+        );
     }
 
     fn test_checkpoint_block_and_certificate(
@@ -36530,7 +36634,7 @@ mod tests {
 
     #[test]
     fn pending_checkpoint_repair_pauses_replay_before_next_snapshot_source() {
-        let mut sync = SnapshotSync::new(false);
+        let mut sync = SnapshotSync::new(false, 0);
         sync.mark_checkpoint_repair_pending();
 
         assert!(sync.is_checkpoint_repair_pending());
@@ -39555,7 +39659,7 @@ mod tests {
 
     #[test]
     fn checkpoint_metadata_requests_are_throttled_during_warp_snapshot() {
-        let mut sync = SnapshotSync::new(true);
+        let mut sync = SnapshotSync::new(true, 0);
 
         assert!(
             !sync.should_retry_checkpoint_metadata(),
@@ -39566,7 +39670,7 @@ mod tests {
 
         sync.last_checkpoint_metadata_request_at = Some(
             std::time::Instant::now()
-                - std::time::Duration::from_secs(CHECKPOINT_METADATA_RETRY_SECS),
+                - std::time::Duration::from_secs(sync.checkpoint_metadata_retry_delay_secs()),
         );
         assert!(sync.should_request_checkpoint_metadata());
 
@@ -39583,7 +39687,7 @@ mod tests {
 
     #[test]
     fn pending_checkpoint_repair_retries_metadata_without_peer_reconnect() {
-        let mut sync = SnapshotSync::new(true);
+        let mut sync = SnapshotSync::new(true, 0);
         sync.mark_checkpoint_repair_pending();
 
         assert!(
@@ -39597,7 +39701,7 @@ mod tests {
 
         sync.last_checkpoint_metadata_request_at = Some(
             std::time::Instant::now()
-                - std::time::Duration::from_secs(CHECKPOINT_METADATA_RETRY_SECS),
+                - std::time::Duration::from_secs(sync.checkpoint_metadata_retry_delay_secs()),
         );
         assert!(
             sync.should_retry_checkpoint_metadata(),
@@ -39617,7 +39721,7 @@ mod tests {
 
     #[test]
     fn warming_checkpoint_cache_retries_metadata_during_full_replay() {
-        let mut sync = SnapshotSync::new(true);
+        let mut sync = SnapshotSync::new(true, 0);
         sync.mark_checkpoint_metadata_retry_pending();
 
         assert!(
@@ -39652,6 +39756,41 @@ mod tests {
         assert!(
             !sync.should_retry_checkpoint_metadata(),
             "completed snapshot sync must clear the independent availability retry"
+        );
+    }
+
+    #[test]
+    fn checkpoint_metadata_retry_uses_bounded_exponential_backoff() {
+        let mut sync = SnapshotSync::new(true, 0);
+        sync.mark_checkpoint_metadata_retry_pending();
+
+        assert_eq!(sync.checkpoint_metadata_retry_delay_secs(), 15);
+        for expected_delay in [30, 60, 120, 240, 300, 300] {
+            assert!(sync.should_retry_checkpoint_metadata());
+            assert_eq!(sync.checkpoint_metadata_retry_delay_secs(), expected_delay);
+            sync.last_checkpoint_metadata_request_at =
+                Some(std::time::Instant::now() - std::time::Duration::from_secs(expected_delay));
+        }
+
+        sync.mark_warp_snapshot_idle();
+        assert_eq!(sync.checkpoint_metadata_retry_attempt, 0);
+        assert_eq!(sync.checkpoint_metadata_retry_delay_secs(), 15);
+    }
+
+    #[test]
+    fn checkpoint_metadata_retry_jitter_is_bounded_and_stable() {
+        let identity = Pubkey::new([23u8; 32]);
+        let jitter = stable_checkpoint_metadata_retry_jitter_secs(&identity);
+        assert!(jitter <= CHECKPOINT_METADATA_RETRY_SECS);
+        assert_eq!(
+            jitter,
+            stable_checkpoint_metadata_retry_jitter_secs(&identity)
+        );
+
+        let sync = SnapshotSync::new(true, jitter);
+        assert_eq!(
+            sync.checkpoint_metadata_retry_delay_secs(),
+            CHECKPOINT_METADATA_RETRY_SECS + jitter
         );
     }
 

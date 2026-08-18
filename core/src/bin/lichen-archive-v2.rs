@@ -14,8 +14,9 @@ use lichen_core::archive_v2::{
     ArchiveV2LegacyLossDeclaration, ArchiveV2Manifest, ArchiveV2MirrorLimits,
     ArchiveV2PressureAction, ArchiveV2Reader, ArchiveV2ReaderConfig, ArchiveV2ReplicaEvidence,
     ArchiveV2ReplicaPolicy, ArchiveV2ReplicaTransport, ArchiveV2Replicator,
-    ArchiveV2RetirementManifest, ArchiveV2Role, ArchiveV2RollbackAnchor, ArchiveV2SegmentCodec,
-    ARCHIVE_V2_CATALOG_VERSION, ARCHIVE_V2_FORMAT_VERSION,
+    ArchiveV2RetirementManifest, ArchiveV2Role, ArchiveV2RoleConfig, ArchiveV2RoleRequirements,
+    ArchiveV2RollbackAnchor, ArchiveV2SegmentCodec, ARCHIVE_V2_CATALOG_VERSION,
+    ARCHIVE_V2_FORMAT_VERSION, ARCHIVE_V2_MIN_RECENT_HISTORY_SLOTS, ARCHIVE_V2_ROLE_CONFIG_VERSION,
 };
 use lichen_core::codec::serialized_size_legacy_bincode;
 use lichen_core::{
@@ -33,6 +34,12 @@ const CAPACITY_RESERVE_BASIS_POINTS: u16 = 500;
 const SEGMENT_OPERATION_PEAK_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const EVIDENCE_RESERVE_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_RETIREMENT_PASSES_PER_OPEN: u64 = 16;
+const RUNTIME_MUTABLE_WRITE_PEAK_BYTES: u64 = 1024 * 1024 * 1024;
+const RUNTIME_WAL_PEAK_BYTES: u64 = 1024 * 1024 * 1024;
+const RUNTIME_COMPACTION_PEAK_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+const RUNTIME_CHECKPOINT_PEAK_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+const RUNTIME_CACHE_EVICTION_MARGIN_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_PREFLIGHT_MANIFEST_FILE_BYTES: u64 = 16 * 1024 * 1024 + 64;
 
 fn main() {
     if let Err(error) = run(std::env::args().skip(1).collect()) {
@@ -45,6 +52,8 @@ fn run(raw: Vec<String>) -> Result<(), String> {
     let (command, args) = CommandArgs::parse(raw)?;
     match command.as_str() {
         "status" => run_status(&args),
+        "role-preflight" => run_role_preflight(&args),
+        "snapshot-hot" => run_snapshot_hot(&args),
         "verify" => run_verify(&args),
         "repair" => run_repair(&args),
         "declare-legacy-loss" => run_declare_legacy_loss(&args),
@@ -61,7 +70,7 @@ fn run(raw: Vec<String>) -> Result<(), String> {
             Ok(())
         }
         _ => Err(format!(
-            "unknown command {command:?}; expected status, verify, repair, declare-legacy-loss, build, mirror, restore, retirement-authorize, retirement-pass, retirement-reclaim, profile-source, or benchmark"
+            "unknown command {command:?}; expected status, role-preflight, snapshot-hot, verify, repair, declare-legacy-loss, build, mirror, restore, retirement-authorize, retirement-pass, retirement-reclaim, profile-source, or benchmark"
         )),
     }
 }
@@ -207,6 +216,580 @@ fn run_status(args: &CommandArgs) -> Result<(), String> {
         "missing_objects_first_100": missing_objects,
         "missing_manifests_first_100": missing_manifests,
         "complete_local_inventory": missing_object_count == 0 && missing_manifest_count == 0,
+    }))
+}
+
+fn regular_nonempty_file(path: &Path) -> bool {
+    fs::symlink_metadata(path)
+        .ok()
+        .is_some_and(|metadata| metadata.file_type().is_file() && metadata.len() > 0)
+}
+
+fn catalog_inventory_entry_matches(
+    root: &Path,
+    manifest: &ArchiveV2Manifest,
+    expected_manifest_hash: Hash,
+    maximum_object_bytes: u64,
+) -> bool {
+    let object = root
+        .join("objects")
+        .join(format!("{}.av2s", manifest.segment_object_hash.to_hex()));
+    let manifest_path = root
+        .join("manifests")
+        .join(format!("{}.av2m", manifest.segment_object_hash.to_hex()));
+    if !matches!(
+        fs::symlink_metadata(&object),
+        Ok(metadata)
+            if metadata.file_type().is_file()
+                && metadata.len() > 0
+                && metadata.len() <= maximum_object_bytes
+    ) || !matches!(
+        fs::symlink_metadata(&manifest_path),
+        Ok(metadata)
+            if metadata.file_type().is_file()
+                && metadata.len() > 0
+                && metadata.len() <= MAX_PREFLIGHT_MANIFEST_FILE_BYTES
+    ) {
+        return false;
+    }
+    let encoded = match fs::read(&manifest_path) {
+        Ok(encoded) => encoded,
+        Err(_) => return false,
+    };
+    Hash::hash(&encoded) == expected_manifest_hash
+        && ArchiveV2Manifest::decode_canonical(&encoded).is_ok_and(|decoded| decoded == *manifest)
+}
+
+fn complete_catalog_inventory(
+    root: &Path,
+    catalog: &ArchiveV2Catalog,
+    maximum_object_bytes: u64,
+) -> bool {
+    catalog.entries.iter().all(|entry| {
+        catalog_inventory_entry_matches(
+            root,
+            &entry.manifest,
+            entry.manifest_hash,
+            maximum_object_bytes,
+        )
+    })
+}
+
+fn runtime_role_capacity_decision(
+    role: ArchiveV2Role,
+    state_dir: &Path,
+    archive_root: &Path,
+    cache_root: Option<&Path>,
+    source_max_object_bytes: u64,
+    network_id: &str,
+) -> Result<ArchiveV2CapacityDecision, String> {
+    let hot = cli_filesystem_capacity(&capacity_probe_path(state_dir)?)?;
+    let archive = cli_filesystem_capacity(&capacity_probe_path(archive_root)?)?;
+    let cache = cache_root
+        .map(capacity_probe_path)
+        .transpose()?
+        .as_deref()
+        .map(cli_filesystem_capacity)
+        .transpose()?
+        .unwrap_or(archive);
+    let absolute_reserve = if network_id == "lichen-testnet-1" {
+        TESTNET_CAPACITY_FLOOR_BYTES
+    } else {
+        DEFAULT_CAPACITY_FLOOR_BYTES
+    };
+    ArchiveV2CapacityGuard::evaluate_adaptive(
+        ArchiveV2CapacityInputs {
+            segment_build_enabled: role == ArchiveV2Role::FullArchive,
+            verified_cache_enabled: role == ArchiveV2Role::VerifiedCache,
+            checkpoint_enabled: true,
+            hot_available_bytes: hot.available_bytes,
+            archive_available_bytes: archive.available_bytes,
+            cache_available_bytes: cache.available_bytes,
+            mutable_state_write_peak_bytes: RUNTIME_MUTABLE_WRITE_PEAK_BYTES,
+            wal_peak_bytes: RUNTIME_WAL_PEAK_BYTES,
+            bounded_compaction_peak_bytes: RUNTIME_COMPACTION_PEAK_BYTES,
+            checkpoint_peak_bytes: RUNTIME_CHECKPOINT_PEAK_BYTES,
+            segment_staging_peak_bytes: SEGMENT_OPERATION_PEAK_BYTES,
+            verification_copy_bytes: SEGMENT_OPERATION_PEAK_BYTES,
+            replication_retry_bytes: SEGMENT_OPERATION_PEAK_BYTES,
+            filesystem_reserve_bytes: absolute_reserve,
+            cache_fetch_staging_bytes: source_max_object_bytes,
+            cache_eviction_margin_bytes: RUNTIME_CACHE_EVICTION_MARGIN_BYTES,
+        },
+        ArchiveV2CapacityThresholds {
+            hot_warning_bytes: absolute_reserve,
+            hot_fatal_bytes: absolute_reserve,
+            archive_warning_bytes: absolute_reserve,
+            cache_warning_bytes: absolute_reserve,
+        },
+        ArchiveV2CapacityTotals {
+            hot_total_bytes: hot.total_bytes,
+            archive_total_bytes: archive.total_bytes,
+            cache_total_bytes: cache.total_bytes,
+        },
+        ArchiveV2AdaptiveReservePolicy {
+            reserve_basis_points: CAPACITY_RESERVE_BASIS_POINTS,
+            emergency_evidence_reserve_bytes: EVIDENCE_RESERVE_BYTES,
+            ..ArchiveV2AdaptiveReservePolicy::default()
+        },
+    )
+    .map_err(|error| error.to_string())
+}
+
+/// Read-only, fail-closed admission report for the exact runtime Archive V2
+/// role boundary. Deployment automation must run this against the same paths
+/// and source roots that it will place in the validator service configuration.
+fn run_role_preflight(args: &CommandArgs) -> Result<(), String> {
+    args.ensure_only(
+        &[
+            "state-dir",
+            "cold-store",
+            "root",
+            "role",
+            "recent-history-slots",
+            "cache-root",
+            "cache-quota-bytes",
+            "source-root",
+            "source-max-object-bytes",
+            "wal",
+            "identity-file",
+            "recovery-file",
+        ],
+        &[],
+    )?;
+    let state_dir = PathBuf::from(args.required("state-dir")?);
+    let root = PathBuf::from(args.required("root")?);
+    let role = args
+        .required("role")?
+        .parse::<ArchiveV2Role>()
+        .map_err(|error| error.to_string())?;
+    let recent_history_slots = parse_u64(
+        args.optional("recent-history-slots")?.unwrap_or("50000"),
+        "recent-history-slots",
+    )?;
+    if recent_history_slots < ARCHIVE_V2_MIN_RECENT_HISTORY_SLOTS {
+        return Err(format!(
+            "--recent-history-slots must be at least {ARCHIVE_V2_MIN_RECENT_HISTORY_SLOTS}"
+        ));
+    }
+    let cache_root = args.optional("cache-root")?.map(PathBuf::from);
+    let cache_quota_bytes = parse_u64(
+        args.optional("cache-quota-bytes")?.unwrap_or("0"),
+        "cache-quota-bytes",
+    )?;
+    let source_max_object_bytes = parse_u64(
+        args.optional("source-max-object-bytes")?
+            .unwrap_or("2147483648"),
+        "source-max-object-bytes",
+    )?;
+    if !(1024..=2 * 1024 * 1024 * 1024).contains(&source_max_object_bytes) {
+        return Err("--source-max-object-bytes must be in 1 KiB..=2 GiB".to_string());
+    }
+    let wal = PathBuf::from(args.required("wal")?);
+    let identity_file = PathBuf::from(args.required("identity-file")?);
+    let recovery_file = PathBuf::from(args.required("recovery-file")?);
+    let source_roots = args
+        .repeated("source-root")
+        .into_iter()
+        .map(PathBuf::from)
+        .collect::<Vec<_>>();
+
+    match role {
+        ArchiveV2Role::VerifiedCache => {
+            if cache_root.is_none() || cache_quota_bytes == 0 || source_roots.is_empty() {
+                return Err(
+                    "verified-cache preflight requires --cache-root, non-zero --cache-quota-bytes, and at least one --source-root"
+                        .to_string(),
+                );
+            }
+        }
+        ArchiveV2Role::FullArchive | ArchiveV2Role::Consensus => {
+            if cache_root.is_some() || cache_quota_bytes != 0 || !source_roots.is_empty() {
+                return Err(format!(
+                    "{role} preflight must not configure cache paths, quota, or remote sources"
+                ));
+            }
+        }
+    }
+
+    let state_path = fs::canonicalize(&state_dir)
+        .map_err(|error| format!("failed resolving state directory: {error}"))?;
+    let archive_path = fs::canonicalize(&root)
+        .map_err(|error| format!("failed resolving Archive V2 root: {error}"))?;
+    let cache_path = cache_root
+        .as_deref()
+        .map(fs::canonicalize)
+        .transpose()
+        .map_err(|error| format!("failed resolving Archive V2 cache root: {error}"))?;
+    let independent_consensus_state = state_path != archive_path
+        && !archive_path.starts_with(&state_path)
+        && !state_path.starts_with(&archive_path)
+        && cache_path.as_ref().is_none_or(|cache| {
+            cache != &state_path
+                && !cache.starts_with(&state_path)
+                && !state_path.starts_with(cache)
+        });
+    let consensus_wal_and_identity = regular_nonempty_file(&wal)
+        && regular_nonempty_file(&identity_file)
+        && wal.starts_with(&state_path);
+    let recovery_data_present = regular_nonempty_file(&recovery_file);
+
+    let mut state = StateStore::open_read_only_with_cache_mb(&state_dir, Some(256))?;
+    if let Some(cold) = args.optional("cold-store")? {
+        state.open_cold_store_read_only(cold)?;
+    }
+    let catalog =
+        ArchiveV2Catalog::load(&root.join("catalog.av2")).map_err(|error| error.to_string())?;
+    let finalized_slot = state.get_last_finalized_slot()?;
+    let local_genesis = state
+        .get_block_by_slot(0)?
+        .ok_or_else(|| "local state has no canonical genesis block".to_string())?;
+    if local_genesis.hash() != catalog.identity.genesis_hash {
+        return Err("Archive V2 catalog genesis conflicts with local state".to_string());
+    }
+    let hot_start = finalized_slot.saturating_sub(recent_history_slots.saturating_sub(1));
+    let complete_hot_window = state
+        .verify_hot_canonical_block_range(hot_start, finalized_slot)
+        .is_ok();
+    let required_archive_end = finalized_slot.checked_sub(recent_history_slots);
+    let complete_catalog_verified = match required_archive_end {
+        Some(end) => catalog
+            .covers_genesis_through(end)
+            .map_err(|error| error.to_string())?,
+        None => {
+            catalog.entries.is_empty()
+                || catalog
+                    .entries
+                    .first()
+                    .is_some_and(|entry| entry.manifest.start_slot == 0)
+        }
+    };
+    let catalog_tip_matches_state = match catalog.entries.last() {
+        Some(entry) => state
+            .get_block_by_slot(entry.manifest.end_slot)?
+            .is_some_and(|block| block.hash() == entry.manifest.last_block_hash),
+        None => true,
+    };
+    let every_segment_local = complete_catalog_inventory(&root, &catalog, 2 * 1024 * 1024 * 1024);
+
+    let mut authenticated_sources = 0u32;
+    let mut source_catalogs_match = true;
+    let mut source_complete_inventories = 0u32;
+    let mut unique_sources = BTreeSet::new();
+    for source in &source_roots {
+        let canonical = fs::canonicalize(source)
+            .map_err(|error| format!("failed resolving source {}: {error}", source.display()))?;
+        if !unique_sources.insert(canonical) {
+            return Err("Archive V2 source roots must be unique".to_string());
+        }
+        let source_catalog = ArchiveV2Catalog::load(&source.join("catalog.av2"))
+            .map_err(|error| format!("source {} catalog failed: {error}", source.display()))?;
+        if source_catalog.identity != catalog.identity
+            || source_catalog.catalog_root != catalog.catalog_root
+        {
+            source_catalogs_match = false;
+        } else {
+            let complete_inventory =
+                complete_catalog_inventory(source, &catalog, source_max_object_bytes);
+            if complete_inventory {
+                authenticated_sources = authenticated_sources.saturating_add(1);
+                source_complete_inventories = source_complete_inventories.saturating_add(1);
+            } else {
+                source_catalogs_match = false;
+            }
+        }
+    }
+
+    let capacity = runtime_role_capacity_decision(
+        role,
+        &state_dir,
+        &root,
+        cache_root.as_deref(),
+        source_max_object_bytes,
+        &catalog.identity.network_id,
+    )?;
+    let role_config = ArchiveV2RoleConfig {
+        version: ARCHIVE_V2_ROLE_CONFIG_VERSION,
+        role,
+        recent_history_slots,
+        verified_cache_quota_bytes: cache_quota_bytes,
+        advertise_deep_history: role != ArchiveV2Role::Consensus,
+    };
+    let requirements = ArchiveV2RoleRequirements {
+        independent_consensus_state,
+        consensus_wal_and_identity,
+        recovery_data_present,
+        complete_catalog_verified: complete_catalog_verified
+            && catalog_tip_matches_state
+            && complete_hot_window
+            && source_catalogs_match,
+        every_segment_local,
+        authenticated_remote_sources: authenticated_sources,
+        cache_staging_headroom_bytes: cache_path
+            .as_deref()
+            .map(cli_filesystem_capacity)
+            .transpose()?
+            .map(|capacity| capacity.available_bytes)
+            .unwrap_or(0),
+        network_archive_policy_satisfied: false,
+        no_archive_operation_in_progress: true,
+    };
+    let admission = role_config
+        .admit(&requirements)
+        .map_err(|error| error.to_string())?;
+    let admitted = admission.admitted && capacity.action == ArchiveV2PressureAction::Normal;
+    print_json(&json!({
+        "operation": "role_preflight",
+        "role": role,
+        "admitted": admitted,
+        "role_admission": admission,
+        "capacity": capacity,
+        "network_id": catalog.identity.network_id,
+        "genesis_hash": catalog.identity.genesis_hash.to_hex(),
+        "catalog_root": catalog.catalog_root.to_hex(),
+        "catalog_segments": catalog.entries.len(),
+        "catalog_end_slot": catalog.entries.last().map(|entry| entry.manifest.end_slot),
+        "finalized_slot": finalized_slot,
+        "required_archive_end": required_archive_end,
+        "hot_start_slot": hot_start,
+        "complete_hot_window": complete_hot_window,
+        "complete_catalog_verified": complete_catalog_verified,
+        "catalog_tip_matches_state": catalog_tip_matches_state,
+        "every_segment_local": every_segment_local,
+        "independent_consensus_state": independent_consensus_state,
+        "consensus_wal_and_identity": consensus_wal_and_identity,
+        "recovery_data_present": recovery_data_present,
+        "authenticated_source_catalogs": authenticated_sources,
+        "source_catalogs_match": source_catalogs_match,
+        "source_complete_inventories": source_complete_inventories,
+    }))?;
+    if !admitted {
+        return Err(
+            "Archive V2 role preflight did not reach an admitted Normal-capacity state".to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn checkpoint_sst_symlink_bytes(root: &Path) -> Result<(u64, u64), String> {
+    let mut count = 0u64;
+    let mut bytes = 0u64;
+    for entry in fs::read_dir(root).map_err(|error| {
+        format!(
+            "failed reading checkpoint source {}: {error}",
+            root.display()
+        )
+    })? {
+        let entry = entry.map_err(|error| format!("failed reading checkpoint entry: {error}"))?;
+        let path = entry.path();
+        if path.extension().and_then(|value| value.to_str()) != Some("sst") {
+            continue;
+        }
+        let link_metadata = fs::symlink_metadata(&path)
+            .map_err(|error| format!("failed inspecting {}: {error}", path.display()))?;
+        if !link_metadata.file_type().is_symlink() {
+            continue;
+        }
+        let target_metadata = fs::metadata(&path).map_err(|error| {
+            format!(
+                "checkpoint source SST symlink {} has no readable target: {error}",
+                path.display()
+            )
+        })?;
+        if !target_metadata.is_file() || target_metadata.len() == 0 {
+            return Err(format!(
+                "checkpoint source SST symlink {} does not resolve to a non-empty regular file",
+                path.display()
+            ));
+        }
+        count = count.saturating_add(1);
+        bytes = bytes
+            .checked_add(target_metadata.len())
+            .ok_or_else(|| "checkpoint materialization size overflow".to_string())?;
+    }
+    Ok((count, bytes))
+}
+
+fn materialize_checkpoint_sst_symlinks(
+    root: &Path,
+    maximum_bytes: u64,
+) -> Result<(u64, u64), String> {
+    let (expected_count, expected_bytes) = checkpoint_sst_symlink_bytes(root)?;
+    if expected_bytes > maximum_bytes {
+        return Err(format!(
+            "checkpoint SST materialization requires {expected_bytes} bytes, exceeding the {maximum_bytes}-byte bound"
+        ));
+    }
+    let mut materialized_count = 0u64;
+    let mut materialized_bytes = 0u64;
+    let paths = fs::read_dir(root)
+        .map_err(|error| format!("failed reading checkpoint {}: {error}", root.display()))?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("failed reading checkpoint entry: {error}"))?;
+    for path in paths {
+        if path.extension().and_then(|value| value.to_str()) != Some("sst")
+            || !fs::symlink_metadata(&path)
+                .map_err(|error| format!("failed inspecting {}: {error}", path.display()))?
+                .file_type()
+                .is_symlink()
+        {
+            continue;
+        }
+        let target_metadata = fs::metadata(&path).map_err(|error| {
+            format!(
+                "checkpoint SST symlink {} became unreadable: {error}",
+                path.display()
+            )
+        })?;
+        let file_name = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .ok_or_else(|| "checkpoint SST filename is not UTF-8".to_string())?;
+        let temporary = root.join(format!(".{file_name}.materialize.next"));
+        if temporary.exists() || fs::symlink_metadata(&temporary).is_ok() {
+            return Err(format!(
+                "checkpoint materialization target already exists: {}",
+                temporary.display()
+            ));
+        }
+        let mut source = fs::File::open(&path)
+            .map_err(|error| format!("failed opening {}: {error}", path.display()))?;
+        let mut destination = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temporary)
+            .map_err(|error| format!("failed creating {}: {error}", temporary.display()))?;
+        let copied = std::io::copy(&mut source, &mut destination)
+            .map_err(|error| format!("failed materializing {}: {error}", path.display()))?;
+        if copied != target_metadata.len() {
+            return Err(format!(
+                "checkpoint SST {} changed size while being materialized",
+                path.display()
+            ));
+        }
+        destination
+            .set_permissions(target_metadata.permissions())
+            .map_err(|error| {
+                format!(
+                    "failed setting {} permissions: {error}",
+                    temporary.display()
+                )
+            })?;
+        destination
+            .sync_all()
+            .map_err(|error| format!("failed syncing {}: {error}", temporary.display()))?;
+        drop(destination);
+        fs::rename(&temporary, &path).map_err(|error| {
+            format!(
+                "failed atomically replacing checkpoint symlink {}: {error}",
+                path.display()
+            )
+        })?;
+        materialized_count = materialized_count.saturating_add(1);
+        materialized_bytes = materialized_bytes.saturating_add(copied);
+    }
+    OpenOptions::new()
+        .read(true)
+        .open(root)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| format!("failed syncing checkpoint directory: {error}"))?;
+    let (remaining_count, _) = checkpoint_sst_symlink_bytes(root)?;
+    if remaining_count != 0
+        || materialized_count != expected_count
+        || materialized_bytes != expected_bytes
+    {
+        return Err(
+            "checkpoint SST materialization did not reach the expected inventory".to_string(),
+        );
+    }
+    Ok((materialized_count, materialized_bytes))
+}
+
+/// Create a self-contained hot RocksDB checkpoint for bounded Archive V2
+/// building. The caller must stop the validator before invoking this command:
+/// opening the same RocksDB through a second process while compaction is live
+/// can leave a read-only iterator pointing at an SST that the primary removes.
+fn run_snapshot_hot(args: &CommandArgs) -> Result<(), String> {
+    args.ensure_only(
+        &[
+            "state-dir",
+            "output",
+            "max-materialized-bytes",
+            "minimum-remaining-bytes",
+        ],
+        &[],
+    )?;
+    let state_dir = PathBuf::from(args.required("state-dir")?);
+    let output = PathBuf::from(args.required("output")?);
+    let maximum_bytes = parse_u64(
+        args.required("max-materialized-bytes")?,
+        "max-materialized-bytes",
+    )?;
+    let minimum_remaining_bytes = parse_u64(
+        args.required("minimum-remaining-bytes")?,
+        "minimum-remaining-bytes",
+    )?;
+    if maximum_bytes == 0 || minimum_remaining_bytes == 0 {
+        return Err(
+            "snapshot materialization and remaining-space bounds must be non-zero".to_string(),
+        );
+    }
+    if output.exists() || fs::symlink_metadata(&output).is_ok() {
+        return Err(format!(
+            "refusing to overwrite checkpoint target {}",
+            output.display()
+        ));
+    }
+    let state_path = fs::canonicalize(&state_dir)
+        .map_err(|error| format!("failed resolving state directory: {error}"))?;
+    let output_parent = output
+        .parent()
+        .ok_or_else(|| "snapshot output has no parent".to_string())?;
+    fs::create_dir_all(output_parent)
+        .map_err(|error| format!("failed creating snapshot parent: {error}"))?;
+    let output_parent = fs::canonicalize(output_parent)
+        .map_err(|error| format!("failed resolving snapshot parent: {error}"))?;
+    if output_parent.starts_with(&state_path) || state_path.starts_with(&output_parent) {
+        return Err("snapshot output and live state directories must not overlap".to_string());
+    }
+    let (source_symlink_count, source_symlink_bytes) = checkpoint_sst_symlink_bytes(&state_dir)?;
+    if source_symlink_bytes > maximum_bytes {
+        return Err(format!(
+            "live state needs {source_symlink_bytes} bytes of SST materialization, exceeding the {maximum_bytes}-byte bound"
+        ));
+    }
+    let available = cli_filesystem_capacity(&output_parent)?.available_bytes;
+    let required = source_symlink_bytes.saturating_add(minimum_remaining_bytes);
+    if available < required {
+        return Err(format!(
+            "snapshot filesystem has {available} bytes available but needs {required} bytes"
+        ));
+    }
+    let state = StateStore::open_with_cache_mb(&state_dir, Some(256))?;
+    state.create_hot_raw_checkpoint(
+        output
+            .to_str()
+            .ok_or_else(|| "snapshot output path is not UTF-8".to_string())?,
+    )?;
+    drop(state);
+    let (materialized_count, materialized_bytes) =
+        materialize_checkpoint_sst_symlinks(&output, maximum_bytes)?;
+    let remaining = cli_filesystem_capacity(&output)?.available_bytes;
+    if remaining < minimum_remaining_bytes {
+        return Err(format!(
+            "snapshot completed with {remaining} bytes, below the {minimum_remaining_bytes}-byte required reserve"
+        ));
+    }
+    print_json(&json!({
+        "operation": "snapshot_hot",
+        "state_dir": state_dir,
+        "output": output,
+        "source_sst_symlink_count": source_symlink_count,
+        "source_sst_symlink_bytes": source_symlink_bytes,
+        "materialized_sst_count": materialized_count,
+        "materialized_sst_bytes": materialized_bytes,
+        "remaining_bytes": remaining,
     }))
 }
 
@@ -1497,7 +2080,7 @@ fn write_bytes_create_new(path: &Path, encoded: &[u8]) -> Result<(), String> {
 
 fn print_usage() {
     println!(
-        "lichen-archive-v2 <status|verify|repair|declare-legacy-loss|build|mirror|restore|retirement-authorize|retirement-pass|retirement-reclaim|profile-source|benchmark> [options]\n\
+        "lichen-archive-v2 <status|role-preflight|snapshot-hot|verify|repair|declare-legacy-loss|build|mirror|restore|retirement-authorize|retirement-pass|retirement-reclaim|profile-source|benchmark> [options]\n\
          Run `lichen-archive-v2 <command> --help` is intentionally unsupported; unknown options fail closed.\n\
          Retirement authorization accepts paired --start-slot/--end-slot bounds inside one verified segment; omitting both authorizes the full segment.\n\
          Replica specifications use name:failure-domain:path. Retirement evidence uses destination,failure-domain,verified-unix-seconds. Verify and mirror default to one object per pass."
@@ -1507,6 +2090,134 @@ fn print_usage() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn checkpoint_sst_materialization_replaces_symlinks_with_bounded_regular_files() {
+        use std::os::unix::fs::symlink;
+
+        let temporary = tempfile::tempdir().unwrap();
+        let source = temporary.path().join("source.sst");
+        let checkpoint = temporary.path().join("checkpoint");
+        fs::create_dir(&checkpoint).unwrap();
+        fs::write(&source, b"immutable-sst-bytes").unwrap();
+        let linked = checkpoint.join("000123.sst");
+        symlink(&source, &linked).unwrap();
+
+        assert!(materialize_checkpoint_sst_symlinks(&checkpoint, 18).is_err());
+        assert!(linked.is_symlink());
+        let (count, bytes) = materialize_checkpoint_sst_symlinks(&checkpoint, 19).unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(bytes, 19);
+        assert!(!linked.is_symlink());
+        assert_eq!(fs::read(linked).unwrap(), b"immutable-sst-bytes");
+    }
+
+    #[test]
+    fn catalog_inventory_requires_exact_manifest_and_bounded_regular_object() {
+        use lichen_core::archive_v2::ArchiveV2SegmentContents;
+        use lichen_core::Block;
+
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("archive");
+        fs::create_dir_all(root.join("objects")).unwrap();
+        fs::create_dir_all(root.join("manifests")).unwrap();
+        let identity = ArchiveV2Identity {
+            network_id: "inventory-testnet".to_string(),
+            genesis_hash: Hash::hash(b"inventory-genesis"),
+        };
+        let block = Block::new_with_timestamp(
+            0,
+            Hash::default(),
+            Hash::hash(b"inventory-state"),
+            [9; 32],
+            Vec::new(),
+            1,
+        );
+        let (object_bytes, manifest) = ArchiveV2SegmentCodec::encode(
+            identity,
+            None,
+            Hash::default(),
+            &ArchiveV2SegmentContents::from_blocks(vec![block]),
+            &ArchiveV2CodecConfig::default(),
+        )
+        .unwrap();
+        let manifest_bytes = manifest.encode_canonical().unwrap();
+        let manifest_hash = Hash::hash(&manifest_bytes);
+        let object_path = object_path(&root, &manifest.segment_object_hash);
+        let manifest_path = manifest_path(&root, &manifest.segment_object_hash);
+        fs::write(&object_path, &object_bytes).unwrap();
+        fs::write(&manifest_path, &manifest_bytes).unwrap();
+
+        assert!(catalog_inventory_entry_matches(
+            &root,
+            &manifest,
+            manifest_hash,
+            object_bytes.len() as u64,
+        ));
+        assert!(!catalog_inventory_entry_matches(
+            &root,
+            &manifest,
+            manifest_hash,
+            object_bytes.len() as u64 - 1,
+        ));
+
+        fs::write(&manifest_path, b"wrong-manifest").unwrap();
+        assert!(!catalog_inventory_entry_matches(
+            &root,
+            &manifest,
+            manifest_hash,
+            object_bytes.len() as u64,
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn catalog_inventory_rejects_symlinked_objects() {
+        use std::os::unix::fs::symlink;
+
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("archive");
+        fs::create_dir_all(root.join("objects")).unwrap();
+        fs::create_dir_all(root.join("manifests")).unwrap();
+        let identity = ArchiveV2Identity {
+            network_id: "inventory-symlink-testnet".to_string(),
+            genesis_hash: Hash::hash(b"inventory-symlink-genesis"),
+        };
+        let block = lichen_core::Block::new_with_timestamp(
+            0,
+            Hash::default(),
+            Hash::hash(b"inventory-symlink-state"),
+            [10; 32],
+            Vec::new(),
+            1,
+        );
+        let (object_bytes, manifest) = ArchiveV2SegmentCodec::encode(
+            identity,
+            None,
+            Hash::default(),
+            &lichen_core::archive_v2::ArchiveV2SegmentContents::from_blocks(vec![block]),
+            &ArchiveV2CodecConfig::default(),
+        )
+        .unwrap();
+        let manifest_bytes = manifest.encode_canonical().unwrap();
+        let manifest_hash = Hash::hash(&manifest_bytes);
+        let external = temporary.path().join("external.av2s");
+        fs::write(&external, &object_bytes).unwrap();
+        symlink(&external, object_path(&root, &manifest.segment_object_hash)).unwrap();
+        fs::write(
+            manifest_path(&root, &manifest.segment_object_hash),
+            &manifest_bytes,
+        )
+        .unwrap();
+
+        assert!(!catalog_inventory_entry_matches(
+            &root,
+            &manifest,
+            manifest_hash,
+            object_bytes.len() as u64,
+        ));
+    }
 
     #[test]
     fn parser_preserves_repeated_replica_options_and_rejects_positionals() {

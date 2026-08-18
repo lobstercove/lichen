@@ -1128,6 +1128,11 @@ impl ConsensusEngine {
             RoundStep::Propose => {
                 if self.step == RoundStep::Propose {
                     info!(
+                        target: "lichen::cadence",
+                        event = "phase_timeout",
+                        height = self.height,
+                        round = self.round,
+                        phase = "propose",
                         "⏰ BFT: Propose timeout at height={} round={}",
                         self.height, self.round
                     );
@@ -1139,7 +1144,26 @@ impl ConsensusEngine {
             }
             RoundStep::Prevote => {
                 if self.step == RoundStep::Prevote {
+                    let received_power = self
+                        .prevote_any_power
+                        .get(&self.round)
+                        .copied()
+                        .unwrap_or(0);
+                    let total_power = self
+                        .power_snapshot
+                        .as_ref()
+                        .map(|snapshot| snapshot.total_eligible_stake)
+                        .unwrap_or(0);
+                    let missing_validators = self.missing_vote_validators(self.round, false);
                     info!(
+                        target: "lichen::cadence",
+                        event = "phase_timeout",
+                        height = self.height,
+                        round = self.round,
+                        phase = "prevote",
+                        received_power = %received_power,
+                        total_power = %total_power,
+                        missing_validators = %missing_validators,
                         "⏰ BFT: Prevote timeout at height={} round={}",
                         self.height, self.round
                     );
@@ -1152,7 +1176,26 @@ impl ConsensusEngine {
             }
             RoundStep::Precommit => {
                 if self.step == RoundStep::Precommit {
+                    let received_power = self
+                        .precommit_any_power
+                        .get(&self.round)
+                        .copied()
+                        .unwrap_or(0);
+                    let total_power = self
+                        .power_snapshot
+                        .as_ref()
+                        .map(|snapshot| snapshot.total_eligible_stake)
+                        .unwrap_or(0);
+                    let missing_validators = self.missing_vote_validators(self.round, true);
                     info!(
+                        target: "lichen::cadence",
+                        event = "phase_timeout",
+                        height = self.height,
+                        round = self.round,
+                        phase = "precommit",
+                        received_power = %received_power,
+                        total_power = %total_power,
+                        missing_validators = %missing_validators,
                         "⏰ BFT: Precommit timeout at height={} round={}",
                         self.height, self.round
                     );
@@ -1491,6 +1534,26 @@ impl ConsensusEngine {
             .filter_map(|v| self.eligible_stake(&v.pubkey, validator_set, stake_pool))
             .map(u128::from)
             .sum()
+    }
+
+    fn missing_vote_validators(&self, round: u32, precommit: bool) -> String {
+        let Some(snapshot) = self.power_snapshot.as_ref() else {
+            return String::new();
+        };
+        let mut missing = snapshot
+            .eligible_power
+            .keys()
+            .filter(|validator| {
+                if precommit {
+                    !self.seen_precommits.contains_key(&(round, **validator))
+                } else {
+                    !self.seen_prevotes.contains_key(&(round, **validator))
+                }
+            })
+            .map(Pubkey::to_base58)
+            .collect::<Vec<_>>();
+        missing.sort_unstable();
+        missing.join(",")
     }
 
     fn add_prevote_power(&mut self, round: u32, block_hash: Option<Hash>, voting_power: u64) {
