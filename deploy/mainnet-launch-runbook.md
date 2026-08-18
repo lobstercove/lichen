@@ -5,7 +5,8 @@ mainnet custody. It is intentionally step-by-step and gate-based. Do not skip a
 gate because mainnet genesis and custody routes handle real value.
 
 Written for the next mainnet package. Release candidate for this runbook is
-`v0.5.250`; keep `v0.5.240` as the signed restart-safe anchor. The candidate
+`v0.5.251`; keep `v0.5.250` as the signed restart-safe anchor and retain
+`v0.5.240` as the Archive V2 recovery anchor. The candidate
 must not be used until its exact tag and signed artifacts pass the release
 gates. Preserve `v0.5.225` as pre-change evidence, not as a restartable
 rollback. Mainnet remains blocked until production storage, full-scope launch
@@ -55,8 +56,9 @@ gates, independent review, and deployment approval pass.
   preserve replay compatibility for the June 2026 testnet after governed signer
   custody was lost; mainnet must launch from verified custody instead.
 - Do not deploy a release that changes consensus rules with a mixed-version
-  rolling restart. The current safe anchor `v0.5.240` must remain available
-  until a newer signed restart-safe anchor is explicitly recorded.
+  rolling restart. The current safe anchor `v0.5.250` must remain available
+  until a newer signed restart-safe anchor is explicitly recorded. Retain
+  `v0.5.240` separately as the Archive V2 recovery anchor.
 - Do not commit provider URLs, auth tokens, keypair passwords, custody seeds,
   funded keypairs, signing keys, or filled production env files.
 - Do not print secrets in shell logs, tickets, chat, or launch notes. Print key
@@ -245,7 +247,7 @@ credentials, or keypair passwords.
 Use the signed release that passed CI. For the current package:
 
 ```bash
-export LICHEN_RELEASE_TAG=v0.5.250
+export LICHEN_RELEASE_TAG=v0.5.251
 export LICHEN_MAINNET_VPS_HOSTS="15.204.229.189 37.59.97.61 15.235.142.253 148.113.43.247"
 ```
 
@@ -293,7 +295,7 @@ cursor is not restart-safe on a mature activated chain. For recovery, explicitly
 reinstall the current signed safe anchor through the same release path:
 
 ```bash
-export LICHEN_RELEASE_TAG=v0.5.240
+export LICHEN_RELEASE_TAG=v0.5.250
 LICHEN_VERIFY_RELEASE_ONLY=1 bash scripts/rolling-release-deploy.sh mainnet
 bash scripts/rolling-release-deploy.sh mainnet
 ```

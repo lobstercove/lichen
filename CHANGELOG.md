@@ -5,6 +5,29 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.251] - 2026-08-18
+
+### Fixed
+- Backs checkpoint metadata retries off exponentially with deterministic
+  validator jitter, and terminally pauses the known unsupported FUSE-SST
+  hardlink checkpoint path instead of repeating synchronized 15-second work.
+- Terminally pauses legacy cold maintenance when the reclaim queue reaches its
+  immutable 4,096-range capacity instead of rescanning the same blocked work
+  every five minutes.
+- Emits bounded structured cadence evidence for proposal build phases and BFT
+  phase timeouts, including received voting power and missing validator IDs.
+- Adds a fail-closed, read-only Archive V2 role preflight covering exact
+  catalog/hot-window continuity, role inventory, capacity, WAL/identity, and
+  source-catalog parity.
+- Adds a bounded stopped-validator hot snapshot command that materializes
+  checkpoint-only SST symlinks, allowing deterministic Archive V2 tail builds
+  from a stable RocksDB view without reading a concurrently compacting live
+  database.
+- Adds bounded catalog-tail construction and dual-R2 publication helpers that
+  verify every new segment, publish immutable objects and manifests to both
+  buckets before the catalog, read back every write, and resume only from the
+  exact previous or exact new catalog hash.
+
 ## [0.5.250] - 2026-08-18
 
 ### Fixed
