@@ -616,6 +616,14 @@ fn determine_startup_mode(
     }
 }
 
+/// Capture the local bootstrap block before Archive V2 attaches its public
+/// historical read path. Startup mode selection and deterministic timestamp
+/// initialization are control-plane operations: a resumed validator must not
+/// synchronously fetch deep history before P2P and RPC have started.
+fn capture_startup_genesis_block(state: &StateStore) -> Option<Block> {
+    state.get_block_by_slot(0).unwrap_or(None)
+}
+
 fn scrub_partial_genesis_state(data_dir: &Path) -> Result<(), String> {
     let entries = fs::read_dir(data_dir).map_err(|e| {
         format!(
@@ -20127,7 +20135,8 @@ async fn run_validator() {
     }
 
     let data_dir_genesis = data_dir_path.join("genesis.json");
-    let has_genesis_block = state.get_block_by_slot(0).unwrap_or(None).is_some();
+    let startup_genesis_block = capture_startup_genesis_block(&state);
+    let has_genesis_block = startup_genesis_block.is_some();
     let last_slot_before_genesis_recovery = state.get_last_slot().unwrap_or(0);
     let should_recover_partial_state = match should_recover_partial_genesis_state(
         &state,
@@ -20283,7 +20292,7 @@ async fn run_validator() {
     let archive_v2_capability = Arc::new(RwLock::new(None));
     let mut deferred_archive_v2_config = None;
     if let Some(config) = archive_v2_config {
-        if state.get_block_by_slot(0).unwrap_or(None).is_none() {
+        if startup_genesis_block.is_none() {
             if let Err(error) =
                 validate_deferred_runtime_archive_v2(&config, &genesis_config.chain_id)
             {
@@ -20589,7 +20598,6 @@ async fn run_validator() {
         consensus_gossip_enabled: !sync_only_mode,
     };
 
-    let has_genesis_block = state.get_block_by_slot(0).unwrap_or(None).is_some();
     let last_slot = state.get_last_slot().unwrap_or(0);
     let has_any_seed_peers = !cached_peers.is_empty() || !seed_peers.is_empty();
 
@@ -21695,9 +21703,9 @@ async fn run_validator() {
     // AUDIT-FIX A2-01: Derive genesis_time as Unix seconds for deterministic
     // block timestamp derivation: timestamp = genesis_time + slot * slot_duration / 1000.
     // Read from the stored genesis block (slot 0) which has the authoritative timestamp.
-    let genesis_time_secs: u64 = match state.get_block_by_slot(0) {
-        Ok(Some(genesis_block)) => genesis_block.header.timestamp,
-        _ => {
+    let genesis_time_secs: u64 = match startup_genesis_block.as_ref() {
+        Some(genesis_block) => genesis_block.header.timestamp,
+        None => {
             // Fallback: parse from genesis config (RFC 3339 string)
             // Manual RFC 3339 parsing to avoid adding chrono dependency.
             // Format: "2025-02-20T12:00:00Z" or "2025-02-20T12:00:00+00:00"
@@ -38307,6 +38315,8 @@ mod tests {
         state
             .put_block_atomic(&tip, Some(2), Some(2))
             .expect("store tip");
+        let startup_genesis_block = capture_startup_genesis_block(&state)
+            .expect("capture local genesis before Archive V2 admission");
         let pool = StakePool::new();
         state.put_stake_pool(&pool).expect("store stake pool");
         for block in [&parent, &tip] {
@@ -38363,6 +38373,12 @@ mod tests {
         state
             .mark_archive_v2_admitted_after_fresh_sync()
             .expect("mark fresh-sync admission");
+
+        let status_after_attach = state.archive_v2_status().expect("reader status");
+        assert_eq!(determine_startup_mode(2, true, true), StartupMode::Resume);
+        assert_eq!(startup_genesis_block.header.timestamp, 1);
+        assert_eq!(status_after_attach.remote_fetches, 0);
+        assert_eq!(status_after_attach.source_failures, 0);
 
         assert!(
             state.get_block_by_slot(1).is_err(),

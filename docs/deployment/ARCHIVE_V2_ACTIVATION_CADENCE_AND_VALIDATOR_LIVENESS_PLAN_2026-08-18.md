@@ -209,6 +209,16 @@ and releases the first deterministic segment encoding before independently
 re-encoding and hash-comparing it, preventing two complete encoded segments
 from occupying memory simultaneously on the bounded 200 GB validator hosts.
 
+v0.5.253 closes the activation-time startup deadlock found by the coordinated
+four-validator role trial. A resumed validator now snapshots its local genesis
+block before the Archive V2 public reader is attached and reuses that snapshot
+for startup mode and deterministic timestamp initialization. Consequently a
+verified-cache node starts P2P, RPC, and BFT without a synchronous deep-history
+source fetch, while public historical reads remain fail-closed after role
+admission. Deployment acceptance must prove zero startup remote fetches before
+P2P initialization and successful four-validator BFT entry with the configured
+Archive V2 roles.
+
 ## 3. Target Archive V2 Architecture
 
 Archive role and consensus membership are independent concerns. The preferred

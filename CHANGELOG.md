@@ -5,6 +5,18 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.253] - 2026-08-20
+
+### Fixed
+- Captures the local genesis block before Archive V2 attaches its public
+  historical reader, so verified-cache validators can start P2P, RPC, and BFT
+  without synchronously fetching a deep-history object during startup.
+- Reuses that local bootstrap snapshot for startup-mode selection and
+  deterministic timestamp initialization while preserving fail-closed public
+  deep-history reads after Archive V2 admission.
+- Extends the verified-cache source-outage regression test to prove startup
+  control-plane reads do not trigger remote archive fetches or source failures.
+
 ## [0.5.252] - 2026-08-19
 
 ### Fixed
