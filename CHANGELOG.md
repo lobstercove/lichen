@@ -5,6 +5,24 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.252] - 2026-08-19
+
+### Fixed
+- Makes `snapshot-hot` open only an isolated staging clone of the stopped hot
+  RocksDB. Mutable metadata and WAL files plus SST symlink targets are copied
+  under the existing byte bound, while immutable regular SSTs are hard-linked.
+  RocksDB recovery and checkpoint writes can no longer change live state-file
+  ownership or contents when the command is run by a privileged operator.
+- Publishes a snapshot only after the staging source is removed, the
+  self-contained checkpoint has no SST symlinks, capacity reserves pass, and
+  the checkpoint directory is atomically renamed and fsynced.
+- Makes bounded tail construction continue from the catalog's exact next slot
+  instead of incorrectly assuming that every established catalog boundary is
+  aligned to slot zero.
+- Bounds Archive V2 segment-build memory by never retaining both deterministic
+  encodings at once: the first immutable object is staged and released before
+  a second encoding is hash-compared and discarded.
+
 ## [0.5.251] - 2026-08-18
 
 ### Fixed

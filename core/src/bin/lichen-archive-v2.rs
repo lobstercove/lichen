@@ -706,10 +706,220 @@ fn materialize_checkpoint_sst_symlinks(
     Ok((materialized_count, materialized_bytes))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct HotSnapshotSourcePlan {
+    symlink_sst_count: u64,
+    symlink_sst_bytes: u64,
+    copied_file_count: u64,
+    copied_file_bytes: u64,
+    hardlinked_sst_count: u64,
+}
+
+fn hot_snapshot_source_plan(root: &Path) -> Result<HotSnapshotSourcePlan, String> {
+    let mut plan = HotSnapshotSourcePlan {
+        symlink_sst_count: 0,
+        symlink_sst_bytes: 0,
+        copied_file_count: 0,
+        copied_file_bytes: 0,
+        hardlinked_sst_count: 0,
+    };
+    for entry in fs::read_dir(root)
+        .map_err(|error| format!("failed reading snapshot source {}: {error}", root.display()))?
+    {
+        let entry = entry.map_err(|error| format!("failed reading snapshot entry: {error}"))?;
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path)
+            .map_err(|error| format!("failed inspecting {}: {error}", path.display()))?;
+        if metadata.is_dir() {
+            continue;
+        }
+        if metadata.file_type().is_symlink() {
+            if path.extension().and_then(|value| value.to_str()) != Some("sst") {
+                return Err(format!(
+                    "snapshot source contains unsupported non-SST symlink {}",
+                    path.display()
+                ));
+            }
+            let target = fs::metadata(&path).map_err(|error| {
+                format!(
+                    "snapshot source SST symlink {} has no readable target: {error}",
+                    path.display()
+                )
+            })?;
+            if !target.is_file() || target.len() == 0 {
+                return Err(format!(
+                    "snapshot source SST symlink {} does not resolve to a non-empty regular file",
+                    path.display()
+                ));
+            }
+            plan.symlink_sst_count = plan.symlink_sst_count.saturating_add(1);
+            plan.symlink_sst_bytes = plan
+                .symlink_sst_bytes
+                .checked_add(target.len())
+                .ok_or_else(|| "snapshot source symlink size overflow".to_string())?;
+        } else if metadata.is_file() {
+            if path.extension().and_then(|value| value.to_str()) == Some("sst") {
+                if metadata.len() == 0 {
+                    return Err(format!("snapshot source SST {} is empty", path.display()));
+                }
+                plan.hardlinked_sst_count = plan.hardlinked_sst_count.saturating_add(1);
+            } else {
+                plan.copied_file_count = plan.copied_file_count.saturating_add(1);
+                plan.copied_file_bytes = plan
+                    .copied_file_bytes
+                    .checked_add(metadata.len())
+                    .ok_or_else(|| "snapshot source copied-file size overflow".to_string())?;
+            }
+        } else {
+            return Err(format!(
+                "snapshot source contains unsupported filesystem entry {}",
+                path.display()
+            ));
+        }
+    }
+    Ok(plan)
+}
+
+fn copy_snapshot_file(
+    source: &Path,
+    destination: &Path,
+    expected_bytes: u64,
+) -> Result<(), String> {
+    let mut source_file = fs::File::open(source)
+        .map_err(|error| format!("failed opening {}: {error}", source.display()))?;
+    let mut destination_file = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(destination)
+        .map_err(|error| format!("failed creating {}: {error}", destination.display()))?;
+    let copied = std::io::copy(&mut source_file, &mut destination_file)
+        .map_err(|error| format!("failed copying {}: {error}", source.display()))?;
+    if copied != expected_bytes {
+        return Err(format!(
+            "snapshot source {} changed size while being copied",
+            source.display()
+        ));
+    }
+    destination_file
+        .set_permissions(
+            fs::metadata(source)
+                .map_err(|error| format!("failed reinspecting {}: {error}", source.display()))?
+                .permissions(),
+        )
+        .map_err(|error| {
+            format!(
+                "failed setting permissions on {}: {error}",
+                destination.display()
+            )
+        })?;
+    destination_file
+        .sync_all()
+        .map_err(|error| format!("failed syncing {}: {error}", destination.display()))
+}
+
+fn stage_hot_snapshot_source(
+    source_root: &Path,
+    staging_root: &Path,
+    expected: HotSnapshotSourcePlan,
+) -> Result<HotSnapshotSourcePlan, String> {
+    if staging_root.exists() || fs::symlink_metadata(staging_root).is_ok() {
+        return Err(format!(
+            "refusing to overwrite snapshot staging source {}",
+            staging_root.display()
+        ));
+    }
+    fs::create_dir(staging_root).map_err(|error| {
+        format!(
+            "failed creating snapshot staging source {}: {error}",
+            staging_root.display()
+        )
+    })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(staging_root, fs::Permissions::from_mode(0o700)).map_err(|error| {
+            format!(
+                "failed protecting snapshot staging source {}: {error}",
+                staging_root.display()
+            )
+        })?;
+    }
+
+    let mut entries = fs::read_dir(source_root)
+        .map_err(|error| {
+            format!(
+                "failed reading snapshot source {}: {error}",
+                source_root.display()
+            )
+        })?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("failed reading snapshot entry: {error}"))?;
+    entries.sort();
+    for source in entries {
+        let metadata = fs::symlink_metadata(&source)
+            .map_err(|error| format!("failed inspecting {}: {error}", source.display()))?;
+        if metadata.is_dir() {
+            continue;
+        }
+        let file_name = source
+            .file_name()
+            .ok_or_else(|| format!("snapshot source has no filename: {}", source.display()))?;
+        let destination = staging_root.join(file_name);
+        if metadata.file_type().is_symlink() {
+            let target = fs::metadata(&source).map_err(|error| {
+                format!(
+                    "snapshot source SST symlink {} became unreadable: {error}",
+                    source.display()
+                )
+            })?;
+            copy_snapshot_file(&source, &destination, target.len())?;
+        } else if metadata.is_file()
+            && source.extension().and_then(|value| value.to_str()) == Some("sst")
+        {
+            fs::hard_link(&source, &destination).map_err(|error| {
+                format!(
+                    "failed hard-linking immutable SST {} into snapshot staging: {error}",
+                    source.display()
+                )
+            })?;
+        } else if metadata.is_file() {
+            copy_snapshot_file(&source, &destination, metadata.len())?;
+        } else {
+            return Err(format!(
+                "snapshot source contains unsupported filesystem entry {}",
+                source.display()
+            ));
+        }
+    }
+    OpenOptions::new()
+        .read(true)
+        .open(staging_root)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| format!("failed syncing snapshot staging source: {error}"))?;
+    let actual = hot_snapshot_source_plan(staging_root)?;
+    let normalized = HotSnapshotSourcePlan {
+        symlink_sst_count: expected.symlink_sst_count,
+        symlink_sst_bytes: expected.symlink_sst_bytes,
+        copied_file_count: actual.copied_file_count,
+        copied_file_bytes: actual.copied_file_bytes,
+        hardlinked_sst_count: actual
+            .hardlinked_sst_count
+            .saturating_sub(expected.symlink_sst_count),
+    };
+    if normalized != expected {
+        return Err("snapshot staging source inventory changed during creation".to_string());
+    }
+    Ok(expected)
+}
+
 /// Create a self-contained hot RocksDB checkpoint for bounded Archive V2
-/// building. The caller must stop the validator before invoking this command:
-/// opening the same RocksDB through a second process while compaction is live
-/// can leave a read-only iterator pointing at an SST that the primary removes.
+/// building. The caller must stop the validator before invoking this command.
+/// The live RocksDB is never opened: immutable regular SSTs are hard-linked
+/// into an isolated staging source, SST symlinks and all mutable files are
+/// copied, and RocksDB recovery/checkpoint writes can affect only that staging
+/// directory. This also prevents a privileged caller from changing live-file
+/// ownership while opening the database.
 fn run_snapshot_hot(args: &CommandArgs) -> Result<(), String> {
     args.ensure_only(
         &[
@@ -753,40 +963,80 @@ fn run_snapshot_hot(args: &CommandArgs) -> Result<(), String> {
     if output_parent.starts_with(&state_path) || state_path.starts_with(&output_parent) {
         return Err("snapshot output and live state directories must not overlap".to_string());
     }
-    let (source_symlink_count, source_symlink_bytes) = checkpoint_sst_symlink_bytes(&state_dir)?;
-    if source_symlink_bytes > maximum_bytes {
+    let source_plan = hot_snapshot_source_plan(&state_dir)?;
+    let staging_copied_bytes = source_plan
+        .symlink_sst_bytes
+        .checked_add(source_plan.copied_file_bytes)
+        .ok_or_else(|| "snapshot staging copy size overflow".to_string())?;
+    if staging_copied_bytes > maximum_bytes {
         return Err(format!(
-            "live state needs {source_symlink_bytes} bytes of SST materialization, exceeding the {maximum_bytes}-byte bound"
+            "snapshot staging needs {staging_copied_bytes} copied bytes, exceeding the {maximum_bytes}-byte bound"
         ));
     }
     let available = cli_filesystem_capacity(&output_parent)?.available_bytes;
-    let required = source_symlink_bytes.saturating_add(minimum_remaining_bytes);
+    let required = maximum_bytes.saturating_add(minimum_remaining_bytes);
     if available < required {
         return Err(format!(
             "snapshot filesystem has {available} bytes available but needs {required} bytes"
         ));
     }
-    let state = StateStore::open_with_cache_mb(&state_dir, Some(256))?;
+
+    let output_name = output
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| "snapshot output filename is not UTF-8".to_string())?;
+    let staging_source = output_parent.join(format!(".{output_name}.source.next"));
+    let checkpoint_next = output_parent.join(format!(".{output_name}.checkpoint.next"));
+    for temporary in [&staging_source, &checkpoint_next] {
+        if temporary.exists() || fs::symlink_metadata(temporary).is_ok() {
+            return Err(format!(
+                "snapshot temporary path already exists: {}",
+                temporary.display()
+            ));
+        }
+    }
+    stage_hot_snapshot_source(&state_dir, &staging_source, source_plan)?;
+    let state = StateStore::open_with_cache_mb(&staging_source, Some(256))?;
     state.create_hot_raw_checkpoint(
-        output
+        checkpoint_next
             .to_str()
             .ok_or_else(|| "snapshot output path is not UTF-8".to_string())?,
     )?;
     drop(state);
     let (materialized_count, materialized_bytes) =
-        materialize_checkpoint_sst_symlinks(&output, maximum_bytes)?;
-    let remaining = cli_filesystem_capacity(&output)?.available_bytes;
+        materialize_checkpoint_sst_symlinks(&checkpoint_next, maximum_bytes)?;
+    let remaining = cli_filesystem_capacity(&checkpoint_next)?.available_bytes;
     if remaining < minimum_remaining_bytes {
         return Err(format!(
             "snapshot completed with {remaining} bytes, below the {minimum_remaining_bytes}-byte required reserve"
         ));
     }
+    fs::remove_dir_all(&staging_source).map_err(|error| {
+        format!(
+            "failed removing isolated snapshot staging source {}: {error}",
+            staging_source.display()
+        )
+    })?;
+    fs::rename(&checkpoint_next, &output).map_err(|error| {
+        format!(
+            "failed atomically publishing snapshot {}: {error}",
+            output.display()
+        )
+    })?;
+    OpenOptions::new()
+        .read(true)
+        .open(&output_parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| format!("failed syncing snapshot parent: {error}"))?;
     print_json(&json!({
         "operation": "snapshot_hot",
         "state_dir": state_dir,
         "output": output,
-        "source_sst_symlink_count": source_symlink_count,
-        "source_sst_symlink_bytes": source_symlink_bytes,
+        "source_sst_symlink_count": source_plan.symlink_sst_count,
+        "source_sst_symlink_bytes": source_plan.symlink_sst_bytes,
+        "staging_copied_file_count": source_plan.copied_file_count + source_plan.symlink_sst_count,
+        "staging_copied_bytes": staging_copied_bytes,
+        "staging_hardlinked_sst_count": source_plan.hardlinked_sst_count,
         "materialized_sst_count": materialized_count,
         "materialized_sst_bytes": materialized_bytes,
         "remaining_bytes": remaining,
@@ -2111,6 +2361,120 @@ mod tests {
         assert_eq!(bytes, 19);
         assert!(!linked.is_symlink());
         assert_eq!(fs::read(linked).unwrap(), b"immutable-sst-bytes");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hot_snapshot_staging_never_links_mutable_files_or_preserves_sst_symlinks() {
+        use std::os::unix::fs::{symlink, MetadataExt};
+
+        let temporary = tempfile::tempdir().unwrap();
+        let source = temporary.path().join("state");
+        let staging = temporary.path().join("staging");
+        let external_sst = temporary.path().join("external.sst");
+        fs::create_dir(&source).unwrap();
+        fs::create_dir(source.join("checkpoints")).unwrap();
+        fs::write(source.join("000001.sst"), b"regular-immutable-sst").unwrap();
+        fs::write(&external_sst, b"symlinked-immutable-sst").unwrap();
+        symlink(&external_sst, source.join("000002.sst")).unwrap();
+        fs::write(source.join("CURRENT"), b"MANIFEST-000003\n").unwrap();
+        fs::write(source.join("MANIFEST-000003"), b"mutable-manifest").unwrap();
+        fs::write(source.join("validator-keypair.json"), b"secret-sidecar").unwrap();
+
+        let regular_sst_inode = fs::metadata(source.join("000001.sst")).unwrap().ino();
+        let current_inode = fs::metadata(source.join("CURRENT")).unwrap().ino();
+        let plan = hot_snapshot_source_plan(&source).unwrap();
+        assert_eq!(plan.symlink_sst_count, 1);
+        assert_eq!(plan.symlink_sst_bytes, 23);
+        assert_eq!(plan.hardlinked_sst_count, 1);
+        assert_eq!(plan.copied_file_count, 3);
+
+        assert_eq!(
+            stage_hot_snapshot_source(&source, &staging, plan).unwrap(),
+            plan
+        );
+        assert_eq!(
+            fs::metadata(staging.join("000001.sst")).unwrap().ino(),
+            regular_sst_inode
+        );
+        assert_ne!(
+            fs::metadata(staging.join("CURRENT")).unwrap().ino(),
+            current_inode
+        );
+        assert!(fs::symlink_metadata(source.join("000002.sst"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert!(!fs::symlink_metadata(staging.join("000002.sst"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            fs::read(staging.join("000002.sst")).unwrap(),
+            b"symlinked-immutable-sst"
+        );
+        assert_eq!(
+            fs::read(source.join("CURRENT")).unwrap(),
+            b"MANIFEST-000003\n"
+        );
+        assert_eq!(
+            fs::read(staging.join("validator-keypair.json")).unwrap(),
+            b"secret-sidecar"
+        );
+        assert!(!staging.join("checkpoints").exists());
+    }
+
+    #[test]
+    fn snapshot_hot_opens_only_isolated_staging_and_preserves_source_bytes() {
+        let temporary = tempfile::tempdir().unwrap();
+        let source = temporary.path().join("state");
+        let output_parent = temporary.path().join("recovery");
+        let output = output_parent.join("hot-snapshot");
+        let state = StateStore::open_with_cache_mb(&source, Some(16)).unwrap();
+        drop(state);
+
+        let source_bytes = fs::read_dir(&source)
+            .unwrap()
+            .filter_map(|entry| {
+                let path = entry.unwrap().path();
+                path.is_file().then(|| {
+                    (
+                        path.file_name().unwrap().to_os_string(),
+                        fs::read(&path).unwrap(),
+                    )
+                })
+            })
+            .collect::<BTreeMap<_, _>>();
+        let (_, args) = CommandArgs::parse(vec![
+            "snapshot-hot".to_string(),
+            "--state-dir".to_string(),
+            source.display().to_string(),
+            "--output".to_string(),
+            output.display().to_string(),
+            "--max-materialized-bytes".to_string(),
+            (16 * 1024 * 1024u64).to_string(),
+            "--minimum-remaining-bytes".to_string(),
+            "1".to_string(),
+        ])
+        .unwrap();
+        run_snapshot_hot(&args).unwrap();
+
+        let source_bytes_after = fs::read_dir(&source)
+            .unwrap()
+            .filter_map(|entry| {
+                let path = entry.unwrap().path();
+                path.is_file().then(|| {
+                    (
+                        path.file_name().unwrap().to_os_string(),
+                        fs::read(&path).unwrap(),
+                    )
+                })
+            })
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(source_bytes_after, source_bytes);
+        assert!(StateStore::open_read_only_with_cache_mb(&output, Some(16)).is_ok());
+        assert!(!output_parent.join(".hot-snapshot.source.next").exists());
+        assert!(!output_parent.join(".hot-snapshot.checkpoint.next").exists());
     }
 
     #[test]
