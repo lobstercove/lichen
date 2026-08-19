@@ -385,6 +385,19 @@ impl<'a> ArchiveV2Builder<'a> {
                 &contents,
                 &self.options.codec,
             )?;
+            let segment_object_hash = Hash::hash(&segment_bytes);
+            if segment_object_hash != manifest.segment_object_hash {
+                return Err(ArchiveV2Error::WrongRoot);
+            }
+            let staged_segment = self.staged_segment_path(&manifest.segment_object_hash);
+            let staged_manifest = self.staged_manifest_path(&manifest.segment_object_hash);
+            write_atomic_identical(&staged_segment, &segment_bytes)?;
+            write_atomic_identical(&staged_manifest, &manifest.encode_canonical()?)?;
+            // The deterministic rebuild is intentionally independent, but the
+            // two complete encoded objects must never be resident together.
+            // Persist the first immutable encoding, release it, then compare
+            // the second encoding by hash before reopening the staged object.
+            drop(segment_bytes);
             let (independent_bytes, independent_manifest) = ArchiveV2SegmentCodec::encode(
                 self.identity.clone(),
                 previous_segment_hash,
@@ -392,17 +405,14 @@ impl<'a> ArchiveV2Builder<'a> {
                 &contents,
                 &self.options.codec,
             )?;
-            if segment_bytes != independent_bytes || manifest != independent_manifest {
+            if Hash::hash(&independent_bytes) != segment_object_hash
+                || manifest != independent_manifest
+            {
                 return Err(ArchiveV2Error::WrongRoot);
             }
-            write_atomic_identical(
-                &self.staged_segment_path(&manifest.segment_object_hash),
-                &segment_bytes,
-            )?;
-            write_atomic_identical(
-                &self.staged_manifest_path(&manifest.segment_object_hash),
-                &manifest.encode_canonical()?,
-            )?;
+            drop(independent_bytes);
+            drop(contents);
+            let segment_bytes = fs::read(&staged_segment)?;
             journal.phase = ArchiveV2BuildPhase::Staged;
             journal.segment_object_hash = Some(manifest.segment_object_hash);
             store_journal(&journal_path, &journal)?;

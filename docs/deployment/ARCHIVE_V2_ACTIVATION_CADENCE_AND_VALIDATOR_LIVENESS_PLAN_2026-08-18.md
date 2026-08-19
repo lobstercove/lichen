@@ -193,14 +193,21 @@ its exact 67,192,599-byte object, SHA-256
 was independently read back from both R2 buckets. The failed scratch build and
 journal remain preserved and must not be resumed against the live DB.
 
-v0.5.251 therefore adds a bounded `snapshot-hot` operation. It must run only
-while that validator is stopped, creates a RocksDB-native hot checkpoint with
-the release-matched library, replaces checkpoint-only SST symlinks with
-regular immutable copies under an explicit byte bound, fsyncs the result, and
-refuses overwrite or insufficient remaining space. Tail segment construction
+v0.5.251 added a bounded `snapshot-hot` operation, but its first production
+run exposed that opening the stopped live RocksDB as root can perform recovery
+writes and change live-file ownership. The live contents were unchanged and
+the exact metadata was repaired before coordinated re-entry; v0.5.251 is not
+approved for deployment. v0.5.252 fixes the boundary by copying mutable
+RocksDB files and SST-symlink targets into a protected isolated staging source,
+hard-linking only immutable regular SSTs, and opening only that staging source.
+It publishes the self-contained checkpoint atomically after removing staging
+and passing the materialization and capacity gates. Tail segment construction
 then reads this stable snapshot plus the terminally paused read-only legacy
-cold store while the validator is back online. No live RocksDB iterator is
-used for a long-running build.
+cold store while the validator is back online. No live RocksDB iterator or
+writable RocksDB open is used for a long-running build. v0.5.252 also stages
+and releases the first deterministic segment encoding before independently
+re-encoding and hash-comparing it, preventing two complete encoded segments
+from occupying memory simultaneously on the bounded 200 GB validator hosts.
 
 ## 3. Target Archive V2 Architecture
 

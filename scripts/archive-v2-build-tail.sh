@@ -51,10 +51,6 @@ done
   exit 2
 }
 range_slots=$((ARCHIVE_V2_END_SLOT - ARCHIVE_V2_START_SLOT + 1))
-[ $((ARCHIVE_V2_START_SLOT % SEGMENT_SLOTS)) -eq 0 ] || {
-  echo "Archive V2 tail start is not segment aligned" >&2
-  exit 2
-}
 [ $((range_slots % SEGMENT_SLOTS)) -eq 0 ] || {
   echo "Archive V2 tail length is not a whole number of segments" >&2
   exit 2
@@ -71,6 +67,7 @@ for directory in "$ARCHIVE_V2_SNAPSHOT_STATE_DIR" "$ARCHIVE_V2_COLD_STORE" "$ARC
     exit 2
   }
 done
+
 [ "$ARCHIVE_V2_ROOT" != "$ARCHIVE_V2_REPLICA_ROOT" ] || {
   echo "primary and replica scratch roots must differ" >&2
   exit 2
@@ -91,6 +88,18 @@ for root in "$ARCHIVE_V2_ROOT" "$ARCHIVE_V2_REPLICA_ROOT"; do
     exit 2
   }
 done
+
+primary_status="$($ARCHIVE_V2_BINARY status --root "$ARCHIVE_V2_ROOT")"
+replica_status="$($ARCHIVE_V2_BINARY status --root "$ARCHIVE_V2_REPLICA_ROOT")"
+expected_start="$(jq -er '.slot_range | select(length == 2) | .[1] + 1' <<<"$primary_status")"
+[ "$ARCHIVE_V2_START_SLOT" -eq "$expected_start" ] || {
+  echo "Archive V2 tail start does not continue the current catalog" >&2
+  exit 2
+}
+[ "$(jq -er .catalog_root <<<"$primary_status")" = "$(jq -er .catalog_root <<<"$replica_status")" ] || {
+  echo "primary and replica scratch catalog roots differ" >&2
+  exit 2
+}
 
 # The checkpoint must be independent of the live DB and have no SST symlinks.
 if find "$ARCHIVE_V2_SNAPSHOT_STATE_DIR" -maxdepth 1 -type l -name '*.sst' -print -quit | grep -q .; then
