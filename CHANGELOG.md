@@ -5,6 +5,13 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.255] - 2026-08-20
+
+### Security
+- Replaces the yanked registry `arrayref 0.3.9` package with its previously
+  locked, reviewed runtime source vendored in-tree. The untrusted 0.3.10
+  replacement is not consumed; runtime behavior is unchanged from v0.5.254.
+
 ## [0.5.254] - 2026-08-20
 
 ### Fixed

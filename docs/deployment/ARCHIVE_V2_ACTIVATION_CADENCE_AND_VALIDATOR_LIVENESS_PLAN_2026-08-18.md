@@ -226,7 +226,9 @@ database, completion metadata, and directory entries are durable. Startup
 removes only recognized incomplete numeric checkpoints and staging names before
 opening live state. A failed cold-store hardlink is terminally paused for the
 remainder of that validator invocation, so it cannot repeatedly pin new SST
-generations. Activation remains blocked until the signed v0.5.254 deployment
+generations. v0.5.255 carries the identical runtime fix with refreshed
+dependency locks after `arrayref 0.3.9` was yanked. Activation remains blocked
+until the signed v0.5.255 deployment
 has removed the known incomplete EU checkpoints and all four capacity decisions
 are `Normal`.
 

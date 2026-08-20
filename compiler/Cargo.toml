@@ -3,6 +3,9 @@ name = "lichen-compiler"
 version = "0.5.5"
 edition = "2021"
 
+[patch.crates-io]
+arrayref = { path = "../third_party/arrayref" }
+
 [dependencies]
 axum = "0.7"
 tokio = { version = "1", features = ["full"] }
