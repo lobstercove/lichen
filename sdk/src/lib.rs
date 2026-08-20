@@ -651,8 +651,8 @@ const CANONICAL_SCALAR_MODULUS_LE: [u8; 32] = [
 #[cfg(not(target_arch = "wasm32"))]
 fn bytes32_to_words(bytes: &[u8; 32]) -> [u64; 8] {
     let mut words = [0u64; 8];
-    for (index, chunk) in bytes.chunks_exact(4).enumerate() {
-        words[index] = u32::from_le_bytes(chunk.try_into().expect("4-byte limb")) as u64;
+    for (index, chunk) in bytes.as_chunks::<4>().0.iter().enumerate() {
+        words[index] = u32::from_le_bytes(*chunk) as u64;
     }
     words
 }
