@@ -356,7 +356,10 @@ fn terminal_cold_maintenance_pause_reason(error: &str) -> Option<&'static str> {
 }
 
 fn terminal_checkpoint_creation_pause_reason(error: &str) -> Option<&'static str> {
-    if error.contains("Failed to create checkpoint:") && error.contains("Operation not permitted") {
+    if (error.contains("Failed to create checkpoint:")
+        || error.contains("Failed to create cold checkpoint:"))
+        && error.contains("Operation not permitted")
+    {
         Some("unsupported_hot_sst_link")
     } else {
         None
@@ -20106,6 +20109,21 @@ async fn run_validator() {
             std::process::exit(EXIT_CODE_FATAL_STARTUP);
         }
     }
+    match StateStore::prune_incomplete_checkpoints(&data_dir) {
+        Ok(removed) if removed > 0 => {
+            info!(
+                "🧹 Removed {} incomplete checkpoint director{} from {} before state startup",
+                removed,
+                if removed == 1 { "y" } else { "ies" },
+                data_dir
+            );
+        }
+        Ok(_) => {}
+        Err(err) => {
+            error!("FATAL: failed incomplete checkpoint cleanup: {}", err);
+            std::process::exit(EXIT_CODE_FATAL_STARTUP);
+        }
+    }
     if let Err(e) =
         recover_incomplete_snapshot_live_apply(&data_dir, cache_size_mb, cold_store_path.as_deref())
     {
@@ -32118,6 +32136,12 @@ mod tests {
             Some("unsupported_hot_sst_link")
         );
         assert_eq!(
+            terminal_checkpoint_creation_pause_reason(
+                "Failed to create cold checkpoint: IO error: Operation not permitted: While link file"
+            ),
+            Some("unsupported_hot_sst_link")
+        );
+        assert_eq!(
             terminal_checkpoint_creation_pause_reason("temporary RocksDB I/O error"),
             None
         );
@@ -35045,6 +35069,8 @@ mod tests {
         );
 
         state.put_block(&genesis).expect("put canonical genesis");
+        StateStore::prune_all_checkpoints(temp_dir.path().to_str().expect("data dir"))
+            .expect("retire the superseded derived checkpoint");
         state
             .create_checkpoint(checkpoint_path.to_str().expect("checkpoint path"), 1)
             .expect("recreate complete checkpoint");

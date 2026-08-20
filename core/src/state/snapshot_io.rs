@@ -705,12 +705,240 @@ fn checkpoint_directory_paths(data_dir: &str) -> Result<Vec<std::path::PathBuf>,
         let file_type = entry
             .file_type()
             .map_err(|err| format!("failed to inspect {}: {}", entry.path().display(), err))?;
-        if file_type.is_dir() {
+        let is_publication_staging = entry
+            .file_name()
+            .to_str()
+            .is_some_and(is_checkpoint_staging_name);
+        if file_type.is_dir() && !is_publication_staging {
             paths.push(entry.path());
         }
     }
     paths.sort();
     Ok(paths)
+}
+
+const CHECKPOINT_STAGING_SUFFIX: &str = ".checkpoint-staging-v1";
+// Serialize publication and every checkpoint-deletion path. Callers may hold
+// the validator's checkpoint-maintenance lock first; this mutex is always
+// acquired before the archive-maintenance lock used by raw hot/cold creation.
+static CHECKPOINT_PUBLICATION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn checkpoint_staging_path(checkpoint_dir: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    let parent = checkpoint_dir
+        .parent()
+        .ok_or_else(|| "Invalid checkpoint path".to_string())?;
+    let name = checkpoint_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "Checkpoint path must have a UTF-8 file name".to_string())?;
+    Ok(parent.join(format!(".{name}{CHECKPOINT_STAGING_SUFFIX}")))
+}
+
+fn checkpoint_slot_from_name(name: &str) -> Option<u64> {
+    let value = name.strip_prefix("slot-")?;
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    value.parse::<u64>().ok()
+}
+
+fn checkpoint_staging_slot_from_name(name: &str) -> Option<u64> {
+    let value = name
+        .strip_prefix(".slot-")?
+        .strip_suffix(CHECKPOINT_STAGING_SUFFIX)?;
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    value.parse::<u64>().ok()
+}
+
+fn is_checkpoint_staging_name(name: &str) -> bool {
+    name.strip_prefix('.')
+        .and_then(|name| name.strip_suffix(CHECKPOINT_STAGING_SUFFIX))
+        .is_some_and(|name| !name.is_empty())
+}
+
+#[cfg(unix)]
+fn sync_checkpoint_directory(path: &std::path::Path) -> Result<(), String> {
+    std::fs::File::open(path)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|err| {
+            format!(
+                "failed to sync checkpoint directory {}: {err}",
+                path.display()
+            )
+        })
+}
+
+#[cfg(not(unix))]
+fn sync_checkpoint_directory(_path: &std::path::Path) -> Result<(), String> {
+    Ok(())
+}
+
+fn sync_checkpoint_tree(path: &std::path::Path) -> Result<(), String> {
+    let metadata = std::fs::symlink_metadata(path).map_err(|err| {
+        format!(
+            "failed to inspect checkpoint path {}: {err}",
+            path.display()
+        )
+    })?;
+    if metadata.file_type().is_symlink() {
+        return Err(format!(
+            "refusing to publish checkpoint tree containing symlink {}",
+            path.display()
+        ));
+    }
+    if metadata.is_file() {
+        return std::fs::File::open(path)
+            .and_then(|file| file.sync_all())
+            .map_err(|err| format!("failed to sync checkpoint file {}: {err}", path.display()));
+    }
+    if !metadata.is_dir() {
+        return Err(format!(
+            "refusing to publish unsupported checkpoint entry {}",
+            path.display()
+        ));
+    }
+    let mut children = std::fs::read_dir(path)
+        .map_err(|err| {
+            format!(
+                "failed to read checkpoint directory {}: {err}",
+                path.display()
+            )
+        })?
+        .map(|entry| {
+            entry
+                .map(|entry| entry.path())
+                .map_err(|err| format!("failed to read child of {}: {err}", path.display()))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    children.sort();
+    for child in children {
+        sync_checkpoint_tree(&child)?;
+    }
+    sync_checkpoint_directory(path)
+}
+
+fn remove_checkpoint_directory(path: &std::path::Path) -> Result<bool, String> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(err) => return Err(format!("failed to inspect {}: {err}", path.display())),
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(format!(
+            "refusing to remove non-directory checkpoint path {}",
+            path.display()
+        ));
+    }
+    std::fs::remove_dir_all(path).map_err(|err| {
+        format!(
+            "failed to remove checkpoint directory {}: {err}",
+            path.display()
+        )
+    })?;
+    Ok(true)
+}
+
+fn publish_checkpoint_directory<T>(
+    checkpoint_dir: &std::path::Path,
+    build: impl FnOnce(&std::path::Path) -> Result<T, String>,
+) -> Result<T, String> {
+    let parent = checkpoint_dir
+        .parent()
+        .ok_or_else(|| "Invalid checkpoint path".to_string())?;
+    std::fs::create_dir_all(parent)
+        .map_err(|err| format!("Failed to create checkpoint parent dir: {err}"))?;
+    let parent_metadata = std::fs::symlink_metadata(parent).map_err(|err| {
+        format!(
+            "failed to inspect checkpoint parent {}: {err}",
+            parent.display()
+        )
+    })?;
+    if parent_metadata.file_type().is_symlink() || !parent_metadata.is_dir() {
+        return Err(format!(
+            "checkpoint parent is not a literal directory: {}",
+            parent.display()
+        ));
+    }
+    match std::fs::symlink_metadata(checkpoint_dir) {
+        Ok(_) => {
+            return Err(format!(
+                "refusing to replace existing checkpoint {}",
+                checkpoint_dir.display()
+            ));
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => {
+            return Err(format!(
+                "failed to inspect checkpoint destination {}: {err}",
+                checkpoint_dir.display()
+            ));
+        }
+    }
+
+    let staging = checkpoint_staging_path(checkpoint_dir)?;
+    match std::fs::symlink_metadata(&staging) {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Ok(_) => {
+            return Err(format!(
+                "checkpoint staging path already exists: {}",
+                staging.display()
+            ));
+        }
+        Err(err) => {
+            return Err(format!(
+                "failed to inspect checkpoint staging path {}: {err}",
+                staging.display()
+            ));
+        }
+    }
+
+    let value = match build(&staging) {
+        Ok(value) => value,
+        Err(error) => {
+            let cleanup = remove_checkpoint_directory(&staging)
+                .and_then(|_| sync_checkpoint_directory(parent));
+            return Err(match cleanup {
+                Ok(()) => error,
+                Err(cleanup_error) => format!("{error}; staging cleanup failed: {cleanup_error}"),
+            });
+        }
+    };
+
+    if let Err(error) = sync_checkpoint_tree(&staging).and_then(|_| {
+        match std::fs::symlink_metadata(checkpoint_dir) {
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Ok(_) => {
+                return Err(format!(
+                    "checkpoint destination appeared before publication: {}",
+                    checkpoint_dir.display()
+                ));
+            }
+            Err(err) => {
+                return Err(format!(
+                    "failed to recheck checkpoint destination {}: {err}",
+                    checkpoint_dir.display()
+                ));
+            }
+        }
+        std::fs::rename(&staging, checkpoint_dir).map_err(|err| {
+            format!(
+                "failed to publish checkpoint {} from {}: {err}",
+                checkpoint_dir.display(),
+                staging.display()
+            )
+        })
+    }) {
+        let cleanup =
+            remove_checkpoint_directory(&staging).and_then(|_| sync_checkpoint_directory(parent));
+        return Err(match cleanup {
+            Ok(()) => error,
+            Err(cleanup_error) => format!("{error}; staging cleanup failed: {cleanup_error}"),
+        });
+    }
+    sync_checkpoint_directory(parent)?;
+    Ok(value)
 }
 
 #[cfg(unix)]
@@ -923,30 +1151,48 @@ impl StateStore {
         checkpoint_dir: &str,
         slot: u64,
     ) -> Result<CheckpointMeta, String> {
-        self.create_raw_checkpoint(checkpoint_dir)?;
-        let checkpoint_store = Self::open_checkpoint(checkpoint_dir)
-            .map_err(|e| format!("Failed to open created checkpoint: {}", e))?;
-        let state_root = checkpoint_store
-            .compute_state_root_cached_read_only()
-            .unwrap_or_else(|| checkpoint_store.compute_state_root_read_only());
-        let total_accounts = checkpoint_store.metrics.get_total_accounts();
-        let meta = CheckpointMeta {
-            slot,
-            state_root: state_root.0,
-            created_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs(),
-            total_accounts,
-        };
+        let _publication_guard = CHECKPOINT_PUBLICATION_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let checkpoint_path = std::path::Path::new(checkpoint_dir);
+        publish_checkpoint_directory(checkpoint_path, |staging| {
+            let staging = staging
+                .to_str()
+                .ok_or_else(|| "Checkpoint staging path must be UTF-8".to_string())?;
+            self.create_raw_checkpoint(staging)?;
+            let checkpoint_store = Self::open_checkpoint(staging)
+                .map_err(|e| format!("Failed to open created checkpoint: {}", e))?;
+            let state_root = checkpoint_store
+                .compute_state_root_cached_read_only()
+                .unwrap_or_else(|| checkpoint_store.compute_state_root_read_only());
+            let total_accounts = checkpoint_store.metrics.get_total_accounts();
+            let meta = CheckpointMeta {
+                slot,
+                state_root: state_root.0,
+                created_at: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs(),
+                total_accounts,
+            };
 
-        let meta_path = std::path::Path::new(checkpoint_dir).join("checkpoint_meta.json");
-        let meta_json = serde_json::to_string_pretty(&meta)
-            .map_err(|e| format!("Failed to serialize checkpoint meta: {}", e))?;
-        std::fs::write(&meta_path, meta_json)
-            .map_err(|e| format!("Failed to write checkpoint meta: {}", e))?;
-
-        Ok(meta)
+            let meta_path = std::path::Path::new(staging).join("checkpoint_meta.json");
+            let meta_json = serde_json::to_string_pretty(&meta)
+                .map_err(|e| format!("Failed to serialize checkpoint meta: {}", e))?;
+            use std::io::Write as _;
+            let mut meta_file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&meta_path)
+                .map_err(|e| format!("Failed to create checkpoint meta: {}", e))?;
+            meta_file
+                .write_all(meta_json.as_bytes())
+                .map_err(|e| format!("Failed to write checkpoint meta: {}", e))?;
+            meta_file
+                .sync_all()
+                .map_err(|e| format!("Failed to sync checkpoint meta: {}", e))?;
+            Ok(meta)
+        })
     }
 
     /// Open a checkpoint as a read-only StateStore for serving snapshot data.
@@ -967,12 +1213,22 @@ impl StateStore {
         if let Ok(entries) = std::fs::read_dir(&cp_root) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                if path.is_dir() {
+                let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+                    continue;
+                };
+                if checkpoint_staging_slot_from_name(&name).is_some() {
+                    continue;
+                }
+                if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
                     let meta_path = path.join("checkpoint_meta.json");
                     if meta_path.exists() {
                         if let Ok(data) = std::fs::read_to_string(&meta_path) {
                             if let Ok(meta) = serde_json::from_str::<CheckpointMeta>(&data) {
-                                result.push((meta.slot, path.to_string_lossy().to_string()));
+                                if checkpoint_slot_from_name(&name)
+                                    .is_none_or(|slot| meta.slot == slot)
+                                {
+                                    result.push((meta.slot, path.to_string_lossy().to_string()));
+                                }
                             }
                         }
                     }
@@ -981,6 +1237,78 @@ impl StateStore {
         }
         result.sort_by_key(|(slot, _)| *slot);
         result
+    }
+
+    /// Remove numeric `slot-*` checkpoint directories without a valid matching
+    /// completion marker and recognized atomic-publication staging directories.
+    /// Unknown names, symlinks, and valid checkpoints are preserved.
+    pub fn prune_incomplete_checkpoints(data_dir: &str) -> Result<usize, String> {
+        let _publication_guard = CHECKPOINT_PUBLICATION_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let checkpoint_root = std::path::Path::new(data_dir).join("checkpoints");
+        match std::fs::symlink_metadata(&checkpoint_root) {
+            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+                return Err(format!(
+                    "checkpoint root is not a literal directory: {}",
+                    checkpoint_root.display()
+                ));
+            }
+            Ok(_) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+            Err(err) => {
+                return Err(format!(
+                    "failed to inspect checkpoint root {}: {err}",
+                    checkpoint_root.display()
+                ));
+            }
+        }
+        let entries = match std::fs::read_dir(&checkpoint_root) {
+            Ok(entries) => entries,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+            Err(err) => {
+                return Err(format!(
+                    "failed to read checkpoint directory {}: {err}",
+                    checkpoint_root.display()
+                ));
+            }
+        };
+        let mut removed = 0usize;
+        for entry in entries {
+            let entry = entry.map_err(|err| {
+                format!(
+                    "failed to read entry in checkpoint directory {}: {err}",
+                    checkpoint_root.display()
+                )
+            })?;
+            let file_type = entry
+                .file_type()
+                .map_err(|err| format!("failed to inspect {}: {err}", entry.path().display()))?;
+            if !file_type.is_dir() {
+                continue;
+            }
+            let checkpoint = entry.path();
+            let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            let remove = if let Some(slot) = checkpoint_slot_from_name(&name) {
+                std::fs::read(checkpoint.join("checkpoint_meta.json"))
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice::<CheckpointMeta>(&bytes).ok())
+                    .is_none_or(|meta| meta.slot != slot)
+            } else {
+                checkpoint_staging_slot_from_name(&name).is_some()
+            };
+            if !remove {
+                continue;
+            }
+            remove_checkpoint_directory(&checkpoint)?;
+            removed = removed.saturating_add(1);
+        }
+        if removed > 0 {
+            sync_checkpoint_directory(&checkpoint_root)?;
+        }
+        Ok(removed)
     }
 
     /// Get the latest checkpoint metadata from the data directory.
@@ -1015,6 +1343,9 @@ impl StateStore {
         data_dir: &str,
         protected_slots: &HashSet<u64>,
     ) -> Result<usize, String> {
+        let _publication_guard = CHECKPOINT_PUBLICATION_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let checkpoints = checkpoint_directory_paths(data_dir)?;
         let mut removed = 0;
         for checkpoint in &checkpoints {
@@ -1070,6 +1401,9 @@ impl StateStore {
         max_total_bytes: Option<u64>,
         protected_slots: &HashSet<u64>,
     ) -> Result<usize, String> {
+        let _publication_guard = CHECKPOINT_PUBLICATION_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let checkpoints = Self::list_checkpoints(data_dir);
         let mut remaining = checkpoints;
         let mut removed = 0;
@@ -4520,6 +4854,132 @@ mod manifest_tests {
     use std::sync::mpsc;
     use std::time::Duration;
     use tempfile::tempdir;
+
+    fn write_checkpoint_meta(path: &std::path::Path, slot: u64) {
+        let meta = CheckpointMeta {
+            slot,
+            state_root: [slot as u8; 32],
+            created_at: 1,
+            total_accounts: 0,
+        };
+        std::fs::write(
+            path.join("checkpoint_meta.json"),
+            serde_json::to_vec(&meta).unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn atomic_checkpoint_publication_never_exposes_a_failed_build() {
+        let temp = tempdir().unwrap();
+        let final_path = temp.path().join("checkpoints/slot-42");
+        let staging = checkpoint_staging_path(&final_path).unwrap();
+
+        let result = publish_checkpoint_directory::<()>(&final_path, |path| {
+            std::fs::create_dir_all(path).unwrap();
+            std::fs::write(path.join("000001.sst"), b"partial").unwrap();
+            Err("injected cold checkpoint failure".to_string())
+        });
+
+        assert_eq!(result.unwrap_err(), "injected cold checkpoint failure");
+        assert!(!final_path.exists());
+        assert!(!staging.exists());
+    }
+
+    #[test]
+    fn atomic_checkpoint_publication_preserves_an_existing_checkpoint() {
+        let temp = tempdir().unwrap();
+        let final_path = temp.path().join("checkpoints/slot-43");
+        std::fs::create_dir_all(&final_path).unwrap();
+        std::fs::write(final_path.join("old"), b"old").unwrap();
+
+        let error = publish_checkpoint_directory(&final_path, |path| {
+            std::fs::create_dir_all(path).unwrap();
+            std::fs::write(path.join("complete"), b"new").unwrap();
+            Ok(43)
+        })
+        .unwrap_err();
+
+        assert!(error.contains("refusing to replace existing checkpoint"));
+        assert_eq!(std::fs::read(final_path.join("old")).unwrap(), b"old");
+        assert!(!final_path.join("complete").exists());
+        assert!(!checkpoint_staging_path(&final_path).unwrap().exists());
+    }
+
+    #[test]
+    fn startup_checkpoint_cleanup_is_exact_and_preserves_completed_or_unknown_dirs() {
+        let temp = tempdir().unwrap();
+        let checkpoints = temp.path().join("checkpoints");
+        std::fs::create_dir_all(&checkpoints).unwrap();
+
+        let valid = checkpoints.join("slot-10");
+        std::fs::create_dir(&valid).unwrap();
+        write_checkpoint_meta(&valid, 10);
+
+        let missing_meta = checkpoints.join("slot-11");
+        std::fs::create_dir(&missing_meta).unwrap();
+        let corrupt_meta = checkpoints.join("slot-12");
+        std::fs::create_dir(&corrupt_meta).unwrap();
+        std::fs::write(corrupt_meta.join("checkpoint_meta.json"), b"not-json").unwrap();
+        let mismatched_meta = checkpoints.join("slot-13");
+        std::fs::create_dir(&mismatched_meta).unwrap();
+        write_checkpoint_meta(&mismatched_meta, 14);
+
+        let staging = checkpoints.join(format!(".slot-14{CHECKPOINT_STAGING_SUFFIX}"));
+        std::fs::create_dir(&staging).unwrap();
+        write_checkpoint_meta(&staging, 14);
+
+        let unknown = checkpoints.join("operator-preserved");
+        std::fs::create_dir(&unknown).unwrap();
+        write_checkpoint_meta(&unknown, 15);
+        let malformed_slot = checkpoints.join("slot-not-a-number");
+        std::fs::create_dir(&malformed_slot).unwrap();
+
+        assert_eq!(
+            StateStore::list_checkpoints(temp.path().to_str().unwrap())
+                .into_iter()
+                .map(|(slot, _)| slot)
+                .collect::<Vec<_>>(),
+            vec![10, 15]
+        );
+        assert!(
+            !checkpoint_directory_paths(temp.path().to_str().unwrap())
+                .unwrap()
+                .contains(&staging),
+            "generic pruning must never enumerate an active publication staging directory"
+        );
+
+        assert_eq!(
+            StateStore::prune_incomplete_checkpoints(temp.path().to_str().unwrap()).unwrap(),
+            4
+        );
+        assert!(valid.is_dir());
+        assert!(unknown.is_dir());
+        assert!(malformed_slot.is_dir());
+        assert!(!missing_meta.exists());
+        assert!(!corrupt_meta.exists());
+        assert!(!mismatched_meta.exists());
+        assert!(!staging.exists());
+        assert_eq!(
+            StateStore::prune_incomplete_checkpoints(temp.path().to_str().unwrap()).unwrap(),
+            0
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn startup_checkpoint_cleanup_rejects_a_symlinked_checkpoint_root() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempdir().unwrap();
+        let external = tempdir().unwrap();
+        symlink(external.path(), temp.path().join("checkpoints")).unwrap();
+
+        let error =
+            StateStore::prune_incomplete_checkpoints(temp.path().to_str().unwrap()).unwrap_err();
+        assert!(error.contains("checkpoint root is not a literal directory"));
+        assert!(external.path().is_dir());
+    }
 
     #[test]
     fn hot_cold_checkpoint_waits_for_archive_maintenance_boundary() {
