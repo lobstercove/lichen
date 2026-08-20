@@ -5,6 +5,20 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.254] - 2026-08-20
+
+### Fixed
+- Builds periodic full checkpoints in a same-filesystem hidden staging
+  directory and publishes them only after the hot database, cold database,
+  completion metadata, and directory entries are durable. Failed cold-store
+  hardlinks no longer expose or retain a partial `slot-*` checkpoint.
+- Removes only recognized incomplete numeric checkpoints and atomic checkpoint
+  staging directories before opening live state, while preserving valid,
+  operator-named, unknown, and symlinked entries fail-closed.
+- Treats the cold-checkpoint `Operation not permitted` failure as the existing
+  terminal unsupported-link condition, preventing repeated checkpoint attempts
+  for the remainder of the validator invocation.
+
 ## [0.5.253] - 2026-08-20
 
 ### Fixed

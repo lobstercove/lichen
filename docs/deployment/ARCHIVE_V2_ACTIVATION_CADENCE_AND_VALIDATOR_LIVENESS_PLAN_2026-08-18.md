@@ -219,6 +219,17 @@ admission. Deployment acceptance must prove zero startup remote fetches before
 P2P initialization and successful four-validator BFT entry with the configured
 Archive V2 roles.
 
+v0.5.254 closes the checkpoint-retention failure discovered during the live
+capacity gate. Periodic full checkpoints are now assembled under a hidden,
+same-filesystem staging name and published only after the hot database, cold
+database, completion metadata, and directory entries are durable. Startup
+removes only recognized incomplete numeric checkpoints and staging names before
+opening live state. A failed cold-store hardlink is terminally paused for the
+remainder of that validator invocation, so it cannot repeatedly pin new SST
+generations. Activation remains blocked until the signed v0.5.254 deployment
+has removed the known incomplete EU checkpoints and all four capacity decisions
+are `Normal`.
+
 ## 3. Target Archive V2 Architecture
 
 Archive role and consensus membership are independent concerns. The preferred
