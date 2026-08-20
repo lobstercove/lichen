@@ -18979,7 +18979,10 @@ fn resolve_runtime_archive_v2_config(
         .map_err(|error| format!("invalid Archive V2 cache quota: {error}"))?;
     let cache_root = get_flag_value(args, &["--archive-v2-cache-root"]).map(PathBuf::from);
     let max_decoded_segments = get_flag_value(args, &["--archive-v2-decoded-segments"])
-        .unwrap_or("8")
+        // A decoded 10k-slot production segment can expand to multiple GiB.
+        // Seekable point reads do not populate this LRU; explicit whole-segment
+        // operations retain one bounded entry by default.
+        .unwrap_or("1")
         .parse::<usize>()
         .map_err(|error| format!("invalid Archive V2 decoded-segment cache size: {error}"))?;
     let source_roots = get_flag_value(args, &["--archive-v2-source-dirs"])

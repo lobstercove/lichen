@@ -5,6 +5,17 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.256] - 2026-08-20
+
+### Fixed
+- Authenticates Archive V2 cache objects through their catalog-pinned object
+  hash and seekable envelope without implicitly decoding every block,
+  transaction, and public-index frame into a live validator's heap.
+- Keeps slot-addressed block and signature-addressed transaction reads on the
+  seekable frame path and lowers the default explicit whole-segment decoded
+  cache from eight entries to one, preventing ordinary verified-cache RPC
+  activity from starving consensus memory/CPU.
+
 ## [0.5.255] - 2026-08-20
 
 ### Security

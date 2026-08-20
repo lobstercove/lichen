@@ -359,6 +359,24 @@ impl ArchiveV2SegmentCodec {
         Ok((segment_bytes, manifest))
     }
 
+    /// Authenticate the immutable seekable object envelope without
+    /// materializing every block, transaction, and public-index row.
+    ///
+    /// The catalog commits to the SHA-256 of the complete object. Header,
+    /// identity, codec-bound, descriptor-root, and trailer validation therefore
+    /// makes an object safe to persist in a verified cache. Point readers then
+    /// authenticate and decompress only the compact index and referenced
+    /// frames. Full decoding remains explicit for offline parity and retirement
+    /// work; it must not be an implicit side effect of a slot-addressed block
+    /// or signature-addressed transaction read.
+    pub fn verify_seekable_object(
+        segment_bytes: &[u8],
+        manifest: &ArchiveV2Manifest,
+        expected_identity: &ArchiveV2Identity,
+    ) -> Result<(), ArchiveV2Error> {
+        verify_seekable_object(segment_bytes, manifest, expected_identity).map(|_| ())
+    }
+
     pub fn decode(
         segment_bytes: &[u8],
         manifest: &ArchiveV2Manifest,
@@ -2051,10 +2069,20 @@ mod tests {
         assert!(
             ArchiveV2SegmentCodec::decode(&bytes[..bytes.len() - 1], &manifest, &identity).is_err()
         );
+        assert!(ArchiveV2SegmentCodec::verify_seekable_object(
+            &bytes[..bytes.len() - 1],
+            &manifest,
+            &identity
+        )
+        .is_err());
+        ArchiveV2SegmentCodec::verify_seekable_object(&bytes, &manifest, &identity).unwrap();
         let mut corrupt = bytes.clone();
         let corrupt_offset = corrupt.len() / 2;
         corrupt[corrupt_offset] ^= 0x40;
         assert!(ArchiveV2SegmentCodec::decode(&corrupt, &manifest, &identity).is_err());
+        assert!(
+            ArchiveV2SegmentCodec::verify_seekable_object(&corrupt, &manifest, &identity).is_err()
+        );
         let wrong_network = ArchiveV2Identity {
             network_id: "other-testnet".to_string(),
             genesis_hash: identity.genesis_hash,
