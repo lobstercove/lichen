@@ -24,7 +24,7 @@ p3-goldilocks = "0.6.1"
 p3-symmetric = "0.6.1"
 
 [dev-dependencies]
-lichen-core = { package = "lobstercove-lichen-core", version = "=0.5.254", path = "../core" }
+lichen-core = { package = "lobstercove-lichen-core", version = "=0.5.255", path = "../core" }
 
 [features]
 default = []
@@ -35,3 +35,6 @@ opt-level = "z"     # Optimize for size
 lto = true          # Enable Link Time Optimization
 codegen-units = 1   # Single codegen unit for better optimization
 strip = true        # Strip symbols
+
+[patch.crates-io]
+arrayref = { path = "../third_party/arrayref" }
