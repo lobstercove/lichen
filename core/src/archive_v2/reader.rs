@@ -674,8 +674,11 @@ impl ArchiveV2Reader {
         {
             return Ok(());
         }
-        let decoded = ArchiveV2SegmentCodec::decode(bytes, manifest, &self.identity)?;
-        self.remember(decoded)?;
+        // Cache admission authenticates the immutable object but deliberately
+        // does not inflate the whole segment into the live validator heap.
+        // Point reads use seekable frame decoding; whole-segment callers reach
+        // `load_segment` explicitly and remain bounded by the decoded LRU.
+        ArchiveV2SegmentCodec::verify_seekable_object(bytes, manifest, &self.identity)?;
         let verified_count = {
             let mut verified = self
                 .verified_objects
@@ -971,6 +974,8 @@ mod tests {
             known
         );
         assert_eq!(reader.status().remote_fetches, 1);
+        assert_eq!(reader.status().verified_objects, 1);
+        assert!(reader.decoded.lock().unwrap().is_empty());
     }
 
     #[test]
@@ -1001,12 +1006,14 @@ mod tests {
             ArchiveV2Reader::open(identity, &local.path().join("catalog.av2"), config).unwrap();
         assert_eq!(reader.get_block(0).unwrap().unwrap().header.slot, 0);
         assert_eq!(reader.status().remote_fetches, 1);
+        assert_eq!(reader.status().verified_objects, 1);
+        assert!(reader.decoded.lock().unwrap().is_empty());
         assert!(object_path(cache.path(), &manifest.segment_object_hash).exists());
 
         fs::remove_file(object_path(cache.path(), &manifest.segment_object_hash)).unwrap();
-        reader.decoded.lock().unwrap().clear();
         assert_eq!(reader.get_block(0).unwrap().unwrap().header.slot, 0);
         assert_eq!(reader.status().remote_fetches, 2);
+        assert!(reader.decoded.lock().unwrap().is_empty());
     }
 
     #[test]

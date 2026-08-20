@@ -226,11 +226,14 @@ database, completion metadata, and directory entries are durable. Startup
 removes only recognized incomplete numeric checkpoints and staging names before
 opening live state. A failed cold-store hardlink is terminally paused for the
 remainder of that validator invocation, so it cannot repeatedly pin new SST
-generations. v0.5.255 carries the identical runtime fix with refreshed
-dependency locks after `arrayref 0.3.9` was yanked. Activation remains blocked
-until the signed v0.5.255 deployment
-has removed the known incomplete EU checkpoints and all four capacity decisions
-are `Normal`.
+generations. v0.5.255 carries the identical checkpoint fix with refreshed
+dependency locks after `arrayref 0.3.9` was yanked. v0.5.256 additionally keeps
+verified-cache point reads on the seekable frame path instead of implicitly
+materializing a complete multi-GiB decoded segment in the validator process,
+and defaults explicit whole-segment caching to one entry. Activation remains
+blocked until the signed v0.5.256 deployment has removed the known incomplete
+EU checkpoints, all four capacity decisions are `Normal`, and the live role
+acceptance proves that historical reads do not perturb four-validator cadence.
 
 ## 3. Target Archive V2 Architecture
 
