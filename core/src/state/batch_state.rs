@@ -1424,12 +1424,10 @@ impl StateBatch {
         };
         match self.db.get_cf(&cf, b"fee_exempt_contracts") {
             Ok(Some(data)) => data
-                .chunks_exact(32)
-                .map(|chunk| {
-                    let mut bytes = [0u8; 32];
-                    bytes.copy_from_slice(chunk);
-                    Pubkey(bytes)
-                })
+                .as_chunks::<32>()
+                .0
+                .iter()
+                .map(|chunk| Pubkey(*chunk))
                 .collect(),
             _ => Vec::new(),
         }

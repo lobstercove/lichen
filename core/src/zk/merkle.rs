@@ -40,8 +40,8 @@ fn u64_to_words(value: u64) -> [u64; 2] {
 
 fn bytes32_to_words(bytes: &[u8; 32]) -> [u64; BYTES32_WORDS] {
     let mut words = [0u64; BYTES32_WORDS];
-    for (index, chunk) in bytes.chunks_exact(4).enumerate() {
-        words[index] = u32::from_le_bytes(chunk.try_into().expect("4-byte limb")) as u64;
+    for (index, chunk) in bytes.as_chunks::<4>().0.iter().enumerate() {
+        words[index] = u32::from_le_bytes(*chunk) as u64;
     }
     words
 }

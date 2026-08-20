@@ -4530,9 +4530,7 @@ fn run_sltp_trigger_engine(
         // Append order ID to the price level's order queue
         if let Some(existing) = batch.get_contract_storage(dex_pk, book_side_key.as_bytes())? {
             let mut updated = existing;
-            let already_indexed = updated
-                .chunks_exact(8)
-                .any(|chunk| chunk == oid.to_le_bytes());
+            let already_indexed = updated.as_chunks::<8>().0.contains(&oid.to_le_bytes());
             if !already_indexed {
                 updated.extend_from_slice(&oid.to_le_bytes());
             }

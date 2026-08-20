@@ -141,8 +141,13 @@ pub fn goldilocks_words_to_u64(
 
 pub fn bytes32_to_goldilocks_words(bytes: [u8; 32]) -> [u64; BYTES32_GOLDILOCKS_WORDS] {
     let mut words = [0u64; BYTES32_GOLDILOCKS_WORDS];
-    for (index, chunk) in bytes.chunks_exact(GOLDILOCKS_WORD_BYTES).enumerate() {
-        let limb = u32::from_le_bytes(chunk.try_into().expect("4-byte commitment limb"));
+    for (index, chunk) in bytes
+        .as_chunks::<GOLDILOCKS_WORD_BYTES>()
+        .0
+        .iter()
+        .enumerate()
+    {
+        let limb = u32::from_le_bytes(*chunk);
         words[index] = u64::from(limb);
     }
     words

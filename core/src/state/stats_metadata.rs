@@ -699,10 +699,8 @@ impl StateStore {
         match self.db.get_cf(&cf, b"fee_exempt_contracts") {
             Ok(Some(data)) => {
                 let mut result = Vec::with_capacity(data.len() / 32);
-                for chunk in data.chunks_exact(32) {
-                    let mut bytes = [0u8; 32];
-                    bytes.copy_from_slice(chunk);
-                    result.push(Pubkey(bytes));
+                for chunk in data.as_chunks::<32>().0 {
+                    result.push(Pubkey(*chunk));
                 }
                 result
             }
