@@ -22,6 +22,7 @@ COPY faucet-service/Cargo.toml faucet-service/Cargo.toml
 COPY custody/Cargo.toml custody/Cargo.toml
 COPY genesis/Cargo.toml genesis/Cargo.toml
 COPY compiler/Cargo.toml compiler/Cargo.toml
+COPY third_party/arrayref/ third_party/arrayref/
 
 # Create dummy source files for dependency caching
 RUN mkdir -p core/src validator/src rpc/src cli/src p2p/src faucet-service/src custody/src genesis/src compiler/src && \
