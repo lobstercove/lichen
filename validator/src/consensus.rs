@@ -1771,19 +1771,30 @@ impl ConsensusEngine {
                     break;
                 }
 
-                // 2. Nil polka (≥2/3 nil prevotes) → prevote nil and cascade.
-                //    do_prevote(None) automatically chains: nil polka detected
-                //    → do_precommit(None) → if nil commit → start_round(+1).
-                //    This lets the loop advance through multiple nil rounds
-                //    in a single call.
-                let has_nil_polka = self
+                // 2. A >1/3 nil-prevote witness proves that at least one honest
+                //    validator has already timed out in this round.  A joining
+                //    validator that just skipped here must not wait the full,
+                //    exponentially enlarged proposal timeout from zero again:
+                //    it can safely prevote nil immediately.  Its vote may form
+                //    the nil polka and synchronize the active quorum into the
+                //    next round.  Without this bridge, a restarted validator
+                //    can remain one phase behind the healthy peers forever.
+                let nil_voters = self
                     .prevotes
                     .get(&(round, None))
-                    .is_some_and(|v| self.has_supermajority_voters(v, validator_set, stake_pool));
-                if has_nil_polka {
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]);
+                let nil_power = self
+                    .prevote_power
+                    .get(&(round, None))
+                    .copied()
+                    .unwrap_or_else(|| {
+                        self.voter_stake(nil_voters.iter(), validator_set, stake_pool)
+                    });
+                if nil_power * 3 > total_eligible_stake {
                     info!(
-                        "🔄 BFT: Fast catch-up: nil polka at h={} r={}, advancing",
-                        self.height, round
+                        "🔄 BFT: Fast catch-up: joining >1/3 nil witness at h={} r={} power={}/{}",
+                        self.height, round, nil_power, total_eligible_stake
                     );
                     let prevote_action = self.do_prevote(None, validator_set, stake_pool);
                     all_actions.push(prevote_action);
@@ -2955,6 +2966,38 @@ mod tests {
             action,
             ConsensusAction::ScheduleTimeout(RoundStep::Propose, _)
         ));
+    }
+
+    #[test]
+    fn test_round_skip_joins_future_nil_witness_without_full_timeout() {
+        let (validators, vs, sp) = make_custom_test_env(&[100, 100, 100, 100]);
+        let (local_kp, local_pk) = make_validator(1);
+        assert_eq!(local_pk, validators[0].1);
+        let mut engine = ConsensusEngine::new_with_min_stake(local_kp, local_pk, 50);
+        engine.start_height(10);
+        engine.rebuild_power_snapshot(&vs, &sp);
+
+        let make_nil_prevote = |index: usize| Prevote {
+            height: 10,
+            round: 10,
+            block_hash: None,
+            validator: validators[index].1,
+            signature: validators[index]
+                .0
+                .sign(&Prevote::signable_bytes(10, 10, &None)),
+        };
+
+        assert!(matches!(
+            engine.on_prevote(make_nil_prevote(1), &vs, &sp),
+            ConsensusAction::None
+        ));
+        let action = engine.on_prevote(make_nil_prevote(2), &vs, &sp);
+
+        assert_eq!(engine.round, 10);
+        assert_eq!(engine.step, RoundStep::Precommit);
+        assert_eq!(engine.signed_prevote_rounds.get(&10), Some(&None));
+        assert_eq!(engine.signed_precommit_rounds.get(&10), Some(&None));
+        assert!(matches!(action, ConsensusAction::Multiple(_)));
     }
 
     #[test]
