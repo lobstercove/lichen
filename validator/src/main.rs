@@ -842,7 +842,12 @@ const FUTURE_CONSENSUS_PROPOSAL_BUFFER_HEIGHTS: u64 = 10;
 /// QoS: per-peer block-range serving token bucket, measured in blocks.
 const BLOCK_RANGE_SERVE_BURST_BLOCKS: u64 = 5000;
 const BLOCK_RANGE_SERVE_REFILL_BLOCKS_PER_SEC: u64 = 1000;
-const BLOCK_RANGE_RESPONSE_BATCH_BLOCKS: usize = sync::INITIAL_SYNC_BLOCK_RANGE_LIMIT as usize;
+// A finalized block can be close to the P2P envelope limit on its own.  A
+// count-based multi-block batch therefore cannot guarantee that the encoded
+// BlockRangeResponse fits the wire codec limit.  Send one canonical block per
+// response, matching normal live block propagation and guaranteeing that a
+// block which propagated at commit time can also be served during catch-up.
+const BLOCK_RANGE_RESPONSE_BATCH_BLOCKS: usize = 1;
 
 /// QoS: per-peer snapshot serving token bucket, measured in request units.
 const SNAPSHOT_SERVE_BURST_UNITS: u64 = 32;
@@ -33421,10 +33426,7 @@ mod tests {
 
     #[test]
     fn block_range_response_batch_uses_small_consensus_safe_chunks() {
-        assert_eq!(
-            BLOCK_RANGE_RESPONSE_BATCH_BLOCKS,
-            sync::INITIAL_SYNC_BLOCK_RANGE_LIMIT as usize
-        );
+        assert_eq!(BLOCK_RANGE_RESPONSE_BATCH_BLOCKS, 1);
         const { assert!(BLOCK_RANGE_RESPONSE_BATCH_BLOCKS > 0) };
         assert!(BLOCK_RANGE_RESPONSE_BATCH_BLOCKS as u64 <= sync::P2P_BLOCK_RANGE_LIMIT);
     }
