@@ -1071,7 +1071,19 @@ impl ConsensusEngine {
         let mut actions = Vec::new();
 
         // Prevotes
-        if let Some(prevotes) = self.future_prevotes.remove(&height) {
+        if let Some(mut prevotes) = self.future_prevotes.remove(&height) {
+            // A validator that was applying a catch-up batch can receive votes
+            // for several rounds of the next height before it enters that
+            // height itself. Process the highest witnessed rounds first. If
+            // f+1 voting power has already moved on, this makes the validator
+            // round-skip before older votes can create an obsolete local lock.
+            //
+            // Replaying in network-arrival order is unsafe for liveness: two
+            // old round-0 prevotes plus our own buffered round-0 prevote can
+            // form a local polka after the active quorum has moved to round 2.
+            // The late validator then remains locked while the survivors vote
+            // nil, stalling the only three online validators.
+            prevotes.sort_by_key(|vote| std::cmp::Reverse(vote.round));
             info!(
                 "📥 BFT: Replaying {} buffered prevotes for height {}",
                 prevotes.len(),
@@ -1086,7 +1098,11 @@ impl ConsensusEngine {
         }
 
         // Precommits
-        if let Some(precommits) = self.future_precommits.remove(&height) {
+        if let Some(mut precommits) = self.future_precommits.remove(&height) {
+            // Match prevote replay ordering so mixed future-round evidence
+            // converges on the newest witnessed round before older commits are
+            // considered.
+            precommits.sort_by_key(|vote| std::cmp::Reverse(vote.round));
             info!(
                 "📥 BFT: Replaying {} buffered precommits for height {}",
                 precommits.len(),
@@ -1771,41 +1787,27 @@ impl ConsensusEngine {
                     break;
                 }
 
-                // 2. A >1/3 nil-prevote witness proves that at least one honest
-                //    validator has already timed out in this round.  A joining
-                //    validator that just skipped here must not wait the full,
-                //    exponentially enlarged proposal timeout from zero again:
-                //    it can safely prevote nil immediately.  Its vote may form
-                //    the nil polka and synchronize the active quorum into the
-                //    next round.  Without this bridge, a restarted validator
-                //    can remain one phase behind the healthy peers forever.
-                let nil_voters = self
-                    .prevotes
-                    .get(&(round, None))
-                    .map(Vec::as_slice)
-                    .unwrap_or(&[]);
-                let nil_power = self
-                    .prevote_power
-                    .get(&(round, None))
-                    .copied()
-                    .unwrap_or_else(|| {
-                        self.voter_stake(nil_voters.iter(), validator_set, stake_pool)
-                    });
-                if nil_power * 3 > total_eligible_stake {
-                    info!(
-                        "🔄 BFT: Fast catch-up: joining >1/3 nil witness at h={} r={} power={}/{}",
-                        self.height, round, nil_power, total_eligible_stake
-                    );
-                    let prevote_action = self.do_prevote(None, validator_set, stake_pool);
-                    all_actions.push(prevote_action);
-                    if self.round > round {
-                        continue; // Cascaded through nil commit → check next round
-                    }
-                    break; // At Precommit step, wait for more precommits
+                // 2. No stored proposal.  The f+1 future-round witness that
+                //    caused the skip can be spread across adjacent rounds, so
+                //    the highest observed round may initially contain only one
+                //    vote.  Waiting for that round's exponentially enlarged
+                //    proposal timeout recreates the staggered-restart stall.
+                //
+                //    Prevote nil immediately on entering the witnessed round.
+                //    A nil prevote cannot create a conflicting value lock or
+                //    commit, while broadcasting it gives the other lagging
+                //    validators same-round evidence to converge on.  A stored
+                //    valid proposal always takes precedence in rule 1 above.
+                info!(
+                    "🔄 BFT: Fast catch-up: joining witnessed round with nil prevote at h={} r={} future_power={}/{}",
+                    self.height, round, future_stake, total_eligible_stake
+                );
+                let prevote_action = self.do_prevote(None, validator_set, stake_pool);
+                all_actions.push(prevote_action);
+                if self.round > round {
+                    continue; // Cascaded through nil commit → check next round
                 }
-
-                // 3. No stored proposal, no nil polka — wait for proposal.
-                break;
+                break; // At Prevote/Precommit step, wait for same-round peers
             }
 
             return if all_actions.len() == 1 {
@@ -2962,10 +2964,9 @@ mod tests {
 
         let action = engine.check_round_skip(2, &vs, &sp);
         assert_eq!(engine.round, 2);
-        assert!(matches!(
-            action,
-            ConsensusAction::ScheduleTimeout(RoundStep::Propose, _)
-        ));
+        assert_eq!(engine.step, RoundStep::Prevote);
+        assert_eq!(engine.signed_prevote_rounds.get(&2), Some(&None));
+        assert!(matches!(action, ConsensusAction::Multiple(_)));
     }
 
     #[test]
@@ -2997,6 +2998,100 @@ mod tests {
         assert_eq!(engine.step, RoundStep::Precommit);
         assert_eq!(engine.signed_prevote_rounds.get(&10), Some(&None));
         assert_eq!(engine.signed_precommit_rounds.get(&10), Some(&None));
+        assert!(matches!(action, ConsensusAction::Multiple(_)));
+    }
+
+    #[test]
+    fn test_round_skip_joins_staggered_future_rounds_without_max_round_timeout() {
+        let (validators, vs, sp) = make_custom_test_env(&[100, 100, 100, 100]);
+        let (local_kp, local_pk) = make_validator(1);
+        assert_eq!(local_pk, validators[0].1);
+        let mut engine = ConsensusEngine::new_with_min_stake(local_kp, local_pk, 50);
+        engine.start_height(10);
+        engine.rebuild_power_snapshot(&vs, &sp);
+
+        let make_nil_prevote = |index: usize, round: u32| Prevote {
+            height: 10,
+            round,
+            block_hash: None,
+            validator: validators[index].1,
+            signature: validators[index]
+                .0
+                .sign(&Prevote::signable_bytes(10, round, &None)),
+        };
+
+        assert!(matches!(
+            engine.on_prevote(make_nil_prevote(1, 8), &vs, &sp),
+            ConsensusAction::None
+        ));
+        let action = engine.on_prevote(make_nil_prevote(2, 9), &vs, &sp);
+
+        assert_eq!(engine.round, 9);
+        assert_eq!(engine.step, RoundStep::Prevote);
+        assert_eq!(engine.signed_prevote_rounds.get(&9), Some(&None));
+        assert!(!engine.signed_precommit_rounds.contains_key(&9));
+        assert!(matches!(action, ConsensusAction::Multiple(_)));
+
+        let action = engine.on_prevote(make_nil_prevote(3, 9), &vs, &sp);
+        assert_eq!(engine.step, RoundStep::Precommit);
+        assert_eq!(engine.signed_precommit_rounds.get(&9), Some(&None));
+        assert!(matches!(action, ConsensusAction::BroadcastPrecommit(_)));
+    }
+
+    #[test]
+    fn test_future_vote_replay_skips_before_obsolete_round_can_lock() {
+        let (validators, vs, sp) = make_custom_test_env(&[100, 100, 100, 100]);
+        let (local_kp, local_pk) = make_validator(1);
+        assert_eq!(local_pk, validators[0].1);
+        let mut engine = ConsensusEngine::new_with_min_stake(local_kp, local_pk, 50);
+        engine.start_height(10);
+        engine.rebuild_power_snapshot(&vs, &sp);
+
+        let block = Block::new_with_timestamp(
+            11,
+            Hash::hash(b"parent"),
+            Hash::hash(b"state"),
+            validators[3].1 .0,
+            Vec::new(),
+            1_000,
+        );
+        let block_hash = block.hash();
+
+        let make_prevote = |index: usize, round: u32, hash: Option<Hash>| Prevote {
+            height: 11,
+            round,
+            block_hash: hash,
+            validator: validators[index].1,
+            signature: validators[index]
+                .0
+                .sign(&Prevote::signable_bytes(11, round, &hash)),
+        };
+
+        // Preserve the failure's network-arrival order: old round-0 value
+        // votes arrived before two survivors' round-2 nil votes.
+        for prevote in [
+            make_prevote(1, 0, Some(block_hash)),
+            make_prevote(2, 0, Some(block_hash)),
+            make_prevote(1, 2, None),
+            make_prevote(2, 2, None),
+        ] {
+            assert!(matches!(
+                engine.on_prevote(prevote, &vs, &sp),
+                ConsensusAction::None
+            ));
+        }
+
+        engine.start_height(11);
+        engine.rebuild_power_snapshot(&vs, &sp);
+        engine.proposal_blocks.insert(block_hash, block);
+        let _ = engine.do_prevote(Some(block_hash), &vs, &sp);
+
+        let action = engine.drain_future_messages(&vs, &sp);
+
+        assert_eq!(engine.round, 2);
+        assert_eq!(engine.signed_prevote_rounds.get(&2), Some(&None));
+        assert_eq!(engine.locked_round, None);
+        assert_eq!(engine.locked_value, None);
         assert!(matches!(action, ConsensusAction::Multiple(_)));
     }
 
