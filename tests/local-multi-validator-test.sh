@@ -25,6 +25,10 @@ set -euo pipefail
 export PAGER=cat
 export GIT_PAGER=cat
 export LESS='-FRX'
+# Restart-readiness acceptance consumes INFO-level validator admission markers.
+# Keep that evidence deterministic instead of inheriting a quieter operator or
+# CI shell; callers can still request a more verbose test filter explicitly.
+export RUST_LOG="${LICHEN_TEST_RUST_LOG:-info}"
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MAX_VALIDATORS="${1:-4}"
@@ -1570,9 +1574,55 @@ restart_archive_v2_validator() {
         fail "V${validator_num} failed Archive V2 ${reason} restart"
     }
     wait_for_archive_v2_runtime_convergence "V${validator_num} ${reason} restart"
+    wait_for_returning_validator_voting_readiness \
+        "$validator_num" \
+        "$restart_log" \
+        "V${validator_num} ${reason} restart"
     verify_chain_recovers_within_bft_window \
         "after V${validator_num} Archive V2 ${reason} restart" \
         "$V1_RPC"
+}
+
+wait_for_returning_validator_voting_readiness() {
+    local validator_num=$1 output_log=$2 phase=$3
+    local rpc start_slot local_slot network_slot drift stable_samples=0
+    rpc="$(rpc_port "$validator_num")"
+
+    for _ in $(seq 1 300); do
+        if grep -q 'Returning validator proved passive tip tracking' "$output_log" \
+            && grep -q 'Entering BFT consensus' "$output_log"; then
+            start_slot="$(get_slot "$rpc")"
+            break
+        fi
+        sleep 1
+    done
+    [[ -n "${start_slot:-}" ]] || {
+        tail -120 "$output_log"
+        fail "${phase} never completed passive voting-readiness admission"
+    }
+
+    # Admission itself exercises BFT startup readiness. Prove that the node
+    # continues advancing after it starts voting so a post-admission storage
+    # stall cannot silently reduce a four-validator set to an effective 2/4.
+    for _ in $(seq 1 30); do
+        sleep 1
+        local_slot="$(get_slot "$rpc")"
+        network_slot="$(get_slot "$V1_RPC")"
+        drift=$((network_slot - local_slot))
+        (( drift < 0 )) && drift=$((-drift))
+        if (( drift <= ARCHIVE_V2_TEST_CATALOG_HEADROOM_SLOTS )); then
+            stable_samples=$((stable_samples + 1))
+        else
+            stable_samples=0
+        fi
+        if (( local_slot >= start_slot + 3 && stable_samples >= 3 )); then
+            ok "${phase} stayed tip-aligned after voting admission (${start_slot} -> ${local_slot}, drift=${drift})"
+            return 0
+        fi
+    done
+
+    tail -120 "$output_log"
+    fail "${phase} stalled or drifted after voting admission"
 }
 
 wait_for_archive_v2_runtime_convergence() {
@@ -1612,9 +1662,9 @@ verify_archive_v2_runtime_role_matrix() {
     fi
     wait_for_archive_v2_runtime_convergence "initial role admission"
 
-    [[ "$(archive_v2_rpc_block_hash "$(rpc_port 1)" 0)" == "$genesis_hash" ]] \
+    [[ "$(archive_v2_rpc_block_hash_with_retry "$(rpc_port 1)" 0 30)" == "$genesis_hash" ]] \
         || fail "Full-archive V1 did not serve verified genesis history"
-    [[ "$(archive_v2_rpc_block_hash "$(rpc_port 4)" 0)" == "$genesis_hash" ]] \
+    [[ "$(archive_v2_rpc_block_hash_with_retry "$(rpc_port 4)" 0 30)" == "$genesis_hash" ]] \
         || fail "Full-archive V4 did not serve verified genesis history"
 
     stop_validator_pid "${VALIDATOR_PIDS[4]:-}"
@@ -1630,6 +1680,10 @@ verify_archive_v2_runtime_role_matrix() {
         fail "V4 did not restart for the segment-corruption drill"
     }
     wait_for_archive_v2_runtime_convergence "V4 corrupt-segment restart"
+    wait_for_returning_validator_voting_readiness \
+        4 \
+        /tmp/lichen-testnet/v4-archive-v2-corrupt-segment.log \
+        "V4 corrupt-segment restart"
     response="$(archive_v2_rpc_block_hash "$(rpc_port 4)" 0)" \
         || fail "Full-archive V4 did not preserve canonical legacy fallback while its Archive V2 segment was corrupt"
     [[ "$response" == "$genesis_hash" ]] \
@@ -1659,6 +1713,10 @@ verify_archive_v2_runtime_role_matrix() {
         fail "V4 did not restart after replica-backed segment repair"
     }
     wait_for_archive_v2_runtime_convergence "V4 replica-backed repair"
+    wait_for_returning_validator_voting_readiness \
+        4 \
+        /tmp/lichen-testnet/v4-archive-v2-repaired-segment.log \
+        "V4 replica-backed repair"
     verify_chain_producing "after V4 replica-backed Archive V2 repair" "$V1_RPC" 10
     [[ "$(archive_v2_rpc_block_hash "$(rpc_port 4)" 0)" == "$genesis_hash" ]] \
         || fail "Full-archive V4 did not recover deep history from the repaired replica"
@@ -1700,6 +1758,10 @@ verify_archive_v2_runtime_role_matrix() {
         fail "V2 did not restart for cache-corruption recovery"
     }
     wait_for_archive_v2_runtime_convergence "V2 cache-corruption restart"
+    wait_for_returning_validator_voting_readiness \
+        2 \
+        /tmp/lichen-testnet/v2-archive-v2-corrupt-cache.log \
+        "V2 cache-corruption restart"
     verify_chain_producing "after V2 verified-cache corruption recovery" "$V1_RPC" 10
     [[ "$(archive_v2_rpc_block_hash "$(rpc_port 2)" 0)" == "$genesis_hash" ]] \
         || fail "Verified-cache V2 did not quarantine and refetch its corrupt object"
@@ -1723,6 +1785,10 @@ verify_archive_v2_runtime_role_matrix() {
         fail "V2 did not restart with an unavailable archive source"
     }
     wait_for_archive_v2_runtime_convergence "V2 empty-cache source outage"
+    wait_for_returning_validator_voting_readiness \
+        2 \
+        /tmp/lichen-testnet/v2-archive-v2-empty-cache-outage.log \
+        "V2 empty-cache source-outage restart"
     response="$(rpc_query_params "$(rpc_port 2)" getBlock "[0]")"
     if python3 -c 'import json,sys; raise SystemExit(0 if isinstance(json.load(sys.stdin).get("result"), dict) else 1)' <<< "$response"; then
         fail "Verified-cache V2 served deep history with both cache and source unavailable"

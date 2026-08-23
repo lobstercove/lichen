@@ -1,7 +1,8 @@
 # Archive V2 Activation, Cadence Recovery, And Validator Liveness Plan
 
 **Date:** 2026-08-18
-**Status:** Authoritative execution plan; Track A implementation in progress
+**Status:** Authoritative execution plan; v0.5.257 locally qualified, signed
+release and coordinated Track A deployment pending
 **Scope:** `lichen-testnet-1`, the Archive V2 production topology, current
 four-validator cadence, and a future deterministic offline-validator design
 
@@ -20,12 +21,19 @@ ad-hoc production change.
 
 ## 1. Executive Decision
 
-The fleet is safe and live, but it is not yet in the intended final state.
+The fleet is intentionally frozen and is not yet in the intended final state.
 
-- All four validators are active, locally committing, advancing, on the same
-  signed v0.5.250 artifact, and have `NRestarts=0`.
-- The normal round-zero cadence is about 300-400 ms, but recurring round-one
-  and round-two BFT escalations still create 1-8 second tails.
+- The prior v0.5.255 processes are stopped under recovery watchdogs so a
+  partially converged network cannot extend divergent local tips. Public RPC
+  correctly returns 503 during this coordinated release boundary.
+- EU is the frozen source tip at 11,779,014. US is frozen at 11,762,850, while
+  SEA and IN remain inactive until the coordinated v0.5.257 install and start.
+- The original 300-400 ms cadence regression was traced to a current-commit
+  transaction-metadata miss falling through to an Archive V2 segment read; an
+  exact measured instance blocked event fanout for 7.443 seconds.
+- v0.5.257 removes that archive fallback from the live commit path and also
+  hardens block-range catch-up, future-round convergence, mempool lock scope,
+  and passive returning-validator admission.
 - The Explorer's `Observed ... ms avg` value is not an arithmetic average. It
   is the upper median of at most 120 observer-side normalized block-arrival
   samples. It can therefore move from roughly 300 ms to roughly 1,000 ms when
@@ -47,17 +55,17 @@ Accordingly:
    remain unexplained or while Archive V2 role activation is disabled.
 2. Do not start reclaim attempt 799 or another emergency FUSE batch merely to
    conceal the capacity constraint.
-3. First ship an observability and background-work isolation release, identify
-   the exact cadence trigger, and prove clean four-validator performance.
+3. Publish the already-qualified v0.5.257 candidate through the signed release
+   workflow and verify its detached post-quantum checksum signature.
 4. Provision the intended storage plane and complete the Archive V2 migration,
    rollback, role, and edge-routing gates.
 5. Treat offline-validator quarantine as a separate versioned consensus change.
 
 ## 2. Authoritative Current Evidence
 
-### 2.1 Fleet integrity
+### 2.1 Historical pre-freeze fleet integrity baseline
 
-The last verified safety state is:
+The earlier pre-freeze safety baseline was:
 
 - four active/running validators;
 - identical installed and running v0.5.250 validator and Archive V2 hashes;
@@ -73,7 +81,7 @@ The recovery evidence and exact artifact hashes are recorded in
 `memories/repo/current-state.md` and the terminal addendum in
 `memories/repo/2026-08-13-v05247-retirement-recovery-handover.md`.
 
-### 2.2 Cadence evidence
+### 2.2 Historical cadence evidence
 
 The most recent synchronized ten-minute sample showed:
 
@@ -136,7 +144,7 @@ the bursts.
 The exact trigger remains unresolved because current logs do not record enough
 proposal-receive, vote-receive, executor-delay, and storage-latency detail.
 
-### 2.5 Current Cloudflare R2 custody
+### 2.5 Cloudflare R2 custody baseline
 
 The two current buckets are separate failure domains inside one Cloudflare
 account/provider, not independent providers:
@@ -230,10 +238,53 @@ generations. v0.5.255 carries the identical checkpoint fix with refreshed
 dependency locks after `arrayref 0.3.9` was yanked. v0.5.256 additionally keeps
 verified-cache point reads on the seekable frame path instead of implicitly
 materializing a complete multi-GiB decoded segment in the validator process,
-and defaults explicit whole-segment caching to one entry. Activation remains
-blocked until the signed v0.5.256 deployment has removed the known incomplete
-EU checkpoints, all four capacity decisions are `Normal`, and the live role
-acceptance proves that historical reads do not perturb four-validator cadence.
+and defaults explicit whole-segment caching to one entry. v0.5.257 isolates
+live commit notifications from Archive V2 receipt fallback, bounds shared
+mempool lock scope, accepts authenticated future-round evidence, and keeps a
+returning validator passive until sustained near-tip stability is proven.
+Activation remains blocked until the signed v0.5.257 deployment has removed
+the known incomplete EU checkpoints, all four capacity decisions are `Normal`,
+and the live role acceptance proves that historical reads do not perturb
+four-validator cadence.
+
+### 2.7 v0.5.257 qualification and current execution boundary
+
+The clean, from-scratch hard gate completed on 2026-08-23 with INFO-level
+admission evidence enabled and no reused mutable validator state:
+
+- four validators joined from their own state and all proposed and voted;
+- a 140-slot paused-validator gap, individual own-state restarts, and a
+  coordinated all-validator restart resumed finality without copied keys,
+  RocksDB, WAL, or genesis-wallet artifacts;
+- full-archive, verified-cache, and consensus-only role boundaries passed;
+- corrupt full-archive segments and cache objects were quarantined, repaired or
+  refetched, and the network sustained 72-81 blocks per 10 seconds throughout
+  the live Archive V2 restart/outage matrix;
+- authenticated-source outage with an empty cache denied deep history while
+  consensus remained live;
+- the strict volume journey passed 140/140 checks and the launchpad graduation
+  journey passed 104/104 checks, including live WebSocket transaction, trade,
+  ticker, slot, and orderbook fanout;
+- all four final public-history manifests matched at checkpoint 12,000 with
+  root `5da0147be91ba3624868a4338e48b7501eb826196a07eed5853071cd65e3cb89`;
+- the pre-journey Archive V2 build/mirror/restore catalog root matched across
+  all four validators at
+  `e35fa837dcdfb989b1c0839d79c41bc575ecad84ff70b09ecae9a146b9c57da2`.
+
+This local qualification is necessary but is not deployment. Completion still
+requires a clean merge, signed v0.5.257 tag workflow, verified release artifact
+hashes, one coordinated four-host install/start, live cadence and role
+acceptance, and only then legacy/FUSE retirement and disk reclamation.
+
+The exact R2 audit remains a separate destructive gate. The full inventory is
+recorded in `memories/repo/evidence/v240-terminal/v05256-r2-full-inventory.tsv`.
+The current deletion-candidate manifest contains 24,794 objects totaling
+1,695,934,359,284 bytes and has SHA-256
+`698c13f6478459be55f91a9e4f5c34fba97fb1315671df264cca0c490ec03bca`;
+the retained canonical set contains 1,272 objects totaling
+152,744,629,494 bytes. No object may be deleted until the live fleet no longer
+depends on legacy/FUSE data and the complete, unhashed-shortened candidate
+manifest SHA is presented for explicit operator approval.
 
 ## 3. Target Archive V2 Architecture
 

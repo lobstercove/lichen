@@ -2,7 +2,10 @@
 
 use lichen_core::{
     archive_v2::ArchiveV2CapabilityAdvertisement,
-    codec::{deserialize_legacy_bincode_strict, serialize_legacy_bincode_limited},
+    codec::{
+        deserialize_legacy_bincode_strict, serialize_legacy_bincode_limited,
+        serialized_size_legacy_bincode,
+    },
     Block, BlockHeader, CanonicalCommitCertificate, CanonicalValidatorPower, CommitSignature, Hash,
     PqSignature, Precommit, Prevote, Proposal, Pubkey, SlashingEvidence, StakePool, Transaction,
     ValidatorSet, Vote,
@@ -461,6 +464,22 @@ impl P2PMessage {
                 .unwrap_or_default()
                 .as_secs(),
         }
+    }
+
+    /// Exact uncompressed payload size enforced by the P2P codec.
+    ///
+    /// Range-response batching uses this counting pass so it can pack blocks
+    /// in linear time without repeatedly serializing and compressing every
+    /// growing prefix of the response.
+    pub fn serialized_payload_size(&self) -> Result<u64, String> {
+        let size = serialized_size_legacy_bincode(self, "P2P message")?;
+        if size > P2P_MESSAGE_CODEC_LIMIT_BYTES {
+            return Err(format!(
+                "P2P message serialized size {} exceeds limit {}",
+                size, P2P_MESSAGE_CODEC_LIMIT_BYTES
+            ));
+        }
+        Ok(size)
     }
 
     /// Serialize message for network transmission with optional LZ4 compression.

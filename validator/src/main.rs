@@ -80,7 +80,8 @@ use lichen_p2p::{
     validator_announcement_signing_message, CheckpointCanonicalProof, CheckpointMetaAnchor,
     ConsistencyReportMsg, MessageType, NodeRole, P2PConfig, P2PMessage, P2PNetwork,
     SnapshotCategoryDigest, SnapshotKind, SnapshotRequestMsg, SnapshotResponseMsg,
-    StatusRequestMsg, StatusResponseMsg, STATE_SNAPSHOT_ENTRIES_CODEC_LIMIT_BYTES,
+    StatusRequestMsg, StatusResponseMsg, P2P_MESSAGE_CODEC_LIMIT_BYTES,
+    STATE_SNAPSHOT_ENTRIES_CODEC_LIMIT_BYTES,
 };
 use lichen_rpc::{start_rpc_server, TransactionSubmission};
 use semver::Version;
@@ -837,18 +838,24 @@ const LIVE_BFT_CATCH_UP_GAP: u64 = 3;
 /// has restarted must not vote until its canonical tip has reached the highest
 /// observed network slot and all in-flight catch-up work is drained.
 const PRE_CONSENSUS_CATCH_UP_TOLERANCE: u64 = 0;
+/// A returning, already-staked validator must demonstrate that it can follow
+/// the live tip before it starts signing again. Touching the tip once is not
+/// sufficient: cold RocksDB/cache state can make its first few canonical
+/// applications much slower than the active quorum. Admitting that node
+/// immediately lets its delayed votes pull healthy peers through repeated nil
+/// rounds.
+const PRE_CONSENSUS_RESUME_STABILITY_SECS: u64 = 10;
+const PRE_CONSENSUS_RESUME_MIN_ADVANCE_SLOTS: u64 = 3;
+const PRE_CONSENSUS_RESUME_MAX_TRACKING_DRIFT: u64 = 1;
+/// If the observed network itself is not advancing, a caught-up returning
+/// validator may be the vote needed to restore quorum. Do not require live
+/// progress forever in that case.
+const PRE_CONSENSUS_STALLED_RECOVERY_GRACE_SECS: u64 = 2;
 const FUTURE_CONSENSUS_PROPOSAL_BUFFER_HEIGHTS: u64 = 10;
 
 /// QoS: per-peer block-range serving token bucket, measured in blocks.
 const BLOCK_RANGE_SERVE_BURST_BLOCKS: u64 = 5000;
 const BLOCK_RANGE_SERVE_REFILL_BLOCKS_PER_SEC: u64 = 1000;
-// A finalized block can be close to the P2P envelope limit on its own.  A
-// count-based multi-block batch therefore cannot guarantee that the encoded
-// BlockRangeResponse fits the wire codec limit.  Send one canonical block per
-// response, matching normal live block propagation and guaranteeing that a
-// block which propagated at commit time can also be served during catch-up.
-const BLOCK_RANGE_RESPONSE_BATCH_BLOCKS: usize = 1;
-
 /// QoS: per-peer snapshot serving token bucket, measured in request units.
 const SNAPSHOT_SERVE_BURST_UNITS: u64 = 32;
 const SNAPSHOT_SERVE_REFILL_UNITS_PER_SEC: u64 = 8;
@@ -863,6 +870,79 @@ const FRESH_JOIN_BOOTSTRAP_REPLAY_SLOTS: u64 = sync::P2P_BLOCK_RANGE_LIMIT;
 type SnapshotEntry = (Vec<u8>, Vec<u8>);
 type SnapshotEntries = Vec<SnapshotEntry>;
 type ShieldedStateBundle = Vec<(String, SnapshotEntries)>;
+
+/// Build the fewest block-range responses that fit the exact P2P wire codec.
+///
+/// A count-only batch can exceed the 16 MiB envelope when blocks are large,
+/// while one response per block creates a burst of QUIC streams that can evict
+/// consensus connections during catch-up. Fixed-width legacy bincode makes the
+/// message envelope plus each serialized block additive, so one counting pass
+/// packs exact bounded messages in linear rather than quadratic time.
+fn build_block_range_response_messages(
+    blocks: &[Block],
+    sender: SocketAddr,
+) -> Result<Vec<P2PMessage>, String> {
+    let mut messages = Vec::new();
+    let mut current = Vec::new();
+    let empty_payload_size = P2PMessage::new(
+        MessageType::BlockRangeResponse { blocks: Vec::new() },
+        sender,
+    )
+    .serialized_payload_size()?;
+    let mut current_payload_size = empty_payload_size;
+
+    for block in blocks {
+        let single_payload_size = P2PMessage::new(
+            MessageType::BlockRangeResponse {
+                blocks: vec![block.clone()],
+            },
+            sender,
+        )
+        .serialized_payload_size()
+        .map_err(|error| {
+            format!(
+                "canonical block {} cannot fit in one P2P BlockRangeResponse: {error}",
+                block.header.slot
+            )
+        })?;
+        let block_payload_size = single_payload_size
+            .checked_sub(empty_payload_size)
+            .ok_or_else(|| "P2P block-range payload size underflow".to_string())?;
+        let candidate_payload_size = current_payload_size
+            .checked_add(block_payload_size)
+            .ok_or_else(|| "P2P block-range payload size overflow".to_string())?;
+
+        if candidate_payload_size > P2P_MESSAGE_CODEC_LIMIT_BYTES {
+            if current.is_empty() {
+                return Err(format!(
+                    "canonical block {} cannot fit in one P2P BlockRangeResponse",
+                    block.header.slot
+                ));
+            }
+            messages.push(P2PMessage::new(
+                MessageType::BlockRangeResponse {
+                    blocks: std::mem::take(&mut current),
+                },
+                sender,
+            ));
+            current_payload_size = empty_payload_size;
+        }
+
+        current.push(block.clone());
+        current_payload_size = current_payload_size
+            .checked_add(block_payload_size)
+            .ok_or_else(|| "P2P block-range payload size overflow".to_string())?;
+    }
+
+    if !current.is_empty() {
+        messages.push(P2PMessage::new(
+            MessageType::BlockRangeResponse { blocks: current },
+            sender,
+        ));
+    }
+
+    Ok(messages)
+}
 
 fn sync_range_peer_order(peers: &[SocketAddr], chunk_index: usize) -> Vec<SocketAddr> {
     if peers.is_empty() {
@@ -2968,6 +3048,35 @@ fn needs_pre_consensus_tip_catch_up(current_slot: u64, network_slot: u64) -> boo
     // is actively applying blocks. Requiring exact equality here can keep a
     // restarted validator in InitialSync forever on a healthy moving chain.
     needs_bootstrap_slot_catch_up(current_slot, network_slot, PRE_CONSENSUS_CATCH_UP_TOLERANCE)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResumeVotingAdmission {
+    Wait,
+    Stable,
+    StalledNetworkRecovery,
+}
+
+fn resume_voting_admission(
+    current_slot: u64,
+    network_slot: u64,
+    sync_active: bool,
+    stability_elapsed: Duration,
+    stability_advance: u64,
+    network_progress_idle: Duration,
+) -> ResumeVotingAdmission {
+    if sync_active || current_slot < network_slot {
+        return ResumeVotingAdmission::Wait;
+    }
+    if network_progress_idle >= Duration::from_secs(PRE_CONSENSUS_STALLED_RECOVERY_GRACE_SECS) {
+        return ResumeVotingAdmission::StalledNetworkRecovery;
+    }
+    if stability_elapsed >= Duration::from_secs(PRE_CONSENSUS_RESUME_STABILITY_SECS)
+        && stability_advance >= PRE_CONSENSUS_RESUME_MIN_ADVANCE_SLOTS
+    {
+        return ResumeVotingAdmission::Stable;
+    }
+    ResumeVotingAdmission::Wait
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -5504,7 +5613,7 @@ fn emit_program_and_nft_events(
         )));
 
         if state
-            .get_tx_meta_full(&tx.signature())
+            .get_hot_tx_meta_full(&tx.signature())
             .ok()
             .flatten()
             .is_some_and(|meta| !meta.succeeded())
@@ -5782,7 +5891,7 @@ fn emit_signature_status_events(
 
     for tx in &block.transactions {
         let error = state
-            .get_tx_meta_full(&tx.signature())
+            .get_hot_tx_meta_full(&tx.signature())
             .ok()
             .flatten()
             .filter(|meta| !meta.succeeded())
@@ -25208,24 +25317,31 @@ async fn run_validator() {
                 }
 
                 if !blocks.is_empty() {
-                    // Send responses below the protocol cap so catch-up traffic
-                    // cannot monopolize large QUIC streams while consensus
-                    // proposal/vote messages are trying to advance the live tip.
-                    let batch_size = BLOCK_RANGE_RESPONSE_BATCH_BLOCKS.min(blocks.len()).max(1);
+                    // Send the fewest exact codec-bounded responses. This keeps
+                    // ordinary catch-up fast without recreating oversized
+                    // responses for near-limit canonical blocks.
+                    let response_messages = match build_block_range_response_messages(
+                        &blocks,
+                        local_addr_for_responses,
+                    ) {
+                        Ok(messages) => messages,
+                        Err(error) => {
+                            warn!(
+                                "Failed to encode block range {}-{} for {}: {}",
+                                request.start_slot, request.end_slot, request.requester, error
+                            );
+                            peer_mgr_for_responses.record_violation(&request.requester);
+                            continue;
+                        }
+                    };
                     info!(
-                        "📤 Sending {} blocks to {} (batch_size={})",
+                        "📤 Sending {} blocks to {} in {} codec-bounded response(s)",
                         blocks.len(),
                         request.requester,
-                        batch_size
+                        response_messages.len()
                     );
 
-                    for chunk in blocks.chunks(batch_size) {
-                        let response_msg = P2PMessage::new(
-                            MessageType::BlockRangeResponse {
-                                blocks: chunk.to_vec(),
-                            },
-                            local_addr_for_responses,
-                        );
+                    for response_msg in response_messages {
                         if let Err(e) = peer_mgr_for_responses
                             .send_to_peer(&request.requester, response_msg)
                             .await
@@ -27825,12 +27941,17 @@ async fn run_validator() {
         let mut interval = time::interval(Duration::from_secs(30));
         loop {
             interval.tick().await;
+            // Never hold the shared mempool mutex while reading RocksDB. A
+            // returning validator can spend seconds rebuilding cache state on
+            // this query, and canonical BFT commit must still be able to remove
+            // included transactions without waiting behind that disk work.
+            let valid_hashes = state_for_mempool_cleanup
+                .get_recent_blockhashes(MAX_TX_AGE_BLOCKS)
+                .ok();
             let mut pool = mempool_for_cleanup.lock().await;
             pool.cleanup_expired();
             // Prune transactions referencing blockhashes older than MAX_TX_AGE_BLOCKS slots
-            if let Ok(valid_hashes) =
-                state_for_mempool_cleanup.get_recent_blockhashes(MAX_TX_AGE_BLOCKS)
-            {
+            if let Some(valid_hashes) = valid_hashes {
                 let evicted = pool.prune_stale_blockhashes(&valid_hashes);
                 if evicted > 0 {
                     warn!("🧹 Mempool pruned {} stale-blockhash transactions", evicted);
@@ -28200,6 +28321,11 @@ async fn run_validator() {
                     .into_iter()
                     .map(|tx| (tx.hash(), tx))
                     .collect();
+                // Matching every compact short ID is CPU work and may be
+                // quadratic in block/mempool size. Keep the mutex only long
+                // enough to take the local snapshot so proposal and commit
+                // paths remain latency-bounded during catch-up floods.
+                drop(pool);
 
                 for short_id in &cb.short_ids {
                     let mut found = false;
@@ -28220,8 +28346,6 @@ async fn run_validator() {
                         missing_hashes.push(Hash(sentinel));
                     }
                 }
-                drop(pool);
-
                 if missing_hashes.is_empty() {
                     // Full reconstruction succeeded
                     // AUDIT-FIX C-8: Avoid unwrap() crash — gracefully skip
@@ -29028,6 +29152,12 @@ async fn run_validator() {
     //  and timeout events, then executing the resulting ConsensusActions.
     // ═══════════════════════════════════════════════════════════════
 
+    // Track the canonical post-effect range that has been verified for BFT.
+    // Returning validators must complete the potentially expensive initial
+    // scan before their passive tip-tracking proof begins; otherwise the scan
+    // can stall that process immediately after it starts voting.
+    let mut bft_post_effects_verified_tip = post_block_effects_activation_slot.saturating_sub(1);
+
     // ── Pre-loop: Pre-consensus sync gate ──
     // Wait until we have the local validator state and are caught up before
     // entering the consensus loop.
@@ -29053,6 +29183,10 @@ async fn run_validator() {
             .filter(|url| !is_shared_bootstrap_rpc(url))
             .count();
         let pre_consensus_sync_started = Instant::now();
+        let require_resume_stability = !is_joining_network && current_tip > 0;
+        let mut resume_stability: Option<(Instant, u64)> = None;
+        let mut highest_network_slot = current_tip;
+        let mut last_network_progress_at = Instant::now();
         loop {
             let has_genesis = pre_consensus_genesis_is_ready(is_joining_network, || {
                 state.get_block_by_slot(0).unwrap_or(None).is_some()
@@ -29167,6 +29301,20 @@ async fn run_validator() {
                     direct_bootstrap_endpoints = direct_endpoints;
                 }
             }
+            if network_slot > highest_network_slot {
+                highest_network_slot = network_slot;
+                last_network_progress_at = Instant::now();
+            }
+            if require_resume_stability
+                && network_slot
+                    > current_slot.saturating_add(PRE_CONSENSUS_RESUME_MAX_TRACKING_DRIFT)
+                && resume_stability.take().is_some()
+            {
+                info!(
+                    "⏳ Returning validator stability proof reset (current: {}, observed: {})",
+                    current_slot, network_slot
+                );
+            }
             if should_wait_for_pre_consensus_tip_observation(
                 is_joining_network,
                 current_slot,
@@ -29217,6 +29365,110 @@ async fn run_validator() {
                 );
                 time::sleep(Duration::from_millis(200)).await;
                 continue;
+            }
+
+            if require_resume_stability {
+                // Exercise the same canonical readiness gate BFT uses while
+                // this validator is still passive. The first scan can be
+                // expensive on a recently caught-up RocksDB. Admission is
+                // valid only if the node remains tip-aligned after that work,
+                // not merely before it.
+                let prepared_tip = {
+                    let _canonical_apply_guard = block_apply_lock.lock().await;
+                    if let Err(error) = ensure_recent_stored_post_block_effects_before_bft(
+                        &state,
+                        &validator_set,
+                        &stake_pool,
+                        PostBlockEffectsRuntime {
+                            activation_slot: post_block_effects_activation_slot,
+                            min_validator_stake,
+                            slot_duration_ms,
+                        },
+                        &mut bft_post_effects_verified_tip,
+                        RECENT_POST_BLOCK_EFFECTS_RECOVERY_WINDOW,
+                        "Pre-consensus BFT readiness gate",
+                    )
+                    .await
+                    {
+                        error!(
+                            "FATAL: returning validator failed pre-consensus BFT readiness gate: {}",
+                            error
+                        );
+                        return;
+                    }
+                    state.get_last_slot().unwrap_or(0)
+                };
+                let observed_after_readiness =
+                    sync_manager_join.get_highest_seen().await.max(network_slot);
+                if observed_after_readiness > highest_network_slot {
+                    highest_network_slot = observed_after_readiness;
+                    last_network_progress_at = Instant::now();
+                }
+                let sync_active_after_readiness = sync_manager_join.is_actively_receiving().await;
+                if prepared_tip != current_slot
+                    || sync_active_after_readiness
+                    || needs_pre_consensus_tip_catch_up(prepared_tip, observed_after_readiness)
+                {
+                    if resume_stability.take().is_some() {
+                        info!(
+                            "⏳ Returning validator stability proof reset after BFT readiness work (before: {}, current: {}, observed: {}, syncing: {})",
+                            current_slot,
+                            prepared_tip,
+                            observed_after_readiness,
+                            sync_active_after_readiness,
+                        );
+                    }
+                    drain_and_log_pre_consensus_bft_queues(
+                        &mut proposal_rx,
+                        &mut prevote_rx,
+                        &mut precommit_rx,
+                        "pre-consensus BFT readiness catch-up",
+                    );
+                    time::sleep(Duration::from_millis(200)).await;
+                    continue;
+                }
+
+                let (stability_started_at, stability_start_slot) =
+                    *resume_stability.get_or_insert_with(|| {
+                        info!(
+                            "⏳ Returning validator is tip-aligned at slot {}; starting passive voting-readiness proof",
+                            current_slot
+                        );
+                        (Instant::now(), current_slot)
+                    });
+                let decision = resume_voting_admission(
+                    current_slot,
+                    network_slot,
+                    false,
+                    stability_started_at.elapsed(),
+                    current_slot.saturating_sub(stability_start_slot),
+                    last_network_progress_at.elapsed(),
+                );
+                match decision {
+                    ResumeVotingAdmission::Stable => {
+                        info!(
+                            "✅ Returning validator proved passive tip tracking through {} slots over {}s; voting admission is ready",
+                            current_slot.saturating_sub(stability_start_slot),
+                            stability_started_at.elapsed().as_secs()
+                        );
+                    }
+                    ResumeVotingAdmission::StalledNetworkRecovery => {
+                        warn!(
+                            "⚠️  Network tip has not advanced for {}s; admitting the tip-aligned returning validator to restore quorum",
+                            last_network_progress_at.elapsed().as_secs()
+                        );
+                    }
+                    ResumeVotingAdmission::Wait => {
+                        drain_and_log_pre_consensus_bft_queues(
+                            &mut proposal_rx,
+                            &mut prevote_rx,
+                            &mut precommit_rx,
+                            "returning-validator passive stability proof",
+                        );
+                        time::sleep(Duration::from_millis(200)).await;
+                        continue;
+                    }
+                }
             }
 
             if let Some(config) = deferred_archive_v2_config.take() {
@@ -29578,7 +29830,6 @@ async fn run_validator() {
             &format!("after recovered round {}", recovered_round),
         );
     }
-    let mut bft_post_effects_verified_tip = post_block_effects_activation_slot.saturating_sub(1);
     {
         let _canonical_apply_guard = block_apply_lock.lock().await;
         if let Err(e) = ensure_recent_stored_post_block_effects_before_bft(
@@ -29905,6 +30156,25 @@ async fn run_validator() {
                     "bft-pause",
                 )
                 .await;
+                // BFT owns this pause path, so it must also release a lost or
+                // partial batch. Without this timeout, a request accepted just
+                // before peer reconnect can leave is_syncing=true forever and
+                // strand the exact missing canonical parent.
+                let sync_manager_for_bft_pause = sync_manager.clone();
+                let state_for_bft_pause = state.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_secs(INITIAL_SYNC_PROGRESS_CHECK_SECS)).await;
+                    let current = state_for_bft_pause.get_last_slot().unwrap_or(0);
+                    let outcome = sync_manager_for_bft_pause
+                        .finish_sync_batch_check(start, end, tip_slot, current)
+                        .await;
+                    if outcome == sync::SyncBatchOutcome::MadeProgress {
+                        info!(
+                            "🔄 BFT-paused sync progress: {} → {} (target {})",
+                            tip_slot, current, end
+                        );
+                    }
+                });
             } else {
                 debug!(
                     "⏳ BFT pausing for block sync (tip={}, bft_height={}, observed={})",
@@ -31591,7 +31861,20 @@ async fn execute_consensus_actions(
             block,
             block_hash,
         } => {
+            let commit_action_started = Instant::now();
+            let commit_lock_wait_started = Instant::now();
             let _block_apply_guard = block_apply_lock.lock().await;
+            let commit_lock_wait_ms = duration_millis_u64(commit_lock_wait_started.elapsed());
+            if commit_lock_wait_ms > slot_duration_ms {
+                warn!(
+                    event = "bft_commit_lock_wait",
+                    height,
+                    round = _commit_round,
+                    lock_wait_ms = commit_lock_wait_ms,
+                    slot_duration_ms,
+                    "BFT commit waited longer than one target slot for canonical application"
+                );
+            }
 
             let current_tip = state.get_last_slot().unwrap_or(0);
             let stored_block = state.get_block_by_slot(height).ok().flatten();
@@ -31762,6 +32045,7 @@ async fn execute_consensus_actions(
             // Proposal execution is speculative. Every validator, including the
             // proposer, replays the committed block into canonical state exactly
             // once at the BFT commit boundary.
+            let replay_started = Instant::now();
             if let Err(err) =
                 validate_then_replay_block_transactions(state, &block, "committed block", false)
             {
@@ -31779,6 +32063,7 @@ async fn execute_consensus_actions(
                 .await;
                 return;
             }
+            let replay_ms = duration_millis_u64(replay_started.elapsed());
 
             // Apply block effects (rewards, staking, oracle) — these
             // mutations are deterministic and applied identically on all
@@ -31799,16 +32084,19 @@ async fn execute_consensus_actions(
             let finalized_slot = height;
 
             // Store block, tip, and commitment metadata atomically.
+            let store_started = Instant::now();
             if let Err(e) =
                 state.put_block_atomic(&block, Some(confirmed_slot), Some(finalized_slot))
             {
                 error!("Failed to store block at height {}: {e}", height);
             }
+            let store_ms = duration_millis_u64(store_started.elapsed());
 
             // Now apply deterministic post-block effects AFTER the block is
             // stored. Use the same wrapper as the block receiver so locally
             // committed/proposed blocks cannot drift from network-applied
             // blocks.
+            let post_effects_started = Instant::now();
             apply_post_block_effects_after_store(
                 state,
                 validator_set,
@@ -31818,8 +32106,10 @@ async fn execute_consensus_actions(
                 slot_duration_ms,
             )
             .await;
+            let post_effects_ms = duration_millis_u64(post_effects_started.elapsed());
 
             // EVM tx inclusion tracking
+            let evm_tracking_started = Instant::now();
             for tx in &block.transactions {
                 if let Some(ix) = tx.message.instructions.first() {
                     if ix.program_id == EVM_PROGRAM_ID {
@@ -31830,6 +32120,7 @@ async fn execute_consensus_actions(
                     }
                 }
             }
+            let evm_tracking_ms = duration_millis_u64(evm_tracking_started.elapsed());
 
             // Update timestamps
             *last_block_time.lock().await = std::time::Instant::now();
@@ -31854,15 +32145,21 @@ async fn execute_consensus_actions(
             }
 
             // Emit program and NFT WebSocket events
+            let event_fanout_started = Instant::now();
+            let program_events_started = Instant::now();
             emit_program_and_nft_events(state, ws_event_tx, &block);
+            let program_events_ms = duration_millis_u64(program_events_started.elapsed());
 
             // Broadcast block event to WebSocket subscribers
+            let block_events_started = Instant::now();
             drop(ws_event_tx.send(lichen_rpc::ws::Event::Block(
                 lichen_rpc::ws::BlockFanoutSummary::from_block(&block),
             )));
             drop(ws_event_tx.send(lichen_rpc::ws::Event::Slot(height)));
+            let block_events_ms = duration_millis_u64(block_events_started.elapsed());
 
             // DEX events + analytics bridge + SL/TP triggers
+            let dex_events_started = Instant::now();
             {
                 let current_trade_count = state.get_program_storage_u64("DEX", b"dex_trade_count");
                 if current_trade_count > *last_dex_trade_count {
@@ -31876,23 +32173,41 @@ async fn execute_consensus_actions(
                     });
                 }
             }
+            let dex_events_ms = duration_millis_u64(dex_events_started.elapsed());
 
             // Finality tracking
+            let signature_events_started = Instant::now();
             {
                 let finality = finality_tracker.clone();
                 finality.mark_confirmed(height);
                 emit_signature_status_events(state, ws_event_tx, &finality, &block);
             }
+            let signature_events_ms = duration_millis_u64(signature_events_started.elapsed());
+            let event_fanout_ms = duration_millis_u64(event_fanout_started.elapsed());
 
             // Remove included transactions from mempool
+            let mempool_wait_started = Instant::now();
             {
                 let tx_hashes: Vec<Hash> = block.transactions.iter().map(|tx| tx.hash()).collect();
                 let mut pool = mempool.lock().await;
+                let mempool_wait_ms = duration_millis_u64(mempool_wait_started.elapsed());
                 pool.remove_transactions_bulk(&tx_hashes);
+                if mempool_wait_ms > slot_duration_ms {
+                    warn!(
+                        event = "bft_commit_mempool_wait_slow",
+                        height,
+                        mempool_wait_ms,
+                        slot_duration_ms,
+                        "BFT canonical commit waited over one target slot for the mempool lock"
+                    );
+                }
             }
+            let mempool_ms = duration_millis_u64(mempool_wait_started.elapsed());
 
             // Checkpoint
+            let checkpoint_started = Instant::now();
             maybe_create_checkpoint(state, height, data_dir, sync_manager).await;
+            let checkpoint_ms = duration_millis_u64(checkpoint_started.elapsed());
             sync_manager.record_progress(height).await;
 
             // Periodic stats pruning
@@ -31911,6 +32226,30 @@ async fn execute_consensus_actions(
                     sync_stats.is_syncing,
                     sync_stats.highest_seen,
                     checkpoint_slot,
+                );
+            }
+
+            let total_apply_ms = duration_millis_u64(commit_action_started.elapsed());
+            if total_apply_ms > slot_duration_ms {
+                warn!(
+                    event = "bft_commit_apply_slow",
+                    height,
+                    round = _commit_round,
+                    total_ms = total_apply_ms,
+                    lock_wait_ms = commit_lock_wait_ms,
+                    replay_ms,
+                    store_ms,
+                    post_effects_ms,
+                    evm_tracking_ms,
+                    event_fanout_ms,
+                    program_events_ms,
+                    block_events_ms,
+                    dex_events_ms,
+                    signature_events_ms,
+                    mempool_ms,
+                    checkpoint_ms,
+                    slot_duration_ms,
+                    "BFT canonical commit exceeded one target slot"
                 );
             }
 
@@ -33425,10 +33764,70 @@ mod tests {
     }
 
     #[test]
-    fn block_range_response_batch_uses_small_consensus_safe_chunks() {
-        assert_eq!(BLOCK_RANGE_RESPONSE_BATCH_BLOCKS, 1);
-        const { assert!(BLOCK_RANGE_RESPONSE_BATCH_BLOCKS > 0) };
-        assert!(BLOCK_RANGE_RESPONSE_BATCH_BLOCKS as u64 <= sync::P2P_BLOCK_RANGE_LIMIT);
+    fn block_range_responses_pack_small_blocks_into_one_message() {
+        let sender = "127.0.0.1:7001".parse().expect("sender");
+        let blocks = (1..=100)
+            .map(|slot| {
+                Block::new_with_timestamp(
+                    slot,
+                    Hash::default(),
+                    Hash::default(),
+                    [1u8; 32],
+                    Vec::new(),
+                    1,
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let messages =
+            build_block_range_response_messages(&blocks, sender).expect("bounded responses");
+        assert_eq!(messages.len(), 1);
+        assert!(messages[0].serialize().is_ok());
+    }
+
+    #[test]
+    fn block_range_responses_split_large_blocks_at_exact_codec_boundary() {
+        let sender = "127.0.0.1:7001".parse().expect("sender");
+        let make_large_block = |slot| {
+            let transactions = (0..28)
+                .map(|index| {
+                    Transaction::new(Message::new(
+                        vec![Instruction {
+                            program_id: Pubkey([2u8; 32]),
+                            accounts: vec![Pubkey([3u8; 32])],
+                            data: vec![index as u8; 200_000],
+                        }],
+                        Hash::default(),
+                    ))
+                })
+                .collect();
+            Block::new_with_timestamp(
+                slot,
+                Hash::default(),
+                Hash::default(),
+                [1u8; 32],
+                transactions,
+                1,
+            )
+        };
+        let blocks = vec![
+            make_large_block(1),
+            make_large_block(2),
+            make_large_block(3),
+        ];
+
+        let messages =
+            build_block_range_response_messages(&blocks, sender).expect("bounded responses");
+        assert_eq!(messages.len(), 2, "three ~5.6 MiB blocks must split");
+        assert!(messages.iter().all(|message| message.serialize().is_ok()));
+        let returned_blocks = messages
+            .iter()
+            .map(|message| match &message.msg_type {
+                MessageType::BlockRangeResponse { blocks } => blocks.len(),
+                _ => 0,
+            })
+            .sum::<usize>();
+        assert_eq!(returned_blocks, blocks.len());
     }
 
     #[test]
@@ -34202,6 +34601,21 @@ mod tests {
         assert!(section.contains("for trade_id in 1..=trade_count"));
         assert!(!section.contains("Vec<CanonicalDexTrade>"));
         assert!(!section.contains("Vec<&CanonicalDexTrade>"));
+    }
+
+    #[test]
+    fn websocket_commit_events_never_fall_through_to_archive_history() {
+        let source = include_str!("main.rs");
+        let start = source
+            .find("fn emit_program_and_nft_events(")
+            .expect("program event helper");
+        let relative_end = source[start..]
+            .find("struct SnapshotSync")
+            .expect("event helper boundary");
+        let section = &source[start..start + relative_end];
+
+        assert!(section.contains("get_hot_tx_meta_full"));
+        assert!(!section.contains(".get_tx_meta_full("));
     }
 
     #[test]
@@ -42042,6 +42456,86 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn returning_validator_waits_for_sustained_tip_tracking_before_voting() {
+        assert_eq!(
+            resume_voting_admission(
+                1_000,
+                1_000,
+                false,
+                Duration::from_secs(PRE_CONSENSUS_RESUME_STABILITY_SECS - 1),
+                PRE_CONSENSUS_RESUME_MIN_ADVANCE_SLOTS,
+                Duration::from_secs(1),
+            ),
+            ResumeVotingAdmission::Wait
+        );
+        assert_eq!(
+            resume_voting_admission(
+                1_000,
+                1_000,
+                false,
+                Duration::from_secs(PRE_CONSENSUS_RESUME_STABILITY_SECS),
+                PRE_CONSENSUS_RESUME_MIN_ADVANCE_SLOTS - 1,
+                Duration::from_secs(1),
+            ),
+            ResumeVotingAdmission::Wait
+        );
+        assert_eq!(
+            resume_voting_admission(
+                1_000,
+                1_000,
+                false,
+                Duration::from_secs(PRE_CONSENSUS_RESUME_STABILITY_SECS),
+                PRE_CONSENSUS_RESUME_MIN_ADVANCE_SLOTS,
+                Duration::from_secs(1),
+            ),
+            ResumeVotingAdmission::Stable
+        );
+    }
+
+    #[test]
+    fn returning_validator_never_votes_while_behind_or_actively_syncing() {
+        let stable = Duration::from_secs(PRE_CONSENSUS_RESUME_STABILITY_SECS + 10);
+        let idle = Duration::from_secs(PRE_CONSENSUS_STALLED_RECOVERY_GRACE_SECS + 10);
+        assert_eq!(
+            resume_voting_admission(
+                999,
+                1_000,
+                false,
+                stable,
+                PRE_CONSENSUS_RESUME_MIN_ADVANCE_SLOTS,
+                idle,
+            ),
+            ResumeVotingAdmission::Wait
+        );
+        assert_eq!(
+            resume_voting_admission(
+                1_000,
+                1_000,
+                true,
+                stable,
+                PRE_CONSENSUS_RESUME_MIN_ADVANCE_SLOTS,
+                idle,
+            ),
+            ResumeVotingAdmission::Wait
+        );
+    }
+
+    #[test]
+    fn tip_aligned_validator_can_restore_a_stalled_quorum_after_grace() {
+        assert_eq!(
+            resume_voting_admission(
+                1_000,
+                1_000,
+                false,
+                Duration::from_secs(1),
+                0,
+                Duration::from_secs(PRE_CONSENSUS_STALLED_RECOVERY_GRACE_SECS),
+            ),
+            ResumeVotingAdmission::StalledNetworkRecovery
+        );
+    }
+
     #[tokio::test]
     async fn unsent_sync_request_cleanup_preserves_sent_chunks() {
         let sync_manager = Arc::new(SyncManager::new());
@@ -42138,6 +42632,30 @@ mod tests {
             !peer_wait_window.contains("drain_and_log_pre_consensus_bft_queues("),
             "peer tip observation wait must preserve queued current/future BFT messages for startup replay"
         );
+    }
+
+    #[test]
+    fn returning_validator_completes_bft_readiness_before_stability_and_voting() {
+        let source = include_str!("main.rs");
+        let start = source
+            .find("// ── Pre-loop: Pre-consensus sync gate ──")
+            .expect("pre-consensus sync marker");
+        let end = source[start..]
+            .find("// ── Initialize BFT consensus engine ──")
+            .expect("BFT init marker");
+        let section = &source[start..start + end];
+        let readiness = section
+            .find("\"Pre-consensus BFT readiness gate\"")
+            .expect("returning-validator BFT readiness call");
+        let stability = section
+            .find("resume_stability.get_or_insert_with")
+            .expect("returning-validator stability proof");
+        let voting = section
+            .find("✅ Entering BFT consensus")
+            .expect("BFT voting admission");
+
+        assert!(readiness < stability);
+        assert!(stability < voting);
     }
 
     #[test]

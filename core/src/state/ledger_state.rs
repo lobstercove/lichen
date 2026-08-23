@@ -1254,7 +1254,16 @@ impl StateStore {
     /// Get full transaction execution metadata.
     /// Returns None for transactions stored in the old 8-byte CU-only format
     /// (those are handled transparently with default return_code/return_data/logs).
-    fn get_hot_tx_meta_full(&self, sig: &Hash) -> Result<Option<crate::processor::TxMeta>, String> {
+    /// Read transaction execution metadata from consensus-active storage only.
+    ///
+    /// Canonical execution, commit notifications, and other liveness-sensitive
+    /// paths must use this method so a metadata miss cannot fall through to an
+    /// Archive V2 segment fetch. Public historical APIs should continue to use
+    /// [`Self::get_tx_meta_full`].
+    pub fn get_hot_tx_meta_full(
+        &self,
+        sig: &Hash,
+    ) -> Result<Option<crate::processor::TxMeta>, String> {
         let cf = self
             .db
             .cf_handle(CF_TX_META)

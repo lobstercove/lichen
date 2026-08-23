@@ -5,6 +5,31 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.257] - 2026-08-23
+
+### Fixed
+- Keeps returning validators passive until post-block effects are verified,
+  block sync is idle, and sustained near-tip observations prove that the local
+  node is stable; restart admission can no longer make a stale validator vote
+  or propose while it is still catching up.
+- Processes authenticated future-round proposals and votes immediately and
+  retries no-progress block ranges without an artificial suppression window,
+  allowing the active quorum to move past unavailable leaders and allowing a
+  returning validator to converge without one-block retry stalls.
+- Splits block-range responses at the exact P2P codec boundary so large sync
+  ranges cannot be rejected after serialization.
+- Restricts live commit notifications to consensus-active transaction metadata
+  instead of falling through to Archive V2 on a current receipt miss. This
+  removes multi-second event-fanout pauses from the canonical commit path.
+- Keeps RocksDB reads and compact-block matching outside the shared mempool
+  lock and emits per-stage slow-commit telemetry for cadence diagnosis.
+
+### Tests
+- Strengthens the four-validator Archive V2 gate so every corrupt-segment,
+  repaired-segment, cache-corruption, cached-source-outage, and empty-cache
+  restart must advance its own tip after voting admission while remaining
+  aligned with the active network.
+
 ## [0.5.256] - 2026-08-20
 
 ### Fixed

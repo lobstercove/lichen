@@ -575,8 +575,22 @@ impl SyncManager {
         };
 
         if self.complete_sync_if_current(start, end).await {
-            if outcome == SyncBatchOutcome::ReachedTarget {
-                self.clear_requested_range(start, end).await;
+            match outcome {
+                SyncBatchOutcome::ReachedTarget => {
+                    self.clear_requested_range(start, end).await;
+                }
+                SyncBatchOutcome::MadeProgress | SyncBatchOutcome::NoProgress => {
+                    // Keep delayed responses admissible, but release duplicate
+                    // suppression immediately. A request can be accepted by
+                    // QUIC just before that connection is replaced; leaving
+                    // its slots "in flight" for the full retry TTL strands the
+                    // exact missing parent while later descendants fill the
+                    // pending queue.
+                    self.make_requested_range_retryable(start, end).await;
+                }
+                SyncBatchOutcome::StaleTimeout => {
+                    unreachable!("a current batch cannot become stale after successful completion")
+                }
             }
             outcome
         } else {
@@ -850,6 +864,27 @@ impl SyncManager {
         let before = requested.len();
         requested.retain(|slot, _| *slot < start || *slot > end);
         before.saturating_sub(requested.len())
+    }
+
+    /// Preserve response-admission markers while making an incomplete range
+    /// eligible for an immediate retry through another peer.
+    async fn make_requested_range_retryable(&self, start: u64, end: u64) -> usize {
+        if start > end {
+            return 0;
+        }
+
+        let retryable_at = Instant::now()
+            .checked_sub(REQUESTED_SLOT_RETRY_TTL)
+            .unwrap_or_else(Instant::now);
+        let mut requested = self.requested_slots.lock().await;
+        let mut released = 0usize;
+        for (slot, requested_at) in requested.iter_mut() {
+            if *slot >= start && *slot <= end {
+                *requested_at = retryable_at;
+                released = released.saturating_add(1);
+            }
+        }
+        released
     }
 
     /// Drop every pending block candidate after a verified checkpoint/snapshot jump.
@@ -1593,7 +1628,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_no_progress_batch_check_preserves_response_acceptance_markers() {
+    async fn test_no_progress_batch_check_preserves_admission_and_retries_immediately() {
         let sm = SyncManager::new();
         sm.start_sync(101, 103).await;
 
@@ -1608,6 +1643,29 @@ mod tests {
         assert!(
             sm.is_requested(101).await,
             "delayed responses remain acceptable after the batch guard releases"
+        );
+        assert_eq!(
+            sm.claim_unrequested_ranges(101, 103).await,
+            vec![(101, 103)],
+            "a lost response must be retryable immediately instead of stranding its parent slot"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_partial_progress_batch_releases_remaining_range_for_retry() {
+        let sm = SyncManager::new();
+        sm.start_sync(101, 200).await;
+        assert_eq!(
+            sm.claim_unrequested_ranges(101, 200).await,
+            vec![(101, 200)]
+        );
+
+        let outcome = sm.finish_sync_batch_check(101, 200, 100, 150).await;
+        assert_eq!(outcome, SyncBatchOutcome::MadeProgress);
+        assert_eq!(
+            sm.claim_unrequested_ranges(151, 200).await,
+            vec![(151, 200)],
+            "the unapplied tail must not retain stale duplicate-suppression markers"
         );
     }
 
