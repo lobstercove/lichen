@@ -579,7 +579,8 @@ mod tests {
         ArchiveV2ReaderConfig, ArchiveV2SegmentCodec, ArchiveV2SegmentContents,
     };
     use crate::state::{
-        SymbolRegistryEntry, CF_BLOCKS, CF_CONTRACT_STORAGE, CF_TRANSACTIONS, CF_TX_TO_SLOT,
+        SymbolRegistryEntry, CF_BLOCKS, CF_CONTRACT_STORAGE, CF_SLOTS, CF_TRANSACTIONS,
+        CF_TX_TO_SLOT,
     };
     use crate::{Instruction, Message, Pubkey};
 
@@ -691,6 +692,92 @@ mod tests {
         );
         assert_eq!(state.get_tx_slot(&signature).unwrap(), Some(0));
         assert!(state.archive_v2_status().is_some());
+    }
+
+    #[test]
+    fn missing_recent_block_body_does_not_scan_archive_v2_by_hash() {
+        let state_root = tempdir().unwrap();
+        let archive_root = tempdir().unwrap();
+        let state = StateStore::open(state_root.path()).unwrap();
+        let historical = Block::new_with_timestamp(
+            0,
+            Hash::default(),
+            Hash::hash(b"bounded-slot-fallback-historical-state"),
+            [0x51; 32],
+            Vec::new(),
+            1,
+        );
+        let identity = ArchiveV2Identity {
+            network_id: "bounded-slot-fallback-testnet".to_string(),
+            genesis_hash: historical.hash(),
+        };
+        let (bytes, manifest) = ArchiveV2SegmentCodec::encode(
+            identity.clone(),
+            None,
+            Hash::default(),
+            &ArchiveV2SegmentContents::from_blocks(vec![historical]),
+            &ArchiveV2CodecConfig {
+                target_frame_bytes: 1024 * 1024,
+                ..ArchiveV2CodecConfig::default()
+            },
+        )
+        .unwrap();
+        let objects = archive_root.path().join("objects");
+        fs::create_dir_all(&objects).unwrap();
+        fs::write(
+            objects.join(format!("{}.av2s", manifest.segment_object_hash)),
+            bytes,
+        )
+        .unwrap();
+        let mut catalog = ArchiveV2Catalog::empty(identity.clone()).unwrap();
+        catalog.append(manifest).unwrap();
+        let catalog_path = archive_root.path().join("catalog.av2");
+        catalog.store_atomic(&catalog_path).unwrap();
+        state.attach_archive_v2_reader(
+            ArchiveV2Reader::open(
+                identity,
+                &catalog_path,
+                ArchiveV2ReaderConfig {
+                    role: crate::archive_v2::ArchiveV2Role::FullArchive,
+                    root: archive_root.path().to_path_buf(),
+                    cache_root: None,
+                    cache_quota_bytes: 0,
+                    max_decoded_segments: 1,
+                    allow_remote_fetch: false,
+                    sources: Vec::new(),
+                },
+            )
+            .unwrap(),
+        );
+        state.mark_archive_v2_admitted_after_fresh_sync().unwrap();
+
+        let recent = Block::new_with_timestamp(
+            2,
+            Hash::hash(b"bounded-slot-fallback-parent"),
+            Hash::hash(b"bounded-slot-fallback-recent-state"),
+            [0x52; 32],
+            Vec::new(),
+            2,
+        );
+        state
+            .db
+            .put_cf(
+                &state.db.cf_handle(CF_SLOTS).unwrap(),
+                recent.header.slot.to_be_bytes(),
+                recent.hash().0,
+            )
+            .unwrap();
+
+        let local_hits_before = state.archive_v2_status().unwrap().local_hits;
+        assert!(state
+            .get_block_by_slot(recent.header.slot)
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            state.archive_v2_status().unwrap().local_hits,
+            local_hits_before,
+            "a known recent slot outside catalog coverage must not scan Archive V2 by hash"
+        );
     }
 
     #[test]

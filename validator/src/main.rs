@@ -2527,6 +2527,20 @@ type SnapshotExportCursorKey = (std::net::SocketAddr, u64, [u8; 32], [u8; 32], S
 type SnapshotExportCursorState = (u64, Option<Vec<u8>>);
 type SnapshotExportSessionKey = (std::net::SocketAddr, u64, [u8; 32], [u8; 32], u64);
 
+#[derive(Clone)]
+struct SnapshotExportResponseCacheEntry {
+    category: String,
+    chunk_index: u64,
+    total_chunks: u64,
+    entries_bytes: Vec<u8>,
+}
+
+impl SnapshotExportResponseCacheEntry {
+    fn matches(&self, category: &str, chunk_index: u64) -> bool {
+        self.category == category && self.chunk_index == chunk_index
+    }
+}
+
 struct CheckpointExportPin {
     slot: u64,
 }
@@ -2584,6 +2598,7 @@ struct VerifiedCheckpointData {
 struct VerifiedCheckpointCacheEntry {
     checkpoints: Vec<VerifiedCheckpointData>,
     verified_at: Instant,
+    invalidated: bool,
 }
 
 impl VerifiedCheckpointData {
@@ -2628,7 +2643,8 @@ impl VerifiedCheckpointData {
 
 impl VerifiedCheckpointCacheEntry {
     fn is_fresh(&self) -> bool {
-        self.verified_at.elapsed().as_secs() < SNAPSHOT_VERIFIED_CHECKPOINT_CACHE_TTL_SECS
+        !self.invalidated
+            && self.verified_at.elapsed().as_secs() < SNAPSHOT_VERIFIED_CHECKPOINT_CACHE_TTL_SECS
     }
 
     fn has_snapshot_manifest(&self) -> bool {
@@ -2660,7 +2676,19 @@ impl VerifiedCheckpointCacheEntry {
         let before = self.checkpoints.len();
         self.checkpoints
             .retain(VerifiedCheckpointData::is_still_available);
-        before.saturating_sub(self.checkpoints.len())
+        let removed = before.saturating_sub(self.checkpoints.len());
+        if removed > 0 {
+            // Checkpoint pruning can advance faster than this cache's TTL (for
+            // example on an accelerated local network). Do not keep treating
+            // an older retained anchor as a fresh advertisement after the
+            // cached primary disappeared: peers can otherwise advertise
+            // different old slots forever while a joining validator waits for
+            // quorum. The current request may still receive the retained
+            // fail-closed fallback while a refresh runs off the request path,
+            // but the cache must remain stale until that refresh completes.
+            self.invalidated = true;
+        }
+        removed
     }
 
     fn checkpoint(
@@ -2762,6 +2790,38 @@ fn checkpoint_source_identity(
         return Some(VerifiedCheckpointSource::Validator(pubkey));
     }
     node_id.map(VerifiedCheckpointSource::Node)
+}
+
+fn pinned_checkpoint_chunk_source(
+    pinned_source: VerifiedCheckpointSource,
+    pinned_node_id: [u8; 32],
+    current_validator_pubkey: Option<Pubkey>,
+    current_node_id: Option<[u8; 32]>,
+) -> Result<VerifiedCheckpointSource, &'static str> {
+    let Some(current_node_id) = current_node_id else {
+        return Err("authenticated node identity is unavailable");
+    };
+    if current_node_id != pinned_node_id {
+        return Err("authenticated node identity changed during snapshot transfer");
+    }
+    if let VerifiedCheckpointSource::Node(expected_node_id) = pinned_source {
+        if expected_node_id != pinned_node_id {
+            return Err("pinned node source does not match its authenticated node identity");
+        }
+    }
+    if let (VerifiedCheckpointSource::Validator(expected), Some(current)) =
+        (pinned_source, current_validator_pubkey)
+    {
+        if current != expected {
+            return Err("validator identity changed during snapshot transfer");
+        }
+    }
+    // Validator announcements can be temporarily absent after an authenticated
+    // peer reconnect. The PQ-authenticated node identity is stable across that
+    // reconnect, so retain the source identity that was pinned with the
+    // commit-certified checkpoint instead of silently changing the anchor key
+    // from Validator to Node midway through a transfer.
+    Ok(pinned_source)
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -6008,6 +6068,11 @@ impl SnapshotSync {
         self.checkpoint_repair_pending = true;
         self.checkpoint_metadata_retry_pending = false;
         self.last_checkpoint_metadata_request_at = None;
+        // A source can stall after metadata discovery already reached the
+        // bounded maximum backoff. Start discovery for the replacement source
+        // from the short retry window instead of making a fresh join wait five
+        // minutes between cache-warming probes.
+        self.checkpoint_metadata_retry_attempt = 0;
     }
 
     fn mark_warp_snapshot_idle(&mut self) {
@@ -6842,6 +6907,12 @@ fn validate_consensus_proposal_before_prevote(
             expected_validators_hash.to_hex(),
         ));
     }
+    block_producer::validate_bft_proposal_limits(block).map_err(|error| {
+        format!(
+            "proposal h={} r={} rejected: {error}",
+            proposal.height, proposal.round
+        )
+    })?;
     if !block.verify_signature_with_chain_id(chain_id) {
         return Err(format!(
             "proposal h={} r={} rejected: block signature is invalid",
@@ -10743,6 +10814,7 @@ async fn latest_verified_checkpoint_cached(
                 let mut entry = VerifiedCheckpointCacheEntry {
                     checkpoints: verified,
                     verified_at: Instant::now(),
+                    invalidated: false,
                 };
                 if let Some(previous) = reusable_cache.as_ref() {
                     entry.reuse_snapshot_manifests_from(previous);
@@ -11499,6 +11571,9 @@ const DEFAULT_BINANCE_WS_URL: &str =
     "wss://stream.binance.com:9443/ws/solusdt@aggTrade/ethusdt@aggTrade/bnbusdt@aggTrade/neousdt@aggTrade/gasusdt@aggTrade/btcusdt@aggTrade";
 const DEFAULT_BINANCE_REST_URL: &str =
     "https://api.binance.com/api/v3/ticker/price?symbols=[%22SOLUSDT%22,%22ETHUSDT%22,%22BNBUSDT%22,%22NEOUSDT%22,%22GASUSDT%22,%22BTCUSDT%22]";
+const DEFAULT_ORACLE_ATTEST_MIN_SECS: u64 = 30;
+const DEFAULT_ORACLE_ATTEST_MAX_STALENESS_SECS: u64 = 60;
+const DEFAULT_ORACLE_ATTEST_MIN_CHANGE_BPS: u64 = 10;
 
 fn reset_24h_stats_if_expired(
     state: &StateStore,
@@ -11843,10 +11918,18 @@ fn spawn_oracle_price_feeder(
         let candle_intervals: [u64; 9] =
             [60, 300, 900, 3600, 14400, 86400, 259200, 604800, 31536000];
         let mut last_attested: HashMap<&'static str, (u64, Instant)> = HashMap::new();
-        let oracle_attestation_min_interval = env_duration_secs("LICHEN_ORACLE_ATTEST_MIN_SECS", 5);
-        let oracle_attestation_max_staleness =
-            env_duration_secs("LICHEN_ORACLE_ATTEST_MAX_STALENESS_SECS", 15);
-        let oracle_attestation_min_change_bps = env_u64("LICHEN_ORACLE_ATTEST_MIN_CHANGE_BPS", 1);
+        let oracle_attestation_min_interval = env_duration_secs(
+            "LICHEN_ORACLE_ATTEST_MIN_SECS",
+            DEFAULT_ORACLE_ATTEST_MIN_SECS,
+        );
+        let oracle_attestation_max_staleness = env_duration_secs(
+            "LICHEN_ORACLE_ATTEST_MAX_STALENESS_SECS",
+            DEFAULT_ORACLE_ATTEST_MAX_STALENESS_SECS,
+        );
+        let oracle_attestation_min_change_bps = env_u64(
+            "LICHEN_ORACLE_ATTEST_MIN_CHANGE_BPS",
+            DEFAULT_ORACLE_ATTEST_MIN_CHANGE_BPS,
+        );
         info!(
             "🔮 Oracle attestation cadence: min={}s max_staleness={}s change={}bps",
             oracle_attestation_min_interval.as_secs(),
@@ -25491,6 +25574,15 @@ async fn run_validator() {
                 SnapshotExportSessionKey,
                 SnapshotExportSessionState,
             > = std::collections::HashMap::new();
+            // Keep only the latest serialized chunk per exact export session.
+            // A large RocksDB category can take longer to materialize than the
+            // receiver's retry interval. Replaying that immutable response keeps
+            // duplicate retries from queueing repeated full exports ahead of the
+            // receiver's next chunk request.
+            let mut snapshot_export_responses: std::collections::HashMap<
+                SnapshotExportSessionKey,
+                SnapshotExportResponseCacheEntry,
+            > = std::collections::HashMap::new();
             // AUDIT-FIX M1: Track cursor last-access time for TTL eviction
             let mut cursor_last_access: std::collections::HashMap<
                 SnapshotExportCursorKey,
@@ -25521,6 +25613,7 @@ async fn run_validator() {
                     session_last_access.retain(|k, last| {
                         if now.duration_since(*last).as_secs() > 1800 {
                             snapshot_export_sessions.remove(k);
+                            snapshot_export_responses.remove(k);
                             false
                         } else {
                             true
@@ -25650,8 +25743,12 @@ async fn run_validator() {
                         requested_snapshot_manifest_root,
                         chunk_sz,
                     );
-                    if chunk_index == 0 && category == "accounts" {
+                    let cached_duplicate = snapshot_export_responses
+                        .get(&session_key)
+                        .is_some_and(|cached| cached.matches(category, chunk_index));
+                    if chunk_index == 0 && category == "accounts" && !cached_duplicate {
                         snapshot_export_sessions.remove(&session_key);
+                        snapshot_export_responses.remove(&session_key);
                         session_last_access.remove(&session_key);
                         snapshot_export_cursors.retain(
                             |(peer, slot, root, manifest_root, _, size), _| {
@@ -25729,6 +25826,39 @@ async fn run_validator() {
                             category, request.requester
                         );
                         peer_mgr_for_snapshot.record_violation(&request.requester);
+                        continue;
+                    }
+
+                    if let Some(cached) = snapshot_export_responses
+                        .get(&session_key)
+                        .filter(|cached| cached.matches(category, chunk_index))
+                        .cloned()
+                    {
+                        let msg = P2PMessage::new(
+                            MessageType::StateSnapshotResponse {
+                                category: category.clone(),
+                                chunk_index,
+                                total_chunks: cached.total_chunks,
+                                snapshot_slot: session.meta.slot,
+                                state_root: session.meta.state_root,
+                                entries: cached.entries_bytes,
+                            },
+                            local_addr_for_snapshot,
+                        );
+                        if let Err(e) = peer_mgr_for_snapshot
+                            .send_to_peer(&request.requester, msg)
+                            .await
+                        {
+                            warn!("⚠️  Failed to replay cached state snapshot chunk: {}", e);
+                        } else {
+                            info!(
+                                "📤 Replayed cached {} snapshot chunk {}/{} to {}",
+                                category,
+                                chunk_index + 1,
+                                cached.total_chunks,
+                                request.requester
+                            );
+                        }
                         continue;
                     }
 
@@ -25910,6 +26040,7 @@ async fn run_validator() {
                                     continue;
                                 }
                             };
+                            let cached_entries_bytes = entries_bytes.clone();
                             let msg = P2PMessage::new(
                                 MessageType::StateSnapshotResponse {
                                     category: category.clone(),
@@ -25920,6 +26051,15 @@ async fn run_validator() {
                                     entries: entries_bytes,
                                 },
                                 local_addr_for_snapshot,
+                            );
+                            snapshot_export_responses.insert(
+                                session_key,
+                                SnapshotExportResponseCacheEntry {
+                                    category: category.clone(),
+                                    chunk_index,
+                                    total_chunks: total_chunks.max(1),
+                                    entries_bytes: cached_entries_bytes,
+                                },
                             );
                             if let Err(e) = peer_mgr_for_snapshot
                                 .send_to_peer(&request.requester, msg)
@@ -26047,6 +26187,7 @@ async fn run_validator() {
             let mut active_snapshot_anchor: Option<VerifiedCheckpointAnchor> = None;
             let mut active_snapshot_source_peer: Option<SocketAddr> = None;
             let mut active_snapshot_source: Option<VerifiedCheckpointSource> = None;
+            let mut active_snapshot_source_node_id: Option<[u8; 32]> = None;
             let mut rejected_snapshot_sources: HashSet<(VerifiedCheckpointSource, u64, [u8; 32])> =
                 HashSet::new();
             let mut snapshot_last_progress_at = std::time::Instant::now();
@@ -26128,6 +26269,7 @@ async fn run_validator() {
                                         active_snapshot_anchor = None;
                                         active_snapshot_source_peer = None;
                                         active_snapshot_source = None;
+                                        active_snapshot_source_node_id = None;
                                         stalled_snapshot_retries = 0;
                                         snapshot_sync_for_apply
                                             .lock()
@@ -26195,6 +26337,16 @@ async fn run_validator() {
                 // Handle CheckpointMetaResponse
                 if let Some(mut checkpoint_metas) = response.checkpoint_meta {
                     checkpoint_metas.sort_by_key(|meta| std::cmp::Reverse(meta.slot));
+                    if active_snapshot_anchor.is_some() {
+                        // Discovery is immutable for the duration of a pinned
+                        // transfer. A late cache-warming response must not prune
+                        // the verified anchor currently authorizing chunks.
+                        debug!(
+                            "Ignoring checkpoint metadata from {} while snapshot transfer is pinned",
+                            response.requester
+                        );
+                        continue;
+                    }
                     let Some(response_anchor_source) = checkpoint_source_identity(
                         peer_mgr_for_snapshot_apply.peer_validator_pubkey(&response.requester),
                         peer_mgr_for_snapshot_apply.peer_node_id(&response.requester),
@@ -26551,9 +26703,20 @@ async fn run_validator() {
                                 let selected_slot = best_anchor.slot;
                                 active_snapshot_staging =
                                     Some((selected_slot, staging_dir, staging_state));
+                                let Some(best_source_node_id) =
+                                    peer_mgr_for_snapshot_apply.peer_node_id(&best_source_peer)
+                                else {
+                                    warn!(
+                                        "⚠️  Missing authenticated node identity for selected checkpoint source {}; waiting for fresh metadata",
+                                        best_source_peer
+                                    );
+                                    cleanup_snapshot_staging(&mut active_snapshot_staging);
+                                    continue;
+                                };
                                 active_snapshot_anchor = Some(best_anchor);
                                 active_snapshot_source_peer = Some(best_source_peer);
                                 active_snapshot_source = Some(best_anchor_key.source);
+                                active_snapshot_source_node_id = Some(best_source_node_id);
                                 stalled_snapshot_retries = 0;
                                 snapshot_sync_for_apply
                                     .lock()
@@ -26661,22 +26824,44 @@ async fn run_validator() {
                     ref entries_bytes,
                 )) = response.state_snapshot_data
                 {
-                    let Some(chunk_source) = checkpoint_source_identity(
-                        peer_mgr_for_snapshot_apply.peer_validator_pubkey(&response.requester),
-                        peer_mgr_for_snapshot_apply.peer_node_id(&response.requester),
-                    ) else {
-                        warn!(
-                            "⚠️  Rejecting {} snapshot chunk from {} without a verified source identity",
-                            category, response.requester
-                        );
-                        continue;
-                    };
                     let Some(active_anchor) = active_snapshot_anchor.as_ref() else {
                         warn!(
                             "⚠️  Rejecting {} snapshot chunk from {} without an active checkpoint anchor",
                             category, response.requester
                         );
                         continue;
+                    };
+                    if active_snapshot_source_peer != Some(response.requester) {
+                        warn!(
+                            "⚠️  Rejecting {} snapshot chunk from {}; active snapshot is pinned to {:?}",
+                            category, response.requester, active_snapshot_source_peer
+                        );
+                        continue;
+                    }
+                    let (Some(pinned_source), Some(pinned_node_id)) =
+                        (active_snapshot_source, active_snapshot_source_node_id)
+                    else {
+                        warn!(
+                            "⚠️  Rejecting {} snapshot chunk from {} without a pinned source identity",
+                            category, response.requester
+                        );
+                        continue;
+                    };
+                    let chunk_source = match pinned_checkpoint_chunk_source(
+                        pinned_source,
+                        pinned_node_id,
+                        peer_mgr_for_snapshot_apply.peer_validator_pubkey(&response.requester),
+                        peer_mgr_for_snapshot_apply.peer_node_id(&response.requester),
+                    ) {
+                        Ok(source) => source,
+                        Err(error) => {
+                            warn!(
+                                "⚠️  Rejecting {} snapshot chunk from {}: {}",
+                                category, response.requester, error
+                            );
+                            peer_mgr_for_snapshot_apply.record_violation(&response.requester);
+                            continue;
+                        }
                     };
                     let chunk_anchor_key = VerifiedCheckpointAnchorKey {
                         source: chunk_source,
@@ -26720,13 +26905,6 @@ async fn run_validator() {
                             hex::encode(&active_anchor.state_root[..8]),
                             snapshot_slot,
                             hex::encode(&state_root[..8]),
-                        );
-                        continue;
-                    }
-                    if active_snapshot_source_peer != Some(response.requester) {
-                        warn!(
-                            "⚠️  Rejecting {} snapshot chunk from {}; active snapshot is pinned to {:?}",
-                            category, response.requester, active_snapshot_source_peer
                         );
                         continue;
                     }
@@ -27119,6 +27297,7 @@ async fn run_validator() {
                             active_snapshot_anchor = None;
                             active_snapshot_source_peer = None;
                             active_snapshot_source = None;
+                            active_snapshot_source_node_id = None;
                             snapshot_sync_for_apply
                                 .lock()
                                 .await
@@ -27134,6 +27313,7 @@ async fn run_validator() {
                             state_snap_digests.clear();
                             active_snapshot_source_peer = None;
                             active_snapshot_source = None;
+                            active_snapshot_source_node_id = None;
                             snapshot_sync_for_apply
                                 .lock()
                                 .await
@@ -27157,6 +27337,7 @@ async fn run_validator() {
                             active_snapshot_anchor = None;
                             active_snapshot_source_peer = None;
                             active_snapshot_source = None;
+                            active_snapshot_source_node_id = None;
                             snapshot_sync_for_apply
                                 .lock()
                                 .await
@@ -27205,6 +27386,7 @@ async fn run_validator() {
                             active_snapshot_anchor = None;
                             active_snapshot_source_peer = None;
                             active_snapshot_source = None;
+                            active_snapshot_source_node_id = None;
                             snapshot_sync_for_apply
                                 .lock()
                                 .await
@@ -27246,6 +27428,7 @@ async fn run_validator() {
                                 active_snapshot_anchor = None;
                                 active_snapshot_source_peer = None;
                                 active_snapshot_source = None;
+                                active_snapshot_source_node_id = None;
                                 snapshot_sync_for_apply
                                     .lock()
                                     .await
@@ -27508,6 +27691,7 @@ async fn run_validator() {
                         active_snapshot_anchor = None;
                         active_snapshot_source_peer = None;
                         active_snapshot_source = None;
+                        active_snapshot_source_node_id = None;
                         state_snap_progress.clear();
                         state_snap_digests.clear();
                         verified_checkpoint_anchors.clear();
@@ -30658,7 +30842,8 @@ async fn run_validator() {
                                 parent_hash,
                                 &validator_pubkey,
                                 Vec::new(),
-                                2000,
+                                block_producer::BFT_PROPOSAL_TRANSACTION_LIMIT,
+                                block_producer::BFT_PROPOSAL_COMPUTE_LIMIT,
                                 bft_ts,
                             ) {
                                 Ok(built) => Some(built),
@@ -30799,7 +30984,8 @@ async fn run_validator() {
                                         parent_hash,
                                         &validator_pubkey,
                                         Vec::new(),
-                                        2000,
+                                        block_producer::BFT_PROPOSAL_TRANSACTION_LIMIT,
+                                        block_producer::BFT_PROPOSAL_COMPUTE_LIMIT,
                                         bft_ts,
                                     ) {
                                         Ok(built) => Some(built),
@@ -30966,7 +31152,8 @@ async fn run_validator() {
                                     parent_hash,
                                     &validator_pubkey,
                                     Vec::new(),
-                                    2000,
+                                    block_producer::BFT_PROPOSAL_TRANSACTION_LIMIT,
+                                    block_producer::BFT_PROPOSAL_COMPUTE_LIMIT,
                                     bft_ts,
                                 ) {
                                     Ok(built) => Some(built),
@@ -34565,6 +34752,65 @@ mod tests {
     }
 
     #[test]
+    fn consensus_proposal_validation_rejects_oversized_work_before_execution() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let validator_kp = Keypair::generate();
+        let validator = validator_kp.pubkey();
+        let validators_hash = Hash([4u8; 32]);
+
+        let genesis_root = state.compute_state_root_cold_start();
+        let genesis =
+            Block::new_with_timestamp(0, Hash::default(), genesis_root, validator.0, Vec::new(), 0);
+        let genesis_hash = genesis.hash();
+        state.put_block(&genesis).expect("put genesis");
+        state.set_last_slot(0).expect("set last slot");
+
+        let transactions = (0..=block_producer::BFT_PROPOSAL_TRANSACTION_LIMIT)
+            .map(|index| {
+                let mut message = Message::new(
+                    vec![Instruction {
+                        program_id: CORE_SYSTEM_PROGRAM_ID,
+                        accounts: vec![Pubkey([index as u8 + 1; 32])],
+                        data: vec![0],
+                    }],
+                    genesis_hash,
+                );
+                message.compute_budget = Some(1);
+                Transaction::new(message)
+            })
+            .collect();
+        let mut block =
+            Block::new_with_timestamp(1, genesis_hash, genesis_root, validator.0, transactions, 1);
+        block.header.validators_hash = validators_hash;
+        let block_hash = block.hash();
+        let proposal = Proposal {
+            height: 1,
+            round: 0,
+            block,
+            valid_round: -1,
+            proposer: validator,
+            signature: validator_kp.sign(&Proposal::signable_bytes_static(1, 0, &block_hash, -1)),
+        };
+
+        let root_before = state.compute_state_root_cold_start();
+        let err = validate_consensus_proposal_before_prevote(
+            &state,
+            &proposal,
+            ConsensusProposalValidationContext {
+                expected_parent_hash: genesis_hash,
+                expected_validators_hash: validators_hash,
+                min_validator_stake: MIN_VALIDATOR_STAKE,
+                chain_id: "",
+            },
+        )
+        .expect_err("oversized proposal work must be rejected before execution");
+
+        assert!(err.contains("user transactions"));
+        assert_eq!(state.compute_state_root_cold_start(), root_before);
+    }
+
+    #[test]
     fn completed_fee_distribution_short_circuits_before_receipt_replay() {
         let source = include_str!("main.rs");
         let start = source
@@ -34814,6 +35060,20 @@ mod tests {
             build_count, 3,
             "expected every BFT proposal build site to stay in the guarded loop section"
         );
+        assert_eq!(
+            section
+                .matches("block_producer::BFT_PROPOSAL_TRANSACTION_LIMIT")
+                .count(),
+            build_count,
+            "every live BFT proposal must use the liveness-safe transaction limit"
+        );
+        assert_eq!(
+            section
+                .matches("block_producer::BFT_PROPOSAL_COMPUTE_LIMIT")
+                .count(),
+            build_count,
+            "every live BFT proposal must use the liveness-safe compute limit"
+        );
 
         let validation_call = "validate_consensus_proposal_before_prevote(";
         let mut validation_count = 0;
@@ -34835,6 +35095,10 @@ mod tests {
         assert_eq!(
             validation_count, 3,
             "expected every BFT proposal validation site to stay in the guarded loop section"
+        );
+        assert!(
+            source.contains("block_producer::validate_bft_proposal_limits(block)"),
+            "received proposals must be rejected before execution when they exceed BFT limits"
         );
         assert!(
             section.matches(validation_guard).count() >= 7,
@@ -37794,6 +38058,16 @@ mod tests {
     }
 
     #[test]
+    fn oracle_attestation_defaults_bound_validator_ingress() {
+        const {
+            assert!(DEFAULT_ORACLE_ATTEST_MIN_SECS < DEFAULT_ORACLE_ATTEST_MAX_STALENESS_SECS);
+        }
+        assert_eq!(DEFAULT_ORACLE_ATTEST_MIN_SECS, 30);
+        assert_eq!(DEFAULT_ORACLE_ATTEST_MAX_STALENESS_SECS, 60);
+        assert_eq!(DEFAULT_ORACLE_ATTEST_MIN_CHANGE_BPS, 10);
+    }
+
+    #[test]
     fn parse_validator_version_accepts_optional_v_prefix() {
         let parsed = parse_validator_version("v0.1.0").unwrap();
         assert_eq!(parsed, Version::parse("0.1.0").unwrap());
@@ -40117,6 +40391,41 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_export_response_cache_matches_only_exact_duplicate_chunk() {
+        let cached = SnapshotExportResponseCacheEntry {
+            category: "tx_meta".to_string(),
+            chunk_index: 7,
+            total_chunks: 9,
+            entries_bytes: vec![1, 2, 3],
+        };
+
+        assert!(cached.matches("tx_meta", 7));
+        assert!(!cached.matches("tx_meta", 8));
+        assert!(!cached.matches("transactions", 7));
+    }
+
+    #[test]
+    fn pinned_snapshot_source_survives_validator_announcement_gap() {
+        let validator = Pubkey([31u8; 32]);
+        let node_id = [41u8; 32];
+        let pinned = VerifiedCheckpointSource::Validator(validator);
+
+        assert_eq!(
+            pinned_checkpoint_chunk_source(pinned, node_id, None, Some(node_id)),
+            Ok(pinned),
+            "an authenticated reconnect must not change a pinned Validator anchor into a Node anchor"
+        );
+        assert!(pinned_checkpoint_chunk_source(
+            pinned,
+            node_id,
+            Some(Pubkey([32u8; 32])),
+            Some(node_id),
+        )
+        .is_err());
+        assert!(pinned_checkpoint_chunk_source(pinned, node_id, None, Some([42u8; 32])).is_err());
+    }
+
+    #[test]
     fn checkpoint_metadata_requests_are_throttled_during_warp_snapshot() {
         let mut sync = SnapshotSync::new(true, 0);
 
@@ -40237,6 +40546,30 @@ mod tests {
     }
 
     #[test]
+    fn abandoned_snapshot_source_restarts_metadata_backoff() {
+        let mut sync = SnapshotSync::new(true, 0);
+        sync.mark_checkpoint_metadata_retry_pending();
+
+        for _ in 0..6 {
+            assert!(sync.should_retry_checkpoint_metadata());
+            let delay = sync.checkpoint_metadata_retry_delay_secs();
+            sync.last_checkpoint_metadata_request_at =
+                Some(std::time::Instant::now() - std::time::Duration::from_secs(delay));
+        }
+        assert_eq!(sync.checkpoint_metadata_retry_delay_secs(), 300);
+
+        sync.mark_warp_snapshot_active();
+        sync.mark_warp_snapshot_retry_pending();
+
+        assert_eq!(sync.checkpoint_metadata_retry_attempt, 0);
+        assert_eq!(sync.checkpoint_metadata_retry_delay_secs(), 15);
+        assert!(
+            sync.should_retry_checkpoint_metadata(),
+            "replacement-source discovery must restart immediately after abandonment"
+        );
+    }
+
+    #[test]
     fn checkpoint_metadata_retry_jitter_is_bounded_and_stable() {
         let identity = Pubkey::new([23u8; 32]);
         let jitter = stable_checkpoint_metadata_retry_jitter_secs(&identity);
@@ -40339,6 +40672,7 @@ mod tests {
                 make_checkpoint(101, root_b, manifest_b.clone()),
             ],
             verified_at: Instant::now(),
+            invalidated: false,
         };
 
         let mut wrong_manifest_root = advertised_snapshot_manifest_root(&manifest_a);
@@ -40395,6 +40729,7 @@ mod tests {
                 manifest,
             )],
             verified_at: Instant::now(),
+            invalidated: false,
         };
 
         let exact_anchor = CheckpointSnapshotRequestAnchor {
@@ -40488,6 +40823,7 @@ mod tests {
                 manifest.clone(),
             )],
             verified_at: Instant::now(),
+            invalidated: false,
         };
         let mut refreshed = VerifiedCheckpointCacheEntry {
             checkpoints: vec![make_checkpoint(
@@ -40496,6 +40832,7 @@ mod tests {
                 Vec::new(),
             )],
             verified_at: Instant::now(),
+            invalidated: false,
         };
 
         refreshed.reuse_snapshot_manifests_from(&previous);
@@ -40512,6 +40849,7 @@ mod tests {
                 make_checkpoint(100, checkpoint_path.display().to_string(), Vec::new()),
             ],
             verified_at: Instant::now(),
+            invalidated: false,
         };
 
         advanced.reuse_snapshot_manifests_from(&previous);
@@ -40561,12 +40899,17 @@ mod tests {
                 make_checkpoint(101, root_b, available_path.display().to_string()),
             ],
             verified_at: Instant::now(),
+            invalidated: false,
         };
 
         assert_eq!(cache.prune_unavailable_checkpoints(), 1);
         assert_eq!(cache.checkpoints.len(), 1);
         assert_eq!(cache.checkpoints[0].meta.slot, 101);
         assert!(cache.has_snapshot_manifest());
+        assert!(
+            !cache.is_fresh(),
+            "removing a cached checkpoint path must force an off-path refresh even when an older anchor remains"
+        );
     }
 
     #[test]
