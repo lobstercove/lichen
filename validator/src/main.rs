@@ -3110,6 +3110,22 @@ fn needs_pre_consensus_tip_catch_up(current_slot: u64, network_slot: u64) -> boo
     needs_bootstrap_slot_catch_up(current_slot, network_slot, PRE_CONSENSUS_CATCH_UP_TOLERANCE)
 }
 
+fn pre_consensus_sync_work_pending(
+    sync_active: bool,
+    pending_blocks: usize,
+    current_slot: u64,
+    network_slot: u64,
+) -> bool {
+    // `is_actively_receiving` also reflects the sync manager's batch guard.
+    // On a continuously advancing chain, a drained one-block batch can be
+    // superseded before its delayed completion check clears that guard.  The
+    // guard is not outstanding consensus work when the receive queue is empty
+    // and the canonical local tip has reached the authenticated network tip.
+    // Never relax actual tip parity: a validator that is even one slot behind,
+    // or that still has a queued block to apply, must remain outside BFT.
+    pending_blocks > 0 || (sync_active && current_slot < network_slot)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ResumeVotingAdmission {
     Wait,
@@ -29518,8 +29534,9 @@ async fn run_validator() {
             sync_manager_join
                 .release_caught_up_sync_guard(current_slot)
                 .await;
-            if sync_manager_join.is_actively_receiving().await {
-                let pending = sync_manager_join.pending_count().await;
+            let sync_active = sync_manager_join.is_actively_receiving().await;
+            let pending = sync_manager_join.pending_count().await;
+            if pre_consensus_sync_work_pending(sync_active, pending, current_slot, network_slot) {
                 info!(
                     "⏳ Waiting for catch-up batch to drain before consensus (current: {}, observed: {}, pending: {})",
                     current_slot, network_slot, pending
@@ -29589,8 +29606,14 @@ async fn run_validator() {
                     last_network_progress_at = Instant::now();
                 }
                 let sync_active_after_readiness = sync_manager_join.is_actively_receiving().await;
+                let pending_after_readiness = sync_manager_join.pending_count().await;
                 if prepared_tip != current_slot
-                    || sync_active_after_readiness
+                    || pre_consensus_sync_work_pending(
+                        sync_active_after_readiness,
+                        pending_after_readiness,
+                        prepared_tip,
+                        observed_after_readiness,
+                    )
                     || needs_pre_consensus_tip_catch_up(prepared_tip, observed_after_readiness)
                 {
                     if resume_stability.take().is_some() {
@@ -29753,8 +29776,10 @@ async fn run_validator() {
                 sync_manager
                     .release_caught_up_sync_guard(current_slot)
                     .await;
-                if sync_manager.is_actively_receiving().await {
-                    let pending = sync_manager.pending_count().await;
+                let sync_active = sync_manager.is_actively_receiving().await;
+                let pending = sync_manager.pending_count().await;
+                if pre_consensus_sync_work_pending(sync_active, pending, current_slot, network_slot)
+                {
                     info!(
                         "⏳ Registration confirmed; waiting for catch-up batch to drain before voting (current: {}, observed: {}, pending: {})",
                         current_slot, network_slot, pending
@@ -42797,6 +42822,39 @@ mod tests {
             network_slot + 1,
             network_slot
         ));
+    }
+
+    #[test]
+    fn drained_sync_guard_does_not_strand_a_tip_aligned_validator() {
+        assert!(pre_consensus_sync_work_pending(true, 1, 1_000, 1_000));
+        assert!(pre_consensus_sync_work_pending(true, 0, 999, 1_000));
+        assert!(!pre_consensus_sync_work_pending(true, 0, 1_000, 1_000));
+        assert!(!pre_consensus_sync_work_pending(true, 0, 1_001, 1_000));
+        assert!(!pre_consensus_sync_work_pending(false, 0, 1_000, 1_000));
+
+        let stable = Duration::from_secs(PRE_CONSENSUS_RESUME_STABILITY_SECS);
+        assert_eq!(
+            resume_voting_admission(
+                1_000,
+                1_000,
+                pre_consensus_sync_work_pending(true, 0, 1_000, 1_000),
+                stable,
+                PRE_CONSENSUS_RESUME_MIN_ADVANCE_SLOTS,
+                Duration::from_secs(1),
+            ),
+            ResumeVotingAdmission::Stable
+        );
+        assert_eq!(
+            resume_voting_admission(
+                999,
+                1_000,
+                pre_consensus_sync_work_pending(true, 0, 999, 1_000),
+                stable,
+                PRE_CONSENSUS_RESUME_MIN_ADVANCE_SLOTS,
+                Duration::from_secs(1),
+            ),
+            ResumeVotingAdmission::Wait
+        );
     }
 
     #[test]

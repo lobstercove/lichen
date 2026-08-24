@@ -2,9 +2,10 @@
 
 **Date:** 2026-08-18
 **Last updated:** 2026-08-24
-**Status:** Authoritative execution plan; signed v0.5.257 recovery is live,
-v0.5.258 liveness correction is under full qualification, and final Archive V2
-role activation, tail extension, legacy retirement, and R2 cleanup remain open
+**Status:** Authoritative execution plan; signed v0.5.258 is live on all four
+validators with Archive V2 roles temporarily disabled, v0.5.259 rejoin
+qualification is in progress, and final Archive V2 tail extension, role
+activation, legacy retirement, and R2 cleanup remain open
 **Scope:** `lichen-testnet-1`, the Archive V2 production topology, current
 four-validator cadence, and a future deterministic offline-validator design
 
@@ -26,11 +27,13 @@ ad-hoc production change.
 The fleet has safely recovered from the frozen v0.5.255 boundary but is not yet
 in the intended final state.
 
-- Signed v0.5.257 is installed and running on all four hosts. Every validator
-  converged from its preserved WAL, resumed finality from the frozen source
-  height 11,779,014, and now serves the same advancing chain within the normal
-  bounded tip spread. That recovery state is the signed rollback baseline for
-  the coordinated v0.5.258 transition.
+- Signed v0.5.258 is installed and running on all four hosts from the exact
+  release-workflow artifact. Every validator preserves its own key, signer,
+  WAL, and state; all four serve the same advancing chain with zero service
+  restarts. The restored live cadence has approximately 300-400 ms medians and
+  bounded tails rather than the earlier repeating multi-second slowdown.
+  Signed v0.5.258 remains the rollback baseline for the coordinated v0.5.259
+  transition.
 - The initial current-commit Archive V2 receipt fallback was real and
   v0.5.257 removed it from event fanout, but it was not the complete explanation
   for the production halt and multi-second cadence.
@@ -56,15 +59,24 @@ in the intended final state.
   release gate explicitly creates a 96-transaction backlog while quorum is
   paused and requires bounded drain, complete finalization, convergence, and
   continued production after quorum returns.
+- The v0.5.258 live outage drill proved that US, EU, and SEA continue finality
+  while IN is offline, but also exposed a returning-validator admission defect:
+  a drained one-block sync batch can leave the sync-manager guard active while
+  its pending queue is empty. On a continuously advancing 300 ms chain, that
+  stale guard can strand an exact-tip validator outside BFT until the network
+  itself stalls. v0.5.259 distinguishes that drained guard from real sync work
+  while retaining exact tip parity and a zero-pending-block requirement.
 - The Explorer's `Observed ... ms avg` value is not an arithmetic average. It
   is the upper median of at most 120 observer-side normalized block-arrival
   samples. It can therefore move from roughly 300 ms to roughly 1,000 ms when
   a sustained timeout burst occupies more than half of the rolling window.
-- The Archive V2 binary and role implementation are present. US has been
-  admitted as `verified_cache` against the 317-segment catalog with a temporary
-  200,000-slot hot-history bridge; EU, SEA, and IN still report
-  `archive_v2.enabled=false`. This is a recovery canary, not final fleet-wide
-  activation.
+- The Archive V2 binary and role implementation are present. All four runtime
+  roles are temporarily disabled because the former 317-segment catalog is
+  stale relative to the current tip; signed admission correctly fails closed
+  rather than claiming incomplete genesis-to-tip-minus-headroom coverage. The
+  intended bounded testnet matrix remains US/EU `verified_cache` and SEA/IN
+  `consensus`. A mainnet launch additionally requires approved persistent
+  `full_archive` capacity in at least three independent failure domains.
 - The existing read-only FUSE SST mounts are an emergency, dual-R2-backed
   legacy archive offload. They are not the final full-archive,
   verified-cache, and consensus role topology.
@@ -80,7 +92,7 @@ Accordingly:
    remain unexplained or while Archive V2 role activation is disabled.
 2. Do not start reclaim attempt 799 or another emergency FUSE batch merely to
    conceal the capacity constraint.
-3. Complete the v0.5.258 hard gates, publish it through the signed release
+3. Complete the v0.5.259 hard gates, publish it through the signed release
    workflow, verify its detached post-quantum checksum signature, and deploy it
    through one coordinated four-host stop/install/start.
 4. Extend the canonical Archive V2 tail from a stopped immutable hot snapshot,
@@ -318,12 +330,13 @@ and defaults explicit whole-segment caching to one entry. v0.5.257 isolates
 live commit notifications from Archive V2 receipt fallback, bounds shared
 mempool lock scope, accepts authenticated future-round evidence, and keeps a
 returning validator passive until sustained near-tip stability is proven.
-Activation remains blocked until the signed v0.5.257 deployment has removed
-the known incomplete EU checkpoints, all four capacity decisions are `Normal`,
-and the live role acceptance proves that historical reads do not perturb
-four-validator cadence.
+The signed v0.5.258 deployment removed the earlier runtime cadence regression,
+but activation remains blocked until v0.5.259 passes rejoin acceptance, the
+catalog tail reaches the current admission boundary, all four capacity
+decisions are `Normal`, and live role acceptance proves that historical reads
+do not perturb four-validator cadence.
 
-### 2.7 v0.5.257 deployment and v0.5.258 execution boundary
+### 2.7 v0.5.258 deployment and v0.5.259 execution boundary
 
 The clean, from-scratch hard gate completed on 2026-08-23 with INFO-level
 admission evidence enabled and no reused mutable validator state:
@@ -383,16 +396,20 @@ log for each restarted validator and fails if it does not observe a
 multi-transaction backlog block, closing the original zero-evidence reporting
 gap.
 
-The local code, data-path, and quality gates are therefore complete. Remaining
-release gates are external and operational: merge the clean commit, obtain the
-signed workflow artifacts for that exact commit, verify the detached
-post-quantum checksum signature, and perform the coordinated fleet transition
-and live acceptance below.
+Signed v0.5.258 then passed its tag workflow, detached post-quantum checksum
+verification, exact four-host artifact staging, and coordinated deployment.
+The temporary oracle-disable hold is removed, all four services run the exact
+signed binary with zero restarts, fixed-slot hashes agree, and live cadence is
+again in the expected 300-400 ms class.
 
-The current production oracle-disable drop-in is a temporary recovery hold. It
-must be byte-identical on all four hosts while v0.5.257 is live, then be removed
-during the coordinated v0.5.258 activation so the corrected defaults are tested
-as shipped. It is not a permanent configuration.
+The strict live outage test proved continued three-validator finality but
+failed normal rejoin: IN remained passive with an empty pending queue while a
+drained sync batch guard was continuously renewed. Freezing the producing tip
+allowed the existing stalled-network fallback to admit IN and restored four-way
+finality without deleting or editing WAL. That fallback proves safety and
+recovery, but it does not satisfy uninterrupted rejoin acceptance. Therefore
+v0.5.259 must pass the same repository gates and a moving-network outage/rejoin
+test before it can become the Track A anchor.
 
 The exact R2 audit remains a separate destructive gate. The full inventory is
 recorded in `memories/repo/evidence/v240-terminal/v05256-r2-full-inventory.tsv`.
@@ -555,17 +572,17 @@ No later phase may weaken these gates.
 
 Current execution order is fixed:
 
-1. Keep the now-converged signed v0.5.257 fleet advancing while the identical
-   temporary oracle hold remains on all four hosts; immediately before the
+1. Keep the now-converged signed v0.5.258 fleet advancing with the shipped
+   oracle defaults and Archive V2 roles disabled; immediately before the
    transition, prove a common recent slot/hash again.
-2. Finish every v0.5.258 local and repository hard gate, merge the clean commit,
+2. Finish every v0.5.259 local and repository hard gate, merge the clean commit,
    publish the signed tag, and verify release artifacts and rollback artifacts.
 3. At one coordinated stop, record the fixed tip/hash, materialize the exact
    volatile SST links, and select the snapshot source by an exact source-backed
    range audit. Create the bounded immutable hot snapshot only from that proven
    complete validator (prefer EU over the US canary if both qualify), install
-   only signed v0.5.258 artifacts, remove the temporary oracle hold, and start
-   all four validators. Never assume the public seed is the complete source.
+   only signed v0.5.259 artifacts, and start all four validators. Never assume
+   the public seed is the complete source.
 4. Prove four-node convergence, artifact parity, effective 30/60/10 oracle
    defaults, bounded proposal transaction counts, no mempool accumulation,
    and 300-400 ms-class round-zero cadence.
@@ -736,6 +753,29 @@ consensus-compatible with the existing transaction/block wire format:
 This deliberately favors finality over unbounded burst TPS while retaining a
 useful multi-transaction block. Raising either consensus limit requires
 adversarial cost benchmarks and cross-host deterministic acceptance first.
+
+For v0.5.259, the returning-validator correction is deliberately narrower than
+loosening the voting-ready tip tolerance:
+
+- the local canonical tip must still be at or ahead of the authenticated
+  observed network tip before voting admission can progress;
+- any queued block remains blocking even if the tips momentarily compare equal;
+- an active sync-manager batch guard is non-blocking only when its receive queue
+  is empty and local canonical tip parity is exact;
+- the same rule is enforced before the post-effects readiness scan, after that
+  scan, and after fresh-validator registration;
+- the existing 10-second passive tracking proof remains required on a moving
+  network, and the stalled-network recovery path remains a bounded quorum
+  restoration fallback rather than the normal rejoin path;
+- live acceptance must stop one validator while the other three advance, then
+  prove the returning validator enters BFT and commits without pausing the
+  surviving quorum.
+
+This is compatible with voting-only `consensus`, remote-backed
+`verified_cache`, and persistent `full_archive` validators because consensus
+admission depends only on canonical hot-state readiness, not deep-history
+availability. Archive source loss may fail deep reads closed, but it must not
+alter voting membership or finality readiness.
 
 ### A5. Provision the final storage plane
 

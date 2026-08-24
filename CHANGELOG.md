@@ -5,6 +5,26 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.259] - 2026-08-24
+
+### Fixed
+- Allows a returning validator whose canonical local tip exactly matches the
+  authenticated network tip to complete passive voting-readiness admission
+  when the block receive queue is empty, even if the sync manager still carries
+  a drained batch guard. A pending block or any local-tip deficit continues to
+  fail closed outside BFT.
+- Applies the same drained-batch distinction before initial readiness, after
+  the canonical post-effects readiness pass, and after fresh-validator
+  registration so all validator roles use one exact admission rule.
+
+### Tests
+- Adds a regression proving an active but drained sync guard cannot strand an
+  exact-tip validator, while queued blocks and a one-slot deficit still prevent
+  voting admission.
+- Retains the mandatory four-validator own-state outage/rejoin, coordinated
+  restart, Archive V2 role, source-loss, corruption-repair, and immutable
+  public-history parity gates.
+
 ## [0.5.258] - 2026-08-24
 
 ### Fixed
